@@ -63,6 +63,7 @@ from taskq.retry import (
     ActorConfigLike,
     JobRetryState,
     Retry,
+    apply_jitter,
     decide_after_failure,
     invoke_on_retry_exhausted,
     safe_mark_failed_or_retry,
@@ -579,11 +580,21 @@ async def _handle_reservation_class_denied(
     # it. Labeled by source only — bucket names are caller-derived and
     # unbounded, so they are not a dimension (see obs/_otel.py).
     record_reservation_denial(e.bucket_name, e.source)
+    # The raw retry_after is a synchroniser under mass denial: every job
+    # denied in the same round carries the same hint (identical token
+    # deficit for same-round rate-limit denials, one lease horizon for
+    # slot denials), so the herd re-attempts in lockstep and each cycle
+    # costs claim + acquire + snooze per job. Spread it with the actor's
+    # retry jitter — the same knob and formula the failure backoff uses —
+    # before handing it to the snooze arm, whose MIN_DEFERRAL_INTERVAL
+    # floor still applies downstream. Timing-only: retry_after is
+    # advisory, never an admission or budget decision.
+    retry_after = apply_jitter(e.retry_after, actor_config.retry.jitter)
     tri = await shield_with_retrieval(
         backend.mark_snoozed(
             job.id,
             worker_id,
-            e.retry_after,
+            retry_after,
             metadata_update={"awaiting": f"{awaiting_prefix}{e.bucket_name}"},
             outcome=outcome,
             progress_seq=progress_seq,
@@ -597,7 +608,7 @@ async def _handle_reservation_class_denied(
                 "from_state": "running",
                 "to_state": "scheduled",
                 "bucket_name": e.bucket_name,
-                "delay_seconds": e.retry_after.total_seconds(),
+                "delay_seconds": retry_after.total_seconds(),
             },
         )
         log_state_change(
@@ -606,7 +617,7 @@ async def _handle_reservation_class_denied(
             to_state="scheduled",
             cause="ReservationUnavailable",
             bucket_name=e.bucket_name,
-            delay_seconds=e.retry_after.total_seconds(),
+            delay_seconds=retry_after.total_seconds(),
         )
         return "scheduled"
     elif tri == "failed:MaxAttemptsExceeded":

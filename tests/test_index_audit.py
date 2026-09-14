@@ -49,6 +49,7 @@ from taskq.backend._sweeps import (  # pyright: ignore[reportPrivateUsage]  # Wh
     _SWEEP_1_SQL,
     _SWEEP_2_SQL,
     _SWEEP_3_SQL,
+    _SWEEP_4_SQL,
     _SWEEP_RESULT_TTL_SQL,
 )
 from taskq.constants import (
@@ -61,6 +62,7 @@ from taskq.worker._leader_shared import (
     _ARCHIVE_CTE_SQL,  # pyright: ignore[reportPrivateUsage]  # Why: same.
     _CLEANUP_STALE_WORKERS_SQL,  # pyright: ignore[reportPrivateUsage]  # Why: same.
     _EXPIRY_CTE_SQL,  # pyright: ignore[reportPrivateUsage]  # Why: same.
+    _QUERY_QUEUE_DEPTH_SQL_TEMPLATE,  # pyright: ignore[reportPrivateUsage]  # Why: same — the queue-depth gauge's exact statement.
 )
 from taskq.worker._leader_sweeps import (
     _QUERY_OLDEST_DUE_AGE_SQL_TEMPLATE,  # pyright: ignore[reportPrivateUsage]  # Why: same as above — pin the production statement, not a copy.
@@ -575,6 +577,59 @@ async def test_result_ttl_sweep_is_index_bounded(audit_schema: Any, pg_dsn: str)
         await conn.close()
 
 
+async def test_sweep_4_window_is_index_bounded(audit_schema: Any, pg_dsn: str) -> None:
+    """Sweep 4's candidate window must seek
+    reservation_slots_lease_expires_idx with the lease-expiry range as an
+    Index Cond. The window's bound is statement_timestamp() (STABLE) and
+    its ORDER BY pins the scan to the lease-keyed partial index — the
+    same two-clock/ORDER-BY doctrine as every sibling sweep; a volatile
+    clock_timestamp() bound (this sweep's old form) cannot be a btree
+    index condition and degrades to a post-scan Filter over the whole
+    held-slot population per tick."""
+    schema, _ = audit_schema
+    conn = await asyncpg.connect(pg_dsn)
+    try:
+        # Held slots with FUTURE leases: the steady-state shape (nothing
+        # eligible yet) every sibling plan pin seeds to. 5k rows across
+        # buckets so the planner's index choice matches a deployed fleet,
+        # not an empty table's seq-scan default.
+        now = datetime.now(UTC)
+        held = [
+            (
+                f"bucket.{b}",
+                s,
+                new_uuid(),
+                new_uuid(),
+                now,
+                now + timedelta(seconds=600 + b * 10 + s),
+            )
+            for b in range(500)
+            for s in range(10)
+        ]
+        await conn.copy_records_to_table(
+            "reservation_slots",
+            schema_name=schema,
+            columns=[
+                "bucket_name",
+                "slot_index",
+                "job_id",
+                "held_by_worker_id",
+                "acquired_at",
+                "lease_expires_at",
+            ],
+            records=held,
+        )
+        await conn.execute(f'ANALYZE "{schema}".reservation_slots')
+        plan = await _explain(conn, _SWEEP_4_SQL.format(schema=schema), 100)
+        _assert_index_cond(
+            plan,
+            "reservation_slots_lease_expires_idx",
+            "(lease_expires_at < statement_timestamp())",
+        )
+    finally:
+        await conn.close()
+
+
 async def test_backlog_oldest_due_age_sampler_is_index_bounded(
     audit_schema: Any, pg_dsn: str
 ) -> None:
@@ -592,6 +647,30 @@ async def test_backlog_oldest_due_age_sampler_is_index_bounded(
             plan,
             "jobs_scheduled_wake_idx",
             "(scheduled_at <= statement_timestamp())",
+        )
+    finally:
+        await conn.close()
+
+
+async def test_queue_depth_gauge_is_served_by_queue_leading_index(
+    audit_schema: Any, pg_dsn: str
+) -> None:
+    """The every-queue_depth_interval gauge must be served by an index
+    whose key leads on queue over exactly the pending/scheduled
+    predicate. jobs_queue_active_idx (queue, id) partial on
+    ``status IN ('pending', 'scheduled')`` — the 01.00.06 bulk-cancel
+    index — matches the gauge's predicate verbatim and leads on its
+    GROUP BY column, so the sampler's cost is independent of terminal
+    history; the pin holds that property settled so a second queue-keyed
+    index over the same predicate does not get added for this gauge."""
+    schema, _ = audit_schema
+    conn = await asyncpg.connect(pg_dsn)
+    try:
+        plan = await _explain(conn, _QUERY_QUEUE_DEPTH_SQL_TEMPLATE.format(schema=schema))
+        assert "jobs_queue_active_idx" in plan, (
+            "the queue-depth gauge must be served by jobs_queue_active_idx "
+            "(queue, id) over the pending/scheduled predicate — a plan that "
+            f"walks anything else makes the sampler's cost grow with terminal history:\n{plan}"
         )
     finally:
         await conn.close()

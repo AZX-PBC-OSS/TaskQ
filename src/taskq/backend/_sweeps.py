@@ -332,13 +332,45 @@ WHERE j.id = snap.id
 RETURNING j.id, snap.prev_status"""
 
 _SWEEP_4_SQL = """\
-UPDATE "{schema}".reservation_slots
+-- Bounded batch + MATERIALIZED, same rationale as the sibling sweeps
+-- above: LIMIT $1 caps one call's write set, so a whole-fleet crash
+-- (every slot's lease expiring at once) drains in committed batches
+-- instead of one unbounded UPDATE; MATERIALIZED stops the planner from
+-- inlining the LIMIT-ed CTE into the UPDATE in a way that could release
+-- more slots than the LIMIT; ORDER BY lease_expires_at plus the STABLE
+-- statement_timestamp() bound make the window an Index Scan whose Index
+-- Cond terminates at the range boundary on
+-- reservation_slots_lease_expires_idx (partial on job_id IS NOT NULL,
+-- keyed on lease_expires_at) — a VOLATILE clock_timestamp() bound cannot
+-- be a btree index condition (see the module docstring's two-clock
+-- doctrine), and without the ORDER BY the planner may fractional-walk
+-- some other predicate-implied partial index (the ORDER-BY-pins-the-scan
+-- rule above); no keyset cursor because every windowed row is nulled by
+-- this same statement, so the eligible set shrinks monotonically per
+-- committed batch.
+--
+-- The outer re-check of job_id IS NOT NULL keeps a concurrent duplicate
+-- sweep (possible during a rolling deploy before the leader lock names
+-- converge) a no-op rather than a count-inflating rewrite: a row another
+-- leader nulled between window and UPDATE falls out here, so the
+-- affected-row count stays the number of rows this call actually
+-- released — same shape as _SWEEP_RESULT_TTL_SQL.
+WITH expired AS MATERIALIZED (
+    SELECT bucket_name, slot_index
+    FROM "{schema}".reservation_slots
+    WHERE lease_expires_at < statement_timestamp()
+      AND job_id IS NOT NULL
+    ORDER BY lease_expires_at
+    LIMIT $1
+)
+UPDATE "{schema}".reservation_slots r
 SET job_id            = NULL,
     held_by_worker_id = NULL,
     acquired_at       = NULL,
     lease_expires_at  = NULL
-WHERE lease_expires_at < clock_timestamp()
-  AND job_id IS NOT NULL"""
+FROM expired
+WHERE (r.bucket_name, r.slot_index) = (expired.bucket_name, expired.slot_index)
+  AND r.job_id IS NOT NULL"""
 
 _SWEEP_RESULT_TTL_SQL = """\
 -- Bounded batch + MATERIALIZED, same rationale as the sweep comments
@@ -1054,25 +1086,36 @@ async def sweep_leaked_reservation_slots(
     conn: ConnLike,
     *,
     schema: str,
+    batch_size: int = DEFAULT_EVENT_WRITER_BATCH_SIZE,
 ) -> int:
-    """Sweep 4: release reservation slots whose lease has expired.
+    """Sweep 4: release reservation slots whose lease has expired, one
+    bounded batch per call.
 
-    Clears ``job_id``, ``held_by_worker_id``, ``acquired_at``, and
-    ``lease_expires_at`` on matching rows.  No ``job_attempts`` or
-    ``job_events`` writes — reservation slots are not job-state
-    transitions.
+    One call clears ``job_id``, ``held_by_worker_id``, ``acquired_at``,
+    and ``lease_expires_at`` on at most ``batch_size`` slots in one short
+    statement; repeated calls drain the eligible backlog a committed
+    batch at a time. No ``job_attempts`` or ``job_events`` writes —
+    reservation slots are not job-state transitions, so the
+    trailing-watermark visibility margin does not bind the batch size;
+    the bound exists because the write set scales with the expired-lease
+    population, and one constant-size statement per call keeps each
+    tick's cost independent of that backlog.
 
-    PG uses server-side ``clock_timestamp()`` (not ``now()``, which is
-    fixed at transaction start — see the module docstring); this
-    function takes no ``now`` argument.
+    PG uses server-side ``statement_timestamp()`` for the lease range
+    bound (STABLE, so ``reservation_slots_lease_expires_idx`` serves it
+    as an Index Cond — see the module docstring's two-clock doctrine; a
+    ``clock_timestamp()`` bound would degrade the window to a post-scan
+    Filter over the whole held-slot population); this function takes no
+    ``now`` argument.
 
     Returns the count of released slots.
     """
     if not _IDENT_RE.match(schema):
         raise ValueError(f"invalid schema identifier: {schema!r}")
+    _validate_positive("batch_size", batch_size)
 
     sql = _SWEEP_4_SQL.format(schema=schema)
-    tag = await conn.execute(sql)
+    tag = await conn.execute(sql, batch_size)
     count = parse_rowcount(tag)
     if count > 0:
         logger.debug(

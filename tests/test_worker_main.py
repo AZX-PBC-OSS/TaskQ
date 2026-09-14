@@ -679,6 +679,7 @@ async def test_local_queue_seed_jobs_consumed(settings: WorkerSettings) -> None:
         backend: Backend,
         worker_id: UUID,
         stub_work_timeout: float = 60.0,
+        slot_freed_event: asyncio.Event | None = None,
     ) -> None:
         while not shutdown_event.is_set():
             try:

@@ -457,11 +457,18 @@ class _PgSweepBackend:
     async def deadline_sweep(self) -> int:
         return 0
 
-    async def sweep_leaked_reservation_slots(self, conn: object, *, schema: str) -> int:
-        self.leaked_calls.append({"schema": schema})
+    async def sweep_leaked_reservation_slots(
+        self, conn: object, *, schema: str, batch_size: int = 100
+    ) -> int:
+        self.leaked_calls.append({"schema": schema, "batch_size": batch_size})
         if self._leaked_exc is not None:
             raise self._leaked_exc
-        return 5
+        # First call reports a non-empty bounded batch so the loop's drain
+        # engages; the next reports an empty window so the drain stops after
+        # exactly one drain call — the same drain-stopping shape the
+        # results sweep fake below produces, because both sweeps now drain
+        # to zero within the tick.
+        return 5 if len(self.leaked_calls) == 1 else 0
 
     async def sweep_expired_results(
         self, conn: object, *, schema: str, batch_size: int = 100
@@ -479,8 +486,9 @@ class _PgSweepBackend:
 async def test_sweep_loop_runs_pg_sweep_block() -> None:
     """When the backend has ``sweep_leaked_reservation_slots``, the PG-only
     sweep block runs leaked-slots, expired-results, and stale-worker sweeps;
-    the results sweep drains (initial bounded call + one drain call that
-    sees an empty window) and carries the configured batch cap."""
+    the leaked-slots and results sweeps each drain within the tick (initial
+    bounded call + one drain call that sees an empty window) and carry the
+    configured batch cap."""
     backend = _PgSweepBackend()
     # cleanup_stale_workers parses "DELETE N" from conn.execute.
     conn = FakeConn(execute_result="DELETE 2")
@@ -488,17 +496,23 @@ async def test_sweep_loop_runs_pg_sweep_block() -> None:
     leader = _make_leader(backend=backend, deps=_make_deps(dispatcher_pool=pool, is_leader=True))
     shutdown = asyncio.Event()
     task = asyncio.create_task(leader._sweep_loop(shutdown))
-    # Wait for the results sweep's initial call AND its drain-stopping call
-    # (the fake reports a non-empty batch, then an empty window), so the
-    # call count is read after the drain has deterministically stopped.
+    # Wait for both sweeps' initial call AND their drain-stopping call (the
+    # fakes report a non-empty batch, then an empty window), so the call
+    # counts are read after the drains have deterministically stopped.
     await wait_for_condition(
-        lambda: bool(backend.leaked_calls) and len(backend.results_calls) >= 2,
-        description="the PG sweep block must run the leaked-slots sweep and drain the results sweep",
+        lambda: len(backend.leaked_calls) >= 2 and len(backend.results_calls) >= 2,
+        description="the PG sweep block must run and drain the leaked-slots and results sweeps",
     )
     await _stop_loop(task, shutdown, delay=0.0)
 
-    assert len(backend.leaked_calls) == 1
+    assert len(backend.leaked_calls) == 2, (
+        "one tick is the initial bounded call plus drain calls until an empty "
+        f"window; got {len(backend.leaked_calls)}"
+    )
     assert backend.leaked_calls[0]["schema"] == leader._deps.settings.schema_name  # type: ignore[reportPrivateUsage]  # Why: test reads the deps the leader was constructed with.
+    assert backend.leaked_calls[0]["batch_size"] == (  # type: ignore[reportPrivateUsage]  # Why: see above.
+        leader._deps.settings.event_writer_batch_size
+    ), "the leader must pass the configured event-writer batch cap to the leaked-slots sweep"
     assert len(backend.results_calls) == 2, (
         "one tick is the initial bounded call plus drain calls until an empty "
         f"window; got {len(backend.results_calls)}"
@@ -528,7 +542,8 @@ async def test_sweep_loop_leaked_slots_error_continues_to_results() -> None:
     )
     await _stop_loop(task, shutdown, delay=0.0)
 
-    # leaked raised, but results still ran — and drained.
+    # leaked raised on its initial call (no rows reported → no drain), but
+    # results still ran — and drained.
     assert len(backend.leaked_calls) == 1
     assert len(backend.results_calls) == 2
 

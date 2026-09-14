@@ -5,7 +5,7 @@ from dataclasses import FrozenInstanceError
 from uuid import UUID
 
 import pytest
-import structlog
+import structlog.testing
 from opentelemetry.trace import NonRecordingSpan, Span, SpanContext
 from pydantic import BaseModel, ConfigDict
 
@@ -205,3 +205,27 @@ def test_span_none_context_works() -> None:
     """JobContext with span=None is usable."""
     ctx = _make_context(span=None)
     assert ctx.span is None
+
+
+# ── progress() with no buffer wired: one-time discoverability notice ────
+
+
+async def test_progress_no_buffer_wired_logs_once_then_stays_silent() -> None:
+    """The first progress() call on a context with no progress buffers
+    wired (direct actor testing, a miswired context) emits ONE debug-level
+    drop notice so the silent no-op is discoverable; every later call
+    stays silent — a tight progress loop must not produce one log line
+    per dropped call."""
+    ctx = _make_context()  # _progress_buffers defaults to None — nothing wired
+
+    with structlog.testing.capture_logs() as logs:
+        await ctx.progress(step=1)
+        await ctx.progress(step=2)
+        await ctx.progress(step=3)
+
+    drop_notices = [e for e in logs if e["event"] == "progress-dropped-no-buffer"]
+    assert len(drop_notices) == 1, (
+        f"expected exactly one drop notice across three dropped calls, got "
+        f"{len(drop_notices)}: {[e['event'] for e in logs]}"
+    )
+    assert drop_notices[0]["log_level"] == "debug"

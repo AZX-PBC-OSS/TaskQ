@@ -2,7 +2,7 @@
 
 import asyncio
 from collections.abc import AsyncGenerator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID
 
@@ -15,7 +15,12 @@ from taskq.progress._buffer import _progress_after_flush, _ProgressBuffer, _snap
 from taskq.progress._flush import _flush_buffer, _flush_buffer_immediate, progress_flush_loop
 
 _JOB_ID = UUID("aaaaaaaa-bbbb-cccc-dddd-000000000001")
+_JOB_ID_B = UUID("aaaaaaaa-bbbb-cccc-dddd-000000000002")
 _WORKER_ID = UUID("11111111-2222-3333-4444-555555555555")
+_POOL_SIZE = 4
+"""Reported by every pool double: the flush loop bounds a tick's flush
+concurrency by the pool's current size, so pool doubles must report one
+large enough for the tick to run the flushes concurrently."""
 
 
 def _make_pool_mock(*, returning_row: dict[str, object] | None = None) -> MagicMock:
@@ -32,6 +37,7 @@ def _make_pool_with_conn(
     conn.fetchrow.return_value = returning_row
 
     pool = MagicMock()
+    pool.get_size.return_value = _POOL_SIZE
 
     @asynccontextmanager
     async def _acquire() -> AsyncGenerator[AsyncMock, None]:
@@ -444,6 +450,7 @@ async def test_flush_loop_continues_after_per_job_exception() -> None:
     conn.fetchrow.side_effect = _fetchrow
 
     pool = MagicMock()
+    pool.get_size.return_value = _POOL_SIZE
 
     @asynccontextmanager
     async def _acquire() -> AsyncGenerator[AsyncMock, None]:
@@ -465,6 +472,142 @@ async def test_flush_loop_continues_after_per_job_exception() -> None:
 
     assert good_buf.dirty is False
     assert good_buf.base_seq == returned_seq
+
+
+# ── Bounded-parallel flush within one tick ──────────────────────────────
+
+
+async def test_flush_loop_flushes_dirty_buffers_concurrently() -> None:
+    """Two dirty buffers flush concurrently within one tick.
+
+    Both flushes block on a two-party barrier inside fetchrow: the
+    barrier is satisfiable only when both UPDATEs are in flight
+    simultaneously. Serial per-buffer flushing parks the first flush at
+    the barrier forever, head-of-line blocking the second — the test
+    then times out and fails.
+    """
+    barrier = asyncio.Barrier(2)
+    conn = AsyncMock()
+
+    async def _fetchrow(*_args: object) -> dict[str, object]:
+        await barrier.wait()
+        return {"progress_seq": 9}
+
+    conn.fetchrow.side_effect = _fetchrow
+
+    pool = MagicMock()
+    pool.get_size.return_value = _POOL_SIZE
+
+    @asynccontextmanager
+    async def _acquire() -> AsyncGenerator[AsyncMock, None]:
+        yield conn
+
+    pool.acquire = _acquire
+
+    buf_a = _make_dirty_buffer()
+    buf_b = _ProgressBuffer(job_id=_JOB_ID_B, base_seq=0)
+    buf_b.pending_seq_delta = 2
+    buf_b.pending_state["step"] = 1
+    buf_b.dirty = True
+    buffers: dict[UUID, _ProgressBuffer] = {_JOB_ID: buf_a, _JOB_ID_B: buf_b}
+
+    shutdown = asyncio.Event()
+    task = asyncio.create_task(
+        progress_flush_loop(lambda: pool, "taskq_test", _WORKER_ID, buffers, 0.01, shutdown)
+    )
+    try:
+        async with asyncio.timeout(2.0):
+            while buf_a.dirty or buf_b.dirty:  # noqa: ASYNC110  # Why: polling observable mock-DB state (buffer.dirty) that carries no event to await; bounded by the surrounding asyncio.timeout.
+                await asyncio.sleep(0.005)
+    except TimeoutError:
+        pytest.fail(
+            "the two dirty buffers did not flush concurrently: the second flush "
+            "never reached the barrier while the first was in flight "
+            "(head-of-line blocking in the flush tick)"
+        )
+    finally:
+        shutdown.set()
+        try:
+            await asyncio.wait_for(asyncio.shield(task), timeout=1.0)
+        except (TimeoutError, asyncio.CancelledError):
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
+
+    assert buf_a.dirty is False
+    assert buf_b.dirty is False
+    assert buf_a.base_seq == 9
+    assert buf_b.base_seq == 9
+
+
+async def test_flush_loop_slow_failing_flush_does_not_block_later_buffers() -> None:
+    """One buffer's failing flush neither blocks nor fails the tick's
+    other flushes.
+
+    The failing job's UPDATE holds its in-flight slot for 0.4 s before
+    raising; the healthy job's flush must complete well inside that
+    window (serial flushing would queue it behind the failure). The
+    failing buffer must stay dirty with its delta intact for the next
+    tick, and the loop must survive the failure.
+    """
+    import asyncpg
+
+    bad_id = UUID("bad00000-0000-0000-0000-000000000000")
+    good_id = UUID("600d0000-0000-0000-0000-000000000000")
+
+    bad_flush_done = asyncio.Event()
+    conn = AsyncMock()
+
+    async def _fetchrow(*args: object) -> dict[str, object] | None:
+        if args[3] == bad_id:
+            await asyncio.sleep(0.4)
+            bad_flush_done.set()
+            raise asyncpg.PostgresError("simulated pg error")
+        return {"progress_seq": 5}
+
+    conn.fetchrow.side_effect = _fetchrow
+
+    pool = MagicMock()
+    pool.get_size.return_value = _POOL_SIZE
+
+    @asynccontextmanager
+    async def _acquire() -> AsyncGenerator[AsyncMock, None]:
+        yield conn
+
+    pool.acquire = _acquire
+
+    bad_buf = _ProgressBuffer(job_id=bad_id, base_seq=0)
+    bad_buf.pending_seq_delta = 1
+    bad_buf.pending_state["step"] = 1
+    bad_buf.dirty = True
+    good_buf = _ProgressBuffer(job_id=good_id, base_seq=0)
+    good_buf.pending_seq_delta = 1
+    good_buf.pending_state["step"] = 1
+    good_buf.dirty = True
+    buffers: dict[UUID, _ProgressBuffer] = {bad_id: bad_buf, good_id: good_buf}
+
+    shutdown = asyncio.Event()
+    task = asyncio.create_task(
+        progress_flush_loop(lambda: pool, "taskq_test", _WORKER_ID, buffers, 0.01, shutdown)
+    )
+    try:
+        async with asyncio.timeout(0.2):
+            while good_buf.dirty:  # noqa: ASYNC110  # Why: polling observable mock-DB state (buffer.dirty) that carries no event to await; bounded by the surrounding asyncio.timeout.
+                await asyncio.sleep(0.005)
+    finally:
+        shutdown.set()
+        try:
+            await asyncio.wait_for(asyncio.shield(task), timeout=1.5)
+        except (TimeoutError, asyncio.CancelledError):
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
+
+    assert bad_flush_done.is_set()
+    assert good_buf.dirty is False
+    assert good_buf.base_seq == 5
+    assert bad_buf.dirty is True
+    assert bad_buf.pending_seq_delta == 1
 
 
 # ── _snapshot_progress regression tests ───────────────────────────────────────

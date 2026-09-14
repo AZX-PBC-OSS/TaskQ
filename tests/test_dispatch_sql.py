@@ -171,6 +171,45 @@ class TestDispatchStrictFifoSql:
         assert "WHERE j.id = eligible.id" in rendered
         assert "AND j.status = 'pending'" in rendered
 
+    def test_per_actor_capacity_prefilters_idle_actors(self) -> None:
+        """per_actor_capacity must carry an EXISTS prefilter that drops
+        actors with no pending rows on the round's queues BEFORE the
+        candidates CROSS JOIN fans the per-(actor, queue) lateral seek out
+        over every registered actor.
+
+        Override-safety is the load-bearing half of the shape: the
+        predicate must cover exactly the queues in the round's params —
+        NOT the actor's actor_config home queue — so an
+        ``enqueue(queue=...)`` override that lands a pending job on any
+        subscribed queue keeps that actor probed. An actor filtered here
+        contributes zero candidate rows either way (the lateral's
+        ``j2.queue = sq.queue_name`` equality already annihilated every
+        one of its pairs), so selection, fairness, and the locked/eligible
+        stages are unchanged.
+        """
+        for variant, sql in (
+            ("strict_fifo", DISPATCH_STRICT_FIFO_SQL),
+            ("round_robin", DISPATCH_ROUND_ROBIN_SQL),
+        ):
+            rendered = sql.format(schema="taskq")
+            body = _cte_body(rendered, "per_actor_capacity")
+            assert "EXISTS" in body, (
+                f"{variant}: per_actor_capacity lost the idle-actor "
+                "prefilter — the candidates CROSS JOIN runs the lateral "
+                "seek for every (actor, queue) pair, idle actors included"
+            )
+            assert "j.status = 'pending'" in body, (
+                f"{variant}: the prefilter must count only pending rows"
+            )
+            assert "= ANY(p.queues)" in body, (
+                f"{variant}: the prefilter must cover exactly the round's queues from params"
+            )
+            assert "ac.queue" not in body, (
+                f"{variant}: the prefilter must not consult the actor's "
+                "home queue — an enqueue(queue=...) override onto a "
+                "subscribed queue must keep the actor probed"
+            )
+
     def test_contains_vendor_derived_structural_patterns(self) -> None:
         """Verify structural patterns derived from vendor precedents are present:
         - FOR UPDATE OF ... SKIP LOCKED (river-style atomicity)

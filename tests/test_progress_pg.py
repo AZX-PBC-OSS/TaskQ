@@ -427,14 +427,42 @@ async def test_ti5_redis_failure_pg_written(
 # ── Redis disconnect mid-stream (simulated) ─────────────────────────
 
 
+class _FailingPipeline:
+    """Pipeline stand-in whose ``execute`` raises.
+
+    Simulates a failed pipelined dual-channel publish round trip — the
+    surface progress events actually go through when
+    ``progress_publish_global`` is on (one pipeline, one execute, both
+    channels; ``client.publish`` is never called on that path).
+    """
+
+    def __init__(self, error: Exception) -> None:
+        self._error = error
+
+    def publish(self, *_args: object) -> None:
+        return None
+
+    async def execute(self) -> list[int]:
+        raise self._error
+
+    async def __aenter__(self) -> "_FailingPipeline":
+        return self
+
+    async def __aexit__(self, *_exc: object) -> None:
+        return None
+
+
 @pytest.mark.redis
 async def test_ti6_redis_disconnect_mid_stream_pg_complete(
     pg_dsn: str, redis_url: str, monkeypatch: pytest.MonkeyPatch, module_pg_schema: ModulePgSchema
 ) -> None:
-    """Redis publish raises after the 3rd call; PG has all 5 updates; job succeeds.
+    """Redis publish raises after the 3rd round trip; PG has all 5 updates; job succeeds.
 
     Rather than stopping the session-scoped Redis container, we monkeypatch
-    the publish method on the redis client to raise after N calls.
+    the pipeline factory on the redis client to fail after N round trips —
+    each progress event is one pipelined execute carrying both channels,
+    so client.publish (which that path never calls) cannot inject the
+    failure.
 
     Oracle: progress_seq == 5 in PG, job status = 'succeeded'.
     """
@@ -449,18 +477,18 @@ async def test_ti6_redis_disconnect_mid_stream_pg_complete(
         pg_dsn, redis_url=redis_url, schema=module_pg_schema.schema_name
     )
     try:
-        # Inject a publish error after the 3rd call
+        # Inject a publish error after the 3rd round trip
         if deps.redis_client is not None:
-            original_publish = deps.redis_client.publish
-            call_count: list[int] = [0]
+            original_pipeline = deps.redis_client.pipeline
+            round_trips: list[int] = [0]
 
-            async def _flaky_publish(channel: str, message: bytes | str) -> int:
-                call_count[0] += 1
-                if call_count[0] > 3:
-                    raise ConnectionError("simulated Redis disconnect")
-                return await original_publish(channel, message)
+            def _flaky_pipeline(transaction: bool = True, shard_hint: str | None = None) -> object:
+                round_trips[0] += 1
+                if round_trips[0] > 3:
+                    return _FailingPipeline(ConnectionError("simulated Redis disconnect"))
+                return original_pipeline(transaction=transaction, shard_hint=shard_hint)
 
-            monkeypatch.setattr(deps.redis_client, "publish", _flaky_publish)
+            monkeypatch.setattr(deps.redis_client, "pipeline", _flaky_pipeline)
 
         await _run_job(deps, backend, _progress_multi_actor)
 

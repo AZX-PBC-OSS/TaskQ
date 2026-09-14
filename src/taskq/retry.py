@@ -39,6 +39,7 @@ __all__ = [
     "RetryKind",
     "RetryOverride",
     "RetryPolicy",
+    "apply_jitter",
     "compute_backoff",
     "decide_after_failure",
     "invoke_on_retry_exhausted",
@@ -175,6 +176,41 @@ _production_rng = random.Random(secrets.randbits(128))  # noqa: S311  Why: rando
 _MAX_BACKOFF_EXPONENT: Final[int] = 1023
 
 
+def _jittered_seconds(raw_s: float, jitter: float, source: random.Random) -> float:
+    """The one implementation of the multiplicative-symmetric jitter
+    multiplication — every delay this package spreads shares it.
+
+    ``raw * source.uniform(1 - jitter, 1 + jitter)``, floored at zero.
+    """
+    return max(0.0, raw_s * source.uniform(1.0 - jitter, 1.0 + jitter))
+
+
+def apply_jitter(
+    delay: timedelta,
+    jitter: float,
+    rng: random.Random | None = None,
+) -> timedelta:
+    """Spread an externally supplied advisory delay with *jitter*.
+
+    Same formula as :func:`compute_backoff` (see it for why
+    multiplicative-symmetric, not Full Jitter), for delays whose raw value
+    comes from outside the policy's own backoff curve — an admission
+    denial's ``retry_after``. Every fielder of the same raw hint in one
+    round would otherwise re-attempt in lockstep (same token deficit, same
+    lease horizon), so the hint is spread across the band exactly as
+    failure backoff is; the knob stays the policy's own ``jitter``, so
+    ``jitter=0.0`` (``uniform(1, 1)``) is the identity and deterministic
+    suites stay deterministic.
+
+    The result is advisory timing only: any downstream floor (the snooze
+    arm's ``MIN_DEFERRAL_INTERVAL``) still applies to the returned value.
+    """
+    if not (0.0 <= jitter <= 1.0):
+        raise ValueError(f"jitter must be in [0.0, 1.0], got {jitter}")
+    source = rng if rng is not None else _production_rng
+    return timedelta(seconds=_jittered_seconds(delay.total_seconds(), jitter, source))
+
+
 def compute_backoff(
     policy: RetryPolicy,
     attempt: int,
@@ -217,8 +253,7 @@ def compute_backoff(
     else:
         raw = base_s
 
-    delay = raw * source.uniform(1 - policy.jitter, 1 + policy.jitter)
-    delay = max(0.0, min(cap_s, delay))
+    delay = min(cap_s, _jittered_seconds(raw, policy.jitter, source))
     return timedelta(seconds=delay)
 
 

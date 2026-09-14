@@ -430,6 +430,9 @@ ignore = [
 # cryptographic purposes.
 "tests/test_retry_backoff.py" = ["S311"]
 "tests/test_retry_backoff_overflow.py" = ["S311"]
+# S311: random.Random used for poll-jitter determinism in producer-wake
+# tests, not cryptographic purposes.
+"tests/test_worker_producer_wake.py" = ["S311"]
 # ASYNC109: timeout parameter mirrors asyncpg Connection API — cannot
 # use asyncio.timeout in a wrapper that delegates to the real connection.
 "src/taskq/testing/asyncpg_chaos.py" = ["ASYNC109"]

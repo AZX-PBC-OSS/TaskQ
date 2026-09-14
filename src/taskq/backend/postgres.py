@@ -63,10 +63,11 @@ from taskq.backend._batch_sql import (
 )
 from taskq.backend._cancel_bulk import _cancel_where
 from taskq.backend._dispatch import (
-    _dispatch_batch as _dispatch,
+    QueueModeCache,
+    _resolve_queue_modes,
 )
 from taskq.backend._dispatch import (
-    _resolve_queue_modes,
+    _dispatch_batch as _dispatch,
 )
 from taskq.backend._enqueue import (
     _enqueue,
@@ -299,6 +300,14 @@ class PostgresBackend:
         # calls, so the objects are cached for the backend's lifetime.
         self._sweep_sizers: dict[str, SweepBatchSizer] = {}
 
+        # Worker-side queue-mode cache, owned by this backend instance:
+        # the worker's single dispatch loop hits it every round, the
+        # queue-ops seam clears it (see QueueModeCache's docstring for
+        # the per-instance and concurrency contract). The TTL clock is
+        # the backend's own clock, so tests drive expiry through
+        # FakeClock exactly like every other clocked seam.
+        self._queue_mode_cache = QueueModeCache(clock=self._clock.monotonic)
+
     # ── Pool accessors (dynamic via self._deps for hot-reload) ────────
 
     @property
@@ -386,6 +395,7 @@ class PostgresBackend:
             queues,
             limit,
             lock_lease,
+            queue_mode_cache=self._queue_mode_cache,
         )
 
     @staticmethod
@@ -940,8 +950,9 @@ class PostgresBackend:
         conn: ConnLike,
         *,
         schema: str,
+        batch_size: int = DEFAULT_EVENT_WRITER_BATCH_SIZE,
     ) -> int:
-        return await sweep_leaked_reservation_slots(conn, schema=schema)
+        return await sweep_leaked_reservation_slots(conn, schema=schema, batch_size=batch_size)
 
     @staticmethod
     async def sweep_expired_results(

@@ -26,7 +26,11 @@ Scope, stated plainly:
 * The statement shape, not its effectiveness. That a LIMIT is fenced
   (MATERIALIZED) and actually bounds rows is pinned per site by the
   dynamic tests; this file pins that the bound *exists* or that its
-  absence is deliberate.
+  absence is deliberate — including, for the windowed write statements,
+  that the MATERIALIZED fence exists: an unfenced LIMIT-ed CTE is not a
+  bound on the rows the data-modifying statement touches, so the fence
+  is part of "the bound exists", while that the fence actually holds
+  rows stays with the per-site dynamic tests.
 * This asserts implementation surface by design — the precedent is
   ``tests/test_sweepaudit_dispatch_bound.py``: pin the production
   constant, not a copy, because a copy drifts from the SQL that actually
@@ -42,6 +46,17 @@ import pkgutil
 import re
 
 import taskq
+from taskq.backend._batch_sql import (  # pyright: ignore[reportPrivateUsage]  # Why: pinning the exact production statement is the point; redefining it here would let the pin drift from the SQL that runs.
+    _PRUNE_OLD_BATCHES_SQL,
+)
+from taskq.backend._sweeps import (  # pyright: ignore[reportPrivateUsage]  # Why: same.
+    _SWEEP_4_SQL,
+)
+from taskq.worker._leader_shared import (  # pyright: ignore[reportPrivateUsage]  # Why: same.
+    _ARCHIVE_CTE_ACTOR_SQL,
+    _ARCHIVE_CTE_SQL,
+    _EXPIRY_CTE_SQL,
+)
 
 _WRITE_RE = re.compile(r"\b(UPDATE|DELETE)\b")
 
@@ -134,14 +149,6 @@ _EXEMPT: dict[str, tuple[str, str]] = {
     ),
     # ── Config-cardinality tables: the table itself cannot grow with the
     #    jobs backlog ──
-    "_SWEEP_4_SQL": (
-        "lease_expires_at < clock_timestamp()",
-        "UPDATE clears expired slot leases only; static reservations' row "
-        "count is configured capacity, but KEYED buckets make table "
-        "cardinality distinct-keys x slots (caller-driven) — those rows "
-        "are reclaimed on eviction by the pending-reclaim drain "
-        "(_RECLAIM_SLICE_DELETE_SQL_TEMPLATE), not by this statement",
-    ),
     "_SYNC_DELETE_SQL_TEMPLATE": (
         "WHERE bucket_name = $1",
         "one bucket's reservation_slots rows; slot count is configured capacity",
@@ -172,17 +179,6 @@ _EXEMPT: dict[str, tuple[str, str]] = {
         "WHERE metadata @> $1::jsonb",
         "one batch's job membership; cleared by the class audit "
         "(abort_batch refuted as a backlog-proportional site)",
-    ),
-    # ── Accepted residual — the one known unbounded statement ──
-    "_PRUNE_OLD_BATCHES_SQL": (
-        "completed_at < $1",
-        "ACCEPTED RESIDUAL: genuinely unbounded DELETE with a correlated "
-        "NOT EXISTS. Batches cardinality grows with batch usage, not job "
-        "volume; it writes no job_events so the watermark margin does not "
-        "bind it. Accepted on reading, not measurement — bounding it "
-        "(windowing CTE + LIMIT, the _COMPLETE_STALE_BATCHES_SQL shape) "
-        "removes this entry; the staleness check then forces the registry "
-        "to shrink.",
     ),
 }
 
@@ -285,3 +281,42 @@ def test_exemption_registry_has_no_stale_entries() -> None:
         elif "LIMIT" in found[1].upper():
             stale.append(f"{name} ({found[0]}): now carries a LIMIT — remove the entry")
     assert not stale, "Stale _EXEMPT entries:\n  " + "\n  ".join(stale)
+
+
+# The windowed write statements this file's LIMIT walk already covers;
+# named here so the fence guard below pins the exact production constants
+# (the precedent of ``tests/test_sweepaudit_dispatch_bound.py``: pin the
+# constant, not a copy, because a copy drifts from the SQL that runs).
+_WINDOWED_WRITE_STATEMENTS: dict[str, str] = {
+    "_ARCHIVE_CTE_SQL": _ARCHIVE_CTE_SQL,
+    "_ARCHIVE_CTE_ACTOR_SQL": _ARCHIVE_CTE_ACTOR_SQL,
+    "_EXPIRY_CTE_SQL": _EXPIRY_CTE_SQL,
+    "_SWEEP_4_SQL": _SWEEP_4_SQL,
+    "_PRUNE_OLD_BATCHES_SQL": _PRUNE_OLD_BATCHES_SQL,
+}
+
+
+def test_windowed_write_ctes_carry_the_materialized_fence() -> None:
+    """Every LIMIT-ed candidate window feeding a data-modifying statement
+    carries ``AS MATERIALIZED``.
+
+    Without the fence the planner may inline the LIMIT-ed CTE into the
+    UPDATE/INSERT/DELETE that joins it and move more rows than the LIMIT —
+    the LIMIT then bounds only the CTE's inlined appearances, not the
+    written result, so the statement is unbounded in exactly the way this
+    file exists to prevent while *looking* bounded (the LIMIT walk above
+    passes it). The dynamic per-site tests pin that the fence actually
+    holds; this pin exists so a new windowed write statement, or a rewrite
+    that drops the keyword from one, fails on arrival at the same place
+    the LIMIT itself does.
+    """
+    unfenced = {
+        name: sql
+        for name, sql in _WINDOWED_WRITE_STATEMENTS.items()
+        if "AS MATERIALIZED" not in sql
+    }
+    assert not unfenced, (
+        "LIMIT-ed candidate windows without the MATERIALIZED fence — the "
+        "planner may inline them into the data-modifying statement and move "
+        "more rows than the LIMIT:\n  " + "\n  ".join(unfenced)
+    )

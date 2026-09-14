@@ -18,7 +18,6 @@ from taskq.backend._protocol import (
     batch_cap_groups,
 )
 from taskq.backend._records import item_jsonb_param, item_tags_jsonb_param
-from taskq.backend.statemachine import TERMINAL_STATUSES
 from taskq.exceptions import (
     BatchMaxPendingExceededError,
     MaxPendingExceededError,
@@ -40,6 +39,13 @@ logger = structlog.get_logger("taskq.testing.in_memory")
 
 
 async def _enqueue(self: "InMemoryBackend", args: EnqueueArgs) -> JobRow:
+    # Why a function-level import: the shared dedup-log helper lives with
+    # the PG enqueue path (taskq.backend._enqueue), whose module scope
+    # imports the asyncpg driver; the testing package's import surface
+    # stays driver-free at import time (the taskq._advisory convention),
+    # and this call path only ever runs where the driver is installed.
+    from taskq.backend._enqueue import _log_enqueue_dedup
+
     if args.unique_for is not None and args.identity_key is not None:
         now = self._clock.now()
         cutoff = now - args.unique_for
@@ -53,18 +59,13 @@ async def _enqueue(self: "InMemoryBackend", args: EnqueueArgs) -> JobRow:
         ]
         if candidates:
             existing_row = max(candidates, key=lambda r: r.created_at)
-            logger.info(
-                "enqueue_deduplicated",
-                kind="enqueue_deduplicated",
-                job_id=str(existing_row.id),
-                actor=existing_row.actor,
-                queue=existing_row.queue,
-                identity_key=existing_row.identity_key,
-                idempotency_key=None,
-                status=existing_row.status,
-                existing_job_id=str(existing_row.id),
-                dedup_reason="unique_for",
-            )
+            # Same shared helper as the idempotency seam below and as the
+            # PG path: one field set, one terminal-target escalation, and
+            # per-site truth in dedup_reason alone. The default
+            # unique_states never match a terminal row, but a
+            # caller-configured set can — and a dead target must be as
+            # loud here as it is on the sibling arm.
+            _log_enqueue_dedup(existing_row, dedup_reason="unique_for")
             return _read_copy(existing_row)
 
     if args.metadata.get("singleton") is True:
@@ -143,26 +144,7 @@ async def _enqueue(self: "InMemoryBackend", args: EnqueueArgs) -> JobRow:
         if existing_id is not None:
             existing_row = self._jobs.get(existing_id)
             if existing_row is not None:
-                fields: dict[str, object] = {
-                    "kind": "enqueue_deduplicated",
-                    "job_id": str(existing_row.id),
-                    "actor": existing_row.actor,
-                    "queue": existing_row.queue,
-                    "identity_key": existing_row.identity_key,
-                    "idempotency_key": existing_row.idempotency_key,
-                    "idempotency_scope": existing_row.idempotency_scope,
-                    "status": existing_row.status,
-                    "existing_job_id": str(existing_row.id),
-                    "dedup_reason": "idempotency_key",
-                }
-                # A terminal target never runs the work again — the key stays
-                # pinned to a dead job until it ages out of retention — so the
-                # hit is louder than the live-job case, which is normal
-                # single-flight operation.
-                if existing_row.status in TERMINAL_STATUSES:
-                    logger.warning("enqueue_deduplicated", **fields)
-                else:
-                    logger.info("enqueue_deduplicated", **fields)
+                _log_enqueue_dedup(existing_row, dedup_reason="idempotency_key")
                 return _read_copy(existing_row)
 
     now = self._clock.now()
@@ -285,14 +267,25 @@ async def _enqueue_batch(
             admitted_args = [a for a in args_list if a.actor not in refused_names]
     rows: list[JobRow] = []
     for args in admitted_args:
-        # Why strip the carried cap here: the aggregate check above is the
-        # batch tier's ONLY admission decision (the PG tier's single
-        # unnest INSERT has no per-item cap logic either). Leaving the cap
-        # on would re-check per item WITHOUT the aggregate's idempotency
-        # discount, refusing pure-retry batches the aggregate just
-        # admitted — a PG/InMemory parity gap the old all-or-nothing
-        # pre-check masked.
-        row = await _enqueue(self, replace(args, max_pending=None))
+        # Why strip the carried cap AND unique_for here: the aggregate
+        # check above is the batch tier's ONLY admission decision (the PG
+        # tier's single unnest INSERT has no per-item cap logic either).
+        # Leaving the cap on would re-check per item WITHOUT the
+        # aggregate's idempotency discount, refusing pure-retry batches
+        # the aggregate just admitted. unique_for is stripped for the
+        # same parity reason: the PG batch tiers (the unnest INSERT and
+        # the COPY) never run the unique_for preflight — a bulk statement
+        # cannot take a per-identity advisory lock without per-item round
+        # trips that defeat bulk throughput, so every batch item writes
+        # and unique_for items are conservatively fully counted toward
+        # the cap instead. A mirror that deduped here would certify dedup
+        # production never performs. Whether the batch tier SHOULD honor
+        # unique_for is a pending owner decision (River enforces batch
+        # uniqueness with a partial unique index + ON CONFLICT,
+        # vendor/river/riverdriver/riverpgxv5/internal/dbsqlc/river_job.sql);
+        # this restores parity with current production behavior, it does
+        # not adjudicate it.
+        row = await _enqueue(self, replace(args, max_pending=None, unique_for=None))
         rows.append(row)
     if refusals:
         raise BatchMaxPendingExceededError(

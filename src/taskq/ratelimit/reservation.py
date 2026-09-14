@@ -1,10 +1,11 @@
 """Concurrency reservation primitive using pre-allocated slot rows.
 
 PG-only — no Redis fast path. Slot rows live in ``taskq.reservation_slots``;
-acquisition uses ``FOR UPDATE SKIP LOCKED`` in a CTE (verbatim from ).
-The heartbeat loop (``src/taskq/worker/heartbeat.py``) already extends
-``reservation_slots.lease_expires_at`` in the same transaction as job locks;
-this module does not modify the heartbeat.
+acquisition uses a ``FOR UPDATE SKIP LOCKED`` CTE that, on the denial
+branch, reports the earliest held lease's expiry as the retry hint in the
+same statement. The heartbeat loop (``src/taskq/worker/heartbeat.py``)
+already extends ``reservation_slots.lease_expires_at`` in the same
+transaction as job locks; this module does not modify the heartbeat.
 
 The in-memory backend (``_InMemorySlotTable``) is the unit-test substitute for
 PG and mirrors the slot-row model as a ``dict[str, dict[int, _SlotState]]``
@@ -25,6 +26,7 @@ from taskq.backend.clock import Clock
 from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining
     DEFAULT_RESERVATION_BACKOFF,
+    RESERVATION_RETRY_HINT_MARGIN,
 )
 from taskq.exceptions import ReservationUnavailable
 
@@ -38,6 +40,21 @@ INSERT INTO "{schema}".reservation_slots (bucket_name, slot_index)
 SELECT $1, generate_series(0, $2 - 1)
 ON CONFLICT (bucket_name, slot_index) DO NOTHING"""
 
+# One statement, one row, both outcomes. The acquire branch is the
+# original CTE untouched. The denial branch rides the same round trip:
+# ``earliest_held`` is an aggregate (exactly one row even over zero
+# matches), so the LEFT JOIN yields one row whose acquired fields are
+# NULL when nothing was acquired — the Python side reads the hint off
+# that row instead of issuing a second statement.
+#
+# The hint is computed server-side (``clock_timestamp()``, the same
+# clock the leases are stamped with and the free-slot predicate reads)
+# so app↔DB clock skew cannot stretch or shrink it. It is NULL when no
+# live-held row exists — every row free but row-locked by a peer acquire
+# (the SKIP LOCKED case), or the anomalous held-without-lease state —
+# and the caller substitutes the flat constant. GREATEST clamps the
+# microsecond skew between the WHERE's and the SELECT's own
+# ``clock_timestamp()`` evaluations inside this one statement.
 _ACQUIRE_SQL_TEMPLATE = """\
 WITH free_slot AS (
     SELECT slot_index FROM "{schema}".reservation_slots
@@ -46,14 +63,30 @@ WITH free_slot AS (
     ORDER BY slot_index
     LIMIT 1
     FOR UPDATE SKIP LOCKED
+),
+acquired AS (
+    UPDATE "{schema}".reservation_slots
+    SET job_id            = $2,
+        held_by_worker_id = $3,
+        acquired_at       = clock_timestamp(),
+        lease_expires_at  = clock_timestamp() + $4 * INTERVAL '1 second'
+    WHERE (bucket_name, slot_index) IN (SELECT $1, slot_index FROM free_slot)
+    RETURNING slot_index, acquired_at
+),
+earliest_held AS (
+    SELECT min(lease_expires_at) AS earliest_expires_at
+    FROM "{schema}".reservation_slots
+    WHERE bucket_name = $1
+      AND job_id IS NOT NULL
+      AND lease_expires_at >= clock_timestamp()
 )
-UPDATE "{schema}".reservation_slots
-SET job_id            = $2,
-    held_by_worker_id = $3,
-    acquired_at       = clock_timestamp(),
-    lease_expires_at  = clock_timestamp() + $4 * INTERVAL '1 second'
-WHERE (bucket_name, slot_index) IN (SELECT $1, slot_index FROM free_slot)
-RETURNING slot_index, acquired_at"""
+SELECT a.slot_index,
+       a.acquired_at,
+       CASE
+           WHEN h.earliest_expires_at IS NULL THEN NULL
+           ELSE GREATEST(EXTRACT(EPOCH FROM (h.earliest_expires_at - clock_timestamp())), 0)
+       END::float8 AS retry_after_seconds
+FROM earliest_held h LEFT JOIN acquired a ON true"""
 
 _RELEASE_SQL_TEMPLATE = """\
 UPDATE "{schema}".reservation_slots
@@ -225,7 +258,31 @@ class _InMemorySlotTable:
                     )
                     return SlotLease(i, now)
 
-            raise ReservationUnavailable(bucket_name, DEFAULT_RESERVATION_BACKOFF)
+            # Every slot is held with a live lease: the honest re-attempt
+            # time is the earliest expiry — the capacity that can actually
+            # free — plus the safety margin, mirroring the PG arm's
+            # denial-branch hint. A slot whose job_id is set but whose
+            # lease is NULL (no production path stamps this) or past (an
+            # expired lease is acquirable above, so it never reaches the
+            # denial) contributes no expiry; with none at all the flat
+            # constant is the fallback, as it is on PG for the SKIP
+            # LOCKED case. The live filter guarantees expiry >= now, so
+            # no clamp is needed here — the PG statement's GREATEST
+            # covers the microsecond skew between its own two
+            # clock_timestamp() reads, which a single clock read has none
+            # of.
+            live_expiries = [
+                slot.lease_expires_at
+                for slot in bucket.values()
+                if slot.job_id is not None
+                and slot.lease_expires_at is not None
+                and slot.lease_expires_at >= now
+            ]
+            if live_expiries:
+                retry_after = min(live_expiries) - now + RESERVATION_RETRY_HINT_MARGIN
+            else:
+                retry_after = DEFAULT_RESERVATION_BACKOFF
+            raise ReservationUnavailable(bucket_name, retry_after)
 
     def release(
         self,
@@ -536,12 +593,24 @@ class ConcurrencyReservation:
                 self._lease.total_seconds(),
             )
 
-        if row is None:
+        if row is None or row["slot_index"] is None:
+            # Denial branch of the acquire statement: the acquired fields
+            # are NULL and the hint column carries the earliest held
+            # lease's remaining seconds (NULL when no live-held row was
+            # readable). The margin is added client-side so both arms —
+            # this and the in-memory twin — share one definition of it.
+            hint_seconds = row["retry_after_seconds"] if row is not None else None
+            retry_after = (
+                timedelta(seconds=float(hint_seconds)) + RESERVATION_RETRY_HINT_MARGIN
+                if hint_seconds is not None
+                else DEFAULT_RESERVATION_BACKOFF
+            )
             logger.info(
                 "reservation-unavailable",
                 bucket_name=self._name,
+                retry_after_seconds=retry_after.total_seconds(),
             )
-            raise ReservationUnavailable(self._name, DEFAULT_RESERVATION_BACKOFF)
+            raise ReservationUnavailable(self._name, retry_after)
 
         slot_lease = SlotLease(row["slot_index"], row["acquired_at"])
         logger.debug(

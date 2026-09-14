@@ -25,6 +25,7 @@ deployment.
 from dataclasses import dataclass
 from typing import Final
 
+from taskq.backend._dispatch import invalidate_queue_mode_caches
 from taskq.backend._protocol import (
     ConnLike,
     _validate_queue_name,  # pyright: ignore[reportPrivateUsage]  # Why: the canonical queue-name rule lives with QueueName; a second copy here would drift from the reservation-namespace ban it encodes
@@ -129,6 +130,10 @@ async def set_queue_mode(
         mode,
     )
     assert row is not None  # RETURNING on an upsert always yields a row
+    # The worker's dispatch path caches resolved queue modes
+    # (taskq.backend._dispatch.QueueModeCache); the process that changed
+    # a mode must not keep dispatching on the stale one for a TTL.
+    invalidate_queue_mode_caches()
     return QueueRow(name=row["name"], mode=row["mode"], max_concurrent=row["max_concurrent"])
 
 
@@ -164,4 +169,10 @@ async def set_queue_max_concurrent(
         max_concurrent,
     )
     assert row is not None
+    # Clearing the mode caches here is not strictly required (this upsert
+    # never touches `mode`, and a fresh row's DEFAULT mode equals the
+    # resolver's miss fallback) — but the queues-table writes are exactly
+    # two upserts in this module, and clearing on both keeps the cache
+    # correct without assuming those two facts stay coupled.
+    invalidate_queue_mode_caches()
     return QueueRow(name=row["name"], mode=row["mode"], max_concurrent=row["max_concurrent"])

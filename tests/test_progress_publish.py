@@ -1,5 +1,6 @@
 """Unit tests for progress publish and consumer-level state-change paths."""
 
+import asyncio
 import json
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock
@@ -27,6 +28,61 @@ def _make_redis_mock(*, raise_on_publish: Exception | None = None) -> AsyncMock:
     else:
         client.publish.return_value = 1
     return client
+
+
+class _RecordingPipeline:
+    """Pipeline double: records queued publish commands and execute round trips.
+
+    Queuing is a local buffer append on a real pipeline — no await per
+    command — and the round trip happens only at ``execute``, so both
+    methods here are synchronous bar ``execute``.
+    """
+
+    def __init__(self, *, error: Exception | None = None) -> None:
+        self.queued: list[tuple[str, str]] = []
+        self.execute_count = 0
+        self._error = error
+
+    def publish(self, channel: str, payload: str) -> None:
+        self.queued.append((channel, payload))
+
+    async def execute(self) -> list[int]:
+        self.execute_count += 1
+        if self._error is not None:
+            raise self._error
+        return [1] * len(self.queued)
+
+    async def __aenter__(self) -> "_RecordingPipeline":
+        return self
+
+    async def __aexit__(self, *_exc: object) -> None:
+        return None
+
+
+class _RecordingRedisClient:
+    """Client double separating pipelined publishes from direct ones.
+
+    ``pipelines`` / ``pipeline_kwargs`` record what the dual-channel path
+    built; ``direct_publishes`` records single ``client.publish`` round
+    trips — the sequential shape the dual-channel path must not use.
+    ``execute_error`` wires a failing round trip for failure-path tests.
+    """
+
+    def __init__(self) -> None:
+        self.pipelines: list[_RecordingPipeline] = []
+        self.pipeline_kwargs: list[dict[str, object]] = []
+        self.direct_publishes: list[tuple[str, str]] = []
+        self.execute_error: Exception | None = None
+
+    def pipeline(self, **kwargs: object) -> _RecordingPipeline:
+        self.pipeline_kwargs.append(dict(kwargs))
+        pipe = _RecordingPipeline(error=self.execute_error)
+        self.pipelines.append(pipe)
+        return pipe
+
+    async def publish(self, channel: str, payload: str) -> int:
+        self.direct_publishes.append((channel, payload))
+        return 1
 
 
 def _make_publish_args(
@@ -325,11 +381,16 @@ async def test_ctx_progress_no_publish_when_redis_client_none() -> None:
     assert buf.pending_seq_delta == 1
 
 
-# ── progress_publish_global=True → publishes to both channels ──────
+# ── progress_publish_global=True → both channels in ONE pipelined round trip ──
 
 
 async def test_publish_progress_event_global_channel_when_enabled() -> None:
-    redis_client = _make_redis_mock()
+    """progress_publish_global=True (the default): the per-job and global
+    publishes share ONE pipelined round trip — one pipeline, one execute,
+    both channels queued — never two sequential client.publish awaits,
+    which doubled every progress call's round trips and worst-case
+    timeout budget."""
+    client = _RecordingRedisClient()
 
     from taskq.settings import WorkerSettings
 
@@ -341,7 +402,7 @@ async def test_publish_progress_event_global_channel_when_enabled() -> None:
     )
 
     await _publish_progress_event(
-        redis_client,
+        client,  # type: ignore[arg-type]  # Why: pipeline-shape double standing in for redis.asyncio.Redis; only the pipeline surface is exercised.
         s,
         actor="my_actor",
         job_id=_JOB_ID,
@@ -352,10 +413,152 @@ async def test_publish_progress_event_global_channel_when_enabled() -> None:
         seq=1,
     )
 
-    assert redis_client.publish.await_count == 2
-    channels_called = {c[0][0] for c in redis_client.publish.call_args_list}
-    assert progress_channel(_SCHEMA_LABEL, _JOB_ID) in channels_called
-    assert progress_global_channel(_SCHEMA_LABEL) in channels_called
+    assert len(client.pipelines) == 1, (
+        f"expected exactly one pipeline for the dual-channel publish, got {len(client.pipelines)}"
+    )
+    assert client.pipelines[0].execute_count == 1, (
+        "both channel publishes must go out in one execute round trip"
+    )
+    assert client.direct_publishes == [], (
+        "the dual-channel path must not issue sequential direct publishes"
+    )
+    channels = {channel for channel, _payload in client.pipelines[0].queued}
+    expected = {progress_channel(_SCHEMA_LABEL, _JOB_ID), progress_global_channel(_SCHEMA_LABEL)}
+    assert channels == expected, f"expected both channels queued, got {channels}"
+    payloads = {payload for _channel, payload in client.pipelines[0].queued}
+    assert len(payloads) == 1, "both channels must carry the identical event payload"
+
+
+async def test_publish_dual_channel_delivers_to_both_subscribers() -> None:
+    """Behavioural delivery pin for the pipelined dual publish: real
+    pub/sub subscribers on the per-job and global channels each receive
+    the identical event payload — pipelining the two PUBLISH commands
+    must not change what subscribers see."""
+    fakeredis = pytest.importorskip("fakeredis.aioredis")
+    server = fakeredis.FakeServer()
+    publisher = fakeredis.FakeRedis(server=server)
+    subscriber = fakeredis.FakeRedis(server=server)
+    per_job = progress_channel(_SCHEMA_LABEL, _JOB_ID)
+    global_channel = progress_global_channel(_SCHEMA_LABEL)
+
+    pubsub = subscriber.pubsub()
+    await pubsub.subscribe(per_job, global_channel)
+
+    from taskq.settings import WorkerSettings
+
+    s = WorkerSettings.load_from_dict(
+        {
+            "TASKQ_SCHEMA_NAME": _SCHEMA_LABEL,
+            "TASKQ_PROGRESS_PUBLISH_GLOBAL": "true",
+        }
+    )
+
+    await _publish_progress_event(
+        publisher,  # type: ignore[arg-type]  # Why: fakeredis satisfies the redis.asyncio.Redis runtime surface; the publish/pipeline seam is what is under test.
+        s,
+        actor="my_actor",
+        job_id=_JOB_ID,
+        step=None,
+        percent=None,
+        detail=None,
+        data=None,
+        seq=1,
+    )
+
+    received: dict[bytes, bytes] = {}
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + 2.0
+    while len(received) < 2 and loop.time() < deadline:
+        message = await pubsub.get_message(ignore_subscribe_messages=True, timeout=0.05)
+        if message is not None and message.get("type") == "message":
+            received[message["channel"]] = message["data"]
+    await pubsub.aclose()
+    await publisher.aclose()
+    await subscriber.aclose()
+
+    assert set(received) == {per_job.encode(), global_channel.encode()}, (
+        f"expected the event on both channels, got {set(received)}"
+    )
+    assert len(set(received.values())) == 1, "both channels must carry the identical payload"
+    parsed = json.loads(next(iter(received.values())))
+    assert parsed["kind"] == "progress"
+    assert parsed["seq"] == 1
+
+
+async def test_publish_dual_channel_pipeline_failure_counts_both_channels(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed pipelined execute never raises and counts one delivery
+    failure for EACH channel: one execute serves both, so both
+    channel-level counters are true statements — and a hard Redis outage
+    totals the same two increments the sequential shape produced."""
+    import taskq.obs._otel as otel_mod
+
+    reader = setup_meter(monkeypatch)
+    new_counter = otel_mod.get_meter().create_counter("taskq.progress.publish_failures")
+    monkeypatch.setattr(otel_mod, "_progress_publish_failures", new_counter)
+    otel_mod.set_otel_enabled(True)
+
+    client = _RecordingRedisClient()
+    client.execute_error = ConnectionError("redis down")
+
+    from taskq.settings import WorkerSettings
+
+    s = WorkerSettings.load_from_dict(
+        {
+            "TASKQ_SCHEMA_NAME": _SCHEMA_LABEL,
+            "TASKQ_PROGRESS_PUBLISH_GLOBAL": "true",
+        }
+    )
+
+    # Must not raise — the publish is fire-and-forget.
+    await _publish_progress_event(
+        client,  # type: ignore[arg-type]  # Why: pipeline-shape double standing in for redis.asyncio.Redis; only the failure path is exercised.
+        s,
+        actor="my_actor",
+        job_id=_JOB_ID,
+        step=None,
+        percent=None,
+        detail=None,
+        data=None,
+        seq=1,
+    )
+
+    assert len(client.pipelines) == 1
+    assert client.pipelines[0].execute_count == 1
+    assert counter_value(reader, "taskq.progress.publish_failures") == 2
+    points = counter_data_points(reader, "taskq.progress.publish_failures")
+    labels = {str(p.attributes.get("channel")) for p in points if p.attributes is not None}
+    assert labels == {"per_job", "global"}
+
+
+async def test_state_change_event_dual_channel_single_pipeline_round_trip() -> None:
+    """progress_publish_global=True state_change events take the same
+    single pipelined round trip as progress events: both channels queued
+    on one pipeline, one execute, no direct publishes."""
+    client = _RecordingRedisClient()
+    _rc, settings, buffers = _make_publish_args(redis_client=client, publish_global=True)
+
+    await _publish_state_change_event(
+        client,  # type: ignore[arg-type]  # Why: pipeline-shape double standing in for redis.asyncio.Redis; only the pipeline surface is exercised.
+        settings,
+        _JOB_ID,
+        "my_actor",
+        buffers,
+        status="running",
+        terminal=False,
+    )
+
+    assert len(client.pipelines) == 1
+    assert client.pipelines[0].execute_count == 1
+    assert client.direct_publishes == []
+    channels = {channel for channel, _payload in client.pipelines[0].queued}
+    expected = {progress_channel(_SCHEMA_LABEL, _JOB_ID), progress_global_channel(_SCHEMA_LABEL)}
+    assert channels == expected
+    payloads = {payload for _channel, payload in client.pipelines[0].queued}
+    assert len(payloads) == 1
+    parsed = json.loads(next(iter(payloads)))
+    assert parsed["kind"] == "state_change"
 
 
 # ── progress_publish_global=False → only per-job channel ──────────

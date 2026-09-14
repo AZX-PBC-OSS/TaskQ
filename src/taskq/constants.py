@@ -22,6 +22,7 @@ __all__ = [
     "DEFAULT_MAX_RETRY_BACKOFF",
     "DEFAULT_PRUNE_BATCH_SIZE",
     "DEFAULT_PRUNE_RETENTION",
+    "DEFAULT_PRUNE_STATEMENT_TIMEOUT_MS",
     "DEFAULT_RECLAIM_POLL_LIMIT",
     "DEFAULT_RESERVATION_BACKOFF",
     "EVENTS_CHANNEL_FMT",
@@ -33,6 +34,7 @@ __all__ = [
     "PROGRESS_GLOBAL_CHANNEL_FMT",
     "QUEUE_CONCURRENCY_PREFIX",
     "RECLAIM_EVENT_VISIBILITY_DELAY",
+    "RESERVATION_RETRY_HINT_MARGIN",
     "WAKE_CHANNEL_FMT",
     "WORKER_CHANNEL_FMT",
     "base_name_collides_with_reserved_prefix",
@@ -113,6 +115,23 @@ DEFAULT_RESERVATION_BACKOFF: Final[timedelta] = timedelta(seconds=5)
 Callers MUST coalesce via an identity check (``is None``), NOT truthiness,
 because ``timedelta(0)`` is falsy and represents an allowed decision that
 must be passed through unchanged.
+"""
+
+RESERVATION_RETRY_HINT_MARGIN: Final[timedelta] = timedelta(seconds=0.5)
+"""Safety margin added to a slot denial's capacity-derived retry hint.
+
+A denial for a full bucket reports the earliest held lease's expiry as
+its ``retry_after`` (computed against the same server clock that stamps
+the leases), so the denied job re-attempts when capacity can actually
+free rather than on a fixed cadence. The margin covers the distance
+between the hint's read and the re-attempt's arrival — the denial write,
+the scheduled-to-pending promotion and the next dispatch round — which
+is milliseconds of scheduling latency, not holder processing: a live
+holder's heartbeat extends its lease before expiry, so waiting past the
+expiry instant never guarantees the slot is free anyway. Sub-second
+hints are additionally floored by ``MIN_DEFERRAL_INTERVAL`` downstream,
+so the margin's real work is on multi-second lease horizons where it is
+noise by design.
 """
 
 MIN_DEFERRAL_INTERVAL: Final[timedelta] = timedelta(seconds=1)
@@ -218,6 +237,29 @@ treat as transient. Applied with ``SET LOCAL`` inside the batch transaction
 only: a session-level ``SET`` would outlive the pooled connection's checkout
 and silently cap unrelated borrowers (dispatch, archive) at a timeout they
 never asked for.
+"""
+
+DEFAULT_PRUNE_STATEMENT_TIMEOUT_MS: Final[int] = 4000
+"""Server-side ``statement_timeout`` for one prune/archive-expiry batch.
+
+80% of the default ``dispatcher_command_timeout`` (5.0 s): the prune
+family runs its batches on dispatcher-pool connections, and the pool's
+client-side ``command_timeout`` fires as an opaque ``TimeoutError`` — so
+the server-side bound is deliberately the *smaller* of the two. An
+overloaded database then aborts the batch server-side
+(``QueryCanceledError``, SQLSTATE 57014 — the transient family the
+:class:`~taskq.backend._sweeps.SweepBatchSizer` breaker counts), and the
+breaker latches a reduced batch size for the next attempt, instead of the
+client cancelling with no degradation signal. River's job cleaner pairs a
+30 s per-query timeout with a reduced-batch circuit breaker
+(``vendor/river/rivershared/riversharedmaintenance/
+river_shared_maintenance.go``); the dispatcher pool's shared command
+timeout is the tighter ceiling this family must live under, so the
+reduced tier — not a longer timeout — is what makes a loaded database
+drainable. The effective value is derived from the configured
+``dispatcher_command_timeout`` by the prune loops
+(:mod:`taskq.worker._leader_sweeps`); this constant is the signature
+default for direct callers and matches the default deployment shape.
 """
 
 DEFAULT_PRUNE_RETENTION: Final[timedelta] = timedelta(days=30)

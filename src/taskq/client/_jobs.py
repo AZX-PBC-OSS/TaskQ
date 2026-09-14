@@ -386,10 +386,20 @@ class JobsClient:
 
         **unique_for:**
 
-        - ``unique_for`` deduplication is **best-effort**. Concurrent
-          enqueues for the same ``(actor, identity_key)`` may both insert;
-          the dispatch CTE's ``running_identities`` filter ensures only one
-          runs.
+        - ``unique_for`` deduplication is **serialized**, not best-effort:
+          the preflight and the INSERT run under one transaction-scoped
+          advisory lock on ``(actor, identity_key)``, so concurrent
+          enqueues of the same identity produce exactly one job and every
+          caller is handed that job. This holds on pool connections and on
+          a caller-supplied connection with no open transaction. On a
+          caller-owned OPEN transaction the lock spans that transaction
+          instead, so single-flight holds until its commit/rollback — a
+          long-lived caller transaction can exhaust another same-identity
+          enqueue's bounded wait
+          (:class:`~taskq.exceptions.UniqueForLockTimeoutError`) rather
+          than dedup against it. The dispatch CTE's ``running_identities``
+          filter remains the execution-level guard behind the
+          enqueue-level one.
 
         - When either dedup mechanism matches an existing job,
           ``JobHandle.was_existing`` is ``True``. This field replaces the
@@ -547,6 +557,23 @@ class JobsClient:
         On a caller-supplied connection with an open transaction, the
         admitted items are inserted but their durability follows that
         transaction's commit/rollback.
+
+        **unique_for (not applied on batch paths):**
+
+        Actor-declared ``unique_for`` is a single-enqueue contract (see
+        :meth:`enqueue`). The batch INSERT writes every item without a
+        per-identity preflight — the single path's advisory-lock +
+        preflight round trips are exactly what bulk throughput exists to
+        avoid — so two batch items with the same
+        ``(actor, identity_key)`` both insert, and the dispatch CTE's
+        identity serialization ensures only one runs at a time.
+        ``unique_for`` items are conservatively fully counted toward
+        ``max_pending`` (a batch mixing ``unique_for`` retries near the
+        cap may refuse loudly rather than admit silently). Deduplicate
+        batch items with per-item ``idempotency_key``s — that arbiter IS
+        applied, below. Whether the batch tier should honor
+        ``unique_for`` is an open design decision; this documents
+        current behavior.
 
         **idempotency_key collisions:**
 
@@ -791,6 +818,16 @@ class JobsClient:
         violation rolls back the entire single transaction and raises
         plain :class:`~taskq.exceptions.MaxPendingExceededError` with
         nothing committed.
+
+        **unique_for (not applied on batch paths):** actor-declared
+        ``unique_for`` is a single-enqueue contract (see
+        :meth:`enqueue_batch`'s disclosure) — every item writes, items
+        sharing an ``(actor, identity_key)`` are not deduplicated, and
+        ``unique_for`` items are fully counted toward ``max_pending``.
+        This holds on both arms (the per-chunk INSERT and the atomic
+        path's chunked INSERT). The ``idempotency_key`` arbiter IS
+        applied on both arms: a colliding item returns the existing
+        row, exactly as :meth:`enqueue_batch` does.
         """
         if chunk_size < 1 or chunk_size > MAX_BATCH_SIZE:
             raise ValueError(f"chunk_size must be in [1, {MAX_BATCH_SIZE}], got {chunk_size}")
@@ -1205,6 +1242,12 @@ class JobsClient:
           across *different* scopes raises
           :class:`~taskq.exceptions.ScopedIdempotencyMigrationPendingError`
           instead, matching the other enqueue paths.
+        - **No unique_for preflight.** Actor-declared ``unique_for`` is
+          a single-enqueue contract (see :meth:`enqueue_batch`'s
+          disclosure): the COPY writes every item, items sharing an
+          ``(actor, identity_key)`` are not deduplicated, and
+          ``unique_for`` items are fully counted toward ``max_pending``
+          — same semantics as the unnest batch tier.
         - **max_pending partition admission.** One aggregated count runs
           before the COPY: within-cap actors' rows are written, and an
           over-cap actor's items are refused — the COPY of the admitted

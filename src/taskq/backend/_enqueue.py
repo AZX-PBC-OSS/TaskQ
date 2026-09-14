@@ -120,14 +120,18 @@ _COMPOSITE_IDEMPOTENCY_DETAIL_TEMPLATE = (
 )
 
 
-def _log_idempotency_dedup(row: JobRow) -> None:
-    """Log one idempotency-key dedup hit, carrying the target's status.
+def _log_enqueue_dedup(row: JobRow, *, dedup_reason: str) -> None:
+    """Log one enqueue dedup hit, carrying the target's status.
 
-    A terminal target never runs the work again — the key stays pinned to
-    a dead job until it ages out of retention — so the hit is louder than
-    the live-job case, which is normal single-flight operation. Shared by
-    the single-enqueue path and the batch result assembly so the two
-    sites cannot drift.
+    A terminal target never runs the work again — the identity stays
+    pinned to a dead job until it ages out of retention (an idempotency
+    key until pruned; a unique_for window whose ``unique_states`` fold a
+    terminal state in, for the window's remainder) — so the hit is
+    louder than the live-job case, which is normal single-flight
+    operation. Shared by every dedup site — the idempotency arm and the
+    unique_for arm of the single-enqueue path, the batch result
+    assembly, and the InMemory mirror — so the sites cannot drift apart
+    in fields or volume; the per-site truth is ``dedup_reason`` alone.
     """
     fields: dict[str, object] = {
         "kind": "enqueue_deduplicated",
@@ -139,7 +143,7 @@ def _log_idempotency_dedup(row: JobRow) -> None:
         "idempotency_scope": row.idempotency_scope,
         "status": row.status,
         "existing_job_id": str(row.id),
-        "dedup_reason": "idempotency_key",
+        "dedup_reason": dedup_reason,
     }
     if row.status in TERMINAL_STATUSES:
         logger.warning("enqueue_deduplicated", **fields)
@@ -427,31 +431,35 @@ async def _enqueue_on_conn(
     Includes unique_for preflight, singleton preflight, max_pending
     count, INSERT, idempotency-key SELECT on conflict, and pg_notify.
     Does NOT acquire from ``worker_pool`` — the caller supplies the
-    connection. A transaction is opened here only for capped actors on
-    a transaction-less caller connection (so the count-then-insert
-    serialization holds); otherwise the caller owns transaction scope.
-
-    The unique_for single-flight guarantee depends on that transaction: the
-    advisory lock below is transaction-scoped, so on a caller-supplied
-    connection with no open transaction it is released at statement end and
-    the preflight is advisory only. That is the same connection on which the
-    caller has already taken responsibility for atomicity.
-
-    Capped actors additionally run inside a transaction owned here when the
-    caller supplied none (see below): the max_pending count-then-insert must
-    be serialized, and a transaction-scoped lock only serializes inside a
-    transaction.
+    connection. A transaction is opened here when the caller-supplied
+    connection carries none and the enqueue needs transaction-scoped
+    serialization: a capped actor's count-then-insert, and the
+    unique_for check-then-insert. A caller who already holds a
+    transaction owns the scope — the advisory locks then span that
+    caller's transaction, so single-flight and cap exactness hold until
+    its commit/rollback.
     """
-    if args.max_pending is not None and not conn.is_in_transaction():
+    unique_for_single_flight = args.unique_for is not None and args.identity_key is not None
+    if (args.max_pending is not None or unique_for_single_flight) and not conn.is_in_transaction():
         # Why a transaction here and not just the lock: pg_advisory_xact_lock
         # releases at transaction end, so on a bare caller connection (every
         # statement its own transaction) the lock below would release before
-        # the INSERT and overlapping counts would each see room — the
+        # the statement it exists to guard. For max_pending that is the
         # count-then-insert race pgqueuer closed with capacity-slot indexes
-        # (v1.4.0, #761/#774/#777). Wrapping makes the lock span the
-        # count and the INSERT; the recursion terminates because the inner
-        # call observes the open transaction. Callers that already hold a
-        # transaction are untouched.
+        # (v1.4.0, #761/#774/#777) — overlapping counts each see room. For
+        # unique_for it is the same defect on the identity preflight: two
+        # dispatchers both run the preflight before either commits, both see
+        # nothing, and both insert (measured: 100 concurrent enqueues
+        # produced 6 rows). Oban runs its unique insert inside a transaction
+        # (vendor/oban/lib/oban/engines/basic.ex) and GoodJob wraps its
+        # concurrency check in requires_new
+        # (vendor/good_job/lib/good_job/active_job_extensions/concurrency.rb)
+        # — the standard shape for a check-then-insert guarantee. Wrapping
+        # makes the lock span the preflight/count and the INSERT; the
+        # recursion terminates because the inner call observes the open
+        # transaction. Callers that already hold a transaction are
+        # untouched: the lock then spans THEIR transaction instead, so the
+        # guarantee holds until their commit.
         async with conn.transaction():
             return await _enqueue_on_conn(
                 conn,
@@ -528,23 +536,15 @@ async def _enqueue_on_conn(
         )
         if existing_rec is not None:
             row = _job_row_from_record(existing_rec)
-            # Why unconditional info, when the idempotency-key dedup site
-            # warns on a terminal target: this preflight matches only
-            # unique_states, which exclude terminal states, so the row it
-            # returns can never be terminal — that site can see a weeks-old
-            # failed row; this one cannot see a terminal row at all.
-            logger.info(
-                "enqueue_deduplicated",
-                kind="enqueue_deduplicated",
-                job_id=str(row.id),
-                actor=row.actor,
-                queue=row.queue,
-                identity_key=row.identity_key,
-                idempotency_key=None,
-                status=row.status,
-                existing_job_id=str(row.id),
-                dedup_reason="unique_for",
-            )
+            # Same shared helper as the idempotency seam. The DEFAULT
+            # unique_states exclude terminal states, but the set is
+            # caller-configurable (@actor(unique_states=...)), and a
+            # window that folds a terminal state in can hand a weeks-old
+            # dead row back as a successful enqueue — the case the helper
+            # warns on. The full field set (idempotency_scope included)
+            # and the terminal-status escalation both come with the
+            # helper; the per-site truth is the dedup_reason alone.
+            _log_enqueue_dedup(row, dedup_reason="unique_for")
             return row
 
     if args.metadata.get("singleton") is True:
@@ -720,7 +720,7 @@ async def _enqueue_on_conn(
             idempotency_key=row.idempotency_key,
         )
     else:
-        _log_idempotency_dedup(row)
+        _log_enqueue_dedup(row, dedup_reason="idempotency_key")
 
     return row
 
@@ -1064,7 +1064,7 @@ async def _enqueue_batch(
             ):
                 rec = existing_by_idem[(args.idempotency_scope, str(args.idempotency_key))]
                 row = _job_row_from_record(rec)  # type: ignore[arg-type]  # Why: asyncpg Record is duck-typed; _job_row_from_record accepts asyncpg.Record at runtime
-                _log_idempotency_dedup(row)
+                _log_enqueue_dedup(row, dedup_reason="idempotency_key")
                 result.append(row)
             else:
                 partial = new_rows_by_id.get(arg_uuid)

@@ -78,6 +78,7 @@ class JobContext[P: BaseModel]:
     _redis_client: redis_async.Redis | None = None  # type: ignore[type-arg]  # Why: redis-py stubs expose Redis as an unparameterised generic; type arg cannot be supplied without a stubs update.
     _worker_settings: WorkerSettings | None = None
     _pending_publish_tasks: set[asyncio.Task[None]] | None = None
+    _progress_dropped_notice: threading.Event = field(default_factory=threading.Event)
 
     @property
     def cancellation_requested(self) -> bool:
@@ -126,6 +127,12 @@ class JobContext[P: BaseModel]:
         raises ``TypeError`` (JSON and ``jsonb`` cannot carry non-string
         keys) where it previously would have been silently coerced.
 
+        When no progress buffers are wired into this context (direct
+        actor testing, a miswired context), the call — the Redis publish
+        included — is a deliberate no-op; the first such dropped call
+        emits one debug-level notice so the no-op is discoverable, and
+        later calls stay silent.
+
         The Redis publish is genuinely fire-and-forget: it may complete out
         of order relative to other in-flight publishes for the same job.
         Consumers reading the SSE/pub-sub stream already discard any event
@@ -157,6 +164,14 @@ class JobContext[P: BaseModel]:
                 raise ProgressTooLarge(limit=limit, actual=serialised_len)
 
         if self._progress_buffers is None:
+            # No coalesce buffer wired, so this call — publish included —
+            # is a deliberate no-op. The first dropped call reports itself
+            # at debug level so a silent no-op is discoverable; the
+            # once-latch keeps a tight progress loop from emitting one
+            # log line per dropped call.
+            if not self._progress_dropped_notice.is_set():
+                self._progress_dropped_notice.set()
+                self.log.debug("progress-dropped-no-buffer", kind="progress_dropped")
             return
 
         buffer = self._progress_buffers.get(self.job_id)

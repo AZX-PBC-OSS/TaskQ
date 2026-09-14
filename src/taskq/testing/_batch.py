@@ -186,6 +186,17 @@ def _complete_batch(
     if row is None or row.status in _BATCH_TERMINAL_STATUSES:
         return
 
+    # Mirror of the PG NOT EXISTS guard: the completion decision reads
+    # the live member set at the moment of the write, never a count the
+    # caller computed earlier. Under READ COMMITTED a count statement's
+    # snapshot can predate a concurrent member's terminal write, so an
+    # over-counted "members remain" must delay completion (the stale-
+    # batch sweep is the safety net) while the attempt itself stays safe
+    # to issue after any terminal outcome — the same call that was
+    # vetoed lands once the last member turns terminal.
+    if _count_batch_non_terminal(backend, batch_id) > 0:
+        return
+
     backend._batches[batch_id] = replace(
         row,
         status="complete",

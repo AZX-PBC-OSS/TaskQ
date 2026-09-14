@@ -128,10 +128,23 @@ UPDATE "{schema}".batches
 SET status = 'aborted', completed_at = clock_timestamp()
 WHERE id = $1 AND status = 'active'"""
 
+# The NOT EXISTS guard arbitrates completion server-side, in this
+# statement's own snapshot: the increment/reset counts CTE runs in ITS
+# statement's READ COMMITTED snapshot, which after a batches-row lock
+# wait can predate a concurrent member's terminal write, so a count of
+# zero from the caller is never the completion decision. The guard shape
+# is the one complete_stale_batches already uses (worker/
+# _leader_shared.py); the status = 'active' sibling condition keeps
+# abort-wins-over-complete intact.
 _COMPLETE_BATCH_SQL = """\
 UPDATE "{schema}".batches
 SET status = 'complete', completed_at = clock_timestamp()
-WHERE id = $1 AND status = 'active'"""
+WHERE id = $1 AND status = 'active'
+  AND NOT EXISTS (
+    SELECT 1 FROM "{schema}".jobs
+    WHERE metadata @> $2::jsonb
+      AND status {terminal_not_in}
+  )"""
 
 _COUNT_BATCH_NON_TERMINAL_SQL = """\
 SELECT count(*)::int FROM "{schema}".jobs
@@ -163,15 +176,33 @@ LEFT JOIN LATERAL (
 ) j ON true
 WHERE 1=1"""
 
+# Bounded batch + MATERIALIZED, the _COMPLETE_STALE_BATCHES_SQL shape
+# (worker/_leader_shared.py — same table family, same correlated NOT EXISTS
+# member-probe): LIMIT $2 caps one call's DELETE, and MATERIALIZED stops the
+# planner from inlining the LIMIT-ed CTE into the DELETE in a way that could
+# remove more rows than the LIMIT. No ORDER BY: batches cardinality grows
+# with batch usage, not job volume, so the window's scan is cheap however it
+# plans — the same rationale the stale-batch completion sweep documents. The
+# count comes from a COUNT over the DELETE's RETURNING set rather than
+# materialising ids the caller only counts.
 _PRUNE_OLD_BATCHES_SQL = """\
-DELETE FROM "{schema}".batches
-WHERE completed_at IS NOT NULL
-  AND completed_at < $1
-  AND NOT EXISTS (
-    SELECT 1 FROM "{schema}".jobs j
-    WHERE j.metadata @> jsonb_build_object('batch_id', batches.id::text)
-  )
-RETURNING id"""
+WITH candidate AS MATERIALIZED (
+    SELECT id
+    FROM "{schema}".batches
+    WHERE completed_at IS NOT NULL
+      AND completed_at < $1
+      AND NOT EXISTS (
+        SELECT 1 FROM "{schema}".jobs j
+        WHERE j.metadata @> jsonb_build_object('batch_id', batches.id::text)
+      )
+    LIMIT $2
+),
+deleted AS (
+    DELETE FROM "{schema}".batches
+    WHERE id IN (SELECT id FROM candidate)
+    RETURNING id
+)
+SELECT count(*)::int FROM deleted"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -209,7 +240,7 @@ def render_batch_sql(schema: str) -> BatchSql:
         ),
         abort_batch_jobs=_ABORT_BATCH_JOBS_SQL.format(schema=schema),
         abort_batch_row=_ABORT_BATCH_ROW_SQL.format(schema=schema),
-        complete_batch=_COMPLETE_BATCH_SQL.format(schema=schema),
+        complete_batch=_COMPLETE_BATCH_SQL.format(schema=schema, terminal_not_in=_TERMINAL_NOT_IN),
         count_batch_non_terminal=_COUNT_BATCH_NON_TERMINAL_SQL.format(
             schema=schema, terminal_not_in=_TERMINAL_NOT_IN
         ),
@@ -360,8 +391,18 @@ async def complete_batch(
     sql: BatchSql,
     batch_id: UUID,
 ) -> None:
-    """Mark a batch as complete.  No-op if the batch is already terminal."""
-    await conn.execute(sql.complete_batch, batch_id)
+    """Mark a batch as complete.  No-op if the batch is already terminal
+    or any member job is still non-terminal.
+
+    Completion is arbitrated inside this statement: the ``NOT EXISTS``
+    guard counts non-terminal members in the statement's own snapshot,
+    so a caller acting on a stale count (two members terminating
+    concurrently can each read the other as non-terminal) can delay
+    completion but never complete prematurely — an optimistic attempt
+    after any terminal member is always safe, and the same attempt that
+    was vetoed lands once the last member turns terminal.
+    """
+    await conn.execute(sql.complete_batch, batch_id, _batch_filter_json(batch_id))
 
 
 async def count_batch_non_terminal(
@@ -438,12 +479,31 @@ async def prune_old_batches(
     conn: ConnLike,
     sql: BatchSql,
     cutoff: datetime,
+    *,
+    batch_size: int = DEFAULT_CHUNK_SIZE,
 ) -> int:
     """Delete completed batches older than *cutoff* that have no remaining
-    member jobs.  Returns the number of rows deleted.
+    member jobs, one bounded batch at a time, and return the total number
+    of rows deleted.
+
+    Each call of the underlying statement deletes at most *batch_size*
+    rows (the ``_COMPLETE_STALE_BATCHES_SQL`` windowing shape); this
+    function drains the eligible set by repeating it until a window comes
+    back short, so one call still reports the whole day's deletion count.
+    Every statement is self-committing, so a drain stopped by an error
+    keeps its progress and the next call resumes the remainder. The count
+    comes from the statement itself (a COUNT over its RETURNING set), not
+    from materialising ids only to count them.
     """
-    rows = await conn.fetch(sql.prune_old_batches, cutoff)
-    return len(rows)
+    total = 0
+    while True:
+        count: int = await conn.fetchval(sql.prune_old_batches, cutoff, batch_size)
+        if count == 0:
+            break
+        total += count
+        if count < batch_size:
+            break
+    return total
 
 
 async def enqueue_batch_atomic(

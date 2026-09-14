@@ -757,7 +757,7 @@ async def wait_for_batch(
     batch_id: UUID,
     *,
     snooze_interval: timedelta = timedelta(seconds=10),
-    snooze_via_exception: bool = True,  # Why: parameter kept for API consistency with taskq.batch.wait_for_batch; in-memory always raises Snooze
+    snooze_via_exception: bool = True,
     expect_at_least: int | None = None,
     on_empty: Literal["error", "ok"] = "error",
     exclude_job_id: UUID | None = None,
@@ -768,9 +768,14 @@ async def wait_for_batch(
     :class:`~taskq.batch.BatchCompletionStatus` using the same
     terminal-status set as the PG path.
 
-    The in-memory variant always raises :class:`~taskq.exceptions.Snooze`
-    when ``pending > 0``, regardless of ``snooze_via_exception`` — the
-    in-memory backend has no sleep cost.
+    Mirrors both snooze modes of the PG variant:
+    ``snooze_via_exception=True`` (the default) raises
+    :class:`~taskq.exceptions.Snooze` while members are in flight;
+    ``False`` blocks on ``asyncio.sleep(snooze_interval)`` and rescans
+    until every member is terminal. The sleep is real event-loop time —
+    the injected clock drives row timestamps, not the loop clock, the
+    same division the PG path has (PG's clock_timestamp vs the loop) —
+    so blocking-mode tests advance the batch from a concurrent task.
     """
     if snooze_interval < _min_snooze:
         original = snooze_interval
@@ -782,48 +787,55 @@ async def wait_for_batch(
         )
 
     batch_id_str = str(batch_id)
-    batch_row = backend._batches.get(batch_id)  # pyright: ignore[reportPrivateUsage]  # Why: co-located helper accessing private batch store
 
-    exclusion_id = exclude_job_id
-    if exclusion_id is None and batch_row is not None:
-        exclusion_id = batch_row.finalizer_job_id
+    while True:
+        batch_row = backend._batches.get(batch_id)  # pyright: ignore[reportPrivateUsage]  # Why: co-located helper accessing private batch store
 
-    matched = [
-        r
-        for r in backend._jobs.values()  # pyright: ignore[reportPrivateUsage]  # Why: wait_for_batch is a co-located module-level helper that requires access to the private job store; same pattern as list_jobs
-        if r.metadata.get("batch_id") == batch_id_str
-        and (exclusion_id is None or r.id != exclusion_id)
-    ]
+        exclusion_id = exclude_job_id
+        if exclusion_id is None and batch_row is not None:
+            exclusion_id = batch_row.finalizer_job_id
 
-    succeeded = sum(1 for r in matched if r.status == "succeeded")
-    failed = sum(1 for r in matched if r.status == "failed")
-    cancelled = sum(1 for r in matched if r.status == "cancelled")
-    crashed = sum(1 for r in matched if r.status == "crashed")
-    abandoned = sum(1 for r in matched if r.status == "abandoned")
-    pending = sum(1 for r in matched if r.status not in TERMINAL_STATUSES)
+        matched = [
+            r
+            for r in backend._jobs.values()  # pyright: ignore[reportPrivateUsage]  # Why: wait_for_batch is a co-located module-level helper that requires access to the private job store; same pattern as list_jobs
+            if r.metadata.get("batch_id") == batch_id_str
+            and (exclusion_id is None or r.id != exclusion_id)
+        ]
 
-    status = BatchCompletionStatus(
-        total=len(matched),
-        pending=pending,
-        succeeded=succeeded,
-        failed=failed,
-        cancelled=cancelled,
-        crashed=crashed,
-        abandoned=abandoned,
-    )
+        succeeded = sum(1 for r in matched if r.status == "succeeded")
+        failed = sum(1 for r in matched if r.status == "failed")
+        cancelled = sum(1 for r in matched if r.status == "cancelled")
+        crashed = sum(1 for r in matched if r.status == "crashed")
+        abandoned = sum(1 for r in matched if r.status == "abandoned")
+        pending = sum(1 for r in matched if r.status not in TERMINAL_STATUSES)
 
-    status = decide_batch_status(
-        batch_id=batch_id,
-        batch_row=batch_row,
-        status=status,
-        snooze_interval=snooze_interval,
-        expect_at_least=expect_at_least,
-        on_empty=on_empty,
-        snooze_via_exception=snooze_via_exception,
-    )
+        status = BatchCompletionStatus(
+            total=len(matched),
+            pending=pending,
+            succeeded=succeeded,
+            failed=failed,
+            cancelled=cancelled,
+            crashed=crashed,
+            abandoned=abandoned,
+        )
 
-    # In-memory always raises Snooze for pending > 0 — no blocking mode.
-    if status.pending > 0:
-        raise Snooze(snooze_interval)
+        status = decide_batch_status(
+            batch_id=batch_id,
+            batch_row=batch_row,
+            status=status,
+            snooze_interval=snooze_interval,
+            expect_at_least=expect_at_least,
+            on_empty=on_empty,
+            snooze_via_exception=snooze_via_exception,
+        )
 
-    return status
+        # Members in flight: raise (exception mode — the consumer
+        # reschedules the caller) or block and rescan (blocking mode),
+        # the two arms of the PG poll loop.
+        if status.pending > 0:
+            if snooze_via_exception:
+                raise Snooze(snooze_interval)
+            await asyncio.sleep(snooze_interval.total_seconds())
+            continue
+
+        return status

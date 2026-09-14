@@ -82,6 +82,22 @@ running_identities AS (
   FROM "{schema}".jobs
   WHERE status = 'running' AND identity_key IS NOT NULL
 ),
+-- Idle-actor prefilter: without it, candidates CROSS JOINs every
+-- actor_config row with every subscribed queue and runs the lateral
+-- index seek once per (actor, queue) pair even when the actor has no
+-- pending rows at all -- at hundreds of registered actors that fan-out
+-- dominates every idle dispatch tick. The EXISTS probe is served by
+-- jobs_actor_dispatch_idx (leading (actor, queue) columns; the partial
+-- predicate covers status = 'pending'), one bounded probe per actor row
+-- instead of a lateral seek per pair. The predicate covers exactly the
+-- queues in the round's params, NOT the actor's home queue: an
+-- enqueue(queue = ...) override that lands a pending row on any
+-- subscribed queue keeps that actor probed. Filtering here is
+-- selection-neutral -- an actor with no pending rows on the round's
+-- queues already contributed zero candidate rows, because the lateral's
+-- j2.queue = sq.queue_name equality annihilated every one of its pairs
+-- -- so ordering, fairness, and the locked/eligible stages are
+-- untouched.
 per_actor_capacity AS (
   SELECT
     ac.actor,
@@ -90,7 +106,15 @@ per_actor_capacity AS (
          ELSE GREATEST(ac.max_concurrent - COALESCE(r.in_flight, 0), 0)
     END AS residual
   FROM "{schema}".actor_config ac
+  CROSS JOIN params p
   LEFT JOIN running_per_actor r ON r.actor = ac.actor
+  WHERE EXISTS (
+    SELECT 1
+    FROM "{schema}".jobs j
+    WHERE j.actor = ac.actor
+      AND j.queue = ANY(p.queues)
+      AND j.status = 'pending'
+  )
 ),
 candidates AS (
   SELECT j.id, j.actor, j.identity_key, j.fairness_key,

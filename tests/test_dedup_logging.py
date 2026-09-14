@@ -8,6 +8,9 @@ Covers:
     ``enqueue_deduplicated`` carrying ``status``, warning on a terminal
     target, info on a live one (PG side pinned in
     tests/test_silent_failure_guards.py)
+  - the unique_for arm carries the same unified field set as the
+    idempotency seam (``idempotency_scope`` included) and warns on a
+    terminal target under caller-configured ``unique_states``
 """
 
 from datetime import UTC, datetime, timedelta
@@ -41,8 +44,12 @@ def _keyed_args(key: IdempotencyKey) -> EnqueueArgs:
     )
 
 
-def _unique_for_args(identity: IdentityKey) -> EnqueueArgs:
-    """The repeated shape of the unique_for dedup pin below."""
+def _unique_for_args(
+    identity: IdentityKey,
+    *,
+    unique_states: tuple[str, ...] = ("pending", "scheduled", "running"),
+) -> EnqueueArgs:
+    """The repeated shape of the unique_for dedup pins below."""
     return EnqueueArgs(
         id=new_job_id(),
         actor="test_actor",
@@ -53,8 +60,29 @@ def _unique_for_args(identity: IdentityKey) -> EnqueueArgs:
         scheduled_at=_START,
         identity_key=identity,
         unique_for=timedelta(minutes=15),
-        unique_states=("pending", "scheduled", "running"),
+        unique_states=unique_states,  # type: ignore[arg-type]  # Why: JobStatus is Literal[str, ...]; these pins pass the exact stored statuses
     )
+
+
+#: Every field the unified ``enqueue_deduplicated`` line carries, on every
+#: arm (idempotency_key and unique_for) and on both backends. One field set
+#: is the observable of the shared helper: a site that re-implements the
+#: dict inline drifts — the unique_for site omitted ``idempotency_scope``
+#: until it was routed through the same helper as the idempotency seam.
+_UNIFIED_DEDUP_FIELDS: frozenset[str] = frozenset(
+    {
+        "kind",
+        "job_id",
+        "actor",
+        "queue",
+        "identity_key",
+        "idempotency_key",
+        "idempotency_scope",
+        "status",
+        "existing_job_id",
+        "dedup_reason",
+    }
+)
 
 
 def _sole_dedup_line(captured: list[dict[str, Any]]) -> dict[str, Any]:
@@ -215,10 +243,11 @@ async def test_idempotency_dedup_onto_live_job_stays_info() -> None:
 
 async def test_unique_for_dedup_line_matches_the_unified_contract() -> None:
     """The unique_for arm emits the same unified ``enqueue_deduplicated``
-    event, carrying the target's status at info — matching the PG path,
-    whose unique_for preflight only matches rows in ``unique_states``
-    (active by default), so a hit there is always normal single-flight
-    operation."""
+    event, carrying the target's status at info — matching the PG path.
+    With the default ``unique_states`` the preflight only matches active
+    rows, so a hit is normal single-flight operation; the
+    terminal-target case (custom ``unique_states``) has its own pin
+    below and must warn like the idempotency seam."""
     backend = _make_backend()
     identity = IdentityKey("account:7")
 
@@ -232,4 +261,72 @@ async def test_unique_for_dedup_line_matches_the_unified_contract() -> None:
     line = _sole_dedup_line(captured)
     assert line.get("log_level") == "info"
     assert line.get("status") == "pending", f"dedup line missing status; got {line!r}"
+    assert line.get("dedup_reason") == "unique_for"
+
+
+async def test_unique_for_dedup_line_carries_the_full_field_set() -> None:
+    """The unique_for arm's line carries the same fields as the
+    idempotency seam's — one field set, per-site ``dedup_reason`` only.
+
+    A site that builds its own field dict drifts from the shared
+    contract: the unique_for site omitted ``idempotency_scope`` while
+    the idempotency seam carried it, so a log query keyed on the pair
+    silently missed every unique_for dedup.
+    """
+    backend = _make_backend()
+    identity = IdentityKey("account:8")
+
+    first = await backend.enqueue(_unique_for_args(identity))
+
+    with structlog.testing.capture_logs() as captured:
+        second = await backend.enqueue(_unique_for_args(identity))
+
+    assert second.id == first.id, "precondition: the unique_for row dedupes"
+
+    line = _sole_dedup_line(captured)
+    missing = _UNIFIED_DEDUP_FIELDS - set(line)
+    assert not missing, (
+        f"the unique_for dedup line must carry the unified field set; "
+        f"missing {sorted(missing)}; got {line!r}"
+    )
+
+
+async def test_unique_for_dedup_onto_terminal_target_warns_with_status() -> None:
+    """A unique_for dedup whose target is TERMINAL must warn and name its
+    status — mirroring the idempotency seam's terminal-target pin above.
+
+    The default ``unique_states`` excludes terminal states, but the set
+    is caller-configurable (``@actor(unique_states=...)``), and a window
+    that folds a terminal state in pins the identity to a dead job for
+    the whole window: the enqueue silently returns success while no work
+    will ever run. That is exactly the case the idempotency seam already
+    warns for, so the unique_for arm must be at least as loud.
+    """
+    backend = _make_backend()
+    identity = IdentityKey("account:9")
+    states_including_terminal = ("pending", "scheduled", "running", "cancelled")
+
+    first = await backend.enqueue(
+        _unique_for_args(identity, unique_states=states_including_terminal)
+    )
+    cancelled = await backend.cancel_where(JobFilter(actor="test_actor"), reason="dedup-log-pin")
+    assert cancelled.cancelled_ids == (first.id,), (
+        "precondition: the target job must be terminal, or the pin asserts nothing"
+    )
+
+    with structlog.testing.capture_logs() as captured:
+        second = await backend.enqueue(
+            _unique_for_args(identity, unique_states=states_including_terminal)
+        )
+
+    assert second.id == first.id, "precondition: the terminal row still dedupes"
+
+    line = _sole_dedup_line(captured)
+    assert line.get("status") == "cancelled", (
+        f"dedup onto a terminal job must record the target's status; got {line!r}"
+    )
+    assert line.get("log_level") == "warning", (
+        "dedup onto a terminal job must be louder than a live-job hit; "
+        f"got log_level={line.get('log_level')!r}"
+    )
     assert line.get("dedup_reason") == "unique_for"

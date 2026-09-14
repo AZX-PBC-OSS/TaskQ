@@ -300,6 +300,8 @@ async def test_postgres_backend_never_touches_redis(
         count: float,
         pg_pool: object,
         settings: WorkerSettings,
+        *,
+        lock_timeout_ms: float = 5000.0,
     ) -> RateLimitDecision:
         pg_calls.append("called")
         return RateLimitDecision(
@@ -348,6 +350,8 @@ async def test_pg_fallback_disabled_re_raises(
         count: float,
         pg_pool: object,
         settings: WorkerSettings,
+        *,
+        lock_timeout_ms: float = 5000.0,
     ) -> RateLimitDecision:
         pg_calls.append("called")
         return RateLimitDecision(

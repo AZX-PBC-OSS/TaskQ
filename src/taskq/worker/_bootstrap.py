@@ -1346,6 +1346,14 @@ async def _main(
                             actor_policies=actor_fire_policies,
                         ).run(shutdown_event)
                     )
+                    # One event shared by the producer and every consumer
+                    # loop: each consumer sets it when its
+                    # local_queue.get() drains a slot (the slot-release
+                    # point from the producer's accounting — see
+                    # producer_loop's saturation branch), waking a
+                    # saturated producer to claim immediately instead of
+                    # on the next fallback poll.
+                    slot_freed_event = asyncio.Event()
                     _spawn(
                         producer_loop(
                             deps,
@@ -1354,6 +1362,7 @@ async def _main(
                             deps.producer_stop_event,
                             backend=backend,
                             worker_id=worker_id,
+                            slot_freed_event=slot_freed_event,
                         )
                     )
                     for _ in range(settings.max_concurrency):
@@ -1371,6 +1380,7 @@ async def _main(
                                     loop_scope=loop_scope,
                                     actor_registry=actor_registry,
                                     enqueuer=enqueuer,
+                                    slot_freed_event=slot_freed_event,
                                 )
                             )
                         else:
@@ -1381,6 +1391,7 @@ async def _main(
                                     shutdown_event,
                                     backend=backend,
                                     worker_id=worker_id,
+                                    slot_freed_event=slot_freed_event,
                                 )
                             )
 

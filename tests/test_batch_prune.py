@@ -1,19 +1,28 @@
 """Tests for batch prune and stale-batch completion sweep integration.
 
-Unit tests cover ``InMemoryBackend.prune_old_batches`` (no PG required).
-Integration test covers the module-level ``complete_stale_batches`` sweep
-function against real PostgreSQL.
+Unit tests cover ``InMemoryBackend.prune_old_batches`` (no PG required)
+and the Postgres ``prune_old_batches`` drain loop (a recording ConnLike
+stand-in). Integration test covers the module-level
+``complete_stale_batches`` sweep function against real PostgreSQL.
 """
 
 from __future__ import annotations
 
+import inspect
 import json
 from datetime import UTC, datetime, timedelta
+from typing import cast
 
 import asyncpg
 import pytest
 
 from taskq._ids import new_base62, new_uuid
+from taskq.backend._batch_sql import (
+    _PRUNE_OLD_BATCHES_SQL,  # pyright: ignore[reportPrivateUsage]  # Why: pin the production statement, not a copy — a copy drifts from the SQL that runs.
+    prune_old_batches,
+    render_batch_sql,
+)
+from taskq.backend._protocol import ConnLike
 from taskq.testing.clock import FakeClock
 from taskq.testing.in_memory import InMemoryBackend
 from taskq.testing.jobs import make_job_row
@@ -99,6 +108,87 @@ class TestInMemoryPruneOldBatches:
 
         assert pruned == 0
         assert bid in backend._batches
+
+
+# ── Unit tests: Postgres prune_old_batches drain loop ────────────────
+
+
+class _FetchvalScriptConn:
+    """ConnLike stand-in answering ``prune_old_batches``' fetchval with a
+    scripted per-call deletion count, recording every statement."""
+
+    def __init__(self, counts: list[int]) -> None:
+        self._counts = list(counts)
+        self._index = 0
+        self.fetchval_calls: list[tuple[str, tuple[object, ...]]] = []
+
+    async def fetchval(self, sql: str, *args: object) -> object:
+        self.fetchval_calls.append((sql, args))
+        count = self._counts[self._index] if self._index < len(self._counts) else 0
+        self._index += 1
+        return count
+
+
+async def _prune_old_batches_pg(conn: _FetchvalScriptConn, *, cutoff: datetime) -> int:
+    """Invoke the module-level Postgres helper with a rendered BatchSql."""
+    return await prune_old_batches(
+        cast(ConnLike, conn),  # pyright: ignore[reportArgumentType]  # Why: the stand-in satisfies the fetchval surface the helper uses.
+        render_batch_sql("taskq"),
+        cutoff,
+        batch_size=1000,
+    )
+
+
+def test_prune_old_batches_signature_carries_batch_size() -> None:
+    """The bound must be part of the callable's contract, not a caller's
+    hope: the Postgres ``prune_old_batches`` exposes a keyword-only
+    ``batch_size`` (the ``complete_stale_batches`` precedent)."""
+    params = inspect.signature(prune_old_batches).parameters
+    assert "batch_size" in params, (
+        "prune_old_batches has no batch_size parameter — one call is an "
+        f"unbounded DELETE again; signature is {inspect.signature(prune_old_batches)}"
+    )
+
+
+def test_prune_old_batches_sql_windows_candidates_with_limit() -> None:
+    """The statement windows candidates in a MATERIALIZED CTE with a
+    parameterized LIMIT and reports its count without materialising ids
+    (a COUNT over the DELETE's RETURNING set)."""
+    sql = _PRUNE_OLD_BATCHES_SQL.format(schema="taskq")
+    assert "AS MATERIALIZED" in sql, (
+        "the candidate window is unfenced — the planner may inline the "
+        f"LIMIT-ed CTE into the DELETE and remove more rows than the LIMIT; got: {sql!r}"
+    )
+    assert "LIMIT $2" in sql, (
+        "the statement carries no parameterized LIMIT — one call is an "
+        f"unbounded DELETE again; got: {sql!r}"
+    )
+    assert "count(*)::int" in sql, (
+        "the statement must count without materialising ids — rows are "
+        f"fetched only to be counted; got: {sql!r}"
+    )
+
+
+async def test_prune_old_batches_drains_in_bounded_batches() -> None:
+    """A 2 500-row eligible set at ``batch_size=1 000`` drains in three
+    bounded calls (full, full, short) and reports the total — the
+    GoodJob ``in_batches_of`` shape, one committed statement per batch."""
+    conn = _FetchvalScriptConn(counts=[1000, 1000, 500])
+    total = await _prune_old_batches_pg(conn, cutoff=_START)
+    assert total == 2500
+    assert len(conn.fetchval_calls) == 3
+    for _sql, args in conn.fetchval_calls:
+        assert args == (_START, 1000), (
+            f"each bounded call must bind (cutoff, batch_size); got {args!r}"
+        )
+
+
+async def test_prune_old_batches_stops_on_empty_window() -> None:
+    """An empty first window is one call and zero — no extra round trips."""
+    conn = _FetchvalScriptConn(counts=[0])
+    total = await _prune_old_batches_pg(conn, cutoff=_START)
+    assert total == 0
+    assert len(conn.fetchval_calls) == 1
 
 
 # ── Integration test: complete_stale_batches sweep ───────────────────

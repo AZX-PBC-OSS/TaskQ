@@ -15,7 +15,7 @@ from taskq.obs import record_progress_flush_failure
 from taskq.progress._buffer import _ProgressBuffer
 from taskq.worker._watchdog import LoopLiveness
 
-__all__ = ["_flush_buffer", "_flush_buffer_immediate", "progress_flush_loop"]
+__all__ = ["_flush_buffer", "_flush_buffer_immediate", "_flush_dirty_set", "progress_flush_loop"]
 
 _log: structlog.stdlib.BoundLogger = structlog.get_logger("taskq.progress._flush")
 
@@ -141,6 +141,55 @@ async def _flush_buffer_immediate(
     await _flush_buffer(worker_pool, schema, job_id, worker_id, buffer, progress_buffers)
 
 
+async def _flush_dirty_set(
+    pool: asyncpg.Pool,
+    schema: str,
+    worker_id: UUID,
+    progress_buffers: dict[UUID, _ProgressBuffer],
+    dirty: list[tuple[UUID, _ProgressBuffer]],
+) -> None:
+    """Flush one tick's dirty set with pool-bounded parallelism.
+
+    The concurrency bound is the pool's current size — never more
+    in-flight acquires than connections the pool holds, so flushes queue
+    at the tick's semaphore (not the pool) while other consumers hold
+    connections. Idle size is deliberately NOT the bound: under
+    saturation it reads zero and would starve progress flushes at
+    exactly the moment jobs are running. A floor of one keeps a tick
+    from hanging on a semaphore that could never be acquired.
+    """
+    flush_slots = asyncio.Semaphore(max(1, min(len(dirty), pool.get_size())))
+
+    async def _flush_one(job_id: UUID, buffer: _ProgressBuffer) -> None:
+        async with flush_slots:
+            try:
+                await _flush_buffer(pool, schema, job_id, worker_id, buffer, progress_buffers)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                # A pool-stage failure — the worker cannot obtain a pool
+                # at all — loses every job's progress delta, not just the
+                # one job named here; hence the distinct kind and stage
+                # label from the per-job flush handler.
+                _log.error(
+                    "progress-flush-pool-error",
+                    job_id=str(job_id),
+                    error=str(exc),
+                    kind="progress_flush_pool_error",
+                )
+                record_progress_flush_failure(
+                    stage="pool",
+                    error_type=type(exc).__name__,
+                )
+
+    # Children isolate their own failures (see _flush_one): one failing
+    # flush must neither cancel the tick's other flushes nor tear down
+    # the group.
+    async with asyncio.TaskGroup() as tg:
+        for job_id, buffer in dirty:
+            tg.create_task(_flush_one(job_id, buffer))
+
+
 async def progress_flush_loop(
     pool_getter: Callable[[], asyncpg.Pool],
     schema: str,
@@ -152,10 +201,15 @@ async def progress_flush_loop(
 ) -> None:
     """Periodic flush loop: runs until shutdown is set, flushing dirty buffers each tick.
 
-    ``pool_getter`` is resolved on every flush rather than captured once,
+    ``pool_getter`` is resolved once per tick rather than captured once,
     so a credential hot-reload (SIGHUP) that swaps the worker pool takes
-    effect immediately — a captured pool would be drained and closed
-    seconds after the reload, breaking every subsequent flush.
+    effect on the next tick (bounded by ``coalesce_interval``) — a
+    captured pool would be drained and closed seconds after the reload,
+    breaking every subsequent flush.
+
+    Each tick flushes its dirty set with bounded parallelism (see
+    :func:`_flush_dirty_set`), so a slow UPDATE on one job no longer
+    head-of-line blocks every other job's flush on that tick.
     """
     if not _IDENT_RE.match(schema):
         raise ValueError(f"invalid schema identifier: {schema!r}")
@@ -165,20 +219,24 @@ async def progress_flush_loop(
 
         if liveness is not None:
             liveness.tick("progress_flush", period=coalesce_interval)
-        for job_id, buffer in list(progress_buffers.items()):
-            if not buffer.dirty:
-                continue
-            try:
-                await _flush_buffer(
-                    pool_getter(), schema, job_id, worker_id, buffer, progress_buffers
-                )
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                # A pool-stage failure — the worker cannot obtain a pool at
-                # all — loses every job's progress delta, not just the one
-                # job named here; hence the distinct kind and stage label
-                # from the per-job flush handler.
+
+        # Snapshot the dirty set before any await: a ctx.progress() call
+        # landing mid-tick mutates buffers and must be picked up by the
+        # NEXT tick, not raced into this one's in-flight flushes.
+        dirty = [(job_id, buffer) for job_id, buffer in progress_buffers.items() if buffer.dirty]
+        if not dirty:
+            continue
+
+        try:
+            pool = pool_getter()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            # The worker cannot obtain a pool at all, so every dirty
+            # job's flush this tick is lost — hence the pool event/kind
+            # per job, exactly as a getter failure was labeled when the
+            # getter was resolved per buffer.
+            for job_id, _buffer in dirty:
                 _log.error(
                     "progress-flush-pool-error",
                     job_id=str(job_id),
@@ -189,3 +247,6 @@ async def progress_flush_loop(
                     stage="pool",
                     error_type=type(exc).__name__,
                 )
+            continue
+
+        await _flush_dirty_set(pool, schema, worker_id, progress_buffers, dirty)

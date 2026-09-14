@@ -28,11 +28,13 @@ real producer/consumer.
 import asyncio
 import contextlib
 import os
+import random
+import secrets
 import socket
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import timedelta
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Final, cast
 from uuid import UUID
 
 import asyncpg
@@ -115,6 +117,32 @@ _consumer_log: structlog.stdlib.BoundLogger = get_logger(f"{__name__}.consumer")
 _reg_log: structlog.stdlib.BoundLogger = get_logger(f"{__name__}.registration")
 _startup_log: structlog.stdlib.BoundLogger = get_logger(f"{__name__}.startup")
 
+_SLOT_REFILL_POLL_SECONDS: Final[float] = 0.1
+"""Fallback bound for the producer's slot-refill wait, the value the
+fixed sleep it replaced polled at: a slot-freed event that is never set
+(broken wiring, a consumer-less worker) still leaves the producer
+re-checking on this cadence rather than parked forever."""
+
+_POLL_JITTER_FRACTION: Final[float] = 0.1
+"""Multiplicative jitter band for the fallback poll wait."""
+
+_PRODUCER_RNG = random.Random(secrets.randbits(128))  # noqa: S311  # Why: random.Random is for timing jitter, not cryptography; seeded once from the OS entropy pool so two workers never share a jitter phase — same seeding pattern as retry.py's _production_rng.
+
+
+def _jittered_poll_interval(interval: float, rng: random.Random) -> float:
+    """The fallback poll interval with ±_POLL_JITTER_FRACTION jitter.
+
+    Every producer in an idle fleet otherwise sleeps the same interval
+    in phase, and any transient event (a GC pause, a network blip, a
+    coordinated restart) re-synchronizes them into periodic DB load
+    spikes — river jitters its fetch poll for exactly this reason
+    (vendor/river/producer.go, jitteredFetchPollInterval). The
+    jitter is multiplicative-symmetric, the repo's jitter convention
+    (retry.compute_backoff), so the mean wait stays the configured
+    interval; river's band is +0..10%.
+    """
+    return interval * rng.uniform(1.0 - _POLL_JITTER_FRACTION, 1.0 + _POLL_JITTER_FRACTION)
+
 
 class _StubPayload(BaseModel):
     """Minimal payload model for stub JobContext (no actor handler runs)."""
@@ -169,6 +197,8 @@ async def producer_loop(
     *,
     backend: Backend,
     worker_id: UUID,
+    slot_freed_event: asyncio.Event | None = None,
+    rng: random.Random | None = None,
 ) -> None:
     """Dispatch pending jobs from the database and feed them into ``local_queue``.
 
@@ -184,12 +214,26 @@ async def producer_loop(
 
     Exits cleanly when either ``shutdown_event`` or ``producer_stop_event``
     is set.
+
+    ``slot_freed_event`` is set by the consumer loops each time a
+    ``local_queue.get()`` drains a slot; the bootstrap wires one shared
+    event into this loop and every consumer. ``rng`` supplies the
+    fallback-poll jitter (a test seam; production uses the module RNG
+    seeded per process). Both default to standalone behaviour: a private
+    event nobody sets degrades the slot-refill wait to the fallback
+    cadence, and the module RNG jitters as in production.
     """
     settings = deps.settings
     queues = settings.queues
     lock_lease_td = timedelta(seconds=settings.lock_lease)
     notify_enabled = getattr(settings, "notify_enabled", False)
     poll_interval = settings.notify_poll_interval if notify_enabled else settings.poll_interval
+    rng_source = rng if rng is not None else _PRODUCER_RNG
+    # Wakes this producer the moment a consumer's local_queue.get()
+    # drains a slot (see the saturation branch below). None keeps the
+    # loop standalone: a private event nobody sets degrades the bounded
+    # wait to exactly the fixed-cadence poll it replaces.
+    slot_freed = slot_freed_event if slot_freed_event is not None else asyncio.Event()
 
     _producer_log.info(
         "producer-loop-start",
@@ -223,7 +267,21 @@ async def producer_loop(
             deps.liveness.tick("producer", period=poll_interval)
             available = local_queue.maxsize - local_queue.qsize()
             if available <= 0:
-                await asyncio.sleep(0.1)
+                # All consumer slots busy and the local queue full. A
+                # consumer's get() is what frees a slot from this
+                # producer's accounting — qsize drops there, not at job
+                # completion — and the consumer loops set slot_freed at
+                # exactly that point, so the next claim begins the
+                # moment a slot frees instead of on the next poll tick
+                # (river wakes its producer the same way when a job
+                # result frees a worker slot: vendor/river/producer.go,
+                # jobResultCh case). Bounded, not bare: an
+                # event that is never set (broken wiring, a
+                # consumer-less worker) must still leave this loop
+                # re-checking on the fallback cadence.
+                with contextlib.suppress(TimeoutError):
+                    await asyncio.wait_for(slot_freed.wait(), timeout=_SLOT_REFILL_POLL_SECONDS)
+                slot_freed.clear()
                 continue
 
             try:
@@ -247,7 +305,13 @@ async def producer_loop(
                 continue
 
             wake_wait = asyncio.create_task(wake_event.wait()) if wake_event is not None else None
-            poll_wait = asyncio.create_task(asyncio.sleep(poll_interval))
+            # Jittered per wait, not fixed: an idle fleet sharing one
+            # interval polls in phase, and any transient event
+            # re-synchronizes it into periodic DB load spikes (see
+            # _jittered_poll_interval for the vendor precedent).
+            poll_wait = asyncio.create_task(
+                asyncio.sleep(_jittered_poll_interval(poll_interval, rng_source))
+            )
             stop_wait = asyncio.create_task(producer_stop_event.wait())
             shutdown_wait = asyncio.create_task(shutdown_event.wait())
 
@@ -332,6 +396,7 @@ async def consumer_loop_stub(
     backend: Backend,
     worker_id: UUID,
     stub_work_timeout: float = 60.0,
+    slot_freed_event: asyncio.Event | None = None,
 ) -> None:
     """Pull one job per iteration, register, sleep sentinel, write terminal status.
 
@@ -363,6 +428,15 @@ async def consumer_loop_stub(
                     task.cancel()
 
         job: JobRow = q_get.result()
+
+        # Slot-release point: the get() above dropped qsize by one, so a
+        # saturated producer can claim again — wake it now (see
+        # producer_loop's saturation branch). Not at job completion: the
+        # slot was handed back at get(), and a completion-time signal
+        # races the producer's availability check against this loop's
+        # next get().
+        if slot_freed_event is not None:
+            slot_freed_event.set()
 
         current_task = asyncio.current_task()
         if current_task is None:
@@ -450,6 +524,7 @@ async def di_consumer_loop(
     loop_scope: LoopScope,
     actor_registry: Mapping[str, ActorRef[Any, Any]],
     enqueuer: SubJobEnqueuer,
+    slot_freed_event: asyncio.Event | None = None,
 ) -> None:
     """Pull one job per iteration and dispatch via dispatch_one_job.
 
@@ -489,6 +564,16 @@ async def di_consumer_loop(
                     task.cancel()
 
         job: JobRow = q_get.result()
+
+        # Slot-release point: the get() above dropped qsize by one, so a
+        # saturated producer can claim again — wake it now (see
+        # producer_loop's saturation branch). Not at job completion: the
+        # slot was handed back at get(), and a completion-time signal
+        # races the producer's availability check against this loop's
+        # next get(). Fires on every iteration — every exit path
+        # (success, failure, snooze, not-found release) passes it.
+        if slot_freed_event is not None:
+            slot_freed_event.set()
 
         if job.actor not in actor_registry:
             _consumer_log.error(

@@ -21,12 +21,19 @@ EXPLAIN ANALYZE BUFFERS, this file's seed shape):
 The written values (started_at / last_heartbeat_at / lock_expires_at)
 stay ``clock_timestamp()`` per the same doctrine; only the row-selection
 bounds move.
+
+Section 3 pins the idle-actor prefilter in ``per_actor_capacity``: an
+EXPLAIN ANALYZE oracle on the full production dispatch CTE asserting the
+candidates lateral executes only for actors that hold pending rows on
+the round's queues (actual loop counts, not estimates), plus the
+selection-neutrality oracle — the live actor's jobs still dispatch.
 """
 
 # ruff: noqa: S608  # Why: every f-string SQL below interpolates only this module's own throwaway schema identifier (built from new_base62, validated by the migration runner's _IDENT_RE) or renders a module SQL constant; all values are $n-bound.
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -211,6 +218,147 @@ async def test_dispatch_lateral_scheduled_at_bound_is_index_served(
             "expected an Index Cond containing 'scheduled_at <= ...' on "
             "jobs_actor_dispatch_idx; a bound that only appears as a Filter "
             f"is not index-served:\n{plan}"
+        )
+    finally:
+        await conn.close()
+
+
+# ── 3. Plan pin: the idle-actor prefilter prunes the lateral fan-out ────
+
+
+_IDLE_ACTORS = 300
+_LIVE_ACTORS = 1
+
+
+@pytest.fixture(scope="module")
+async def prefilter_schema(pg_dsn: str) -> Any:
+    """Throwaway schema, migrations applied, seeded into the shape that
+    exposes the fan-out: many registered actors with NO pending rows (the
+    idle fleet — actor_config is synced from every worker's registry, so
+    hundreds of idle actors is the production shape) plus one live actor
+    with a handful of due pending rows on the round's queue.
+    """
+    schema = f"dispatch_prefilter_{new_base62()}".lower()
+    assert _IDENT_RE.match(schema)
+    conn = await asyncpg.connect(pg_dsn)
+    try:
+        await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        await migrate_mod.apply_pending(conn, schema=schema)
+
+        await conn.execute(
+            f'INSERT INTO "{schema}".actor_config (actor, queue) '
+            "SELECT 'idle_' || lpad(gs::text, 3, '0'), 'default' "
+            "FROM generate_series(1, $1)",
+            _IDLE_ACTORS,
+        )
+        await conn.execute(
+            f'INSERT INTO "{schema}".actor_config (actor, queue) '
+            "VALUES ('prefilter_probe', 'default')",
+        )
+
+        live_job_ids = [new_uuid() for _ in range(5)]
+        await conn.execute(
+            f'INSERT INTO "{schema}".jobs '
+            "(id, actor, queue, payload, status, priority, scheduled_at, max_attempts, retry_kind) "
+            "SELECT id, 'prefilter_probe', 'default', '{}'::jsonb, 'pending', 1, "
+            "clock_timestamp() - interval '1 minute', 3, 'transient' "
+            "FROM unnest($1::uuid[]) AS t(id)",
+            live_job_ids,
+        )
+        await conn.execute(f'ANALYZE "{schema}".jobs')
+        await conn.execute(f'ANALYZE "{schema}".actor_config')
+        yield schema
+    finally:
+        await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        await conn.close()
+
+
+async def _explain_analyze(conn: asyncpg.Connection, sql: str, *params: object) -> str:
+    rows = await conn.fetch(f"EXPLAIN (ANALYZE, BUFFERS) {sql}", *params)
+    return "\n".join(r["QUERY PLAN"] for r in rows)
+
+
+def _lateral_scan_loops(plan: str) -> list[int]:
+    """Actual loop counts of the candidates-lateral index scans.
+
+    The lateral's scan is identified by its Index Cond containing the
+    STABLE ``scheduled_at <=`` bound (pinned index-served by the test
+    above); the owning node's ``loops=`` sits on the nearest preceding
+    line of PG's text plan.
+    """
+    lines = plan.splitlines()
+    loops: list[int] = []
+    for i, line in enumerate(lines):
+        if "Index Cond:" not in line or "scheduled_at <=" not in line:
+            continue
+        for j in range(i - 1, -1, -1):
+            match = re.search(r"loops=(\d+)", lines[j])
+            if match is not None:
+                loops.append(int(match.group(1)))
+                break
+    return loops
+
+
+async def test_dispatch_prefilter_prunes_lateral_fanout_for_idle_actors(
+    pg_dsn: str, prefilter_schema: str
+) -> None:
+    """EXPLAIN ANALYZE the production strict-FIFO dispatch CTE end to end:
+    with a fleet of idle registered actors, the candidates lateral must
+    execute only for the actor(s) that actually hold pending rows on the
+    round's queue.
+
+    Without per_actor_capacity's EXISTS prefilter, the candidates CROSS
+    JOIN runs the lateral seek once per (actor_config row, subscribed
+    queue) pair — ``_IDLE_ACTORS + _LIVE_ACTORS`` loops here, and
+    hundreds-to-thousands per idle tick in production. With the
+    prefilter, per_actor_capacity yields only the live actor, so the
+    lateral runs once. The asserted quantity is the scan node's ACTUAL
+    loop count — an exact count, not a timing or estimate — so the pin
+    is deterministic for a fixed seed.
+
+    EXPLAIN ANALYZE executes the UPDATE, so the same run doubles as the
+    correctness oracle: the prefilter must not drop the live actor —
+    its five due jobs still transition to running under the dispatched
+    worker id.
+    """
+    conn = await asyncpg.connect(pg_dsn)
+    try:
+        worker_id = new_uuid()
+        plan = await _explain_analyze(
+            conn,
+            DISPATCH_STRICT_FIFO_SQL.format(schema=prefilter_schema),
+            ["default"],
+            10,
+            worker_id,
+            timedelta(seconds=30),
+            2,
+        )
+
+        lateral_loops = _lateral_scan_loops(plan)
+        assert lateral_loops, (
+            "no index-served candidates lateral found in the plan — the "
+            "STABLE-bound doctrine pin (scheduled_at <= as an Index Cond) "
+            f"has regressed:\n{plan}"
+        )
+        unfiltered_loops = _IDLE_ACTORS + _LIVE_ACTORS
+        assert max(lateral_loops) <= 4, (
+            f"candidates lateral executed {max(lateral_loops)} times per "
+            "outer row where the seeded shape allows at most "
+            f"{_LIVE_ACTORS} live (actor, queue) pairs — the unfiltered "
+            f"fan-out is {unfiltered_loops} loops, which is what a lost "
+            "or broken idle-actor prefilter looks like. Plan:\n{plan}"
+        )
+
+        running = await conn.fetchval(
+            f'SELECT count(*) FROM "{prefilter_schema}".jobs '
+            "WHERE status = 'running' AND actor = 'prefilter_probe' "
+            "AND locked_by_worker = $1",
+            worker_id,
+        )
+        assert running == 5, (
+            "the prefilter changed selection, not just the plan: expected "
+            f"the live actor's 5 due jobs running under {worker_id}, got "
+            f"{running}"
         )
     finally:
         await conn.close()

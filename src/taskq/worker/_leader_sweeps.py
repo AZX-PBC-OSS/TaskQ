@@ -14,12 +14,13 @@ import contextlib
 import time
 from collections.abc import Awaitable, Callable
 from datetime import UTC, date, datetime, timedelta
-from typing import cast
+from typing import Final, cast
 
 import asyncpg
 import croniter as cr
 import structlog
 
+from taskq.backend._sweeps import SweepBatchSizer
 from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining
     schema_lock_name,
@@ -82,6 +83,104 @@ log: structlog.stdlib.BoundLogger = get_logger(__name__)
 #: actor_config row), so re-warning every tick would be noise; never
 #: re-warning made a permanent, growing backlog invisible after one line.
 _STRANDED_REWARN_SECS: float = 3600.0
+
+#: Server-side batch bound for the prune family, as a fraction of the
+#: dispatcher pool's client-side command_timeout. The batches run on
+#: dispatcher-pool connections, whose command_timeout fires as an opaque
+#: client ``TimeoutError``; keeping the server-side bound below it means
+#: an overloaded database aborts the batch server-side
+#: (``QueryCanceledError`` — the transient family the SweepBatchSizer
+#: breaker counts) and the next attempt runs at the latched reduced tier,
+#: instead of the client cancelling with no degradation signal. 80% leaves
+#: a full round-trip margin at the default 5 s pool timeout (4 s server
+#: bound). River's job cleaner pairs a 30 s per-query timeout with a
+#: reduced-batch circuit breaker
+#: (vendor/river/rivershared/riversharedmaintenance/river_shared_maintenance.go);
+#: the dispatcher pool's shared command timeout is the tighter ceiling
+#: this family lives under, so the reduced tier — not a longer timeout —
+#: is what makes a loaded database drainable.
+_PRUNE_TIMEOUT_FRACTION: Final[float] = 0.8
+
+#: Intra-day retry backoff for a FAILED prune/archive-expiry attempt: 60 s
+#: doubling, capped at 30 min. The once-per-SUCCESSFUL-attempt-per-day
+#: guard is deliberate policy and stays — the retry fills only the
+#: failure half, so a prune that keeps failing under load retries within
+#: the day instead of waiting for tomorrow's cron fire, while a day that
+#: succeeded is never pruned twice. 60 s sits between the vendors' cadences
+#: (Oban and River retry their pruners every 30 s; GoodJob every 10 min) —
+#: fast enough to drain behind a passing load spike, slow enough not to
+#: pile onto the database that just aborted the batch. Module-level (not
+#: settings) so tests shrink it without threading a knob through every
+#: loop, the same contract DEFAULT_MAX_CONSECUTIVE_UNEXPECTED carries.
+_PRUNE_RETRY_BACKOFF_INITIAL_SECS: float = 60.0
+_PRUNE_RETRY_BACKOFF_CAP_SECS: float = 1800.0
+
+
+def _prune_statement_timeout_ms(command_timeout_secs: float) -> int:
+    """The prune family's per-batch server-side bound under the pool it
+    runs on (see ``_PRUNE_TIMEOUT_FRACTION``). Never below 1 ms: a
+    sub-millisecond bound is ``statement_timeout = 0``-adjacent
+    (0 disables the safety net), and the batch helpers reject it at the
+    typed boundary anyway."""
+    return max(1, int(command_timeout_secs * _PRUNE_TIMEOUT_FRACTION * 1000.0))
+
+
+def _next_retry_backoff(current: float | None) -> float:
+    """The backoff after one more failed attempt: the initial delay, then
+    doubling, capped — the ladder the prune loops retry on."""
+    if current is None:
+        return _PRUNE_RETRY_BACKOFF_INITIAL_SECS
+    return min(current * 2.0, _PRUNE_RETRY_BACKOFF_CAP_SECS)
+
+
+async def _sleep_until_next_attempt(
+    shutdown: asyncio.Event,
+    next_fire: datetime,
+    retry_backoff: float | None,
+) -> bool:
+    """Sleep until the next scheduled cron fire, or — after a failed
+    attempt — the next backoff retry, whichever is earlier; interruptible
+    by shutdown.
+
+    Returns True when the wake was a backoff retry (the failure sequence
+    continues from its current rung); False when the scheduled fire
+    governs (a fresh sequence starts, so yesterday's capped rung does not
+    carry into today's attempt).
+    """
+    until_fire = max(0.0, (next_fire - datetime.now(UTC)).total_seconds())
+    secs = until_fire if retry_backoff is None else min(retry_backoff, until_fire)
+    with contextlib.suppress(TimeoutError):
+        await asyncio.wait_for(shutdown.wait(), timeout=secs)
+    return retry_backoff is not None and retry_backoff < until_fire
+
+
+def _batch_drain_gate(
+    ctx: SweepContext,
+    shutdown: asyncio.Event,
+    *,
+    loop_name: str,
+    period_secs: float,
+) -> Callable[[], bool]:
+    """The between-batches gate the prune-family drains receive: False once
+    shutdown is set (the drain stops; committed batches stay committed),
+    a detector-2 liveness tick otherwise.
+
+    The prune loops are cron-driven — up to a day between attempts — so an
+    always-registered liveness entry with the cron cadence would give
+    detector 2 a multi-day staleness budget and detect nothing. Instead
+    the drain registers on its first tick and the loop forgets the entry
+    when the attempt ends (the gated-loop pattern the leadership watchdog
+    uses), with the period set to the per-batch bound so a wedged drain
+    trips the detector within a few batches' worth of budget.
+    """
+
+    def gate() -> bool:
+        if shutdown.is_set():
+            return False
+        ctx.deps.liveness.tick(loop_name, period=period_secs)
+        return True
+
+    return gate
 
 
 async def _sleep_interruptible(shutdown: asyncio.Event, seconds: float) -> None:
@@ -221,6 +320,32 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
                 batch_size=ctx.deps.settings.event_writer_batch_size,
             )
 
+    # Sweep 4 and the stale-batch completion sweep: each drain call
+    # acquires its own dispatcher connection so every committed batch is
+    # independent — the same per-call acquire the sweeps above use.
+    async def leaked_slots_call() -> int:
+        async with ctx.deps.dispatcher_pool.acquire(
+            timeout=ctx.deps.settings.dispatcher_command_timeout
+        ) as conn:
+            return cast(
+                "int",
+                await ctx.backend.sweep_leaked_reservation_slots(  # type: ignore[reportAttributeAccessIssue]  # Why: guarded by the hasattr gate at the call site; only PostgresBackend implements these maintenance sweeps.
+                    conn,
+                    schema=ctx.deps.settings.schema_name,
+                    batch_size=ctx.deps.settings.event_writer_batch_size,
+                ),
+            )
+
+    async def stale_batches_call() -> int:
+        async with ctx.deps.dispatcher_pool.acquire(
+            timeout=ctx.deps.settings.dispatcher_command_timeout
+        ) as conn:
+            return await complete_stale_batches(
+                conn,
+                schema=ctx.deps.settings.schema_name,
+                batch_size=ctx.deps.settings.event_writer_batch_size,
+            )
+
     while not shutdown.is_set():
         ctx.deps.liveness.tick("leader.sweep", period=ctx.deps.settings.sweep_interval)
         if ctx.deps.is_leader.is_set():
@@ -331,15 +456,7 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
                     start = time.monotonic()
                     rows_4: int | None = None
                     try:
-                        async with ctx.deps.dispatcher_pool.acquire(
-                            timeout=ctx.deps.settings.dispatcher_command_timeout
-                        ) as conn:
-                            rows_4 = cast(
-                                "int",
-                                await ctx.backend.sweep_leaked_reservation_slots(  # type: ignore[reportAttributeAccessIssue]  # Why: guarded by hasattr; only PostgresBackend implements these maintenance sweeps.
-                                    conn, schema=ctx.deps.settings.schema_name
-                                ),
-                            )
+                        rows_4 = await leaked_slots_call()
                     except TRANSIENT_PG_ERRORS as exc:
                         iteration_clean = False
                         if _is_deadline_family(exc):
@@ -368,6 +485,18 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
                                 rows_4,
                                 start,
                             )
+                    # Every batch commits, so a stopped drain is a pause,
+                    # not a rollback — the same drain-to-zero-within-a-tick
+                    # wiring as sweeps 1/2/rt.
+                    if rows_4 and not await _drain_bounded(
+                        ctx,
+                        shutdown,
+                        sweep_name="leaked_slots",
+                        call=leaked_slots_call,
+                        warn_event="sweep-leaked-slots-failed",
+                        warn_kind="sweep_leaked_slots_failed",
+                    ):
+                        iteration_clean = False
                     # Result TTL expiry: one bounded batch per call, drained
                     # like sweeps 1/2 — every batch commits, so a stopped
                     # drain is a pause, not a rollback.
@@ -524,16 +653,26 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
                     start = time.monotonic()
                     stale_rows: int | None = None
                     try:
-                        async with ctx.deps.dispatcher_pool.acquire(
-                            timeout=ctx.deps.settings.dispatcher_command_timeout
-                        ) as conn:
-                            stale_rows = await complete_stale_batches(
-                                conn,
-                                schema=ctx.deps.settings.schema_name,
-                                batch_size=ctx.deps.settings.event_writer_batch_size,
-                            )
+                        stale_rows = await stale_batches_call()
                         if stale_rows:
                             log.info("stale-batches-completed", kind="batch", count=stale_rows)
+                        # Drain the remainder within this tick, the same
+                        # _drain_bounded wiring as sweeps 1/2/rt: one
+                        # bounded call per tick left a large stale set
+                        # draining at one batch per sweep_interval, while
+                        # every sibling sweep drains to zero per tick.
+                        # UndefinedTableError rides the outer except below
+                        # (pre-migration tolerance) — _drain_bounded's own
+                        # transient set deliberately does not carry it.
+                        if stale_rows and not await _drain_bounded(
+                            ctx,
+                            shutdown,
+                            sweep_name="stale_batches",
+                            call=stale_batches_call,
+                            warn_event="stale-batches-sweep-failed",
+                            warn_kind="batch",
+                        ):
+                            iteration_clean = False
                     except (
                         *TRANSIENT_PG_ERRORS,
                         asyncpg.exceptions.UndefinedTableError,
@@ -654,8 +793,38 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
 
 
 async def _prune_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
+    """Daily prune with intra-day retry on failure.
+
+    The once-per-SUCCESSFUL-prune-per-day guard (``last_pruned_date``) is
+    deliberate policy: a day that pruned is done. The failure half
+    retries with backoff (60 s doubling, capped) until success or the
+    next scheduled fire, so a prune that keeps failing under load does
+    not wait for tomorrow — see ``_PRUNE_RETRY_BACKOFF_INITIAL_SECS``.
+    Every batch is a committed, server-side-bounded statement
+    (:func:`~taskq.worker._leader_shared.prune_terminal_jobs`), and the
+    drain stops between batches on shutdown.
+    """
     last_pruned_date: date | None = None
+    retry_backoff: float | None = None
     lock_name = schema_lock_name("prune", ctx.deps.settings.schema_name)
+    # Loop-invariant policy, built once for the process lifetime: the
+    # breaker's latch state must outlive any single attempt (a database
+    # that needed smaller bites yesterday needs them today — the one-way
+    # latch is the point), and the batch bound derives from the pool the
+    # batches run on (see _PRUNE_TIMEOUT_FRACTION).
+    prune_sizer = SweepBatchSizer(
+        default_size=ctx.deps.settings.prune_batch_size,
+        divisor=ctx.deps.settings.event_writer_reduced_batch_divisor,
+        failure_threshold=ctx.deps.settings.sweep_breaker_failure_threshold,
+        window_secs=ctx.deps.settings.sweep_breaker_window_secs,
+    )
+    statement_timeout_ms = _prune_statement_timeout_ms(ctx.deps.settings.dispatcher_command_timeout)
+    drain_gate = _batch_drain_gate(
+        ctx,
+        shutdown,
+        loop_name="leader.prune",
+        period_secs=statement_timeout_ms / 1000.0,
+    )
 
     while not shutdown.is_set():
         now_utc = datetime.now(UTC)
@@ -665,14 +834,15 @@ async def _prune_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
         it = cr.croniter(cron_expr, now_utc)
         next_fire: datetime = it.get_next(datetime).replace(tzinfo=UTC)
 
-        try:
-            secs = max(0.0, (next_fire - datetime.now(UTC)).total_seconds())
-            await asyncio.wait_for(shutdown.wait(), timeout=secs)
-        except TimeoutError:
-            pass
-
+        woke_for_retry = await _sleep_until_next_attempt(shutdown, next_fire, retry_backoff)
         if shutdown.is_set():
             break
+        if not woke_for_retry:
+            # The scheduled fire governs this wake: a failure below starts
+            # a fresh backoff sequence, not a continuation of the previous
+            # one's capped rung.
+            retry_backoff = None
+
         if not ctx.deps.is_leader.is_set():
             continue
         today_utc = datetime.now(UTC).date()
@@ -699,6 +869,7 @@ async def _prune_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
                     )
                     continue
 
+                attempt_start = time.monotonic()
                 try:
                     retention_per_status = _build_retention_per_status(ctx.deps.settings)
                     actor_overrides = await _load_actor_retention_overrides(
@@ -708,11 +879,14 @@ async def _prune_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
                         conn,
                         retention_per_status=retention_per_status,
                         archive_retention=ctx.deps.settings.archive_retention_period,
-                        batch_size=ctx.deps.settings.prune_batch_size,
                         schema=ctx.deps.settings.schema_name,
                         actor_overrides=actor_overrides if actor_overrides else None,
+                        drain_gate=drain_gate,
+                        statement_timeout_ms=statement_timeout_ms,
+                        sizer=prune_sizer,
                     )
                     last_pruned_date = today_utc
+                    retry_backoff = None
                     for status, count in result.by_status.items():
                         log.info(
                             "prune-completed",
@@ -742,25 +916,72 @@ async def _prune_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
                     ) as exc:
                         log.warning("batch-prune-failed", kind="batch", error=repr(exc))
                 except Exception as exc:
-                    log.error("prune-failed", kind="prune", error=repr(exc))
+                    # The failure half of the once-a-day policy: this
+                    # attempt did NOT prune, so the day is not marked and
+                    # the loop retries on the backoff ladder instead of
+                    # sleeping to tomorrow's fire. Partially-drained
+                    # batches are already committed; the retry resumes the
+                    # remainder at the (possibly latched) reduced tier.
+                    retry_backoff = _next_retry_backoff(retry_backoff)
+                    if _is_deadline_family(exc):
+                        record_sweep_timeout("prune")
+                    log.error(
+                        "prune-failed",
+                        kind="prune",
+                        error=repr(exc),
+                        duration_ms=int((time.monotonic() - attempt_start) * 1000),
+                        retry_in_secs=retry_backoff,
+                    )
                 finally:
+                    # The drain's detector-2 registration is attempt-scoped
+                    # (the gated-loop pattern — see _batch_drain_gate):
+                    # forget it whether the attempt succeeded, failed, or
+                    # stopped on shutdown, so the once-a-day loop cannot
+                    # read as a stale sibling between attempts.
+                    ctx.deps.liveness.forget("leader.prune")
                     with contextlib.suppress(*TRANSIENT_PG_ERRORS):
                         await conn.execute(
                             "SELECT pg_advisory_unlock(hashtextextended($1, 0))",
                             lock_name,
                         )
         except TRANSIENT_PG_ERRORS as exc:
+            # The lock attempt itself failed — same failure half, same
+            # ladder (a PG blip at 03:00 must not defer the prune to
+            # tomorrow).
+            retry_backoff = _next_retry_backoff(retry_backoff)
             log.warning(
                 "prune-lock-attempt-failed",
                 kind="prune_lock_failed",
                 worker_id=str(ctx.worker_id),
                 error=repr(exc),
+                retry_in_secs=retry_backoff,
             )
 
 
 async def _archive_expiry_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
+    """Daily archive expiry with intra-day retry on failure — the same
+    policy shape as :func:`_prune_loop` (once per successful attempt per
+    day; failures retry on the shared backoff ladder).
+    """
     last_expiry_date: date | None = None
+    retry_backoff: float | None = None
     lock_name = schema_lock_name("archive_expiry", ctx.deps.settings.schema_name)
+    # Same loop-invariant policy as _prune_loop: the latch outlives any
+    # single attempt, and the batch bound derives from the dispatcher
+    # pool's command timeout.
+    expiry_sizer = SweepBatchSizer(
+        default_size=ctx.deps.settings.prune_batch_size,
+        divisor=ctx.deps.settings.event_writer_reduced_batch_divisor,
+        failure_threshold=ctx.deps.settings.sweep_breaker_failure_threshold,
+        window_secs=ctx.deps.settings.sweep_breaker_window_secs,
+    )
+    statement_timeout_ms = _prune_statement_timeout_ms(ctx.deps.settings.dispatcher_command_timeout)
+    drain_gate = _batch_drain_gate(
+        ctx,
+        shutdown,
+        loop_name="leader.archive_expiry",
+        period_secs=statement_timeout_ms / 1000.0,
+    )
 
     while not shutdown.is_set():
         now_utc = datetime.now(UTC)
@@ -770,14 +991,14 @@ async def _archive_expiry_loop(ctx: SweepContext, shutdown: asyncio.Event) -> No
         it = cr.croniter(cron_expr, now_utc)
         next_fire: datetime = it.get_next(datetime).replace(tzinfo=UTC)
 
-        try:
-            secs = max(0.0, (next_fire - datetime.now(UTC)).total_seconds())
-            await asyncio.wait_for(shutdown.wait(), timeout=secs)
-        except TimeoutError:
-            pass
-
+        woke_for_retry = await _sleep_until_next_attempt(shutdown, next_fire, retry_backoff)
         if shutdown.is_set():
             break
+        if not woke_for_retry:
+            # The scheduled fire governs this wake: a failure below starts
+            # a fresh backoff sequence (same rule as _prune_loop).
+            retry_backoff = None
+
         if not ctx.deps.is_leader.is_set():
             continue
         today_utc = datetime.now(UTC).date()
@@ -805,13 +1026,17 @@ async def _archive_expiry_loop(ctx: SweepContext, shutdown: asyncio.Event) -> No
                     )
                     continue
 
+                attempt_start = time.monotonic()
                 try:
                     result = await archive_expiry_sweep(
                         conn,
-                        batch_size=ctx.deps.settings.prune_batch_size,
                         schema=ctx.deps.settings.schema_name,
+                        drain_gate=drain_gate,
+                        statement_timeout_ms=statement_timeout_ms,
+                        sizer=expiry_sizer,
                     )
                     last_expiry_date = today_utc
+                    retry_backoff = None
                     for status, count in result.by_status.items():
                         log.info(
                             "archive-expiry-completed",
@@ -822,19 +1047,35 @@ async def _archive_expiry_loop(ctx: SweepContext, shutdown: asyncio.Event) -> No
                             duration_ms=result.duration_ms,
                         )
                 except Exception as exc:
-                    log.error("archive-expiry-failed", kind="archive_expiry", error=repr(exc))
+                    # Same failure half as _prune_loop: retry on the ladder,
+                    # never a second successful expiry in one day.
+                    retry_backoff = _next_retry_backoff(retry_backoff)
+                    if _is_deadline_family(exc):
+                        record_sweep_timeout("archive_expiry")
+                    log.error(
+                        "archive-expiry-failed",
+                        kind="archive_expiry",
+                        error=repr(exc),
+                        duration_ms=int((time.monotonic() - attempt_start) * 1000),
+                        retry_in_secs=retry_backoff,
+                    )
                 finally:
+                    # Attempt-scoped detector-2 registration, same as
+                    # _prune_loop's forget.
+                    ctx.deps.liveness.forget("leader.archive_expiry")
                     with contextlib.suppress(*TRANSIENT_PG_ERRORS):
                         await conn.execute(
                             "SELECT pg_advisory_unlock(hashtextextended($1, 0))",
                             lock_name,
                         )
         except TRANSIENT_PG_ERRORS as exc:
+            retry_backoff = _next_retry_backoff(retry_backoff)
             log.warning(
                 "archive-expiry-lock-attempt-failed",
                 kind="archive_expiry_lock_failed",
                 worker_id=str(ctx.worker_id),
                 error=repr(exc),
+                retry_in_secs=retry_backoff,
             )
 
 

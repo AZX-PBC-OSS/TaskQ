@@ -1671,9 +1671,11 @@ class WorkerSettings(TaskQSettings):
         #
         # The producer loop is deliberately NOT checked here: it is not
         # wrapped in asyncio.timeout (dispatch_batch is a multi-statement
-        # transaction — BEGIN + resolve_queue_modes + dispatch CTE + INSERTs
-        # + COMMIT, each bounded separately by the pool's command_timeout),
-        # so the timeout + period model does not hold. The actual worst-case
+        # transaction — BEGIN + dispatch CTE + INSERTs + COMMIT, plus a
+        # queue-mode resolve on cache miss (the worker-side TTL cache in
+        # taskq.backend._dispatch.QueueModeCache), each bounded
+        # separately by the pool's command_timeout), so the timeout +
+        # period model does not hold. The actual worst-case
         # gap is k * timeout + period for k statements, which the invariant
         # cannot express without knowing k at settings-load time.
         if self.watchdog_enabled:

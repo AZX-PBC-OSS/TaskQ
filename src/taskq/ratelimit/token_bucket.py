@@ -54,6 +54,10 @@ from typing import TYPE_CHECKING, Final
 
 import structlog
 
+from taskq._advisory import (
+    _LOCK_TIMEOUT_SET_SQL,  # pyright: ignore[reportPrivateUsage]  # Why: the one implementation of the set_config statement shared with the enqueue and sliding-window bounded locks — a local copy would drift from the machinery it mirrors.
+    DEFAULT_ADVISORY_LOCK_CLIENT_BACKSTOP_SLACK_S,
+)
 from taskq.backend._protocol import RateLimitBackend
 from taskq.backend._records import jsonb_param, jsonb_to_dict
 from taskq.backend.clock import Clock
@@ -72,6 +76,19 @@ if TYPE_CHECKING:
 logger = structlog.get_logger("taskq.ratelimit.token_bucket")
 
 _DEFAULT_FIXED_QUOTA_TTL: Final[timedelta] = timedelta(seconds=86400)
+
+#: Bounded wait (milliseconds) for the PG fallback's ``rate_limit_buckets``
+#: row lock. Same value and rationale as the log-style sliding window's
+#: :data:`~taskq.ratelimit._sliding_window_pg.DEFAULT_SLIDING_WINDOW_LOCK_TIMEOUT_MS`
+#: — the PG fallback is the Redis-outage funnel
+#: (``rate_limit_pg_fallback_enabled`` defaults on), so every admission
+#: waits on this lock exactly when the fleet is already degraded; the
+#: bound converts a black-holed holder (dead TCP, no FIN — the server
+#: reaps it only via keepalives) from a bucket-wide admission hang into
+#: the limiter's fail-closed denial. ``0`` (or less) waits indefinitely,
+#: the ``lock_timeout`` GUC convention shared with migrate.py and
+#: ``taskq._advisory``.
+DEFAULT_TOKEN_BUCKET_LOCK_TIMEOUT_MS: Final[float] = 5000.0
 
 #: Ceiling for the *derived* default TTL.
 #:
@@ -750,6 +767,8 @@ class TokenBucket:
         count: float,
         pg_pool: "asyncpg.Pool | None",
         settings: "WorkerSettings | None",
+        *,
+        lock_timeout_ms: float = DEFAULT_TOKEN_BUCKET_LOCK_TIMEOUT_MS,
     ) -> RateLimitDecision:
         """PG fallback path using FOR UPDATE on rate_limit_buckets.
 
@@ -759,6 +778,20 @@ class TokenBucket:
         read in the same transaction, so the stored ``ts`` is server-domain
         by construction — a node with a skewed Python clock cannot mint
         phantom refill.
+
+        The row-lock WAIT is bounded (default
+        :data:`DEFAULT_TOKEN_BUCKET_LOCK_TIMEOUT_MS`): with
+        ``rate_limit_pg_fallback_enabled`` on, a Redis outage funnels all
+        admission through this lock, so an unbounded wait would let one
+        black-holed holder (dead TCP, no FIN) stall its bucket's admission
+        until the server's keepalives reap it. On budget exhaustion the
+        acquire FAILS CLOSED — the limiter's denial outcome, ``allowed=False``
+        with a retry hint of one more budget, the same channel the log-style
+        sliding window's lock timeout denial takes — never an exception,
+        never an admission: a racer that could not read the bucket can
+        never spend or admit tokens. ``lock_timeout_ms <= 0`` waits
+        indefinitely, the ``lock_timeout`` GUC convention shared with
+        migrate.py and ``taskq._advisory``.
         """
         if pg_pool is None:
             raise RuntimeError("pg_pool not injected for postgres backend")
@@ -790,14 +823,82 @@ class TokenBucket:
         )
 
         async with pg_pool.acquire() as conn, conn.transaction():
-            # Cold-start guard: SELECT ... FOR UPDATE cannot lock a row that
-            # does not exist yet, so concurrent first acquires would each
-            # read `row is None` and independently admit up to `capacity`
-            # tokens. Pre-seed a full-capacity row (idempotent — DO NOTHING
-            # on conflict) so the very first acquire also serializes on the
-            # row lock below.
-            await conn.execute(preseed_sql, self._name, self._capacity)
-            row = await conn.fetchrow(select_sql, self._name)
+
+            async def _preseed_and_read() -> "asyncpg.Record | None":
+                # Cold-start guard: SELECT ... FOR UPDATE cannot lock a row
+                # that does not exist yet, so concurrent first acquires
+                # would each read `row is None` and independently admit up
+                # to `capacity` tokens. Pre-seed a full-capacity row
+                # (idempotent — DO NOTHING on conflict) so the very first
+                # acquire also serializes on the row lock below.
+                await conn.execute(preseed_sql, self._name, self._capacity)
+                return await conn.fetchrow(select_sql, self._name)
+
+            row: asyncpg.Record | None = None
+
+            if lock_timeout_ms > 0:
+                # Bounded row-lock wait, mechanics mirrored from
+                # taskq._advisory's contended tier. set_config(..., true)
+                # is SET LOCAL semantics, so the bound covers every lock
+                # wait this transaction can take — the preseed's conflict
+                # check, the SELECT FOR UPDATE, the upsert's speculative
+                # insert — and dies with the transaction's own commit; no
+                # save/restore cycle is needed (unlike the enqueue helper,
+                # whose caller keeps using the transaction afterwards).
+                # The savepoint keeps the transaction committable after a
+                # 55P03 (a raw statement error would leave it aborted);
+                # the client-side backstop bounds the network black hole
+                # the server-side timeout cannot see.
+                #
+                # Why a function-level import: this module is imported by
+                # taskq.ratelimit, which taskq.testing imports
+                # transitively — that boundary must stay importable
+                # without the asyncpg driver installed. The acquire only
+                # ever runs against a real connection, where asyncpg is
+                # guaranteed present.
+                from asyncpg.exceptions import LockNotAvailableError
+
+                await conn.execute(_LOCK_TIMEOUT_SET_SQL, f"{round(lock_timeout_ms)}ms")
+
+                async def _locked_state_read() -> None:
+                    nonlocal row
+                    async with conn.transaction():
+                        row = await _preseed_and_read()
+
+                try:
+                    await asyncio.wait_for(
+                        _locked_state_read(),
+                        timeout=lock_timeout_ms / 1000.0
+                        + DEFAULT_ADVISORY_LOCK_CLIENT_BACKSTOP_SLACK_S,
+                    )
+                except (LockNotAvailableError, TimeoutError):
+                    # Fail closed: the limiter's denial outcome with a
+                    # retry hint of one more budget — the timed-out racer
+                    # wrote nothing (the savepoint rolled the preseed
+                    # back; the upsert never ran), so nothing is admitted
+                    # or spent. The warning is the operator signal that
+                    # the bucket (or its holder) is contended or sick
+                    # rather than merely busy — the same event name the
+                    # log-style path emits for the same condition.
+                    logger.warning(
+                        "ratelimit-lock-timeout",
+                        bucket_name=self._name,
+                        backend="postgres",
+                        lock_timeout_ms=lock_timeout_ms,
+                    )
+                    result = RateLimitDecision(
+                        allowed=False,
+                        remaining=0.0,
+                        retry_after=timedelta(milliseconds=lock_timeout_ms),
+                        bucket_name=self._name,
+                        backend="postgres",
+                    )
+                    log_decision(result)
+                    return result
+            else:
+                # lock_timeout_ms <= 0: the indefinite mode — the GUC
+                # convention's opt-out, and the pre-bound behavior.
+                row = await _preseed_and_read()
 
             if row is None:
                 # Unreachable in the normal path — the preseed above guarantees
