@@ -22,23 +22,17 @@
   optional; ``should_abort`` is the documented cooperative-cancellation
   check sync actors poll). Production carries all four actor-facing
   members (``cancellation_requested``, ``check_cancelled``,
-  ``should_abort``, ``progress`` — ``src/taskq/context.py:82-103``);
-  the runner's stub context has only ``cancellation_requested``, and
-  the testing mirror has ``cancellation_requested`` and
-  ``should_abort`` but neither ``progress`` nor ``check_cancelled``
-  (tracked on issue #172's thread); the pin below is strict-xfail per
-  the repo's executably-tracked-defect convention so the gap cannot sit
-  silent in the suite while the narrower ``span`` field carries the
-  convention's protection. Any actor that reports progress or polls
-  cooperative cancellation is untestable through the harness today and
-  fails with a self-misattributing ``AttributeError`` — the pin makes
-  that failure the suite's own signal instead of the adopter's
-  surprise.
+  ``should_abort``, ``progress`` — ``src/taskq/context.py:82-103``),
+  and the runner's stub context now carries them too (issue #172's
+  method surface): cancellation checks read the runner's cancel event,
+  and progress reports land observably on the context's
+  ``progress_reports`` with a strictly monotone ``seq`` — the runner
+  has no Redis/Postgres wiring, so recording, not publishing, is the
+  faithful harness half of the contract.
 """
 
+import asyncio
 from datetime import UTC, datetime
-
-import pytest
 
 from taskq._ids import new_job_id
 from taskq.backend._protocol import EnqueueArgs
@@ -87,44 +81,23 @@ async def test_stub_context_span_read_matches_the_documented_disabled_value() ->
     )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="issue #172's method surface: the runner's stub context carries "
-    "none of the documented actor-facing methods except "
-    "cancellation_requested (progress, check_cancelled, should_abort), and "
-    "the testing mirror carries neither progress nor check_cancelled — "
-    "actors reporting progress or polling cooperative cancellation are "
-    "untestable through the harness, failing with a self-misattributing "
-    "AttributeError; fixed when the harness contexts carry the surface "
-    "(progress observably recorded) or fail it with a designed, "
-    "self-attributing unsupported-feature error — then remove this marker",
-)
 async def test_documented_method_surface_is_exercisable_through_the_runner() -> None:
     """An actor calling the documented ``await ctx.progress(...)``,
     ``ctx.check_cancelled()``, and ``ctx.should_abort()`` through
-    ``run_until_drained`` gets either a working surface (the report
-    lands observably; the job succeeds) or a designed, self-attributing
-    unsupported-feature failure. It must never get the current shape —
-    a bare ``AttributeError`` the actor misreads as its own bug. Both
-    resolutions are legitimate; the absence is neither, and that is
-    what this pin holds out."""
+    ``run_until_drained`` succeeds, and the progress report lands
+    observably on the context — recorded with a strictly monotone
+    ``seq``, the faithful harness half of a contract whose production
+    half publishes."""
     clock = FakeClock(start=_START)
     backend = InMemoryBackend(clock=clock)
-    gaps: list[str] = []
+    contexts: list[object] = []
 
     async def reporter(payload: object, ctx: object) -> object:
-        try:
-            await ctx.progress(step=1, percent=50.0)  # type: ignore[attr-defined]  # Why: stub ctx is duck-typed; the pinned contract is the disjunction recorded-or-designed-failure, never bare absence.
-        except AttributeError:
-            gaps.append("progress")
-        try:
-            ctx.check_cancelled()  # type: ignore[attr-defined]  # Why: stub ctx is duck-typed; same disjunction contract as progress above.
-        except AttributeError:
-            gaps.append("check_cancelled")
-        try:
-            ctx.should_abort()  # type: ignore[attr-defined]  # Why: stub ctx is duck-typed; the sync-actor cooperative-cancellation check is part of the same documented surface.
-        except AttributeError:
-            gaps.append("should_abort")
+        contexts.append(ctx)
+        await ctx.progress(step=1, percent=50.0)  # type: ignore[attr-defined]  # Why: stub ctx is duck-typed; the pinned contract is that the documented call works and lands observably.
+        await ctx.progress(step=2)  # type: ignore[attr-defined]  # Why: stub ctx is duck-typed; a second report pins the strictly-monotone seq.
+        ctx.check_cancelled()  # type: ignore[attr-defined]  # Why: stub ctx is duck-typed; the pinned contract is the documented raising check.
+        assert not ctx.should_abort(), "no cancellation was requested"  # type: ignore[attr-defined]  # Why: stub ctx is duck-typed; the sync-actor cooperative-cancellation check is part of the documented surface.
         return {"ok": True}
 
     backend.register_stub("reporter", reporter)
@@ -140,9 +113,63 @@ async def test_documented_method_surface_is_exercisable_through_the_runner() -> 
     await backend.enqueue(args)
     await backend.run_until_drained()
 
-    assert gaps == [], (
-        "the documented method surface is absent on the harness context "
-        f"(missing: {gaps}) — an actor reporting progress through the "
-        "harness must be exercisable, not surprised by a bare "
-        "AttributeError it will misattribute to its own code"
+    row = await backend.get(args.id)
+    assert row is not None
+    assert row.status == "succeeded", (
+        "a stub using the documented method surface must succeed; "
+        f"got status={row.status} error_class={row.error_class}"
     )
+    reports = contexts[0].progress_reports  # type: ignore[attr-defined]  # Why: stub ctx is duck-typed; the pinned contract is that the report is observably recorded on the context.
+    assert reports == [
+        {"seq": 1, "step": 1, "percent": 50.0, "detail": None, "data": None},
+        {"seq": 2, "step": 2, "percent": None, "detail": None, "data": None},
+    ], f"each report must land observably with a strictly monotone seq; got {reports}"
+
+
+async def test_stub_context_cancellation_methods_observe_a_requested_cancel() -> None:
+    """The raising half of the cancellation contract: with the job's
+    cancel event already set, the stub observes
+    ``cancellation_requested`` and ``should_abort()`` as True and
+    ``check_cancelled()`` raises :class:`asyncio.CancelledError` — not
+    only the quiet fresh-dispatch readings the exercisability pin
+    covers."""
+    clock = FakeClock(start=_START)
+    backend = InMemoryBackend(clock=clock)
+    observed: dict[str, object] = {}
+
+    def probe(payload: object, ctx: object) -> object:
+        observed["cancellation_requested"] = ctx.cancellation_requested  # type: ignore[attr-defined]  # Why: stub ctx is duck-typed; the pinned contract is the documented reading.
+        observed["should_abort"] = ctx.should_abort()  # type: ignore[attr-defined]  # Why: stub ctx is duck-typed; same documented reading.
+        try:
+            ctx.check_cancelled()  # type: ignore[attr-defined]  # Why: stub ctx is duck-typed; the pinned contract is the raise.
+        except asyncio.CancelledError:
+            observed["check_cancelled_raised"] = True
+        return {"ok": True}
+
+    backend.register_stub("probe", probe)
+    args = EnqueueArgs(
+        id=new_job_id(),
+        actor="probe",
+        queue="default",
+        payload={},
+        max_attempts=3,
+        retry_kind="transient",
+        scheduled_at=_START,
+    )
+    cancel_event = asyncio.Event()
+    cancel_event.set()
+    backend.register_cancel_event(args.id, cancel_event)
+    await backend.enqueue(args)
+    await backend.run_until_drained()
+
+    row = await backend.get(args.id)
+    assert row is not None
+    assert row.status == "succeeded", (
+        "the stub caught the CancelledError itself, so the job succeeds; "
+        f"got status={row.status} error_class={row.error_class}"
+    )
+    assert observed == {
+        "cancellation_requested": True,
+        "should_abort": True,
+        "check_cancelled_raised": True,
+    }, f"the cancellation surface must observe the requested cancel; got {observed}"

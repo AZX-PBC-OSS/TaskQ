@@ -57,12 +57,52 @@ class JobContext[P: BaseModel]:
     span: Span | None = None
     deps: dict[str, object] | None = field(default=None)
     abort_requested: threading.Event = field(default_factory=threading.Event)
+    # Every progress() call appends one record here — the harness half of
+    # the documented progress contract: the report lands observably (the
+    # actor or its test inspects this list), with `seq` strictly monotone
+    # per call as production guarantees. The fixture path has no Redis/
+    # Postgres wiring, so nothing is published; the ProgressTooLarge size
+    # cap is a WorkerSettings concern the fixture does not carry (its
+    # enforcement is pinned by the dedicated progress suites).
+    progress_reports: list[dict[str, object]] = field(
+        default_factory=list[dict[str, object]],
+    )
 
     @property
     def cancellation_requested(self) -> bool:
         """True when the cancel event has been set."""
         return self.cancel_event.is_set()
 
+    def check_cancelled(self) -> None:
+        """Raise :class:`asyncio.CancelledError` when cancellation has
+        been requested — the production contract, so actors using the
+        raising style are exercisable through the harness."""
+        if self.cancel_event.is_set():
+            raise asyncio.CancelledError
+
     def should_abort(self) -> bool:
         """Synchronous cancellation check for sync actors (thread-safe)."""
         return self.abort_requested.is_set()
+
+    async def progress(
+        self,
+        *,
+        step: int | None = None,
+        percent: float | None = None,
+        detail: str | None = None,
+        data: dict[str, object] | None = None,
+    ) -> None:
+        """Record a progress report on the context (see the
+        ``progress_reports`` field). Signature and ``seq`` monotonicity
+        mirror the production :meth:`taskq.context.JobContext.progress`;
+        the harness never blocks on the network because it never
+        publishes."""
+        self.progress_reports.append(
+            {
+                "seq": len(self.progress_reports) + 1,
+                "step": step,
+                "percent": percent,
+                "detail": detail,
+                "data": data,
+            }
+        )

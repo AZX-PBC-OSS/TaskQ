@@ -32,7 +32,12 @@ from taskq.context import JobContext as ProductionJobContext
 from taskq.testing.job_context import JobContext as TestingJobContext
 
 #: The mirror's documented additions beyond the production field shape.
-_MIRROR_EXTRAS = {"deps", "abort_requested"}
+#: ``deps`` and ``abort_requested`` are the mirror's original extras;
+#: ``progress_reports`` is the harness half of the documented progress
+#: contract (issue #172's method surface): the fixture path has no
+#: Redis/Postgres wiring, so reports are recorded on the context for
+#: the test to inspect rather than published.
+_MIRROR_EXTRAS = {"deps", "abort_requested", "progress_reports"}
 
 
 def _public_field_names(cls: type) -> set[str]:

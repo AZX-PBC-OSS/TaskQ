@@ -80,7 +80,12 @@ class _StubContext:
     worker), and at the trace-correlation contract (``span`` is the
     documented OTel-disabled ``None`` — the in-memory runner is
     uninstrumented, so actors reading ``ctx.span`` observe exactly what
-    a production worker without a tracer hands them).
+    a production worker without a tracer hands them), and at the
+    documented method surface: ``check_cancelled()``,
+    ``should_abort()``, and ``await ctx.progress(...)`` (recorded on
+    ``progress_reports``, never published — the runner has no
+    Redis/Postgres wiring) behave as the production contract documents,
+    so actors using them are exercisable under the runner.
     """
 
     __slots__ = (
@@ -88,6 +93,7 @@ class _StubContext:
         "cancel_event",
         "job_id",
         "payload",
+        "progress_reports",
         "snooze_count",
         "span",
     )
@@ -106,10 +112,53 @@ class _StubContext:
         self.cancel_event = cancel_event
         self.snooze_count = snooze_count
         self.span: Span | None = None
+        # One record per progress() call — the harness half of the
+        # documented progress contract: the report lands observably
+        # (the stub or its test inspects this list), with `seq` strictly
+        # monotone per call as production guarantees. The runner has no
+        # Redis/Postgres wiring, so nothing is published.
+        self.progress_reports: list[dict[str, object]] = []
 
     @property
     def cancellation_requested(self) -> bool:
         return self.cancel_event is not None and self.cancel_event.is_set()
+
+    def check_cancelled(self) -> None:
+        """Raise :class:`asyncio.CancelledError` when cancellation has
+        been requested — the production contract, so stubs using the
+        raising style are exercisable under the runner."""
+        if self.cancellation_requested:
+            raise asyncio.CancelledError
+
+    def should_abort(self) -> bool:
+        """Synchronous cancellation check for sync actors. Production
+        reads the same phase-1 cancellation state through a threading
+        event; the runner has one cancellation event, so both checks
+        read it."""
+        return self.cancellation_requested
+
+    async def progress(
+        self,
+        *,
+        step: int | None = None,
+        percent: float | None = None,
+        detail: str | None = None,
+        data: dict[str, object] | None = None,
+    ) -> None:
+        """Record a progress report on the context (see the
+        ``progress_reports`` attribute). Signature and ``seq``
+        monotonicity mirror the production
+        :meth:`taskq.context.JobContext.progress`; the runner never
+        blocks on the network because it never publishes."""
+        self.progress_reports.append(
+            {
+                "seq": len(self.progress_reports) + 1,
+                "step": step,
+                "percent": percent,
+                "detail": detail,
+                "data": data,
+            }
+        )
 
 
 class PassthroughPayload(BaseModel):
@@ -655,6 +704,23 @@ async def run_until_drained(backend: "InMemoryBackend") -> None:
                 retry_delay=None,
             )
             outcome = "failed"
+        except asyncio.CancelledError:
+            # Cooperative-cancel mirror: production's consume_one_job marks
+            # the row cancelled on the CancelledError path and re-raises;
+            # the worker's task boundary absorbs that raise and the worker
+            # keeps dispatching. The runner awaits the actor inline, so
+            # this per-dispatch catch is that boundary. The discriminator
+            # between a cooperative cancel (the stub's check_cancelled()
+            # raised — only possible once the job's registered cancel event
+            # is set, the controller's phase-1-then-phase-2 protocol) and
+            # an external cancellation of the drain task itself (callers
+            # cancel run_until_drained — the job-handle timeout suite runs
+            # it as a cancellable task) is the event: set → absorb and keep
+            # draining; unset → the caller's cancel, propagate.
+            cancel_event = backend._cancel_events.get(job.id)  # pyright: ignore[reportPrivateUsage]  # Why: test runner helper intentionally accesses private InMemoryBackend state; this module is co-located with the backend and owns this access pattern.
+            if cancel_event is None or not cancel_event.is_set():
+                raise
+            outcome = "cancelled"
 
         try:
             await apply_batch_terminal_outcome(backend, job, outcome)
