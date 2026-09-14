@@ -214,9 +214,10 @@ they represent safety-critical signals.
 | `messaging.client.consumed.messages` | `1` | `actor`, `queue`, `outcome` | Jobs consumed. `outcome` is one of `succeeded`, `failed`, `cancelled`, `abandoned`. A snoozed or rescheduled job maps to `abandoned`. | yes |
 | `taskq.cancellation.requested` | — | — | Incremented once per `JobsClient.cancel()` call regardless of outcome. | unconditional |
 | `taskq.cancellation.phase_transitions` | `1` | — | Cancel phase transitions (0→1, 1→2, etc.). | yes |
-| `taskq.backpressure.errors` | — | `actor`, `kind` | Enqueue rejections due to backpressure. `kind` is currently `"max_pending"`. | unconditional |
+| `taskq.backpressure.errors` | — | `actor`, `kind` | Synchronous refusals raised at enqueue. `kind` is the bounded enum `max_pending` / `max_pending_lock_timeout` (capacity admission) or `unique_for_lock_timeout` / `idempotency_lock_timeout` (identity-serialization refusals, counted beside their typed errors — not capacity signals, so alerting keyed on the capacity kinds is not tripped by them). | unconditional |
 | `taskq.backpressure.capacity_refresh_failures` | `1` | `degraded` | Failed refreshes of the enqueue-side `actor_config` capacity cache. `degraded` is `"stale_snapshot"` (a previous snapshot is still being served) or `"no_snapshot"` (the cache never loaded and every enqueue is enforcing the `@actor` literal). | unconditional |
 | `taskq.deadline_exceeded_sweep.jobs_failed` | `1` | `actor` | Jobs failed by the deadline-exceeded sweep. | unconditional |
+| `taskq.enqueue.dedups` | `1` | `dedup_reason` | Enqueue dedup hits (an enqueue returned an existing row instead of writing one). `dedup_reason` is `unique_for` or `idempotency_key`. The per-hit log lines are budget-bounded at batch scale; this counter is the rate signal that survives the bound. | yes |
 | `taskq.heartbeat.misses` | `1` | — | Heartbeat renewal failures. | yes |
 | `taskq.worker.slot_pool.acquire_failures` | `1` | — | Bounded acquires from the per-slot transaction pool that failed (timeout or connection error) — infrastructure, not a job outcome: the claimed job is left for lock-lease reclaim. The per-occurrence job id and cause stay in the `slot-pool-acquire-failed` log event. | yes |
 | `taskq.leader.election_attempts` | `1` | — | Leader election attempts. | yes |
@@ -224,6 +225,9 @@ they represent safety-critical signals.
 | `taskq.error_reporter.failures` | `1` | `reporter_type` | `ErrorReporter` invocation failures. | yes |
 | `taskq.progress.publish_failures` | `1` | — | Redis publish failures for progress fanout. | yes |
 | `taskq.ratelimit.refund_failures` | `1` | `bucket`, `backend` | Rate-limit refund/rollback failures. | yes |
+| `taskq.ratelimit.denials` | `1` | `backend` | Rate-limit decisions that denied admission. Bucket names are not a dimension (caller-controlled cardinality). | yes |
+| `taskq.ratelimit.acquire_dependency_failures` | `1` | `error_type` | Rate-limit acquires that failed on a store dependency (Redis or the PG fallback) and were failed closed as denials — an availability signal, distinct from `taskq.reservation.denials` (admission decisions). Read the two together before scaling a bucket; `error_type` is the exception class name. | yes |
+| `taskq.reservation.denials` | `1` | `source` | Reservation/rate-limit admission denials surfaced to a worker handler. `source` is `reservation` or `rate_limit`. Bucket names are not a dimension. | yes |
 | `taskq.pruned.jobs` | `1` | `actor`, `status` | Jobs moved from `jobs` to `jobs_archive` by the prune sweep (Sweep 5). | yes |
 | `taskq.archived.jobs` | `1` | `status` | Same prune-sweep event, status-only view (no actor dimension). | yes |
 | `taskq.expired_archive.jobs` | `1` | `status` | Jobs hard-deleted from `jobs_archive` by the archive expiry sweep (Sweep 6). | yes |
@@ -257,6 +261,7 @@ they represent safety-critical signals.
 | `taskq.maintenance_leader.sweep_batch_size_configured` | `1` | `sweep_name` | The batch size this worker's `event_writer_batch_size` configures for each sweep; emitted at the same call site as `sweep_batch_size` so the sweep-degraded alert compares the two label-matched. |
 | `taskq.jobs.by_status` | `1` | `status` | Jobs per status, sampled by every worker. A growing `scheduled` count next to a flat `pending` count is the promotion-stall signature. |
 | `taskq.jobs.oldest_due_age_seconds` | `s` | — | Seconds since the oldest scheduled job became due for promotion. Grows monotonically while promotion is stalled. |
+| `taskq.jobs.running_lease_expired` | `1` | — | Running jobs whose lock lease is past expiry (the zombie-running shape). Healthy reads 0 — the reclaim sweep drains expired leases within a tick or two — so a sustained non-zero reading means reclaim is not draining. Sampled by every worker with `taskq.jobs.by_status`; the per-job truth (`locked_by_worker`, `lock_expires_at`) is on the admin `/jobs` lease column, not on a label. |
 | `taskq.jobs.stranded` | `1` | `actor` | Pending/scheduled jobs whose actor has no `actor_config` row and which can therefore never be dispatched, sampled by the leader. An empty reading means recovery. |
 
 ### Sweep samples: rows and duration are different populations
@@ -346,7 +351,7 @@ span does not inflate metric counts relative to a partially-sampled trace.
 The repo ships alert rules for the metrics above — import them instead of
 writing from scratch:
 
-- [`src/taskq/contrib/prometheus/rules.yaml`](https://github.com/AZX-PBC-OSS/TaskQ/blob/main/src/taskq/contrib/prometheus/rules.yaml) — 9 rules (queue depth, heartbeat misses, crashed-job rate, abandoned jobs, lock TTL, leader split-brain, dispatch latency, progress failures, disabled cron)
+- [`src/taskq/contrib/prometheus/rules.yaml`](https://github.com/AZX-PBC-OSS/TaskQ/blob/main/src/taskq/contrib/prometheus/rules.yaml) — 17 rules (queue depth, heartbeat misses, crashed-job rate, abandoned jobs, lock TTL, leader split-brain, dispatch latency, progress failures, disabled cron, scheduled-backlog growth, promotion stall, sweep timeouts, sweep degraded tier, maintenance-lock contention, rate-limit dependency outage, cron lock contention, expired-lease zombies)
 - `src/taskq/contrib/kubernetes/prometheus_rule.yaml` — the same rules as a PrometheusRule CRD for Kubernetes
 
 The operational "which metric catches which failure mode" table is in

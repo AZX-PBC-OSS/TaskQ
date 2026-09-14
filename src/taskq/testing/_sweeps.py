@@ -21,7 +21,7 @@ one input cannot mean three things across the two backends.
 """
 
 from dataclasses import replace
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 
 import structlog
@@ -173,108 +173,150 @@ async def _reclaim_expired_locks(
     batch_size: int = DEFAULT_EVENT_WRITER_BATCH_SIZE,
 ) -> int:
     # Mirrors PostgresBackend._SWEEP_1_SQL exactly, in both directions:
+    # * eligibility arms — the lease arm (lock_expires_at passed) and the
+    #   heartbeat arm (a per-job heartbeat_timeout whose holder has been
+    #   silent past it while the lease is still valid), disjoint by the
+    #   same lock_expires_at >= now exclusion the SQL's UNION ALL uses,
+    #   with NULL last_heartbeat_at never eligible (NULL + interval is
+    #   NULL in PG; the twin's None-guard mirrors it);
+    # * bounded batches — each arm transitions at most batch_size rows
+    #   per call (the SQL's per-arm LIMIT), so one call reclaims at most
+    #   2 x batch_size rows, exactly like the UNION ALL;
     # * carve-out — a job with an in-flight cancel request
     #   (cancel_phase != 0) is normally left for the cancellation
-    #   protocol to finish, but is still reclaimed once its lock has been
-    #   expired for cancel_grace + cleanup_grace + a flat 60s safety
-    #   margin (see _sweeps.py's _SWEEP_1_SQL comment) — otherwise a
-    #   worker that died mid-cancellation would never be recovered;
+    #   protocol to finish, but is still reclaimed once its arm's
+    #   deadline has been past for cancel_grace + cleanup_grace + a flat
+    #   60s safety margin (see _sweeps.py's _SWEEP_1_SQL comment) —
+    #   otherwise a worker that died mid-cancellation would never be
+    #   recovered;
     # * terminal labels — the retry branch resets cancel state (clean
     #   slate for the next dispatch); the exhausted branch lands on
     #   'cancelled' when a cancel was in-flight, 'crashed' otherwise,
-    #   while the attempt row records outcome='crashed' either way.
+    #   while the attempt row records outcome='crashed' either way;
+    # * outbox channel — both arms' events carry reason='lock_expired'
+    #   (the slice poll_reclaim_events tails) with a cause key naming
+    #   which deadline fired.
     _validate_positive("batch_size", batch_size)
     now = self._clock.now()
     deep_expiry_margin = cancel_grace + cleanup_grace + timedelta(seconds=60)
+    arm_counts: dict[str, int] = {"lock_expired": 0, "heartbeat_timeout": 0}
     count = 0
     for job_id, row in list(self._jobs.items()):
-        if count >= batch_size:
+        if all(c >= batch_size for c in arm_counts.values()):
             break
+        # The heartbeat arm's row-exact deadline, or None when the row
+        # carries no heartbeat_timeout / no heartbeat yet (NULL +
+        # interval is NULL in PG; the ternary's guard mirrors that
+        # None-propagation for the arithmetic below).
+        heartbeat_deadline: datetime | None = (
+            row.last_heartbeat_at + row.heartbeat_timeout
+            if row.last_heartbeat_at is not None and row.heartbeat_timeout is not None
+            else None
+        )
+        # One if/elif, conjuncts ordered so each None-guard precedes the
+        # arithmetic it guards — the same inline-narrowing shape the
+        # original single-conjunction predicate used.
+        cause: str | None = None
         if (
             row.status == "running"
             and row.lock_expires_at is not None
             and row.lock_expires_at < now
             and (row.cancel_phase == 0 or row.lock_expires_at < now - deep_expiry_margin)
         ):
-            duration_ms: int | None = None
-            if row.started_at is not None:
-                delta = now - row.started_at
-                duration_ms = int(delta.total_seconds() * 1000)
+            cause = "lock_expired"
+        elif (
+            row.status == "running"
+            and heartbeat_deadline is not None
+            and row.lock_expires_at is not None
+            and row.lock_expires_at >= now
+            and heartbeat_deadline < now
+            and (row.cancel_phase == 0 or heartbeat_deadline < now - deep_expiry_margin)
+        ):
+            cause = "heartbeat_timeout"
+        if cause is None or arm_counts[cause] >= batch_size:
+            continue
+        arm_counts[cause] += 1
+        duration_ms: int | None = None
+        if row.started_at is not None:
+            delta = now - row.started_at
+            duration_ms = int(delta.total_seconds() * 1000)
 
-            attempt_row = AttemptRow(
-                job_id=row.id,
-                attempt=row.attempt,
-                started_at=row.started_at if row.started_at is not None else now,
-                finished_at=now,
-                outcome="crashed",
-                error_class="WorkerCrashed",
-                error_message="lock expired before worker reported terminal state",
-                error_traceback=None,
-                duration_ms=duration_ms,
-                worker_id=row.locked_by_worker,
-                metadata={},
+        attempt_row = AttemptRow(
+            job_id=row.id,
+            attempt=row.attempt,
+            started_at=row.started_at if row.started_at is not None else now,
+            finished_at=now,
+            outcome="crashed",
+            error_class="WorkerCrashed",
+            error_message="lock expired before worker reported terminal state",
+            error_traceback=None,
+            duration_ms=duration_ms,
+            worker_id=row.locked_by_worker,
+            metadata={},
+        )
+        self._attempts.setdefault(job_id, []).append(attempt_row)
+
+        if row.attempt < row.max_attempts and row.retry_kind != "non_retryable":
+            new_scheduled = now + timedelta(seconds=5)
+            self._jobs[job_id] = replace(
+                row,
+                status="pending",
+                scheduled_at=new_scheduled,
+                locked_by_worker=None,
+                lock_expires_at=None,
+                cancel_phase=CancelPhase.NONE,
+                cancel_requested_at=None,
             )
-            self._attempts.setdefault(job_id, []).append(attempt_row)
-
-            if row.attempt < row.max_attempts and row.retry_kind != "non_retryable":
-                new_scheduled = now + timedelta(seconds=5)
-                self._jobs[job_id] = replace(
-                    row,
-                    status="pending",
-                    scheduled_at=new_scheduled,
-                    locked_by_worker=None,
-                    lock_expires_at=None,
-                    cancel_phase=CancelPhase.NONE,
-                    cancel_requested_at=None,
-                )
-                self._append_state_change_event(
-                    job_id,
-                    from_state="running",
-                    to_state="pending",
-                    now=now,
-                    worker_id=row.locked_by_worker,
-                    reason="lock_expired",
-                )
-                logger.debug(
-                    "state-change",
-                    kind="state_change",
-                    from_state="running",
-                    to_state="pending",
-                    job_id=str(job_id),
-                )
-            else:
-                # Exhausted: an in-flight cancel request makes 'cancelled'
-                # the honest terminal label (mirrors _SWEEP_1_SQL's CASE).
-                new_status = "cancelled" if row.cancel_phase != CancelPhase.NONE else "crashed"
-                # locked_by_worker/lock_expires_at are cleared on EVERY
-                # branch by _SWEEP_1_SQL's single SET clause list; the
-                # twin must match or a terminal row keeps pointing at a
-                # dead holder for every locked_by_worker-scoped reader.
-                self._jobs[job_id] = replace(
-                    row,
-                    status=new_status,
-                    finished_at=now,
-                    locked_by_worker=None,
-                    lock_expires_at=None,
-                    cancel_phase=CancelPhase.NONE,
-                    cancel_requested_at=None,
-                )
-                self._append_state_change_event(
-                    job_id,
-                    from_state="running",
-                    to_state=new_status,
-                    now=now,
-                    worker_id=row.locked_by_worker,
-                    reason="lock_expired",
-                )
-                logger.debug(
-                    "state-change",
-                    kind="state_change",
-                    from_state="running",
-                    to_state=new_status,
-                    job_id=str(job_id),
-                )
-            for event in self._wake_subscribers:
-                event.set()
-            count += 1
+            self._append_state_change_event(
+                job_id,
+                from_state="running",
+                to_state="pending",
+                now=now,
+                worker_id=row.locked_by_worker,
+                reason="lock_expired",
+                cause=cause,
+            )
+            logger.debug(
+                "state-change",
+                kind="state_change",
+                from_state="running",
+                to_state="pending",
+                job_id=str(job_id),
+            )
+        else:
+            # Exhausted: an in-flight cancel request makes 'cancelled'
+            # the honest terminal label (mirrors _SWEEP_1_SQL's CASE).
+            new_status = "cancelled" if row.cancel_phase != CancelPhase.NONE else "crashed"
+            # locked_by_worker/lock_expires_at are cleared on EVERY
+            # branch by _SWEEP_1_SQL's single SET clause list; the
+            # twin must match or a terminal row keeps pointing at a
+            # dead holder for every locked_by_worker-scoped reader.
+            self._jobs[job_id] = replace(
+                row,
+                status=new_status,
+                finished_at=now,
+                locked_by_worker=None,
+                lock_expires_at=None,
+                cancel_phase=CancelPhase.NONE,
+                cancel_requested_at=None,
+            )
+            self._append_state_change_event(
+                job_id,
+                from_state="running",
+                to_state=new_status,
+                now=now,
+                worker_id=row.locked_by_worker,
+                reason="lock_expired",
+                cause=cause,
+            )
+            logger.debug(
+                "state-change",
+                kind="state_change",
+                from_state="running",
+                to_state=new_status,
+                job_id=str(job_id),
+            )
+        for event in self._wake_subscribers:
+            event.set()
+        count += 1
     return count

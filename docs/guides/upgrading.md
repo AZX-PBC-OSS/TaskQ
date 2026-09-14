@@ -491,20 +491,25 @@ used to surface as a silently rewritten key on read-back. Dropping the flag
 is also 1.29–1.73x faster on str-keyed input (its only effect there). See
 the `taskq._json.dumps` docstring for the full reasoning.
 
-### `heartbeat_timeout` is refused at the enqueue boundary
+### `heartbeat_timeout` is enforced by the reclaim sweep
 
-> **Unreleased.** Breaking for callers passing `heartbeat_timeout` to any
-> enqueue API.
+> **Unreleased.** New enforcement for a parameter that was previously
+> accepted and silently ignored.
 
-Passing `heartbeat_timeout` to any enqueue API (`JobsClient.enqueue`, the
-`TaskQ` facade, `SubJobEnqueuer.enqueue()`) now raises `ValueError` naming
-the parameter. It was previously accepted and silently
-ignored — job reclamation is governed by the global `TASKQ_LOCK_LEASE`
-setting; no worker or reclaim sweep reads a per-job heartbeat timeout.
-Remove the parameter from call sites, or size `TASKQ_LOCK_LEASE` for the
-reclaim latency you need. The field stays on `EnqueueArgs` and on the
-stored row: write paths that build args directly — cron ticks, the testing
-helpers — never cross this boundary.
+`heartbeat_timeout`, accepted by every enqueue API (`JobsClient.enqueue`,
+the `TaskQ` facade, `SubJobEnqueuer.enqueue()` / `enqueue_batch()`), is now
+**enforced**: the leader's reclaim sweep reclaims a running job whose holder
+has been silent past the job's `heartbeat_timeout` — exactly as an expired
+lock is reclaimed, through the same crash-recovery transitions and the same
+`reason='lock_expired'` outbox channel (the event carries
+`cause='heartbeat_timeout'`) — even while the global `TASKQ_LOCK_LEASE`
+lease is still valid. Previously the value was stored and read by nothing.
+A non-positive value now raises `ValueError` at the enqueue boundary
+(mirroring `start_to_close`'s rule: a zero-or-negative timeout anchors the
+deadline in the past and would reclaim a healthy job on the first sweep
+tick). Size it `>= 2x` the fleet's `TASKQ_HEARTBEAT_INTERVAL`. The
+supporting partial index ships as migration `01.00.10_01`; fleets that set
+no `heartbeat_timeout` keep an empty index and unchanged sweep cost.
 
 ### Reservation and rate-limit denials are counters, not event rows
 

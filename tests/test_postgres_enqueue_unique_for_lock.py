@@ -9,9 +9,13 @@ three properties:
    its budget gets the typed :class:`UniqueForLockTimeoutError` -- never a
    raw asyncpg error, and never an unbounded block.
 2. Exhaustion is NOT backpressure: the error sits outside the
-   ``BackpressureError`` family and bumps no ``taskq.backpressure.errors``
-   counter -- the caller's correct response is to retry the same enqueue,
-   not to shed load.
+   ``BackpressureError`` family (the caller's correct response is to
+   retry the same enqueue, not to shed load) -- but the refusal is
+   COUNTED on ``taskq.backpressure.errors`` under its own bounded kind
+   (``unique_for_lock_timeout``), beside the warning log: a typed
+   refusal an operator can only see by reading logs is invisible at
+   3am, and the ``kind`` label keeps identity contention off the
+   capacity kinds an operator's capacity alerting keys on.
 3. The wait's correct outcome survives: once a racer acquires the lock
    after contention, the preflight either returns the winner's row (the
    dedup return the wait was for) or inserts a fresh row.
@@ -205,16 +209,17 @@ class TestUniqueForLockBoundedWaitUnit:
         assert conn.savepoint_opens == 1
         assert conn.blocking_lock_calls == 1
         assert conn.set_config_values == ["100ms"]
-        # Identity-key contention is not a capacity signal: the backpressure
-        # counter must stay untouched.
-        assert recorded == []
+        # The refusal is counted under its own bounded kind, beside the
+        # log line — never under a capacity kind, and never uncounted
+        # (a log-only refusal is invisible to an operator's alerting).
+        assert recorded == [(_UNIQUE_FOR_ACTOR, "unique_for_lock_timeout")]
 
     async def test_lock_timeout_logs_warning_event_with_budget(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """The ``unique-for-lock-timeout`` log event carries the identity
-        and the expired budget — the observability channel for an
-        exhaustion that deliberately bumps no counter."""
+        and the expired budget — the per-occurrence observability channel
+        for an exhaustion whose RATE rides the backpressure counter."""
         _spy_backpressure(monkeypatch)
         conn = _ContendedFakeConn(try_lock_result=False, blocking_times_out=True)
         with (

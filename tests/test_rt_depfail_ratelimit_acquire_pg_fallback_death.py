@@ -279,6 +279,13 @@ async def test_pg_fallback_death_acquire_does_not_burn_retry_budget() -> None:
         f"snooze write; got {len(snoozes)}"
     )
     assert snoozes[0]["outcome"] == "rate_limit_denied"
+    assert snoozes[0]["denial_reason"] == "unavailable", (
+        "the store-failure denial must route to the NON-consuming snooze arm "
+        "(denial_reason='unavailable'): the PG fallback's death is "
+        "infrastructure backpressure about a job whose actor never ran, so the "
+        "claim's attempt increment is refunded and no terminal arm can fire — "
+        "a 'capacity' reason would burn the job's retry budget for the outage."
+    )
     assert snoozes[0]["metadata_update"] == {
         "awaiting": "rate_limit:unavailable:PostgresConnectionError"
     }, (
@@ -331,6 +338,13 @@ async def test_no_pool_fallback_acquire_does_not_burn_retry_budget() -> None:
         f"snooze write; got {len(snoozes)}"
     )
     assert snoozes[0]["outcome"] == "rate_limit_denied"
+    assert snoozes[0]["denial_reason"] == "unavailable", (
+        "the store-failure denial must route to the NON-consuming snooze arm "
+        "(denial_reason='unavailable'): an unwired fallback store is "
+        "infrastructure backpressure about a job whose actor never ran, so the "
+        "claim's attempt increment is refunded and no terminal arm can fire — "
+        "a 'capacity' reason would burn the job's retry budget for the outage."
+    )
     assert snoozes[0]["metadata_update"] == {
         "awaiting": "rate_limit:unavailable:RateLimitDependencyUnavailable"
     }, (

@@ -28,10 +28,12 @@ from taskq._json import dumps as _json_dumps
 from taskq.backend._protocol import (
     AttemptRow,
     CancelPhase,
+    DenialReason,
     ErrorInfo,
     JobId,
     JobRow,
     SnoozeOutcome,
+    validate_denial_reason,
     validate_snooze_outcome,
 )
 from taskq.constants import MIN_DEFERRAL_INTERVAL
@@ -617,14 +619,18 @@ async def _mark_snoozed(
     progress_state: dict[str, object] | None = None,
     outcome: SnoozeOutcome = "snoozed",
     attempt: int | None = None,
+    denial_reason: DenialReason = "capacity",
 ) -> Literal["scheduled", "failed", "failed:MaxAttemptsExceeded", "noop"]:
     # Caller-input validation precedes the state fence, matching the PG
     # terminal's order (its guard runs before the fencing UPDATE): an
     # illegal outcome raises loudly whatever the job's state — the same
     # ValueError, from the same shared validator, the PG boundary
     # raises — never silently degrading to the "noop" a fenced-out
-    # write would return.
+    # write would return. denial_reason gets the same boundary check
+    # for the same reason: an illegal reason must not silently fall
+    # into one arm's budget semantics.
     validate_snooze_outcome(outcome)
+    validate_denial_reason(denial_reason)
     row = self._jobs.get(job_id)
     # Attempt-epoch conjunct — see _mark_succeeded's guard comment; a
     # fenced-out epoch returns "noop" through the same machinery as the
@@ -705,9 +711,14 @@ async def _mark_snoozed(
     # (outcome 'snoozed') never reaches this gate: its budget is
     # refunded below.  A job carrying schedule_to_close reschedules until
     # its deadline (its own terminal exit); an indefinite job reschedules
-    # by policy.
+    # by policy.  An 'unavailable' denial never reaches it either: the
+    # store's failure to answer is infra backpressure about a job whose
+    # actor never ran, so it can never terminalise — it takes the
+    # non-consuming snooze arm below (mirroring the SQL arms' $9
+    # predicates).
     if (
         outcome in ("reservation_denied", "rate_limit_denied")
+        and denial_reason != "unavailable"
         and row.attempt >= row.max_attempts
         and row.retry_kind != "indefinite"
         and (row.schedule_to_close is None)
@@ -774,7 +785,10 @@ async def _mark_snoozed(
     # actor-requested deferral REFUNDS the claim's attempt increment
     # (floored at 0) so downstream-429 snoozing is unbounded and never
     # walks the column; an admission denial leaves the increment
-    # standing (budget-bounded backpressure).  The outcome-keyed
+    # standing (budget-bounded backpressure) — unless the store could
+    # not answer ('unavailable': infra backpressure about a job that
+    # never executed, refunded exactly like the actor-requested
+    # deferral, mirroring the SQL arm's $9 CASE).  The outcome-keyed
     # counters on the row are the deferral's whole durable record,
     # mirroring the SQL arms' CASE increments.
     self._jobs[job_id] = replace(
@@ -785,7 +799,11 @@ async def _mark_snoozed(
         locked_by_worker=None,
         lock_expires_at=None,
         last_heartbeat_at=None,
-        attempt=max(row.attempt - 1, 0) if outcome == "snoozed" else row.attempt,
+        attempt=(
+            max(row.attempt - 1, 0)
+            if outcome == "snoozed" or denial_reason == "unavailable"
+            else row.attempt
+        ),
         snooze_count=row.snooze_count + (1 if outcome == "snoozed" else 0),
         rate_limit_blocked_count=row.rate_limit_blocked_count
         + (1 if outcome in ("reservation_denied", "rate_limit_denied") else 0),

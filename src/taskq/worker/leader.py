@@ -274,10 +274,22 @@ class MaintenanceLeader:
         re-fetches a fresh credential rather than falling back to a
         stale/absent DSN. Falls back to ``open_dedicated_conn`` with the
         DSN only when no factory is available.
+
+        The factory call is bounded by ``settings.reload_factory_timeout``
+        — the SAME bound the notify reconnect loop, the bootstrap opens,
+        and the reload path apply to every factory call. Unbounded, a hung
+        token endpoint parks the election loop past every staleness
+        budget and the in-worker watchdog force-exits the whole worker
+        instead of this loop's own retry/backoff handling it; the bound's
+        exhaustion IS the loop's ordinary factory-failure path (logged,
+        heartbeat-interval backoff, retry).
         """
         factory = self._deps.leader_conn_factory
         if factory is not None:
-            conn = await factory()
+            conn = await asyncio.wait_for(
+                factory(),
+                timeout=float(self._deps.settings.reload_factory_timeout),
+            )
             # Why: the factory path bypasses open_dedicated_conn, so the
             # worker's keepalive policy must be applied here - the factory
             # owns the credential, TaskQ owns the socket policy.
@@ -305,10 +317,18 @@ class MaintenanceLeader:
         Uses ``deps.leader_conn_factory`` when set so the same credential
         source is used for all leader connections. Falls back to
         ``open_dedicated_conn`` with the DSN otherwise.
+
+        The factory call is bounded by ``settings.reload_factory_timeout``,
+        exactly as ``_open_leader_conn`` bounds it — the election loop's
+        callers already treat any factory failure (including this
+        TimeoutError) as retry-with-backoff, never a crash.
         """
         factory = self._deps.leader_conn_factory
         if factory is not None:
-            conn = await factory()
+            conn = await asyncio.wait_for(
+                factory(),
+                timeout=float(self._deps.settings.reload_factory_timeout),
+            )
             apply_keepalive_to_conn(conn, label=label)
             return conn
         dsn = self._deps.settings.pg_dsn_direct

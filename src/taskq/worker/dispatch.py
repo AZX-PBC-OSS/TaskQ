@@ -14,7 +14,7 @@ direction.
 
 import asyncio
 import time
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from contextlib import AsyncExitStack
 from datetime import timedelta
 from typing import TYPE_CHECKING, cast
@@ -157,7 +157,11 @@ async def dispatch_one_job(
        dedicated slot pool when one is open (the per-slot path), else
        the LOOP-scope connection, else none (autonomous consume). An
        acquire failure raises :class:`SlotPoolAcquireError` before any
-       span or metric exists: infrastructure, not a job outcome.
+       span or metric exists: infrastructure, not a job outcome. On the
+       per-slot path the acquired connection also shadows the
+       LOOP-registered ``asyncpg.Connection`` for the actor invocation
+       (``loop_slot_values``), so the actor's own writes join this job's
+       transaction and concurrent slots never share a connection.
     2. Create the CONSUMER span with link to the PRODUCER span.
     3. Validate the payload against actor_ref's payload schema.
     4. Build the interim JobContext with the CONSUMER span.
@@ -218,11 +222,18 @@ async def dispatch_one_job(
     # acquire precedes the span/metrics block on purpose: a job that
     # cannot acquire is infrastructure, not a job outcome, so it must
     # produce no consumer span and no consumed-message record. The
-    # registered LOOP-scope connection stays untouched here — it is
-    # still what actors receive by DI injection.
+    # slot connection is also what the actor receives: it shadows the
+    # LOOP-scope cache for this actor invocation (loop_slot_values
+    # below), so an actor's own writes join THIS job's transaction and
+    # a registered LOOP-scope connection is never shared across
+    # concurrent slots' actors (issue #116). The registered LOOP-scope
+    # connection itself stays untouched — every non-actor reader
+    # (bootstrap's activation check, the loop-level enqueuer's
+    # provenance inference) still resolves it from the LOOP cache.
     async with AsyncExitStack() as conn_stack:
         job_enqueuer: SubJobEnqueuer = enqueuer
         transaction_conn: ConnLike | None = None
+        actor_loop_slot_values: Mapping[type, object] | None = None
         if deps.slot_pool is not None:
             slot_pool = deps.slot_pool
             acquire_timeout = deps.settings.dispatcher_command_timeout
@@ -241,6 +252,17 @@ async def dispatch_one_job(
                 )
                 raise SlotPoolAcquireError(acquire_timeout=acquire_timeout) from exc
             transaction_conn = acquired
+            # Per-slot LOOP-scope semantics for the actor: the slot
+            # connection shadows the LOOP-registered asyncpg.Connection
+            # for this invocation (build_actor_scope wraps the LOOP
+            # container in a LoopScopeSlotView). The actor's writes then
+            # join this job's transaction on this connection, and two
+            # concurrent slots' actors can never interleave operations
+            # on one connection — asyncpg permits one operation per
+            # connection, so the shared shape raised InterfaceError
+            # inside healthy actors and burned their retry budget
+            # (issue #116).
+            actor_loop_slot_values = {asyncpg.Connection: transaction_conn}
 
             async def _release_slot_conn(
                 # Why default-arg binding for pool/conn: the release must
@@ -401,6 +423,7 @@ async def dispatch_one_job(
                         actor_func=actor_ref.fn,  # type: ignore[arg-type]  # Why: actor_ref.fn is Callable[..., object] (covers both sync and async); build_actor_scope expects Callable[..., Awaitable[object]] for DI resolution but never calls the function — sync-vs-async dispatch is handled later via actor_ref.is_sync
                         actor_name=actor_ref.name,
                         passthrough_kwargs=passthrough_kwargs,
+                        loop_slot_values=actor_loop_slot_values,
                     ) as resolved:
 
                         async def run_actor_with_di(

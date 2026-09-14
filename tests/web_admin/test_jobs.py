@@ -809,3 +809,108 @@ def test_pagination_links_survive_an_empty_cursor_value(stub_pool: _StubPool) ->
     )
 
     assert any("cursor_dir=next" in href and "cursor_at=&" in href for href in links), links
+
+
+# ── Live-tab lease state: the zombie-running shape is visible ────────────
+
+
+def _live_row(**overrides: Any) -> dict[str, Any]:
+    """One live-tab row carrying the lock columns the lease cell reads."""
+    row: dict[str, Any] = {
+        "id": "abc-123",
+        "actor": "send_email",
+        "queue": "default",
+        "status": "running",
+        "created_at": "2025-01-01T12:00:00",
+        "scheduled_at": "2025-01-01T12:00:00",
+        "started_at": "2025-01-01T12:00:01",
+        "finished_at": None,
+        "duration_ms": None,
+        "attempt": 1,
+        "max_attempts": 3,
+        "priority": 5,
+        "identity_key": None,
+        "fairness_key": None,
+        "progress_state": None,
+        "error_message": None,
+        "locked_by_worker": str(new_uuid()),
+        "lock_expires_at": "2025-01-01T12:01:00",
+        "lease_expired": False,
+    }
+    row.update(overrides)
+    return row
+
+
+def _render_live_table(stub_pool: _StubPool, jobs: list[dict[str, Any]]) -> str:
+    """Render the jobs table partial on the live tab with *jobs*."""
+    return _render_job_table(stub_pool, tab="live", jobs=jobs, statuses=["running"])
+
+
+def test_live_jobs_list_fetches_the_lease_columns() -> None:
+    """The live-tab list query must fetch ``lock_expires_at`` and compute
+    ``lease_expired`` server-side (the DB clock wrote the lease; the row's
+    expired-ness is a stored predicate, not a Python-clock guess)."""
+    from taskq.web.admin.jobs import _LIVE_COLS
+
+    cols = _LIVE_COLS.lower()
+    assert "lock_expires_at" in cols, (
+        "the live /jobs list must fetch lock_expires_at — a lease the page "
+        "never selects can never be rendered"
+    )
+    assert "lease_expired" in cols, (
+        "the live /jobs list must compute lease_expired server-side against "
+        "the database clock — comparing the row's timestamptz in Python mixes "
+        "clock domains on the one field where 'past' is the whole signal"
+    )
+
+
+def test_live_jobs_table_renders_lease_column_with_expired_badge(
+    stub_pool: _StubPool,
+) -> None:
+    """A running row whose lease is past renders the lease state — expiry
+    time plus the holding worker, with the expired state marked visually,
+    following the status-badge pattern.
+
+    The zombie shape (running, lease past, row still running) is exactly
+    what the admin page must surface: without the lease column, an
+    operator staring at /jobs sees a healthy running job.
+    """
+    worker_id = str(new_uuid())
+    expired_row = _live_row(
+        locked_by_worker=worker_id, lock_expires_at="2025-01-01T12:00:30", lease_expired=True
+    )
+    healthy_row = _live_row(lease_expired=False)
+
+    html = _render_live_table(stub_pool, [expired_row, healthy_row])
+
+    assert "Lease" in html, "the live tab must carry a Lease column"
+    assert worker_id in html, (
+        "the holding worker must render — which worker holds the stuck lease "
+        "is the first question at 3am"
+    )
+    assert "expired" in html, (
+        "an expired lease must be visually distinct from a live one — the "
+        "zombie shape must not read as a healthy running job"
+    )
+    # The healthy row shows its lease time without the expired marking.
+    healthy_cell_marker = ">12:01:00<" in html or "12:01:00" in html
+    assert healthy_cell_marker, "a healthy running row must show its lease expiry"
+
+
+def test_live_jobs_table_non_running_rows_have_no_lease_state(
+    stub_pool: _StubPool,
+) -> None:
+    """Pending/terminal rows hold no lease — their lease cell renders the
+    same muted dash every other empty cell uses, not a badge."""
+    pending_row = _live_row(status="pending", lease_expired=False)
+    pending_row.pop("locked_by_worker")
+    pending_row.pop("lock_expires_at")
+    pending_row.pop("lease_expired")
+
+    html = _render_live_table(stub_pool, [pending_row])
+
+    assert "Lease" in html
+    assert "expired" not in html.replace("Lease", ""), (
+        "a row that holds no lease must not render an expired badge — the "
+        "badge means a running row's lease is past, nothing else"
+    )

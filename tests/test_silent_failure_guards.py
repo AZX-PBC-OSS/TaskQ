@@ -121,41 +121,50 @@ def otel_reader(monkeypatch: pytest.MonkeyPatch) -> InMemoryMetricReader:
 
 
 class TestHeartbeatTimeoutIsNotSilentlyDiscarded:
-    """Contract chosen: **refused loudly**.
+    """Contract chosen: **enforced** (direction (a) — the reclamation
+    contract the original refusal docstring named as the alternative).
 
-    ``heartbeat_timeout`` is enforced NOWHERE — it appears zero times
-    under ``src/taskq/worker/``, in no dispatch path and in no sweep
-    path.  Reclamation is driven exclusively by the GLOBAL ``lock_lease``
-    (``settings.py:822``, applied at ``_dispatch_sql.py:50-51``, ``:172``).
+    ``heartbeat_timeout`` was once enforced NOWHERE — accepted on the
+    public API, stored on the row, and read by nothing — and the interim
+    contract this suite pinned was refusal at the enqueue boundary. The
+    project has since chosen the other acceptable contract: the leader's
+    reclaim sweep reclaims a running job whose holder has been silent
+    past its per-job ``heartbeat_timeout`` (pinned against PG and the
+    in-memory twin in ``tests/test_heartbeat_timeout_enforced.py``, the
+    reclamation test this suite's original docstring specified as the
+    replacement).
 
-    Of the two acceptable contracts — (a) a per-job ``heartbeat_timeout``
-    actually affects reclamation, or (b) setting it is refused loudly —
-    this suite pins (b): the parameter is unimplemented, so accepting it
-    silently is the bug.  A caller that sets a 10-second heartbeat
-    timeout and gets the 60-second global lease instead has no way to
-    learn that from the library.  A documented no-op is not a contract.
-
-    If the project later chooses contract (a) instead, this suite should
-    be replaced by a reclamation test, not weakened.
+    What must never return is the SILENT discard: a caller that sets a
+    10-second heartbeat timeout and gets the 60-second global lease
+    instead has no way to learn that from the library. Under direction
+    (a) that guard is "the value reaches the stored row the sweep
+    reads" — an enqueue that drops it would silently revert the caller
+    to lease-only reclamation with no signal.
     """
 
-    async def test_enqueue_with_heartbeat_timeout_is_refused(self) -> None:
-        """Setting an unenforced per-job heartbeat_timeout must raise."""
+    async def test_enqueue_with_heartbeat_timeout_is_carried_to_the_row(self) -> None:
+        """The value must reach the stored row — the row the reclaim
+        sweep's heartbeat arm reads. An enqueue that dropped it would
+        silently revert the caller to global-lease-only reclamation."""
         backend = InMemoryBackend(clock=FakeClock(_NOW))
         enqueuer = _make_enqueuer(backend)
 
-        with pytest.raises(
-            (ValueError, NotImplementedError),
-            match="heartbeat_timeout",
-        ):
-            await enqueuer.enqueue(
-                _make_actor_ref(),
-                _Payload(),
-                heartbeat_timeout=timedelta(seconds=10),
-            )
+        handle = await enqueuer.enqueue(
+            _make_actor_ref(),
+            _Payload(),
+            heartbeat_timeout=timedelta(seconds=10),
+        )
+        row = await backend.get(handle.job_id)
+        assert row is not None, "enqueue returned a handle for a row the backend cannot read"
+        assert row.heartbeat_timeout == timedelta(seconds=10), (
+            f"heartbeat_timeout was silently discarded on the way to the row "
+            f"(got {row.heartbeat_timeout!r}) — the reclaim sweep reads the "
+            "stored column, so the caller's per-job liveness promise would "
+            "silently no-op."
+        )
 
     async def test_enqueue_without_heartbeat_timeout_still_works(self) -> None:
-        """The refusal is scoped to the unenforced parameter only."""
+        """The parameter is opt-in: no value, no per-job deadline."""
         backend = InMemoryBackend(clock=FakeClock(_NOW))
         enqueuer = _make_enqueuer(backend)
 

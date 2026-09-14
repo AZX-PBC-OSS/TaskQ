@@ -66,6 +66,7 @@ from taskq.worker._leader_shared import (
 )
 from taskq.worker._leader_sweeps import (
     _QUERY_OLDEST_DUE_AGE_SQL_TEMPLATE,  # pyright: ignore[reportPrivateUsage]  # Why: same as above — pin the production statement, not a copy.
+    _QUERY_RUNNING_LEASE_EXPIRED_SQL_TEMPLATE,  # pyright: ignore[reportPrivateUsage]  # Why: same — the zombie-running gauge's exact statement.
 )
 
 pytestmark = pytest.mark.integration
@@ -323,6 +324,48 @@ async def audit_schema(pg_dsn: str) -> Any:
             ],
             records=running,
         )
+        # Heartbeat-configured running slice (nothing eligible — every
+        # heartbeat fresh, every lease future): the steady-state
+        # population of the heartbeat arm's partial index
+        # (jobs_running_heartbeat_deadline_idx), whose every-tick cost
+        # the arm's plan pin asserts stays index-bounded. A distinct
+        # actor names the slice so the single UPDATE below can set
+        # heartbeat_timeout on exactly these rows.
+        heartbeat_running = [
+            (
+                new_uuid(),
+                "live.heartbeat",
+                "default",
+                '{"v": 1}',
+                "running",
+                future(600 + i),
+                now - timedelta(seconds=i % 30),
+                3,
+                "transient",
+            )
+            for i in range(500)
+        ]
+        await conn.copy_records_to_table(
+            "jobs",
+            schema_name=schema,
+            columns=[
+                "id",
+                "actor",
+                "queue",
+                "payload",
+                "status",
+                "lock_expires_at",
+                "last_heartbeat_at",
+                "max_attempts",
+                "retry_kind",
+            ],
+            records=heartbeat_running,
+        )
+        await conn.execute(
+            f'UPDATE "{schema}".jobs '  # Why: fixed actor literal — no user input, nothing to $-bind.
+            "SET heartbeat_timeout = interval '30 seconds' "
+            "WHERE actor = 'live.heartbeat' AND status = 'running'"
+        )
         scheduled = [
             (
                 new_uuid(),
@@ -558,6 +601,41 @@ async def test_sweep_1_snap_is_index_bounded(audit_schema: Any, pg_dsn: str) -> 
         await conn.close()
 
 
+async def test_sweep_1_heartbeat_arm_is_index_bounded(audit_schema: Any, pg_dsn: str) -> None:
+    """Sweep 1's heartbeat arm (the per-job ``heartbeat_timeout``
+    disjunct) must seek jobs_running_heartbeat_deadline_idx — partial on
+    ``status='running' AND heartbeat_timeout IS NOT NULL`` — with
+    ``last_heartbeat_at < statement_timestamp()`` as an Index Cond.
+
+    The row-exact deadline (``last_heartbeat_at + heartbeat_timeout``)
+    cannot be an index condition (the bound is row-dependent, and
+    timestamptz+interval is STABLE so no expression index exists), so
+    the arm's necessary condition — a heartbeat at all in the past — is
+    stated explicitly to give the partial index its range bound, and the
+    ORDER BY last_heartbeat_at pins the scan to that index's key order
+    (the ORDER-BY-pins-the-scan rule the sibling sweeps follow). Without
+    the index the OR's second arm degrades every sweep tick to a filter
+    over the whole running set — the exact whole-table-walk class this
+    audit family exists to prevent."""
+    schema, _ = audit_schema
+    conn = await asyncpg.connect(pg_dsn)
+    try:
+        plan = await _explain(
+            conn,
+            _SWEEP_1_SQL.format(schema=schema),
+            timedelta(seconds=30),
+            timedelta(seconds=10),
+            100,
+        )
+        _assert_index_cond(
+            plan,
+            "jobs_running_heartbeat_deadline_idx",
+            "(last_heartbeat_at < statement_timestamp())",
+        )
+    finally:
+        await conn.close()
+
+
 async def test_sweep_2_snap_is_index_bounded(audit_schema: Any, pg_dsn: str) -> None:
     schema, _ = audit_schema
     conn = await asyncpg.connect(pg_dsn)
@@ -675,6 +753,29 @@ async def test_backlog_oldest_due_age_sampler_is_index_bounded(
             plan,
             "jobs_scheduled_wake_idx",
             "(scheduled_at <= statement_timestamp())",
+        )
+    finally:
+        await conn.close()
+
+
+async def test_backlog_running_lease_expired_sampler_is_index_bounded(
+    audit_schema: Any, pg_dsn: str
+) -> None:
+    """The zombie-running detector's count must seek
+    jobs_running_lock_expires_idx (partial on status='running', keyed on
+    lock_expires_at) with the expiry bound as an Index Cond — the same
+    two-clock rule as every sibling sampler: a VOLATILE
+    clock_timestamp() bound cannot be a btree index condition, so it
+    would degrade to a post-scan Filter walking the whole running
+    population per worker, per interval."""
+    schema, _ = audit_schema
+    conn = await asyncpg.connect(pg_dsn)
+    try:
+        plan = await _explain(conn, _QUERY_RUNNING_LEASE_EXPIRED_SQL_TEMPLATE.format(schema=schema))
+        _assert_index_cond(
+            plan,
+            "jobs_running_lock_expires_idx",
+            "(lock_expires_at < statement_timestamp())",
         )
     finally:
         await conn.close()

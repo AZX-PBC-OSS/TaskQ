@@ -49,6 +49,7 @@ from taskq.backend._protocol import (
     BulkCancelResult,
     CancelFlag,
     CancelPhase,
+    DenialReason,
     EnqueueArgs,
     ErrorInfo,
     EventRow,
@@ -634,6 +635,7 @@ class InMemoryBackend:
         progress_state: dict[str, object] | None = None,
         outcome: SnoozeOutcome = "snoozed",
         attempt: int | None = None,
+        denial_reason: DenialReason = "capacity",
     ) -> Literal["scheduled", "failed", "failed:MaxAttemptsExceeded", "noop"]:
         return await _mark_snoozed(
             self,
@@ -645,6 +647,7 @@ class InMemoryBackend:
             progress_state=progress_state,
             outcome=outcome,
             attempt=attempt,
+            denial_reason=denial_reason,
         )
 
     async def mark_retry_after(
@@ -759,11 +762,31 @@ class InMemoryBackend:
         row = self._jobs.get(job_id)
         if row is None or row.status not in ("failed", "crashed", "cancelled"):
             return False
+        # Monotonic attempt with the ceiling raised just enough to open
+        # the budget gates, mirroring the PG statement's
+        # LEAST(GREATEST(max_attempts, attempt + 1), 32767) (the vendored
+        # admin-retry precedent: Oban's retry_job and River's JobRetry
+        # never reset the counter). A re-run climbs to fresh attempt
+        # numbers — the twin's dispatch claim stamps attempt + 1 — so no
+        # attempt-row writer can revisit a spent epoch's key. At the
+        # smallint bound the ceiling cannot rise further and the retry
+        # is refused — the row stays terminal — rather than re-pending
+        # a job the next claim could only overflow.
+        raised_ceiling = min(max(row.max_attempts, row.attempt + 1), 32767)
+        if raised_ceiling <= row.attempt:
+            return False
         self._jobs[job_id] = replace(
             row,
             status="pending",
-            attempt=0,
+            max_attempts=raised_ceiling,
             cancel_phase=CancelPhase.NONE,
+            # The whole cancel trail goes with the spent epoch, mirroring
+            # the PG SET clause's cancel_requested_at = NULL: the TERMINAL
+            # writes deliberately keep the cancel columns as the audit
+            # trail of why the job ended, and a re-run must not inherit
+            # that trail — the next attempt's cancel protocol starts at
+            # phase 0 with no request stamp.
+            cancel_requested_at=None,
             error_class=None,
             error_message=None,
             error_traceback=None,

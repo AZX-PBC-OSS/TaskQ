@@ -157,7 +157,7 @@ Serialises the payload through `ref.payload_type`, enqueues the job, and returns
 | `priority` | `int \| None` | `None` | Dispatch priority. Higher values are dispatched first within the same queue. |
 | `schedule_to_close` | `datetime \| None` | derived from `retry.time_budget` | **Deprecated** (emits `DeprecationWarning`): an absolute datetime crosses clock domains (the app clock that produced it vs the database clock that evaluates it) and can misbehave under skew. Declare `retry.time_budget` on the actor instead — the interval form is anchored to the database clock. When supplied (timezone-aware; naive raises `ValueError`) it overrides the `time_budget`-derived interval. Hard deadline: if the job has not reached a terminal state by this datetime it fails with `DeadlineExceeded`. |
 | `start_to_close` | `timedelta \| None` | `None` | Per-attempt execution timeout measured from when the worker locks the job, enforced via `asyncio.wait_for` around the actor invocation. Distinct from `schedule_to_close` — see [`start_to_close` vs `schedule_to_close`](retries.md#7-start_to_close-vs-schedule_to_close) for the precedence chain and full explanation. |
-| `heartbeat_timeout` | `timedelta \| None` | `None` | **Refused**: a non-`None` value raises `ValueError` — per-job heartbeat enforcement is not implemented (the parameter was previously accepted and silently ignored), and a running job is reclaimed only when the global `TASKQ_LOCK_LEASE` expires. Remove it from call sites. |
+| `heartbeat_timeout` | `timedelta \| None` | `None` | Per-job holder-liveness promise, enforced by the leader's reclaim sweep: a running job whose holder has been silent (no heartbeat) past this timeout is crash-reclaimed even while its global `TASKQ_LOCK_LEASE` is still valid — the shorter of the two deadlines governs. Must be `> 0` (a zero-or-negative value anchors the deadline in the past and reclaims a healthy job on the first sweep tick). Size it `>= 2x` the fleet's `TASKQ_HEARTBEAT_INTERVAL` — the per-job analogue of the `lock_lease >= 4 x heartbeat_interval` invariant (see [workers.md](workers.md)). The reclaim event rides the existing `reason='lock_expired'` outbox channel with `cause='heartbeat_timeout'`. |
 | `identity_key` | `IdentityKey \| None` | `None` | Opaque string identifying the logical entity this job belongs to (e.g. `"account:42"`). Required for `unique_for` deduplication to take effect. Also used for fairness scheduling. |
 | `fairness_key` | `str \| None` | `None` | Partitions the dispatch order so no single key monopolises the queue. **Requires the target queue to be in `round_robin` mode** (`taskq queues set-mode <queue> round_robin`); on the default `strict_fifo` the key is stored and ignored. See [workers.md](workers.md#queue-dispatch-modes). |
 | `idempotency_key` | `IdempotencyKey \| None` | `None` | String preventing duplicate insertion, unique within its `idempotency_scope`. See [Idempotency key](#idempotency_key). |
@@ -1281,18 +1281,20 @@ by application code. For actor-side usage see [Actor API — Sub-job enqueuing](
 !!! warning "Transactional sub-enqueue: session state, not concurrency, is the constraint"
     Sub-enqueues join the actor's transaction only when a LOOP-scope `asyncpg.Connection` is
     registered in DI. With `max_concurrency > 1` the worker opens a dedicated per-slot
-    transaction pool and each job transacts on its own connection, so the transactional path is
-    correct at any concurrency (the startup event `transactional_consume_per_slot` announces
-    the mode). Two consequences to know: TaskQ's own transactional writes (the terminal write,
-    transactional sub-enqueues) run on the slot connections while actors still receive the
-    registered LOOP-scope connection — if that connection carries session state (`SET ROLE`,
-    `search_path`, an RLS-driving GUC) that TaskQ's writes were expected to inherit, run the
-    transactional actor on a `TASKQ_MAX_CONCURRENCY=1` worker, where the writes keep using the
-    registered connection — and the per-slot pool costs `max_concurrency + 1` direct
-    connections, so the single-slot worker is also the minimal-connection-budget shape. Without
-    a LOOP-scope connection (the default worker), `ctx.jobs` commits each child immediately
-    through the worker pool (autonomous mode; the startup log warns
-    `sub_enqueue_autonomous_fallback`). See
+    transaction pool, each job transacts on its own connection, and the actor receives that
+    same slot connection by injection — its own writes join the transaction, and concurrent
+    slots never share a connection, so the transactional path is correct at any concurrency
+    (the startup event `transactional_consume_per_slot` announces the mode). Two consequences
+    to know: the actor's transactional writes run on the slot connections — fresh direct-DSN
+    connections that never carried the registered LOOP-scope connection's session state
+    (`SET ROLE`, `search_path`, an RLS-driving GUC) — so writes that must inherit that state
+    belong on a `TASKQ_MAX_CONCURRENCY=1` worker, where the transaction and the actor's
+    injected connection keep using the registered connection — and the per-slot pool costs
+    `max_concurrency + 1` direct connections, so the single-slot worker is also the
+    minimal-connection-budget shape. Without a LOOP-scope `Connection` (the default worker —
+    including a LOOP-scope `asyncpg.Pool` registration, which does not activate the
+    transactional path), `ctx.jobs` commits each child immediately through the worker pool
+    (autonomous mode; the startup log warns `sub_enqueue_autonomous_fallback`). See
     [ops.md — Fan-out at scale](ops.md#5-fan-out-at-scale-chunks-cursors-idempotency) for the
     consequences for chaining patterns.
 
@@ -1372,8 +1374,9 @@ set per-item tags explicitly.
 
 `schedule_to_close` and `start_to_close` override the actor's declared defaults for
 this specific sub-job. `heartbeat_timeout` has no actor-level declaration and is
-**refused**: passing it raises `ValueError` — it is not enforced, and reclamation is
-governed by the global `TASKQ_LOCK_LEASE`. Note that `schedule_to_close` bounds total
+call-site-only: it sets this sub-job's holder-liveness promise, enforced by the
+leader's reclaim sweep (a holder silent past it is crash-reclaimed even while the
+global `TASKQ_LOCK_LEASE` is still valid). Note that `schedule_to_close` bounds total
 wall-clock time *including* time snoozed on `wait_for_batch` — finalizer-style
 sub-jobs that snooze for long periods should set it generously or not at all.
 

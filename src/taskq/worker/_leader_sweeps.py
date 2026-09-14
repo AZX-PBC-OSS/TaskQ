@@ -35,6 +35,7 @@ from taskq.obs import (
     update_oldest_due_age_cache,
     update_queue_depth_cache,
     update_reservation_slots_cache,
+    update_running_lease_expired_cache,
     update_stranded_jobs_cache,
 )
 from taskq.ratelimit.registry import (
@@ -601,6 +602,84 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
                                     rows_er,
                                     start,
                                 )
+                    # Fleet-wide keyed-row reclaim: ONE bounded, committed
+                    # batch per table per tick, deliberately NOT a
+                    # _drain_bounded drain — the same slow-and-constant
+                    # discipline the event-retention block above settled.
+                    # This is the fleet half of keyed reclamation: the
+                    # per-worker eviction+drain below only ever names rows
+                    # its OWN process materialised, so keyed
+                    # reservation_slots / rate_limit_buckets rows orphan
+                    # when the worker that created them dies (the #139
+                    # residual). The rows carry their own staleness — the
+                    # keyed mark plus last_used_at, refreshed by the
+                    # acquire/release/upsert statements that already touch
+                    # them — and sweep_idle_keyed_rows deletes marked rows
+                    # unused past the horizon, bounded per tick (static
+                    # buckets and redis-backend keyed rows are never
+                    # marked, never deleted). hasattr gate like the
+                    # retention block above: only PostgresBackend
+                    # implements this maintenance sweep. The period gate is
+                    # the settings-level disable sentinel: timedelta(0)
+                    # disables the sweep, and a disabled sweep acquires no
+                    # connection and logs nothing. UndefinedColumnError
+                    # rides the except below (pre-migration tolerance, the
+                    # stale-batches block's pattern): a rolling deploy runs
+                    # this code against a schema whose keyed/last_used_at
+                    # columns have not landed yet, which is a per-tick warn
+                    # until migration 01.00.10_02 (keyed_row_fleet_reclaim)
+                    # applies — not the
+                    # deliberately-fatal unexpected-error streak.
+                    if hasattr(
+                        ctx.backend, "sweep_idle_keyed_rows"
+                    ) and ctx.deps.settings.keyed_row_reclaim_period > timedelta(0):
+                        start = time.monotonic()
+                        rows_kr: int | None = None
+                        try:
+                            async with ctx.deps.dispatcher_pool.acquire(
+                                timeout=ctx.deps.settings.dispatcher_command_timeout
+                            ) as conn:
+                                rows_kr = cast(
+                                    "int",
+                                    await ctx.backend.sweep_idle_keyed_rows(  # type: ignore[reportAttributeAccessIssue]  # Why: guarded by the hasattr gate above; only PostgresBackend implements these maintenance sweeps.
+                                        conn,
+                                        schema=ctx.deps.settings.schema_name,
+                                        horizon=ctx.deps.settings.keyed_row_reclaim_period,
+                                        batch_size=ctx.deps.settings.keyed_row_reclaim_batch_size,
+                                    ),
+                                )
+                        except (
+                            *TRANSIENT_PG_ERRORS,
+                            asyncpg.exceptions.UndefinedColumnError,
+                        ) as exc:
+                            # Same transient-PG rationale as the sibling
+                            # sweeps above, plus the pre-migration
+                            # UndefinedColumnError tolerance (see the block
+                            # comment).
+                            iteration_clean = False
+                            if _is_deadline_family(exc):
+                                record_sweep_timeout("keyed_row_reclaim")
+                            log.warning(
+                                "sweep-keyed-row-reclaim-failed",
+                                kind="sweep_keyed_row_reclaim_failed",
+                                worker_id=str(ctx.worker_id),
+                                error=repr(exc),
+                            )
+                        finally:
+                            # Same rows-bound-by-the-awaited-call discipline
+                            # as every sibling sweep above: duration always,
+                            # rows and the success stamp only when the call
+                            # returned.
+                            _metric_duration("keyed_row_reclaim", start)
+                            if rows_kr is not None:
+                                _metric_rows("keyed_row_reclaim", rows_kr)
+                                record_sweep_success("keyed_row_reclaim")
+                                _dbg(
+                                    "keyed_row_reclaim_tick",
+                                    "keyed_row_reclaim_tick",
+                                    rows_kr,
+                                    start,
+                                )
                     # Stale-worker cleanup: one bounded batch per call,
                     # drained the same way. The window bounds workers per
                     # call, which bounds the DDL ON DELETE fan-out (the
@@ -747,7 +826,17 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
                 )
         if rl.has_keyed_rate_limits:
             try:
-                evicted = rl.evict_idle_keyed_rate_limits(idle_for=_KEYED_IDLE_THRESHOLD)
+                # Why max_pending_reclaims: the same settings-derived bound
+                # the reservation eviction above applies and the rate-limit
+                # opportunistic eviction already applies — the pending set
+                # mirrors the tracked entries, so the constant fallback
+                # (10 000) would let pending grow far past a deliberately
+                # small max_keyed_rate_limits while the tracked entries
+                # themselves are capped at it.
+                evicted = rl.evict_idle_keyed_rate_limits(
+                    idle_for=_KEYED_IDLE_THRESHOLD,
+                    max_pending_reclaims=ctx.deps.settings.max_keyed_rate_limits,
+                )
                 if evicted:
                     log.debug(
                         "sweep-evicted-idle-keyed-rate-limits",
@@ -1253,11 +1342,26 @@ _QUERY_OLDEST_DUE_AGE_SQL_TEMPLATE = (
     'FROM "{schema}".jobs '
     "WHERE status = 'scheduled' AND scheduled_at <= statement_timestamp()"
 )
+# statement_timestamp() (STABLE) — not clock_timestamp() (VOLATILE) — for the
+# expiry bound, the same two-clock rule as the oldest-due bound above and the
+# reclaim sweep's own predicate (backend/_sweeps.py): a volatile comparison
+# cannot be a btree index condition, so the bound would degrade
+# jobs_running_lock_expires_idx (partial on status='running', keyed on
+# lock_expires_at) from an Index Cond that terminates at the boundary to a
+# post-scan Filter walking the whole running population — per worker, per
+# interval. The zombie count is the zombie-running DETECTOR (#101): running
+# rows with a past lease are invisible in jobs.by_status (a healthy running
+# count) and in the miss counters (a dead worker emits nothing), and this one
+# statement is the direct count.
+_QUERY_RUNNING_LEASE_EXPIRED_SQL_TEMPLATE = (
+    'SELECT count(*) FROM "{schema}".jobs '
+    "WHERE status = 'running' AND lock_expires_at < statement_timestamp()"
+)
 
 
 async def _backlog_detection_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
-    """Sample the backlog detectors (jobs-by-status, oldest due age) every
-    ``queue_depth_interval``.
+    """Sample the backlog detectors (jobs-by-status, oldest due age,
+    running-lease-expired) every ``queue_depth_interval``.
 
     Why NOT leader-gated, unlike every sibling sampler here: a detector
     hosted behind the leadership gate emits nothing under the very failure
@@ -1280,25 +1384,33 @@ async def _backlog_detection_loop(ctx: SweepContext, shutdown: asyncio.Event) ->
         return
     by_status_sql = _QUERY_JOBS_BY_STATUS_SQL_TEMPLATE.format(schema=schema)
     oldest_due_sql = _QUERY_OLDEST_DUE_AGE_SQL_TEMPLATE.format(schema=schema)
+    expired_lease_sql = _QUERY_RUNNING_LEASE_EXPIRED_SQL_TEMPLATE.format(schema=schema)
     while not shutdown.is_set():
         ctx.deps.liveness.tick(
             "leader.backlog_detection", period=ctx.deps.settings.queue_depth_interval
         )
         try:
-            # One connection for both statements: the two gauges answer one
-            # question (is promotion stalled?) and must not straddle two
+            # One connection for all three statements: the gauges answer one
+            # question (is work moving?) and must not straddle two
             # snapshots.
             async with ctx.deps.dispatcher_pool.acquire(
                 timeout=ctx.deps.settings.dispatcher_command_timeout
             ) as conn:
                 status_rows = await conn.fetch(by_status_sql)
                 oldest_due: float | None = await conn.fetchval(oldest_due_sql)
+                expired_lease: int | None = await conn.fetchval(expired_lease_sql)
             update_jobs_by_status_cache(
                 {str(row["status"]): int(row["count"]) for row in status_rows}
             )
             # MIN(scheduled_at) over an empty set is NULL — nothing is due,
             # which the gauge expresses as 0.0, not as a missing sample.
             update_oldest_due_age_cache(oldest_due if oldest_due is not None else 0.0)
+            # count(*) never returns NULL; the None arm only tolerates a
+            # stubbed/aborted read, expressed as 0 for the same
+            # not-a-missing-sample reason as the age above.
+            update_running_lease_expired_cache(
+                int(expired_lease) if expired_lease is not None else 0
+            )
         except Exception as exc:
             log.warning(
                 "backlog-detection-sampling-failed",

@@ -791,7 +791,11 @@ class _HealthFakeAcquire:
 
 
 class _HealthFakePool:
-    def acquire(self) -> _HealthFakeAcquire:
+    def acquire(self, *, timeout: float | None = None) -> _HealthFakeAcquire:
+        # timeout kwarg: production's readiness probe passes the ping bound
+        # through to acquire (worker/health.py's discipline); the fake
+        # mirrors asyncpg's keyword-only signature and ignores the value —
+        # its acquire never blocks.
         return _HealthFakeAcquire()
 
     async def close(self) -> None:

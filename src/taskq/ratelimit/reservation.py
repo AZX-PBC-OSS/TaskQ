@@ -7,6 +7,18 @@ same statement. The heartbeat loop (``src/taskq/worker/heartbeat.py``)
 already extends ``reservation_slots.lease_expires_at`` in the same
 transaction as job locks; this module does not modify the heartbeat.
 
+Every row-writing statement here (ensure_slots, acquire, release) also
+stamps the fleet-reclaim bookkeeping on ``reservation_slots``: the
+``keyed`` mark (set at materialisation by
+:class:`ConcurrencyReservation`'s ``keyed`` flag) and the
+``last_used_at`` staleness stamp, refreshed by the very UPDATE/INSERT
+that already touches the row — the solid_queue Semaphore shape. The
+maintenance leader's ``sweep_idle_keyed_rows`` deletes keyed rows
+unused past the operator horizon, closing the residual where a keyed
+bucket's rows orphan when the worker that materialised them dies (the
+in-process registry bookkeeping that would otherwise name them dies
+with the process).
+
 The in-memory backend (``_InMemorySlotTable``) is the unit-test substitute for
 PG and mirrors the slot-row model as a ``dict[str, dict[int, _SlotState]]``
 where each ``(bucket_name, slot_index)`` pair is a persistent key, matching
@@ -36,12 +48,13 @@ if TYPE_CHECKING:
 logger = structlog.get_logger("taskq.ratelimit.reservation")
 
 _ENSURE_SLOTS_SQL_TEMPLATE = """\
-INSERT INTO "{schema}".reservation_slots (bucket_name, slot_index)
-SELECT $1, generate_series(0, $2 - 1)
-ON CONFLICT (bucket_name, slot_index) DO NOTHING"""
+INSERT INTO "{schema}".reservation_slots (bucket_name, slot_index, keyed, last_used_at)
+SELECT $1, generate_series(0, $2 - 1), $3, clock_timestamp()
+ON CONFLICT (bucket_name, slot_index) DO UPDATE SET keyed = EXCLUDED.keyed"""
 
 # One statement, one row, both outcomes. The acquire branch is the
-# original CTE untouched. The denial branch rides the same round trip:
+# original CTE untouched except for the last_used_at stamp. The denial
+# branch rides the same round trip:
 # ``earliest_held`` is an aggregate (exactly one row even over zero
 # matches), so the LEFT JOIN yields one row whose acquired fields are
 # NULL when nothing was acquired — the Python side reads the hint off
@@ -55,6 +68,14 @@ ON CONFLICT (bucket_name, slot_index) DO NOTHING"""
 # and the caller substitutes the flat constant. GREATEST clamps the
 # microsecond skew between the WHERE's and the SELECT's own
 # ``clock_timestamp()`` evaluations inside this one statement.
+#
+# The last_used_at stamp rides the acquired arm's UPDATE — the
+# solid_queue Semaphore shape (attempt_decrement refreshes expires_at
+# inside the very UPDATE that takes the slot): the row the acquire
+# touches is the row whose staleness must reset, with no dedicated
+# stamping round trip. Only the acquired row is stamped; the fleet
+# reclaim sweep groups by bucket and decides on max(last_used_at), so
+# one fresh slot row keeps the whole bucket live.
 _ACQUIRE_SQL_TEMPLATE = """\
 WITH free_slot AS (
     SELECT slot_index FROM "{schema}".reservation_slots
@@ -69,7 +90,8 @@ acquired AS (
     SET job_id            = $2,
         held_by_worker_id = $3,
         acquired_at       = clock_timestamp(),
-        lease_expires_at  = clock_timestamp() + $4 * INTERVAL '1 second'
+        lease_expires_at  = clock_timestamp() + $4 * INTERVAL '1 second',
+        last_used_at      = clock_timestamp()
     WHERE (bucket_name, slot_index) IN (SELECT $1, slot_index FROM free_slot)
     RETURNING slot_index, acquired_at
 ),
@@ -88,12 +110,17 @@ SELECT a.slot_index,
        END::float8 AS retry_after_seconds
 FROM earliest_held h LEFT JOIN acquired a ON true"""
 
+# The last_used_at stamp rides the release exactly as it rides the
+# acquire: the row the release frees is the row whose staleness must
+# reset (a just-released bucket is mid-workflow, not idle), and the
+# UPDATE already touches it.
 _RELEASE_SQL_TEMPLATE = """\
 UPDATE "{schema}".reservation_slots
 SET job_id            = NULL,
     held_by_worker_id = NULL,
     acquired_at       = NULL,
-    lease_expires_at  = NULL
+    lease_expires_at  = NULL,
+    last_used_at      = clock_timestamp()
 WHERE bucket_name       = $1
   AND slot_index        = $2
   AND held_by_worker_id = $3"""
@@ -424,11 +451,24 @@ class ConcurrencyReservation:
 
     Raises :class:`ValueError` if ``slots < 1`` or ``lease <= 0``.
     Raises :class:`ReservationUnavailable` when no slot is available.
+
+    ``keyed`` (default ``False``) marks a reservation materialised from a
+    :class:`~taskq.ratelimit.refs.KeyedReservationRef`: its slot rows
+    carry the fleet-reclaimable ``keyed`` flag and a ``last_used_at``
+    stamp (refreshed by this class's acquire/release/ensure statements),
+    so the maintenance leader's ``sweep_idle_keyed_rows`` can reclaim
+    them after the OWNING PROCESS dies — the in-process registry
+    bookkeeping that would otherwise name them dies with it. A
+    statically declared reservation keeps the default: its rows are
+    never fleet-reclaimable (there is no keyed lifecycle, no acquire-path
+    heal, and no re-materialisation — a sweep that deleted them would
+    leave a permanently denying limiter).
     """
 
     __slots__ = (
         "_acquire_sql",
         "_ensure_sql",
+        "_keyed",
         "_lease",
         "_lock_lease",
         "_name",
@@ -448,6 +488,7 @@ class ConcurrencyReservation:
         *,
         clock: Clock | None = None,
         schema: str = "taskq",
+        keyed: bool = False,
     ) -> None:
         if slots < 1:
             raise ValueError(f"slots must be >= 1, got {slots}")
@@ -466,6 +507,7 @@ class ConcurrencyReservation:
         self._lease = lease_td
         self._lock_lease = lock_lease
         self._schema = schema
+        self._keyed = keyed
 
         if lock_lease is not None and lease_td < lock_lease:
             logger.warning(
@@ -498,6 +540,17 @@ class ConcurrencyReservation:
         return self._schema
 
     @property
+    def keyed(self) -> bool:
+        """Whether this reservation was keyed-materialised.
+
+        Carried on the instance so the row-writing statements can stamp
+        the fleet-reclaimable mark without every call site re-deriving
+        it — the constructor is the single point that knows the
+        reservation's lifecycle origin.
+        """
+        return self._keyed
+
+    @property
     def name(self) -> str:
         return self._name
 
@@ -521,9 +574,20 @@ class ConcurrencyReservation:
         return self._table
 
     async def ensure_slots(self, pool: "asyncpg.Pool") -> None:
-        """Idempotent pre-allocation of slot rows."""
+        """Idempotent pre-allocation of slot rows.
+
+        Inserts the bucket's full slot row set with this reservation's
+        fleet-reclaimable mark and a fresh ``last_used_at``; the conflict
+        arm flips ONLY the ``keyed`` mark (never the holder/lease
+        columns — held state is untouched), so re-ensuring stays
+        idempotent while the mark always reflects the CURRENT owner:
+        a keyed materialisation (or its heal) claiming a name re-marks
+        its rows fleet-reclaimable, and a later static declaration of
+        the same name (the bootstrap's startup ensure) marks them
+        never-sweep again.
+        """
         async with pool.acquire() as conn:
-            await conn.execute(self._ensure_sql, self._name, self._slots)
+            await conn.execute(self._ensure_sql, self._name, self._slots, self._keyed)
 
     async def slot_rows_exist(self, pool: "asyncpg.Pool") -> bool:
         """Whether any ``reservation_slots`` row exists for this bucket.

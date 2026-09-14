@@ -59,6 +59,7 @@ from taskq.obs._otel import (
     record_deadline_exceeded_swept,
     record_dispatch_duration,
     record_election_attempt,
+    record_enqueue_dedup,
     record_error_reporter_failure,
     record_expired_archive_jobs,
     record_heartbeat_miss,
@@ -93,6 +94,7 @@ from taskq.obs._otel import (
     update_oldest_due_age_cache,
     update_queue_depth_cache,
     update_reservation_slots_cache,
+    update_running_lease_expired_cache,
     update_stranded_jobs_cache,
     update_sweep_batch_size_cache,
 )
@@ -140,6 +142,7 @@ __all__ = [
     "record_deadline_exceeded_swept",
     "record_dispatch_duration",
     "record_election_attempt",
+    "record_enqueue_dedup",
     "record_error_reporter_failure",
     "record_exception_safe",
     "record_expired_archive_jobs",
@@ -180,6 +183,7 @@ __all__ = [
     "update_oldest_due_age_cache",
     "update_queue_depth_cache",
     "update_reservation_slots_cache",
+    "update_running_lease_expired_cache",
     "update_stranded_jobs_cache",
     "update_sweep_batch_size_cache",
 ]

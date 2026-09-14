@@ -184,8 +184,13 @@ def _emit_sub_enqueue_startup_warnings(
             note=(
                 "no LOOP-scope asyncpg.Connection provider is "
                 "registered; ctx.jobs.enqueue will use autonomous "
-                "commit via worker_pool. Register asyncpg.Connection "
-                "at Scope.LOOP for transactional sub-job enqueue."
+                "commit via worker_pool. Register an asyncpg.Connection "
+                "at Scope.LOOP to activate transactional consume — "
+                "registering an asyncpg.Pool instead does NOT activate "
+                "it: the transactional path keys on a Connection, so a "
+                "Pool-only registration silently keeps this autonomous "
+                "fallback in force (transactional consume disabled "
+                "without a failure anywhere)."
             ),
         )
         return
@@ -307,14 +312,16 @@ async def _maybe_open_slot_pool(
 
     Activation is the sharing precondition the dispatch path would
     otherwise hit: a resolvable LOOP-scope ``asyncpg.Connection`` AND
-    ``max_concurrency > 1``. On that shape the worker's own
-    transactional writes move to per-slot connections — one transaction
-    per connection, so concurrent slots can never nest savepoints on a
-    shared one — while the registered LOOP-scope connection remains
-    what actors receive by injection. Every other shape (no LOOP-scope
-    connection, or the single-slot ``max_concurrency == 1`` worker)
-    keeps today's behaviour and this function returns ``False``
-    without touching *deps*.
+    ``max_concurrency > 1``. On that shape the worker's transactional
+    consume moves to per-slot connections — one transaction per
+    connection, so concurrent slots can never nest savepoints on a
+    shared one — and the slot connection shadows the LOOP-registered
+    connection for each actor invocation, so an actor's own writes join
+    its job's transaction and no two concurrent slots' actors ever
+    interleave operations on one connection (issue #116). Every other
+    shape (no LOOP-scope connection, or the single-slot
+    ``max_concurrency == 1`` worker) keeps today's behaviour and this
+    function returns ``False`` without touching *deps*.
 
     The open is bounded by ``reload_factory_timeout`` — building a
     fully-warmed pool means opening every connection (each a credential
@@ -369,10 +376,16 @@ async def _maybe_open_slot_pool(
             "a LOOP-scope asyncpg.Connection is registered and max_concurrency > 1: "
             "transactional consume runs per-slot on a dedicated direct-DSN pool — "
             "one connection per consumer slot plus one reserved for the readiness "
-            "probe, fully warmed at boot. TaskQ's own transactional writes (the "
-            "terminal write, transactional sub-enqueues) use these slot connections; "
-            "the registered LOOP-scope connection remains what actors receive by "
-            "injection."
+            "probe, fully warmed at boot. Every job's actor receives its own slot "
+            "connection — the connection that job's transaction runs on — so the "
+            "actor's own writes, the terminal write, and transactional sub-enqueues "
+            "all join one transaction per job, and concurrent slots can never "
+            "interleave operations on one connection (asyncpg permits one "
+            "operation per connection). The registered LOOP-scope connection is "
+            "this mode's activation signal; it remains the transaction connection "
+            "only on a max_concurrency=1 worker — the one shape whose writes "
+            "inherit that connection's session state (SET ROLE, search_path, an "
+            "RLS-driving GUC)."
         ),
     )
     if caller_supplied_pg_pools and pg_credential_provider is None:
@@ -1176,9 +1189,10 @@ async def _main(
         # config (the public register() rejects names in the reserved
         # queue-cap namespace to prevent user shadowing). sync_slots
         # (not ensure_slots) is used so that BOTH growing AND shrinking a
-        # cap take effect on restart — ensure_slots is purely additive
-        # (INSERT ... ON CONFLICT DO NOTHING) and could never remove
-        # excess slots, so lowering max_concurrent was a silent no-op.
+        # cap take effect on restart — ensure_slots can never remove
+        # excess slots (its conflict arm only flips the fleet-reclaim
+        # keyed mark; INSERT ... ON CONFLICT otherwise) so lowering
+        # max_concurrent was a silent no-op.
         # sync_slots inserts missing slots, deletes excess free slots, and
         # skips held slots (reporting them) — a strict superset of
         # ensure_slots, so initial registration works identically.

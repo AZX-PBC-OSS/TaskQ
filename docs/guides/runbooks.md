@@ -214,6 +214,81 @@ Extra workers consume `pending` jobs faster but promote nothing.
 
 ---
 
+## TaskQRateLimitDependencyOutage
+
+**What fired.** `rate(taskq_ratelimit_acquire_dependency_failures_total[5m]) > 0` for 5 minutes: rate-limit acquires are failing because the limiter's store — Redis, or the PG fallback behind it — could not answer, and the worker failed the acquire closed as a denial. Every rate-limited dispatch is snoozing while the outage lasts: no work is lost, but nothing rate-limited moves either, and the queue looks calm while it piles up behind the limiter.
+
+**How to confirm.**
+
+- Metric: `taskq_ratelimit_acquire_dependency_failures_total` rising, labeled by `error_type` (the exception class name). Read it beside `taskq_reservation_denials_total{source="rate_limit"}`: denials with this counter flat are ordinary contention; denials with this counter rising are an outage masquerading as contention — the two must be told apart before anyone scales a bucket.
+- The `error_type` label names the failure class (a Redis connection error, a timeout): it distinguishes "the store is unreachable" from "the store is slow".
+- Check the store from a worker pod, not from your laptop: the outage is between the worker's network position and the store (DNS, NetworkPolicy, the store itself).
+
+**How to remediate.**
+
+1. Restore the store dependency: Redis connectivity from the worker pods first (the common cause), then the store itself. The PG fallback fails the same closed way when Postgres is the sick dependency — check `TaskQSweepTimeouts` / `TaskQDispatchLatencyHigh` before touching Redis.
+2. Do NOT raise bucket limits or disable rate limiting during the outage: the denials are the limiter failing closed (the configured safe behavior), and widening limits cannot create store capacity.
+3. Snoozed dispatches retry on their own once acquires succeed again — confirm recovery by watching `taskq_ratelimit_acquire_dependency_failures_total` flatten and the snoozed backlog drain (`taskq_jobs_by_status{status="scheduled"}` falling).
+
+---
+
+## TaskQCronLockContention
+
+**What fired.** `rate(taskq_cron_lock_contention_total[10m]) > 0` for 10 minutes: cron ticks are returning without firing because another session holds the cron advisory lock, sustained. A brief low rate is the benign leader-handover overlap; a rate sustained at the tick cadence means cron is not running anywhere — the lock is transaction-scoped and releases on COMMIT/ROLLBACK, which never happens if the holding session was partitioned without a FIN. That is the fleet-wide cron stall: every schedule silently stops firing, and the signals an operator would check first (`taskq_cron_disabled_schedules`, `taskq_cron_consecutive_failures`) deliberately stay still in that mode.
+
+**How to confirm.**
+
+- Metric: `taskq_cron_lock_contention_total` rising at roughly the tick rate (one contention per tick attempt) — not brief bursts. `taskq_cron_disabled_schedules` staying 0 while no `cron fired` lines appear is the same stall seen from the other side.
+- SQL — the cron lock holder (the lock name is `taskq:cron:<schema>`, a single bigint key via `hashtextextended`, so it appears with `classid = 0`):
+
+  ```sql
+  SELECT l.pid, l.granted, a.state, a.wait_event_type,
+         now() - a.backend_start AS session_age,
+         left(a.query, 120) AS query_head
+  FROM pg_locks l JOIN pg_stat_activity a ON a.pid = l.pid
+  WHERE l.locktype = 'advisory' AND l.classid = 0
+    AND l.objid = (SELECT hashtextextended('taskq:cron:<your-schema>', 0));
+  ```
+
+  A long-lived `granted` session whose `session_age` far exceeds worker liveness (partitioned without a FIN) is the finding; a healthy leader's hold is transaction-scoped and momentary.
+
+**How to remediate.**
+
+1. Terminate the stale holder if it is dead weight
+   (`SELECT pg_terminate_backend(<pid>);`) — the server reaps partitioned sessions only on its `tcp_keepalives_*` schedule, which can outlast a maintenance window.
+2. If the holder is a healthy worker of THIS schema: two pods both running cron loops against the same schema points at a deployment/election misconfiguration — one cron loop per schema is the contract; fix the deployment, do not kill the session.
+3. Confirm recovery: `taskq_cron_lock_contention_total` stops rising, `cron fired` lines resume, and missed schedules catch up (due schedules fire immediately once the lock is free — cron does not skip missed ticks by default; see the cron guide for `TASKQ_CRON_TICK_LIMIT` if the backlog is large).
+
+---
+
+## TaskQRunningLeaseExpired
+
+**What fired.** `taskq_jobs_running_lease_expired > 0` for 5 minutes: running jobs whose lock lease is past expiry, sustained. A healthy fleet reads 0 — the leader's reclaim sweep (`sweep_name="expired_locks"`) drains expired leases within a tick or two of expiry — so a sustained non-zero count means reclaim is not draining. Work is claimed and stuck in `running` while health probes stay green: the zombie-running shape.
+
+**How to confirm.**
+
+- Metric: `taskq_jobs_running_lease_expired` (sampled by every worker, so one flapping series is a sampling artifact — the alert fires on the sustained value). Cross-check the reclaim sweep's health: `taskq_maintenance_leader_sweep_last_success_seconds{sweep_name="expired_locks"}` fresh means the sweep runs but rows regrow faster than it drains (workers dying or wedging mid-run); a stale stamp means the sweep itself is stopped (see [TaskQPromotionStalled](#taskqpromotionstalled) — the same signature, different sweep).
+- SQL — the zombies and their holders:
+
+  ```sql
+  SELECT id, actor, locked_by_worker, lock_expires_at,
+         now() - lock_expires_at AS overdue_by, attempt, max_attempts
+  FROM taskq.jobs
+  WHERE status = 'running' AND lock_expires_at < clock_timestamp()
+  ORDER BY lock_expires_at;
+  ```
+
+- The admin `/jobs` page renders the same state per row (Lease column): a red `expired` badge with the holding worker.
+
+**How to remediate.**
+
+1. If `TaskQHeartbeatMisses` is firing or the holders' workers are gone: the jobs self-heal — the reclaim sweep transitions them (retryable → `pending` after a backoff; exhausted → `crashed`). The alert's value is that it stays non-zero when that does NOT happen.
+2. If the reclaim sweep is stalled or timing out: follow [TaskQPromotionStalled](#taskqpromotionstalled) and [TaskQSweepTimeouts](#taskqsweeptimeouts) — fix the sweep/database; the zombies are a symptom.
+3. If the sweep is healthy and the count still regrows: jobs are repeatedly outliving their lease — the lease (`lock_lease`-shaped settings) is shorter than the actor's real run time and heartbeats are not renewing fast enough. Check `TaskQLockExpiringSoon` (firing means renewals are barely keeping ahead) and widen the lease/heartbeat budget for those actors; do not restart workers to "clear" the gauge — the same jobs will zombie again.
+4. Confirm recovery: `taskq_jobs_running_lease_expired` returns to 0 and stays there across several sweep intervals.
+
+---
+
 ## Related documentation
 
 - [Observability](observability.md) — the metrics these alerts evaluate,

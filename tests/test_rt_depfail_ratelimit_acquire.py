@@ -301,6 +301,22 @@ async def test_redis_outage_acquire_does_not_burn_retry_budget(
         "Verdict: FAIL-OPEN-RED — the actor is blamed for its limiter's outage."
     )
 
+    snoozes = fake_backend.mark_snoozed_calls
+    assert len(snoozes) == 1, (
+        "the fail-closed outcome is the limiter's denial channel: exactly one "
+        f"snooze write; got {len(snoozes)}"
+    )
+    assert snoozes[0]["outcome"] == "rate_limit_denied"
+    assert snoozes[0]["denial_reason"] == "unavailable", (
+        "DEPENDENCY-FAILURE contract (non-consuming denial): the store-outage "
+        "denial must route to the NON-consuming snooze arm — denial_reason="
+        "'unavailable' is what makes mark_snoozed refund the claim's attempt "
+        "increment and never take a terminal arm, so an outage the job cannot "
+        "control spends none of its retry budget. A 'capacity' reason here "
+        "means the outage denial is being accounted as saturation backpressure "
+        "and the budget burns."
+    )
+
 
 async def test_redis_outage_fallback_composition_runs_actor_via_pg() -> None:
     """With the PG fallback enabled (default) and a live PG pool, a dead

@@ -40,6 +40,8 @@ from taskq.constants import (
     DEFAULT_EVENT_RETENTION_PERIOD,
     DEFAULT_EVENT_WRITER_BATCH_SIZE,
     DEFAULT_EVENT_WRITER_STATEMENT_TIMEOUT_MS,
+    DEFAULT_KEYED_ROW_RECLAIM_BATCH_SIZE,
+    DEFAULT_KEYED_ROW_RECLAIM_PERIOD,
     DEFAULT_MAX_KEYED_RESERVATIONS,
     DEFAULT_MAX_RETRY_BACKOFF,
     DEFAULT_PRUNE_BATCH_SIZE,
@@ -784,6 +786,57 @@ class WorkerSettings(TaskQSettings):
         "of not dispatching enqueue(queue=...) override jobs whose actor's "
         "home queue is not subscribed. Default False (override-safe).",
     )
+
+    # -- Enqueue advisory-lock budgets ------------------------------------
+    # Defaults are the values of taskq.backend._enqueue's
+    # DEFAULT_MAX_PENDING_LOCK_TIMEOUT_MS / DEFAULT_UNIQUE_FOR_LOCK_TIMEOUT_MS
+    # / DEFAULT_IDEMPOTENCY_LOCK_TIMEOUT_MS (5 s each) — written as literals,
+    # not imported, because that module binds the asyncpg driver at import
+    # time and this module is imported by the driver-free testing boundary
+    # (taskq.testing.settings). The PostgresBackend enqueue wrappers read
+    # these fields at the lock use sites (the dispatch_oversample plumbing
+    # pattern); a deployment that sets none of them keeps the exact
+    # pre-knob ceilings the module constants supplied.
+    max_pending_lock_timeout_ms: float = Field(
+        default=5000.0,
+        description="TASKQ_MAX_PENDING_LOCK_TIMEOUT_MS (milliseconds). Bounded "
+        "wait for the max_pending advisory lock on the single-enqueue path "
+        "(the count-then-insert serialization per capped actor). Exhaustion "
+        "raises MaxPendingLockTimeoutError — the same typed backpressure "
+        "treatment as a cap rejection, and denials consume retry budget, so "
+        "widen this during an outage that slows lock holders rather than "
+        "letting the fixed ceiling convert slow holders into refused "
+        "enqueues. 0 or less waits indefinitely (the lock_timeout GUC "
+        "convention shared with the sibling budgets).",
+    )
+    unique_for_lock_timeout_ms: float = Field(
+        default=5000.0,
+        description="TASKQ_UNIQUE_FOR_LOCK_TIMEOUT_MS (milliseconds). Bounded "
+        "wait for the unique_for single-flight advisory lock on the "
+        "single-enqueue path (the identity preflight-then-insert "
+        "serialization). Exhaustion raises UniqueForLockTimeoutError with "
+        "retry-yields-dedup guidance; the correct contention outcome is "
+        "usually the dedup return, so a unique_for caller may want a longer "
+        "wait than the max_pending budget before giving up on the answer. "
+        "Separate knob from max_pending_lock_timeout_ms because the two "
+        "budgets bound different semantics (identity dedup vs capacity "
+        "admission). 0 or less waits indefinitely (the lock_timeout GUC "
+        "convention shared with the sibling budgets).",
+    )
+    idempotency_lock_timeout_ms: float = Field(
+        default=5000.0,
+        description="TASKQ_IDEMPOTENCY_LOCK_TIMEOUT_MS (milliseconds). Bounded "
+        "wait for the idempotency token INSERT's speculative-lock conflict "
+        "on the single-enqueue path — another transaction's UNCOMMITTED row "
+        "with the same (idempotency_scope, idempotency_key) pair. On a "
+        "transactional consumer the holder is the actor's own open "
+        "transaction (unbounded by default), so this budget bounds the "
+        "VICTIM; exhaustion raises IdempotencyKeyLockTimeoutError, meaning "
+        "the dedup answer could not be determined in time — retry the same "
+        "enqueue, which typically dedupes against the now-visible winner. "
+        "0 or less waits indefinitely (the lock_timeout GUC convention "
+        "shared with the sibling budgets).",
+    )
     heartbeat_pool_size: int = Field(
         default=4,
         ge=1,
@@ -920,6 +973,36 @@ class WorkerSettings(TaskQSettings):
         ge=1,
         description="TASKQ_EVENT_RETENTION_BATCH_SIZE. job_events rows "
         "deleted per leader sweep tick, one committed batch.",
+    )
+    keyed_row_reclaim_period: timedelta = Field(
+        default=DEFAULT_KEYED_ROW_RECLAIM_PERIOD,
+        validator=_non_negative_timedelta,
+        description="TASKQ_KEYED_ROW_RECLAIM_PERIOD. The idle age at which "
+        "fleet-reclaimable keyed rows — keyed reservation_slots rows and "
+        "PG-state-backed keyed rate_limit_buckets rows, marked by the "
+        "keyed column — are deleted by the maintenance leader's "
+        "sweep_idle_keyed_rows, one bounded committed batch per tick per "
+        "table. Closes the #139 residual: keyed rows orphan when the "
+        "worker that materialised them dies, because the in-process "
+        "reclamation machinery (registry eviction + the pending-reclaim "
+        "drain) dies with the process; the rows' own last_used_at stamp "
+        "(refreshed by the acquire/release/upsert statements that already "
+        "touch them) is the fleet-wide signal. Static buckets and "
+        "redis-backend keyed rows are never deleted by this sweep at any "
+        "setting. timedelta(0) DISABLES the sweep — the same "
+        "zero-means-off sentinel event_retention_period uses, so a "
+        "brand-new deletion loop's safe misconfiguration is off. "
+        "Negative values raise at settings load.",
+    )
+    keyed_row_reclaim_batch_size: int = Field(
+        default=DEFAULT_KEYED_ROW_RECLAIM_BATCH_SIZE,
+        ge=1,
+        description="TASKQ_KEYED_ROW_RECLAIM_BATCH_SIZE. BUCKETS (rows, "
+        "for rate_limit_buckets) the fleet reclaim sweep deletes per "
+        "committed batch per tick — the constant-size bound that keeps "
+        "one tick's DELETE independent of the dead-worker backlog it is "
+        "recovering from, the same doctrine as "
+        "event_retention_batch_size.",
     )
     queue_depth_interval: float = Field(
         default=15.0,
@@ -1437,15 +1520,17 @@ class WorkerSettings(TaskQSettings):
         default=False,
         description=(
             "When True, sync_actor_config silently overwrites a stored "
-            "actor_config row whose queue or metadata differ from the "
-            "registered values. When False (the default), that structural "
-            "drift raises ActorConfigDriftList and the worker refuses to "
-            "start. Capacity fields (max_concurrent, max_pending, "
-            "result_ttl) are unaffected by this flag: once a row exists, "
-            "the stored value is always authoritative and is never "
-            "overwritten by the registered @actor(...) literal, "
-            "regardless of force. Use `taskq actor-config set` to change "
-            "a stored capacity value. Env var: TASKQ_FORCE_UPDATE_ACTOR_CONFIG."
+            "actor_config row whose metadata differs from the registered "
+            "value. When False (the default), metadata drift raises "
+            "ActorConfigDriftList and the worker refuses to start. The "
+            "queue assignment and the capacity fields (max_concurrent, "
+            "max_pending, result_ttl) are unaffected by this flag: once a "
+            "row exists, the stored value is always authoritative and is "
+            "never overwritten by the registered @actor(...) literal, "
+            "regardless of force. Move an actor between queues with "
+            "`taskq actor-config move-queue`; tune a stored capacity value "
+            "with `taskq actor-config set`. Env var: "
+            "TASKQ_FORCE_UPDATE_ACTOR_CONFIG."
         ),
     )
 
@@ -1513,6 +1598,16 @@ class WorkerSettings(TaskQSettings):
         "selects, plans and fires. A catch-up burst larger than this drains "
         "across successive one-second ticks instead of one oversized "
         "transaction; the remainder stays due and untouched until its tick.",
+    )
+    cron_payload_factory_timeout: float = Field(
+        default=5.0,
+        validator=_positive_finite_float,
+        description="TASKQ_CRON_PAYLOAD_FACTORY_TIMEOUT. Per-call deadline "
+        "for a cron schedule's payload factory (both the off-loop call and "
+        "the coroutine a factory returns). Default 5.0s. Tune it BELOW the "
+        "leader's whole-tick deadline (dispatcher_command_timeout) so the "
+        "named per-schedule failure this deadline records is what fires, "
+        "not the whole-tick cancellation.",
     )
 
     # ── Until-idle drain mode ────────────────────────────────────────────

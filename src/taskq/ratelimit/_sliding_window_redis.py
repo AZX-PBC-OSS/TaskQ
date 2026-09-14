@@ -48,9 +48,18 @@ __all__ = [
 async def _ensure_log_script(
     self: "SlidingWindow", redis_client: "redis_async.Redis"
 ) -> "AsyncScript":
+    def get() -> "AsyncScript | None":
+        if self._redis_log_script_client is not redis_client:
+            return None
+        return self._redis_log_script
+
+    def bind(script: "AsyncScript") -> None:
+        self._redis_log_script_client = redis_client
+        self._redis_log_script = script
+
     return await ensure_redis_script(
-        lambda: self._redis_log_script,
-        lambda s: setattr(self, "_redis_log_script", s),
+        get,
+        bind,
         lambda: redis_client.register_script(SLIDING_WINDOW_LOG_SCRIPT),
         self._script_lock,
     )
@@ -59,9 +68,18 @@ async def _ensure_log_script(
 async def _ensure_gcra_script(
     self: "SlidingWindow", redis_client: "redis_async.Redis"
 ) -> "AsyncScript":
+    def get() -> "AsyncScript | None":
+        if self._redis_gcra_script_client is not redis_client:
+            return None
+        return self._redis_gcra_script
+
+    def bind(script: "AsyncScript") -> None:
+        self._redis_gcra_script_client = redis_client
+        self._redis_gcra_script = script
+
     return await ensure_redis_script(
-        lambda: self._redis_gcra_script,
-        lambda s: setattr(self, "_redis_gcra_script", s),
+        get,
+        bind,
         lambda: redis_client.register_script(SLIDING_WINDOW_GCRA_SCRIPT),
         self._script_lock,
     )
@@ -70,9 +88,18 @@ async def _ensure_gcra_script(
 async def _ensure_gcra_refund_script(
     self: "SlidingWindow", redis_client: "redis_async.Redis"
 ) -> "AsyncScript":
+    def get() -> "AsyncScript | None":
+        if self._redis_gcra_refund_script_client is not redis_client:
+            return None
+        return self._redis_gcra_refund_script
+
+    def bind(script: "AsyncScript") -> None:
+        self._redis_gcra_refund_script_client = redis_client
+        self._redis_gcra_refund_script = script
+
     return await ensure_redis_script(
-        lambda: self._redis_gcra_refund_script,
-        lambda s: setattr(self, "_redis_gcra_refund_script", s),
+        get,
+        bind,
         lambda: redis_client.register_script(GCRA_REFUND_SCRIPT),
         self._script_lock,
     )

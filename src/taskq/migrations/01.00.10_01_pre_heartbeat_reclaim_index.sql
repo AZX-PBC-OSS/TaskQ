@@ -1,0 +1,54 @@
+-- Partial index serving the reclaim sweep's heartbeat arm (the per-job
+-- heartbeat_timeout disjunct in taskq/backend/_sweeps.py's _SWEEP_1_SQL):
+-- the arm selects running, heartbeat-configured rows whose holder has
+-- been silent past the row's deadline, ordered by last_heartbeat_at,
+-- LIMIT one batch, and this index serves that shape as an ordered scan
+-- over ONLY the heartbeat-configured running set. Forward-only; there is
+-- no down migration. To revert, restore from backup. The literal
+-- "{schema}" token is substituted at apply time by the migration runner.
+--
+-- ── Why plain CREATE INDEX, not the no-transaction CONCURRENTLY form ──
+-- Same deadlock shape as 01.00.07_01_pre_event_retention_index.sql (see
+-- that file's full derivation): the migration runner serializes
+-- concurrent migrators with pg_advisory_lock, a second replica's
+-- blocking lock wait is an open transaction, and CREATE INDEX
+-- CONCURRENTLY waits for every transaction that started before it — a
+-- cycle the deadlock detector breaks by failing the apply. This file
+-- therefore follows 01.00.02_01 / 01.00.07_01's precedent: a
+-- transactional plain CREATE INDEX, whose ordinary locks queue behind
+-- the advisory-lock waiter without a snapshot-wait cycle.
+--
+-- OPS NOTE (locks), same caveat as 01.00.02_01 / 01.00.07_01: the
+-- CREATE INDEX below takes a write-blocking lock on jobs for the
+-- duration of the build; build time is proportional to the current row
+-- count. Operators with a large jobs table should run the equivalent
+-- `CREATE INDEX CONCURRENTLY IF NOT EXISTS
+-- jobs_running_heartbeat_deadline_idx ON "{schema}".jobs
+-- (last_heartbeat_at) WHERE status = 'running' AND heartbeat_timeout IS
+-- NOT NULL` manually outside the migration runner during a maintenance
+-- window, then let this migration no-op via IF NOT EXISTS.
+--
+-- ── Why partial ────────────────────────────────────────────────────
+-- The index covers only the rows the heartbeat arm can ever visit:
+-- running jobs that carry a heartbeat_timeout. A fleet that never sets
+-- the knob has an empty index (every sweep tick touches it at
+-- buffer-scale, the same empty steady state the lease arm's index
+-- has); a fleet that does set it pays a per-tick scan proportional to
+-- its heartbeat-configured running set, never to the running set at
+-- large. The index key is last_heartbeat_at because the row-exact
+-- deadline (last_heartbeat_at + heartbeat_timeout) cannot be an index
+-- condition at all: the bound is row-dependent (per-job heartbeat_timeout
+-- varies per row), and timestamptz + interval is STABLE in Postgres, so
+-- no expression index may exist on it. The arm's SQL therefore states
+-- the necessary condition (last_heartbeat_at < statement_timestamp())
+-- explicitly as the range bound, ORDER BY last_heartbeat_at pins the
+-- scan to this index's key order, and the row-exact deadline rides as
+-- a filter. The WHERE clause below must stay VERBATIM-identical to the
+-- arm's `status = 'running' AND heartbeat_timeout IS NOT NULL`
+-- conjuncts (taskq/backend/_sweeps.py's _SWEEP_1_SQL): a partial index
+-- serves a query only when the planner can prove the query implies the
+-- index predicate, and a verbatim repeat of the predicate is that
+-- proof.
+CREATE INDEX IF NOT EXISTS jobs_running_heartbeat_deadline_idx
+    ON "{schema}".jobs (last_heartbeat_at)
+    WHERE status = 'running' AND heartbeat_timeout IS NOT NULL;

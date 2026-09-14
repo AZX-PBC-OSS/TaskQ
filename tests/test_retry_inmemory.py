@@ -24,6 +24,7 @@ from taskq._ids import new_job_id
 from taskq.actor import actor
 from taskq.backend._protocol import (
     AttemptOutcome,
+    DenialReason,
     EnqueueArgs,
     ErrorInfo,
     JobId,
@@ -879,6 +880,7 @@ class _SnoozeWriteInfraFails(InMemoryBackend):
         progress_state: dict[str, object] | None = None,
         outcome: AttemptOutcome = "snoozed",
         attempt: int | None = None,
+        denial_reason: DenialReason = "capacity",
     ) -> Literal["scheduled", "failed", "failed:MaxAttemptsExceeded", "noop"]:
         raise OSError("db socket closed mid-snooze-write")
 

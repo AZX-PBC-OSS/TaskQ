@@ -8,6 +8,7 @@
       "component": "taskq-py",
       "package-name": "taskq-py",
       "release-type": "python",
+      "release-as": "0.3.0",
       "extra-files": [
         {
           "type": "generic",

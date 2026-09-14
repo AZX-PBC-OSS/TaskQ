@@ -31,12 +31,15 @@ The class rule, mechanically enforced here:
    off the markers, nothing else.
 """
 
+import json
 import re
 import subprocess
 from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _CHANGELOG = _REPO_ROOT / "CHANGELOG.md"
+_RELEASE_CONFIG = _REPO_ROOT / "release-please-config.json"
+_RELEASE_MANIFEST = _REPO_ROOT / ".release-please-manifest.json"
 
 #: A generated release heading: ``## [0.2.2](https://…/compare/v0.2.1...v0.2.2) (2026-…)``.
 _GENERATED_HEADING = re.compile(r"^## \[\d+\.\d+\.\d+\]\(https://", re.MULTILINE)
@@ -116,4 +119,41 @@ def test_documented_breaking_changes_are_visible_to_release_please() -> None:
         "Fixes' — a user-visible breaking change must carry a "
         "release-please breaking marker. Marked commits found: "
         f"{markers or 'none'}."
+    )
+
+
+def test_next_release_version_is_hand_pinned_above_the_last_released_minor() -> None:
+    """The next release's version is pinned in release-please-config.json
+    (``release-as``), not left to whatever bump the merged history's
+    markers compute.
+
+    Why a hand pin: the breaking changes reach ``main`` through a merge
+    whose strategy the release machinery does not control — a
+    squash-merge collapses every ``fix!:`` marker on the stack into one
+    hand-written message, and a marker-less history computes a PATCH
+    bump, shipping user-visible breaks (``dumps()``'s dropped
+    ``OPT_NON_STR_KEYS``, the keyed-ref ``.typed()`` requirement,
+    ``heartbeat_timeout``'s loud refusal, denials-as-counters) as
+    0.2.3. ``release-as`` fixes the floor regardless of how history
+    lands. The pin asserts the floor is at least a minor bump above the
+    last released version — the breaking floor for a 0.x line — so a
+    patch-level pin, or a removed pin, fails here.
+    """
+    config = json.loads(_RELEASE_CONFIG.read_text())
+    package = config["packages"]["."]
+    assert "release-as" in package, (
+        "release-please-config.json's root package carries no 'release-as' "
+        "pin: the next release's version is whatever the merged history's "
+        "markers compute, and a squash-merge that drops the stack's "
+        "breaking markers would cut the breaks as a patch release. Hand-set "
+        "the floor (the #160 resolution)."
+    )
+    pinned = tuple(int(part) for part in str(package["release-as"]).split("."))
+    manifest = json.loads(_RELEASE_MANIFEST.read_text())
+    released = tuple(int(part) for part in str(manifest["."]).split("."))
+    assert pinned[:2] > released[:2], (
+        f"the hand-pinned release version {package['release-as']} is not a "
+        f"minor-or-greater bump above the last released version "
+        f"{manifest['.']} — a patch-level floor ships the stack's breaking "
+        "changes as a patch release, the exact adopter harm #160 records."
     )

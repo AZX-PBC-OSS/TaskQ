@@ -16,6 +16,7 @@ from taskq.backend._protocol import (
     Backend,
     CancelFlag,
     CancelPhase,
+    DenialReason,
     EnqueueArgs,
     ErrorInfo,
     EventRow,
@@ -251,6 +252,7 @@ class FakeBackend:
         progress_state: dict[str, object] | None = None,
         outcome: SnoozeOutcome = "snoozed",
         attempt: int | None = None,
+        denial_reason: DenialReason = "capacity",
     ) -> Literal["scheduled", "failed", "failed:MaxAttemptsExceeded", "noop"]:
         self.mark_snoozed_calls.append(
             {
@@ -261,6 +263,7 @@ class FakeBackend:
                 "progress_seq": progress_seq,
                 "progress_state": progress_state,
                 "outcome": outcome,
+                "denial_reason": denial_reason,
             }
         )
         return self._mark_snoozed_return

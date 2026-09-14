@@ -9,10 +9,10 @@ downstream modules (schedule CRUD, cron loop, admin ops).
 import asyncio
 import importlib
 import inspect
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from typing import Any, cast
+from typing import Any, Final, cast
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
@@ -63,17 +63,69 @@ def _resolve_factory(dotted_path: str) -> Callable[[], Any]:
     return factory
 
 
+_FACTORY_TIMEOUT_S: Final = 5.0
+"""The per-factory deadline ``resolve_payload`` enforces on both phases of
+a factory: the call itself (run off the event loop) and, for a factory that
+returns a coroutine, the await of that coroutine back on the loop."""
+
+
+async def _await_factory_bounded(
+    payload_factory: str,
+    work: Awaitable[object],
+    timeout_s: float | None = None,
+) -> object:
+    """Await one phase of a payload factory under the factory deadline.
+
+    *timeout_s* overrides :data:`_FACTORY_TIMEOUT_S` for this call — the
+    cron tick passes its ``cron_payload_factory_timeout`` setting so an
+    operator who tunes the whole-tick deadline below the factory default
+    cannot leave a per-factory budget that silently exceeds it (the
+    leader's whole-tick ``asyncio.timeout`` would then cancel mid-factory,
+    losing the named per-schedule failure this path exists to record).
+
+    A timeout raises ``TimeoutError`` naming the factory's dotted path: the
+    schedule's error text is the only place an operator sees WHICH factory
+    hung.  A factory that fails with its own ``TimeoutError`` reason keeps
+    that reason — "pool exhausted" is the diagnosis, "hung for 5s" would be
+    a lie.  The type stays ``TimeoutError`` so every classification and
+    catch site downstream is unchanged.
+    """
+    effective_timeout = _FACTORY_TIMEOUT_S if timeout_s is None else timeout_s
+    try:
+        return await asyncio.wait_for(work, timeout=effective_timeout)
+    except TimeoutError as exc:
+        reason = str(exc)
+        if reason:
+            raise TimeoutError(f"cron payload factory {payload_factory!r}: {reason}") from exc
+        raise TimeoutError(
+            f"cron payload factory {payload_factory!r} timed out after {effective_timeout:g}s"
+        ) from exc
+
+
 async def resolve_payload(
     payload_factory: str | None,
     raw_metadata: object,
+    *,
+    timeout_s: float | None = None,
 ) -> dict[str, object]:
     """Resolve payload from a factory dotted path or static metadata.
 
     If *payload_factory* is set, resolves the dotted path via
-    :func:`_resolve_factory` and calls it.  Async factories are awaited
-    with ``asyncio.wait_for(result, timeout=5.0)``.  ``BaseModel`` results
-    are converted via ``.model_dump()``; ``dict`` results are returned
-    as-is.  Raises ``TypeError`` for unexpected return types.
+    :func:`_resolve_factory` and calls it.  The call itself runs OFF the
+    event loop — :func:`asyncio.to_thread`, the standard-library mechanism
+    for a callable that may block and the same one sync actors run under —
+    bounded by the 5 s per-factory ``wait_for``, so a sync factory that
+    blocks is cut at the deadline instead of freezing every timer on the
+    loop (this bound and the caller's whole-tick deadline alike) while the
+    tick holds the cron advisory lock.  A factory that RETURNS a coroutine
+    keeps loop affinity: the coroutine is awaited back on the loop under
+    the same ``wait_for``.  ``BaseModel`` results are converted via
+    ``.model_dump()``; ``dict`` results are returned as-is.  Raises
+    ``TypeError`` for unexpected return types.
+
+    Thread-safety contract: a sync payload factory may run on a worker
+    thread — it must be thread-safe and must not require the event loop;
+    a coroutine-returning factory keeps loop affinity.
 
     If no *payload_factory*, extracts ``static_payload`` from
     *raw_metadata*.  Returns ``{}`` if neither is set.
@@ -81,30 +133,26 @@ async def resolve_payload(
     Raises:
         TypeError: factory returned an unexpected type (not dict or
             BaseModel).
+        TimeoutError: the factory call, or the coroutine it returned,
+            outlived the 5 s per-factory deadline; the message names the
+            factory.
         ImportError / AttributeError: propagated from :func:`_resolve_factory`.
     """
     if payload_factory is not None:
         factory = _resolve_factory(payload_factory)
-        result: object = factory()
+        # The call runs off the loop: called inline, a sync factory that
+        # blocks freezes every timer on the loop — this deadline and the
+        # caller's whole-tick asyncio.timeout alike — so the tick holds
+        # the cron advisory lock for as long as the factory blocks.
+        # asyncio.to_thread is the standard-library off-loop mechanism,
+        # the same one sync actors run under.
+        result: object = await _await_factory_bounded(
+            payload_factory, asyncio.to_thread(factory), timeout_s=timeout_s
+        )
         if inspect.iscoroutine(result):
-            try:
-                result = await asyncio.wait_for(result, timeout=5.0)
-            except TimeoutError as exc:
-                # Name the factory: the schedule's error text is the only
-                # place an operator sees WHICH factory hung.  A factory
-                # that fails with its own TimeoutError reason keeps that
-                # reason — "pool exhausted" is the diagnosis, "hung for
-                # 5s" would be a lie.  The type stays TimeoutError so
-                # every classification and catch site downstream is
-                # unchanged.
-                reason = str(exc)
-                if reason:
-                    raise TimeoutError(
-                        f"cron payload factory {payload_factory!r}: {reason}"
-                    ) from exc
-                raise TimeoutError(
-                    f"cron payload factory {payload_factory!r} timed out after 5s"
-                ) from exc
+            # A coroutine-returning factory keeps loop affinity: its body
+            # runs here, on the loop, under the same deadline.
+            result = await _await_factory_bounded(payload_factory, result, timeout_s=timeout_s)
         if isinstance(result, BaseModel):
             return result.model_dump()
         if isinstance(result, dict):

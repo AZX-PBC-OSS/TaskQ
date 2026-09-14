@@ -3,7 +3,7 @@
 import pytest
 from opentelemetry import trace
 from opentelemetry.metrics import Meter
-from opentelemetry.sdk.metrics.export import InMemoryMetricReader
+from opentelemetry.sdk.metrics.export import InMemoryMetricReader, NumberDataPoint
 
 import taskq.obs as obs_mod
 import taskq.obs._otel as otel_mod
@@ -82,6 +82,13 @@ def _patch_instruments(monkeypatch: pytest.MonkeyPatch, meter: Meter) -> None:
             "_disabled_schedules_gauge",
             lambda: m.create_observable_gauge(
                 "taskq.cron.disabled_schedules", callbacks=[otel_mod._observe_disabled_schedules]
+            ),
+        ),
+        (
+            "_running_lease_expired_gauge",
+            lambda: m.create_observable_gauge(
+                "taskq.jobs.running_lease_expired",
+                callbacks=[otel_mod._observe_running_lease_expired],
             ),
         ),
         ("_pruned_jobs", lambda: m.create_counter("taskq.pruned.jobs")),
@@ -484,6 +491,30 @@ def test_disabled_schedules_gauge_reads_from_state(otel_reader: InMemoryMetricRe
     metrics = collect_metrics(otel_reader)
     names = {m.name for m in metrics}
     assert "taskq.cron.disabled_schedules" in names
+
+
+# ── instrument: taskq.jobs.running_lease_expired ──────────────────────────
+
+
+def test_running_lease_expired_gauge_reads_from_cache(otel_reader: InMemoryMetricReader) -> None:
+    """The zombie-running gauge reads the sampler's count, with no
+    dimensions: one series, the fleet total, alertable directly."""
+    obs_mod.update_running_lease_expired_cache(4)
+
+    metrics = collect_metrics(otel_reader)
+    gauge = next((m for m in metrics if m.name == "taskq.jobs.running_lease_expired"), None)
+    assert gauge is not None, (
+        "taskq.jobs.running_lease_expired not emitted — running-with-expired-"
+        "lease is invisible as a distinct shape without it"
+    )
+    points = [p for p in gauge.data.data_points if isinstance(p, NumberDataPoint)]
+    assert len(points) == 1
+    assert points[0].value == 4
+    assert not points[0].attributes, (
+        "the gauge must carry no dimensions — the zombie shape is a fleet "
+        "total, and the per-job truth (locked_by_worker, lock_expires_at) "
+        "lives on the row and the admin page, not on a label"
+    )
 
 
 # ── instrument 18: taskq.pruned.jobs ─────────────────────────────────────

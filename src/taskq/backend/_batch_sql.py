@@ -609,6 +609,16 @@ async def enqueue_batch_atomic(
                 chunk_raw = list(islice(it, chunk_size))
                 if not chunk_raw:
                     break
+                # The chunk's base in the CALLER's coordinate space: the
+                # consumed prefix BEFORE this chunk. Captured before the
+                # count bump so the bulk core's per-item annotations (the
+                # jsonb NUL guard) name STREAM-GLOBAL indices — a
+                # chunk-local index from inside this loop is unfixable at
+                # the client layer, which cannot know the backend's chunk
+                # base (the streaming boundary's registry can only shift
+                # errors it sees cross its own per-chunk call, and this
+                # re-chunk happens entirely below that boundary).
+                chunk_base = item_count
                 item_count += len(chunk_raw)
                 chunk = [
                     replace(
@@ -637,6 +647,7 @@ async def enqueue_batch_atomic(
                     # raises here as plain MaxPendingExceededError before
                     # any INSERT, and the rollback discards earlier chunks.
                     refuse_whole_batch_on_cap=True,
+                    index_base=chunk_base,
                 )
                 all_rows.extend(rows)
 
@@ -656,6 +667,11 @@ async def enqueue_batch_atomic(
                     # not raise a one-item partition refusal.
                     enforce_max_pending=True,
                     refuse_whole_batch_on_cap=True,
+                    # The finalizer's caller-global coordinate: one past
+                    # the last stream item (it is the (N+1)th enqueue this
+                    # call performs). index 0 — the pre-fix annotation —
+                    # falsely accused an innocent stream item.
+                    index_base=item_count,
                 )
                 all_rows.extend(fin_rows)
                 finalizer_row = fin_rows[0]

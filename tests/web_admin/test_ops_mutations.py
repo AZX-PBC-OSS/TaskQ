@@ -335,7 +335,7 @@ def test_schedule_run_now_redirects_on_factory_type_error(
     monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
 
     async def _raise_type_error(
-        payload_factory: str | None, raw_metadata: object
+        payload_factory: str | None, raw_metadata: object, *, timeout_s: float | None = None
     ) -> dict[str, object]:
         raise TypeError("factory returned unexpected type")
 
@@ -360,7 +360,7 @@ def test_schedule_run_now_redirects_on_factory_generic_error(
     monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
 
     async def _raise_value_error(
-        payload_factory: str | None, raw_metadata: object
+        payload_factory: str | None, raw_metadata: object, *, timeout_s: float | None = None
     ) -> dict[str, object]:
         raise ValueError("boom")
 

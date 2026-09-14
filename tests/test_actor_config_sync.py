@@ -11,7 +11,7 @@ import asyncpg
 import pytest
 
 from taskq._ids import new_base62
-from taskq._json import dumps_str
+from taskq._json import dumps_str, loads
 from taskq.actor_config import ActorConfig
 from taskq.exceptions import ActorConfigDriftList
 from taskq.worker.startup import sync_actor_config
@@ -171,11 +171,14 @@ async def test_capacity_divergence_max_concurrent_does_not_raise() -> None:
 
 
 @pytest.mark.asyncio
-async def test_multi_field_drift_only_structural_fields_raise() -> None:
-    """Mixed drift: max_concurrent (capacity) + queue + metadata (structural) differ.
+async def test_multi_field_drift_only_metadata_raises() -> None:
+    """Mixed drift: max_concurrent (capacity) + queue (assignment) + metadata
+    (structural) differ.
 
-    Only the two structural fields raise; max_concurrent divergence is
-    silently accepted as an operator override.
+    Only metadata raises; the queue assignment is operator-owned once a row
+    exists (moved by `taskq actor-config move-queue`) and a differing
+    literal is the rolling-deploy window of a move, not a bug — while
+    max_concurrent divergence is silently accepted as an operator override.
     """
     fake_conn = FakeAsyncpgConnection()
     fake_conn.set_select_rows(
@@ -204,10 +207,10 @@ async def test_multi_field_drift_only_structural_fields_raise() -> None:
         )
 
     drift_list = exc_info.value
-    assert len(drift_list.drifts) == 2
+    assert len(drift_list.drifts) == 1
 
     fields = {d.field for d in drift_list.drifts}
-    assert fields == {"queue", "metadata"}
+    assert fields == {"metadata"}
 
 
 # ── force=True path ──────────────────────────────────────────────────────────
@@ -446,12 +449,14 @@ async def test_capacity_divergence_result_ttl_does_not_raise() -> None:
 
 
 @pytest.mark.asyncio
-async def test_upsert_sql_omits_capacity_columns_from_conflict_set() -> None:
-    """The rendered UPSERT's ON CONFLICT clause never assigns capacity columns.
+async def test_upsert_sql_preserves_operator_owned_columns_on_conflict() -> None:
+    """The rendered UPSERT's ON CONFLICT clause never assigns the capacity
+    columns or the queue assignment.
 
-    This is what actually preserves a stored capacity value across
-    startups — the SELECT/compare logic above only decides whether to
-    raise, never what gets written.
+    This is what actually preserves a stored capacity value — and, across
+    the rolling-deploy window of `taskq actor-config move-queue`, the moved
+    queue assignment — across startups: a worker still carrying the old
+    literal boots, and its UPSERT cannot flip the row back.
     """
     fake_conn = FakeAsyncpgConnection()
     fake_conn.set_select_rows([])
@@ -466,7 +471,7 @@ async def test_upsert_sql_omits_capacity_columns_from_conflict_set() -> None:
     assert "max_concurrent" not in on_conflict
     assert "max_pending" not in on_conflict
     assert "result_ttl" not in on_conflict
-    assert "queue" in on_conflict
+    assert "queue" not in on_conflict
     assert "metadata" in on_conflict
 
 
@@ -538,11 +543,12 @@ async def test_integration_resync_no_changes_no_error(
 
 @pytest.mark.asyncio
 @pytest.mark.integration
-async def test_integration_structural_drift_force_false_raises_table_unchanged(
+async def test_integration_queue_drift_force_false_boots_and_row_unchanged(
     pg_conn: asyncpg.Connection,
 ) -> None:
-    """Re-sync with a differing queue (structural) and force=False:
-    ActorConfigDriftList raised; table is unchanged.
+    """Re-sync with a differing queue (assignment drift) and force=False:
+    no exception — this is the rolling-deploy window of a move — and the
+    stored assignment survives the boot (the UPSERT never rewrites it).
     """
     schema = f"tacs_{new_base62()}".lower()
     await _ensure_schema(pg_conn, schema)
@@ -552,10 +558,34 @@ async def test_integration_structural_drift_force_false_raises_table_unchanged(
 
     changed = [_make_config("a", max_concurrent=5, queue="critical")]
 
+    await sync_actor_config(pg_conn, changed, force=False, schema=schema)
+
+    rows = await _select_configs(pg_conn, schema)
+    assert len(rows) == 1
+    assert rows[0]["max_concurrent"] == 5
+    assert rows[0]["queue"] == "default", "a differing literal must not flip the stored assignment"
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_integration_metadata_drift_force_false_raises_table_unchanged(
+    pg_conn: asyncpg.Connection,
+) -> None:
+    """Re-sync with differing metadata (structural) and force=False:
+    ActorConfigDriftList raised; table is unchanged.
+    """
+    schema = f"tacs_{new_base62()}".lower()
+    await _ensure_schema(pg_conn, schema)
+
+    original = _make_config("a", max_concurrent=5, queue="default", metadata={"x": 1})
+    await sync_actor_config(pg_conn, [original], schema=schema)
+
+    changed = [_make_config("a", max_concurrent=5, queue="default", metadata={"x": 2})]
+
     with pytest.raises(ActorConfigDriftList) as exc_info:
         await sync_actor_config(pg_conn, changed, force=False, schema=schema)
 
-    assert {d.field for d in exc_info.value.drifts} == {"queue"}
+    assert {d.field for d in exc_info.value.drifts} == {"metadata"}
 
     rows = await _select_configs(pg_conn, schema)
     assert len(rows) == 1
@@ -591,10 +621,14 @@ async def test_integration_capacity_drift_force_false_does_not_raise(
 
 @pytest.mark.asyncio
 @pytest.mark.integration
-async def test_integration_structural_drift_force_true_overwrites(
+async def test_integration_queue_drift_force_true_preserves_stored_queue(
     pg_conn: asyncpg.Connection,
 ) -> None:
-    """Re-sync with a differing queue and force=True: the stored queue is updated."""
+    """Re-sync with a differing queue and force=True: the stored queue is
+    preserved — force governs metadata only, and a force-boot rewriting the
+    assignment from a stale literal is exactly the move-undo hazard the
+    conflict clause forecloses.
+    """
     schema = f"tacs_{new_base62()}".lower()
     await _ensure_schema(pg_conn, schema)
 
@@ -607,18 +641,44 @@ async def test_integration_structural_drift_force_true_overwrites(
 
     rows = await _select_configs(pg_conn, schema)
     assert len(rows) == 1
-    assert rows[0]["queue"] == "critical"
+    assert rows[0]["queue"] == "default"
 
 
 @pytest.mark.asyncio
 @pytest.mark.integration
-async def test_integration_force_true_never_overwrites_capacity(
+async def test_integration_metadata_drift_force_true_overwrites(
     pg_conn: asyncpg.Connection,
 ) -> None:
-    """force=True overwrites structural drift but never touches capacity fields.
+    """Re-sync with differing metadata and force=True: the stored metadata
+    is updated (the flag's remaining purpose).
+    """
+    schema = f"tacs_{new_base62()}".lower()
+    await _ensure_schema(pg_conn, schema)
 
-    Registers a differing max_concurrent *and* queue simultaneously with
-    force=True: queue is overwritten, max_concurrent is not.
+    original = _make_config("a", max_concurrent=5, queue="default", metadata={"x": 1})
+    await sync_actor_config(pg_conn, [original], schema=schema)
+
+    changed = [_make_config("a", max_concurrent=5, queue="default", metadata={"x": 2})]
+
+    await sync_actor_config(pg_conn, changed, force=True, schema=schema)
+
+    rows = await _select_configs(pg_conn, schema)
+    assert len(rows) == 1
+    assert rows[0]["queue"] == "default"
+    assert loads(rows[0]["metadata"]) == {"x": 2}
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_integration_force_true_never_overwrites_capacity_or_queue(
+    pg_conn: asyncpg.Connection,
+) -> None:
+    """force=True overwrites metadata drift but never touches the capacity
+    fields or the queue assignment.
+
+    Registers a differing max_concurrent AND queue simultaneously with
+    force=True: neither is overwritten — both are operator-owned once the
+    row exists.
     """
     schema = f"tacs_{new_base62()}".lower()
     await _ensure_schema(pg_conn, schema)
@@ -631,7 +691,7 @@ async def test_integration_force_true_never_overwrites_capacity(
 
     rows = await _select_configs(pg_conn, schema)
     assert len(rows) == 1
-    assert rows[0]["queue"] == "critical"
+    assert rows[0]["queue"] == "default", "force=True must not overwrite the queue assignment"
     assert rows[0]["max_concurrent"] == 5, "force=True must not overwrite capacity fields"
 
 

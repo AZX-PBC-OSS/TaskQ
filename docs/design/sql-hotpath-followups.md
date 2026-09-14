@@ -165,18 +165,82 @@ executions).
    literal `oversample * limit_n` upper bound, with the per-actor bound
    enforced by `residual > 0` filtering and the post-`eligible`
    `actor_rank <= residual - in_flight` cap (unchanged).
-4. Re-render both variants (strict-FIFO and round-robin) through the same
-   template; the round-robin lateral keeps its per-fairness_key window but
-   gets the literal bound the same way.
-5. Add a regression test pinning the **generic plan** (`SET plan_cache_mode
-   = force_generic_plan`): dispatch over a deep seeded backlog must return
-   `limit_n` rows, not a truncated set. The v1 experiment shows this shape
-   of bug is reachable by planner choice; the test is the guardrail.
-6. Note for reviewers: `UPDATE ... RETURNING` row order is plan-dependent
-   (the shipped CTE's id-ordered RETURNING is an accident of its seq-scan
-   probe side). The worker path consumes rows order-agnostically; if a
-   caller ever needs rank order, sort client-side by the returned
-   `pending_rank`-equivalent columns.
+ 4. Re-render both variants (strict-FIFO and round-robin) through the same
+    template; the round-robin lateral keeps its per-fairness_key window but
+    gets the literal bound the same way.
+ 5. Add a regression test pinning the **generic plan** (`SET plan_cache_mode
+    = force_generic_plan`): dispatch over a deep seeded backlog must return
+    `limit_n` rows, not a truncated set. The v1 experiment shows this shape
+    of bug is reachable by planner choice; the test is the guardrail.
+ 6. Note for reviewers: `UPDATE ... RETURNING` row order is plan-dependent
+    (the shipped CTE's id-ordered RETURNING is an accident of its seq-scan
+    probe side). The worker path consumes rows order-agnostically; if a
+    caller ever needs rank order, sort client-side by the returned
+    `pending_rank`-equivalent columns.
+
+### Shipped outcome (issue #130, supersedes the outline above)
+
+The fix that shipped keeps this section's diagnosis (the non-folding
+subquery LIMITs, the whole-backlog `locked`/UPDATE joins, v1's
+generic-plan rejection, v2/v3's rejection) but replaces the outline's
+mechanism: instead of render-time literal LIMITs, every bound is
+**structural or a direct `$n` parameter**, so the five-parameter
+statement contract (queues, limit, worker, lease, oversample) is
+preserved and the bounds survive plans whose estimates never saw the
+values. Measured on PG 18.6 at 1k/30k due rows (the same EXPLAIN
+row-work oracle as `tests/test_dispatch_backlog_depth_bound.py`):
+widest plan node 100 rows at both depths, ~0.9 ms flat (shipped:
+1.4 → 9.2/19.7 ms), and under `plan_cache_mode = force_generic_plan`
+the same ids with the same flat row work — the generic-plan cliff is
+avoided by structure, not by estimates.
+
+- `ranked AS MATERIALIZED` + `top_ids` (LIMIT `$2::int`) finalize the
+  round's id set before the heap is re-touched — v1b's fence doctrine,
+  but `locked` then drives `jobs` by primary key through a **correlated
+  LATERAL** (`FOR UPDATE OF ... SKIP LOCKED` inside it): the
+  correlation denies the hash-join-over-backlog path at every depth,
+  including the shallow depths where a whole-pending Seq Scan is
+  honestly *cheaper* than `limit_n` pkey probes and is therefore chosen
+  on correct costs (an estimate fix alone cannot close that hole).
+- The terminal UPDATE re-finds its rows via
+  `j.id = ANY(ARRAY(SELECT id FROM eligible))`: the array materializes
+  once as an InitPlan; the ScalarArrayOp is served as a Bitmap Index
+  Scan on `jobs_pkey` (deep) or a scan-level filter (shallow) — both
+  bounded — where a `FROM eligible` join would re-open the planner's
+  seq-scan option at shallow depths. River ships the parameterized
+  LIMIT form (`LIMIT $5::integer` in `JobGetAvailable`); oban's basic
+  engine is the subset-CTE fence precedent.
+- The round-robin variant — a second depth defect this section's
+  prototypes did not cover (they measured strict-FIFO only): the
+  candidates lateral's `ROW_NUMBER` window ran over EVERY due row of
+  the (actor, queue) pair before the `fairness_rank <= residual *
+  oversample` filter, O(depth) per tick with no LIMIT to stop it. The
+  shipped shape probes each fairness cohort with
+  `ORDER BY + LIMIT residual * oversample` on the new
+  `jobs_round_robin_probe_idx` expression index
+  (actor, queue, COALESCE(fairness_key, '\_\_null\_\_'), priority DESC,
+  scheduled_at, id) WHERE status='pending' (migration 01.00.09_01_pre)
+  and runs the window over that bounded union — identical surviving
+  rows and ranks, so fairness contracts and the in-memory twin's
+  per-partition model are untouched (the differential harness stays
+  green without a twin change). Cohort enumeration is a
+  `WITH RECURSIVE` row-compare loose index scan (Postgres 18 has no
+  native skip scan), one bounded seek per distinct cohort; the
+  superseded `jobs_actor_fairness_dispatch_idx` is dropped by
+  01.00.09_01_post.
+- `per_actor_capacity`'s idle-actor prefilter moved from `EXISTS` to a
+  correlated per-queue LATERAL probe: the EXISTS is a semi-join the
+  planner executes as a hash over a whole-backlog Seq Scan whenever
+  `actor_config`'s row estimate favors one pass over jobs — and
+  `actor_config` (one row per actor, below autovacuum's insert
+  threshold) is usually never analyzed, so the ~440-row default guess
+  is production reality. The correlation removes the option.
+
+The guardrail is `tests/test_dispatch_backlog_depth_bound.py`
+(rows × loops per plan node ≤ a depth-independent bound at 1k and 30k,
+both variants), plus the SQL-shape pins in `tests/test_dispatch_sql.py`
+(including a negative pin: no subquery LIMIT bounds anywhere in the
+family).
 
 ---
 

@@ -18,6 +18,8 @@ __all__ = [
     "DEFAULT_EVENT_RETENTION_PERIOD",
     "DEFAULT_EVENT_WRITER_BATCH_SIZE",
     "DEFAULT_EVENT_WRITER_STATEMENT_TIMEOUT_MS",
+    "DEFAULT_KEYED_ROW_RECLAIM_BATCH_SIZE",
+    "DEFAULT_KEYED_ROW_RECLAIM_PERIOD",
     "DEFAULT_MAX_KEYED_RESERVATIONS",
     "DEFAULT_MAX_RETRY_BACKOFF",
     "DEFAULT_PRUNE_BATCH_SIZE",
@@ -306,6 +308,38 @@ backlog size. 10_000 matches the prune family's batch rather than the
 rows, so the ``RECLAIM_EVENT_VISIBILITY_DELAY`` INSERT-to-COMMIT margin
 that caps event *writers* does not bind it — the general
 bounded-per-transaction rule does.
+"""
+
+DEFAULT_KEYED_ROW_RECLAIM_PERIOD: Final[timedelta] = timedelta(hours=1)
+"""Default idle age at which fleet-reclaimable keyed rows (keyed
+``reservation_slots`` rows; PG-state-backed keyed ``rate_limit_buckets``
+rows) become deletable by the maintenance leader's fleet sweep.
+
+The effective value is ``WorkerSettings.keyed_row_reclaim_period``
+(``timedelta(0)`` there disables the sweep entirely); this constant is the
+setting's default. Why 1 hour: it is the SAME threshold the in-process
+registry eviction uses (``taskq.ratelimit.registry._KEYED_IDLE_THRESHOLD``)
+— a keyed entry the registry would already have evicted for idleness is
+exactly the entry whose rows the fleet sweep may reclaim, so the two
+reclamation tiers converge instead of the fleet sweep racing ahead of the
+registry's own idleness definition and churning rows under still-tracked
+buckets (the acquire-path heal covers the overlap, but the churn is
+pointless when one threshold serves both tiers).
+"""
+
+DEFAULT_KEYED_ROW_RECLAIM_BATCH_SIZE: Final[int] = 256
+"""Default bound on the fleet reclaim sweep's committed batch per tick.
+
+The effective value is ``WorkerSettings.keyed_row_reclaim_batch_size``. The
+unit is BUCKETS for ``reservation_slots`` (each bucket's full slot row set
+deletes together — a partial delete would shrink configured capacity) and
+ROWS for ``rate_limit_buckets`` (one row per bucket). Why 256: it matches
+the in-process pending-reclaim drain's per-statement slice
+(``_DEFAULT_RECLAIM_BATCH_NAMES`` in ``taskq.ratelimit.registry``), so both
+reclamation tiers move keyed rows at the same constant-size rate — at the
+default 30 s sweep interval that is ~512 buckets/min against a backlog
+bounded by the per-worker keyed caps, and one tick's write set stays
+independent of that backlog.
 """
 
 RECLAIM_OUTBOX_RETENTION_MULTIPLIER: Final[int] = 100

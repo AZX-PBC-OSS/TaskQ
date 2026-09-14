@@ -347,6 +347,15 @@ class PayloadValidationError(TaskQError):
     At dispatch: causes the job to transition to 'failed' with
     error_class='PayloadValidationError'. Non-retryable in both cases
     regardless of the actor's retry policy.
+
+    ``item_index`` is the failing item's position in the CALLER's
+    coordinate space (the batch list / the streaming caller's stream)
+    whenever the raise site knows one — batch per-item guards and their
+    remapping boundaries populate it, so a handler or retry tool reads
+    the position as a field instead of parsing the message. ``None``
+    is the no-coordinate case: single-item enqueue, dispatch-time
+    validation, non-itemized configuration errors. The message embeds
+    the same index for humans; the field is the machine-readable copy.
     """
 
     def __init__(
@@ -356,10 +365,12 @@ class PayloadValidationError(TaskQError):
         actor: str | None = None,
         payload_schema_ver: str | None = None,
         validation_errors: list[dict[str, object]] | None = None,
+        item_index: int | None = None,
     ) -> None:
         self.actor = actor
         self.payload_schema_ver = payload_schema_ver
         self.validation_errors: list[dict[str, object]] = validation_errors or []
+        self.item_index = item_index
         super().__init__(detail)
 
 
@@ -600,11 +611,14 @@ _ACTOR_CONFIG_DRIFT_HINT = (
 class ActorConfigDriftError(TaskQError):
     """One actor whose registered *structural* config differs from the stored row.
 
-    Only ``queue`` and ``metadata`` are structural — a mismatch there means
-    a stale worker is routing an actor to the wrong place, which is a
-    correctness bug. Capacity fields (``max_concurrent``, ``max_pending``,
-    ``result_ttl``) are operator-owned and never raise this error; see
-    :func:`taskq.worker.startup.sync_actor_config`.
+    Only ``metadata`` is structural — no operator surface can move it, so a
+    mismatch there is always a correctness bug and refuses boot. The queue
+    assignment is operator-owned once a row exists (moved by
+    ``taskq actor-config move-queue``): a differing literal never raises,
+    it logs ``actor-config-queue-override`` at boot and the stored
+    assignment wins. Capacity fields (``max_concurrent``,
+    ``max_pending``, ``result_ttl``) are likewise operator-owned and never
+    raise this error; see :func:`taskq.worker.startup.sync_actor_config`.
     """
 
     hint = _ACTOR_CONFIG_DRIFT_HINT
@@ -612,9 +626,9 @@ class ActorConfigDriftError(TaskQError):
     def __init__(
         self,
         actor: str,
-        field: Literal["queue", "metadata"],
-        registered: str | dict[str, object] | None,
-        stored: str | dict[str, object] | None,
+        field: Literal["metadata"],
+        registered: dict[str, object] | None,
+        stored: dict[str, object] | None,
     ) -> None:
         self.actor = actor
         self.field = field

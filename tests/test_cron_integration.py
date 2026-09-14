@@ -770,6 +770,8 @@ async def test_tc2_base_exception_propagates(pg_dsn: str, monkeypatch: pytest.Mo
 
         async def _raise_system_exit(
             row: asyncpg.Record,
+            *,
+            timeout_s: float | None = None,
         ) -> dict[str, object]:
             raise SystemExit("deliberate BaseException")
 

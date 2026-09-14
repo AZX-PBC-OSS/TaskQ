@@ -766,7 +766,17 @@ class RateLimitRegistry:
                 )
             schema = settings.schema_name if settings is not None else "taskq"
             new_reservation = ConcurrencyReservation(
-                name=concrete_name, slots=ref.slots, lease=ref.lease, schema=schema
+                name=concrete_name,
+                slots=ref.slots,
+                lease=ref.lease,
+                schema=schema,
+                # The fleet-reclaimable mark: a keyed-materialised
+                # bucket's rows carry their own staleness (keyed +
+                # last_used_at, stamped by the reservation's own
+                # acquire/release/ensure statements), so the maintenance
+                # leader can reclaim them after this process dies — the
+                # in-process bookkeeping below cannot survive that.
+                keyed=True,
             )
             self.register(new_reservation)
             # A fresh registration is a fresh lifecycle: any heal-window
@@ -927,6 +937,14 @@ class RateLimitRegistry:
                 capacity=ref.capacity,
                 refill_per_second=ref.refill_per_second,
                 backend=ref.backend,
+                # The fleet-reclaimable mark, restricted to PG-state
+                # backed buckets: only their acquire path touches the
+                # rate_limit_buckets row, so only there is the row's
+                # last_used_at a truthful liveness signal. A
+                # redis-backend keyed bucket's PG row (admin metadata +
+                # outage-fallback state) must never be swept — its
+                # stamp cannot speak for Redis-side use.
+                keyed=ref.backend == "postgres",
             )
             self.register(new_bucket)
             self._keyed_rate_limit_last_used[concrete_name] = monotonic()
@@ -940,15 +958,15 @@ class RateLimitRegistry:
             # look like "no limiter configured". Unlike ensure_slots for
             # keyed reservations (a correctness precondition for acquire),
             # this row is observability metadata, so a publish failure
-            # must NOT fail the acquisition — warn and continue. The row
-            # outlives the registry entry: its schema is captured here so
-            # a later idle eviction can record the row for the reclaim
-            # drain (an uncaptured publish failure leaves no row behind,
-            # so it records nothing).
+            # must NOT fail the acquisition — warn and continue.
             if pg_pool is not None:
                 try:
                     await _upsert_rate_limit_bucket_row(
-                        pg_pool, schema, concrete_name, "token_bucket"
+                        pg_pool,
+                        schema,
+                        concrete_name,
+                        "token_bucket",
+                        keyed=new_bucket.keyed,
                     )
                 except Exception:
                     logger.warning(
@@ -956,8 +974,19 @@ class RateLimitRegistry:
                         bucket_name=concrete_name,
                         exc_info=True,
                     )
-                else:
-                    self._keyed_rate_limit_row_schemas[concrete_name] = schema
+                # The reclaim capture rides the RESOLUTION, not the
+                # publish's outcome. A row can exist without a successful
+                # publish: the acquire path preseeds one for
+                # backend="postgres" (and for the redis backend's PG
+                # fallback) whatever the publish did, so keying the
+                # capture on publish success orphans that row — its idle
+                # eviction records nothing (the pending-reclaim set is the
+                # only code path that can name it) and steady state is one
+                # row per key whose first publish failed, unbounded in the
+                # caller-controlled key space. A captured name with no row
+                # drains as a one-statement no-op DELETE; an uncaptured
+                # row is permanent.
+                self._keyed_rate_limit_row_schemas[concrete_name] = schema
         elif concrete_name in self._keyed_rate_limit_last_used:
             # Keyed-materialized entry reused for the same concrete name:
             # refresh recency, and guard against a concrete-name COLLISION
@@ -987,6 +1016,33 @@ class RateLimitRegistry:
                     f"concrete name)"
                 )
             self._keyed_rate_limit_last_used[concrete_name] = monotonic()
+            if pg_pool is not None and concrete_name not in self._keyed_rate_limit_row_schemas:
+                # First pool-bearing touch of a bucket materialized without
+                # a pool: the materialisation arm above never ran its
+                # publish, so the admin-UI row is missing AND the reclaim
+                # capture is missing. Publish now (the same idempotent,
+                # best-effort statement the materialisation arm uses) and
+                # capture whatever the publish's outcome — the acquire
+                # path can preseed the row regardless (see the capture
+                # comment above). Self-limiting: once captured, this arm
+                # is a dict membership check on the reuse hot path and
+                # nothing else.
+                schema = settings.schema_name if settings is not None else "taskq"
+                try:
+                    await _upsert_rate_limit_bucket_row(
+                        pg_pool,
+                        schema,
+                        concrete_name,
+                        "token_bucket",
+                        keyed=existing.keyed,
+                    )
+                except Exception:
+                    logger.warning(
+                        "keyed-rate-limit-bucket-publish-failed",
+                        bucket_name=concrete_name,
+                        exc_info=True,
+                    )
+                self._keyed_rate_limit_row_schemas[concrete_name] = schema
         # else: the concrete name was STATICALLY pre-registered (not keyed-
         # materialized) — reuse it as-is and never stamp the tracking dict,
         # so the sweep can never evict a user's static entry.
@@ -1667,8 +1723,9 @@ class RateLimitRegistry:
         ``EXPIRE`` TTL on the bucket's hash (see
         :meth:`_resolve_rate_limit_name`) — that TTL governs Redis, not
         the PG ``rate_limit_buckets`` row the materialization path
-        published, so a bucket whose publish landed has its schema
-        captured at publish time and is recorded here for row
+        publishes, so a bucket resolved with a PG pool has its schema
+        captured at resolution time (publish outcome irrelevant — the
+        acquire path can preseed the row) and is recorded here for row
         reclamation: :meth:`drain_pending_reservation_reclaims` deletes
         the published row on the same sweep cadence, the exact shape of
         the reservation-side reclamation (steady state without it: one
@@ -1722,9 +1779,12 @@ class RateLimitRegistry:
             nonlocal vetoed
             schema = self._keyed_rate_limit_row_schemas.get(name)
             if schema is None:
-                # No published row (materialized with no pool, or the
-                # best-effort publish failed): nothing to reclaim — the
-                # eviction proceeds unrecorded.
+                # Never resolved with a PG pool on this worker: no publish,
+                # no preseed (a pool-less acquire cannot touch PG), so this
+                # registry created no row — nothing to reclaim from it. A
+                # pool-bearing sibling that resolved the same key holds its
+                # own capture for the concrete name and reclaims the row
+                # through its own eviction+drain.
                 return True
             if self._record_pending_reclaim(
                 self._pending_rate_limit_reclaims, schema, name, cap=cap
@@ -1992,27 +2052,36 @@ async def _upsert_rate_limit_bucket_row(
     schema: str,
     name: str,
     kind: str,
+    *,
+    keyed: bool = False,
 ) -> None:
     """Insert one ``rate_limit_buckets`` row (idempotent).
 
     Shared by :func:`sync_rate_limit_buckets` (startup bulk publish of
-    statically registered primitives) and the keyed-materialization path
+    statically registered primitives — ``keyed`` stays False, a static
+    row is never fleet-reclaimable) and the keyed-materialization paths
     in :meth:`RateLimitRegistry._resolve_rate_limit_name` (publish on
-    first acquisition), so both write identical rows.
+    first acquisition and on the first pool-bearing reuse), so both
+    write identical rows — the keyed paths pass the bucket's
+    fleet-reclaimable mark, which is True only for PG-state-backed
+    keyed buckets (see :class:`TokenBucket`'s ``keyed`` docstring).
 
     Uses ``ON CONFLICT DO NOTHING`` so concurrent workers and restarts
-    are idempotent.
+    are idempotent. The row is born with a fresh ``last_used_at`` (the
+    horizon starts ticking at publish time), so a keyed bucket that is
+    published but never acquired is still reclaimable after the horizon
+    — the acquire path's own stamps take over from the first acquire.
     """
     if not _IDENT_RE.match(schema):
         raise ValueError(f"invalid schema identifier: {schema!r}")
 
     upsert_sql = (
-        f'INSERT INTO "{schema}".rate_limit_buckets (bucket_name, kind, state, updated_at) '  # noqa: S608
-        f"VALUES ($1, $2, '{{}}'::jsonb, clock_timestamp()) "
+        f'INSERT INTO "{schema}".rate_limit_buckets (bucket_name, kind, state, updated_at, keyed, last_used_at) '  # noqa: S608
+        f"VALUES ($1, $2, '{{}}'::jsonb, clock_timestamp(), $3, clock_timestamp()) "
         f"ON CONFLICT (bucket_name) DO NOTHING"
     )
     async with pool.acquire() as conn:
-        await conn.execute(upsert_sql, name, kind)
+        await conn.execute(upsert_sql, name, kind, keyed)
 
 
 async def sync_rate_limit_buckets(

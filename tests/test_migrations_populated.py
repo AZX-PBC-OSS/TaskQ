@@ -643,8 +643,32 @@ async def _check_idempotency_scope_post(conn: asyncpg.Connection, schema: str) -
     )
 
 
+async def _check_keyed_row_fleet_reclaim_pre(conn: asyncpg.Connection, schema: str) -> None:
+    """After ``01.00.10_02:pre``: both keyed-row tables carry the
+    fleet-reclaim marking columns and their window partial indexes are
+    VALID, and every PRE-EXISTING row reads keyed=false — the migration
+    must never mark a live fleet's rows fleet-reclaimable on arrival
+    (a static bucket's rows deleted by the new leader sweep would leave
+    a permanently denying limiter)."""
+    for table in ("reservation_slots", "rate_limit_buckets"):
+        marked = await conn.fetchval(f'SELECT count(*) FROM "{schema}"."{table}" WHERE keyed')
+        assert marked == 0, (
+            f"{table}: pre-existing rows must read keyed=false after "
+            "01.00.10_02:pre — the migration adds the mark for FUTURE "
+            "keyed materialisations only, never for rows already in the "
+            "fleet (whose lifecycle origin the migration cannot know)"
+        )
+    assert await _index_validity(conn, schema, "reservation_slots_keyed_last_used_idx") is True, (
+        "the reservation_slots keyed window index must be VALID"
+    )
+    assert await _index_validity(conn, schema, "rate_limit_buckets_keyed_last_used_idx") is True, (
+        "the rate_limit_buckets keyed window index must be VALID"
+    )
+
+
 _MIGRATION_SPECIFIC_CHECKS: dict[str, _MigrationCheck] = {
     "01.00.03_01:post": _check_idempotency_scope_post,
+    "01.00.10_02:pre": _check_keyed_row_fleet_reclaim_pre,
 }
 
 

@@ -327,7 +327,7 @@ See [observability.md](observability.md) for OTel configuration.
 
 | Env Var | Type | Default | Description | Constraints |
 |---|---|---|---|---|
-| `TASKQ_FORCE_UPDATE_ACTOR_CONFIG` | `bool` | `false` | When `true`, silently overwrites a stored `actor_config` row's `queue` or `metadata` if they differ from the registered values. When `false`, that structural drift raises `ActorConfigDriftList` and the worker refuses to start. Does not affect `max_concurrent` / `max_pending` / `result_ttl` — those are operator-owned once a row exists and are never overwritten by the registered literal regardless of this flag; use `taskq actor-config set` to change them. Use for one deploy when intentionally re-routing an actor's `queue` or `metadata`, then unset. | — |
+| `TASKQ_FORCE_UPDATE_ACTOR_CONFIG` | `bool` | `false` | When `true`, silently overwrites a stored `actor_config` row's `metadata` if it differs from the registered value. When `false`, metadata drift raises `ActorConfigDriftList` and the worker refuses to start. Does not affect `queue` or the capacity fields (`max_concurrent` / `max_pending` / `result_ttl`) — those are operator-owned once a row exists and are never overwritten by the registered literal regardless of this flag; move an actor's queue with `taskq actor-config move-queue`, tune capacity with `taskq actor-config set`. Use for one deploy when intentionally adopting a code-side `metadata` change, then unset. | — |
 
 ### Cron Scheduler
 

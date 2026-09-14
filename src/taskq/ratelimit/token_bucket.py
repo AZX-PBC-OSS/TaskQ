@@ -281,15 +281,33 @@ class TokenBucket:
 
     Raises :class:`ValueError` if ``capacity <= 0`` or
     ``refill_per_second < 0``.
+
+    ``keyed`` (default ``False``) marks a bucket materialised from a
+    :class:`~taskq.ratelimit.refs.KeyedRateLimitRef` whose
+    ``rate_limit_buckets`` row is FLEET-reclaimable: keyed-materialised
+    AND PG-state-backed. The restriction to ``backend="postgres"`` is
+    the point, not an accident: only a PG-state-backed bucket's acquire
+    path touches its PG row, so only there does the row's
+    ``last_used_at`` stamp (refreshed by the preseed/upsert/refund
+    statements below) truthfully track use — a redis-backend keyed
+    bucket's healthy acquire never touches PG, and its PG row is
+    outage-fallback state plus admin metadata that the fleet sweep must
+    never delete (the stamp would be a false staleness signal for an
+    actively-used bucket). The registry's materialisation arm is the
+    single call site that knows both facts and passes the flag
+    accordingly; every other constructor call keeps the static default.
     """
 
     __slots__ = (
         "_backend",
         "_capacity",
+        "_keyed",
         "_mem_bucket",
         "_name",
         "_redis_refund_script",
+        "_redis_refund_script_client",
         "_redis_script",
+        "_redis_script_client",
         "_refill",
         "_script_lock",
         "_ttl",
@@ -302,6 +320,8 @@ class TokenBucket:
         refill_per_second: float,
         backend: RateLimitBackend = "redis",
         ttl: timedelta | None = None,
+        *,
+        keyed: bool = False,
     ) -> None:
         if capacity <= 0:
             raise ValueError(f"capacity must be > 0, got {capacity}")
@@ -312,6 +332,7 @@ class TokenBucket:
         self._capacity = capacity
         self._refill = refill_per_second
         self._backend: RateLimitBackend = backend
+        self._keyed = keyed
 
         self._ttl = ttl if ttl is not None else _default_ttl(capacity, refill_per_second)
 
@@ -320,7 +341,9 @@ class TokenBucket:
             self._mem_bucket = _InMemoryBucket(name, capacity, refill_per_second)
 
         self._redis_script: AsyncScript | None = None
+        self._redis_script_client: redis_async.Redis | None = None
         self._redis_refund_script: AsyncScript | None = None
+        self._redis_refund_script_client: redis_async.Redis | None = None
         self._script_lock: asyncio.Lock = asyncio.Lock()
 
     @property
@@ -342,6 +365,13 @@ class TokenBucket:
     @property
     def ttl(self) -> timedelta:
         return self._ttl
+
+    @property
+    def keyed(self) -> bool:
+        """Whether this bucket's ``rate_limit_buckets`` row is
+        fleet-reclaimable (see the class docstring for the exact
+        marking rule)."""
+        return self._keyed
 
     def holds_consumed_memory_quota(self) -> bool:
         """True if idle-evicting this bucket's registry entry would silently reset a consumed fixed quota.
@@ -642,9 +672,18 @@ class TokenBucket:
         await script(keys=[key], args=argv)  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]  # Why: redis-py AsyncScript.__call__ has no return-type annotation; refund return value is not consumed
 
     async def _ensure_refund_script(self, redis_client: "redis_async.Redis") -> "AsyncScript":
+        def get() -> "AsyncScript | None":
+            if self._redis_refund_script_client is not redis_client:
+                return None
+            return self._redis_refund_script
+
+        def bind(script: "AsyncScript") -> None:
+            self._redis_refund_script_client = redis_client
+            self._redis_refund_script = script
+
         return await ensure_redis_script(
-            lambda: self._redis_refund_script,
-            lambda s: setattr(self, "_redis_refund_script", s),
+            get,
+            bind,
             lambda: redis_client.register_script(REFUND_SCRIPT),
             self._script_lock,
         )
@@ -695,7 +734,13 @@ class TokenBucket:
             f"SELECT state, EXTRACT(EPOCH FROM clock_timestamp()) AS now_s "  # noqa: S608  # Why: schema_name is pre-validated against _IDENT_RE at settings load time; bucket_name is $1-bound
             f'FROM "{schema}".rate_limit_buckets WHERE bucket_name=$1 FOR UPDATE'
         )
-        update_sql = f'UPDATE "{schema}".rate_limit_buckets SET state=$1::jsonb, updated_at=clock_timestamp() WHERE bucket_name=$2'  # noqa: S608  # Why: schema_name is pre-validated against _IDENT_RE at settings load time; values are $1/$2-bound
+        # The refund is a release-path USE of the row (the token goes
+        # back), so it rides the same last_used_at refresh the acquire
+        # does: a bucket whose token was just refunded is mid-workflow,
+        # and an unstamped refund could let the fleet sweep catch the
+        # row idle past the horizon in the window between the acquiring
+        # worker's last acquire and its next one.
+        update_sql = f'UPDATE "{schema}".rate_limit_buckets SET state=$1::jsonb, updated_at=clock_timestamp(), last_used_at=clock_timestamp() WHERE bucket_name=$2'  # noqa: S608  # Why: schema_name is pre-validated against _IDENT_RE at settings load time; values are $1/$2-bound
 
         async with pg_pool.acquire() as conn, conn.transaction():
             row: asyncpg.Record | None = None
@@ -827,9 +872,18 @@ class TokenBucket:
         return result
 
     async def _ensure_script(self, redis_client: "redis_async.Redis") -> "AsyncScript":
+        def get() -> "AsyncScript | None":
+            if self._redis_script_client is not redis_client:
+                return None
+            return self._redis_script
+
+        def bind(script: "AsyncScript") -> None:
+            self._redis_script_client = redis_client
+            self._redis_script = script
+
         return await ensure_redis_script(
-            lambda: self._redis_script,
-            lambda s: setattr(self, "_redis_script", s),
+            get,
+            bind,
             lambda: redis_client.register_script(TOKEN_BUCKET_SCRIPT),
             self._script_lock,
         )
@@ -891,22 +945,37 @@ class TokenBucket:
         # pre-validated against _IDENT_RE at WorkerSettings load time.
         # The preseed stamps ts server-side via jsonb_build_object so the
         # first acquire's elapsed math is server-domain even before the
-        # SELECT below folds the epoch in.
+        # SELECT below folds the epoch in. It also carries the
+        # fleet-reclaim marking ($3): the keyed flag and a fresh
+        # last_used_at, so a row the acquire itself had to create (the
+        # publish failed, or a prior fleet sweep reclaimed it) is marked
+        # correctly at birth — a keyed PG bucket's row must never depend
+        # on a side quest's outcome for its reclamation bookkeeping.
         preseed_sql = (
-            f'INSERT INTO "{schema}".rate_limit_buckets (bucket_name, kind, state, updated_at) '  # noqa: S608  # Why: schema_name pre-validated; values are $1/$2-bound
+            f'INSERT INTO "{schema}".rate_limit_buckets (bucket_name, kind, state, updated_at, keyed, last_used_at) '  # noqa: S608  # Why: schema_name pre-validated; values are $1/$2/$3-bound
             f"VALUES ($1, 'token_bucket', "
             f"jsonb_build_object('tokens', $2::float8, "
-            f"'ts', EXTRACT(EPOCH FROM clock_timestamp())), clock_timestamp()) "
+            f"'ts', EXTRACT(EPOCH FROM clock_timestamp())), clock_timestamp(), $3, clock_timestamp()) "
             f"ON CONFLICT (bucket_name) DO NOTHING"
         )
         select_sql = (
             f"SELECT state, EXTRACT(EPOCH FROM clock_timestamp()) AS now_s "  # noqa: S608  # Why: schema_name is pre-validated against _IDENT_RE at settings load time; bucket_name is $1-bound
             f'FROM "{schema}".rate_limit_buckets WHERE bucket_name=$1 FOR UPDATE'
         )
+        # The upsert rides the fleet-reclaim marking on the write it
+        # already makes: last_used_at refreshes on every acquire (the
+        # staleness signal the leader sweep trusts), and keyed takes the
+        # CURRENT owner's mark — EXCLUDED.keyed — so a keyed bucket
+        # acquiring over a stale static-marked row claims it (reclaimable
+        # once idle again) and a static bucket acquiring over a former
+        # keyed row retires it (a live static declaration owns its row
+        # and must never lose it to the sweep).
         upsert_sql = (
-            f'INSERT INTO "{schema}".rate_limit_buckets (bucket_name, kind, state, updated_at) '  # noqa: S608  # Why: schema_name pre-validated; values are $1/$2-bound
-            f"VALUES ($1, 'token_bucket', $2::jsonb, clock_timestamp()) "
-            f"ON CONFLICT (bucket_name) DO UPDATE SET state=EXCLUDED.state, updated_at=clock_timestamp()"
+            f'INSERT INTO "{schema}".rate_limit_buckets (bucket_name, kind, state, updated_at, keyed, last_used_at) '  # noqa: S608  # Why: schema_name pre-validated; values are $1/$2/$3-bound
+            f"VALUES ($1, 'token_bucket', $2::jsonb, clock_timestamp(), $3, clock_timestamp()) "
+            f"ON CONFLICT (bucket_name) DO UPDATE SET state=EXCLUDED.state, "
+            f"updated_at=clock_timestamp(), last_used_at=clock_timestamp(), "
+            f"keyed=EXCLUDED.keyed"
         )
 
         async with pg_pool.acquire() as conn, conn.transaction():
@@ -918,7 +987,7 @@ class TokenBucket:
                 # to `capacity` tokens. Pre-seed a full-capacity row
                 # (idempotent — DO NOTHING on conflict) so the very first
                 # acquire also serializes on the row lock below.
-                await conn.execute(preseed_sql, self._name, self._capacity)
+                await conn.execute(preseed_sql, self._name, self._capacity, self._keyed)
                 return await conn.fetchrow(select_sql, self._name)
 
             row: asyncpg.Record | None = None
@@ -1021,8 +1090,10 @@ class TokenBucket:
             # to conn.execute fails because asyncpg does not auto-encode
             # Python dicts as jsonb.
             state_param = jsonb_param({"tokens": tokens, "ts": now})
-            # updated_at and the state ts are both server-domain now
-            await conn.execute(upsert_sql, self._name, state_param)
+            # updated_at, the state ts, and the fleet-reclaim stamps
+            # (last_used_at refresh, keyed re-mark) are all server-domain
+            # now
+            await conn.execute(upsert_sql, self._name, state_param, self._keyed)
 
         result = RateLimitDecision(
             allowed=allowed,

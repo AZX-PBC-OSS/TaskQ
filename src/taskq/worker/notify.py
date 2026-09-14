@@ -365,8 +365,23 @@ async def _health_check_loop(
             return
 
         try:
-            await conn.execute("SELECT 1")
+            # Why bounded: a hand-rolled factory or caller-owned conn
+            # carries no command_timeout (the DSN path's
+            # dispatcher_command_timeout already bounds this probe there),
+            # and this loop is deliberately exempt from the watchdog's
+            # stale-loop detector — an unbounded probe on a wedged conn
+            # parks the health check forever with nothing to recover it.
+            # notify_listener_setup_timeout is the SAME bound this loop
+            # family already applies to every bounded execute/registration
+            # (the LISTEN at setup and reconnect) — not a second
+            # mechanism; exhaustion is treated like any dead conn: the
+            # reconnect path runs.
+            await asyncio.wait_for(
+                conn.execute("SELECT 1"),
+                timeout=float(deps.settings.notify_listener_setup_timeout),
+            )
         except (
+            TimeoutError,
             asyncpg.PostgresConnectionError,
             asyncpg.InterfaceError,
             asyncpg.InternalClientError,  # Why: container stop can leave the protocol in an inconsistent state (e.g. "cannot switch to state 15"); must trigger reconnect, not crash the worker.
@@ -381,8 +396,17 @@ async def _health_check_loop(
                 channels=[ch for ch, _ in channels],
             )
             for channel, on_notify in channels:
-                with contextlib.suppress(asyncpg.InterfaceError):
-                    await conn.remove_listener(channel, on_notify)  # pyright: ignore[reportArgumentType]  # Why: stubs over-narrow callback type; runtime accepts sync callbacks
+                # Why bounded + TimeoutError suppressed: the UNLISTEN is a
+                # best-effort network round trip on a conn already judged
+                # dead — unbounded, a wedged conn parks the health check's
+                # reconnect path forever. notify_listener_setup_timeout is
+                # the loop family's existing execute bound; a timeout is
+                # another suppressed failure, not a crash.
+                with contextlib.suppress(asyncpg.InterfaceError, TimeoutError):
+                    await asyncio.wait_for(
+                        conn.remove_listener(channel, on_notify),  # pyright: ignore[reportArgumentType]  # Why: stubs over-narrow callback type; runtime accepts sync callbacks
+                        timeout=float(deps.settings.notify_listener_setup_timeout),
+                    )
             if deps.owns_notify_conn:
                 # Ownership contract (connections.py): TaskQ never closes
                 # caller-owned resources - the caller owns its lifecycle even
@@ -508,8 +532,20 @@ async def notify_listener_loop(
         _connected_lookup[backend] = False
         _connected_lookup.pop(backend, None)
         for channel, on_notify_callback in channels:
-            with contextlib.suppress(asyncpg.InterfaceError, RuntimeError, AttributeError):
-                await deps.notify_conn.remove_listener(channel, on_notify_callback)  # pyright: ignore[reportArgumentType, reportOptionalMemberAccess]  # Why: stubs over-narrow callback type; notify_conn is non-None after open_worker_deps
+            # Why bounded + TimeoutError suppressed: the teardown UNLISTEN
+            # is a best-effort network round trip — unbounded, a wedged
+            # notify conn stalls the listener's shutdown past every
+            # shutdown budget and the ShutdownWatchdog force-exits the
+            # process for it. notify_listener_setup_timeout is the loop
+            # family's existing execute bound; a timeout is another
+            # suppressed failure, not a crash.
+            with contextlib.suppress(
+                asyncpg.InterfaceError, RuntimeError, AttributeError, TimeoutError
+            ):
+                await asyncio.wait_for(
+                    deps.notify_conn.remove_listener(channel, on_notify_callback),  # pyright: ignore[reportArgumentType, reportOptionalMemberAccess]  # Why: stubs over-narrow callback type; notify_conn is non-None after open_worker_deps
+                    timeout=float(deps.settings.notify_listener_setup_timeout),
+                )
         logger.info(
             "notify-listener-stop",
             kind="notify_listener_stop",

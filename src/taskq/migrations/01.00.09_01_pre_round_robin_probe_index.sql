@@ -1,0 +1,70 @@
+-- Round-robin dispatch probe index: the expression index serving the
+-- per-cohort candidate probes and the rr_keys cohort enumeration in
+-- taskq/backend/_dispatch_sql.py's round-robin CTE (issue #130's
+-- depth-bounded dispatch geometry). Forward-only; there is no down
+-- migration. To revert, restore from backup. The literal "{schema}"
+-- token is substituted at apply time by the migration runner.
+--
+-- What it serves (see _dispatch_sql.py's module docstring for the full
+-- depth-bounding doctrine):
+--   * the candidates lateral's per-cohort probe: actor/queue equality
+--     plus COALESCE(fairness_key, '__null__') equality is a full
+--     three-column Index Cond prefix, the index's own
+--     (priority DESC, scheduled_at, id) order serves the probe's
+--     ORDER BY without a sort, and the STABLE scheduled_at bound is an
+--     index-level condition — so each probe is an ordered scan that
+--     stops at its LIMIT (residual * oversample rows), regardless of
+--     how deep the cohort behind that key is;
+--   * the rr_keys recursive enumeration: each step's
+--     (actor, queue, COALESCE(fairness_key, '__null__')) > (...)
+--     row comparison is an Index Cond on exactly these leading
+--     columns, one bounded seek per DISTINCT cohort — the loose index
+--     scan this Postgres generation has no native skip scan for.
+--
+-- The COALESCE(fairness_key, '__null__') expression is IMMUTABLE and
+-- must stay VERBATIM-identical to every use in the dispatch SQL (the
+-- probe equality, the rr_keys walk, and the window PARTITION BY): an
+-- expression index serves a query only when the query carries the
+-- identical expression, and that shared expression is also what folds
+-- every unkeyed job into ONE cohort with a job literally keyed
+-- '__null__' — the partition identity the shipped round-robin window
+-- already used (PARTITION BY COALESCE(fairness_key, '__null__')).
+--
+-- ── Why plain CREATE INDEX, not the no-transaction CONCURRENTLY form ──
+-- The migration runner's no-transaction directive + CREATE INDEX
+-- CONCURRENTLY template (src/taskq/migrate.py's module docstring)
+-- cannot ship here: it deadlocks under the runner's own startup
+-- discipline. apply_pending_locked serializes concurrent migrators
+-- with pg_advisory_lock, and CREATE INDEX CONCURRENTLY waits for every
+-- transaction that started before it — so a CIC build here waits on
+-- the second replica's advisory-lock wait, which waits on the first
+-- migrator's advisory lock: a cycle the deadlock detector breaks by
+-- failing the apply. This file follows the 01.00.02_01 /
+-- 01.00.07_01 precedent: a transactional plain CREATE INDEX, whose
+-- ordinary locks queue behind the advisory-lock waiter without a
+-- snapshot-wait cycle.
+--
+-- OPS NOTE (locks), same caveat as 01.00.02_01/01.00.07_01: the
+-- CREATE INDEX below takes a write-blocking lock on jobs for the
+-- duration of the build, and build time is proportional to the
+-- current pending-row count. Operators with a large or heavily
+-- backlogged jobs table should run the equivalent
+-- `CREATE INDEX CONCURRENTLY IF NOT EXISTS jobs_round_robin_probe_idx
+-- ON "{schema}".jobs (actor, queue, COALESCE(fairness_key,
+-- '__null__'), priority DESC, scheduled_at, id)
+-- WHERE status = 'pending'` manually outside the migration runner
+-- during a maintenance window, then let this migration no-op via
+-- IF NOT EXISTS.
+--
+-- ROLLING DEPLOY: pre-phase is safe for both code generations. The
+-- index is purely additive — the previous release's round-robin CTE
+-- never references it (its window scans the whole due set on
+-- jobs_actor_fairness_dispatch_idx), and this release's strict-FIFO
+-- CTE never references it either (its lateral rides
+-- jobs_actor_dispatch_idx). Only the new release's round-robin CTE
+-- depends on it, which is why the index ships in the pre phase,
+-- before the code rollout.
+CREATE INDEX IF NOT EXISTS jobs_round_robin_probe_idx
+    ON "{schema}".jobs (actor, queue, COALESCE(fairness_key, '__null__'),
+                        priority DESC, scheduled_at, id)
+    WHERE status = 'pending';

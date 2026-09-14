@@ -460,6 +460,7 @@ async def open_worker_deps(
             conns.dispatcher_pool_factory,
             dispatcher_dsn_factory,
             stack,
+            settings=settings,
             label="dispatcher",
             host=_dsn_host(direct_dsn) if direct_dsn else None,
         )
@@ -470,6 +471,7 @@ async def open_worker_deps(
             conns.heartbeat_pool_factory,
             heartbeat_dsn_factory,
             stack,
+            settings=settings,
             label="heartbeat",
             host=_dsn_host(direct_dsn) if direct_dsn else None,
         )
@@ -480,6 +482,7 @@ async def open_worker_deps(
             conns.worker_pool_factory,
             worker_dsn_factory,
             stack,
+            settings=settings,
             label="worker",
             host=_dsn_host(pooled_dsn) if pooled_dsn else None,
         )
@@ -530,7 +533,29 @@ async def open_worker_deps(
             resolved_notify_factory = None
         elif conns.notify_conn_factory is not None:
             resolved_notify_factory = conns.notify_conn_factory
-            notify_conn = await resolved_notify_factory()
+            # Why bounded: this open runs before any watchdog is armed, so
+            # an unbounded factory call wedges worker startup with nothing
+            # to detect or recover it. reload_factory_timeout is the SAME
+            # bound the reload path and the notify reconnect loop apply to
+            # every factory call — not a second mechanism. The DSN path
+            # below needs none of this: open_dedicated_conn applies
+            # asyncpg's own connect timeout.
+            try:
+                notify_conn = await asyncio.wait_for(
+                    resolved_notify_factory(),
+                    timeout=float(settings.reload_factory_timeout),
+                )
+            except TimeoutError as exc:
+                # Bootstrap is fatal: a worker that cannot establish its
+                # notify connection must refuse to start, naming the bound
+                # and the credential source that never returned.
+                raise TimeoutError(
+                    f"notify connection factory did not return within "
+                    f"{settings.reload_factory_timeout}s during worker bootstrap "
+                    "— a worker that cannot establish its notify connection must "
+                    "not boot. Check the credential provider behind "
+                    "WorkerConnections.notify_conn_factory."
+                ) from exc
             apply_keepalive_to_conn(notify_conn, label="notify")
         else:
             assert direct_dsn is not None  # guarded by _needs_pg_dsn
@@ -567,9 +592,27 @@ async def open_worker_deps(
 
             stack.push_async_callback(_close_notify_conn)
 
-        # Issue LISTEN so the connection is in subscription state
+        # Issue LISTEN so the connection is in subscription state. Why
+        # bounded: the open runs before any watchdog is armed, and a
+        # connection — factory-built, DSN-built, or caller-owned — can
+        # complete its handshake and still black-hole on the execute.
+        # notify_listener_setup_timeout is the SAME bound the notify
+        # listener applies to every LISTEN during setup and reconnect —
+        # not a second mechanism.
         channel = wake_channel(settings.schema_name)
-        await notify_conn.execute(f'LISTEN "{channel}"')
+        try:
+            await asyncio.wait_for(
+                notify_conn.execute(f'LISTEN "{channel}"'),
+                timeout=float(settings.notify_listener_setup_timeout),
+            )
+        except TimeoutError as exc:
+            raise TimeoutError(
+                f'notify LISTEN "{channel}" did not complete within '
+                f"{settings.notify_listener_setup_timeout}s during worker "
+                "bootstrap — a worker whose notify connection cannot enter "
+                "subscription state must not boot. Check the notify connection "
+                "and notify_listener_setup_timeout."
+            ) from exc
         logger.info("notify-listen-issued", channel=channel, owns_notify=owns_notify)
 
         # ── leader_conn (pg_dsn_direct, TCP keepalive) ─────────────────
@@ -580,7 +623,29 @@ async def open_worker_deps(
             resolved_leader_factory = None
         elif conns.leader_conn_factory is not None:
             resolved_leader_factory = conns.leader_conn_factory
-            leader_conn = await resolved_leader_factory()
+            # Why bounded: this open runs before any watchdog is armed, so
+            # an unbounded factory call wedges worker startup with nothing
+            # to detect or recover it. reload_factory_timeout is the SAME
+            # bound the reload path, the bootstrap slot-pool open, and the
+            # notify reconnect loop apply to every factory call — not a
+            # second mechanism. The DSN path below needs none of this:
+            # open_dedicated_conn applies asyncpg's own connect timeout.
+            try:
+                leader_conn = await asyncio.wait_for(
+                    resolved_leader_factory(),
+                    timeout=float(settings.reload_factory_timeout),
+                )
+            except TimeoutError as exc:
+                # Bootstrap is fatal: a worker that cannot establish its
+                # leader connection must refuse to start, naming the bound
+                # and the credential source that never returned.
+                raise TimeoutError(
+                    f"leader connection factory did not return within "
+                    f"{settings.reload_factory_timeout}s during worker bootstrap "
+                    "— a worker that cannot establish its leader connection "
+                    "must not boot. Check the credential provider behind "
+                    "WorkerConnections.leader_conn_factory."
+                ) from exc
             apply_keepalive_to_conn(leader_conn, label="leader")
         else:
             assert direct_dsn is not None  # guarded by _needs_pg_dsn
@@ -624,7 +689,30 @@ async def open_worker_deps(
         if conns.redis_client is not None:
             redis_client = conns.redis_client  # caller-owned
         elif conns.redis_client_factory is not None:
-            redis_client = await conns.redis_client_factory()
+            # Why bounded: this open runs before any watchdog is armed, so
+            # an unbounded factory call wedges worker startup with nothing
+            # to detect or recover it. reload_factory_timeout is the SAME
+            # bound the notify and leader factory opens above and the
+            # reload path apply to every factory call — not a second
+            # mechanism. The redis_url path below needs none of this:
+            # from_url is lazy (no network round trip at construction).
+            try:
+                redis_client = await asyncio.wait_for(
+                    conns.redis_client_factory(),
+                    timeout=float(settings.reload_factory_timeout),
+                )
+            except TimeoutError as exc:
+                # Bootstrap is fatal: a worker wired with a redis factory
+                # must refuse to start when the factory cannot deliver a
+                # client, naming the bound and the credential source that
+                # never returned.
+                raise TimeoutError(
+                    f"redis client factory did not return within "
+                    f"{settings.reload_factory_timeout}s during worker bootstrap "
+                    "— a worker wired with a redis client factory must not "
+                    "boot with no client. Check the credential provider behind "
+                    "WorkerConnections.redis_client_factory."
+                ) from exc
             owns_redis = True
         elif settings.redis_url is not None:
             import redis.asyncio as redis_async  # type: ignore[no-redef]  # Why: runtime import guarded by settings.redis_url; TYPE_CHECKING import is for annotations only
@@ -740,6 +828,7 @@ async def _resolve_pool(
     dsn_factory: PoolFactory | None,
     stack: AsyncExitStack,
     *,
+    settings: WorkerSettings,
     label: str,
     host: str | None = None,
 ) -> asyncpg.Pool:
@@ -753,15 +842,35 @@ async def _resolve_pool(
     by building ``dsn_factory`` only when the DSN is available and the role
     is not overridden. TaskQ-owned pools register a bounded-close callback
     (:func:`taskq._close.close_pool_bounded`) on ``stack`` for LIFO teardown.
+
+    The user-factory call is bounded by ``settings.reload_factory_timeout``:
+    it runs before any watchdog is armed, and the SAME bound already governs
+    every other pool factory call (the reload path, the bootstrap slot-pool
+    open). The DSN fallback needs none of this — asyncpg's own connect
+    timeout bounds ``create_pool``.
     """
     if concrete is not None:
         logger.info("pool-using-provided", pool=label, ownership="caller")
         return concrete
-    chosen = factory if factory is not None else dsn_factory
-    assert chosen is not None, (
-        f"{label} pool has no source — provide a concrete pool, factory, or DSN"
-    )
-    pool = await chosen()
+    if factory is not None:
+        try:
+            pool = await asyncio.wait_for(factory(), timeout=float(settings.reload_factory_timeout))
+        except TimeoutError as exc:
+            # Bootstrap is fatal: a worker that cannot open a role pool
+            # must refuse to start, naming the pool and the credential
+            # source that never returned.
+            raise TimeoutError(
+                f"{label} pool factory did not return within "
+                f"{settings.reload_factory_timeout}s during worker bootstrap "
+                f"— a worker that cannot open its {label} pool must not "
+                "boot. Check the credential provider behind "
+                f"WorkerConnections.{label}_pool_factory."
+            ) from exc
+    else:
+        assert dsn_factory is not None, (
+            f"{label} pool has no source — provide a concrete pool, factory, or DSN"
+        )
+        pool = await dsn_factory()
 
     async def _close_pool(p: asyncpg.Pool = pool, lbl: str = label) -> None:
         # Why default-arg binding: keeps this closure loop-safe, matching the
@@ -931,7 +1040,18 @@ async def reload_credentials(
                     )
                     apply_keepalive_to_conn(new_notify, label="notify")
                     channel = wake_channel(deps.settings.schema_name)
-                    await new_notify.execute(f'LISTEN "{channel}"')
+                    # Why bounded: a freshly built conn can complete the
+                    # factory handshake and still black-hole on the LISTEN
+                    # execute. notify_listener_setup_timeout is the SAME
+                    # bound the bootstrap open and the reconnect loop apply
+                    # to the identical execute — not a second mechanism;
+                    # exhaustion follows this path's failure style: the
+                    # resource is logged and marked failed, the reload
+                    # continues.
+                    await asyncio.wait_for(
+                        new_notify.execute(f'LISTEN "{channel}"'),
+                        timeout=float(deps.settings.notify_listener_setup_timeout),
+                    )
                     deps.notify_conn = new_notify
                     if old_notify is not None and old_notify is not new_notify:
                         _drain_old_conn(old_notify, "notify", drain_timeout)

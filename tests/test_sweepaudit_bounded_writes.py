@@ -51,6 +51,8 @@ from taskq.backend._batch_sql import (  # pyright: ignore[reportPrivateUsage]  #
 )
 from taskq.backend._sweeps import (  # pyright: ignore[reportPrivateUsage]  # Why: same.
     _SWEEP_4_SQL,
+    _SWEEP_IDLE_KEYED_BUCKETS_SQL,
+    _SWEEP_IDLE_KEYED_SLOTS_SQL,
 )
 from taskq.worker._leader_shared import (  # pyright: ignore[reportPrivateUsage]  # Why: same.
     _ARCHIVE_CTE_ACTOR_SQL,
@@ -112,6 +114,14 @@ _EXEMPT: dict[str, tuple[str, str]] = {
         "WHERE id = $1",
         "keyed single cron_schedules row (admin)",
     ),
+    "_MOVE_LOCK_ASSIGNMENT_SQL": (
+        "WHERE actor = $1",
+        "keyed single actor_config row (move_actor_queue's assignment lock)",
+    ),
+    "_MOVE_SET_ASSIGNMENT_SQL": (
+        "WHERE actor = $1",
+        "keyed single actor_config row (move_actor_queue's assignment flip)",
+    ),
     "CANCEL_ESCALATION_SQL": (
         "WHERE id = $1",
         "keyed single running job, escalated on cancel request",
@@ -158,6 +168,12 @@ _EXEMPT: dict[str, tuple[str, str]] = {
     "_SYNC_DELETE_SQL_TEMPLATE": (
         "WHERE bucket_name = $1",
         "one bucket's reservation_slots rows; slot count is configured capacity",
+    ),
+    "_ENSURE_SLOTS_SQL_TEMPLATE": (
+        "ON CONFLICT (bucket_name, slot_index)",
+        "one keyed-materialised bucket's reservation_slots rows; row count "
+        "is the configured slots capacity, and the conflict arm writes "
+        "only the keyed marker (never holder or lease state)",
     ),
     "_RECLAIM_SLICE_DELETE_SQL_TEMPLATE": (
         "bucket_name = ANY($1)",
@@ -304,6 +320,8 @@ _WINDOWED_WRITE_STATEMENTS: dict[str, str] = {
     "_ARCHIVE_CTE_ACTOR_SQL": _ARCHIVE_CTE_ACTOR_SQL,
     "_EXPIRY_CTE_SQL": _EXPIRY_CTE_SQL,
     "_SWEEP_4_SQL": _SWEEP_4_SQL,
+    "_SWEEP_IDLE_KEYED_BUCKETS_SQL": _SWEEP_IDLE_KEYED_BUCKETS_SQL,
+    "_SWEEP_IDLE_KEYED_SLOTS_SQL": _SWEEP_IDLE_KEYED_SLOTS_SQL,
     "_PRUNE_OLD_BATCHES_SQL": _PRUNE_OLD_BATCHES_SQL,
 }
 

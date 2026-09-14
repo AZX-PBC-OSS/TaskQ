@@ -198,7 +198,7 @@ taskq worker --actors MODULE:ATTR [OPTIONS]
 | `--worker-label` | `str` | `None` | `TASKQ_WORKER_LABEL` | Human-readable label stored in the workers table |
 | `--workgroup-instance` | `str` | `None` | `TASKQ_WORKGROUP_INSTANCE` | UUIDv7 identifying the workgroup orchestrator that launched this worker |
 | `--health-socket-path` | `str` | `None` | `TASKQ_HEALTH_SOCKET_PATH` | Unix socket path for the health server (use unique paths when running multiple workers) |
-| `--force-update-actor-config` | `bool` | `False` | `TASKQ_FORCE_UPDATE_ACTOR_CONFIG` | Overwrite drifted actor-config rows at startup |
+| `--force-update-actor-config` | `bool` | `False` | `TASKQ_FORCE_UPDATE_ACTOR_CONFIG` | Overwrite metadata-drifted actor-config rows at startup (queue and capacity are never boot-rewritten) |
 | `--until-idle` | `bool` | `False` | — | Run until all subscribed queues are drained, then exit. Exit 0 if all jobs succeeded, 3 if any failed, 4 if idle-max-runtime was exceeded. Incompatible with cron-driven workloads. |
 | `--idle-settle-window` | `float` | `None` | `TASKQ_IDLE_SETTLE_WINDOW` | Seconds to wait after queues appear empty before declaring drained. Default 2.0. Only used with `--until-idle`. |
 | `--idle-poll-interval` | `float` | `None` | `TASKQ_IDLE_POLL_INTERVAL` | How often to check queue depth. Default 1.0. Only used with `--until-idle`. |
@@ -275,16 +275,16 @@ On the command line the flag must be repeated once per queue.
 
 ### `--force-update-actor-config`
 
-At startup the worker compares each registered actor's `queue` and `metadata` values against the stored row in `{schema}.actor_config`. If either differs and this flag is absent, the worker refuses to start and prints:
+At startup the worker compares each registered actor's `metadata` value against the stored row in `{schema}.actor_config`. If it differs and this flag is absent, the worker refuses to start and prints:
 
 ```
 ActorConfigDriftList: ...
 Re-run with --force-update-actor-config to overwrite, or set TASKQ_FORCE_UPDATE_ACTOR_CONFIG=true.
 ```
 
-`max_concurrent`, `max_pending`, and `result_ttl` never appear in this error — they are operator-owned once a stored row exists (the `@actor(...)` literal only seeds them the first time) and can never drift. Use `taskq actor-config set` to change those; see [ActorConfig sync](workers.md#actorconfig-sync).
+`max_concurrent`, `max_pending`, `result_ttl`, and `queue` never appear in this error — they are operator-owned once a stored row exists (the `@actor(...)` literal only seeds them the first time) and can never drift into a refusal. A differing `queue` literal logs `actor-config-queue-override` at WARNING and the boot adopts the stored assignment (the rolling-deploy window of `taskq actor-config move-queue`); a differing capacity literal logs `actor-config-capacity-override` at info. Use `taskq actor-config set` to change capacity, `taskq actor-config move-queue` to move an actor's queue; see [ActorConfig sync](workers.md#actorconfig-sync).
 
-Use this flag on the first new pod of a rolling deploy when an actor's `queue` or `metadata` has changed. Remove it for subsequent pods — it is not safe to run permanently as it allows silent structural drift. See [workers.md](workers.md#actorconfig-sync) for the full drift protocol.
+Use this flag on the first new pod of a rolling deploy when an actor's `metadata` has changed. Remove it for subsequent pods — it is not safe to run permanently as it allows silent metadata drift. See [workers.md](workers.md#actorconfig-sync) for the full drift protocol.
 
 ### `taskq actor-config`
 
@@ -308,9 +308,9 @@ To see why a change is (or isn't) taking effect, diff the stored rows against th
 taskq actor-config diff --actors myapp.actors:registry
 ```
 
-Per actor and capacity field this prints the `@actor(...)` literal, the stored value, and the value the engine currently enforces (`effective`). It also flags `queue`/`metadata` mismatches — those are structural and block the next worker startup with `ActorConfigDriftList` — actors with no stored row yet, and leftover rows whose actor is no longer registered. Note the no-row case is field-dependent: an actor with no stored row **does not dispatch at all** (`max_concurrent` shows `effective=0` — the dispatch capacity gate reads only `actor_config` rows until a worker startup seeds it), while `max_pending` / `result_ttl` fall back to the code literal.
+Per actor and capacity field this prints the `@actor(...)` literal, the stored value, and the value the engine currently enforces (`effective`). It also flags `queue` mismatches (assignment drift — boot adopts the stored queue, but the cron leader's fires follow it while producers enqueue by their own literal, so the two routing halves disagree until you run `taskq actor-config move-queue` or deploy the matching literal), `metadata` mismatches (startup-blocking), actors with no stored row yet, and leftover rows whose actor is no longer registered. Note the no-row case is field-dependent: an actor with no stored row **does not dispatch at all** (`max_concurrent` shows `effective=0` — the dispatch capacity gate reads only `actor_config` rows until a worker startup seeds it), while `max_pending` / `result_ttl` fall back to the code literal.
 
-`taskq actor-config set` requires the actor to have a stored row already (created by a worker startup that registered it). `queue` and `metadata` are structural and are only ever changed by redeploying with a new `@actor(...)` registration (plus `--force-update-actor-config` if a stored row already exists).
+`taskq actor-config set` requires the actor to have a stored row already (created by a worker startup that registered it). `queue` is moved by `taskq actor-config move-queue`; `metadata` is structural and only ever changes by redeploying a new `@actor(...)` registration (plus `--force-update-actor-config` if a stored row already exists).
 
 ### `taskq actor-config deregister`
 
@@ -326,7 +326,37 @@ taskq actor-config deregister <ACTOR> [--force] [--purge-queue]
 - `--purge-queue` — also delete the orphaned `queues` row if no other actor
   references it.
 
-Exit code 0 on success, 1 on refusal (with error message) or not found.
+Exit code 0 on success, 2 on refusal (with error message), 3 on unknown actor.
+
+### `taskq actor-config move-queue`
+
+Move an actor to a different queue in one operator action — the one-step
+replacement for the old four-write lockstep (code literal + stored row +
+consumed-queue set + target `queues` row) whose fail-closed half refused
+worker boot mid-move:
+
+```bash
+taskq actor-config move-queue <ACTOR> <NEW_QUEUE>
+```
+
+The actor's pending/scheduled backlog is rewritten onto the target queue as
+bounded committed batches, then one final transaction locks the stored
+assignment, carries the old queue's `queues` row (mode + `max_concurrent`) to
+the target when the target has no row of its own, and flips it — so
+old-queue strays drain through the target's consumers, and a crash mid-drain
+re-runs cleanly. Running jobs finish where they were claimed; other actors
+on the old queue are untouched; cron fires follow the moved assignment from
+the flip on.
+
+Deploy the matching `@actor(queue=...)` literal before, during, or after
+the move — in any order. Workers boot on either side of the window (a
+stale literal logs `actor-config-queue-override` and adopts the stored
+assignment). Ensure workers consume the new queue, and keep consuming the
+old queue until every producer runs the new literal — stale producers
+keep enqueueing to it.
+
+Exit code 0 on success, 2 on refusal (invalid queue name, or the actor is
+already on that queue), 3 on unknown actor.
 
 ### Exit codes
 

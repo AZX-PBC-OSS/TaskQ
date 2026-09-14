@@ -39,7 +39,7 @@ from collections.abc import AsyncGenerator, AsyncIterator, Iterable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from functools import lru_cache
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Final
 from uuid import UUID
 
 import structlog
@@ -94,6 +94,30 @@ from taskq.types import BulkCancelResult, CancelResult
 __all__ = ["ActorsClient", "EventRow", "JobEvent", "TaskQ", "orjson_response_class"]
 
 logger = structlog.get_logger("taskq.client._taskq")
+
+_RELOAD_FACTORY_TIMEOUT_SECS: Final[float] = 30.0
+"""Bounds every ``pool_factory()`` call TaskQ itself makes — ``open()``'s
+first build (the AAD first token fetch lives inside the factory) and
+:meth:`TaskQ.reload_credentials`'s rotation. Mirrors
+``WorkerSettings.reload_factory_timeout``'s default (30.0): the SAME
+bound the worker applies to every factory call it makes (bootstrap,
+reload, notify reconnect — worker/deps.py), not a second mechanism.
+Client processes arm no watchdogs, so an unbounded factory call is a
+silent process wedge; a hung token endpoint fails the open (or the
+reload, leaving the live pool serving) loudly instead. Module-level so
+tests shrink it as a seam (the ``CLOSE_TIMEOUT_SECS`` convention)."""
+
+_CLIENT_POOL_COMMAND_TIMEOUT_SECS: Final[float] = 5.0
+"""Per-query bound on every pool TaskQ itself builds for the client — the
+DSN pool at :meth:`TaskQ.open` and the ``pg_provider`` sugar's factory
+pools. Mirrors ``WorkerSettings.dispatcher_command_timeout``'s default
+(5.0), the bound every worker-side pool TaskQ builds already carries: a
+black-holed Postgres parks the client's first enqueue/get/cancel forever
+without it, and client processes arm no watchdogs to convert the hang
+into a crash. Caller-supplied ``pool_factory``/``pool`` instances stay
+caller-owned (their timeouts are their choice), the same doctrine the
+worker applies to caller-supplied pools. Module-level so tests shrink it
+as a seam."""
 
 
 @lru_cache(maxsize=1)
@@ -236,6 +260,16 @@ class _ClientSettings:
     event_writer_reduced_batch_divisor: int = 4
     sweep_breaker_failure_threshold: int = 3
     sweep_breaker_window_secs: float = 600.0
+    # Enqueue advisory-lock budgets declared on BackendSettings: the
+    # backend's enqueue wrappers read them at the lock use sites
+    # (PostgresBackend._enqueue_lock_budgets — its defensive getattr
+    # fallbacks stay for settings objects that predate the fields).
+    # Defaults mirror WorkerSettings' (5000.0 each — the module constants
+    # the fallbacks supply), so a client-built backend behaves exactly as
+    # before the contract was declared.
+    max_pending_lock_timeout_ms: float = 5000.0
+    unique_for_lock_timeout_ms: float = 5000.0
+    idempotency_lock_timeout_ms: float = 5000.0
 
 
 @dataclass(slots=True)
@@ -341,7 +375,11 @@ class TaskQ:
             from taskq.auth import make_pg_pool_factory
 
             pool_factory = make_pg_pool_factory(
-                dsn, pg_provider, min_size=min_pool_size, max_size=max_pool_size
+                dsn,
+                pg_provider,
+                min_size=min_pool_size,
+                max_size=max_pool_size,
+                command_timeout=_CLIENT_POOL_COMMAND_TIMEOUT_SECS,
             )
             dsn = None
 
@@ -426,13 +464,32 @@ class TaskQ:
 
         if self._pool is None:
             if self._pool_factory is not None:
-                self._pool = await self._pool_factory()
+                # Why bounded: this open runs before anything else exists
+                # — no pool, no watchdog — so an unbounded factory call
+                # (the AAD first token fetch lives inside it) wedges the
+                # client process forever with no signal.
+                # _RELOAD_FACTORY_TIMEOUT_SECS is the SAME bound the
+                # worker applies to its bootstrap factory calls
+                # (worker/deps.py) — not a second mechanism.
+                try:
+                    self._pool = await asyncio.wait_for(
+                        self._pool_factory(), timeout=_RELOAD_FACTORY_TIMEOUT_SECS
+                    )
+                except TimeoutError as exc:
+                    raise TimeoutError(
+                        f"TaskQ.open(): pool_factory did not return within "
+                        f"{_RELOAD_FACTORY_TIMEOUT_SECS}s — the credential "
+                        "provider behind it (e.g. a token endpoint) is "
+                        "black-holed. The open fails loudly; nothing was "
+                        "built."
+                    ) from exc
             else:
                 stmt_kwargs = statement_cache_kwargs(settings)
                 created = await asyncpg.create_pool(
                     dsn=self._dsn,
                     min_size=self._min_pool_size,
                     max_size=self._max_pool_size,
+                    command_timeout=_CLIENT_POOL_COMMAND_TIMEOUT_SECS,
                     statement_cache_size=stmt_kwargs["statement_cache_size"],
                     max_cached_statement_lifetime=stmt_kwargs["max_cached_statement_lifetime"],
                 )
@@ -520,8 +577,21 @@ class TaskQ:
 
         old_pool = self._pool
         # Built before anything is swapped, so a factory failure leaves the
-        # live pool in place — see the docstring.
-        new_pool = await self._pool_factory()
+        # live pool in place — see the docstring. Why bounded: a hung token
+        # endpoint must fail the rotation loudly (the live pool keeps
+        # serving), never wedge the client — the SAME bound the worker's
+        # reload_credentials applies to its identical factory calls.
+        try:
+            new_pool = await asyncio.wait_for(
+                self._pool_factory(), timeout=_RELOAD_FACTORY_TIMEOUT_SECS
+            )
+        except TimeoutError as exc:
+            raise TimeoutError(
+                f"TaskQ.reload_credentials(): pool_factory did not return "
+                f"within {_RELOAD_FACTORY_TIMEOUT_SECS}s — the live pool is "
+                "untouched and still serving. Check the credential provider "
+                "behind TaskQ 'pool_factory'."
+            ) from exc
 
         self._pool = new_pool
         self._deps.worker_pool = new_pool

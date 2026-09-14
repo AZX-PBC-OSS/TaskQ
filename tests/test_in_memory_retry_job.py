@@ -1,8 +1,11 @@
 """Tests for InMemoryBackend.retry_job and PostgresBackend.retry_job.
 
 Verifies that retry_job:
-- Resets a failed/crashed/cancelled job to pending with cleared error fields
-- Sets attempt=0, cancel_phase=0, scheduled_at=now()
+- Re-pends a failed/crashed/cancelled job with cleared error fields
+- Keeps attempt monotonic (never reset — the Oban/River admin-retry
+  precedent) and raises max_attempts to GREATEST(max_attempts,
+  attempt + 1) so the budget gates open
+- Resets cancel_phase=0, scheduled_at=now()
 - Returns True for retryable jobs, False for non-retryable ones
 - Fires a wake NOTIFY (verified via wake subscriber on InMemoryBackend)
 """
@@ -72,7 +75,18 @@ class TestInMemoryRetryJob:
         row = await backend.get(job_id)
         assert row is not None
         assert row.status == "pending"
-        assert row.attempt == 0
+        assert row.attempt == 1, (
+            "MONOTONIC-ATTEMPT CONTRACT: retry_job must never reset the "
+            f"attempt counter — observed {row.attempt!r}. A reset revisits "
+            "the spent epoch's attempt numbers (the PG twin's job_attempts "
+            "PRIMARY KEY collision, pinned in "
+            "tests/test_retry_job_attempt_epoch_pk.py)."
+        )
+        assert row.max_attempts == 3, (
+            "CEILING-RAISE CONTRACT: a mid-budget re-run keeps the original "
+            "ceiling (GREATEST(max_attempts, attempt + 1) — attempt 1 of 3 "
+            f"stays 3) — observed {row.max_attempts!r}."
+        )
         assert row.error_class is None
         assert row.error_message is None
         assert row.error_traceback is None
@@ -169,19 +183,34 @@ class TestInMemoryRetryJob:
             assert wake_event.is_set()
 
     async def test_retry_resets_cancel_phase(self) -> None:
-        """retry_job resets cancel_phase to 0 (NONE)."""
+        """retry_job resets the whole cancel trail: cancel_phase to 0 (NONE)
+        and cancel_requested_at to None — the re-run is a fresh epoch, so it
+        must not inherit the spent epoch's request stamp (PG's SET clause
+        clears both)."""
         from taskq.backend._protocol import CancelPhase
 
         backend = _make_backend()
         job_id = await _enqueue_job(backend)
         row = backend._jobs[job_id]
-        backend._jobs[job_id] = replace(row, status="cancelled", cancel_phase=CancelPhase.FORCED)
+        backend._jobs[job_id] = replace(
+            row,
+            status="cancelled",
+            cancel_phase=CancelPhase.FORCED,
+            cancel_requested_at=_START + timedelta(seconds=1),
+        )
 
         await backend.retry_job(job_id)
 
         row = await backend.get(job_id)
         assert row is not None
         assert row.cancel_phase == CancelPhase.NONE
+        assert row.cancel_requested_at is None, (
+            "FRESH-EPOCH CONTRACT: the twin mirrors PG's retry_job SET "
+            "clause, which clears cancel_requested_at alongside "
+            "cancel_phase — a stale request stamp on a re-pended row "
+            "diverges from the PG contract source (pinned in "
+            "tests/test_rt_diff_terminal.py)."
+        )
 
     async def test_retry_clears_result_fields(self) -> None:
         """retry_job clears result, result_size_bytes, and result_expires_at."""

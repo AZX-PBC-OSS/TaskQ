@@ -112,8 +112,17 @@ _NAME_MAP: list[tuple[str, str]] = [
         "taskq_maintenance_leader_sweep_batch_size_configured",
     ),
     ("taskq.leader.lock_contention", "taskq_leader_lock_contention_total"),
+    ("taskq.cron.lock_contention", "taskq_cron_lock_contention_total"),
     ("taskq.jobs.by_status", "taskq_jobs_by_status"),
     ("taskq.jobs.oldest_due_age_seconds", "taskq_jobs_oldest_due_age_seconds"),  # ends in unit word
+    ("taskq.jobs.running_lease_expired", "taskq_jobs_running_lease_expired"),
+    ("taskq.enqueue.dedups", "taskq_enqueue_dedups_total"),
+    (
+        "taskq.ratelimit.acquire_dependency_failures",
+        "taskq_ratelimit_acquire_dependency_failures_total",
+    ),
+    ("taskq.ratelimit.denials", "taskq_ratelimit_denials_total"),
+    ("taskq.reservation.denials", "taskq_reservation_denials_total"),
 ]
 
 _RULES_YAML = (
@@ -144,6 +153,9 @@ _EXPECTED_ALERT_NAMES = {
     "TaskQSweepTimeouts",
     "TaskQSweepDegraded",
     "TaskQLeaderLockContention",
+    "TaskQRateLimitDependencyOutage",
+    "TaskQCronLockContention",
+    "TaskQRunningLeaseExpired",
 }
 
 
@@ -218,6 +230,7 @@ def _populate_all_instruments(meter: Any) -> None:
         callbacks=[lambda _: [Observation(100, {"sweep_name": "scheduled_to_pending"})]],
     )
     meter.create_counter("taskq.leader.lock_contention", unit="1").add(1, {"lock": "maintenance"})
+    meter.create_counter("taskq.cron.lock_contention", unit="1").add(1)
     meter.create_observable_gauge(
         "taskq.jobs.by_status",
         unit="1",
@@ -226,19 +239,32 @@ def _populate_all_instruments(meter: Any) -> None:
     meter.create_observable_gauge(
         "taskq.jobs.oldest_due_age_seconds", unit="s", callbacks=[lambda _: [Observation(0.0)]]
     )
+    meter.create_observable_gauge(
+        "taskq.jobs.running_lease_expired",
+        unit="1",
+        callbacks=[lambda _: [Observation(0)]],
+    )
+    meter.create_counter("taskq.enqueue.dedups", unit="1").add(
+        1, {"dedup_reason": "idempotency_key"}
+    )
+    meter.create_counter("taskq.ratelimit.acquire_dependency_failures", unit="1").add(
+        1, {"error_type": "ConnectionError"}
+    )
+    meter.create_counter("taskq.ratelimit.denials", unit="1").add(1, {"backend": "redis"})
+    meter.create_counter("taskq.reservation.denials", unit="1").add(1, {"source": "reservation"})
 
 
 # ── rules.yaml parses correctly ────────────────────────────────────
 
 
 def test_rules_yaml_parses_correctly() -> None:
-    """rules.yaml has no YAML errors; single group; 14 rules with required fields."""
+    """rules.yaml has no YAML errors; single group; 17 rules with required fields."""
     assert _RULES_YAML.exists(), f"rules.yaml not found at {_RULES_YAML}"
     data = yaml.safe_load(_RULES_YAML.read_text())
     groups = data["groups"]
     assert len(groups) == 1
     rules = groups[0]["rules"]
-    assert len(rules) == 14
+    assert len(rules) == 17
     for rule in rules:
         assert "alert" in rule
         assert "expr" in rule
@@ -247,14 +273,14 @@ def test_rules_yaml_parses_correctly() -> None:
         assert "summary" in rule.get("annotations", {})
 
 
-# ── rules.yaml has exactly 14 alerts ───────────────────────────────
+# ── rules.yaml has exactly 17 alerts ───────────────────────────────
 
 
-def test_rules_yaml_exactly_14_alerts() -> None:
-    """rules.yaml contains exactly 14 alerts with the names."""
+def test_rules_yaml_exactly_17_alerts() -> None:
+    """rules.yaml contains exactly 17 alerts with the names."""
     data = yaml.safe_load(_RULES_YAML.read_text())
     rules = data["groups"][0]["rules"]
-    assert len(rules) == 14
+    assert len(rules) == 17
     assert {r["alert"] for r in rules} == _EXPECTED_ALERT_NAMES
 
 

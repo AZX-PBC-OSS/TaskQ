@@ -168,6 +168,7 @@ class _FakeBackend(FakeBackend):
         progress_state: object = None,
         outcome: str = "snoozed",
         attempt: int | None = None,
+        denial_reason: str = "capacity",
     ) -> Literal["scheduled", "failed", "noop"]:
         self.mark_snoozed_calls.append(job_id)
         return "scheduled"

@@ -78,6 +78,14 @@ class _TestBackendSettings:
     event_writer_reduced_batch_divisor: int = 4
     sweep_breaker_failure_threshold: int = 3
     sweep_breaker_window_secs: float = 600.0
+    # Enqueue advisory-lock budgets declared on BackendSettings — same
+    # doctrine as every other knob above: the double must declare the
+    # contract, not pass by luck. Defaults mirror WorkerSettings' (5000.0
+    # each, the module constants the backend's defensive getattr
+    # fallbacks supply).
+    max_pending_lock_timeout_ms: float = 5000.0
+    unique_for_lock_timeout_ms: float = 5000.0
+    idempotency_lock_timeout_ms: float = 5000.0
 
 
 @dataclass

@@ -83,7 +83,16 @@ _LIVE_COLS = (
     "  THEN extract(epoch from finished_at - started_at) * 1000 "
     "  ELSE NULL END AS duration_ms, "
     "attempt, max_attempts, priority, identity_key, fairness_key, "
-    "locked_by_worker, cancel_requested_at, progress_state, error_message, "
+    # The lease columns: lock_expires_at for display, and lease_expired
+    # computed server-side against the database clock — the lease is
+    # written by that clock, so "is it past" is a stored predicate, not a
+    # Python-clock guess (the same domain-mixing rule _build_where applies
+    # to time windows). The zombie-running shape (running, lease past)
+    # must be visible on this page, not only on the gauge.
+    "locked_by_worker, lock_expires_at, "
+    "CASE WHEN status = 'running' AND lock_expires_at < clock_timestamp() "
+    "  THEN true ELSE false END AS lease_expired, "
+    "cancel_requested_at, progress_state, error_message, "
     "tags"
 )
 

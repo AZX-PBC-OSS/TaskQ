@@ -15,12 +15,12 @@ either an :class:`~taskq.testing.in_memory.InMemoryBackend` (tests) or a
 """
 
 import asyncio
-from collections.abc import Generator, Iterable
+from collections.abc import Callable, Generator, Iterable, Sequence
 from contextlib import AsyncExitStack, contextmanager
 from dataclasses import replace
 from datetime import datetime, timedelta
 from itertools import islice
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, NoReturn, cast
 from uuid import UUID
 
 import structlog
@@ -46,10 +46,16 @@ from taskq.backend._protocol import (
     ScheduleCreateArgs,
     ScheduleUpdateArgs,
 )
+from taskq.backend._records import (
+    _nul_item_payload_error,  # pyright: ignore[reportPrivateUsage]  # Why: the shared per-item jsonb NUL annotation helper — the same contract the streaming boundary re-locates; redefining it here would let client and backend drift
+    item_jsonb_param,
+    item_tags_jsonb_param,
+)
 from taskq.backend.clock import Clock, SystemClock
 from taskq.batch import MAX_BATCH_SIZE, BatchHandle, BatchSummary, EnqueueItem
 from taskq.batch_policy import BatchFailurePolicy
 from taskq.client._args import (
+    UniqueForNoIdentityWarner,
     build_batch_args,
     build_enqueue_args,
     enqueue_span,
@@ -116,7 +122,201 @@ def _item_payload_error(idx: int, actor_name: str, exc: ValidationError) -> Payl
         f"Payload validation failed for item {idx} (actor={actor_name!r}): {exc}",
         actor=actor_name,
         validation_errors=errs,
+        # The machine-readable copy of the message's index. ``idx`` is
+        # already caller-global at both callers: the atomic arm's lazy
+        # generator enumerates the WHOLE stream, and the chunked arm's
+        # remap passes chunk_offset + the located position — so the field
+        # needs no second shift anywhere (the chunked arm's backend errors
+        # are still chunk-local and shifted once by the registry; the
+        # atomic arm's backend errors arrive stream-global from the
+        # backend's index_base and cross this layer un-shifted).
+        item_index=idx,
     )
+
+
+# ── Streaming boundary: chunk-local → stream-global item indices ────────
+#
+# enqueue_batch_streaming's chunked arm funnels one caller stream through
+# per-chunk calls, and every per-item typed error those calls raise names
+# an index into THE CHUNK — the backend's per-call contract — while the
+# caller needs an index into THE STREAM: with no caller connection each
+# chunk is its own committed transaction, so a later chunk's chunk-local
+# index confidently names a stream position that was never attempted
+# while the committed prefix stays durable, and a retry guided by the
+# wrong index duplicates that prefix.
+
+
+def _remap_validation_error(
+    exc: Exception,
+    chunk_items: Sequence[EnqueueItem],
+    chunk_args: Sequence[EnqueueArgs] | None,
+    chunk_offset: int,
+) -> NoReturn:
+    """Locate the pydantic failure's chunk item by re-validating it, and
+    re-annotate at ``chunk_offset + its chunk-local position`` — the
+    committed prefix plus the in-chunk position is the item's position in
+    the CALLER's stream.
+
+    The raised :class:`~pydantic.ValidationError` carries no item index,
+    so the failing item is located by re-running the same validation the
+    args build already performed once per item (error path only — the
+    happy path validates exactly once, inside
+    :func:`~taskq.client._args.build_enqueue_args`).
+    """
+    for i, item in enumerate(chunk_items):
+        ref = item.actor_ref
+        try:
+            ref.payload_type.model_validate(item.payload)
+        except ValidationError:
+            # Why cast: the registry dispatch reached this remap via
+            # isinstance(ValidationError), so the caller guaranteed the
+            # type pydantic already re-established here.
+            raise _item_payload_error(
+                chunk_offset + i, ref.name, cast(ValidationError, exc)
+            ) from exc
+    raise exc
+
+
+def _nul_rejected_field(args: EnqueueArgs, idx: int) -> str | None:
+    """Which jsonb-bound field of batch item *idx* the shared NUL guard
+    rejects (``"payload"`` / ``"metadata"`` / ``"tags"``), or ``None``
+    when the item is clean.
+
+    Re-runs the same serialization guard the backend's batch preflight
+    ran — the shared helpers in :mod:`taskq.backend._records` — purely to
+    LOCATE the rejected item, so the streaming boundary can re-annotate
+    it at its stream-global index without parsing the raised message
+    apart.
+    """
+    try:
+        item_jsonb_param(args.payload, idx=idx, field="payload", actor=args.actor)
+    except PayloadValidationError:
+        return "payload"
+    try:
+        item_jsonb_param(args.metadata, idx=idx, field="metadata", actor=args.actor)
+    except PayloadValidationError:
+        return "metadata"
+    try:
+        item_tags_jsonb_param(args.tags, idx=idx, actor=args.actor)
+    except PayloadValidationError:
+        return "tags"
+    return None
+
+
+def _remap_payload_validation_error(
+    exc: Exception,
+    chunk_items: Sequence[EnqueueItem],
+    chunk_args: Sequence[EnqueueArgs] | None,
+    chunk_offset: int,
+) -> NoReturn:
+    """Re-run the shared jsonb NUL guard over the chunk's built args to
+    locate the rejected item, then re-raise its annotation at the
+    stream-global index.
+
+    The backend's batch preflight — PG's build loop and the in-memory
+    mirror alike, one shared guard — annotates its rejection with the
+    index into the CALL's args list, which on the streaming path is one
+    chunk. The annotation is reconstructed through the same helper the
+    guard itself uses, so field, actor and wording cannot drift from the
+    backend's.
+    """
+    if chunk_args is None:
+        # The args build raised before any args existed — it speaks
+        # ValueError/pydantic only, so this arm is unreachable from the
+        # boundary today; without built args there is no located item to
+        # shift, and the original crosses unchanged rather than
+        # guessed-at.
+        raise exc
+    for i, args in enumerate(chunk_args):
+        field = _nul_rejected_field(args, i)
+        if field is not None:
+            raise _nul_item_payload_error(
+                idx=chunk_offset + i, field=field, actor=args.actor
+            ) from exc
+    raise exc
+
+
+def _remap_batch_max_pending_error(
+    exc: Exception,
+    chunk_items: Sequence[EnqueueItem],
+    chunk_args: Sequence[EnqueueArgs] | None,
+    chunk_offset: int,
+) -> NoReturn:
+    """Shift the partition refusal's chunk-local indices to stream-global
+    and fold the committed prefix into ``admitted_count``.
+
+    The backend's per-actor partition refusal carries indices into the
+    CALL's args list — one chunk on the streaming path; the caller's
+    safe-retry contract (retry only the refused items, never the
+    committed prefix) needs indices into the CALLER's stream and an
+    ``admitted_count`` covering every committed item. Items after the
+    refusing chunk were never attempted.
+    """
+    refused = cast(BatchMaxPendingExceededError, exc)
+    raise BatchMaxPendingExceededError(
+        refusals=refused.refusals,
+        refused_indices={
+            actor: [i + chunk_offset for i in indices]
+            for actor, indices in refused.refused_indices.items()
+        },
+        admitted_count=chunk_offset + refused.admitted_count,
+    ) from exc
+
+
+_ItemErrorRemap = Callable[
+    [Exception, Sequence[EnqueueItem], Sequence[EnqueueArgs] | None, int],
+    NoReturn,
+]
+"""One registry member: given the raised per-item error, the chunk's
+items and built args, and the chunk's stream-global base (the committed
+prefix), re-raise the error annotated at stream-global item indices."""
+
+_ITEM_ERROR_REMAPS: dict[type[Exception], _ItemErrorRemap] = {
+    ValidationError: _remap_validation_error,
+    PayloadValidationError: _remap_payload_validation_error,
+    BatchMaxPendingExceededError: _remap_batch_max_pending_error,
+}
+"""The exhaustive registry of per-item error types the streaming boundary
+remaps from chunk-local to stream-global indices.
+
+Why a registry instead of except clauses at the call site: the chunked
+streaming path once remapped exactly the two types it knew about
+(pydantic ``ValidationError`` and the cap partition's
+``BatchMaxPendingExceededError``), so a third per-item typed error — the
+jsonb NUL guard's ``PayloadValidationError`` — silently crossed with its
+chunk-local index and confidently named a stream position that was never
+attempted, on a path where each chunk is separately committed and a
+retry guided by the wrong index duplicates the committed prefix. A new
+typed per-item backend error joins THIS mapping (one entry); the
+boundary's except clause is derived from it and never grows a bolt-on
+arm. A registered type's subclasses inherit its remap — the dispatch
+walks by ``isinstance``, not exact type.
+"""
+
+_REMAPPABLE_ITEM_ERROR_TYPES: tuple[type[Exception], ...] = tuple(_ITEM_ERROR_REMAPS)
+"""The boundary's except-clause tuple — derived from the registry, never
+hand-maintained alongside it, so the boundary catches exactly what the
+registry knows and nothing else."""
+
+
+def _remap_chunk_item_error(
+    exc: Exception,
+    chunk_items: Sequence[EnqueueItem],
+    chunk_args: Sequence[EnqueueArgs] | None,
+    chunk_offset: int,
+) -> NoReturn:
+    """The streaming boundary's single dispatch: find the raised error's
+    registry entry and hand it to that entry's remap.
+
+    First ``isinstance`` match wins, so a registered type's subclasses
+    inherit its remap. A non-member crosses unchanged — the boundary's
+    except clause admits only registry members, so that arm is reachable
+    only from direct (test) calls.
+    """
+    for error_type, remap in _ITEM_ERROR_REMAPS.items():
+        if isinstance(exc, error_type):
+            remap(exc, chunk_items, chunk_args, chunk_offset)
+    raise exc
 
 
 class JobsClient:
@@ -142,7 +342,7 @@ class JobsClient:
         self._settings: "TaskQSettings | None" = settings  # noqa: UP037  # Why: TaskQSettings is under TYPE_CHECKING; string annotation avoids runtime import.
         self._redis_client: "redis_async.Redis | None" = None  # type: ignore[type-arg]  # noqa: UP037  # Why: redis_async is under TYPE_CHECKING; string annotation avoids runtime import. type-arg: redis-py stubs expose Redis as an unparameterised generic.
         self._exit_stack: AsyncExitStack = AsyncExitStack()
-        self._warned_unique_for: set[str] = set()
+        self._unique_for_warner = UniqueForNoIdentityWarner()
         self._capacity_cache = ActorCapacityCache(backend, ttl=capacity_cache_ttl)
         # Why resolved here: every enqueue path in this client validates
         # against one number, and a client built without settings still gets
@@ -180,6 +380,18 @@ class JobsClient:
         except asyncpg.exceptions.UndefinedTableError as exc:
             schema = self._settings.schema_name if self._settings is not None else "taskq"
             raise SchemaNotMigratedError(schema) from exc
+
+    _OPEN_REDIS_TIMEOUT_SECS: float = 30.0
+    """Bounds the eager ``initialize()`` — the first broker round trip —
+    in :meth:`_open_redis`. Mirrors ``WorkerSettings.reload_factory_timeout``'s
+    default (30.0), the same budget the worker gives every first-use
+    redis/factory call (worker/deps.py bounds its redis factory
+    identically); the codebase bounds redis operations with
+    ``asyncio.wait_for`` (redis-py socket kwargs are configured nowhere in
+    src/taskq). A class attribute (not a module constant) so the edit
+    stays inside this file's Redis-creation region; tests shrink it as a
+    seam through the class, the ``CLOSE_TIMEOUT_SECS`` monkeypatch
+    convention."""
 
     async def _open_redis(self, settings: "TaskQSettings") -> None:
         """Open a Redis client when ``settings.redis_url`` is not ``None``.
@@ -221,7 +433,19 @@ class JobsClient:
             # the pushed callback through the bounded close (never raises;
             # aclose() on a never-initialized client is a no-op).
             self._exit_stack.push_async_callback(_close_client)
-            await client.initialize()
+            # Why bounded: initialize() is the EAGER first broker round
+            # trip — a black-holed Redis would wedge TaskQ.open() forever,
+            # and client processes arm no watchdogs. The pushed callback
+            # above already bounds the unwind's close.
+            try:
+                await asyncio.wait_for(client.initialize(), timeout=self._OPEN_REDIS_TIMEOUT_SECS)
+            except TimeoutError as exc:
+                raise TimeoutError(
+                    f"Redis client initialize() did not complete within "
+                    f"{self._OPEN_REDIS_TIMEOUT_SECS}s — the broker at "
+                    f"{settings.redis_url} is unreachable or black-holed. "
+                    "The open fails loudly instead of parking forever."
+                ) from exc
             self._redis_client = client
         self._settings = settings
 
@@ -242,27 +466,6 @@ class JobsClient:
         self._capacity_cache.invalidate()
 
     # ── Enqueue ────────────────────────────────────────────────────────
-
-    def _maybe_warn_unique_for_no_identity[P: BaseModel, R: BaseModel | None](
-        self, ref: ActorRef[P, R]
-    ) -> None:
-        if ref.name in self._warned_unique_for:
-            return
-        self._warned_unique_for.add(ref.name)
-        unique_for = ref.unique_for
-        assert unique_for is not None  # guarded by the call site
-        # When @actor gains an identity callable parameter, this warning can
-        # be moved to _build_ref alongside the actor-config-* family at
-        # actor.py:551-578 — the log event name stays the same.
-        logger.warning(
-            "actor_config_unique_for_ignored",
-            kind="actor_config_unique_for_ignored",
-            actor=ref.name,
-            queue=ref.queue,
-            unique_for_seconds=unique_for.total_seconds(),
-            reason="unique_for is set but identity_key was not provided at enqueue; "
-            "unique_for is a no-op without an identity_key",
-        )
 
     async def enqueue[P: BaseModel, R: BaseModel | None](
         self,
@@ -445,8 +648,10 @@ class JobsClient:
                 idempotency_max_bytes=self._idempotency_max_bytes,
             )
             span.set_attribute("messaging.message.id", str(args.id))
-            if ref.unique_for is not None and args.identity_key is None:
-                self._maybe_warn_unique_for_no_identity(ref)
+            if args.unique_for is not None and args.identity_key is None:
+                self._unique_for_warner.maybe_warn(
+                    actor=ref.name, queue=ref.queue, unique_for=args.unique_for
+                )
             with self._translate_schema_errors():
                 row = await self._backend.enqueue(args)
 
@@ -1027,12 +1232,13 @@ class JobsClient:
             # Consume chunks. The payload is validated exactly ONCE per item
             # (inside build_enqueue_args, via build_batch_args) — the previous
             # per-item pre-validation pass ran pydantic-core twice per item and
-            # its result was discarded. A ValidationError surfacing from
-            # build_batch_args is located back to its chunk offset (error path
-            # only, shifted by the committed prefix so the annotation is
-            # stream-global) so the failure keeps the index-annotated
-            # PayloadValidationError contract (M6) without a second
-            # validation on the happy path.
+            # its result was discarded. Every per-item typed error this chunk
+            # can raise — pydantic validation from the args build, the jsonb
+            # NUL guard and the per-actor cap partition from the backend call
+            # — crosses ONE remapping boundary below (_ITEM_ERROR_REMAPS) and
+            # leaves annotated at stream-global indices, keeping the
+            # index-annotated PayloadValidationError contract (M6) without a
+            # second validation on the happy path.
             while True:
                 chunk_items = list(islice(stream, chunk_size))
                 if not chunk_items:
@@ -1049,46 +1255,30 @@ class JobsClient:
                         ] = await self._capacity_cache.effective_max_pending(
                             ci.actor_ref.name, ci.actor_ref.max_pending
                         )
+                # The stream-global base for every per-item error this
+                # chunk can raise, captured BEFORE anything is built or
+                # inserted: total_count is exactly the committed prefix
+                # (chunks 1..N-1), so a chunk-local item index plus this
+                # base names the item's position in the CALLER's stream.
+                chunk_offset = total_count
+                chunk_args: list[EnqueueArgs] | None = None
+                # ONE boundary for every remappable per-item error: the
+                # registry's members (and their subclasses, via the
+                # isinstance dispatch) re-raise with stream-global item
+                # indices; anything else — driver errors, programming
+                # errors — crosses untouched.
                 try:
                     chunk_args = build_batch_args(
                         chunk_items, resolved_batch_id, max_pending_by_actor=effective_mp
                     )
-                except ValidationError as exc:
-                    # total_count is the committed prefix — exactly this
-                    # chunk's stream-global base — so the located item's
-                    # annotation names its position in the CALLER's
-                    # stream, not its chunk-local position.
-                    for offset, ci in enumerate(chunk_items):
-                        ref = ci.actor_ref
-                        try:
-                            ref.payload_type.model_validate(ci.payload)
-                        except ValidationError:
-                            raise _item_payload_error(total_count + offset, ref.name, exc) from exc
-                    raise
-                # Why capture the offset BEFORE the backend call: at this
-                # point total_count is exactly the number of items in the
-                # committed prefix (chunks 1..N-1), which is the index base
-                # a refused item must be shifted by to name its position in
-                # the CALLER's stream rather than its chunk-local position.
-                chunk_offset = total_count
-                try:
                     chunk_rows = await self._backend.enqueue_batch(
                         chunk_args, connection=connection
                     )  # type: ignore[call-arg]  # Why: asyncpg.Connection is compatible with the protocol's connection parameter at runtime
-                except BatchMaxPendingExceededError as exc:
-                    # The backend's partition refusal carries chunk-local
-                    # indices; re-raise with stream-global ones (plus the
-                    # committed prefix folded into admitted_count) so the
-                    # caller can retry exactly the refused items. Items
-                    # after the refusing chunk were never attempted.
-                    raise BatchMaxPendingExceededError(
-                        refusals=exc.refusals,
-                        refused_indices={
-                            actor: [i + chunk_offset for i in indices]
-                            for actor, indices in exc.refused_indices.items()
-                        },
-                        admitted_count=chunk_offset + exc.admitted_count,
-                    ) from exc
+                except _REMAPPABLE_ITEM_ERROR_TYPES as exc:
+                    _remap_chunk_item_error(exc, chunk_items, chunk_args, chunk_offset)
+                assert (
+                    chunk_args is not None
+                )  # Why: bound inside the try before the backend call; every failure path re-raises above
                 for i, row in enumerate(chunk_rows):
                     all_handles.append(
                         JobHandle(

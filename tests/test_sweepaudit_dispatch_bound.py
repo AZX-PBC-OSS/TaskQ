@@ -201,14 +201,29 @@ async def test_dispatch_lateral_scheduled_at_bound_is_index_served(
         # Mirrors the production candidates CTE's FROM shape
         # (pac CROSS JOIN LATERAL sq CROSS JOIN LATERAL (<lateral>) j) so
         # the lateral's outer references resolve exactly as at dispatch
-        # time; only the outer producers are literalized.
+        # time; only the outer producers are literalized. The params CTE
+        # is the production one verbatim: the lateral's LIMIT bound is
+        # the direct $5 parameter (the depth fix's foldable-bound
+        # doctrine — subquery LIMITs never fold into row estimates), so
+        # the wrapper must bind the same five typed parameters the real
+        # statement binds.
         wrapped = (
-            "WITH params AS (SELECT 2::int AS oversample) "
+            "WITH params AS (SELECT $1::text[] AS queues, $2::int AS limit_n, "
+            "$3::uuid AS worker_id, $4::interval AS lock_lease, "
+            "$5::int AS oversample) "
             "SELECT * FROM (SELECT 'dispatch_probe'::text AS actor, 10::int AS residual) pac "
             "CROSS JOIN LATERAL (VALUES ('default'::text)) AS sq(queue_name) "
             f"CROSS JOIN LATERAL ({lateral}) j"
         )
-        plan = await _explain(conn, wrapped)
+        plan = await _explain(
+            conn,
+            wrapped,
+            ["default"],
+            10,
+            new_uuid(),
+            timedelta(seconds=30),
+            2,
+        )
 
         assert "jobs_actor_dispatch_idx" in plan, (
             f"expected the per-(actor, queue) dispatch index in the plan:\n{plan}"

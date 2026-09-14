@@ -5,6 +5,7 @@ from taskq._di.registry import ProviderRegistry
 from taskq._di.scope import LifecycleDetectionWarning, Scope
 from taskq._di.scopes import (
     LoopScope,
+    LoopScopeSlotView,
     ProcessScope,
     ResolvedActorScope,
     ScopeContainer,
@@ -29,6 +30,7 @@ __all__ = [
     "FactoryShape",
     "LifecycleDetectionWarning",
     "LoopScope",
+    "LoopScopeSlotView",
     "ProcessScope",
     "ProviderEntry",
     "ProviderLifecycle",

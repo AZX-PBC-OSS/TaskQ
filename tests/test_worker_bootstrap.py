@@ -180,17 +180,19 @@ async def test_bootstrap_populates_actor_config(pg_dsn: str) -> None:
 
 
 @pytest.mark.asyncio
-async def test_drift_refuses_start(pg_dsn: str) -> None:
-    """Structural drift (queue) still refuses startup.
+async def test_metadata_drift_refuses_start(pg_dsn: str) -> None:
+    """Metadata drift still refuses startup.
 
-    max_concurrent is deliberately NOT the oracle here anymore: it is a
-    capacity field, operator-owned once a row exists, and never raises
-    regardless of how it differs from the registered literal — see
-    test_capacity_drift_does_not_block_start below.
+    Metadata is the remaining structural field — no operator surface can
+    move it, so any mismatch is a bug. The queue assignment is NOT the
+    oracle here: it is operator-owned once a row exists (moved by
+    `taskq actor-config move-queue`) and a differing literal boots with a
+    warning instead — see test_capacity_drift_does_not_block_start and
+    tests/test_actor_queue_move.py for that contract.
     """
     await _prepare_schema(pg_dsn)
 
-    @actor(name="X", queue="critical")  # type: ignore[call-overload] # Why: test-only stub.
+    @actor(name="X", metadata={"team": "platform"})  # type: ignore[call-overload] # Why: test-only stub.
     async def actor_x(payload: _Payload) -> None: ...
 
     registry: Mapping[str, ActorRef[Any, Any]] = {
@@ -203,7 +205,7 @@ async def test_drift_refuses_start(pg_dsn: str) -> None:
     try:
         await conn.execute(
             f"INSERT INTO {_SCHEMA_LABEL}.actor_config (actor, max_concurrent, queue, metadata) "
-            "VALUES ('X', 5, 'default', '{}'::jsonb)"
+            "VALUES ('X', 5, 'default', '{\"team\": \"ops\"}'::jsonb)"
         )
     finally:
         await conn.close()
@@ -214,9 +216,9 @@ async def test_drift_refuses_start(pg_dsn: str) -> None:
     drift_list = exc_info.value
     assert len(drift_list.drifts) == 1
     assert drift_list.drifts[0].actor == "X"
-    assert drift_list.drifts[0].field == "queue"
-    assert drift_list.drifts[0].registered == "critical"
-    assert drift_list.drifts[0].stored == "default"
+    assert drift_list.drifts[0].field == "metadata"
+    assert drift_list.drifts[0].registered == {"team": "platform"}
+    assert drift_list.drifts[0].stored == {"team": "ops"}
 
     conn = await asyncpg.connect(pg_dsn)
     try:
@@ -275,14 +277,15 @@ async def test_capacity_drift_does_not_block_start(pg_dsn: str) -> None:
 
 
 @pytest.mark.asyncio
-async def test_drift_force_overwrites(pg_dsn: str) -> None:
-    """force=True overwrites structural drift (queue) but leaves capacity
-    (max_concurrent) untouched — it was never gated by force in the first
-    place.
+async def test_drift_force_overwrites_metadata_but_not_queue(pg_dsn: str) -> None:
+    """force=True overwrites metadata drift but leaves the queue assignment
+    and capacity (max_concurrent) untouched — neither was ever gated by
+    force, and a force-boot rewriting the assignment from a stale literal
+    is exactly the move-undo hazard the UPSERT's conflict clause forecloses.
     """
     await _prepare_schema(pg_dsn)
 
-    @actor(name="X", queue="critical", max_concurrent=3)  # type: ignore[call-overload] # Why: test-only stub.
+    @actor(name="X", queue="critical", max_concurrent=3, metadata={"team": "platform"})  # type: ignore[call-overload] # Why: test-only stub.
     async def actor_x(payload: _Payload) -> None: ...
 
     registry: Mapping[str, ActorRef[Any, Any]] = {
@@ -295,7 +298,7 @@ async def test_drift_force_overwrites(pg_dsn: str) -> None:
     try:
         await conn.execute(
             f"INSERT INTO {_SCHEMA_LABEL}.actor_config (actor, max_concurrent, queue, metadata) "
-            "VALUES ('X', 5, 'default', '{}'::jsonb)"
+            "VALUES ('X', 5, 'default', '{\"team\": \"ops\"}'::jsonb)"
         )
     finally:
         await conn.close()
@@ -305,11 +308,15 @@ async def test_drift_force_overwrites(pg_dsn: str) -> None:
     conn = await asyncpg.connect(pg_dsn)
     try:
         row = await conn.fetchrow(
-            f"SELECT max_concurrent, queue FROM {_SCHEMA_LABEL}.actor_config WHERE actor = 'X'"
+            f"SELECT max_concurrent, queue, metadata FROM {_SCHEMA_LABEL}.actor_config "
+            "WHERE actor = 'X'"
         )
         assert row is not None
-        assert row["queue"] == "critical", "force=True must overwrite structural drift"
+        assert row["queue"] == "default", "force=True must not overwrite the queue assignment"
         assert row["max_concurrent"] == 5, "force=True must not touch capacity fields"
+        assert json.loads(row["metadata"]) == {"team": "platform"}, (
+            "force=True must overwrite metadata drift"
+        )
     finally:
         await conn.close()
 

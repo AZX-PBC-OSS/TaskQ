@@ -119,10 +119,12 @@ from taskq._json import (
 from taskq.backend._protocol import (
     AttemptRow,
     ConnLike,
+    DenialReason,
     ErrorInfo,
     JobId,
     JobRow,
     SnoozeOutcome,
+    validate_denial_reason,
     validate_snooze_outcome,
 )
 from taskq.backend._records import (
@@ -749,6 +751,7 @@ async def _mark_snoozed(
     outcome: SnoozeOutcome = "snoozed",
     *,
     attempt: int | None = None,
+    denial_reason: DenialReason = "capacity",
     acquire_timeout: float = DEFAULT_TERMINAL_POOL_ACQUIRE_TIMEOUT_S,
 ) -> Literal["scheduled", "failed", "failed:MaxAttemptsExceeded", "noop"]:
     # The statement's arms key on exactly the three SnoozeOutcome values;
@@ -756,8 +759,11 @@ async def _mark_snoozed(
     # so this boundary owns the check (the in-memory twin raises the
     # identical error) — before the pool is even touched, so an illegal
     # outcome raises loudly whatever the job's state instead of firing
-    # no arm and stranding the row 'running'.
+    # no arm and stranding the row 'running'. denial_reason gets the
+    # same boundary check for the same reason: an illegal reason must
+    # not silently fall into one arm's budget semantics.
     validate_snooze_outcome(outcome)
+    validate_denial_reason(denial_reason)
     branch: str
     async with pool.acquire(timeout=acquire_timeout) as conn:
         rec = await conn.fetchrow(
@@ -770,6 +776,7 @@ async def _mark_snoozed(
             _progress_jsonb_escaped(progress_state),
             outcome,
             attempt,
+            denial_reason,
         )
         if rec is None:
             return "noop"

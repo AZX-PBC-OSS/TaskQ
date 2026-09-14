@@ -1,27 +1,27 @@
 # ruff: noqa: S608  # Why: schema is the fixture's validated identifier throughout; every value is $-bound.
 
-"""KNOWN DEFECT, executably tracked: ``retry_job`` resets ``attempt`` to 0
-and can revisit attempt numbers from a spent epoch, colliding on
-``job_attempts``' PRIMARY KEY (job_id, attempt).
+"""PIN: ``retry_job`` keeps ``attempt`` monotonic, so a re-run job never
+revisits a spent epoch's attempt numbers and no ``job_attempts`` write
+can collide on the table's PRIMARY KEY (job_id, attempt).
 
-Reproduced by execution (a psql probe during this initiative's review):
-a job whose attempt row was written at attempt N, re-run via the admin
-``retry_job`` (which resets ``attempt = 0``), climbs back through N on
-re-dispatch, and its NEXT terminal write inserts at (job_id, N) again —
-``duplicate key value violates unique constraint "job_attempts_pkey"``.
-The hazard is shared by every attempt-row writer, not any one arm: the
-fence guarantees freshness within an epoch, and only the epoch reset
-revisits numbers.
-
-The fix is a semantics decision on ``retry_job``'s contract — keep
-``attempt`` monotonic across re-runs (the Oban/River admin-retry
-precedent: their retry APIs never reset the attempt counter), or give
-the attempt-row inserts conflict handling — and that decision belongs to
-the operator, not to this initiative's fix run. Until it is made, this
-pin holds the defect visible: ``xfail(strict=True)`` fails the suite the
-moment the defect is fixed, forcing this marker's removal, so it cannot
-rot into silence. The in-memory twin cannot catch this class at all (its
-attempt store is a list, not keyed), which is why the pin is PG-only.
+History (the defect this pin replaced): ``retry_job`` used to reset
+``attempt`` to 0, so a re-dispatched job climbed back through its spent
+numbers and the next terminal write inserted at (job_id, N) again —
+``duplicate key value violates unique constraint "job_attempts_pkey"``
+— a revisited-primary-key violation the consumer's terminal-write infra
+family misclassified as transient, stranding the row ``running``. The
+operator's decision follows the vendored admin-retry precedent — Oban's
+``retry_job`` never touches the counter and raises the ceiling
+(``GREATEST(max_attempts, attempt + 1)``,
+vendor/oban/lib/oban/engines/basic.ex:366-372); River's ``JobRetry``
+likewise leaves ``attempt`` alone and bumps ``max_attempts`` only when
+the budget is exhausted
+(vendor/river/riverdriver/riverpgxv5/internal/dbsqlc/river_job.sql:514-516)
+— so a re-run climbs to fresh attempt numbers and the collision is
+unrepresentable. Every assertion here fails if anyone reintroduces the
+epoch reset. The in-memory twin mirrors the same semantics (its attempt
+store is a list, not keyed, so the PK itself is PG-only — the monotonic
+counter and ceiling are pinned for it in tests/test_in_memory_retry_job.py).
 """
 
 from datetime import UTC, datetime, timedelta
@@ -36,19 +36,13 @@ from taskq.testing.pg import create_running_job, create_worker
 pytestmark = pytest.mark.integration
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="retry_job resets attempt to 0, so a re-run job revisits its "
-    "spent epoch's attempt numbers and the next terminal write collides on "
-    "job_attempts_pkey; fixed when retry_job keeps attempt monotonic (or "
-    "attempt inserts gain conflict handling) — then remove this marker",
-)
-async def test_retry_job_epoch_reset_collides_on_attempt_pk(
+async def test_retry_job_attempt_monotonic_no_duplicate_key_on_re_run(
     module_pg_schema: ModulePgSchema,
     clean_jobs_app: JobsApp,
 ) -> None:
-    """Terminal at attempt N → retry_job (attempt → 0) → re-dispatch to N
-    → terminal again: the second write at (job_id, N) must not collide."""
+    """Terminal at attempt N → retry_job → re-dispatch climbs past N →
+    terminal again at the fresh number: the attempt counter never goes
+    backwards and the second write lands without a PK collision."""
     deps = clean_jobs_app.deps
     backend = clean_jobs_app.backend
     schema = module_pg_schema.schema_name
@@ -73,19 +67,56 @@ async def test_retry_job_epoch_reset_collides_on_attempt_pk(
         )
 
         # Epoch 1: the terminal write lands the attempt row at (job, 1).
-        assert await backend.mark_failed_or_retry(job_id, worker_id, error, None)
+        assert await backend.mark_failed_or_retry(job_id, worker_id, error, None, attempt=1)
         row = await conn.fetchrow(
-            f'SELECT status, attempt FROM "{schema}".jobs WHERE id = $1', job_id
+            f'SELECT status, attempt, max_attempts FROM "{schema}".jobs WHERE id = $1', job_id
         )
         assert row is not None and row["status"] == "failed" and row["attempt"] == 1
 
-        # The admin re-run: resets attempt to 0 and re-queues the row.
+        # The admin re-run: the counter stays at its spent value and the
+        # ceiling rises so the budget gates open.
         assert await backend.retry_job(job_id)
+        repended = await conn.fetchrow(
+            f'SELECT status, attempt, max_attempts FROM "{schema}".jobs WHERE id = $1', job_id
+        )
+        assert repended is not None and repended["status"] == "pending"
+        assert repended["attempt"] == 1, (
+            "MONOTONIC-ATTEMPT CONTRACT: retry_job must never reset the "
+            f"attempt counter — observed {repended['attempt']!r}. A reset "
+            "revisits the spent epoch's attempt numbers and the next "
+            "terminal write collides on job_attempts_pkey (the wedge pinned "
+            "in tests/test_retry_job_wedge_consequence.py)."
+        )
+        assert repended["max_attempts"] == 2, (
+            "CEILING-RAISE CONTRACT: retry_job must raise max_attempts to "
+            "GREATEST(max_attempts, attempt + 1) so the budget gates open "
+            f"for the re-run — observed {repended['max_attempts']!r}."
+        )
 
-        # Epoch 2: dispatch claims it again — attempt walks back to 1.
+        # Epoch 2: dispatch claims it again — the counter climbs to the
+        # fresh number 2; the spent 1 is never revisited.
         claimed = await backend.dispatch_batch(worker_id, ["default"], 1, timedelta(minutes=5))
         assert [r.id for r in claimed] == [job_id]
+        assert claimed[0].attempt == 2, (
+            "the re-dispatch must climb past the spent epoch's numbers — "
+            f"observed attempt={claimed[0].attempt!r}; a walk back to 1 "
+            "means the epoch reset is back."
+        )
 
-        # The second terminal write at (job, 1): today this raises
-        # UniqueViolationError on job_attempts_pkey.
-        assert await backend.mark_failed_or_retry(job_id, worker_id, error, None)
+        # The second terminal write lands at the fresh (job, 2): under the
+        # old epoch reset this write raised UniqueViolationError on
+        # job_attempts_pkey.
+        assert await backend.mark_failed_or_retry(job_id, worker_id, error, None, attempt=2)
+        final = await conn.fetchrow(
+            f'SELECT status, attempt FROM "{schema}".jobs WHERE id = $1', job_id
+        )
+        assert final is not None and final["status"] == "failed" and final["attempt"] == 2
+        attempts = await conn.fetch(
+            f'SELECT attempt FROM "{schema}".job_attempts WHERE job_id = $1 ORDER BY attempt',
+            job_id,
+        )
+        assert [a["attempt"] for a in attempts] == [1, 2], (
+            "the attempt history must hold one row per spent number — a "
+            "duplicate-key write would have failed the statement above, and "
+            "a revisited number means the epoch reset is back."
+        )

@@ -41,6 +41,9 @@
                     {% endif %}
                     <th class="px-3 py-2.5 text-left text-xs font-semibold uppercase tracking-wider">{{ sort_header('Created', 'created_at', sort, order) }}</th>
                     <th class="px-3 py-2.5 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">Started</th>
+                    {% if tab == 'live' %}
+                    <th class="px-3 py-2.5 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">Lease</th>
+                    {% endif %}
                     <th class="px-3 py-2.5 text-left text-xs font-semibold uppercase tracking-wider">{{ sort_header('Finished', 'finished_at', sort, order) if tab == 'archived' else 'Finished' }}</th>
                     <th class="px-3 py-2.5 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">Duration</th>
                     <th class="px-3 py-2.5 text-left text-xs font-semibold uppercase tracking-wider">{{ sort_header('Attempt', 'attempt', sort, order) }}</th>
@@ -86,6 +89,27 @@
                     <td class="px-3 py-2 text-xs whitespace-nowrap">
                         {{ timestamp_cell(job.started_at) }}
                     </td>
+                    {% if tab == 'live' %}
+                    <td class="px-3 py-2 text-xs whitespace-nowrap">
+                        {# A lease cell exists for the zombie-running shape: a
+                           running row whose lease is past must not read as a
+                           healthy running job. lease_expired is computed
+                           server-side against the database clock; the dash is
+                           every non-running row's state. #}
+                        {% if job.status == 'running' and job.lock_expires_at %}
+                        <div class="flex items-center gap-1.5">
+                            {% if job.get('lease_expired') %}
+                            <span class="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-red-100 text-red-700 dark:bg-red-900 dark:text-red-300">expired</span>
+                            <span class="font-mono" title="lease {{ job.lock_expires_at }} expired — held by {{ job.locked_by_worker or '?' }}">{{ (job.locked_by_worker or '?')[:8] }}</span>
+                            {% else %}
+                            <span title="held by {{ job.locked_by_worker or '?' }}">{{ job.lock_expires_at[:19] }}</span>
+                            {% endif %}
+                        </div>
+                        {% else %}
+                        <span class="text-slate-400">—</span>
+                        {% endif %}
+                    </td>
+                    {% endif %}
                     <td class="px-3 py-2 text-xs whitespace-nowrap">
                         {{ timestamp_cell(job.finished_at) }}
                     </td>

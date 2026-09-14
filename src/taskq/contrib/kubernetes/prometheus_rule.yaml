@@ -31,7 +31,7 @@ spec:
           labels:
             severity: critical
           annotations:
-            summary: "TaskQ worker {{ $labels.worker_id }} heartbeat misses detected"
+            summary: "TaskQ worker heartbeat misses detected"
             description: >-
               Heartbeat renewal failures detected. If misses continue, the
               worker will self-isolate. Investigate PG connectivity
@@ -68,7 +68,7 @@ spec:
           labels:
             severity: warning
           annotations:
-            summary: "TaskQ lock p99 remaining time < 30s (worker {{ $labels.worker_id }})"
+            summary: "TaskQ lock p99 remaining time < 30s"
             description: >-
               Lock remaining-time-to-expiry p99 is below 30s. Locks are
               dangerously close to expiry, indicating the heartbeat loop is
@@ -190,3 +190,50 @@ spec:
               sustained contention at the attempt rate means a worker never
               wins the lock (the second-schema lock-loss signature). Runbook:
               docs/guides/runbooks.md#taskqleaderlockcontention.
+
+        - alert: TaskQRateLimitDependencyOutage
+          expr: rate(taskq_ratelimit_acquire_dependency_failures_total[5m]) > 0
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "TaskQ rate-limit acquires are failing on their store dependency"
+            description: >-
+              Rate-limit acquires are failing because the limiter's store
+              (Redis, or the PG fallback behind it) could not answer, and the
+              worker failed the acquire closed as a denial — every
+              rate-limited dispatch is snoozing while the outage lasts. Read
+              beside taskq_reservation_denials_total: a denial rate with this
+              counter rising is an outage masquerading as contention. Runbook:
+              docs/guides/runbooks.md#taskqratelimitdependencyoutage.
+
+        - alert: TaskQCronLockContention
+          expr: rate(taskq_cron_lock_contention_total[10m]) > 0
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "TaskQ cron ticks are being lost to advisory-lock contention"
+            description: >-
+              Cron ticks are returning without firing because another session
+              holds the cron advisory lock, sustained for 10 minutes. A brief
+              low rate is benign leader-handover overlap; a sustained rate
+              means cron is not running anywhere — a partitioned holder never
+              releasing the transaction-scoped lock is the fleet-wide cron
+              stall. Runbook: docs/guides/runbooks.md#taskqcronlockcontention.
+
+        - alert: TaskQRunningLeaseExpired
+          expr: taskq_jobs_running_lease_expired > 0
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "TaskQ running jobs are stuck on expired leases"
+            description: >-
+              Running jobs whose lock lease is past expiry, sustained for 5
+              minutes. A healthy fleet reads 0 — the reclaim sweep drains
+              expired leases within a tick or two of expiry — so a sustained
+              non-zero reading means reclaim is not draining: work is claimed
+              and stuck while health probes stay green. Inspect the admin
+              /jobs lease column (or jobs.lock_expires_at) for the holders.
+              Runbook: docs/guides/runbooks.md#taskqrunningleaseexpired.

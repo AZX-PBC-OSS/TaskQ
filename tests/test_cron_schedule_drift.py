@@ -10,8 +10,9 @@ Correcting the original report: it claimed this logged NOTHING. It logged
 `cron-schedule-already-registered` at DEBUG. The real defect is narrower and
 worse -- that line reported the CODE's values and never compared them to the
 stored row, so the mismatch itself was undetectable at any log level. Meanwhile
-structural `actor_config` drift raises `ActorConfigDriftList` and refuses to
-start. Same class of mistake, opposite loudness.
+`actor_config` metadata drift (the remaining structural field) raises
+`ActorConfigDriftList` and refuses to start. Same class of mistake, opposite
+loudness.
 """
 
 from __future__ import annotations

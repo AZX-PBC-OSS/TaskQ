@@ -9,6 +9,8 @@ wrappers that delegate.
 
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any, Final
 from uuid import UUID
@@ -53,6 +55,7 @@ from taskq.exceptions import (
 from taskq.obs import (
     get_logger,
     record_backpressure_error,
+    record_enqueue_dedup,
 )
 
 if TYPE_CHECKING:
@@ -170,8 +173,63 @@ async def _optional_savepoint(conn: ConnLike, *, enabled: bool) -> AsyncGenerato
         yield
 
 
+_DEDUP_WARN_PER_HIT_LIMIT: Final[int] = 3
+"""Per-call ceiling on per-hit terminal-target dedup WARNINGs before the
+aggregate summary takes over (``_DedupWarnBudget``). The bound the
+batch-scale contract demands is small: a re-submitted 1000-item batch
+against 500 terminal targets must not emit 500 WARNINGs from one call
+(#140). Three per-hit lines plus the one summary line stays at four —
+under the pinned bound of five with headroom, and still three full
+per-hit samples (actor, key, status) for an operator triaging which
+identities are pinned to dead jobs."""
+
+
+@dataclass
+class _DedupWarnBudget:
+    """Per-call state bounding the terminal-target WARNING arm of
+    :func:`_log_enqueue_dedup` at batch scale.
+
+    Why per-CALL aggregation rather than the dependency-failure
+    window-gate's time window (``worker/_consumer.py``, the precedent this
+    follows for the flood shape itself): the small-scale per-hit contract
+    must survive rapid successive calls — a time window keyed per process
+    would silently suppress the second small terminal-target batch logged
+    within it, and a window keyed per identity is unbounded in the batch
+    dimension the flood lives in. A call-local budget is deterministic,
+    needs no clock, and a :class:`contextvars.ContextVar` keeps concurrent
+    batch calls isolated per task.
+    """
+
+    terminal_hits: int = 0
+    warned_hits: int = 0
+
+    def charge_warning(self) -> bool:
+        """Count one terminal-target hit; True while a per-hit WARNING slot remains."""
+        self.terminal_hits += 1
+        if self.warned_hits < _DEDUP_WARN_PER_HIT_LIMIT:
+            self.warned_hits += 1
+            return True
+        return False
+
+    @property
+    def suppressed_hits(self) -> int:
+        """Terminal-target hits whose per-hit WARNING the budget suppressed."""
+        return self.terminal_hits - self.warned_hits
+
+
+_dedup_warn_budget: ContextVar[_DedupWarnBudget | None] = ContextVar(
+    "taskq_enqueue_dedup_warn_budget", default=None
+)
+"""The dedup WARNING budget of the CURRENT enqueue-batch call, if any.
+
+Set by the batch tiers around their result assembly (both backends); the
+single-enqueue paths never set it — a single enqueue is one hit by
+construction, no flood is possible, and the per-hit escalation contract
+holds there unchanged."""
+
+
 def _log_enqueue_dedup(row: JobRow, *, dedup_reason: str) -> None:
-    """Log one enqueue dedup hit, carrying the target's status.
+    """Report one enqueue dedup hit — the log line plus the dedup counter.
 
     A terminal target never runs the work again — the identity stays
     pinned to a dead job until it ages out of retention (an idempotency
@@ -182,7 +240,23 @@ def _log_enqueue_dedup(row: JobRow, *, dedup_reason: str) -> None:
     unique_for arm of the single-enqueue path, the batch result
     assembly, and the InMemory mirror — so the sites cannot drift apart
     in fields or volume; the per-site truth is ``dedup_reason`` alone.
+
+    The ``taskq.enqueue.dedups`` counter rides the same shared seam for
+    the same reason: every hit counts once on both backends, at every
+    scale, regardless of the log arm the hit took — and the batch-scale
+    WARNING budget below cannot mute the rate signal with the lines.
+
+    At batch scale the terminal-target WARNING arm is bounded per call
+    (#140): when the current call carries a ``_DedupWarnBudget`` (the
+    batch tiers set one), the first ``_DEDUP_WARN_PER_HIT_LIMIT``
+    terminal hits warn per-hit exactly as before and the rest are
+    counted for the call's ONE summary WARNING
+    (:func:`_log_enqueue_dedup_warn_summary`) — a per-item WARNING flood
+    is channel noise an operator mutes, destroying the signal the
+    WARNING exists to raise. The INFO arm (every live-target hit,
+    carrying status) is untouched at every scale.
     """
+    record_enqueue_dedup(dedup_reason)
     fields: dict[str, object] = {
         "kind": "enqueue_deduplicated",
         "job_id": str(row.id),
@@ -196,9 +270,37 @@ def _log_enqueue_dedup(row: JobRow, *, dedup_reason: str) -> None:
         "dedup_reason": dedup_reason,
     }
     if row.status in TERMINAL_STATUSES:
-        logger.warning("enqueue_deduplicated", **fields)
+        budget = _dedup_warn_budget.get()
+        if budget is None or budget.charge_warning():
+            logger.warning("enqueue_deduplicated", **fields)
+        # Else: the hit is counted for the call's summary WARNING; its
+        # per-hit line is the flood the budget exists to bound.
     else:
         logger.info("enqueue_deduplicated", **fields)
+
+
+def _log_enqueue_dedup_warn_summary(budget: _DedupWarnBudget, *, dedup_reason: str) -> None:
+    """Emit the ONE aggregate WARNING for the terminal-target dedup hits a
+    call suppressed — the flood's total, named once.
+
+    No-op when the budget suppressed nothing (small batches keep pure
+    per-hit WARNINGs, indistinguishable from the pre-bound contract).
+    Emitted on the failure path too (the caller's ``finally``): the
+    suppressed hits already happened, and a summary that only fires on
+    success is a failure that looks like a success.
+    """
+    suppressed = budget.suppressed_hits
+    if suppressed <= 0:
+        return
+    logger.warning(
+        "enqueue_deduplicated",
+        kind="enqueue_deduplicated",
+        dedup_reason=dedup_reason,
+        aggregate="terminal_dedup",
+        terminal_hits=budget.terminal_hits,
+        warned_hits=budget.warned_hits,
+        suppressed_hits=suppressed,
+    )
 
 
 def _attribute_duplicate_pair(
@@ -446,12 +548,14 @@ async def _acquire_unique_for_lock(
     in time" — the caller's correct response is to retry the same
     enqueue, which typically dedupes against the now-visible winner —
     which no BackpressureError handler expresses (those shed load or
-    log queue counts). Correspondingly NOT recorded against
-    ``taskq.backpressure.errors``: identity-key contention is not a
-    capacity signal, and spiking that counter would trip capacity
-    alerting; the ``unique-for-lock-timeout`` log event carries the
-    observability instead. A raw driver error never surfaces from
-    contention.
+    log queue counts). The refusal is still COUNTED on
+    ``taskq.backpressure.errors`` under its own bounded kind
+    (``unique_for_lock_timeout``), beside the warning log: a typed
+    refusal only a log reader can see is invisible at 3am, and the
+    ``kind`` label keeps identity contention off the capacity kinds
+    (``max_pending`` / ``max_pending_lock_timeout``) so an alert keyed
+    on those is not tripped by it. A raw driver error never surfaces
+    from contention.
     """
     if not await acquire_advisory_xact_lock_bounded(conn, lock_key, timeout_ms=timeout_ms):
         logger.warning(
@@ -460,6 +564,7 @@ async def _acquire_unique_for_lock(
             identity_key=identity_key,
             lock_timeout_ms=timeout_ms,
         )
+        record_backpressure_error(actor, kind="unique_for_lock_timeout")
         raise UniqueForLockTimeoutError(
             actor=actor,
             identity_key=identity_key,
@@ -769,8 +874,10 @@ async def _enqueue_on_conn(
         # usable state and undoing the GUC), nothing was inserted, and
         # the typed refusal carries the retry-yields-dedup guidance —
         # UniqueForLockTimeoutError's treatment for its identical
-        # situation. NOT backpressure-recorded: one pair's contention is
-        # not a capacity signal; this log event carries it instead.
+        # situation. Counted on ``taskq.backpressure.errors`` under its
+        # own bounded kind (``idempotency_lock_timeout``), beside the
+        # warning log: same asymmetry fix as the unique_for arm, and the
+        # kind label keeps one pair's contention off the capacity kinds.
         logger.warning(
             "idempotency-lock-timeout",
             actor=args.actor,
@@ -778,6 +885,7 @@ async def _enqueue_on_conn(
             idempotency_scope=args.idempotency_scope,
             lock_timeout_ms=idempotency_lock_timeout_ms,
         )
+        record_backpressure_error(args.actor, kind="idempotency_lock_timeout")
         raise IdempotencyKeyLockTimeoutError(
             actor=args.actor,
             idempotency_key=str(args.idempotency_key),
@@ -1007,6 +1115,7 @@ async def _enqueue_batch(
     connection: "ConnLike | None" = None,
     enforce_max_pending: bool = True,
     refuse_whole_batch_on_cap: bool = False,
+    index_base: int = 0,
 ) -> list[JobRow]:
     """Insert a batch, partitioning cap admission per actor.
 
@@ -1020,6 +1129,17 @@ async def _enqueue_batch(
     call owns the transaction, immediately after the insert on a
     caller-owned open transaction (that transaction's commit/rollback
     decides their durability).
+
+    ``index_base`` is the position of ``args_list[0]`` in the CALLER's
+    coordinate space. The default ``0`` is every existing caller (the
+    whole list IS the call); the atomic chunk arm passes the consumed
+    prefix so a chunk's per-item annotations (the jsonb NUL guard below)
+    name STREAM-GLOBAL indices — a chunk-local index from inside the
+    backend is unfixable at the client layer, which cannot know the
+    backend's chunk base. The cap partition's ``refused_indices`` stay
+    per-call deliberately: the only ``index_base != 0`` caller also sets
+    ``refuse_whole_batch_on_cap`` and surfaces the index-free
+    :class:`MaxPendingExceededError`, so there is no partition to shift.
     """
     if not args_list:
         raise ValueError("args_list must not be empty")
@@ -1056,14 +1176,20 @@ async def _enqueue_batch(
     # ValueError(NUL_JSONB_ERROR) that named nothing. Admission semantics
     # ride the partition below: a defective item rejects the whole call
     # (all-or-nothing, caller-space index) before the cap check or INSERT
-    # ever runs.
+    # ever runs. The index is index_base + the loop position so a chunk
+    # of a larger stream annotates at the STREAM-GLOBAL position; the
+    # annotation (message and PayloadValidationError.item_index) is the
+    # one coordinate the caller can act on, and the caller cannot
+    # reconstruct the chunk base from outside the backend.
     for idx, args in enumerate(args_list):
         ids.append(args.id)
         actors.append(args.actor)
         queues.append(args.queue)
         identity_keys.append(str(args.identity_key) if args.identity_key is not None else None)
         fairness_keys.append(args.fairness_key)
-        payloads.append(item_jsonb_param(args.payload, idx=idx, field="payload", actor=args.actor))
+        payloads.append(
+            item_jsonb_param(args.payload, idx=index_base + idx, field="payload", actor=args.actor)
+        )
         payload_schema_vers.append(args.payload_schema_ver)
         priorities.append(args.priority)
         max_attempts_list.append(args.max_attempts)
@@ -1079,7 +1205,9 @@ async def _enqueue_batch(
         # enqueue_batch); there is no Python pre-decision.
         scheduled_ats.append(args.scheduled_at)
         metadatas.append(
-            item_jsonb_param(args.metadata, idx=idx, field="metadata", actor=args.actor)
+            item_jsonb_param(
+                args.metadata, idx=index_base + idx, field="metadata", actor=args.actor
+            )
         )
         idempotency_keys.append(
             str(args.idempotency_key) if args.idempotency_key is not None else None
@@ -1097,7 +1225,7 @@ async def _enqueue_batch(
         # jsonb_in rejection as any other jsonb write; the item-annotated
         # dumps_jsonb_str wrapper guards it before the value ever reaches
         # Postgres.
-        tag_jsons.append(item_tags_jsonb_param(args.tags, idx=idx, actor=args.actor))
+        tag_jsons.append(item_tags_jsonb_param(args.tags, idx=index_base + idx, actor=args.actor))
 
     async def _insert_on_conn(
         conn: ConnLike,
@@ -1254,28 +1382,42 @@ async def _enqueue_batch(
                 pair = (rec["idempotency_scope"], str(rec["idempotency_key"]))
                 existing_by_idem[pair] = rec
 
-        result: list[JobRow] = []
-        for args in admitted_args:
-            arg_uuid = args.id
-            if arg_uuid in full_new_recs:
-                result.append(_job_row_from_record(full_new_recs[arg_uuid]))  # type: ignore[arg-type]  # Why: asyncpg Record is duck-typed; _job_row_from_record accepts asyncpg.Record at runtime
-            elif (
-                args.idempotency_key is not None
-                and (args.idempotency_scope, str(args.idempotency_key)) in existing_by_idem
-            ):
-                rec = existing_by_idem[(args.idempotency_scope, str(args.idempotency_key))]
-                row = _job_row_from_record(rec)  # type: ignore[arg-type]  # Why: asyncpg Record is duck-typed; _job_row_from_record accepts asyncpg.Record at runtime
-                _log_enqueue_dedup(row, dedup_reason="idempotency_key")
-                result.append(row)
-            else:
-                partial = new_rows_by_id.get(arg_uuid)
-                if partial is not None:
-                    result.append(_job_row_from_record(partial))  # type: ignore[arg-type]  # Why: asyncpg Record is duck-typed; _job_row_from_record accepts asyncpg.Record at runtime
+        # The per-call dedup WARNING budget (#140): the loop below is the
+        # only site this closure logs dedup hits, and exactly one of the
+        # caller arms' assemblies runs to completion per call (a legacy
+        # retry re-raises at the INSERT before reaching here), so a budget
+        # scoped to the assembly IS the call's budget. Reset in the
+        # finally so no leak escapes the closure into the caller's
+        # context; the summary rides the same finally so the failure path
+        # (a RuntimeError mid-assembly) still reports suppressed hits.
+        dedup_budget = _DedupWarnBudget()
+        dedup_budget_token = _dedup_warn_budget.set(dedup_budget)
+        try:
+            result: list[JobRow] = []
+            for args in admitted_args:
+                arg_uuid = args.id
+                if arg_uuid in full_new_recs:
+                    result.append(_job_row_from_record(full_new_recs[arg_uuid]))  # type: ignore[arg-type]  # Why: asyncpg Record is duck-typed; _job_row_from_record accepts asyncpg.Record at runtime
+                elif (
+                    args.idempotency_key is not None
+                    and (args.idempotency_scope, str(args.idempotency_key)) in existing_by_idem
+                ):
+                    rec = existing_by_idem[(args.idempotency_scope, str(args.idempotency_key))]
+                    row = _job_row_from_record(rec)  # type: ignore[arg-type]  # Why: asyncpg Record is duck-typed; _job_row_from_record accepts asyncpg.Record at runtime
+                    _log_enqueue_dedup(row, dedup_reason="idempotency_key")
+                    result.append(row)
                 else:
-                    raise RuntimeError(
-                        f"enqueue_batch: no row found for args.id={args.id!r} "
-                        f"after INSERT; this is a bug"
-                    )
+                    partial = new_rows_by_id.get(arg_uuid)
+                    if partial is not None:
+                        result.append(_job_row_from_record(partial))  # type: ignore[arg-type]  # Why: asyncpg Record is duck-typed; _job_row_from_record accepts asyncpg.Record at runtime
+                    else:
+                        raise RuntimeError(
+                            f"enqueue_batch: no row found for args.id={args.id!r} "
+                            f"after INSERT; this is a bug"
+                        )
+        finally:
+            _dedup_warn_budget.reset(dedup_budget_token)
+            _log_enqueue_dedup_warn_summary(dedup_budget, dedup_reason="idempotency_key")
         return result, refusals, refused_indices
 
     if (
@@ -1376,11 +1518,18 @@ async def _enqueue_batch_fast(
     *,
     connection: "ConnLike | None" = None,
     enforce_max_pending: bool = True,
+    index_base: int = 0,
 ) -> int:
     """COPY a batch, partitioning cap admission per actor (see
     :func:`_enqueue_batch`). Idempotency violations remain all-or-nothing
     — COPY has no ON CONFLICT arbiter, so a duplicate key aborts the
     entire statement; only cap admission partitions.
+
+    ``index_base`` is the caller-coordinate shift for the per-item NUL
+    annotations (see :func:`_enqueue_batch`); every current caller passes
+    the whole list, so the default ``0`` is the live behavior — the
+    parameter exists so a future chunked COPY caller gets stream-global
+    indices by construction instead of re-growing the local-index defect.
     """
     if not args_list:
         raise ValueError("args_list must not be empty")
@@ -1396,12 +1545,12 @@ async def _enqueue_batch_fast(
     # UPDATE below stamps status/scheduled_at/schedule_to_close/
     # result_expires_at from the server clock inside the same transaction —
     # never from this process's Python clock.
-    # Same per-item annotation as _enqueue_batch's build loop: the COPY
-    # record tuples are serialized here, before any statement is issued,
-    # so a NUL-bearing item rejects the whole batch (nothing written)
-    # with the item index, actor, and field named. Tags bind as text[]
-    # (no jsonb hop on this path) and stay guarded by the EnqueueArgs
-    # construction chokepoint alone.
+    # Same per-item annotation as _enqueue_batch's build loop (including
+    # the index_base shift): the COPY record tuples are serialized here,
+    # before any statement is issued, so a NUL-bearing item rejects the
+    # whole batch (nothing written) with the item index, actor, and field
+    # named. Tags bind as text[] (no jsonb hop on this path) and stay
+    # guarded by the EnqueueArgs construction chokepoint alone.
     records: list[tuple[object, ...]] = []
     for idx, args in enumerate(args_list):
         ids.append(args.id)
@@ -1417,7 +1566,9 @@ async def _enqueue_batch_fast(
                 args.queue,
                 str(args.identity_key) if args.identity_key is not None else None,
                 args.fairness_key,
-                item_jsonb_param(args.payload, idx=idx, field="payload", actor=args.actor),
+                item_jsonb_param(
+                    args.payload, idx=index_base + idx, field="payload", actor=args.actor
+                ),
                 args.payload_schema_ver,
                 args.priority,
                 0,
@@ -1443,7 +1594,9 @@ async def _enqueue_batch_fast(
                 str(args.idempotency_key) if args.idempotency_key is not None else None,
                 args.trace_id,
                 args.span_id,
-                item_jsonb_param(args.metadata, idx=idx, field="metadata", actor=args.actor),
+                item_jsonb_param(
+                    args.metadata, idx=index_base + idx, field="metadata", actor=args.actor
+                ),
                 list(args.tags),
             )
         )
