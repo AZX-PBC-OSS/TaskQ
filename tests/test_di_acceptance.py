@@ -121,7 +121,7 @@ def _settings(pg_dsn: str) -> WorkerSettings:
 
 
 @pytest.fixture(autouse=True)
-async def _migrated_taskq_test_schema(pg_dsn: str) -> AsyncIterator[None]:
+async def migrated_taskq_test_schema(pg_dsn: str) -> AsyncIterator[None]:
     """Provision ``taskq_test`` at HEAD before each acceptance boot.
 
     The boot path refuses on pending migrations (the schema-currency
