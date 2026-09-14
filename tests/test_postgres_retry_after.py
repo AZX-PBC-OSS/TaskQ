@@ -51,7 +51,7 @@ async def test_mark_retry_after_consume_budget_true_snoozed(
         )
 
     result = await backend.mark_retry_after(
-        JobId(job_id), worker_id, timedelta(seconds=5), consume_budget=True
+        JobId(job_id), worker_id, timedelta(seconds=5), consume_budget=True, attempt=1
     )
     assert result == "scheduled"
 
@@ -118,7 +118,7 @@ async def test_mark_retry_after_consume_budget_true_max_attempts_failed(
         )
 
     result = await backend.mark_retry_after(
-        JobId(job_id), worker_id, timedelta(seconds=5), consume_budget=True
+        JobId(job_id), worker_id, timedelta(seconds=5), consume_budget=True, attempt=3
     )
     assert result == "failed:MaxAttemptsExceeded"
 
@@ -186,7 +186,7 @@ async def test_mark_retry_after_consume_budget_true_deadline_failed(
         )
 
     result = await backend.mark_retry_after(
-        JobId(job_id), worker_id, timedelta(seconds=30), consume_budget=True
+        JobId(job_id), worker_id, timedelta(seconds=30), consume_budget=True, attempt=1
     )
     assert result == "failed:DeadlineExceeded"
 
@@ -256,7 +256,7 @@ async def test_mark_retry_after_consume_budget_true_noop(
         )
 
     result = await backend.mark_retry_after(
-        JobId(job_id), worker_id, timedelta(seconds=5), consume_budget=True
+        JobId(job_id), worker_id, timedelta(seconds=5), consume_budget=True, attempt=1
     )
     assert result == "noop"
 
@@ -295,7 +295,7 @@ async def test_mark_retry_after_no_consume_snoozed(
         )
 
     result = await backend.mark_retry_after(
-        JobId(job_id), worker_id, timedelta(seconds=5), consume_budget=False
+        JobId(job_id), worker_id, timedelta(seconds=5), consume_budget=False, attempt=1
     )
     assert result == "scheduled"
 
@@ -354,7 +354,7 @@ async def test_mark_retry_after_no_consume_deadline_failed(
         )
 
     result = await backend.mark_retry_after(
-        JobId(job_id), worker_id, timedelta(seconds=30), consume_budget=False
+        JobId(job_id), worker_id, timedelta(seconds=30), consume_budget=False, attempt=1
     )
     assert result == "failed:DeadlineExceeded"
 
@@ -426,8 +426,14 @@ async def test_mark_retry_after_consume_budget_true_attempt_not_incremented(
             assert before is not None
             expected_attempt = before["attempt"]
 
+        # The attempt-epoch fence: the write carries the row's CURRENT
+        # attempt (the re-dispatch below increments it every cycle).
         result = await backend.mark_retry_after(
-            JobId(job_id), worker_id, timedelta(seconds=1), consume_budget=True
+            JobId(job_id),
+            worker_id,
+            timedelta(seconds=1),
+            consume_budget=True,
+            attempt=expected_attempt,
         )
         assert result == "scheduled"
 
@@ -497,7 +503,7 @@ async def test_mark_snoozed_snoozed_branch(
             schedule_to_close=datetime.now(UTC) + timedelta(hours=1),
         )
 
-    result = await backend.mark_snoozed(JobId(job_id), worker_id, timedelta(seconds=5))
+    result = await backend.mark_snoozed(JobId(job_id), worker_id, timedelta(seconds=5), attempt=1)
     assert result == "scheduled"
 
     async with deps.worker_pool.acquire() as conn:
@@ -552,7 +558,7 @@ async def test_mark_snoozed_deadline_failed_branch(
             schedule_to_close=datetime.now(UTC) - timedelta(seconds=60),
         )
 
-    result = await backend.mark_snoozed(JobId(job_id), worker_id, timedelta(seconds=5))
+    result = await backend.mark_snoozed(JobId(job_id), worker_id, timedelta(seconds=5), attempt=1)
     assert result == "failed"
 
     async with deps.worker_pool.acquire() as conn:
@@ -630,8 +636,12 @@ async def test_mark_snoozed_job_events_and_attempts_both_branches(
         )
 
     # Exercise both branches
-    result_s = await backend.mark_snoozed(JobId(snoozed_job_id), worker_s, timedelta(seconds=5))
-    result_d = await backend.mark_snoozed(JobId(deadline_job_id), worker_d, timedelta(seconds=5))
+    result_s = await backend.mark_snoozed(
+        JobId(snoozed_job_id), worker_s, timedelta(seconds=5), attempt=1
+    )
+    result_d = await backend.mark_snoozed(
+        JobId(deadline_job_id), worker_d, timedelta(seconds=5), attempt=1
+    )
     assert result_s == "scheduled"
     assert result_d == "failed"
 

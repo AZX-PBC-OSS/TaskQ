@@ -543,8 +543,10 @@ async def sync_account(payload: SyncPayload) -> None: ...
   `identity_key` is omitted, `unique_for` is a **silent no-op** — the library logs a warning with
   event name `actor_config_unique_for_ignored` and creates a fresh job every time. This is a common
   footgun: configure `unique_for` on the actor but forget to pass `identity_key` at the call site.
-- Deduplication is **best-effort** — concurrent enqueues for the same `(actor, identity_key)` may
-  both insert. The dispatch CTE's `running_identities` filter ensures only one runs.
+- Deduplication is **single-flight** — a transaction-scoped advisory lock serializes the
+  preflight-then-insert per `(actor, identity_key)` on pool and bare-caller connections alike,
+  so concurrent enqueues dedupe against the winner's row rather than both inserting; the
+  dispatch CTE's `running_identities` filter remains as the backstop for cross-window races.
 - When a dedup match is found, `JobHandle.was_existing` is `True` and the handle wraps the
   existing job row.
 - `unique_states` controls which statuses count as "active" for the window check. Terminal states

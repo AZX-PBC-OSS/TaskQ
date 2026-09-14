@@ -1423,8 +1423,21 @@ class Backend(Protocol):
         fallback_result_ttl: timedelta | None = None,
         *,
         result_bytes: bytes | None = None,
+        attempt: int | None = None,
     ) -> bool:
         """Mark a job succeeded, computing ``result_expires_at`` at completion.
+
+        *attempt* is the attempt-identity epoch: the handler's
+        dispatch-time job-row ``attempt`` snapshot. The terminal fence is
+        one epoch deeper than the worker fence — the write lands only on
+        a row whose current ``attempt`` matches, so a stale handler's
+        write after a same-worker reclaim/redispatch (the row re-dispatched
+        at ``attempt + 1`` on the same worker) no-ops exactly like a
+        different worker's late write — the contract Oban's ``ack_query``
+        pins with ``attempted_at == ^job.attempted_at``. ``None`` — a
+        caller that cannot present the epoch — also no-ops: a terminal
+        write that cannot prove which attempt it terminates must not
+        terminate any attempt.
 
         The result reaches the backend in exactly one of two forms:
         ``result`` — the actor's result dict, which the backend serializes
@@ -1463,6 +1476,7 @@ class Backend(Protocol):
         fallback_result_ttl: timedelta | None = None,
         *,
         result_bytes: bytes | None = None,
+        attempt: int | None = None,
     ) -> bool:
         """Mark a job succeeded using the supplied connection.
 
@@ -1476,7 +1490,8 @@ class Backend(Protocol):
         ``result`` / ``result_bytes`` follow the same two-form contract as
         :meth:`mark_succeeded` — pass exactly one, or neither for a NULL
         result.  ``fallback_result_ttl`` follows the same resolution rule
-        as :meth:`mark_succeeded`.
+        as :meth:`mark_succeeded`.  ``attempt`` follows the same
+        attempt-epoch fence as :meth:`mark_succeeded`.
         """
         ...
 
@@ -1488,19 +1503,33 @@ class Backend(Protocol):
         retry_delay: timedelta | None,
         progress_seq: int = 0,
         progress_state: dict[str, object] | None = None,
+        *,
+        attempt: int | None = None,
     ) -> JobRow:
         """Mark a running job failed, or schedule a retry *retry_delay* later.
 
         ``retry_delay=None`` is the terminal-fail arm (``status='failed'``,
         the original ``error_info`` persisted).  A non-None delay is applied
         by the backend's own clock, never the caller's: ``scheduled_at =
-        now() + delay`` and the ``scheduled``/``pending`` status derive from
-        the delay alone (zero → immediate).  The same statement arbitrates
-        the ``schedule_to_close`` deadline server-side — when
-        ``clock_timestamp() + delay`` would land past the deadline, the row
-        is failed with ``error_class='DeadlineExceeded'`` instead of
-        retried — so app↔DB clock skew can neither void the retry backoff
-        nor kill a job whose deadline has not actually passed.
+        now() + delay`` — floored at
+        :data:`taskq.constants.MIN_DEFERRAL_INTERVAL`, the same bound the
+        deferral arms apply, so a failure-retry decision can never requeue
+        below the deferral floor — and the ``scheduled``/``pending`` status
+        derives from the effective delay alone (a sub-floor delay still
+        lands ``scheduled`` at least the floor out).  The same statement
+        arbitrates the ``schedule_to_close`` deadline server-side — when
+        ``clock_timestamp() + effective delay`` would land past the
+        deadline, the row is failed with ``error_class='DeadlineExceeded'``
+        instead of retried — so app↔DB clock skew can neither void the
+        retry backoff nor kill a job whose deadline has not actually
+        passed.
+
+        *attempt* is the attempt-identity epoch — see
+        :meth:`mark_succeeded`. A fenced-out write (stale epoch, wrong
+        worker, or a row that moved) raises
+        :class:`~taskq.exceptions.WorkerOwnershipMismatch`, which
+        :func:`taskq.retry.safe_mark_failed_or_retry` converts to the
+        ``None`` the handlers treat as a no-op.
         """
         ...
 
@@ -1510,6 +1539,8 @@ class Backend(Protocol):
         worker_id: UUID,
         progress_seq: int = 0,
         progress_state: dict[str, object] | None = None,
+        *,
+        attempt: int | None = None,
     ) -> bool: ...
 
     async def write_cancel_escalation(
@@ -1536,9 +1567,13 @@ class Backend(Protocol):
         progress_seq: int = 0,
         progress_state: dict[str, object] | None = None,
         outcome: SnoozeOutcome = "snoozed",
+        attempt: int | None = None,
     ) -> Literal["scheduled", "failed", "failed:MaxAttemptsExceeded", "noop"]:
         """Release a running job back to the queue without consuming retry
         budget.
+
+        *attempt* is the attempt-identity epoch — see
+        :meth:`mark_succeeded`; a fenced-out write returns ``"noop"``.
 
         A non-terminal snooze/denial writes NO ``job_attempts`` /
         ``job_events`` rows — it is admission control or a voluntary
@@ -1575,6 +1610,7 @@ class Backend(Protocol):
         consume_budget: bool = True,
         progress_seq: int = 0,
         progress_state: dict[str, object] | None = None,
+        attempt: int | None = None,
     ) -> Literal["scheduled", "failed:DeadlineExceeded", "failed:MaxAttemptsExceeded", "noop"]: ...
 
     # ── Attempt history ─────────────────────────────────────────────────

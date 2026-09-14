@@ -117,6 +117,7 @@ from taskq.constants import (
     DEFAULT_EVENT_RETENTION_BATCH_SIZE,
     DEFAULT_EVENT_WRITER_BATCH_SIZE,
     DEFAULT_EVENT_WRITER_STATEMENT_TIMEOUT_MS,
+    RECLAIM_OUTBOX_RETENTION_MULTIPLIER,
     wake_channel,
 )
 from taskq.obs import get_logger, log_state_change, record_deadline_exceeded_swept
@@ -431,14 +432,16 @@ _SWEEP_EVENT_TTL_SQL = """\
 -- kind='state_change' AND COALESCE(detail->>'reason','')='lock_expired'
 -- slice is the crash-reclaim outbox poll_reclaim_events tails under a
 -- trailing-watermark protocol (see poll_reclaim_events in
--- _sql_templates.py) — deleting an unconsumed outbox row silently loses
--- a crashed worker's reclaim forever, so the sweep exempts the slice at
--- every age. Inside the CTE the LIMIT applies to the already-filtered
--- deletable-only set; hoisted into the outer DELETE it would let an
--- outbox-dominated prefix of the oldest rows fill the window batch after
--- batch while the DELETE matched nothing — a drain that scans LIMIT rows
--- every call yet never deletes, i.e. under-deletion caused by the
--- carve-out's own placement.
+-- _sql_templates.py) — deleting an unconsumed outbox row too early
+-- silently loses a crashed worker's reclaim, so the sweep keeps the slice
+-- past the ordinary retention age (the expired_outbox arm below deletes
+-- it only at RECLAIM_OUTBOX_RETENTION_MULTIPLIER x that age — the
+-- derivation of the multiplier is in constants.py). Inside the CTE the
+-- LIMIT applies to the already-filtered deletable-only set; hoisted into
+-- the outer DELETE it would let an outbox-dominated prefix of the oldest
+-- rows fill the window batch after batch while the DELETE matched
+-- nothing — a drain that scans LIMIT rows every call yet never deletes,
+-- i.e. under-deletion caused by the carve-out's own placement.
 --
 -- Why COALESCE and not a bare (detail->>'reason') = 'lock_expired':
 -- detail->>'reason' is NULL for every event whose detail carries no
@@ -478,10 +481,51 @@ WITH expired AS MATERIALIZED (
       AND NOT (kind = 'state_change' AND COALESCE(detail->>'reason', '') = 'lock_expired')
     ORDER BY occurred_at, id
     LIMIT $2
+),
+expired_outbox AS MATERIALIZED (
+    -- The outbox age-cap arm: the carve-out above keeps unconsumed
+    -- lock_expired rows past the ordinary retention age so a lagging
+    -- consumer's watermark can still reach them, but NOT at every age --
+    -- a fleet with NO watch_reclaims consumer would retain every
+    -- lock_expired event forever, and a row committed below a cursor
+    -- that already passed it is unreachable to the poll (id > $1 cannot
+    -- go back), so without this arm such a row is both undeliverable and
+    -- undeletable. The cap is RECLAIM_OUTBOX_RETENTION_MULTIPLIER x the
+    -- same retention argument (constants.py derives the value against
+    -- both pinned ages).
+    --
+    -- Predicate form: the bare (detail->>'reason') = 'lock_expired'
+    -- (no COALESCE) is the VERBATIM WHERE clause of the
+    -- job_events_reclaim_idx partial index (01.00.02_01), so the planner
+    -- proves the index predicate and the scan is confined to the outbox
+    -- population instead of the whole table. The positive form needs no
+    -- COALESCE anyway: it selects outbox rows, and a NULL reason simply
+    -- makes the predicate NULL-false — an ordinary row this arm must not
+    -- touch, correctly left to the main window above.
+    --
+    -- ORDER BY id, not (occurred_at, id): id and occurred_at are
+    -- co-monotonic by the visibility-delay doctrine (constants.py
+    -- RECLAIM_EVENT_VISIBILITY_DELAY), so id order IS oldest-first here,
+    -- and the partial index is keyed on id — the ordered scan follows
+    -- the index and stops at the LIMIT, no top-N sort over the filtered
+    -- population. The scan cost is bounded by the outbox population
+    -- itself (unconsumed lock_expired rows), and this arm is what keeps
+    -- that population bounded — a self-draining set.
+    SELECT id
+    FROM "{schema}".job_events
+    WHERE kind = 'state_change' AND (detail->>'reason') = 'lock_expired'
+      AND occurred_at < statement_timestamp() - $1::interval * {outbox_multiplier}
+    ORDER BY id
+    LIMIT $2
+),
+to_delete AS (
+    SELECT id FROM expired
+    UNION ALL
+    SELECT id FROM expired_outbox
 )
 DELETE FROM "{schema}".job_events e
-USING expired
-WHERE e.id = expired.id
+USING to_delete
+WHERE e.id = to_delete.id
 RETURNING e.id"""
 
 # Per-sweep batched attempt INSERT templates (schema baked in via .format
@@ -1191,9 +1235,18 @@ async def sweep_expired_events(
     status holds its events forever under the cascade-only regime).
 
     The crash-reclaim outbox slice (``kind='state_change'`` and
-    ``detail->>'reason'='lock_expired'``) is exempt at every age — see
-    ``_SWEEP_EVENT_TTL_SQL``'s comment for why deleting an unconsumed
-    outbox row silently loses a crashed worker's reclaim.
+    ``detail->>'reason'='lock_expired'``) is kept past the ordinary
+    retention age — deleting an unconsumed outbox row while a lagging
+    consumer's watermark can still reach it silently loses a crashed
+    worker's reclaim — but NOT at every age: the same statement's outbox
+    arm deletes the slice at
+    ``RECLAIM_OUTBOX_RETENTION_MULTIPLIER`` times *retention*, so a fleet
+    with no ``watch_reclaims`` consumer cannot retain the slice forever
+    and a row committed below a watermark cursor that already passed it
+    (unreachable to the poll by construction) is still bounded. See
+    ``_SWEEP_EVENT_TTL_SQL``'s comment and
+    ``taskq.constants.RECLAIM_OUTBOX_RETENTION_MULTIPLIER`` for the
+    derivations.
 
     *retention* must be positive: ``timedelta(0)`` is the SETTING's
     disable sentinel (``WorkerSettings.event_retention_period``), never a
@@ -1205,7 +1258,7 @@ async def sweep_expired_events(
     (STABLE, so the retention partial index serves it as an Index Cond —
     see the module docstring); this function takes no ``now`` argument.
 
-    Returns the count of events deleted by this call.
+    Returns the count of events deleted by this call (both arms).
     """
     if not _IDENT_RE.match(schema):
         raise ValueError(f"invalid schema identifier: {schema!r}")
@@ -1216,7 +1269,9 @@ async def sweep_expired_events(
             "settings-level disable sentinel, not a sweep argument"
         )
 
-    sql = _SWEEP_EVENT_TTL_SQL.format(schema=schema)
+    sql = _SWEEP_EVENT_TTL_SQL.format(
+        schema=schema, outbox_multiplier=RECLAIM_OUTBOX_RETENTION_MULTIPLIER
+    )
     tag = await conn.execute(sql, retention, batch_size)
     count = parse_rowcount(tag)
     if count > 0:

@@ -484,6 +484,39 @@ async def open_worker_deps(
             host=_dsn_host(pooled_dsn) if pooled_dsn else None,
         )
 
+        # WorkerDeps is built BEFORE the dedicated connections open, with
+        # the conn/redis fields filled in as each open step completes:
+        # each TaskQ-owned dedicated conn registers its LIFO teardown
+        # guard at the moment it is opened — the pools' push-at-open
+        # discipline — so a failure in any LATER open step (the LISTEN
+        # execute, the leader factory, the redis factory) unwinds the
+        # stack with the guard already registered instead of leaking the
+        # session. The guards read through ``deps`` at teardown time
+        # (never a captured instance), which is why deps must exist this
+        # early.
+        deps = WorkerDeps(
+            settings=settings,
+            dispatcher_pool=dispatcher_pool,
+            heartbeat_pool=heartbeat_pool,
+            worker_pool=worker_pool,
+            notify_conn=None,
+            leader_conn=None,
+            redis_client=None,
+            notify_conn_factory=None,
+            leader_conn_factory=None,
+            # Reload (SIGHUP) only ever rebuilds via the user's own factory —
+            # a fresh credential fetch. The DSN-fallback path uses static
+            # credentials baked into the DSN, so there is nothing to rotate;
+            # only conns.*_factory (not the DSN closures above) is stored here.
+            dispatcher_pool_factory=conns.dispatcher_pool_factory,
+            heartbeat_pool_factory=conns.heartbeat_pool_factory,
+            worker_pool_factory=conns.worker_pool_factory,
+            redis_client_factory=conns.redis_client_factory,
+            owns_notify_conn=owns_notify,
+            owns_leader_conn=owns_leader,
+            _exit_stack=stack,
+        )
+
         # ── notify_conn (pg_dsn_direct, TCP keepalive) ────────────────
         # ``resolved_notify_factory`` is stored on WorkerDeps so notify.py's
         # reconnect loop and reload_credentials() rebuild the connection
@@ -513,6 +546,26 @@ async def open_worker_deps(
 
             resolved_notify_factory = _notify_dsn_factory
             notify_conn = await resolved_notify_factory()
+
+        deps.notify_conn = notify_conn
+        deps.notify_conn_factory = resolved_notify_factory
+
+        # LIFO teardown guard, registered at open and BEFORE the LISTEN
+        # execute: the guard is what closes this conn when the LISTEN
+        # itself (or any later open step) fails. Reads through ``deps``
+        # so a conn swapped in by reload_credentials is the one closed;
+        # bounded close, then null the attr so nothing can touch the
+        # closed conn after teardown. Caller-owned conns never get a
+        # guard — the ownership contract.
+        if owns_notify:
+
+            async def _close_notify_conn() -> None:
+                conn = deps.notify_conn
+                if conn is not None:
+                    await close_conn_bounded(conn, "notify", CLOSE_TIMEOUT_SECS)
+                    deps.notify_conn = None
+
+            stack.push_async_callback(_close_notify_conn)
 
         # Issue LISTEN so the connection is in subscription state
         channel = wake_channel(settings.schema_name)
@@ -549,6 +602,22 @@ async def open_worker_deps(
             resolved_leader_factory = _leader_dsn_factory
             leader_conn = await resolved_leader_factory()
 
+        deps.leader_conn = leader_conn
+        deps.leader_conn_factory = resolved_leader_factory
+
+        # Same push-at-open guard as notify_conn: a failure in any later
+        # open step (the redis factory) unwinds the stack with this guard
+        # already registered.
+        if owns_leader:
+
+            async def _close_leader_conn() -> None:
+                conn = deps.leader_conn
+                if conn is not None:
+                    await close_conn_bounded(conn, "leader", CLOSE_TIMEOUT_SECS)
+                    deps.leader_conn = None
+
+            stack.push_async_callback(_close_leader_conn)
+
         # ── redis_client ───────────────────────────────────────────────
         redis_client: redis_async.Redis | None = None  # type: ignore[type-arg]  # Why: redis-py stubs expose Redis as an unparameterised generic; the type arg cannot be supplied without a stubs update.
         owns_redis = False
@@ -565,29 +634,7 @@ async def open_worker_deps(
                 decode_responses=False,
             )
             owns_redis = True
-
-        deps = WorkerDeps(
-            settings=settings,
-            dispatcher_pool=dispatcher_pool,
-            heartbeat_pool=heartbeat_pool,
-            worker_pool=worker_pool,
-            notify_conn=notify_conn,
-            leader_conn=leader_conn,
-            redis_client=redis_client,
-            notify_conn_factory=resolved_notify_factory,
-            leader_conn_factory=resolved_leader_factory,
-            # Reload (SIGHUP) only ever rebuilds via the user's own factory —
-            # a fresh credential fetch. The DSN-fallback path uses static
-            # credentials baked into the DSN, so there is nothing to rotate;
-            # only conns.*_factory (not the DSN closures above) is stored here.
-            dispatcher_pool_factory=conns.dispatcher_pool_factory,
-            heartbeat_pool_factory=conns.heartbeat_pool_factory,
-            worker_pool_factory=conns.worker_pool_factory,
-            redis_client_factory=conns.redis_client_factory,
-            owns_notify_conn=owns_notify,
-            owns_leader_conn=owns_leader,
-            _exit_stack=stack,
-        )
+        deps.redis_client = redis_client
 
         # Why here: TASKQ_RELOAD_INTERVAL / SIGHUP only rotate resources that
         # have a factory on deps, and the DSN fallbacks above are stored for
@@ -620,31 +667,16 @@ async def open_worker_deps(
                 ),
             )
 
-        # LIFO teardown guards for TaskQ-owned dedicated connections.
+        # LIFO teardown guards for the TaskQ-owned redis client. The
+        # dedicated conns above already registered theirs at open time;
+        # no open step can fail between the redis build and this push,
+        # so the redis guards need no window of their own.
         # orchestrate_shutdown closes and nulls a TaskQ-owned leader_conn early
         # (to release the advisory lock before the SIGTERM budget expires), and
-        # reload_credentials swaps conns/pools mid-run. The guards below read
+        # reload_credentials swaps conns/pools mid-run. Every guard reads
         # through ``deps`` at teardown time (never a captured instance), so
         # they close whatever is current and never double-close.
-        # Caller-owned connections are never closed here.
-        if owns_notify:
-
-            async def _close_notify_conn() -> None:
-                conn = deps.notify_conn
-                if conn is not None:
-                    await close_conn_bounded(conn, "notify", CLOSE_TIMEOUT_SECS)
-                    deps.notify_conn = None
-
-            stack.push_async_callback(_close_notify_conn)
-        if owns_leader:
-
-            async def _close_leader_conn() -> None:
-                conn = deps.leader_conn
-                if conn is not None:
-                    await close_conn_bounded(conn, "leader", CLOSE_TIMEOUT_SECS)
-                    deps.leader_conn = None
-
-            stack.push_async_callback(_close_leader_conn)
+        # Caller-owned resources are never closed here.
         if owns_redis and redis_client is not None:
 
             async def _close_redis_client() -> None:

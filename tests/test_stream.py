@@ -435,7 +435,12 @@ async def test_ti1_pg_stream_terminates_on_job_completion(pg_dsn: str) -> None:
 
         await asyncio.sleep(0.1)
         await backend.mark_succeeded(
-            job_id, worker_id, result=None, progress_seq=0, progress_state=None
+            job_id,
+            worker_id,
+            result=None,
+            progress_seq=0,
+            progress_state=None,
+            attempt=1,
         )
 
         events = await asyncio.wait_for(task, timeout=5.0)
@@ -473,7 +478,12 @@ async def test_ti2_pg_all_status_transitions_appear(pg_dsn: str) -> None:
         await asyncio.sleep(0.1)
 
         await backend.mark_succeeded(
-            job_id, worker_id, result=None, progress_seq=0, progress_state=None
+            job_id,
+            worker_id,
+            result=None,
+            progress_seq=0,
+            progress_state=None,
+            attempt=1,
         )
 
         events = await asyncio.wait_for(task, timeout=5.0)
@@ -528,7 +538,12 @@ async def test_ti3_pg_listen_connection_closed_after_stream(pg_dsn: str) -> None
         )
 
         await backend.mark_succeeded(
-            job_id, worker_id, result=None, progress_seq=0, progress_state=None
+            job_id,
+            worker_id,
+            result=None,
+            progress_seq=0,
+            progress_state=None,
+            attempt=1,
         )
 
         events = await asyncio.wait_for(task, timeout=5.0)
@@ -625,7 +640,12 @@ async def test_ti5_pg_poll_timeout_path_yields_terminal(pg_dsn: str) -> None:
         await asyncio.sleep(0.2)
 
         await backend.mark_succeeded(
-            job_id, worker_id, result=None, progress_seq=0, progress_state=None
+            job_id,
+            worker_id,
+            result=None,
+            progress_seq=0,
+            progress_state=None,
+            attempt=1,
         )
 
         events = await asyncio.wait_for(task, timeout=5.0)
@@ -665,7 +685,12 @@ async def test_ti6_redis_stream_terminates_on_job_completion(pg_dsn: str, redis_
         await asyncio.sleep(0.1)
 
         await backend.mark_succeeded(
-            job_id, worker_id, result=None, progress_seq=0, progress_state=None
+            job_id,
+            worker_id,
+            result=None,
+            progress_seq=0,
+            progress_state=None,
+            attempt=1,
         )
 
         events = await asyncio.wait_for(task, timeout=5.0)
@@ -743,7 +768,12 @@ async def test_ti7_redis_progress_events_monotonic_seq(pg_dsn: str, redis_url: s
                 await asyncio.sleep(0.3)
 
             await backend.mark_succeeded(
-                job_id, worker_id, result=None, progress_seq=3, progress_state=None
+                job_id,
+                worker_id,
+                result=None,
+                progress_seq=3,
+                progress_state=None,
+                attempt=1,
             )
 
             events = await asyncio.wait_for(task, timeout=5.0)
@@ -809,7 +839,12 @@ async def test_ti8_redis_malformed_message_skipped(pg_dsn: str, redis_url: str) 
             await asyncio.sleep(0.1)
 
             await backend.mark_succeeded(
-                job_id, worker_id, result=None, progress_seq=0, progress_state=None
+                job_id,
+                worker_id,
+                result=None,
+                progress_seq=0,
+                progress_state=None,
+                attempt=1,
             )
 
             events = await asyncio.wait_for(task, timeout=5.0)
@@ -922,7 +957,12 @@ async def test_tc1_pg_listen_connection_dropped_stream_recovers(
         )
 
         await backend.mark_succeeded(
-            job_id, worker_id, result=None, progress_seq=0, progress_state=None
+            job_id,
+            worker_id,
+            result=None,
+            progress_seq=0,
+            progress_state=None,
+            attempt=1,
         )
 
         events = await asyncio.wait_for(task, timeout=10.0)

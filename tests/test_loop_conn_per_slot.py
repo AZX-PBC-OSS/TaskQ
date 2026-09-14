@@ -286,6 +286,11 @@ async def test_sibling_failure_does_not_discard_pending_sub_jobs(
     buffers for transactional simulation) with a real LOOP-scope connection
     so the transactional consume path is taken."""
     backend = InMemoryBackend(clock=FakeClock(_NOW))
+    # The dispatch parity gate: candidates are built from the actor_config
+    # registry — zero registered actors means zero candidates (the sibling
+    # PG test seeds its actors the same way; a dispatchable actor must be
+    # registered on both backends alike).
+    backend.register_actor_config(actor="slot_actor")
 
     loop_conn = await asyncpg.connect(pg_dsn)
     slot_pool = await _open_slot_pool(pg_dsn)

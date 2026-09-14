@@ -149,7 +149,7 @@ async def test_fr5_audit_only_four_paths_write_scheduled(
 
     # ── mark_succeeded on a running job → succeeded, not scheduled ──
     job = await _enqueue_running(backend)
-    result = await backend.mark_succeeded(job.id, worker_id, {"ok": True})
+    result = await backend.mark_succeeded(job.id, worker_id, {"ok": True}, attempt=job.attempt)
     assert result is True
     post = _get_job(backend, job.id)
     assert post.status == "succeeded"
@@ -162,13 +162,15 @@ async def test_fr5_audit_only_four_paths_write_scheduled(
         error_message="boom",
         error_traceback=None,
     )
-    row = await backend.mark_failed_or_retry(job.id, worker_id, error_info, retry_delay=None)
+    row = await backend.mark_failed_or_retry(
+        job.id, worker_id, error_info, retry_delay=None, attempt=job.attempt
+    )
     assert row.status == "failed"
     assert row.status != "scheduled"
 
     # ── mark_cancelled on a running job → cancelled, not scheduled ──
     job = await _enqueue_running(backend)
-    result = await backend.mark_cancelled(job.id, worker_id)
+    result = await backend.mark_cancelled(job.id, worker_id, attempt=job.attempt)
     assert result is True
     post = _get_job(backend, job.id)
     assert post.status == "cancelled"

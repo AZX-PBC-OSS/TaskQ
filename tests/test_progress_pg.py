@@ -18,7 +18,7 @@ import asyncio
 import json
 from contextlib import AsyncExitStack
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, cast
 from uuid import UUID
 
 import asyncpg
@@ -107,6 +107,7 @@ async def _setup_worker(
             "TASKQ_HEARTBEAT_INTERVAL": "0.5",
             "TASKQ_LOCK_LEASE": "30.0",
             "TASKQ_WATCHDOG_LOOP_LAG_BUDGET": "1.2",
+            "TASKQ_WATCHDOG_LOOP_LAG_WARN_BUDGET": "0.5",
             "TASKQ_CANCELLATION_GRACE_PERIOD": "0.5",
             "TASKQ_CLEANUP_GRACE_PERIOD": "0.5",
             **extra,
@@ -538,17 +539,16 @@ async def test_ti7_crash_mid_progress_flush_fires(
 
 
 async def test_tc2_pg_unavailable_during_flush_recovers(
-    pg_dsn: str, monkeypatch: pytest.MonkeyPatch, module_pg_schema: ModulePgSchema
+    pg_dsn: str, module_pg_schema: ModulePgSchema
 ) -> None:
-    """_flush_buffer raises PostgresError on the first flush tick, then succeeds.
+    """The tick's batched flush checkout raises PostgresError on the first
+    flush tick, then succeeds.
 
     The flush loop logs ERROR but does not crash. On the next tick the buffer
     is flushed successfully.
 
     Oracle: flush eventually succeeds (buffer.dirty=False after recovery).
     """
-    import taskq.progress._flush as flush_mod
-
     stack, deps, _backend = await _setup_worker(pg_dsn, schema=module_pg_schema.schema_name)
     try:
         from taskq.progress._buffer import _ProgressBuffer
@@ -561,23 +561,49 @@ async def test_tc2_pg_unavailable_during_flush_recovers(
             await create_worker(conn, schema, wid)
             job_id = await create_running_job(conn, schema, wid)
 
-        buf = _ProgressBuffer(job_id=job_id, base_seq=0)
+        # Seed the buffer with the dispatched row's attempt epoch: the
+        # batched flush statement fences every row on (running + this
+        # worker + this attempt epoch), and the buffer's default epoch
+        # of 0 matches no running row by construction (see
+        # _ProgressBuffer.attempt) — production buffers are seeded from
+        # the dispatched JobRow.attempt, which create_running_job's
+        # attempt=1 default mirrors.
+        buf = _ProgressBuffer(job_id=job_id, base_seq=0, attempt=1)
         buf.pending_seq_delta = 2
         buf.pending_state["step"] = 7
         buf.dirty = True
         deps.progress_buffers[job_id] = buf
 
-        # Wrap the real _flush_buffer to inject a one-shot PG error
-        original_flush_buffer = flush_mod._flush_buffer  # type: ignore[attr-defined] # Why: accessing private flush function for test-controlled injection.
+        # Inject a one-shot PG error at the tick's batched-statement
+        # pool checkout. This is the batched-surface translation of this
+        # test's original per-buffer injection (a _flush_buffer wrapper
+        # — the tick no longer routes through _flush_buffer; it drains
+        # its dirty set through bounded row-batches whose only per-batch
+        # pool touch is this acquire). The facade is needed because a
+        # real asyncpg Pool's attributes are read-only; the loop's
+        # per-batch catch is what turns the raise into the logged,
+        # buffers-stay-dirty, no-crash observable this test pins.
+        real_pool = deps.worker_pool
         call_count: list[int] = [0]
 
-        async def _flaky_flush_buffer(*args: Any, **kwargs: Any) -> None:
-            call_count[0] += 1
-            if call_count[0] == 1:
-                raise asyncpg.PostgresError("simulated PG overload")
-            await original_flush_buffer(*args, **kwargs)
+        class _PGDownOncePool:
+            """Pool facade: the first acquire raises (PG unavailable),
+            every later one delegates to the live pool."""
 
-        monkeypatch.setattr(flush_mod, "_flush_buffer", _flaky_flush_buffer)
+            def acquire(self, *, timeout: float | None = None) -> object:
+                call_count[0] += 1
+                if call_count[0] == 1:
+                    raise asyncpg.PostgresError("simulated PG overload")
+                return real_pool.acquire(timeout=timeout)
+
+            def __getattr__(self, name: str) -> object:
+                return getattr(real_pool, name)
+
+        # Why cast: duck-typed pool stand-in for the loop's pool_getter;
+        # the pinned contract is the tick's recovery behaviour, not pool
+        # fidelity (asyncpg.Pool attributes are read-only, so the facade
+        # cannot be patched onto the real pool).
+        flaky_pool = cast("asyncpg.Pool", _PGDownOncePool())
 
         shutdown = asyncio.Event()
 
@@ -590,12 +616,12 @@ async def test_tc2_pg_unavailable_during_flush_recovers(
 
         await asyncio.gather(
             progress_flush_loop(
-                lambda: deps.worker_pool, schema, wid, deps.progress_buffers, 0.05, shutdown
+                lambda: flaky_pool, schema, wid, deps.progress_buffers, 0.05, shutdown
             ),
             _stop_when_clean(),
         )
 
-        # First call raised; second call succeeded; buffer is now clean
+        # First checkout raised; a later one succeeded; buffer is now clean
         assert call_count[0] >= 2, "expected at least one failure + one success"
         assert not buf.dirty, "buffer should be clean after recovery flush"
     finally:

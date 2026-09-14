@@ -32,11 +32,15 @@ aborts the write whole, still classifies through
 Invariants preserved verbatim from the three-statement form:
 
 * The UPDATE stays the single arbiter: its fencing WHERE (``status =
-  'running' AND locked_by_worker = $2``) decides everything, and an
-  empty ``upd`` CTE makes the INSERT CTEs insert nothing and the final
-  ``SELECT`` return no row — the exact ``rec is None`` /
-  ``WorkerOwnershipMismatch`` / ``False`` contract, without a second
-  read.
+  'running' AND locked_by_worker = $2`` — now one epoch deeper with the
+  attempt conjunct ``AND attempt = $k``, the handler's dispatch-time
+  job-row attempt snapshot threaded from every call site: a stale
+  attempt's write after a same-worker reclaim/redispatch no-ops exactly
+  like a different worker's late write, Oban's ``ack_query`` contract)
+  decides everything, and an empty ``upd`` CTE makes the INSERT CTEs
+  insert nothing and the final ``SELECT`` return no row — the exact
+  ``rec is None`` / ``WorkerOwnershipMismatch`` / ``False`` contract,
+  without a second read.
 * ``job_attempts.worker_id`` resolves through the holder-CTE idiom
   (``FOR KEY SHARE`` probe, LEFT-scan semantics via scalar subquery): a
   present worker row records the id, an already-deleted one records
@@ -64,6 +68,22 @@ Invariants preserved verbatim from the three-statement form:
   stored jsonb is key-order-normalized either way, so readers parsing
   the detail see the identical object.
 
+Bounded pool checkout
+=====================
+
+Every pool-bearing function here acquires with ``pool.acquire(timeout=…)``
+(keyword-only ``acquire_timeout``, default
+:data:`DEFAULT_TERMINAL_POOL_ACQUIRE_TIMEOUT_S`; the PostgresBackend
+wrappers thread ``dispatcher_command_timeout``). An exhausted or wedged
+pool therefore fails the individual write inside a bound instead of
+queueing it forever: the ``TimeoutError`` is the designed terminal-write
+infra failure (see ``worker/_handlers.py``), never a job outcome — the
+row stays ``running`` and lease expiry reclaims it. This is what keeps a
+cancel storm of concurrent consumer ``mark_cancelled`` writes from
+wedging both the writers AND any loop that shares the pool (the
+heartbeat spiral pinned by
+``tests/test_rt_locks_terminal_write_pool_starvation.py``).
+
 Deliberately NOT done here (the evaluated alternative): coalescing
 outcomes across jobs into one multi-row flusher.  Completion is the
 job's final act — the consumer ``await``s (under ``asyncio.shield``)
@@ -81,7 +101,7 @@ rejected rather than shipped behind a setting.
 """
 
 from datetime import timedelta
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Final, Literal
 from uuid import UUID
 
 import structlog
@@ -93,6 +113,8 @@ from taskq._json import (
     NUL_JSONB_ERROR,
     _encoded_has_nul,  # pyright: ignore[reportPrivateUsage]  # Why: byte-level NUL scan for the pre-serialized bytes path — see the comment above.
     decode_result_bytes,
+    dumps_jsonb_str,
+    sanitize_surrogates,
 )
 from taskq.backend._protocol import (
     AttemptRow,
@@ -112,6 +134,7 @@ from taskq.backend._sql_templates import SqlTemplates
 from taskq.constants import MAX_RESULT_BYTES
 from taskq.exceptions import (
     ResultTooLarge,
+    UnencodableValue,
     WorkerOwnershipMismatch,
 )
 from taskq.obs import (
@@ -140,6 +163,74 @@ __all__ = [
 ]
 
 logger: structlog.stdlib.BoundLogger = get_logger(__name__)
+
+#: Fallback bound (seconds) for a terminal write's pool checkout when the
+#: caller does not thread one in. Every terminal write is ONE fused
+#: statement (the ~0.14 ms UPDATE the module docstring's e2e profile
+#: measured), so a checkout that cannot resolve in a quarter second is a
+#: wedged or closing pool, not a busy one — and the write's correct
+#: outcome there is the DESIGNED failure: the acquire's ``TimeoutError``
+#: surfaces as terminal-write infra (``_TERMINAL_WRITE_INFRA_EXCEPTIONS``
+#: in worker/_handlers.py explicitly anticipates "timeout acquiring a
+#: pool connection"), the job row stays ``running``, and lock-lease
+#: expiry reclaims it at-least-once. Production callers
+#: (:class:`~taskq.backend.postgres.PostgresBackend`) thread
+#: ``dispatcher_command_timeout`` — the operator knob the repo's other
+#: bounded acquires use — so this default binds only direct module-level
+#: callers, which otherwise had NO bound at all.
+DEFAULT_TERMINAL_POOL_ACQUIRE_TIMEOUT_S: Final[float] = 0.25
+
+
+# ── Attempt-epoch + derived-text bind helpers ──────────────────────────
+
+
+def _progress_jsonb_escaped(value: dict[str, object] | None) -> str | None:
+    """``jsonb_param`` for ACTOR-DERIVED progress state, with the cold-path
+    surrogate escape.
+
+    The progress state reaching a terminal write is the coalesced buffer
+    the actor filled, not caller input, so a value no UTF-8 encoder
+    accepts (a lone surrogate published below the publish guard's
+    wiring) is escaped here instead of refused: the write lands with the
+    defect visible (:func:`~taskq._json.sanitize_surrogates`), never
+    stranding the job ``running`` in the crash-reclaim loop. Mirrors the
+    in-memory twin's ``_merge_progress`` (testing/_terminal.py) exactly —
+    the escape runs only on the cold path the serialization already
+    rejected, and a structural refusal (over-deep nesting) still stands,
+    because escaping cannot repair it. NUL stays refused (the ValueError
+    the twin raises for the same input) — the NUL family's split.
+    """
+    if value is None:
+        return None
+    try:
+        return dumps_jsonb_str(value)
+    except UnencodableValue as exc:
+        try:
+            return dumps_jsonb_str(sanitize_surrogates(value))
+        except RecursionError:
+            # from None: the walk's stack exhaustion is an artifact of the
+            # repair attempt, not the refusal's cause — the original
+            # UnencodableValue is the truthful failure (twin-mirrored).
+            raise exc from None
+
+
+def _error_text_escaped(value: str | None) -> str | None:
+    """Escape unencodable codepoints in DERIVED error text before the bind.
+
+    The message and traceback are derived from an uncontrolled exception
+    the actor raised; rejecting them would strand the very job the text
+    describes, and binding them raw raises asyncpg ``DataError`` (a
+    ``PostgresError`` subclass) that the terminal-write classification
+    misreads as transient infra — the job loops through reclaim against
+    the same unencodable text forever. The escaped form keeps the write
+    valid and the defect diagnosable: the stored text shows exactly
+    where the unencodable codepoint was. ``str.encode("utf-8",
+    "backslashreplace")`` is the identity on any string a UTF-8 encoder
+    accepts, so clean text binds byte-identically. The in-memory twin
+    stores this text verbatim (no encode on that tier) — pinned as the
+    intended mirror split in tests/test_rt_payload_surrogate_guards.py.
+    """
+    return sanitize_surrogates(value)
 
 
 # ── Shared helpers ─────────────────────────────────────────────────────
@@ -218,6 +309,7 @@ async def _mark_succeeded_on_conn(
     max_result_bytes: int = MAX_RESULT_BYTES,
     *,
     result_bytes: bytes | None = None,
+    attempt: int | None = None,
 ) -> bool:
     """Terminal success write: ONE statement (UPDATE + attempt + event).
 
@@ -225,6 +317,16 @@ async def _mark_succeeded_on_conn(
     transactional paths byte-identical in semantics — see the module
     docstring.  ``None`` here still means the fencing UPDATE matched no
     row (wrong worker, missing job, already moved): nothing was written.
+
+    *attempt* is the attempt-identity epoch — the handler's dispatch-time
+    job-row attempt snapshot. The fence is one epoch deeper than the
+    worker fence: ``attempt = $8`` must match the row's current attempt,
+    so a stale handler's write (a same-worker reclaim/redispatch moved
+    the row to a later attempt) no-ops exactly like a different worker's
+    late write — Oban's ``ack_query`` contract. ``attempt=None`` — a
+    caller that cannot present the epoch — binds NULL, which never
+    satisfies the equality: a write that cannot prove which attempt it
+    terminates must not terminate any attempt.
 
     ``result_bytes`` carries the caller's own orjson encoding of *result*
     (the worker consumer serializes exactly once and passes the bytes);
@@ -284,8 +386,9 @@ async def _mark_succeeded_on_conn(
         serialized_result,
         result_size,
         progress_seq,
-        jsonb_param(progress_state),
+        _progress_jsonb_escaped(progress_state),
         fallback_result_ttl,
+        attempt,
     )
     if rec is None:
         return False
@@ -313,6 +416,8 @@ async def _mark_succeeded(
     max_result_bytes: int = MAX_RESULT_BYTES,
     *,
     result_bytes: bytes | None = None,
+    attempt: int | None = None,
+    acquire_timeout: float = DEFAULT_TERMINAL_POOL_ACQUIRE_TIMEOUT_S,
 ) -> bool:
     # No explicit transaction: the fused statement is atomic by itself (a
     # single SQL statement — CTEs included — either completes entirely or
@@ -322,7 +427,7 @@ async def _mark_succeeded(
     # The LOOP-scope path (_mark_succeeded_on_conn via
     # mark_succeeded_with_conn) still runs inside the actor's transaction
     # exactly as before.
-    async with pool.acquire() as conn:
+    async with pool.acquire(timeout=acquire_timeout) as conn:
         return await _mark_succeeded_on_conn(
             conn,
             sql,
@@ -334,6 +439,7 @@ async def _mark_succeeded(
             fallback_result_ttl,
             max_result_bytes,
             result_bytes=result_bytes,
+            attempt=attempt,
         )
 
 
@@ -349,10 +455,21 @@ async def _mark_failed_or_retry(
     retry_delay: timedelta | None,
     progress_seq: int = 0,
     progress_state: dict[str, object] | None = None,
+    *,
+    attempt: int | None = None,
+    acquire_timeout: float = DEFAULT_TERMINAL_POOL_ACQUIRE_TIMEOUT_S,
 ) -> JobRow:
     if retry_delay is None:
         return await _mark_failed(
-            pool, sql, job_id, worker_id, error_info, progress_seq, progress_state
+            pool,
+            sql,
+            job_id,
+            worker_id,
+            error_info,
+            progress_seq,
+            progress_state,
+            attempt=attempt,
+            acquire_timeout=acquire_timeout,
         )
     return await _mark_retry(
         pool,
@@ -363,6 +480,8 @@ async def _mark_failed_or_retry(
         retry_delay,
         progress_seq,
         progress_state,
+        attempt=attempt,
+        acquire_timeout=acquire_timeout,
     )
 
 
@@ -374,22 +493,31 @@ async def _mark_failed(
     error_info: ErrorInfo,
     progress_seq: int,
     progress_state: dict[str, object] | None,
+    *,
+    attempt: int | None = None,
+    acquire_timeout: float = DEFAULT_TERMINAL_POOL_ACQUIRE_TIMEOUT_S,
 ) -> JobRow:
     # No explicit transaction — see _mark_succeeded.  The rare
     # WorkerOwnershipMismatch diagnostic (_select_owner) runs after the
     # no-op statement on the same connection: both the fused statement and
     # the owner read are single-statement implicit transactions, and the
     # write could not have modified the row when it matched nothing.
-    async with pool.acquire() as conn:
+    # The error text is escaped at the bind (_error_text_escaped): the
+    # message/traceback are derived from an uncontrolled exception, and a
+    # lone surrogate in them must fail the job with the defect visible,
+    # not strand it running through the reclaim loop on asyncpg's
+    # DataError-as-infra misclassification.
+    async with pool.acquire(timeout=acquire_timeout) as conn:
         rec = await conn.fetchrow(
             sql.mark_failed,
             job_id,
             worker_id,
             error_info.error_class,
-            error_info.error_message,
-            error_info.error_traceback,
+            _error_text_escaped(error_info.error_message),
+            _error_text_escaped(error_info.error_traceback),
             progress_seq,
-            jsonb_param(progress_state),
+            _progress_jsonb_escaped(progress_state),
+            attempt,
         )
         if rec is None:
             actual = await _select_owner(conn, sql, job_id)
@@ -417,19 +545,28 @@ async def _mark_retry(
     retry_delay: timedelta,
     progress_seq: int,
     progress_state: dict[str, object] | None,
+    *,
+    attempt: int | None = None,
+    acquire_timeout: float = DEFAULT_TERMINAL_POOL_ACQUIRE_TIMEOUT_S,
 ) -> JobRow:
     branch: str
-    async with pool.acquire() as conn:
+    async with pool.acquire(timeout=acquire_timeout) as conn:
+        # Error text escaped at the bind for the same reason as
+        # _mark_failed; the retry_delay is floored at
+        # MIN_DEFERRAL_INTERVAL inside the statement (params CTE's
+        # GREATEST) — the template-side twin of the in-memory
+        # _mark_failed_or_retry floor.
         rec = await conn.fetchrow(
             sql.mark_retry,
             job_id,
             worker_id,
             retry_delay,
             error_info.error_class,
-            error_info.error_message,
-            error_info.error_traceback,
+            _error_text_escaped(error_info.error_message),
+            _error_text_escaped(error_info.error_traceback),
             progress_seq,
-            jsonb_param(progress_state),
+            _progress_jsonb_escaped(progress_state),
+            attempt,
         )
         if rec is None:
             actual = await _select_owner(conn, sql, job_id)
@@ -473,14 +610,18 @@ async def _mark_cancelled(
     worker_id: UUID,
     progress_seq: int = 0,
     progress_state: dict[str, object] | None = None,
+    *,
+    attempt: int | None = None,
+    acquire_timeout: float = DEFAULT_TERMINAL_POOL_ACQUIRE_TIMEOUT_S,
 ) -> bool:
-    async with pool.acquire() as conn:
+    async with pool.acquire(timeout=acquire_timeout) as conn:
         rec = await conn.fetchrow(
             sql.mark_cancelled,
             job_id,
             worker_id,
             progress_seq,
-            jsonb_param(progress_state),
+            _progress_jsonb_escaped(progress_state),
+            attempt,
         )
         if rec is None:
             return False
@@ -505,13 +646,15 @@ async def _write_cancel_escalation(
     job_id: JobId,
     worker_id: UUID,
     phase: Literal[2],
+    *,
+    acquire_timeout: float = DEFAULT_TERMINAL_POOL_ACQUIRE_TIMEOUT_S,
 ) -> bool:
     if phase != 2:
         raise ValueError(
             "write_cancel_escalation only accepts phase=2; use write_cancel_request for phase=1"
         )
 
-    async with pool.acquire() as conn:
+    async with pool.acquire(timeout=acquire_timeout) as conn:
         async with conn.transaction():
             tag = await conn.execute(sql.cancel_escalation, job_id, worker_id)
             if parse_rowcount(tag) != 1:
@@ -548,8 +691,10 @@ async def _mark_abandoned(
     job_id: JobId,
     progress_seq: int = 0,
     progress_state: dict[str, object] | None = None,
+    *,
+    acquire_timeout: float = DEFAULT_TERMINAL_POOL_ACQUIRE_TIMEOUT_S,
 ) -> bool:
-    async with pool.acquire() as conn:
+    async with pool.acquire(timeout=acquire_timeout) as conn:
         rec = await conn.fetchrow(
             sql.mark_abandoned,
             job_id,
@@ -560,7 +705,24 @@ async def _mark_abandoned(
             return False
 
         locked_by_worker: UUID | None = rec["locked_by_worker"]
+        # The statement's NULL-lease defense-in-depth arm (see
+        # mark_abandoned's comment in _sql_templates.py): the applied row
+        # still carries its NULL lock (the abandon clears neither the
+        # holder nor the lease), so a NULL here means that arm is the one
+        # that fired. The row was unholdable by construction — warn on the
+        # shape so a fleet that keeps producing it (a rogue direct-SQL
+        # writer, a restored backup with NULLed leases) is visible instead
+        # of silently absorbing corruptions one abandon at a time; the
+        # stranded-jobs detector's per-shape event convention.
+        null_lease_arm: bool = rec["lock_expires_at"] is None
 
+    if null_lease_arm:
+        logger.warning(
+            "abandoned-null-lock-running-row",
+            kind="null_lock_running_row_abandoned",
+            job_id=str(job_id),
+            worker_id=str(locked_by_worker) if locked_by_worker is not None else None,
+        )
     log_state_change(
         logger,
         from_state="running",
@@ -585,6 +747,9 @@ async def _mark_snoozed(
     progress_seq: int = 0,
     progress_state: dict[str, object] | None = None,
     outcome: SnoozeOutcome = "snoozed",
+    *,
+    attempt: int | None = None,
+    acquire_timeout: float = DEFAULT_TERMINAL_POOL_ACQUIRE_TIMEOUT_S,
 ) -> Literal["scheduled", "failed", "failed:MaxAttemptsExceeded", "noop"]:
     # The statement's arms key on exactly the three SnoozeOutcome values;
     # PG cannot reject an unknown bind value inside the statement itself,
@@ -594,7 +759,7 @@ async def _mark_snoozed(
     # no arm and stranding the row 'running'.
     validate_snooze_outcome(outcome)
     branch: str
-    async with pool.acquire() as conn:
+    async with pool.acquire(timeout=acquire_timeout) as conn:
         rec = await conn.fetchrow(
             sql.mark_snoozed,
             job_id,
@@ -602,8 +767,9 @@ async def _mark_snoozed(
             delay,
             jsonb_param(metadata_update),
             progress_seq,
-            jsonb_param(progress_state),
+            _progress_jsonb_escaped(progress_state),
             outcome,
+            attempt,
         )
         if rec is None:
             return "noop"
@@ -659,9 +825,12 @@ async def _mark_retry_after(
     consume_budget: bool = True,
     progress_seq: int = 0,
     progress_state: dict[str, object] | None = None,
+    *,
+    attempt: int | None = None,
+    acquire_timeout: float = DEFAULT_TERMINAL_POOL_ACQUIRE_TIMEOUT_S,
 ) -> Literal["scheduled", "failed:DeadlineExceeded", "failed:MaxAttemptsExceeded", "noop"]:
     branch: str
-    async with pool.acquire() as conn:
+    async with pool.acquire(timeout=acquire_timeout) as conn:
         sql_stmt = (
             sql.mark_retry_after_consume_true
             if consume_budget
@@ -673,13 +842,19 @@ async def _mark_retry_after(
             worker_id,
             delay,
             progress_seq,
-            jsonb_param(progress_state),
+            _progress_jsonb_escaped(progress_state),
+            attempt,
         )
         if rec is None:
             return "noop"
 
         branch = rec["outcome_branch"]
-        attempt: int = rec["attempt"]
+        # Why row_attempt, not attempt: the caller's ``attempt`` hint (the
+        # SQL bind above) is a different value from the row's own attempt
+        # the logs must report — a same-named local would obscure the
+        # parameter (pyright reportRedeclaration) and invite a future edit
+        # to bind the wrong one.
+        row_attempt: int = rec["attempt"]
         # The attempt row and state_change event are written by the
         # fused statement's per-arm CTEs (attempt outcome/error fields
         # and the snoozed arms' now_ts-based duration included) — see
@@ -692,7 +867,7 @@ async def _mark_retry_after(
             to_state="scheduled",
             job_id=str(job_id),
             worker_id=str(worker_id),
-            attempt=attempt,
+            attempt=row_attempt,
             cause="retry_after",
         )
         return "scheduled"
@@ -702,7 +877,7 @@ async def _mark_retry_after(
         to_state="failed",
         job_id=str(job_id),
         worker_id=str(worker_id),
-        attempt=attempt,
+        attempt=row_attempt,
         cause="retry_after",
     )
     if branch == "max_attempts_failed":
@@ -713,8 +888,14 @@ async def _mark_retry_after(
 # ── write_attempt ──────────────────────────────────────────────────────
 
 
-async def _write_attempt(pool: "asyncpg.Pool", sql: SqlTemplates, attempt: AttemptRow) -> None:
-    async with pool.acquire() as conn:
+async def _write_attempt(
+    pool: "asyncpg.Pool",
+    sql: SqlTemplates,
+    attempt: AttemptRow,
+    *,
+    acquire_timeout: float = DEFAULT_TERMINAL_POOL_ACQUIRE_TIMEOUT_S,
+) -> None:
+    async with pool.acquire(timeout=acquire_timeout) as conn:
         async with conn.transaction():
             await conn.execute(
                 sql.insert_attempt_explicit,

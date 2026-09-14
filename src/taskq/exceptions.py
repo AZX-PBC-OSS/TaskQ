@@ -200,6 +200,59 @@ class UniqueForLockTimeoutError(TaskQError):
         )
 
 
+class IdempotencyKeyLockTimeoutError(TaskQError):
+    """Raised when the bounded wait for an idempotency token insert
+    exceeded its budget.
+
+    The third member of the enqueue serialization family, after
+    :class:`MaxPendingLockTimeoutError` (capacity) and
+    :class:`UniqueForLockTimeoutError` (single-flight identity): the
+    speculative ``ON CONFLICT (idempotency_scope, idempotency_key) DO
+    NOTHING`` token INSERT blocks on another transaction's UNCOMMITTED
+    same-pair row — Postgres must wait for that transaction's uniqueness
+    verdict — and on a transactional consumer the holder IS the actor's
+    own open transaction, whose runtime is unbounded by default
+    (``default_start_to_close`` = None). The wait is bounded by a
+    ``lock_timeout`` scoped to the INSERT's savepoint; on expiry the
+    DEDUP ANSWER for that one ``(idempotency_scope, idempotency_key)``
+    pair could not be determined in time, which is
+    :class:`UniqueForLockTimeoutError`'s exact situation and therefore
+    takes its treatment: retry the same enqueue — once the holder's
+    transaction resolves, the retry either dedupes against the committed
+    token or inserts fresh. Deliberately NOT a
+    :class:`BackpressureError` (nothing about capacity is wrong) and
+    deliberately NOT recorded against ``taskq.backpressure.errors``;
+    the ``idempotency-lock-timeout`` log event carries the
+    observability instead.
+
+    This enqueue wrote nothing: the savepoint that carried the GUC and
+    the INSERT rolled back first, so the caller's transaction remains
+    usable — the same caller-owned-transaction discipline the singleton
+    collision's savepoint established.
+    """
+
+    def __init__(
+        self,
+        actor: str | None,
+        idempotency_key: str,
+        timeout_ms: float,
+        *,
+        idempotency_scope: str | None = None,
+    ) -> None:
+        self.actor = actor
+        self.idempotency_key = idempotency_key
+        self.idempotency_scope = idempotency_scope
+        self.timeout_ms = timeout_ms
+        super().__init__(
+            f"enqueue for actor {actor!r} idempotency_key {idempotency_key!r} "
+            f"(scope {idempotency_scope!r}) could not resolve the speculative token "
+            f"insert within {timeout_ms:g} ms — another transaction holds an "
+            "uncommitted same-pair token (on a transactional consumer, the actor's "
+            "own open transaction). Nothing was inserted; retry the same enqueue — "
+            "once the holder's transaction resolves, the retry dedupes or inserts."
+        )
+
+
 class BatchMaxPendingExceededError(BackpressureError):
     """A bulk enqueue partitioned its admission per actor and refused some.
 
@@ -340,6 +393,30 @@ class ResultTooLarge(TaskQError):
     """
 
 
+class UnencodableValue(TypeError):
+    """A value no UTF-8 JSON encoding accepts, so no PG ``text``/``jsonb``
+    form of it exists.
+
+    The canonical case is a lone surrogate (``"\\udcff"`` — exactly what
+    ``os.fsdecode`` of a non-UTF-8 filename byte yields): a legal Python
+    ``str`` that orjson refuses to encode. Non-``str`` dict keys and
+    objects the fallback cannot convert raise the same class. Raised by
+    :func:`taskq._json.dumps` — the single serialization boundary — so
+    every producer sees one class; subclassing :class:`TypeError` keeps
+    the historical orjson contract every ``except TypeError`` caller and
+    wording pin already relies on.
+
+    Non-retryable wherever the producer already ran (an actor result): a
+    re-run reproduces the same unencodable value, so retrying only burns
+    the remaining attempts — the exact burn :class:`ResultTooLarge`
+    exists to prevent. Classified alongside it in
+    :meth:`taskq.retry.RetryClassifier.classify`. The durable-write
+    boundary (:func:`taskq._json.dumps_jsonb_str`) instead escapes the
+    unencodable codepoints, mirroring :func:`taskq._json.sanitize_nul_str`:
+    rejecting there would strand the very work the value describes.
+    """
+
+
 class ProgressTooLarge(TaskQError):
     """Raised when progress data payload exceeds the configured size limit.
 
@@ -451,6 +528,31 @@ class ReservationUnavailable(TaskQError):
         self.bucket_name = bucket_name
         self.retry_after = retry_after
         self.source = source
+
+
+class RateLimitDependencyUnavailable(RuntimeError):
+    """A rate limiter's PG store was never wired — no pool was injected.
+
+    Raised by every ratelimit PG delegate's no-pool branch (the token
+    bucket's acquire/peek/reset/refund and both sliding-window styles)
+    when the delegate is reached with ``pg_pool=None``: most often the
+    Redis→PG fallback funnelling into a fallback pool the caller never
+    injected, but a directly PG-backed limiter with no pool is the same
+    condition. The store dependency cannot answer, so the acquire
+    boundary's correct response is the limiter's fail-closed denial —
+    :data:`taskq.worker._consumer._RATE_LIMIT_DEPENDENCY_EXCEPTIONS`
+    includes this class for exactly that; an escapee would instead be
+    misattributed to the job as a failure (a retry attempt burnt and a
+    wiring gap persisted as the job's ``error_class``).
+
+    Deliberately NOT a :class:`TaskQError`: subclassing
+    :class:`RuntimeError` keeps the historical contract every existing
+    caller and wording pin relies on — the ``except RuntimeError`` /
+    ``pytest.raises(RuntimeError, match="pg_pool not injected...")`` pins
+    and the chaos tier's fail-loud ``pytest.raises(RuntimeError)`` all
+    hold unchanged (the same builtin-base precedent as
+    :class:`UnencodableValue`).
+    """
 
 
 class IllegalStateTransition(TaskQError):

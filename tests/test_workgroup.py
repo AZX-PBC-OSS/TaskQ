@@ -583,11 +583,15 @@ def test_validate_health_pg_schema_invalid() -> None:
 
 
 def test_validate_worker_name_too_long() -> None:
+    # 43 is the longest name whose health socket path binds on every
+    # supported platform: 103 usable sun_path chars (macOS budget, incl.
+    # NUL) minus the path's 60 fixed chars of prefix/uuid/separators —
+    # one char past it is the first name the child cannot bind anywhere.
     cfg = WorkgroupConfig(
         actors="app:reg",
-        workers=[WorkerSpec(name="x" * 65, queues=["default"])],
+        workers=[WorkerSpec(name="x" * 44, queues=["default"])],
     )
-    with pytest.raises(ValueError, match="64 chars"):
+    with pytest.raises(ValueError, match="socket"):
         _validate_config(cfg)
 
 

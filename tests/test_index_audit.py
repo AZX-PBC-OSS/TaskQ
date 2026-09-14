@@ -239,6 +239,22 @@ async def audit_schema(pg_dsn: str) -> Any:
         await _drop_schema(conn, schema)
         await migrate_mod.apply_pending(conn, schema=schema)
 
+        # The shared test cluster runs with synchronous_commit=off (a
+        # throwaway container — see taskq.testing._shared_containers),
+        # and an async commit's records are not WAL-flushed when the
+        # client is acknowledged. The visibility-map set is gated on the
+        # page's WAL being durable, so a VACUUM after async-committed
+        # COPY loads cannot mark those pages all-visible — the map
+        # stalls part-covered and every candidate plan is priced as a
+        # heap-fetching scan. Seeding this fixture's loads with
+        # synchronous_commit=on makes every COPY commit durable by the
+        # time the VACUUM below runs, so the map completes and the
+        # planner can cost index-only scans — the representative steady
+        # state of a production table, whose commits are durable and
+        # whose autovacuum completes the map. Session-scoped: only this
+        # one seeding connection pays the flushes.
+        await conn.execute("SET synchronous_commit = on")
+
         now = datetime.now(UTC)
 
         def future(secs: float) -> datetime:
@@ -499,7 +515,19 @@ async def audit_schema(pg_dsn: str) -> Any:
             columns=["job_id", "attempt", "started_at", "finished_at", "outcome", "worker_id"],
             records=referencing + unreferenceable,
         )
-        for table in ("jobs", "cron_schedules", "job_attempts", "workers"):
+        # jobs gets VACUUM (ANALYZE), not bare ANALYZE: a production jobs
+        # table is constantly vacuumed (autovacuum trails every bulk
+        # write), so its live pages are all-visible and the planner can
+        # cost index-only scans over them — the cost model the pins must
+        # be evaluated at. Bare ANALYZE leaves the COPY-loaded pages'
+        # visibility bits unset (ANALYZE never touches the map), which
+        # forces every candidate plan into heap-fetching scans and
+        # misprices the queue-depth gauge away from its (queue, id)
+        # partial index. The sibling tables keep bare ANALYZE: their
+        # pins assert Index Cond seeks whose chosen plans do not depend
+        # on the visibility map.
+        await conn.execute(f'VACUUM (ANALYZE) "{schema}".jobs')
+        for table in ("cron_schedules", "job_attempts", "workers"):
             await conn.execute(f'ANALYZE "{schema}".{table}')
         yield schema, stale_worker
     finally:

@@ -137,6 +137,7 @@ async def test_mark_snoozed_at_smallint_ceiling_does_not_overflow(
             worker_id,
             _DELAY,
             outcome="reservation_denied",
+            attempt=1,
         )
     except asyncpg.DataError as exc:  # pragma: no cover - the defect path
         pytest.fail(
@@ -180,6 +181,7 @@ async def test_mark_retry_after_consume_false_at_ceiling_does_not_overflow(
             worker_id,
             _DELAY,
             consume_budget=False,
+            attempt=1,
         )
     except asyncpg.DataError as exc:  # pragma: no cover - the defect path
         pytest.fail(
@@ -222,6 +224,7 @@ async def test_snooze_below_ceiling_keeps_ceiling_fixed(
         worker_id,
         _DELAY,
         outcome="reservation_denied",
+        attempt=1,
     )
     assert outcome == "scheduled"
 
@@ -249,6 +252,9 @@ async def _in_memory_running_job_at_ceiling(
         scheduled_at=_MEM_NOW - timedelta(seconds=1),
     )
     await backend.enqueue(args)
+    # Register the actor so dispatch_batch finds it (mirrors PG's
+    # actor_config requirement — candidates come FROM the registry).
+    backend.register_actor_config(actor="mem_ceiling_actor")
     worker_id = new_uuid()
     dispatched = await backend.dispatch_batch(worker_id, ["default"], 1, timedelta(seconds=60))
     assert len(dispatched) == 1
@@ -273,6 +279,7 @@ async def test_in_memory_mark_snoozed_at_ceiling_keeps_ceiling_fixed() -> None:
         worker_id,
         _DELAY,
         outcome="reservation_denied",
+        attempt=1,
     )
 
     assert outcome == "scheduled"
@@ -294,6 +301,7 @@ async def test_in_memory_mark_retry_after_consume_false_at_ceiling_keeps_ceiling
         worker_id,
         _DELAY,
         consume_budget=False,
+        attempt=1,
     )
 
     assert outcome == "scheduled"
@@ -316,6 +324,7 @@ async def test_in_memory_snooze_below_ceiling_keeps_ceiling_fixed() -> None:
         worker_id,
         _DELAY,
         outcome="reservation_denied",
+        attempt=1,
     )
 
     assert outcome == "scheduled"

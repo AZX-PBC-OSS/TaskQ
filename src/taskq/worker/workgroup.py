@@ -108,6 +108,34 @@ wrong.
 """
 
 
+# ── Child health socket path ──────────────────────────────────────────────
+
+
+def _health_socket_path(name: str, instance_id: UUID) -> str:
+    """The child worker's mandatory health socket path.
+
+    The single construction of the path: both the spawn command line and
+    the config validator's worker-name budget derive from it, so the
+    budget and the built path cannot drift apart.
+    """
+    return f"/tmp/taskq_health_{name}_{instance_id}.sock"  # noqa: S108  # Why: workgroup-child socket files live in /tmp — the shortest prefix that keeps the full path inside every platform's AF_UNIX budget; handed to the child via --health-socket-path.
+
+
+_SUN_PATH_BUDGET: int = 104 - 1
+"""Usable ``sockaddr_un.sun_path`` chars on the tightest supported
+platform (macOS/BSD: 104 bytes including the NUL terminator). Budgeted
+for the tightest platform rather than the local one — a config authored
+on a Linux host (107 usable chars) must still bind on a macOS deploy."""
+
+
+_MAX_WORKER_NAME_LEN: int = _SUN_PATH_BUDGET - len(_health_socket_path("", UUID(int=0)))
+"""Longest worker name whose health socket path still binds on every
+supported platform. With the name empty the path is exactly its fixed
+overhead — prefix, separator, instance-id uuid, suffix — so the name
+budget is the platform budget minus that overhead, derived from the real
+construction rather than restated beside it."""
+
+
 # ── Config model ──────────────────────────────────────────────────────────
 
 
@@ -311,8 +339,19 @@ def _validate_config(cfg: WorkgroupConfig) -> None:
         )
 
     for w in cfg.workers:
-        if len(w.name) > 64:
-            raise ValueError(f"worker[{w.name!r}].name must be <= 64 chars (socket path limit)")
+        if len(w.name) > _MAX_WORKER_NAME_LEN:
+            raise ValueError(
+                f"worker[{w.name!r}].name must be <= {_MAX_WORKER_NAME_LEN} chars: the "
+                "child's health socket path (fixed-length prefix + name + instance-id "
+                f"uuid + suffix) must stay within the {_SUN_PATH_BUDGET}-char AF_UNIX "
+                "sun_path budget of the tightest supported platform"
+            )
+        if not w.queues:
+            raise ValueError(
+                f"worker[{w.name!r}].queues must list at least one queue — a worker "
+                "that consumes no queue dispatches nothing; omit the key to fall back "
+                "to [defaults].queues, or ['default'] when no default is set"
+            )
         if w.pg_credential_provider is not None and (
             not w.pg_credential_provider or ":" not in w.pg_credential_provider
         ):
@@ -517,7 +556,7 @@ async def _spawn_child(
     child.instance_id = new_uuid()
     child.spawned_at = time.monotonic()
     child.health_failures = 0
-    health_path = f"/tmp/taskq_health_{child.spec.name}_{child.instance_id}.sock"  # noqa: S108  # Why: temp socket path for workgroup children; passed via --health-socket-path CLI arg.
+    health_path = _health_socket_path(child.spec.name, child.instance_id)
 
     cmd = [
         sys.executable,

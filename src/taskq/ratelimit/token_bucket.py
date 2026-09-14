@@ -61,6 +61,7 @@ from taskq._advisory import (
 from taskq.backend._protocol import RateLimitBackend
 from taskq.backend._records import jsonb_param, jsonb_to_dict
 from taskq.backend.clock import Clock
+from taskq.exceptions import RateLimitDependencyUnavailable
 from taskq.ratelimit._decision_log import log_decision
 from taskq.ratelimit._redis_utils import ensure_redis_script, redis_time_seconds, with_pg_fallback
 from taskq.ratelimit._scripts import REFUND_SCRIPT, TOKEN_BUCKET_SCRIPT
@@ -365,11 +366,22 @@ class TokenBucket:
         in the event loop with no await between this read and the dict pop,
         so the value is consistent at the sweep instant.
         """
+        # Why the protected read: _InMemoryBucket._tokens is this module's
+        # own accumulator, and the registry's idle-eviction sweep (the
+        # only caller) runs synchronously with no await between this read
+        # and the dict pop — the docstring above documents the
+        # consistency argument; a public accessor would widen the surface
+        # for one internal read.
+        tokens: float | None = (
+            self._mem_bucket._tokens  # pyright: ignore[reportPrivateUsage]  # Why: same-module internal accumulator; see the comment above.
+            if self._mem_bucket is not None
+            else None
+        )
         return (
             self._backend == "memory"
             and self._refill == 0.0
-            and self._mem_bucket is not None
-            and self._mem_bucket._tokens < self._capacity
+            and tokens is not None
+            and tokens < self._capacity
         )
 
     async def acquire(
@@ -542,20 +554,30 @@ class TokenBucket:
         pg_pool: "asyncpg.Pool | None",
         settings: "WorkerSettings | None",
     ) -> RateLimitState:
-        """Read-only PG state snapshot — the elapsed-refill estimate runs on
-        the server epoch returned alongside the state (same domain the
-        acquire path stamps)."""
+        """Read-only PG state snapshot: the STORED token count, exactly as
+        the row holds it.
+
+        No elapsed-refill projection. Peek is the audit view of the
+        store — the bounded-lock contract's fail-closed verification
+        reads it to prove a timed-out racer wrote nothing ("the seeded
+        tokens are intact"), and a projection would make that audit
+        drift with the read's timing: the same unchanged row would
+        report a different count at T and T+1s. What an acquire WOULD
+        see is the acquire's own arithmetic, applied under the row lock
+        and re-stamped atomically; projecting it here would only
+        duplicate it without its guarantees. ``is_exhausted`` and the
+        exhausted retry hint derive from the reported count, so an
+        exhausted bucket still tells the operator how long one more
+        token takes.
+        """
         if pg_pool is None:
-            raise RuntimeError("pg_pool not injected for postgres backend")
+            raise RateLimitDependencyUnavailable("pg_pool not injected for postgres backend")
         if settings is None:
             raise RuntimeError("settings not injected for postgres backend")
 
         schema = settings.schema_name
 
-        select_sql = (
-            f"SELECT state, EXTRACT(EPOCH FROM clock_timestamp()) AS now_s "  # noqa: S608  # Why: schema_name is pre-validated against _IDENT_RE at settings load time; bucket_name is $1-bound
-            f'FROM "{schema}".rate_limit_buckets WHERE bucket_name=$1'
-        )
+        select_sql = f'SELECT state FROM "{schema}".rate_limit_buckets WHERE bucket_name=$1'  # noqa: S608  # Why: schema_name is pre-validated against _IDENT_RE at settings load time; bucket_name is $1-bound
 
         async with pg_pool.acquire() as conn:
             row = await conn.fetchrow(select_sql, self._name)
@@ -563,12 +585,8 @@ class TokenBucket:
         if row is None:
             tokens = self._capacity
         else:
-            now = float(row["now_s"])
             state = jsonb_to_dict(row["state"])
             tokens = float(state.get("tokens", self._capacity))  # type: ignore[index]  # Why: rate_limit_buckets.state is NOT NULL; jsonb_to_dict only returns None for SQL NULL, which cannot occur here; fallback for rows missing keys (e.g. from schema migrations or interop writes)
-            ts = float(state.get("ts", now))  # type: ignore[index]  # Why: same — state is non-None; fallback to now for rows missing "ts"
-            elapsed = max(0.0, now - ts)
-            tokens = min(self._capacity, tokens + elapsed * self._refill)
 
         is_exhausted = tokens <= 0.0
         retry_after: timedelta | None = None
@@ -591,7 +609,7 @@ class TokenBucket:
         settings: "WorkerSettings | None",
     ) -> None:
         if pg_pool is None:
-            raise RuntimeError("pg_pool not injected for postgres backend")
+            raise RateLimitDependencyUnavailable("pg_pool not injected for postgres backend")
         if settings is None:
             raise RuntimeError("settings not injected for postgres backend")
 
@@ -636,6 +654,8 @@ class TokenBucket:
         count: float,
         pg_pool: "asyncpg.Pool | None",
         settings: "WorkerSettings | None",
+        *,
+        lock_timeout_ms: float = DEFAULT_TOKEN_BUCKET_LOCK_TIMEOUT_MS,
     ) -> None:
         """Refund tokens on the PG backend using FOR UPDATE on rate_limit_buckets.
 
@@ -646,9 +666,26 @@ class TokenBucket:
         and the stored ``ts`` are server-domain (``EXTRACT(EPOCH FROM
         clock_timestamp())`` read in the same locked transaction), matching
         the acquire path's stamps.
+
+        The row-lock WAIT is bounded (default
+        :data:`DEFAULT_TOKEN_BUCKET_LOCK_TIMEOUT_MS`) by the same discipline
+        the acquire path in this file applies: with
+        ``rate_limit_pg_fallback_enabled`` on, a Redis outage funnels the
+        fleet's refunds through this lock exactly when it is already
+        degraded, and an unbounded wait would let one black-holed holder
+        (dead TCP, no FIN) pin the refund until the server's keepalives
+        reap it. On budget exhaustion the refund RAISES — the opposite of
+        the acquire's fail-closed denial, because ``_refund_pg`` returns
+        ``None`` on success and a quiet no-op return would make a lost
+        refund look like a completed one (the tokens stay spent; for a
+        fixed-quota bucket nothing ever puts them back). The raise surfaces
+        one level up as the release path's rollback-failure ERROR and
+        ``ratelimit.refund_failures`` counter. ``lock_timeout_ms <= 0``
+        waits indefinitely, the ``lock_timeout`` GUC convention shared
+        with migrate.py and ``taskq._advisory``.
         """
         if pg_pool is None:
-            raise RuntimeError("pg_pool not injected for postgres backend refund")
+            raise RateLimitDependencyUnavailable("pg_pool not injected for postgres backend refund")
         if settings is None:
             raise RuntimeError("settings not injected for postgres backend refund")
 
@@ -661,7 +698,57 @@ class TokenBucket:
         update_sql = f'UPDATE "{schema}".rate_limit_buckets SET state=$1::jsonb, updated_at=clock_timestamp() WHERE bucket_name=$2'  # noqa: S608  # Why: schema_name is pre-validated against _IDENT_RE at settings load time; values are $1/$2-bound
 
         async with pg_pool.acquire() as conn, conn.transaction():
-            row = await conn.fetchrow(select_sql, self._name)
+            row: asyncpg.Record | None = None
+
+            if lock_timeout_ms > 0:
+                # Bounded row-lock wait, mechanics mirrored from the
+                # acquire path above (taskq._advisory's contended tier):
+                # set_config(..., true) is SET LOCAL semantics, so the
+                # bound covers every lock wait this transaction can take
+                # and dies with the transaction's own commit; the
+                # savepoint wraps the lock-taking read as one unit; the
+                # client-side backstop bounds the network black hole the
+                # server-side timeout cannot see. Why the function-level
+                # import: same boundary reason as the acquire above —
+                # this module stays importable without the asyncpg
+                # driver installed, and the refund only ever runs
+                # against a real connection.
+                from asyncpg.exceptions import LockNotAvailableError
+
+                await conn.execute(_LOCK_TIMEOUT_SET_SQL, f"{round(lock_timeout_ms)}ms")
+
+                async def _locked_state_read() -> None:
+                    nonlocal row
+                    async with conn.transaction():
+                        row = await conn.fetchrow(select_sql, self._name)
+
+                try:
+                    await asyncio.wait_for(
+                        _locked_state_read(),
+                        timeout=lock_timeout_ms / 1000.0
+                        + DEFAULT_ADVISORY_LOCK_CLIENT_BACKSTOP_SLACK_S,
+                    )
+                except (LockNotAvailableError, TimeoutError):
+                    # The acquire converts exhaustion into the limiter's
+                    # denial outcome; the refund cannot — its success
+                    # shape IS the silent ``None`` return, so the only
+                    # honest exhausted outcome is the RAISE. The warning
+                    # is the same contended-or-sick-bucket signal every
+                    # bounded limiter lock emits (one event name, one
+                    # condition), with ``phase`` marking the different
+                    # consequence: a lost refund, not a denied admission.
+                    logger.warning(
+                        "ratelimit-lock-timeout",
+                        bucket_name=self._name,
+                        backend="postgres",
+                        lock_timeout_ms=lock_timeout_ms,
+                        phase="refund",
+                    )
+                    raise
+            else:
+                # lock_timeout_ms <= 0: the indefinite mode — the GUC
+                # convention's opt-out, and the pre-bound behavior.
+                row = await conn.fetchrow(select_sql, self._name)
 
             if row is None:
                 return
@@ -794,7 +881,7 @@ class TokenBucket:
         migrate.py and ``taskq._advisory``.
         """
         if pg_pool is None:
-            raise RuntimeError("pg_pool not injected for postgres backend")
+            raise RateLimitDependencyUnavailable("pg_pool not injected for postgres backend")
         if settings is None:
             raise RuntimeError("settings not injected for postgres backend")
 

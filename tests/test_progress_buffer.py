@@ -221,6 +221,9 @@ async def test_ctx_progress_snooze_preserves_seq_and_redispatch_continues() -> N
 
     clock = FakeClock(datetime(2025, 1, 1, tzinfo=UTC))
     backend = InMemoryBackend(clock=clock)
+    # Register the actor so dispatch_batch finds it (mirrors PG's
+    # actor_config requirement — candidates come FROM the registry).
+    backend.register_actor_config(actor="test_actor")
     job_id = new_job_id()
     worker_id = new_uuid()
 
@@ -268,6 +271,7 @@ async def test_ctx_progress_snooze_preserves_seq_and_redispatch_continues() -> N
         delay=timedelta(seconds=60),
         progress_seq=progress_seq,
         progress_state=dict(buf.pending_state),
+        attempt=1,
     )
     assert result == "scheduled"
 

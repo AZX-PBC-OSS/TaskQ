@@ -133,6 +133,14 @@ async def _make_in_memory(
     round_robin_queues: tuple[str, ...] = (),
 ) -> InMemoryBackend:
     backend = InMemoryBackend(clock=FakeClock(_IN_MEMORY_NOW))
+    # Dispatch candidates come FROM the actor_config registry on BOTH
+    # backends (PG's per_actor_capacity CTE — every caller of this helper
+    # seeds the PG side's actor_config via _ensure_pg_actor): the twin's
+    # registry must carry the same actors, or "no actors registered" would
+    # read as "no filter" — the exact mirror-greener-than-production shape
+    # the dispatch-parity pins police.
+    for actor in {args.actor for args in args_list}:
+        backend.register_actor_config(actor=actor)
     for queue in round_robin_queues:
         set_queue_mode(backend, queue, "round_robin")
     for args in args_list:

@@ -145,7 +145,7 @@ async def test_pg_zero_delay_snooze_is_floored_at_min_deferral_interval(
         )
         before: datetime = await conn.fetchval("SELECT clock_timestamp()")
 
-    result = await app.backend.mark_snoozed(JobId(job_id), worker_id, timedelta(0))
+    result = await app.backend.mark_snoozed(JobId(job_id), worker_id, timedelta(0), attempt=1)
     assert result == "scheduled"
 
     async with deps.worker_pool.acquire() as conn:  # pyright: ignore[reportUnknownVariableType] # Why: same

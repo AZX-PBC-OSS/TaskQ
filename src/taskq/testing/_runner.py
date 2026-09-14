@@ -529,7 +529,10 @@ async def tick_cancel_polling(backend: "InMemoryBackend") -> None:
     per-job cancel event (registered via ``register_cancel_event``).
     Subsequent calls escalate ``cancel_phase = 2`` if the cancellation
     grace period has elapsed, or mark ``abandoned`` if the cleanup
-    grace period has also elapsed.
+    grace period has also elapsed — and, when the abandoned job's
+    attempt is executing under ``run_until_drained``, cancel that
+    attempt's task: the runner's mirror of production phase 2's hard
+    cancel of a non-cooperative attempt.
 
     MUST NOT sleep or yield to the event loop.
     """
@@ -571,7 +574,22 @@ async def tick_cancel_polling(backend: "InMemoryBackend") -> None:
             # Mark abandoned via the public method so attempt/event rows
             # are written.  mark_abandoned's own
             # cancel_phase==2 guard is satisfied by the condition above.
-            await backend.mark_abandoned(job_id)
+            abandoned = await backend.mark_abandoned(job_id)
+            # Production phase 2 terminates a non-cooperative attempt by
+            # hard-cancelling the actor task once the graces elapse
+            # (cancel.py's active.task.cancel()); the cooperative event
+            # alone cannot reach an attempt that never reads it, and the
+            # runner awaits attempts inline, so without this cancel the
+            # drain parks forever beside a row that already says
+            # abandoned.  The row is terminal BEFORE the cancel: the
+            # attempt's mark_cancelled path then no-ops against the
+            # abandoned row instead of racing a second terminal write,
+            # and the drain task's own cancellation propagates through
+            # run_until_drained's caller-cancel arm (Task.cancelling()).
+            if abandoned:
+                inflight = backend._inflight_attempt  # pyright: ignore[reportPrivateUsage]  # Why: test runner helper intentionally accesses private InMemoryBackend state; this module is co-located with the backend and owns this access pattern.
+                if inflight is not None and inflight[0] == job_id:
+                    inflight[1].cancel()
 
     # Cleanup: remove cancel-tracking state for terminal jobs to prevent
     # unbounded growth of _cancel_events and _cancel_observed_at.
@@ -678,6 +696,16 @@ async def run_until_drained(backend: "InMemoryBackend") -> None:
         # _handle_generic_exception; the test runner has no such wrapper, so
         # we catch it here and transition the job to failed — matching the
         # non-retryable contract documented on PayloadValidationError.
+        # The in-flight attempt registration: tick_cancel_polling's
+        # both-graces arm cancels this task to terminate a
+        # non-cooperative attempt (the mirror of production's
+        # active.task.cancel()). Keyed by job id so only the abandon of
+        # the job actually executing can cancel the drain.
+        current_task = asyncio.current_task()
+        registration: tuple[JobId, asyncio.Task[object]] | None = None
+        if current_task is not None:
+            registration = (job.id, current_task)
+            backend._inflight_attempt = registration  # pyright: ignore[reportPrivateUsage]  # Why: test runner helper intentionally accesses private InMemoryBackend state; this module is co-located with the backend and owns this access pattern.
         try:
             outcome = await consume_one_job(
                 backend,
@@ -702,6 +730,7 @@ async def run_until_drained(backend: "InMemoryBackend") -> None:
                 worker_id=backend._worker_id,  # pyright: ignore[reportPrivateUsage]  # Why: test runner helper intentionally accesses private InMemoryBackend state; this module is co-located with the backend and owns this access pattern.
                 error_info=error_info,
                 retry_delay=None,
+                attempt=job.attempt,
             )
             # Production's generic-exception escape routes this failure
             # through _handle_generic_exception and applies the batch
@@ -738,6 +767,12 @@ async def run_until_drained(backend: "InMemoryBackend") -> None:
             if task is not None and task.cancelling() > 0:
                 raise
             outcome = "cancelled"
+        finally:
+            # Identity-guarded: a concurrent run_until_drained on the same
+            # backend may have registered its own attempt over ours — only
+            # clear what this dispatch registered.
+            if registration is not None and backend._inflight_attempt is registration:  # pyright: ignore[reportPrivateUsage]  # Why: test runner helper intentionally accesses private InMemoryBackend state; this module is co-located with the backend and owns this access pattern.
+                backend._inflight_attempt = None  # pyright: ignore[reportPrivateUsage]  # Why: test runner helper intentionally accesses private InMemoryBackend state; this module is co-located with the backend and owns this access pattern.
 
         try:
             await apply_batch_terminal_outcome(backend, job, outcome)

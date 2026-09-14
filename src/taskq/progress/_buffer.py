@@ -22,6 +22,17 @@ class _ProgressBuffer:
 
     job_id: UUID
     base_seq: int
+    # The attempt epoch the accumulated deltas belong to. The flush gate
+    # carries it as a per-row conjunct (``jobs.attempt = <epoch>``): a
+    # stale flush landing after a same-worker redispatch to a later
+    # attempt must no-op instead of clobbering the new epoch's progress.
+    # Fail-closed by construction: dispatch stamps ``attempt + 1`` on
+    # claiming, so a running row always carries attempt >= 1 and an
+    # unseeded epoch of 0 matches no running row — the flush no-ops
+    # rather than writing. Production buffers are seeded from the
+    # dispatched ``JobRow.attempt``; only direct test construction omits
+    # it (against statement doubles that ignore the bound values).
+    attempt: int = 0
     pending_seq_delta: int = 0
     pending_state: dict[str, object] = field(default_factory=lambda: {})
     dirty: bool = False

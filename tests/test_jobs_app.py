@@ -159,7 +159,7 @@ async def test_jobs_app_enqueue_dispatch_round_trip(
     assert dispatched[0].status == "running"
 
     # Mark succeeded — reuse the same worker_id that acquired the lock
-    ok = await backend.mark_succeeded(job_id, worker_id, {"result": True})
+    ok = await backend.mark_succeeded(job_id, worker_id, {"result": True}, attempt=1)
     assert ok is True
 
     # Get attempts

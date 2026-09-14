@@ -382,6 +382,7 @@ async def test_indefinite_retry_attempt_unchanged() -> None:
         backend._worker_id,  # type: ignore[reportPrivateUsage] # Why: test-only
         error_info,
         decision.retry_delay,
+        attempt=1,
     )
     assert row.status == "scheduled"
     assert row.attempt == 1
@@ -453,6 +454,7 @@ async def test_indefinite_retry_exceeds_deadline() -> None:
         backend._worker_id,  # type: ignore[reportPrivateUsage] # Why: test-only
         error_info,
         decision.retry_delay,
+        attempt=1,
     )
     assert row.status == "failed"
     assert row.error_class == "DeadlineExceeded"
@@ -529,6 +531,9 @@ async def test_remaining_time_dispatch_not_blocked_by_start_to_close() -> None:
     asyncio.wait_for uses full start_to_close, NOT clamped to remaining_time."""
     clock = FakeClock(start=_START)
     backend = InMemoryBackend(clock=clock)
+    # Register the actor so dispatch_batch finds it (mirrors PG's
+    # actor_config requirement — candidates come FROM the registry).
+    backend.register_actor_config(actor="indef_u5")
 
     args = EnqueueArgs(
         id=new_job_id(),
@@ -873,6 +878,7 @@ class _SnoozeWriteInfraFails(InMemoryBackend):
         progress_seq: int = 0,
         progress_state: dict[str, object] | None = None,
         outcome: AttemptOutcome = "snoozed",
+        attempt: int | None = None,
     ) -> Literal["scheduled", "failed", "failed:MaxAttemptsExceeded", "noop"]:
         raise OSError("db socket closed mid-snooze-write")
 
@@ -889,6 +895,10 @@ async def _enqueue_and_dispatch_running(
     backend: InMemoryBackend, *, actor: str
 ) -> tuple[JobId, UUID]:
     """Enqueue one transient job and dispatch it to a running-owned row."""
+    # Register the actor so dispatch_batch finds it (mirrors PG's
+    # actor_config requirement — candidates come FROM the registry).
+    if actor not in backend._actor_configs_meta:  # type: ignore[reportPrivateUsage] # Why: test-only private access; the established fixture pattern.
+        backend.register_actor_config(actor=actor)
     args = EnqueueArgs(
         id=new_job_id(),
         actor=actor,

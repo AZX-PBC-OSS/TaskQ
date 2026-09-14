@@ -37,9 +37,13 @@ reclaimed within the sweep's own 30-second SLA.  A cap hit after
 opportunistic eviction is a genuine sustained-high-cardinality denial,
 not an artefact of when the sweep last ran.  Both eviction call sites
 (the per-worker sweep and the opportunistic path) record evicted buckets
-for row reclamation under the same settings-derived cap
-(``WorkerSettings.max_keyed_reservations``), so the pending-reclaim set
-is bounded by the configured ceiling whichever path evicts.
+for row reclamation — reservation buckets' ``reservation_slots`` rows
+under ``WorkerSettings.max_keyed_reservations``, rate-limit buckets'
+published ``rate_limit_buckets`` rows (the schema captured at publish
+time) under ``WorkerSettings.max_keyed_rate_limits`` on the
+opportunistic path and the shared constant ceiling on the sweep path —
+so each pending-reclaim set is bounded by a configured ceiling
+whichever path evicts.
 
 Over-acquisition window on rollback failure:
 
@@ -280,6 +284,15 @@ class RateLimitRegistry:
         # evict_idle_keyed_rate_limits() to bound registry growth under
         # high key cardinality. Never consulted by acquire_for_actor.
         self._keyed_rate_limit_last_used: dict[str, float] = {}
+        # Schema of the rate_limit_buckets row each keyed rate limit
+        # published, captured at publish time — a TokenBucket carries no
+        # schema of its own (unlike ConcurrencyReservation), so this is
+        # the only record of where the row landed. Read by
+        # evict_idle_keyed_rate_limits() to record the bucket's row for
+        # reclamation; rides the keyed lifecycle like the heal stamps
+        # (dropped on eviction, re-captured on re-materialization's
+        # publish).
+        self._keyed_rate_limit_row_schemas: dict[str, str] = {}
         # Evicted keyed-reservation bucket names whose reservation_slots
         # rows are still to be deleted, keyed by the schema those rows
         # live in. Each schema's names live in a dict[str, None] used as
@@ -295,6 +308,15 @@ class RateLimitRegistry:
         # evict_idle_keyed_reservations() records; the sweep loop's
         # drain_pending_reservation_reclaims() deletes.
         self._pending_reservation_reclaims: dict[str, dict[str, None]] = {}
+        # Evicted keyed rate-limit bucket names whose published
+        # rate_limit_buckets rows are still to be deleted — the
+        # rate-limit twin of _pending_reservation_reclaims: same
+        # insertion-ordered per-schema sets, same cap-vetoed recording,
+        # same drain (which deletes the front slice per schema; a bucket
+        # row has no holder, so nothing survives the DELETE and no
+        # survivor rotation is needed). evict_idle_keyed_rate_limits()
+        # records; drain_pending_reservation_reclaims() deletes.
+        self._pending_rate_limit_reclaims: dict[str, dict[str, None]] = {}
         # Monotonic time of the last acquire-path heal attempt per keyed
         # reservation name — gates the existence probe in the
         # ReservationUnavailable heal to one attempt per
@@ -340,14 +362,21 @@ class RateLimitRegistry:
     def has_pending_reservation_reclaims(self) -> bool:
         """Whether any evicted keyed bucket still awaits its row deletion.
 
-        The sweep loop uses this to skip the drain entirely (no
-        connection acquired) when there is nothing to reclaim.
+        Covers both pending sets — reservation slot rows and published
+        rate-limit bucket rows. The sweep loop uses this single gate to
+        skip the drain entirely (no connection acquired) when there is
+        nothing to reclaim, so a pending set the gate cannot see would
+        never be drained.
         """
-        return any(self._pending_reservation_reclaims.values())
+        return any(self._pending_reservation_reclaims.values()) or any(
+            self._pending_rate_limit_reclaims.values()
+        )
 
     def _pending_reclaim_total(self) -> int:
         """Total bucket names across schemas awaiting row reclamation."""
-        return sum(len(names) for names in self._pending_reservation_reclaims.values())
+        return sum(len(names) for names in self._pending_reservation_reclaims.values()) + sum(
+            len(names) for names in self._pending_rate_limit_reclaims.values()
+        )
 
     def has_reservation(self, name: str) -> bool:
         """O(1) membership test against the live reservations dict.
@@ -878,7 +907,7 @@ class RateLimitRegistry:
             and settings is not None
             and len(self._keyed_rate_limit_last_used) >= settings.max_keyed_rate_limits
         ):
-            self._opportunistic_evict_rate_limits()
+            self._opportunistic_evict_rate_limits(settings)
             if len(self._keyed_rate_limit_last_used) >= settings.max_keyed_rate_limits:
                 logger.warning(
                     "registry-keyed-rate-limit-limit-exceeded",
@@ -911,7 +940,11 @@ class RateLimitRegistry:
             # look like "no limiter configured". Unlike ensure_slots for
             # keyed reservations (a correctness precondition for acquire),
             # this row is observability metadata, so a publish failure
-            # must NOT fail the acquisition — warn and continue.
+            # must NOT fail the acquisition — warn and continue. The row
+            # outlives the registry entry: its schema is captured here so
+            # a later idle eviction can record the row for the reclaim
+            # drain (an uncaptured publish failure leaves no row behind,
+            # so it records nothing).
             if pg_pool is not None:
                 try:
                     await _upsert_rate_limit_bucket_row(
@@ -923,6 +956,8 @@ class RateLimitRegistry:
                         bucket_name=concrete_name,
                         exc_info=True,
                     )
+                else:
+                    self._keyed_rate_limit_row_schemas[concrete_name] = schema
         elif concrete_name in self._keyed_rate_limit_last_used:
             # Keyed-materialized entry reused for the same concrete name:
             # refresh recency, and guard against a concrete-name COLLISION
@@ -1417,10 +1452,16 @@ class RateLimitRegistry:
                 ),
             )
 
-    def _opportunistic_evict_rate_limits(self) -> None:
+    def _opportunistic_evict_rate_limits(self, settings: "WorkerSettings | None") -> None:
         """Idle-rate-limit scan, amortized to one per min-interval.
 
-        Rate-limit twin of :meth:`_opportunistic_evict_reservations`.
+        Rate-limit twin of :meth:`_opportunistic_evict_reservations`:
+        the scan reclaims registry ENTRIES within max(sweep cadence,
+        min-interval) of becoming idle, and evicted buckets' PUBLISHED
+        ``rate_limit_buckets`` rows are recorded for the reclaim drain
+        under the settings-derived cap when settings are in scope (they
+        are at the only call site, the cap-hit branch of
+        :meth:`_resolve_rate_limit_name`).
         """
         now = monotonic()
         if (
@@ -1428,7 +1469,10 @@ class RateLimitRegistry:
             >= _OPPORTUNISTIC_EVICT_MIN_INTERVAL.total_seconds()
         ):
             self._keyed_rate_limit_last_eviction_scan = now
-            self.evict_idle_keyed_rate_limits(idle_for=_KEYED_IDLE_THRESHOLD)
+            self.evict_idle_keyed_rate_limits(
+                idle_for=_KEYED_IDLE_THRESHOLD,
+                max_pending_reclaims=(None if settings is None else settings.max_keyed_rate_limits),
+            )
 
     def _evict_idle_keyed(
         self,
@@ -1546,7 +1590,9 @@ class RateLimitRegistry:
 
         def _admit(name: str, prim: ConcurrencyReservation) -> bool:
             nonlocal vetoed
-            if self._admit_pending_reclaim(name, prim, cap=cap):
+            if self._record_pending_reclaim(
+                self._pending_reservation_reclaims, prim.schema, name, cap=cap
+            ):
                 return True
             vetoed += 1
             return False
@@ -1574,29 +1620,38 @@ class RateLimitRegistry:
             )
         return len(evicted)
 
-    def _admit_pending_reclaim(
+    def _record_pending_reclaim(
         self,
+        pending: dict[str, dict[str, None]],
+        schema: str,
         name: str,
-        reservation: ConcurrencyReservation,
         *,
         cap: int,
     ) -> bool:
         """Record one evicted keyed bucket for row reclamation, under the cap.
 
-        Returns True (the caller's eviction proceeds) after recording
-        *name* under *reservation*'s schema — the drain's idle-guarded
-        DELETE is a harmless no-op for a bucket that has no rows. A name
-        still pending from an earlier eviction wave keeps its position
-        (it has not been served a drain pass yet). At the cap, returns
-        False: the eviction is vetoed and the entry stays registered
-        (see :meth:`evict_idle_keyed_reservations`).
+        Shared by both eviction kinds — *pending* is the kind's own
+        per-schema set (``_pending_reservation_reclaims`` for slot rows,
+        ``_pending_rate_limit_reclaims`` for published bucket rows), so
+        each kind's cap bounds its own set. Returns True (the caller's
+        eviction proceeds) after recording *name* under *schema* — the
+        drain's DELETE is a harmless no-op for a bucket that has no rows.
+        A name still pending from an earlier eviction wave keeps its
+        position (it has not been served a drain pass yet). At the cap,
+        returns False: the eviction is vetoed and the entry stays
+        registered (see the eviction methods).
         """
-        if self._pending_reclaim_total() >= cap:
+        if sum(len(names) for names in pending.values()) >= cap:
             return False
-        self._pending_reservation_reclaims.setdefault(reservation.schema, {})[name] = None
+        pending.setdefault(schema, {})[name] = None
         return True
 
-    def evict_idle_keyed_rate_limits(self, idle_for: "timedelta") -> int:
+    def evict_idle_keyed_rate_limits(
+        self,
+        idle_for: "timedelta",
+        *,
+        max_pending_reclaims: "int | None" = None,
+    ) -> int:
         """Drop registry entries for keyed rate limits idle at least ``idle_for``.
 
         Rate limits derived from a :class:`KeyedRateLimitRef` are registered
@@ -1606,16 +1661,39 @@ class RateLimitRegistry:
         automatically against its own registry (not leader-gated) with a
         1-hour idle threshold; call directly for custom eviction windows.
 
-        Only removes the in-memory registry entry and its acquire-recency
-        tracking — it does NOT touch the underlying Redis hash for that
-        bucket; per-key Redis memory is already self-bounding via the Lua
-        script's ``EXPIRE`` TTL on the bucket's hash (see
-        :meth:`_resolve_rate_limit_name`). A key that is acquired again
-        after eviction is simply re-registered on next use (idempotent — see
-        :meth:`_resolve_rate_limit_name`), so eviction is always safe to
-        call, including concurrently with in-flight acquisitions for other
-        keys. Token buckets are not automatically removed from Redis; their
-        independent TTL handles that side.
+        Removes the in-memory registry entry and its acquire-recency
+        tracking. The underlying Redis hash is deliberately NOT touched:
+        per-key Redis memory is already self-bounding via the Lua script's
+        ``EXPIRE`` TTL on the bucket's hash (see
+        :meth:`_resolve_rate_limit_name`) — that TTL governs Redis, not
+        the PG ``rate_limit_buckets`` row the materialization path
+        published, so a bucket whose publish landed has its schema
+        captured at publish time and is recorded here for row
+        reclamation: :meth:`drain_pending_reservation_reclaims` deletes
+        the published row on the same sweep cadence, the exact shape of
+        the reservation-side reclamation (steady state without it: one
+        ``rate_limit_buckets`` row per key ever seen, unbounded in the
+        caller-controlled key space). A key that is acquired again after
+        eviction is simply re-registered on next use (idempotent — see
+        :meth:`_resolve_rate_limit_name`), and the drain drops its name
+        from the pending set without deleting anything (a re-activated
+        key owns its row again), so eviction is always safe to call,
+        including concurrently with in-flight acquisitions for other
+        keys.
+
+        *max_pending_reclaims* caps the rate-limit pending-reclaim set
+        (default: :data:`taskq.constants.DEFAULT_MAX_KEYED_RESERVATIONS`,
+        the shared keyed-pending ceiling; the acquisition path's
+        opportunistic eviction passes the settings-derived
+        ``WorkerSettings.max_keyed_rate_limits``, so the pending set is
+        bounded by the same ceiling that bounds the tracked entries). At
+        the cap the eviction is VETOED — the entry stays registered and
+        re-scanned on the next sweep, so no structure grows unbounded
+        and no published row is orphaned by an eviction that could not
+        be recorded (the same fail-closed bound as the reservation
+        side; the pending-depth gauge and the
+        ``registry-keyed-reclaim-pending-cap-veto`` warning are the
+        visible signals).
 
         **Exemption — memory fixed-quota buckets.** A ``backend="memory"``
         bucket with ``refill_per_second == 0`` that has consumed any of its
@@ -1635,13 +1713,48 @@ class RateLimitRegistry:
 
         Returns the number of entries evicted.
         """
+        cap = (
+            DEFAULT_MAX_KEYED_RESERVATIONS if max_pending_reclaims is None else max_pending_reclaims
+        )
+        vetoed = 0
+
+        def _admit(name: str, prim: TokenBucket | SlidingWindow) -> bool:
+            nonlocal vetoed
+            schema = self._keyed_rate_limit_row_schemas.get(name)
+            if schema is None:
+                # No published row (materialized with no pool, or the
+                # best-effort publish failed): nothing to reclaim — the
+                # eviction proceeds unrecorded.
+                return True
+            if self._record_pending_reclaim(
+                self._pending_rate_limit_reclaims, schema, name, cap=cap
+            ):
+                return True
+            vetoed += 1
+            return False
+
         evicted = self._evict_idle_keyed(
             self._keyed_rate_limit_last_used,
             self._rate_limits,
             idle_for,
             "registry-evicted-idle-keyed-rate-limits",
             preserve=_preserves_memory_fixed_quota_state,
+            admit=_admit,
         )
+        # The publish-schema capture rides the registration's lifecycle:
+        # an evicted bucket's schema must not survive into a future
+        # re-registration of the same concrete name (a vetoed entry keeps
+        # its capture — it is still registered and still owns its row).
+        for name in evicted:
+            self._keyed_rate_limit_row_schemas.pop(name, None)
+        update_keyed_reclaim_pending(self._pending_reclaim_total())
+        if vetoed:
+            logger.warning(
+                "registry-keyed-reclaim-pending-cap-veto",
+                vetoed=vetoed,
+                cap=cap,
+                pending=self._pending_reclaim_total(),
+            )
         return len(evicted)
 
     async def drain_pending_reservation_reclaims(
@@ -1651,35 +1764,41 @@ class RateLimitRegistry:
         batch_names: int = _DEFAULT_RECLAIM_BATCH_NAMES,
         acquire_timeout: "float | None" = None,
     ) -> int:
-        """Delete the ``reservation_slots`` rows of evicted keyed buckets.
+        """Delete the PG rows of evicted keyed buckets.
 
-        One bounded slice per schema per call — at most *batch_names*
-        pending bucket names, ONE idle-guarded batched DELETE, ONE
-        batched existence probe for the slice. The slice is the FRONT of
-        the per-schema insertion-ordered pending set, and this tick's
-        SURVIVORS (names whose rows were all still held) re-enter at the
-        BACK: a held bucket waits at most one full rotation, so a run of
-        held buckets at the head of the queue can never starve the
-        buckets behind them. Driven by the per-worker sweep loop on the
-        sweep cadence, immediately after the keyed evictions that feed
-        it; a no-op (no connection acquired) when nothing is pending.
+        Two row kinds, one bounded pass per schema per call:
+        ``reservation_slots`` rows of evicted keyed reservations, and the
+        published ``rate_limit_buckets`` rows of evicted keyed rate
+        limits. For each kind and schema, at most *batch_names* pending
+        bucket names and ONE batched DELETE. The slice is the FRONT of
+        the per-schema insertion-ordered pending set. Driven by the
+        per-worker sweep loop on the sweep cadence, immediately after
+        the keyed evictions that feed it; a no-op (no connection
+        acquired) when nothing is pending on either side.
 
         Semantics — what stays pending and why:
 
-        - A name that re-registered since eviction is dropped from the
+        - A name that re-registered since eviction is dropped from its
           pending set WITHOUT a statement: a re-activated key owns its
           rows again.
-        - The DELETE removes only free or lease-expired rows — a slot
-          still held by a live lease survives (the over-admission
-          invariant).
-        - A HELD slot is therefore the ONLY reason a name stays pending
-          after its slice ran: the existence probe names the buckets
-          whose rows survived the DELETE, and those names rotate to the
-          back of the queue — the lease expires, the holder's release or
-          the lock-expiry sweep frees the row, and a later drain (at most
-          one full rotation away) deletes it. A name with no rows left —
-          fully deleted this tick, or never materialized at all — leaves
-          the pending set.
+        - The reservation DELETE removes only free or lease-expired rows
+          — a slot still held by a live lease survives (the
+          over-admission invariant). A HELD slot is therefore the only
+          reason a reservation name stays pending after its slice ran:
+          the existence probe names the buckets whose rows survived the
+          DELETE, and those names rotate to the BACK of the queue — the
+          lease expires, the holder's release or the lock-expiry sweep
+          frees the row, and a later drain (at most one full rotation
+          away) deletes it. A name with no rows left — fully deleted
+          this tick, or never materialized at all — leaves the pending
+          set.
+        - The rate-limit DELETE needs no guard and no probe: a bucket
+          row has no holder, so nothing survives the statement and every
+          sliced name leaves the pending set in one pass — the queue
+          drains FIFO with no survivors to rotate. A live bucket never
+          reaches the statement at all: only evicted keyed names are
+          ever recorded, and the re-registered check above drops a
+          re-activated key first.
         - A schema key whose pending set empties (every name
           re-registered, or every row reclaimed) is popped after the
           pass, so a later drain with nothing pending acquires no
@@ -1702,7 +1821,7 @@ class RateLimitRegistry:
 
         Returns the number of rows deleted.
         """
-        if not self._pending_reservation_reclaims:
+        if not self._pending_reservation_reclaims and not self._pending_rate_limit_reclaims:
             return 0
         start = monotonic()
         total_deleted = 0
@@ -1713,7 +1832,9 @@ class RateLimitRegistry:
                         raise ValueError(f"invalid schema identifier: {schema!r}")
                     pending = self._pending_reservation_reclaims.get(schema)
                     if not pending:
-                        self._drop_pending_schema_if_empty(schema)
+                        self._drop_pending_schema_if_empty(
+                            self._pending_reservation_reclaims, schema
+                        )
                         continue
                     # Round-robin: the front batch (insertion order) is
                     # served first; survivors re-enter at the back below.
@@ -1728,7 +1849,9 @@ class RateLimitRegistry:
                         else:
                             slice_names.append(name)
                     if not slice_names:
-                        self._drop_pending_schema_if_empty(schema)
+                        self._drop_pending_schema_if_empty(
+                            self._pending_reservation_reclaims, schema
+                        )
                         continue
                     deleted_rows = await conn.fetch(
                         _RECLAIM_SLICE_DELETE_SQL_TEMPLATE.format(schema=schema),
@@ -1754,7 +1877,42 @@ class RateLimitRegistry:
                         # BACK: its next chance comes after every other
                         # pending bucket's, never before them.
                         pending[name] = None
-                    self._drop_pending_schema_if_empty(schema)
+                    self._drop_pending_schema_if_empty(self._pending_reservation_reclaims, schema)
+                for schema in list(self._pending_rate_limit_reclaims):
+                    if not _IDENT_RE.match(schema):
+                        raise ValueError(f"invalid schema identifier: {schema!r}")
+                    pending = self._pending_rate_limit_reclaims.get(schema)
+                    if not pending:
+                        self._drop_pending_schema_if_empty(
+                            self._pending_rate_limit_reclaims, schema
+                        )
+                        continue
+                    # Front batch, same as the reservation pass; with no
+                    # survivors there is nothing to rotate — the names
+                    # that fit the slice are served in insertion order.
+                    candidates = list(pending)[:batch_names]
+                    slice_names: list[str] = []
+                    for name in candidates:
+                        if name in self._rate_limits or name in self._keyed_rate_limit_last_used:
+                            # Re-registered since eviction: the bucket is
+                            # live again and owns its published row — drop
+                            # the pending entry, touch nothing in PG.
+                            pending.pop(name, None)
+                        else:
+                            slice_names.append(name)
+                    if not slice_names:
+                        self._drop_pending_schema_if_empty(
+                            self._pending_rate_limit_reclaims, schema
+                        )
+                        continue
+                    deleted_rows = await conn.fetch(
+                        _RECLAIM_RATE_LIMIT_SLICE_DELETE_SQL_TEMPLATE.format(schema=schema),
+                        slice_names,
+                    )
+                    total_deleted += len(deleted_rows)
+                    for name in slice_names:
+                        pending.pop(name, None)
+                    self._drop_pending_schema_if_empty(self._pending_rate_limit_reclaims, schema)
         except Exception as exc:
             record_reservation_reclaim_drain_failure(type(exc).__name__)
             raise
@@ -1764,22 +1922,26 @@ class RateLimitRegistry:
             update_keyed_reclaim_pending(self._pending_reclaim_total())
         return total_deleted
 
-    def _drop_pending_schema_if_empty(self, schema: str) -> None:
+    def _drop_pending_schema_if_empty(
+        self, pending: dict[str, dict[str, None]], schema: str
+    ) -> None:
         """Pop a schema key whose pending set is empty.
 
         An empty-set key is invisible to ``has_pending_reservation_reclaims``
         but keeps the drain's top-level truthiness gate passing, so every
         later drain would acquire a connection to discover nothing.
         """
-        if not self._pending_reservation_reclaims.get(schema):
-            self._pending_reservation_reclaims.pop(schema, None)
+        if not pending.get(schema):
+            pending.pop(schema, None)
 
     def clear(self) -> None:
         """Reset ALL mutable registry state — a test aid, NOT safe while running.
 
-        Clears the seven dicts (``_rate_limits``, ``_reservations``,
+        Clears the nine dicts (``_rate_limits``, ``_reservations``,
         ``_keyed_reservation_last_used``, ``_keyed_rate_limit_last_used``,
+        ``_keyed_rate_limit_row_schemas``,
         ``_pending_reservation_reclaims``,
+        ``_pending_rate_limit_reclaims``,
         ``_keyed_reservation_heal_attempted``,
         ``_keyed_reservation_heal_failure_logged``)
         AND resets the two opportunistic-eviction scan timestamps
@@ -1788,8 +1950,8 @@ class RateLimitRegistry:
         Omitting the timestamps would leave the opportunistic-eviction
         throttle stamped, silently suppressing scans for up to
         ``_OPPORTUNISTIC_EVICT_MIN_INTERVAL`` (30 s) in the next test;
-        omitting the pending-reclaim set or the heal stamps would leak
-        one test's evictions into the next.
+        omitting a pending-reclaim set, a publish-schema capture, or a
+        heal stamp would leak one test's evictions into the next.
 
         **Not safe to call while a worker is running** — concurrent
         dispatch / sweep iteration over the dicts would observe
@@ -1797,19 +1959,32 @@ class RateLimitRegistry:
 
         Like the eviction methods, this resets IN-PROCESS bookkeeping
         only — it does NOT touch Redis bucket hashes or Postgres
-        ``reservation_slots`` rows; backend state persists and will be
-        observed on next acquire.
+        ``reservation_slots`` / ``rate_limit_buckets`` rows; backend
+        state persists and will be observed on next acquire.
         """
         self._rate_limits.clear()
         self._reservations.clear()
         self._keyed_reservation_last_used.clear()
         self._keyed_rate_limit_last_used.clear()
+        self._keyed_rate_limit_row_schemas.clear()
         self._pending_reservation_reclaims.clear()
+        self._pending_rate_limit_reclaims.clear()
         self._keyed_reservation_heal_attempted.clear()
         self._keyed_reservation_heal_failure_logged.clear()
         self._keyed_reservation_last_eviction_scan = float("-inf")
         self._keyed_rate_limit_last_eviction_scan = float("-inf")
         update_keyed_reclaim_pending(0)
+
+
+# The reclaim drain's rate-limit statement, beside the publish statement
+# whose rows it reclaims (the same locality as the reservation reclaim
+# templates in ratelimit/reservation.py). No lease guard, unlike the
+# reservation twin: a rate_limit_buckets row has no holder, so nothing
+# survives the DELETE and the drain runs no survivor probe.
+_RECLAIM_RATE_LIMIT_SLICE_DELETE_SQL_TEMPLATE = """\
+DELETE FROM "{schema}".rate_limit_buckets
+WHERE bucket_name = ANY($1)
+RETURNING bucket_name"""
 
 
 async def _upsert_rate_limit_bucket_row(

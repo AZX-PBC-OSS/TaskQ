@@ -1,8 +1,14 @@
-"""Unit and Hypothesis tests for _flush_buffer, progress_flush_loop, and edge cases."""
+"""Unit and Hypothesis tests for _flush_buffer, progress_flush_loop, and edge cases.
+
+The tick-level pins hold the loop to its single-statement contract: one
+batched multi-row UPDATE per tick carries every dirty buffer's row, with
+the fencing gate applied per-row over the unnest arrays.
+"""
 
 import asyncio
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager, suppress
+from typing import cast
 from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID
 
@@ -11,16 +17,22 @@ from hypothesis import given
 from hypothesis import settings as hyp_settings
 from hypothesis import strategies as st
 
+from taskq._ids import new_uuid
 from taskq.progress._buffer import _progress_after_flush, _ProgressBuffer, _snapshot_progress
-from taskq.progress._flush import _flush_buffer, _flush_buffer_immediate, progress_flush_loop
+from taskq.progress._flush import (
+    _FLUSH_BATCH_ROWS,  # pyright: ignore[reportPrivateUsage]  # Why: the pin asserts the batch bound itself — the doctrine constant is the contract under test.
+    _FLUSH_MAX_BATCHES_PER_TICK,  # pyright: ignore[reportPrivateUsage]  # Why: the pin asserts the tick cap itself — the doctrine constant is the contract under test.
+    _flush_buffer,
+    _flush_buffer_immediate,
+    progress_flush_loop,
+)
 
 _JOB_ID = UUID("aaaaaaaa-bbbb-cccc-dddd-000000000001")
 _JOB_ID_B = UUID("aaaaaaaa-bbbb-cccc-dddd-000000000002")
 _WORKER_ID = UUID("11111111-2222-3333-4444-555555555555")
 _POOL_SIZE = 4
-"""Reported by every pool double: the flush loop bounds a tick's flush
-concurrency by the pool's current size, so pool doubles must report one
-large enough for the tick to run the flushes concurrently."""
+"""Reported by every pool double so the double mirrors a real asyncpg
+pool's surface; the tick's batched flush statement reads no pool size."""
 
 
 def _make_pool_mock(*, returning_row: dict[str, object] | None = None) -> MagicMock:
@@ -32,9 +44,27 @@ def _make_pool_mock(*, returning_row: dict[str, object] | None = None) -> MagicM
 def _make_pool_with_conn(
     *, returning_row: dict[str, object] | None = None
 ) -> tuple[MagicMock, AsyncMock]:
-    """Return (pool, conn) mocks whose acquire() is an async context manager."""
+    """Return (pool, conn) doubles for both flush statement surfaces.
+
+    ``conn.fetchrow`` answers the single-row statement (the immediate and
+    crash-flush paths); ``conn.fetch`` answers the tick's batched
+    statement, echoing one ``{"id", "progress_seq"}`` RETURNING row per
+    job id found in the call's unnest id array — ``returning_row=None``
+    fences every row out (empty RETURNING).
+    """
     conn = AsyncMock()
     conn.fetchrow.return_value = returning_row
+
+    async def _fetch(*args: object) -> list[dict[str, object]]:
+        # The tick's batched UPDATE binds (sql, job_ids, deltas, states, attempts, worker).
+        job_ids = args[1] if len(args) > 1 else None
+        if returning_row is None or not isinstance(job_ids, list):
+            return []
+        returned_seq = returning_row.get("progress_seq", 0)
+        typed_ids = cast("list[UUID]", job_ids)  # pyright: ignore[reportUnknownVariableType]  # Why: the fake conn's *args are object; the pins only ever bind UUID lists.
+        return [{"id": job_id, "progress_seq": returned_seq} for job_id in typed_ids]
+
+    conn.fetch.side_effect = _fetch
 
     pool = MagicMock()
     pool.get_size.return_value = _POOL_SIZE
@@ -341,8 +371,8 @@ async def test_flush_loop_resolves_pool_via_getter_each_tick() -> None:
         shutdown.set()
         await task
 
-    assert conn_a.fetchrow.await_count >= 1
-    assert conn_b.fetchrow.await_count >= 1  # post-swap flush hit the NEW pool
+    assert conn_a.fetch.await_count >= 1
+    assert conn_b.fetch.await_count >= 1  # post-swap flush hit the NEW pool
 
 
 async def test_flush_loop_raises_on_invalid_schema() -> None:
@@ -423,31 +453,26 @@ async def test_flush_loop_removes_buffer_when_row_gone() -> None:
     assert _JOB_ID not in buffers
 
 
-async def test_flush_loop_continues_after_per_job_exception() -> None:
-    """If one buffer raises an unexpected exception, the loop continues for others."""
-    import asyncpg
+async def test_flush_loop_fenced_out_row_dropped_while_sibling_flushes() -> None:
+    """A row whose gate does not match (reclaimed, terminal, or owned by a
+    later attempt epoch) is simply absent from the batch's RETURNING: it
+    does not update, its buffer is dropped, and — because there is no
+    per-buffer statement — its fence cannot fail the statement carrying
+    the sibling row.
+    """
+    reclaimed_id = UUID("bad00000-0000-0000-0000-000000000000")
+    live_id = UUID("600d0000-0000-0000-0000-000000000000")
 
-    bad_id = UUID("bad00000-0000-0000-0000-000000000000")
-    good_id = UUID("600d0000-0000-0000-0000-000000000000")
-
-    bad_buf = _make_dirty_buffer(base_seq=0, delta=1)
-    bad_buf.job_id = bad_id
-    good_buf = _ProgressBuffer(job_id=good_id, base_seq=0)
-    good_buf.dirty = True
-    good_buf.pending_seq_delta = 1
-
-    returned_seq = 5
     conn = AsyncMock()
-    call_count = 0
 
-    async def _fetchrow(*args: object) -> dict[str, object] | None:
-        nonlocal call_count
-        call_count += 1
-        if call_count == 1:
-            raise asyncpg.PostgresError("simulated pg error")
-        return {"progress_seq": returned_seq}
+    async def _fetch(*args: object) -> list[dict[str, object]]:
+        # Only the live job's row clears the gate and RETURNS.
+        job_ids = args[1] if len(args) > 1 else None
+        if not isinstance(job_ids, list) or live_id not in job_ids:
+            return []
+        return [{"id": live_id, "progress_seq": 5}]
 
-    conn.fetchrow.side_effect = _fetchrow
+    conn.fetch.side_effect = _fetch
 
     pool = MagicMock()
     pool.get_size.return_value = _POOL_SIZE
@@ -458,7 +483,15 @@ async def test_flush_loop_continues_after_per_job_exception() -> None:
 
     pool.acquire = _acquire
 
-    buffers: dict[UUID, _ProgressBuffer] = {bad_id: bad_buf, good_id: good_buf}
+    reclaimed_buf = _ProgressBuffer(job_id=reclaimed_id, base_seq=0)
+    reclaimed_buf.pending_seq_delta = 1
+    reclaimed_buf.pending_state["step"] = 1
+    reclaimed_buf.dirty = True
+    live_buf = _ProgressBuffer(job_id=live_id, base_seq=0)
+    live_buf.pending_seq_delta = 1
+    live_buf.pending_state["step"] = 1
+    live_buf.dirty = True
+    buffers: dict[UUID, _ProgressBuffer] = {reclaimed_id: reclaimed_buf, live_id: live_buf}
     shutdown = asyncio.Event()
 
     async def _stop() -> None:
@@ -470,30 +503,35 @@ async def test_flush_loop_continues_after_per_job_exception() -> None:
         _stop(),
     )
 
-    assert good_buf.dirty is False
-    assert good_buf.base_seq == returned_seq
+    assert reclaimed_id not in buffers, (
+        "the fenced-out row's buffer must be dropped — the gate no-op'd for that job"
+    )
+    assert live_buf.dirty is False
+    assert live_buf.base_seq == 5
 
 
-# ── Bounded-parallel flush within one tick ──────────────────────────────
+# ── Single-statement batched flush per tick ────────────────────────────
 
 
-async def test_flush_loop_flushes_dirty_buffers_concurrently() -> None:
-    """Two dirty buffers flush concurrently within one tick.
-
-    Both flushes block on a two-party barrier inside fetchrow: the
-    barrier is satisfiable only when both UPDATEs are in flight
-    simultaneously. Serial per-buffer flushing parks the first flush at
-    the barrier forever, head-of-line blocking the second — the test
-    then times out and fails.
+async def test_flush_tick_batches_all_dirty_buffers_into_one_statement() -> None:
+    """One flush tick reaches the backend exactly once regardless of dirty
+    count: every dirty buffer's row rides ONE batched multi-row UPDATE —
+    the unnest-array shape the vendored bulk writers converged on (river's
+    columnar arrays, graphile's unnest-joined set op, procrastinate's
+    composite array). The recorded statement's unnest arrays carry both
+    job ids with their per-row deltas and attempt epochs, the fencing
+    gate stays per-row over the unnest rows, and both rows update.
     """
-    barrier = asyncio.Barrier(2)
     conn = AsyncMock()
 
-    async def _fetchrow(*_args: object) -> dict[str, object]:
-        await barrier.wait()
-        return {"progress_seq": 9}
+    async def _fetch(*args: object) -> list[dict[str, object]]:
+        job_ids = args[1] if len(args) > 1 else None
+        if not isinstance(job_ids, list):
+            return []
+        typed_ids = cast("list[UUID]", job_ids)  # pyright: ignore[reportUnknownVariableType]  # Why: the fake conn's *args are object; the pins only ever bind UUID lists.
+        return [{"id": job_id, "progress_seq": 9} for job_id in typed_ids]
 
-    conn.fetchrow.side_effect = _fetchrow
+    conn.fetch.side_effect = _fetch
 
     pool = MagicMock()
     pool.get_size.return_value = _POOL_SIZE
@@ -505,67 +543,262 @@ async def test_flush_loop_flushes_dirty_buffers_concurrently() -> None:
     pool.acquire = _acquire
 
     buf_a = _make_dirty_buffer()
+    buf_a.attempt = 3
     buf_b = _ProgressBuffer(job_id=_JOB_ID_B, base_seq=0)
     buf_b.pending_seq_delta = 2
     buf_b.pending_state["step"] = 1
+    buf_b.attempt = 5
     buf_b.dirty = True
     buffers: dict[UUID, _ProgressBuffer] = {_JOB_ID: buf_a, _JOB_ID_B: buf_b}
 
     shutdown = asyncio.Event()
-    task = asyncio.create_task(
-        progress_flush_loop(lambda: pool, "taskq_test", _WORKER_ID, buffers, 0.01, shutdown)
-    )
-    try:
-        async with asyncio.timeout(2.0):
-            while buf_a.dirty or buf_b.dirty:  # noqa: ASYNC110  # Why: polling observable mock-DB state (buffer.dirty) that carries no event to await; bounded by the surrounding asyncio.timeout.
-                await asyncio.sleep(0.005)
-    except TimeoutError:
-        pytest.fail(
-            "the two dirty buffers did not flush concurrently: the second flush "
-            "never reached the barrier while the first was in flight "
-            "(head-of-line blocking in the flush tick)"
-        )
-    finally:
-        shutdown.set()
-        try:
-            await asyncio.wait_for(asyncio.shield(task), timeout=1.0)
-        except (TimeoutError, asyncio.CancelledError):
-            task.cancel()
-            with suppress(asyncio.CancelledError):
-                await task
 
+    async def _stop() -> None:
+        await asyncio.sleep(0.05)
+        shutdown.set()
+
+    await asyncio.gather(
+        progress_flush_loop(lambda: pool, "taskq_test", _WORKER_ID, buffers, 0.01, shutdown),
+        _stop(),
+    )
+
+    assert conn.fetch.await_count == 1, (
+        f"the tick issued {conn.fetch.await_count} statements for 2 dirty buffers — "
+        "the contract is one batched multi-row statement per tick"
+    )
+    conn.fetchrow.assert_not_awaited()  # the tick path has no per-buffer statement
+
+    call_args = conn.fetch.await_args_list[0].args
+    sql, job_ids, seq_deltas, _state_docs, attempts, worker_arg = (
+        call_args[0],
+        call_args[1],
+        call_args[2],
+        call_args[3],
+        call_args[4],
+        call_args[5],
+    )
+    assert isinstance(sql, str)
+    assert "unnest(" in sql, "the statement must carry its rows columnar-style in unnest arrays"
+    assert "j.status = 'running'" in sql, "the per-row running gate must stay in the statement"
+    assert "j.locked_by_worker = $5::uuid" in sql, (
+        "the per-row worker gate must stay in the statement"
+    )
+    assert "j.attempt = f.attempt" in sql, "the per-row attempt-epoch gate conjunct is missing"
+    assert "RETURNING j.id, j.progress_seq" in sql, (
+        "the retire protocol keys on which job ids came back — RETURNING must carry them"
+    )
+    assert set(job_ids) == {_JOB_ID, _JOB_ID_B}, (
+        f"one statement must carry both dirty buffers' rows; got {job_ids!r}"
+    )
+    assert dict(zip(job_ids, seq_deltas, strict=True)) == {_JOB_ID: 2, _JOB_ID_B: 2}, (
+        f"the id→delta columnar pairing is broken; got deltas {seq_deltas!r}"
+    )
+    assert dict(zip(job_ids, attempts, strict=True)) == {_JOB_ID: 3, _JOB_ID_B: 5}, (
+        f"each row must carry its buffer's attempt epoch; got attempts {attempts!r}"
+    )
+    assert worker_arg == _WORKER_ID
+
+    # Both rows updated: both buffers adopted the returned seq and retired.
     assert buf_a.dirty is False
-    assert buf_b.dirty is False
     assert buf_a.base_seq == 9
+    assert buf_b.dirty is False
     assert buf_b.base_seq == 9
 
 
-async def test_flush_loop_slow_failing_flush_does_not_block_later_buffers() -> None:
-    """One buffer's failing flush neither blocks nor fails the tick's
-    other flushes.
+async def test_flush_tick_drains_in_bounded_batches_with_a_tick_cap() -> None:
+    """The #120 doctrine: no flush statement ever carries more than
+    ``_FLUSH_BATCH_ROWS`` rows, and no tick issues more than
+    ``_FLUSH_MAX_BATCHES_PER_TICK`` batches — an all-in-one statement
+    over the whole dirty set is the long-running-statement trap (it
+    times out as a whole and stalls the tick). 70 dirty buffers drain
+    as exactly ceil(70/32) = 3 bounded statements; 300 drain as the
+    tick-capped 8 statements, leaving the remainder dirty for the next
+    tick — the incremental-commit discipline the leader sweeps apply."""
+    conn = AsyncMock()
 
-    The failing job's UPDATE holds its in-flight slot for 0.4 s before
-    raising; the healthy job's flush must complete well inside that
-    window (serial flushing would queue it behind the failure). The
-    failing buffer must stay dirty with its delta intact for the next
-    tick, and the loop must survive the failure.
+    async def _fetch(*args: object) -> list[dict[str, object]]:
+        job_ids = args[1] if len(args) > 1 else None
+        if not isinstance(job_ids, list):
+            return []
+        typed_ids = cast("list[UUID]", job_ids)  # pyright: ignore[reportUnknownVariableType]  # Why: the fake conn's *args are object; the pins only ever bind UUID lists.
+        return [{"id": job_id, "progress_seq": 9} for job_id in typed_ids]
+
+    conn.fetch.side_effect = _fetch
+
+    pool = MagicMock()
+
+    @asynccontextmanager
+    async def _acquire() -> AsyncGenerator[AsyncMock, None]:
+        yield conn
+
+    pool.acquire = _acquire
+
+    def _dirty_buffers(n: int) -> dict[UUID, _ProgressBuffer]:
+        out: dict[UUID, _ProgressBuffer] = {}
+        for _ in range(n):
+            job_id = new_uuid()
+            buf = _ProgressBuffer(job_id=job_id, base_seq=0)
+            buf.pending_seq_delta = 1
+            buf.pending_state["step"] = 1
+            buf.attempt = 2
+            buf.dirty = True
+            out[job_id] = buf
+        return out
+
+    buffers = _dirty_buffers(70)
+    shutdown = asyncio.Event()
+
+    async def _stop() -> None:
+        await asyncio.sleep(0.05)
+        shutdown.set()
+
+    await asyncio.gather(
+        progress_flush_loop(lambda: pool, "taskq_test", _WORKER_ID, buffers, 0.01, shutdown),
+        _stop(),
+    )
+
+    assert conn.fetch.await_count == 3, (
+        f"70 dirty buffers must drain as ceil(70/{_FLUSH_BATCH_ROWS}) = 3 bounded "
+        f"statements; got {conn.fetch.await_count}"
+    )
+    for call in conn.fetch.await_args_list:
+        assert len(call.args[1]) <= _FLUSH_BATCH_ROWS, (
+            f"a flush statement carried {len(call.args[1])} rows — the batch bound "
+            f"({_FLUSH_BATCH_ROWS}) is the #120 doctrine's guarantee that no "
+            "statement runs long"
+        )
+    assert all(buf.dirty is False for buf in buffers.values())
+
+    # 300 dirty buffers: the tick cap holds — 8 batches, 256 rows, the
+    # remainder stays dirty for the next tick.
+    conn2 = AsyncMock()
+    conn2.fetch.side_effect = _fetch
+    pool2 = MagicMock()
+
+    @asynccontextmanager
+    async def _acquire2() -> AsyncGenerator[AsyncMock, None]:
+        yield conn2
+
+    pool2.acquire = _acquire2
+
+    buffers2 = _dirty_buffers(300)
+    shutdown2 = asyncio.Event()
+
+    async def _stop2() -> None:
+        await asyncio.sleep(0.05)
+        shutdown2.set()
+
+    await asyncio.gather(
+        progress_flush_loop(lambda: pool2, "taskq_test", _WORKER_ID, buffers2, 0.15, shutdown2),
+        _stop2(),
+    )
+
+    assert conn2.fetch.await_count == _FLUSH_MAX_BATCHES_PER_TICK, (
+        f"300 dirty buffers must issue at most {_FLUSH_MAX_BATCHES_PER_TICK} batches "
+        f"in one tick; got {conn2.fetch.await_count} — the tick must not be "
+        "monopolised by a huge dirty set"
+    )
+    still_dirty = [buf for buf in buffers2.values() if buf.dirty]
+    assert len(still_dirty) == 300 - _FLUSH_MAX_BATCHES_PER_TICK * _FLUSH_BATCH_ROWS, (
+        f"the remainder ({300 - _FLUSH_MAX_BATCHES_PER_TICK * _FLUSH_BATCH_ROWS} "
+        f"buffers) must stay dirty for the next tick; got {len(still_dirty)} dirty"
+    )
+
+
+async def test_flush_failing_batch_leaves_only_its_own_buffers_dirty() -> None:
+    """Per-batch failure isolation — the #120 doctrine's other half: a
+    failing batch is that batch's failure alone. 70 dirty buffers in 3
+    bounded batches; the middle batch's statement fails — its 32
+    buffers stay dirty with deltas intact while the first and third
+    batches' buffers flush in the same tick. The single-statement shape
+    made every dirty job lose its flush together; the bounded shape
+    keeps the blast radius at one batch."""
+    conn = AsyncMock()
+    fetch_calls: list[list[object]] = []
+
+    async def _fetch(*args: object) -> list[dict[str, object]]:
+        job_ids = args[1] if len(args) > 1 else None
+        if not isinstance(job_ids, list):
+            return []
+        typed_ids = cast("list[UUID]", job_ids)  # pyright: ignore[reportUnknownVariableType]  # Why: the fake conn's *args are object; the pins only ever bind UUID lists.
+        fetch_calls.append(list(typed_ids))
+        if len(fetch_calls) == 2:
+            raise RuntimeError("middle batch infra failure")
+        return [{"id": job_id, "progress_seq": 9} for job_id in typed_ids]
+
+    conn.fetch.side_effect = _fetch
+
+    pool = MagicMock()
+
+    @asynccontextmanager
+    async def _acquire() -> AsyncGenerator[AsyncMock, None]:
+        yield conn
+
+    pool.acquire = _acquire
+
+    buffers: dict[UUID, _ProgressBuffer] = {}
+    for _ in range(70):
+        job_id = new_uuid()
+        buf = _ProgressBuffer(job_id=job_id, base_seq=0)
+        buf.pending_seq_delta = 1
+        buf.pending_state["step"] = 1
+        buf.attempt = 2
+        buf.dirty = True
+        buffers[job_id] = buf
+
+    shutdown = asyncio.Event()
+
+    async def _stop() -> None:
+        await asyncio.sleep(0.05)
+        shutdown.set()
+
+    await asyncio.gather(
+        progress_flush_loop(lambda: pool, "taskq_test", _WORKER_ID, buffers, 0.15, shutdown),
+        _stop(),
+    )
+
+    assert len(fetch_calls) == 3, (
+        "all three bounded batches must run despite the middle one failing"
+    )
+    failed_ids = {job_id for job_id in fetch_calls[1] if isinstance(job_id, UUID)}
+    for job_id, buf in buffers.items():
+        if job_id in failed_ids:
+            assert buf.dirty is True, (
+                "the failed batch's buffers must stay dirty with deltas intact"
+            )
+            assert buf.pending_seq_delta == 1
+        else:
+            assert buf.dirty is False, "the other batches' buffers must have flushed"
+
+
+async def test_flush_loop_failing_statement_leaves_both_buffers_dirty_and_survives() -> None:
+    """The tick's single batched statement is one failure surface: when it
+    fails, BOTH dirty buffers stay dirty with their deltas intact for the
+    next tick, and the loop survives to re-issue the batch — which then
+    flushes both rows.
     """
     import asyncpg
 
     bad_id = UUID("bad00000-0000-0000-0000-000000000000")
     good_id = UUID("600d0000-0000-0000-0000-000000000000")
 
-    bad_flush_done = asyncio.Event()
+    statement_calls = 0
+    first_failure_seen = asyncio.Event()
     conn = AsyncMock()
 
-    async def _fetchrow(*args: object) -> dict[str, object] | None:
-        if args[3] == bad_id:
-            await asyncio.sleep(0.4)
-            bad_flush_done.set()
-            raise asyncpg.PostgresError("simulated pg error")
-        return {"progress_seq": 5}
+    async def _fetch(*args: object) -> list[dict[str, object]]:
+        nonlocal statement_calls
+        statement_calls += 1
+        if statement_calls == 1:
+            first_failure_seen.set()
+            raise asyncpg.PostgresError("simulated batched flush UPDATE failure")
+        job_ids = args[1] if len(args) > 1 else None
+        if not isinstance(job_ids, list):
+            return []
+        typed_ids = cast("list[UUID]", job_ids)  # pyright: ignore[reportUnknownVariableType]  # Why: the fake conn's *args are object; the pins only ever bind UUID lists.
+        return [{"id": job_id, "progress_seq": 4} for job_id in typed_ids]
 
-    conn.fetchrow.side_effect = _fetchrow
+    conn.fetch.side_effect = _fetch
 
     pool = MagicMock()
     pool.get_size.return_value = _POOL_SIZE
@@ -591,23 +824,89 @@ async def test_flush_loop_slow_failing_flush_does_not_block_later_buffers() -> N
         progress_flush_loop(lambda: pool, "taskq_test", _WORKER_ID, buffers, 0.01, shutdown)
     )
     try:
-        async with asyncio.timeout(0.2):
-            while good_buf.dirty:  # noqa: ASYNC110  # Why: polling observable mock-DB state (buffer.dirty) that carries no event to await; bounded by the surrounding asyncio.timeout.
+        try:
+            async with asyncio.timeout(2.0):
+                await first_failure_seen.wait()
+        except TimeoutError:
+            pytest.fail("the tick never issued its batched statement (fetch was not called)")
+        # Let the failure handler finish; the buffers must be untouched by it.
+        for _ in range(4):
+            await asyncio.sleep(0)
+        assert bad_buf.dirty is True, "a failed batch must leave every dirty buffer dirty"
+        assert bad_buf.pending_seq_delta == 1, "the failed batch must not retire any delta"
+        assert bad_buf.pending_state == {"step": 1}
+        assert good_buf.dirty is True
+        assert good_buf.pending_seq_delta == 1
+        assert good_buf.pending_state == {"step": 1}
+        async with asyncio.timeout(2.0):
+            while bad_buf.dirty or good_buf.dirty:  # noqa: ASYNC110  # Why: polling observable mock-DB state (buffer.dirty) that carries no event to await; bounded by the surrounding asyncio.timeout.
                 await asyncio.sleep(0.005)
     finally:
         shutdown.set()
         try:
-            await asyncio.wait_for(asyncio.shield(task), timeout=1.5)
+            await asyncio.wait_for(asyncio.shield(task), timeout=1.0)
         except (TimeoutError, asyncio.CancelledError):
             task.cancel()
             with suppress(asyncio.CancelledError):
                 await task
 
-    assert bad_flush_done.is_set()
+    assert statement_calls == 2, "the loop must re-issue the batch on the next tick"
+    assert bad_buf.dirty is False
+    assert bad_buf.base_seq == 4
     assert good_buf.dirty is False
-    assert good_buf.base_seq == 5
-    assert bad_buf.dirty is True
+    assert good_buf.base_seq == 4
+
+
+async def test_flush_loop_pool_acquire_failure_keeps_buffers_dirty_with_pool_kind() -> None:
+    """A pool-stage failure (acquire raises or exhausts) loses every dirty
+    job's flush that tick: both buffers stay dirty with deltas intact for
+    the next tick, and the failure is labeled with the pool event/kind —
+    the same taxonomy the loop's pool_getter handler uses.
+    """
+    import asyncpg
+    import structlog
+
+    bad_id = UUID("bad00000-0000-0000-0000-000000000000")
+    good_id = UUID("600d0000-0000-0000-0000-000000000000")
+
+    pool = MagicMock()
+    pool.get_size.return_value = _POOL_SIZE
+
+    def _acquire() -> object:
+        raise asyncpg.PostgresConnectionError("pool acquire failed")
+
+    pool.acquire = _acquire
+
+    bad_buf = _ProgressBuffer(job_id=bad_id, base_seq=0)
+    bad_buf.pending_seq_delta = 1
+    bad_buf.pending_state["step"] = 1
+    bad_buf.dirty = True
+    good_buf = _ProgressBuffer(job_id=good_id, base_seq=0)
+    good_buf.pending_seq_delta = 1
+    good_buf.pending_state["step"] = 1
+    good_buf.dirty = True
+    buffers: dict[UUID, _ProgressBuffer] = {bad_id: bad_buf, good_id: good_buf}
+    shutdown = asyncio.Event()
+
+    async def _stop() -> None:
+        await asyncio.sleep(0.05)
+        shutdown.set()
+
+    with structlog.testing.capture_logs() as logs:
+        await asyncio.gather(
+            progress_flush_loop(lambda: pool, "taskq_test", _WORKER_ID, buffers, 0.01, shutdown),
+            _stop(),
+        )
+
+    kinds = {e.get("kind") for e in logs if e.get("kind")}
+    assert kinds == {"progress_flush_pool_error"}, (
+        f"an acquire failure is a pool-wide outage and must log the pool kind: {logs}"
+    )
+    assert bad_buf.dirty is True, "the failed tick must leave every dirty buffer dirty"
     assert bad_buf.pending_seq_delta == 1
+    assert good_buf.dirty is True
+    assert good_buf.pending_seq_delta == 1
+    assert set(buffers) == {bad_id, good_id}, "no buffer may be dropped on a pool failure"
 
 
 # ── _snapshot_progress regression tests ───────────────────────────────────────

@@ -163,6 +163,9 @@ async def test_zero_jitter_passes_raw_denial_delay_through() -> None:
 async def _mem_running_job(clock: FakeClock) -> tuple[InMemoryBackend, JobId, UUID]:
     """One running job on the in-memory twin, claimed by a fresh worker."""
     backend = InMemoryBackend(clock=clock)
+    # Register the actor so dispatch_batch finds it (mirrors PG's
+    # actor_config requirement — candidates come FROM the registry).
+    backend.register_actor_config(actor="jitter_actor")
     args = EnqueueArgs(
         id=new_job_id(),
         actor="jitter_actor",

@@ -1,0 +1,391 @@
+# Why: schema is a fixed test identifier, not user input; every value is $-bound.
+"""Differential attacks on terminal writes.
+
+mark_succeeded (incl. the lock-bookkeeping clear PG performs), the
+mark_failed_or_retry decision arms (retry / deadline / exhausted), fencing
+no-ops and ownership mismatches, the mark_snoozed and mark_retry_after
+deferral arms, and retry_job.
+"""
+
+from __future__ import annotations
+
+import pytest
+
+from taskq._ids import new_uuid
+from taskq.backend._protocol import ErrorInfo
+from taskq.exceptions import WorkerOwnershipMismatch
+from tests.test_rt_diff_harness import DiffSide, assert_mirror, run_differential
+
+pytestmark = pytest.mark.integration
+
+
+# ── mark_succeeded ─────────────────────────────────────────────────────
+
+
+async def _succeeded_lock_bookkeeping(side: DiffSide) -> None:
+    await side.enqueue("j1", scheduled_in=-1.0, result_ttl_s=300.0)
+    await side.dispatch("w1", ["default"], limit=1)
+    ok = await side.mark_succeeded("j1", "w1", result={"v": 1})
+    side.record("succeeded", ok)
+
+
+async def test_diff_mark_succeeded_clears_lock_bookkeeping(pg_dsn: str) -> None:
+    """PG's mark_succeeded clears locked_by_worker and lock_expires_at with the
+    terminal write; the mirror must not leave a succeeded row still claiming
+    its worker and lease."""
+    mem, pg = await run_differential(_succeeded_lock_bookkeeping, pg_dsn=pg_dsn)
+    assert_mirror(
+        "a terminal success write clears the lock holder and lease "
+        "(locked_by_worker = NULL, lock_expires_at = NULL) exactly like PG's "
+        "mark_succeeded SET clause — a succeeded row must not keep matching "
+        "every locked_by_worker-scoped reader",
+        mem,
+        pg,
+    )
+    assert pg["jobs"]["j1"]["locked_by_worker"] is None
+    assert pg["jobs"]["j1"]["lock_expires_at"] is None
+
+
+async def _succeeded_fencing(side: DiffSide) -> None:
+    await side.enqueue("j1", scheduled_in=-1.0)
+    await side.enqueue("j2", scheduled_in=-1.0)
+    await side.dispatch("w1", ["default"], limit=2)
+    # Wrong worker: no-op.
+    side.record("wrong_worker", await side.mark_succeeded("j1", "w2", result={"v": 1}))
+    # Then the owner succeeds; a second (already-terminal) write no-ops.
+    side.record("owner", await side.mark_succeeded("j1", "w1", result={"v": 1}))
+    side.record("already_terminal", await side.mark_succeeded("j1", "w1"))
+    # A NULL result succeeds too (result/result_size stay NULL).
+    side.record("null_result", await side.mark_succeeded("j2", "w1"))
+
+
+async def test_diff_mark_succeeded_fencing_no_ops(pg_dsn: str) -> None:
+    """mark_succeeded no-ops on a wrong worker and on an already-terminal row,
+    and a NULL-result success stores NULL result fields."""
+    mem, pg = await run_differential(_succeeded_fencing, pg_dsn=pg_dsn)
+    assert_mirror(
+        "mark_succeeded's fencing UPDATE matches only a running row owned by "
+        "the caller: wrong-worker and post-terminal writes return False and "
+        "write nothing; a NULL result stores NULL result fields",
+        mem,
+        pg,
+    )
+    assert pg["records"] == {
+        "wrong_worker": False,
+        "owner": True,
+        "already_terminal": False,
+        "null_result": True,
+    }
+
+
+# ── mark_failed_or_retry ───────────────────────────────────────────────
+
+
+async def _failed_or_retry_arms(side: DiffSide) -> None:
+    # Retry arm, positive delay -> scheduled with a 10s backoff.
+    await side.enqueue("retry", scheduled_in=-40.0, max_attempts=3)
+    await side.dispatch("w1", ["default"], limit=1)
+    row = await side.mark_failed_or_retry("retry", "w1", retry_delay_s=10.0)
+    side.record("retry_returned", [side.token_of(row.id), row.status])
+
+    # Retry arm, zero delay -> floored to MIN_DEFERRAL_INTERVAL (1 s) ->
+    # scheduled: the anti-monopolisation floor PG's mark_retry params CTE
+    # pins (GREATEST($3, MIN_DEFERRAL_INTERVAL)), the same bound the
+    # deferral arms and the decision layer (retry.py) apply.
+    await side.enqueue("quick", scheduled_in=-39.0, max_attempts=3)
+    await side.dispatch("w1", ["default"], limit=1)
+    row = await side.mark_failed_or_retry("quick", "w1", retry_delay_s=0.0)
+    side.record("zero_delay_returned", [side.token_of(row.id), row.status])
+
+    # Deadline arm: the next retry point passes schedule_to_close.
+    await side.enqueue("late", scheduled_in=-38.0, stc_in=5.0, max_attempts=3)
+    await side.dispatch("w1", ["default"], limit=1)
+    row = await side.mark_failed_or_retry("late", "w1", retry_delay_s=10.0)
+    side.record("deadline_returned", [side.token_of(row.id), row.status])
+
+    # Exhausted arm: no delay left -> terminal failed.
+    await side.enqueue("dead", scheduled_in=-37.0, max_attempts=1)
+    await side.dispatch("w1", ["default"], limit=1)
+    row = await side.mark_failed_or_retry("dead", "w1", retry_delay_s=None)
+    side.record("failed_returned", [side.token_of(row.id), row.status])
+
+
+async def test_diff_mark_failed_or_retry_arms(pg_dsn: str) -> None:
+    """The retry/deadline/exhausted decision table: statuses, backoffs, error
+    fields, attempt rows, and events must match arm for arm."""
+    mem, pg = await run_differential(_failed_or_retry_arms, pg_dsn=pg_dsn)
+    assert_mirror(
+        "mark_failed_or_retry's arms: positive delay requeues scheduled with "
+        "the delay as backoff; a sub-floor delay is floored to "
+        "MIN_DEFERRAL_INTERVAL and requeues scheduled; a next-retry point "
+        "past schedule_to_close fails DeadlineExceeded; no delay fails "
+        "terminal — identical rows, attempts, and events on both backends",
+        mem,
+        pg,
+    )
+    assert pg["records"] == {
+        "retry_returned": ["retry", "scheduled"],
+        "zero_delay_returned": ["quick", "scheduled"],
+        "deadline_returned": ["late", "failed"],
+        "failed_returned": ["dead", "failed"],
+    }
+    assert pg["jobs"]["retry"]["scheduled_at"] == 10
+    assert pg["jobs"]["quick"]["scheduled_at"] == 1
+    assert pg["jobs"]["late"]["error_class"] == "DeadlineExceeded"
+
+
+async def _failed_or_retry_mismatch(side: DiffSide) -> None:
+    await side.enqueue("j1", scheduled_in=-1.0)
+    await side.dispatch("w1", ["default"], limit=1)
+    try:
+        await side.mark_failed_or_retry("j1", "w2", retry_delay_s=None)
+        side.record("wrong_worker", "no-raise")
+    except WorkerOwnershipMismatch as exc:
+        side.record(
+            "wrong_worker",
+            [
+                "WorkerOwnershipMismatch",
+                side.worker_token(exc.expected),
+                side.worker_token(exc.actual),
+            ],
+        )
+    # A terminal (no longer running) row raises the same mismatch.
+    await side.mark_failed_or_retry("j1", "w1", retry_delay_s=None)
+    try:
+        await side.mark_failed_or_retry("j1", "w1", retry_delay_s=None)
+        side.record("terminal_row", "no-raise")
+    except WorkerOwnershipMismatch as exc:
+        side.record(
+            "terminal_row",
+            [
+                "WorkerOwnershipMismatch",
+                side.worker_token(exc.expected),
+                side.worker_token(exc.actual),
+            ],
+        )
+    # A job id that was never stored.
+    missing = new_uuid()
+    try:
+        await side.backend.mark_failed_or_retry(
+            missing,  # type: ignore[arg-type]  # Why: JobId is a runtime-transparent NewType; the scenario deliberately addresses an unregistered id.
+            new_uuid(),
+            ErrorInfo(error_class="ValueError", error_message="boom", error_traceback=None),
+            None,
+        )
+        side.record("missing_job", "no-raise")
+    except Exception as exc:  # Why: the exception TYPE is the observable being compared.
+        side.record("missing_job", type(exc).__name__)
+
+
+async def test_diff_mark_failed_or_retry_ownership_and_missing(pg_dsn: str) -> None:
+    """Ownership mismatches raise identically; a missing job id must produce
+    the SAME typed outcome on both backends."""
+    mem, pg = await run_differential(_failed_or_retry_mismatch, pg_dsn=pg_dsn)
+    assert_mirror(
+        "mark_failed_or_retry raises WorkerOwnershipMismatch for a "
+        "wrong-worker or non-running row on both backends — and for a job id "
+        "that was never stored, the mirror must raise the same typed error "
+        "PG raises, not a different exception class",
+        mem,
+        pg,
+    )
+    assert pg["records"]["wrong_worker"] == ["WorkerOwnershipMismatch", "w2", "w1"]
+    assert pg["records"]["terminal_row"] == ["WorkerOwnershipMismatch", "w1", None]
+
+
+# ── mark_cancelled ─────────────────────────────────────────────────────
+
+
+async def _cancelled_fencing(side: DiffSide) -> None:
+    await side.enqueue("j1", scheduled_in=-1.0)
+    await side.enqueue("j2", scheduled_in=-1.0)
+    await side.dispatch("w1", ["default"], limit=2)
+    side.record("wrong_worker", await side.mark_cancelled("j1", "w2"))
+    side.record("owner", await side.mark_cancelled("j1", "w1"))
+    side.record("already_terminal", await side.mark_cancelled("j1", "w1"))
+
+
+async def test_diff_mark_cancelled_fencing(pg_dsn: str) -> None:
+    """mark_cancelled no-ops on wrong worker and post-terminal, clears lock
+    bookkeeping, and writes the cancelled attempt row."""
+    mem, pg = await run_differential(_cancelled_fencing, pg_dsn=pg_dsn)
+    assert_mirror(
+        "mark_cancelled's fencing matches only the running owner: the "
+        "cancelled transition clears lock bookkeeping and writes the "
+        "cancelled attempt row — no-ops otherwise, on both backends",
+        mem,
+        pg,
+    )
+    assert pg["records"] == {
+        "wrong_worker": False,
+        "owner": True,
+        "already_terminal": False,
+    }
+    assert pg["jobs"]["j1"]["attempts"][-1]["outcome"] == "cancelled"
+
+
+# ── mark_snoozed / mark_retry_after ────────────────────────────────────
+
+
+async def _snoozed_arms(side: DiffSide) -> None:
+    # Actor-requested deferral: attempt refunded, snooze_count bumped.
+    await side.enqueue("snooze", scheduled_in=-1.0, max_attempts=3)
+    await side.dispatch("w1", ["default"], limit=1)
+    side.record(
+        "snoozed",
+        await side.mark_snoozed(
+            "snooze", "w1", 10.0, outcome="snoozed", metadata_update={"k": "v"}
+        ),
+    )
+    # Admission denial within budget: increment stands, blocked_count bumps.
+    await side.enqueue("denied", scheduled_in=-1.0, max_attempts=3)
+    await side.dispatch("w1", ["default"], limit=1)
+    side.record(
+        "denied_in_budget",
+        await side.mark_snoozed("denied", "w1", 10.0, outcome="reservation_denied"),
+    )
+    # Admission denial at budget (non-indefinite, no deadline): terminal.
+    await side.enqueue("denied-dead", scheduled_in=-1.0, max_attempts=1)
+    await side.dispatch("w1", ["default"], limit=1)
+    side.record(
+        "denied_at_budget",
+        await side.mark_snoozed("denied-dead", "w1", 10.0, outcome="rate_limit_denied"),
+    )
+    # Deadline arm: the deferral point passes schedule_to_close.
+    await side.enqueue("snooze-late", scheduled_in=-1.0, stc_in=5.0)
+    await side.dispatch("w1", ["default"], limit=1)
+    side.record("snoozed_deadline", await side.mark_snoozed("snooze-late", "w1", 10.0))
+
+
+async def test_diff_mark_snoozed_arms(pg_dsn: str) -> None:
+    """The snooze decision table: refund vs standing increment, denial
+    counters, budget exhaustion, and the deadline arm — plus the metadata
+    merge and the deferral floor."""
+    mem, pg = await run_differential(_snoozed_arms, pg_dsn=pg_dsn)
+    assert_mirror(
+        "mark_snoozed's arms: 'snoozed' refunds the claim's attempt and "
+        "counts snooze_count; a denial within budget keeps the increment and "
+        "counts rate_limit_blocked_count; a denial at budget on a "
+        "non-indefinite job with no deadline fails MaxAttemptsExceeded; a "
+        "deferral past schedule_to_close fails DeadlineExceeded — identical "
+        "on both backends, floors and metadata merges included",
+        mem,
+        pg,
+    )
+    assert pg["records"] == {
+        "snoozed": "scheduled",
+        "denied_in_budget": "scheduled",
+        "denied_at_budget": "failed:MaxAttemptsExceeded",
+        "snoozed_deadline": "failed",
+    }
+    assert pg["jobs"]["snooze"]["attempt"] == 0
+    assert pg["jobs"]["snooze"]["snooze_count"] == 1
+    assert pg["jobs"]["snooze"]["metadata"] == {"k": "v"}
+    assert pg["jobs"]["denied"]["attempt"] == 1
+    assert pg["jobs"]["denied"]["rate_limit_blocked_count"] == 1
+    assert pg["jobs"]["denied-dead"]["error_class"] == "MaxAttemptsExceeded"
+
+
+async def _retry_after_arms(side: DiffSide) -> None:
+    # Consuming RetryAfter: a real execution — attempt stands, attempt row
+    # written (outcome snoozed / RetryAfter).
+    await side.enqueue("consume", scheduled_in=-1.0, max_attempts=3)
+    await side.dispatch("w1", ["default"], limit=1)
+    side.record(
+        "consuming",
+        await side.mark_retry_after("consume", "w1", 10.0, consume_budget=True),
+    )
+    # Non-consuming RetryAfter: deferral — attempt refunded, snooze_count
+    # bumped, no attempt/event rows.
+    await side.enqueue("defer", scheduled_in=-1.0, max_attempts=3)
+    await side.dispatch("w1", ["default"], limit=1)
+    side.record(
+        "non_consuming",
+        await side.mark_retry_after("defer", "w1", 10.0, consume_budget=False),
+    )
+    # Consuming at budget: terminal MaxAttemptsExceeded.
+    await side.enqueue("consume-dead", scheduled_in=-1.0, max_attempts=1)
+    await side.dispatch("w1", ["default"], limit=1)
+    side.record(
+        "consuming_at_budget",
+        await side.mark_retry_after("consume-dead", "w1", 10.0, consume_budget=True),
+    )
+    # Non-consuming past the deadline: terminal DeadlineExceeded.
+    await side.enqueue("defer-late", scheduled_in=-1.0, stc_in=5.0)
+    await side.dispatch("w1", ["default"], limit=1)
+    side.record(
+        "non_consuming_deadline",
+        await side.mark_retry_after("defer-late", "w1", 10.0, consume_budget=False),
+    )
+
+
+async def test_diff_mark_retry_after_arms(pg_dsn: str) -> None:
+    """The RetryAfter decision table: consuming vs non-consuming budget
+    semantics, budget exhaustion, and the deadline arm."""
+    mem, pg = await run_differential(_retry_after_arms, pg_dsn=pg_dsn)
+    assert_mirror(
+        "mark_retry_after: a consuming deferral is a real execution (attempt "
+        "stands, attempt row written); a non-consuming one refunds the "
+        "attempt and counts snooze_count with no attempt/event rows; budget "
+        "exhaustion and deadline arms fail terminal — identically on both "
+        "backends",
+        mem,
+        pg,
+    )
+    assert pg["records"] == {
+        "consuming": "scheduled",
+        "non_consuming": "scheduled",
+        "consuming_at_budget": "failed:MaxAttemptsExceeded",
+        "non_consuming_deadline": "failed:DeadlineExceeded",
+    }
+    assert pg["jobs"]["consume"]["attempt"] == 1
+    assert pg["jobs"]["defer"]["attempt"] == 0
+    assert pg["jobs"]["defer"]["snooze_count"] == 1
+    assert pg["jobs"]["defer"]["attempts"] == []
+
+
+# ── retry_job ──────────────────────────────────────────────────────────
+
+
+async def _retry_job_gates(side: DiffSide) -> None:
+    await side.enqueue("failed", scheduled_in=-1.0, max_attempts=1)
+    await side.dispatch("w1", ["default"], limit=1)
+    await side.mark_failed_or_retry("failed", "w1", retry_delay_s=None)
+    side.record("retry_failed", await side.retry_job("failed"))
+    # An abandoned row (terminal) is NOT retryable. Planted directly: the
+    # escalation path's event-detail divergence is pinned separately in
+    # tests/test_rt_diff_cancel.py.
+    await side.plant(
+        "abandoned",
+        status="abandoned",
+        worker_token="w2",
+        cancel_phase=2,
+        started_ago_s=30.0,
+        lock_expired_ago_s=None,
+    )
+    side.record("retry_abandoned", await side.retry_job("abandoned"))
+    # A live pending row is not retryable.
+    await side.enqueue("pending", scheduled_in=-1.0)
+    side.record("retry_pending", await side.retry_job("pending"))
+
+
+async def test_diff_retry_job_status_gates(pg_dsn: str) -> None:
+    """retry_job revives failed/crashed/cancelled rows only — resetting
+    attempt, errors, and result — and refuses abandoned and non-terminal rows."""
+    mem, pg = await run_differential(_retry_job_gates, pg_dsn=pg_dsn)
+    assert_mirror(
+        "retry_job admits only failed/crashed/cancelled rows, resetting "
+        "attempt to 0, clearing errors and result, and rescheduling at now; "
+        "abandoned and non-terminal rows refuse — identically on both "
+        "backends",
+        mem,
+        pg,
+    )
+    assert pg["records"] == {
+        "retry_failed": True,
+        "retry_abandoned": False,
+        "retry_pending": False,
+    }
+    assert pg["jobs"]["failed"]["status"] == "pending"
+    assert pg["jobs"]["failed"]["attempt"] == 0
+    assert pg["jobs"]["failed"]["error_class"] is None

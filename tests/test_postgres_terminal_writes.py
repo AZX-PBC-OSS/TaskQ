@@ -55,7 +55,7 @@ class TestTerminalWritesUpdateRow:
         async with deps.worker_pool.acquire() as conn:
             worker_id, job_id = await setup_running_job(conn, schema)
 
-        result = await backend.mark_succeeded(job_id, worker_id, {"ok": True})
+        result = await backend.mark_succeeded(job_id, worker_id, {"ok": True}, attempt=1)
         assert result is True
 
         async with deps.worker_pool.acquire() as conn:
@@ -83,7 +83,7 @@ class TestTerminalWritesUpdateRow:
         async with deps.worker_pool.acquire() as conn:
             worker_id, job_id = await setup_running_job(conn, schema)
 
-        result = await backend.mark_cancelled(job_id, worker_id)
+        result = await backend.mark_cancelled(job_id, worker_id, attempt=1)
         assert result is True
 
         async with deps.worker_pool.acquire() as conn:
@@ -142,7 +142,7 @@ class TestTerminalWritesUpdateRow:
             error_message="boom",
             error_traceback=None,
         )
-        row = await backend.mark_failed_or_retry(job_id, worker_id, error_info, None)
+        row = await backend.mark_failed_or_retry(job_id, worker_id, error_info, None, attempt=1)
         assert row.status == "failed"
         assert row.finished_at is not None
 
@@ -172,7 +172,7 @@ class TestTerminalWritesUpdateRow:
         )
         # The decision is a delay — the server derives scheduled_at from it.
         row = await backend.mark_failed_or_retry(
-            job_id, worker_id, error_info, timedelta(seconds=10)
+            job_id, worker_id, error_info, timedelta(seconds=10), attempt=1
         )
         assert row.status == "scheduled"
         assert row.locked_by_worker is None
@@ -197,7 +197,7 @@ class TestTerminalWritesUpdateRow:
         async with deps.worker_pool.acquire() as conn:
             worker_id, job_id = await setup_running_job(conn, schema)
 
-        result = await backend.mark_snoozed(job_id, worker_id, timedelta(seconds=30))
+        result = await backend.mark_snoozed(job_id, worker_id, timedelta(seconds=30), attempt=1)
         assert result == "scheduled"
 
         async with deps.worker_pool.acquire() as conn:
@@ -279,7 +279,7 @@ class TestJobEventsMatchTransitions:
         async with deps.worker_pool.acquire() as conn:
             worker_id, job_id = await setup_running_job(conn, schema)
 
-        await backend.mark_succeeded(job_id, worker_id, {"ok": True})
+        await backend.mark_succeeded(job_id, worker_id, {"ok": True}, attempt=1)
 
         async with deps.worker_pool.acquire() as conn:
             events = await conn.fetch(
@@ -304,7 +304,7 @@ class TestJobAttemptsCascadeDelete:
         async with deps.worker_pool.acquire() as conn:
             worker_id, job_id = await setup_running_job(conn, schema)
 
-        await backend.mark_succeeded(job_id, worker_id, {"ok": True})
+        await backend.mark_succeeded(job_id, worker_id, {"ok": True}, attempt=1)
 
         async with deps.worker_pool.acquire() as conn:
             # Verify attempt and event rows exist
@@ -357,7 +357,7 @@ class TestWorkerRowDeletedBeforeTerminalWrite:
             # The stale-worker sweep beat the terminal write to it.
             await conn.execute(f'DELETE FROM "{schema}".workers WHERE id = $1', worker_id)
 
-        assert await backend.mark_succeeded(job_id, worker_id, {"ok": True}) is True
+        assert await backend.mark_succeeded(job_id, worker_id, {"ok": True}, attempt=1) is True
 
         async with deps.worker_pool.acquire() as conn:
             row = await conn.fetchrow(f'SELECT status FROM "{schema}".jobs WHERE id = $1', job_id)
@@ -390,6 +390,7 @@ class TestWorkerRowDeletedBeforeTerminalWrite:
                 error_traceback=None,
             ),
             timedelta(seconds=10),
+            attempt=1,
         )
         assert row.status == "scheduled"
 
@@ -450,7 +451,7 @@ class TestWrongWorkerIdPG:
         async with deps.worker_pool.acquire() as conn:
             _, job_id = await setup_running_job(conn, schema)
 
-        result = await backend.mark_succeeded(job_id, wrong_worker, None)
+        result = await backend.mark_succeeded(job_id, wrong_worker, None, attempt=1)
         assert result is False
 
     async def test_mark_cancelled_wrong_worker_false(self, clean_jobs_app: JobsApp) -> None:
@@ -462,7 +463,7 @@ class TestWrongWorkerIdPG:
         async with deps.worker_pool.acquire() as conn:
             _, job_id = await setup_running_job(conn, schema)
 
-        result = await backend.mark_cancelled(job_id, wrong_worker)
+        result = await backend.mark_cancelled(job_id, wrong_worker, attempt=1)
         assert result is False
 
     async def test_mark_failed_or_retry_wrong_worker_raises(self, clean_jobs_app: JobsApp) -> None:
@@ -480,7 +481,7 @@ class TestWrongWorkerIdPG:
             error_traceback=None,
         )
         with pytest.raises(WorkerOwnershipMismatch) as exc_info:
-            await backend.mark_failed_or_retry(job_id, wrong_worker, error_info, None)
+            await backend.mark_failed_or_retry(job_id, wrong_worker, error_info, None, attempt=1)
         assert exc_info.value.job_id == job_id
         assert exc_info.value.expected == wrong_worker
         assert exc_info.value.actual == worker_id
@@ -547,7 +548,7 @@ class TestWrongWorkerIdPG:
         )
         with pytest.raises(WorkerOwnershipMismatch) as exc_info:
             await backend.mark_failed_or_retry(
-                job_id, wrong_worker, error_info, timedelta(seconds=30)
+                job_id, wrong_worker, error_info, timedelta(seconds=30), attempt=1
             )
         assert exc_info.value.actual == worker_id
 
@@ -577,7 +578,7 @@ class TestWrongWorkerIdPG:
             error_traceback=None,
         )
         with pytest.raises(WorkerOwnershipMismatch) as exc_info:
-            await backend.mark_failed_or_retry(missing_job, worker_id, error_info, None)
+            await backend.mark_failed_or_retry(missing_job, worker_id, error_info, None, attempt=1)
         assert exc_info.value.actual is None
 
 
@@ -604,7 +605,7 @@ class TestPayloadValidationErrorPG:
             error_message=str(raw_payload),
             error_traceback=None,
         )
-        result = await backend.mark_failed_or_retry(job_id, worker_id, error_info, None)
+        result = await backend.mark_failed_or_retry(job_id, worker_id, error_info, None, attempt=1)
 
         assert result.status == "failed"
         assert result.error_class == "PayloadValidationError"
@@ -638,7 +639,9 @@ class TestEquivalence:
     ) -> None:
         # ── Memory backend ─────────────────────────────────────────
         mem_job_id, mem_worker = await enqueue_and_dispatch_memory(memory_jobs)
-        mem_result = await memory_jobs.mark_succeeded(mem_job_id, mem_worker, {"ok": True})
+        mem_result = await memory_jobs.mark_succeeded(
+            mem_job_id, mem_worker, {"ok": True}, attempt=1
+        )
         assert mem_result is True
         mem_row = await memory_jobs.get(mem_job_id)
         mem_attempts = await memory_jobs.get_attempts(mem_job_id)
@@ -652,7 +655,7 @@ class TestEquivalence:
         async with deps.worker_pool.acquire() as conn:
             pg_worker, pg_job_id = await setup_running_job(conn, schema, with_events=True)
 
-        pg_result = await backend.mark_succeeded(pg_job_id, pg_worker, {"ok": True})
+        pg_result = await backend.mark_succeeded(pg_job_id, pg_worker, {"ok": True}, attempt=1)
         assert pg_result is True
 
         async with deps.worker_pool.acquire() as conn:
@@ -683,7 +686,9 @@ class TestEquivalence:
             error_message="boom",
             error_traceback=None,
         )
-        mem_row = await memory_jobs.mark_failed_or_retry(mem_job_id, mem_worker, error_info, None)
+        mem_row = await memory_jobs.mark_failed_or_retry(
+            mem_job_id, mem_worker, error_info, None, attempt=1
+        )
         assert mem_row.status == "failed"
         mem_attempts = await memory_jobs.get_attempts(mem_job_id)
         mem_events = await memory_jobs.get_events(mem_job_id)
@@ -698,7 +703,9 @@ class TestEquivalence:
                 conn, schema, max_attempts=1, with_events=True
             )
 
-        pg_row = await backend.mark_failed_or_retry(pg_job_id, pg_worker, error_info, None)
+        pg_row = await backend.mark_failed_or_retry(
+            pg_job_id, pg_worker, error_info, None, attempt=1
+        )
         assert pg_row.status == "failed"
 
         async with deps.worker_pool.acquire() as conn:
@@ -731,7 +738,7 @@ class TestMarkSnoozedRefundsAttempt:
         async with deps.worker_pool.acquire() as conn:
             worker_id, job_id = await setup_running_job(conn, schema, attempt=1)
 
-        result = await backend.mark_snoozed(job_id, worker_id, timedelta(seconds=30))
+        result = await backend.mark_snoozed(job_id, worker_id, timedelta(seconds=30), attempt=1)
         assert result == "scheduled"
 
         async with deps.worker_pool.acquire() as conn:
@@ -752,7 +759,7 @@ class TestMarkSnoozedRefundsAttempt:
         async with deps.worker_pool.acquire() as conn:
             worker_id, job_id = await setup_running_job(conn, schema, attempt=1)
 
-        result = await backend.mark_snoozed(job_id, worker_id, timedelta(seconds=30))
+        result = await backend.mark_snoozed(job_id, worker_id, timedelta(seconds=30), attempt=1)
         assert result == "scheduled"
 
         async with deps.worker_pool.acquire() as conn:
@@ -795,7 +802,7 @@ class TestMarkSnoozedHeartbeat:
         assert pre is not None
         assert pre["last_heartbeat_at"] is not None
 
-        result = await backend.mark_snoozed(job_id, worker_id, timedelta(seconds=30))
+        result = await backend.mark_snoozed(job_id, worker_id, timedelta(seconds=30), attempt=1)
         assert result == "scheduled"
 
         async with deps.worker_pool.acquire() as conn:
@@ -822,7 +829,7 @@ class TestMarkSnoozedDeadline:
         async with deps.worker_pool.acquire() as conn:
             worker_id, job_id = await setup_running_job(conn, schema, schedule_to_close=close_at)
 
-        result = await backend.mark_snoozed(job_id, worker_id, timedelta(seconds=30))
+        result = await backend.mark_snoozed(job_id, worker_id, timedelta(seconds=30), attempt=1)
         assert result == "failed"
 
         async with deps.worker_pool.acquire() as conn:
@@ -851,7 +858,7 @@ class TestMarkSnoozedDeadline:
         async with deps.worker_pool.acquire() as conn:
             worker_id, job_id = await setup_running_job(conn, schema, schedule_to_close=close_at)
 
-        result = await backend.mark_snoozed(job_id, worker_id, timedelta(seconds=5))
+        result = await backend.mark_snoozed(job_id, worker_id, timedelta(seconds=5), attempt=1)
         assert result == "scheduled"
 
         async with deps.worker_pool.acquire() as conn:
@@ -884,6 +891,7 @@ class TestMarkSnoozedReservationDenied:
             timedelta(seconds=30),
             metadata_update={"awaiting": "reservation:gpu_pool"},
             outcome="reservation_denied",
+            attempt=1,
         )
         assert result == "scheduled"
 
@@ -923,10 +931,10 @@ class TestMarkSnoozedIdempotent:
         async with deps.worker_pool.acquire() as conn:
             worker_id, job_id = await setup_running_job(conn, schema)
 
-        result1 = await backend.mark_snoozed(job_id, worker_id, timedelta(seconds=30))
+        result1 = await backend.mark_snoozed(job_id, worker_id, timedelta(seconds=30), attempt=1)
         assert result1 == "scheduled"
 
-        result2 = await backend.mark_snoozed(job_id, worker_id, timedelta(seconds=30))
+        result2 = await backend.mark_snoozed(job_id, worker_id, timedelta(seconds=30), attempt=1)
         assert result2 == "noop"
 
         async with deps.worker_pool.acquire() as conn:
@@ -955,7 +963,7 @@ class TestMarkRetryAfterConsumeTrue:
             worker_id, job_id = await setup_running_job(conn, schema, attempt=1)
 
         result = await backend.mark_retry_after(
-            job_id, worker_id, timedelta(seconds=30), consume_budget=True
+            job_id, worker_id, timedelta(seconds=30), consume_budget=True, attempt=1
         )
         assert result == "scheduled"
 
@@ -991,7 +999,7 @@ class TestMarkRetryAfterConsumeFalse:
             worker_id, job_id = await setup_running_job(conn, schema, attempt=1)
 
         result = await backend.mark_retry_after(
-            job_id, worker_id, timedelta(seconds=30), consume_budget=False
+            job_id, worker_id, timedelta(seconds=30), consume_budget=False, attempt=1
         )
         assert result == "scheduled"
 
@@ -1023,7 +1031,7 @@ class TestMarkRetryAfterMaxAttempts:
             )
 
         result = await backend.mark_retry_after(
-            job_id, worker_id, timedelta(seconds=30), consume_budget=True
+            job_id, worker_id, timedelta(seconds=30), consume_budget=True, attempt=3
         )
         assert result == "failed:MaxAttemptsExceeded"
 
@@ -1054,7 +1062,7 @@ class TestMarkRetryAfterMaxAttempts:
             )
 
         result = await backend.mark_retry_after(
-            job_id, worker_id, timedelta(seconds=30), consume_budget=True
+            job_id, worker_id, timedelta(seconds=30), consume_budget=True, attempt=5
         )
         assert result == "scheduled"
 
@@ -1083,7 +1091,7 @@ class TestMarkRetryAfterDeadline:
             worker_id, job_id = await setup_running_job(conn, schema, schedule_to_close=close_at)
 
         result = await backend.mark_retry_after(
-            job_id, worker_id, timedelta(seconds=30), consume_budget=True
+            job_id, worker_id, timedelta(seconds=30), consume_budget=True, attempt=1
         )
         assert result == "failed:DeadlineExceeded"
 
@@ -1120,12 +1128,12 @@ class TestMarkRetryAfterIdempotent:
             worker_id, job_id = await setup_running_job(conn, schema)
 
         result1 = await backend.mark_retry_after(
-            job_id, worker_id, timedelta(seconds=30), consume_budget=True
+            job_id, worker_id, timedelta(seconds=30), consume_budget=True, attempt=1
         )
         assert result1 == "scheduled"
 
         result2 = await backend.mark_retry_after(
-            job_id, worker_id, timedelta(seconds=30), consume_budget=True
+            job_id, worker_id, timedelta(seconds=30), consume_budget=True, attempt=1
         )
         assert result2 == "noop"
 
@@ -1157,7 +1165,7 @@ class TestMarkRetryAfterHeartbeat:
         assert pre["last_heartbeat_at"] is not None
 
         result = await backend.mark_retry_after(
-            job_id, worker_id, timedelta(seconds=30), consume_budget=True
+            job_id, worker_id, timedelta(seconds=30), consume_budget=True, attempt=1
         )
         assert result == "scheduled"
 
@@ -1220,7 +1228,9 @@ class TestMarkSucceededResultExpiryFallback:
             worker_id, job_id = await self._seed_cleared_ttl_and_aged_job(clean_jobs_app, conn)
 
         ttl = timedelta(seconds=5)
-        ok = await backend.mark_succeeded(job_id, worker_id, {"ok": True}, fallback_result_ttl=ttl)
+        ok = await backend.mark_succeeded(
+            job_id, worker_id, {"ok": True}, fallback_result_ttl=ttl, attempt=1
+        )
         assert ok is True
 
         async with deps.worker_pool.acquire() as conn:
@@ -1256,7 +1266,7 @@ class TestMarkSucceededResultExpiryFallback:
         async with deps.worker_pool.acquire() as conn:
             worker_id, job_id = await self._seed_cleared_ttl_and_aged_job(clean_jobs_app, conn)
 
-        ok = await backend.mark_succeeded(job_id, worker_id, {"ok": True})
+        ok = await backend.mark_succeeded(job_id, worker_id, {"ok": True}, attempt=1)
         assert ok is True
 
         async with deps.worker_pool.acquire() as conn:
@@ -1285,7 +1295,7 @@ class TestMarkSucceededResultExpiryFallback:
             )
 
         ok = await backend.mark_succeeded(
-            job_id, worker_id, {"ok": True}, fallback_result_ttl=timedelta(seconds=5)
+            job_id, worker_id, {"ok": True}, fallback_result_ttl=timedelta(seconds=5), attempt=1
         )
         assert ok is True
 
@@ -1344,6 +1354,7 @@ class TestMarkSucceededResultExpiryFallback:
                 worker_id,
                 {"ok": True},
                 fallback_result_ttl=timedelta(seconds=ttl_seconds),
+                attempt=1,
             )
             assert ok is True
 
@@ -1396,6 +1407,8 @@ class TestMarkSucceededResultExpiryFallback:
             await conn.execute("SELECT pg_sleep(3)")
 
             # Execute the mark_failed SQL directly on the txn conn.
+            # The trailing 1 is the attempt-epoch fence bind ($8) —
+            # the seeded row is at attempt 1.
             rec = await conn.fetchrow(
                 sql.mark_failed,
                 job_id,
@@ -1405,6 +1418,7 @@ class TestMarkSucceededResultExpiryFallback:
                 None,
                 0,
                 None,
+                1,
             )
             assert rec is not None
             finished_at: datetime = rec["finished_at"]
@@ -1445,6 +1459,9 @@ class TestMarkSucceededResultExpiryFallback:
                 0,
                 None,
                 "snoozed",
+                # The trailing 1 is the attempt-epoch fence bind ($8) —
+                # the seeded row is at attempt 1.
+                1,
             )
             assert rec is not None
             assert rec["outcome_branch"] == "snoozed"

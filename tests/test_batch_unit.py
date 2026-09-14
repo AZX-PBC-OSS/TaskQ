@@ -51,7 +51,7 @@ class FakePool(asyncpg.Pool):  # type: ignore[misc]
     def __init__(self, row_data: dict[str, int | None] | None) -> None:
         self._conn = FakeConn(row_data)
 
-    def acquire(self) -> _PoolCtx:  # pyright: ignore[reportIncompatibleMethodOverride]  # Why: stub returns a minimal context manager; real Pool.acquire returns PoolAcquireContext with a timeout kwarg the tests never use.
+    def acquire(self, timeout: float | None = None) -> _PoolCtx:  # pyright: ignore[reportIncompatibleMethodOverride]  # Why: stub returns a minimal context manager; real Pool.acquire returns PoolAcquireContext. The timeout kwarg is now load-bearing production surface — wait_for_batch bounds every poll's acquire with it (batch.py _POOL_ACQUIRE_TIMEOUT_S) — so the stub accepts and ignores it, mirroring conftest's _FakePool.
         return _PoolCtx(self._conn)
 
 

@@ -441,6 +441,7 @@ class PostgresBackend:
         fallback_result_ttl: timedelta | None = None,
         *,
         result_bytes: bytes | None = None,
+        attempt: int | None = None,
     ) -> bool:
         return await _mark_succeeded_on_conn(
             conn,
@@ -453,6 +454,7 @@ class PostgresBackend:
             fallback_result_ttl,
             self._deps.settings.result_max_bytes,
             result_bytes=result_bytes,
+            attempt=attempt,
         )
 
     async def mark_succeeded(
@@ -465,6 +467,7 @@ class PostgresBackend:
         fallback_result_ttl: timedelta | None = None,
         *,
         result_bytes: bytes | None = None,
+        attempt: int | None = None,
     ) -> bool:
         return await _mark_succeeded(
             self._worker_pool,
@@ -477,6 +480,8 @@ class PostgresBackend:
             fallback_result_ttl,
             self._deps.settings.result_max_bytes,
             result_bytes=result_bytes,
+            attempt=attempt,
+            acquire_timeout=self._deps.settings.dispatcher_command_timeout,
         )
 
     async def mark_failed_or_retry(
@@ -487,6 +492,8 @@ class PostgresBackend:
         retry_delay: timedelta | None,
         progress_seq: int = 0,
         progress_state: dict[str, object] | None = None,
+        *,
+        attempt: int | None = None,
     ) -> JobRow:
         return await _mark_failed_or_retry(
             self._worker_pool,
@@ -497,6 +504,8 @@ class PostgresBackend:
             retry_delay,
             progress_seq,
             progress_state,
+            attempt=attempt,
+            acquire_timeout=self._deps.settings.dispatcher_command_timeout,
         )
 
     async def mark_cancelled(
@@ -505,9 +514,39 @@ class PostgresBackend:
         worker_id: UUID,
         progress_seq: int = 0,
         progress_state: dict[str, object] | None = None,
+        *,
+        attempt: int | None = None,
     ) -> bool:
+        # Why _worker_pool (supersession of the original heartbeat routing,
+        # which had no documented rationale — original v0.1.0 wiring): the
+        # heartbeat pool is sized heartbeat_pool_size (default 4) for the
+        # liveness loop's one-connection-per-tick cadence, and routing a
+        # per-job terminal write onto it let a cancel storm of concurrent
+        # consumer mark_cancelled calls exhaust the very pool the
+        # heartbeat loop's own bounded acquire waits on — starving the
+        # loop into isolate_self while the worker was merely cancelling
+        # jobs (the spiral pinned by
+        # tests/test_rt_locks_terminal_write_pool_starvation.py). The
+        # routing's plausible original motive — a shielded cancel-path
+        # write outliving the worker pool's LIFO close (deps.py opens
+        # heartbeat_pool BEFORE worker_pool, so teardown closes
+        # worker_pool first) — is superseded by the bounded acquire
+        # threaded above: a closing or closed pool is exactly the
+        # wedged-checkout case the bound converts from a hang into the
+        # designed infra failure, and the cancel path already treats that
+        # outcome as best-effort (worker/_consumer.py: the row stays
+        # running and lock-lease expiry reclaims it) — the same contract
+        # every other shielded terminal write already accepts on the
+        # worker pool.
         return await _mark_cancelled(
-            self._heartbeat_pool, self._sql, job_id, worker_id, progress_seq, progress_state
+            self._worker_pool,
+            self._sql,
+            job_id,
+            worker_id,
+            progress_seq,
+            progress_state,
+            attempt=attempt,
+            acquire_timeout=self._deps.settings.dispatcher_command_timeout,
         )
 
     async def write_cancel_escalation(
@@ -517,7 +556,12 @@ class PostgresBackend:
         phase: Literal[2],
     ) -> bool:
         return await _write_cancel_escalation(
-            self._worker_pool, self._sql, job_id, worker_id, phase
+            self._worker_pool,
+            self._sql,
+            job_id,
+            worker_id,
+            phase,
+            acquire_timeout=self._deps.settings.dispatcher_command_timeout,
         )
 
     async def mark_abandoned(
@@ -527,7 +571,12 @@ class PostgresBackend:
         progress_state: dict[str, object] | None = None,
     ) -> bool:
         return await _mark_abandoned(
-            self._worker_pool, self._sql, job_id, progress_seq, progress_state
+            self._worker_pool,
+            self._sql,
+            job_id,
+            progress_seq,
+            progress_state,
+            acquire_timeout=self._deps.settings.dispatcher_command_timeout,
         )
 
     async def mark_snoozed(
@@ -540,6 +589,7 @@ class PostgresBackend:
         progress_seq: int = 0,
         progress_state: dict[str, object] | None = None,
         outcome: SnoozeOutcome = "snoozed",
+        attempt: int | None = None,
     ) -> Literal["scheduled", "failed", "failed:MaxAttemptsExceeded", "noop"]:
         return await _mark_snoozed(
             self._worker_pool,
@@ -551,6 +601,8 @@ class PostgresBackend:
             progress_seq=progress_seq,
             progress_state=progress_state,
             outcome=outcome,
+            attempt=attempt,
+            acquire_timeout=self._deps.settings.dispatcher_command_timeout,
         )
 
     async def mark_retry_after(
@@ -562,6 +614,7 @@ class PostgresBackend:
         consume_budget: bool = True,
         progress_seq: int = 0,
         progress_state: dict[str, object] | None = None,
+        attempt: int | None = None,
     ) -> Literal["scheduled", "failed:DeadlineExceeded", "failed:MaxAttemptsExceeded", "noop"]:
         return await _mark_retry_after(
             self._worker_pool,
@@ -572,12 +625,19 @@ class PostgresBackend:
             consume_budget=consume_budget,
             progress_seq=progress_seq,
             progress_state=progress_state,
+            attempt=attempt,
+            acquire_timeout=self._deps.settings.dispatcher_command_timeout,
         )
 
     # ── Attempt history ─────────────────────────────────────────────────
 
     async def write_attempt(self, attempt: AttemptRow) -> None:
-        await _write_attempt(self._worker_pool, self._sql, attempt)
+        await _write_attempt(
+            self._worker_pool,
+            self._sql,
+            attempt,
+            acquire_timeout=self._deps.settings.dispatcher_command_timeout,
+        )
 
     async def get_attempts(self, job_id: JobId) -> list[AttemptRow]:
         return await _get_attempts(self._worker_pool, self._sql, job_id)
@@ -780,6 +840,19 @@ class PostgresBackend:
                     self._sql.enqueue_notify,
                     wake_channel(self._schema_name),
                 )
+        # The statement's reopened CTE (see retry_job in
+        # _sql_templates.py) reconciles a terminal batch row back to
+        # 'active' when the retried job is one of its members -- an
+        # operator who watched a batch complete and then saw it go active
+        # again needs the admin retry that caused it named in the log,
+        # not a mystery status flip.
+        if rec["reopened_batch"]:
+            logger.info(
+                "retry_job_reopened_batch",
+                kind="batch",
+                job_id=str(job_id),
+                batch_id=str(UUID(str(rec["batch_id"]))),
+            )
         return True
 
     # ── Scheduling / sweeps ─────────────────────────────────────────────
@@ -850,7 +923,17 @@ class PostgresBackend:
         return count
 
     async def scheduled_to_pending(self, *, batch_size: int | None = None) -> int:
-        async with self._notify_pool.acquire() as conn:
+        # Bounded acquire (the sweep twin's contract,
+        # tests/test_rt_locks_sweep_notify_pool_unbounded.py): _notify_pool
+        # delegates to the dispatcher pool, which a prune drain holds for
+        # its whole multi-batch drain — an unbounded checkout queues the
+        # sweep indefinitely behind it. The dispatcher command timeout is
+        # the prune loop's own acquire convention, and the resulting
+        # TimeoutError is transient-classified by the leader loops that
+        # call these entrypoints (worker/_transient.py).
+        async with self._notify_pool.acquire(
+            timeout=self._deps.settings.dispatcher_command_timeout
+        ) as conn:
             return await self._run_bounded_sweep(
                 "scheduled_to_pending",
                 batch_size,
@@ -863,7 +946,11 @@ class PostgresBackend:
             )
 
     async def deadline_sweep(self, *, batch_size: int | None = None) -> int:
-        async with self._notify_pool.acquire() as conn:
+        # Bounded acquire — same contract and rationale as
+        # scheduled_to_pending above.
+        async with self._notify_pool.acquire(
+            timeout=self._deps.settings.dispatcher_command_timeout
+        ) as conn:
             return await self._run_bounded_sweep(
                 "deadline_exceeded",
                 batch_size,
@@ -882,7 +969,11 @@ class PostgresBackend:
         *,
         batch_size: int | None = None,
     ) -> int:
-        async with self._notify_pool.acquire() as conn:
+        # Bounded acquire — same contract and rationale as
+        # scheduled_to_pending above.
+        async with self._notify_pool.acquire(
+            timeout=self._deps.settings.dispatcher_command_timeout
+        ) as conn:
             return await self._run_bounded_sweep(
                 "expired_locks",
                 batch_size,

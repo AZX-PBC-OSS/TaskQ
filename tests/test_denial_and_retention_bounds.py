@@ -43,6 +43,7 @@ import pytest
 
 from taskq._ids import new_job_id, new_uuid
 from taskq._json import dumps_str
+from taskq.backend._protocol import JobId
 from taskq.backend.clock import SystemClock
 from taskq.backend.postgres import PostgresBackend
 from taskq.migrate import apply_pending
@@ -104,6 +105,16 @@ async def _relock_for_next_dispatch(
     )
 
 
+async def _current_attempt(conn: asyncpg.Connection, schema: str, job_id: UUID) -> int:
+    """The row's current attempt epoch — the denial-cycle writes' fence bind."""
+    attempt: int | None = await conn.fetchval(
+        f'SELECT attempt FROM "{schema}".jobs WHERE id = $1',  # noqa: S608  # Why: schema is a test-fixture identifier, validated against _IDENT_RE upstream; job_id is $-bound.
+        job_id,
+    )
+    assert attempt is not None
+    return attempt
+
+
 async def _count(conn: asyncpg.Connection, schema: str, table: str, job_id: UUID) -> int:
     count: int | None = await conn.fetchval(
         f'SELECT count(*) FROM "{schema}".{table} WHERE job_id = $1',  # noqa: S608
@@ -130,11 +141,15 @@ async def _drive_denial_loop(
     """
     for _ in range(cycles):
         outcome = await backend.mark_snoozed(
-            job_id,
+            JobId(job_id),
             worker_id,
             _ZERO,
             metadata_update={"awaiting": "reservation:test_bucket"},
             outcome="reservation_denied",
+            # The attempt-epoch fence: _relock_for_next_dispatch replays
+            # dispatch's attempt increment, so the write carries the row's
+            # CURRENT epoch, read fresh each cycle.
+            attempt=await _current_attempt(conn, schema, job_id),
         )
         assert outcome == "scheduled", f"denial cycle did not snooze: {outcome!r}"
         await _relock_for_next_dispatch(conn, schema, job_id, worker_id)
@@ -361,11 +376,14 @@ async def test_denial_rows_are_reclaimable_by_retention(
             terminal_outcome: str | None = None
             for _ in range(_DENIAL_CYCLES):
                 outcome = await backend.mark_snoozed(
-                    job_id,
+                    JobId(job_id),
                     worker_id,
                     _ZERO,
                     metadata_update={"awaiting": "reservation:test_bucket"},
                     outcome="reservation_denied",
+                    # The attempt-epoch fence: the row's CURRENT epoch,
+                    # read fresh each cycle (the relock below increments it).
+                    attempt=await _current_attempt(conn, schema, job_id),
                 )
                 if outcome != "scheduled":
                     terminal_outcome = outcome

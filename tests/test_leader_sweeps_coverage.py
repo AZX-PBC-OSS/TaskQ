@@ -140,6 +140,7 @@ def _make_deps(
         "HEARTBEAT_INTERVAL": str(heartbeat_interval),
         "LOCK_LEASE": "2.0",
         "WATCHDOG_LOOP_LAG_BUDGET": "1.2",
+        "WATCHDOG_LOOP_LAG_WARN_BUDGET": "0.5",
         "MAX_HEARTBEAT_FAILURES": "3",
         "CANCELLATION_GRACE_PERIOD": "0.0",
         "CLEANUP_GRACE_PERIOD": "0.0",
@@ -915,7 +916,15 @@ async def test_stranded_jobs_loop_invalid_schema_returns_early() -> None:
 
 async def test_stranded_jobs_loop_warns_for_pending_without_actor_config() -> None:
     """Pending jobs whose actor has no actor_config row produce a warning."""
-    rows = [{"actor": "orphan_actor", "cnt": 7}]
+    rows = [
+        {
+            "actor": "orphan_actor",
+            "cnt": 7,
+            "no_actor_config_cnt": 7,
+            "unserved_queue_cnt": 0,
+            "unserved_queues": [],
+        }
+    ]
     conn = FakeConn(fetch_rows=rows)
     pool = FakePool(conn=conn)
     deps = _make_deps(worker_pool=pool, is_leader=True)
@@ -970,7 +979,17 @@ async def test_stranded_jobs_loop_fetch_error_continues() -> None:
 
 async def test_stranded_jobs_loop_skips_when_not_leader(monkeypatch: Any) -> None:
     """When not leader, the loop ``continue``s without fetching."""
-    conn = FakeConn(fetch_rows=[{"actor": "x", "cnt": 1}])
+    conn = FakeConn(
+        fetch_rows=[
+            {
+                "actor": "x",
+                "cnt": 1,
+                "no_actor_config_cnt": 1,
+                "unserved_queue_cnt": 0,
+                "unserved_queues": [],
+            }
+        ]
+    )
     pool = FakePool(conn=conn)
     leader = _make_leader(
         backend=_mem_backend(),
@@ -1110,7 +1129,12 @@ async def _run_stranded_loop_collecting(
     *,
     ticks: int,
 ) -> tuple[list[dict[str, object]], list[dict[str, int]]]:
-    """Drive the loop over a scripted sequence of query results."""
+    """Drive the loop over a scripted sequence of query results.
+
+    Row shape mirrors the detector SQL's per-shape breakdown (see
+    ``_stranded_row`` below); the spies collect BOTH strand events, so a
+    test pins which shape warned, not just that something did.
+    """
     import taskq.worker._leader_sweeps as sweeps_mod
 
     class _ScriptedConn:
@@ -1133,7 +1157,7 @@ async def _run_stranded_loop_collecting(
     original_update = sweeps_mod.update_stranded_jobs_cache
 
     def _spy_warning(event: str, **kwargs: object) -> None:
-        if event == "stranded-jobs-no-actor-config":
+        if event in ("stranded-jobs-no-actor-config", "stranded-jobs-unserved-queue"):
             warnings.append({"event": event, **kwargs})
 
     def _spy_update(data: dict[str, int]) -> None:
@@ -1156,9 +1180,30 @@ async def _run_stranded_loop_collecting(
     return warnings, gauge_updates
 
 
+def _stranded_row(
+    actor: str,
+    cnt: int,
+    *,
+    no_config: int = 0,
+    unserved: int = 0,
+    queues: list[str] | None = None,
+) -> dict[str, object]:
+    """One detector-SQL row: the actor's stranded total plus the
+    per-shape breakdown the warning events key on."""
+    return {
+        "actor": actor,
+        "cnt": cnt,
+        "no_actor_config_cnt": no_config,
+        "unserved_queue_cnt": unserved,
+        "unserved_queues": queues or [],
+    }
+
+
 async def test_stranded_jobs_publishes_a_gauge_every_tick() -> None:
     """The condition must be visible in metrics, not only in one log line."""
-    _, gauges = await _run_stranded_loop_collecting([[{"actor": "orphan", "cnt": 7}]], ticks=3)
+    _, gauges = await _run_stranded_loop_collecting(
+        [[_stranded_row("orphan", 7, no_config=7)]], ticks=3
+    )
     assert len(gauges) >= 3
     assert all(g == {"orphan": 7} for g in gauges[:3])
 
@@ -1167,9 +1212,9 @@ async def test_stranded_jobs_rewarns_when_the_backlog_grows() -> None:
     """A growing backlog must not be silenced by the first warning."""
     warnings, _ = await _run_stranded_loop_collecting(
         [
-            [{"actor": "orphan", "cnt": 5}],
-            [{"actor": "orphan", "cnt": 5}],
-            [{"actor": "orphan", "cnt": 50}],
+            [_stranded_row("orphan", 5, no_config=5)],
+            [_stranded_row("orphan", 5, no_config=5)],
+            [_stranded_row("orphan", 50, no_config=50)],
         ],
         ticks=4,
     )
@@ -1184,9 +1229,9 @@ async def test_stranded_jobs_clears_and_rewarns_on_recurrence() -> None:
     """Recovery clears the gauge, and a recurrence warns again."""
     warnings, gauges = await _run_stranded_loop_collecting(
         [
-            [{"actor": "orphan", "cnt": 3}],
+            [_stranded_row("orphan", 3, no_config=3)],
             [],
-            [{"actor": "orphan", "cnt": 3}],
+            [_stranded_row("orphan", 3, no_config=3)],
         ],
         ticks=4,
     )
@@ -1195,6 +1240,78 @@ async def test_stranded_jobs_clears_and_rewarns_on_recurrence() -> None:
     assert first_seen_flags.count(True) >= 2, (
         "a recurrence must warn again; pre-fix the actor stayed in `warned` forever"
     )
+
+
+# ── _stranded_jobs_loop: the unserved-queue strand shape ──────────────────
+#
+# A pending row WITH an actor_config row on a queue no worker serves is as
+# permanently undispatchable as the no-actor_config shape: dispatch probes
+# only the queues in a worker's subscription (the candidates lateral
+# annihilates every other pair), and with no schedule_to_close the deadline
+# sweep cannot fail the row either. The gauge must carry it, and its warning
+# must say WHICH condition held — an operator who sees a no-actor-config
+# event and finds the actor_config row present concludes the detector lies,
+# which is the exact failure a per-shape event prevents.
+
+
+async def test_stranded_jobs_unserved_queue_shape_counts_in_gauge_and_names_queue() -> None:
+    """The unserved-queue strand publishes to the gauge and warns with its
+    own event naming the queues — never the no-actor-config event, whose
+    remediation (create the actor_config row) would not fix this strand."""
+    warnings, gauges = await _run_stranded_loop_collecting(
+        [[_stranded_row("orphan_actor_q", 1, unserved=1, queues=["no-worker-queue"])]],
+        ticks=2,
+    )
+    assert gauges[0] == {"orphan_actor_q": 1}, "the gauge must carry the unserved-queue shape"
+    unserved_events = [w for w in warnings if w["event"] == "stranded-jobs-unserved-queue"]
+    assert unserved_events, "the unserved-queue strand must warn"
+    assert unserved_events[0]["queues"] == ["no-worker-queue"], (
+        "the queue names are the actionable payload: subscribe a worker or re-route"
+    )
+    assert unserved_events[0]["pending_count"] == 1
+    assert not [w for w in warnings if w["event"] == "stranded-jobs-no-actor-config"], (
+        "a row whose actor_config EXISTS must not fire the no-actor-config event"
+    )
+
+
+async def test_stranded_jobs_both_shapes_on_one_actor_fire_both_events() -> None:
+    """A row stranded for both reasons (no actor_config AND on an unserved
+    queue) counts ONCE in the gauge and fires BOTH events — each names its
+    own condition and its own count."""
+    warnings, gauges = await _run_stranded_loop_collecting(
+        [[_stranded_row("solo_b", 1, no_config=1, unserved=1, queues=["default"])]],
+        ticks=2,
+    )
+    assert gauges[0] == {"solo_b": 1}, "a row stranded for both reasons counts once"
+    events = {w["event"] for w in warnings}
+    assert events == {
+        "stranded-jobs-no-actor-config",
+        "stranded-jobs-unserved-queue",
+    }
+    by_event = {w["event"]: w for w in warnings}
+    assert by_event["stranded-jobs-no-actor-config"]["pending_count"] == 1
+    assert by_event["stranded-jobs-unserved-queue"]["pending_count"] == 1
+
+
+async def test_stranded_jobs_unserved_shape_rewarns_on_growth_like_the_legacy_shape() -> None:
+    """The rewarn bookkeeping (grow or slow cadence) is per ACTOR over the
+    stranded total, so the unserved shape inherits it — a growing
+    unserved backlog is not silenced after its first warning."""
+    warnings, _ = await _run_stranded_loop_collecting(
+        [
+            [_stranded_row("orphan_actor_q", 2, unserved=2, queues=["no-worker-queue"])],
+            [_stranded_row("orphan_actor_q", 2, unserved=2, queues=["no-worker-queue"])],
+            [_stranded_row("orphan_actor_q", 9, unserved=9, queues=["no-worker-queue"])],
+        ],
+        ticks=4,
+    )
+    counts = [
+        w["pending_count"]
+        for w in warnings
+        if w["event"] == "stranded-jobs-unserved-queue" and w["actor"] == "orphan_actor_q"
+    ]
+    assert counts.count(2) == 1, "onset warns once, the unchanged tick stays quiet"
+    assert 9 in counts, "growth must re-warn"
 
 
 async def test_stranded_jobs_detector_disabled_logs_at_error() -> None:
@@ -1262,6 +1379,7 @@ async def test_sweep_loop_acquire_has_timeout() -> None:
         HEARTBEAT_INTERVAL="0.5",
         LOCK_LEASE="2.0",
         WATCHDOG_LOOP_LAG_BUDGET="1.2",
+        WATCHDOG_LOOP_LAG_WARN_BUDGET="0.5",
         MAX_HEARTBEAT_FAILURES="3",
         CANCELLATION_GRACE_PERIOD="0.0",
         CLEANUP_GRACE_PERIOD="0.0",

@@ -41,6 +41,7 @@ def _build_short_settings(pg_dsn: str, schema: str) -> WorkerSettings:
             "TASKQ_HEARTBEAT_INTERVAL": str(_HEARTBEAT_INTERVAL),
             "TASKQ_LOCK_LEASE": str(_LOCK_LEASE),
             "TASKQ_WATCHDOG_LOOP_LAG_BUDGET": "1.2",
+            "TASKQ_WATCHDOG_LOOP_LAG_WARN_BUDGET": "0.5",
             "TASKQ_CANCELLATION_GRACE_PERIOD": "0.0",
             "TASKQ_CLEANUP_GRACE_PERIOD": "0.0",
             "TASKQ_MAX_HEARTBEAT_FAILURES": "999",
@@ -890,7 +891,7 @@ async def test_ti8_fanout_outstanding_counter_reaches_zero(
 
         # Mark first N-1 as succeeded
         for jid in job_ids[:-1]:
-            await backend.mark_succeeded(JobId(jid), worker_id, None)
+            await backend.mark_succeeded(JobId(jid), worker_id, None, attempt=1)
 
         # Force-expire the lock on the last job (simulates a crashed worker)
         crashed_jid = job_ids[-1]

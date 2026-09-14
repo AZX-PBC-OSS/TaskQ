@@ -537,7 +537,7 @@ async def test_unique_for_does_not_dedupe_onto_a_succeeded_job(
             first.id,
             worker_id,
         )
-    assert await backend.mark_succeeded(first.id, worker_id, {"ok": True})
+    assert await backend.mark_succeeded(first.id, worker_id, {"ok": True}, attempt=0)
 
     async with deps.worker_pool.acquire() as conn:
         status = await conn.fetchval(f'SELECT status FROM "{schema}".jobs WHERE id = $1', first.id)

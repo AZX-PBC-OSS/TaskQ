@@ -88,9 +88,15 @@ class _TxFakeBackend(FakeBackend):
         fallback_result_ttl: object = None,
         *,
         result_bytes: bytes | None = None,
+        attempt: int | None = None,
     ) -> bool:
         return await self.mark_succeeded(
-            job_id, worker_id, result, progress_seq, result_bytes=result_bytes
+            job_id,
+            worker_id,
+            result,
+            progress_seq,
+            result_bytes=result_bytes,
+            attempt=attempt,
         )
 
 

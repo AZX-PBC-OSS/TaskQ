@@ -202,6 +202,24 @@ async def _enqueue(self: "InMemoryBackend", args: EnqueueArgs) -> JobRow:
         tags=args.tags,
     )
 
+    if args.id in self._jobs:
+        # Why a function-level import: the driver-free import-surface
+        # convention (see the _log_enqueue_dedup import above); this path
+        # only ever runs where the driver is installed.
+        from asyncpg.exceptions import UniqueViolationError
+
+        # PG's enqueue INSERT has no ON CONFLICT arbiter for the primary
+        # key (only the singleton and legacy-idempotency constraints are
+        # typed conversions — backend/_enqueue.py), so an INSERT carrying
+        # an existing job id propagates the RAW UniqueViolationError from
+        # jobs_pkey. The twin refuses identically — never silently
+        # overwriting a live row, which certified code that would corrupt
+        # on PG.
+        raise UniqueViolationError(
+            f'duplicate key value violates unique constraint "jobs_pkey" '
+            f"(job id {args.id} already stored)"
+        )
+
     self._jobs[args.id] = row
 
     if args.idempotency_key is not None:

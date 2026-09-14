@@ -225,6 +225,7 @@ class TestClockSkewResilience:
             job.id,
             worker_id,
             snooze.delay,
+            attempt=1,
         )
 
         assert tri == "scheduled", f"mark_snoozed returned {tri!r}, expected 'scheduled'"
@@ -394,7 +395,7 @@ class TestSnoozeBudgetInvariant:
         for i in range(10):
             # Snooze: running → scheduled, max_attempts unchanged, the
             # claim's increment refunded (1 → 0).
-            tri = await backend.mark_snoozed(job.id, worker_id, snooze.delay)
+            tri = await backend.mark_snoozed(job.id, worker_id, snooze.delay, attempt=1)
             assert tri == "scheduled", f"snooze {i + 1} returned {tri!r}"
 
             row = await backend.get(job.id)

@@ -953,6 +953,24 @@ to produce. Check these before rolling out, not during.
 The queue-name charset is: letters, digits, `_`, `.`, `-`, with the first
 character a letter or `_`.
 
+Workgroup TOML configs follow the same load-time rule through
+`WorkgroupConfig.from_toml`:
+
+- `[[workers]] name` is capped at 43 characters. The supervisor binds a
+  health socket for every child at
+  `/tmp/taskq_health_<name>_<uuid>.sock` — 60 fixed chars around the
+  name — and the path must fit every supported platform's AF_UNIX
+  `sun_path` budget (104 bytes on macOS/BSD, 108 on Linux, NUL
+  included). A name of 44-64 chars previously loaded and then died at
+  child spawn with `OSError: AF_UNIX path too long`, restart-looping
+  against the burst budget until give-up; longer names still do.
+- `queues = []` (on a worker or in `[defaults]`) is refused. A worker
+  that consumes no queue dispatches nothing; omit the key to inherit
+  `[defaults].queues`, or `["default"]` when no default is set.
+
+Both raise `ValueError` at config load — from `taskq workgroup start` /
+`taskq workgroup validate` before any process spawns.
+
 Two further invariants apply **only when `watchdog_enabled=True`**:
 
 - `watchdog_loop_lag_budget + heartbeat_interval` must be `< lock_lease`. A

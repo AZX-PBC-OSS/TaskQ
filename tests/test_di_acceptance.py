@@ -27,10 +27,12 @@ Coverage:
   - Registry sealed after validate()
 """
 
+from collections.abc import AsyncIterator
 from contextlib import AsyncExitStack
 from typing import Any
 from unittest.mock import create_autospec
 
+import asyncpg
 import pytest
 import structlog
 from pydantic import BaseModel
@@ -42,6 +44,7 @@ from taskq.actor import actor
 from taskq.backend._protocol import Backend
 from taskq.context import JobContext
 from taskq.exceptions import DependencyCycle, MissingProvider, ScopeViolation
+from taskq.migrate import apply_pending
 from taskq.obs import bind_job_context
 from taskq.settings import WorkerSettings
 from taskq.worker.run import _main
@@ -66,6 +69,7 @@ def _backend_methods_stub() -> Backend:
             fallback_result_ttl: object = None,
             *,
             result_bytes: object = None,
+            attempt: int | None = None,
         ) -> bool:
             return True
 
@@ -78,10 +82,17 @@ def _backend_methods_stub() -> Backend:
             fallback_result_ttl: object = None,
             *,
             result_bytes: object = None,
+            attempt: int | None = None,
         ) -> bool:
             return True
 
-        async def mark_cancelled(self, job_id: object, worker_id: object) -> bool:
+        async def mark_cancelled(
+            self,
+            job_id: object,
+            worker_id: object,
+            *,
+            attempt: int | None = None,
+        ) -> bool:
             return True
 
         async def write_cancel_escalation(
@@ -107,6 +118,26 @@ def _settings(pg_dsn: str) -> WorkerSettings:
             "heartbeat_interval": "10",
         },
     )
+
+
+@pytest.fixture(autouse=True)
+async def _migrated_taskq_test_schema(pg_dsn: str) -> AsyncIterator[None]:
+    """Provision ``taskq_test`` at HEAD before each acceptance boot.
+
+    The boot path refuses on pending migrations (the schema-currency
+    guard, ``_refuse_boot_on_pending_migrations``) before any DI
+    validation runs — these acceptance tests exercise the DI refusals,
+    so the schema must be current or the boot refuses on the right
+    check for the wrong test. ``apply_pending`` creates or upgrades the
+    schema idempotently; integration tests run serially, so the shared
+    name is uncontended.
+    """
+    conn = await asyncpg.connect(pg_dsn)
+    try:
+        await apply_pending(conn, schema="taskq_test")
+    finally:
+        await conn.close()
+    yield
 
 
 # ── test_acceptance_scope_violation_blocks_worker_startup ────────

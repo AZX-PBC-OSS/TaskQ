@@ -29,6 +29,7 @@ from taskq.web.admin._constants import (
     parse_job_statuses,
     parse_job_tags,
     parse_text_filter,
+    parse_time_filter,
 )
 from taskq.web.admin._factory import (
     get_backend,
@@ -116,8 +117,8 @@ def _build_where(
     statuses: list[str],
     actor: str | None,
     queue: str | None,
-    time_from: str | None,
-    time_to: str | None,
+    time_from: datetime | None,
+    time_to: datetime | None,
     identity_key: str | None,
     fairness_key: str | None,
     search: str | None,
@@ -133,7 +134,10 @@ def _build_where(
     clock, so anchoring the window in this process's clock would shift the
     whole window by the app-to-database skew and silently drop rows written
     in the last few seconds. ``time_from``/``time_to`` stay absolute --
-    those are the caller's explicit instants, not a "now" of ours.
+    those are the caller's explicit instants, not a "now" of ours -- and
+    arrive already parsed to ``datetime`` instances
+    (:func:`parse_time_filter`): asyncpg's timestamptz encoder accepts
+    only datetimes, so the raw query strings must never reach this bind.
     """
     clauses: list[str] = ["status = ANY($1)"]
     params: list[Any] = [statuses]
@@ -273,17 +277,18 @@ def _build_paginated_sql(
 
 def _parse_time_range(
     time_range: str | None,
-    time_from: str | None,
-    time_to: str | None,
-) -> tuple[str | None, str | None, timedelta | None]:
+    time_from: datetime | None,
+    time_to: datetime | None,
+) -> tuple[datetime | None, datetime | None, timedelta | None]:
     """Resolve the time filter to ``(time_from, time_to, within)``.
 
-    An explicit from/to pair is passed through as absolute instants. A
+    An explicit from/to pair (already parsed to datetimes by
+    :func:`parse_time_filter`) is passed through as absolute instants. A
     named range ("1h", "7d", ...) resolves to a ``timedelta`` that
     :func:`_build_where` evaluates against the database clock -- see its
     docstring for why this is not resolved to an absolute bound here.
     """
-    if time_from and time_to:
+    if time_from is not None and time_to is not None:
         return time_from, time_to, None
     if time_range and time_range in _TIME_RANGE_MAP:
         return None, None, _TIME_RANGE_MAP[time_range]
@@ -321,6 +326,21 @@ def _truncate_traceback(tb: str | None) -> str | None:
     remaining = len(tb) - _TRACEBACK_DISPLAY_LIMIT
     suffix = f"\n... ({remaining} more characters)"
     return tb[: _TRACEBACK_DISPLAY_LIMIT - len(suffix)] + suffix
+
+
+def _blob_display_text(value: Any) -> str | None:
+    """Render a decoded jsonb blob as the bounded text the Data section shows.
+
+    The jsonb size settings (``result_max_bytes`` and siblings) are *storage*
+    caps a deployment can raise, so a stored blob of any size can reach this
+    page; the render gets the same display bound ``error_traceback`` gets —
+    one number for how much stored text an operator page renders, reporting
+    the dropped character count so the operator can tell truncation from an
+    actually-small value.
+    """
+    if value is None:
+        return None
+    return _truncate_traceback(value if isinstance(value, str) else str(value))
 
 
 def register(router: APIRouter) -> None:
@@ -374,7 +394,15 @@ def register(router: APIRouter) -> None:
         statuses = (
             parse_job_statuses(status, default=default_statuses) if status else default_statuses
         )
-        t_from, t_to, within = _parse_time_range(time_range, time_from, time_to)
+        # Absolute windows parse to datetimes (parse_time_filter: asyncpg's
+        # timestamptz encoder binds only datetime instances, and garbage is
+        # the family's clean 400, never an opaque driver 500); the raw
+        # strings stay in scope for the form's round-trip below.
+        t_from, t_to, within = _parse_time_range(
+            time_range,
+            parse_time_filter(time_from, "time_from"),
+            parse_time_filter(time_to, "time_to"),
+        )
 
         # Shared parser: dedupes, caps the item count and per-item length
         # (the enqueue-side tag contract), and 400s on abuse.
@@ -474,8 +502,10 @@ def register(router: APIRouter) -> None:
             "actor_filter": actor or "",
             "queue_filter": queue or "",
             "time_range": time_range or "",
-            "time_from": t_from or "",
-            "time_to": t_to or "",
+            # The caller's own strings, not the parsed datetimes: the form
+            # field round-trips what the operator submitted.
+            "time_from": time_from or "",
+            "time_to": time_to or "",
             "identity_key": identity_key or "",
             "fairness_key": fairness_key or "",
             "search": search or "",
@@ -531,7 +561,13 @@ def register(router: APIRouter) -> None:
             if status
             else sorted(_ALL_STATUSES if tab == "live" else _TERMINAL_STATUSES)
         )
-        t_from, t_to, within = _parse_time_range(time_range, time_from, time_to)
+        # Same parse as /jobs: the count binds through the shared
+        # _build_where, so the window must be datetimes here too.
+        t_from, t_to, within = _parse_time_range(
+            time_range,
+            parse_time_filter(time_from, "time_from"),
+            parse_time_filter(time_to, "time_to"),
+        )
         where, params = _build_where(
             statuses, actor, queue, t_from, t_to, None, None, None, within=within
         )
@@ -624,12 +660,20 @@ def register(router: APIRouter) -> None:
         job_dict["error_traceback"] = _truncate_traceback(job_dict.get("error_traceback"))
         for _jsonb_key in ("progress_state", "payload", "metadata", "result"):
             job_dict[_jsonb_key] = decode_jsonb(job_dict.get(_jsonb_key))
+        # Every blob this page renders as text is display-bounded; the
+        # mappings the template reads structurally stay decoded —
+        # progress_state feeds the Progress timeline, and metadata feeds the
+        # Batch section, whose text render uses the parallel
+        # ``metadata_display`` key instead of the mapping.
+        job_dict["payload"] = _blob_display_text(job_dict["payload"])
+        job_dict["result"] = _blob_display_text(job_dict["result"])
+        job_dict["metadata_display"] = _blob_display_text(job_dict["metadata"])
         attempts_list = [_normalize_row(dict(a)) for a in attempts]
         for a in attempts_list:
             a["error_traceback"] = _truncate_traceback(a.get("error_traceback"))
         events_list = [_normalize_row(dict(e)) for e in events]
         for e in events_list:
-            e["detail"] = decode_jsonb(e.get("detail"))
+            e["detail"] = _blob_display_text(decode_jsonb(e.get("detail")))
 
         realtime_mode, mode_label = realtime_ctx
 
@@ -663,6 +707,13 @@ def register(router: APIRouter) -> None:
             raise HTTPException(
                 status_code=503, detail="Backend not configured for admin operations"
             )
+
+        # reason is the one mutation text this route binds: it reaches the
+        # job_events ``detail`` jsonb insert via write_cancel_request, and
+        # PostgreSQL rejects \u0000 in jsonb strings — the same
+        # opaque-driver-error class the list filters reject with
+        # parse_text_filter, so reason gets the same clean 400 here.
+        reason = parse_text_filter(reason, "reason")
 
         job = await backend.get(JobId(job_id))
         if job is None:

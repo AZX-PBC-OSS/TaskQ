@@ -310,6 +310,7 @@ async def _handle_timeout(
                 progress_seq=progress_seq,
                 progress_state=progress_state,
                 log=log,
+                attempt=job.attempt,
             )
         )
         log_state_change(
@@ -340,6 +341,7 @@ async def _handle_timeout(
                 progress_seq=progress_seq,
                 progress_state=progress_state,
                 log=log,
+                attempt=job.attempt,
             )
         )
         log_state_change(
@@ -398,6 +400,7 @@ async def _handle_snooze(
             s.delay,
             progress_seq=progress_seq,
             progress_state=progress_state,
+            attempt=job.attempt,
         )
     )
     if tri == "scheduled":
@@ -488,6 +491,7 @@ async def _handle_retry_after(
             consume_budget=r.consume_budget,
             progress_seq=progress_seq,
             progress_state=progress_state,
+            attempt=job.attempt,
         )
     )
     if tri == "scheduled":
@@ -599,6 +603,7 @@ async def _handle_reservation_class_denied(
             outcome=outcome,
             progress_seq=progress_seq,
             progress_state=progress_state,
+            attempt=job.attempt,
         )
     )
     if tri == "scheduled":
@@ -766,6 +771,7 @@ async def _handle_generic_exception(
                 progress_seq=progress_seq,
                 progress_state=progress_state,
                 log=log,
+                attempt=job.attempt,
             )
         )
         log_state_change(
@@ -800,6 +806,7 @@ async def _handle_generic_exception(
                 progress_seq=progress_seq,
                 progress_state=progress_state,
                 log=log,
+                attempt=job.attempt,
             )
         )
         log_state_change(

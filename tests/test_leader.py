@@ -269,6 +269,7 @@ def _make_deps(
         HEARTBEAT_INTERVAL=str(heartbeat_interval),
         LOCK_LEASE="2.0",
         WATCHDOG_LOOP_LAG_BUDGET="1.2",
+        WATCHDOG_LOOP_LAG_WARN_BUDGET="0.5",
         MAX_HEARTBEAT_FAILURES="3",
         CANCELLATION_GRACE_PERIOD="0.0",
         CLEANUP_GRACE_PERIOD="0.0",

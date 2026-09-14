@@ -412,6 +412,131 @@ class TestGcraRowLockBoundedWaitUnit:
         assert not any("DO UPDATE" in s for s in conn.fetched_rows)
 
 
+# ── Unit: bounded refund row-lock wait, fake pool (no PG) ───────────────
+
+
+class TestTokenBucketRefundRowLockBoundedWaitUnit:
+    """The token-bucket PG refund's ``FOR UPDATE`` wait is bounded by the
+    same discipline as the acquire — with the opposite exhaustion
+    semantics: a refund that could not take the row lock RAISES, because
+    ``_refund_pg`` returns ``None`` on success and a silent no-op return
+    on budget exhaustion would make a lost refund look like a completed
+    one (tokens stay spent — for a fixed-quota bucket, permanently)."""
+
+    async def test_lock_timeout_raises_never_silent_noop(self) -> None:
+        """A refund whose server-side lock_timeout fires raises the
+        driver error — never returns ``None`` as though the refund
+        happened — and the state-mutating UPDATE never ran."""
+        tb = _tb("tb_refund_row_lock_unit")
+        conn = _RowLockFakeConn(select_times_out=True)
+        start = time.monotonic()
+        with pytest.raises(asyncpg.LockNotAvailableError):
+            await tb._refund_pg(  # pyright: ignore[reportPrivateUsage]  # Why: the refund is the unit under test; the public surface wraps it in machinery a fake pool cannot satisfy.
+                1.0,
+                _FakePgPool(conn),  # type: ignore[arg-type]  # Why: duck-typed pool stand-in
+                _fake_settings(),
+                lock_timeout_ms=100.0,
+            )
+        elapsed = time.monotonic() - start
+        assert elapsed < 2.0, f"budget was 100 ms but the wait took {elapsed:.3f}s"
+        # The GUC budget was set for this transaction.
+        assert conn.set_config_values == ["100ms"]
+        # One savepoint from the refund's OWN transaction wrapper, one
+        # wrapping the lock-taking read.
+        assert conn.savepoint_opens == 2
+        # Never a silent success: the refund UPDATE never executed.
+        assert not any("UPDATE" in s for s in conn.executed_sql), (
+            "a timed-out refund wrote bucket state or returned quietly — a "
+            "refund failure must never look like a success"
+        )
+
+    async def test_lock_timeout_logs_ratelimit_warning_event(self) -> None:
+        """The refund's lock-timeout emits the same ``ratelimit-lock-timeout``
+        event as the acquire paths — one event name for one condition —
+        with ``phase="refund"`` marking the different consequence (a lost
+        refund, not a denied admission)."""
+        tb = _tb("tb_refund_row_lock_unit_log")
+        conn = _RowLockFakeConn(select_times_out=True)
+        with (
+            structlog.testing.capture_logs() as logs,
+            pytest.raises(asyncpg.LockNotAvailableError),
+        ):
+            await tb._refund_pg(  # pyright: ignore[reportPrivateUsage]  # Why: as above.
+                1.0,
+                _FakePgPool(conn),  # type: ignore[arg-type]  # Why: duck-typed pool stand-in
+                _fake_settings(),
+                lock_timeout_ms=250.0,
+            )
+        entries = [e for e in logs if e.get("event") == "ratelimit-lock-timeout"]
+        assert len(entries) == 1, f"expected exactly one timeout event, got {logs!r}"
+        assert entries[0].get("bucket_name") == "tb_refund_row_lock_unit_log"
+        assert entries[0].get("backend") == "postgres"
+        assert entries[0].get("lock_timeout_ms") == 250.0
+        assert entries[0].get("phase") == "refund"
+
+    async def test_granted_row_lock_refunds_with_exact_arithmetic(self) -> None:
+        """A refund granted the row lock inside the budget proceeds through
+        the unchanged arithmetic: elapsed refill applied, then +1 capped
+        at capacity (5 stored + 1 refunded = 6)."""
+        tb = _tb("tb_refund_row_lock_unit_granted")
+        conn = _RowLockFakeConn(select_times_out=False, select_row=_TB_ROW)
+        await tb._refund_pg(  # pyright: ignore[reportPrivateUsage]  # Why: as above.
+            1.0,
+            _FakePgPool(conn),  # type: ignore[arg-type]  # Why: duck-typed pool stand-in
+            _fake_settings(),
+            lock_timeout_ms=1000.0,
+        )
+        assert conn.set_config_values == ["1000ms"]
+        assert conn.savepoint_opens == 2
+        assert any("UPDATE" in s for s in conn.executed_sql), (
+            "the granted refund must write the refunded state"
+        )
+
+    async def test_lock_timeout_budget_zero_waits_indefinitely(self) -> None:
+        """``lock_timeout_ms <= 0`` disables the bound (the pre-bound
+        behavior), matching the ``lock_timeout`` GUC convention — pinned
+        by contract: the granted fake proves the indefinite mode takes
+        the plain blocking read with no GUC statements and no savepoint
+        of its own."""
+        tb = _tb("tb_refund_row_lock_unit3")
+        conn = _RowLockFakeConn(select_times_out=False, select_row=_TB_ROW)
+        await tb._refund_pg(  # pyright: ignore[reportPrivateUsage]  # Why: as above.
+            1.0,
+            _FakePgPool(conn),  # type: ignore[arg-type]  # Why: duck-typed pool stand-in
+            _fake_settings(),
+            lock_timeout_ms=0.0,
+        )
+        # Only the refund's OWN transaction wrapper opened — indefinite
+        # mode adds no savepoint of its own.
+        assert conn.savepoint_opens == 1, "indefinite mode must not open a savepoint"
+        assert conn.set_config_values == [], "indefinite mode must not touch the GUC"
+        assert any("UPDATE" in s for s in conn.executed_sql)
+
+    async def test_client_backstop_bounds_black_holed_row_lock(self) -> None:
+        """A network black hole (the refund's row-lock SELECT never
+        returns) is bounded by the client-side wait_for backstop at
+        budget + slack, and the outcome is still a RAISE — the refund
+        never completes silently."""
+        tb = _tb("tb_refund_row_lock_unit_blackhole")
+        conn = _BlackHoleRowLockConn(select_row=_TB_ROW)
+        start = time.monotonic()
+        with pytest.raises(TimeoutError):
+            await tb._refund_pg(  # pyright: ignore[reportPrivateUsage]  # Why: as above.
+                1.0,
+                _FakePgPool(conn),  # type: ignore[arg-type]  # Why: duck-typed pool stand-in
+                _fake_settings(),
+                lock_timeout_ms=100.0,
+            )
+        elapsed = time.monotonic() - start
+        # The backstop fires at budget + slack: strictly after the budget,
+        # well before any plausible unbounded hang.
+        assert elapsed >= 0.5, f"the backstop must outlast the 100ms budget, took {elapsed:.3f}s"
+        assert elapsed < 2.0, f"the backstop must bound the black hole, took {elapsed:.3f}s"
+        assert not any("UPDATE" in s for s in conn.executed_sql), (
+            "a backstopped refund must not write state — it raised instead"
+        )
+
+
 # ── Integration: real Postgres ──────────────────────────────────────────
 
 
@@ -472,13 +597,36 @@ class TestRowLockBoundedWaitPg:
         state = await tb.peek(pg_pool=module_pg_pool, settings=settings)
         assert state.tokens_remaining == 5.0
 
+        # Elapsed-zero the cleared window: the holder's INSERT stamped the
+        # bucket's ts at seed time, and the pinned elapsed-accrual contract
+        # (test_ratelimit_token_bucket_pg.py::test_pg_burst_throttle_refill)
+        # makes every real acquire fold refill since that stamp into
+        # remaining — the exact 5.0 -> 4.0 arithmetic below is only
+        # assertable with the window rewound to the acquire's own read
+        # (the same _rewind_bucket_ts discipline the token-bucket PG
+        # suite uses for time travel).
+        async with module_pg_pool.acquire() as _rewind_conn:
+            await _rewind_conn.execute(
+                f'UPDATE "{module_pg_schema.schema_name}".rate_limit_buckets '  # noqa: S608  # Why: schema is fixture-derived; values are $-bound.
+                f"SET state = jsonb_set(state, '{{ts}}', "
+                f"to_jsonb(EXTRACT(EPOCH FROM clock_timestamp()))) "
+                f"WHERE bucket_name = $1",
+                name,
+            )
+
         # Bounded retry clears: once the holder's transaction ended, a
         # fresh acquire takes the row and admits normally.
         cleared = await tb._acquire_pg(  # pyright: ignore[reportPrivateUsage]  # Why: as above.
             1.0, module_pg_pool, settings, lock_timeout_ms=250.0
         )
         assert cleared.allowed is True
-        assert cleared.remaining == 4.0
+        # abs tolerance, constraint named: the rewind and the acquire are
+        # two separate round trips, so real wall-clock time (a few ms at
+        # 1 token/s refill) accrues between them — the pinned elapsed
+        # accrual contract makes that mandatory. The tolerance covers only
+        # that inter-statement gap; the pre-rewind shape failed at 4.26
+        # (the whole 250 ms lock budget's accrual), an order past it.
+        assert cleared.remaining == pytest.approx(4.0, abs=0.1)
 
     async def test_gcra_row_lock_wait_bounded(
         self,

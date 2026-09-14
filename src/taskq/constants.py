@@ -34,6 +34,7 @@ __all__ = [
     "PROGRESS_GLOBAL_CHANNEL_FMT",
     "QUEUE_CONCURRENCY_PREFIX",
     "RECLAIM_EVENT_VISIBILITY_DELAY",
+    "RECLAIM_OUTBOX_RETENTION_MULTIPLIER",
     "RESERVATION_RETRY_HINT_MARGIN",
     "WAKE_CHANNEL_FMT",
     "WORKER_CHANNEL_FMT",
@@ -279,8 +280,9 @@ parent-job status.
 The effective value is ``WorkerSettings.event_retention_period``
 (``timedelta(0)`` there disables the sweep entirely); this constant is the
 setting's default. The crash-reclaim outbox slice
-(``kind='state_change' AND detail->>'reason'='lock_expired'``) is exempt
-from the sweep at every setting.
+(``kind='state_change' AND detail->>'reason'='lock_expired'``) is kept
+``RECLAIM_OUTBOX_RETENTION_MULTIPLIER`` times this window before the same
+sweep deletes it (see that constant for the derivation).
 
 Why 7 days: events are narration — the durable forensic record for a job
 is jobs/jobs_archive plus job_attempts/job_attempts_archive, kept for the
@@ -304,6 +306,35 @@ backlog size. 10_000 matches the prune family's batch rather than the
 rows, so the ``RECLAIM_EVENT_VISIBILITY_DELAY`` INSERT-to-COMMIT margin
 that caps event *writers* does not bind it — the general
 bounded-per-transaction rule does.
+"""
+
+RECLAIM_OUTBOX_RETENTION_MULTIPLIER: Final[int] = 100
+"""How many times the ordinary retention window the crash-reclaim outbox
+slice (``kind='state_change' AND detail->>'reason'='lock_expired'``) is
+kept before the retention sweep presumes its consumer gone and deletes it.
+
+The outbox cannot be exempt at every age: a fleet with NO
+``TaskQ.watch_reclaims`` consumer would then retain every ``lock_expired``
+event forever (unbounded growth), and an event committed below a watermark
+cursor that already passed it is unreachable to ``poll_reclaim_events``
+(``id > $1`` cannot go back) — without an age cap such a row is BOTH
+undeliverable and undeletable, permanently lost signal AND permanent
+storage. But it also cannot be deleted at the ordinary retention age: the
+carve-out exists so a consumer whose cursor has not reached a row yet
+still sees it. The multiplier composes the two: an unconsumed outbox row
+outlives ordinary events by this factor of the configured retention, then
+is deleted — bounded, but far beyond any healthy consumer's lag.
+
+Why 100 exactly: it must clear BOTH pinned ages with headroom on either
+side. Upward — a 400-day-old outbox row must survive a sweep call at
+30-day retention (``test_lock_expired_reclaim_outbox_is_exempt_from_
+retention``, the guard rail the original carve-out pinned): 100 x 30 d ≈
+3000 d, 7.5x headroom. Downward — a 1-hour-old unconsumed row must be
+deleted by a 1-second-retention drain (``test_rt_orphans_outbox_immortal_
+events``, the no-consumer bound): 100 x 1 s = 100 s, 36x headroom. Any
+value in (~13.4, 3600) satisfies both pins; 100 sits logarithmically
+midway and reads as "two orders of magnitude more patience than the
+narration slice gets."
 """
 
 DEFAULT_CHUNK_SIZE: Final[int] = 1000

@@ -604,7 +604,7 @@ See [jobs-clients.md](jobs-clients.md) for the full tradeoff table.
 | Mechanism | Semantics | Use when |
 |---|---|---|
 | `idempotency_key` (+ `idempotency_scope`) | **Exact.** DB unique index; duplicates return the existing job, no error | re-enqueue after failure/crash; exactly-once *scheduling* |
-| `unique_for` + `identity_key` | **Windowed, best-effort.** Advisory-lock preflight; concurrent enqueues may both insert but only one runs | suppressing duplicate *triggers* inside a freshness window |
+| `unique_for` + `identity_key` | **Windowed, single-flight.** A transaction-scoped advisory lock serializes the preflight-then-insert per identity on pool and bare-caller connections alike, so concurrent enqueues dedupe against the winner's row | suppressing duplicate *triggers* inside a freshness window |
 | `singleton=True` | One active job per actor | "never two of me at once" (mind the cron interaction below) |
 
 **Idempotency-key discipline** — every rule below was learned from a production incident:

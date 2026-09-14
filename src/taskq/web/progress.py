@@ -22,6 +22,11 @@ Design notes
 - Keepalive comments are emitted every ``sse_heartbeat_interval`` seconds via
   a ``get_message(timeout=...)`` polling loop (avoids blocking ``listen()``
   which has no per-message timeout support).
+- Each broker read carries an app-level deadline: the delegated ``timeout=``
+  bounds only the read itself, while a reconnect inside redis-py's
+  ``parse_response`` (broker dropped mid-read) is bounded by nothing — so the
+  loop wraps every read in ``asyncio.wait_for`` and a read that outlives the
+  deadline ends the stream, exactly as broker death does.
 - On client disconnect, ``try/finally`` in the generator calls
   ``pubsub.unsubscribe()`` and ``pubsub.aclose()`` to prevent stale Redis
   subscriptions.
@@ -70,6 +75,19 @@ _SSE_SEPARATOR = "\n"
 
 # Returned when Redis is not configured or unreachable at subscribe time.
 _REDIS_503_BODY: dict[str, str] = {"error": "redis_not_configured"}
+
+# Grace added to the delegated heartbeat timeout to form the app-level
+# deadline on each broker read in the streaming loop. get_message's own
+# ``timeout=`` bounds only the read; redis-py's PubSub.parse_response
+# re-enters the connection when the broker dropped (a reconnect with no
+# connect timeout of its own), so a wedged/tarpitted broker can stall one
+# read far past the heartbeat cadence while the subscription, the asyncio
+# task, and the SSE slot stay pinned. Every TaskQ-initiated wait on a
+# possibly-dead broker is bounded by this codebase (the admin health ping's
+# 0.5 s wait_for in admin/_factory.py, every close via close_redis_bounded);
+# the read gets the same treatment — one heartbeat window for the read
+# itself, plus the same grace the health ping allows.
+_BROKER_READ_GRACE_SECS: float = 0.5
 
 # JSON responses render through orjson (taskq._json), never stdlib json —
 # byte-identical bodies to starlette's stdlib JSONResponse for these payloads.
@@ -181,10 +199,27 @@ async def _event_generator(
                 last_emitted_seq = max(0, resolved_last_event_id)
 
         while True:
-            raw_msg = await pubsub.get_message(
-                ignore_subscribe_messages=True,
-                timeout=heartbeat_secs,
-            )
+            try:
+                raw_msg = await asyncio.wait_for(
+                    pubsub.get_message(
+                        ignore_subscribe_messages=True,
+                        timeout=heartbeat_secs,
+                    ),
+                    timeout=heartbeat_secs + _BROKER_READ_GRACE_SECS,
+                )
+            except TimeoutError:
+                # Fail-visible, matching broker death mid-stream: the stream
+                # ends (the browser EventSource reconnects) and the finally
+                # below releases the subscription and the SSE slot. A read
+                # that outlives the deadline is reported, never silently
+                # retried into another unbounded wait.
+                logger.warning(
+                    "sse-redis-read-timeout",
+                    job_id=str(job_id),
+                    channel=channel,
+                    read_bound_secs=heartbeat_secs + _BROKER_READ_GRACE_SECS,
+                )
+                raise
 
             if raw_msg is None:
                 yield _make_keepalive()

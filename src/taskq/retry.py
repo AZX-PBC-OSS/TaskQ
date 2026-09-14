@@ -22,8 +22,13 @@ import structlog
 from pydantic import BaseModel, ConfigDict, ValidationError, field_validator, model_validator
 
 from taskq.backend._protocol import Backend, ErrorInfo, JobId, JobRow, RetryKind
-from taskq.constants import DEFAULT_MAX_RETRY_BACKOFF
-from taskq.exceptions import PayloadValidationError, ResultTooLarge, WorkerOwnershipMismatch
+from taskq.constants import DEFAULT_MAX_RETRY_BACKOFF, MIN_DEFERRAL_INTERVAL
+from taskq.exceptions import (
+    PayloadValidationError,
+    ResultTooLarge,
+    UnencodableValue,
+    WorkerOwnershipMismatch,
+)
 
 __all__ = [
     "MAX_ATTEMPTS_SMALLINT_CEILING",
@@ -121,8 +126,14 @@ class Retry(BaseModel):
     The delay — not a computed timestamp — is the decision payload: the
     backend derives ``scheduled_at = now() + retry_delay`` and the
     scheduled/pending status from its own clock (single arbiter, immune to
-    app↔DB clock skew).  ``retry_delay=0`` means "retry immediately"
-    (lands pending).
+    app↔DB clock skew).  The delay never falls below
+    :data:`~taskq.constants.MIN_DEFERRAL_INTERVAL` — the requeue-rate
+    floor the deferral arms already apply at their writes — so a
+    degenerate curve (``base=timedelta(0)``, where ``0 * 2**k == 0`` at
+    every rung) or a zero ``Retry-After`` override cannot turn the
+    failure cycle into a claim/run/fail round trip monopolising a worker
+    slot with no period and, for an ``indefinite`` kind, no attempt
+    ceiling.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -330,7 +341,18 @@ class RetryClassifier:
             if override_delay is not None
             else compute_backoff(policy, attempt, max_retry_backoff=max_retry_backoff)
         )
-        return Retry(retry_delay=delay)
+        # The monopolisation floor the deferral arms apply at their writes
+        # (mark_snoozed / the non-consuming retry-after arm, via
+        # MIN_DEFERRAL_INTERVAL): a failure-retry delay below it requeues
+        # the job at the head of dispatch order — one claim/run/fail round
+        # trip per cycle holding a worker slot — and an ``indefinite``
+        # policy has no attempt ceiling to bound the cycle count. A
+        # zero/near-zero ``base`` (or a zero Retry-After override)
+        # degenerates the curve to exactly that, so the decision itself
+        # never carries a sub-floor delay; the write arms floor again as
+        # their own defense-in-depth, the same two-layer shape the
+        # deferral family ships.
+        return Retry(retry_delay=max(delay, MIN_DEFERRAL_INTERVAL))
 
     @staticmethod
     def classify(
@@ -355,6 +377,15 @@ class RetryClassifier:
         # 'failed' anyway.
         if isinstance(exception, ResultTooLarge):
             return Fail(error_class="ResultTooLarge", retryable=False)
+
+        # Why the same contract for the encoding half: the actor already
+        # ran to completion — the value it returned is one no UTF-8 JSON
+        # encoding accepts (a lone surrogate, a non-str dict key), and a
+        # re-run reproduces it exactly. Left retryable, a single
+        # unencodable result burns every remaining attempt re-running the
+        # actor's side effects before landing in 'failed' anyway.
+        if isinstance(exception, UnencodableValue):
+            return Fail(error_class="UnencodableValue", retryable=False)
 
         if isinstance(exception, ValidationError):
             return Fail(error_class="PayloadValidationError", retryable=False)
@@ -694,11 +725,15 @@ async def safe_mark_failed_or_retry(
     progress_state: dict[str, object] | None = None,
     *,
     log: structlog.stdlib.BoundLogger | None = None,
+    attempt: int | None = None,
 ) -> JobRow | None:
     """Wrap mark_failed_or_retry, catching WorkerOwnershipMismatch .
 
     Returns the persisted JobRow on success, or None on ownership mismatch
-    (signals the caller to skip the on_retry_exhausted hook).
+    (signals the caller to skip the on_retry_exhausted hook). *attempt* is
+    the attempt-identity epoch threaded from the handler's job-row
+    snapshot — see ``Backend.mark_failed_or_retry``; a fenced-out epoch
+    surfaces here as the same None a worker-fence miss produces.
     """
     logger: structlog.stdlib.BoundLogger = (
         log if log is not None else structlog.get_logger("taskq.retry")
@@ -711,6 +746,7 @@ async def safe_mark_failed_or_retry(
             retry_delay=retry_delay,
             progress_seq=progress_seq,
             progress_state=progress_state,
+            attempt=attempt,
         )
     except WorkerOwnershipMismatch as exc:
         logger.warning(

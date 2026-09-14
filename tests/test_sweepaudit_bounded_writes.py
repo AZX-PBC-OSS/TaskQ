@@ -60,6 +60,12 @@ from taskq.worker._leader_shared import (  # pyright: ignore[reportPrivateUsage]
 
 _WRITE_RE = re.compile(r"\b(UPDATE|DELETE)\b")
 
+# A real LIMIT clause keyword, not a substring: ``rate_limit_buckets``
+# contains "LIMIT" inside the identifier, and a plain substring test
+# both waves unregistered statements on that table through as bounded
+# and flags properly-registered ones as stale.
+_LIMIT_CLAUSE_RE = re.compile(r"\bLIMIT\b", re.IGNORECASE)
+
 # Unbounded write statements that are deliberate: each entry is the
 # constant name mapped to (scoping substring that must survive in the
 # body, why the row count cannot grow with the jobs backlog). An entry is
@@ -158,6 +164,12 @@ _EXEMPT: dict[str, tuple[str, str]] = {
         "a bounded slice of evicted keyed buckets' idle rows; count "
         "bounded by slice size x configured slots",
     ),
+    "_RECLAIM_RATE_LIMIT_SLICE_DELETE_SQL_TEMPLATE": (
+        "bucket_name = ANY($1)",
+        "a bounded slice of evicted keyed buckets' published "
+        "rate_limit_buckets rows; count bounded by the drain's slice "
+        "size x one row per bucket",
+    ),
     "_DEREGISTER_DISABLE_SCHEDULES_SQL": (
         "WHERE actor = $1",
         "one actor's cron_schedules rows; schedule count per actor is configuration",
@@ -239,7 +251,7 @@ def test_every_write_statement_is_bounded_or_registered() -> None:
     unregistered: list[str] = []
     wrong_scope: list[str] = []
     for qualified, body in _discover_write_statements().items():
-        if "LIMIT" in body.upper():
+        if _LIMIT_CLAUSE_RE.search(body):
             continue
         name = qualified.rsplit(":", 1)[1]
         entry = _EXEMPT.get(name)
@@ -278,7 +290,7 @@ def test_exemption_registry_has_no_stale_entries() -> None:
         found = by_name.get(name)
         if found is None:
             stale.append(f"{name}: no such statement discovered")
-        elif "LIMIT" in found[1].upper():
+        elif _LIMIT_CLAUSE_RE.search(found[1]):
             stale.append(f"{name} ({found[0]}): now carries a LIMIT — remove the entry")
     assert not stale, "Stale _EXEMPT entries:\n  " + "\n  ".join(stale)
 

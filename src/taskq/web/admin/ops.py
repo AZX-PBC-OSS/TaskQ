@@ -99,6 +99,25 @@ _HELD_SLOTS_SQL = (
     "ORDER BY bucket_name, slot_index"
 )
 
+# Log-frame escapes for caller-controlled text. A raw control character in a
+# structlog event value forges a whole subsequent line under any
+# line-oriented renderer (console/KV), corrupting log parsing and alerting —
+# so a URL-controlled field is escaped before it reaches an event, never
+# passed through verbatim. \n/\r/\t keep their letter escapes for
+# readability; every other C0 control and DEL renders as its hex escape.
+_LOG_CONTROL_ESCAPES: dict[int, str] = {
+    **{c: f"\\x{c:02x}" for c in range(0x20)},
+    0x7F: "\\x7f",
+    ord("\n"): "\\n",
+    ord("\r"): "\\r",
+    ord("\t"): "\\t",
+}
+
+
+def _log_safe_text(value: str) -> str:
+    """Escape control characters so a caller-controlled value cannot forge log lines."""
+    return value.translate(_LOG_CONTROL_ESCAPES)
+
 
 async def _fetch_redis_rl_state(
     redis_client: Any,
@@ -649,7 +668,7 @@ def register(router: APIRouter) -> None:
             # an explanatory 404 instead of surfacing the KeyError as a 500.
             logger.warning(
                 "rate-limit-reset-bucket-not-registered",
-                bucket_name=bucket_name,
+                bucket_name=_log_safe_text(bucket_name),
             )
             raise HTTPException(
                 status_code=404,

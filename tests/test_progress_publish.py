@@ -129,6 +129,9 @@ async def test_terminal_flush_before_mark_succeeded_drains_buffer() -> None:
 
     clock = FakeClock(datetime(2025, 1, 1, tzinfo=UTC))
     backend = InMemoryBackend(clock=clock)
+    # Register the actor so dispatch_batch finds it (mirrors PG's
+    # actor_config requirement — candidates come FROM the registry).
+    backend.register_actor_config(actor="test_actor")
     job_id = new_job_id()
     worker_id = new_uuid()
 
@@ -218,7 +221,7 @@ async def test_terminal_flush_before_mark_succeeded_drains_buffer() -> None:
     assert buf.pending_seq_delta == 0
     assert buf.dirty is False
 
-    await backend.mark_succeeded(job_id, worker_id, None, progress_seq=1)
+    await backend.mark_succeeded(job_id, worker_id, None, progress_seq=1, attempt=1)
 
     row = await backend.get(job_id)
     assert row is not None
@@ -770,6 +773,9 @@ async def test_cancel_discards_buffer_no_flush_terminal_state_change() -> None:
 
     clock = FakeClock(datetime(2025, 1, 1, tzinfo=UTC))
     backend = InMemoryBackend(clock=clock)
+    # Register the actor so dispatch_batch finds it (mirrors PG's
+    # actor_config requirement — candidates come FROM the registry).
+    backend.register_actor_config(actor="test_actor")
     job_id = new_job_id()
     worker_id = new_uuid()
 
@@ -815,7 +821,7 @@ async def test_cancel_discards_buffer_no_flush_terminal_state_change() -> None:
     override_seq = cancel_buf.base_seq
     override_state = dict(cancel_buf.pending_state)
 
-    await backend.mark_cancelled(job_id, worker_id, progress_seq=0)
+    await backend.mark_cancelled(job_id, worker_id, progress_seq=0, attempt=1)
 
     row = await backend.get(job_id)
     assert row is not None
@@ -936,6 +942,9 @@ async def test_cancel_clean_buffer_passes_base_seq_not_zero() -> None:
 
     clock = FakeClock(datetime(2025, 1, 1, tzinfo=UTC))
     backend = InMemoryBackend(clock=clock)
+    # Register the actor so dispatch_batch finds it (mirrors PG's
+    # actor_config requirement — candidates come FROM the registry).
+    backend.register_actor_config(actor="test_actor")
     job_id = new_job_id()
     worker_id = new_uuid()
 
@@ -981,7 +990,7 @@ async def test_cancel_clean_buffer_passes_base_seq_not_zero() -> None:
     assert cancel_seq == 5
     assert cancel_state == {"step": 5}
 
-    await backend.mark_cancelled(job_id, worker_id, progress_seq=cancel_seq)
+    await backend.mark_cancelled(job_id, worker_id, progress_seq=cancel_seq, attempt=1)
 
     row = await backend.get(job_id)
     assert row is not None

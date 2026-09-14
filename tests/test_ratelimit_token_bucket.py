@@ -17,6 +17,7 @@ from typing import Any
 
 import pytest
 
+from taskq.exceptions import RateLimitDependencyUnavailable
 from taskq.ratelimit import TokenBucket
 from taskq.ratelimit._scripts import TOKEN_BUCKET_SCRIPT
 from taskq.ratelimit.decision import RateLimitDecision
@@ -259,6 +260,20 @@ async def test_acquire_postgres_without_pg_pool_raises() -> None:
     tb = _pg_bucket()
     with pytest.raises(RuntimeError, match="pg_pool not injected for postgres backend"):
         await tb.acquire(clock=FakeClock(_START), settings=_FakeSettings())
+
+
+async def test_acquire_postgres_no_pool_raises_typed_dependency_error() -> None:
+    """The no-pool branch raises the typed ``RateLimitDependencyUnavailable``
+    — the store-dependency family member the consumer's acquire boundary
+    recognises — instead of a bare ``RuntimeError`` that escapes the family
+    and is misattributed to the job as a failure. A ``RuntimeError``
+    subclass, so the wording pins above and the chaos tier's
+    ``pytest.raises(RuntimeError)`` hold unchanged."""
+    tb = _pg_bucket(name="pg-typed-test")
+    with pytest.raises(RateLimitDependencyUnavailable, match="pg_pool not injected"):
+        await tb.acquire(  # type: ignore[arg-type]  # Why: duck-typed settings stand-in, the same seam the wording pin above uses — the acquire only reads schema_name, and no connection is ever made.
+            clock=FakeClock(_START), settings=_FakeSettings()
+        )
 
 
 async def test_acquire_postgres_without_settings_raises() -> None:

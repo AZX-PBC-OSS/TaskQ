@@ -19,7 +19,7 @@ Provides:
 import asyncio
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import TYPE_CHECKING, Any, Literal, assert_never
+from typing import TYPE_CHECKING, Any, Final, Literal, assert_never
 from uuid import UUID
 
 import structlog
@@ -75,6 +75,22 @@ MIN_SNOOZE_INTERVAL: timedelta = timedelta(seconds=1)
 
 Caller-supplied ``snooze_interval`` values below this are clamped and a
 warning is logged.
+"""
+
+_POOL_ACQUIRE_TIMEOUT_S: Final[float] = 2.0
+"""Bound for the pool acquire on every :func:`wait_for_batch` poll.
+
+asyncpg's ``Pool.acquire`` has no default timeout, so an unbounded
+acquire parks the poll — the first one and every snooze-loop iteration
+after it — for as long as the pool stays exhausted. This is the same
+bound and rationale as the project's other caller-facing pool waits
+(``pg_pool.acquire(timeout=2.0)`` in the workgroup health check,
+``DEFAULT_CAPACITY_READ_TIMEOUT`` around JobsClient's schedule-seed
+read): a wait on something outside the process is bounded, and
+exceeding the bound is reported as a :class:`TimeoutError` instead of
+wedging the caller. Only the acquire is bounded — the poll's statement
+runs on the caller's own pool, whose statement/command timeouts remain
+that pool's contract.
 """
 
 
@@ -471,6 +487,11 @@ async def wait_for_batch(
         children are terminal, then returns BatchCompletionStatus.
       - Use this form from scripts and integration tests where no consumer
         is present to translate a Snooze into a rescheduled job.
+      - Each poll's pool acquire is bounded by
+        :data:`_POOL_ACQUIRE_TIMEOUT_S`: a pool that cannot yield a
+        connection within the bound surfaces as a :class:`TimeoutError`
+        (the project's report idiom for an exhausted pool) rather than
+        parking the wait forever.
 
     ``expect_at_least`` raises :class:`~taskq.exceptions.EmptyBatchError`
     when fewer than the expected number of jobs are present and none are
@@ -575,7 +596,12 @@ async def wait_for_batch(
 
     async def _fetch() -> BatchCompletionStatus:
         if isinstance(db, _asyncpg.Pool):
-            async with db.acquire() as conn:  # type: ignore[reportArgumentType]  # Why: Pool.acquire() returns PoolConnectionProxy; pyright stubs model it as incompatible with Connection but it is runtime-compatible
+            # Bounded acquire (see _POOL_ACQUIRE_TIMEOUT_S): on an
+            # exhausted pool the wait surfaces as a TimeoutError to the
+            # caller instead of parking this poll — and every
+            # snooze-loop iteration after it — forever. The workgroup
+            # health check bounds the identical shape the same way.
+            async with db.acquire(timeout=_POOL_ACQUIRE_TIMEOUT_S) as conn:  # type: ignore[reportArgumentType]  # Why: Pool.acquire() returns PoolConnectionProxy; pyright stubs model it as incompatible with Connection but it is runtime-compatible
                 return await _fetch_and_decide(conn)  # type: ignore[reportArgumentType]  # Why: PoolConnectionProxy is a runtime-compatible Connection proxy; pyright stubs model it as incompatible
         return await _fetch_and_decide(db)
 

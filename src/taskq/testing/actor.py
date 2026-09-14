@@ -158,6 +158,7 @@ class FakeBackend:
         fallback_result_ttl: timedelta | None = None,
         *,
         result_bytes: bytes | None = None,
+        attempt: int | None = None,
     ) -> bool:
         self.mark_succeeded_calls.append((job_id, worker_id, result, result_bytes))
         return True
@@ -173,6 +174,7 @@ class FakeBackend:
         fallback_result_ttl: timedelta | None = None,
         *,
         result_bytes: bytes | None = None,
+        attempt: int | None = None,
     ) -> bool:
         return await self.mark_succeeded(
             job_id,
@@ -182,6 +184,7 @@ class FakeBackend:
             progress_state,
             fallback_result_ttl,
             result_bytes=result_bytes,
+            attempt=attempt,
         )
 
     async def mark_failed_or_retry(
@@ -192,6 +195,8 @@ class FakeBackend:
         retry_delay: timedelta | None,
         progress_seq: int = 0,
         progress_state: dict[str, object] | None = None,
+        *,
+        attempt: int | None = None,
     ) -> JobRow:
         self.mark_failed_or_retry_calls.append(
             {
@@ -209,6 +214,8 @@ class FakeBackend:
         worker_id: UUID,
         progress_seq: int = 0,
         progress_state: dict[str, object] | None = None,
+        *,
+        attempt: int | None = None,
     ) -> bool:
         self.mark_cancelled_calls.append(
             {
@@ -243,6 +250,7 @@ class FakeBackend:
         progress_seq: int = 0,
         progress_state: dict[str, object] | None = None,
         outcome: SnoozeOutcome = "snoozed",
+        attempt: int | None = None,
     ) -> Literal["scheduled", "failed", "failed:MaxAttemptsExceeded", "noop"]:
         self.mark_snoozed_calls.append(
             {
@@ -266,6 +274,7 @@ class FakeBackend:
         consume_budget: bool = True,
         progress_seq: int = 0,
         progress_state: dict[str, object] | None = None,
+        attempt: int | None = None,
     ) -> Literal["scheduled", "failed:DeadlineExceeded", "failed:MaxAttemptsExceeded", "noop"]:
         self.mark_retry_after_calls.append(
             {

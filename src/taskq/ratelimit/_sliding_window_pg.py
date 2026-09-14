@@ -24,6 +24,7 @@ from taskq._advisory import (
     acquire_advisory_xact_lock_bounded,
 )
 from taskq.backend._records import jsonb_param, jsonb_to_dict
+from taskq.exceptions import RateLimitDependencyUnavailable
 from taskq.ratelimit._decision_log import log_decision
 from taskq.ratelimit.decision import RateLimitDecision, RateLimitState
 
@@ -53,7 +54,7 @@ async def _peek_pg_log(
     settings: "WorkerSettings | None",
 ) -> RateLimitState:
     if pg_pool is None:
-        raise RuntimeError("pg_pool not injected for postgres backend")
+        raise RateLimitDependencyUnavailable("pg_pool not injected for postgres backend")
     if settings is None:
         raise RuntimeError("settings not injected for postgres backend")
 
@@ -111,7 +112,7 @@ async def _peek_pg_gcra(
     settings: "WorkerSettings | None",
 ) -> RateLimitState:
     if pg_pool is None:
-        raise RuntimeError("pg_pool not injected for postgres backend")
+        raise RateLimitDependencyUnavailable("pg_pool not injected for postgres backend")
     if settings is None:
         raise RuntimeError("settings not injected for postgres backend")
 
@@ -169,7 +170,7 @@ async def _reset_pg_log(
     settings: "WorkerSettings | None",
 ) -> None:
     if pg_pool is None:
-        raise RuntimeError("pg_pool not injected for postgres backend")
+        raise RateLimitDependencyUnavailable("pg_pool not injected for postgres backend")
     if settings is None:
         raise RuntimeError("settings not injected for postgres backend")
 
@@ -187,7 +188,7 @@ async def _reset_pg_gcra(
     settings: "WorkerSettings | None",
 ) -> None:
     if pg_pool is None:
-        raise RuntimeError("pg_pool not injected for postgres backend")
+        raise RateLimitDependencyUnavailable("pg_pool not injected for postgres backend")
     if settings is None:
         raise RuntimeError("settings not injected for postgres backend")
 
@@ -208,7 +209,7 @@ async def _refund_pg_gcra(
     if decision.previous_state is None:
         return
     if pg_pool is None:
-        raise RuntimeError("pg_pool not injected for postgres gcra refund")
+        raise RateLimitDependencyUnavailable("pg_pool not injected for postgres gcra refund")
     if settings is None:
         raise RuntimeError("settings not injected for postgres gcra refund")
 
@@ -236,7 +237,7 @@ async def _refund_pg_log(
     if decision.request_id is None:
         return
     if pg_pool is None:
-        raise RuntimeError("pg_pool not injected for postgres log refund")
+        raise RateLimitDependencyUnavailable("pg_pool not injected for postgres log refund")
     if settings is None:
         raise RuntimeError("settings not injected for postgres log refund")
 
@@ -301,7 +302,7 @@ async def _acquire_pg_log(
     never over-admit past the limit.
     """
     if pg_pool is None:
-        raise RuntimeError("pg_pool not injected for postgres backend")
+        raise RateLimitDependencyUnavailable("pg_pool not injected for postgres backend")
     if settings is None:
         raise RuntimeError("settings not injected for postgres backend")
     if request_id is None:
@@ -479,7 +480,7 @@ async def _acquire_pg_gcra(
     GUC convention shared with migrate.py and ``taskq._advisory``.
     """
     if pg_pool is None:
-        raise RuntimeError("pg_pool not injected for postgres backend")
+        raise RateLimitDependencyUnavailable("pg_pool not injected for postgres backend")
     if settings is None:
         raise RuntimeError("settings not injected for postgres backend")
 

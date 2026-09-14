@@ -139,6 +139,10 @@ def _make_deps(
         HEARTBEAT_INTERVAL=str(heartbeat_interval),
         LOCK_LEASE=str(lock_lease),
         WATCHDOG_LOOP_LAG_BUDGET="1.2",
+        # Tier 1 must be able to fire before the 1.2s terminal tier —
+        # a warn budget at or above the terminal budget silently disables
+        # tier 1 and fails settings validation.
+        WATCHDOG_LOOP_LAG_WARN_BUDGET="0.5",
         MAX_HEARTBEAT_FAILURES=str(max_heartbeat_failures),
         CANCELLATION_GRACE_PERIOD="0.0",
         CLEANUP_GRACE_PERIOD="0.0",
@@ -583,6 +587,7 @@ async def test_custom_schema_name_flows_to_sql() -> None:
         HEARTBEAT_INTERVAL="0.5",
         LOCK_LEASE="2.0",
         WATCHDOG_LOOP_LAG_BUDGET="1.2",
+        WATCHDOG_LOOP_LAG_WARN_BUDGET="0.5",
         MAX_HEARTBEAT_FAILURES="3",
         CANCELLATION_GRACE_PERIOD="0.0",
         CLEANUP_GRACE_PERIOD="0.0",

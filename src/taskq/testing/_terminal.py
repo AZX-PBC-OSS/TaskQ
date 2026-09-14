@@ -22,6 +22,7 @@ from taskq._json import (
     decode_result_bytes,
     dumps_jsonb_str,
     loads,
+    sanitize_surrogates,
 )
 from taskq._json import dumps as _json_dumps
 from taskq.backend._protocol import (
@@ -36,6 +37,7 @@ from taskq.backend._protocol import (
 from taskq.constants import MIN_DEFERRAL_INTERVAL
 from taskq.exceptions import (
     ResultTooLarge,
+    UnencodableValue,
     WorkerOwnershipMismatch,
 )
 from taskq.testing._reads import _read_copy
@@ -73,12 +75,36 @@ def _merge_progress(
     raises the same ``ValueError`` PG's bind raises instead of being
     stored; the round-trip is idempotent for already-stored JSON-native
     state.
+
+    The progress state reaching a terminal write is ACTOR-DERIVED — the
+    coalesced buffer the actor filled, not caller input — so a value no
+    UTF-8 encoder accepts (a lone surrogate published through a
+    settings-less context, below the publish guard's wiring) is escaped
+    here instead of refused: the write lands with the defect visible
+    (:func:`~taskq._json.sanitize_surrogates`), never stranding the job
+    ``running`` in the reclaim loop. The escape runs only on the cold
+    path the round-trip already rejected, and a structural refusal
+    (over-deep nesting) still stands — escaping cannot repair it.
     """
     if update is not None:
-        return loads(dumps_jsonb_str((current or {}) | update))
+        return _round_trip_progress_state((current or {}) | update)
     if current is None:
         return None
-    return loads(dumps_jsonb_str(current))
+    return _round_trip_progress_state(current)
+
+
+def _round_trip_progress_state(state: dict[str, object]) -> dict[str, object]:
+    try:
+        return loads(dumps_jsonb_str(state))
+    except UnencodableValue as exc:
+        try:
+            return loads(dumps_jsonb_str(sanitize_surrogates(state)))
+        except RecursionError:
+            # from None: the walk's stack exhaustion is an artifact of the
+            # repair attempt, not the refusal's cause — the original
+            # UnencodableValue (with orjson's own reason chained) is the
+            # truthful failure.
+            raise exc from None
 
 
 async def _mark_succeeded(
@@ -91,6 +117,7 @@ async def _mark_succeeded(
     fallback_result_ttl: timedelta | None = None,
     *,
     result_bytes: bytes | None = None,
+    attempt: int | None = None,
 ) -> bool:
     # Caller-input validation precedes the state fence, matching the PG
     # terminal's order (its guards run before the fencing UPDATE): a
@@ -147,7 +174,15 @@ async def _mark_succeeded(
     row = self._jobs.get(job_id)
     if row is None:
         return False
-    if row.status != "running" or row.locked_by_worker != worker_id:
+    # The attempt-epoch conjunct, mirroring the PG fence's
+    # ``AND attempt = $8`` one epoch deeper than the worker fence: a
+    # stale handler's write (the row re-dispatched at a later attempt on
+    # the SAME worker) no-ops exactly like a different worker's late
+    # write, and ``attempt=None`` — a caller that cannot present the
+    # epoch — never matches (PG binds NULL, which never satisfies the
+    # equality), so a write that cannot prove which attempt it
+    # terminates must not terminate any attempt.
+    if row.status != "running" or row.locked_by_worker != worker_id or row.attempt != attempt:
         return False
     now = self._clock.now()
     # Mirror the PG COALESCE: stored (operator-owned) result_ttl applied at
@@ -163,10 +198,16 @@ async def _mark_succeeded(
     self._jobs[job_id] = replace(
         row,
         status="succeeded",
+        finished_at=now,
+        # The terminal success write clears the lock holder and lease exactly
+        # like PG's mark_succeeded SET clause (_sql_templates.py: locked_by_worker
+        # = NULL, lock_expires_at = NULL): a succeeded row must not keep
+        # matching every locked_by_worker-scoped reader.
+        locked_by_worker=None,
+        lock_expires_at=None,
         result=stored_result,
         result_size_bytes=result_size_bytes,
         result_expires_at=new_result_expires_at,
-        finished_at=now,
         progress_seq=progress_seq,
         progress_state=merged_progress,
     )
@@ -209,6 +250,7 @@ async def _mark_succeeded_with_conn(
     fallback_result_ttl: timedelta | None = None,
     *,
     result_bytes: bytes | None = None,
+    attempt: int | None = None,
 ) -> bool:
     return await _mark_succeeded(
         self,
@@ -219,6 +261,7 @@ async def _mark_succeeded_with_conn(
         progress_state,
         fallback_result_ttl,
         result_bytes=result_bytes,
+        attempt=attempt,
     )
 
 
@@ -230,20 +273,48 @@ async def _mark_failed_or_retry(
     retry_delay: timedelta | None,
     progress_seq: int = 0,
     progress_state: dict[str, object] | None = None,
+    *,
+    attempt: int | None = None,
 ) -> JobRow:
     row = self._jobs.get(job_id)
     if row is None:
-        raise KeyError(f"Job {job_id} not found")
+        # PG's fencing UPDATE matches nothing for a job id that was never
+        # stored, and the pool wrapper raises WorkerOwnershipMismatch with
+        # actual=None (backend/_terminal.py: _select_owner reads no row) —
+        # the same typed error the wrong-worker and terminal-row cases
+        # raise, never a KeyError.
+        raise WorkerOwnershipMismatch(job_id, worker_id, None)
 
+    # The attempt-epoch conjunct mirrors the PG fence's
+    # ``AND j.attempt = (SELECT attempt FROM params)``: a mismatched
+    # epoch raises the same WorkerOwnershipMismatch the PG rowcount-0
+    # path raises (safe_mark_failed_or_retry converts it to the None the
+    # handlers treat as a no-op), and ``attempt=None`` — a caller that
+    # cannot present the epoch — never matches, exactly as PG's NULL
+    # bind never satisfies the equality.
     if row.status != "running":
         raise WorkerOwnershipMismatch(job_id, worker_id, row.locked_by_worker)
 
-    if row.locked_by_worker != worker_id:
+    if row.locked_by_worker != worker_id or row.attempt != attempt:
         raise WorkerOwnershipMismatch(job_id, worker_id, row.locked_by_worker)
 
     if retry_delay is not None:
         now = self._clock.now()
-        new_scheduled = now + retry_delay
+        # The failure-retry arm's deferral floor — the same bound
+        # mark_snoozed and the non-consuming retry-after arm apply, and the
+        # same bound PG's mark_retry template pins in its params CTE
+        # (``GREATEST($3::interval, MIN_DEFERRAL_INTERVAL) AS
+        # effective_delay`` — _sql_templates.py): a zero/now delay would
+        # park the job at the head of the dispatch order and make it
+        # instantly re-claimable — one claim/refund round trip per cycle
+        # monopolising a worker slot. The floored delay is the SINGLE
+        # effective delay: the status branch and the deadline comparison
+        # below both use it, the conservative direction, mirroring the SQL
+        # arm's GREATEST. (The decision layer floors too — retry.py's
+        # RetryClassifier — the same two-layer defense-in-depth shape the
+        # deferral family ships.)
+        effective_delay = max(retry_delay, MIN_DEFERRAL_INTERVAL)
+        new_scheduled = now + effective_delay
         # Mirror the PG mark_retry deadline CTE: the backend's own clock is
         # the single arbiter — a retry that would land past
         # schedule_to_close fails with DeadlineExceeded instead.
@@ -291,7 +362,7 @@ async def _mark_failed_or_retry(
             return _read_copy(updated)
 
         retry_status: Literal["scheduled", "pending"] = (
-            "scheduled" if retry_delay > timedelta(0) else "pending"
+            "scheduled" if effective_delay > timedelta(0) else "pending"
         )
         merged_progress = _merge_progress(row.progress_state, progress_state)
         updated = replace(
@@ -389,11 +460,14 @@ async def _mark_cancelled(
     worker_id: UUID,
     progress_seq: int = 0,
     progress_state: dict[str, object] | None = None,
+    *,
+    attempt: int | None = None,
 ) -> bool:
     row = self._jobs.get(job_id)
     if row is None:
         return False
-    if row.status != "running" or row.locked_by_worker != worker_id:
+    # Attempt-epoch conjunct — see _mark_succeeded's guard comment.
+    if row.status != "running" or row.locked_by_worker != worker_id or row.attempt != attempt:
         return False
 
     now = self._clock.now()
@@ -458,11 +532,16 @@ async def _write_cancel_escalation(
 
     now = self._clock.now()
     self._jobs[job_id] = replace(row, cancel_phase=CancelPhase.FORCED)
+    # worker_id rides the escalation event's detail exactly as PG's
+    # _write_cancel_escalation does (backend/_terminal.py passes
+    # worker_id into _insert_state_change_event): the running→running
+    # phase-change event names the holder that escalated.
     self._append_state_change_event(
         job_id=job_id,
         from_state="running",
         to_state="running",
         now=now,
+        worker_id=worker_id,
         cancel_phase_from=CancelPhase.COOPERATIVE,
         cancel_phase_to=CancelPhase.FORCED,
     )
@@ -537,6 +616,7 @@ async def _mark_snoozed(
     progress_seq: int = 0,
     progress_state: dict[str, object] | None = None,
     outcome: SnoozeOutcome = "snoozed",
+    attempt: int | None = None,
 ) -> Literal["scheduled", "failed", "failed:MaxAttemptsExceeded", "noop"]:
     # Caller-input validation precedes the state fence, matching the PG
     # terminal's order (its guard runs before the fencing UPDATE): an
@@ -546,7 +626,15 @@ async def _mark_snoozed(
     # write would return.
     validate_snooze_outcome(outcome)
     row = self._jobs.get(job_id)
-    if row is None or row.status != "running" or row.locked_by_worker != worker_id:
+    # Attempt-epoch conjunct — see _mark_succeeded's guard comment; a
+    # fenced-out epoch returns "noop" through the same machinery as the
+    # worker fence.
+    if (
+        row is None
+        or row.status != "running"
+        or row.locked_by_worker != worker_id
+        or row.attempt != attempt
+    ):
         return "noop"
 
     now = self._clock.now()
@@ -726,9 +814,16 @@ async def _mark_retry_after(
     consume_budget: bool = True,
     progress_seq: int = 0,
     progress_state: dict[str, object] | None = None,
+    attempt: int | None = None,
 ) -> Literal["scheduled", "failed:DeadlineExceeded", "failed:MaxAttemptsExceeded", "noop"]:
     row = self._jobs.get(job_id)
-    if row is None or row.status != "running" or row.locked_by_worker != worker_id:
+    # Attempt-epoch conjunct — see _mark_succeeded's guard comment.
+    if (
+        row is None
+        or row.status != "running"
+        or row.locked_by_worker != worker_id
+        or row.attempt != attempt
+    ):
         return "noop"
 
     now = self._clock.now()

@@ -420,8 +420,14 @@ async def consumer_loop_stub(
                 task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await task
-            if shut_wait in _done:
+            if shut_wait in _done and q_get not in _done:
                 return
+            # Why fall through on a both-done turn: the get has already
+            # TAKEN the job out of local_queue — returning here would
+            # discard it with no consumer run, no terminal write, and no
+            # release, leaving recovery to lock-lease expiry. The taken
+            # job runs this final iteration; the outer while's shutdown
+            # check then exits the loop.
         finally:
             for task in [q_get, shut_wait]:
                 if not task.done():
@@ -480,15 +486,21 @@ async def consumer_loop_stub(
                     # cancel landing while this write is detached must not
                     # strand its outcome unretrieved (see taskq._shield).
                     with contextlib.suppress(asyncio.CancelledError):
-                        await shield_with_retrieval(backend.mark_cancelled(job.id, worker_id))
+                        await shield_with_retrieval(
+                            backend.mark_cancelled(job.id, worker_id, attempt=job.attempt)
+                        )
                     raise
                 except TimeoutError:
                     pass
 
                 if ctx.cancellation_requested:
-                    await shield_with_retrieval(backend.mark_cancelled(job.id, worker_id))
+                    await shield_with_retrieval(
+                        backend.mark_cancelled(job.id, worker_id, attempt=job.attempt)
+                    )
                 else:
-                    await shield_with_retrieval(backend.mark_succeeded(job.id, worker_id, None))
+                    await shield_with_retrieval(
+                        backend.mark_succeeded(job.id, worker_id, None, attempt=job.attempt)
+                    )
                 # fallback_result_ttl is not forwarded here: the stub path has
                 # no actor registry and therefore no @actor(result_ttl=...)
                 # literal to supply. If the stored actor_config.result_ttl is
@@ -501,7 +513,9 @@ async def consumer_loop_stub(
 
             except asyncio.CancelledError:
                 with contextlib.suppress(asyncio.CancelledError):
-                    await shield_with_retrieval(backend.mark_cancelled(job.id, worker_id))
+                    await shield_with_retrieval(
+                        backend.mark_cancelled(job.id, worker_id, attempt=job.attempt)
+                    )
                 raise
 
             except Exception:
@@ -556,8 +570,14 @@ async def di_consumer_loop(
                 task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await task
-            if shut_wait in _done:
+            if shut_wait in _done and q_get not in _done:
                 return
+            # Why fall through on a both-done turn: the get has already
+            # TAKEN the job out of local_queue — returning here would
+            # discard it with no dispatch, no terminal write, and no
+            # release, leaving recovery to lock-lease expiry. The taken
+            # job runs this final iteration; the outer while's shutdown
+            # check then exits the loop.
         finally:
             for task in [q_get, shut_wait]:
                 if not task.done():
@@ -601,6 +621,7 @@ async def di_consumer_loop(
                     worker_id,
                     timedelta(seconds=10),
                     metadata_update={"released_reason": "actor-not-found"},
+                    attempt=job.attempt,
                 )
             except Exception:
                 _consumer_log.exception(
@@ -664,6 +685,10 @@ async def register_worker(pool: asyncpg.Pool, settings: WorkerSettings) -> UUID:
 
     If ``settings.worker_label`` or ``settings.workgroup_instance`` are set,
     they are stored directly for cross-process correlation and health checking.
+
+    The row's metadata records the worker's runtime facts: whether NOTIFY
+    dispatch is enabled, and ``max_concurrency`` — the capacity the worker
+    runs at, which sizes ``local_queue`` and bounds every dispatch.
     """
     worker_id = new_uuid()
     schema = settings.schema_name
@@ -678,7 +703,15 @@ async def register_worker(pool: asyncpg.Pool, settings: WorkerSettings) -> UUID:
     maybe_instance: UUID | None = UUID(maybe_instance_raw) if maybe_instance_raw else None
 
     notify_enabled = getattr(settings, "notify_enabled", False)
-    metadata: dict[str, object] = {"notify_enabled": notify_enabled}
+    # The workers row carries the capacity this worker actually runs at:
+    # ``max_concurrency`` sizes ``local_queue`` and bounds every dispatch,
+    # so a fleet's effective parallelism stays queryable from the database
+    # (good_job reports ``max_threads`` in its process rows; sidekiq
+    # heartbeats ``concurrency``).
+    metadata: dict[str, object] = {
+        "notify_enabled": notify_enabled,
+        "max_concurrency": settings.max_concurrency,
+    }
 
     sql = (
         f'INSERT INTO "{schema}".workers '  # noqa: S608  # Why: schema validated against _IDENT_RE before interpolation; asyncpg cannot bind identifiers as parameters.

@@ -195,6 +195,7 @@ def test_progress_buffer_fields() -> None:
     assert field_names == {
         "job_id",
         "base_seq",
+        "attempt",
         "pending_seq_delta",
         "pending_state",
         "dirty",
@@ -207,6 +208,10 @@ def test_progress_buffer_construction_with_defaults() -> None:
     buf = _ProgressBuffer(job_id=job_id, base_seq=0)
     assert buf.job_id == job_id
     assert buf.base_seq == 0
+    # The unseeded attempt epoch is 0: fail-closed, it matches no running
+    # row (dispatch stamps attempt + 1), so an unseeded buffer's flush
+    # no-ops instead of writing.
+    assert buf.attempt == 0
     assert buf.pending_seq_delta == 0
     assert buf.pending_state == {}
     assert buf.dirty is False
@@ -218,12 +223,14 @@ def test_progress_buffer_construction_with_all_values() -> None:
     buf = _ProgressBuffer(
         job_id=job_id,
         base_seq=10,
+        attempt=4,
         pending_seq_delta=3,
         pending_state={"step": 2, "percent": 50.0},
         dirty=True,
         last_flush_at=1234.5,
     )
     assert buf.base_seq == 10
+    assert buf.attempt == 4
     assert buf.pending_seq_delta == 3
     assert buf.pending_state == {"step": 2, "percent": 50.0}
     assert buf.dirty is True

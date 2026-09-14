@@ -333,8 +333,9 @@ async def _maybe_open_slot_pool(
         return False
 
     host = _dsn_host(settings.resolved_pg_dsn_direct)
-    stack = deps._exit_stack
-    if stack is None:  # pyright: ignore[reportPrivateUsage]  # Why: bootstrap owns deps and its exit-stack lifecycle; _main calls this inside open_worker_deps.
+    # Why: bootstrap owns deps and its exit-stack lifecycle; _main calls this inside open_worker_deps.
+    stack = deps._exit_stack  # pyright: ignore[reportPrivateUsage]
+    if stack is None:
         raise RuntimeError("slot pool cannot be opened outside of open_worker_deps")
     try:
         pool = await asyncio.wait_for(factory(), timeout=settings.reload_factory_timeout)
@@ -671,6 +672,74 @@ def _emit_startup_warnings(settings: WorkerSettings) -> None:
         )
 
 
+async def _refuse_boot_on_pending_migrations(deps: WorkerDeps, settings: WorkerSettings) -> None:
+    """Raise ``RuntimeError`` when the schema is behind this code's migrations.
+
+    The worker never applies migrations by design (``N`` replicas racing to
+    migrate is the hazard the migration advisory lock exists to prevent —
+    see ``_emit_startup_warnings``'s migrate-on-start warning), so a schema
+    stopped one release behind is a deployment ordering mistake, and the
+    boot path's own doctrine ("a deployment mistake that must crash startup
+    loudly, not a best-effort condition to warn about" — the queue-cap
+    guard's comment) covers it: ANY pending migration refuses boot, not
+    just the one whose missing column happens to be probed (01.00.04's
+    ``queues.max_concurrent``). A fresh database with no ledger at all is
+    the loudest case of the same mistake — every bundled migration is
+    pending — and refuses identically instead of failing later on raw
+    ``UndefinedTableError`` from the first boot step that writes.
+
+    Why hand-rolled ``fetch``-only queries instead of reusing
+    :func:`taskq.migrate.list_applied`: the boot path's established
+    duck-typing contract. The unit lane's pool stubs
+    (``tests/conftest.py``'s ``_FakeConn``) implement exactly
+    ``fetch``/``execute``/``transaction`` — the same surface
+    ``_apply_batch_statement_timeout`` documents as the complete
+    ConnLike wrapper contract — and ``list_applied`` needs
+    ``fetchval``. The EXISTS probe below therefore returns one row on
+    every real connection (``SELECT EXISTS`` always answers) and an
+    empty list on a stub, which is precisely the queue-cap probe's own
+    convention for "this connection cannot answer schema questions"
+    (empty result → no information → the read degrades and boot
+    proceeds; the integration lane exercises the guard against real
+    Postgres).
+    """
+    from taskq.migrate import discover
+
+    if not _IDENT_RE.match(settings.schema_name):
+        raise ValueError(f"invalid schema identifier: {settings.schema_name!r}")
+    ledger_probe = (
+        "SELECT EXISTS ("
+        "SELECT 1 FROM information_schema.tables "
+        "WHERE table_schema = $1 AND table_name = 'schema_migrations'"
+        ") AS ledger_exists"
+    )
+    async with deps.dispatcher_pool.acquire(timeout=settings.dispatcher_command_timeout) as conn:
+        probe_rows = await conn.fetch(ledger_probe, settings.schema_name)
+        if not probe_rows:
+            # A real connection always answers SELECT EXISTS with one
+            # row; no rows means a duck-typed stub cannot answer schema
+            # questions at all — the queue-cap read's own degradation
+            # path, not a currency verdict.
+            return
+        if not probe_rows[0]["ledger_exists"]:
+            # No ledger anywhere: a fresh database. Every bundled
+            # migration is pending by definition.
+            applied: set[str] = set()
+        else:
+            ledger_rows = await conn.fetch(
+                f'SELECT version FROM "{settings.schema_name}".schema_migrations',  # noqa: S608  # Why: schema validated against _IDENT_RE at the top of this helper; asyncpg cannot bind identifiers.
+            )
+            applied = {str(r["version"]) for r in ledger_rows}
+    pending = [m.key for m in discover() if m.key not in applied]
+    if pending:
+        raise RuntimeError(
+            f"schema {settings.schema_name!r} is missing {len(pending)} migration(s) "
+            f"this worker's code requires ({', '.join(pending)}); the worker never "
+            "applies migrations itself. Apply pending migrations before starting "
+            "workers (`taskq migrate up`, or a pre-deploy job/init container)."
+        )
+
+
 async def _main(
     settings: WorkerSettings,
     *,
@@ -691,8 +760,13 @@ async def _main(
     ``_local_queue_seed`` is a test seam — keyword-only, defaults to ``None``,
     prefixed with ``_`` to mark it as non-production API.  When not ``None``,
     each job in the seed list is pushed onto ``local_queue`` BEFORE the
-    TaskGroup starts, so consumer stubs immediately consume them.
-    Production callers (``worker_main``) MUST NOT pass this parameter.
+    TaskGroup starts, so consumer stubs immediately consume them.  The seed
+    is size-checked at entry: ``local_queue`` is bounded at
+    ``max_concurrency`` and is drained only by consumers created after the
+    seed loop, so an oversized seed (more than ``max_concurrency`` jobs)
+    raises ``ValueError`` here rather than parking the bootstrap on a full
+    queue with zero consumers started.  Production callers (``worker_main``)
+    MUST NOT pass this parameter.
 
     ``pg_credential_provider`` is the resolved Postgres credential
     provider the worker's internal per-slot transaction pool
@@ -778,6 +852,21 @@ async def _main(
             raise ValueError(
                 f"actor_registry keys must equal each ActorRef's name; mismatches: {pairs}"
             )
+
+    if _local_queue_seed is not None and len(_local_queue_seed) > settings.max_concurrency:
+        # Why at the boundary, before any I/O: the seed loop below pushes
+        # onto local_queue (maxsize = max_concurrency) BEFORE the consumer
+        # TaskGroup exists, so the excess put would park bootstrap forever
+        # on a full queue with zero consumers running — a silent hang, not
+        # a slow start. Rejecting here fails before a worker row is
+        # registered or signal handlers are installed.
+        raise ValueError(
+            f"_local_queue_seed has {len(_local_queue_seed)} job(s) but "
+            f"max_concurrency is {settings.max_concurrency}: the seed is "
+            f"pushed onto local_queue (bounded at max_concurrency) before "
+            f"any consumer starts, so an oversized seed would park "
+            f"bootstrap forever. Seed at most max_concurrency jobs."
+        )
 
     registry = _registry if _registry is not None else ProviderRegistry()
     if not registry.has_provider(WorkerSettings):
@@ -869,6 +958,20 @@ async def _main(
                     message="until_idle mode is incompatible with cron-driven workloads; "
                     "the queue will never drain. Use --idle-max-runtime as a cap.",
                 )
+
+        # Schema-currency guard: refuse boot BEFORE any boot step writes to
+        # the database (sync_rate_limit_buckets, register_worker, ...). A
+        # schema one release behind used to pass every boot step except the
+        # queue-cap query's 01.00.04 guard: the enqueue INSERT's column list
+        # omits whatever the missing migration adds, so writes half-work,
+        # and the first dispatch claim's RETURNING then dies in the strict
+        # ``_job_row_from_record`` read AFTER the claim already committed
+        # the row to running+locked — every dispatched job loops through
+        # lock-expiry crash-reclaim and never executes. Same doctrine as
+        # the queue-cap guard below: a deployment mistake must crash
+        # startup loudly, not best-effort warn and serve against a stale
+        # schema.
+        await _refuse_boot_on_pending_migrations(deps, settings)
 
         # Only register the worker pool in DI when the user hasn't provided
         # their own asyncpg.Pool provider — and only then may the reload

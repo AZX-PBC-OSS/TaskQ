@@ -7,7 +7,7 @@
 from collections import defaultdict as _dd
 from dataclasses import replace
 from datetime import timedelta
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final
 from uuid import UUID
 
 from taskq.backend._protocol import JobRow, QueueMode
@@ -17,6 +17,14 @@ if TYPE_CHECKING:
     from taskq.testing.in_memory import InMemoryBackend
 
 __all__ = ["_dispatch_batch", "_set_queue_mode"]
+
+# Mirrors WorkerSettings.dispatch_oversample's default (settings.py): each
+# per-(actor, queue) candidate read is bounded by residual * oversample —
+# the truncation the differential must model, because a dispatchable job
+# sorted behind a deep blocked cohort that fills the truncated read is
+# PG's honest observable (the round dispatches NOTHING, never "past" the
+# truncation).
+_DISPATCH_OVERSAMPLE: Final[int] = 2
 
 
 async def _dispatch_batch(
@@ -36,7 +44,6 @@ async def _dispatch_batch(
             if row.identity_key is not None:
                 running_identities.add((row.actor, row.identity_key))
 
-    _has_actor_configs: bool = bool(self._actor_configs_meta)
     # Why: `row.queue in queues` with NO `not queues` escape — PG builds the
     # candidate set with ``CROSS JOIN LATERAL unnest((SELECT queues FROM
     # params))`` (backend/_dispatch_sql.py), and an empty array annihilates
@@ -44,78 +51,126 @@ async def _dispatch_batch(
     # ``not queues or ...`` read the same input as "no filter" (match ALL),
     # so the mirror dispatched work a real worker polling the same empty
     # list never would — the mirror was greener than production.
-    candidates = [
-        row
-        for row in self._jobs.values()
-        if row.status == "pending"
-        and row.queue in queues
-        and row.scheduled_at <= now
-        and (row.schedule_to_close is None or row.schedule_to_close > now)
-        and (not _has_actor_configs or row.actor in self._actor_configs_meta)
-    ]
-
-    _by_actor: dict[str, list[JobRow]] = _dd(list)
-    for c in candidates:
-        _by_actor[c.actor].append(c)
-
+    #
     # Why: `or []` cannot re-admit an empty queue list here — the candidate
     # filter above matches NOTHING for `[]`, so no row survives to be
     # round-robin-ordered; it is only a None guard, never a selection.
     _use_round_robin = any(self._queues.get(q) == "round_robin" for q in (queues or []))
 
-    for _rows in _by_actor.values():
+    # ── per_actor_capacity + candidates lateral ─────────────────────────
+    # Candidates come FROM the actor_config registry, exactly PG's
+    # per_actor_capacity CTE (backend/_dispatch_sql.py): zero registered
+    # actors means zero capacity rows means zero candidates — "no actors
+    # registered" must never read as "no filter" (the mirror was greener
+    # than production). residual = the round's limit when the actor has no
+    # max_concurrent, else max(max_concurrent - in_flight, 0).
+    candidates: list[JobRow] = []
+    _fairness_rank: dict[UUID, int] = {}
+    for _actor, _cfg in self._actor_configs_meta.items():
+        _cap = _cfg.max_concurrent
+        _residual = limit if _cap is None else max(_cap - running_per_actor.get(_actor, 0), 0)
+        if _residual <= 0:
+            continue
+        _bound = _residual * _DISPATCH_OVERSAMPLE
+        _by_queue: dict[str, list[JobRow]] = _dd(list)
+        for row in self._jobs.values():
+            if (
+                row.status == "pending"
+                and row.actor == _actor
+                and row.queue in queues
+                and row.scheduled_at <= now
+                and (row.schedule_to_close is None or row.schedule_to_close > now)
+            ):
+                _by_queue[row.queue].append(row)
+        for _queue_rows in _by_queue.values():
+            if _use_round_robin:
+                _fk_groups: dict[str, list[JobRow]] = _dd(list)
+                for r in _queue_rows:
+                    # Why: ONE shared "__null__" partition for every unkeyed
+                    # job, exactly PG's ``PARTITION BY COALESCE(j2.fairness_key,
+                    # '__null__')`` (backend/_dispatch_sql.py). The old
+                    # per-row synthetic partition (f"__null__{r.id}") ranked
+                    # every unkeyed job at fairness_rank 1, so a bounded batch
+                    # was consumed entirely by the unkeyed cohort and the keyed
+                    # cohorts starved — the exact round-robin starvation the
+                    # mode exists to prevent, in the default configuration
+                    # (fairness_key is None by default). Unkeyed jobs rank
+                    # 1, 2, 3… and yield their surplus slots to the keyed
+                    # cohorts.
+                    fk = r.fairness_key if r.fairness_key is not None else "__null__"
+                    _fk_groups[fk].append(r)
+                for _fk_rows in _fk_groups.values():
+                    _fk_rows.sort(key=lambda r: (-r.priority, r.scheduled_at, r.id))
+                    # The oversample bound is per fairness partition (a global
+                    # LIMIT would truncate before partitioning — PG filters
+                    # ``fairness_rank <= residual * oversample`` instead), so
+                    # every cohort contributes candidates up to the bound.
+                    for _rank, _r in enumerate(_fk_rows, 1):
+                        if _rank <= _bound:
+                            _fairness_rank[_r.id] = _rank
+                            candidates.append(_r)
+            else:
+                # Strict-FIFO lateral: ORDER BY priority DESC, scheduled_at,
+                # id LIMIT residual * oversample — the truncation that can
+                # starve a dispatchable job sorting behind the bound.
+                _queue_rows.sort(key=lambda r: (-r.priority, r.scheduled_at, r.id))
+                candidates.extend(_queue_rows[:_bound])
+
+    # ── identity_dedup, BEFORE ranking ──────────────────────────────────
+    # PG dedupes candidates per (actor, identity_key) before pending_rank
+    # is computed (the identity_dedup CTE): the best candidate per identity
+    # (priority DESC, scheduled_at, id), with identities a running job
+    # already holds dropped entirely; identity-less rows pass through.
+    _deduped: list[JobRow] = []
+    _best_by_identity: dict[tuple[str, str], JobRow] = {}
+    for r in candidates:
+        if r.identity_key is None:
+            _deduped.append(r)
+            continue
+        _ident = (r.actor, r.identity_key)
+        if _ident in running_identities:
+            continue
+        _cur = _best_by_identity.get(_ident)
+        if _cur is None or (-r.priority, r.scheduled_at, r.id) < (
+            -_cur.priority,
+            _cur.scheduled_at,
+            _cur.id,
+        ):
+            _best_by_identity[_ident] = r
+    _deduped.extend(_best_by_identity.values())
+
+    # ── ranked + eligible ordering ──────────────────────────────────────
+    # pending_rank: per-actor row number over the deduped set, per mode
+    # (PG's ranked CTE — strict FIFO: priority DESC, scheduled_at, id;
+    # round_robin: fairness_rank, priority DESC, scheduled_at, id). The
+    # final selection order is PG's eligible ORDER BY: pending_rank, then
+    # fairness_rank (round_robin only; strict-FIFO rows carry none), then
+    # priority DESC, scheduled_at, id — NEVER alphabetical actor order,
+    # which the old per-rank interleave substituted whenever a round's
+    # limit cut inside a rank shared by jobs of different actors.
+    _ranked_by_actor: dict[str, list[JobRow]] = _dd(list)
+    for c in _deduped:
+        _ranked_by_actor[c.actor].append(c)
+    _pending_rank: dict[UUID, int] = {}
+    for _actor_rows in _ranked_by_actor.values():
         if _use_round_robin:
-            _fk_groups: dict[str, list[JobRow]] = _dd(list)
-            for r in _rows:
-                # Why: ONE shared "__null__" partition for every unkeyed job,
-                # exactly PG's ``PARTITION BY COALESCE(j2.fairness_key,
-                # '__null__')`` (backend/_dispatch_sql.py). The old
-                # per-row synthetic partition (f"__null__{r.id}") ranked
-                # every unkeyed job at fairness_rank 1, so a bounded batch
-                # was consumed entirely by the unkeyed cohort and the keyed
-                # cohorts starved — the exact round-robin starvation the
-                # mode exists to prevent, in the default configuration
-                # (fairness_key is None by default). Unkeyed jobs rank
-                # 1, 2, 3… and yield their surplus slots to the keyed
-                # cohorts.
-                fk = r.fairness_key if r.fairness_key is not None else "__null__"
-                _fk_groups[fk].append(r)
-            _fairness_rank: dict[object, int] = {}
-            for _fk_rows in _fk_groups.values():
-                _fk_rows.sort(key=lambda r: (-r.priority, r.scheduled_at, r.id))
-                for _rank, _r in enumerate(_fk_rows, 1):
-                    _fairness_rank[_r.id] = _rank
-            _rows.sort(
-                key=lambda r: (
-                    _fairness_rank.get(r.id, 0),
-                    -r.priority,
-                    r.scheduled_at,
-                    r.id,
-                )
+            _actor_rows.sort(
+                key=lambda r: (_fairness_rank[r.id], -r.priority, r.scheduled_at, r.id)
             )
         else:
-            _rows.sort(key=lambda r: (-r.priority, r.scheduled_at, r.id))
-    _ranked_candidates: list[tuple[int, JobRow]] = []
-    for _actor_rows in _by_actor.values():
-        for _rank, _row in enumerate(_actor_rows, 1):
-            _ranked_candidates.append((_rank, _row))
-    _by_rank: dict[int, dict[str, list[JobRow]]] = _dd(lambda: _dd(list))
-    for _rank, _row in _ranked_candidates:
-        _by_rank[_rank][_row.actor].append(_row)
-    _interleaved: list[JobRow] = []
-    for _rank_val in sorted(_by_rank):
-        _actors_at_rank = sorted(_by_rank[_rank_val])
-        _remain = True
-        _idx = 0
-        while _remain:
-            _remain = False
-            for _actor in _actors_at_rank:
-                _actor_jobs = _by_rank[_rank_val][_actor]
-                if _idx < len(_actor_jobs):
-                    _interleaved.append(_actor_jobs[_idx])
-                    _remain = True
-            _idx += 1
-    candidates = _interleaved
+            _actor_rows.sort(key=lambda r: (-r.priority, r.scheduled_at, r.id))
+        for _rank, _r in enumerate(_actor_rows, 1):
+            _pending_rank[_r.id] = _rank
+    candidates = sorted(
+        _deduped,
+        key=lambda r: (
+            _pending_rank[r.id],
+            _fairness_rank[r.id] if _use_round_robin else 0,
+            -r.priority,
+            r.scheduled_at,
+            r.id,
+        ),
+    )
 
     dispatched_per_actor: dict[str, int] = {}
     newly_dispatched_identities: set[tuple[str, str]] = set()
@@ -125,9 +180,10 @@ async def _dispatch_batch(
         if len(dispatched) >= limit:
             break
 
-        cap: int | None = None
-        if _has_actor_configs and row.actor in self._actor_configs_meta:
-            cap = self._actor_configs_meta[row.actor].max_concurrent
+        # Every candidate's actor carries an actor_config row by
+        # construction (candidates come FROM the registry), exactly as
+        # PG's eligible_candidates LEFT JOIN always finds its row.
+        cap = self._actor_configs_meta[row.actor].max_concurrent
 
         per_dispatch_cap = cap if cap is not None else limit
         if dispatched_per_actor.get(row.actor, 0) >= per_dispatch_cap:

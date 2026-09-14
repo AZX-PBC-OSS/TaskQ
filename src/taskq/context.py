@@ -143,7 +143,7 @@ class JobContext[P: BaseModel]:
         publishing to Redis are logged and recorded as a metric, never
         raised here.
         """
-        if data is not None and self._worker_settings is not None:
+        if (data is not None or detail is not None) and self._worker_settings is not None:
             # Load-bearing serialization, not redundant with the publish
             # path's ``model_dump_json``: this is the only
             # ``progress_data_max_bytes`` enforcement in the codebase, and it
@@ -158,10 +158,22 @@ class JobContext[P: BaseModel]:
             # 2.13). The double serialization of ``data`` (here + the event
             # dump) is therefore the price of the synchronous-raise contract;
             # the flush's re-serialization is a separate (PG) boundary.
-            serialised_len = len(dumps(data))
-            limit = self._worker_settings.progress_data_max_bytes
-            if serialised_len > limit:
-                raise ProgressTooLarge(limit=limit, actual=serialised_len)
+            if data is not None:
+                serialised_len = len(dumps(data))
+                limit = self._worker_settings.progress_data_max_bytes
+                if serialised_len > limit:
+                    raise ProgressTooLarge(limit=limit, actual=serialised_len)
+            if detail is not None:
+                # The detail string passes through the same publish-time
+                # serialization ``data`` does: an unencodable detail (a lone
+                # surrogate) raises to the actor HERE, before it enters the
+                # coalesce buffer and detonates at the durable write as a
+                # failure no terminal-write classification answers for. The
+                # settings-wiring condition is the data guard's own: an
+                # unwired context (direct actor testing) falls through to
+                # the write boundary, which escapes the unencodable form
+                # instead of stranding the job.
+                dumps(detail)
 
         if self._progress_buffers is None:
             # No coalesce buffer wired, so this call — publish included —

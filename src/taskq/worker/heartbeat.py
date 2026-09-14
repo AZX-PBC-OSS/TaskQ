@@ -258,20 +258,43 @@ async def isolate_self(
     jobs_pending_count = 0
     jobs_crashed_count = 0
     jobs_cancelled_count = 0
+    # Rows whose guarded UPDATE no-oped — transitioned by the leader's
+    # sweep between this path's SELECT and UPDATE; their attempt rows
+    # belong to the winner, and the count keeps the complete log's
+    # arithmetic explainable (selected rows = pending + crashed +
+    # cancelled + lost_race).
+    jobs_lost_race_count = 0
 
     try:
         conn = await asyncpg.connect(pg_dsn, timeout=5.0)  # pyright: ignore[reportCallIssue, reportUnknownVariableType]  # Why: asyncpg-stubs does not declare timeout kwarg on connect(); the parameter exists at runtime at 0.31.0.  asyncpg default is 60s — far too long when PG is already problematic.
         try:
 
-            async def _inner() -> tuple[int, int, int]:
+            async def _inner() -> tuple[int, int, int, int]:
                 pending = 0
                 crashed = 0
                 cancelled = 0
+                lost_race = 0
                 async with conn.transaction():
                     rows = await conn.fetch(  # pyright: ignore[reportUnknownVariableType]  # Why: conn type suppressed above due to asyncpg-stubs limitation on connect().
                         select_running_jobs_sql, worker_id
                     )
                     for row in rows:  # pyright: ignore[reportUnknownVariableType]  # Why: rows type suppressed above — propagates from conn.fetch() suppression.
+                        # The guarded UPDATE is the race arbiter, so its
+                        # rowcount — not the SELECT that picked the row —
+                        # decides whether this worker owns the transition.
+                        # A row the leader's Sweep 1 reclaimed between the
+                        # SELECT and this UPDATE reads UPDATE 0 here, and
+                        # the sweep's own attempt row already holds
+                        # job_attempts' PRIMARY KEY (job_id, attempt): an
+                        # unconditional INSERT on the lost row is a
+                        # non-transient constraint error that aborts the
+                        # WHOLE transaction and collapses the isolation of
+                        # rows that are still this worker's. Only the
+                        # winner of the transition writes the attempt row.
+                        tag = await conn.execute(isolate_job_sql, row["id"], worker_id)
+                        if parse_rowcount(tag) == 0:
+                            lost_race += 1
+                            continue
                         is_pending = (  # pyright: ignore[reportUnknownVariableType]  # Why: row column accessor types unknown — propagates from conn.fetch() suppression.
                             row["attempt"] < row["max_attempts"]
                             and row["retry_kind"] != "non_retryable"
@@ -284,7 +307,6 @@ async def isolate_self(
                             cancelled += 1
                         else:
                             crashed += 1
-                        await conn.execute(isolate_job_sql, row["id"], worker_id)
                         await conn.execute(
                             insert_attempt_sql,
                             row["id"],
@@ -298,7 +320,7 @@ async def isolate_self(
                             worker_id,
                             "{}",  # metadata — matches the sweep paths' literal
                         )
-                return pending, crashed, cancelled
+                return pending, crashed, cancelled, lost_race
 
             # shield_with_retrieval, not plain asyncio.shield: on outer
             # cancel the isolation tx keeps running detached on a conn the
@@ -309,6 +331,7 @@ async def isolate_self(
                 jobs_pending_count,
                 jobs_crashed_count,
                 jobs_cancelled_count,
+                jobs_lost_race_count,
             ) = await shield_with_retrieval(_inner())
         finally:
             # Why bounded: isolate_self only runs when PG is already
@@ -334,4 +357,5 @@ async def isolate_self(
             jobs_pending_count=jobs_pending_count,
             jobs_crashed_count=jobs_crashed_count,
             jobs_cancelled_count=jobs_cancelled_count,
+            jobs_lost_race_count=jobs_lost_race_count,
         )

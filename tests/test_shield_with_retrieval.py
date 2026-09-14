@@ -21,6 +21,7 @@ import structlog
 from taskq._ids import new_uuid
 from taskq._shield import shield_with_retrieval
 from taskq.backend._protocol import JobId
+from taskq.worker._watchdog import LoopLiveness
 from taskq.worker.cancel import ActiveJobRegistry, _CancelController
 
 
@@ -228,8 +229,14 @@ class TestCancelAbandonSite:
                 schema_name="jobs",
                 cancellation_grace_period=0.0,
                 cleanup_grace_period=0.0,
+                heartbeat_interval=5.0,
             ),
             active_jobs=ActiveJobRegistry(),
+            # run_post_tx renews the heartbeat loop's detector-2 stamp
+            # between abandon round trips (the same discipline as the
+            # in-tx escalation drain), so the stub carries a liveness
+            # registry alongside the grace fields.
+            liveness=LoopLiveness(),
         )
         controller = _CancelController(
             deps,  # pyright: ignore[reportArgumentType]  # Why: run_post_tx only touches settings' grace fields and active_jobs, all stubbed above

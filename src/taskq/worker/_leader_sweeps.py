@@ -20,6 +20,7 @@ import asyncpg
 import croniter as cr
 import structlog
 
+from taskq.backend._protocol import ConnLike
 from taskq.backend._sweeps import SweepBatchSizer
 from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining
@@ -79,9 +80,10 @@ __all__ = [
 log: structlog.stdlib.BoundLogger = get_logger(__name__)
 
 #: How long before an already-warned stranded actor is warned about again.
-#: The condition is persistent by nature (it needs an operator to create the
-#: actor_config row), so re-warning every tick would be noise; never
-#: re-warning made a permanent, growing backlog invisible after one line.
+#: The condition is persistent by nature (it needs an operator to create
+#: the actor_config row or point a worker's subscription at the queue),
+#: so re-warning every tick would be noise; never re-warning made a
+#: permanent, growing backlog invisible after one line.
 _STRANDED_REWARN_SECS: float = 3600.0
 
 #: Server-side batch bound for the prune family, as a fraction of the
@@ -792,6 +794,92 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
         await _sleep_interruptible(shutdown, ctx.deps.settings.sweep_interval)
 
 
+#: The session-level advisory lock unlock for the cron-driven maintenance
+#: loops (prune / archive-expiry) — the hashtextextended key convention
+#: their ``pg_try_advisory_lock`` acquires use.
+_ADVISORY_UNLOCK_SQL = "SELECT pg_advisory_unlock(hashtextextended($1, 0))"
+
+#: The connection-gone family of the transient set. An unlock failing this
+#: way resolved itself: the session died and took its session-scoped locks
+#: with it, so nothing is stranded — unlike a cancel or client-side
+#: timeout, which leaves the session alive and still holding the lock.
+_SESSION_GONE_ERRORS: Final[tuple[type[BaseException], ...]] = (
+    asyncpg.PostgresConnectionError,
+    asyncpg.InterfaceError,
+    OSError,
+)
+
+
+async def _release_session_lock(conn: ConnLike, lock_name: str, *, kind: str) -> None:
+    """Release a session-level advisory lock on *conn*, loudly.
+
+    A session advisory lock outlives transactions and dies only with its
+    session, so an unlock failure on a connection that returns to the pool
+    strands the fleet's lock until that session is recycled — every later
+    attempt on any pod reads as lock-held for the whole retention horizon.
+    The release is therefore never a silent suppress: the plain unlock
+    statement runs first (one round trip, the pre-existing happy path),
+    and a transient failure of it — a server-side cancel or a client-side
+    command timeout landing mid-unlock — is warned about and recovered by
+    re-issuing the unlock while READING ``pg_advisory_unlock``'s boolean
+    verdict. The verdict is what makes the retry a recovery rather than a
+    second guess: after a canceled or timed-out statement the attempt's
+    effect is unknown (a client-side timeout can race the statement's
+    completion server-side), and only the verdict settles whether the lock
+    is still held — True, the retry released it; False, this session no
+    longer holds it because the raced attempt already had. A retry failing
+    with the connection-gone family resolved itself (the session died with
+    its locks); any other retry failure leaves the release unconfirmed on
+    a live session and is logged as an error naming the strand, an
+    operator-visible condition instead of a silent one. Errors outside the
+    transient set propagate unchanged — the loops' loud-crash doctrine for
+    non-transient surprises.
+    """
+    try:
+        await conn.execute(_ADVISORY_UNLOCK_SQL, lock_name)
+        return
+    except TRANSIENT_PG_ERRORS as exc:
+        log.warning(
+            "advisory-unlock-attempt-failed",
+            kind=kind,
+            lock=lock_name,
+            error=repr(exc),
+        )
+    try:
+        released = await conn.fetchval(_ADVISORY_UNLOCK_SQL, lock_name)
+    except _SESSION_GONE_ERRORS:
+        log.warning(
+            "advisory-unlock-session-gone",
+            kind=kind,
+            lock=lock_name,
+        )
+        return
+    except TRANSIENT_PG_ERRORS as exc:
+        log.error(
+            "advisory-unlock-unconfirmed",
+            kind=kind,
+            lock=lock_name,
+            error=repr(exc),
+        )
+        return
+    if released is None:
+        # No verdict came back (a driver shape that returned no row): the
+        # release is unconfirmed, not recovered.
+        log.error(
+            "advisory-unlock-unconfirmed",
+            kind=kind,
+            lock=lock_name,
+            error="pg_advisory_unlock returned no verdict",
+        )
+        return
+    log.info(
+        "advisory-unlock-recovered",
+        kind=kind,
+        lock=lock_name,
+        released_by_retry=released is True,
+    )
+
+
 async def _prune_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
     """Daily prune with intra-day retry on failure.
 
@@ -844,9 +932,29 @@ async def _prune_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
             retry_backoff = None
 
         if not ctx.deps.is_leader.is_set():
+            # A wake that finds the pod leaderless is a MISSED fire, not a
+            # done day: the loop top recomputes the next fire from the cron
+            # expression, and for a daily cron that is tomorrow, so a
+            # seconds-scale leadership flap spanning the fire second would
+            # silently defer retention work by 24 hours. The failure half's
+            # backoff ladder covers the missed half too — each leaderless
+            # wake advances the rung, so the retry cadence during a
+            # sustained flap is bounded, and the first wake with leadership
+            # back lands the attempt within the day.
+            retry_backoff = _next_retry_backoff(retry_backoff)
+            log.warning(
+                "prune-fire-missed-leaderless",
+                kind="prune",
+                worker_id=str(ctx.worker_id),
+                retry_in_secs=retry_backoff,
+            )
             continue
         today_utc = datetime.now(UTC).date()
         if last_pruned_date == today_utc:
+            # The day's prune is done, so a ladder armed by an earlier miss
+            # or failure has nothing left to retry; clearing it here keeps
+            # the loop from waking at the rung cadence until the next fire.
+            retry_backoff = None
             continue
 
         try:
@@ -939,11 +1047,13 @@ async def _prune_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
                     # stopped on shutdown, so the once-a-day loop cannot
                     # read as a stale sibling between attempts.
                     ctx.deps.liveness.forget("leader.prune")
-                    with contextlib.suppress(*TRANSIENT_PG_ERRORS):
-                        await conn.execute(
-                            "SELECT pg_advisory_unlock(hashtextextended($1, 0))",
-                            lock_name,
-                        )
+                    # A session-scoped lock outlives this attempt's
+                    # transactions and dies only with its session, so the
+                    # release is loud and self-recovering (see
+                    # _release_session_lock): a suppressed failure here
+                    # would strand the fleet's prune lock on the pooled
+                    # session until pool recycle.
+                    await _release_session_lock(conn, lock_name, kind="prune")
         except TRANSIENT_PG_ERRORS as exc:
             # The lock attempt itself failed — same failure half, same
             # ladder (a PG blip at 03:00 must not defer the prune to
@@ -1000,9 +1110,23 @@ async def _archive_expiry_loop(ctx: SweepContext, shutdown: asyncio.Event) -> No
             retry_backoff = None
 
         if not ctx.deps.is_leader.is_set():
+            # Same missed-fire contract as _prune_loop: the loop top would
+            # recompute the next fire from the daily cron (tomorrow), so a
+            # leadership flap at the fire second defers archive expiry by
+            # a day unless the miss arms the backoff ladder.
+            retry_backoff = _next_retry_backoff(retry_backoff)
+            log.warning(
+                "archive-expiry-fire-missed-leaderless",
+                kind="archive_expiry",
+                worker_id=str(ctx.worker_id),
+                retry_in_secs=retry_backoff,
+            )
             continue
         today_utc = datetime.now(UTC).date()
         if last_expiry_date == today_utc:
+            # The day's expiry is done — same ladder-clearing rule as
+            # _prune_loop's date gate.
+            retry_backoff = None
             continue
 
         try:
@@ -1063,11 +1187,11 @@ async def _archive_expiry_loop(ctx: SweepContext, shutdown: asyncio.Event) -> No
                     # Attempt-scoped detector-2 registration, same as
                     # _prune_loop's forget.
                     ctx.deps.liveness.forget("leader.archive_expiry")
-                    with contextlib.suppress(*TRANSIENT_PG_ERRORS):
-                        await conn.execute(
-                            "SELECT pg_advisory_unlock(hashtextextended($1, 0))",
-                            lock_name,
-                        )
+                    # Same session-scoped-lock discipline as _prune_loop's
+                    # finally: loud, self-recovering release — a suppressed
+                    # failure would strand the fleet's archive-expiry lock
+                    # on the pooled session until pool recycle.
+                    await _release_session_lock(conn, lock_name, kind="archive_expiry")
         except TRANSIENT_PG_ERRORS as exc:
             retry_backoff = _next_retry_backoff(retry_backoff)
             log.warning(
@@ -1221,18 +1345,60 @@ async def _reservation_slots_loop(ctx: SweepContext, shutdown: asyncio.Event) ->
 
 
 async def _stranded_jobs_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
-    """Periodically warn about pending jobs whose actor has no actor_config row.
+    """Periodically surface pending/scheduled jobs that can never dispatch.
+
+    Two strand shapes, one gauge (actor -> stranded row count):
+
+    - **no actor_config row**: dispatch derives its candidate set from
+      ``per_actor_capacity``, which is ``FROM actor_config``, so a row
+      whose actor has no config row is invisible to every dispatch round.
+    - **unserved queue**: dispatch probes only the queues in the
+      dispatching worker's subscription (the candidates lateral's
+      ``j2.queue = sq.queue_name`` annihilates every other pair), so a
+      row on a queue NO registered worker serves is invisible fleet-wide
+      while its actor_config row exists and no deadline can fail it.
+
+    The unserved-queue predicate is fleet-wide by construction: the
+    ``workers`` table carries every registered worker's subscription,
+    and a crashed worker's row survives until the stale-worker grace
+    prunes it, so a fleet-wide restart does not false-alarm — only a
+    queue nothing has served past that grace strands.
 
     Off the hot dispatch path — runs every 60 s when this worker is leader.
     """
+    # One scan over the pending/scheduled set, each row's two strand
+    # conditions computed once in the inner SELECT and the outer WHERE
+    # admitting exactly the stranded rows. The per-condition FILTER
+    # counts (and the queue names on the unserved condition) exist so
+    # each warning event can say WHICH condition held and, for the
+    # unserved shape, on which queues — an operator who sees a
+    # no-actor-config event and finds the actor_config row present
+    # concludes the detector lies, which is the exact failure a
+    # per-shape event prevents. A row stranded for BOTH reasons counts
+    # once in the gauge's total.
     _stranded_sql = """\
-    SELECT j.actor, count(*) AS cnt
-    FROM "{schema}".jobs j
-    WHERE j.status IN ('pending', 'scheduled')
-      AND NOT EXISTS (
-        SELECT 1 FROM "{schema}".actor_config ac WHERE ac.actor = j.actor
-      )
-    GROUP BY j.actor
+    SELECT s.actor,
+           count(*) AS cnt,
+           count(*) FILTER (WHERE s.no_actor_config) AS no_actor_config_cnt,
+           count(*) FILTER (WHERE s.unserved_queue) AS unserved_queue_cnt,
+           coalesce(
+             array_agg(DISTINCT s.queue) FILTER (WHERE s.unserved_queue),
+             ARRAY[]::text[]
+           ) AS unserved_queues
+    FROM (
+        SELECT j.actor,
+               j.queue,
+               NOT EXISTS (
+                 SELECT 1 FROM "{schema}".actor_config ac WHERE ac.actor = j.actor
+               ) AS no_actor_config,
+               NOT EXISTS (
+                 SELECT 1 FROM "{schema}".workers w WHERE j.queue = ANY(w.queues)
+               ) AS unserved_queue
+        FROM "{schema}".jobs j
+        WHERE j.status IN ('pending', 'scheduled')
+    ) s
+    WHERE s.no_actor_config OR s.unserved_queue
+    GROUP BY s.actor
     """
 
     # actor -> (last warned count, monotonic timestamp of that warning).
@@ -1274,7 +1440,18 @@ async def _stranded_jobs_loop(ctx: SweepContext, shutdown: asyncio.Event) -> Non
                 error_message=str(exc),
             )
             continue
-        current: dict[str, int] = {row["actor"]: row["cnt"] for row in rows}
+        current: dict[str, int] = {}
+        # actor -> (no-actor-config rows, unserved-queue rows, unserved
+        # queue names) — the per-shape facts the warning events report.
+        shapes: dict[str, tuple[int, int, list[str]]] = {}
+        for row in rows:
+            actor = row["actor"]
+            current[actor] = row["cnt"]
+            shapes[actor] = (
+                row["no_actor_config_cnt"],
+                row["unserved_queue_cnt"],
+                list(row["unserved_queues"]),
+            )
 
         # Always publish the gauge, including the empty case: an operator needs
         # to see the condition persist, grow, and clear. A log line at onset
@@ -1293,13 +1470,28 @@ async def _stranded_jobs_loop(ctx: SweepContext, shutdown: asyncio.Event) -> Non
                 should_warn = cnt > last_count or (now - last_time) >= _STRANDED_REWARN_SECS
             if should_warn:
                 warned[actor] = (cnt, now)
-                log.warning(
-                    "stranded-jobs-no-actor-config",
-                    kind="stranded_jobs_no_actor_config",
-                    actor=actor,
-                    pending_count=cnt,
-                    first_seen=previous is None,
-                )
+                no_config_cnt, unserved_cnt, unserved_queues = shapes[actor]
+                if no_config_cnt:
+                    log.warning(
+                        "stranded-jobs-no-actor-config",
+                        kind="stranded_jobs_no_actor_config",
+                        actor=actor,
+                        pending_count=no_config_cnt,
+                        first_seen=previous is None,
+                    )
+                if unserved_cnt:
+                    # Why its own event (not the no-actor-config one): the
+                    # remediation is different — subscribe a worker to the
+                    # queue or re-route the enqueue — and the queue names are
+                    # the actionable payload for it.
+                    log.warning(
+                        "stranded-jobs-unserved-queue",
+                        kind="stranded_jobs_unserved_queue",
+                        actor=actor,
+                        pending_count=unserved_cnt,
+                        queues=unserved_queues,
+                        first_seen=previous is None,
+                    )
 
         # Drop actors that recovered, so a recurrence warns again instead of
         # being suppressed for the life of the process.

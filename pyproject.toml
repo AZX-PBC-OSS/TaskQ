@@ -473,6 +473,13 @@ indent-style = "space"
 
 [tool.pyright]
 include = ["src", "tests", "examples"]
+# Why: .worktrees/ holds full repo checkouts (gitignored working copies for
+# isolated branches). Each carries its own tests/ package, so without this
+# exclusion pyright sees DUPLICATE tests.* module names, refuses to bind
+# either, and every cross-test import (e.g. tests.conftest, the differential
+# harness's DiffSide) degrades to Unknown — "Type of parameter is unknown"
+# across every importing file while the defining file stays clean.
+exclude = [".worktrees"]
 pythonVersion = "3.12"
 typeCheckingMode = "strict"
 reportMissingTypeStubs = false
@@ -538,6 +545,14 @@ reportUnknownLambdaType = false
 reportArgumentType = false
 reportMissingImports = false
 reportUnknownVariableType = false
+# Why: absolute tests.* cross-imports (tests.conftest, the differential
+# harness's DiffSide) need the repo root on the import path; without this
+# they resolve to Unknown and spray "Type of parameter is unknown" across
+# importing files (reportMissingImports is off, so the degradation is
+# silent). An execution environment REPLACES the import roots of any file it
+# matches — there is no inheritance from the root="." fallback below, so this
+# must be stated here even though the fallback carries the same path.
+extraPaths = ["."]
 
 [[tool.pyright.executionEnvironments]]
 root = "examples"
@@ -548,6 +563,30 @@ reportUnknownArgumentType = false
 reportUnknownParameterType = false
 reportUnknownLambdaType = false
 reportUntypedFunctionDecorator = false
+# Why: the example modules import each other with ABSOLUTE `examples.*`
+# paths (examples/actors/__init__.py re-exports every actor that
+# tests/test_examples_smoke.py pins), which needs the repo root on the
+# import path. Same no-inheritance rationale as the tests environment above.
+extraPaths = ["."]
+
+# Why: the repo root as an explicit import-root fallback for every file NOT
+# covered by a more specific environment above (src/taskq top-level modules,
+# backend/, client/, progress/, web/, obs/, contrib/, migrations/). Without it
+# pyright resolves `taskq.*` only through the venv's editable install and
+# every ABSOLUTE `tests.*` cross-test import degrades to Unknown, spraying
+# "Type of parameter is unknown" across importing files while the defining
+# file stays clean (relative imports work, which is why the condition stayed
+# latent).
+# ORDER IS LOAD-BEARING: pyright resolves a file to the FIRST environment
+# whose root is a path prefix of it (a plain Array.find over the list — no
+# most-specific-match logic; verified against the bundled 1.1.411 source).
+# A root="." entry matches EVERY file, so it must stay LAST: placed anywhere
+# above, it silently shadows every other environment and re-enables the
+# reports this config turns off for tests/, src/taskq/testing/, ratelimit/,
+# worker/, and the auth/aad/aws/vault boundaries.
+[[tool.pyright.executionEnvironments]]
+root = "."
+extraPaths = ["."]
 
 [tool.pytest.ini_options]
 minversion = "8.0"

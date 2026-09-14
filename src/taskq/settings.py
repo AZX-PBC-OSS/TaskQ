@@ -1769,6 +1769,35 @@ class WorkerSettings(TaskQSettings):
                 )
             )
 
+        # Tier-1 vs tier-2 ordering: the warn budget must be able to fire
+        # before the terminal budget. A warn budget at or above the
+        # terminal budget silently disables tier 1 — the worker is
+        # force-exited with no prior lag warning, exactly the
+        # silent-disable failure the (0, 1) bound on
+        # watchdog_dump_after_fraction exists to prevent ("at 1.0 the
+        # deadline trip always fires first"). A budget pair the validator
+        # cannot distinguish from a healthy one is a misconfiguration the
+        # operator only meets at the os._exit. Same watchdog gating as
+        # the lease invariant above.
+        if self.watchdog_enabled and (
+            self.watchdog_loop_lag_warn_budget >= self.watchdog_loop_lag_budget
+        ):
+            errors.append(
+                ValidationError(
+                    field_name="watchdog_loop_lag_warn_budget",
+                    value=self.watchdog_loop_lag_warn_budget,
+                    error_msg=(
+                        f"watchdog_loop_lag_warn_budget "
+                        f"({self.watchdog_loop_lag_warn_budget}) must be < "
+                        f"watchdog_loop_lag_budget ({self.watchdog_loop_lag_budget}): "
+                        f"a warn budget at or above the terminal budget can never "
+                        f"fire first, so the terminal lag trip force-exits with zero "
+                        f"prior warning. Raise watchdog_loop_lag_budget (keeping it "
+                        f"inside lock_lease) or lower the warn budget."
+                    ),
+                )
+            )
+
         return errors or None
 
     @property

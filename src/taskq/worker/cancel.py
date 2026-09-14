@@ -173,8 +173,34 @@ class _CancelController:
         self._cleanup_grace = deps.settings.cleanup_grace_period
 
         # Jobs queued for abandonment.
-        # Populated by run_in_tx, drained by run_post_tx.
+        # Populated by run_in_tx, drained by run_post_tx.  Never cleared
+        # wholesale: an entry whose abandon write raised is re-appended by
+        # run_post_tx and must survive into the next tick's drain, because
+        # its registry entry holds the in-process ABANDON_PENDING sentinel
+        # that no phase arm in run_in_tx matches — wiping the queue here
+        # would strand the job permanently between phases while its
+        # heartbeat keeps renewing the lease.
         self._pending_abandons: deque[JobId] = deque()
+
+    def _tick_liveness(self) -> None:
+        """Renew the heartbeat loop's detector-2 stamp between round trips.
+
+        A bulk cancel makes every active job's escalation due inside ONE
+        heartbeat tick, each costing an escalation UPDATE plus an event
+        INSERT round trip; without renewing between them, a healthy drain
+        that merely outlasts one staleness budget
+        (``max(interval * grace_factor, stale_floor)``) reads as a dead
+        loop and detector 2 force-exits the worker mid-drain — after the
+        tick's lease renewals already committed, so the sweep cannot yet
+        reclaim the work either.  Name and period match heartbeat_loop's
+        own registration (the cancel hook runs inside that loop's tick),
+        the same discipline as ``_drain_bounded`` in
+        ``taskq.worker._leader_sweeps``.
+        """
+        self._deps.liveness.tick(
+            "heartbeat",
+            period=self._deps.settings.heartbeat_interval,
+        )
 
     async def run_in_tx(self, conn: asyncpg.Connection) -> None:
         """Execute cancel-poll phases 1-3 inside the heartbeat transaction.
@@ -184,7 +210,6 @@ class _CancelController:
         commits, avoiding a self-deadlock on the row lock held by this
         transaction.
         """
-        self._pending_abandons.clear()
         loop = asyncio.get_running_loop()
         worker_id = self._worker_id
 
@@ -249,6 +274,7 @@ class _CancelController:
                 active.cancel_phase >= CancelPhase.FORCED and db_phase == CancelPhase.COOPERATIVE
             )
             if phase_2_due and elapsed is not None and elapsed >= self._cancel_grace:
+                self._tick_liveness()
                 tag = await conn.execute(
                     self._escalation_sql,
                     active.job_id,
@@ -301,8 +327,21 @@ class _CancelController:
             # would block waiting for that lock to release — a self-deadlock.
             # We queue the job here and drain in run_post_tx after the
             # transaction commits.
+            #
+            # Why db_phase == FORCED: the poll's predicate
+            # (locked_by_worker = this worker, cancel_requested_at set,
+            # status = 'running') is exactly the set of rows this worker's
+            # abandon may touch — mark_abandoned itself is worker-unfenced,
+            # so an abandon queued from stale local state alone can
+            # terminate another worker's re-dispatched attempt once a
+            # reclaim has moved the row.  A row still owned by this worker
+            # is always returned by this worker's own poll, so a silent
+            # poll with a local FORCED entry means the entry is stale —
+            # the abandon must not be issued (the PG-level proof is
+            # tests/test_rt_cancelwatch_cross_worker_abandon.py).
             if (
                 active.cancel_phase == CancelPhase.FORCED
+                and db_phase == CancelPhase.FORCED
                 and elapsed is not None
                 and elapsed >= self._cancel_grace + self._cleanup_grace
             ):
@@ -326,16 +365,36 @@ class _CancelController:
         registered and its phase back at FORCED, so a later tick can re-issue
         the escalation and re-queue the abandon.  Deregistering there would
         strand a still-running job with no route back to cancellation.
+
+        An abandon whose write RAISES is re-queued at the head of the deque
+        and the exception still propagates: the write did not land, and the
+        entry's ABANDON_PENDING sentinel matches no phase arm in run_in_tx,
+        so dropping it here would strand the job between phases forever —
+        the re-queue hands it to the next tick's drain exactly as the
+        not-applied path hands a False back for re-issue.
         """
         worker_id = self._worker_id
         while self._pending_abandons:
             job_id = self._pending_abandons.popleft()
+            self._tick_liveness()
             # shield_with_retrieval, not plain asyncio.shield: a second
             # CancelledError landing while this abandon write is detached
             # (shutdown racing a force-cancel escalation) must not orphan
             # the inner outcome — the retrieval callback logs its failure
             # instead of asyncio reporting "Task exception was never retrieved".
-            abandoned = await shield_with_retrieval(self._backend.mark_abandoned(job_id))
+            try:
+                abandoned = await shield_with_retrieval(self._backend.mark_abandoned(job_id))
+            except Exception:
+                # Why the broad catch: whatever failed — a pool-acquire
+                # TimeoutError, a PostgresError, a socket death — the write
+                # did not land and the abandon must stay pending for the
+                # next tick.  CancelledError is deliberately NOT caught:
+                # it means the heartbeat task itself is being torn down
+                # (no later drain exists to re-attempt) and the detached
+                # inner write's outcome is retrieved by the shield's
+                # callback.
+                self._pending_abandons.appendleft(job_id)
+                raise
             if not abandoned:
                 entry = self._deps.active_jobs.get(job_id)
                 if entry is not None:

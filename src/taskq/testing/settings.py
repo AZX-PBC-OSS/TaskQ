@@ -24,8 +24,12 @@ _DEFAULTS: dict[str, str] = {
     # Keeps the lag-lease invariant satisfied for these fast defaults
     # (1.2 + 0.5 < 2.0) and the budget above the 1.0s default check
     # interval: a stalled loop dies before its 2s lease expires, without
-    # the detector tripping on its own sampling cadence.
+    # the detector tripping on its own sampling cadence. The warn budget
+    # rides along at 0.5s because tier 1 must be able to fire before the
+    # 1.2s terminal tier — a warn budget at or above the terminal budget
+    # silently disables tier 1 and fails settings validation.
     "TASKQ_WATCHDOG_LOOP_LAG_BUDGET": "1.2",
+    "TASKQ_WATCHDOG_LOOP_LAG_WARN_BUDGET": "0.5",
     "TASKQ_CANCELLATION_GRACE_PERIOD": "0.5",
     "TASKQ_CLEANUP_GRACE_PERIOD": "0.5",
     "TASKQ_TERMINATION_GRACE_PERIOD": "7.0",

@@ -243,11 +243,14 @@ async def test_indefinite_retry_polling_pattern() -> None:
 async def test_cancel_mid_snooze() -> None:
     """Cancel mid-snooze: enqueue → dispatch → Snooze → cancel(scheduled job) → cancelled."""
     backend = _make_backend()
+    # Register the actor so dispatch_batch finds it (mirrors PG's
+    # actor_config requirement — candidates come FROM the registry).
+    backend.register_actor_config(actor="test_actor")
 
     args = make_enqueue_args(payload={}, max_attempts=10, scheduled_at=_START)
     await backend.enqueue(args)
 
-    worker_id = backend._worker_id  # type: ignore[reportPrivateUsage] # Why: test-only private access for dispatch_batch
+    worker_id = backend._worker_id  # type: ignore[reportPrivateUsage]  # Why: test-only private access for dispatch_batch
 
     dispatched = await backend.dispatch_batch(
         worker_id, ["default"], limit=1, lock_lease=timedelta(seconds=60)
@@ -257,7 +260,7 @@ async def test_cancel_mid_snooze() -> None:
     assert job.status == "running"
     assert job.attempt == 1
 
-    result = await backend.mark_snoozed(job.id, worker_id, delay=timedelta(seconds=30))
+    result = await backend.mark_snoozed(job.id, worker_id, delay=timedelta(seconds=30), attempt=1)
     assert result == "scheduled"
 
     row = await backend.get(args.id)

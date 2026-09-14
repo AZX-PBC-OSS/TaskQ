@@ -236,7 +236,12 @@ async def prefilter_schema(pg_dsn: str) -> Any:
     exposes the fan-out: many registered actors with NO pending rows (the
     idle fleet — actor_config is synced from every worker's registry, so
     hundreds of idle actors is the production shape) plus one live actor
-    with a handful of due pending rows on the round's queue.
+    with a handful of due pending rows on the round's queue — and, on that
+    same live actor, the 20k-row not-yet-due pending backlog of this
+    module's measured seed shape: the lateral-seek loop-count oracle needs
+    the candidates lateral served by jobs_actor_dispatch_idx, and a
+    handful-of-rows jobs table plans every seek as a Seq Scan, exposing no
+    Index Cond to count loops on.
     """
     schema = f"dispatch_prefilter_{new_base62()}".lower()
     assert _IDENT_RE.match(schema)
@@ -248,7 +253,7 @@ async def prefilter_schema(pg_dsn: str) -> Any:
         await conn.execute(
             f'INSERT INTO "{schema}".actor_config (actor, queue) '
             "SELECT 'idle_' || lpad(gs::text, 3, '0'), 'default' "
-            "FROM generate_series(1, $1)",
+            "FROM generate_series(1, $1) AS gs",
             _IDLE_ACTORS,
         )
         await conn.execute(
@@ -256,6 +261,41 @@ async def prefilter_schema(pg_dsn: str) -> Any:
             "VALUES ('prefilter_probe', 'default')",
         )
 
+        now = datetime.now(UTC)
+        # Not-yet-due pending rows at the head of the index order, on the
+        # live actor only — the idle fleet keeps zero pending rows, so the
+        # prefilter oracle's premise (idle actors contribute no lateral
+        # seeks) is untouched.
+        future_rows = [
+            (
+                new_uuid(),
+                "prefilter_probe",
+                "default",
+                '{"v": 1}',
+                "pending",
+                100,
+                now + timedelta(hours=1),
+                3,
+                "transient",
+            )
+            for _ in range(20_000)
+        ]
+        await conn.copy_records_to_table(
+            "jobs",
+            schema_name=schema,
+            columns=[
+                "id",
+                "actor",
+                "queue",
+                "payload",
+                "status",
+                "priority",
+                "scheduled_at",
+                "max_attempts",
+                "retry_kind",
+            ],
+            records=future_rows,
+        )
         live_job_ids = [new_uuid() for _ in range(5)]
         await conn.execute(
             f'INSERT INTO "{schema}".jobs '

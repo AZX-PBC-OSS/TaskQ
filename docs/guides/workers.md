@@ -226,8 +226,10 @@ orders candidates. The mode is resolved by querying the `queues` table at dispat
 taskq queues set-mode multi round_robin
 ```
 
-The change takes effect on the next dispatch cycle -- no worker restart needed
-(`_resolve_queue_modes` re-reads the table every dispatch batch). Queues with no
+The change takes effect within the queue-mode cache's 5 s TTL -- no worker
+restart needed (dispatch serves queue modes from a per-worker TTL cache; the
+process running `set-mode` invalidates its own caches immediately, and each
+worker picks the flip up on its next cache refill). Queues with no
 row default to `strict_fifo`, and nothing in TaskQ creates rows, so a queue is
 `strict_fifo` until you run this command.
 

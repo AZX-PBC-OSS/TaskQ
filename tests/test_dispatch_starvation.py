@@ -340,11 +340,20 @@ async def test_actor_config_gate_unregistered() -> None:
 
 
 @pytest.mark.asyncio
-async def test_actor_config_gate_empty_allows_all() -> None:
-    """When _actor_configs_meta is empty, all actors pass the gate."""
+async def test_actor_config_gate_empty_blocks_all() -> None:
+    """When _actor_configs_meta is empty, NOTHING dispatches.
+
+    PG's per_actor_capacity CTE builds candidates FROM the actor_config
+    registry (backend/_dispatch_sql.py): zero registered actors means
+    zero capacity rows means zero candidates — "no actors registered"
+    must never read as "no filter". The old escape let the mirror
+    dispatch work a real worker polling the same empty registry never
+    would (the mirror was greener than production — pinned as a RED
+    differential in tests/test_rt_diff_dispatch.py).
+    """
     backend = _make_backend()
     wid = new_uuid()
-    # No actor_config registered → gate is open
+    # No actor_config registered → the gate admits nothing.
     await backend.enqueue(
         EnqueueArgs(
             id=new_uuid(),
@@ -357,8 +366,10 @@ async def test_actor_config_gate_empty_allows_all() -> None:
         )
     )
     dispatched = await backend.dispatch_batch(wid, ["default"], limit=30, lock_lease=_LOCK_LEASE)
-    assert any(j.actor == "any_actor_no_config" for j in dispatched), (
-        "Actor should dispatch when gate is open (empty _actor_configs_meta)"
+    assert dispatched == [], (
+        "An empty actor registry must dispatch NOTHING on either backend "
+        "(PG's per_actor_capacity has no rows to build candidates from) — "
+        "never silently read 'no actors registered' as 'no filter'"
     )
 
 

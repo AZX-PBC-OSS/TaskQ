@@ -328,6 +328,62 @@ def test_no_rendered_sql_template_uses_now() -> None:
     )
 
 
+# ── Attempt-epoch fencing: every worker-fenced terminal template ──────
+# carries the attempt conjunct
+
+
+def test_worker_fenced_terminal_templates_carry_the_attempt_epoch_conjunct() -> None:
+    """Every worker-fenced terminal-write template must fence on the
+    attempt epoch, one conjunct deeper than the worker fence.
+
+    The worker fence (``status = 'running' AND locked_by_worker = $n``)
+    cannot distinguish attempt N's stale handler from attempt N+1's live
+    one on the SAME worker after a stall → sweep reclaim → same-worker
+    redispatch: the stale handler's terminal write matches the guard and
+    falsely terminalises the redispatched attempt with the old attempt's
+    result. Oban fences exactly this with an attempt-identity epoch on
+    every terminal write (``ack_query``:
+    ``attempted_at == ^job.attempted_at``, vendor/oban/lib/oban/engines/
+    basic.ex). The behavioural pin is
+    ``tests/test_rt_terminal_write_fencing.py`` (integration) and
+    ``tests/test_in_memory_terminal_writes.py`` (the twin mirror); this
+    is the template inventory guard — every arm of every fenced
+    template must carry the conjunct, and the expected counts pin that
+    no arm is missed.
+
+    Source-text assertion over rendered SQL — the same inventory-guard
+    category and rationale as ``test_no_rendered_sql_template_uses_now``
+    above: the guard shape IS the contract, and only reading the set
+    holds every arm of every template (including the one added tomorrow)
+    to it.
+    """
+    from taskq.backend._sql_templates import render
+
+    sql = render("taskq")
+    # (template, conjunct needle, expected occurrences — one per fenced
+    # UPDATE arm). The single-statement templates have one arm; the
+    # multi-arm arbiters carry the conjunct in every arm so a stale
+    # epoch cannot reach any outcome.
+    fenced: tuple[tuple[str, str, int], ...] = (
+        ("mark_succeeded", "AND attempt = $8", 1),
+        ("mark_failed", "AND attempt = $8", 1),
+        ("mark_cancelled", "AND attempt = $5", 1),
+        ("mark_retry", "AND j.attempt = (SELECT attempt FROM params)", 2),
+        ("mark_snoozed", "AND j.attempt = (SELECT attempt FROM params)", 3),
+        ("mark_retry_after_consume_true", "AND j.attempt = (SELECT attempt FROM params)", 3),
+        ("mark_retry_after_consume_false", "AND j.attempt = (SELECT attempt FROM params)", 2),
+    )
+    for template, needle, expected in fenced:
+        rendered: str = getattr(sql, template)
+        assert rendered.count(needle) == expected, (
+            f"{template} must fence every UPDATE arm on the attempt epoch "
+            f"({needle!r} expected {expected}x, found {rendered.count(needle)}x) — "
+            "a stale attempt's terminal write must no-op after a same-worker "
+            "reclaim/redispatch, exactly as a different worker's late write "
+            "already does"
+        )
+
+
 # ── Finding 12: SubJobEnqueuer.enqueue_batch(batch_id=...) passthrough ──
 
 

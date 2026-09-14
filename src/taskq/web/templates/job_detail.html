@@ -211,7 +211,8 @@
             </div>
             <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg p-4">
                 <h4 class="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">Metadata</h4>
-                <pre class="text-xs bg-slate-50 dark:bg-slate-800 rounded p-2 overflow-x-auto max-h-48">{{ job.metadata or '—' }}</pre>
+                {# metadata_display: the display-bounded text of job.metadata — the mapping itself stays decoded for the Batch section below. #}
+                <pre class="text-xs bg-slate-50 dark:bg-slate-800 rounded p-2 overflow-x-auto max-h-48">{{ job.metadata_display or '—' }}</pre>
             </div>
             {% if job.result is not none %}
             <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg p-4 lg:col-span-2">

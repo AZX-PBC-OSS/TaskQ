@@ -108,10 +108,14 @@ async def blocker_worker(
     # Re-enable the watchdog (the conftest fleet runs with it off) and size
     # the lease to hold the fast budget: 5.0 + 0.5 < 8.0 satisfies the
     # lag-lease invariant, and 5.0 > the 1.0s default check interval keeps
-    # the detector clear of its own sampling cadence.
+    # the detector clear of its own sampling cadence. The warn budget rides
+    # at 1.0s so tier 1 can fire before the 5.0s terminal tier — a warn
+    # budget at or above the terminal budget silently disables tier 1 and
+    # fails the worker's settings validation.
     container.with_env("TASKQ_WATCHDOG_ENABLED", "true")
     container.with_env("TASKQ_LOCK_LEASE", "8.0")
     container.with_env("TASKQ_WATCHDOG_LOOP_LAG_BUDGET", "5.0")
+    container.with_env("TASKQ_WATCHDOG_LOOP_LAG_WARN_BUDGET", "1.0")
     container.with_env("TASKQ_WATCHDOG_LOOP_LAG_STARTUP_GRACE", "2.0")
 
     await asyncio.to_thread(container.start)
@@ -231,6 +235,7 @@ async def test_watchdog_kill_orphan_is_reclaimed_and_fleet_recovers(
     replacement.with_env("TASKQ_WATCHDOG_ENABLED", "true")
     replacement.with_env("TASKQ_LOCK_LEASE", "8.0")
     replacement.with_env("TASKQ_WATCHDOG_LOOP_LAG_BUDGET", "5.0")
+    replacement.with_env("TASKQ_WATCHDOG_LOOP_LAG_WARN_BUDGET", "1.0")
     await asyncio.to_thread(replacement.start)
     try:
         await wait_for_worker_ready(e2e_pg_pool, e2e_schema.schema_name, timeout=30.0)

@@ -213,6 +213,25 @@ def render(schema: str) -> SqlTemplates:
         # see, also applied at completion, so a long-queued job does not
         # complete already expired); then the enqueue-time value.
         #
+        # ATTEMPT-EPOCH FENCING: every worker-fenced terminal template
+        # carries one conjunct deeper than the worker fence —
+        # ``attempt = $k`` (here and in mark_failed / mark_cancelled;
+        # ``j.attempt = (SELECT attempt FROM params)`` in the multi-arm
+        # arbiters). The worker fence alone cannot distinguish attempt
+        # N's stale handler from attempt N+1's live one on the SAME
+        # worker after a stall → sweep reclaim → same-worker redispatch:
+        # the stale handler's write matches (id, running, worker) and
+        # falsely terminalises the redispatched attempt. Oban fences
+        # exactly this with an attempt-identity epoch on every terminal
+        # write (ack_query: ``attempted_at == ^job.attempted_at`` —
+        # vendor/oban/lib/oban/engines/basic.ex). The epoch is the
+        # handler's dispatch-time job-row attempt snapshot, threaded from
+        # every call site; a mismatched epoch — a stale handler, or a
+        # caller that cannot present one ($k IS NULL never satisfies the
+        # equality) — makes the UPDATE match no row and the write no-ops
+        # through the same machinery as the worker fence (rowcount 0 →
+        # False / WorkerOwnershipMismatch / "noop", no publish).
+        #
         # duration_ms is computed IN the statement from the same
         # database-written timestamp pair Python used to receive and
         # multiply back — but server-side, with exact numeric arithmetic
@@ -241,7 +260,7 @@ WITH upd AS (
         ),
         progress_seq = $5,
         progress_state = CASE WHEN $6::jsonb IS NOT NULL THEN COALESCE(progress_state, '{{}}'::jsonb) || $6::jsonb ELSE progress_state END
-    WHERE id = $1 AND status = 'running' AND locked_by_worker = $2
+    WHERE id = $1 AND status = 'running' AND locked_by_worker = $2 AND attempt = $8
     RETURNING *
 ), holder AS (
     SELECT id FROM "{s}".workers WHERE id = $2 FOR KEY SHARE
@@ -275,7 +294,7 @@ WITH upd AS (
         error_traceback = $5,
         progress_seq = $6,
         progress_state = CASE WHEN $7::jsonb IS NOT NULL THEN COALESCE(progress_state, '{{}}'::jsonb) || $7::jsonb ELSE progress_state END
-    WHERE id = $1 AND status = 'running' AND locked_by_worker = $2
+    WHERE id = $1 AND status = 'running' AND locked_by_worker = $2 AND attempt = $8
     RETURNING *
 ), holder AS (
     SELECT id FROM "{s}".workers WHERE id = $2 FOR KEY SHARE
@@ -299,12 +318,18 @@ WITH upd AS (
 )
 SELECT * FROM upd""",
         # mark_retry is a two-CTE single-arbiter statement, structurally
-        # mirroring mark_snoozed / mark_retry_after: the delay ($3::interval)
-        # is applied by the SERVER clock (scheduled_at = clock_timestamp() +
-        # delay; the status derives from the delay alone), and the schedule_to_close
-        # deadline is arbitrated in the same statement — clock_timestamp() +
-        # delay <= schedule_to_close retries; past it, the deadline_failed
-        # CTE lands 'failed' with error_class='DeadlineExceeded'.  The caller
+        # mirroring mark_snoozed / mark_retry_after: the delay ($3::interval,
+        # floored at MIN_DEFERRAL_INTERVAL via the params CTE's GREATEST —
+        # see mark_snoozed's params comment for the monopolisation hazard
+        # an unfloored requeue arm is: a failure-retry decision must never
+        # requeue below the deferral floor, the same bound the deferral
+        # arms and the in-memory twin's _mark_failed_or_retry apply) is
+        # applied by the SERVER clock (scheduled_at = clock_timestamp() +
+        # effective_delay; the status derives from the effective delay
+        # alone), and the schedule_to_close deadline is arbitrated in the
+        # same statement — clock_timestamp() + effective_delay <=
+        # schedule_to_close retries; past it, the deadline_failed CTE
+        # lands 'failed' with error_class='DeadlineExceeded'.  The caller
         # never passes a Python-domain timestamp (C1: a skewed caller could
         # otherwise void the backoff or kill a live job).
         #
@@ -324,13 +349,23 @@ SELECT * FROM upd""",
         # `cancel_phase = 2` guard reads them.
         mark_retry=f"""\
 WITH params AS (
-    SELECT $1::uuid AS job_id, $2::uuid AS worker_id, $3::interval AS retry_delay
+    SELECT $1::uuid AS job_id,
+           $2::uuid AS worker_id,
+           -- The failure-retry floor, the same bound the deferral arms
+           -- pin (mark_snoozed's params comment): a sub-floor requeue
+           -- delay parks the job at the head of the dispatch order and
+           -- cycles a worker slot at claim/run/fail/retry round-trip
+           -- rate. effective_delay is the arm's SINGLE delay — status,
+           -- scheduled_at and every deadline comparison read it, so the
+           -- retried and deadline arms partition exactly.
+           GREATEST($3::interval, {_MIN_DEFERRAL_INTERVAL_SQL}) AS effective_delay,
+           $9::int AS attempt
 ),
 retried AS (
     UPDATE "{s}".jobs j
-    SET status = CASE WHEN $3::interval > interval '0' THEN 'scheduled'::"{s}".job_status
+    SET status = CASE WHEN (SELECT effective_delay FROM params) > interval '0' THEN 'scheduled'::"{s}".job_status
                       ELSE 'pending'::"{s}".job_status END,
-        scheduled_at = clock_timestamp() + (SELECT retry_delay FROM params),
+        scheduled_at = clock_timestamp() + (SELECT effective_delay FROM params),
         finished_at = NULL,
         locked_by_worker = NULL,
         lock_expires_at = NULL,
@@ -347,8 +382,9 @@ retried AS (
     WHERE j.id = (SELECT job_id FROM params)
       AND j.status = 'running'
       AND j.locked_by_worker = (SELECT worker_id FROM params)
+      AND j.attempt = (SELECT attempt FROM params)
       AND (j.schedule_to_close IS NULL
-           OR clock_timestamp() + (SELECT retry_delay FROM params) <= j.schedule_to_close)
+           OR clock_timestamp() + (SELECT effective_delay FROM params) <= j.schedule_to_close)
     RETURNING j.*, 'retried'::text AS outcome_branch, clock_timestamp() AS now_ts
 ),
 deadline_failed AS (
@@ -368,8 +404,9 @@ deadline_failed AS (
     WHERE j.id = (SELECT job_id FROM params)
       AND j.status = 'running'
       AND j.locked_by_worker = (SELECT worker_id FROM params)
+      AND j.attempt = (SELECT attempt FROM params)
       AND j.schedule_to_close IS NOT NULL
-      AND clock_timestamp() + (SELECT retry_delay FROM params) > j.schedule_to_close
+      AND clock_timestamp() + (SELECT effective_delay FROM params) > j.schedule_to_close
       AND NOT EXISTS (SELECT 1 FROM retried)
     RETURNING j.*, 'deadline_failed'::text AS outcome_branch, clock_timestamp() AS now_ts
 ),
@@ -428,7 +465,7 @@ WITH upd AS (
         lock_expires_at = NULL,
         progress_seq = $3,
         progress_state = CASE WHEN $4::jsonb IS NOT NULL THEN COALESCE(progress_state, '{{}}'::jsonb) || $4::jsonb ELSE progress_state END
-    WHERE id = $1 AND status = 'running' AND locked_by_worker = $2
+    WHERE id = $1 AND status = 'running' AND locked_by_worker = $2 AND attempt = $5
     RETURNING *
 ), holder AS (
     SELECT id FROM "{s}".workers WHERE id = $2 FOR KEY SHARE
@@ -457,7 +494,26 @@ WITH upd AS (
         finished_at = clock_timestamp(),
         progress_seq = $2,
         progress_state = CASE WHEN $3::jsonb IS NOT NULL THEN COALESCE(progress_state, '{{}}'::jsonb) || $3::jsonb ELSE progress_state END
-    WHERE id = $1 AND status = 'running' AND cancel_phase = 2
+    -- The NULL-lease arm is defense-in-depth for the no-exit cell
+    -- (running x lock_expires_at IS NULL x dead holder): Postgres has
+    -- exactly one writer that moves a row to running -- the dispatch CTE
+    -- (_dispatch_sql.py stamps lock_expires_at = clock_timestamp() +
+    -- lock_lease unconditionally) -- and every other writer that clears
+    -- the lease also leaves running (isolate_self, sweep 1, terminal
+    -- writes), so a running row with a NULL lease is a direct-SQL-only
+    -- corruption shape. Its holder cannot be live, so the escalation
+    -- ladder's precondition (a live holder that must be given the chance
+    -- to reach phase 2) can never be satisfied: the cancel protocol can
+    -- land phase 1 and stall forever (mark_abandoned was phase-2-only,
+    -- the reclaim sweep's lock_expires_at < bound is NULL-false at every
+    -- age, and every other exit is owner-scoped). The abandon's
+    -- precondition -- the holder had its chance -- holds vacuously, so
+    -- the arm abandons directly and _mark_abandoned warns on the shape.
+    -- The in-memory twin has no mirror arm: its store stamps a lease on
+    -- every lease-less running write (testing/in_memory.py _JobStore),
+    -- so the cell is unrepresentable there by construction.
+    WHERE id = $1 AND status = 'running'
+      AND (cancel_phase = 2 OR lock_expires_at IS NULL)
     RETURNING *
 ), holder AS (
     -- The abandoned job's worker id is the row's own (possibly already
@@ -549,9 +605,9 @@ SELECT * FROM upd""",
         # inserts at (job_id, attempt) WITHOUT dispatch having advanced
         # attempt, so the insert is safe only if no row at that key can
         # already exist.  The fence (status='running' AND
-        # locked_by_worker=$2) guarantees the job has been
-        # running-owned by this worker since dispatch stamped
-        # attempt=N.  Every writer at (job, N) ends that running window
+        # locked_by_worker=$2 AND attempt=$8) guarantees the job has been
+        # running-owned by this worker at this attempt epoch since
+        # dispatch stamped attempt=N.  Every writer at (job, N) ends that running window
         # first: the terminal mark_* writes transition the row out of
         # 'running', and sweep-1's reclaim — the only writer that acts on
         # a running row this worker no longer owns — either terminalises
@@ -583,10 +639,11 @@ WITH params AS (
            -- status, scheduled_at and every deadline comparison read
            -- it, so the snoozed and deadline arms partition exactly
            -- (a row can never match neither).
-           GREATEST($3::interval, {_MIN_DEFERRAL_INTERVAL_SQL}) AS effective_delay,
-           $4::jsonb AS metadata_update,
-           $5::int AS progress_seq,
-           $6::jsonb AS progress_state
+            GREATEST($3::interval, {_MIN_DEFERRAL_INTERVAL_SQL}) AS effective_delay,
+            $4::jsonb AS metadata_update,
+            $5::int AS progress_seq,
+            $6::jsonb AS progress_state,
+            $8::int AS attempt
 ),
 snoozed AS (
     UPDATE "{s}".jobs j
@@ -607,6 +664,7 @@ snoozed AS (
     WHERE j.id = (SELECT job_id FROM params)
       AND j.status = 'running'
       AND j.locked_by_worker = (SELECT worker_id FROM params)
+      AND j.attempt = (SELECT attempt FROM params)
       AND (j.schedule_to_close IS NULL
            OR clock_timestamp() + (SELECT effective_delay FROM params) <= j.schedule_to_close)
       AND ($7::text = 'snoozed'
@@ -630,6 +688,7 @@ max_attempts_failed AS (
     WHERE j.id = (SELECT job_id FROM params)
       AND j.status = 'running'
       AND j.locked_by_worker = (SELECT worker_id FROM params)
+      AND j.attempt = (SELECT attempt FROM params)
       AND $7::text IN ('reservation_denied', 'rate_limit_denied')
       AND j.retry_kind <> 'indefinite'
       AND j.attempt >= j.max_attempts
@@ -652,6 +711,7 @@ deadline_failed AS (
     WHERE j.id = (SELECT job_id FROM params)
       AND j.status = 'running'
       AND j.locked_by_worker = (SELECT worker_id FROM params)
+      AND j.attempt = (SELECT attempt FROM params)
       AND j.schedule_to_close IS NOT NULL
       AND clock_timestamp() + (SELECT effective_delay FROM params) > j.schedule_to_close
       AND NOT EXISTS (SELECT 1 FROM snoozed)
@@ -708,7 +768,8 @@ WITH params AS (
            $2::uuid AS worker_id,
            $3::interval AS delay,
            $4::int AS progress_seq,
-           $5::jsonb AS progress_state
+           $5::jsonb AS progress_state,
+           $6::int AS attempt
 ),
         snoozed AS (
     UPDATE "{s}".jobs j
@@ -725,6 +786,7 @@ WITH params AS (
     WHERE j.id = (SELECT job_id FROM params)
       AND j.status = 'running'
       AND j.locked_by_worker = (SELECT worker_id FROM params)
+      AND j.attempt = (SELECT attempt FROM params)
       AND (j.schedule_to_close IS NULL
            OR clock_timestamp() + (SELECT delay FROM params) <= j.schedule_to_close)
       AND (j.retry_kind = 'indefinite'
@@ -746,6 +808,7 @@ max_attempts_failed AS (
     WHERE j.id = (SELECT job_id FROM params)
       AND j.status = 'running'
       AND j.locked_by_worker = (SELECT worker_id FROM params)
+      AND j.attempt = (SELECT attempt FROM params)
       -- Every non-indefinite kind exhausts here: a non_retryable job at
       -- budget under RetryAfter(consume_budget=True) has no other exit —
       -- a 'transient'-only predicate left it matching no arm at all and
@@ -772,6 +835,7 @@ deadline_failed AS (
     WHERE j.id = (SELECT job_id FROM params)
       AND j.status = 'running'
       AND j.locked_by_worker = (SELECT worker_id FROM params)
+      AND j.attempt = (SELECT attempt FROM params)
       AND j.schedule_to_close IS NOT NULL
       AND clock_timestamp() + (SELECT delay FROM params) > j.schedule_to_close
       AND NOT EXISTS (SELECT 1 FROM snoozed)
@@ -858,9 +922,10 @@ WITH params AS (
            -- its params comment for the why): this arm is non-consuming
            -- by construction, and it must never park the job at the
            -- head of the dispatch order either.
-           GREATEST($3::interval, {_MIN_DEFERRAL_INTERVAL_SQL}) AS effective_delay,
-           $4::int AS progress_seq,
-           $5::jsonb AS progress_state
+            GREATEST($3::interval, {_MIN_DEFERRAL_INTERVAL_SQL}) AS effective_delay,
+            $4::int AS progress_seq,
+            $5::jsonb AS progress_state,
+            $6::int AS attempt
 ),
 snoozed AS (
     UPDATE "{s}".jobs j
@@ -879,6 +944,7 @@ snoozed AS (
     WHERE j.id = (SELECT job_id FROM params)
       AND j.status = 'running'
       AND j.locked_by_worker = (SELECT worker_id FROM params)
+      AND j.attempt = (SELECT attempt FROM params)
       AND (j.schedule_to_close IS NULL
            OR clock_timestamp() + (SELECT effective_delay FROM params) <= j.schedule_to_close)
     RETURNING j.*, 'snoozed'::text AS outcome_branch, clock_timestamp() AS now_ts
@@ -898,6 +964,7 @@ deadline_failed AS (
     WHERE j.id = (SELECT job_id FROM params)
       AND j.status = 'running'
       AND j.locked_by_worker = (SELECT worker_id FROM params)
+      AND j.attempt = (SELECT attempt FROM params)
       AND j.schedule_to_close IS NOT NULL
       AND clock_timestamp() + (SELECT effective_delay FROM params) > j.schedule_to_close
       AND NOT EXISTS (SELECT 1 FROM snoozed)
@@ -1175,22 +1242,52 @@ WHERE l.relation = '"{s}".job_events'::regclass
         # whole table at most once per TTL window per process.
         list_actor_max_pending=f'SELECT actor, max_pending FROM "{s}".actor_config',
         # ── Admin operations ───────────────────────────────────────
+        # The reopened CTE is the batch-status reconciliation for the
+        # completed-batch membership lie: retry_job re-pends a failed/
+        # crashed/cancelled member with no batch awareness, and every
+        # batch-status writer guards on status = 'active' (complete_batch,
+        # abort_batch, the leader's complete_stale_batches), so a
+        # terminal batch row sitting over re-pended membership was
+        # unreconcilable by any of them -- the row claimed an outcome its
+        # membership contradicted, and wait_for_batch snoozed on it
+        # forever. The reopen runs in the retry's own transaction: the
+        # moment a member becomes non-terminal again, a terminal
+        # ('complete'/'aborted') batch row returns to 'active' with its
+        # completed_at cleared, so the ordinary guards re-engage (a later
+        # complete_batch or the stale-batch sweep re-arbitrates against
+        # the live membership, and an operator abort can again be
+        # recorded). metadata.batch_id marks membership only -- the
+        # finalizer is deliberately NOT stamped (enqueue_batch_atomic's
+        # deadlock-prevention doctrine) -- so a finalizer retry reopens
+        # nothing. Guarded on the terminal statuses, the reopen is
+        # idempotent: a second retry of an already-'active' batch's member
+        # is a no-op here.
         retry_job=f"""\
-UPDATE "{s}".jobs
-SET status = 'pending',
-    attempt = 0,
-    cancel_phase = 0,
-    cancel_requested_at = NULL,
-    error_class = NULL,
-    error_message = NULL,
-    error_traceback = NULL,
-    scheduled_at = clock_timestamp(),
-    finished_at = NULL,
-    result = NULL,
-    result_size_bytes = NULL,
-    result_expires_at = NULL
-WHERE id = $1 AND status IN ('failed', 'crashed', 'cancelled')
-RETURNING id""",
+WITH retried AS (
+    UPDATE "{s}".jobs
+    SET status = 'pending',
+        attempt = 0,
+        cancel_phase = 0,
+        cancel_requested_at = NULL,
+        error_class = NULL,
+        error_message = NULL,
+        error_traceback = NULL,
+        scheduled_at = clock_timestamp(),
+        finished_at = NULL,
+        result = NULL,
+        result_size_bytes = NULL,
+        result_expires_at = NULL
+    WHERE id = $1 AND status IN ('failed', 'crashed', 'cancelled')
+    RETURNING id, metadata->>'batch_id' AS batch_id
+),
+reopened AS (
+    UPDATE "{s}".batches
+    SET status = 'active', completed_at = NULL
+    WHERE id = (SELECT batch_id::uuid FROM retried WHERE batch_id IS NOT NULL)
+      AND status IN ('complete', 'aborted')
+    RETURNING id
+)
+SELECT id, batch_id, EXISTS (SELECT 1 FROM reopened) AS reopened_batch FROM retried""",
         # ── COPY FROM column lists ─────────────────────────────────
         copy_from_columns=COPY_FROM_COLUMNS,
         copy_enqueue_columns=COPY_ENQUEUE_COLUMNS,

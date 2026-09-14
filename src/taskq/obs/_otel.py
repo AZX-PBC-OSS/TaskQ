@@ -752,9 +752,13 @@ _stranded_jobs_cache: dict[str, int] = {}
 def update_stranded_jobs_cache(data: dict[str, int]) -> None:
     """Replace the stranded-jobs cache with fresh data from the leader's query.
 
-    Stranded jobs are pending/scheduled jobs whose actor has no `actor_config`
-    row, which makes them permanently undispatchable: the dispatch CTE derives
-    its candidates from `per_actor_capacity`, which is `FROM actor_config`.
+    Stranded jobs are pending/scheduled rows that can never dispatch: the
+    actor has no `actor_config` row (the dispatch CTE derives its
+    candidates from `per_actor_capacity`, which is `FROM actor_config`),
+    or the row sits on a queue no registered worker serves (dispatch
+    probes only its own subscription's queues). Both shapes accumulate
+    invisibly to dispatch and the deadline sweep; the detector's
+    per-shape warning events name which condition held.
 
     This gauge exists because the detector previously emitted a log line and
     nothing else, exactly once per actor per process lifetime -- so the
@@ -985,6 +989,33 @@ def record_ratelimit_denial(backend: str) -> None:
     ).add(1, {"backend": backend})
 
 
+def record_ratelimit_acquire_dependency_failure(error_type: str) -> None:
+    """Bump the ratelimit.acquire_dependency_failures counter.
+
+    Called when a rate-limit acquire fails because the limiter's store —
+    Redis, or the PG fallback behind it — could not answer, and the
+    worker failed the acquire closed as a denial. An AVAILABILITY
+    signal, distinct from ``taskq.reservation.denials``, which counts
+    admission decisions: a denial with this counter rising is an outage
+    masquerading as contention, and an operator must read the two
+    together before scaling a bucket. ``error_type`` is the exception
+    class name.
+    Respects ``_otel_enabled`` — no-op when False.
+    """
+    if not _otel_enabled:
+        return
+    _lazy_counter(
+        "taskq.ratelimit.acquire_dependency_failures",
+        description=(
+            "Rate-limit acquires that failed on a store dependency (Redis "
+            "or the PG fallback) and were failed closed as denials — an "
+            "availability signal, distinct from reservation.denials "
+            "(admission decisions). Attributes: error_type (exception "
+            "class name)."
+        ),
+    ).add(1, {"error_type": error_type})
+
+
 def record_reservation_denial(bucket_name: str, source: str) -> None:
     """Bump the reservation.denials counter.
 
@@ -1053,7 +1084,8 @@ def record_reservation_reclaim_drain_duration(elapsed_seconds: float) -> None:
 
 
 def record_reservation_reclaim_drain_rows(rows: int) -> None:
-    """Count ``reservation_slots`` rows deleted by one reclaim drain.
+    """Count rows deleted by one keyed-reclaim drain — ``reservation_slots``
+    slot rows and ``rate_limit_buckets`` bucket rows alike.
 
     Respects ``_otel_enabled`` — no-op when False.
     """
@@ -1061,7 +1093,10 @@ def record_reservation_reclaim_drain_rows(rows: int) -> None:
         return
     _lazy_counter(
         "taskq.ratelimit.reclaim_drain_rows",
-        description="reservation_slots rows deleted by the keyed-reservation reclaim drain.",
+        description=(
+            "Rows deleted by the keyed-reclaim drain — reservation_slots and "
+            "rate_limit_buckets alike (RETURNING-confirmed)."
+        ),
     ).add(rows)
 
 
@@ -1113,9 +1148,9 @@ def _observe_keyed_reclaim_pending(options: CallbackOptions) -> Iterable[Observa
 _keyed_reclaim_pending_gauge = get_meter().create_observable_gauge(
     name="taskq.ratelimit.reclaim_pending",
     description=(
-        "Evicted keyed bucket names waiting for their reservation_slots "
-        "rows to be reclaimed by the next drain tick (scalar: bucket "
-        "names are not a dimension)."
+        "Evicted keyed bucket names — reservations and rate limits alike — "
+        "waiting for their rows (slot or bucket) to be reclaimed by the next "
+        "drain tick (scalar: bucket names are not a dimension)."
     ),
     unit="1",
     callbacks=[_observe_keyed_reclaim_pending],

@@ -109,7 +109,7 @@ def _progress_client(pool: _SwitchablePool, redis: _StubRedis) -> Any:
     from taskq.web.progress import create_router
 
     router = create_router(
-        pool,
+        pool,  # pyright: ignore[reportArgumentType]  # Why: duck-typed stub satisfies the asyncpg.Pool surface the route reads.
         redis,
         schema="taskq",
         sse_heartbeat_interval=timedelta(milliseconds=50),
@@ -133,9 +133,9 @@ def _clear_semaphores() -> Iterator[None]:  # pyright: ignore[reportUnusedFuncti
     order, where a non-acquiring test happens to run last; under
     `pytest-randomly` (which the CI gate runs with) it is a coin toss.
     """
-    _sse_limit._SEMAPHORES.clear()  # Why: process-global registry; tests must not leak slots into each other.
+    _sse_limit._SEMAPHORES.clear()  # pyright: ignore[reportPrivateUsage]  # Why: process-global registry; the only handle tests have to stop slots leaking between modules.
     yield
-    _sse_limit._SEMAPHORES.clear()
+    _sse_limit._SEMAPHORES.clear()  # pyright: ignore[reportPrivateUsage]  # Why: same as above — clear on exit too.
 
 
 async def test_slots_are_granted_up_to_the_limit() -> None:
@@ -169,6 +169,27 @@ async def test_keys_have_independent_budgets() -> None:
     await _sse_limit.acquire_sse_slot("b", 1)
     with pytest.raises(HTTPException):
         await _sse_limit.acquire_sse_slot("a", 1)
+
+
+async def test_a_limit_change_gets_its_own_budget_not_the_first_mounts() -> None:
+    """One process can mount the same endpoint family at several limits (the
+    test suite does; a misconfigured process could): a later mount must
+    enforce the limit it was given, not silently inherit the first mount's
+    budget. Keying the budget by family alone made mount order decide the
+    cap — a wide first mount silently unfenced a tight later one, and a
+    tight first mount 429'd streams the wide one was configured to allow."""
+    # First mount of family "t": wide limit, one slot held.
+    await _sse_limit.acquire_sse_slot("t", 50)
+    # Second mount of the SAME family, configured tight: its third
+    # concurrent stream must be refused by its own limit...
+    await _sse_limit.acquire_sse_slot("t", 2)
+    await _sse_limit.acquire_sse_slot("t", 2)
+    with pytest.raises(HTTPException) as excinfo:
+        await _sse_limit.acquire_sse_slot("t", 2)
+    assert excinfo.value.status_code == 429
+    # ...while the wide budget still has room — proving the refusal came
+    # from the tight budget, not from a shared exhausted one.
+    await _sse_limit.acquire_sse_slot("t", 50)
 
 
 async def test_release_after_frees_the_slot_when_the_stream_ends() -> None:

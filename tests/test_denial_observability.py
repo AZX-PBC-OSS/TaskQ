@@ -95,6 +95,9 @@ async def _mem_job(
     promotion sweep does between dispatch rounds.
     """
     backend = InMemoryBackend(clock=FakeClock(_NOW) if clock is None else clock)
+    # Register the actor so dispatch_batch finds it (mirrors PG's
+    # actor_config requirement — candidates come FROM the registry).
+    backend.register_actor_config(actor="denial_actor")
     args = EnqueueArgs(
         id=new_job_id(),
         actor="denial_actor",
@@ -230,6 +233,7 @@ async def test_denial_on_non_retryable_at_budget_fails_max_attempts() -> None:
         worker_id,
         _DELAY,
         outcome="reservation_denied",
+        attempt=1,
     )
     assert result == "failed:MaxAttemptsExceeded"
 
@@ -249,7 +253,9 @@ async def test_retry_after_consume_true_on_non_retryable_at_budget_fails() -> No
     through to a reschedule."""
     backend, job_id, worker_id = await _mem_job(max_attempts=1, retry_kind="non_retryable")
 
-    result = await backend.mark_retry_after(job_id, worker_id, _DELAY, consume_budget=True)
+    result = await backend.mark_retry_after(
+        job_id, worker_id, _DELAY, consume_budget=True, attempt=1
+    )
     assert result == "failed:MaxAttemptsExceeded"
 
     row = await backend.get(job_id)
@@ -274,6 +280,7 @@ async def test_denial_on_job_with_close_deadline_keeps_rescheduling() -> None:
         worker_id,
         _DELAY,
         outcome="reservation_denied",
+        attempt=1,
     )
     assert result == "scheduled"
 
@@ -318,6 +325,7 @@ async def test_actor_deferral_is_unbounded_and_never_spends_budget() -> None:
             worker_id,
             zero_delay,
             outcome="snoozed",
+            attempt=1,
         )
         assert result == "scheduled"
         # Advance past the floored deferral and promote, exactly as the
@@ -343,7 +351,9 @@ async def test_actor_deferral_is_unbounded_and_never_spends_budget() -> None:
     assert row.rate_limit_blocked_count == 0
 
     # The consume_budget=False arm carries the same contract.
-    result = await backend.mark_retry_after(job_id, worker_id, _DELAY, consume_budget=False)
+    result = await backend.mark_retry_after(
+        job_id, worker_id, _DELAY, consume_budget=False, attempt=1
+    )
     assert result == "scheduled"
     row = await backend.get(job_id)
     assert row is not None
@@ -372,7 +382,7 @@ async def test_zero_delay_deferrals_reschedule_at_least_min_deferral_interval_ou
 
     # Snooze: the actor-requested deferral.
     backend, job_id, worker_id = await _mem_job(max_attempts=10, retry_kind="transient")
-    result = await backend.mark_snoozed(job_id, worker_id, timedelta(0))
+    result = await backend.mark_snoozed(job_id, worker_id, timedelta(0), attempt=1)
     assert result == "scheduled"
     row = await backend.get(job_id)
     assert row is not None
@@ -386,6 +396,7 @@ async def test_zero_delay_deferrals_reschedule_at_least_min_deferral_interval_ou
         worker_id,
         timedelta(0),
         outcome="reservation_denied",
+        attempt=1,
     )
     assert result == "scheduled"
     row = await backend.get(job_id)
@@ -395,7 +406,9 @@ async def test_zero_delay_deferrals_reschedule_at_least_min_deferral_interval_ou
 
     # RetryAfter(consume_budget=False): the arm's twin.
     backend, job_id, worker_id = await _mem_job(max_attempts=10, retry_kind="transient")
-    result = await backend.mark_retry_after(job_id, worker_id, timedelta(0), consume_budget=False)
+    result = await backend.mark_retry_after(
+        job_id, worker_id, timedelta(0), consume_budget=False, attempt=1
+    )
     assert result == "scheduled"
     row = await backend.get(job_id)
     assert row is not None
@@ -410,7 +423,9 @@ async def test_consuming_retry_after_keeps_its_raw_zero_delay() -> None:
     the budget it spends, not by the deferral floor."""
     backend, job_id, worker_id = await _mem_job(max_attempts=10, retry_kind="transient")
 
-    result = await backend.mark_retry_after(job_id, worker_id, timedelta(0), consume_budget=True)
+    result = await backend.mark_retry_after(
+        job_id, worker_id, timedelta(0), consume_budget=True, attempt=1
+    )
     assert result == "scheduled"
 
     row = await backend.get(job_id)

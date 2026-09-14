@@ -132,6 +132,7 @@ async def test_transient_retry_succeeds_after_retries(
         worker_id,
         error_info,
         decision_1.retry_delay,
+        attempt=1,
     )
     assert row_1.status == "scheduled"
 
@@ -160,6 +161,7 @@ async def test_transient_retry_succeeds_after_retries(
         worker_id,
         error_info,
         decision_2.retry_delay,
+        attempt=2,
     )
     assert row_2.status == "scheduled"
 
@@ -169,7 +171,7 @@ async def test_transient_retry_succeeds_after_retries(
     async with deps.worker_pool.acquire() as conn:
         await _promote_scheduled_to_running(conn, schema, worker_id, job_id, attempt=3)
 
-    result = await backend.mark_succeeded(job_id, worker_id, {"ok": True})
+    result = await backend.mark_succeeded(job_id, worker_id, {"ok": True}, attempt=3)
     assert result is True
 
     # ── Assertions ──────────────────────────────────────────────────
@@ -263,6 +265,7 @@ async def test_transient_exhaustion(
         worker_id,
         error_info,
         decision_1.retry_delay,
+        attempt=1,
     )
     assert row_1.status == "scheduled"
 
@@ -284,7 +287,7 @@ async def test_transient_exhaustion(
     )
     assert isinstance(decision_2, Fail)
 
-    row_2 = await backend.mark_failed_or_retry(job_id, worker_id, error_info, None)
+    row_2 = await backend.mark_failed_or_retry(job_id, worker_id, error_info, None, attempt=2)
     assert row_2.status == "failed"
 
     # ── Assertions ──────────────────────────────────────────────────
@@ -327,6 +330,9 @@ async def test_cancel_skips_classifier() -> None:
         cancellation_grace_period=timedelta(seconds=2),
         cleanup_grace_period=timedelta(seconds=2),
     )
+    # Register the actor so dispatch_batch finds it (mirrors PG's
+    # actor_config requirement — candidates come FROM the registry).
+    backend.register_actor_config(actor="slow_actor")
 
     args = EnqueueArgs(
         id=new_job_id(),
@@ -362,7 +368,7 @@ async def test_cancel_skips_classifier() -> None:
 
     assert cancel_event.is_set()
 
-    cancelled = await backend.mark_cancelled(job_id, worker_id)
+    cancelled = await backend.mark_cancelled(job_id, worker_id, attempt=1)
     assert cancelled is True
 
     row = await backend.get(job_id)
@@ -559,7 +565,7 @@ async def test_indefinite_retry_polling_pattern(
         assert isinstance(decision, Retry), f"attempt {attempt_num} should be Retry"
 
         row_after = await backend.mark_failed_or_retry(
-            job_id, worker_id, error_info, decision.retry_delay
+            job_id, worker_id, error_info, decision.retry_delay, attempt=attempt_num
         )
         assert row_after.status == "scheduled"
 
@@ -572,7 +578,7 @@ async def test_indefinite_retry_polling_pattern(
     async with deps.worker_pool.acquire() as conn:
         await _promote_scheduled_to_running(conn, schema, worker_id, job_id, attempt=11)
 
-    result = await backend.mark_succeeded(job_id, worker_id, {"ok": True})
+    result = await backend.mark_succeeded(job_id, worker_id, {"ok": True}, attempt=11)
     assert result is True
 
     async with deps.worker_pool.acquire() as conn:
@@ -652,7 +658,7 @@ async def test_indefinite_retry_deadline_enforcement(
     assert isinstance(decision_1, Retry)
 
     row_1 = await backend.mark_failed_or_retry(
-        job_id, worker_id, error_info, decision_1.retry_delay
+        job_id, worker_id, error_info, decision_1.retry_delay, attempt=1
     )
     assert row_1.status == "scheduled"
 
@@ -679,7 +685,7 @@ async def test_indefinite_retry_deadline_enforcement(
     # The SQL deadline guard arbitrates: the delay cannot land before the
     # (already-past) schedule_to_close, so the write fails the job.
     row_2 = await backend.mark_failed_or_retry(
-        job_id, worker_id, error_info, decision_2.retry_delay
+        job_id, worker_id, error_info, decision_2.retry_delay, attempt=2
     )
     assert row_2.status == "failed"
     assert row_2.error_class == "DeadlineExceeded"

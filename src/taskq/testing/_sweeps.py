@@ -26,7 +26,7 @@ from typing import TYPE_CHECKING
 
 import structlog
 
-from taskq.backend._protocol import AttemptRow, CancelPhase
+from taskq.backend._protocol import AttemptRow, CancelPhase, JobId, JobRow
 from taskq.backend._sweeps import (  # pyright: ignore[reportPrivateUsage]  # Why: the twins must enforce the identical boundary contract the Postgres sweeps enforce — one validator, one seam, no drift.
     _validate_positive,
 )
@@ -85,52 +85,83 @@ async def _deadline_sweep(
 ) -> int:
     _validate_positive("batch_size", batch_size)
     now = self._clock.now()
-    count = 0
+    # Select the whole bounded batch FIRST: on PG the transition UPDATE,
+    # the batched job_attempts INSERT, and the event INSERT share one
+    # transaction (sweep_deadline_exceeded), so an attempt-row primary-key
+    # collision on ANY selected row aborts the ENTIRE batch — every
+    # selected job stays pending/scheduled, nothing is written. The twin
+    # selects, validates every planned (job_id, attempt) key against the
+    # stored attempt rows and in-batch duplicates, and only then mutates:
+    # a collision raises the same typed UniqueViolationError PG's batched
+    # INSERT raises (job_attempts_pkey), never a silent duplicate append
+    # that completes the transition PG would leave torn down.
+    selected: list[tuple[JobId, JobRow]] = []
     for job_id, row in list(self._jobs.items()):
-        if count >= batch_size:
+        if len(selected) >= batch_size:
             break
         if (
             row.status in ("pending", "scheduled")
             and row.schedule_to_close is not None
             and row.schedule_to_close < now
         ):
-            self._jobs[job_id] = replace(
-                row,
-                status="failed",
-                finished_at=now,
-                error_class="DeadlineExceeded",
-                error_message="schedule_to_close reached before next dispatch",
-            )
-            attempt_row = AttemptRow(
-                job_id=job_id,
-                attempt=row.attempt,
-                started_at=row.started_at if row.started_at is not None else now,
-                finished_at=now,
-                outcome="failed",
-                error_class="DeadlineExceeded",
-                error_message="schedule_to_close reached before next dispatch",
-                error_traceback=None,
-                duration_ms=None,
-                worker_id=None,
-                metadata={},
-            )
-            self._attempts.setdefault(job_id, []).append(attempt_row)
-            self._append_state_change_event(
-                job_id=job_id,
-                from_state=row.status,
-                to_state="failed",
-                now=now,
-                error_class="DeadlineExceeded",
-            )
-            record_deadline_exceeded_swept(actor=row.actor)
-            logger.debug(
-                "state-change",
-                kind="state_change",
-                from_state=row.status,
-                to_state="failed",
-                job_id=str(job_id),
-            )
-            count += 1
+            selected.append((job_id, row))
+
+    if selected:
+        # Why a function-level import: the driver-free import-surface
+        # convention (taskq.testing imports no asyncpg at module scope);
+        # this raise path only ever runs where the driver is installed.
+        from asyncpg.exceptions import UniqueViolationError
+
+        _existing = {(a.job_id, a.attempt) for rows in self._attempts.values() for a in rows}
+        _seen: set[tuple[JobId, int]] = set()
+        for job_id, row in selected:
+            _key = (job_id, row.attempt)
+            if _key in _existing or _key in _seen:
+                raise UniqueViolationError(
+                    'duplicate key value violates unique constraint "job_attempts_pkey" '
+                    f"(job {job_id} attempt {row.attempt} already has an attempt row)"
+                )
+            _seen.add(_key)
+
+    count = 0
+    for job_id, row in selected:
+        self._jobs[job_id] = replace(
+            row,
+            status="failed",
+            finished_at=now,
+            error_class="DeadlineExceeded",
+            error_message="schedule_to_close reached before next dispatch",
+        )
+        attempt_row = AttemptRow(
+            job_id=job_id,
+            attempt=row.attempt,
+            started_at=row.started_at if row.started_at is not None else now,
+            finished_at=now,
+            outcome="failed",
+            error_class="DeadlineExceeded",
+            error_message="schedule_to_close reached before next dispatch",
+            error_traceback=None,
+            duration_ms=None,
+            worker_id=None,
+            metadata={},
+        )
+        self._attempts.setdefault(job_id, []).append(attempt_row)
+        self._append_state_change_event(
+            job_id=job_id,
+            from_state=row.status,
+            to_state="failed",
+            now=now,
+            error_class="DeadlineExceeded",
+        )
+        record_deadline_exceeded_swept(actor=row.actor)
+        logger.debug(
+            "state-change",
+            kind="state_change",
+            from_state=row.status,
+            to_state="failed",
+            job_id=str(job_id),
+        )
+        count += 1
     return count
 
 

@@ -281,14 +281,14 @@ async def test_succeeded_mark_succeeded_noop(memory_jobs: InMemoryBackend) -> No
     with a no-op return, confirming idempotent terminal-write semantics.
     """
     job_id, worker_id = await _enqueue_and_dispatch(memory_jobs)
-    ok = await memory_jobs.mark_succeeded(job_id, worker_id, result={"v": 1})
+    ok = await memory_jobs.mark_succeeded(job_id, worker_id, result={"v": 1}, attempt=1)
     assert ok is True
 
     row = await memory_jobs.get(job_id)
     assert row is not None
     assert row.status == "succeeded"
 
-    ok2 = await memory_jobs.mark_succeeded(job_id, worker_id, result={"v": 2})
+    ok2 = await memory_jobs.mark_succeeded(job_id, worker_id, result={"v": 2}, attempt=1)
     assert ok2 is False
 
 

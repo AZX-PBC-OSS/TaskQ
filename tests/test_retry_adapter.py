@@ -131,6 +131,8 @@ class _MismatchBackend:
         retry_delay: timedelta | None,
         progress_seq: int = 0,
         progress_state: dict[str, object] | None = None,
+        *,
+        attempt: int | None = None,
     ) -> JobRow:
         raise self._exc
 

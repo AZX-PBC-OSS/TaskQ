@@ -114,6 +114,7 @@ async def test_reservation_denial_writes_no_event_or_attempt_rows(
         worker_id,
         _DELAY,
         outcome="reservation_denied",
+        attempt=1,
     )
     assert outcome == "scheduled"
 
@@ -168,6 +169,7 @@ async def test_retry_after_without_budget_writes_no_event_or_attempt_rows(
         worker_id,
         _DELAY,
         consume_budget=False,
+        attempt=1,
     )
     assert outcome == "scheduled"
 
@@ -268,6 +270,10 @@ async def test_denial_loop_terminates_within_retry_budget(
             worker_id,
             timedelta(0),
             outcome="reservation_denied",
+            # The attempt-epoch fence: each cycle's dispatch stamped
+            # attempt = attempt + 1, so the write carries the dispatched
+            # row's current epoch (rows[0].attempt).
+            attempt=rows[0].attempt,
         )
         # A terminal outcome from the denial path is what the fix may add;
         # the row's status is the source of truth, checked at the top of
@@ -323,6 +329,7 @@ async def test_denial_on_non_retryable_at_budget_fails_max_attempts(
         worker_id,
         _DELAY,
         outcome="reservation_denied",
+        attempt=1,
     )
     assert outcome == "failed:MaxAttemptsExceeded"
 
