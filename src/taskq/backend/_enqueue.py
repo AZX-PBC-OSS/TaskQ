@@ -120,6 +120,33 @@ _COMPOSITE_IDEMPOTENCY_DETAIL_TEMPLATE = (
 )
 
 
+def _log_idempotency_dedup(row: JobRow) -> None:
+    """Log one idempotency-key dedup hit, carrying the target's status.
+
+    A terminal target never runs the work again — the key stays pinned to
+    a dead job until it ages out of retention — so the hit is louder than
+    the live-job case, which is normal single-flight operation. Shared by
+    the single-enqueue path and the batch result assembly so the two
+    sites cannot drift.
+    """
+    fields: dict[str, object] = {
+        "kind": "enqueue_deduplicated",
+        "job_id": str(row.id),
+        "actor": row.actor,
+        "queue": row.queue,
+        "identity_key": row.identity_key,
+        "idempotency_key": row.idempotency_key,
+        "idempotency_scope": row.idempotency_scope,
+        "status": row.status,
+        "existing_job_id": str(row.id),
+        "dedup_reason": "idempotency_key",
+    }
+    if row.status in TERMINAL_STATUSES:
+        logger.warning("enqueue_deduplicated", **fields)
+    else:
+        logger.info("enqueue_deduplicated", **fields)
+
+
 def _attribute_duplicate_pair(
     detail: str | None,
     candidates: "set[tuple[str, str]]",
@@ -693,26 +720,7 @@ async def _enqueue_on_conn(
             idempotency_key=row.idempotency_key,
         )
     else:
-        fields: dict[str, object] = {
-            "kind": "enqueue_deduplicated",
-            "job_id": str(row.id),
-            "actor": row.actor,
-            "queue": row.queue,
-            "identity_key": row.identity_key,
-            "idempotency_key": row.idempotency_key,
-            "idempotency_scope": row.idempotency_scope,
-            "status": row.status,
-            "existing_job_id": str(row.id),
-            "dedup_reason": "idempotency_key",
-        }
-        # A terminal target never runs the work again — the key stays
-        # pinned to a dead job until it ages out of retention — so the
-        # hit is louder than the live-job case, which is normal
-        # single-flight operation.
-        if row.status in TERMINAL_STATUSES:
-            logger.warning("enqueue_deduplicated", **fields)
-        else:
-            logger.info("enqueue_deduplicated", **fields)
+        _log_idempotency_dedup(row)
 
     return row
 
@@ -1055,7 +1063,9 @@ async def _enqueue_batch(
                 and (args.idempotency_scope, str(args.idempotency_key)) in existing_by_idem
             ):
                 rec = existing_by_idem[(args.idempotency_scope, str(args.idempotency_key))]
-                result.append(_job_row_from_record(rec))  # type: ignore[arg-type]  # Why: asyncpg Record is duck-typed; _job_row_from_record accepts asyncpg.Record at runtime
+                row = _job_row_from_record(rec)  # type: ignore[arg-type]  # Why: asyncpg Record is duck-typed; _job_row_from_record accepts asyncpg.Record at runtime
+                _log_idempotency_dedup(row)
+                result.append(row)
             else:
                 partial = new_rows_by_id.get(arg_uuid)
                 if partial is not None:

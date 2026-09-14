@@ -224,11 +224,25 @@ async def _post_write_row(backend: Backend, job: JobRow) -> JobRow:
     failure — or dropping the hooks entirely — would be worse than
     handing the hooks the stale snapshot.
     """
+    reread_log: structlog.stdlib.BoundLogger = structlog.get_logger("taskq.worker.hooks")
     try:
         updated = await backend.get(job.id)
-    except _TERMINAL_WRITE_INFRA_EXCEPTIONS:
+    except _TERMINAL_WRITE_INFRA_EXCEPTIONS as exc:
+        reread_log.warning(
+            "terminal-hook-row-reread-failed",
+            kind="terminal_hook_row_reread_failed",
+            job_id=str(job.id),
+            error_class=type(exc).__name__,
+        )
         return job
-    return updated if updated is not None else job
+    if updated is None:
+        reread_log.warning(
+            "terminal-hook-row-reread-missing",
+            kind="terminal_hook_row_reread_missing",
+            job_id=str(job.id),
+        )
+        return job
+    return updated
 
 
 async def _handle_timeout(
@@ -402,43 +416,6 @@ async def _handle_snooze(
             delay_seconds=s.delay.total_seconds(),
         )
         return "scheduled"
-    elif tri == "failed:MaxAttemptsExceeded":
-        span.add_event(
-            "lifecycle.failed",
-            attributes={
-                "from_state": "running",
-                "to_state": "failed",
-                "error_class": "MaxAttemptsExceeded",
-            },
-        )
-        hook_row = await _post_write_row(backend, job)
-        _log_job_failed(
-            log,
-            job,
-            cause="MaxAttemptsExceeded",
-            error_class="MaxAttemptsExceeded",
-            snooze_count=hook_row.snooze_count,
-        )
-        log_state_change(
-            log,
-            from_state="running",
-            to_state="failed",
-            cause="MaxAttemptsExceeded",
-        )
-        await invoke_on_retry_exhausted(
-            actor_config.on_retry_exhausted,
-            hook_row,
-            RuntimeError("MaxAttemptsExceeded"),
-            actor_config.on_retry_exhausted_timeout,
-            log=log,
-        )
-        await invoke_error_reporter(
-            error_reporter,
-            hook_row,
-            RuntimeError("MaxAttemptsExceeded"),
-            log=log,
-        )
-        return "failed"
     elif tri == "failed":
         span.add_event(
             "lifecycle.failed",
