@@ -4,7 +4,7 @@ Tests cover the election lifecycle through failover, plus the
 acceptance-definition assertion.
 
 Each test uses per-test schema isolation against the session-scoped PG
-container. Short heartbeat intervals (1.0 s) keep the suite fast; default
+container. Short heartbeat intervals (0.5 s) keep the suite fast; default
 intervals (10.0 s) would make each test wait ~12 s.
 """
 
@@ -12,6 +12,7 @@ import asyncio
 import logging
 from contextlib import AsyncExitStack, suppress
 from datetime import UTC, datetime, timedelta
+from typing import Any
 from uuid import UUID
 
 import asyncpg
@@ -24,6 +25,7 @@ from taskq.backend.postgres import PostgresBackend
 from taskq.constants import schema_lock_name, wake_channel
 from taskq.obs import setup_logging
 from taskq.settings import WorkerSettings
+from taskq.testing.assertions import wait_for_condition
 from taskq.testing.fixtures import _create_worker
 from taskq.worker.deps import WorkerDeps, open_worker_deps
 from taskq.worker.heartbeat import heartbeat_loop, isolate_self
@@ -949,13 +951,13 @@ async def _run_pod(
     worker_id: UUID,
     shutdown: asyncio.Event,
 ) -> tuple[asyncio.Task[None], asyncio.Task[None]]:
-    """Start one pod's election loop plus its heartbeat loop.
+    """Start one pod's leader runtime plus its heartbeat loop.
 
-    Both are required for a pod to look alive to the rest of the fleet: the
-    leader's ``maintenance_leader.last_seen_at`` lease is pinged by the
-    heartbeat tick, so a leader running without one reads as a dead holder
-    to every other pod. A test that started only the election loop would be
-    exercising a pod shape production never runs.
+    The production pod shape: the lease row is renewed by the election
+    loop itself, while the heartbeat keeps the pod's ``workers`` row live
+    (stale-worker cleanup and the admin liveness verdicts read it). A
+    test that started only the election loop would be exercising a pod
+    shape production never runs.
     """
     leader = MaintenanceLeader(deps, worker_id, backend, clock=SystemClock())
     election_task = asyncio.create_task(leader.run(shutdown))
@@ -1101,11 +1103,6 @@ async def test_healthy_fleet_elects_once_with_no_leadership_churn(
             "a healthy two-pod fleet must elect exactly once over its lifetime; "
             f"got {len(elections)} elections, indicating leadership churn"
         )
-        reclaims = _events(caplog, "leader-holder-reclaimed")
-        assert reclaims == [], (
-            "no pod may terminate a live leader's backend while its lease is "
-            f"being pinged; got {len(reclaims)} reclaims of a healthy holder"
-        )
     finally:
         await stack_b.aclose()
         await stack_a.aclose()
@@ -1164,3 +1161,368 @@ async def test_joining_pod_does_not_displace_the_incumbent_leader(pg_dsn: str) -
     finally:
         await stack_b.aclose()
         await stack_a.aclose()
+
+
+# ── Lease lifecycle: resign handover, trust window, term loss ────────
+#
+# The election loop's own contract over the lease row (the statement-level
+# fences are pinned in tests/test_leader_lease_contract.py): a graceful
+# stop hands the role over on the successor's next cycle; a leader whose
+# renewal path has failed past its trust window stands down on its own
+# clock, strictly before the server-side expiry it wrote, without touching
+# the database; and a leader whose row was taken over under it reads the
+# fence's zero rows and stands down.
+
+
+@pytest.mark.asyncio
+async def test_orchestrated_shutdown_still_resigns_the_lease(pg_dsn: str) -> None:
+    """The production shutdown path must free the row, not just the conn.
+
+    orchestrate_shutdown closes and nulls a TaskQ-owned ``leader_conn``
+    before the leader runtime's teardown runs, so a resign that reads only
+    ``deps.leader_conn`` would find nothing to write through — the row
+    would be left to lapse and every graceful deploy would pay a whole
+    lease of no-leader time. The resign must ride a connection that
+    survives to teardown.
+    """
+    from taskq.worker.shutdown import orchestrate_shutdown
+
+    schema, stack, deps, backend, worker_id = await _open_single(
+        pg_dsn, f"test_leader_{new_base62()}"
+    )
+    try:
+        leader = MaintenanceLeader(deps, worker_id, backend, clock=SystemClock())
+        shutdown = asyncio.Event()
+        task = asyncio.create_task(leader.run(shutdown))
+        try:
+            await asyncio.wait_for(deps.is_leader.wait(), timeout=5 * _HEARTBEAT_INTERVAL + 3)
+
+            # The real orchestrated path: phases, then the owned leader_conn
+            # is closed and nulled, then the event fires.
+            result = await orchestrate_shutdown(
+                deps,
+                deps.settings,
+                worker_id,
+                shutdown,
+                None,
+                backend=backend,
+            )
+            assert result == 0
+            assert deps.leader_conn is None, (
+                "test premise: the orchestrator takes leader_conn down first"
+            )
+
+            await asyncio.wait_for(task, timeout=5 * _HEARTBEAT_INTERVAL + 3)
+
+            async with deps.dispatcher_pool.acquire() as conn:
+                count = await conn.fetchval(f'SELECT count(*) FROM "{schema}".maintenance_leader')
+            assert count == 0, (
+                "the resign must land even though the orchestrator closed "
+                "leader_conn first — otherwise the row lapses only after a "
+                "whole leader_lease, and every rolling deploy pays it"
+            )
+        finally:
+            shutdown.set()
+            if not task.done():
+                task.cancel()
+            with suppress(asyncio.CancelledError, ExceptionGroup):
+                await task
+    finally:
+        await stack.aclose()
+
+
+@pytest.mark.asyncio
+async def test_graceful_leader_shutdown_hands_over_within_one_election_cycle(
+    pg_dsn: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The resign at shutdown deletes the row, so the surviving follower
+    wins on its very next election attempt — a clean exit must cost the
+    fleet one election cycle, never a lease's lapse."""
+    (
+        schema,
+        stack_a,
+        deps_a,
+        backend_a,
+        wid_a,
+        stack_b,
+        deps_b,
+        backend_b,
+        wid_b,
+    ) = await _open_two(pg_dsn, f"test_leader_{new_base62()}")
+
+    try:
+        _route_logs_to_stdlib()
+        with caplog.at_level(logging.DEBUG):
+            # Per-pod shutdown events: the incumbent is stopped alone, the
+            # follower keeps running — the deploy shape.
+            shutdown_a, shutdown_b = asyncio.Event(), asyncio.Event()
+            leader_a = MaintenanceLeader(deps_a, wid_a, backend_a, clock=SystemClock())
+            leader_b = MaintenanceLeader(deps_b, wid_b, backend_b, clock=SystemClock())
+            task_a = asyncio.create_task(leader_a.run(shutdown_a))
+            task_b = asyncio.create_task(leader_b.run(shutdown_b))
+            try:
+                # Whichever pod won is the incumbent this test stops.
+                await wait_for_condition(
+                    lambda: deps_a.is_leader.is_set() != deps_b.is_leader.is_set(),
+                    description="one pod won the initial election",
+                    timeout=5 * _HEARTBEAT_INTERVAL + 3,
+                )
+                if deps_a.is_leader.is_set():
+                    winner_deps, winner_task, winner_shutdown = deps_a, task_a, shutdown_a
+                    follower_deps, follower_wid = deps_b, wid_b
+                else:
+                    winner_deps, winner_task, winner_shutdown = deps_b, task_b, shutdown_b
+                    follower_deps, follower_wid = deps_a, wid_a
+
+                # The graceful stop: run()'s teardown resigns the lease
+                # before the connections go. The row's absence between the
+                # resign and the follower's win is deliberately NOT asserted
+                # — the handover is designed to be faster than any
+                # post-hoc read of it; what proves the resign landed is the
+                # bound below: without it the follower would wait out the
+                # whole lease (40s at these settings) instead of one cycle.
+                winner_shutdown.set()
+                await asyncio.wait_for(winner_task, timeout=5 * _HEARTBEAT_INTERVAL + 3)
+                assert not winner_deps.is_leader.is_set()
+
+                # One cycle = the follower's next election attempt.
+                await wait_for_condition(
+                    follower_deps.is_leader.is_set,
+                    description="the follower took over on its next election cycle",
+                    timeout=_HEARTBEAT_INTERVAL + 2.0,
+                )
+                async with follower_deps.dispatcher_pool.acquire() as conn:
+                    row = await conn.fetchrow(
+                        f'SELECT worker_id FROM "{schema}".maintenance_leader WHERE singleton = true'
+                    )
+                assert row is not None and UUID(str(row["worker_id"])) == follower_wid
+            finally:
+                shutdown_a.set()
+                shutdown_b.set()
+                for task in (task_a, task_b):
+                    if not task.done():
+                        task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await asyncio.gather(task_a, task_b, return_exceptions=True)
+
+        assert _events(caplog, "leader-resigned"), (
+            "the graceful stop must log its resign — a handover with no resign "
+            "event means the fleet paid the full lease lapse instead"
+        )
+    finally:
+        await stack_b.aclose()
+        await stack_a.aclose()
+
+
+class _HungRenewConn:
+    """A leader_conn stand-in that hangs the lease renewal only.
+
+    Every other call delegates to the real connection (the double's
+    surface is derived from the real thing, not hand-listed). The hung
+    renewal is cut off by the renewal's own trust-window budget — the
+    leader must stand down on its own clock while the server still shows
+    its lease live.
+    """
+
+    def __init__(self, real: asyncpg.Connection) -> None:
+        self._real = real
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._real, name)
+
+    async def fetchval(self, sql: str, *args: object) -> object:
+        if "maintenance_leader" in sql and sql.lstrip().upper().startswith("UPDATE"):
+            await asyncio.Future()  # never settles; the renewal's own deadline cuts it off
+        return await self._real.fetchval(sql, *args)
+
+
+class _HungElectConn:
+    """A leader_conn stand-in whose elect never answers.
+
+    Used after a demotion so the election loop parks inside the elect:
+    nothing can rewrite the lease row while the test reads it, which is
+    what makes "the step-down touched no database state" observable
+    without racing a re-election.
+    """
+
+    def __init__(self) -> None:
+        self._closed = False
+
+    async def fetchval(self, sql: str, *args: object) -> object:
+        if "maintenance_leader" in sql:
+            await asyncio.Future()  # never settles; released by task cancel
+        return None
+
+    async def execute(self, sql: str, *args: object) -> str:
+        return "DELETE 0"  # the teardown resign: bounded and inert here
+
+    def is_closed(self) -> bool:
+        return self._closed
+
+    async def close(self) -> None:
+        self._closed = True
+
+    def terminate(self) -> None:
+        self._closed = True
+
+
+@pytest.mark.asyncio
+async def test_leader_steps_down_on_its_own_clock_before_the_server_side_expiry(
+    pg_dsn: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The split-brain guard: the leader stops trusting its term at
+    ``attempt_started + leader_lease - margin`` on its own monotonic clock —
+    strictly before the ``expires_at`` the server holds — and standing down
+    touches no database state.
+
+    A renewal that cannot land (here: the connection never answers) must
+    end in demotion once the remaining trust is spent, while the row the
+    leader wrote is still unexpired at the server and still naming it —
+    the gap that keeps a peer's takeover and this pod's leadership from
+    ever overlapping.
+    """
+    schema, stack, deps, backend, worker_id = await _open_single(
+        pg_dsn, f"test_leader_{new_base62()}"
+    )
+    try:
+        # The shortest honoured lease: trusted_until closes a full margin
+        # before the server-side expiry the elect wrote.
+        deps.settings.leader_lease = 4 * deps.settings.heartbeat_interval
+        leader = MaintenanceLeader(deps, worker_id, backend, clock=SystemClock())
+        shutdown = asyncio.Event()
+        task = asyncio.create_task(leader.run(shutdown))
+        try:
+            await asyncio.wait_for(deps.is_leader.wait(), timeout=5 * _HEARTBEAT_INTERVAL + 3)
+
+            async with deps.dispatcher_pool.acquire() as conn:
+                before = await conn.fetchrow(
+                    f'SELECT elected_at, expires_at FROM "{schema}".maintenance_leader '
+                    f"WHERE singleton = true"
+                )
+            assert before is not None
+
+            # Renewal answers stop here; the row at the server stays as the
+            # elect wrote it until the lapse. The factory replacement makes
+            # the post-demotion re-election park inside a hung elect, so the
+            # row cannot be rewritten between the demotion and the reads
+            # below — that is what makes "the step-down touched no database
+            # state" observable without racing the loop's next cycle.
+            real_conn = deps.leader_conn
+            assert real_conn is not None
+            deps.leader_conn = _HungRenewConn(real_conn)  # type: ignore[assignment]  # Why: a connection-boundary double; the renewal hangs while every other call delegates.
+
+            async def _hung_factory() -> asyncpg.Connection:
+                return _HungElectConn()  # type: ignore[return-value]  # Why: a connection-boundary double; see above.
+
+            deps.leader_conn_factory = _hung_factory
+
+            _route_logs_to_stdlib()
+            with caplog.at_level(logging.DEBUG):
+                await wait_for_condition(
+                    lambda: any(
+                        "leadership-lost" in record.getMessage() for record in caplog.records
+                    ),
+                    description="the leader stood down once its trust window was spent",
+                    timeout=5 * _HEARTBEAT_INTERVAL + 3,
+                )
+
+            assert not deps.is_leader.is_set()
+            assert deps.leader_term is None
+            assert not deps.leading()
+
+            # The ordering the trust window exists for: the demotion is
+            # already latched while the server still holds the lease live.
+            async with deps.dispatcher_pool.acquire() as conn:
+                still_live = await conn.fetchval(
+                    f'SELECT expires_at > clock_timestamp() FROM "{schema}".maintenance_leader '
+                    f"WHERE singleton = true"
+                )
+                after = await conn.fetchrow(
+                    f'SELECT elected_at, expires_at FROM "{schema}".maintenance_leader '
+                    f"WHERE singleton = true"
+                )
+            assert still_live is True, (
+                "the leader must stand down BEFORE the server-side expiry "
+                "it wrote — standing down past it overlaps a peer's legal "
+                "takeover"
+            )
+            assert after is not None
+            assert after["elected_at"] == before["elected_at"], (
+                "a trust-window step-down must not touch the row: no renewal "
+                "landed and no resign deleted it"
+            )
+            assert after["expires_at"] == before["expires_at"]
+        finally:
+            shutdown.set()
+            task.cancel()
+            with suppress(asyncio.CancelledError, ExceptionGroup):
+                await task
+    finally:
+        await stack.aclose()
+
+
+@pytest.mark.asyncio
+async def test_leader_whose_row_was_taken_over_steps_down_on_the_next_renewal(
+    pg_dsn: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A renewal fenced on ``(worker_id, elected_at)`` that matches no row
+    means a successor holds the lease: the deposed leader stands down and
+    leaves the successor's row untouched.
+
+    The takeover itself cannot be produced by the elect statement against
+    a live lease — that is the exclusion property — so the successor's row
+    is seeded directly, exactly the state the fence exists to be read
+    against.
+    """
+    schema, stack, deps, backend, worker_id = await _open_single(
+        pg_dsn, f"test_leader_{new_base62()}"
+    )
+    try:
+        leader = MaintenanceLeader(deps, worker_id, backend, clock=SystemClock())
+        shutdown = asyncio.Event()
+        task = asyncio.create_task(leader.run(shutdown))
+        try:
+            await asyncio.wait_for(deps.is_leader.wait(), timeout=5 * _HEARTBEAT_INTERVAL + 3)
+
+            # A successor's row appears under the incumbent (its own lease
+            # having lapsed is how production reaches this state).
+            successor = new_uuid()
+            async with deps.dispatcher_pool.acquire() as conn:
+                await _create_worker(conn, schema, successor)
+                await conn.execute(
+                    f'UPDATE "{schema}".maintenance_leader SET '
+                    f"worker_id = $1, elected_at = clock_timestamp(), "
+                    f"last_seen_at = clock_timestamp(), "
+                    f"expires_at = clock_timestamp() + interval '1 hour' "
+                    f"WHERE singleton = true",
+                    successor,
+                )
+
+            _route_logs_to_stdlib()
+            with caplog.at_level(logging.DEBUG):
+                await wait_for_condition(
+                    lambda: any(
+                        "leadership-lost" in message and "term_lost" in message
+                        for message in (record.getMessage() for record in caplog.records)
+                    ),
+                    description="the deposed leader stood down on its next fenced renewal",
+                    timeout=5 * _HEARTBEAT_INTERVAL + 3,
+                )
+
+            assert not deps.is_leader.is_set()
+            assert deps.leader_term is None
+            # The demotion touched nothing: the successor's row stands.
+            async with deps.dispatcher_pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    f'SELECT worker_id FROM "{schema}".maintenance_leader WHERE singleton = true'
+                )
+            assert row is not None and UUID(str(row["worker_id"])) == successor, (
+                "a deposed leader must leave the successor's row alone"
+            )
+        finally:
+            shutdown.set()
+            task.cancel()
+            with suppress(asyncio.CancelledError, ExceptionGroup):
+                await task
+    finally:
+        await stack.aclose()

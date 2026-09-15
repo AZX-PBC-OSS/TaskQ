@@ -143,13 +143,12 @@ def _make_wake_leader(
     from taskq.backend._protocol import Backend
     from taskq.backend.clock import SystemClock
     from taskq.worker._watchdog import LoopLiveness
-    from taskq.worker.deps import WorkerDeps
     from taskq.worker.leader import MaintenanceLeader
+    from tests._leader_stub_deps import stub_deps
 
     is_leader = asyncio.Event()
     is_leader.set()
-    deps = cast(
-        WorkerDeps,
+    deps = stub_deps(
         SimpleNamespace(
             liveness=LoopLiveness(),
             is_leader=is_leader,

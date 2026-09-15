@@ -561,6 +561,48 @@ a bound, not a counter). Two behaviours follow from that:
 These change what your code *does* without changing what it *accepts*. Nothing
 raises, so nothing points you at the call site — audit for them explicitly.
 
+### Maintenance leadership is now a lease you can bound
+
+Leadership was held by a session-scoped advisory lock with no expiry. A holder
+that stopped working without closing its session — a frozen host, a
+black-holed partition, a stopped process — kept the lock, and the only
+recovery was terminating that backend, a privilege managed Postgres commonly
+reserves. Where it was unavailable, the whole maintenance plane stayed down
+until the server's own keepalive reaping closed the session: hours, at stock
+settings, with dispatch still flowing and every pod reporting healthy.
+
+Leadership is now a lease on the `maintenance_leader` row, renewed every
+`heartbeat_interval` and taken over by any pod once it lapses. Failover from a
+silent leader is bounded by `TASKQ_LEADER_LEASE` (new, default 40 s) plus
+`TASKQ_HEARTBEAT_INTERVAL` and one round trip, and recovery needs no privilege
+beyond `UPDATE` on that row. Raising `heartbeat_interval` alone raises the
+effective lease with it rather than shortening the renewal margin.
+
+Three consequences to audit:
+
+* **One additive migration** (`01.00.12_01_pre_leader_lease.sql`) adds
+  `expires_at` to `maintenance_leader`. It is `pre`-phase and rolling-safe:
+  pods from the previous release neither read nor write that column, so it can
+  be applied while they are running, and a rollback ignores it.
+* **The advisory lock is now a transition courtesy**, taken after winning the
+  lease so a pod from the previous release cannot lead beside a lease holder
+  during the roll. It is never required and never waited on, and it is removed
+  once every fleet has rolled. Leadership may hand over once per pod during
+  the roll itself — visible in `leader-elected` and `leadership-lost` — which
+  is a handover, never an overlap. Both directions are covered: a pod from the
+  previous release defers to a live lease because it cannot take the lock, and
+  a pod from this release defers to a previous-release holder because the row
+  is taken over only once **both** its lease has lapsed and its `last_seen_at`
+  ping has been silent for four heartbeat intervals. The ping check is what
+  makes the mixed fleet safe — a previous-release pod's own upsert names four
+  columns and leaves whatever `expires_at` it found in place, so the expiry
+  alone would judge a pod that is pinging every second to be lapsed.
+* **`taskq_leader_lock_contention_total` stops rising in a healthy fleet.** It
+  previously incremented on every follower's every heartbeat, so the
+  sustained-rate alert fired permanently wherever more than one pod ran. It
+  now records one event per distinct holder a pod finds in its way.
+  Dashboards that graphed the old always-rising counter will go flat.
+
 ### Rate-limit refunds now credit the store that paid
 
 If you run `backend="redis"` rate limits with `rate_limit_pg_fallback_enabled`

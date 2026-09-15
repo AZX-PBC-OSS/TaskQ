@@ -168,7 +168,7 @@ async def test_heartbeat_extends_lease(
 
     await res.acquire(job_id, worker_id, module_pg_pool)
 
-    _, _, update_reservation_leases_sql, _ = _build_heartbeat_sql(settings.schema_name)
+    _, _, update_reservation_leases_sql = _build_heartbeat_sql(settings.schema_name)
     lock_lease = timedelta(seconds=settings.lock_lease)
     update_jobs_lock_sql = _UPD_JOBS_LOCK_SQL_TEMPLATE.format(schema=schema)
 

@@ -882,6 +882,14 @@ class WorkerSettings(TaskQSettings):
         "reclaimed by the recovery sweep. "
         "Must be >= 4 * heartbeat_interval.",
     )
+    leader_lease: float = Field(
+        default=40.0,
+        ge=1.0,
+        description="TASKQ_LEADER_LEASE (seconds). How long the maintenance "
+        "leader's lease is trusted without a renewal; another pod takes "
+        "leadership once it lapses. Renewed every heartbeat_interval, and "
+        "never held to less than 4 of them.",
+    )
     max_heartbeat_failures: int = Field(
         default=3,
         ge=1,
@@ -1640,6 +1648,21 @@ class WorkerSettings(TaskQSettings):
             "Only used when --until-idle is active."
         ),
     )
+
+    @property
+    def resolved_leader_lease(self) -> float:
+        """The maintenance lease actually honoured, in seconds.
+
+        The lease is renewed once per heartbeat interval, so one shorter
+        than four of them would demote a leader whose renewal is merely a
+        tick behind — leadership would churn on every slow tick. Raising
+        ``heartbeat_interval`` alone must not produce that, and must not
+        refuse to boot either: a fleet that can no longer be told what to
+        do is worse than one running a longer lease than it asked for. The
+        configured value is therefore a floor that the same four-beat slack
+        the jobs' lock leases carry can raise, never a ceiling.
+        """
+        return max(self.leader_lease, 4 * self.heartbeat_interval)
 
     @property
     def resolved_pg_dsn_direct(self) -> PostgresDsn:

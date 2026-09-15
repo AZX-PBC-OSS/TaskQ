@@ -31,6 +31,7 @@ from taskq.backend.clock import SystemClock
 from taskq.testing.otel import collect_metrics
 from taskq.worker._watchdog import LoopLiveness
 from taskq.worker.leader import MaintenanceLeader
+from tests._leader_stub_deps import stub_deps
 
 if TYPE_CHECKING:
     from taskq.worker.deps import WorkerDeps
@@ -112,8 +113,7 @@ class _ObservableLeaderFlag(asyncio.Event):
 
 
 def _leader(is_leader: asyncio.Event) -> MaintenanceLeader:
-    deps = cast(
-        WorkerDeps,
+    deps = stub_deps(
         SimpleNamespace(
             liveness=LoopLiveness(),
             is_leader=is_leader,

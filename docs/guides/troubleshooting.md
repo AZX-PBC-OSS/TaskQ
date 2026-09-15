@@ -180,7 +180,8 @@ The `scheduled_to_pending` sweep (Sweep 3) runs every 1 second **on the leader o
 ### Diagnosis
 
 ```sql
-SELECT ml.worker_id, w.hostname, w.pid, ml.last_seen_at
+SELECT ml.worker_id, w.hostname, w.pid, ml.last_seen_at, ml.expires_at,
+       ml.expires_at >= clock_timestamp() AS lease_live
 FROM {schema}.maintenance_leader ml
 JOIN {schema}.workers w ON ml.worker_id = w.id;
 
@@ -189,35 +190,19 @@ WHERE status = 'scheduled' AND scheduled_at <= clock_timestamp()
 GROUP BY actor;
 ```
 
-No rows from the first query = no leader. Check the admin UI at `/admin/leader` — a healthy leader shows `last_seen_at` within 30s of now.
+Leadership is a lease on that row: the holder writes an `expires_at` of its
+own choosing and renews it every `heartbeat_interval`, and any pod may take
+the row over once that instant has passed. No rows from the first query = no
+leader. `lease_live` false = the lease has lapsed and the next election cycle
+on any running pod will take it. Check the admin UI at `/admin/leader`, which
+shows the same verdict.
 
 ### Fix
 
-- **No leader:** ensure at least one worker is running. Failover SLA is `heartbeat_interval + 1s`.
+- **No leader:** ensure at least one worker is running. Failover is bounded by `leader_lease + heartbeat_interval` plus one round trip — 50s at defaults — for a leader that went silent, and by `heartbeat_interval + 1s` for one that exited cleanly.
 - **PgBouncer:** set `TASKQ_PG_DSN_DIRECT` to bypass PgBouncer. See [PgBouncer compatibility](workers.md#pgbouncer-compatibility).
-- **Stale leader:** force-release the advisory lock by terminating the backend. The election lock is schema-qualified (`taskq:maintenance_leader:<schema>`, built by `taskq.constants.schema_lock_name`), so the LIKE pattern below matches the shared prefix and any schema suffix:
-
-```sql
-SELECT pg_terminate_backend(pid)
-FROM pg_stat_activity
-WHERE query LIKE '%pg_try_advisory_lock%taskq:maintenance_leader%';
-```
-
-For a session whose query text does not carry the name (the worker binds it as a parameter), match the lock itself instead — the key is a single bigint (`classid = 0`), so compare `objid` against the qualified name's hash for your schema:
-
-```sql
-SELECT pg_terminate_backend(pid)
-FROM pg_stat_activity
-WHERE pid IN (
-    SELECT pid FROM pg_locks
-    WHERE locktype = 'advisory' AND classid = 0
-      AND objid = hashtextextended('taskq:maintenance_leader:<your-schema>', 0)
-      AND granted
-);
-```
-
-!!! warning
-    Only use `pg_terminate_backend` when the leader is confirmed stale (no `last_seen_at` update for > 60s). It forces an election cycle.
+- **Lapsed lease nobody takes:** the surviving pods cannot reach or write `{schema}.maintenance_leader`. Check their logs for `election-attempt-failed`, and check that the application role still holds `INSERT`/`UPDATE`/`DELETE` on that table. Nothing else is needed to recover the role — no privilege over other sessions, and no manual intervention in the database.
+- **A lease that never lapses while nothing runs:** the holder is alive and renewing but its leader-gated loops are not progressing. That is a different fault; see [`TaskQPromotionStalled`](runbooks.md).
 
 ---
 
@@ -413,33 +398,25 @@ No leader is elected, maintenance sweeps do not run, or `/admin/leader` shows no
 
 | Issue | Detail |
 |---|---|
-| No leader elected | `maintenance_leader` table is empty; no worker holds the advisory lock. |
-| Stale leader | Leader died but its advisory lock was not released (TCP keepalive did not detect). |
-| PgBouncer interference | `leader_conn` routes through transaction-mode pooling, silently dropping the session-scoped lock. |
+| No leader elected | `maintenance_leader` table is empty; no worker has won the row's lease. |
+| Lapsed lease nobody takes | The holder went silent and its `expires_at` has passed, but no surviving pod can reach or write the row. |
+| PgBouncer interference | `leader_conn` routes through transaction-mode pooling, which the election, renewal, and resign statements all require a direct session for. |
 
 ### Diagnosis
 
 ```sql
-SELECT * FROM {schema}.maintenance_leader;
-SELECT pid, granted FROM pg_locks
-WHERE locktype = 'advisory' AND mode = 'exclusive';
+SELECT ml.*, ml.expires_at >= clock_timestamp() AS lease_live
+FROM {schema}.maintenance_leader ml;
 ```
 
-Check the admin UI at `/admin/workers` — the `is_leader` column shows which worker holds the lock.
+Check the admin UI at `/admin/workers` — the `is_leader` column and `/admin/leader`'s `watchdog_healthy` reflect the same lease verdict this query computes.
 
 ### Fix
 
 - **No leader:** ensure at least one worker is running with a valid `TASKQ_PG_DSN_DIRECT`. Election is attempted every `heartbeat_interval`.
-- **PgBouncer:** set `TASKQ_PG_DSN_DIRECT` to bypass PgBouncer. Session-level advisory locks are silently released by transaction-mode pooling.
-- **Stale leader:** if the watchdog has not detected it, force-release by terminating the backend:
-
-```sql
-SELECT pg_terminate_backend(pid)
-FROM pg_stat_activity
-WHERE pid IN (SELECT pid FROM pg_locks WHERE locktype = 'advisory' AND mode = 'exclusive');
-```
-
-- **Multiple schemas:** each schema gets its own advisory lock namespace. Verify `TASKQ_SCHEMA_NAME` is consistent across all workers. Failover SLA is `heartbeat_interval + 1s`; if slower, check that `leader_conn` uses a direct DSN and the watchdog health check (every 5s) is not blocked.
+- **PgBouncer:** set `TASKQ_PG_DSN_DIRECT` to bypass PgBouncer. See [PgBouncer compatibility](workers.md#pgbouncer-compatibility).
+- **Lapsed lease nobody takes:** the surviving pods cannot reach or write `{schema}.maintenance_leader`. Check their logs for `election-attempt-failed`, and check that the application role still holds `INSERT`/`UPDATE`/`DELETE` on that table. Recovery needs no privilege over the previous holder's session and no manual intervention in the database — a stuck or dead leader is displaced on the lease alone.
+- **Multiple schemas:** each schema gets its own `maintenance_leader` row. Verify `TASKQ_SCHEMA_NAME` is consistent across all workers. Failover is bounded by `leader_lease + heartbeat_interval` plus one round trip (50s at defaults) for a leader that went silent, and by `heartbeat_interval + 1s` for one that exited cleanly; if slower, check that `leader_conn` uses a direct DSN and the watchdog health check (every 5s) is not blocked.
 
 ---
 

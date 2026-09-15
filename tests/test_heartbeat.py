@@ -307,8 +307,8 @@ async def _wait_for_heartbeat_failures(
 
 
 async def test_tick_advances_liveness_and_lock_extends() -> None:
-    """Tick advances workers.last_seen_at, jobs, reservation_slots, and
-    (when leader) maintenance_leader, in the correct order."""
+    """Tick advances workers.last_seen_at, jobs and reservation_slots, in
+    the correct order, and leaves maintenance_leader alone even on a leader."""
     record_calls: list[float] = []
     await _patch_tick_duration(record_calls.append)
 
@@ -317,11 +317,10 @@ async def test_tick_advances_liveness_and_lock_extends() -> None:
 
     assert deps.heartbeat_failures == 0
     calls = pool.execute_calls
-    assert len(calls) >= 4
+    assert len(calls) >= 3
     assert "workers" in calls[0][0]
     assert "jobs" in calls[1][0]
     assert "reservation_slots" in calls[2][0]
-    assert "maintenance_leader" in calls[3][0]
     assert pool.acquire_count == 1
     assert len(record_calls) == 1
     assert record_calls[0] > 0
@@ -525,8 +524,10 @@ async def test_cancel_controller_called_when_set() -> None:
 
     calls = pool.execute_calls
     rs_idx = next(i for i, (sql, _) in enumerate(calls) if "reservation_slots" in sql)
-    leader_idx = next(i for i, (sql, _) in enumerate(calls) if "maintenance_leader" in sql)
-    assert rs_idx < leader_idx
+    assert rs_idx == len(calls) - 1, (
+        "the reservation-slots UPDATE is the tick's last statement, so the "
+        "controller runs after it inside the same transaction"
+    )
 
 
 # ── cancel_controller NOT called when None ────────────────────────
@@ -616,28 +617,31 @@ async def test_custom_schema_name_flows_to_sql() -> None:
     _worker_liveness_sql, wl_args = pool.execute_calls[0]
     assert worker_id in wl_args
     assert settings.schema_name not in wl_args
-    # Leader ping fires because is_leader is set (last call)
-    assert any("maintenance_leader" in sql for sql, _ in pool.execute_calls), "leader ping missing"
+    # The configured schema is what the statements name — the defect this
+    # test exists for was a hardcoded default surviving the rendering.
+    assert all(f'"{settings.schema_name}".' in sql for sql, _ in pool.execute_calls)
 
 
-# ── Leader-ping fires only when is_leader ─────────────────────────
+# ── The tick never touches the lease row ──────────────────────────
 
 
-async def test_leader_ping_not_fired_when_not_leader() -> None:
-    """When is_leader is NOT set, maintenance_leader UPDATE is skipped."""
+@pytest.mark.parametrize("is_leader", [False, True])
+async def test_tick_never_writes_the_lease_row(is_leader: bool) -> None:
+    """The heartbeat leaves ``maintenance_leader`` alone, leader or not.
+
+    The lease is renewed by the election loop on its own connection, fenced
+    on the term it holds. An unfenced write from this loop would refresh the
+    row of a leader whose term has already lapsed on its own clock, and
+    because a live ``last_seen_at`` is one of the two signals that keep the
+    row from being taken over, that write would hold leadership open past
+    the horizon the lease exists to impose.
+    """
     await _patch_tick_duration(lambda v: None)
     pool = FakePool()
-    await _run_tick(pool=pool, is_leader=False)
+    await _run_tick(pool=pool, is_leader=is_leader)
+    assert pool.execute_calls
     for sql, _ in pool.execute_calls:
         assert "maintenance_leader" not in sql
-
-
-async def test_leader_ping_fired_when_leader() -> None:
-    """When is_leader IS set, maintenance_leader UPDATE fires."""
-    await _patch_tick_duration(lambda v: None)
-    pool = FakePool()
-    await _run_tick(pool=pool, is_leader=True)
-    assert any("maintenance_leader" in sql for sql, _ in pool.execute_calls)
 
 
 # ── TimeoutError treated as connection failure ────────────────────

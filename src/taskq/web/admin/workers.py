@@ -33,7 +33,14 @@ _WORKERS_SQL = (
 _LEADER_SQL = (
     "SELECT ml.*, w.hostname, w.pid, "
     "w.last_seen_at AS worker_last_seen, "
-    "(ml.last_seen_at > clock_timestamp() - make_interval(secs => {live_secs})) AS watchdog_healthy "
+    # The holder's own lease is the truthful verdict when it wrote one: the
+    # expiry it chose is the instant its peers act on, so anything derived
+    # from this process's idea of a freshness window would disagree with the
+    # fleet. A row without one was written by a pod that does not lease, and
+    # only its ping can answer for it.
+    "(CASE WHEN ml.expires_at IS NOT NULL THEN ml.expires_at >= clock_timestamp() "
+    "ELSE ml.last_seen_at > clock_timestamp() - make_interval(secs => {live_secs}) END) "
+    "AS watchdog_healthy "
     'FROM "{schema}".maintenance_leader ml '
     'JOIN "{schema}".workers w ON ml.worker_id = w.id'
 )

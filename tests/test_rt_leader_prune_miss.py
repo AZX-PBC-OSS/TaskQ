@@ -30,7 +30,7 @@ from __future__ import annotations
 import asyncio
 import time
 from datetime import datetime, timedelta
-from typing import Any
+from typing import Any, cast
 
 import pytest
 import structlog
@@ -41,6 +41,7 @@ from taskq.backend.clock import SystemClock
 from taskq.testing.settings import make_integration_settings
 from taskq.worker._leader_shared import SweepContext
 from taskq.worker._leader_sweeps import _prune_loop
+from taskq.worker.deps import WorkerDeps
 
 #: The bounded window the contract demands for a missed-fire retry. With the
 #: backoff initial shrunk to 1 s, a fixed loop must attempt (or log) within the
@@ -138,6 +139,15 @@ class _FakeDeps:
         self.is_leader = asyncio.Event()
         self.liveness = _FakeLiveness()
         self.dispatcher_pool = _FakePool()
+        self.leader_term = None
+
+    def leading(self) -> bool:
+        """The per-iteration gate, answered the way a live worker answers it.
+
+        Bound to the production predicate rather than restated so this fake
+        cannot drift into its own idea of what leading means.
+        """
+        return bool(WorkerDeps.leading(cast(WorkerDeps, self)))
 
 
 class _FakeBackend:

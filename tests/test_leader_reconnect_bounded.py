@@ -74,6 +74,11 @@ class _FakeConn:
 
     async def fetchval(self, sql: str, *args: object) -> object:
         self.fetchval_calls.append((sql, args))
+        if "maintenance_leader" in sql:
+            # The lease statement answers with the won term's elected_at, or
+            # no row at all; the generic result models the advisory-lock
+            # probe and would report a win to a pod that lost.
+            return datetime.now(UTC) if self._fetchval_result else None
         return self._fetchval_result
 
     async def execute(self, sql: str, *args: object) -> str:

@@ -92,11 +92,11 @@ the triage below before touching replica counts.
 
 1. Check `TaskQSweepTimeouts` and `TaskQSweepDegraded` — if either is firing,
    the database cannot finish the sweep's batches and that is the root cause.
-2. If a stuck session of this schema holds the advisory lock (a partitioned
-   former leader that never released): terminate that session
-   (`SELECT pg_terminate_backend(<pid>);`). Schemas in one database now
-   always use distinct lock keys — the keys are schema-qualified — so a
-   foreign-schema holder is no longer a possible cause.
+2. Check `{schema}.maintenance_leader.expires_at`. A lease that has lapsed
+   and that no pod takes over means the survivors cannot reach or write that
+   table — check their `election-attempt-failed` logs and the application
+   role's grants on it. Recovering the role needs nothing else: no privilege
+   over other sessions, and no manual intervention in the database.
 3. If no lock contention and no timeouts: check leader health
    (`sum(taskq_maintenance_leader_is_leader) == 1` — the
    `TaskQLeaderSplitBrainOrNoLeader` alert covers the zero-leader case) and
@@ -189,16 +189,20 @@ Extra workers consume `pending` jobs faster but promote nothing.
   WHERE l.locktype = 'advisory';
   ```
 
-  The lock is a single bigint key (`hashtextextended('taskq:maintenance_leader:<schema>', 0)`), so it appears with `classid = 0`; match `objid` against `SELECT hashtextextended('taskq:maintenance_leader:<your-schema>', 0)` to pick this deployment's row out of the set. Healthy contention — leader handover overlap between pods of the *same* deployment — is brief and intermittent, which is why the alert requires a sustained rate. A long-lived `granted` session, or a holder whose `pid` maps to a session with `session_age` far beyond heartbeat liveness (partitioned without a FIN), is the finding.
+  The lock is a single bigint key (`hashtextextended('taskq:maintenance_leader:<schema>', 0)`), so it appears with `classid = 0`; match `objid` against `SELECT hashtextextended('taskq:maintenance_leader:<your-schema>', 0)` to pick this deployment's row out of the set. Contention is recorded once per distinct holder a pod finds in its way, so a stable fleet — however many followers it has — records nothing after it settles, and a handover records one event per pod. A sustained rate therefore means the observed holder keeps changing (handover churn), or that this pod cannot even read the lease row to observe a stable holder — its probe fails every cycle; check its `leader-retry` lines and connectivity.
 
 **How to remediate.**
 
-1. Identify the winning session from the SQL above. Because the key is schema-qualified, a holder belonging to another schema or deployment sharing this database is **not** the cause — it holds a different key. The holder is a session of this same schema: either the legitimately-elected leader during handover (benign, and filtered out by the sustained-rate alert) or a stuck/dead one.
-2. Terminate the stale holder if it is dead weight
-   (`SELECT pg_terminate_backend(<pid>);`). The maintenance lock is
-   session-scoped, and a partitioned session that never sends a FIN holds
-   it until the server reaps the backend — bounded by the server's
-   `tcp_keepalives_*` settings (minutes, not forever).
+1. Identify the winning session from the SQL above. Because the key is schema-qualified, a holder belonging to another schema or deployment sharing this database is **not** the cause — it holds a different key. The holder is a session of this same schema.
+2. Cross-check it against `{schema}.maintenance_leader`. A pod that follows a
+   live lease records no contention at all, and a pod that finds the row
+   absent wins it outright on its next cycle, so a sustained rate means the
+   counter's remaining shapes: the row's holder keeps changing (handover
+   churn), or the counting pod cannot read the row at all. A courtesy lock
+   held by a session no lease row accounts for never produces it: the lease
+   is what confers the role, so nothing waits on that session — but a lock
+   nobody owns still points at a pod that elected under an older release,
+   or at a session one left behind.
 3. **Upgrade discipline:** the schema-qualified names replaced the
    unqualified (`taskq:maintenance_leader`) ones outright, and the two are
    NOT overlap-compatible — a mixed old/new fleet holds different keys, so
