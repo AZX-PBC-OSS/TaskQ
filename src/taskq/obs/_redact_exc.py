@@ -16,10 +16,11 @@ Two concrete leaks, both verified by execution rather than assumed:
   caller-supplied and routinely carry tenant or subject identifiers.
 * **Credentials in URI-shaped text.** Any ``scheme://user:password@host``
   (the empty-username ``scheme://:password@host`` form included) and any
-  password-family query parameter (``?password=…`` / ``&password=…``)
-  appearing in a message is masked, so a DSN that reaches an exception by
-  any route cannot be forwarded verbatim, in whichever spelling it carries
-  the credential.
+  password-family connection parameter -- query string (``?password=…``) or
+  libpq keyword/value (``host=db … password=…``, single-quoted values
+  included), in any casing -- appearing in a message is masked, so a DSN
+  that reaches an exception by any route cannot be forwarded verbatim, in
+  whichever spelling it carries the credential.
 
 Scope, deliberately narrow: only ``DETAIL`` is dropped. ``HINT`` is Postgres's
 suggested fix and ``CONTEXT`` is the PL/pgSQL call stack -- both structural,
@@ -66,21 +67,41 @@ __all__ = [
 #: exception messages, so a greedy DOTALL match starting at the first DETAIL
 #: would delete every outer frame after it -- destroying the diagnostic while
 #: appearing to work on a single-exception test.
-_PG_DETAIL_RE = re.compile(r"^[ \t]*DETAIL:.*$", re.MULTILINE)
+#:
+#: The optional ``(?:[ \t]*[|+][ \t]*)*`` prefix absorbs
+#: ``traceback.format_exception``'s ``ExceptionGroup`` rendering, which
+#: indents every line of a sub-exception with a repeated ``| `` (or, on a
+#: group's own header/separator lines, ``+``) marker -- one added layer per
+#: level of nesting -- before the exception's own text. Without it, a DETAIL
+#: line inside a grouped or ``except*``-caught sub-exception reads
+#: ``    | DETAIL:  Key (...)=(...) already exists.`` and the anchor on a
+#: bare ``^[ \t]*`` never reaches past the marker, so the row value ships to
+#: the span/log unredacted. The prefix is still consumed only when it is
+#: immediately followed by ``DETAIL:`` -- a header line such as
+#: ``  | ExceptionGroup: ...`` does not itself start with ``DETAIL:`` and so
+#: is not touched.
+_PG_DETAIL_RE = re.compile(r"^(?:[ \t]*[|+][ \t]*)*[ \t]*DETAIL:.*$", re.MULTILINE)
 
 #: Companion to :data:`_PG_DETAIL_RE` for ``repr()``-flattened text.
 #: ``repr(exc)`` renders the newline before DETAIL as the two
 #: literal characters ``\n``, which the line-anchored pattern above cannot
 #: see — and ``error=repr(exc)`` is a majority log idiom. Consumes from the
-#: escaped newline up to (not including) the next escaped newline or the
-#: end of the line; the closing-quote alternative (``['\"]\)?\s*$``) can
-#: only succeed at end-of-line, so it keeps a repr's trailing ``')`` when
-#: present without ever stopping the scrub early and leaving row values
-#: behind. ``MULTILINE`` makes ``$`` match per real line, so a repr line
-#: embedded in a rendered traceback (real newlines around it) is scrubbed
-#: too. Optional escaped ``\r`` covers the CRLF boundary shape.
+#: escaped newline up to (not including) the next escaped newline, or up to
+#: the repr tail: a quote followed by the run of ``)``/``]`` closers a
+#: ``repr()`` ends with (``')`` for a plain exception, ``')])`` once the
+#: exception sits in an ``ExceptionGroup``'s list, one more ``])`` per
+#: nesting level) at end of line. The closing alternatives can only succeed
+#: at end-of-line, so they keep a repr's trailing closers when present
+#: without ever stopping the scrub early and leaving row values behind. The
+#: final bare ``$`` leg is fail-closed: a DETAIL whose tail matches NEITHER
+#: safe delimiter (an unterminated repr, or one embedded mid-line with more
+#: text after it) is scrubbed through end of line rather than shipped — a
+#: delimiter miss must delete more text, never less of the secret.
+#: ``MULTILINE`` makes ``$`` match per real line, so a repr line embedded in
+#: a rendered traceback (real newlines around it) is scrubbed too. Optional
+#: escaped ``\r`` covers the CRLF boundary shape.
 _PG_DETAIL_ESCAPED_RE = re.compile(
-    r"(?:\\r)?\\n[ \t]*DETAIL:.*?(?=(?:\\r)?\\n|['\"]\)?\s*$)",
+    r"(?:\\r)?\\n[ \t]*DETAIL:.*?(?=(?:\\r)?\\n|['\"][)\]]*\s*$|$)",
     re.MULTILINE,
 )
 
@@ -93,17 +114,53 @@ _PG_DETAIL_ESCAPED_RE = re.compile(
 #: form still reads ``scheme://:***@host``.
 _URI_CRED_RE = re.compile(r"(\b[a-zA-Z][a-zA-Z0-9+.-]*://[^\s:/@]*):([^\s@]+)@")
 
-#: password-family credentials in a URI QUERY STRING. Group 1 is the ``?``/``&``
-#: delimiter plus the parameter name — kept verbatim so the masked form still
-#: names which setting carried the credential — and group 2 is the value. The
-#: name set is deliberately tight to the password family: broader names
-#: (``secret``, ``token``, …) would redact non-credential parameters, which
-#: is its own bug. The value class stops at whitespace, ``&`` (the next
-#: parameter) and ``@`` (the userinfo boundary), so it never overruns the
-#: parameter it belongs to. No scheme prefix is demanded: a query string
-#: rides on bare ``host/db?password=…`` text too, and gating on ``://``
-#: would miss exactly that shape.
-_URI_PARAM_CRED_RE = re.compile(r"([?&](?:password|passphrase|passwd|pwd)=)([^\s&@]+)")
+#: Connection-parameter names whose value is credential material. Kept tight
+#: to the password family: broader names (``secret``, ``token``, …) would
+#: redact non-credential parameters, which is its own bug. ``sslpassword`` is
+#: the passphrase for the client TLS key — a credential in its own right.
+#:
+#: Spelled once, in one case, and compiled into the matcher below rather than
+#: written out as literals inside a pattern: a hand-maintained list of exact
+#: spellings is what let case variants and ``sslpassword`` through, and a
+#: derived matcher makes the next spelling a one-word edit here.
+_CRED_PARAM_NAMES = ("password", "passphrase", "passwd", "pwd", "sslpassword")
+
+#: password-family credentials in a connection string, in BOTH spellings that
+#: carry one. Group 1 is the delimiter plus the parameter name — kept verbatim
+#: so the masked form still names which setting carried the credential — and
+#: group 2 is the value.
+#:
+#: Delimiters cover the URI query string (``?password=…`` / ``&password=…``)
+#: and the libpq keyword/value conninfo form (``host=db … password=…``), which
+#: carries neither ``://`` nor ``?`` and so slipped past a query-only matcher.
+#: The keyword form's delimiter is a boundary, expressed as a lookbehind for
+#: anything that could be the tail of a LONGER parameter name, so ``cpwd=`` is
+#: not mistaken for ``pwd=``.
+#:
+#: ``IGNORECASE``: libpq parameter names are case-insensitive, and psql, ORMs
+#: and operator-typed DSNs echo back whatever casing was written, so a matcher
+#: keyed to one exact spelling ships the value verbatim in every other.
+#:
+#: The value is either a libpq single-quoted string — which may carry spaces
+#: and honours the ``\'`` and ``\\`` escapes, so the quote run must be
+#: consumed whole or the tail of the secret rides along after the ``***`` —
+#: or an unquoted token. The unquoted class stops only at whitespace and
+#: ``&`` (the next parameter). It deliberately does NOT stop at ``@``: a
+#: password may legally contain an unencoded ``@``, and a matcher that
+#: treats it as a boundary leaves the tail of the secret riding along after
+#: the ``***``.
+_URI_PARAM_CRED_RE = re.compile(
+    r"((?:[?&]|(?<![A-Za-z0-9_]))(?:"
+    + "|".join(_CRED_PARAM_NAMES)
+    + r")=)('(?:[^'\\]|\\.)*'|[^\s&]+)",
+    re.IGNORECASE,
+)
+
+#: Lowercased trigger substrings for :data:`_URI_PARAM_CRED_RE`'s prefilter.
+#: Derived from the same name tuple, so a name added above is guarded here
+#: without a second edit — a prefilter that drifts from its pattern silently
+#: stops masking.
+_CRED_PARAM_TRIGGERS = tuple(f"{name}=" for name in _CRED_PARAM_NAMES)
 
 #: Default bound on scrubbed message text. 2000 to match
 #: ``web/admin/jobs.py``'s ``_TRACEBACK_DISPLAY_LIMIT`` — one number for "how
@@ -147,14 +204,22 @@ def _scrub_text(text: str) -> str:
 
     Both credential shapes are masked: userinfo (``scheme://user:pass@host``,
     empty username included) by :data:`_URI_CRED_RE`, then password-family
-    query parameters (``?password=…`` / ``&password=…``) by
-    :data:`_URI_PARAM_CRED_RE`. The order is safe for a DSN carrying both at
-    once (``scheme://user:SECRET@host/db?password=OTHER``): the userinfo
-    password class stops only at whitespace/``@`` and so claims the whole
-    userinfo password even when it embeds query-param-looking text, the
-    param value class excludes ``@`` and so cannot reach back into userinfo,
-    and neither mask's ``***`` output contains anything the other regex can
-    re-match — each fires exactly once.
+    connection parameters — query-string and libpq keyword/value alike, in any
+    casing — by :data:`_URI_PARAM_CRED_RE`. The order is what makes a DSN
+    carrying both at once safe (``scheme://user:SECRET@host/db?password=OTHER``):
+    the userinfo mask runs first and claims the password up to the FIRST
+    ``@``, so an RFC 3986-shaped DSN leaves the parameter mask a string whose
+    only ``@`` is the one the userinfo mask wrote ``***`` in front of. The
+    boundary really is the first ``@``, not the RFC 3986 userinfo end: a
+    password carrying an unencoded ``@`` (``scheme://user:SEC@RET@host``) is
+    masked only up to it and the tail (``RET``) rides through. That is
+    accepted rather than guessed around: an unencoded ``@`` is not valid in
+    userinfo (RFC 3986 requires percent-encoding), and in arbitrary non-URI
+    text a later ``@`` more often belongs to the next token (an email
+    address, a mention) than to the password, so last-``@`` matching would
+    over-delete diagnostics to catch a malformed shape. Neither mask's
+    ``***`` output contains anything the other regex can re-match — each
+    fires exactly once.
 
     The credential masks are applied unconditionally, outside the
     ``_redaction_enabled`` guard: the debugging case that wants a row value
@@ -169,8 +234,9 @@ def _scrub_text(text: str) -> str:
       require ``"DETAIL:"`` in the subject.
     * ``_URI_CRED_RE`` requires a ``scheme://`` separator.
     * ``_URI_PARAM_CRED_RE`` requires a password-family parameter name
-      followed by ``=`` — and deliberately NOT ``://``: bare
-      ``host/db?password=…`` text must stay masked, so the guard is on the
+      followed by ``=``, compared case-insensitively to match the pattern —
+      and deliberately NOT ``://``: bare ``host/db?password=…`` and libpq
+      ``host=db … password=…`` text must stay masked, so the guard is on the
       parameter names, not a scheme.
 
     Skipping a substitution when its trigger substring is absent cannot
@@ -183,7 +249,8 @@ def _scrub_text(text: str) -> str:
         text = _PG_DETAIL_ESCAPED_RE.sub("", text)
     if "://" in text:
         text = _URI_CRED_RE.sub(r"\1:***@", text)
-    if "password=" in text or "passphrase=" in text or "passwd=" in text or "pwd=" in text:
+    lowered = text.lower()
+    if any(trigger in lowered for trigger in _CRED_PARAM_TRIGGERS):
         return _URI_PARAM_CRED_RE.sub(r"\1***", text)
     return text
 
