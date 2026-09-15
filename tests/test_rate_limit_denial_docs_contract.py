@@ -83,6 +83,11 @@ def test_rate_limiting_guide_states_denials_are_retry_free() -> None:
         "sustained rate limiting must never burn retry budget; the "
         "queue-depth section is where operators look for that guarantee"
     )
+    assert "writes no `job_events` and no `job_attempts` row" in text, (
+        "a denial persists no per-denial rows -- the guide must say the "
+        "aggregated counter on the job row replaced them, not leave an "
+        "operator hunting job_events for a row that is never written"
+    )
 
 
 def test_rate_limiting_guide_does_not_promise_terminal_failure() -> None:
@@ -99,8 +104,51 @@ def test_rate_limiting_guide_does_not_claim_snoozed_job_status() -> None:
     text = _read("guides", "rate-limiting.md")
     assert "transitions to `snoozed` status" not in text, (
         "job_status has no 'snoozed' value -- a denied job is `scheduled` "
-        "with a future run_at, and operators querying the table need the "
-        "status name that actually exists"
+        "with a future `scheduled_at`, and operators querying the table "
+        "need the status name that actually exists"
+    )
+
+
+def test_denial_guides_never_name_a_run_at_column() -> None:
+    """No denial surface may name `run_at` -- the column does not exist.
+
+    The jobs row's reschedule timestamp is `scheduled_at`: the snooze
+    statement writes `scheduled_at = clock_timestamp() + delay` and the
+    promotion sweep reads it back. `run_at` appears nowhere in the
+    schema, so a guide that names it sends an operator querying for a
+    denied job against a column that is not there.
+    """
+    for guide in (
+        "ops.md",
+        "rate-limiting.md",
+        "troubleshooting.md",
+        "upgrading.md",
+        "observability.md",
+    ):
+        text = _read("guides", guide)
+        assert "run_at" not in text, (
+            f"{guide} names a `run_at` column -- the jobs row's reschedule "
+            "timestamp is `scheduled_at`; there is no `run_at` column in "
+            "the schema"
+        )
+
+
+def test_rate_limiting_guide_denial_step_names_the_real_reschedule_column() -> None:
+    """The dispatch-time denial step must name the column that exists.
+
+    `scheduled_at` is where the denial's backoff lands on the jobs row;
+    naming it is what lets an operator querying the `scheduled` rows see
+    when a denied job becomes claimable again.
+    """
+    text = _read("guides", "rate-limiting.md")
+    step = text.split("A rate-limited job is rescheduled", 1)
+    assert len(step) == 2, (
+        "rate-limiting.md must keep a dispatch-time step describing how a denied job is rescheduled"
+    )
+    body = step[1].split("\n\n", 1)[0]
+    assert "`scheduled_at`" in body, (
+        "the denial step must say the reschedule is recorded on the jobs "
+        "row's `scheduled_at` column -- the name an operator's query needs"
     )
 
 
@@ -110,6 +158,12 @@ def test_troubleshooting_guide_states_denials_cost_no_retry_budget() -> None:
     assert "no retry budget consumed" in text, (
         "an operator diagnosing a rate-limit backlog must be told the "
         "backlog is not silently eating retry budget"
+    )
+    assert "schedule_to_close" in text, (
+        "a denied job is rescheduled until capacity frees or its "
+        "schedule-to-close deadline expires through the ordinary deadline "
+        "path -- the one bound on a never-admitted job must be named where "
+        "an operator diagnoses the backlog"
     )
 
 

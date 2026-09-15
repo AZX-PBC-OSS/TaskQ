@@ -193,9 +193,11 @@ remaining steps. Later steps only execute when earlier ones did not match or rai
     answers. A producer that exhausts the budget gets `UniqueForLockTimeoutError` (this enqueue
     wrote nothing; on a caller-owned transaction durability is the caller's decision) instead of
     queueing indefinitely behind a same-key stampede or a black-holed holder. That error is
-    deliberately **not** in the `BackpressureError` family and bumps no
-    `taskq.backpressure.errors` counter — nothing about capacity is wrong; the dedup answer for
-    one identity could not be determined in time. The correct response is to **retry the same
+    deliberately **not** in the `BackpressureError` family — nothing about capacity is wrong; the
+    dedup answer for one identity could not be determined in time. It does still increment
+    `taskq.backpressure.errors` with `kind="unique_for_lock_timeout"`, so alerting meant for
+    capacity pressure must filter the `kind` label rather than the raw counter. The correct
+    response is to **retry the same
     enqueue**: once the winner's row is visible, the retry typically returns it as a dedup hit
     (`was_existing=True`). `0` or less disables the bound entirely (the unbounded queueing
     behavior), matching Postgres' own `lock_timeout = 0` convention.
@@ -1452,7 +1454,7 @@ from taskq.exceptions import (
 |---|---|
 | `MaxPendingExceededError` | `enqueue()` called when `pending + scheduled` count >= `max_pending`. Fields: `actor` (str), `current_count` (int), `max_pending` (int). |
 | `MaxPendingLockTimeoutError` | `enqueue()` on a capped actor could not acquire the per-`(schema, actor)` serialization advisory lock within its budget (default 5 s) — cap check never ran. Two distinct causes: too many concurrent producers racing the same actor, **or** a single long-running caller transaction holding the lock for its own lifetime (e.g. a transactional actor's `ctx.jobs` sub-enqueue to a capped actor, held until that actor's commit/rollback — see the operational note above). Same `BackpressureError` family as `MaxPendingExceededError`; same response (retry later or shed load; for the transactional-holder cause, also check for a long-running actor sub-enqueueing to this capped actor). Fields: `actor` (str), `timeout_ms` (float). |
-| `UniqueForLockTimeoutError` | `enqueue()` with `unique_for` + `identity_key` could not acquire the per-`(schema, actor, identity_key)` single-flight advisory lock within its budget (default 5 s, `DEFAULT_UNIQUE_FOR_LOCK_TIMEOUT_MS`) — the dedup answer for one identity could not be determined in time; nothing was inserted. NOT a `BackpressureError` (no capacity problem) and not counted in `taskq.backpressure.errors`. Response: retry the same enqueue — it typically dedupes against the winner's row (`was_existing=True`). Fields: `actor` (str), `identity_key` (str), `timeout_ms` (float). |
+| `UniqueForLockTimeoutError` | `enqueue()` with `unique_for` + `identity_key` could not acquire the per-`(schema, actor, identity_key)` single-flight advisory lock within its budget (default 5 s, `DEFAULT_UNIQUE_FOR_LOCK_TIMEOUT_MS`) — the dedup answer for one identity could not be determined in time; nothing was inserted. NOT a `BackpressureError` (no capacity problem), though it is counted in `taskq.backpressure.errors` under `kind="unique_for_lock_timeout"` alongside the capacity kinds. Response: retry the same enqueue — it typically dedupes against the winner's row (`was_existing=True`). Fields: `actor` (str), `identity_key` (str), `timeout_ms` (float). |
 | `BatchMaxPendingExceededError` | A bulk enqueue (`enqueue_batch()` / `enqueue_batch_fast()` / the chunked arm of `enqueue_batch_streaming()`) partitioned admission per actor and refused some: the within-cap actors' items were inserted first, then this raises. Fields: `refusals` (list of `MaxPendingExceededError`, one per over-cap actor), `refused_indices` (actor -> indices into the caller's items), `admitted_count` (int). Not a `MaxPendingExceededError` subclass — part of the batch is already stored; retry only the refused items or rely on idempotency keys. An `except BackpressureError` handler catches this too and must consult `admitted_count` / `refused_indices` before any whole-batch retry. |
 | `SingletonCollisionError` | `enqueue()` called for a singleton actor that already has an active job. Fields: `actor` (str), `blocking_job_id` (UUID or None), `retry_after` (timedelta or None). |
 | `PayloadValidationError` | Pydantic validation of the payload fails at enqueue time or at dispatch time. Non-retryable regardless of retry policy. Fields: `actor`, `payload_schema_ver`, `validation_errors`. |

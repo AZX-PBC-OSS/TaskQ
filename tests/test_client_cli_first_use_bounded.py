@@ -169,8 +169,6 @@ def _capture_ui_app(
     """
     import uvicorn
 
-    import taskq.cli as cli_mod
-
     captured: dict[str, Any] = {}
 
     def _fake_uvicorn_run(app: Any, **kwargs: Any) -> None:
@@ -180,7 +178,7 @@ def _capture_ui_app(
 
     redis_url: str | None = None
     if create_pool is not None:
-        monkeypatch.setattr(cli_mod.asyncpg, "create_pool", create_pool)
+        monkeypatch.setattr(asyncpg, "create_pool", create_pool)
     if from_url_result is not None:
         import redis.asyncio as aioredis
 
@@ -421,10 +419,12 @@ async def test_taskq_open_dsn_pool_carries_command_timeout(
     async with asyncio.timeout(_TEST_BUDGET_SECS):
         await tq.close()
 
-    assert captured_kwargs.get("command_timeout") == 5.0, (
+    assert captured_kwargs.get("command_timeout") == 10.0, (
         "the DSN pool TaskQ builds must carry the pool-level per-query "
-        "bound (client._taskq._CLIENT_POOL_COMMAND_TIMEOUT_SECS, mirroring "
-        "WorkerSettings.dispatcher_command_timeout's default), got "
+        "bound (client._taskq._CLIENT_POOL_COMMAND_TIMEOUT_SECS — set "
+        "deliberately above the 5 s enqueue-path lock budgets so the "
+        "server-side typed lock refusal wins the race against asyncpg's "
+        "client-side cancellation), got "
         f"kwargs: {sorted(captured_kwargs)}"
     )
 
@@ -455,13 +455,13 @@ def test_taskq_pg_provider_pool_factory_carries_command_timeout(
         schema="taskq",
     )
 
-    assert captured_kwargs.get("command_timeout") == 5.0, (
+    assert captured_kwargs.get("command_timeout") == 10.0, (
         "make_pg_pool_factory must receive the pool-level per-query bound "
         "(client._taskq._CLIENT_POOL_COMMAND_TIMEOUT_SECS) from the "
         "pg_provider sugar, got kwargs: "
         f"{sorted(captured_kwargs)}"
     )
-    assert taskq_mod._CLIENT_POOL_COMMAND_TIMEOUT_SECS == 5.0
+    assert taskq_mod._CLIENT_POOL_COMMAND_TIMEOUT_SECS == 10.0
 
 
 # ── taskq ui serve: startup factory calls and eager redis are bounded ──

@@ -205,7 +205,10 @@ taskq actor-config set my_actor --max-concurrent 10
 
 The exception: **`max_pending`** — a NULL stored value falls back to the code literal, so its
 declarations work on deploy. (`max_pending` rejects enqueues past the queued depth with
-`MaxPendingExceededError`, surfaced as `taskq.backpressure.errors`.)
+`MaxPendingExceededError`, surfaced as `taskq.backpressure.errors` with `kind="max_pending"` —
+filter on the `kind` label, because the same counter also carries identity-serialization
+refusals (`unique_for_lock_timeout`, `idempotency_lock_timeout`) that are lock contention, not
+capacity pressure.)
 
 Two viable ownership postures — pick one deliberately:
 
@@ -786,9 +789,16 @@ Two more states worth naming because they mean *infrastructure*, not your code:
 
 When an actor's rate limit or reservation denies admission, the actor body **never runs**: the
 job is rescheduled at `now + retry_after` (computed by the limiter store in the DB/Redis clock
-domain), the slot is freed, and **no retry budget is consumed**. The attempt row records
-`rate_limit_denied` / `reservation_denied` and `metadata.awaiting` names the bucket. A denied job
-waits in Postgres — this is not busy-spinning in the worker.
+domain), the slot is freed, and **no retry budget is consumed**. Admission control has HTTP-429
+semantics: "come back later", indefinitely retryable. A denial never by itself ends a job — the
+only bound on a job that is never admitted is its `schedule_to_close` deadline, which fails it
+through the ordinary deadline path.
+
+A denial writes **no** `job_events` and **no** `job_attempts` row: per-denial rows grow without
+bound under sustained contention. The surviving per-job record is the aggregated
+`rate_limit_blocked_count` column on the job row — query it to find which job has been starving
+for capacity while the fleet-wide denial counters look like ordinary load. A denied job waits in
+Postgres — this is not busy-spinning in the worker.
 
 ```python
 from taskq.ratelimit import SlidingWindow, TokenBucket, registry
@@ -854,7 +864,7 @@ connection errors the limiter falls back to the PG implementation by default
 
 | Signal | Consumes budget | Reschedules at | Use for |
 |---|---|---|---|
-| `raise Snooze(delay)` | **No** — `max_attempts` is bumped to keep the invariant `attempt < max_attempts` | `now + delay` | waiting for a condition (batch completion, external state) |
+| `raise Snooze(delay)` | **No** — the claim's attempt increment is refunded, so the budget is left unspent; `max_attempts` is immutable and nothing raises it | `now + delay` | waiting for a condition (batch completion, external state) |
 | `raise RetryAfter(delay)` | **Yes** (default) — bounded by `max_attempts`, terminal `MaxAttemptsExceeded` when out | `now + delay` | a retry that should wait a *known* time (429s) |
 | `raise RetryAfter(delay, consume_budget=False)` | No (snooze semantics) | `now + delay` | known-delay wait that must never exhaust the budget |
 
@@ -934,7 +944,7 @@ Every job emits an `enqueue` PRODUCER span, a `process` CONSUMER span (linked, w
 | `messaging.process.duration` | actor latency, slow chunks |
 | `taskq.lock.expires_in_seconds` | heartbeat trouble before it becomes `crashed` jobs |
 | `taskq.deadline_exceeded_sweep.jobs_failed` | `schedule_to_close` too tight |
-| `taskq.backpressure.errors` | `max_pending` rejections — producer pressure |
+| `taskq.backpressure.errors` (filter `kind` to the capacity kinds) | `max_pending` rejections — producer pressure |
 | `taskq.cron.disabled_schedules` | a cron outage with one log line |
 | `taskq.maintenance_leader.is_leader` summed != 1 | leader split-brain / no leader |
 

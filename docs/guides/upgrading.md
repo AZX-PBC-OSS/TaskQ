@@ -43,12 +43,18 @@ This is a deliberate tradeoff, not a missing feature:
    This lists every discovered migration and whether it has already been
    applied, without changing anything.
 
-4. **Apply migrations explicitly**, or let the worker apply them at startup
-   via `TASKQ_MIGRATE_ON_START=true`:
+4. **Apply migrations explicitly** — from a pre-deploy job or init container,
+   before any worker starts:
 
    ```shell
    taskq migrate up
    ```
+
+   Workers never self-migrate. `TASKQ_MIGRATE_ON_START=true` is honoured only
+   by `taskq ui serve`; a worker warns and ignores it, and refuses to boot
+   while a pre-phase migration is pending, so relying on it there produces a
+   crash-loop rather than a migrated schema. N replicas racing to migrate is
+   the concurrent-migration hazard migrations exist to avoid.
 
    The command is idempotent — migrations already recorded in
    `{schema}.schema_migrations` are skipped. See [cli.md](cli.md#taskq-migrate-up)
@@ -468,9 +474,13 @@ Per-worker attribution is unchanged on the channels where cardinality is
 free: `worker_id` is bound onto every log line via contextvars, and
 `taskq.worker_id` is a cron-fire span attribute. The `record_*` helpers
 still accept their `worker_id` argument — only the dimension is gone.
-`taskq.cron.consecutive_failures` keeps its `schedule_id` dimension:
-schedules are a bounded, operator-created set, and
-`cron_auto_disable_threshold` is evaluated per schedule.
+`taskq.cron.consecutive_failures` is labeled by `actor`, not `schedule_id`
+— schedule rows accept any actor string at creation time, so the label is
+capped at the emitter like `queue`. A dashboard grouped by `schedule_id`
+loses its series; group by `actor` and read per-schedule attribution from
+the cron-fire span and the log lines, where cardinality is free.
+`cron_auto_disable_threshold` is still evaluated per schedule in the
+database.
 
 ### `taskq._json.dumps()` requires `str` dict keys
 
@@ -523,10 +533,10 @@ counter columns on the job row and emits an OTEL counter; it writes no
 Anything that consumed per-denial event rows (e.g. dashboards over
 `job_events`) must read the counters or OTEL instead.
 
-### Snoozing and denials no longer raise `max_attempts`; deferrals refund the claim's attempt
+### Snoozing and denials no longer raise `max_attempts`; both refund the claim's attempt
 
-> **Unreleased.** Breaking for jobs that previously snoozed forever
-> under admission denials.
+> **Unreleased.** Breaking for anything that read `max_attempts` as a
+> counter that deferrals inflate.
 
 `max_attempts` is now immutable — no code path raises it (the ceiling is
 a bound, not a counter). Two behaviours follow from that:
@@ -539,20 +549,21 @@ a bound, not a counter). Two behaviours follow from that:
   downstream indefinitely: `attempt` oscillates and never walks toward the
   smallint ceiling, and `max_attempts` never moves. Backoff keys off real
   executions only.
-* **Admission denials are budget-bounded.** A reservation/rate-limit
-  denial leaves the claim's increment standing, and a
-  non-`indefinite` job with no `schedule_to_close` now terminally fails
-  with `MaxAttemptsExceeded` when its retry budget is spent, rather
-  than re-queueing forever against a saturated bucket. Jobs that must
-  wait out a saturation express it explicitly: `retry_kind
-  'indefinite'`, or a `schedule_to_close` deadline (the deadline, not
-  the budget, ends a deadline-carrying job).
+* **Admission denials have HTTP-429 semantics.** A reservation or
+  rate-limit denial means "come back later": the actor body never ran,
+  so the denial refunds the claim's `attempt` increment, spends no retry
+  budget, and never by itself terminally fails the job. A denied job is
+  rescheduled with backoff for as long as the bucket stays saturated.
+  The single bound on a job that is never admitted is its
+  `schedule_to_close` deadline, which fails it through the ordinary
+  deadline path — a queue or limiter misconfiguration cannot kill a job
+  whose only offence is that the fleet was busy more times than its
+  `max_attempts`.
 
-  The `schedule_to_close` deadline is the terminal exit for the
-  deferral paths only — a consuming `RetryAfter` (the default,
-  `consume_budget=True`) at a spent budget terminally fails regardless
-  of a future deadline: a consuming retry is a real execution, so its
-  budget exhaustion ends the job, deadline or no deadline.
+  A consuming `RetryAfter` (the default, `consume_budget=True`) is
+  unaffected: it is a real execution asking for a known delay, so its
+  budget exhaustion still terminally fails the job, deadline or no
+  deadline.
 
 ---
 
@@ -884,8 +895,39 @@ message now names only the ref, matching the sanitization contract
 `job_events` rows older than `TASKQ_EVENT_RETENTION_PERIOD` (default 7
 days) are now deleted by a leader sweep regardless of parent-job status;
 `timedelta(0)` disables it; the crash-reclaim outbox slice
-(`kind='state_change' AND detail->>'reason'='lock_expired'`) is exempt at
-any setting.
+(`kind='state_change' AND detail->>'reason'='lock_expired'`) is carved out
+of the ordinary window so an unread reclaim event survives it — but the
+carve-out is bounded, not unconditional. The same sweep deletes that slice
+once it is older than 100x the retention period
+(`RECLAIM_OUTBOX_RETENTION_MULTIPLIER`), because a fleet with no
+`watch_reclaims` consumer would otherwise retain every `lock_expired` event
+forever. Shortening the retention period shortens that window
+proportionally: a `TaskQ.watch_reclaims` consumer lagging past 100x
+retention loses events silently, with no error on either side. Size the
+retention period against your slowest consumer's worst outage, not only
+against event volume.
+
+### TaskQ-built client pools carry a 10 s per-query bound
+
+> **Unreleased.** Silent; a black-holed database now raises instead of
+> parking the client forever.
+
+Every pool TaskQ builds for a client — the DSN pool at `TaskQ.open()` and
+the `pg_provider` sugar's factory pools — now carries an asyncpg
+`command_timeout` of 10 s. Previously a black-holed Postgres (packets
+dropped, no RST) parked the client's first `enqueue`/`get`/`cancel`
+indefinitely: client processes arm no watchdogs, so nothing converted the
+hang into a crash. The query now fails with `TimeoutError` after 10 s.
+
+The trade-off cuts the other way for a slow-but-alive database: a
+legitimate client query exceeding 10 s is now cancelled, so size
+client-side expectations (and any outer retry) accordingly. The bound is
+deliberately above the enqueue-path lock budgets (5 s defaults) — the
+server-side `lock_timeout` still fires first, so a lock refusal surfaces
+as the typed `MaxPendingLockTimeoutError` / `UniqueForLockTimeoutError` /
+`IdempotencyKeyLockTimeoutError` rather than a bare `TimeoutError`. Pools
+you supply yourself (`pool=` / `pool_factory=`) stay caller-owned: their
+timeouts are your choice.
 
 ---
 

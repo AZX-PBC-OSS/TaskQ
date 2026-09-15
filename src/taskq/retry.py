@@ -19,7 +19,14 @@ from typing import Final, Literal, NamedTuple, Protocol, Self
 from uuid import UUID
 
 import structlog
-from pydantic import BaseModel, ConfigDict, ValidationError, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
 from taskq.backend._protocol import Backend, ErrorInfo, JobId, JobRow, RetryKind
 from taskq.constants import DEFAULT_MAX_RETRY_BACKOFF, MIN_DEFERRAL_INTERVAL
@@ -285,7 +292,18 @@ class RetryOverride(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     kind: RetryKind | None = None
-    delay: timedelta | None = None
+    delay: timedelta | None = Field(
+        default=None,
+        description=(
+            "When to retry, not whether the attempt is charged: a delay alone "
+            "still spends one attempt of the job's budget, so a classifier "
+            "returning only a delay against a sustained outage exhausts "
+            "max_attempts on schedule. Pair it with kind='indefinite' to keep "
+            "retrying, or raise RetryAfter(delay, consume_budget=False) from "
+            "the actor body for a known-duration wait that spends no budget. "
+            "Clamped by max_retry_backoff."
+        ),
+    )
 
     @field_validator("delay")
     @classmethod

@@ -965,8 +965,12 @@ class WorkerSettings(TaskQSettings):
         "prune family's zero-means-archive-immediately: for a brand-new "
         "deletion loop the safe misconfiguration is off. The "
         "crash-reclaim outbox slice (kind='state_change' AND "
-        "detail->>'reason'='lock_expired') is exempt from the sweep at any "
-        "setting. Negative values raise at settings load.",
+        "detail->>'reason'='lock_expired') is carved out of this window so "
+        "an unread reclaim event survives it, but the carve-out is bounded: "
+        "the same sweep deletes it at 100x this period "
+        "(RECLAIM_OUTBOX_RETENTION_MULTIPLIER), so a short retention period "
+        "shortens the window a lagging watch_reclaims consumer has. Negative "
+        "values raise at settings load.",
     )
     event_retention_batch_size: int = Field(
         default=DEFAULT_EVENT_RETENTION_BATCH_SIZE,

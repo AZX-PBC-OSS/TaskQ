@@ -113,6 +113,12 @@ class MaxPendingExceededError(BackpressureError):
     not block on capacity.
     """
 
+    hint = (
+        "Inside an actor body, prefer `raise Snooze(delay)` over letting this "
+        "reach the retry classifier: a full queue is backpressure, not a "
+        "failure, and a Snooze defers without spending the job's retry budget."
+    )
+
     def __init__(self, actor: str, current_count: int, max_pending: int) -> None:
         self.current_count = current_count
         super().__init__(actor, pending=current_count, max_pending=max_pending)
@@ -768,9 +774,10 @@ class SchemaNotMigratedError(TaskQError):
     def __init__(self, schema: str) -> None:
         self.schema = schema
         super().__init__(
-            f"TaskQ schema {schema!r} is missing or not migrated. "  # noqa: S608  # Why: human-readable error message, not a SQL query; ruff's SQL-injection heuristic false-positives on the word "schema" near f-string interpolation.
-            f"Run `taskq migrate up` to create/update it, or set "
-            f"TASKQ_MIGRATE_ON_START=true to migrate automatically at worker startup."
+            f"TaskQ schema {schema!r} is missing or not migrated. "
+            "Run `taskq migrate up` from a pre-deploy job or init container to "
+            "create/update it. Workers never self-migrate: "
+            "TASKQ_MIGRATE_ON_START is read only by `taskq ui serve`."
         )
 
 
