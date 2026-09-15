@@ -115,9 +115,9 @@ class TestTerminalWriteIdempotency:
 
         events = await backend.get_events(job_id)
         state_changes = [e for e in events if e.kind == "state_change"]
-        assert len(state_changes) == 2
-        assert state_changes[1].detail["from_state"] == "running"
-        assert state_changes[1].detail["to_state"] == "succeeded"
+        assert len(state_changes) == 1
+        assert state_changes[0].detail["from_state"] == "running"
+        assert state_changes[0].detail["to_state"] == "succeeded"
 
     async def test_mark_failed_or_retry_terminal_single_attempt_and_event(self) -> None:
         backend = _make_backend()
@@ -138,9 +138,9 @@ class TestTerminalWriteIdempotency:
 
         events = await backend.get_events(job_id)
         state_changes = [e for e in events if e.kind == "state_change"]
-        assert len(state_changes) == 2
-        assert state_changes[1].detail["to_state"] == "failed"
-        assert state_changes[1].detail["error_class"] == "ValueError"
+        assert len(state_changes) == 1
+        assert state_changes[0].detail["to_state"] == "failed"
+        assert state_changes[0].detail["error_class"] == "ValueError"
 
     async def test_mark_cancelled_single_attempt_and_event(self) -> None:
         backend = _make_backend()
@@ -158,8 +158,8 @@ class TestTerminalWriteIdempotency:
 
         events = await backend.get_events(job_id)
         state_changes = [e for e in events if e.kind == "state_change"]
-        assert len(state_changes) == 2
-        assert state_changes[1].detail["to_state"] == "cancelled"
+        assert len(state_changes) == 1
+        assert state_changes[0].detail["to_state"] == "cancelled"
 
 
 # ── ownership mismatch ─────────────────────────────────────────
@@ -273,8 +273,8 @@ class TestSingleAttemptRowPerTransition:
         assert attempts[0].outcome == "succeeded"
 
         events = await backend.get_events(job_id)
-        assert len(events) == 2
-        assert events[1].kind == "state_change"
+        assert len(events) == 1
+        assert events[0].kind == "state_change"
 
     async def test_mark_failed_terminal_attempt_and_event(self) -> None:
         backend = _make_backend()
@@ -291,8 +291,8 @@ class TestSingleAttemptRowPerTransition:
         assert attempts[0].outcome == "failed"
 
         events = await backend.get_events(job_id)
-        assert len(events) == 2
-        assert events[1].kind == "state_change"
+        assert len(events) == 1
+        assert events[0].kind == "state_change"
 
     async def test_mark_failed_retry_attempt_and_event(self) -> None:
         backend = _make_backend()
@@ -315,9 +315,9 @@ class TestSingleAttemptRowPerTransition:
         assert attempts[0].outcome == "failed"
 
         events = await backend.get_events(job_id)
-        assert len(events) == 2
-        assert events[1].kind == "state_change"
-        assert events[1].detail["to_state"] == "scheduled"
+        assert len(events) == 1
+        assert events[0].kind == "state_change"
+        assert events[0].detail["to_state"] == "scheduled"
 
     async def test_mark_cancelled_attempt_and_event(self) -> None:
         backend = _make_backend()
@@ -329,22 +329,21 @@ class TestSingleAttemptRowPerTransition:
         assert attempts[0].outcome == "cancelled"
 
         events = await backend.get_events(job_id)
-        assert len(events) == 2
-        assert events[1].kind == "state_change"
+        assert len(events) == 1
+        assert events[0].kind == "state_change"
 
     async def test_mark_snoozed_attempt_and_event(self) -> None:
         backend = _make_backend()
         job_id, wid = await _enqueue_and_dispatch(backend)
         await backend.mark_snoozed(job_id, wid, timedelta(seconds=30), attempt=1)
 
-        # A snooze is a deferral, not an execution: no attempt row, and
-        # the only event is the dispatch one.
+        # A snooze is a deferral, not an execution: no attempt row and no
+        # event row — the row's snooze_count is its whole durable record.
         attempts = await backend.get_attempts(job_id)
         assert len(attempts) == 0
 
         events = await backend.get_events(job_id)
-        assert len(events) == 1
-        assert events[0].kind == "state_change"
+        assert len(events) == 0
 
     async def test_write_cancel_request_running_no_attempt_one_event(self) -> None:
         backend = _make_backend()
@@ -355,7 +354,7 @@ class TestSingleAttemptRowPerTransition:
         assert len(attempts) == 0
 
         events = await backend.get_events(job_id)
-        assert len(events) == 2
+        assert len(events) == 1
         cancel_events = [e for e in events if e.kind == "cancel_request"]
         assert len(cancel_events) == 1
         assert cancel_events[0].detail["reason"] == "test reason"
@@ -499,9 +498,9 @@ class TestMarkAbandonedCancelPhaseGuard:
 
         events = await backend.get_events(job_id)
         state_changes = [e for e in events if e.kind == "state_change"]
-        assert len(state_changes) == 2
-        assert state_changes[1].detail["from_state"] == "running"
-        assert state_changes[1].detail["to_state"] == "abandoned"
+        assert len(state_changes) == 1
+        assert state_changes[0].detail["from_state"] == "running"
+        assert state_changes[0].detail["to_state"] == "abandoned"
 
 
 # ── attempt-epoch fencing (same worker, later attempt) ─────────────────
@@ -795,9 +794,9 @@ class TestPayloadValidationErrorThroughMarkFailedOrRetry:
 
         events = await backend.get_events(job_id)
         state_changes = [e for e in events if e.kind == "state_change"]
-        assert len(state_changes) == 2
-        assert state_changes[1].detail["to_state"] == "failed"
-        assert state_changes[1].detail["error_class"] == "PayloadValidationError"
+        assert len(state_changes) == 1
+        assert state_changes[0].detail["to_state"] == "failed"
+        assert state_changes[0].detail["error_class"] == "PayloadValidationError"
 
 
 # ── write_cancel_request on pending/scheduled ──────────────────
@@ -902,7 +901,7 @@ class TestWriteCancelRequestOnRunning:
         assert row.status == "running"
 
         events = await backend.get_events(job_id)
-        assert len(events) == 2
+        assert len(events) == 1
         cancel_events = [e for e in events if e.kind == "cancel_request"]
         assert len(cancel_events) == 1
         assert cancel_events[0].detail["reason"] == "please stop"
@@ -916,7 +915,7 @@ class TestWriteCancelRequestOnRunning:
         assert r2 is False
 
         events = await backend.get_events(job_id)
-        assert len(events) == 2  # dispatch event + cancel_request (no duplicate)
+        assert len(events) == 1  # the cancel_request alone (no duplicate)
 
 
 # ── write_cancel_escalation events ────────────────────────────
@@ -951,8 +950,8 @@ class TestWriteCancelEscalationEvents:
         assert row.cancel_phase == 2
 
         events = await backend.get_events(job_id)
-        # dispatch wrote one, write_cancel_request wrote one, write_cancel_escalation wrote one
-        assert len(events) == 3
+        # write_cancel_request wrote one, write_cancel_escalation wrote one
+        assert len(events) == 2
 
         escalation_events = [
             e for e in events if e.kind == "state_change" and "cancel_phase_from" in e.detail
@@ -1355,10 +1354,10 @@ class TestSnoozePastDeadline:
 
         events = await backend.get_events(job_id)
         state_changes = [e for e in events if e.kind == "state_change"]
-        assert len(state_changes) == 2
-        assert state_changes[1].detail["from_state"] == "running"
-        assert state_changes[1].detail["to_state"] == "failed"
-        assert state_changes[1].detail["error_class"] == "DeadlineExceeded"
+        assert len(state_changes) == 1
+        assert state_changes[0].detail["from_state"] == "running"
+        assert state_changes[0].detail["to_state"] == "failed"
+        assert state_changes[0].detail["error_class"] == "DeadlineExceeded"
 
 
 # ── G-5: mark_snoozed outcome parameter ─────────────────────────────────
@@ -1572,11 +1571,9 @@ class TestMarkRetryAfterConsumeTrueIncrements:
 
         events = await backend.get_events(job_id)
         state_changes = [e for e in events if e.kind == "state_change"]
-        assert len(state_changes) == 2
-        assert state_changes[0].detail["from_state"] == "pending"
-        assert state_changes[0].detail["to_state"] == "running"
-        assert state_changes[1].detail["from_state"] == "running"
-        assert state_changes[1].detail["to_state"] == "scheduled"
+        assert len(state_changes) == 1
+        assert state_changes[0].detail["from_state"] == "running"
+        assert state_changes[0].detail["to_state"] == "scheduled"
 
 
 class TestMarkRetryAfterConsumeFalsePreserves:
@@ -1611,7 +1608,7 @@ class TestMarkRetryAfterConsumeFalsePreserves:
         assert len(attempts) == 0
 
         events = await backend.get_events(job_id)
-        assert len(events) == 1  # dispatch-only; the deferral writes no row
+        assert len(events) == 0  # the deferral writes no row of any kind
 
 
 class TestMarkRetryAfterMaxAttemptsFails:
@@ -1650,12 +1647,10 @@ class TestMarkRetryAfterMaxAttemptsFails:
 
         events = await backend.get_events(job_id)
         state_changes = [e for e in events if e.kind == "state_change"]
-        assert len(state_changes) == 2
-        assert state_changes[0].detail["from_state"] == "pending"
-        assert state_changes[0].detail["to_state"] == "running"
-        assert state_changes[1].detail["from_state"] == "running"
-        assert state_changes[1].detail["to_state"] == "failed"
-        assert state_changes[1].detail["error_class"] == "MaxAttemptsExceeded"
+        assert len(state_changes) == 1
+        assert state_changes[0].detail["from_state"] == "running"
+        assert state_changes[0].detail["to_state"] == "failed"
+        assert state_changes[0].detail["error_class"] == "MaxAttemptsExceeded"
 
 
 class TestMarkRetryAfterIndefiniteTierIgnoresMaxAttempts:
@@ -1716,12 +1711,10 @@ class TestMarkRetryAfterPastDeadlineFails:
 
         events = await backend.get_events(job_id)
         state_changes = [e for e in events if e.kind == "state_change"]
-        assert len(state_changes) == 2
-        assert state_changes[0].detail["from_state"] == "pending"
-        assert state_changes[0].detail["to_state"] == "running"
-        assert state_changes[1].detail["from_state"] == "running"
-        assert state_changes[1].detail["to_state"] == "failed"
-        assert state_changes[1].detail["error_class"] == "DeadlineExceeded"
+        assert len(state_changes) == 1
+        assert state_changes[0].detail["from_state"] == "running"
+        assert state_changes[0].detail["to_state"] == "failed"
+        assert state_changes[0].detail["error_class"] == "DeadlineExceeded"
 
 
 class TestMarkRetryAfterIdempotentNoop:

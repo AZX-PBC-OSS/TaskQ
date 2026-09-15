@@ -369,7 +369,10 @@ def test_worker_fenced_terminal_templates_carry_the_attempt_epoch_conjunct() -> 
         ("mark_failed", "AND attempt = $8", 1),
         ("mark_cancelled", "AND attempt = $5", 1),
         ("mark_retry", "AND j.attempt = (SELECT attempt FROM params)", 2),
-        ("mark_snoozed", "AND j.attempt = (SELECT attempt FROM params)", 3),
+        # mark_snoozed has exactly two arms (snoozed, deadline_failed) —
+        # a deferral's only terminal exit is the job's own deadline, so a
+        # denial/budget arm no longer exists to fence.
+        ("mark_snoozed", "AND j.attempt = (SELECT attempt FROM params)", 2),
         ("mark_retry_after_consume_true", "AND j.attempt = (SELECT attempt FROM params)", 3),
         ("mark_retry_after_consume_false", "AND j.attempt = (SELECT attempt FROM params)", 2),
     )

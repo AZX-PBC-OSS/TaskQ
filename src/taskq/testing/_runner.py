@@ -615,6 +615,28 @@ def _earliest_scheduled_at(backend: "InMemoryBackend") -> datetime | None:
     return min(scheduled_times) if scheduled_times else None
 
 
+def _every_scheduled_job_starved(backend: "InMemoryBackend", starved: "set[JobId]") -> bool:
+    """True when every scheduled job was denied again at or after the
+    reschedule point its own previous denial set.
+
+    A first denial only proves "no capacity right now" — the reschedule
+    point it produces is the limiter's own Retry-After promise, and a
+    limiter that refills by then must get its chance: the drain advances
+    the clock to that point and re-claims. A job denied AGAIN at or after
+    the point has exhausted the promise — admission only ever answers
+    "no" for it — so advancing the clock further cannot drain it. This
+    separates "waiting for the clock", which draining should advance
+    through, from "waiting for capacity this test never grants", which
+    it cannot.
+    """
+    scheduled = [
+        r
+        for r in backend._jobs.values()  # pyright: ignore[reportPrivateUsage]  # Why: test runner helper intentionally accesses private InMemoryBackend state; this module is co-located with the backend and owns this access pattern.
+        if r.status == "scheduled"
+    ]
+    return bool(scheduled) and all(r.id in starved for r in scheduled)
+
+
 async def run_until_drained(backend: "InMemoryBackend") -> None:
     """Execute the dispatch-then-execute loop until drained.
 
@@ -629,7 +651,10 @@ async def run_until_drained(backend: "InMemoryBackend") -> None:
        which handles ``Snooze``, ``RetryAfter``,
        ``ReservationUnavailable``, generic exceptions, cancellation,
        and success.
-    5. Terminates when: no pending, no running, no scheduled-due jobs.
+    5. Terminates when: no pending, no running, no scheduled-due jobs —
+       or when every remaining scheduled job is starved (denied again at
+       or after the reschedule point its own previous denial set; see the
+       ``starved`` bookkeeping below).
 
     Clock advancement: if the backend's clock is a ``FakeClock`` with
     ``move_to``, the loop advances to the earliest ``scheduled_at`` when
@@ -644,6 +669,22 @@ async def run_until_drained(backend: "InMemoryBackend") -> None:
     ``_jobs.values()``).  This mirrors the single-worker model.
     """
     from taskq.worker._consumer import consume_one_job
+
+    # An admission denial reschedules the job indefinitely — that is the
+    # 429 contract, and nothing about the job's own state ever ends the
+    # loop. The drain would then spin forever against a limiter that is
+    # saturated for the whole test, advancing the FakeClock one deferral
+    # at a time. Draining means "run what can run", so a job that only
+    # ever gets denied is drained as far as it can go — but a single
+    # denial cannot prove that: the reschedule point the denial sets is
+    # the limiter's own Retry-After promise, and a limiter that refills
+    # by then must get its chance. The drain therefore trusts the promise
+    # once per job (advance to the point, re-claim) and counts a job as
+    # starved only when it is denied AGAIN at or after that point; once
+    # every remaining scheduled job is starved, no clock advance can be
+    # proven to help, and the drain stops.
+    denied_reschedule: dict[JobId, datetime] = {}
+    starved: set[JobId] = set()
 
     while True:
         # Step 1: promote scheduled→pending (the backend's own clock is
@@ -664,6 +705,8 @@ async def run_until_drained(backend: "InMemoryBackend") -> None:
             next_at = _earliest_scheduled_at(backend)
             if next_at is None:
                 # No scheduled jobs at all — fully drained.
+                return
+            if _every_scheduled_job_starved(backend, starved):
                 return
 
             # Advance clock if FakeClock, else return.
@@ -774,6 +817,24 @@ async def run_until_drained(backend: "InMemoryBackend") -> None:
             # clear what this dispatch registered.
             if registration is not None and backend._inflight_attempt is registration:  # pyright: ignore[reportPrivateUsage]  # Why: test runner helper intentionally accesses private InMemoryBackend state; this module is co-located with the backend and owns this access pattern.
                 backend._inflight_attempt = None  # pyright: ignore[reportPrivateUsage]  # Why: test runner helper intentionally accesses private InMemoryBackend state; this module is co-located with the backend and owns this access pattern.
+
+        # A denial leaves the row's denial counter one higher and nothing
+        # else advanced; any other outcome is forward progress and clears
+        # the whole map, so one job finally getting admitted re-opens the
+        # drain for every job still waiting.
+        after = backend._jobs.get(job.id)  # pyright: ignore[reportPrivateUsage]  # Why: test runner helper intentionally accesses private InMemoryBackend state; this module is co-located with the backend and owns this access pattern.
+        if after is not None and after.rate_limit_blocked_count > job.rate_limit_blocked_count:
+            previous_point = denied_reschedule.get(job.id)
+            if previous_point is not None and backend._clock.now() >= previous_point:  # pyright: ignore[reportPrivateUsage]  # Why: same runner-helper access pattern as above — the denial timestamp lives on the backend's clock.
+                # Denied again at/after the reschedule point the previous
+                # denial itself set: the limiter's own Retry-After promise
+                # was honored once and failed, so no further clock advance
+                # is provably useful for this job.
+                starved.add(job.id)
+            denied_reschedule[job.id] = after.scheduled_at
+        else:
+            denied_reschedule.clear()
+            starved.clear()
 
         try:
             await apply_batch_terminal_outcome(backend, job, outcome)

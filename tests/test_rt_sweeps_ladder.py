@@ -6,13 +6,13 @@ watermark (``RECLAIM_EVENT_VISIBILITY_DELAY``) reads.  The bounded sweeps
 write their batch with a microsecond ordinality ladder
 (``clock_timestamp() + (ord - 1) * 1 microsecond``, see
 ``INSERT_EVENTS_DETAIL_BATCH_SQL``), while the OTHER writers in the same
-database use a bare per-row ``clock_timestamp()`` (dispatch's
-``INSERT_EVENTS_BATCH_SQL``) or the single-row ``INSERT_EVENT_SQL``.
+database use a bare per-row ``clock_timestamp()`` (the fused terminal
+writes' event CTEs, or the single-row ``INSERT_EVENT_SQL``).
 This file attacks the invariant at the global level:
 
 * interleave a bounded sweep DRAIN (three committed batches) with the
-  dispatch form and the single-row form ON A DIFFERENT CONNECTION, then
-  assert no inversion anywhere in id order;
+  bare single-row form ON A DIFFERENT CONNECTION (the terminal writes'
+  non-laddered shape), then assert no inversion anywhere in id order;
 * pin the ladder's exact shape — within one batch, consecutive ids step
   by exactly one microsecond, which is what proves the ladder (rather
   than a bare volatile stamp, which collapses ~26 rows per microsecond)
@@ -44,7 +44,7 @@ import asyncpg
 import pytest
 
 from taskq._ids import new_uuid
-from taskq.backend._sql import INSERT_EVENT_SQL, INSERT_EVENTS_BATCH_SQL
+from taskq.backend._sql import INSERT_EVENT_SQL
 from taskq.backend.postgres import PostgresBackend
 from taskq.testing.fixtures import ModulePgSchema
 
@@ -86,15 +86,14 @@ async def test_occurred_at_stays_co_monotonic_across_mixed_writers(
     not invert against each other in id order.
 
     Three committed sweep batches (ladder stamps) interleave with the
-    dispatch form (bare per-row clock_timestamp(), no ladder) and the
-    single-row form, the latter two on a separate connection, matching
-    the production writer mix.  The assertion is the watermark's own
-    invariant, evaluated over every event row in id order.
+    bare single-row form (the terminal/cancel writers' non-laddered
+    shape) on a separate connection, matching the production writer mix.
+    The assertion is the watermark's own invariant, evaluated over every
+    event row in id order.
     """
     schema = module_pg_schema.schema_name
     sweep_job_ids = await _seed_expired_locks(clean_pg_conn, schema, 40)
-    dispatch_ids = [new_uuid() for _ in range(3)]
-    single_id = new_uuid()
+    single_ids = [new_uuid() for _ in range(2)]
     # job_events.job_id FK-references jobs: the interleaved writers' rows
     # need parent jobs rows (plain pending jobs, seeded in one round trip
     # so the seed itself is not the loop defect under test).
@@ -104,7 +103,7 @@ async def test_occurred_at_stays_co_monotonic_across_mixed_writers(
         "SELECT t.id, 'test_actor', 'default', '{}'::jsonb, 'pending', 3, "
         "'transient', clock_timestamp() "
         "FROM unnest($1::uuid[]) AS t(id)",
-        [*dispatch_ids, single_id],
+        single_ids,
     )
 
     other = await asyncpg.connect(module_pg_schema.pg_dsn)
@@ -119,12 +118,12 @@ async def test_occurred_at_stays_co_monotonic_across_mixed_writers(
         )
         assert n1 == _BATCH
 
-        # Dispatch-form writer (no ladder) on another connection.
+        # Bare single-row writer (no ladder) on another connection.
         await other.execute(
-            INSERT_EVENTS_BATCH_SQL.format(schema=schema),
-            dispatch_ids,
+            INSERT_EVENT_SQL.format(schema=schema),
+            single_ids[0],
             "state_change",
-            '{"from_state": "pending", "to_state": "running"}',
+            '{"from_state": "running", "to_state": "succeeded"}',
         )
 
         # Batch 2: 15 more ladder-stamped rows.
@@ -140,9 +139,9 @@ async def test_occurred_at_stays_co_monotonic_across_mixed_writers(
         # Single-row writer on the other connection.
         await other.execute(
             INSERT_EVENT_SQL.format(schema=schema),
-            single_id,
+            single_ids[1],
             "state_change",
-            '{"from_state": "pending", "to_state": "running"}',
+            '{"from_state": "running", "to_state": "succeeded"}',
         )
 
         # Batch 3: the 10-row short batch that finishes the drain.
@@ -160,7 +159,7 @@ async def test_occurred_at_stays_co_monotonic_across_mixed_writers(
     rows = await clean_pg_conn.fetch(
         f'SELECT id, job_id, occurred_at FROM "{schema}".job_events ORDER BY id',  # noqa: S608  # Why: schema is a test-fixture identifier, validated by render() upstream.
     )
-    assert len(rows) == 40 + len(dispatch_ids) + 1, "every writer's rows are present"
+    assert len(rows) == 40 + len(single_ids), "every writer's rows are present"
     sweep_id_set = set(sweep_job_ids)
     sweep_event_rows = [row for row in rows if row["job_id"] in sweep_id_set]
     assert {row["job_id"] for row in sweep_event_rows} == sweep_id_set, (

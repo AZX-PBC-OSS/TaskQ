@@ -253,7 +253,8 @@ def _assert_state_change_event(
 def _assert_no_snooze_event_row(events: list[EventRow]) -> None:
     """A non-terminal snooze/denial writes no event row: the row's status
     transition is real, but its durable record is the row's counters —
-    the only state_change events belong to dispatches and terminal exits."""
+    the only state_change events belong to terminal exits and the
+    sweep/cancel audit entries."""
     state_changes = [e for e in events if e.kind == "state_change"]
     assert not any(
         e.detail.get("from_state") == "running" and e.detail.get("to_state") == "scheduled"

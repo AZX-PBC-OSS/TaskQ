@@ -26,7 +26,7 @@ see [runbooks.md](runbooks.md). For the raw knob rows,
 |---|---|---|---|
 | 1 — `reclaim_expired_locks` | Reclaims `running` jobs whose `lock_expires_at` passed: retryable ones → `pending` (5 s backoff), the rest → `crashed` (or `cancelled` if a cancel was in flight). Writes one `job_attempts` and one `job_events` row per job. | leader sweep loop, every `TASKQ_SWEEP_INTERVAL` (default 30 s) | `event_writer_batch_size` per batch, up to `TASKQ_SWEEP_DRAIN_BATCHES` batches per tick |
 | 2 — `sweep_deadline_exceeded` | Fails overdue `schedule_to_close` jobs with `error_class='DeadlineExceeded'`. Writes one `job_attempts` and one `job_events` row per job. | leader sweep loop, every `sweep_interval` | same |
-| 3 — `scheduled_to_pending` | Promotes due `scheduled` jobs to `pending` and fires a wake NOTIFY. Writes one `job_events` row per job. | scheduled-wake loop, every **1 second** | **one batch per tick** — a larger backlog drains across ticks |
+| 3 — `scheduled_to_pending` | Promotes due `scheduled` jobs to `pending` and fires a wake NOTIFY. Writes no `job_events` rows — promotion is scheduler bookkeeping, and a row per promotion would grow without bound under a sustained admission-denial loop (claim + promote are the cycle's two acts). | scheduled-wake loop, every **1 second** | **one batch per tick** — a larger backlog drains across ticks |
 | 4 — `sweep_leaked_reservation_slots` | Clears reservation slots whose lease expired. Writes no `job_events` rows. | leader sweep loop, every `sweep_interval` | single statement, not batched (no event writes) |
 | Result TTL — `sweep_expired_results` | Nulls expired stored results. Writes no `job_events` rows. | leader sweep loop, every `sweep_interval` | `event_writer_batch_size` per batch, drained |
 | `cleanup_stale_workers` | Deletes workers whose heartbeat went stale; the `ON DELETE SET NULL` fan-out into `job_attempts` is what the batch bound caps. | leader sweep loop, every `sweep_interval` | `event_writer_batch_size` per batch, drained |
@@ -46,8 +46,9 @@ per tick — their backlog drains across ticks by construction.
 
 ## 2. Why every event-writer is bounded
 
-Everything in this initiative writes `job_events` rows — sweeps 1–3, bulk
-cancel, deregistration — and `job_events` is not just an audit trail: it feeds
+Everything in this initiative that writes `job_events` rows — sweeps 1–2,
+bulk cancel, deregistration — shares one discipline, and `job_events` is not
+just an audit trail: it feeds
 `poll_reclaim_events()`, the crash-reclaim feed consumers subscribe to. That
 feed's correctness is what the bounds protect. Two distinct failures motivated
 the design, and they fail in opposite directions:

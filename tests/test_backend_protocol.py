@@ -327,10 +327,9 @@ class TestReturnAnnotations:
 
         hints = get_type_hints(Backend.mark_snoozed)
         ret = hints.get("return")
-        expected = {"scheduled", "failed", "failed:MaxAttemptsExceeded", "noop"}
+        expected = {"scheduled", "failed", "noop"}
         assert ret is not None and set(get_args(ret)) == expected, (
-            f"mark_snoozed should return Literal['scheduled', 'failed', "
-            f"'failed:MaxAttemptsExceeded', 'noop'], got {ret}"
+            f"mark_snoozed should return Literal['scheduled', 'failed', 'noop'], got {ret}"
         )
 
     def test_mark_snoozed_outcome_parameter_is_snooze_outcome(self) -> None:

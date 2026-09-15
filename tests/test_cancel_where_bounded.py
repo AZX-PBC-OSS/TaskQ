@@ -568,8 +568,8 @@ async def test_pins_state_change_from_state_is_each_jobs_actual_previous_status(
     others, in the same call.
 
     That is the exact thing a careless batching rewrite breaks: collapsing this
-    into ``INSERT_EVENTS_BATCH_SQL`` (one shared ``$3::jsonb`` detail for the
-    whole ``unnest``) would silently stamp ONE ``from_state`` on every event and
+    into a shared-detail batch (one ``$3::jsonb`` detail for the whole
+    ``unnest``) would silently stamp ONE ``from_state`` on every event and
     corrupt the audit log for half the rows, with every count assertion still
     passing.  The mix seeded here (pending AND scheduled, cancelled in one call)
     is what catches it.

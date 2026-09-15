@@ -440,9 +440,12 @@ from taskq.testing.assertions import (
 assert_has_event(events, "state_change", from_state="running", to_state="succeeded")
 
 # Assert the (from_state, to_state) sequence from state_change events matches.
+# The sequence holds the transitions of record only: claims and promotion are
+# scheduler bookkeeping and write no event rows, so a plain run to success is
+# exactly its terminal transition.
 assert_transition_sequence(
     events,
-    expected=[("pending", "running"), ("running", "succeeded")],
+    expected=[("running", "succeeded")],
 )
 ```
 

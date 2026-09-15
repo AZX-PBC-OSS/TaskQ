@@ -19,10 +19,15 @@ from typing import Final, Literal, NamedTuple, Protocol, Self
 from uuid import UUID
 
 import structlog
-from pydantic import BaseModel, ConfigDict, ValidationError, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from taskq.backend._protocol import Backend, ErrorInfo, JobId, JobRow, RetryKind
-from taskq.constants import DEFAULT_MAX_RETRY_BACKOFF, MIN_DEFERRAL_INTERVAL
+from taskq.constants import (
+    DEFAULT_MAX_RETRY_BACKOFF,
+    MAX_ATTEMPTS_SMALLINT_CEILING,
+    MAX_ENQUEUABLE_MAX_ATTEMPTS,
+    MIN_DEFERRAL_INTERVAL,
+)
 from taskq.exceptions import (
     PayloadValidationError,
     ResultTooLarge,
@@ -52,26 +57,6 @@ __all__ = [
     "safe_mark_failed_or_retry",
     "time_budget_as_interval",
 ]
-
-MAX_ATTEMPTS_SMALLINT_CEILING: Final[int] = 32767
-"""The ``jobs.max_attempts`` column's smallint domain ceiling.
-
-The column is ``smallint`` (migrations/01.00.00_01_pre_initial.sql), so
-32767 is the largest value any row can hold. Shared here because the
-validation below, the in-memory mirror and any future writer must not
-drift on what the ceiling is."""
-
-MAX_ENQUEUABLE_MAX_ATTEMPTS: Final[int] = MAX_ATTEMPTS_SMALLINT_CEILING - 1
-"""Largest ``RetryPolicy.max_attempts`` a fresh policy may carry.
-
-One below the column ceiling, retained as a defensive margin: a row
-parked at exactly 32767 has no headroom for any future statement that
-needs to add one to a max_attempts-derived value, so the policy guard
-refuses the value the way it refuses values past the column entirely
-(:func:`RetryPolicy._validate_max_attempts`). Rows can still legally
-REACH the ceiling — earlier releases' snooze arms parked a snoozed
-32766-job there — which is why :func:`decide_after_failure` clamps
-row-stored values back into this bound before reconstructing a policy."""
 
 
 class RetryPolicy(BaseModel):
@@ -280,12 +265,35 @@ class RetryOverride(BaseModel):
     duration instead of the policy's computed exponential/linear
     backoff, while ``max_retry_backoff`` still applies as a safety
     ceiling so a malicious or malformed header cannot strand a job.
+
+    ``delay`` alone does not spare the attempt budget — it still consumes
+    a retry the way the policy's own computed backoff would, so a
+    classifier that wants an unlimited wait with no budget spent must
+    raise ``RetryAfter(consume_budget=False)`` instead.
+
+    A returned delay does not extend schedule_to_close. The two bounds
+    mean different things (``max_retry_backoff`` stops one absurd delay;
+    schedule_to_close is the caller's statement of how long the result
+    is still worth having), and honouring a long server-supplied delay
+    that lands past schedule_to_close still fails the job terminally
+    through the ordinary deadline path.
     """
 
     model_config = ConfigDict(frozen=True)
 
     kind: RetryKind | None = None
-    delay: timedelta | None = None
+    delay: timedelta | None = Field(
+        default=None,
+        description=(
+            "Overrides the policy's computed backoff for this occurrence "
+            "only. Still consumes the attempt budget like any other retry "
+            "— for a denial-style wait that must not spend budget, raise "
+            "RetryAfter(consume_budget=False) instead. Clamped by "
+            "max_retry_backoff, but NOT reconciled with schedule_to_close: "
+            "a delay that lands past the job's schedule_to_close still "
+            "fails it terminally through the deadline path."
+        ),
+    )
 
     @field_validator("delay")
     @classmethod

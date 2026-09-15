@@ -775,10 +775,13 @@ async def test_admission_denial_never_terminally_fails_an_exhausted_job(
     assert row["status"] == "scheduled"
     assert row["error_class"] is None
     assert row["finished_at"] is None
-    # The denial neither spends nor extends the budget: the ceiling is a
-    # bound and the attempt counter belongs to the dispatch that claimed
-    # the job, not to admission control.
-    assert row["attempt"] == 3
+    # The denial neither spends nor extends the budget: it refunds the
+    # claim's attempt increment (GREATEST(attempt - 1, 0)), returning the
+    # row to the attempt it held before this dispatch claimed it. The gap
+    # `max_attempts - attempt` is exactly what it was before the claim, so
+    # a job denied without bound never walks its attempt counter toward
+    # max_attempts or the smallint ceiling.
+    assert row["attempt"] == 2
     assert row["max_attempts"] == 3
     assert row["rate_limit_blocked_count"] == 1
 
@@ -819,24 +822,32 @@ async def test_repeated_admission_denials_reschedule_without_bound(
             schedule_to_close=None,
         )
 
+    # Each cycle mirrors one real claim→denial round: mark_snoozed refunds
+    # the claim's attempt increment (GREATEST(attempt - 1, 0)), and the
+    # raw re-claim below plays the dispatcher's own increment before the
+    # next denial — the attempt oscillates between N and N+1 and never
+    # walks toward max_attempts or the smallint ceiling, however many
+    # denials occur.
     denials = 5
+    claimed_attempt = 2
     for cycle in range(denials):
         result = await backend.mark_snoozed(
             JobId(job_id),
             worker_id,
             timedelta(seconds=1),
             outcome="rate_limit_denied",
-            attempt=2,
+            attempt=claimed_attempt,
         )
         assert result == "scheduled", f"denial {cycle + 1} must reschedule, not terminalise"
 
-        # Re-claim at the same attempt epoch: admission control runs
-        # before the actor, so the dispatch that re-claims a denied job
-        # is the same attempt being re-admitted, not a new one.
+        # Re-claim: a real dispatch increments attempt exactly as the
+        # initial claim did, re-admitting the refunded row.
+        claimed_attempt += 1
         async with deps.worker_pool.acquire() as conn:
             await conn.execute(
                 f"""UPDATE "{schema}".jobs
                 SET status = 'running',
+                    attempt = $3,
                     locked_by_worker = $1,
                     lock_expires_at = now() + interval '60 seconds',
                     started_at = now(),
@@ -844,6 +855,7 @@ async def test_repeated_admission_denials_reschedule_without_bound(
                 WHERE id = $2""",
                 worker_id,
                 job_id,
+                claimed_attempt,
             )
 
     async with deps.worker_pool.acquire() as conn:
@@ -853,7 +865,7 @@ async def test_repeated_admission_denials_reschedule_without_bound(
         )
 
     assert row is not None
-    assert row["attempt"] == 2
+    assert row["attempt"] == claimed_attempt
     assert row["max_attempts"] == 2
     assert row["snooze_count"] == 0  # a denial is not a voluntary deferral
     assert row["rate_limit_blocked_count"] == denials, (
@@ -893,6 +905,10 @@ async def test_admission_denial_writes_no_attempt_or_event_rows(
             schedule_to_close=None,
         )
 
+    # mark_snoozed refunds the claim's attempt increment on every denial;
+    # the raw re-claim below plays the dispatcher's own increment, exactly
+    # as test_repeated_admission_denials_reschedule_without_bound does.
+    claimed_attempt = 1
     for _ in range(3):
         assert (
             await backend.mark_snoozed(
@@ -900,14 +916,16 @@ async def test_admission_denial_writes_no_attempt_or_event_rows(
                 worker_id,
                 timedelta(seconds=1),
                 outcome="reservation_denied",
-                attempt=1,
+                attempt=claimed_attempt,
             )
             == "scheduled"
         )
+        claimed_attempt += 1
         async with deps.worker_pool.acquire() as conn:
             await conn.execute(
                 f"""UPDATE "{schema}".jobs
                 SET status = 'running',
+                    attempt = $3,
                     locked_by_worker = $1,
                     lock_expires_at = now() + interval '60 seconds',
                     started_at = now(),
@@ -915,6 +933,7 @@ async def test_admission_denial_writes_no_attempt_or_event_rows(
                 WHERE id = $2""",
                 worker_id,
                 job_id,
+                claimed_attempt,
             )
 
     async with deps.worker_pool.acquire() as conn:

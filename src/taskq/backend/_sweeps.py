@@ -1192,12 +1192,19 @@ async def sweep_scheduled_to_pending(
     ``status='scheduled'`` and ``scheduled_at <= clock_timestamp()`` to
     ``status='pending'``, in one short transaction (server-side
     ``statement_timeout`` included); repeated calls drain the eligible
-    backlog a batch at a time.  Writes one ``job_events`` row per
-    promoted job — batched into one statement over the whole batch —
-    with ``kind='state_change'``, ``detail`` carrying
-    ``from_state='scheduled'`` and ``to_state='pending'`` (identical per
-    row, but carried through the same detail-batch template as every
-    other event writer so the one-template rule holds).
+    backlog a batch at a time.
+
+    A promotion writes NO ``job_events`` row. scheduled→pending is the
+    scheduler's bookkeeping, not an outcome transition, and it is one of
+    the two acts every admission-denial cycle repeats (claim + promote):
+    under the 429 denial contract a denied job cycles until capacity
+    frees or its deadline expires, so a row per promotion is precisely
+    the unbounded-growth vector the aggregated denial counters on the job
+    row replaced. The transitions of record are the terminal writes and
+    the sweep/cancel audit entries; neither vendored grain (River, Oban)
+    writes a per-promotion row. The sweep's own observability is the
+    per-call count log below and the per-row ``state_change`` log lines
+    (logs, not durable rows).
 
     PG uses server-side ``statement_timestamp()`` for the due range bound
     (STABLE, so ``jobs_scheduled_wake_idx`` serves it as an Index Cond —
@@ -1214,7 +1221,6 @@ async def sweep_scheduled_to_pending(
     _validate_positive("statement_timeout_ms", statement_timeout_ms)
 
     sql = _SWEEP_3_SQL.format(schema=schema)
-    event_sql = INSERT_EVENTS_DETAIL_BATCH_SQL.format(schema=schema)
 
     promoted: list[_PromotedRow] = []
 
@@ -1223,21 +1229,9 @@ async def sweep_scheduled_to_pending(
         rows = await conn.fetch(sql, batch_size)
 
         if rows:
-            job_ids: list[JobId] = []
-            details: list[str | None] = []
             for rec in rows:
-                job_id: JobId = JobId(rec["id"])
-                prev_status: str = rec["prev_status"]
+                promoted.append(_PromotedRow(JobId(rec["id"]), rec["prev_status"]))
 
-                detail: dict[str, object] = {
-                    "from_state": prev_status,
-                    "to_state": "pending",
-                }
-                job_ids.append(job_id)
-                details.append(jsonb_param(detail))
-                promoted.append(_PromotedRow(job_id, prev_status))
-
-            await conn.execute(event_sql, job_ids, details, "state_change")
             await conn.execute(
                 "SELECT pg_notify($1, '')",
                 wake_channel(schema),

@@ -786,9 +786,16 @@ Two more states worth naming because they mean *infrastructure*, not your code:
 
 When an actor's rate limit or reservation denies admission, the actor body **never runs**: the
 job is rescheduled at `now + retry_after` (computed by the limiter store in the DB/Redis clock
-domain), the slot is freed, and **no retry budget is consumed**. The attempt row records
-`rate_limit_denied` / `reservation_denied` and `metadata.awaiting` names the bucket. A denied job
-waits in Postgres — this is not busy-spinning in the worker.
+domain), the slot is freed, and **no retry budget is consumed**. A denial is admission control
+rather than an execution, so it writes no `job_attempts` and no `job_events` row: contention is
+carried by the aggregated `rate_limit_blocked_count` on the job row (`snooze_count` for an
+actor-requested deferral), while `metadata.awaiting` names the bucket being waited on. A denied
+job waits in Postgres — this is not busy-spinning in the worker.
+
+A denial never terminally fails a job either. It carries HTTP-429 semantics — come back later —
+so the job reschedules until capacity frees; its only terminal exit is its own
+`schedule_to_close` deadline, reached through the ordinary deadline path. To find jobs starving
+for admission rather than progressing, sort by `rate_limit_blocked_count`.
 
 ```python
 from taskq.ratelimit import SlidingWindow, TokenBucket, registry
@@ -854,7 +861,7 @@ connection errors the limiter falls back to the PG implementation by default
 
 | Signal | Consumes budget | Reschedules at | Use for |
 |---|---|---|---|
-| `raise Snooze(delay)` | **No** — `max_attempts` is bumped to keep the invariant `attempt < max_attempts` | `now + delay` | waiting for a condition (batch completion, external state) |
+| `raise Snooze(delay)` | **No** — the claim's attempt increment is released, so `attempt` returns to what it was and `max_attempts` never moves | `now + delay` | waiting for a condition (batch completion, external state) |
 | `raise RetryAfter(delay)` | **Yes** (default) — bounded by `max_attempts`, terminal `MaxAttemptsExceeded` when out | `now + delay` | a retry that should wait a *known* time (429s) |
 | `raise RetryAfter(delay, consume_budget=False)` | No (snooze semantics) | `now + delay` | known-delay wait that must never exhaust the budget |
 

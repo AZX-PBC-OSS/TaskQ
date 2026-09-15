@@ -111,9 +111,7 @@ class FakeBackend:
     def __init__(
         self,
         *,
-        mark_snoozed_return: Literal[
-            "scheduled", "failed", "failed:MaxAttemptsExceeded", "noop"
-        ] = "scheduled",
+        mark_snoozed_return: Literal["scheduled", "failed", "noop"] = "scheduled",
         mark_retry_after_return: Literal[
             "scheduled", "failed:DeadlineExceeded", "failed:MaxAttemptsExceeded", "noop"
         ] = "scheduled",
@@ -125,9 +123,7 @@ class FakeBackend:
         self.mark_snoozed_calls: list[dict[str, object]] = []
         self.mark_retry_after_calls: list[dict[str, object]] = []
         self.mark_failed_or_retry_calls: list[dict[str, object]] = []
-        self._mark_snoozed_return: Literal[
-            "scheduled", "failed", "failed:MaxAttemptsExceeded", "noop"
-        ] = mark_snoozed_return
+        self._mark_snoozed_return: Literal["scheduled", "failed", "noop"] = mark_snoozed_return
         self._mark_retry_after_return: Literal[
             "scheduled", "failed:DeadlineExceeded", "failed:MaxAttemptsExceeded", "noop"
         ] = mark_retry_after_return
@@ -253,7 +249,7 @@ class FakeBackend:
         outcome: SnoozeOutcome = "snoozed",
         attempt: int | None = None,
         denial_reason: DenialReason = "capacity",
-    ) -> Literal["scheduled", "failed", "failed:MaxAttemptsExceeded", "noop"]:
+    ) -> Literal["scheduled", "failed", "noop"]:
         self.mark_snoozed_calls.append(
             {
                 "job_id": job_id,

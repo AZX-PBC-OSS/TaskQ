@@ -755,15 +755,16 @@ async def _mark_snoozed(
     attempt: int | None = None,
     denial_reason: DenialReason = "capacity",
     acquire_timeout: float = DEFAULT_TERMINAL_POOL_ACQUIRE_TIMEOUT_S,
-) -> Literal["scheduled", "failed", "failed:MaxAttemptsExceeded", "noop"]:
+) -> Literal["scheduled", "failed", "noop"]:
     # The statement's arms key on exactly the three SnoozeOutcome values;
     # PG cannot reject an unknown bind value inside the statement itself,
     # so this boundary owns the check (the in-memory twin raises the
     # identical error) — before the pool is even touched, so an illegal
     # outcome raises loudly whatever the job's state instead of firing
-    # no arm and stranding the row 'running'. denial_reason gets the
-    # same boundary check for the same reason: an illegal reason must
-    # not silently fall into one arm's budget semantics.
+    # no arm and stranding the row 'running'. denial_reason keeps the
+    # same boundary check even though the statement no longer branches
+    # on it — a caller naming a reason the protocol does not define is a
+    # coding error the API must refuse rather than silently accept.
     validate_snooze_outcome(outcome)
     validate_denial_reason(denial_reason)
     branch: str
@@ -778,7 +779,6 @@ async def _mark_snoozed(
             _progress_jsonb_escaped(progress_state),
             outcome,
             attempt,
-            denial_reason,
         )
         if rec is None:
             return "noop"
@@ -786,9 +786,10 @@ async def _mark_snoozed(
         branch = rec["outcome_branch"]
         # A non-terminal snooze/denial writes no attempt/event rows and no
         # timestamps of its own — it increments the outcome-keyed counter
-        # on the row (see _sql_templates.mark_snoozed).  The terminal
-        # max_attempts arm writes its attempt row and state_change event
-        # exactly like every other terminal transition.
+        # on the row (see _sql_templates.mark_snoozed).  The deadline arm
+        # is the statement's ONLY terminal exit, and writes its attempt
+        # row and state_change event exactly like every other terminal
+        # transition.
 
     if branch == "snoozed":
         log_state_change(
@@ -800,17 +801,6 @@ async def _mark_snoozed(
             attempt=rec["attempt"],
         )
         return "scheduled"
-    if branch == "max_attempts_failed":
-        log_state_change(
-            logger,
-            from_state="running",
-            to_state="failed",
-            job_id=str(job_id),
-            worker_id=str(worker_id),
-            attempt=rec["attempt"],
-            cause="max_attempts",
-        )
-        return "failed:MaxAttemptsExceeded"
     log_state_change(
         logger,
         from_state="running",

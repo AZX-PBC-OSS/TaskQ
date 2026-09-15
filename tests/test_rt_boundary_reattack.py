@@ -6,12 +6,13 @@ combinatorics, the orderings, and the seam-scoping the fixing pass may have
 left unpinned.  A green boundary here is release confidence; a red one is a
 defect with evidence attached.  Per fix:
 
-1. **The ``unavailable`` denial carve-out** — every ``mark_snoozed`` caller
-   is enumerated and driven: a REAL saturation (acquire- or actor-raised)
-   must ride ``'capacity'`` (the budget-consuming loop), and the
-   ``'unavailable'`` reason must never suppress the deadline arm or invent
-   a terminal exit at ``attempt == max_attempts`` — on PG and on the
-   in-memory twin.
+1. **The denial-reason boundary** — every ``mark_snoozed`` caller is
+   enumerated and driven: a REAL saturation (acquire- or actor-raised)
+   carries ``'capacity'`` and only the store-failure synthesis carries
+   ``'unavailable'``, so the two causes stay distinguishable on the row.
+   Both reasons take the identical non-consuming 429 path: no reason may
+   suppress the deadline arm, and no denial — at any attempt number — may
+   invent a terminal exit — on PG and on the in-memory twin.
 2. **The depth-bounded dispatch SQL** — the combinatorics the one-actor
    oracle never touched: hundreds of actors behind one queue (the
    ``per_actor_capacity`` lateral fan-out), dozens of fairness cohorts at
@@ -126,9 +127,10 @@ async def attack_pool(pg_dsn: str) -> AsyncIterator[asyncpg.Pool]:
 
 
 class TestDenialReasonCarveOutBoundaries:
-    """The ``'unavailable'`` arm must be reachable ONLY by the store-failure
-    synthesis, and must never weaken the deadline or budget arms it sits
-    beside."""
+    """The ``'unavailable'`` reason must be reachable ONLY by the
+    store-failure synthesis, and no denial — of either reason, at any
+    attempt number — may terminalise the job outside its own deadline
+    arm."""
 
     # ── PG arms ──────────────────────────────────────────────────────
 
@@ -177,10 +179,11 @@ class TestDenialReasonCarveOutBoundaries:
         assert row.status == "failed"
         assert row.error_class == "DeadlineExceeded"
         assert row.attempt == 1, "the deadline arm never refunds the increment"
-        assert row.rate_limit_blocked_count == 0, (
-            "the denial counter increments only on the snoozed arm; a row that "
-            "went terminal through the deadline arm was never counted as "
-            "backpressure"
+        assert row.rate_limit_blocked_count == 1, (
+            "the denial that ran the job out of road still happened to it, "
+            "and with no per-occurrence rows the aggregate is its only record "
+            "— the terminal row must show the deadline was reached WHILE the "
+            "job was starving for admission, not make that last denial vanish"
         )
         attempts = await clean_jobs_app.backend.get_attempts(job)
         assert len(attempts) == 1
@@ -237,15 +240,19 @@ class TestDenialReasonCarveOutBoundaries:
         assert attempts == [], "a non-terminal denial writes no attempt rows"
 
     @pytest.mark.integration
-    async def test_capacity_denial_at_exact_max_attempts_burns_budget_on_pg(
+    async def test_capacity_denial_at_exact_max_attempts_reschedules_on_pg(
         self,
         clean_jobs_app: JobsApp,
         module_pg_schema: ModulePgSchema,
     ) -> None:
-        """The control arm: the SAME shape with the default ``'capacity'``
-        reason terminalises — the pinned contract that saturation backpressure
-        is budget-bounded, exactly what an 'unavailable' mislabel would
-        unbound."""
+        """A saturation denial at ``attempt == max_attempts`` reschedules —
+        the SAME non-consuming path an ``'unavailable'`` denial takes.
+
+        Pinned to the 429 contract: a denial reports that the fleet had no
+        slot, which says nothing about the work, so it can neither spend
+        the retry budget nor decide the outcome — whatever the reason. The
+        attempt ceiling is a bound on EXECUTIONS, and nothing executed.
+        """
         schema = module_pg_schema.schema_name
         async with clean_jobs_app.deps.worker_pool.acquire() as conn:
             worker_id = new_uuid()
@@ -268,26 +275,32 @@ class TestDenialReasonCarveOutBoundaries:
             denial_reason="capacity",
         )
 
-        assert outcome == "failed:MaxAttemptsExceeded", (
+        assert outcome == "scheduled", (
             "a 'capacity' (saturation) denial at attempt == max_attempts must "
-            f"take the terminal arm; got {outcome!r} — the bounded "
-            "budget-consuming loop is the deliberate contract an operator "
-            "scaling a bucket relies on"
+            f"stay in the non-consuming snooze arm; got {outcome!r} — "
+            "MaxAttemptsExceeded asserts the actor ran and failed "
+            "max_attempts times, which a full bucket can never claim"
         )
         row = await clean_jobs_app.backend.get(job)
         assert row is not None
-        assert row.status == "failed"
-        assert row.error_class == "MaxAttemptsExceeded"
-        assert row.attempt == 2, "the consuming arm keeps the increment standing"
+        assert row.status == "scheduled"
+        assert row.error_class is None
+        assert row.attempt == 1, (
+            "the denial arm refunds the claim's attempt increment (dispatch "
+            "stamped attempt=2; the refund returns it to 1) so saturation "
+            "consumes no budget"
+        )
+        assert row.max_attempts == 2, "the ceiling is a bound, never a counter"
+        assert row.rate_limit_blocked_count == 1
         attempts = await clean_jobs_app.backend.get_attempts(job)
-        assert len(attempts) == 1
+        assert attempts == [], "a non-terminal denial writes no attempt rows"
 
     # ── The in-memory twin ───────────────────────────────────────────
 
     async def test_mirror_matches_the_three_unavailable_boundaries(self) -> None:
         """All three arms on the in-memory twin: past-deadline terminalises,
-        exact-max stays scheduled with the refund, and the capacity control
-        burns — observably identical to the PG arms above."""
+        and exact-max stays scheduled with the refund for BOTH denial
+        reasons — observably identical to the PG arms above."""
         backend = InMemoryBackend(clock=FakeClock(_NOW))
         backend.register_actor_config(actor="mirror_actor")
 
@@ -328,7 +341,9 @@ class TestDenialReasonCarveOutBoundaries:
         assert row is not None
         assert row.status == "failed"
         assert row.error_class == "DeadlineExceeded"
-        assert row.rate_limit_blocked_count == 0
+        # The deadline arm counts the denial that ran the job out of road —
+        # the terminal row must show it was starving when its deadline hit.
+        assert row.rate_limit_blocked_count == 1
 
         # (c) attempt == max_attempts exactly + 'unavailable' → stays scheduled.
         cap_job = new_uuid()
@@ -367,11 +382,12 @@ class TestDenialReasonCarveOutBoundaries:
         assert row.rate_limit_blocked_count == 1
         assert await backend.get_attempts(cap_job) == []
 
-        # Control: same shape, 'capacity' → burns.
-        burn_job = new_uuid()
+        # Same shape, 'capacity': the identical non-consuming path — a
+        # saturation denial is a 429 exactly like a store outage.
+        sat_job = new_uuid()
         await backend.enqueue(
             EnqueueArgs(
-                id=burn_job,
+                id=sat_job,
                 actor="mirror_actor",
                 queue="default",
                 payload={},
@@ -382,24 +398,28 @@ class TestDenialReasonCarveOutBoundaries:
         )
         claimed = await backend.dispatch_batch(_WORKER_ID, ["default"], 1, _LOCK_LEASE)
         assert len(claimed) == 1
-        running = await backend.get(burn_job)
+        running = await backend.get(sat_job)
         assert running is not None
         outcome = await backend.mark_snoozed(
-            burn_job,
+            sat_job,
             _WORKER_ID,
             _DELAY,
             outcome="reservation_denied",
             attempt=running.attempt,
             denial_reason="capacity",
         )
-        assert outcome == "failed:MaxAttemptsExceeded", (
-            f"mirror capacity control: got {outcome!r} — the twin must keep "
-            "the budget-consuming loop for saturation denials"
+        assert outcome == "scheduled", (
+            f"mirror capacity arm at the budget bound: got {outcome!r} — the "
+            "twin must never terminalise a denial at the budget bound either; "
+            "the attempt ceiling bounds executions and nothing executed"
         )
-        row = await backend.get(burn_job)
+        row = await backend.get(sat_job)
         assert row is not None
-        assert row.status == "failed"
-        assert row.attempt == 1
+        assert row.status == "scheduled"
+        assert row.error_class is None
+        assert row.attempt == 0, "the mirror refunds the increment, floored at 0"
+        assert row.rate_limit_blocked_count == 1
+        assert await backend.get_attempts(sat_job) == []
 
     # ── The caller map: every consumer-driven mark_snoozed shape ────
 
@@ -408,10 +428,10 @@ class TestDenialReasonCarveOutBoundaries:
         driven end-to-end through ``dispatch_one_job``, carries the reason
         its provenance demands: a REAL saturation (the limiter answered
         'full', or the actor raised the denial itself) rides ``'capacity'``
-        — the budget-consuming loop — while only the store-failure
-        synthesis rides ``'unavailable'``.  A saturation mislabelled here is
-        the unbounded denial loop back: budget never consumed, the
-        1,014-denials production shape."""
+        while only the store-failure synthesis rides ``'unavailable'``.
+        Both take the identical non-consuming 429 path — the label's job is
+        keeping an outage distinguishable from saturation, so an operator
+        never answers a dead store with more capacity."""
         # Acquire-path saturation: a one-slot reservation whose slot is
         # already held — the limiter's own 'full' answer.
         saturation = ConcurrencyReservation(
@@ -434,8 +454,8 @@ class TestDenialReasonCarveOutBoundaries:
         _assert_single_snooze(fake_backend, outcome="reservation_denied", reason="capacity")
 
         # In-actor saturation from a rate-limit-shaped source: the reason is
-        # still 'capacity' (both denial sources burn); the source label is
-        # the otel counter's dimension, not a budget decision.
+        # still 'capacity' (the store answered, and its answer was "full");
+        # the source label is the otel counter's dimension, not a reason.
         fake_backend, actor_runs = await _dispatch_with(_rate_limit_raising_actor)
         assert actor_runs == 1
         _assert_single_snooze(fake_backend, reason="capacity")
@@ -477,11 +497,13 @@ def _assert_single_snooze(
     if outcome is not None:
         assert snoozes[0]["outcome"] == outcome
     assert snoozes[0]["denial_reason"] == reason, (
-        f"the denial's budget semantics ride denial_reason: got "
-        f"{snoozes[0]['denial_reason']!r}, expected {reason!r} — a saturation "
-        "denial riding 'unavailable' never consumes budget (the unbounded "
-        "denial loop), and a store outage riding 'capacity' burns budget for "
-        "an outage the job cannot control"
+        f"the denial's provenance rides denial_reason: got "
+        f"{snoozes[0]['denial_reason']!r}, expected {reason!r} — both reasons "
+        "are non-consuming, so the label is how a store outage stays "
+        "distinguishable from real saturation on the row; a saturation "
+        "mislabelled 'unavailable' sends the operator hunting an outage "
+        "that never happened, and an outage mislabelled 'capacity' gets "
+        "answered with more capacity"
     )
 
 

@@ -15,9 +15,11 @@ same cap, asserting the two properties the cap exists for:
 
 * one call promotes exactly ``batch_size`` eligible rows and leaves the
   remainder eligible (bounded per call);
-* repeated calls drain to completion with exactly one ``state_change``
-  event per promoted row (complete across calls — a cap that loses work or
-  events is a regression, not a fix).
+* repeated calls drain to completion — every row lands ``pending`` on both
+  backends, and neither writes any ``job_events`` rows: promotion is
+  scheduler bookkeeping, and a row per promotion is the unbounded-growth
+  vector under a sustained admission-denial loop (a cap that loses work is
+  a regression, not a fix).
 
 PG is seeded via one ``INSERT ... SELECT FROM unnest`` round trip (never
 row-by-row: a row-by-row seed would itself be the defect under test); the
@@ -168,20 +170,20 @@ async def test_both_backends_promote_at_most_batch_size_per_call(
     )
 
 
-async def test_capped_calls_drain_with_one_event_per_promoted_row(
+async def test_capped_calls_drain_completely_without_writing_events(
     clean_pg_conn: asyncpg.Connection,
     module_pg_schema: ModulePgSchema,
 ) -> None:
-    """Repeated capped calls drain fully, one event per promoted row, on BOTH
-    backends.
+    """Repeated capped calls drain fully on BOTH backends, writing no event
+    rows.
 
     The companion to the cap assertion: a bound that leaves rows behind
-    forever is a stall, and a drain that loses the per-row ``state_change``
-    event breaks the audit trail (and, on Postgres, the reclaim-event
-    watermark's per-row distinctness).  Both backends must complete.
+    forever is a stall, so both backends must complete the drain with every
+    row landing ``pending``; and promotion is scheduler bookkeeping, so
+    neither backend may write a per-row ``state_change`` event for it.
     """
     schema = module_pg_schema.schema_name
-    pg_job_ids = await _seed_scheduled_pg(clean_pg_conn, schema, _ELIGIBLE)
+    await _seed_scheduled_pg(clean_pg_conn, schema, _ELIGIBLE)
 
     memory = _make_memory_backend()
     mem_job_ids = await _seed_scheduled_memory(memory, _ELIGIBLE)
@@ -218,28 +220,27 @@ async def test_capped_calls_drain_with_one_event_per_promoted_row(
         "the in-memory drain must leave no row 'scheduled'"
     )
 
-    # ── One state_change event per promoted row, on both ────────────
+    # ── No state_change event per promoted row, on either ───────────
+    # Promotion is scheduler bookkeeping, not an outcome transition: the
+    # transitions of record are the terminal writes and the sweep/cancel
+    # audit entries, and under a sustained denial loop a row per promotion
+    # is the unbounded-growth vector the denial counters replaced.
     pg_events = await clean_pg_conn.fetch(
         f'SELECT job_id, count(*) AS n FROM "{schema}".job_events '  # noqa: S608  # Why: schema is a test-fixture identifier.
         "WHERE kind = 'state_change' GROUP BY job_id",
     )
-    assert {row["job_id"] for row in pg_events} == set(pg_job_ids), (
-        "every promoted Postgres job must carry at least one state_change event"
-    )
-    assert all(row["n"] == 1 for row in pg_events), (
-        "exactly one state_change event per promoted Postgres job — a batched "
-        "write must not drop or duplicate the per-row audit trail"
+    assert pg_events == [], (
+        f"a capped promotion drain wrote {len(pg_events)} Postgres event rows — "
+        "promotion must stay bookkeeping-only"
     )
 
     for job_id in mem_job_ids:
         events = await memory.get_events(job_id)
         state_changes = [e for e in events if e.kind == "state_change"]
-        assert len(state_changes) == 1, (
+        assert len(state_changes) == 0, (
             f"job {job_id} carries {len(state_changes)} state_change events in "
-            "memory — exactly one per promoted row is the parity contract"
+            "memory — zero per promoted row is the parity contract"
         )
-        assert state_changes[0].detail["to_state"] == "pending"
-        assert state_changes[0].detail["from_state"] == "scheduled"
 
 
 # ── SweepBatchSizer ────────────────────────────────────────────────────
