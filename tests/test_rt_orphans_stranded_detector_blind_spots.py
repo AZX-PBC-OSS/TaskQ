@@ -101,10 +101,14 @@ class _DetectorDeps:
         return bool(WorkerDeps.leading(cast(WorkerDeps, self)))
 
 
-async def _run_stranded_detector_once(
+async def _run_detector(
     pg_dsn: str, pool: asyncpg.Pool, schema: str, monkeypatch: pytest.MonkeyPatch
-) -> dict[str, int]:
-    """Run the REAL detector loop for a few fast ticks; return the last gauge."""
+) -> tuple[dict[str, int], list[dict[str, object]]]:
+    """Run the REAL detector loop for a few fast ticks; return the last gauge
+    and every log event the loop emitted (the per-shape warnings are the only
+    surface the per-condition counts and queue names reach)."""
+    import structlog.testing
+
     settings = WorkerSettings.load_from_dict(
         {
             "TASKQ_PG_DSN": pg_dsn,
@@ -127,12 +131,21 @@ async def _run_stranded_detector_once(
     monkeypatch.setattr("taskq.worker._leader_sweeps.update_stranded_jobs_cache", _capture)
 
     shutdown = asyncio.Event()
-    task = asyncio.create_task(_stranded_jobs_loop(ctx, shutdown))
-    await asyncio.sleep(0.25)
-    shutdown.set()
-    await asyncio.wait_for(task, timeout=5.0)
+    with structlog.testing.capture_logs() as captured:
+        task = asyncio.create_task(_stranded_jobs_loop(ctx, shutdown))
+        await asyncio.sleep(0.25)
+        shutdown.set()
+        await asyncio.wait_for(task, timeout=5.0)
     assert published, "detector loop never published a tick"
-    return published[-1]
+    return published[-1], [dict(event) for event in captured]
+
+
+async def _run_stranded_detector_once(
+    pg_dsn: str, pool: asyncpg.Pool, schema: str, monkeypatch: pytest.MonkeyPatch
+) -> dict[str, int]:
+    """Run the REAL detector loop for a few fast ticks; return the last gauge."""
+    gauge, _events = await _run_detector(pg_dsn, pool, schema, monkeypatch)
+    return gauge
 
 
 async def _seed_strand_shapes(conn: asyncpg.Connection, schema: str) -> tuple[UUID, UUID]:
@@ -277,9 +290,9 @@ async def _seed_assignment_routed_strand(conn: asyncpg.Connection, schema: str) 
     await conn.execute(
         f'INSERT INTO "{schema}".jobs '
         "(id, actor, queue, payload, max_attempts, retry_kind, status, attempt, "
-        " scheduled_at, started_at) "
+        " scheduled_at, started_at, assignment_routed) "
         "VALUES ($1, $2, $3, '{}'::jsonb, 3, 'transient', 'pending', 1, "
-        " clock_timestamp(), clock_timestamp())",
+        " clock_timestamp(), clock_timestamp(), true)",
         job_id,
         _ASSIGNMENT_ACTOR,
         _SERVED_LABEL_QUEUE,
@@ -406,6 +419,163 @@ async def test_stranded_detector_sees_the_assignment_routed_strand(
             "the workers table, but a re-pended row is routed by its actor's "
             "stored assignment — so the one surface that can see a fleet-wide "
             "strand reports healthy while the work can never be claimed"
+        )
+    finally:
+        if pool is not None:
+            await pool.close()
+        await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        await conn.close()
+
+
+# ── Per-shape attribution: one row, one category, the right queue name ──────
+
+_GHOST_ACTOR = "ghost_repend_actor"
+_GHOST_LABEL_QUEUE = "ghost-served-label-queue"
+_STRAY_ACTOR = "post_move_stray_actor"
+_STRAY_SERVED_ASSIGNMENT = "stray-served-assignment-queue"
+_STRAY_UNSERVED_LABEL = "stray-unserved-label-queue"
+
+
+async def test_repend_with_no_actor_config_reports_only_the_config_shape(
+    pg_dsn: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A re-pended row whose actor has no config row is ONE strand, reported
+    in the config category alone.
+
+    Without a config row there is no assignment to route by, so "is the
+    routing queue served" has no meaning for the row — and the row's own
+    label is never its routing queue once the marker is set. A detector
+    that nonetheless evaluates the unserved-queue arm against the missing
+    assignment (NULL) reports the row twice: once as the config strand it
+    is, and once as an unserved-queue strand naming a label that a live
+    worker provably serves — an operator chasing that event hunts a queue
+    problem that does not exist while the real cause (seed the actor's
+    config row) goes unnamed.
+    """
+    schema = f"tshp_{new_base62()}".lower()
+    conn = await asyncpg.connect(pg_dsn)
+    pool: asyncpg.Pool | None = None
+    try:
+        await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        await apply_pending(conn, schema=schema)
+        await conn.execute(
+            f'INSERT INTO "{schema}".jobs '
+            "(id, actor, queue, payload, max_attempts, retry_kind, status, attempt, "
+            " scheduled_at, started_at, assignment_routed) "
+            "VALUES ($1, $2, $3, '{}'::jsonb, 3, 'transient', 'pending', 1, "
+            " clock_timestamp(), clock_timestamp(), true)",
+            new_uuid(),
+            _GHOST_ACTOR,
+            _GHOST_LABEL_QUEUE,
+        )
+        # A live worker serving the row's LABEL queue: the strongest form of
+        # the contrast — even with the label served, the NULL-assignment arm
+        # must not report an unserved queue.
+        await conn.execute(
+            f'INSERT INTO "{schema}".workers (id, hostname, pid, queues) VALUES ($1, $2, $3, $4)',
+            new_uuid(),
+            "worker-host",
+            4242,
+            [_GHOST_LABEL_QUEUE],
+        )
+
+        pool = await asyncpg.create_pool(pg_dsn, min_size=1, max_size=2)
+        gauge, events = await _run_detector(pg_dsn, pool, schema, monkeypatch)
+
+        assert gauge.get(_GHOST_ACTOR) == 1, (
+            "the config-missing re-pend is one stranded row and must count once "
+            f"in the gauge; published {gauge!r}"
+        )
+        config_events = [e for e in events if e.get("event") == "stranded-jobs-no-actor-config"]
+        assert [e.get("actor") for e in config_events] == [_GHOST_ACTOR], (
+            "the row must be reported as the missing-config strand exactly once; "
+            f"events={config_events!r}"
+        )
+        assert config_events[0].get("pending_count") == 1
+        unserved_events = [
+            e
+            for e in events
+            if e.get("event") == "stranded-jobs-unserved-queue" and e.get("actor") == _GHOST_ACTOR
+        ]
+        assert unserved_events == [], (
+            "a row stranded for a missing config row must not ALSO be reported as "
+            "an unserved-queue strand — with no config row there is no assignment "
+            f"to test, and its label ({_GHOST_LABEL_QUEUE!r}, served by a live "
+            f"worker) is not its routing queue; events={unserved_events!r}"
+        )
+    finally:
+        if pool is not None:
+            await pool.close()
+        await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        await conn.close()
+
+
+async def test_unserved_event_names_the_queue_dispatch_would_route_by(
+    pg_dsn: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The queue an unserved-queue warning names must be the queue dispatch
+    would actually route the row by — the queue the detector TESTED.
+
+    Two rows, one per routing class: a producer-placed stray left on a
+    retired source queue after its actor moved (label-routed: the label is
+    unserved while the actor's current assignment IS served), and a
+    re-pended row whose assignment names a queue nothing serves while its
+    label names a served one. Naming anything but the tested queue sends
+    the operator to subscribe consumers to a queue that is already served
+    — or to retire one that is not the problem.
+    """
+    schema = f"tshp_{new_base62()}".lower()
+    conn = await asyncpg.connect(pg_dsn)
+    pool: asyncpg.Pool | None = None
+    try:
+        await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        await apply_pending(conn, schema=schema)
+        await conn.executemany(
+            f'INSERT INTO "{schema}".actor_config (actor, queue) VALUES ($1, $2)',
+            [(_STRAY_ACTOR, _STRAY_SERVED_ASSIGNMENT)],
+        )
+        # The post-move producer stray: label-routed (never re-pended), so
+        # dispatch serves it by its own label — the retired queue.
+        await conn.execute(
+            f'INSERT INTO "{schema}".jobs '
+            "(id, actor, queue, payload, max_attempts, retry_kind, status, scheduled_at) "
+            "VALUES ($1, $2, $3, '{}'::jsonb, 3, 'transient', 'pending', clock_timestamp())",
+            new_uuid(),
+            _STRAY_ACTOR,
+            _STRAY_UNSERVED_LABEL,
+        )
+        await _seed_assignment_routed_strand(conn, schema)
+        # One worker serving the queues that ARE served in this scenario:
+        # the stray actor's current assignment and the re-pended row's label.
+        await conn.execute(
+            f'INSERT INTO "{schema}".workers (id, hostname, pid, queues) VALUES ($1, $2, $3, $4)',
+            new_uuid(),
+            "worker-host",
+            4242,
+            [_STRAY_SERVED_ASSIGNMENT, _SERVED_LABEL_QUEUE],
+        )
+
+        pool = await asyncpg.create_pool(pg_dsn, min_size=1, max_size=2)
+        _gauge, events = await _run_detector(pg_dsn, pool, schema, monkeypatch)
+
+        unserved = {
+            e.get("actor"): e for e in events if e.get("event") == "stranded-jobs-unserved-queue"
+        }
+        stray_event = unserved.get(_STRAY_ACTOR)
+        assert stray_event is not None and stray_event.get("queues") == [_STRAY_UNSERVED_LABEL], (
+            f"the label-routed stray is dispatched by its own label, so the event "
+            f"must name the unserved label {_STRAY_UNSERVED_LABEL!r} — naming the "
+            f"actor's assignment {_STRAY_SERVED_ASSIGNMENT!r} (which a live worker "
+            f"serves) reports the healthy queue as the problem; event={stray_event!r}"
+        )
+        repend_event = unserved.get(_ASSIGNMENT_ACTOR)
+        assert repend_event is not None and repend_event.get("queues") == [
+            _UNSERVED_ASSIGNMENT_QUEUE
+        ], (
+            f"the re-pended row is dispatched by its actor's assignment, so the "
+            f"event must name the unserved assignment {_UNSERVED_ASSIGNMENT_QUEUE!r} "
+            f"— naming the label {_SERVED_LABEL_QUEUE!r} (served) reports the "
+            f"healthy queue as the problem; event={repend_event!r}"
         )
     finally:
         if pool is not None:

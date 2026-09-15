@@ -899,6 +899,48 @@ def test_queue_migrate_reports_pending_jobs_still_on_the_old_queue(
         "the command must report how many pending jobs still carry the old "
         f"queue; output={combined!r}"
     )
+    assert "reaches zero" in combined, (
+        "with a residual outstanding, the command must tell the operator to keep "
+        f"the retired queue's consumers running until it drains; output={combined!r}"
+    )
+
+
+def test_queue_migrate_with_zero_residual_omits_the_keep_consuming_advice(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A move whose residual is already zero must not advise keeping the
+    retired queue's consumers running until the count reaches zero.
+
+    The advice is the operator's next action; emitting it when the count is
+    already 0 tells the operator to wait on a condition that already holds —
+    and an operator who follows it keeps a retired queue's consumers running
+    forever, which is the cost the move exists to retire. The residual count
+    itself is still reported: the count is the contract, the advice is
+    conditional on there being one.
+    """
+    moved = ActorQueueMoveResult(
+        actor=_ACTOR,
+        from_queue=_OLD_QUEUE,
+        to_queue=_NEW_QUEUE,
+        jobs_moved=3,
+        running_jobs_left=0,
+        queues_row_carried=True,
+    )
+    assert moved.pending_jobs_on_old_queue == 0
+    _patch_move(monkeypatch, result=moved)
+
+    result = runner.invoke(app, ["queue", "migrate", _ACTOR, "--to", _NEW_QUEUE])
+
+    combined = result.output + result.stderr
+    assert result.exit_code == 0, f"stderr: {result.stderr}"
+    assert "0" in combined and _OLD_QUEUE in combined, (
+        f"the zero residual must still be reported; output={combined!r}"
+    )
+    assert "reaches zero" not in combined, (
+        "advising the operator to keep consumers up until a count that is "
+        f"already zero reaches zero is noise that reads as an outstanding "
+        f"action; output={combined!r}"
+    )
 
 
 def test_queue_migrate_leaves_no_partial_move_on_failure(

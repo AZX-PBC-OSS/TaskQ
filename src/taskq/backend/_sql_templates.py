@@ -75,6 +75,7 @@ COPY_FROM_COLUMNS: Final[tuple[str, ...]] = (
     "retry_cap_seconds",
     "retry_backoff",
     "retry_jitter",
+    "assignment_routed",
 )
 
 # Column list for the enqueue COPY path only.  Every omitted column is
@@ -395,6 +396,10 @@ retried AS (
         last_heartbeat_at = NULL,
         cancel_phase = 0,
         cancel_requested_at = NULL,
+        -- A failure retry returns a claimed row to the pending pool, so
+        -- it routes by the actor's current assignment from here on (the
+        -- routing contract in taskq/backend/_dispatch_sql.py).
+        assignment_routed = true,
         error_class = $4,
         error_message = $5,
         error_traceback = $6,
@@ -668,6 +673,10 @@ snoozed AS (
         last_heartbeat_at = NULL,
         cancel_phase = 0,
         cancel_requested_at = NULL,
+        -- A deferral returns a claimed row to the pending pool, so it
+        -- routes by the actor's current assignment from here on (the
+        -- routing contract in taskq/backend/_dispatch_sql.py).
+        assignment_routed = true,
         -- Every arm of this statement refunds the claim's attempt
         -- increment. An actor-requested deferral did not execute, and
         -- neither did an admission denial: no handler ran, so nothing
@@ -762,6 +771,10 @@ WITH params AS (
         last_heartbeat_at = NULL,
         cancel_phase = 0,
         cancel_requested_at = NULL,
+        -- A deferral returns a claimed row to the pending pool, so it
+        -- routes by the actor's current assignment from here on (the
+        -- routing contract in taskq/backend/_dispatch_sql.py).
+        assignment_routed = true,
         progress_seq = (SELECT progress_seq FROM params),
         progress_state = CASE WHEN (SELECT progress_state FROM params) IS NOT NULL THEN COALESCE(j.progress_state, '{{}}'::jsonb) || (SELECT progress_state FROM params) ELSE j.progress_state END
     WHERE j.id = (SELECT job_id FROM params)
@@ -918,6 +931,10 @@ snoozed AS (
         last_heartbeat_at = NULL,
         cancel_phase = 0,
         cancel_requested_at = NULL,
+        -- A deferral returns a claimed row to the pending pool, so it
+        -- routes by the actor's current assignment from here on (the
+        -- routing contract in taskq/backend/_dispatch_sql.py).
+        assignment_routed = true,
         attempt = {_ATTEMPT_REFUND_SQL},
         snooze_count = j.snooze_count + 1,
         progress_seq = (SELECT progress_seq FROM params),
@@ -1052,6 +1069,11 @@ released AS (
         last_heartbeat_at = NULL,
         cancel_phase = 0,
         cancel_requested_at = NULL,
+        -- An interruption hands the row back to the fleet, so it routes
+        -- by the actor's current assignment from here on (the routing
+        -- contract in taskq/backend/_dispatch_sql.py) — the same
+        -- re-pend class as the snooze/refund arms and the sweep.
+        assignment_routed = true,
         attempt = {_ATTEMPT_REFUND_SQL},
         interrupt_count = j.interrupt_count + 1,
         progress_seq = GREATEST(j.progress_seq, (SELECT progress_seq FROM params)),
@@ -1426,6 +1448,15 @@ WITH retried AS (
     UPDATE "{s}".jobs
     SET status = 'pending',
         max_attempts = LEAST(GREATEST(max_attempts, attempt + 1), 32767),
+        -- An operator hand-back routes by the actor's current
+        -- assignment, not by the label the row was first placed under
+        -- (the routing contract in taskq/backend/_dispatch_sql.py).
+        -- This holds for a row terminalized before it was ever claimed
+        -- too: the retry is the deliberate re-pend, so a job cancelled
+        -- while pending and retried after its actor moved reaches the
+        -- target queue's consumers instead of stranding on the retired
+        -- source queue.
+        assignment_routed = true,
         cancel_phase = 0,
         cancel_requested_at = NULL,
         error_class = NULL,

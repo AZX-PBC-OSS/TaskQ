@@ -67,16 +67,16 @@ async def _dispatch_batch(
     # max_concurrent, else max(max_concurrent - in_flight, 0).
     #
     # Routing contract, mirroring PG's two candidate arms: a pending row
-    # routes by its OWN queue label while never claimed
-    # (started_at IS NULL — producer placement governs, so post-move
+    # routes by its OWN queue label while producer-placed (NOT
+    # assignment_routed — producer placement governs, so post-move
     # strays and enqueue overrides keep their queue), and by the actor's
-    # CURRENT stored assignment once claimed (started_at IS NOT NULL —
-    # every re-pend path keeps the row's label as audit trail but
-    # follows the assignment, so a move's running-job tail drains
-    # through the target queue's consumers). started_at is the durable
-    # "was claimed" marker: dispatch stamps it and no re-pend path on
-    # either backend clears it (attempt is NOT a marker — the
-    # snooze/refund arms give the claim's increment back).
+    # CURRENT stored assignment once a re-pend has handed it back
+    # (assignment_routed — every re-pend path keeps the row's label as
+    # audit trail but follows the assignment, so a move's tails drain
+    # through the target queue's consumers). The marker is written by
+    # the re-pend paths themselves on both backends rather than inferred
+    # from started_at, which would miss an operator retry of a job
+    # terminalized before it was ever claimed.
     candidates: list[JobRow] = []
     _fairness_rank: dict[UUID, int] = {}
     for _actor, _cfg in self._actor_configs_meta.items():
@@ -95,7 +95,7 @@ async def _dispatch_batch(
                 and (row.schedule_to_close is None or row.schedule_to_close > now)
             ):
                 continue
-            if row.started_at is None:
+            if not row.assignment_routed:
                 # Label-routed arm: PG's per_actor_capacity x
                 # unnest(queues) probes, queue label against the
                 # subscription.

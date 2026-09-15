@@ -73,27 +73,31 @@ tail across rounds, it never removes any row from consideration.
 
 Routing contract (the running-job-tail fix for
 :func:`taskq.actor_config_ops.move_actor_queue`): a pending row's
-dispatch routing queue is its OWN ``jobs.queue`` label while it has
-never been claimed (``started_at IS NULL``) — producer placement
-governs, so a stale producer's post-move enqueue to a retired source
-queue stays served by that queue's consumers, and an explicit
-``enqueue(queue=...)`` override keeps its queue — and its actor's
-CURRENT stored assignment (``actor_config.queue``) once it has been
-claimed at least once (``started_at IS NOT NULL``).  Every re-pend
-path (``mark_retry``/``mark_failed_or_retry``, the leader's
-crash-reclaim sweep, the operator ``retry_job``, the snooze/refund
-deferral arms) returns a claimed row to the pending pool still
-carrying its original queue label — the label is the audit trail of
-first placement, and no path rewrites it — so without the
-assignment-routed arm a move's left-behind running-job tails would be
-claimable only by consumers of the queue the operator is retiring:
-stranded the moment the source queue's last consumer goes away.
-``started_at`` is the durable "was claimed" marker because no re-pend
-path clears it; ``attempt`` is NOT usable (the snooze/refund arms give
-the claim's increment back, flooring to 0).  The two populations are
-probed by disjoint arms with disjoint partial indexes
-(``jobs_actor_dispatch_idx`` / ``jobs_round_robin_probe_idx`` for
-never-claimed rows, ``jobs_repended_probe_idx`` for re-pended rows),
+dispatch routing queue is decided by its ORIGIN.  A row a producer
+placed (``assignment_routed`` false) routes by its OWN ``jobs.queue``
+label — producer placement governs, so a stale producer's post-move
+enqueue to a retired source queue stays served by that queue's
+consumers, and an explicit ``enqueue(queue=...)`` override keeps its
+queue.  A row a re-pend handed back (``assignment_routed`` true)
+routes by its actor's CURRENT stored assignment
+(``actor_config.queue``).  Every re-pend path
+(``mark_retry``/``mark_failed_or_retry``, the leader's crash-reclaim
+sweep, the operator ``retry_job``, the snooze/refund deferral arms)
+returns a row to the pending pool still carrying its original queue
+label — the label is the audit trail of first placement, and no path
+rewrites it — so without the assignment-routed arm a move's
+left-behind tails would be claimable only by consumers of the queue
+the operator is retiring: stranded the moment the source queue's last
+consumer goes away.  The marker is written by the re-pend paths
+themselves rather than inferred: ``started_at`` answers only "was
+claimed", which misses an operator retry of a job terminalized before
+it was ever claimed — a deliberate hand-back that would otherwise
+route by its stale label and strand permanently; ``attempt`` is
+likewise unusable (the snooze/refund arms give the claim's increment
+back, flooring to 0).  The two populations are probed by disjoint arms
+with disjoint partial indexes (``jobs_actor_dispatch_idx`` /
+``jobs_round_robin_probe_idx`` for producer-placed rows,
+``jobs_assignment_routed_probe_idx`` for re-pended rows),
 each arm keeping its own ORDER BY + LIMIT probe so the depth contract
 holds for both; the re-pended arm's cohort enumeration
 (``rr_tail_keys``) walks only the re-pended population, which is empty
@@ -210,9 +214,9 @@ running_identities AS (
 -- every one of its pairs -- so ordering, fairness, and the
 -- locked/eligible stages are untouched.
 --
--- The probe is scoped to never-claimed rows (started_at IS NULL): this
--- CTE feeds only the label-routed candidates arm, and a re-pended row
--- (started_at IS NOT NULL) is that arm's non-candidate -- its routing
+-- The probe is scoped to producer-placed rows (NOT assignment_routed):
+-- this CTE feeds only the label-routed candidates arm, and a re-pended
+-- row (assignment_routed) is that arm's non-candidate -- its routing
 -- queue is the actor's assignment, probed by repend_capacity below.
 -- An actor whose only dispatchable rows are re-pends is therefore NOT
 -- probed here; it enters the round through repend_capacity instead.
@@ -234,7 +238,7 @@ per_actor_capacity AS (
       FROM "{schema}".jobs j
       WHERE j.actor = ac.actor
         AND j.queue = pq.q
-        AND j.started_at IS NULL
+        AND NOT j.assignment_routed
         AND j.status = 'pending'
       ORDER BY j.priority DESC, j.scheduled_at, j.id
       LIMIT 1
@@ -247,7 +251,7 @@ per_actor_capacity AS (
 -- CURRENT stored assignment is among this round's subscribed queues,
 -- with the same residual arithmetic as per_actor_capacity. The
 -- assignment IS the routing here: every re-pended row of such an actor
--- (any queue label, started_at IS NOT NULL, pending) is a candidate
+-- (any queue label, assignment_routed, pending) is a candidate
 -- for this round no matter which label it carries -- the
 -- move_actor_queue tail contract. Actors whose assignment is not
 -- subscribed contribute nothing here, exactly as a label-routed actor
@@ -274,11 +278,11 @@ repend_capacity AS (
 ),
 -- Re-pended cohort enumeration: the same recursive loose index scan
 -- geometry as _RR_KEYS_CTE, over the re-pended population only
--- (pending AND started_at IS NOT NULL) and keyed on (actor,
+-- (pending AND assignment_routed) and keyed on (actor,
 -- COALESCE(fairness_key, '__null__')) -- the cohort identity has no
 -- queue column because a re-pended row's routing queue is the actor's
 -- assignment, one queue per actor, never the row's label. The walk
--- rides jobs_repended_probe_idx (migration 01.00.11_01): each step's
+-- rides jobs_assignment_routed_probe_idx: each step's
 -- row-compare on the two leading key columns is an Index Cond, one
 -- bounded seek per DISTINCT cohort, so the enumeration's work is
 -- proportional to the re-pended cohort count, never to any cohort's
@@ -289,7 +293,7 @@ rr_tail_keys AS (
   (
     SELECT j5.actor, COALESCE(j5.fairness_key, '__null__') AS fkey
     FROM "{schema}".jobs j5
-    WHERE j5.status = 'pending' AND j5.started_at IS NOT NULL
+    WHERE j5.status = 'pending' AND j5.assignment_routed
     ORDER BY j5.actor, COALESCE(j5.fairness_key, '__null__')
     LIMIT 1
   )
@@ -299,7 +303,7 @@ rr_tail_keys AS (
   CROSS JOIN LATERAL (
     SELECT j6.actor, COALESCE(j6.fairness_key, '__null__') AS fkey
     FROM "{schema}".jobs j6
-    WHERE j6.status = 'pending' AND j6.started_at IS NOT NULL
+    WHERE j6.status = 'pending' AND j6.assignment_routed
       AND (j6.actor, COALESCE(j6.fairness_key, '__null__')) > (cur.actor, cur.fkey)
     ORDER BY j6.actor, COALESCE(j6.fairness_key, '__null__')
     LIMIT 1
@@ -314,8 +318,8 @@ rr_tail_keys AS (
 --     assignment -- every system re-pend follows the assignment, so a
 --     move's running-job tails drain through the target's consumers
 --     and never strand on a retired source queue.
--- Disjointness is by the started_at discriminator (IS NULL vs IS NOT
--- NULL), so no row can reach identity_dedup twice from the two arms.
+-- Disjointness is by the assignment_routed discriminator, so no row can
+-- reach identity_dedup twice from the two arms.
 candidates AS (
   (SELECT j.id, j.actor, j.identity_key, j.fairness_key,
           __FAIRNESS_RANK_COLUMN__,
@@ -539,10 +543,10 @@ _STRICT_FIFO_CANDIDATES_LATERAL = """\
     FROM "{schema}".jobs j2
     WHERE j2.actor = pac.actor
       AND j2.queue = sq.queue_name
-      -- Never-claimed rows only: a re-pended row on this label is the
+      -- Producer-placed rows only: a re-pended row on this label is the
       -- assignment-routed arm's candidate (see the routing contract in
       -- the module docstring), never this arm's.
-      AND j2.started_at IS NULL
+      AND NOT j2.assignment_routed
       AND j2.status = 'pending'
       AND j2.scheduled_at <= statement_timestamp()
       AND (j2.schedule_to_close IS NULL OR j2.schedule_to_close > statement_timestamp())
@@ -598,10 +602,10 @@ _ROUND_ROBIN_CANDIDATES_LATERAL = """\
          FROM "{schema}".jobs j2
          WHERE j2.actor = pac.actor
            AND j2.queue = sq.queue_name
-           -- Never-claimed rows only: a re-pended row on this label is
+           -- Producer-placed rows only: a re-pended row on this label is
            -- the assignment-routed arm's candidate (see the routing
            -- contract in the module docstring), never this arm's.
-           AND j2.started_at IS NULL
+           AND NOT j2.assignment_routed
            AND j2.status = 'pending'
            AND COALESCE(j2.fairness_key, '__null__') = k.fkey
            AND j2.scheduled_at <= statement_timestamp()
@@ -620,12 +624,12 @@ _ROUND_ROBIN_CANDIDATES_LATERAL = """\
     ) w"""
 
 # The assignment-routed candidates arm, strict-FIFO variant: re-pended
-# rows (started_at IS NOT NULL, any queue label) of actors whose
+# rows (assignment_routed, any queue label) of actors whose
 # current assignment is subscribed this round, admitted per fairness
 # cohort with the same residual * oversample bound as the label-routed
 # arm's probes and carrying no fairness rank (this variant ranks by
 # priority alone downstream). The per-cohort probes ride
-# jobs_repended_probe_idx: actor equality plus the COALESCE-normalized
+# jobs_assignment_routed_probe_idx: actor equality plus the COALESCE-normalized
 # cohort equality is a two-column Index Cond prefix, the index's own
 # (priority DESC, scheduled_at, id) order serves the probe's ORDER BY
 # without a sort, and the LIMIT stops the scan -- the same depth
@@ -647,7 +651,7 @@ _REPENDED_STRICT_FIFO_LATERAL = """\
              j2.priority, j2.scheduled_at
       FROM "{schema}".jobs j2
       WHERE j2.actor = rc.actor
-        AND j2.started_at IS NOT NULL
+        AND j2.assignment_routed
         AND j2.status = 'pending'
         AND COALESCE(j2.fairness_key, '__null__') = tk.fkey
         AND j2.scheduled_at <= statement_timestamp()
@@ -685,7 +689,7 @@ _REPENDED_ROUND_ROBIN_LATERAL = """\
                j2.priority, j2.scheduled_at
         FROM "{schema}".jobs j2
         WHERE j2.actor = rc.actor
-          AND j2.started_at IS NOT NULL
+          AND j2.assignment_routed
           AND j2.status = 'pending'
           AND COALESCE(j2.fairness_key, '__null__') = tk.fkey
           AND j2.scheduled_at <= statement_timestamp()

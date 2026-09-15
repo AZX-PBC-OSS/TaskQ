@@ -1,0 +1,13 @@
+-- Retire the started_at-proxy probe index, superseded by
+-- jobs_assignment_routed_probe_idx (01.00.12_05_pre_assignment_routed_marker.sql).
+-- Forward-only; there is no down migration. To revert, restore from
+-- backup. The literal "{schema}" token is substituted at apply time by
+-- the migration runner.
+--
+-- PHASE: post. Pods still running the previous release plan their
+-- assignment-routed arm against started_at IS NOT NULL and need this index
+-- to keep that probe bounded. Dropping it while any of them is still
+-- serving would turn their dispatch tick into a scan of the pending
+-- backlog. It therefore waits until the last old pod is gone, which is
+-- exactly what the post phase guarantees.
+DROP INDEX IF EXISTS "{schema}".jobs_repended_probe_idx;

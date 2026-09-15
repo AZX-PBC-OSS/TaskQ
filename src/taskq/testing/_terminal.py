@@ -381,6 +381,9 @@ async def _mark_failed_or_retry(
             error_traceback=error_info.error_traceback,
             cancel_phase=CancelPhase.NONE,
             cancel_requested_at=None,
+            # A failure retry returns the row to the pending pool, so it
+            # routes by the actor's current assignment from here on.
+            assignment_routed=True,
             progress_seq=progress_seq,
             progress_state=merged_progress,
         )
@@ -755,6 +758,9 @@ async def _mark_snoozed(
         metadata=new_metadata,
         cancel_phase=CancelPhase.NONE,
         cancel_requested_at=None,
+        # A deferral returns the row to the pending pool, so it routes by
+        # the actor's current assignment from here on.
+        assignment_routed=True,
         progress_seq=progress_seq,
         progress_state=merged_progress,
     )
@@ -933,6 +939,9 @@ async def _mark_retry_after(
         last_heartbeat_at=None,
         cancel_phase=CancelPhase.NONE,
         cancel_requested_at=None,
+        # A deferral returns the row to the pending pool, so it routes by
+        # the actor's current assignment from here on.
+        assignment_routed=True,
         progress_seq=progress_seq,
         progress_state=merged_progress,
     )
@@ -1052,7 +1061,9 @@ async def _mark_interrupted(
     # at 0) exactly as the snooze/unavailable arms refund it; no attempt
     # row is written (an interruption is not an execution outcome); one
     # state_change event with reason 'interrupted' records the transition
-    # and interrupt_count carries the aggregate on the row.
+    # and interrupt_count carries the aggregate on the row. The release
+    # is a re-pend, so the row routes by the actor's current assignment
+    # from here on (mirrors the SQL released arm's assignment_routed).
     released_status: Literal["scheduled", "pending"] = (
         "scheduled" if effective_hold > timedelta(0) else "pending"
     )
@@ -1069,6 +1080,7 @@ async def _mark_interrupted(
         cancel_requested_at=None,
         attempt=max(row.attempt - 1, 0),
         interrupt_count=row.interrupt_count + 1,
+        assignment_routed=True,
         progress_seq=max(row.progress_seq, progress_seq),
         progress_state=merged_progress,
     )

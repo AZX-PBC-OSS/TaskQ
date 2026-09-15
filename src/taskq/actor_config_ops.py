@@ -384,6 +384,16 @@ _MOVE_COUNT_RUNNING_SQL = """
 SELECT count(*) FROM "{schema}".jobs WHERE actor = $1 AND status = 'running'
 """.strip()
 
+# The producer-side residual, read in the flip transaction so the count is
+# consistent with the assignment it is reported alongside. Rows a stale
+# producer placed on the source queue during the drain land here; they are
+# served by the source queue's consumers, and this is the only supported
+# way for an operator to know when that queue can stop being consumed.
+_MOVE_COUNT_PENDING_ON_OLD_QUEUE_SQL = """
+SELECT count(*) FROM "{schema}".jobs
+ WHERE actor = $1 AND queue = $2 AND status IN ('pending', 'scheduled')
+""".strip()
+
 # Keyed single row by the table's primary key.
 _MOVE_SET_ASSIGNMENT_SQL = """
 UPDATE "{schema}".actor_config
@@ -416,6 +426,16 @@ class ActorQueueMoveResult:
     queue. ``queues_row_carried`` is ``True`` only when the target queue
     had no row and inherited the source queue's mode and max_concurrent;
     a configured target stands unchanged.
+
+    ``pending_jobs_on_old_queue`` counts the actor's pending rows still
+    carrying the SOURCE queue label after the flip — the irreducible
+    producer-side residual. The move deliberately does not chase these:
+    a producer still running the old literal keeps placing rows there,
+    and producer placement governs a never-claimed row's routing, so
+    they stay served by the source queue's consumers. That trade-off is
+    only safe while it is visible, because the operator's decision of
+    when to stop consuming the retired queue depends on this count
+    rather than on a guess.
     """
 
     actor: str
@@ -424,6 +444,7 @@ class ActorQueueMoveResult:
     jobs_moved: int
     running_jobs_left: int
     queues_row_carried: bool
+    pending_jobs_on_old_queue: int = 0
 
 
 async def move_actor_queue(
@@ -596,6 +617,12 @@ async def move_actor_queue(
                 actor,
             )
 
+            residual_on_old = await conn.fetchval(
+                _MOVE_COUNT_PENDING_ON_OLD_QUEUE_SQL.format(schema=schema),
+                actor,
+                from_queue,
+            )
+
             await conn.execute(
                 _MOVE_SET_ASSIGNMENT_SQL.format(schema=schema),
                 actor,
@@ -624,6 +651,7 @@ async def move_actor_queue(
         jobs_moved=jobs_moved,
         running_jobs_left=int(running_left or 0),
         queues_row_carried=queues_row_carried,
+        pending_jobs_on_old_queue=int(residual_on_old or 0),
     )
 
 

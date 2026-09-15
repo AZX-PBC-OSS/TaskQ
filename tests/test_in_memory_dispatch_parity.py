@@ -105,13 +105,15 @@ async def _setup_pg_queue(
     )
 
 
-async def _ensure_pg_actor(conn: "asyncpg.Connection", schema: str, actor: str) -> None:
+async def _ensure_pg_actor(
+    conn: "asyncpg.Connection", schema: str, actor: str, *, queue: str = "default"
+) -> None:
     await conn.execute(
         f'INSERT INTO "{schema}".actor_config (actor, max_concurrent, queue, metadata) '
         "VALUES ($1, NULL, $2, $3::jsonb) "
         "ON CONFLICT (actor) DO UPDATE SET max_concurrent = NULL",
         actor,
-        "default",
+        queue,
         "{}",
     )
 
@@ -395,4 +397,107 @@ async def test_cancel_where_id_ordering_matches_pg(
         "different answer: any caller correlating cancelled_ids against "
         "its own bookkeeping sees the mirror agree with production only "
         "when the sort keys happen to coincide."
+    )
+
+
+# ── The assignment-routing discriminator ─────────────────────────────
+
+
+async def test_handback_of_a_never_claimed_row_switches_to_assignment_routing_on_both_backends(
+    module_pg_schema: ModulePgSchema,
+    clean_jobs_app: JobsApp,
+) -> None:
+    """A re-pended row must switch from label routing to assignment routing
+    on BOTH backends — and the switch must be visible even for a row that
+    was never claimed.
+
+    The row below is cancelled while pending and handed back by an operator
+    retry, so ``started_at`` stays NULL forever: a discriminator built on
+    the started_at proxy still reads it as producer-placed and routes it by
+    its (stale) label — the exact strand the ``assignment_routed`` marker
+    exists to close. The observable contract, on each backend: before the
+    hand-back a consumer of the actor's assignment queue claims nothing
+    (producer placement governs the never-claimed row); after it, a
+    consumer of the row's label queue claims nothing and a consumer of the
+    actor's current assignment claims the row.
+    """
+    schema = module_pg_schema.schema_name
+    pg_backend = clean_jobs_app.backend
+    actor = "parity_repend_switch"
+    label_queue = "parity_label_q"
+    assignment_queue = "parity_assignment_q"
+
+    job_id = new_job_id()
+    args = _args(job_id=job_id, actor=actor, queue=label_queue)
+
+    async with clean_jobs_app.deps.worker_pool.acquire() as conn:  # type: ignore[union-attr]  # Why: deps is object-typed in the non-TYPE_CHECKING JobsApp shim; WorkerDeps has worker_pool at runtime.
+        await _setup_pg_queue(conn, schema, label_queue, "strict_fifo")
+        await _setup_pg_queue(conn, schema, assignment_queue, "strict_fifo")
+        await _ensure_pg_actor(conn, schema, actor, queue=assignment_queue)
+
+    await pg_backend.enqueue(args)
+    mem_backend = InMemoryBackend(clock=FakeClock(_IN_MEMORY_NOW))
+    mem_backend.register_actor_config(actor=actor, queue=assignment_queue)
+    await mem_backend.enqueue(args)
+
+    # Producer placement governs while the row has never been handed back:
+    # the assignment queue's consumer must NOT claim the labelled row (a
+    # router that ignored the label would claim it here).
+    pg_before = await pg_backend.dispatch_batch(new_uuid(), [assignment_queue], 10, _LEASE)
+    mem_before = await mem_backend.dispatch_batch(new_uuid(), [assignment_queue], 10, _LEASE)
+    assert pg_before == [], (
+        "PostgresBackend (production) claimed a producer-placed row via the "
+        f"actor's assignment queue before any re-pend: {_ids(pg_before)}. "
+        "The parity oracle itself is wrong — re-derive it before trusting "
+        "the InMemory comparison."
+    )
+    assert _ids(mem_before) == _ids(pg_before), (
+        "InMemoryBackend diverged before the hand-back: a producer-placed row "
+        "must route by its own label, so the assignment queue's consumer "
+        f"claims nothing; PG claimed {_ids(pg_before)}, InMemory claimed "
+        f"{_ids(mem_before)}."
+    )
+
+    # The hand-back: cancelled while pending, then re-pended by an operator
+    # retry. started_at stays NULL on both backends — only the marker can
+    # tell this row's origin apart from a producer placement.
+    pg_cancel = await pg_backend.cancel_where(JobFilter(actor=actor), reason="parity")
+    mem_cancel = await mem_backend.cancel_where(JobFilter(actor=actor), reason="parity")
+    assert pg_cancel.cancelled_ids == (job_id,)
+    assert mem_cancel.cancelled_ids == pg_cancel.cancelled_ids
+    assert await pg_backend.retry_job(job_id) is True
+    assert await mem_backend.retry_job(job_id) is True
+
+    # After the hand-back the label no longer routes the row…
+    pg_by_label = await pg_backend.dispatch_batch(new_uuid(), [label_queue], 10, _LEASE)
+    mem_by_label = await mem_backend.dispatch_batch(new_uuid(), [label_queue], 10, _LEASE)
+    assert pg_by_label == [], (
+        "PostgresBackend (production) routed a re-pended row by its stale "
+        f"label: {_ids(pg_by_label)}. The parity oracle itself is wrong — "
+        "re-derive it before trusting the InMemory comparison."
+    )
+    assert _ids(mem_by_label) == _ids(pg_by_label), (
+        "InMemoryBackend diverged at the discriminator: a re-pended row must "
+        "NOT be claimable by its label queue's consumers — PG claimed "
+        f"{_ids(pg_by_label)} on the label queue, InMemory claimed "
+        f"{_ids(mem_by_label)}. This row was never claimed, so started_at "
+        "is NULL: a started_at-proxy discriminator routes it by the label "
+        "here, which is exactly the strand the assignment_routed marker "
+        "exists to close."
+    )
+
+    # …and the actor's current assignment does.
+    pg_by_assignment = await pg_backend.dispatch_batch(new_uuid(), [assignment_queue], 10, _LEASE)
+    mem_by_assignment = await mem_backend.dispatch_batch(new_uuid(), [assignment_queue], 10, _LEASE)
+    assert _ids(pg_by_assignment) == [job_id], (
+        "PostgresBackend (production) must route the re-pended row to the "
+        f"actor's current assignment queue; claimed {_ids(pg_by_assignment)}. "
+        "The parity oracle itself is wrong — re-derive it before trusting "
+        "the InMemory comparison."
+    )
+    assert _ids(mem_by_assignment) == _ids(pg_by_assignment), (
+        "InMemoryBackend diverged at the assignment-routed arm: the re-pended "
+        f"row must be claimable by the assignment queue's consumers — PG "
+        f"claimed {_ids(pg_by_assignment)}, InMemory claimed "
+        f"{_ids(mem_by_assignment)}."
     )

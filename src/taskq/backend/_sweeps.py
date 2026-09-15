@@ -432,6 +432,11 @@ SET status = CASE
     lock_expires_at = NULL,
     cancel_phase = 0,
     cancel_requested_at = NULL,
+    -- A reclaim hands the row back to the fleet, so it routes by the
+    -- actor's current assignment from here on (the routing contract in
+    -- taskq/backend/_dispatch_sql.py). Set on every arm: a row that
+    -- terminalises instead is not dispatchable, and the flag is inert.
+    assignment_routed = true,
     scheduled_at = CASE
         WHEN {has_budget}
             THEN clock_timestamp() + {reclaim_delay}

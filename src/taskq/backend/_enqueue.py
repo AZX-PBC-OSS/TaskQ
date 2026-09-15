@@ -1614,6 +1614,11 @@ async def _enqueue_batch_fast(
                 args.retry_cap.total_seconds(),
                 args.retry_backoff,
                 args.retry_jitter,
+                # Producer placement: an enqueue IS the placement the row's
+                # own queue label records, so dispatch routes it by that
+                # label rather than by the actor's stored assignment (the
+                # routing contract in taskq/backend/_dispatch_sql.py).
+                False,
             )
         )
 

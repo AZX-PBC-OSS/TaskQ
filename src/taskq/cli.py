@@ -33,6 +33,7 @@ from taskq.actor import ActorRef
 from taskq.actor_config_ops import (
     UNSET,
     ActorConfigRow,
+    ActorQueueMoveResult,
     Unset,
     deregister_actor,
     get_actor_config,
@@ -128,6 +129,16 @@ queues_app = typer.Typer(
     help="Inspect and configure queue dispatch mode and per-queue concurrency caps.",
 )
 app.add_typer(queues_app, name="queues")
+
+# Queue-lifecycle operations. An operator moving an actor between queues is
+# thinking about queues, not about the actor_config table the assignment
+# happens to live in, so the move is reachable under this noun as well as
+# under `actor-config`.
+queue_app = typer.Typer(
+    no_args_is_help=True,
+    help="Queue lifecycle operations.",
+)
+app.add_typer(queue_app, name="queue")
 
 
 def _import_ref(ref: str, *, example: str) -> Any:
@@ -994,15 +1005,93 @@ async def _actor_config_move_queue(
     except ValueError as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=2) from None
+    except asyncpg.exceptions.QueryCanceledError:
+        # A drain batch hit its own statement_timeout. The batches that
+        # committed before it are real progress and the drain's queue
+        # predicate skips rows already moved, so the only action is to run
+        # the command again — which is a refusal to report, not a crash.
+        # The error text is not echoed: the server appends DETAIL quoting
+        # row values, which must not cross this boundary.
+        typer.echo(
+            f"move-queue of actor {actor!r} onto {new_queue!r} aborted: a drain batch "
+            "exceeded its statement timeout. Batches committed before the abort are "
+            "kept, so the move is incomplete and safe to re-run — re-run the same "
+            "command to continue from where it stopped.",
+            err=True,
+        )
+        raise typer.Exit(code=2) from None
     finally:
         await close_conn_bounded(conn, "actor-config-move-queue", CLOSE_TIMEOUT_SECS)
 
+    _report_queue_move(result)
+
+
+@queue_app.command("migrate")
+def queue_migrate(
+    actor: Annotated[str, typer.Argument(help="Actor name to move.")],
+    to: Annotated[
+        str,
+        typer.Option(
+            "--to",
+            help="Target queue name. Required — the target is never defaulted.",
+        ),
+    ],
+) -> None:
+    """Move an actor onto a different queue, and report the residual.
+
+    Applies the coordinated writes of a move — the stored assignment and
+    the target `queues` row carrying the source's mode and cap — in one
+    transaction, so a failure leaves the deployment exactly where it
+    started rather than half-moved. The actor's pending/scheduled backlog
+    is rewritten onto the target first, as bounded committed batches.
+
+    The target is named by `--to` rather than positionally: the two
+    arguments of a move are an actor and a queue, both plain strings, and
+    two bare positionals are the shape an operator transposes under
+    pressure — with the consequence that the backlog drains onto a queue
+    that was never the target.
+
+    Reports how many pending jobs still carry the source queue label.
+    Producers still running the old literal keep placing jobs there, and
+    those stay served by the source queue's consumers, so that count is
+    what tells the operator when the retired queue can stop being consumed.
+
+    Exit codes: 0 moved, 2 refusal (invalid queue name, the actor is
+    already on that queue, the assignment changed concurrently, or a drain
+    batch timed out and the move is re-runnable), 3 no stored row.
+    """
+    settings = TaskQSettings.load()
+    asyncio.run(_actor_config_move_queue(settings, actor, to))
+
+
+def _report_queue_move(result: ActorQueueMoveResult) -> None:
+    """Print one completed move, and its residual to stderr.
+
+    The residual goes to stderr because it drives the operator's next
+    action while it is non-zero (keep the source queue's consumers up
+    until it drains), not part of the move's result record — the move
+    itself succeeded.
+    """
     typer.echo(
         f"Moved actor {result.actor!r}: {result.from_queue!r} -> {result.to_queue!r}"
         f" jobs_moved={result.jobs_moved}"
         f" running_jobs_left={result.running_jobs_left}"
         f" queues_row_carried={result.queues_row_carried}"
     )
+    residual = result.pending_jobs_on_old_queue
+    residual_line = (
+        f"{residual} pending/scheduled job(s) still carry queue {result.from_queue!r} "
+        "(placed there by producers still running the old literal)."
+    )
+    if residual > 0:
+        # The operator's next action is only advice while there is a
+        # residual to drain — at zero the condition is already met and
+        # repeating it reads as an outstanding action.
+        residual_line += (
+            " Keep that queue's consumers running until every producer carries "
+            "the new literal and this count reaches zero."
+        )
+    typer.echo(residual_line, err=True)
     typer.echo(
         f"NOTE: ensure workers consume {result.to_queue!r} now, and keep "
         f"consuming {result.from_queue!r} until every producer runs the "
@@ -1183,6 +1272,151 @@ async def _actor_config_diff(
     # the exit code is the signal a CI gate checks.
     if blocking:
         raise typer.Exit(code=1)
+
+
+def _describe_actor_capacity(row: ActorConfigRow) -> str:
+    """One actor's stored capacity, with every special value named.
+
+    A bare ``0`` and a bare blank are the two values an operator most
+    often misreads: zero looks like a broken row rather than the drain it
+    is, and NULL looks like half-written data rather than the "no
+    actor-level cap" it actually configures. Both get a word.
+    """
+    if row.max_concurrent is None:
+        concurrent = "uncapped (stored NULL — no actor-level cap)"
+    elif row.max_concurrent == 0:
+        concurrent = "0 — DRAIN MODE (deliberately stopped; jobs enqueue and never run)"
+    else:
+        concurrent = str(row.max_concurrent)
+    pending = "unlimited (stored NULL)" if row.max_pending is None else str(row.max_pending)
+    return f"max_concurrent={concurrent}  max_pending={pending}"
+
+
+def _doctor_findings(
+    registry: Mapping[str, ActorRef[Any, Any]],
+    rows: list[ActorConfigRow],
+    queues: list[QueueRow],
+) -> list[str]:
+    """Every condition worth an operator's attention, as report lines.
+
+    All three families are conditions TaskQ has decided a worker keeps
+    running through, which is why they surface here rather than at boot:
+    each one produces no error anywhere, and its only symptom is work
+    that quietly does not happen.
+    """
+    stored_by_actor = {row.actor: row for row in rows}
+    findings: list[str] = []
+
+    # The dispatch capacity gate joins actor_config, so a registered actor
+    # with no row is not merely uncapped — it is never a candidate.
+    for name in sorted(set(registry) - set(stored_by_actor)):
+        findings.append(
+            f"{name}: no stored actor_config row — NEVER DISPATCHES. The dispatch "
+            "capacity gate reads only stored rows, so jobs accumulate pending "
+            "with no error anywhere. A worker startup seeds the row."
+        )
+
+    # A queues row whose queue no actor is assigned to is inert until an
+    # actor is moved onto that name and silently inherits its cap.
+    assigned = {row.queue for row in stored_by_actor.values()}
+    for queue in sorted(
+        (q for q in queues if q.name not in assigned and q.max_concurrent is not None),
+        key=lambda q: q.name,
+    ):
+        findings.append(
+            f"queue {queue.name!r}: STALE queues row — max_concurrent="
+            f"{queue.max_concurrent} but no actor is assigned to it. The cap is "
+            "inert now and silently applies to the next actor moved onto this queue."
+        )
+
+    queue_caps = {q.name: q.max_concurrent for q in queues}
+    for name in sorted(stored_by_actor):
+        row = stored_by_actor[name]
+        # Neither value is invalid alone: only the combination is
+        # unsatisfiable, so only a combination check can catch it.
+        if (
+            row.max_concurrent is not None
+            and row.max_pending is not None
+            and row.max_pending < row.max_concurrent
+        ):
+            findings.append(
+                f"{name}: INCOHERENT — max_pending={row.max_pending} is below "
+                f"max_concurrent={row.max_concurrent}, so the actor may queue fewer "
+                "jobs than it may run at once and its concurrency cap is unreachable."
+            )
+        queue_cap = queue_caps.get(row.queue)
+        if (
+            row.max_concurrent is not None
+            and queue_cap is not None
+            and queue_cap < row.max_concurrent
+        ):
+            findings.append(
+                f"{name}: INCOHERENT — max_concurrent={row.max_concurrent} exceeds "
+                f"queue {row.queue!r}'s max_concurrent={queue_cap}, which binds first; "
+                "raising the actor cap alone changes nothing."
+            )
+    return findings
+
+
+@app.command("doctor")
+def doctor(
+    actors: Annotated[
+        str,
+        typer.Option(
+            "--actors",
+            help="Module:attr reference to the actor registry (e.g. myapp.actors:registry). "
+            "Stored rows are read against these registered actors.",
+        ),
+    ],
+) -> None:
+    """Report capacity and configuration conditions that fail silently.
+
+    TaskQ refuses boot only on structural stored-config drift, so a whole
+    family of misconfigurations produces no error at all: an actor with no
+    stored row never dispatches, a leftover `queues` row caps an actor
+    nobody thinks is capped, and a stored `max_concurrent=0` drains an
+    actor that looks configured. Each one's only symptom is work that
+    does not happen. This is the one command that names them together.
+
+    Read-only: it issues no writing statement, so it is safe to run
+    against production mid-incident.
+
+    Exit code: always 0. Every condition reported here is one a worker
+    keeps running through, and a diagnostic that fails the shell gets
+    wrapped in `|| true` and then ignored. Gating CI on drift is
+    `taskq actor-config diff`, which exits non-zero by design.
+    """
+    registry = _load_actor_registry(actors)
+    settings = TaskQSettings.load()
+    asyncio.run(_doctor(settings, registry))
+
+
+async def _doctor(
+    settings: TaskQSettings,
+    registry: Mapping[str, ActorRef[Any, Any]],
+) -> None:
+    conn = await asyncpg.connect(str(settings.pg_dsn))
+    try:
+        rows = await list_actor_configs(conn, schema=settings.schema_name)
+        queues = await list_queues(conn, schema=settings.schema_name)
+    finally:
+        await close_conn_bounded(conn, "doctor", CLOSE_TIMEOUT_SECS)
+
+    typer.echo("stored actor capacity:")
+    for row in sorted(rows, key=lambda r: r.actor):
+        typer.echo(f"  {row.actor:<20} queue={row.queue:<16} {_describe_actor_capacity(row)}")
+    if not rows:
+        typer.echo("  (no stored actor_config rows)")
+
+    findings = _doctor_findings(registry, rows, queues)
+    typer.echo("")
+    if not findings:
+        typer.echo("no findings — every registered actor has a stored row and every")
+        typer.echo("queue row backs a live assignment.")
+        return
+    typer.echo(f"findings ({len(findings)}):")
+    for finding in findings:
+        typer.echo(f"  - {finding}")
 
 
 async def _report_up_failure(conn: asyncpg.Connection | None, schema: str, exc: Exception) -> None:
@@ -1380,10 +1614,19 @@ def _ui_serve(
         )
 
         if run_migrate:
+            # Pre phase only. This path fires on process lifecycle events
+            # nobody sequences — a pod restart, a rollout, an autoscale
+            # event — not on an operator's decision. Post-phase migrations
+            # exist to be withheld until the whole fleet is confirmed
+            # upgraded, so applying them here would let an unrelated
+            # restart close a rolling-deploy overlap window mid-rollout.
+            # They stay behind an explicit `taskq migrate up --phase post`.
             if conn_factory is not None:
-                await migrate_mod.apply_pending_locked(conn_factory=conn_factory, schema=schema)
+                await migrate_mod.apply_pending_locked(
+                    conn_factory=conn_factory, schema=schema, phase="pre"
+                )
             else:
-                await migrate_mod.apply_pending_locked(pg_dsn, schema=schema)
+                await migrate_mod.apply_pending_locked(pg_dsn, schema=schema, phase="pre")
 
         async with AsyncExitStack() as stack:
             # A credential-provider pool passes password= as an async

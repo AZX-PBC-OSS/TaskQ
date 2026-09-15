@@ -191,6 +191,7 @@ def _job_row_from_record(rec: "asyncpg.Record") -> JobRow:
         retry_cap=timedelta(seconds=rec["retry_cap_seconds"]),
         retry_backoff=rec["retry_backoff"],  # type: ignore[arg-type]  # Why: DB text column; domain is CHECK-constrained to the Literal's values
         retry_jitter=rec["retry_jitter"],
+        assignment_routed=rec["assignment_routed"],
     )
 
 

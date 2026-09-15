@@ -180,7 +180,11 @@ async def drain_local_queue_to_pending(deps: "WorkerDeps", worker_id: UUID) -> i
     # ``j`` is what the shared fragment qualifies on.
     sql = (
         f"UPDATE \"{schema}\".jobs j SET status='pending', locked_by_worker=NULL, "  # noqa: S608  # Why: schema validated against _IDENT_RE before interpolation; asyncpg has no parameter binding for identifiers (same rationale as migrate.py).
-        f"lock_expires_at=NULL, attempt = {_ATTEMPT_REFUND_SQL} "
+        # A drain re-pend hands the row back to the fleet, so it routes
+        # by the actor's current assignment from here on (the routing
+        # contract in taskq/backend/_dispatch_sql.py) -- the same
+        # re-pend class as _SWEEP_1_SQL and the isolate template.
+        f"lock_expires_at=NULL, assignment_routed=true, attempt = {_ATTEMPT_REFUND_SQL} "
         f"WHERE locked_by_worker=$1 AND status='running'"
     )
     # The exclusion clause is only bound when there is something to
