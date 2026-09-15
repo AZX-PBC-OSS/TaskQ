@@ -764,10 +764,10 @@ async def _mark_snoozed(
     # so this boundary owns the check (the in-memory twin raises the
     # identical error) — before the pool is even touched, so an illegal
     # outcome raises loudly whatever the job's state instead of firing
-    # no arm and stranding the row 'running'. denial_reason is validated
-    # at the same boundary even though no arm keys on it: it is part of
-    # the caller's contract and a typo must not pass silently, and the
-    # observability layer reports the value the caller supplied.
+    # no arm and stranding the row 'running'. denial_reason keeps the
+    # same boundary check even though the statement no longer branches
+    # on it — a caller naming a reason the protocol does not define is a
+    # coding error the API must refuse rather than silently accept.
     validate_snooze_outcome(outcome)
     validate_denial_reason(denial_reason)
     branch: str
@@ -789,9 +789,10 @@ async def _mark_snoozed(
         branch = rec["outcome_branch"]
         # A non-terminal snooze/denial writes no attempt/event rows and no
         # timestamps of its own — it increments the outcome-keyed counter
-        # on the row (see _sql_templates.mark_snoozed).  The terminal
-        # deadline arm writes its attempt row and state_change event
-        # exactly like every other terminal transition.
+        # on the row (see _sql_templates.mark_snoozed).  The deadline arm
+        # is the statement's ONLY terminal exit, and writes its attempt
+        # row and state_change event exactly like every other terminal
+        # transition.
 
     if branch == "snoozed":
         log_state_change(

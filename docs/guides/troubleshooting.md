@@ -499,13 +499,25 @@ WHERE status = 'scheduled' AND snooze_count > 0
 GROUP BY actor;
 ```
 
+A denial writes no `job_events` and no `job_attempts` row, so the aggregated
+`rate_limit_blocked_count` on the job row is the per-job record of how much contention a job has
+absorbed. Use it to tell a job that is starving for admission from one that is merely slow:
+
+```sql
+SELECT id, actor, rate_limit_blocked_count, scheduled_at
+FROM {schema}.jobs
+WHERE status = 'scheduled' AND rate_limit_blocked_count > 0
+ORDER BY rate_limit_blocked_count DESC
+LIMIT 50;
+```
+
 ### Fix
 
 - **Redis not available:** verify `TASKQ_REDIS_URL` and connectivity. PG fallback (`TASKQ_RATE_LIMIT_PG_FALLBACK_ENABLED=true`, the default) keeps limits functional but slower.
 - **Missing `[redis]` extra:** `uv add "taskq-py[redis]"`.
 - **In-memory backend:** switch to `backend="redis"` or `backend="postgres"` for multi-worker deployments. Memory is for tests only.
 - **Primitives not registered:** register all primitives on the `registry` singleton before the worker starts. DI validation checks each actor's `rate_limits`/`reservations` names at startup.
-- **Reservation slots out of sync:** call `sync_slots()` after changing slot counts. Sustained rate limiting accumulates jobs as `snoozed` (no retry budget consumed) — monitor queue depth, as there is no built-in backpressure beyond `max_pending`.
+- **Reservation slots out of sync:** call `sync_slots()` after changing slot counts. Sustained rate limiting accumulates `scheduled` jobs with a rising `rate_limit_blocked_count` (no retry budget consumed, and no denial ever fails a job on its own) — monitor queue depth, as there is no built-in backpressure beyond `max_pending`.
 
 ```python
 from taskq.ratelimit import sync_slots

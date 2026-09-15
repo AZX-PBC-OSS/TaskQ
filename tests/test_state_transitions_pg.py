@@ -143,17 +143,16 @@ class TestFullLifecycle:
 
         state_changes = [e for e in events if e["kind"] == "state_change"]
         # The snooze's row transition writes no event (a deferral, not an
-        # execution): dispatch, wake promotion, re-dispatch, terminal exit.
-        assert len(state_changes) == 4
+        # execution), and neither the claim nor the wake promotion writes
+        # one (both are scheduler/dispatcher bookkeeping): the terminal
+        # exit is the transition of record.
+        assert len(state_changes) == 1
 
         transitions: list[tuple[str | None, str | None]] = []
         for e in state_changes:
             detail = parse_detail(e["detail"])
             transitions.append((detail.get("from_state"), detail.get("to_state")))
         expected_sequence = [
-            ("pending", "running"),
-            ("scheduled", "pending"),
-            ("pending", "running"),
             ("running", "succeeded"),
         ]
         assert transitions == expected_sequence
@@ -390,8 +389,9 @@ class TestDeadlineSweep:
 class TestPollingLifecycle:
     """Polling lifecycle: enqueue → dispatch → snooze → wake → dispatch → succeed.
 
-    Oracle: all three transitions produce state_change events in
-    job_events with correct from_state/to_state.
+    Oracle: the terminal exit produces its state_change event; the
+    bookkeeping transitions (claims, the wake promotion, the deferral)
+    write none.
     """
 
     async def test_polling_lifecycle(self, clean_jobs_app: JobsApp) -> None:
@@ -441,9 +441,9 @@ class TestPollingLifecycle:
 
         expected_transitions = [
             # The snooze's running→scheduled row transition writes no
-            # event; the sequence records the wake promotion and the
-            # terminal exit only.
-            ("scheduled", "pending"),
+            # event, and neither the claims nor the wake promotion write
+            # one (all scheduler/dispatcher bookkeeping); the terminal
+            # exit is the transition of record.
             ("running", "succeeded"),
         ]
 

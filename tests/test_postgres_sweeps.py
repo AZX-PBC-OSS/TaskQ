@@ -2168,7 +2168,9 @@ class TestSweepScheduledToPending:
 
     async def test_scheduled_job_past_scheduled_at_promoted(self, clean_jobs_app: JobsApp) -> None:
         """Scheduled job with scheduled_at in the past → promoted to
-        pending, one state_change event row written."""
+        pending, writing no event row (promotion is scheduler
+        bookkeeping; the transitions of record are the terminal writes
+        and the sweep/cancel audit entries)."""
         deps = clean_jobs_app.deps
         schema = deps.settings.schema_name
 
@@ -2202,15 +2204,7 @@ class TestSweepScheduledToPending:
 
         assert row is not None
         assert row["status"] == "pending"
-        assert len(events) == 1
-        assert events[0]["kind"] == "state_change"
-        detail = events[0]["detail"]
-        if isinstance(detail, str):
-            from taskq._json import loads
-
-            detail = loads(detail)
-        assert detail["from_state"] == "scheduled"
-        assert detail["to_state"] == "pending"
+        assert len(events) == 0
 
     async def test_scheduled_job_future_scheduled_at_not_promoted(
         self, clean_jobs_app: JobsApp
@@ -2279,9 +2273,12 @@ class TestSweepScheduledToPending:
         assert row is not None
         assert row["status"] == "pending"
 
-    async def test_event_detail_per_promoted_row(self, clean_jobs_app: JobsApp) -> None:
-        """Each promoted row produces one kind='state_change' event with
-        from_state='scheduled' and to_state='pending'."""
+    async def test_promotion_writes_no_event_rows(self, clean_jobs_app: JobsApp) -> None:
+        """A promoted batch produces no ``job_events`` rows at all — a row
+        per promotion is the unbounded-growth vector under sustained
+        admission denial (claim + promote are the cycle's two acts), so
+        the aggregated denial counters on the job row carry contention
+        instead."""
         deps = clean_jobs_app.deps
         schema = deps.settings.schema_name
 
@@ -2306,17 +2303,14 @@ class TestSweepScheduledToPending:
                 f'SELECT job_id, kind, detail FROM "{schema}".job_events WHERE job_id = ANY($1::uuid[]) ORDER BY job_id',
                 [job_id_1, job_id_2],
             )
+            rows = await conn.fetch(
+                f'SELECT id, status FROM "{schema}".jobs WHERE id = ANY($1::uuid[])',
+                [job_id_1, job_id_2],
+            )
 
-        assert len(events) == 2
-        for ev in events:
-            assert ev["kind"] == "state_change"
-            detail = ev["detail"]
-            if isinstance(detail, str):
-                from taskq._json import loads
-
-                detail = loads(detail)
-            assert detail["from_state"] == "scheduled"
-            assert detail["to_state"] == "pending"
+        assert {r["id"] for r in rows} == {job_id_1, job_id_2}
+        assert all(r["status"] == "pending" for r in rows)
+        assert len(events) == 0
 
 
 # ── reclaim_expired_locks instance method ──────────────────────────────

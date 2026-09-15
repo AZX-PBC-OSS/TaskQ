@@ -539,14 +539,20 @@ a bound, not a counter). Two behaviours follow from that:
   downstream indefinitely: `attempt` oscillates and never walks toward the
   smallint ceiling, and `max_attempts` never moves. Backoff keys off real
   executions only.
-* **Admission denials are budget-bounded.** A reservation/rate-limit
-  denial leaves the claim's increment standing, and a
-  non-`indefinite` job with no `schedule_to_close` now terminally fails
-  with `MaxAttemptsExceeded` when its retry budget is spent, rather
-  than re-queueing forever against a saturated bucket. Jobs that must
-  wait out a saturation express it explicitly: `retry_kind
-  'indefinite'`, or a `schedule_to_close` deadline (the deadline, not
-  the budget, ends a deadline-carrying job).
+* **Admission denials carry 429 semantics.** A reservation/rate-limit
+  denial is "come back later": it releases the claim's attempt
+  increment, so it never spends retry budget, never writes a
+  `job_events` or `job_attempts` row, and never by itself terminally
+  fails a job. A denied job reschedules with backoff until capacity
+  frees; its only terminal exit is its own `schedule_to_close`
+  deadline, reached through the ordinary deadline path. This keeps the
+  retry budget a measure of real executions rather than of how
+  saturated a bucket happened to be, and stops a queue or rate-limit
+  misconfiguration from killing work that never got a slot.
+
+  Sustained contention stays visible on the aggregated counters the job
+  row already carries — `rate_limit_blocked_count` and `snooze_count` —
+  and on the denial metrics, rather than as one durable row per denial.
 
   The `schedule_to_close` deadline is the terminal exit for the
   deferral paths only — a consuming `RetryAfter` (the default,

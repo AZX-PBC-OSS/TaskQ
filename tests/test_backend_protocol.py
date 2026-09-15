@@ -334,8 +334,7 @@ class TestReturnAnnotations:
         # exit only.
         expected = {"scheduled", "failed", "noop"}
         assert ret is not None and set(get_args(ret)) == expected, (
-            f"mark_snoozed should return Literal['scheduled', 'failed', "
-            f"'noop'], got {ret}"
+            f"mark_snoozed should return Literal['scheduled', 'failed', 'noop'], got {ret}"
         )
 
     def test_mark_snoozed_outcome_parameter_is_snooze_outcome(self) -> None:

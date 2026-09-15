@@ -24,7 +24,6 @@ from taskq.backend._dispatch_sql import (
 from taskq.backend._protocol import ConnLike, JobRow
 from taskq.backend._records import (
     _job_row_from_record,
-    jsonb_param,
 )
 from taskq.backend._sql_templates import SqlTemplates
 from taskq.constants import (
@@ -184,8 +183,19 @@ async def _dispatch_batch(
     miss path re-resolves through the query and refills the cache.
     ``None`` keeps the pre-cache contract — resolve on every call — for
     standalone callers that want fresh resolution.
+
+    A claim deliberately writes NO ``job_events`` row. pending→running is
+    the dispatcher's bookkeeping, not an outcome transition, and a claim
+    is the one act every admission-denial cycle repeats — under the 429
+    denial contract a denied job is claimed and rescheduled until capacity
+    frees or its deadline expires, so a row per claim is precisely the
+    unbounded-growth vector the aggregated denial counters on the job row
+    (``snooze_count`` / ``rate_limit_blocked_count``) replaced. The
+    transitions of record are the terminal writes and the sweep/cancel
+    audit entries; neither vendored grain (River, Oban) writes a per-claim
+    row either. The claim's observability rides the ``kind='dispatch'``
+    log line and OTEL span in ``_dispatch_sql.dispatch_batch``.
     """
-    event_sql = sql.insert_events_batch
     async with dispatcher_pool.acquire(timeout=acquire_timeout) as conn:
         queue_modes = (
             queue_mode_cache.resolved_modes(queues) if queue_mode_cache is not None else None
@@ -220,23 +230,6 @@ async def _dispatch_batch(
                 lock_lease=lock_lease,
                 oversample=dispatch_oversample,
             )
-            if records:
-                # One statement, not one per job. This runs inside the
-                # transaction still holding the dispatch row locks, so each
-                # extra round trip is lock hold time; every row here shares
-                # `kind` and `detail`, so only the ids vary.
-                await conn.execute(
-                    event_sql,
-                    [rec["id"] for rec in records],
-                    "state_change",
-                    jsonb_param(
-                        {
-                            "from_state": "pending",
-                            "to_state": "running",
-                            "worker_id": str(worker_id),
-                        }
-                    ),
-                )
     return [_job_row_from_record(rec) for rec in records]
 
 

@@ -260,13 +260,12 @@ async def _dispatch_batch(
             attempt=row.attempt + 1,
         )
         self._jobs[row.id] = updated
-        self._append_state_change_event(
-            job_id=row.id,
-            from_state="pending",
-            to_state="running",
-            now=now,
-            worker_id=worker_id,
-        )
+        # Mirrors PG's claim (backend/_dispatch.py): no job_events row —
+        # pending→running is dispatcher bookkeeping, and a claim is the one
+        # act every admission-denial cycle repeats, so a row per claim is
+        # the unbounded-growth vector the row's aggregated denial counters
+        # replaced. The transitions of record are the terminal writes and
+        # the sweep/cancel audit entries.
         dispatched.append(_read_copy(updated))
 
     return dispatched

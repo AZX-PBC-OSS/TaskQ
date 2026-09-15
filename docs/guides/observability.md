@@ -236,6 +236,22 @@ they represent safety-critical signals.
 | `taskq.leader.lock_contention` | `1` | `lock` | Advisory-lock acquisitions lost to another session, recorded by the losing side. | yes |
 | `taskq.cron.lock_contention` | `1` | — | Cron ticks that returned without firing because another session held the cron advisory lock. A sustained rate equal to the tick rate means cron is not running anywhere (a partitioned holder never releasing the transaction-scoped lock); a brief low rate is leader-handover overlap. | yes |
 
+!!! tip "Which job is starving? The denial counters live on the row"
+
+    The denial counters above are fleet-wide rates: they tell you the fleet is shedding
+    admissions, not which job has been waiting. Because an admission denial writes no
+    `job_events` and no `job_attempts` row, the per-job record is the aggregated
+    `rate_limit_blocked_count` column on `jobs` (and `snooze_count` for actor-requested
+    deferrals). Query it when one job is mysteriously slow while the fleet looks healthy:
+
+    ```sql
+    SELECT id, actor, rate_limit_blocked_count, snooze_count, scheduled_at
+    FROM {schema}.jobs
+    WHERE status = 'scheduled' AND rate_limit_blocked_count > 0
+    ORDER BY rate_limit_blocked_count DESC
+    LIMIT 50;
+    ```
+
 ### Histograms
 
 | Metric name | Unit | Attributes | Description |

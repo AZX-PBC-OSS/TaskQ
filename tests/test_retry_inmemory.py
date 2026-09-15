@@ -23,12 +23,12 @@ from pydantic import BaseModel
 from taskq._ids import new_job_id
 from taskq.actor import actor
 from taskq.backend._protocol import (
-    AttemptOutcome,
     DenialReason,
     EnqueueArgs,
     ErrorInfo,
     JobId,
     JobRow,
+    SnoozeOutcome,
 )
 from taskq.backend.clock import Clock
 from taskq.client._jobs import JobsClient
@@ -897,10 +897,10 @@ class _SnoozeWriteInfraFails(InMemoryBackend):
         metadata_update: dict[str, object] | None = None,
         progress_seq: int = 0,
         progress_state: dict[str, object] | None = None,
-        outcome: AttemptOutcome = "snoozed",
+        outcome: SnoozeOutcome = "snoozed",
         attempt: int | None = None,
         denial_reason: DenialReason = "capacity",
-    ) -> Literal["scheduled", "failed", "failed:MaxAttemptsExceeded", "noop"]:
+    ) -> Literal["scheduled", "failed", "noop"]:
         raise OSError("db socket closed mid-snooze-write")
 
 

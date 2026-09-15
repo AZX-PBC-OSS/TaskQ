@@ -602,6 +602,86 @@ async def test_run_until_drained_handles_reservation_unavailable() -> None:
     assert reservation_attempts == []
     # The re-dispatched execution succeeded and wrote its one row.
     assert [a.outcome for a in attempts] == ["succeeded"]
+    # The recovery happened at the denial's own reschedule point: the
+    # drain advanced the clock to it (the limiter's Retry-After promise)
+    # and re-claimed there — a limiter that refills by its own promised
+    # point always gets its chance.
+    assert attempts[0].started_at == _START + timedelta(seconds=10)
+
+
+async def test_run_until_drained_stops_when_admission_never_recovers() -> None:
+    """A limiter that never admits must not spin the drain forever.
+
+    The drain trusts the denial's own reschedule point once — it advances
+    the clock there and re-claims — and a second denial observed at that
+    point proves the starvation: no further advance can drain the job, so
+    the drain returns with the job still scheduled (never dropped, never
+    terminal), exactly the two denials counted, and the clock left at the
+    first reschedule point rather than ratcheted one deferral at a time.
+    """
+    clock = FakeClock(_START)
+    backend = _make_backend(clock)
+
+    def deny_stub(payload: object, ctx: object) -> object:
+        raise ReservationUnavailable("gpu_pool", timedelta(seconds=10))
+
+    backend.register_stub("res_actor", deny_stub)
+
+    args = _enqueue_args(actor="res_actor")
+    await backend.enqueue(args)
+    await backend.run_until_drained()
+
+    row = await backend.get(args.id)
+    assert row is not None
+    assert row.status == "scheduled"
+    assert row.error_class is None
+    # The initial denial plus the one at the trusted reschedule point —
+    # never an unbounded ratchet.
+    assert row.rate_limit_blocked_count == 2
+    assert await backend.get_attempts(args.id) == []
+    assert clock.now() == _START + timedelta(seconds=10), (
+        "the drain advanced exactly to the denial's reschedule point and "
+        "stopped when the promise failed there"
+    )
+
+
+async def test_claim_and_denial_write_no_event_rows() -> None:
+    """The in-memory mirror of the PG claim contract: a claim writes no
+    ``job_events`` row, so a claim→denial cycle nets zero durable rows —
+    the aggregated denial counter on the job row is the whole record.
+
+    Driven at the claim seam directly (no promotion sweep in between, the
+    same isolation the PG outage pin's raw-SQL requeue uses) so the rows
+    the CLAIM and the DENIAL write are the whole measured surface.
+    """
+    clock = FakeClock(_START)
+    backend = _make_backend(clock)
+
+    args = _enqueue_args(actor="res_actor")
+    await backend.enqueue(args)
+    dispatched = await backend.dispatch_batch(backend._worker_id, ["default"], 1, _GRACE)
+    assert len(dispatched) == 1
+
+    outcome = await backend.mark_snoozed(
+        args.id,
+        backend._worker_id,
+        timedelta(seconds=10),
+        outcome="reservation_denied",
+        attempt=dispatched[0].attempt,
+    )
+
+    assert outcome == "scheduled"
+    row = await backend.get(args.id)
+    assert row is not None
+    assert row.status == "scheduled"
+    assert row.attempt == 0, "the denial refunds the claim's attempt increment"
+    assert row.rate_limit_blocked_count == 1
+    assert await backend.get_attempts(args.id) == []
+    assert await backend.get_events(args.id) == [], (
+        "a claim→denial cycle must net zero durable event rows — a row per "
+        "cycle is the unbounded-growth vector the aggregated denial "
+        "counter replaced"
+    )
 
 
 # ── Single-actor cap ─────────────────────────────────────────────

@@ -43,7 +43,11 @@ else:
 from pydantic import AfterValidator, BaseModel, ConfigDict
 
 from taskq._json import check_no_nul_str
-from taskq.constants import DEFAULT_CHUNK_SIZE, DEFAULT_RECLAIM_POLL_LIMIT
+from taskq.constants import (
+    DEFAULT_CHUNK_SIZE,
+    DEFAULT_RECLAIM_POLL_LIMIT,
+    MAX_ATTEMPTS_SMALLINT_CEILING,
+)
 
 __all__ = [
     "BACKEND_PROTOCOL_VERSION",
@@ -205,8 +209,10 @@ type SnoozeOutcome = Literal["snoozed", "reservation_denied", "rate_limit_denied
 
 Why narrower than :data:`AttemptOutcome`: the snooze statement's arms
 branch on exactly these three values (the snooze arm's refund/counter
-CASE, the denial-keyed counters, the ``max_attempts`` gate's denial
-predicate).  The five execution outcomes key no arm — a caller passing
+CASE, the denial-keyed counters, and the deadline arm's terminal exit —
+a deferral's only way to fail, since a denial never spends budget and
+never terminalises on its own).  The five execution outcomes key no arm
+— a caller passing
 one on a running job left PG firing no arm at all (the row stranded
 ``running`` until the lease sweep, the call returning ``"noop"``) while
 the in-memory twin silently rescheduled the job with no counter
@@ -253,18 +259,21 @@ denial *outcome*) was denied.
 
 ``capacity`` is a real saturation denial — the limiter's store answered
 and the answer was "full".  The denial is legitimate backpressure about
-a job the system chose not to run yet, and the bounded,
-budget-consuming denial loop is the deliberate contract (an operator
-scaling a bucket on denials is the intended response).
+a job the system chose not to run yet; an operator scaling a bucket on
+denial counts is the intended response.
 
 ``unavailable`` is the limiter's store failing to answer at all (Redis
 unreachable, the PG fallback dead or unwired) — infrastructure
-backpressure about a job whose actor never executed.  It is
-non-consuming: the claim's attempt increment is refunded exactly the
-way an actor-requested ``snoozed`` deferral refunds it, and no
-terminal arm may fire — a job whose only fault is its limiter's store
-being down never lands in a terminal exit, and when the store returns
-its original retry budget is still there to spend.
+backpressure about a job whose actor never executed.
+
+Both reasons take the identical non-consuming path: every denial
+carries HTTP-429 semantics, so the claim's attempt increment is
+refunded exactly the way an actor-requested ``snoozed`` deferral
+refunds it, no terminal arm may fire on budget grounds, and the job
+reschedules until capacity frees or its own ``schedule_to_close``
+expires.  The reason's only effect is observability: a store-outage
+denial stays distinguishable from a saturation denial, so an operator
+never answers an outage with more capacity.
 
 Only the consumer's store-failure synthesis site passes ``unavailable``
 (explicitly, never inferred from a bucket name); every other caller
@@ -293,9 +302,10 @@ def validate_denial_reason(reason: str) -> None:
     if reason not in DENIAL_REASON_VALUES:
         raise ValueError(
             f"mark_snoozed denial_reason must be one of {sorted(DENIAL_REASON_VALUES)}; "
-            f"got {reason!r} — 'capacity' is a saturation denial (budget-consuming, "
-            "the bounded loop), 'unavailable' is the store failing to answer "
-            "(non-consuming, never terminal)"
+            f"got {reason!r} — 'capacity' is a saturation denial (the store "
+            "answered 'full'), 'unavailable' is the store failing to answer; "
+            "both are non-consuming and non-terminal — the reason only keeps "
+            "the two causes distinguishable on the row"
         )
 
 
@@ -588,7 +598,37 @@ class EnqueueArgs:
                 "if both are desired, pass only schedule_to_close (datetime) — "
                 "the interval form is the actor-declaration default."
             )
+        self._check_max_attempts()
         self._check_no_nul_text()
+
+    def _check_max_attempts(self) -> None:
+        """Keep ``max_attempts`` inside the ``jobs.max_attempts`` smallint domain.
+
+        Enforced here rather than only in :class:`~taskq.retry.RetryPolicy`
+        because this struct — not the policy — is the boundary every enqueue
+        path funnels through, including callers that build it straight from a
+        stored column instead of through a policy (the cron re-enqueue reading
+        an actor-config row, the admin ops surface).  An out-of-domain value
+        reaching Postgres is a bare driver error at write time.
+
+        The bound here is the column's own domain, which is deliberately
+        looser than the bound a fresh policy accepts
+        (:data:`~taskq.constants.MAX_ENQUEUABLE_MAX_ATTEMPTS`, one lower for
+        defensive headroom): rows may legitimately sit at the ceiling, so the
+        struct that also carries already-stored values must be able to express
+        one.  The policy validator keeps the tighter bound for values an
+        operator is choosing fresh.
+        """
+        if self.max_attempts < 1:
+            raise ValueError(
+                f"max_attempts must be >= 1 to fit the smallint jobs.max_attempts "
+                f"column as a usable attempt budget, got {self.max_attempts}"
+            )
+        if self.max_attempts > MAX_ATTEMPTS_SMALLINT_CEILING:
+            raise ValueError(
+                f"max_attempts must fit the smallint jobs.max_attempts column "
+                f"(<= {MAX_ATTEMPTS_SMALLINT_CEILING}), got {self.max_attempts}"
+            )
 
     def _check_no_nul_text(self) -> None:
         """Reject a NUL (U+0000) in any caller-supplied value bound as text.
@@ -1692,16 +1732,23 @@ class Backend(Protocol):
         deferral reschedules at least that far out, so a zero delay
         cannot park the job at the head of the dispatch order.
 
-        No outcome here spends retry budget: every one of them refunds
-        the claim's attempt increment, because in none of them did a
-        handler run.  An admission denial — whether the store answered
-        "full" (*denial_reason* ``"capacity"``) or failed to answer
-        (``"unavailable"``) — is the queue's own "come back later", so
-        charging it would make how many real retries a job gets depend
-        on how saturated the bucket was while the job waited.  The one
-        terminal exit is the caller's own deadline: a reschedule point
-        past ``schedule_to_close`` returns ``"failed"``
-        (``DeadlineExceeded``).
+        Every deferral shape refunds the claim's attempt increment
+        (floored at 0), so no deferral — actor-requested or admission
+        denial — spends retry budget.  An admission denial carries HTTP
+        429 semantics: it reports that the fleet had no slot, which says
+        nothing about the work, so it can neither charge the budget nor
+        decide the outcome.  A denied job reschedules until capacity
+        frees; its only terminal exit is its own ``schedule_to_close``
+        (``"failed"``, ``DeadlineExceeded``), and the counters on the row
+        are how sustained contention stays visible.
+
+        *denial_reason* names the cause of a denial-class outcome
+        (:data:`DenialReason`) for the caller's own observability —
+        ``"capacity"`` (the default) is a saturation denial, the store
+        answering "full"; ``"unavailable"`` is the store failing to
+        answer.  Both take the identical non-consuming path; the value is
+        validated at the boundary so an undefined reason is refused
+        rather than silently accepted.
         """
         ...
 

@@ -29,7 +29,12 @@ from pydantic import (
 )
 
 from taskq.backend._protocol import Backend, ErrorInfo, JobId, JobRow, RetryKind
-from taskq.constants import DEFAULT_MAX_RETRY_BACKOFF, MIN_DEFERRAL_INTERVAL
+from taskq.constants import (
+    DEFAULT_MAX_RETRY_BACKOFF,
+    MAX_ATTEMPTS_SMALLINT_CEILING,
+    MAX_ENQUEUABLE_MAX_ATTEMPTS,
+    MIN_DEFERRAL_INTERVAL,
+)
 from taskq.exceptions import (
     PayloadValidationError,
     ResultTooLarge,
@@ -59,26 +64,6 @@ __all__ = [
     "safe_mark_failed_or_retry",
     "time_budget_as_interval",
 ]
-
-MAX_ATTEMPTS_SMALLINT_CEILING: Final[int] = 32767
-"""The ``jobs.max_attempts`` column's smallint domain ceiling.
-
-The column is ``smallint`` (migrations/01.00.00_01_pre_initial.sql), so
-32767 is the largest value any row can hold. Shared here because the
-validation below, the in-memory mirror and any future writer must not
-drift on what the ceiling is."""
-
-MAX_ENQUEUABLE_MAX_ATTEMPTS: Final[int] = MAX_ATTEMPTS_SMALLINT_CEILING - 1
-"""Largest ``RetryPolicy.max_attempts`` a fresh policy may carry.
-
-One below the column ceiling, retained as a defensive margin: a row
-parked at exactly 32767 has no headroom for any future statement that
-needs to add one to a max_attempts-derived value, so the policy guard
-refuses the value the way it refuses values past the column entirely
-(:func:`RetryPolicy._validate_max_attempts`). Rows can still legally
-REACH the ceiling — earlier releases' snooze arms parked a snoozed
-32766-job there — which is why :func:`decide_after_failure` clamps
-row-stored values back into this bound before reconstructing a policy."""
 
 
 class RetryPolicy(BaseModel):
@@ -309,11 +294,13 @@ class RetryOverride(BaseModel):
         default=None,
         description=(
             "Delay before the next attempt, overriding the policy's computed "
-            "backoff. A delay alone does not spare the attempt budget: the "
-            "retry still counts against max_attempts unless kind is also set, "
-            "or the actor raises RetryAfter(consume_budget=False). Nor does it "
-            "extend schedule_to_close — a delay landing past that deadline "
-            "fails the job terminally."
+            "backoff for this occurrence only. A delay alone does not spare "
+            "the attempt budget: the retry still counts against max_attempts "
+            "unless kind is also set, or the actor raises "
+            "RetryAfter(consume_budget=False). Clamped by max_retry_backoff, "
+            "but NOT reconciled with schedule_to_close — a delay landing "
+            "past that deadline fails the job terminally through the "
+            "deadline path."
         ),
     )
 

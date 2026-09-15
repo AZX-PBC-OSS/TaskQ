@@ -176,7 +176,7 @@ async def test_diff_sweep2_deadline_retried_job_does_not_wedge(pg_dsn: str) -> N
     batch, and leaves the job stuck at 'scheduled' — reproducing exactly what
     issue #176 describes (and rewedging on every subsequent tick).
     """
-    mem, pg = await run_differential(_s2_deadline_retried_job, pg_dsn=pg_dsn)
+    _mem, pg = await run_differential(_s2_deadline_retried_job, pg_dsn=pg_dsn)
     # The sweep must not have raised — 'sweep' should record the swept count
     # (an int), never an exception class name like "UniqueViolationError".
     assert pg["records"]["sweep"] != "UniqueViolationError", (
@@ -212,9 +212,9 @@ async def test_diff_sweep3_promotion(pg_dsn: str) -> None:
     """S3 promotes only due scheduled rows to pending, leaving the rest scheduled."""
     mem, pg = await run_differential(_s3_promotion, pg_dsn=pg_dsn)
     assert_mirror(
-        "the promotion sweep flips due scheduled rows to pending (with the "
-        "scheduled->pending state_change event) and leaves not-yet-due rows "
-        "untouched, on both backends",
+        "the promotion sweep flips due scheduled rows to pending (writing no "
+        "event rows — promotion is scheduler bookkeeping) and leaves "
+        "not-yet-due rows untouched, on both backends",
         mem,
         pg,
     )

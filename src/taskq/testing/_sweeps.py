@@ -60,12 +60,11 @@ async def _scheduled_to_pending(
             break
         if row.status == "scheduled" and row.scheduled_at <= now:
             self._jobs[job_id] = replace(row, status="pending")
-            self._append_state_change_event(
-                job_id=job_id,
-                from_state="scheduled",
-                to_state="pending",
-                now=now,
-            )
+            # Mirrors PG's sweep_scheduled_to_pending: no job_events row —
+            # scheduled→pending is scheduler bookkeeping, and it is one of
+            # the two acts every admission-denial cycle repeats (claim +
+            # promote), so a row per promotion is the same
+            # unbounded-growth vector the denial counters replaced.
             logger.debug(
                 "state-change",
                 kind="state_change",

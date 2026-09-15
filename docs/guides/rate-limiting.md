@@ -685,7 +685,7 @@ At dispatch time the worker calls `registry.acquire_for_actor()`:
 1. Reservations are acquired first, in declaration order.
 2. Rate limits are acquired next, in declaration order.
 3. If any acquisition is denied, all previously acquired resources are released in reverse order (rollback) and `ReservationUnavailable` is raised.
-4. A rate-limited job transitions to `snoozed` status (not failed or retried) and is re-promoted to `pending` when the snooze period expires. You will see `snoozed` in the admin UI for these jobs.
+4. A rate-limited job is rescheduled (not failed and not retried): it goes to `scheduled` with a future `scheduled_at`, and is re-promoted to `pending` when that time arrives. There is no `snoozed` job status — query for `scheduled` rows, and read `rate_limit_blocked_count` on the job row to see how many denials the job has met.
 5. After the actor completes, reservation slots are released. Rate-limit tokens are consumed permanently (not refunded).
 
 If `RateLimitDecision.retry_after` is `None` (fixed quota with `refill_per_second=0`), the registry substitutes `DEFAULT_RESERVATION_BACKOFF = timedelta(seconds=5)` before raising `ReservationUnavailable`.
