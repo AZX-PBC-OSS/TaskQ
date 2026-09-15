@@ -112,25 +112,33 @@ WITH matching AS MATERIALIZED (
     FROM "{schema}".jobs
     WHERE {conditions}
       AND status IN ('pending', 'scheduled')
+      AND id > ${cursor_ph}::uuid
     ORDER BY id
     LIMIT ${limit_ph}
+),
+batch_ids AS MATERIALIZED (
+    SELECT array_agg(id ORDER BY id) AS ids,
+           (array_agg(id ORDER BY id))[count(*)] AS last_id
+    FROM matching
 ),
 cancelled AS (
     UPDATE "{schema}".jobs AS j
     SET status = 'cancelled', finished_at = clock_timestamp()
-    FROM (
-        SELECT id, status AS prev_status
-        FROM matching
-    ) AS prev
-    WHERE j.id = prev.id
+    WHERE j.id = ANY ((SELECT ids FROM batch_ids)::uuid[])
       AND j.status IN ('pending', 'scheduled')
-    RETURNING j.id, prev.prev_status
+    RETURNING j.id
+),
+cancelled_prev AS (
+    SELECT c.id, m.status AS prev_status
+    FROM cancelled AS c
+    JOIN matching AS m ON m.id = c.id
 )
 SELECT
     (SELECT count(*)::int FROM matching) AS matched_count,
-    (SELECT count(*)::int FROM cancelled) AS cancelled_directly,
-    (SELECT array_agg(id ORDER BY id) FROM cancelled) AS cancelled_ids,
-    (SELECT array_agg(prev_status ORDER BY id) FROM cancelled) AS cancelled_prev_statuses
+    (SELECT last_id FROM batch_ids) AS last_id,
+    (SELECT count(*)::int FROM cancelled_prev) AS cancelled_directly,
+    (SELECT array_agg(id ORDER BY id) FROM cancelled_prev) AS cancelled_ids,
+    (SELECT array_agg(prev_status ORDER BY id) FROM cancelled_prev) AS cancelled_prev_statuses
 """
 
 
@@ -871,12 +879,13 @@ async def test_cancel_by_queue_cte_is_index_served(audit_schema: Any, pg_dsn: st
     schema, _ = audit_schema
     conn = await asyncpg.connect(pg_dsn)
     try:
-        sql = _CANCEL_PS_CTE_TEMPLATE.format(schema=schema, conditions="queue = $1", limit_ph=2)
-        plan = await _explain(conn, sql, "orders", 100)
-        assert "jobs_queue_active_idx" in plan, f"expected jobs_queue_active_idx:\n{plan}"
-        assert "Index Cond: (queue = $1" in plan or "Index Cond: (queue =" in plan, (
-            f"expected a queue Index Cond seek:\n{plan}"
+        sql = _CANCEL_PS_CTE_TEMPLATE.format(
+            schema=schema, conditions="queue = $1", cursor_ph=2, limit_ph=3
         )
+        plan = await _explain(conn, sql, "orders", UUID(int=0), 100)
+        # The engine folds bound params to literals in EXPLAIN text, so the
+        # Index Cond reads `queue = 'orders'::text`, not `queue = $1`.
+        _assert_index_cond(plan, "jobs_queue_active_idx", "queue =")
     finally:
         await conn.close()
 
@@ -898,9 +907,9 @@ async def test_cancel_and_deregister_by_actor_is_index_served(
     conn = await asyncpg.connect(pg_dsn)
     try:
         cancel_sql = _CANCEL_PS_CTE_TEMPLATE.format(
-            schema=schema, conditions="actor = $1", limit_ph=2
+            schema=schema, conditions="actor = $1", cursor_ph=2, limit_ph=3
         )
-        plan = await _explain(conn, cancel_sql, "sync.inventory", 100)
+        plan = await _explain(conn, cancel_sql, "sync.inventory", UUID(int=0), 100)
         assert "jobs_actor_active_id_idx" in plan or "jobs_actor_pending_idx" in plan, (
             f"cancel(actor) matching CTE must seek an actor-keyed index:\n{plan}"
         )
@@ -1744,9 +1753,7 @@ async def event_ttl_schema(pg_dsn: str) -> Any:
         await conn.close()
 
 
-async def test_event_retention_window_is_index_bounded(
-    event_ttl_schema: str, pg_dsn: str
-) -> None:
+async def test_event_retention_window_is_index_bounded(event_ttl_schema: str, pg_dsn: str) -> None:
     """The retention sweep's ordinary-events window must seek
     ``job_events_occurred_at_idx`` with the age bound as an Index Cond.
 
@@ -1759,9 +1766,7 @@ async def test_event_retention_window_is_index_bounded(
     counter to say so."""
     conn = await asyncpg.connect(pg_dsn)
     try:
-        plan = await _explain(
-            conn, _event_ttl_sql(event_ttl_schema), _EV_RETENTION, _EV_BATCH
-        )
+        plan = await _explain(conn, _event_ttl_sql(event_ttl_schema), _EV_RETENTION, _EV_BATCH)
         _assert_index_cond(
             plan,
             "job_events_occurred_at_idx",
@@ -1788,9 +1793,7 @@ async def test_event_retention_outbox_arm_is_index_bounded(
     exists to prevent."""
     conn = await asyncpg.connect(pg_dsn)
     try:
-        plan = await _explain(
-            conn, _event_ttl_sql(event_ttl_schema), _EV_RETENTION, _EV_BATCH
-        )
+        plan = await _explain(conn, _event_ttl_sql(event_ttl_schema), _EV_RETENTION, _EV_BATCH)
         # The outbox arm's bound is retention x the multiplier; the server
         # folds that to a single interval literal, so the arm's Index Cond
         # is distinguished from the ordinary arm's by the folded value.

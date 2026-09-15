@@ -957,6 +957,43 @@ def _plan_rows_discarded(node: dict[str, Any]) -> int:
     return total
 
 
+async def _advance_drive_cursor(
+    conn: asyncpg.Connection,
+    schema: str,
+    drive_args: tuple[object, ...],
+    tag: str,
+    *,
+    handled: str,
+) -> tuple[object, ...]:
+    """Advance a keyset cursor in *drive_args* past the rows already handled.
+
+    The drive statement's arguments are the filter parameters followed by
+    whatever per-batch state it takes.  If one of those is a ``UUID`` it is
+    the drain's keyset cursor, and a measurement loop driving the statement
+    by hand must move it between batches exactly as the production drain
+    does -- otherwise every pass re-runs the first batch and the loop never
+    terminates.
+
+    *handled* is the SQL predicate identifying rows this arm has already
+    dealt with: the terminal arm moves them to ``cancelled``, while the
+    cooperative arm leaves them ``running`` and only sets
+    ``cancel_phase``, so each arm recognises its own progress differently.
+
+    Finding the cursor by type rather than by position keeps this agnostic
+    to the statement's parameter layout, and a statement that takes no
+    cursor is returned unchanged -- so the same loop drives both the
+    bounded and the unbounded shape.
+    """
+    last_handled: UUID | None = await conn.fetchval(
+        f'SELECT max(id::text)::uuid FROM "{schema}".jobs '  # noqa: S608  # Why: schema is a test-fixture identifier, validated by render() in every caller; `handled` is a test-local literal, never user input.
+        f"WHERE {handled} AND tags @> ARRAY[$1]::text[]",
+        tag,
+    )
+    if last_handled is None:
+        return drive_args
+    return tuple(last_handled if isinstance(arg, UUID) else arg for arg in drive_args)
+
+
 class _StatementRecordingPool:
     """Pool stand-in that records the first drive statement and its params,
     then lets the real drain proceed untouched."""
@@ -1032,17 +1069,32 @@ async def test_drain_batch_cost_does_not_grow_as_the_backlog_is_cancelled(
         None,
         batch_size=batch_size,
     )
-    drive_sql, _probe_args = recording.statements[0]
+    drive_sql, probe_args = recording.statements[0]
+    # Re-bind the statement with the arguments the drain itself passed,
+    # substituting this test's tag for the probe's. Hand-spelling the
+    # argument list here instead would pin the statement's parameter
+    # COUNT -- an implementation detail -- so a drive statement that
+    # gained a parameter (a keyset cursor, say) would fail these on
+    # arity rather than on the cost they exist to measure.
+    drive_args = (["tenant-acme"], *probe_args[1:])
 
     per_batch_discarded: list[int] = []
     while True:
         plan_rows = await conn.fetch(
             f"EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) {drive_sql}",  # Why: drive_sql is the production constant captured above; its only interpolation is the fixture schema identifier.
-            ["tenant-acme"],
-            batch_size,
+            *drive_args,
         )
         plan = json.loads(plan_rows[0][0])[0]["Plan"]
         per_batch_discarded.append(_plan_rows_discarded(plan))
+        # EXPLAIN ANALYZE executes the statement, so this batch has
+        # landed. If the drive statement takes a keyset cursor, advance it
+        # past the rows just cancelled so the next pass resumes where this
+        # one stopped -- exactly what the production drain does between
+        # batches. Reading the cursor back from the table keeps this
+        # independent of how the statement returns it.
+        drive_args = await _advance_drive_cursor(
+            conn, schema, drive_args, "tenant-acme", handled="status = 'cancelled'"
+        )
         remaining = await conn.fetchval(
             f'SELECT count(*) FROM "{schema}".jobs '  # noqa: S608  # Why: schema is a test-fixture identifier, validated by render() above.
             "WHERE status IN ('pending', 'scheduled') AND tags @> ARRAY['tenant-acme']::text[]"
@@ -1109,11 +1161,16 @@ async def test_drain_batch_cost_is_independent_of_non_matching_backlog(
             None,
             batch_size=batch_size,
         )
-        drive_sql, _ = recording.statements[0]
+        drive_sql, probe_args = recording.statements[0]
+        # Re-bind with the arguments the drain itself passed, swapping in
+        # this test's tag. Only one batch is driven here, so no cursor
+        # needs advancing -- but binding positionally off the captured
+        # arguments keeps this from pinning the statement's parameter
+        # count, which is an implementation detail.
         plan_rows = await conn.fetch(
             f"EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) {drive_sql}",  # Why: drive_sql is the production constant captured above; its only interpolation is the fixture schema identifier.
             ["tenant-acme"],
-            batch_size,
+            *probe_args[1:],
         )
         return _plan_rows_discarded(json.loads(plan_rows[0][0])[0]["Plan"])
 
@@ -1146,6 +1203,183 @@ async def test_drain_batch_cost_is_independent_of_non_matching_backlog(
         "whole pending population rather than the match set: every tenant's "
         "offboard slows as the fleet grows, with nothing in that tenant's own "
         f"metrics to explain it. Rows discarded: small={small_backlog_discarded} "
+        f"large={large_backlog_discarded}"
+    )
+
+
+async def test_running_arm_drain_batch_cost_does_not_grow_as_requests_accumulate(
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
+) -> None:
+    """The cooperative-cancel arm's batches must cost the same whether they
+    run at the start of the backlog or at its end.
+
+    The running arm re-selects "the next ``batch_size`` matching rows with
+    ``status='running' AND cancel_phase=0``" on every pass, and a row it
+    already requested STAYS ``running`` (the worker owns the terminal
+    write) — only ``cancel_phase`` moves. If the plan cannot skip the
+    already-requested rows, batch N pays for the (N-1) * batch_size rows
+    its predecessors moved, exactly as the terminal arm does, and an
+    offboard landing on a fleet with a deep running backlog strands its
+    tail against the per-batch statement timeout with nothing raised.
+    Fixing the terminal arm alone leaves this half of the defect in place,
+    so the same visit-cost pin is applied here, measured the same way:
+    rows the production drive statement visited and discarded per batch.
+    """
+    schema = module_pg_schema.schema_name
+    conn = clean_pg_conn
+    render(schema)
+    batch_size = 20
+    total = batch_size * 10
+
+    job_ids = [new_uuid() for _ in range(total)]
+    await _seed_jobs(conn, schema, job_ids, status="running", tags=["tenant-acme"])
+    await conn.execute(f'ANALYZE "{schema}".jobs')
+
+    # Capture the exact production drive statement rather than re-spelling
+    # the CTE here. The pending/scheduled arm always drains first and runs
+    # exactly once against this probe (its window holds the single pending
+    # probe row), so the second recorded statement is the running arm's.
+    recording = _StatementRecordingPool(module_pg_pool)
+    probe_id = [new_uuid()]
+    await _seed_jobs(conn, schema, probe_id, status="pending", tags=["probe-only"])
+    await _cancel_where(
+        recording,  # type: ignore[arg-type]  # Why: duck-typed pool; only acquire() is used.
+        schema,
+        render(schema),
+        JobFilter(tags=("probe-only",)),
+        None,
+        batch_size=batch_size,
+    )
+    drive_sql, probe_args = recording.statements[1]
+    drive_args = (["tenant-acme"], *probe_args[1:])
+
+    per_batch_discarded: list[int] = []
+    while True:
+        plan_rows = await conn.fetch(
+            f"EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) {drive_sql}",  # Why: drive_sql is the production constant captured above; its only interpolation is the fixture schema identifier.
+            *drive_args,
+        )
+        plan = json.loads(plan_rows[0][0])[0]["Plan"]
+        per_batch_discarded.append(_plan_rows_discarded(plan))
+        # This arm leaves a handled row `running` and only moves
+        # cancel_phase, so its progress is recognised by cancel_phase = 1
+        # rather than by a terminal status.
+        drive_args = await _advance_drive_cursor(
+            conn, schema, drive_args, "tenant-acme", handled="cancel_phase = 1"
+        )
+        remaining = await conn.fetchval(
+            f'SELECT count(*) FROM "{schema}".jobs '  # noqa: S608  # Why: schema is a test-fixture identifier, validated by render() above.
+            "WHERE status = 'running' AND cancel_phase = 0 "
+            "AND tags @> ARRAY['tenant-acme']::text[]"
+        )
+        if remaining == 0:
+            break
+
+    assert len(per_batch_discarded) >= 5, (
+        f"expected the backlog to drain over several batches; got "
+        f"{len(per_batch_discarded)} batches for {total} rows at batch_size={batch_size}"
+    )
+    # The bound is the batch, not the backlog: a batch that skips the rows
+    # earlier batches already cancel-requested discards at most a
+    # batch-sized handful whatever pass it is on. A batch that re-walks
+    # them discards (N-1) * batch_size, which crosses this bound almost
+    # immediately.
+    worst = max(per_batch_discarded)
+    assert worst <= batch_size * 2, (
+        "a running-arm cancel batch visited and discarded far more rows than "
+        "one batch's worth, so each pass is re-walking the rows earlier "
+        "batches already moved to cancel_phase=1: total drain work is "
+        "quadratic in the running backlog, and on a real backlog the later "
+        "batches blow their own statement timeout and strand the tail. Rows "
+        f"discarded per batch: {per_batch_discarded!r}"
+    )
+
+
+async def test_running_arm_drain_batch_cost_is_independent_of_non_matching_backlog(
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
+) -> None:
+    """The cooperative-cancel arm's batch cost must not track a running
+    backlog the filter never matches.
+
+    A running job stays ``running`` after the arm requests its cancel, so
+    the arm re-selects from a population that only shrinks by its own
+    batch size -- and if the drive statement answers the tag filter by
+    walking the table, every batch pays for every other tenant's running
+    jobs. An offboard that lands while the fleet is busy then slows for
+    reasons visible in no metric of the tenant being offboarded. The
+    pending/scheduled arm has the same pin above; the running arm's
+    population is shaped differently (rows never leave ``running`` on
+    this path), so it is pinned separately rather than assumed.
+
+    Measured as rows the production drive statement visited and
+    discarded, the wasted work itself, so the pin holds at any table
+    size.
+    """
+    schema = module_pg_schema.schema_name
+    conn = clean_pg_conn
+    render(schema)
+    batch_size = 20
+    matching = 20
+
+    async def _drive_discarded() -> int:
+        recording = _StatementRecordingPool(module_pg_pool)
+        probe = [new_uuid()]
+        await _seed_jobs(conn, schema, probe, status="pending", tags=["probe-only"])
+        await _cancel_where(
+            recording,  # type: ignore[arg-type]  # Why: duck-typed pool; only acquire() is used.
+            schema,
+            render(schema),
+            JobFilter(tags=("probe-only",)),
+            None,
+            batch_size=batch_size,
+        )
+        # The pending/scheduled arm drains the probe in one batch and the
+        # running arm runs second, so the second recorded statement is the
+        # running arm's.
+        drive_sql, probe_args = recording.statements[1]
+        # Re-bind with this test's tag substituted for the probe's; only
+        # one batch is driven here, so the captured per-batch arguments
+        # (a keyset cursor at its initial position) are correct as-is.
+        drive_args = (["tenant-acme"], *probe_args[1:])
+        plan_rows = await conn.fetch(
+            f"EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) {drive_sql}",  # Why: drive_sql is the production constant captured above; its only interpolation is the fixture schema identifier.
+            *drive_args,
+        )
+        return _plan_rows_discarded(json.loads(plan_rows[0][0])[0]["Plan"])
+
+    # Baseline: only the match set exists.
+    await _seed_jobs(
+        conn, schema, [new_uuid() for _ in range(matching)], status="running", tags=["tenant-acme"]
+    )
+    await conn.execute(f'ANALYZE "{schema}".jobs')
+    small_backlog_discarded = await _drive_discarded()
+
+    # The match set is unchanged; every other tenant's running backlog grows.
+    for tenant in range(20):
+        await _seed_jobs(
+            conn,
+            schema,
+            [new_uuid() for _ in range(100)],
+            status="running",
+            tags=[f"tenant-other-{tenant}"],
+        )
+    await conn.execute(f'ANALYZE "{schema}".jobs')
+    large_backlog_discarded = await _drive_discarded()
+
+    # The bound is absolute, not a ratio, for the same reason the
+    # pending/scheduled arm's pin states: a filtered write scoped to its
+    # match set discards at most a batch's worth of rows however deep the
+    # rest of the table's running population gets.
+    assert large_backlog_discarded <= batch_size * 2, (
+        "a filtered bulk cancel's running arm visited and discarded far more "
+        "rows once other tenants' running jobs were present, so its cost "
+        "tracks the table's whole running population rather than the match "
+        "set: every offboard that lands mid-incident slows as the fleet's "
+        f"running backlog grows. Rows discarded: small={small_backlog_discarded} "
         f"large={large_backlog_discarded}"
     )
 

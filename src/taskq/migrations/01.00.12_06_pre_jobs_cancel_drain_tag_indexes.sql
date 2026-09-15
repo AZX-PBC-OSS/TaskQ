@@ -1,0 +1,71 @@
+-- Tag indexes restricted to the bulk-cancel drain's two live windows.
+-- Forward-only; there is no down migration. To revert, DROP INDEX. The
+-- literal "{schema}" token is substituted at apply time by the migration
+-- runner.
+--
+-- The drain (src/taskq/backend/_cancel_bulk.py) pages its match set with
+-- a keyset cursor: "the next batch_size matching rows with id > cursor".
+-- A tag filter can be answered from jobs_tags_gin_idx — but that index
+-- holds every tagged row in EVERY status, so its posting list keeps
+-- every row the drain has ever moved out of the window: a cancelled
+-- match is still in the bitmap, fetched from the heap, and discarded by
+-- the status qual on every batch of every later drain of the same tag.
+-- The shape that pays is the drain's own resume contract: a re-run after
+-- a mid-drain failure re-enters at cursor zero against a posting list
+-- holding the entire first run's cancelled rows, and on a fleet-scale
+-- tenant that per-batch re-fetch grows until the batch trips its
+-- statement_timeout — on exactly the deep-history backlogs the re-run
+-- exists to finish.
+--
+-- This is not visible at the suite's table sizes: measured on
+-- postgres:18-alpine (EXPLAIN (ANALYZE, BUFFERS)), the keyset drain's
+-- tag-filtered windows are already served dead-row-free at hundreds of
+-- rows by the keyed (queue, id) / (actor, id) active-row indexes from
+-- 01.00.06_01 and by jobs_tags_gin_idx itself. The indexes below earn
+-- their place only where the same-tag dead population dwarfs the live
+-- one AND the tag bitmap wins the plan race — the sparse-live,
+-- deep-history resume — where their posting lists track the live match
+-- set: a row leaves these indexes in the same transaction that moves it
+-- out of the window, so no batch ever reads what an earlier batch
+-- handled.
+--
+-- The predicates below repeat the drain's quals VERBATIM — a partial
+-- index is only a candidate when the planner can prove its predicate
+-- from the query's own quals:
+--   * pending/scheduled arm: `status IN ('pending', 'scheduled')`
+--   * cooperative arm: `status = 'running' AND cancel_phase = 0` — the
+--     phase term is load-bearing: a requested row stays 'running' (the
+--     worker owns the terminal write), so a status-only predicate would
+--     keep every already-requested row in the key range and leave the
+--     re-walk in place.
+--
+-- DELIBERATE overlap with jobs_tags_gin_idx, which serves tag filters
+-- over ALL statuses (the admin list view, archive queries) and stays.
+-- This initiative never drops structures.
+--
+-- A plain (id) partial index over the active rows is deliberately NOT
+-- here, and this was measured rather than assumed: with one present, the
+-- drain's queue- and actor-filtered windows (`queue = $1 AND status IN
+-- (...) AND id > $cursor ORDER BY id LIMIT $n`) plan against it instead
+-- of the keyed (queue, id) / (actor, id) indexes from 01.00.06_01 —
+-- resolving the keyed column as a post-scan filter over every active row
+-- rather than seeking one queue's batch (verified on an audit-shaped
+-- corpus: both windows switch to the id-only index when it exists).
+-- tests/test_index_audit.py pins those seeks and fails on exactly that
+-- substitution, so the id partial cannot ship. The unfiltered drain's
+-- one linear pass of terminal history per call (the keyset cursor bounds
+-- it to once, not per batch) is accepted instead.
+--
+-- OPS NOTE (locks): a plain CREATE INDEX takes a SHARE lock that blocks
+-- writes to jobs for the build. Build these CONCURRENTLY by hand during
+-- a maintenance window on any deployment where jobs is large — the same
+-- guidance 01.00.06_01 carries, and for the same reason: the migration
+-- runner wraps each file in a transaction, and CREATE INDEX
+-- CONCURRENTLY cannot run inside one.
+CREATE INDEX IF NOT EXISTS jobs_tags_active_gin_idx
+    ON "{schema}".jobs USING gin (tags)
+    WHERE status IN ('pending', 'scheduled');
+
+CREATE INDEX IF NOT EXISTS jobs_tags_cancellable_running_gin_idx
+    ON "{schema}".jobs USING gin (tags)
+    WHERE status = 'running' AND cancel_phase = 0;

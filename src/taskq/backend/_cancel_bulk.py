@@ -72,12 +72,56 @@ from taskq.constants import (
 
 __all__ = ["_cancel_where"]
 
+# Sorts below every UUID, so the first keyset pass in
+# `_drain_cancel_batches` is unbounded on the low side. A sentinel rather
+# than NULL so the cursor parameter has one type on every pass and the
+# statement keeps a single cached plan.
+_UUID_MIN = UUID(int=0)
+
 
 class NotifyTarget(NamedTuple):
     """A running job that needs a post-commit NOTIFY."""
 
     job_id: UUID
     worker_id: UUID
+
+
+async def _apply_batch_plan_mode(conn: ConnLike) -> str:
+    """Pin the batch's statements to custom plans; return the value to restore.
+
+    Each arm issues one fixed statement text per batch on a pooled
+    connection, so a deep drain crosses asyncpg's prepare threshold and
+    then the plancache's generic-plan threshold mid-drain. A generic plan
+    binds the keyset cursor as an unknown: the planner then prices a
+    whole-table scan below the cursor-bounded index walk, and the re-walk
+    the cursor exists to remove returns from that batch on (measured:
+    post-threshold batches discard (N-1) * batch_size rows again while
+    custom-plan batches discard none). ``force_custom_plan`` keeps every
+    batch on the plan its actual cursor value implies.
+
+    Same capture/restore discipline as the batch ``statement_timeout``
+    (``_apply_batch_statement_timeout``), and ``fetch``/``execute`` for
+    the same reason it documents: that is the complete duck-typing
+    surface every ConnLike wrapper in the suite proxies.
+    """
+    prev_rows = await conn.fetch("SELECT current_setting('plan_cache_mode')")
+    if not prev_rows:
+        # plan_cache_mode is a registered GUC with a value in every
+        # session; no row here means the server answered something the
+        # drain cannot restore, so failing loudly beats guessing.
+        raise RuntimeError("current_setting('plan_cache_mode') returned no value")
+    prev = str(prev_rows[0]["current_setting"])
+    await conn.execute("SELECT set_config('plan_cache_mode', 'force_custom_plan', true)")
+    return prev
+
+
+async def _restore_plan_mode(conn: ConnLike, prev: str) -> None:
+    """Restore the ``plan_cache_mode`` captured by :func:`_apply_batch_plan_mode`.
+
+    Success path only, inside the still-open transaction; on the error
+    path the rollback has already discarded the SET LOCAL.
+    """
+    await conn.execute("SELECT set_config('plan_cache_mode', $1, true)", prev)
 
 
 async def _drain_cancel_batches(
@@ -100,7 +144,12 @@ async def _drain_cancel_batches(
     capture/restore discipline as the maintenance sweeps: the previous
     value is restored on the success path inside the still-open
     transaction, and the error path needs no restore because the
-    rollback discards a ``SET LOCAL``.
+    rollback discards a ``SET LOCAL``. The batch likewise pins
+    ``plan_cache_mode=force_custom_plan`` (same ``SET LOCAL``
+    discipline): the drain issues one statement text per arm, so past
+    asyncpg's prepare threshold the plancache would flip to a generic
+    plan that can no longer see the keyset cursor's selectivity, and the
+    re-walk the cursor exists to prevent returns mid-drain.
 
     Termination keys on the WINDOW count — the ``matched_count``
     aggregate the statement returns from its own MATERIALIZED
@@ -121,8 +170,14 @@ async def _drain_cancel_batches(
     batch's rolled-back rows — progress is never lost and nothing is
     counted twice.
     """
+    # The keyset cursor: the greatest id this drain has WINDOWED so far.
+    # Starts below every UUID so the first pass is unbounded on the low
+    # side, then advances past each batch so the next pass resumes where
+    # this one stopped instead of re-walking what it already handled.
+    cursor = _UUID_MIN
     while True:
         matched_count = 0
+        row = None
         for attempt in range(3):
             try:
                 async with pool.acquire() as conn:
@@ -130,13 +185,15 @@ async def _drain_cancel_batches(
                         prev_timeout = await _apply_batch_statement_timeout(
                             conn, statement_timeout_ms
                         )
-                        row = await conn.fetchrow(statement, *params, batch_size)
+                        prev_plan_mode = await _apply_batch_plan_mode(conn)
+                        row = await conn.fetchrow(statement, *params, cursor, batch_size)
                         if row is not None:
                             matched_count = int(row["matched_count"])
                             await handle_batch(conn, row)
-                        # Success path only: restore the caller's timeout
+                        # Success path only: restore the caller's settings
                         # inside the still-open transaction; on error the
-                        # rollback has already discarded the SET LOCAL.
+                        # rollback has already discarded the SET LOCALs.
+                        await _restore_plan_mode(conn, prev_plan_mode)
                         await _restore_statement_timeout(conn, prev_timeout)
                 break
             except asyncpg.DeadlockDetectedError:
@@ -145,6 +202,17 @@ async def _drain_cancel_batches(
                 await asyncio.sleep(0.1 * (2**attempt) + random.random() * 0.05)
         if matched_count < batch_size:
             return
+        # Advance past everything this batch WINDOWED, not merely what it
+        # cancelled: a row that failed the EPQ re-check was claimed by a
+        # dispatcher between the snapshot and the row lock, so it is no
+        # longer this statement's to cancel. Re-windowing it would make
+        # the drain spin on it forever without matched_count ever falling
+        # below batch_size; statement 2's fresh snapshot is what picks it
+        # up, which is the hand-off the two-statement design exists for.
+        # `last_id` is NULL only for an empty window, which cannot reach
+        # here (matched_count == batch_size implies a full one).
+        if row is not None and row["last_id"] is not None:
+            cursor = row["last_id"]
 
 
 async def _cancel_where(
@@ -172,7 +240,8 @@ async def _cancel_where(
     params = list(filter_sql.params)
     # The filter params occupy $1..$n; the batch LIMIT binds as the next
     # positional parameter, appended after them at every execute site.
-    limit_ph = len(params) + 1
+    cursor_ph = len(params) + 1
+    limit_ph = len(params) + 2
 
     # Statement 1: cancel pending/scheduled → terminal 'cancelled'
     # EPQ-safe: predicates on the target table (j.status) are re-evaluated
@@ -181,30 +250,77 @@ async def _cancel_where(
     -- MATERIALIZED is load-bearing: without it the planner may inline the
     -- LIMIT-ed matching CTE into the UPDATE as a nested loop and update
     -- more rows than the LIMIT admits.
+    -- The window is a keyset page, not a fresh scan: `id > cursor` starts
+    -- each pass where the previous one stopped, and ORDER BY id is what
+    -- gives the cursor its meaning and keeps the scan on an id-ordered
+    -- index. Without the cursor, every pass re-walks from the bottom of
+    -- the key space and discards the rows earlier batches already moved
+    -- to 'cancelled' (measured: batch N discards (N-1) * batch_size —
+    -- the drain's quadratic term), and at fleet scale the later batches
+    -- trip their own statement_timeout and strand the tail.
     WITH matching AS MATERIALIZED (
         SELECT id, status
         FROM "{schema}".jobs
         WHERE {conditions_str}
           AND status IN ('pending', 'scheduled')
+          AND id > ${cursor_ph}::uuid
         ORDER BY id
         LIMIT ${limit_ph}
+    ),
+    -- This batch's ids collapsed to ONE array value, so the UPDATE below
+    -- can restrict on `j.id = ANY (<array>)`. That spelling is the whole
+    -- point, and it is a planner-structural choice rather than a hint:
+    --
+    --   `UPDATE jobs j FROM matching WHERE j.id = matching.id` makes the
+    --   id correspondence a JOIN qualifier between two relations, and a
+    --   join leaves the planner free to pick the scan method and join
+    --   order for `jobs`. At these row counts it picks a Seq Scan of
+    --   `jobs` hash-joined against the CTE, with the status predicate
+    --   applied as a post-scan filter — so every batch re-visits and
+    --   re-rejects every row earlier batches already moved to
+    --   'cancelled', and the drain is quadratic in backlog depth.
+    --   MATERIALIZED does NOT prevent this: it fixes what the join's
+    --   inner side contains, not how the outer side is scanned.
+    --
+    --   `j.id = ANY (<array>)` is instead a RESTRICTION clause on `jobs`
+    --   alone. There is no join to reorder, and the planner answers it
+    --   with one primary-key probe per id (measured: `Index Cond: id =
+    --   ANY (...)` on jobs_pkey) — the Seq Scan is merely costed, not
+    --   chosen, and the batch's plan pin keeps that choice being made
+    --   with this batch's real cursor value rather than a generic one.
+    batch_ids AS MATERIALIZED (
+        -- The last element is the greatest id this batch windowed — the
+        -- drain's next cursor. PostgreSQL has no max(uuid) aggregate, so
+        -- the ordered array carries it; the ORDER BY is stated explicitly
+        -- rather than assumed from `matching`'s scan order because the
+        -- cursor is the drain's only re-walk bound.
+        SELECT array_agg(id ORDER BY id) AS ids,
+               (array_agg(id ORDER BY id))[count(*)] AS last_id
+        FROM matching
     ),
     cancelled AS (
         UPDATE "{schema}".jobs AS j
         SET status = 'cancelled', finished_at = clock_timestamp()
-        FROM (
-            SELECT id, status AS prev_status
-            FROM matching
-        ) AS prev
-        WHERE j.id = prev.id
+        WHERE j.id = ANY ((SELECT ids FROM batch_ids)::uuid[])
           AND j.status IN ('pending', 'scheduled')
-        RETURNING j.id, prev.prev_status
+        RETURNING j.id
+    ),
+    -- prev_status is recovered by joining the affected ids back to the
+    -- snapshot `matching` already holds, rather than by carrying it out
+    -- of the UPDATE. Both sides are batch-sized CTEs, so this join costs
+    -- the batch and never touches `jobs`. A row that failed the EPQ
+    -- re-check is absent from `cancelled` and so drops out here too.
+    cancelled_prev AS (
+        SELECT c.id, m.status AS prev_status
+        FROM cancelled AS c
+        JOIN matching AS m ON m.id = c.id
     )
     SELECT
         (SELECT count(*)::int FROM matching) AS matched_count,
-        (SELECT count(*)::int FROM cancelled) AS cancelled_directly,
-        (SELECT array_agg(id ORDER BY id) FROM cancelled) AS cancelled_ids,
-        (SELECT array_agg(prev_status ORDER BY id) FROM cancelled) AS cancelled_prev_statuses
+        (SELECT last_id FROM batch_ids) AS last_id,
+        (SELECT count(*)::int FROM cancelled_prev) AS cancelled_directly,
+        (SELECT array_agg(id ORDER BY id) FROM cancelled_prev) AS cancelled_ids,
+        (SELECT array_agg(prev_status ORDER BY id) FROM cancelled_prev) AS cancelled_prev_statuses
     """
 
     # Statement 2: cooperative cancel for running jobs with cancel_phase=0
@@ -213,32 +329,55 @@ async def _cancel_where(
     -- MATERIALIZED is load-bearing: without it the planner may inline the
     -- LIMIT-ed matching CTE into the UPDATE as a nested loop and update
     -- more rows than the LIMIT admits.
+    -- Same keyset window as the pending/scheduled arm, against the same
+    -- defect with one twist: a row this arm handles STAYS 'running' (the
+    -- worker owns the terminal write), so without `id > cursor` every
+    -- pass re-walks the rows it already moved to cancel_phase = 1.
     WITH matching AS MATERIALIZED (
         SELECT id, locked_by_worker
         FROM "{schema}".jobs
         WHERE {conditions_str}
           AND status = 'running'
           AND cancel_phase = 0
+          AND id > ${cursor_ph}::uuid
         ORDER BY id
         LIMIT ${limit_ph}
+    ),
+    -- Same restriction-clause shape as the pending/scheduled arm above,
+    -- for the same reason and against the same defect: a FROM-join on
+    -- `matching` lets the planner Seq Scan `jobs` and apply the
+    -- status/cancel_phase predicates as a post-scan filter, so each batch
+    -- re-walks the rows earlier batches already moved to cancel_phase=1.
+    -- See that arm's comment for why `= ANY (<array>)` turns the id list
+    -- into per-row index probes instead.
+    batch_ids AS MATERIALIZED (
+        -- Last element is the greatest id windowed; see the other arm for
+        -- why the ordering is stated explicitly.
+        SELECT array_agg(id ORDER BY id) AS ids,
+               (array_agg(id ORDER BY id))[count(*)] AS last_id
+        FROM matching
     ),
     cancel_requested AS (
         UPDATE "{schema}".jobs AS j
         SET cancel_requested_at = clock_timestamp(), cancel_phase = 1
-        FROM (
-            SELECT id, locked_by_worker
-            FROM matching
-        ) AS prev
-        WHERE j.id = prev.id
+        WHERE j.id = ANY ((SELECT ids FROM batch_ids)::uuid[])
           AND j.status = 'running'
           AND j.cancel_phase = 0
-        RETURNING j.id, prev.locked_by_worker
+        RETURNING j.id
+    ),
+    -- locked_by_worker recovered from the batch-sized snapshot rather
+    -- than carried out of the UPDATE, exactly as prev_status is above.
+    cancel_requested_prev AS (
+        SELECT c.id, m.locked_by_worker
+        FROM cancel_requested AS c
+        JOIN matching AS m ON m.id = c.id
     )
     SELECT
         (SELECT count(*)::int FROM matching) AS matched_count,
-        (SELECT count(*)::int FROM cancel_requested) AS cancel_requested,
-        (SELECT array_agg(id ORDER BY id) FROM cancel_requested) AS cancel_requested_ids,
-        (SELECT array_agg(locked_by_worker ORDER BY id) FROM cancel_requested) AS cancel_requested_workers
+        (SELECT last_id FROM batch_ids) AS last_id,
+        (SELECT count(*)::int FROM cancel_requested_prev) AS cancel_requested,
+        (SELECT array_agg(id ORDER BY id) FROM cancel_requested_prev) AS cancel_requested_ids,
+        (SELECT array_agg(locked_by_worker ORDER BY id) FROM cancel_requested_prev) AS cancel_requested_workers
     """
 
     event_batch_sql = INSERT_EVENTS_DETAIL_BATCH_SQL.format(schema=schema)

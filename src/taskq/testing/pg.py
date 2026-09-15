@@ -21,17 +21,27 @@ if TYPE_CHECKING:
 __all__ = [
     "DEFAULT_ACTORS",
     "JobTriple",
+    "RowVisitCounter",
     "create_pending_job",
     "create_running_job",
     "create_worker",
     "create_workered_running_job",
     "get_job_triple",
+    "install_row_visit_counter",
     "parse_detail",
+    "read_row_visits",
     "reset_schema",
     "seed_actors",
     "setup_running_job",
     "truncate_schema",
 ]
+
+# Role the row-visit counter runs statements as. Row-level security is
+# bypassed for a table's owner and for superusers, so a counting policy
+# only fires for an ordinary role. Cluster-wide (roles are not
+# schema-scoped) and reused across tests; the policy and sequence that
+# actually isolate one test from another are per schema.
+ROW_VISIT_COUNTER_ROLE = "taskq_row_visit_probe"
 
 
 async def _create_worker(
@@ -308,3 +318,155 @@ async def create_workered_running_job(
     await _create_worker(conn, schema, wid)
     jid = await create_running_job(conn, schema, wid, **job_kwargs)
     return wid, jid
+
+
+# ── Row-visit counting (cost oracles) ────────────────────────────────────
+
+
+async def install_row_visit_counter(conn: _Conn, schema: str, table: str = "jobs") -> None:
+    """Make *table* count every row the engine actually visits.
+
+    Installs a permissive row-level-security policy whose USING expression
+    bumps a sequence. PostgreSQL evaluates that expression once per row it
+    reads from the table, so the sequence advances by exactly the number
+    of rows a statement looked at -- including the rows it looked at and
+    then discarded, which is the number a cost oracle wants.
+
+    This exists so a test can assert "this operation's cost is bounded by
+    its batch, not by the table" as **observable behaviour**, without any
+    of the usual brittleness:
+
+    * **Survives engine upgrades.** It reads no ``EXPLAIN`` output, so no
+      plan node name, plan shape, or counter spelling can change under
+      it. Plan text is not a stable interface across PostgreSQL major
+      versions; "rows the engine read" is.
+    * **Tests behaviour, not implementation.** It needs no knowledge of
+      the SQL under test -- it is not parsed, re-spelled, re-bound or
+      re-run -- so it follows any rewrite that keeps cost bounded and
+      fails any that does not.
+    * **Deterministic.** An exact count: no clock, no buffer-cache state,
+      no machine-speed dependence, nothing to make it flaky.
+
+    Use it for any bounded-cost contract where a drain, sweep or scan
+    must not re-read what it already processed -- the failure mode where
+    nothing errors and no count is wrong, but the work grows with the
+    backlog until the operation stops finishing.
+
+    The policy is permissive and always true, so it changes visibility not
+    at all. Statements must run as :data:`ROW_VISIT_COUNTER_ROLE` for it
+    to fire; :class:`RowVisitCounter` arranges that.
+    """
+    if not _IDENT_RE.match(schema):  # pragma: no cover - guards a test-only helper
+        raise ValueError(f"invalid schema identifier: {schema!r}")
+    if not _IDENT_RE.match(table):  # pragma: no cover - guards a test-only helper
+        raise ValueError(f"invalid table identifier: {table!r}")
+    await conn.execute(f'CREATE SEQUENCE IF NOT EXISTS "{schema}".taskq_rows_visited')
+    # VOLATILE with a high COST so the planner never folds it away,
+    # caches it, or hoists it above the scan it is counting.
+    await conn.execute(
+        f'CREATE OR REPLACE FUNCTION "{schema}".taskq_count_row_visit() RETURNS boolean '
+        f"AS $$ SELECT nextval('\"{schema}\".taskq_rows_visited') IS NOT NULL $$ "
+        "LANGUAGE sql VOLATILE COST 10000"
+    )
+    await conn.execute(f'ALTER TABLE "{schema}".{table} ENABLE ROW LEVEL SECURITY')
+    await conn.execute(f'DROP POLICY IF EXISTS taskq_count_row_visits ON "{schema}".{table}')
+    await conn.execute(
+        f'CREATE POLICY taskq_count_row_visits ON "{schema}".{table} '
+        f'USING ("{schema}".taskq_count_row_visit())'
+    )
+    await conn.execute(
+        "DO $$ BEGIN "  # noqa: S608  # Why: CREATE ROLE takes no parameters, so the role name must be interpolated; it is this module's own constant, never caller input.
+        f"  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '{ROW_VISIT_COUNTER_ROLE}') "
+        f"  THEN CREATE ROLE {ROW_VISIT_COUNTER_ROLE} NOLOGIN; END IF; "
+        "END $$"
+    )
+    await conn.execute(f'GRANT USAGE ON SCHEMA "{schema}" TO {ROW_VISIT_COUNTER_ROLE}')
+    await conn.execute(f'GRANT ALL ON ALL TABLES IN SCHEMA "{schema}" TO {ROW_VISIT_COUNTER_ROLE}')
+    await conn.execute(
+        f'GRANT ALL ON ALL SEQUENCES IN SCHEMA "{schema}" TO {ROW_VISIT_COUNTER_ROLE}'
+    )
+
+
+async def read_row_visits(conn: _Conn, schema: str) -> int:
+    """Rows visited so far, per :func:`install_row_visit_counter`."""
+    return int(
+        await conn.fetchval(
+            f'SELECT last_value FROM "{schema}".taskq_rows_visited'  # noqa: S608  # Why: a sequence name cannot be $N-bound; `schema` is validated against _IDENT_RE in install_row_visit_counter before any of this runs.
+        )
+        or 0
+    )
+
+
+class RowVisitCounter:
+    """Pool stand-in recording how many rows each statement visited.
+
+    Wraps a real pool and hands out real pooled connections, so the code
+    under test runs untouched against the real engine; this only samples
+    the counting sequence either side of each statement it issues.
+
+    ``per_statement`` ends up with one entry per driving statement, in
+    order -- so a bounded drain shows a flat list and an unbounded one
+    shows a list that climbs.
+
+    Requires :func:`install_row_visit_counter` to have been called for
+    *schema* first.
+    """
+
+    def __init__(self, pool: Any, schema: str, *, method: str = "fetchrow") -> None:
+        self._pool = pool
+        self._schema = schema
+        self._method = method
+        self.per_statement: list[int] = []
+        # Row visits grouped by the statement text that caused them, so a
+        # caller that issues more than one distinct driving statement (the
+        # bulk cancel runs a terminal arm and then a cooperative-cancel
+        # arm) can assert each one's cost against its own contract instead
+        # of against a concatenation of both.
+        self.by_statement: dict[str, list[int]] = {}
+
+    def acquire(self, **kwargs: object) -> Any:
+        outer = self
+
+        class _Acquire:
+            async def __aenter__(self) -> Any:
+                self._ctx = outer._pool.acquire(**kwargs)
+                self._conn = await self._ctx.__aenter__()
+                # RLS is bypassed for the table owner and for superusers,
+                # so the counting policy only fires for an ordinary role.
+                await self._conn.execute(f"SET ROLE {ROW_VISIT_COUNTER_ROLE}")
+                return _CountingConnection(self._conn, outer)
+
+            async def __aexit__(self, *exc: object) -> Any:
+                # Hand the pooled connection back exactly as it was found.
+                await self._conn.execute("RESET ROLE")
+                return await self._ctx.__aexit__(*exc)
+
+        return _Acquire()
+
+
+class _CountingConnection:
+    """Delegates everything to a real connection, counting row visits
+    around the one statement-issuing method under measurement."""
+
+    def __init__(self, inner: Any, counter: RowVisitCounter) -> None:
+        self._inner = inner
+        self._counter = counter
+
+    def __getattr__(self, name: str) -> Any:
+        inner_attr = getattr(self._inner, name)
+        if name != self._counter._method:
+            return inner_attr
+
+        async def _measured(*args: object, **kwargs: object) -> Any:
+            counter = self._counter
+            schema = counter._schema
+            before = await read_row_visits(self._inner, schema)
+            result = await inner_attr(*args, **kwargs)
+            after = await read_row_visits(self._inner, schema)
+            visits = after - before
+            counter.per_statement.append(visits)
+            sql = str(args[0]) if args else ""
+            counter.by_statement.setdefault(sql, []).append(visits)
+            return result
+
+        return _measured
