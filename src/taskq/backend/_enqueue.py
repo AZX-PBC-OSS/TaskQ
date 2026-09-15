@@ -1593,6 +1593,11 @@ async def _enqueue_batch_fast(
                     args.metadata, idx=index_base + idx, field="metadata", actor=args.actor
                 ),
                 list(args.tags),
+                # Producer placement: an enqueue IS the placement the row's
+                # own queue label records, so dispatch routes it by that
+                # label rather than by the actor's stored assignment (the
+                # routing contract in taskq/backend/_dispatch_sql.py).
+                False,
             )
         )
 

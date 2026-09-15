@@ -1475,36 +1475,61 @@ async def _stranded_jobs_loop(ctx: SweepContext, shutdown: asyncio.Event) -> Non
 
     Off the hot dispatch path — runs every 60 s when this worker is leader.
     """
-    # One scan over the pending/scheduled set, each row's two strand
-    # conditions computed once in the inner SELECT and the outer WHERE
+    # One scan over the pending/scheduled set, each row's strand
+    # conditions computed once in the inner SELECTs and the outer WHERE
     # admitting exactly the stranded rows. The per-condition FILTER
     # counts (and the queue names on the unserved condition) exist so
     # each warning event can say WHICH condition held and, for the
     # unserved shape, on which queues — an operator who sees a
     # no-actor-config event and finds the actor_config row present
     # concludes the detector lies, which is the exact failure a
-    # per-shape event prevents. A row stranded for BOTH reasons counts
-    # once in the gauge's total.
+    # per-shape event prevents.
+    # A re-pended row (assignment_routed) is not dispatched by its own
+    # queue label -- it routes by its actor's CURRENT stored assignment
+    # (the routing contract in taskq/backend/_dispatch_sql.py). Testing
+    # such a row's label against `workers` asks the detector's question
+    # about the wrong queue: the label can name a queue the fleet serves
+    # while the row is only claimable by the assignment queue nobody
+    # runs. routing_queue IS dispatch's own discriminator — the
+    # assignment for a re-pended row, the row's own label otherwise — so
+    # the queue the unserved arm TESTS and the queue the event NAMES are
+    # one expression, never two that can drift.
+    # The two shapes are mutually exclusive: with no config row there is
+    # no assignment to route by (the CASE yields NULL, and NULL = ANY(...)
+    # would report the row unserved no matter what the fleet serves), so
+    # the unserved arm is evaluated only when the config row exists. A
+    # config-missing row counts once, in the config category — naming a
+    # queue for it would point the operator at a label dispatch never
+    # reads.
     _stranded_sql = """\
     SELECT s.actor,
            count(*) AS cnt,
            count(*) FILTER (WHERE s.no_actor_config) AS no_actor_config_cnt,
            count(*) FILTER (WHERE s.unserved_queue) AS unserved_queue_cnt,
            coalesce(
-             array_agg(DISTINCT s.queue) FILTER (WHERE s.unserved_queue),
+             array_agg(DISTINCT s.routing_queue) FILTER (WHERE s.unserved_queue),
              ARRAY[]::text[]
            ) AS unserved_queues
     FROM (
-        SELECT j.actor,
-               j.queue,
-               NOT EXISTS (
-                 SELECT 1 FROM "{schema}".actor_config ac WHERE ac.actor = j.actor
-               ) AS no_actor_config,
-               NOT EXISTS (
-                 SELECT 1 FROM "{schema}".workers w WHERE j.queue = ANY(w.queues)
-               ) AS unserved_queue
-        FROM "{schema}".jobs j
-        WHERE j.status IN ('pending', 'scheduled')
+        SELECT r.actor,
+               r.routing_queue,
+               r.no_actor_config,
+               NOT r.no_actor_config
+                 AND NOT EXISTS (
+                   SELECT 1 FROM "{schema}".workers w
+                   WHERE r.routing_queue = ANY(w.queues)
+                 ) AS unserved_queue
+        FROM (
+            SELECT j.actor,
+                   CASE WHEN j.assignment_routed THEN ac.queue ELSE j.queue END
+                     AS routing_queue,
+                   NOT EXISTS (
+                     SELECT 1 FROM "{schema}".actor_config ac2 WHERE ac2.actor = j.actor
+                   ) AS no_actor_config
+            FROM "{schema}".jobs j
+            LEFT JOIN "{schema}".actor_config ac ON ac.actor = j.actor
+            WHERE j.status IN ('pending', 'scheduled')
+        ) r
     ) s
     WHERE s.no_actor_config OR s.unserved_queue
     GROUP BY s.actor

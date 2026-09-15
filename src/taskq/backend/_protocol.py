@@ -692,6 +692,17 @@ class JobRow:
     since enqueue.  Trailing default: rows materialised before the
     counters existed read 0.
     """
+    assignment_routed: bool = False
+    """Whether dispatch routes this row by its actor's stored assignment
+    rather than by its own ``queue`` label.  Producer-placed rows are
+    ``False`` (the label governs, so an explicit ``enqueue(queue=...)``
+    and a stale producer's post-move enqueue both stay where they were
+    put); every re-pend path sets it ``True``, so a row handed back to
+    the fleet follows the actor's current queue instead of stranding on
+    one the operator has retired.  See the routing contract in
+    ``taskq/backend/_dispatch_sql.py``.  Trailing default: rows
+    materialised before the marker existed read producer-placed.
+    """
 
 
 @dataclass(frozen=True, slots=True)

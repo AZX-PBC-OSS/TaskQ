@@ -360,8 +360,66 @@ assignment). Ensure workers consume the new queue, and keep consuming the
 old queue until every producer runs the new literal — stale producers
 keep enqueueing to it.
 
-Exit code 0 on success, 2 on refusal (invalid queue name, or the actor is
-already on that queue), 3 on unknown actor.
+The command reports how many pending jobs still carry the old queue label.
+That count is the residual stale producers keep adding to, and it is what
+tells you when the retired queue can stop being consumed — keep its
+consumers up until it reaches zero.
+
+Exit code 0 on success, 2 on refusal (invalid queue name, the actor is
+already on that queue, the assignment changed concurrently, or a drain
+batch exceeded its statement timeout — batches committed before the abort
+are kept, so the move is incomplete and safe to re-run), 3 on unknown
+actor.
+
+### `taskq queue migrate`
+
+The same move under the queue noun, for when you are thinking about queue
+lifecycle rather than about the `actor_config` table the assignment is
+stored in:
+
+```bash
+taskq queue migrate <ACTOR> --to <QUEUE>
+```
+
+The target queue is named by an explicit `--to` rather than positionally.
+Both arguments of a move are plain strings, and two bare positionals are
+easy to transpose under pressure — with the consequence that the backlog
+drains onto a queue that was never the target.
+
+Behaviour, reporting and exit codes are identical to
+`taskq actor-config move-queue`.
+
+### `taskq doctor`
+
+A read-only health report for the misconfigurations that produce no error
+anywhere:
+
+```bash
+taskq doctor --actors myapp.actors:registry
+```
+
+TaskQ refuses boot only on structural stored-config drift, so a whole
+family of capacity and configuration problems fails silently — their only
+symptom is work that quietly does not happen. `doctor` names them together:
+
+- a registered actor with **no stored row**, which never dispatches (the
+  dispatch capacity gate reads only `actor_config` rows);
+- a **stale `queues` row** whose queue no actor is assigned to — inert
+  now, but silently applied to the next actor moved onto that name;
+- **incoherent capacity combinations**: a `max_pending` below
+  `max_concurrent` (the actor may queue fewer jobs than it may run at
+  once, so its cap is unreachable), and an actor cap above its queue's cap
+  (the queue binds first, so raising the actor cap changes nothing).
+
+A stored `max_concurrent=0` is labelled **drain mode** and a stored `NULL`
+is labelled **uncapped**, so a deliberate drain is distinguishable from an
+accidental zero and a real "no actor-level cap" from missing data.
+
+It issues no writing statement, so it is safe to run against production
+mid-incident. It always exits 0: every condition it reports is one a worker
+keeps running through, and a diagnostic that fails the shell gets wrapped
+in `|| true` and then ignored. Gate CI on drift with
+`taskq actor-config diff`, which exits non-zero by design.
 
 ### Exit codes
 

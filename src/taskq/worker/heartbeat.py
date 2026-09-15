@@ -228,6 +228,11 @@ SET status = CASE
     lock_expires_at = NULL,
     cancel_phase = 0,
     cancel_requested_at = NULL,
+    -- An isolate re-pend hands the row back to the fleet, so it routes
+    -- by the actor's current assignment from here on (the routing
+    -- contract in taskq/backend/_dispatch_sql.py) -- the same SET this
+    -- template mirrors branch-for-branch from _SWEEP_1_SQL.
+    assignment_routed = true,
     scheduled_at = CASE
         WHEN attempt < max_attempts AND retry_kind != 'non_retryable'
             THEN clock_timestamp() + interval '5 seconds'

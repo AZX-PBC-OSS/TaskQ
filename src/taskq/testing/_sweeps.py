@@ -286,6 +286,9 @@ async def _reclaim_expired_locks(
                 lock_expires_at=None,
                 cancel_phase=CancelPhase.NONE,
                 cancel_requested_at=None,
+                # A reclaim hands the row back to the fleet, so it routes
+                # by the actor's current assignment from here on.
+                assignment_routed=True,
             )
             self._append_state_change_event(
                 job_id,

@@ -778,6 +778,11 @@ class InMemoryBackend:
             row,
             status="pending",
             max_attempts=raised_ceiling,
+            # An operator hand-back routes by the actor's current
+            # assignment, not by the label the row was first placed
+            # under — including for a row terminalized before it was
+            # ever claimed.
+            assignment_routed=True,
             cancel_phase=CancelPhase.NONE,
             # The whole cancel trail goes with the spent epoch, mirroring
             # the PG SET clause's cancel_requested_at = NULL: the TERMINAL

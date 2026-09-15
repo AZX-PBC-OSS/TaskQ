@@ -91,6 +91,7 @@ def _full_record(*, job_id: UUID | None = None) -> dict[str, object]:
         "tags": [],
         "snooze_count": 0,
         "rate_limit_blocked_count": 0,
+        "assignment_routed": False,
     }
 
 

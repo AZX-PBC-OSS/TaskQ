@@ -380,6 +380,9 @@ async def _mark_failed_or_retry(
             error_traceback=error_info.error_traceback,
             cancel_phase=CancelPhase.NONE,
             cancel_requested_at=None,
+            # A failure retry returns the row to the pending pool, so it
+            # routes by the actor's current assignment from here on.
+            assignment_routed=True,
             progress_seq=progress_seq,
             progress_state=merged_progress,
         )
@@ -810,6 +813,9 @@ async def _mark_snoozed(
         metadata=new_metadata,
         cancel_phase=CancelPhase.NONE,
         cancel_requested_at=None,
+        # A deferral returns the row to the pending pool, so it routes by
+        # the actor's current assignment from here on.
+        assignment_routed=True,
         progress_seq=progress_seq,
         progress_state=merged_progress,
     )
@@ -988,6 +994,9 @@ async def _mark_retry_after(
         last_heartbeat_at=None,
         cancel_phase=CancelPhase.NONE,
         cancel_requested_at=None,
+        # A deferral returns the row to the pending pool, so it routes by
+        # the actor's current assignment from here on.
+        assignment_routed=True,
         progress_seq=progress_seq,
         progress_state=merged_progress,
     )
