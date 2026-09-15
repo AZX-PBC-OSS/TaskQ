@@ -884,8 +884,12 @@ message now names only the ref, matching the sanitization contract
 `job_events` rows older than `TASKQ_EVENT_RETENTION_PERIOD` (default 7
 days) are now deleted by a leader sweep regardless of parent-job status;
 `timedelta(0)` disables it; the crash-reclaim outbox slice
-(`kind='state_change' AND detail->>'reason'='lock_expired'`) is exempt at
-any setting.
+(`kind='state_change' AND detail->>'reason'='lock_expired'`) is exempt from
+the ordinary retention window — a lagging `watch_reclaims` consumer's
+cursor can still reach it — but is not exempt from deletion outright: it
+is deleted once it exceeds 100x `TASKQ_EVENT_RETENTION_PERIOD`, so a short
+retention period bounds how far behind a reclaim consumer may lag before
+it silently misses events.
 
 ---
 

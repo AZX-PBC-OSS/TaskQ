@@ -14,6 +14,7 @@ __all__ = [
     "INSERT_ATTEMPT_SQL",
     "INSERT_EVENT_SQL",
     "POLL_CANCEL_FLAGS_SQL",
+    "RECLAIM_RETRYABLE_PREDICATE",
     "UPDATE_JOBS_LOCK_SQL_TEMPLATE",
     "UPDATE_LEADER_PING_SQL_TEMPLATE",
     "UPDATE_RESERVATION_LEASES_SQL_TEMPLATE",
@@ -21,6 +22,24 @@ __all__ = [
     "build_heartbeat_sql",
     "parse_rowcount",
 ]
+
+#: Whether an infrastructure reclaim hands a running row back for another
+#: attempt instead of terminalising it. Formatted with ``q`` — the table
+#: alias prefix (``"j."`` where the statement aliases jobs, ``""`` where it
+#: updates the table directly) — so the crash-reclaim sweep and the
+#: isolate-self path state one predicate rather than two hand-kept copies.
+#:
+#: ``indefinite`` ignores ``max_attempts`` entirely: its retry budget is the
+#: ``schedule_to_close`` deadline, and the consumer's own failure path
+#: already reschedules such a job whatever its attempt number. A crash is a
+#: less conclusive event than a failed execution, so it must not be the one
+#: thing that ends such a job early — an overdue indefinite job is instead
+#: terminalised by the deadline sweep, which is where its budget actually
+#: runs out.
+RECLAIM_RETRYABLE_PREDICATE = (
+    "({q}retry_kind != 'non_retryable'"
+    " AND ({q}retry_kind = 'indefinite' OR {q}attempt < {q}max_attempts))"
+)
 
 # job_attempts.worker_id FK-references workers(id) ON DELETE SET NULL. That
 # action only protects rows that already exist when the parent is deleted; an

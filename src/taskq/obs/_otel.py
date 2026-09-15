@@ -1382,11 +1382,14 @@ _disabled_schedules_gauge = get_meter().create_observable_gauge(
 
 
 def record_sweep_timeout(sweep_name: str) -> None:
-    """Count a sweep call that was cut short by a deadline or server cancel.
+    """Count a sweep or sampler read that did not complete.
 
-    Called on the failure path (``TimeoutError`` / ``QueryCanceledError``),
-    never the success path. Any sustained rate means sweeps are being
-    aborted, not merely slow. Respects ``_otel_enabled`` — no-op when False.
+    Called on the failure path, never the success path. A sweep reports the
+    deadline family (``TimeoutError`` / ``QueryCanceledError``), where the
+    distinction between aborted and merely slow is the actionable one; a
+    gauge sampler reports every failure, because its gauge keeps serving its
+    last value either way and the read not happening is the whole fault.
+    Respects ``_otel_enabled`` — no-op when False.
     """
     if not _otel_enabled:
         return

@@ -61,7 +61,7 @@ async def _status_of(fleet: Fleet, job_id: JobId) -> str:
     return str(rows[0]["status"])
 
 
-async def _interrupt_database(dsn: str, database: str) -> int:
+async def _interrupt_database(dsn: str) -> int:
     """Terminate every other session on this database.
 
     This is what a restart, a failover, or a maintenance window does to a
@@ -69,27 +69,20 @@ async def _interrupt_database(dsn: str, database: str) -> int:
     it at its next statement. Returns how many sessions were ended, so a test
     can assert the interruption actually happened rather than passing because
     nothing was hit.
+
+    pg_stat_activity is cluster-wide and the container hosts every xdist
+    worker's database, so the scope comes from the terminating connection's
+    own database rather than a name passed in.
     """
     conn = await asyncpg.connect(dsn)
     try:
         rows = await conn.fetch(
             "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
-            "WHERE datname = $1 AND pid <> pg_backend_pid()",
-            database,
+            "WHERE datname = current_database() AND pid <> pg_backend_pid()"
         )
         return len(rows)
     finally:
         await conn.close()
-
-
-async def _database_name(dsn: str) -> str:
-    conn = await asyncpg.connect(dsn)
-    try:
-        name = await conn.fetchval("SELECT current_database()")
-    finally:
-        await conn.close()
-    assert isinstance(name, str)
-    return name
 
 
 async def test_a_pod_keeps_working_after_the_database_drops_its_connections(
@@ -110,7 +103,6 @@ async def test_a_pod_keeps_working_after_the_database_drops_its_connections(
         actors=((_ACTOR, _QUEUE),),
     ) as fleet:
         dsn = str(fleet.settings.pg_dsn)
-        database = await _database_name(dsn)
         pod = fleet.pod("pod-1")
 
         # A completed job before the interruption, so the comparison afterwards
@@ -125,7 +117,7 @@ async def test_a_pod_keeps_working_after_the_database_drops_its_connections(
         await pod.run(claimed[0], work, actor_config=fleet_actor_config())
         assert await _status_of(fleet, before_ids[0]) == "succeeded"
 
-        terminated = await _interrupt_database(dsn, database)
+        terminated = await _interrupt_database(dsn)
         assert terminated > 0, (
             "the scenario requires the database to have actually dropped the "
             "pod's connections; no sessions were terminated"
@@ -214,7 +206,6 @@ async def test_a_job_in_flight_across_an_interruption_is_not_destroyed(
         actors=((_ACTOR, _QUEUE),),
     ) as fleet:
         dsn = str(fleet.settings.pg_dsn)
-        database = await _database_name(dsn)
         pod = fleet.pod("pod-1")
 
         job_ids = await fleet.enqueue(1, actor=_ACTOR, queue=_QUEUE, max_attempts=3)
@@ -239,7 +230,7 @@ async def test_a_job_in_flight_across_an_interruption_is_not_destroyed(
         )
         await asyncio.wait_for(started.wait(), timeout=5.0)
 
-        terminated = await _interrupt_database(dsn, database)
+        terminated = await _interrupt_database(dsn)
         assert terminated > 0, (
             "the scenario requires the database to have dropped the pod's connections mid-attempt"
         )
@@ -284,7 +275,6 @@ async def test_an_interruption_does_not_duplicate_a_completed_job(
         actors=((_ACTOR, _QUEUE),),
     ) as fleet:
         dsn = str(fleet.settings.pg_dsn)
-        database = await _database_name(dsn)
         pod = fleet.pod("pod-1")
 
         job_ids = await fleet.enqueue(1, actor=_ACTOR, queue=_QUEUE)
@@ -303,7 +293,7 @@ async def test_an_interruption_does_not_duplicate_a_completed_job(
         assert await _status_of(fleet, job_id) == "succeeded"
         assert runs == 1
 
-        terminated = await _interrupt_database(dsn, database)
+        terminated = await _interrupt_database(dsn)
         assert terminated > 0, "the scenario requires the database to have dropped every session"
 
         # Everything the fleet does on its own to find orphaned work.

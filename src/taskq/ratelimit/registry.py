@@ -242,14 +242,15 @@ def _same_config(
     return False
 
 
-def _preserves_memory_fixed_quota_state(prim: TokenBucket | SlidingWindow) -> bool:
+def _preserves_fixed_quota_state(prim: TokenBucket | SlidingWindow) -> bool:
     """Eviction-exemption predicate for keyed rate limits.
 
-    Exempts a memory-backed fixed-quota TokenBucket holding consumed quota
-    state (see :meth:`TokenBucket.holds_consumed_memory_quota`) from idle
-    eviction — evicting it would silently reset the drained quota.
+    Exempts a fixed-quota TokenBucket whose state an eviction cycle would
+    discard (see :meth:`TokenBucket.holds_consumed_quota`) — whether that
+    state lives on the instance or in the row the reclaim drain deletes,
+    losing it hands back a budget the tenant already spent.
     """
-    return isinstance(prim, TokenBucket) and prim.holds_consumed_memory_quota()
+    return isinstance(prim, TokenBucket) and prim.holds_consumed_quota()
 
 
 class RateLimitRegistry:
@@ -1752,13 +1753,17 @@ class RateLimitRegistry:
         ``registry-keyed-reclaim-pending-cap-veto`` warning are the
         visible signals).
 
-        **Exemption — memory fixed-quota buckets.** A ``backend="memory"``
-        bucket with ``refill_per_second == 0`` that has consumed any of its
-        quota is NOT evicted (see
-        :meth:`TokenBucket.holds_consumed_memory_quota`): its token state
-        lives on the instance, so eviction would silently reset the drained
-        quota to full on next acquire — whereas Redis deliberately retains
-        that same state for 24 h. The exemption applies to both callers of
+        **Exemption — fixed-quota buckets.** A bucket with
+        ``refill_per_second == 0`` whose state an eviction cycle would
+        discard is NOT evicted (see
+        :meth:`TokenBucket.holds_consumed_quota`). For ``backend="memory"``
+        that is a bucket which has consumed part of its quota, held because
+        its token state lives on the instance; for ``backend="postgres"``
+        it is every such bucket, because the state lives in the row the
+        reclaim drain deletes and remaining tokens are not readable on this
+        synchronous path. Either way the next acquire would start again at
+        full capacity against a budget already spent — whereas Redis
+        deliberately retains that same state for 24 h. The exemption applies to both callers of
         this method (the per-worker sweep and the cap-pressure opportunistic
         eviction). Trade-off, deliberately chosen: an exempt bucket counts
         against ``settings.max_keyed_rate_limits`` until its quota returns
@@ -1798,7 +1803,7 @@ class RateLimitRegistry:
             self._rate_limits,
             idle_for,
             "registry-evicted-idle-keyed-rate-limits",
-            preserve=_preserves_memory_fixed_quota_state,
+            preserve=_preserves_fixed_quota_state,
             admit=_admit,
         )
         # The publish-schema capture rides the registration's lifecycle:

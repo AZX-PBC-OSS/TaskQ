@@ -21,6 +21,7 @@ from taskq._dsn import dsn_host
 from taskq._shield import shield_with_retrieval
 from taskq.backend._sql import (
     INSERT_ATTEMPT_SQL,
+    RECLAIM_RETRYABLE_PREDICATE,
     build_heartbeat_sql,
     parse_rowcount,
 )
@@ -218,7 +219,7 @@ _SELECT_RUNNING_JOBS_SQL_TEMPLATE = (
 _ISOLATE_JOB_SQL_TEMPLATE = """\
 UPDATE "{schema}".jobs
 SET status = CASE
-        WHEN attempt < max_attempts AND retry_kind != 'non_retryable'
+        WHEN {retryable}
             THEN 'pending'::"{schema}".job_status
         WHEN cancel_phase != 0
             THEN 'cancelled'::"{schema}".job_status
@@ -229,16 +230,18 @@ SET status = CASE
     cancel_phase = 0,
     cancel_requested_at = NULL,
     scheduled_at = CASE
-        WHEN attempt < max_attempts AND retry_kind != 'non_retryable'
+        WHEN {retryable}
             THEN clock_timestamp() + interval '5 seconds'
         ELSE scheduled_at
     END,
     finished_at = CASE
-        WHEN NOT (attempt < max_attempts AND retry_kind != 'non_retryable')
+        WHEN NOT {retryable}
             THEN clock_timestamp()
         ELSE finished_at
     END
-WHERE id = $1 AND status = 'running' AND locked_by_worker = $2"""
+WHERE id = $1 AND status = 'running' AND locked_by_worker = $2""".replace(
+    "{retryable}", RECLAIM_RETRYABLE_PREDICATE.format(q="")
+)
 
 
 async def isolate_self(
@@ -295,9 +298,15 @@ async def isolate_self(
                         if parse_rowcount(tag) == 0:
                             lost_race += 1
                             continue
+                        # Mirrors RECLAIM_RETRYABLE_PREDICATE, which the UPDATE
+                        # above applied: an 'indefinite' job's budget is its
+                        # schedule_to_close deadline, not max_attempts.
                         is_pending = (  # pyright: ignore[reportUnknownVariableType]  # Why: row column accessor types unknown — propagates from conn.fetch() suppression.
-                            row["attempt"] < row["max_attempts"]
-                            and row["retry_kind"] != "non_retryable"
+                            row["retry_kind"] != "non_retryable"
+                            and (
+                                row["retry_kind"] == "indefinite"
+                                or row["attempt"] < row["max_attempts"]
+                            )
                         )
                         if is_pending:
                             pending += 1

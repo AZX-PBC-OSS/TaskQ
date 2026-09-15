@@ -155,8 +155,9 @@ async def _drop_schema(pg_dsn: str) -> None:
 
 async def _age_bucket_row_setup(pool: asyncpg.Pool, bucket: str, older_than: timedelta) -> None:
     """Stand up one fleet-reclaimable ``rate_limit_buckets`` row directly
-    — the shape the keyed PG-backend acquire's preseed writes — aged
-    past the horizon, for the batch-bound pin's population."""
+    — the empty state document the keyed publish path writes before any
+    acquire — aged past the horizon, for the batch-bound pin's
+    population."""
     async with pool.acquire() as conn:
         await conn.execute(
             f'INSERT INTO "{_schema()}".rate_limit_buckets '
@@ -173,6 +174,7 @@ async def _insert_bucket_row_with_tokens(
     *,
     tokens: float,
     capacity: float,
+    refill: float,
     older_than: timedelta,
 ) -> None:
     """Stand up one fleet-reclaimable ``rate_limit_buckets`` row directly,
@@ -184,11 +186,13 @@ async def _insert_bucket_row_with_tokens(
             f"(bucket_name, kind, state, keyed, last_used_at) "
             f"VALUES ($1, 'token_bucket', "
             f"jsonb_build_object('tokens', $2::float8, 'ts', "
-            f"EXTRACT(EPOCH FROM clock_timestamp()), 'capacity', $3::float8), "
-            f"true, clock_timestamp() - $4::interval)",
+            f"EXTRACT(EPOCH FROM clock_timestamp()), 'capacity', $3::float8, "
+            f"'refill', $4::float8), "
+            f"true, clock_timestamp() - $5::interval)",
             bucket,
             tokens,
             capacity,
+            refill,
             older_than,
         )
 
@@ -742,6 +746,74 @@ async def test_consumed_fixed_quota_bucket_survives_the_fleet_sweep(pg_dsn: str)
         await _drop_schema(pg_dsn)
 
 
+async def test_legacy_bucket_row_without_quota_keys_survives_the_fleet_sweep(
+    pg_dsn: str,
+) -> None:
+    """A ``rate_limit_buckets`` row whose state predates the quota keys
+    survives the fleet sweep past the horizon.
+
+    The write shape before ``capacity``/``refill`` rode along in ``state``
+    was ``{"tokens", "ts"}`` and nothing else: a real token count with
+    nothing stored to evaluate it against. That row could be a refilling
+    bucket mid-window (safe to delete — its state converges back to full)
+    or a fixed quota partly spent (deleting it lets the next acquire
+    re-preseed at full capacity, handing back a budget the tenant already
+    used). The sweep cannot tell the two apart from the row, so the row
+    is kept: the veto is fail-closed on missing keys, the same "cannot
+    prove safe to delete" rule the consumed-fixed-quota case already
+    states. A kept legacy row is not a leak — the first acquire after the
+    keys existed rewrites the state with the full document, so the kept
+    population is bounded by rows nothing has touched since.
+
+    The companion never-acquired row (``{}`` state — what the keyed
+    publish path writes before any acquire) carries no token count at
+    all, so the same sweep must still delete it: the veto protects
+    unprovable state, not the absence of state.
+    """
+    await _fresh_schema(pg_dsn)
+    pool = await asyncpg.create_pool(dsn=pg_dsn, min_size=1, max_size=2)
+    try:
+        legacy = "taskq:ratelimit:pg:tenant:legacy-state"
+        never_acquired = "taskq:ratelimit:pg:tenant:published-never-acquired"
+        async with pool.acquire() as conn:
+            await conn.execute(
+                f'INSERT INTO "{_schema()}".rate_limit_buckets '
+                f"(bucket_name, kind, state, keyed, last_used_at) "
+                f"VALUES ($1, 'token_bucket', "
+                f"jsonb_build_object('tokens', $2::float8, 'ts', "
+                f"EXTRACT(EPOCH FROM clock_timestamp())), "
+                f"true, clock_timestamp() - $3::interval)",
+                legacy,
+                2.0,
+                _HORIZON + timedelta(minutes=5),
+            )
+        await _age_bucket_row_setup(pool, never_acquired, _HORIZON + timedelta(minutes=5))
+
+        deleted = await _sweep(pg_dsn)
+
+        assert await _bucket_rows(pool, never_acquired) == 0, (
+            "the never-acquired published row survived the sweep although its "
+            "state carries no token count at all: the veto protects unprovable "
+            "state, not the absence of state — sparing empty rows keeps one "
+            "permanent row per key ever published, the unbounded growth this "
+            "sweep exists to bound"
+        )
+        assert deleted == 1, (
+            f"the sweep should have deleted exactly the provably-safe row; got {deleted}"
+        )
+        assert await _bucket_rows(pool, legacy) == 1, (
+            f"the fleet sweep deleted the legacy row {legacy!r} although its state "
+            "carries a stored token count without the capacity/refill keys needed "
+            "to prove deletion safe: if that count is a partly spent fixed quota, "
+            "the next acquire re-preseeds at full capacity and hands back a budget "
+            "the tenant already used — a row the sweep cannot prove safe to delete "
+            "is one it must keep"
+        )
+    finally:
+        await pool.close()
+        await _drop_schema(pg_dsn)
+
+
 async def _stand_up_bursty_live_bucket(pool: asyncpg.Pool, bucket: str) -> None:
     """Materialise *bucket* as a keyed 5-slot reservation in the shape of a
     bursty tenant: configured for 5 concurrent, but only ever running 1.
@@ -969,6 +1041,7 @@ async def test_refilling_keyed_bucket_below_capacity_remains_reclaimable(pg_dsn:
             bucket,
             tokens=1.0,
             capacity=5.0,
+            refill=0.5,
             older_than=_HORIZON + timedelta(minutes=5),
         )
 
@@ -1004,6 +1077,7 @@ async def test_keyed_bucket_at_full_capacity_remains_reclaimable(pg_dsn: str) ->
             bucket,
             tokens=5.0,
             capacity=5.0,
+            refill=0.0,
             older_than=_HORIZON + timedelta(minutes=5),
         )
 

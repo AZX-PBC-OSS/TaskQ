@@ -996,6 +996,15 @@ class TaskQ:
         a long outage drains at query speed (full batches are re-polled
         immediately, not one batch per *poll_timeout*).
 
+        The built-in ``TASKQ_EVENT_RETENTION_PERIOD`` sweep deletes these
+        rows by age independently of any consumer's cursor: the
+        ``lock_expired`` slice is exempt from the ordinary retention
+        window, but not from deletion outright — it is deleted once it
+        exceeds ``RECLAIM_OUTBOX_RETENTION_MULTIPLIER`` (100x) times the
+        retention setting.  A consumer that lags behind that bound
+        silently misses events; pruning by cursor position does not
+        protect against it.
+
         Shutdown and backpressure
         -------------------------
         This is a pull-based async generator: events are fetched only as
