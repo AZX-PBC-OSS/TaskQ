@@ -200,12 +200,12 @@ def _make_backend(
 
 
 class _CaptureFakePool:
-    """Fake pool whose connection records fetch() parameters.
+    """Fake pool whose connection records fetch() statements and parameters.
 
     Mirrors asyncpg's acquire contract: keyword-only ``timeout`` bound.
     """
 
-    def __init__(self, marker: list[str], captured: list[tuple[object, ...]]) -> None:
+    def __init__(self, marker: list[str], captured: list[tuple[str, tuple[object, ...]]]) -> None:
         self._marker = marker
         self._captured = captured
         self.acquire_timeouts: list[float | None] = []
@@ -223,13 +223,13 @@ class _CaptureFakePool:
 
 
 class _CaptureFakeConn:
-    """Fake connection that records fetch() parameters."""
+    """Fake connection that records fetch() statements and parameters."""
 
-    def __init__(self, captured: list[tuple[object, ...]]) -> None:
+    def __init__(self, captured: list[tuple[str, tuple[object, ...]]]) -> None:
         self._captured = captured
 
     async def fetch(self, sql: str, *args: object) -> list[dict[str, Any]]:
-        self._captured.append(args)
+        self._captured.append((sql, args))
         return []
 
     async def execute(self, sql: str, *args: object) -> str:
@@ -247,7 +247,7 @@ class _CaptureFakeConn:
 
 def _make_capture_backend(
     marker: list[str],
-    captured: list[tuple[object, ...]],
+    captured: list[tuple[str, tuple[object, ...]]],
 ) -> PostgresBackend:
     """Construct a PostgresBackend with a capture fake pool."""
     return _backend_with_dispatcher_pool(_CaptureFakePool(marker, captured))
@@ -298,13 +298,18 @@ class TestDispatchBatchHelperParams:
 
     def test_helper_receives_params_in_order(self) -> None:
         marker: list[str] = []
-        captured: list[tuple[object, ...]] = []
+        captured: list[tuple[str, tuple[object, ...]]] = []
 
         backend = _make_capture_backend(marker, captured)
         asyncio.run(backend.dispatch_batch(_FIXED_UUID, ["high", "low"], 10, _GRACE))
 
-        # First fetch: queue modes query (1 arg); second: dispatch CTE (5 args: queues, limit_n, worker_id, lock_lease, oversample)
-        dispatch_args = captured[-1]
+        # The claim is the fetch carrying the dispatch CTE (5 args: queues,
+        # limit_n, worker_id, lock_lease, oversample); the round's other
+        # statements (queue-mode resolve, and the claimable-rows probe that
+        # follows an empty claim) bind different parameter lists.
+        claims = [args for sql, args in captured if "WITH RECURSIVE params AS (" in sql]
+        assert len(claims) == 1
+        dispatch_args = claims[0]
         assert len(dispatch_args) == 5
         assert dispatch_args[0] == ["high", "low"]
         assert dispatch_args[1] == 10
@@ -376,15 +381,15 @@ class TestDispatchBatchEmptyQueues:
 
     def test_empty_queues_passes_through(self) -> None:
         marker: list[str] = []
-        captured: list[tuple[object, ...]] = []
+        captured: list[tuple[str, tuple[object, ...]]] = []
 
         backend = _make_capture_backend(marker, captured)
         result = asyncio.run(backend.dispatch_batch(_FIXED_UUID, [], 10, _GRACE))
         assert result == []
         assert marker == ["acquire"]
-        assert len(captured) >= 1
-        dispatch_args = captured[-1]
-        assert dispatch_args[0] == []
+        claims = [args for sql, args in captured if "WITH RECURSIVE params AS (" in sql]
+        assert len(claims) == 1
+        assert claims[0][0] == []
 
 
 class TestDispatchBatchCancellation:

@@ -479,6 +479,31 @@ def record_dispatch_duration(queue: str, elapsed: float) -> None:
     _dispatch_duration.record(elapsed, {"queue": _bounded_queue(queue)})
 
 
+_dispatch_failures = get_meter().create_counter(
+    "taskq.dispatch.failures",
+    description=(
+        "Count of dispatch rounds that raised before returning a claim set, "
+        "labeled by queue (capped -- see _bounded_queue). A producer that "
+        "fails every round emits successful-looking silence on every other "
+        "dispatch signal; this counter is what separates a failing producer "
+        "from an idle queue without reading logs."
+    ),
+    unit="1",
+)
+
+
+def record_dispatch_failure(queue: str) -> None:
+    """Bump the dispatch-failure counter.
+
+    Called from the dispatch round's exception path, outside the span body
+    for sampling independence.  Respects ``_otel_enabled`` — no-op when
+    False.
+    """
+    if not _otel_enabled:
+        return
+    _dispatch_failures.add(1, {"queue": _bounded_queue(queue)})
+
+
 _consumed_messages = get_meter().create_counter(
     "messaging.client.consumed.messages",
     description=(

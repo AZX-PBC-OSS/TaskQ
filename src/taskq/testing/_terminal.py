@@ -654,13 +654,11 @@ async def _mark_snoozed(
     effective_delay = max(delay, MIN_DEFERRAL_INTERVAL)
     new_scheduled_at = now + effective_delay
 
-    # Arm order here is deadline → max_attempts → snooze; the fused SQL
-    # checks snoozed → max_attempts → deadline with NOT EXISTS chaining.
-    # The orders are observably equivalent: a past-deadline row matches
-    # the deadline arm under either order (the snooze arm's deadline
-    # guard and the max_attempts arm's schedule_to_close IS NULL both
-    # exclude it first in the SQL), and every other row's arm choice
-    # depends only on its own predicate.
+    # Arm order here is deadline → snooze; the fused SQL checks snoozed →
+    # deadline with NOT EXISTS chaining. The orders are observably
+    # equivalent: a past-deadline row matches the deadline arm under
+    # either order (the SQL snooze arm's deadline guard excludes it
+    # first), and every other row takes the snooze arm.
     if row.schedule_to_close is not None and new_scheduled_at > row.schedule_to_close:
         deadline_merged_progress = _merge_progress(row.progress_state, progress_state)
         self._jobs[job_id] = replace(
@@ -673,6 +671,14 @@ async def _mark_snoozed(
             locked_by_worker=None,
             lock_expires_at=None,
             last_heartbeat_at=None,
+            # The denial that ran out the deadline is counted like every
+            # other: this arm's attempt row records the DeadlineExceeded
+            # failure, never the refusal that provoked it, so the
+            # aggregate on the row is the only place the last denial
+            # appears (mirroring the SQL arm's CASE increments).
+            snooze_count=row.snooze_count + (1 if outcome == "snoozed" else 0),
+            rate_limit_blocked_count=row.rate_limit_blocked_count
+            + (1 if outcome in ("reservation_denied", "rate_limit_denied") else 0),
             progress_seq=progress_seq,
             progress_state=deadline_merged_progress,
         )
@@ -704,67 +710,11 @@ async def _mark_snoozed(
         )
         return "failed"
 
-    # The admission-denial budget gate: the exact complement of the
-    # snooze arm's guard for DENIAL outcomes only — a non-indefinite job
-    # at attempt >= max_attempts with no close deadline has no remaining
-    # exit except the terminal one.  An actor-requested deferral
-    # (outcome 'snoozed') never reaches this gate: its budget is
-    # refunded below.  A job carrying schedule_to_close reschedules until
-    # its deadline (its own terminal exit); an indefinite job reschedules
-    # by policy.  An 'unavailable' denial never reaches it either: the
-    # store's failure to answer is infra backpressure about a job whose
-    # actor never ran, so it can never terminalise — it takes the
-    # non-consuming snooze arm below (mirroring the SQL arms' $9
-    # predicates).
-    if (
-        outcome in ("reservation_denied", "rate_limit_denied")
-        and denial_reason != "unavailable"
-        and row.attempt >= row.max_attempts
-        and row.retry_kind != "indefinite"
-        and (row.schedule_to_close is None)
-    ):
-        maxatt_merged_progress = _merge_progress(row.progress_state, progress_state)
-        self._jobs[job_id] = replace(
-            row,
-            status="failed",
-            finished_at=now,
-            error_class="MaxAttemptsExceeded",
-            error_message="retry budget exhausted",
-            error_traceback=None,
-            locked_by_worker=None,
-            lock_expires_at=None,
-            last_heartbeat_at=None,
-            progress_seq=progress_seq,
-            progress_state=maxatt_merged_progress,
-        )
-        self._append_attempt(
-            job_id=job_id,
-            attempt=row.attempt,
-            started_at=row.started_at,
-            now=now,
-            outcome="failed",
-            error_class="MaxAttemptsExceeded",
-            error_message="retry budget exhausted",
-            error_traceback=None,
-            worker_id=worker_id,
-        )
-        self._append_state_change_event(
-            job_id=job_id,
-            from_state="running",
-            to_state="failed",
-            now=now,
-            error_class="MaxAttemptsExceeded",
-            worker_id=worker_id,
-        )
-        logger.debug(
-            "state-change",
-            kind="state_change",
-            from_state="running",
-            to_state="failed",
-            job_id=str(job_id),
-        )
-        return "failed:MaxAttemptsExceeded"
-
+    # There is deliberately no budget gate here, mirroring the SQL
+    # statement's arms: a deferral's only terminal exit is the deadline
+    # arm above.  Being refused a slot is not an execution, so it cannot
+    # exhaust a budget only executions spend.
+    #
     # PG's snooze arm binds metadata_update through jsonb_param (the
     # NUL-guarded serialization) and merges it server-side
     # (j.metadata || update), so the update's values read back as PG's
@@ -781,16 +731,14 @@ async def _mark_snoozed(
     )
     merged_progress = _merge_progress(row.progress_state, progress_state)
     # A non-terminal snooze/denial writes no attempt/event rows and never
-    # touches max_attempts (the ceiling is a bound, not a counter).  An
-    # actor-requested deferral REFUNDS the claim's attempt increment
-    # (floored at 0) so downstream-429 snoozing is unbounded and never
-    # walks the column; an admission denial leaves the increment
-    # standing (budget-bounded backpressure) — unless the store could
-    # not answer ('unavailable': infra backpressure about a job that
-    # never executed, refunded exactly like the actor-requested
-    # deferral, mirroring the SQL arm's $9 CASE).  The outcome-keyed
-    # counters on the row are the deferral's whole durable record,
-    # mirroring the SQL arms' CASE increments.
+    # touches max_attempts (the ceiling is a bound, not a counter).  Every
+    # deferral REFUNDS the claim's attempt increment (floored at 0),
+    # whether the actor asked for it or an admission gate refused the
+    # slot: neither ran the actor, so neither spent budget, and a job can
+    # be deferred for as long as the fleet stays saturated without
+    # walking the column.  The outcome-keyed counters on the row are the
+    # deferral's whole durable record, mirroring the SQL arms' CASE
+    # increments.
     self._jobs[job_id] = replace(
         row,
         status=snooze_status,
@@ -799,11 +747,7 @@ async def _mark_snoozed(
         locked_by_worker=None,
         lock_expires_at=None,
         last_heartbeat_at=None,
-        attempt=(
-            max(row.attempt - 1, 0)
-            if outcome == "snoozed" or denial_reason == "unavailable"
-            else row.attempt
-        ),
+        attempt=max(row.attempt - 1, 0),
         snooze_count=row.snooze_count + (1 if outcome == "snoozed" else 0),
         rate_limit_blocked_count=row.rate_limit_blocked_count
         + (1 if outcome in ("reservation_denied", "rate_limit_denied") else 0),

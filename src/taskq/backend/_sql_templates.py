@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from typing import Final
 
 from taskq.backend._dispatch_sql import (
+    DISPATCH_CLAIMABLE_PROBE_SQL,
     DISPATCH_ROUND_ROBIN_SQL,
     DISPATCH_STRICT_FIFO_SQL,
 )
@@ -153,6 +154,7 @@ class SqlTemplates:
     # ── Dispatch SQL templates ─────────────────────────────────────
     dispatch_strict_fifo: str
     dispatch_round_robin: str
+    dispatch_claimable_probe: str
 
     # ── Static read SQL ────────────────────────────────────────────
     get_events: str
@@ -558,53 +560,45 @@ SELECT * FROM upd""",
         #     an operator configured is the budget the job gets.  Only an
         #     explicit admin retry raises the ceiling.
         #   * An admission denial ($7 = 'reservation_denied' /
-        #     'rate_limit_denied') leaves the claim's increment standing:
-        #     the system's own backpressure is budget-bounded, so a
-        #     saturated bucket fails the job out at attempt >=
-        #     max_attempts instead of re-queueing it forever (measured in
-        #     production under the unbounded shape: one job denied 1,014
-        #     times, 6.5M job_events rows).  Jobs that must wait out a
-        #     saturation express it explicitly: retry_kind 'indefinite',
-        #     or a schedule_to_close deadline.
+        #     'rate_limit_denied') REFUNDS the increment identically,
+        #     whatever the denial's reason ($9).  Being refused a slot
+        #     carries the semantics of an upstream 429: come back later.
+        #     The actor did not run, so no budget was spent and the
+        #     denial is retryable without limit — a shared rate limit or
+        #     a peer's reservation can refuse the same job for as long
+        #     as the fleet stays saturated, which is far longer than any
+        #     retry budget would survive.  Charging contention to the
+        #     budget makes a queue consume its own backlog exactly when
+        #     it is busiest: jobs that would succeed the moment capacity
+        #     freed are written off as exhausted instead, and the
+        #     busier the fleet the more of them.  The bound on waiting
+        #     is the job's own schedule_to_close, which an operator set
+        #     deliberately; a denial never ends a job by itself.
         #
         # Both paths are counted on the job row (snooze_count /
         # rate_limit_blocked_count, keyed by $7) instead of minting
         # per-occurrence rows.
         #
-        # Three arms, exhaustive and mutually exclusive over every
-        # fenced row:
-        #   snoozed            — an actor-requested deferral (always,
-        #                        while the deadline allows), OR an
-        #                        admission denial while budget remains
-        #                        (attempt < max_attempts, any kind), OR
-        #                        the kind is indefinite, OR the job
-        #                        carries schedule_to_close (its own
-        #                        terminal exit — the deadline, not the
-        #                        budget, ends that job);
-        #   max_attempts_failed — the complement, admission denials
-        #                        only: a non-indefinite job at
-        #                        attempt >= max_attempts with no close
-        #                        deadline;
-        #   deadline_failed     — the reschedule point passes
-        #                        schedule_to_close.
-        # $9 (denial_reason) splits the denial rows across those arms:
-        # 'capacity' (a saturation denial — the store answered "full")
-        # keeps the bounded budget-consuming loop above; 'unavailable'
-        # (the store could not answer — infra backpressure about a job
-        # whose actor never ran) takes the NON-CONSUMING shape of the
-        # 'snoozed' arm — the claim's attempt increment is refunded and
-        # the max_attempts arm is unreachable, so a sustained outage
-        # keeps the job retryable with its original budget intact. The
-        # refund revisits attempt numbers, which is collision-safe here
-        # for the same reason the 'snoozed' arm's refund is: a
-        # non-terminal snooze/denial writes no job_attempts rows, so no
-        # writer ever lands on the revisited keys.
+        # Two arms, exhaustive and mutually exclusive over every fenced
+        # row:
+        #   snoozed         — every non-terminal deferral: an
+        #                     actor-requested one and an admission denial
+        #                     alike, for as long as the reschedule point
+        #                     stays inside schedule_to_close;
+        #   deadline_failed — the reschedule point passes
+        #                     schedule_to_close: the job's own deadline,
+        #                     and the only terminal exit a deferral can
+        #                     reach.
+        # There is deliberately no budget arm.  The retry ceiling has
+        # exactly one enforcement point — a real execution's terminal
+        # write — because only an execution spends budget; admission
+        # control never does.
         # A non-terminal snooze/denial writes NO job_attempts/job_events
         # rows — it is admission control, not an execution; the outcome
         # counters on the row and OTEL carry it.  Terminal arms write
         # their rows uniformly with every other terminal transition.
         #
-        # job_attempts PK hazard for the max_attempts_failed arm: the arm
+        # job_attempts PK hazard for the deadline_failed arm: the arm
         # inserts at (job_id, attempt) WITHOUT dispatch having advanced
         # attempt, so the insert is safe only if no row at that key can
         # already exist.  The fence (status='running' AND
@@ -646,7 +640,14 @@ WITH params AS (
             $4::jsonb AS metadata_update,
             $5::int AS progress_seq,
             $6::jsonb AS progress_state,
-            $8::int AS attempt
+            $8::int AS attempt,
+            -- Bound and typed but no longer an arm discriminator: a
+            -- denial is non-consuming whatever refused it, so 'capacity'
+            -- and 'unavailable' take the identical path. The parameter
+            -- stays in the statement's signature because the caller's
+            -- validated reason is part of this call's contract and its
+            -- position is load-bearing for every other bind.
+            $9::text AS denial_reason
 ),
 snoozed AS (
     UPDATE "{s}".jobs j
@@ -658,11 +659,11 @@ snoozed AS (
         last_heartbeat_at = NULL,
         cancel_phase = 0,
         cancel_requested_at = NULL,
-        -- 'unavailable' rides the 'snoozed' refund: the store's failure
-        -- to answer is not an execution, so the claim's attempt
-        -- increment is returned exactly as an actor-requested deferral
-        -- returns it.
-        attempt = CASE WHEN $7::text = 'snoozed' OR $9::text = 'unavailable' THEN GREATEST(j.attempt - 1, 0) ELSE j.attempt END,
+        -- Every arm of this statement refunds: neither an actor-requested
+        -- deferral nor an admission denial is an execution, so the claim's
+        -- attempt increment goes back and the gap `max_attempts - attempt`
+        -- is exactly what it was before the claim.
+        attempt = GREATEST(j.attempt - 1, 0),
         snooze_count = CASE WHEN $7::text = 'snoozed' THEN j.snooze_count + 1 ELSE j.snooze_count END,
         rate_limit_blocked_count = CASE WHEN $7::text IN ('reservation_denied', 'rate_limit_denied') THEN j.rate_limit_blocked_count + 1 ELSE j.rate_limit_blocked_count END,
         metadata = j.metadata || COALESCE((SELECT metadata_update FROM params), '{{}}'::jsonb),
@@ -672,41 +673,12 @@ snoozed AS (
       AND j.status = 'running'
       AND j.locked_by_worker = (SELECT worker_id FROM params)
       AND j.attempt = (SELECT attempt FROM params)
+      -- The reschedule point is the ONLY admission condition: a deferral
+      -- that never ran spends nothing, so nothing but the job's own
+      -- deadline can refuse it.
       AND (j.schedule_to_close IS NULL
            OR clock_timestamp() + (SELECT effective_delay FROM params) <= j.schedule_to_close)
-      AND ($7::text = 'snoozed'
-           OR $9::text = 'unavailable'
-           OR j.retry_kind = 'indefinite'
-           OR j.attempt < j.max_attempts
-           OR j.schedule_to_close IS NOT NULL)
     RETURNING j.*, 'snoozed'::text AS outcome_branch, clock_timestamp() AS now_ts
-),
-max_attempts_failed AS (
-    UPDATE "{s}".jobs j
-    SET status = 'failed',
-        finished_at = clock_timestamp(),
-        error_class = 'MaxAttemptsExceeded',
-        error_message = 'retry budget exhausted',
-        error_traceback = NULL,
-        locked_by_worker = NULL,
-        lock_expires_at = NULL,
-        last_heartbeat_at = NULL,
-        progress_seq = (SELECT progress_seq FROM params),
-        progress_state = CASE WHEN (SELECT progress_state FROM params) IS NOT NULL THEN COALESCE(j.progress_state, '{{}}'::jsonb) || (SELECT progress_state FROM params) ELSE j.progress_state END
-    WHERE j.id = (SELECT job_id FROM params)
-      AND j.status = 'running'
-      AND j.locked_by_worker = (SELECT worker_id FROM params)
-      AND j.attempt = (SELECT attempt FROM params)
-      AND $7::text IN ('reservation_denied', 'rate_limit_denied')
-      -- An infra denial can never terminalise: the store's failure to
-      -- answer says nothing about the job, and MaxAttemptsExceeded
-      -- asserts the actor ran and failed max_attempts times.
-      AND $9::text <> 'unavailable'
-      AND j.retry_kind <> 'indefinite'
-      AND j.attempt >= j.max_attempts
-      AND j.schedule_to_close IS NULL
-      AND NOT EXISTS (SELECT 1 FROM snoozed)
-    RETURNING j.*, 'max_attempts_failed'::text AS outcome_branch, clock_timestamp() AS now_ts
 ),
 deadline_failed AS (
     UPDATE "{s}".jobs j
@@ -718,6 +690,14 @@ deadline_failed AS (
         locked_by_worker = NULL,
         lock_expires_at = NULL,
         last_heartbeat_at = NULL,
+        -- The denial that ran out the deadline is still a denial the job
+        -- received, and it is the one no other record keeps: this arm
+        -- writes an attempt row for the DeadlineExceeded failure, never
+        -- for the refusal that provoked it. Counting it here is what
+        -- makes the aggregate on the row equal the number of times the
+        -- fleet actually refused this job.
+        rate_limit_blocked_count = CASE WHEN $7::text IN ('reservation_denied', 'rate_limit_denied') THEN j.rate_limit_blocked_count + 1 ELSE j.rate_limit_blocked_count END,
+        snooze_count = CASE WHEN $7::text = 'snoozed' THEN j.snooze_count + 1 ELSE j.snooze_count END,
         progress_seq = (SELECT progress_seq FROM params),
         progress_state = CASE WHEN (SELECT progress_state FROM params) IS NOT NULL THEN COALESCE(j.progress_state, '{{}}'::jsonb) || (SELECT progress_state FROM params) ELSE j.progress_state END
     WHERE j.id = (SELECT job_id FROM params)
@@ -727,30 +707,10 @@ deadline_failed AS (
       AND j.schedule_to_close IS NOT NULL
       AND clock_timestamp() + (SELECT effective_delay FROM params) > j.schedule_to_close
       AND NOT EXISTS (SELECT 1 FROM snoozed)
-      AND NOT EXISTS (SELECT 1 FROM max_attempts_failed)
     RETURNING j.*, 'failed'::text AS outcome_branch, clock_timestamp() AS now_ts
 ),
 holder AS (
     SELECT id FROM "{s}".workers WHERE id = $2 FOR KEY SHARE
-),
-max_attempts_att AS (
-    INSERT INTO "{s}".job_attempts
-    (job_id, attempt, started_at, finished_at, outcome,
-     error_class, error_message, error_traceback, duration_ms, worker_id, metadata)
-    SELECT m.id, m.attempt, m.started_at, clock_timestamp(), 'failed',
-           'MaxAttemptsExceeded', 'retry budget exhausted', NULL,
-           trunc(EXTRACT(EPOCH FROM (m.finished_at - m.started_at)) * 1000)::int,
-           (SELECT id FROM holder), '{{}}'::jsonb
-    FROM max_attempts_failed m
-),
-max_attempts_evt AS (
-    INSERT INTO "{s}".job_events
-    (job_id, occurred_at, kind, detail)
-    SELECT m.id, clock_timestamp(), 'state_change',
-           jsonb_build_object('from_state', 'running', 'to_state', 'failed',
-                              'error_class', 'MaxAttemptsExceeded',
-                              'worker_id', $2::text)
-    FROM max_attempts_failed m
 ),
 deadline_att AS (
     INSERT INTO "{s}".job_attempts
@@ -772,7 +732,6 @@ deadline_evt AS (
     FROM deadline_failed d
 )
 SELECT * FROM snoozed
-UNION ALL SELECT * FROM max_attempts_failed
 UNION ALL SELECT * FROM deadline_failed""",
         mark_retry_after_consume_true=f"""\
 WITH params AS (
@@ -1180,6 +1139,7 @@ SELECT * FROM "{s}".job_attempts WHERE job_id = $1 ORDER BY attempt""",
         # ── Dispatch SQL templates ─────────────────────────────────
         dispatch_strict_fifo=DISPATCH_STRICT_FIFO_SQL.format(schema=s),
         dispatch_round_robin=DISPATCH_ROUND_ROBIN_SQL.format(schema=s),
+        dispatch_claimable_probe=DISPATCH_CLAIMABLE_PROBE_SQL.format(schema=s),
         # ── Static read SQL ────────────────────────────────────────
         get_events=f"""\
 SELECT id AS event_id, job_id, occurred_at, kind, detail

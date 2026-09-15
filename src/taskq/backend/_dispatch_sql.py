@@ -12,8 +12,8 @@ the only differences are the ``fairness_rank`` production in the
 enumeration CTE.  A single template is rendered into both constants via
 :func:`_render_dispatch_sql`.
 
-Depth bounding (issue #130): every jobs access in this statement is a
-per-round bounded probe, never a scan of the pending backlog.  The
+Depth bounding: every jobs access in this statement is a per-round
+bounded probe, never a scan of the pending backlog.  The
 shipped shape re-examined the whole backlog twice per round (the
 ``locked`` CTE's ``ranked``-to-``jobs`` re-join and the terminal
 UPDATE's join were planned as hash joins over a Seq Scan of every
@@ -70,6 +70,10 @@ plus ``limit_n`` locked/eligible rows, exactly what that pin's oracle
 asserts.  Deep backlogs still drain: each round takes each cohort's
 top-``residual * oversample`` rows, so depth only delays a cohort's
 tail across rounds, it never removes any row from consideration.
+Under peer lock contention the window also bounds the slide: a round
+whose whole window is row-locked expands the window geometrically
+(bounded, in ``taskq.backend._dispatch``) instead of scanning deeper
+without a bound — see :data:`DISPATCH_CLAIMABLE_PROBE_SQL`.
 
 Routing contract (the running-job-tail fix for
 :func:`taskq.actor_config_ops.move_actor_queue`): a pending row's
@@ -113,11 +117,13 @@ from taskq.backend._protocol import ConnLike
 from taskq.obs import (
     get_logger,
     record_dispatch_duration,
+    record_dispatch_failure,
     safe_start_span,
 )
 from taskq.obs._redact_exc import record_exception_safe, safe_exception_message
 
 __all__ = [
+    "DISPATCH_CLAIMABLE_PROBE_SQL",
     "DISPATCH_ROUND_ROBIN_SQL",
     "DISPATCH_STRICT_FIFO_SQL",
     "dispatch_batch",
@@ -362,35 +368,66 @@ ranked AS MATERIALIZED (
     ) AS pending_rank
   FROM identity_dedup id
 ),
--- The round's id set is finalized HERE, before the statement touches
--- the heap again: top_ids carries every column locked needs (rank,
--- fairness rank, ordering keys), so the lock step below never has to
--- re-join a candidate CTE back onto ranked -- a re-join the planner
--- can execute as a materialize-rescan or hash join whose row work
--- grows with the candidate set instead of staying at limit_n.
--- LIMIT $2 (a direct parameter, never a (SELECT ... FROM params)
--- subquery): a parameter folds to its bound value in a custom plan's
--- row estimates, where a subquery bound never folds and the garbage
--- estimate cascades through the CTE chain until the terminal joins
--- believe the round carries millions of rows.
+-- The lock step is SPLIT by whether the actor carries a concurrency
+-- cap, because the two populations need opposite things from the
+-- pre-lock cut and one shape cannot serve both.
+--
+-- Uncapped work (sliding_locked) must NOT be cut before the lock.
+-- Cutting first fixes the candidate window, and a peer
+-- holding those rows leaves this dispatcher with nothing to fall back
+-- to: it reports an empty round while claimable rows sit unlocked
+-- behind the window. Two dispatchers compute the same window, so the
+-- second adds no throughput at all and a fleet cannot be scaled out.
+-- Locking straight down the ranked stream is what fixes it: Postgres
+-- places LockRows BELOW Limit when both sit at the same query level,
+-- and the lock node moves to its next input row when a lock would
+-- block, so SKIP LOCKED slides past a peer's held rows to deeper
+-- unlocked ones and the Limit still stops the scan at limit_n
+-- ACQUIRED rows. Unlike the vendored pgqueuer uncapped arm, whose
+-- lock node reads the live index and is bounded only by acquired rows,
+-- this stream reads the MATERIALIZED candidate window: examined rows
+-- are bounded by the window itself (residual * oversample per
+-- (actor, queue) cohort probe), which is what keeps the depth
+-- contract intact -- but a peer holding the WHOLE window still
+-- empties the round while deeper rows sit unlocked. Reaching those is
+-- the caller's bounded window-expansion pass (_dispatch.py), never an
+-- unbounded scan here.
+--
+-- Capped work (top_ids -> locked) keeps a deliberate pre-lock window,
+-- because sliding is the hazard there rather than the fix: a scan free
+-- to slide past locked rows would walk an actor's whole backlog
+-- admitting rows its cap does not allow. The window is bounded by
+-- limit_n before the lock, and `eligible` re-limits admission after it
+-- to the capacity actually remaining (actor_rank <= max_concurrent -
+-- in_flight), so neither failure direction is reachable: the cap is
+-- never exceeded, and the window never outruns the round's bound.
+capped_ranked AS (
+  SELECT r.*
+  FROM ranked r
+  JOIN "{schema}".actor_config ac ON ac.actor = r.actor
+  WHERE ac.max_concurrent IS NOT NULL
+),
+-- The windowed cut, capped actors only. LIMIT is a direct $n
+-- expression, never a (SELECT ... FROM params) subquery: a parameter
+-- folds to its bound value in a custom plan's row estimates, where a
+-- subquery bound never folds and the garbage estimate cascades
+-- through the CTE chain until the terminal joins believe the round
+-- carries millions of rows.
 top_ids AS (
   SELECT id, actor, fairness_key, fairness_rank,
          priority, scheduled_at, pending_rank, residual
-  FROM ranked
+  FROM capped_ranked
   ORDER BY pending_rank, priority DESC, scheduled_at, id
   LIMIT $2::int
 ),
--- Lock step: FOR UPDATE row locks taken on a set already bounded by
--- top_ids' LIMIT, driving jobs by primary key through a correlated
--- LATERAL. The correlation on t.id denies the planner's hash-join
--- option -- the option that, at shallow depths, is genuinely cheaper
--- than 50 pkey probes and is therefore chosen on honest costs (a seq
--- scan of a 1k-row backlog beats 50 random probes) -- so the lock
--- step is a nested loop of at most limit_n index probes at EVERY
--- depth. FOR UPDATE inside a FROM-clause subquery is legal, and the
--- pending re-check is the race guard for rows that lost a race for
--- their lock... SKIP LOCKED leaves those rows for the dispatcher that
--- holds them.
+-- Capped lock step: FOR UPDATE on a set already bounded by top_ids'
+-- LIMIT, driving jobs by primary key through a correlated LATERAL.
+-- The correlation on t.id denies the planner's hash-join option --
+-- the option that, at shallow depths, is genuinely cheaper than 50
+-- pkey probes and is therefore chosen on honest costs -- so this step
+-- is a nested loop of at most limit_n index probes at EVERY depth.
+-- The pending re-check is the race guard for rows that lost a race
+-- for their lock; SKIP LOCKED leaves those to the holder.
 locked AS (
   SELECT j.id, j.actor, j.identity_key, j.fairness_key, t.fairness_rank,
          j.priority, j.scheduled_at, t.pending_rank, t.residual
@@ -403,7 +440,27 @@ locked AS (
       AND j2.status = 'pending'
     FOR UPDATE OF j2 SKIP LOCKED
   ) j
-  ORDER BY t.pending_rank, t.priority DESC, t.scheduled_at, t.id
+),
+-- Uncapped lock step: the ORDER BY, the LIMIT and the row lock all sit
+-- at ONE query level, which is what puts LockRows under Limit and lets
+-- the skip slide. Ranked is already materialized, so this reads the
+-- finalized candidate ranks in order and stops at limit_n acquired
+-- rows.
+sliding_locked AS (
+  SELECT j2.id, j2.actor, j2.identity_key, j2.fairness_key, r.fairness_rank,
+         j2.priority, j2.scheduled_at, r.pending_rank, r.residual
+  FROM ranked r
+  JOIN "{schema}".jobs j2 ON j2.id = r.id AND j2.status = 'pending'
+  LEFT JOIN "{schema}".actor_config ac ON ac.actor = r.actor
+  WHERE ac.max_concurrent IS NULL
+  ORDER BY r.pending_rank, r.priority DESC, r.scheduled_at, r.id
+  LIMIT $2::int
+  FOR UPDATE OF j2 SKIP LOCKED
+),
+claimed AS (
+  SELECT * FROM locked
+  UNION ALL
+  SELECT * FROM sliding_locked
 ),
 eligible_candidates AS (
   SELECT l.*,
@@ -416,7 +473,7 @@ eligible_candidates AS (
     CASE WHEN ac.max_concurrent IS NOT NULL
          AND COALESCE(r.in_flight, 0) >= ac.max_concurrent
          THEN FALSE ELSE TRUE END AS boolean_gate
-  FROM locked l
+  FROM claimed l
   LEFT JOIN "{schema}".actor_config ac ON ac.actor = l.actor
   LEFT JOIN running_per_actor r ON r.actor = l.actor
   WHERE ac.max_concurrent IS NULL
@@ -475,14 +532,19 @@ RETURNING j.*;
 # proportional to the number of fairness cohorts in the table, never
 # to any cohort's depth.
 #
-# The recursive term cannot be correlated, so the enumeration is global
-# over every (actor, queue, cohort) with a pending row, and the
-# candidates lateral below joins it down to the round's (actor, queue)
-# pairs; the join filters in memory over the materialized recursion
-# output, bounded by the cohort count. The recursive term also cannot
-# reference other CTEs, so it cannot pre-scope itself to the round's
-# queues; that costs nothing but enumeration steps for other queues'
-# cohorts, never probe work.
+# The recursive term cannot be correlated and cannot reference another
+# CTE, but it CAN read the round's bound parameters, and $1 is the
+# queue list -- so the walk scopes itself to the round's own queues
+# rather than enumerating the whole table's cohorts. That scoping is
+# load-bearing, not an optimization: an unscoped walk takes one
+# enumeration step per pending cohort anywhere in the fleet, so a
+# round's cost grows with other teams' cohort counts and every queue's
+# dispatch latency couples to fleet-wide backlog. The predicate also
+# narrows to never-claimed rows, because this enumeration feeds only
+# the label-routed arm; re-pended cohorts are walked by rr_tail_keys.
+# The candidates lateral below still joins the result down to each
+# probe's own (actor, queue) pair -- in-memory filtering over the
+# materialized output, now bounded by the round's own cohort count.
 #
 # COALESCE(fairness_key, '__null__') is the partition identity the
 # whole round-robin path shares (window PARTITION BY, probe equality,
@@ -498,6 +560,8 @@ rr_keys AS (
            COALESCE(j3.fairness_key, '__null__') AS fkey
     FROM "{schema}".jobs j3
     WHERE j3.status = 'pending'
+      AND j3.started_at IS NULL
+      AND j3.queue = ANY($1::text[])
     ORDER BY j3.actor, j3.queue, COALESCE(j3.fairness_key, '__null__')
     LIMIT 1
   )
@@ -509,6 +573,8 @@ rr_keys AS (
            COALESCE(j4.fairness_key, '__null__') AS fkey
     FROM "{schema}".jobs j4
     WHERE j4.status = 'pending'
+      AND j4.started_at IS NULL
+      AND j4.queue = ANY($1::text[])
       AND (j4.actor, j4.queue, COALESCE(j4.fairness_key, '__null__'))
           > (cur.actor, cur.queue, cur.fkey)
     ORDER BY j4.actor, j4.queue, COALESCE(j4.fairness_key, '__null__')
@@ -755,6 +821,74 @@ DISPATCH_ROUND_ROBIN_SQL: str = _render_dispatch_sql(
 )
 
 
+# Empty-round arbiter for the window-expansion loop in
+# taskq.backend._dispatch: does ANY pending, dispatch-routable row
+# remain on the round's queues? The claim statement's candidate window
+# is deliberately bounded (residual * oversample per cohort probe) and
+# its SKIP LOCKED slide ranges only within that materialized window, so
+# a round whose whole window is row-locked by peers returns empty while
+# deeper rows sit unlocked. Re-running the claim with a widened window
+# is only worth its round trips when rows actually remain, and this
+# probe is what tells the two empty-round causes apart: an idle queue
+# (false — the round stays one statement) versus a locked-out window
+# (true — expand and re-claim).
+#
+# The probe mirrors the candidacy ROUTING contract exactly (the same
+# two populations the candidates CTE's two arms serve: never-claimed
+# rows matched by their own queue label against the round's
+# subscription, re-pended rows matched by their actor's current
+# assignment) and it shares per_actor_capacity's "has pending" probe
+# semantics: existence of pending rows, nothing more. It deliberately
+# does NOT re-derive admission — no residual arithmetic, no identity
+# anti-join, no due-window predicate. Admission is the claim
+# statement's own job; a probe that re-implemented it would be a second
+# copy of the candidacy logic, and its per-row subqueries would turn
+# depth-proportional exactly on the saturated shapes it ran on. The
+# price of the simpler question: when pending rows exist but are all
+# currently inadmissible (cap-saturated actor, identity already running)
+# the probe answers true and the loop burns its bounded expansions
+# before returning empty — bounded wasted work on a transient state,
+# never an unbounded scan.
+#
+# Depth contract: actor_config is scanned once (one row per registered
+# actor, the same bound class per_actor_capacity pays per round) and
+# every inner probe is a LIMIT-1 index read that stops at the first
+# matching entry — per (actor, queue) the same first-entry probe
+# per_actor_capacity itself issues — so the probe's work is bounded by
+# registered actors x round queues, never by backlog depth. The
+# inner probes carry no ORDER BY: any single matching row answers the
+# question, so the cheapest first match is the correct one.
+DISPATCH_CLAIMABLE_PROBE_SQL: str = """\
+SELECT 1
+FROM "{schema}".actor_config ac
+WHERE EXISTS (
+    SELECT 1
+    FROM unnest($1::text[]) AS pq(q)
+    CROSS JOIN LATERAL (
+        SELECT 1
+        FROM "{schema}".jobs j
+        WHERE j.actor = ac.actor
+          AND j.queue = pq.q
+          AND j.started_at IS NULL
+          AND j.status = 'pending'
+        LIMIT 1
+    ) hit
+)
+OR (
+    ac.queue = ANY($1::text[])
+    AND EXISTS (
+        SELECT 1
+        FROM "{schema}".jobs j
+        WHERE j.actor = ac.actor
+          AND j.started_at IS NOT NULL
+          AND j.status = 'pending'
+        LIMIT 1
+    )
+)
+LIMIT 1
+"""
+
+
 async def dispatch_batch(
     conn: ConnLike,
     *,
@@ -784,11 +918,18 @@ async def dispatch_batch(
             "taskq.batch_size": limit_n,
         },
     ) as span:
+        t0 = time.monotonic()
         try:
-            t0 = time.monotonic()
             rows = await conn.fetch(sql, queue_list, limit_n, worker_id, lock_lease, oversample)
-            elapsed = time.monotonic() - t0
         except Exception as exc:
+            # A round that raised is still a round the producer spent: the
+            # duration and the failure counter are recorded here because
+            # every other dispatch signal is emitted only on the success
+            # path, so a pod failing every round would otherwise be
+            # indistinguishable, in the metric stream, from one polling an
+            # empty queue.
+            record_dispatch_duration(queue_attr, time.monotonic() - t0)
+            record_dispatch_failure(queue_attr)
             # Why redacted: this text leaves the trust boundary for whatever
             # telemetry backend is configured. str() of an asyncpg
             # PostgresError appends the server's DETAIL line, which quotes the
@@ -797,6 +938,7 @@ async def dispatch_batch(
             span.set_status(StatusCode.ERROR, safe_exception_message(exc))
             record_exception_safe(span, exc)
             raise
+        elapsed = time.monotonic() - t0
         returned_count = len(rows)
         span.set_status(StatusCode.OK)
         logger.info(

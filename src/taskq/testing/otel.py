@@ -134,6 +134,11 @@ def setup_meter(
     )
     monkeypatch.setattr(
         otel_mod,
+        "_dispatch_failures",
+        new_meter.create_counter("taskq.dispatch.failures", unit="1"),
+    )
+    monkeypatch.setattr(
+        otel_mod,
         "_consumed_messages",
         new_meter.create_counter("messaging.client.consumed.messages", unit="1"),
     )
