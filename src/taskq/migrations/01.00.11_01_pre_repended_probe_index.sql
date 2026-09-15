@@ -1,0 +1,76 @@
+-- Re-pended-row probe index: the expression index serving the
+-- assignment-routed candidate arm in taskq/backend/_dispatch_sql.py's
+-- dispatch CTE (the running-job-tail fix for move_actor_queue).
+-- Forward-only; there is no down migration. To revert, restore from
+-- backup. The literal "{schema}" token is substituted at apply time by
+-- the migration runner.
+--
+-- What it serves (see _dispatch_sql.py's module docstring for the
+-- routing doctrine): every re-pend path (mark_retry /
+-- mark_failed_or_retry, the leader's crash-reclaim sweep, the operator
+-- retry_job, the snooze/refund deferral arms) returns a claimed row to
+-- the pending pool still carrying its ORIGINAL queue label — the label
+-- is the audit trail of where the row was first placed — and dispatch
+-- routes such a row by its actor's CURRENT stored assignment
+-- (actor_config.queue), never by the label. The arm that finds those
+-- rows probes per (actor, fairness cohort) with actor equality plus
+-- COALESCE(fairness_key, '__null__') equality as a two-column Index
+-- Cond prefix, the index's own (priority DESC, scheduled_at, id) order
+-- serving the probe's ORDER BY without a sort, so each probe is an
+-- ordered scan that stops at its LIMIT (residual * oversample rows)
+-- regardless of how deep the cohort behind that key is. The
+-- rr_tail_keys recursive enumeration walks the same leading columns
+-- with a (actor, COALESCE(fairness_key, '__null__')) row comparison,
+-- one bounded seek per DISTINCT cohort — the loose index scan this
+-- Postgres generation has no native skip scan for (the same geometry
+-- as jobs_round_robin_probe_idx / rr_keys, over the re-pended
+-- population instead of the whole pending set).
+--
+-- ── Why partial on started_at IS NOT NULL ──────────────────────────
+-- The population is exactly the rows the assignment-routed arm can
+-- ever visit: pending rows that have been claimed at least once
+-- (dispatch stamps started_at at claim; no re-pend path clears it, so
+-- it is the durable "was claimed" marker — attempt is NOT, because the
+-- snooze/refund arms give the claim's increment back). A fleet with no
+-- re-pends in flight has an empty index: every dispatch tick touches
+-- it at buffer scale, which is what keeps the depth oracle
+-- (tests/test_dispatch_backlog_depth_bound.py, seeded exclusively with
+-- never-claimed rows) depth-bounded through this arm. Never-claimed
+-- rows keep riding jobs_actor_dispatch_idx /
+-- jobs_round_robin_probe_idx exactly as before.
+--
+-- The COALESCE(fairness_key, '__null__') expression is IMMUTABLE and
+-- must stay VERBATIM-identical to every use in the dispatch SQL (the
+-- arm's probe equality, the rr_tail_keys walk, and the arm's window
+-- PARTITION BY): an expression index serves a query only when the
+-- query carries the identical expression, and that shared expression
+-- is also what folds every unkeyed job into ONE cohort with a job
+-- literally keyed '__null__' — the partition identity the round-robin
+-- window already used.
+--
+-- ── Why plain CREATE INDEX, not the no-transaction CONCURRENTLY form ──
+-- Same deadlock shape as 01.00.07_01_pre_event_retention_index.sql and
+-- 01.00.09_01_pre_round_robin_probe_index.sql (see those files' full
+-- derivations): the migration runner serializes concurrent migrators
+-- with pg_advisory_lock, a second replica's blocking lock wait is an
+-- open transaction, and CREATE INDEX CONCURRENTLY waits for every
+-- transaction that started before it — a cycle the deadlock detector
+-- breaks by failing the apply. This file follows the precedent: a
+-- transactional plain CREATE INDEX, whose ordinary locks queue behind
+-- the advisory-lock waiter without a snapshot-wait cycle.
+--
+-- OPS NOTE (locks), same caveat as the sibling index migrations: the
+-- CREATE INDEX below takes a write-blocking lock on jobs for the
+-- duration of the build; build time is proportional to the current row
+-- count (and the index body only ever holds the re-pended subset).
+-- Operators with a large jobs table should run the equivalent
+-- `CREATE INDEX CONCURRENTLY IF NOT EXISTS
+-- jobs_repended_probe_idx ON "{schema}".jobs (actor,
+-- COALESCE(fairness_key, '__null__'), priority DESC, scheduled_at, id)
+-- WHERE status = 'pending' AND started_at IS NOT NULL` manually
+-- outside the migration runner during a maintenance window, then let
+-- this migration no-op via IF NOT EXISTS.
+CREATE INDEX IF NOT EXISTS jobs_repended_probe_idx
+    ON "{schema}".jobs (actor, COALESCE(fairness_key, '__null__'),
+                        priority DESC, scheduled_at, id)
+    WHERE status = 'pending' AND started_at IS NOT NULL;

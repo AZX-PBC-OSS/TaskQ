@@ -637,6 +637,17 @@ RETURNING e.id"""
 # destroying the per-row distinctness the audit trail pins.  The jsonb
 # metadata literal carries doubled braces because the template is
 # rendered through str.format.
+#
+# error_message rides per-row ($6, mapped from the sweep's own
+# reclaim_reason literals through _ATTEMPT_MESSAGES below) because the
+# two arms fire on different deadlines and an attempt row asserting the
+# OTHER arm's deadline is a lie an auditor reconciling job_attempts
+# against jobs would trip over: the heartbeat arm selects rows precisely
+# because lock_expires_at >= statement_timestamp(), so its attempt rows
+# must name the heartbeat deadline, never a lock expiry — the same
+# honesty standard the event's separate cause key already carries.  The
+# lease arm's text is pinned verbatim by
+# tests/test_sweep_expired_locks_bounded.py::test_job_attempts_row_shape.
 _SWEEP_1_ATTEMPTS_BATCH_SQL = """\
 WITH holder AS (
     SELECT id
@@ -652,11 +663,22 @@ SELECT a.job_id, a.attempt,
        COALESCE(a.started_at, clock_timestamp() + (a.ord - 1) * interval '1 microsecond'),
        clock_timestamp() + (a.ord - 1) * interval '1 microsecond',
        'crashed', 'WorkerCrashed',
-       'lock expired before worker reported terminal state', NULL,
+       a.error_message, NULL,
        a.duration_ms, holder.id, '{{}}'::jsonb
-FROM unnest($1::uuid[], $2::smallint[], $3::timestamptz[], $4::uuid[], $5::int[])
-    WITH ORDINALITY AS a(job_id, attempt, started_at, worker_id, duration_ms, ord)
+FROM unnest($1::uuid[], $2::smallint[], $3::timestamptz[], $4::uuid[], $5::int[], $6::text[])
+    WITH ORDINALITY AS a(job_id, attempt, started_at, worker_id, duration_ms, error_message, ord)
 LEFT JOIN holder ON holder.id = a.worker_id"""
+
+#: The per-arm attempt-row error messages, keyed by the sweep's own
+#: reclaim_reason literals ('lock_expired' / 'heartbeat_timeout' — the
+#: same values the arms' reason columns and the events' cause key carry).
+#: One map, imported by both the PG caller (which feeds it to the batched
+#: INSERT as the $6 text array) and the in-memory twin (which builds its
+#: AttemptRow from it), so the two audit surfaces cannot drift.
+_ATTEMPT_MESSAGES: dict[str, str] = {
+    "lock_expired": "lock expired before worker reported terminal state",
+    "heartbeat_timeout": "heartbeat timeout passed before worker reported terminal state",
+}
 
 _SWEEP_2_ATTEMPTS_BATCH_SQL = """\
 INSERT INTO "{schema}".job_attempts
@@ -882,7 +904,12 @@ async def sweep_expired_locks(
 
     All branches write a ``job_attempts`` row (outcome ``'crashed'``,
     error_class ``'WorkerCrashed'`` — that IS what happened to the
-    attempt, regardless of the job's terminal label) and a
+    attempt, regardless of the job's terminal label — with an
+    ``error_message`` naming the deadline that fired: the lease arm's
+    rows say the lock expired, the heartbeat arm's say the heartbeat
+    timeout passed, so an auditor reconciling ``job_attempts`` against
+    ``jobs`` never reads a heartbeat reclaim asserting a lock expiry the
+    sweep's own selection disproved) and a
     ``job_events`` row (kind ``'state_change'``, reason
     ``'lock_expired'`` — the crash-reclaim outbox channel BOTH arms
     ride, so ``poll_reclaim_events`` consumers and the retention
@@ -953,6 +980,7 @@ async def sweep_expired_locks(
             started_ats: list[datetime | None] = []
             worker_ids: list[UUID | None] = []
             duration_mss: list[int | None] = []
+            error_messages: list[str] = []
             details: list[str | None] = []
 
             for rec in rows:
@@ -989,11 +1017,20 @@ async def sweep_expired_locks(
                 started_ats.append(started_at)
                 worker_ids.append(original_worker)
                 duration_mss.append(duration_ms)
+                # The attempt row names the deadline that fired, not the
+                # sibling arm's — see _SWEEP_1_ATTEMPTS_BATCH_SQL's comment.
+                error_messages.append(_ATTEMPT_MESSAGES[reclaim_reason])
                 details.append(jsonb_param(detail))
                 reclaimed.append(_ReclaimedRow(job_id, attempt, new_status, reclaim_reason))
 
             await conn.execute(
-                attempt_sql, job_ids, attempts, started_ats, worker_ids, duration_mss
+                attempt_sql,
+                job_ids,
+                attempts,
+                started_ats,
+                worker_ids,
+                duration_mss,
+                error_messages,
             )
             await conn.execute(event_sql, job_ids, details, "state_change")
             await conn.execute(
@@ -1444,33 +1481,52 @@ _SWEEP_IDLE_KEYED_SLOTS_SQL = """\
 -- CTE into the DELETE. ORDER BY min(last_used_at) makes the drain
 -- oldest-bucket-first and deterministic (bucket_name tiebreak).
 --
--- Two windows, one whole-bucket contract. `stale` names candidate
--- buckets off the keyed partial index (keyed AND stamp past the
--- horizon). `reclaimable` re-verifies EVERY row of each candidate
--- bucket, because a bucket must be reclaimed WHOLE or not at all — a
--- partial delete would silently shrink the bucket's configured
--- capacity, and the acquire-path heal only fires at ZERO rows (a
--- partially-deleted bucket denies with a smaller slot count forever,
--- no code path ever names it again). Three whole-bucket vetoes, all
--- evaluated over the full row set:
+-- Three CTEs, one whole-bucket contract: lock, decide, delete.
+-- `stale` names candidate buckets off the keyed partial index (keyed
+-- AND stamp past the horizon). `locked` then takes FOR UPDATE over
+-- EVERY row of each candidate bucket — a locking read, so under READ
+-- COMMITTED each row is re-fetched at its LATEST committed version (the
+-- solid_queue Semaphore shape: `Semaphore.lock.find_by(key:)` waits out
+-- the concurrent writer and reads the post-write row before deciding).
+-- `reclaimable` re-verifies the whole-bucket vetoes over `locked`'s
+-- output — the latest versions, not the statement snapshot — and the
+-- DELETE removes exactly the rows both later CTEs approved, by ctid.
+-- A bucket must be reclaimed WHOLE or not at all: a partial delete
+-- would silently shrink the bucket's configured capacity, and the
+-- acquire-path heal only fires at ZERO rows (a partially-deleted bucket
+-- denies with a smaller slot count forever, no code path ever names it
+-- again). Three whole-bucket vetoes, all evaluated over the full row
+-- set:
 --   max(last_used_at) past the horizon — a fresh sibling (a recent
---     acquire touched ONE slot row; the bucket is live);
+--     acquire or release touched ONE slot row; the bucket is
+--     mid-workflow);
 --   bool_and(keyed) — a keyed=false sibling means a static declaration
 --     (or a former keyed life re-ensured by a static bootstrap) owns
 --     part of the name's rows; fail safe, never sweep;
 --   bool_and(job_id IS NULL OR lease_expires_at < now) — a live-held
 --     slot vetoes the whole bucket, holder row and free siblings
 --     alike, for as long as its lease stands (the lease-heartbeat
---     doctrine: expiry is the abandonment signal).
+--     doctrine: expiry is the abandonment signal — the protection an
+--     old-generation acquire's unstamped row relies on under
+--     rolling-deploy skew, where the lease and not the stamp is the
+--     only liveness signal).
 --
--- The outer per-row free-or-expired guard is the same guard the
--- in-process reclaim drain's DELETE carries (_RECLAIM_SLICE_DELETE_SQL_
--- TEMPLATE in taskq.ratelimit.reservation): a row acquired AFTER the
--- windows were taken is re-checked under its row lock (EvalPlanQual)
--- and survives. That survivor case is the one accepted partial: its
--- acquire stamped it fresh, so the bucket is live again and re-enters
--- eligibility a horizon later — the identical transient the in-process
--- drain accepts when a lease outlives its eviction, not a new class.
+-- Why the lock round trip instead of a plain guarded DELETE: EvalPlanQual
+-- re-checks a DELETE's per-row guard against only the row it re-locks.
+-- A write that lands between the window and the DELETE (an acquire
+-- stamping the row it takes, a release stamping the row it frees)
+-- refreshes ONE row of the bucket; the per-row guard on that row
+-- spares it while its untouched stale free siblings still pass, and the
+-- bucket leaves the statement partially deleted — a live bucket
+-- permanently running at reduced capacity, since a bucket in continuous
+-- use never re-enters eligibility and the heal never fires above zero
+-- rows. Deciding over the locked latest versions makes the verdict
+-- whole-bucket before any row is removed, and deleting by the locked
+-- rows' ctids makes the write set exactly the rows the verdict approved
+-- (rows a concurrent writer moved are keyed to the moved-to ctid the
+-- statement snapshot cannot see, so they fail the join and stay — their
+-- bucket was vetoed anyway, because every writer on these rows either
+-- stamps last_used_at fresh or holds a live lease).
 WITH stale AS MATERIALIZED (
     SELECT bucket_name
     FROM "{schema}".reservation_slots
@@ -1480,19 +1536,24 @@ WITH stale AS MATERIALIZED (
     ORDER BY min(last_used_at), bucket_name
     LIMIT $2
 ),
-reclaimable AS MATERIALIZED (
-    SELECT s.bucket_name
+locked AS MATERIALIZED (
+    SELECT s.ctid, s.bucket_name, s.job_id, s.lease_expires_at, s.keyed, s.last_used_at
     FROM "{schema}".reservation_slots s
     JOIN stale k ON s.bucket_name = k.bucket_name
-    GROUP BY s.bucket_name
-    HAVING max(s.last_used_at) < statement_timestamp() - $1::interval
-       AND bool_and(s.keyed)
-       AND bool_and(s.job_id IS NULL OR s.lease_expires_at < statement_timestamp())
+    FOR UPDATE
+),
+reclaimable AS MATERIALIZED (
+    SELECT l.bucket_name
+    FROM locked l
+    GROUP BY l.bucket_name
+    HAVING max(l.last_used_at) < statement_timestamp() - $1::interval
+       AND bool_and(l.keyed)
+       AND bool_and(l.job_id IS NULL OR l.lease_expires_at < statement_timestamp())
 )
 DELETE FROM "{schema}".reservation_slots r
-USING reclaimable
-WHERE r.bucket_name = reclaimable.bucket_name
-  AND (r.job_id IS NULL OR r.lease_expires_at < statement_timestamp())
+USING reclaimable c, locked l
+WHERE r.ctid = l.ctid
+  AND l.bucket_name = c.bucket_name
 RETURNING r.bucket_name"""
 
 

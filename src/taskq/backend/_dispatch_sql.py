@@ -73,6 +73,34 @@ plus ``limit_n`` locked/eligible rows, exactly what that pin's oracle
 asserts.  Deep backlogs still drain: each round takes each cohort's
 top-``residual * oversample`` rows, so depth only delays a cohort's
 tail across rounds, it never removes any row from consideration.
+
+Routing contract (the running-job-tail fix for
+:func:`taskq.actor_config_ops.move_actor_queue`): a pending row's
+dispatch routing queue is its OWN ``jobs.queue`` label while it has
+never been claimed (``started_at IS NULL``) — producer placement
+governs, so a stale producer's post-move enqueue to a retired source
+queue stays served by that queue's consumers, and an explicit
+``enqueue(queue=...)`` override keeps its queue — and its actor's
+CURRENT stored assignment (``actor_config.queue``) once it has been
+claimed at least once (``started_at IS NOT NULL``).  Every re-pend
+path (``mark_retry``/``mark_failed_or_retry``, the leader's
+crash-reclaim sweep, the operator ``retry_job``, the snooze/refund
+deferral arms) returns a claimed row to the pending pool still
+carrying its original queue label — the label is the audit trail of
+first placement, and no path rewrites it — so without the
+assignment-routed arm a move's left-behind running-job tails would be
+claimable only by consumers of the queue the operator is retiring:
+stranded the moment the source queue's last consumer goes away.
+``started_at`` is the durable "was claimed" marker because no re-pend
+path clears it; ``attempt`` is NOT usable (the snooze/refund arms give
+the claim's increment back, flooring to 0).  The two populations are
+probed by disjoint arms with disjoint partial indexes
+(``jobs_actor_dispatch_idx`` / ``jobs_round_robin_probe_idx`` for
+never-claimed rows, ``jobs_repended_probe_idx`` for re-pended rows),
+each arm keeping its own ORDER BY + LIMIT probe so the depth contract
+holds for both; the re-pended arm's cohort enumeration
+(``rr_tail_keys``) walks only the re-pended population, which is empty
+in the steady never-retried state the depth oracle seeds.
 """
 
 import time
@@ -184,6 +212,13 @@ running_identities AS (
 -- because the lateral's j2.queue = sq.queue_name equality annihilated
 -- every one of its pairs -- so ordering, fairness, and the
 -- locked/eligible stages are untouched.
+--
+-- The probe is scoped to never-claimed rows (started_at IS NULL): this
+-- CTE feeds only the label-routed candidates arm, and a re-pended row
+-- (started_at IS NOT NULL) is that arm's non-candidate -- its routing
+-- queue is the actor's assignment, probed by repend_capacity below.
+-- An actor whose only dispatchable rows are re-pends is therefore NOT
+-- probed here; it enters the round through repend_capacity instead.
 per_actor_capacity AS (
   SELECT
     ac.actor,
@@ -202,6 +237,7 @@ per_actor_capacity AS (
       FROM "{schema}".jobs j
       WHERE j.actor = ac.actor
         AND j.queue = pq.q
+        AND j.started_at IS NULL
         AND j.status = 'pending'
       ORDER BY j.priority DESC, j.scheduled_at, j.id
       LIMIT 1
@@ -210,16 +246,93 @@ per_actor_capacity AS (
   ) hp
   WHERE hp.has_pending IS NOT NULL
 ),
+-- The assignment-routed half of the routing contract: the actors whose
+-- CURRENT stored assignment is among this round's subscribed queues,
+-- with the same residual arithmetic as per_actor_capacity. The
+-- assignment IS the routing here: every re-pended row of such an actor
+-- (any queue label, started_at IS NOT NULL, pending) is a candidate
+-- for this round no matter which label it carries -- the
+-- move_actor_queue tail contract. Actors whose assignment is not
+-- subscribed contribute nothing here, exactly as a label-routed actor
+-- with no rows on a subscribed queue contributes nothing above.
+-- ac.queue = ANY(p.queues) reads the CROSS JOINed params column (a
+-- plain text[] value), NOT a subquery -- = ANY(subquery) iterates the
+-- subquery's ROWS, and a one-row array-valued subquery would compare
+-- the label against the whole array; the column form is the array
+-- membership test. It is a filter over actor_config rows (bounded by
+-- the registered-actor count), not an ordering-critical probe, so the
+-- array predicate form is correct here where it would be wrong in a
+-- probe lateral.
+repend_capacity AS (
+  SELECT
+    ac.actor,
+    CASE WHEN ac.max_concurrent IS NULL
+         THEN (SELECT limit_n FROM params)
+         ELSE GREATEST(ac.max_concurrent - COALESCE(r.in_flight, 0), 0)
+    END AS residual
+  FROM "{schema}".actor_config ac
+  CROSS JOIN params p
+  LEFT JOIN running_per_actor r ON r.actor = ac.actor
+  WHERE ac.queue = ANY(p.queues)
+),
+-- Re-pended cohort enumeration: the same recursive loose index scan
+-- geometry as _RR_KEYS_CTE, over the re-pended population only
+-- (pending AND started_at IS NOT NULL) and keyed on (actor,
+-- COALESCE(fairness_key, '__null__')) -- the cohort identity has no
+-- queue column because a re-pended row's routing queue is the actor's
+-- assignment, one queue per actor, never the row's label. The walk
+-- rides jobs_repended_probe_idx (migration 01.00.11_01): each step's
+-- row-compare on the two leading key columns is an Index Cond, one
+-- bounded seek per DISTINCT cohort, so the enumeration's work is
+-- proportional to the re-pended cohort count, never to any cohort's
+-- depth. Empty in the never-retried steady state, which is what keeps
+-- the depth oracle (seeded exclusively with never-claimed rows)
+-- depth-bounded through the assignment-routed arm.
+rr_tail_keys AS (
+  (
+    SELECT j5.actor, COALESCE(j5.fairness_key, '__null__') AS fkey
+    FROM "{schema}".jobs j5
+    WHERE j5.status = 'pending' AND j5.started_at IS NOT NULL
+    ORDER BY j5.actor, COALESCE(j5.fairness_key, '__null__')
+    LIMIT 1
+  )
+  UNION ALL
+  SELECT nxt.actor, nxt.fkey
+  FROM rr_tail_keys cur
+  CROSS JOIN LATERAL (
+    SELECT j6.actor, COALESCE(j6.fairness_key, '__null__') AS fkey
+    FROM "{schema}".jobs j6
+    WHERE j6.status = 'pending' AND j6.started_at IS NOT NULL
+      AND (j6.actor, COALESCE(j6.fairness_key, '__null__')) > (cur.actor, cur.fkey)
+    ORDER BY j6.actor, COALESCE(j6.fairness_key, '__null__')
+    LIMIT 1
+  ) nxt
+),
+-- Two disjoint candidate sources, one per routing population:
+--   * the label-routed arm (per_actor_capacity x subscribed queues)
+--     matches never-claimed rows by their own queue label -- producer
+--     placement governs until first claim;
+--   * the assignment-routed arm (the repended lateral below, from
+--     repend_capacity) matches re-pended rows by their actor's current
+--     assignment -- every system re-pend follows the assignment, so a
+--     move's running-job tails drain through the target's consumers
+--     and never strand on a retired source queue.
+-- Disjointness is by the started_at discriminator (IS NULL vs IS NOT
+-- NULL), so no row can reach identity_dedup twice from the two arms.
 candidates AS (
-  SELECT j.id, j.actor, j.identity_key, j.fairness_key,
-         __FAIRNESS_RANK_COLUMN__,
-         j.priority, j.scheduled_at, pac.residual
+  (SELECT j.id, j.actor, j.identity_key, j.fairness_key,
+          __FAIRNESS_RANK_COLUMN__,
+          j.priority, j.scheduled_at, pac.residual
   FROM per_actor_capacity pac
   CROSS JOIN LATERAL unnest((SELECT queues FROM params)) AS sq(queue_name)
   CROSS JOIN LATERAL (
 __CANDIDATES_LATERAL__
   ) j
-  WHERE pac.residual > 0
+  WHERE pac.residual > 0)
+  UNION ALL
+  (
+__REPENDED_LATERAL__
+  )
 ),
 identity_dedup AS (
   (
@@ -429,6 +542,10 @@ _STRICT_FIFO_CANDIDATES_LATERAL = """\
     FROM "{schema}".jobs j2
     WHERE j2.actor = pac.actor
       AND j2.queue = sq.queue_name
+      -- Never-claimed rows only: a re-pended row on this label is the
+      -- assignment-routed arm's candidate (see the routing contract in
+      -- the module docstring), never this arm's.
+      AND j2.started_at IS NULL
       AND j2.status = 'pending'
       AND j2.scheduled_at <= statement_timestamp()
       AND (j2.schedule_to_close IS NULL OR j2.schedule_to_close > statement_timestamp())
@@ -477,20 +594,24 @@ _ROUND_ROBIN_CANDIDATES_LATERAL = """\
                PARTITION BY COALESCE(c.fairness_key, '__null__')
                ORDER BY c.priority DESC, c.scheduled_at, c.id
              ) AS fairness_rank
-      FROM rr_keys k
-      CROSS JOIN LATERAL (
-        SELECT j2.id, j2.actor, j2.identity_key, j2.fairness_key,
-               j2.priority, j2.scheduled_at
-        FROM "{schema}".jobs j2
-        WHERE j2.actor = pac.actor
-          AND j2.queue = sq.queue_name
-          AND j2.status = 'pending'
-          AND COALESCE(j2.fairness_key, '__null__') = k.fkey
-          AND j2.scheduled_at <= statement_timestamp()
-          AND (j2.schedule_to_close IS NULL OR j2.schedule_to_close > statement_timestamp())
-        ORDER BY j2.priority DESC, j2.scheduled_at, j2.id
-        LIMIT pac.residual * $5::int
-      ) c
+       FROM rr_keys k
+       CROSS JOIN LATERAL (
+         SELECT j2.id, j2.actor, j2.identity_key, j2.fairness_key,
+                j2.priority, j2.scheduled_at
+         FROM "{schema}".jobs j2
+         WHERE j2.actor = pac.actor
+           AND j2.queue = sq.queue_name
+           -- Never-claimed rows only: a re-pended row on this label is
+           -- the assignment-routed arm's candidate (see the routing
+           -- contract in the module docstring), never this arm's.
+           AND j2.started_at IS NULL
+           AND j2.status = 'pending'
+           AND COALESCE(j2.fairness_key, '__null__') = k.fkey
+           AND j2.scheduled_at <= statement_timestamp()
+           AND (j2.schedule_to_close IS NULL OR j2.schedule_to_close > statement_timestamp())
+         ORDER BY j2.priority DESC, j2.scheduled_at, j2.id
+         LIMIT pac.residual * $5::int
+       ) c
       -- The pair restriction sits OUTSIDE the probe: rr_keys is the
       -- global cohort enumeration (the recursive term cannot be
       -- correlated), and this filter narrows it to the lateral's own
@@ -501,6 +622,88 @@ _ROUND_ROBIN_CANDIDATES_LATERAL = """\
         AND k.queue = sq.queue_name
     ) w"""
 
+# The assignment-routed candidates arm, strict-FIFO variant: re-pended
+# rows (started_at IS NOT NULL, any queue label) of actors whose
+# current assignment is subscribed this round, admitted per fairness
+# cohort with the same residual * oversample bound as the label-routed
+# arm's probes and carrying no fairness rank (this variant ranks by
+# priority alone downstream). The per-cohort probes ride
+# jobs_repended_probe_idx: actor equality plus the COALESCE-normalized
+# cohort equality is a two-column Index Cond prefix, the index's own
+# (priority DESC, scheduled_at, id) order serves the probe's ORDER BY
+# without a sort, and the LIMIT stops the scan -- the same depth
+# contract the label-routed arm keeps on jobs_actor_dispatch_idx.
+# Ranks are not computed here (the strict variant orders by priority
+# downstream), but the admission stays per-cohort rather than one
+# queue-agnostic probe because the only index over this population is
+# cohort-keyed: a single ORDER BY priority probe over it would need a
+# sort over every due re-pended row of the actor -- depth-proportional
+# work the depth contract forbids.
+_REPENDED_STRICT_FIFO_LATERAL = """\
+    SELECT p.id, p.actor, p.identity_key, p.fairness_key,
+           NULL::bigint AS fairness_rank,
+           p.priority, p.scheduled_at, rc.residual
+    FROM repend_capacity rc
+    CROSS JOIN rr_tail_keys tk
+    CROSS JOIN LATERAL (
+      SELECT j2.id, j2.actor, j2.identity_key, j2.fairness_key,
+             j2.priority, j2.scheduled_at
+      FROM "{schema}".jobs j2
+      WHERE j2.actor = rc.actor
+        AND j2.started_at IS NOT NULL
+        AND j2.status = 'pending'
+        AND COALESCE(j2.fairness_key, '__null__') = tk.fkey
+        AND j2.scheduled_at <= statement_timestamp()
+        AND (j2.schedule_to_close IS NULL OR j2.schedule_to_close > statement_timestamp())
+      ORDER BY j2.priority DESC, j2.scheduled_at, j2.id
+      LIMIT rc.residual * $5::int
+    ) p
+    WHERE tk.actor = rc.actor
+      AND rc.residual > 0"""
+
+# The assignment-routed candidates arm, round-robin variant: the same
+# per-cohort bounded probes, with the fairness window running over the
+# bounded probe union exactly as the label-routed arm's does -- one
+# partition per cohort, ranks computed within the cohort, so a
+# re-pended row gets its cohort turn beside never-claimed rows instead
+# of sorting behind them. A cohort carrying BOTH populations produces
+# two rank series (the label-routed arm ranks its own probe's rows, this
+# arm ranks its own); ties interleave by priority in the downstream
+# eligible order, and every cohort's rows from both populations are
+# admitted each round, so neither series can starve the other.
+_REPENDED_ROUND_ROBIN_LATERAL = """\
+    SELECT w.id, w.actor, w.identity_key, w.fairness_key,
+           w.fairness_rank, w.priority, w.scheduled_at, rc.residual
+    FROM repend_capacity rc
+    CROSS JOIN LATERAL (
+      SELECT c.id, c.actor, c.identity_key, c.fairness_key,
+             c.priority, c.scheduled_at,
+             ROW_NUMBER() OVER (
+               PARTITION BY COALESCE(c.fairness_key, '__null__')
+               ORDER BY c.priority DESC, c.scheduled_at, c.id
+             ) AS fairness_rank
+      FROM rr_tail_keys tk
+      CROSS JOIN LATERAL (
+        SELECT j2.id, j2.actor, j2.identity_key, j2.fairness_key,
+               j2.priority, j2.scheduled_at
+        FROM "{schema}".jobs j2
+        WHERE j2.actor = rc.actor
+          AND j2.started_at IS NOT NULL
+          AND j2.status = 'pending'
+          AND COALESCE(j2.fairness_key, '__null__') = tk.fkey
+          AND j2.scheduled_at <= statement_timestamp()
+          AND (j2.schedule_to_close IS NULL OR j2.schedule_to_close > statement_timestamp())
+        ORDER BY j2.priority DESC, j2.scheduled_at, j2.id
+        LIMIT rc.residual * $5::int
+      ) c
+      -- The actor restriction sits OUTSIDE the probe, same doctrine as
+      -- the label-routed arm: rr_tail_keys is the global cohort
+      -- enumeration (the recursive term cannot be correlated), and
+      -- this filter narrows it over the materialized recursion output.
+      WHERE tk.actor = rc.actor
+    ) w
+    WHERE rc.residual > 0"""
+
 
 def _render_dispatch_sql(
     template: str,
@@ -508,6 +711,7 @@ def _render_dispatch_sql(
     fairness_rank_column: str,
     rr_keys_cte: str,
     candidates_lateral: str,
+    repended_lateral: str,
     ranked_order_by: str,
     eligible_candidates_order_by: str,
 ) -> str:
@@ -515,14 +719,19 @@ def _render_dispatch_sql(
 
     ``{schema}`` placeholders are preserved so the returned constant can be
     rendered with ``.format(schema=...)`` at the call site.  ``rr_keys_cte``
-    is empty for the strict-FIFO variant (no cohort enumeration arm); the
-    template's ``WITH RECURSIVE`` keyword tolerates a list with no recursive
-    CTE, so one template serves both variants.
+    is empty for the strict-FIFO variant (no label-cohort enumeration arm);
+    the template's ``WITH RECURSIVE`` keyword tolerates a list with no
+    recursive CTE, so one template serves both variants.  ``rr_tail_keys``
+    (the re-pended cohort enumeration) is shared verbatim by both variants
+    in the template itself; only the two candidates arms differ per
+    variant, through ``candidates_lateral`` (label-routed) and
+    ``repended_lateral`` (assignment-routed).
     """
     return (
         template.replace("__FAIRNESS_RANK_COLUMN__", fairness_rank_column)
         .replace("__RR_KEYS_CTE__", rr_keys_cte)
         .replace("__CANDIDATES_LATERAL__", candidates_lateral)
+        .replace("__REPENDED_LATERAL__", repended_lateral)
         .replace("__RANKED_ORDER_BY__", ranked_order_by)
         .replace("__ELIGIBLE_CANDIDATES_ORDER_BY__", eligible_candidates_order_by)
     )
@@ -533,6 +742,7 @@ DISPATCH_STRICT_FIFO_SQL: str = _render_dispatch_sql(
     fairness_rank_column="NULL::bigint AS fairness_rank",
     rr_keys_cte="",
     candidates_lateral=_STRICT_FIFO_CANDIDATES_LATERAL,
+    repended_lateral=_REPENDED_STRICT_FIFO_LATERAL,
     ranked_order_by="id.priority DESC, id.scheduled_at, id.id",
     eligible_candidates_order_by="l.priority DESC, l.scheduled_at",
 )
@@ -542,6 +752,7 @@ DISPATCH_ROUND_ROBIN_SQL: str = _render_dispatch_sql(
     fairness_rank_column="j.fairness_rank",
     rr_keys_cte=_RR_KEYS_CTE,
     candidates_lateral=_ROUND_ROBIN_CANDIDATES_LATERAL,
+    repended_lateral=_REPENDED_ROUND_ROBIN_LATERAL,
     ranked_order_by="id.fairness_rank, id.priority DESC, id.scheduled_at, id.id",
     eligible_candidates_order_by="l.fairness_rank, l.priority DESC, l.scheduled_at",
 )
