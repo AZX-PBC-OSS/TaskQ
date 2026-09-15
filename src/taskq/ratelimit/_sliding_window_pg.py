@@ -26,6 +26,7 @@ from taskq._advisory import (
 from taskq.backend._records import jsonb_param, jsonb_to_dict
 from taskq.exceptions import RateLimitDependencyUnavailable
 from taskq.ratelimit._decision_log import log_decision
+from taskq.ratelimit._lock_budget import resolve_sliding_window_lock_timeout_ms
 from taskq.ratelimit.decision import RateLimitDecision, RateLimitState
 
 if TYPE_CHECKING:
@@ -267,8 +268,8 @@ async def _refund_pg_log(
 #: racer that exhausts the budget gets the limiter's DENIAL outcome —
 #: fail closed, never an admission. ``0`` (or less) waits indefinitely,
 #: matching the ``lock_timeout`` GUC convention used by migrate.py.
-#: A module constant tunable only through the acquire's private kwargs
-#: today — settings plumbing is a filed follow-up.
+#: The shipped ceiling; an operator retunes it with
+#: ``sliding_window_lock_timeout_ms``.
 DEFAULT_SLIDING_WINDOW_LOCK_TIMEOUT_MS: float = 5000.0
 
 #: The acquire mechanics (try-lock fast path, savepoint + lock_timeout +
@@ -284,7 +285,7 @@ async def _acquire_pg_log(
     settings: "WorkerSettings | None",
     request_id: UUID | None,
     *,
-    lock_timeout_ms: float = DEFAULT_SLIDING_WINDOW_LOCK_TIMEOUT_MS,
+    lock_timeout_ms: float | None = None,
 ) -> RateLimitDecision:
     """Acquire log-style against PG.
 
@@ -294,8 +295,9 @@ async def _acquire_pg_log(
 
     The per-bucket advisory lock is acquired with the two-tier bounded
     acquire (``acquire_advisory_xact_lock_bounded`` from
-    ``taskq._advisory``; default
-    :data:`DEFAULT_SLIDING_WINDOW_LOCK_TIMEOUT_MS`). On budget
+    ``taskq._advisory``) for the operator's
+    ``sliding_window_lock_timeout_ms`` budget, defaulting to
+    :data:`DEFAULT_SLIDING_WINDOW_LOCK_TIMEOUT_MS`. On budget
     exhaustion the acquire FAILS CLOSED: it returns the limiter's denial
     outcome — ``allowed=False`` with a retry hint, never an exception and
     never an admission — so a racer that could not check the window can
@@ -307,6 +309,9 @@ async def _acquire_pg_log(
         raise RuntimeError("settings not injected for postgres backend")
     if request_id is None:
         raise RuntimeError("request_id required for log-style PG acquire")
+    lock_timeout_ms = resolve_sliding_window_lock_timeout_ms(
+        lock_timeout_ms, settings, DEFAULT_SLIDING_WINDOW_LOCK_TIMEOUT_MS
+    )
 
     window_ms = int(self._window.total_seconds() * 1000)
     schema = settings.schema_name
@@ -457,7 +462,7 @@ async def _acquire_pg_gcra(
     pg_pool: "asyncpg.Pool | None",
     settings: "WorkerSettings | None",
     *,
-    lock_timeout_ms: float = DEFAULT_SLIDING_WINDOW_LOCK_TIMEOUT_MS,
+    lock_timeout_ms: float | None = None,
 ) -> RateLimitDecision:
     """Acquire GCRA-style against PG.
 
@@ -466,7 +471,8 @@ async def _acquire_pg_gcra(
     server-domain by construction and a node with a skewed Python clock
     cannot move the shared admission boundary.
 
-    The bucket row's FOR UPDATE WAIT is bounded (default
+    The bucket row's FOR UPDATE WAIT is bounded by the operator's
+    ``sliding_window_lock_timeout_ms`` budget (defaulting to
     :data:`DEFAULT_SLIDING_WINDOW_LOCK_TIMEOUT_MS`), mirroring the
     log-style acquire's advisory-lock budget in the same module: with
     ``rate_limit_pg_fallback_enabled`` on, a Redis outage funnels all
@@ -483,6 +489,9 @@ async def _acquire_pg_gcra(
         raise RateLimitDependencyUnavailable("pg_pool not injected for postgres backend")
     if settings is None:
         raise RuntimeError("settings not injected for postgres backend")
+    lock_timeout_ms = resolve_sliding_window_lock_timeout_ms(
+        lock_timeout_ms, settings, DEFAULT_SLIDING_WINDOW_LOCK_TIMEOUT_MS
+    )
 
     window_ms = int(self._window.total_seconds() * 1000)
     window_seconds = window_ms / 1000.0

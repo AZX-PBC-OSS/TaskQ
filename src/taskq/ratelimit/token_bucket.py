@@ -63,6 +63,7 @@ from taskq.backend._records import jsonb_param, jsonb_to_dict
 from taskq.backend.clock import Clock
 from taskq.exceptions import RateLimitDependencyUnavailable
 from taskq.ratelimit._decision_log import log_decision
+from taskq.ratelimit._lock_budget import resolve_token_bucket_lock_timeout_ms
 from taskq.ratelimit._redis_utils import ensure_redis_script, redis_time_seconds, with_pg_fallback
 from taskq.ratelimit._scripts import REFUND_SCRIPT, TOKEN_BUCKET_SCRIPT
 from taskq.ratelimit.decision import RateLimitDecision, RateLimitState
@@ -694,7 +695,7 @@ class TokenBucket:
         pg_pool: "asyncpg.Pool | None",
         settings: "WorkerSettings | None",
         *,
-        lock_timeout_ms: float = DEFAULT_TOKEN_BUCKET_LOCK_TIMEOUT_MS,
+        lock_timeout_ms: float | None = None,
     ) -> None:
         """Refund tokens on the PG backend using FOR UPDATE on rate_limit_buckets.
 
@@ -706,9 +707,11 @@ class TokenBucket:
         clock_timestamp())`` read in the same locked transaction), matching
         the acquire path's stamps.
 
-        The row-lock WAIT is bounded (default
-        :data:`DEFAULT_TOKEN_BUCKET_LOCK_TIMEOUT_MS`) by the same discipline
-        the acquire path in this file applies: with
+        The row-lock WAIT is bounded by the operator's
+        ``token_bucket_lock_timeout_ms`` budget (defaulting to
+        :data:`DEFAULT_TOKEN_BUCKET_LOCK_TIMEOUT_MS`) — the same budget and
+        the same discipline the acquire path in this file applies, so a
+        deployment that shortens the wait shortens both arms: with
         ``rate_limit_pg_fallback_enabled`` on, a Redis outage funnels the
         fleet's refunds through this lock exactly when it is already
         degraded, and an unbounded wait would let one black-holed holder
@@ -727,6 +730,9 @@ class TokenBucket:
             raise RateLimitDependencyUnavailable("pg_pool not injected for postgres backend refund")
         if settings is None:
             raise RuntimeError("settings not injected for postgres backend refund")
+        lock_timeout_ms = resolve_token_bucket_lock_timeout_ms(
+            lock_timeout_ms, settings, DEFAULT_TOKEN_BUCKET_LOCK_TIMEOUT_MS
+        )
 
         schema = settings.schema_name
 
@@ -909,7 +915,7 @@ class TokenBucket:
         pg_pool: "asyncpg.Pool | None",
         settings: "WorkerSettings | None",
         *,
-        lock_timeout_ms: float = DEFAULT_TOKEN_BUCKET_LOCK_TIMEOUT_MS,
+        lock_timeout_ms: float | None = None,
     ) -> RateLimitDecision:
         """PG fallback path using FOR UPDATE on rate_limit_buckets.
 
@@ -920,7 +926,8 @@ class TokenBucket:
         by construction — a node with a skewed Python clock cannot mint
         phantom refill.
 
-        The row-lock WAIT is bounded (default
+        The row-lock WAIT is bounded by the operator's
+        ``token_bucket_lock_timeout_ms`` budget (defaulting to
         :data:`DEFAULT_TOKEN_BUCKET_LOCK_TIMEOUT_MS`): with
         ``rate_limit_pg_fallback_enabled`` on, a Redis outage funnels all
         admission through this lock, so an unbounded wait would let one
@@ -938,6 +945,9 @@ class TokenBucket:
             raise RateLimitDependencyUnavailable("pg_pool not injected for postgres backend")
         if settings is None:
             raise RuntimeError("settings not injected for postgres backend")
+        lock_timeout_ms = resolve_token_bucket_lock_timeout_ms(
+            lock_timeout_ms, settings, DEFAULT_TOKEN_BUCKET_LOCK_TIMEOUT_MS
+        )
 
         schema = settings.schema_name
 

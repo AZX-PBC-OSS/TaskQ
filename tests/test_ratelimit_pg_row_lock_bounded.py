@@ -38,6 +38,7 @@ contract against real Postgres (row locks are server state).
 
 import asyncio
 import time
+from collections.abc import Callable
 from datetime import timedelta
 
 import asyncpg
@@ -46,6 +47,10 @@ import structlog.testing
 
 from taskq._ids import new_base62
 from taskq.ratelimit import SlidingWindow, TokenBucket
+from taskq.ratelimit._lock_budget import (
+    resolve_sliding_window_lock_timeout_ms,
+    resolve_token_bucket_lock_timeout_ms,
+)
 from taskq.ratelimit._sliding_window_pg import (
     DEFAULT_SLIDING_WINDOW_LOCK_TIMEOUT_MS,
     _acquire_pg_gcra,
@@ -801,6 +806,39 @@ class TestRowLockBudgetsAreOperatorSettings:
                 f"shipped {constant:g} ms constant -- wiring the knob must "
                 "preserve today's ceiling or every deployment that does not "
                 "set the env var changes behavior on upgrade."
+            )
+
+    @pytest.mark.parametrize(
+        ("resolve", "field"),
+        [
+            (resolve_token_bucket_lock_timeout_ms, "token_bucket_lock_timeout_ms"),
+            (resolve_sliding_window_lock_timeout_ms, "sliding_window_lock_timeout_ms"),
+        ],
+        ids=["token_bucket", "sliding_window"],
+    )
+    def test_settings_double_lacking_the_knob_fails_loud(
+        self,
+        resolve: Callable[[float | None, WorkerSettings | None, float], float],
+        field: str,
+    ) -> None:
+        """A settings object missing the budget field raises AttributeError
+        at the resolution seam rather than silently falling back to the
+        shipped constant: a stale or mis-spelled settings double must
+        surface as a loud failure, not as the operator's knob being
+        ignored while the wait pretends all is well."""
+
+        class _PreKnobSettings:
+            """A settings double from before the knobs existed: it carries
+            schema_name (the other field the PG paths read) but not the
+            lock-budget fields."""
+
+            schema_name = "taskq_fake"
+
+        with pytest.raises(AttributeError, match=field):
+            resolve(
+                None,
+                _PreKnobSettings(),  # type: ignore[arg-type]  # Why: the double deliberately lacks the field — its absence is the behaviour under test.
+                DEFAULT_TOKEN_BUCKET_LOCK_TIMEOUT_MS,
             )
 
     async def test_operator_budget_governs_the_token_bucket_acquire_wait(self) -> None:

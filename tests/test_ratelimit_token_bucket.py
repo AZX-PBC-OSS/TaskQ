@@ -20,7 +20,9 @@ import pytest
 from taskq.exceptions import RateLimitDependencyUnavailable
 from taskq.ratelimit import TokenBucket
 from taskq.ratelimit._scripts import TOKEN_BUCKET_SCRIPT
+from taskq.ratelimit._sliding_window_pg import DEFAULT_SLIDING_WINDOW_LOCK_TIMEOUT_MS
 from taskq.ratelimit.decision import RateLimitDecision
+from taskq.ratelimit.token_bucket import DEFAULT_TOKEN_BUCKET_LOCK_TIMEOUT_MS
 from taskq.settings import WorkerSettings
 from taskq.testing.clock import FakeClock
 
@@ -476,10 +478,17 @@ class _FakeRedisClient:
 
 
 class _FakeSettings:
-    """Minimal settings stub exposing ``schema_name`` and ``rate_limit_pg_fallback_enabled``."""
+    """Minimal settings stub exposing ``schema_name`` and ``rate_limit_pg_fallback_enabled``.
+
+    The lock budgets mirror WorkerSettings' shipped defaults: the PG
+    acquire/refund resolution seam reads them without a fallback, so a
+    double lacking one fails loud instead of silently pinning the wait.
+    """
 
     schema_name: str = "taskq_test"
     rate_limit_pg_fallback_enabled: bool = True
+    token_bucket_lock_timeout_ms: float = DEFAULT_TOKEN_BUCKET_LOCK_TIMEOUT_MS
+    sliding_window_lock_timeout_ms: float = DEFAULT_SLIDING_WINDOW_LOCK_TIMEOUT_MS
 
 
 class _FakePgPool:
