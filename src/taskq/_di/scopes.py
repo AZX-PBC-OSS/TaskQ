@@ -21,7 +21,11 @@ from pydantic import BaseModel
 
 from taskq._di.registry import ProviderRegistry
 from taskq._di.scope import Scope
-from taskq._di.solver import solve_dependencies
+from taskq._di.solver import (
+    _cached_introspection,  # pyright: ignore[reportPrivateUsage]  # Why: the shadow-derivation walk mirrors the solver's own parameter introspection; reusing its memoized introspection keeps per-job cost at cached-tuple access instead of re-running get_type_hints.
+    _unwrap_scope_override,  # pyright: ignore[reportPrivateUsage]  # Why: same — the walk must unwrap Annotated[...] exactly as the solver does, or a Scope-marked shadowed parameter would be misread.
+    solve_dependencies,
+)
 from taskq._di.types import FactoryShape, ProviderEntry, ProviderLifecycle
 from taskq._di.types import ScopeContainer as ScopeContainerProtocol
 from taskq._shield import shield_with_retrieval
@@ -74,6 +78,7 @@ class ScopeContainer:
         *,
         scope: Scope,
         resolver: _Resolver,
+        factory_timeout: float | None = None,
     ) -> None:
         self._scope: Scope = scope
         self._cache: dict[type, object] = {}
@@ -82,6 +87,44 @@ class ScopeContainer:
         self._resolver: _Resolver = resolver
         self._sync_gen_executor: ThreadPoolExecutor | None = None
         self._last_cache_hit: bool = False
+        self._factory_timeout: float | None = factory_timeout
+
+    async def _await_factory[T](self, coro: Awaitable[T], *, type_: type) -> T:
+        """Await a user-registered factory's first-use open, bounded.
+
+        ``factory_timeout`` is the #162 discipline applied at the DI
+        registry's own factory seam: a user factory that accepts the
+        call and never returns (the black-holed credential endpoint —
+        the documented "database pools, HTTP clients" shape) must fail
+        the operation that awaited it within the configured bound, not
+        park it forever. The worker's bootstrap passes
+        ``reload_factory_timeout`` here for every scope it opens — the
+        pre-watchdog window where no other bound exists — and the
+        timeout's ``TimeoutError`` propagates to fail that boot loudly;
+        ``None`` (the default) keeps the unbounded await for containers
+        whose callers supply their own bounds (the per-job TRANSIENT
+        scope, whose factories run under the consumer's deadline and
+        the armed watchdogs).
+        """
+        if self._factory_timeout is None:
+            return await coro
+        bound = asyncio.timeout(self._factory_timeout)
+        try:
+            async with bound:
+                return await coro
+        except TimeoutError:
+            if not bound.expired():
+                # The factory's own TimeoutError, not this bound —
+                # re-raise unlabeled so the caller sees its real cause.
+                raise
+            logger.error(
+                "di-factory-first-use-timeout",
+                kind="di_factory_first_use_timeout",
+                provider_type=type_.__qualname__,
+                scope=self._scope.name,
+                timeout=self._factory_timeout,
+            )
+            raise
 
     @property
     def last_cache_hit(self) -> bool:
@@ -105,7 +148,8 @@ class ScopeContainer:
                 result = cast(Callable[..., Any], entry.impl)(**kwargs)
             case FactoryShape.ASYNC_CALLABLE:
                 kwargs = await self._resolver(entry.impl)
-                result = await cast(Callable[..., Any], entry.impl)(**kwargs)
+                factory_coro = cast(Callable[..., Any], entry.impl)(**kwargs)
+                result = await self._await_factory(factory_coro, type_=type_)
             case FactoryShape.SYNC_GENERATOR:
                 result = await self._resolve_sync_generator(entry)
             case FactoryShape.ASYNC_GENERATOR:
@@ -115,7 +159,8 @@ class ScopeContainer:
                 instance = cast(type[Any], entry.impl)(**kwargs)
                 match entry.lifecycle:
                     case ProviderLifecycle.AsyncContextManager:
-                        value = await instance.__aenter__()
+                        enter_coro = instance.__aenter__()
+                        value = await self._await_factory(enter_coro, type_=type_)
 
                         async def _acm_teardown() -> None:
                             await instance.__aexit__(None, None, None)
@@ -158,7 +203,8 @@ class ScopeContainer:
         cm = contextlib.contextmanager(factory)(**kwargs)
 
         loop = asyncio.get_running_loop()
-        value = await loop.run_in_executor(self._sync_gen_executor, cm.__enter__)
+        enter_future = loop.run_in_executor(self._sync_gen_executor, cm.__enter__)
+        value = await self._await_factory(enter_future, type_=entry.type_)
 
         def _teardown() -> Any:
             return loop.run_in_executor(self._sync_gen_executor, cm.__exit__, None, None, None)
@@ -171,7 +217,8 @@ class ScopeContainer:
         kwargs = await self._resolver(entry.impl)
         factory = cast(Callable[..., AsyncGenerator[Any]], entry.impl)
         cm = asynccontextmanager(factory)(**kwargs)
-        value = await cm.__aenter__()
+        enter_coro = cm.__aenter__()
+        value = await self._await_factory(enter_coro, type_=entry.type_)
 
         async def _teardown() -> None:
             await cm.__aexit__(None, None, None)
@@ -230,8 +277,13 @@ class ScopeContainer:
 class ProcessScope(ScopeContainer):
     """PROCESS-lifetime scope — worker process startup → exit."""
 
-    def __init__(self, *, resolver: _Resolver) -> None:
-        super().__init__(scope=Scope.PROCESS, resolver=resolver)
+    def __init__(
+        self,
+        *,
+        resolver: _Resolver,
+        factory_timeout: float | None = None,
+    ) -> None:
+        super().__init__(scope=Scope.PROCESS, resolver=resolver, factory_timeout=factory_timeout)
 
     async def bootstrap(
         self,
@@ -267,8 +319,13 @@ class ProcessScope(ScopeContainer):
 class ThreadScope(ScopeContainer):
     """THREAD-lifetime scope — placeholder for multi-thread workers (trivially empty in M3)."""
 
-    def __init__(self, *, resolver: _Resolver) -> None:
-        super().__init__(scope=Scope.THREAD, resolver=resolver)
+    def __init__(
+        self,
+        *,
+        resolver: _Resolver,
+        factory_timeout: float | None = None,
+    ) -> None:
+        super().__init__(scope=Scope.THREAD, resolver=resolver, factory_timeout=factory_timeout)
 
     async def bootstrap(
         self,
@@ -295,8 +352,13 @@ class ThreadScope(ScopeContainer):
 class LoopScope(ScopeContainer):
     """LOOP-lifetime scope — worker loop start → loop close."""
 
-    def __init__(self, *, resolver: _Resolver) -> None:
-        super().__init__(scope=Scope.LOOP, resolver=resolver)
+    def __init__(
+        self,
+        *,
+        resolver: _Resolver,
+        factory_timeout: float | None = None,
+    ) -> None:
+        super().__init__(scope=Scope.LOOP, resolver=resolver, factory_timeout=factory_timeout)
         self._loop: asyncio.AbstractEventLoop = asyncio.get_running_loop()
 
     async def bootstrap(
@@ -382,6 +444,73 @@ class LoopScope(ScopeContainer):
         return self._cache.get(type_)
 
 
+def _shadow_derived_providers(
+    registry: ProviderRegistry,
+    slot_values: Mapping[type, object],
+) -> frozenset[type]:
+    """The provider types whose dependency closure reaches a shadowed type.
+
+    Walks the registry's provider graph statically — the same parameter
+    introspection the solver performs at resolution time (memoized by
+    ``_cached_introspection``), followed recursively through
+    provider→provider edges — and returns every NON-value provider whose
+    own parameters, or any transitively injected provider's parameters,
+    name a type in *slot_values*. Those are the LOOP-scoped factories
+    that bake a LOOP-registered connection (or anything derived from
+    one) into the singleton the scope's bootstrap resolution created;
+    the per-slot view re-resolves them per actor invocation instead.
+
+    VALUE providers are never returned: a value carries no dependency
+    graph, so it cannot derive from anything. Unregistered parameter
+    types contribute nothing (a validated registry has none left).
+    """
+
+    providers = registry.providers
+    shadow_types = frozenset(slot_values)
+    verdict: dict[type, bool] = {}
+
+    def _entry_callable(entry: ProviderEntry[object]) -> object | None:
+        # The callable whose parameters name this provider's
+        # dependencies: the factory itself, or the class's __init__ —
+        # the same pair the solver resolves through.
+        if entry.factory_shape is FactoryShape.VALUE:
+            return None
+        if entry.factory_shape is FactoryShape.CLASS:
+            return cast("type[Any]", entry.impl).__init__
+        return entry.impl
+
+    def _reaches(t: type, seen: frozenset[type]) -> bool:
+        if t in verdict:
+            return verdict[t]
+        if t in seen:
+            # A cycle's back-edge cannot be the path that makes either
+            # member shadow-derived; the verdict is decided by the rest
+            # of each member's dependencies.
+            return False
+        entry = providers.get(t)
+        if entry is None or entry.factory_shape is FactoryShape.VALUE:
+            verdict[t] = t in shadow_types
+            return verdict[t]
+        callable_ = _entry_callable(entry)
+        hit = False
+        if callable_ is not None:
+            hints, _sig_params = _cached_introspection(callable_)
+            for param_name, annotation in hints.items():
+                if param_name == "return":
+                    continue
+                unwrapped, _override = _unwrap_scope_override(param_name, annotation)
+                lookup_type = unwrapped if unwrapped is not None else annotation
+                if not isinstance(lookup_type, type):
+                    continue
+                if lookup_type in shadow_types or _reaches(lookup_type, seen | {t}):
+                    hit = True
+                    break
+        verdict[t] = hit
+        return hit
+
+    return frozenset(t for t in providers if _reaches(t, frozenset()))
+
+
 class LoopScopeSlotView:
     """Per-actor-invocation view of the LOOP scope for one consumer slot.
 
@@ -403,22 +532,51 @@ class LoopScopeSlotView:
     connector state, river runs one JobExecutor per active job, oban
     wraps each job-stage query in its own transaction).
 
-    The view is a pure read-through: it never caches, never invokes a
-    factory, and never registers a teardown — a mapped instance's
-    lifecycle belongs to the wiring that supplied it (the dispatch
-    acquire/release exit stack that owns the slot connection). Every type
-    NOT in the mapping resolves through the real LOOP container
-    unchanged, and nothing outside this actor invocation can observe the
-    shadow: the LOOP cache itself is never touched.
+    The shadow reaches one level further than the mapping itself: a
+    LOOP-scoped FACTORY whose dependency closure reaches a shadowed type
+    (a helper that injects the connection — "any object derived from a
+    shared connection is shared the same way", the same rule one level
+    removed) is re-resolved PER INVOCATION through the invocation's
+    TRANSIENT runner instead of the LOOP cache. The scope's bootstrap
+    eagerly resolved that factory through the REAL containers, so the
+    cached singleton holds the ONE registered connection; handing it to
+    concurrent slots' actors would rebuild the exact sharing the view
+    exists to prevent. Re-resolution runs the factory's own parameters
+    through the same shadowed scope-containers map (nested LOOP-scoped
+    dependencies included), produces an instance this invocation alone
+    owns, and lands any lifecycle teardown on the invocation's TRANSIENT
+    teardown — the derived object lives and dies with the actor call.
+    Providers whose closure never touches a shadowed type keep the LOOP
+    singleton: the view does not per-invocation-ize unrelated
+    loop-lifetime resources.
+
+    The view is a pure read-through otherwise: it never caches, never
+    invokes a factory on its own account, and never registers a
+    teardown — a mapped instance's lifecycle belongs to the wiring that
+    supplied it (the dispatch acquire/release exit stack that owns the
+    slot connection), and a re-resolved instance's to the invocation
+    runner. Every type NOT in the mapping and NOT shadow-derived
+    resolves through the real LOOP container unchanged, and nothing
+    outside this actor invocation can observe the shadow: the LOOP
+    cache itself is never touched.
 
     Mapped values must be live instances; ``None`` is not a meaningful
     mapping (it is treated as absent, exactly like the LOOP cache's own
     miss shape).
     """
 
-    def __init__(self, inner: LoopScope, slot_values: Mapping[type, object]) -> None:
+    def __init__(
+        self,
+        inner: LoopScope,
+        slot_values: Mapping[type, object],
+        *,
+        invocation_runner: ScopeContainer,
+        shadow_derived: frozenset[type],
+    ) -> None:
         self._inner = inner
         self._slot_values = slot_values
+        self._invocation_runner = invocation_runner
+        self._shadow_derived = shadow_derived
         self._last_cache_hit = False
 
     async def get_or_create[T](self, type_: type[T], entry: ProviderEntry[T]) -> T:
@@ -426,6 +584,15 @@ class LoopScopeSlotView:
         if value is not None:
             self._last_cache_hit = True
             return cast("T", value)  # pyright: ignore[reportReturnType]  # Why: the DI erasure boundary — the mapping's value is the live instance the caller's wiring owns for type_ (dispatch maps the slot connection under asyncpg.Connection); the same value-shape trust ScopeContainer's cache-hit branch applies.
+        if type_ in self._shadow_derived:
+            # A LOOP-scoped factory derived (transitively) from a
+            # shadowed type: the LOOP cache's bootstrap singleton baked
+            # in the registered instance, so resolve this invocation's
+            # own through the TRANSIENT runner — fresh parameters off
+            # the shadowed containers map, no caching, teardown owned
+            # by the invocation.
+            self._last_cache_hit = False
+            return await self._invocation_runner.get_or_create(type_, entry)  # pyright: ignore[reportReturnType]  # Why: same erasure boundary as the mapped branch — the runner's ProviderEntry[T] is the caller's entry; ScopeContainer's return-site coercion covers T.
         self._last_cache_hit = False
         return await self._inner.get_or_create(type_, entry)
 
@@ -488,9 +655,12 @@ async def build_actor_scope(
     :class:`LoopScopeSlotView` that shadows the LOOP cache for this
     invocation only, actor parameters and nested LOOP-scoped
     dependencies alike — so a LOOP-registered connection never reaches
-    two concurrent slots' actors (issue #116). ``None``/empty keeps the
-    plain LOOP container: the single-slot worker, whose transaction
-    connection IS the registered connection.
+    two concurrent slots' actors (issue #116), and a LOOP-scoped
+    factory DERIVED from a shadowed type (a helper holding the
+    connection) resolves per invocation instead of serving the
+    bootstrap singleton that baked the registered connection in. ``None``
+    /empty keeps the plain LOOP container: the single-slot worker, whose
+    transaction connection IS the registered connection.
     """
     scope_containers: dict[Scope, ScopeContainerProtocol] = {}
 
@@ -511,10 +681,21 @@ async def build_actor_scope(
     # sibling dispatches and leak the slot's connection to later jobs.
     # The view is visible only to the solves that run inside THIS
     # build_actor_scope body, which is exactly the audience the slot's
-    # connection is safe for.
+    # connection is safe for. The invocation runner is the body's own
+    # TRANSIENT container: a shadow-derived LOOP factory resolves its
+    # parameters through the same containers map (LOOP is this view, so
+    # its connection-typed parameters see the slot's instance) and its
+    # lifecycle teardowns land on the invocation's teardown — the
+    # derived object lives and dies with this one actor call, never
+    # cached where a sibling slot could reach it.
     loop_container: LoopScope | LoopScopeSlotView = loop_scope
     if loop_slot_values:
-        loop_container = LoopScopeSlotView(loop_scope, loop_slot_values)
+        loop_container = LoopScopeSlotView(
+            loop_scope,
+            loop_slot_values,
+            invocation_runner=transient_scope,
+            shadow_derived=_shadow_derived_providers(registry, loop_slot_values),
+        )
 
     scope_containers = {
         Scope.PROCESS: process_scope,

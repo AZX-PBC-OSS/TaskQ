@@ -1353,9 +1353,13 @@ class WorkerSettings(TaskQSettings):
         "(reload_credentials), at bootstrap when the worker opens its "
         "per-slot transaction pool (a fully-warmed open means one "
         "connection - and on a managed-identity deployment one "
-        "credential fetch - per consumer slot), and on the notify "
-        "listener's health-check reconnect (reconnect_notify_conn). A "
-        "hung token endpoint is marked failed for that resource - or "
+        "credential fetch - per consumer slot), on the notify "
+        "listener's health-check reconnect (reconnect_notify_conn), and "
+        "at the DI scope bootstraps' first use of user-registered "
+        "factories (the 'database pools, HTTP clients' provider class, "
+        "resolved through ScopeContainer.get_or_create before any "
+        "watchdog is armed). A hung token endpoint - or a black-holed "
+        "DI factory - is marked failed for that resource - or "
         "logged as a reconnect attempt and retried - instead of wedging "
         "the reload coordinator, worker boot, or the reconnect loop.",
     )
