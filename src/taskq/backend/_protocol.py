@@ -520,12 +520,11 @@ def parse_batch_status(value: str) -> BatchStatus:
 QueueName = Annotated[str, AfterValidator(_validate_queue_name)]
 """Validator alias for queue names — accepts plain ``str`` literals.
 
-Why ``Annotated`` and not ``NewType``: every studied vendor (river,
-dramatiq, arq, procrastinate) uses raw ``str`` + a separate validator
-for queue names; no nominal type because no other ``str`` field at any
-call site could be confused with ``queue``. ``Annotated`` gives runtime
-validation in Pydantic models without forcing every caller to wrap
-literals in ``QueueName("default")``.
+Why ``Annotated`` and not ``NewType``: queue names are plain strings
+requiring validation — no nominal type because no other ``str`` field
+at any call site could be confused with ``queue``. ``Annotated`` gives
+runtime validation in Pydantic models without forcing every caller to
+wrap literals in ``QueueName("default")``.
 """
 
 # ── Data carriers ──────────────────────────────────────────────────────
@@ -776,10 +775,10 @@ class JobFilter:
     skipped). Use :meth:`has_predicates` to check whether the filter has
     at least one predicate before passing it to ``cancel_where``.
 
-    Heads-up: ``active=True`` is **not** Celery's 'active' — Celery's
-    means 'currently executing' (``running`` only), TaskQ's means 'not
-    yet finished' (``pending`` + ``scheduled`` + ``running``).  Read the
-    ``active`` section below before relying on the name.
+    Heads-up: ``active=True`` means 'not yet finished' — a superset of
+    non-terminal statuses (``pending`` + ``scheduled`` + ``running``),
+    not just 'currently executing'. Read the ``active`` section below
+    before relying on the name.
 
     ``cursor`` is an opaque keyset-pagination token encoding the sort
     columns of ``order_by``'s ordering from the last row of the previous
@@ -808,11 +807,10 @@ class JobFilter:
     sequence as ``status = ANY($n)``; the in-memory backend performs a
     membership check in both cases.
 
-    ``active`` is a meta-filter that selects statuses by terminality.
-    **This is not Celery's 'active'.**  Celery/Flower use 'active' for
-    tasks currently executing on a worker (``running`` only); here it
-    means 'not yet finished' — a superset that also includes work that
-    has not started yet:
+    ``active`` is a meta-filter that selects statuses by terminality —
+    use it to filter by whether a job is still running or has reached
+    a terminal state. Here, 'not yet finished' means a superset that
+    includes both work currently executing and work not yet started:
 
     - ``active=True`` → non-terminal statuses (pending, scheduled, running)
     - ``active=False`` → terminal statuses (succeeded, failed, cancelled,
@@ -843,8 +841,8 @@ class JobFilter:
     cursor: str | None = None
     tags: tuple[str, ...] | None = None
     order_by: JobSortField | None = None
-    # Not Celery's 'active' ('currently executing') — True selects every
-    # non-terminal status, i.e. 'not yet finished'. See the class docstring.
+    # True selects every non-terminal status (still running or pending);
+    # False selects only terminal statuses. See the class docstring.
     active: bool | None = None
 
     def __post_init__(self) -> None:
@@ -1113,13 +1111,12 @@ class ErrorInfo:
         that classification honest.
 
         Oversized values are truncated (not rejected): a failure must
-        still record, just bounded.  Que truncates recorded errors to
-        500/10k chars in SQL with CHECK constraints; the bounds here
-        live at this same construction boundary instead, so every
-        construction site — present and future — inherits them, and the
-        columns stay schemaless for existing rows a CHECK would reject
-        on sight.  A plain slice (no marker): length is the contract
-        the suite pins.
+        still record, just bounded.  The bounds here live at this same
+        construction boundary (Python, not SQL CHECK constraints), so
+        every construction site — present and future — inherits them,
+        and the columns stay schemaless for existing rows a CHECK would
+        reject on sight.  A plain slice (no marker): length is the
+        contract the suite pins.
         """
         check_no_nul_str(self.error_class, what="error_class")
         check_no_nul_str(self.error_message, what="error_message")
@@ -1499,11 +1496,9 @@ class Backend(Protocol):
         a row whose current ``attempt`` matches, so a stale handler's
         write after a same-worker reclaim/redispatch (the row re-dispatched
         at ``attempt + 1`` on the same worker) no-ops exactly like a
-        different worker's late write — the contract Oban's ``ack_query``
-        pins with ``attempted_at == ^job.attempted_at``. ``None`` — a
-        caller that cannot present the epoch — also no-ops: a terminal
-        write that cannot prove which attempt it terminates must not
-        terminate any attempt.
+        different worker's late write. ``None`` — a caller that cannot
+        present the epoch — also no-ops: a terminal write that cannot
+        prove which attempt it terminates must not terminate any attempt.
 
         The result reaches the backend in exactly one of two forms:
         ``result`` — the actor's result dict, which the backend serializes
@@ -1769,9 +1764,9 @@ class Backend(Protocol):
     async def retry_job(self, job_id: JobId) -> bool:
         """Re-run a terminal job (failed/crashed/cancelled) by re-pending it.
 
-        The attempt counter is NOT reset — the vendored admin-retry
-        precedent (Oban's ``retry_job``, River's ``JobRetry``) never
-        touches it — so a re-run job climbs to fresh attempt numbers and
+        The attempt counter is NOT reset: an idempotent admin operation
+        must not restart the counter, so a re-run job climbs to fresh
+        attempt numbers and
         no ``job_attempts`` write can collide on a spent epoch's primary
         key.  ``max_attempts`` rises to ``GREATEST(max_attempts,
         attempt + 1)`` (capped at the smallint bound), which opens the
@@ -1832,8 +1827,8 @@ class Backend(Protocol):
         ``filters.status`` accepts a single :data:`JobStatus` or a
         sequence of statuses; ``filters.active`` is a meta-filter for
         non-terminal (``True``) or terminal (``False``) statuses —
-        'active' here means 'not yet finished', not Celery's 'currently
-        executing'.  See :class:`JobFilter` for details.
+        'active' here means 'not yet finished' (pending, scheduled, or
+        running).  See :class:`JobFilter` for details.
         """
         ...
 

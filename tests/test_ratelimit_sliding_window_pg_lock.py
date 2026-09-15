@@ -249,6 +249,65 @@ class TestSlidingWindowLockBoundedWaitUnit:
         assert entries[0].get("backend") == "postgres"
         assert entries[0].get("lock_timeout_ms") == 250.0
 
+    async def test_settings_lock_timeout_is_honored_by_default_call_shape(self) -> None:
+        """RED — issue #161: the sliding-window log acquire has no
+        ``WorkerSettings`` field for its lock-wait budget, so an operator
+        cannot tune it the way the enqueue path's
+        ``max_pending_lock_timeout_ms`` / ``unique_for_lock_timeout_ms`` are
+        tunable (settings.py:800-839, following the reload_factory_timeout
+        precedent). ``SlidingWindow.acquire`` calls ``_acquire_pg_log(self,
+        pg_pool, settings, request_id)`` with NO ``lock_timeout_ms`` kwarg
+        (see sliding_window.py's postgres/log dispatch arm) — so whatever
+        an operator sets on ``settings`` for this budget is never read; the
+        acquire always falls back to the module constant
+        ``DEFAULT_SLIDING_WINDOW_LOCK_TIMEOUT_MS`` (5000 ms).
+
+        This test drives the acquire through the SAME call shape production
+        uses (no explicit ``lock_timeout_ms`` override) with a settings
+        object carrying a short, operator-configured budget, and expects
+        the short budget to govern the server-side ``lock_timeout`` GUC and
+        the contended wait. It fails today because no such settings field
+        exists, and even a same-named field would still be ignored since
+        the call site never reads it.
+        """
+        sw = _sw("sw_lock_settings_budget")
+        conn = _ContendedFakeConn(try_lock_result=False, blocking_times_out=True)
+        settings = WorkerSettings.load_from_dict(
+            {
+                "pg_dsn": "postgresql://u:p@h/d",
+                "schema_name": "taskq_fake",
+                # The knob issue #161 says should exist and be threaded
+                # through, mirroring max_pending_lock_timeout_ms /
+                # unique_for_lock_timeout_ms. It does not exist on
+                # WorkerSettings today, so this raises immediately.
+                "sliding_window_lock_timeout_ms": 150.0,
+            },
+        )
+        start = time.monotonic()
+        decision = await _acquire_pg_log(
+            sw,
+            _FakePgPool(conn),  # type: ignore[arg-type]  # Why: duck-typed pool stand-in
+            settings,
+            new_uuid(),
+            # No lock_timeout_ms override: this is the exact call shape
+            # SlidingWindow.acquire uses in production.
+        )
+        elapsed = time.monotonic() - start
+        assert decision.allowed is False
+        assert decision.retry_after == timedelta(milliseconds=150.0), (
+            "the operator-configured 150ms budget on settings should have "
+            "governed the wait, not the 5000ms module default"
+        )
+        assert conn.set_config_values == ["150ms"], (
+            "the server-side lock_timeout GUC should reflect the "
+            "settings-provided budget, not DEFAULT_SLIDING_WINDOW_LOCK_TIMEOUT_MS"
+        )
+        assert elapsed < 2.0, (
+            f"budget should have been 150ms (from settings) but the wait "
+            f"took {elapsed:.3f}s, consistent with the 5000ms module default "
+            f"still governing"
+        )
+
     async def test_lock_acquired_after_contention_enforces_window(self) -> None:
         """Contended racers queue server-side: once the holder releases
         inside the budget, the blocking acquire is granted and the acquire

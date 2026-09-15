@@ -804,12 +804,11 @@ async def test_cooperative_cancel_escape_applies_batch_hook() -> None:
     the batch policy hook: dispatch's CancelledError handler applies
     :func:`apply_batch_terminal_outcome` with ``cancelled`` best-effort
     before its re-raise — a batch completes on any terminal member,
-    discarded included (GoodJob's finish check fires for every finished
-    job), so the finalizer runs immediately instead of a sweep-interval
-    late. The recorder stands in for the hook (the FakeBackend carries
-    no batch stores), pinning the call and its outcome; a dispatch that
-    re-raises past the hook leaves the recorder empty and turns this
-    pin red."""
+    discarded included, so the finalizer runs immediately instead of
+    waiting for a sweep interval. The recorder stands in for the hook
+    (the FakeBackend carries no batch stores), pinning the call and its
+    outcome; a dispatch that re-raises past the hook leaves the
+    recorder empty and turns this pin red."""
     hook_calls: list[tuple[UUID, str]] = []
 
     async def my_actor(payload: _Payload, ctx: JobContext[_Payload]) -> dict[str, object]:
@@ -857,7 +856,7 @@ async def test_cooperative_cancel_escape_applies_batch_hook() -> None:
             "the CancelledError escape must apply the batch hook with the "
             "cancelled outcome before its re-raise — a batch whose last "
             "member ends through the escape completes immediately, "
-            f"GoodJob-aligned; got {hook_calls}"
+            f"not waiting for the sweep interval; got {hook_calls}"
         )
 
 
@@ -919,7 +918,7 @@ async def test_payload_validation_escape_applies_batch_hook() -> None:
             "the payload-validation escape must apply the batch hook with "
             "the handler's terminal outcome — a batch whose last member "
             "ends through the escape completes immediately, "
-            f"GoodJob-aligned; got {hook_calls}"
+            f"not waiting for the sweep interval; got {hook_calls}"
         )
 
 
@@ -2041,3 +2040,120 @@ async def test_slot_pool_release_terminates_in_flight_transaction_instead_of_rel
         assert pool.conn.terminated is True
         events = [log.get("event") for log in logs]
         assert "slot-conn-terminated-transaction-in-flight" in events
+
+
+# ── Slot connections must carry the registered connection's setup ─────
+
+
+class _RegisteredConn(asyncpg.Connection):
+    """Stand-in for a user's own fully-configured registered connection.
+
+    Subclassing ``asyncpg.Connection`` mirrors a custom ``connection_class``;
+    the sentinel attribute stands in for whatever per-connection setup the
+    registration performed -- ``set_type_codec``, an ``init``/``setup``
+    callback, ``server_settings`` such as ``search_path``, a ``SET ROLE``.
+    All of that is observable only on this object, exactly as a real codec
+    registration or session GUC would be.
+    """
+
+    def __new__(cls, *a: object, **kw: object) -> "_RegisteredConn":
+        # asyncpg.Connection.__init__ requires live protocol machinery that
+        # a unit test has no way to supply; __new__ alone yields an instance
+        # of the right type without running it.
+        return object.__new__(cls)
+
+    def __init__(self) -> None:
+        # Deliberately does not call super().__init__() -- see __new__.
+        self.has_user_setup = True
+        # asyncpg.Connection.__del__ reads _aborted; set it so a GC'd
+        # instance built this way does not raise from the finalizer.
+        self._aborted = True
+
+
+class _BareSetupPool:
+    """Slot-pool stand-in that hands out a connection opened fresh off the
+    direct DSN: no codecs, no init hook, no connection_class, no
+    server_settings -- what a plain ``asyncpg.create_pool(dsn=direct, ...)``
+    produces.
+    """
+
+    def __init__(self) -> None:
+        self.conn = _FakeSlotConn()
+
+    def acquire(self, timeout: float | None = None) -> Coroutine[Any, Any, _FakeSlotConn]:
+        return self._acquired()
+
+    async def _acquired(self) -> _FakeSlotConn:
+        return self.conn
+
+    async def release(self, conn: object) -> None:
+        return None
+
+
+async def test_slot_connection_carries_registered_connection_setup() -> None:
+    """When a LOOP-scope ``asyncpg.Connection`` is registered and the per-slot
+    transaction pool is active, the connection the actor's DI resolves must
+    still carry the setup performed on the registered connection.
+
+    The per-slot pool exists so concurrent slots never interleave operations
+    on one connection, but the connections it hands out are built from the
+    direct DSN alone. Any type codec, ``init``/``setup`` callback, custom
+    ``connection_class``, ``server_settings`` entry, or login role the
+    registration established is absent from them, so an actor silently reads
+    and writes through a connection that decodes values differently, resolves
+    a different ``search_path``, or runs as a different role than the one the
+    application configured. That is data corruption with no error raised, and
+    it appears at any ``max_concurrency`` above one.
+
+    Per-slot isolation and registered-connection setup are not in tension: a
+    correct slot pool derives its connection setup from the registration
+    rather than discarding it.
+    """
+    registered_conn = _RegisteredConn()
+    observed_conn: object | None = None
+
+    async def my_actor(
+        payload: _Payload,
+        ctx: JobContext[_Payload],
+        conn: asyncpg.Connection,
+    ) -> dict[str, object]:
+        nonlocal observed_conn
+        observed_conn = conn
+        return {}
+
+    registry = ProviderRegistry()
+    registry.register_value(asyncpg.Connection, Scope.LOOP, registered_conn)
+
+    async with _ScopeStack(registry) as scopes:
+        fake_backend = FakeBackend()
+        fake_deps = _FakeWorkerDeps()
+        # Activate the per-slot path, the shape bootstrap opens whenever a
+        # LOOP-scope Connection is registered and max_concurrency > 1.
+        fake_deps.slot_pool = _BareSetupPool()  # type: ignore[assignment]  # Why: duck-typed pool stand-in, same as the release tests above.
+        actor_ref = _make_actor_ref(my_actor)
+        job = make_job_row(payload={"value": 42})
+
+        await dispatch_one_job(
+            backend=as_backend(fake_backend),
+            deps=_as_deps(fake_deps),
+            job=job,
+            worker_id=_WORKER_ID,
+            registry=scopes.registry,
+            process_scope=scopes.process_scope,
+            thread_scope=scopes.thread_scope,
+            loop_scope=scopes.loop_scope,
+            actor_ref=actor_ref,  # type: ignore[arg-type]  # Why: same ActorRef generic-widening pattern as the tests above.
+            actor_config=StubActorConfig(retry=RetryPolicy()),
+            clock=FakeClock(_NOW),
+            active_jobs=fake_deps.active_jobs,
+            enqueuer=SubJobEnqueuer(
+                backend=as_backend(fake_backend), loop_scope_resolved=None, worker_pool=None
+            ),
+        )
+
+    assert observed_conn is not None
+    assert getattr(observed_conn, "has_user_setup", False) is True, (
+        "the actor received a slot connection that dropped the registered "
+        "connection's setup (codecs, init hook, connection_class, "
+        "server_settings, role)"
+    )

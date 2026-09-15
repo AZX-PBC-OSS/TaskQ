@@ -28,11 +28,16 @@ from pydantic import BaseModel, TypeAdapter
 
 from taskq import TaskQ, actor
 from taskq._ids import new_base62, new_job_id
+from taskq.backend._enqueue import _enqueue_on_conn
 from taskq.backend._protocol import Backend, JobFilter, JobId, JobRow
+from taskq.backend._sql_templates import render as render_sql
+from taskq.backend.clock import SystemClock
 from taskq.client._handle import JobHandle
 from taskq.client._taskq import JobEvent, _stream_pg, _stream_redis
+from taskq.exceptions import IdempotencyKeyLockTimeoutError
 from taskq.migrate import apply_pending
 from taskq.testing.assertions import wait_for
+from taskq.testing.jobs import make_enqueue_args
 from taskq.types import CancelResult
 
 pytestmark = pytest.mark.integration
@@ -376,6 +381,76 @@ class TestEnqueue:
             )
 
         assert handle2.was_existing is True
+
+    async def test_enqueue_idempotency_key_contention_raises_typed_error_not_bare_timeout(
+        self, pg_dsn: str
+    ) -> None:
+        """RED (issue #190): a real ``TaskQ(dsn=...)`` client's enqueue with a
+        contended idempotency key must raise the typed
+        ``IdempotencyKeyLockTimeoutError``, not a bare ``builtins.TimeoutError``.
+
+        The client pool ``TaskQ.open()`` builds sets
+        ``command_timeout=_CLIENT_POOL_COMMAND_TIMEOUT_SECS`` (5.0,
+        ``client/_taskq.py``), which equals the idempotency arm's own
+        ``DEFAULT_IDEMPOTENCY_LOCK_TIMEOUT_MS`` (5000.0,
+        ``backend/_enqueue.py``) and starts its network timer before the
+        savepoint's ``SET LOCAL lock_timeout`` even executes. On a REAL pool
+        connection (unlike the fake-conn unit pins in
+        ``test_lock_timeout_refusal_counters.py``, and unlike
+        ``tests/test_rt_locks_actor_tx_enqueue_serialization.py``'s second
+        connection, which deliberately opens with
+        ``command_timeout=30.0`` to sidestep this exact race), asyncpg's
+        client-side command_timeout preempts the server-side 55P03
+        lock_timeout race every time, so the
+        ``except LockNotAvailableError`` handler at ``backend/_enqueue.py``
+        is unreachable and the caller only ever sees
+        ``asyncio.CancelledError``-derived ``builtins.TimeoutError`` with no
+        ``idempotency-lock-timeout`` warning log and no
+        ``idempotency_lock_timeout`` backpressure counter bump.
+        """
+        await _migrate(pg_dsn)
+        key = f"tq-client-contended-{new_base62()}".lower()
+
+        # Holder: a raw connection with an open, uncommitted transaction
+        # occupying the (idempotency_scope, idempotency_key) speculative
+        # token row via the real enqueue path.
+        holder_conn = await asyncpg.connect(pg_dsn)
+        try:
+            tr = holder_conn.transaction()
+            await tr.start()
+            try:
+                # TaskQ.enqueue() has no connection= param, so the holder's
+                # insert is driven directly via the client's underlying SQL
+                # contract against this held-open transaction — the same
+                # approach tests/test_rt_locks_actor_tx_enqueue_serialization.py
+                # uses for its holder side.
+                sql = render_sql(_SCHEMA_LABEL)
+                await _enqueue_on_conn(
+                    holder_conn,
+                    sql,
+                    _SCHEMA_LABEL,
+                    SystemClock(),
+                    make_enqueue_args(idempotency_key=key),
+                )
+
+                # Victim: the REAL client pool (5.0s command_timeout),
+                # exactly as an application would use it.
+                async with TaskQ(dsn=pg_dsn, schema=_SCHEMA_LABEL) as tq:
+                    with pytest.raises(IdempotencyKeyLockTimeoutError) as excinfo:
+                        await asyncio.wait_for(
+                            tq.enqueue(
+                                _test_actor, _Payload(value=1), idempotency_key=key
+                            ),
+                            timeout=20.0,
+                        )
+                assert "idempotency_key" in repr(excinfo.value), (
+                    "Contract: the client-visible enqueue must surface the typed "
+                    f"IdempotencyKeyLockTimeoutError; got {excinfo.value!r}"
+                )
+            finally:
+                await tr.rollback()
+        finally:
+            await holder_conn.close()
 
     async def test_enqueue_without_scheduled_at_status_is_pending(self, pg_dsn: str) -> None:
         """Enqueueing without scheduled_at results in a job with status='pending'."""

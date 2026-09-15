@@ -1,34 +1,48 @@
-"""RED-team: a rate-limiter STORE outage must not terminally fail jobs.
+"""Admission denials are HTTP-429 semantics: come back later, never fail.
 
-The contract under attack (issue #139's ship-blocker edge): a rate-limited
-job whose limiter store cannot answer — Redis unreachable, the PG fallback
-disabled — is failed closed by the consumer's acquire boundary, which
-synthesises the limiter's own denial (``ReservationUnavailable(bucket_name=
-"unavailable:<error_type>", source="rate_limit")``) and snoozes the job
-through ``mark_snoozed``. That denial is infrastructure backpressure about
-a job whose actor never executed, so it is non-consuming: across a
-sustained outage the job stays scheduled/retryable, and when the store
-returns it still completes within its original retry budget. A job whose
-only fault is its limiter's store being down never lands in the terminal
-``MaxAttemptsExceeded`` exit — that label asserts the actor ran and failed
-``max_attempts`` times, and an operator reading it must be able to trust
-that.
+A rate-limited job that is denied admission — because the limiter's store
+cannot answer (Redis unreachable, the PG fallback disabled) OR because the
+bucket is simply saturated — has not executed. Its actor never ran, no
+handler raised, nothing about the job itself went wrong. The denial is the
+system saying "no capacity right now, come back later", exactly as an HTTP
+429 with a ``Retry-After`` header does.
 
-Distinguishability is the operator's stated contract: a SATURATION denial
-(a full bucket) legitimately consumes budget and terminalises at the
-boundary — pinned deliberately in tests/test_denial_and_retention_bounds.py
-and tests/test_denial_observability.py — while the store-outage denial
-carries the ``rate_limit:unavailable:<error_type>`` awaiting annotation
-and must not burn budget. The seam driven is the consumer level: a real
-``dispatch_batch`` claim (the production attempt increment), a real
-``dispatch_one_job`` → ``consume_one_job`` acquire boundary → the
-production denial synthesis → ``_run_terminal_path`` →
-``_handle_reservation_class_denied`` → the real Postgres ``mark_snoozed``
-arms. The burn is a property of the claim and the denial arm composing,
-and no narrower seam composes them; the pre-existing pins of this
-dependency-failure family (tests/test_rt_depfail_ratelimit_acquire.py,
-tests/test_rt_depfail_ratelimit_acquire_pg_fallback_death.py) drive one
-cycle against a recording stub backend, so the budget arms never run.
+That makes every admission denial NON-CONSUMING, regardless of its cause:
+
+* A denial never spends a unit of the job's retry budget. The claim's
+  attempt increment is refunded by the denial write, so ``attempt`` does
+  not creep and the configured ``max_attempts`` ceiling is not inflated to
+  compensate.
+* A denial never by itself terminalises a job. A denied job is rescheduled
+  indefinitely with backoff until capacity frees or its
+  ``schedule_to_close`` deadline expires; expiry fails it terminally
+  through the ordinary deadline path as ``DeadlineExceeded``. A job whose
+  only fault is that it never got a slot must never land in the terminal
+  ``MaxAttemptsExceeded`` exit — that label asserts the actor ran and
+  failed ``max_attempts`` times, and an operator reading it must be able
+  to trust that.
+* A denial writes no per-denial ``job_events`` or ``job_attempts`` rows.
+  Contention stays observable through the aggregated
+  ``rate_limit_blocked_count`` counter on the job row.
+
+Why it matters: a queue or rate-limit misconfiguration must not be able to
+kill work. A bucket sized too small, or a limiter store left down over a
+weekend, is an operational problem to be seen in telemetry and fixed — not
+a reason to destroy jobs that were never given a chance to run. Bounding
+denial pressure is the deadline's job, not the retry budget's.
+
+Store-outage denials stay DISTINGUISHABLE from saturation denials even
+though both are non-consuming: the outage denial carries the
+``rate_limit:unavailable:<error_type>`` awaiting annotation naming the
+unavailability and its cause, so an operator scaling a bucket on denial
+counts alone does not chase an outage with capacity.
+
+The seam driven is the consumer level: a real ``dispatch_batch`` claim
+(the production attempt increment), a real ``dispatch_one_job`` →
+``consume_one_job`` acquire boundary → the production denial synthesis →
+``_run_terminal_path`` → ``_handle_reservation_class_denied`` → the real
+Postgres ``mark_snoozed`` arms. Budget consumption is a property of the
+claim and the denial arm composing, and no narrower seam composes them.
 """
 
 from datetime import timedelta
@@ -65,13 +79,13 @@ pytestmark = pytest.mark.integration
 _WORKER_ID = new_uuid()
 
 _MAX_ATTEMPTS = 3
-"""The stock transient budget from the claim: attempt reaches the ceiling
-on the third claim→denial cycle when denials do not refund."""
+"""The stock transient budget from the claim: attempt would reach the
+ceiling on the third claim→denial cycle if denials consumed budget."""
 
 _SUSTAINED_OUTAGE_CYCLES = _MAX_ATTEMPTS + 2
-"""Cycle count past the budget boundary: the contract is that a SUSTAINED
-outage keeps the job retryable, not merely one that ends before the
-boundary is reached."""
+"""Cycle count past the budget boundary: the contract is that SUSTAINED
+denial pressure keeps the job retryable, not merely pressure that ends
+before the boundary is reached."""
 
 _LOCK_LEASE = timedelta(seconds=60)
 
@@ -283,9 +297,15 @@ async def _drive_outage_cycles(
     job_id: JobId,
     *,
     cycles: int,
+    expect_awaiting: str | None = "rate_limit:unavailable:ConnectionError",
 ) -> asyncpg.Record:
-    """Drive *cycles* real claim→store-outage-denial rounds, asserting the
-    non-consuming contract at every boundary; returns the final row."""
+    """Drive *cycles* real claim→admission-denial rounds, asserting the
+    429 contract at every boundary; returns the final row.
+
+    *expect_awaiting* pins the awaiting annotation the denial must leave
+    when the denial cause is meant to be distinguishable on the row;
+    ``None`` skips that assertion for causes with no annotation contract.
+    """
     row: asyncpg.Record | None = None
     for cycle in range(1, cycles + 1):
         if cycle > 1:
@@ -293,28 +313,40 @@ async def _drive_outage_cycles(
         outcome = await _claim_and_dispatch(backend, deps, scopes, actor_ref, job_id)
         row = await _fetch_row(deps, schema, job_id)
         assert outcome == "scheduled", (
-            "STORE-OUTAGE DENIAL CONTRACT (non-consuming infra backpressure): the "
-            f"consumer's outcome for denial cycle {cycle} of a store outage is "
-            f"{outcome!r} — the job is leaving the retryable set for an outage it "
-            "cannot control. A store-unreachable denial is about a job that never "
-            "executed; it must snooze (stay scheduled), never terminalise."
+            "429 DENIAL CONTRACT (an admission denial is 'come back later'): the "
+            f"consumer's outcome for denial cycle {cycle} is {outcome!r} — the job "
+            "is leaving the retryable set over a slot it never got. The actor "
+            "never executed; the denial must reschedule (stay scheduled), never "
+            "terminalise."
         )
         assert row["status"] == "scheduled", (
-            "STORE-OUTAGE DENIAL CONTRACT (the job stays retryable across a "
-            f"sustained outage): after denial cycle {cycle} the row is "
+            "429 DENIAL CONTRACT (the job stays retryable under sustained "
+            f"contention): after denial cycle {cycle} the row is "
             f"{row['status']!r} with error_class={row['error_class']!r}. The "
-            "actor never ran — the limiter's store was down — so no "
-            "budget-consuming event occurred that could justify a terminal exit."
+            "actor never ran, so no budget-consuming event occurred that could "
+            "justify a terminal exit."
         )
-        assert _awaiting_annotation(row) == "rate_limit:unavailable:ConnectionError", (
-            "STORE-OUTAGE DENIAL CONTRACT (distinguishable degradation): the "
-            f"awaiting annotation after cycle {cycle} is "
-            f"{_awaiting_annotation(row)!r}; the store-outage denial must stay "
-            "distinguishable from a saturation denial by naming the "
-            "unavailability and its cause."
-        )
+        if expect_awaiting is not None:
+            assert _awaiting_annotation(row) == expect_awaiting, (
+                "429 DENIAL CONTRACT (denial causes stay distinguishable): the "
+                f"awaiting annotation after cycle {cycle} is "
+                f"{_awaiting_annotation(row)!r}, expected {expect_awaiting!r}. A "
+                "store-outage denial must stay distinguishable from a saturation "
+                "denial by naming the unavailability and its cause, so an "
+                "operator does not answer an outage with more capacity."
+            )
     assert row is not None, "at least one denial cycle must have run"
     return row
+
+
+async def _count_rows(deps: WorkerDeps, schema: str, table: str, job_id: JobId) -> int:
+    """Durable bookkeeping rows a denial loop left behind for this job."""
+    async with deps.worker_pool.acquire() as conn:
+        count: int | None = await conn.fetchval(
+            f'SELECT count(*) FROM "{schema}".{table} WHERE job_id = $1',  # noqa: S608  # Why: schema and table are test-fixture identifiers; the job id is $-bound
+            job_id,
+        )
+    return count or 0
 
 
 async def _seed_outage_scenario(
@@ -350,11 +382,11 @@ async def test_sustained_store_outage_does_not_terminally_fail_the_job(
 ) -> None:
     """A stock transient job rides out a sustained limiter-store outage.
 
-    Verdict asserted: NON-CONSUMING. Every dispatch during the outage is
-    denied by the synthesized store-failure denial; the contract is that
-    none of those denials spend retry budget, so even after
-    max_attempts + 2 denial cycles the job is still scheduled/retryable
-    and carries no MaxAttemptsExceeded mislabel.
+    An admission denial is "come back later", so none of the denials a
+    store outage produces spend retry budget: even after max_attempts + 2
+    denial cycles the job is still scheduled/retryable and carries no
+    MaxAttemptsExceeded mislabel. An operator whose limiter store is down
+    must find their work waiting when it comes back, not destroyed.
     """
     _ACTOR_RUNS[0] = 0
     backend, deps, schema, job_id = await _seed_outage_scenario(clean_jobs_app)
@@ -382,11 +414,20 @@ async def test_sustained_store_outage_does_not_terminally_fail_the_job(
         await dead_client.aclose()
 
     assert final["error_class"] != "MaxAttemptsExceeded", (
-        "STORE-OUTAGE DENIAL CONTRACT (no mislabel): the job terminally failed "
+        "429 DENIAL CONTRACT (no mislabel): the job terminally failed "
         f"as {final['error_class']!r} — retry budget exhausted — while its ONLY "
         "fault was the limiter's store being unreachable. The actor never "
         "executed; MaxAttemptsExceeded asserts it ran and failed "
         "max_attempts times, which is false."
+    )
+    assert final["max_attempts"] == _MAX_ATTEMPTS, (
+        "429 DENIAL CONTRACT (the ceiling is immutable): the configured "
+        f"max_attempts is {final['max_attempts']} after "
+        f"{_SUSTAINED_OUTAGE_CYCLES} denials, not the configured "
+        f"{_MAX_ATTEMPTS}. Denials must be excluded from the budget outright, "
+        "not compensated for by inflating the operator's declared ceiling — an "
+        "inflated ceiling silently buys the job extra real execution attempts "
+        "the operator never asked for."
     )
     assert _ACTOR_RUNS[0] == 0, (
         "the actor must never run while its limiter's store cannot answer — "
@@ -399,13 +440,14 @@ async def test_outage_denials_preserve_budget_job_completes_when_store_returns(
     clean_jobs_app: JobsApp,
     module_redis_url: str,
 ) -> None:
-    """The budget an outage never consumed is still there to spend.
+    """The budget a denial never consumed is still there to spend.
 
-    Verdict asserted: BUDGET PRESERVED. After a full outage window of
-    denial cycles at the budget boundary, the store returns (the same
-    limiter, a live store) and the very next dispatch runs the actor for
-    real and completes the job — impossible if the outage denials had
-    spent the budget.
+    After a full window of denial cycles at the budget boundary, capacity
+    returns (the same limiter, a live store) and the very next dispatch
+    runs the actor for real and completes the job — impossible if the
+    denials had spent the budget. This is what "come back later" has to
+    mean: the job's real allowance of execution attempts is untouched by
+    however long it waited for a slot.
     """
     _ACTOR_RUNS[0] = 0
     backend, deps, schema, job_id = await _seed_outage_scenario(clean_jobs_app)
@@ -454,4 +496,153 @@ async def test_outage_denials_preserve_budget_job_completes_when_store_returns(
         "the healed dispatch must run the actor exactly once — the outage "
         "window executed nothing, and this dispatch is the job's first real "
         "execution"
+    )
+
+
+def _saturated_bucket(name: str) -> TokenBucket:
+    """A bucket that denies every acquire: one token, never refilled.
+
+    The in-process memory backend keeps the exhausted state on the bucket
+    object the actor ref holds, so every dispatch of the job under test
+    meets a genuinely saturated limiter — ordinary contention, no store
+    failure anywhere in the picture.
+    """
+    return TokenBucket(name=name, capacity=1, refill_per_second=0.0, backend="memory")
+
+
+async def test_saturated_bucket_denials_never_exhaust_the_retry_budget(
+    clean_jobs_app: JobsApp,
+) -> None:
+    """Ordinary contention must not kill work, exactly like a store outage.
+
+    A saturated bucket is the commonest admission denial there is, and the
+    least deserving of a terminal failure: the actor never ran, so nothing
+    about the job failed. Sustained contention past the retry ceiling
+    leaves the job scheduled and retryable with its declared max_attempts
+    intact — a bucket an operator sized too small is a capacity problem to
+    be seen in telemetry and fixed, never a reason to destroy jobs that
+    were merely waiting their turn. Only the schedule-to-close deadline
+    bounds a denied job, and it fails it as DeadlineExceeded, not as
+    MaxAttemptsExceeded.
+    """
+    _ACTOR_RUNS[0] = 0
+    backend, deps, schema, job_id = await _seed_outage_scenario(clean_jobs_app)
+
+    bucket = _saturated_bucket("rt_saturation_budget_bucket")
+    # Spend the single token so the job's own dispatches all meet a full
+    # bucket: the denial under test is saturation, not a cold-start race.
+    first = await bucket.acquire(1.0, clock=SystemClock())
+    assert first.allowed, "fixture wiring: the bucket's first token must be available"
+
+    rl_registry = RateLimitRegistry()
+    rl_registry.register(bucket)
+    actor_ref = _rate_limited_actor_ref(bucket)
+
+    di_registry = ProviderRegistry()
+    from taskq.ratelimit._provider import register_rate_limit_registry
+
+    register_rate_limit_registry(di_registry, rl_registry)
+
+    async with _ScopeStack(di_registry) as scopes:
+        final = await _drive_outage_cycles(
+            backend,
+            deps,
+            scopes,
+            actor_ref,
+            schema,
+            job_id,
+            cycles=_SUSTAINED_OUTAGE_CYCLES,
+            expect_awaiting=None,
+        )
+
+    assert final["error_class"] != "MaxAttemptsExceeded", (
+        "429 DENIAL CONTRACT (contention is not failure): the job terminally "
+        f"failed as {final['error_class']!r} after {_SUSTAINED_OUTAGE_CYCLES} "
+        "saturation denials. Its actor never executed once — a full bucket says "
+        "'come back later', and a rate-limit misconfiguration must not be able "
+        "to kill work with a retry count of three."
+    )
+    assert final["attempt"] < _MAX_ATTEMPTS, (
+        "429 DENIAL CONTRACT (denials are non-consuming): attempt reached "
+        f"{final['attempt']} of {_MAX_ATTEMPTS} through denials alone. Each "
+        "denial must refund the claim's attempt increment, so a job that never "
+        "ran keeps its whole allowance of real execution attempts."
+    )
+    assert final["max_attempts"] == _MAX_ATTEMPTS, (
+        "429 DENIAL CONTRACT (the ceiling is immutable): max_attempts is "
+        f"{final['max_attempts']}, not the declared {_MAX_ATTEMPTS}. Denials are "
+        "excluded from the budget outright; inflating the operator's declared "
+        "ceiling to stay ahead of them silently grants extra real execution "
+        "attempts nobody asked for."
+    )
+    assert _ACTOR_RUNS[0] == 0, (
+        "the actor must never run while its bucket is empty — every dispatch in "
+        "the contention window was admission control, not an execution"
+    )
+
+
+async def test_saturation_denials_are_visible_as_a_counter_not_as_rows(
+    clean_jobs_app: JobsApp,
+) -> None:
+    """Contention stays observable without unbounded bookkeeping growth.
+
+    Because a denial never fails a job, telemetry is the only way an
+    operator sees a bottleneck — so the signal has to exist. It is an
+    aggregated counter on the job row (``rate_limit_blocked_count``),
+    which rises once per denial and is O(1) in storage. The per-denial
+    ``job_events`` and ``job_attempts`` rows are deliberately absent: a
+    denial records that nothing happened, and a job that may be denied
+    indefinitely until its deadline would otherwise accrue bookkeeping
+    without bound.
+    """
+    _ACTOR_RUNS[0] = 0
+    backend, deps, schema, job_id = await _seed_outage_scenario(clean_jobs_app)
+
+    attempts_before = await _count_rows(deps, schema, "job_attempts", job_id)
+    events_before = await _count_rows(deps, schema, "job_events", job_id)
+
+    bucket = _saturated_bucket("rt_saturation_counter_bucket")
+    first = await bucket.acquire(1.0, clock=SystemClock())
+    assert first.allowed, "fixture wiring: the bucket's first token must be available"
+
+    rl_registry = RateLimitRegistry()
+    rl_registry.register(bucket)
+    actor_ref = _rate_limited_actor_ref(bucket)
+
+    di_registry = ProviderRegistry()
+    from taskq.ratelimit._provider import register_rate_limit_registry
+
+    register_rate_limit_registry(di_registry, rl_registry)
+
+    async with _ScopeStack(di_registry) as scopes:
+        final = await _drive_outage_cycles(
+            backend,
+            deps,
+            scopes,
+            actor_ref,
+            schema,
+            job_id,
+            cycles=_SUSTAINED_OUTAGE_CYCLES,
+            expect_awaiting=None,
+        )
+
+    assert final["rate_limit_blocked_count"] == _SUSTAINED_OUTAGE_CYCLES, (
+        "429 DENIAL OBSERVABILITY: the aggregated denial counter on the job row "
+        f"reads {final['rate_limit_blocked_count']} after "
+        f"{_SUSTAINED_OUTAGE_CYCLES} denials. With denials no longer failing "
+        "jobs and no longer writing per-denial rows, this counter is the only "
+        "way an operator can see that a job is starving for capacity — it must "
+        "count every denial."
+    )
+    attempts_added = await _count_rows(deps, schema, "job_attempts", job_id) - attempts_before
+    events_added = await _count_rows(deps, schema, "job_events", job_id) - events_before
+    assert attempts_added == 0, (
+        f"{_SUSTAINED_OUTAGE_CYCLES} denials wrote {attempts_added} job_attempts "
+        "rows. A denial is not an attempt — no handler ran — and a job denied "
+        "until its deadline would grow this table without bound."
+    )
+    assert events_added == 0, (
+        f"{_SUSTAINED_OUTAGE_CYCLES} denials wrote {events_added} job_events "
+        "rows. Denial contention belongs on the aggregated counter, not as one "
+        "durable row per poll."
     )

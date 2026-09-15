@@ -17,20 +17,26 @@ see its failure mode:
   in-flight slot-pool ping, which is what makes the one-connection
   reserve sufficient; and a failing shared probe fails every waiter
   that joined it.
+* **Registered-connection setup** (integration, real PG): connections
+  the pool hands out carry the session state the application configured
+  on the LOOP-registered connection. Losing it turns a concurrency knob
+  into a silent behaviour change.
 """
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
+from contextlib import AsyncExitStack
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
+import asyncpg
 import pytest
 
 from taskq.settings import WorkerSettings
-from taskq.worker._bootstrap import _slot_pool_factory
+from taskq.worker._bootstrap import _maybe_open_slot_pool, _slot_pool_factory
 from taskq.worker.health import _ping_slot_pool
 
 
@@ -299,3 +305,138 @@ async def test_sequential_probes_each_ping_freshly() -> None:
     await _ping_slot_pool(deps)
 
     assert pool.acquire_calls == 2
+
+
+# ── Registered-connection setup carries onto slot connections ────────────
+#
+# At max_concurrency == 1 the actor receives the LOOP-registered
+# connection itself, so whatever the application configured on it — a
+# ``set_type_codec`` registration, an ``init``/``setup`` callback, a
+# ``SET ROLE``, a ``search_path`` or any other server setting — is
+# present by construction. The moment max_concurrency rises above 1 the
+# worker hands actors connections out of its own per-slot pool instead.
+# Unless that pool builds its connections with the same setup, a
+# deployment's behaviour changes silently with a concurrency knob:
+# RLS-driving roles vanish, a custom search_path resolves different
+# tables, and a domain type the application registered a codec for comes
+# back as a raw string. Nothing fails loudly — the actor just reads and
+# writes the wrong thing. These pins are the reason the per-slot pool is
+# not allowed to be a bare direct-DSN pool.
+
+
+@pytest.mark.integration
+async def test_slot_connections_carry_the_registered_connections_server_settings(
+    module_pg_schema: Any,
+) -> None:
+    """A ``search_path`` configured on the registered LOOP-scope connection
+    is present on every connection the per-slot pool hands out.
+
+    ``search_path`` stands for the whole server-settings/role family: it
+    is observable with a plain ``SHOW``, and an actor whose unqualified
+    table references resolve against a different search_path than the one
+    the application configured reads and writes the wrong schema without
+    raising anything.
+    """
+    schema = module_pg_schema.schema_name
+    settings = _make_settings(max_concurrency=2, pg_dsn_direct=module_pg_schema.pg_dsn)
+
+    registered = await asyncpg.connect(
+        module_pg_schema.pg_dsn,
+        server_settings={"search_path": f"{schema},public"},
+    )
+    deps, loop_scope, stack = await _slot_pool_harness(registered)
+    try:
+        opened = await _maybe_open_slot_pool(
+            loop_scope,
+            settings,
+            deps,
+            factory=_slot_pool_factory(settings, None),
+            pg_credential_provider=None,
+            caller_supplied_pg_pools=False,
+            log=_quiet_log(),
+        )
+        assert opened, "the per-slot path must activate at max_concurrency > 1"
+
+        registered_path = await registered.fetchval("SHOW search_path")
+        async with deps.slot_pool.acquire() as slot_conn:
+            slot_path = await slot_conn.fetchval("SHOW search_path")
+
+        assert slot_path == registered_path, (
+            "the per-slot connection resolves unqualified names against a "
+            f"different search_path ({slot_path!r}) than the registered "
+            f"connection ({registered_path!r}) — raising max_concurrency "
+            "silently repointed every actor's queries at another schema"
+        )
+    finally:
+        await stack.aclose()
+        await registered.close()
+
+
+@pytest.mark.integration
+async def test_slot_connections_carry_the_registered_connections_type_codecs(
+    module_pg_schema: Any,
+) -> None:
+    """A codec registered on the LOOP-scope connection decodes the same
+    values on the connections actors actually receive per slot.
+
+    A codec is the setup an application is least likely to notice losing:
+    the query still succeeds, it just returns the driver's default
+    representation. An actor written against the decoded form then
+    mis-parses every row, on exactly the workers whose concurrency was
+    raised.
+    """
+    settings = _make_settings(max_concurrency=2, pg_dsn_direct=module_pg_schema.pg_dsn)
+
+    registered = await asyncpg.connect(module_pg_schema.pg_dsn)
+    await registered.set_type_codec(
+        "json",
+        encoder=lambda value: '{"tagged": true}',
+        decoder=lambda value: {"decoded_by": "registered-codec"},
+        schema="pg_catalog",
+    )
+    deps, loop_scope, stack = await _slot_pool_harness(registered)
+    try:
+        opened = await _maybe_open_slot_pool(
+            loop_scope,
+            settings,
+            deps,
+            factory=_slot_pool_factory(settings, None),
+            pg_credential_provider=None,
+            caller_supplied_pg_pools=False,
+            log=_quiet_log(),
+        )
+        assert opened, "the per-slot path must activate at max_concurrency > 1"
+
+        async with deps.slot_pool.acquire() as slot_conn:
+            decoded = await slot_conn.fetchval("SELECT '{\"a\": 1}'::json")
+
+        assert decoded == {"decoded_by": "registered-codec"}, (
+            "the registered connection's json codec is absent on the slot "
+            f"connection (got {decoded!r}) — the actor receives the driver's "
+            "default representation instead of the application's"
+        )
+    finally:
+        await stack.aclose()
+        await registered.close()
+
+
+async def _slot_pool_harness(registered: Any) -> tuple[Any, Any, Any]:
+    """Minimal deps/loop-scope pair for driving ``_maybe_open_slot_pool``.
+
+    ``_maybe_open_slot_pool`` reads exactly two things: the LOOP scope's
+    resolved cache (to find the registered ``asyncpg.Connection``, its
+    activation signal) and ``deps._exit_stack`` (where it registers the
+    pool's teardown). Standing those up directly keeps the pins on the
+    production open path without booting a whole worker.
+    """
+    stack = AsyncExitStack()
+    await stack.__aenter__()
+    deps = SimpleNamespace(slot_pool=None, slot_pool_factory=None, _exit_stack=stack)
+    loop_scope = SimpleNamespace(
+        resolved_cache=lambda: {asyncpg.Connection: registered},
+    )
+    return deps, loop_scope, stack
+
+
+def _quiet_log() -> Any:
+    return SimpleNamespace(info=lambda *a, **k: None, warning=lambda *a, **k: None)

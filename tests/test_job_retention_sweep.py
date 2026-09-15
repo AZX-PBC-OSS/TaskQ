@@ -31,9 +31,10 @@ These tests target the seam the design names. They fail today because no
 such sweep or setting exists.
 """
 
+import asyncio
 from collections.abc import Callable, Coroutine
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, cast
 from uuid import UUID
 
 import asyncpg
@@ -48,6 +49,9 @@ pytestmark = pytest.mark.integration
 
 _OLD = datetime.now(UTC) - timedelta(days=60)
 _YOUNG = datetime.now(UTC) - timedelta(days=1)
+
+# Settings-only assertions need a syntactically valid DSN and never connect.
+_DUMMY_DSN = "postgresql://taskq:taskq@localhost:5432/taskq"
 
 
 _SweepFn = Callable[..., Coroutine[Any, Any, int]]
@@ -96,6 +100,74 @@ def test_event_retention_is_worker_configurable() -> None:
         "and a batch size bounded like the other sweeps). "
         "grep -rn 'event_retention' src/taskq/settings.py finds nothing."
     )
+
+
+def test_event_retention_defaults_to_seven_days_out_of_the_box() -> None:
+    """An operator who sets nothing gets a seven-day ``job_events`` window.
+
+    The default is the product decision, not an implementation detail: it
+    is what bounds event growth on every deployment that never reads the
+    setting's documentation. Seven days is deliberately far shorter than
+    the 30-90 day job-retention window, because events are narration
+    (the durable forensic record is jobs/job_attempts and their archives),
+    and because the pre-existing cascade-only regime could never reclaim
+    the events of a job that never terminates at all.
+
+    A silent drift of this default — to something long enough that the
+    table still grows without practical bound, or short enough to erase a
+    week of operator-visible timeline — changes shipped behaviour for
+    every deployment at once, so it is pinned by value rather than by
+    reference to the constant.
+    """
+    settings = WorkerSettings.load_from_dict({"TASKQ_PG_DSN": _DUMMY_DSN}, validate=False)
+    assert settings.event_retention_period == timedelta(days=7), (
+        "the shipped job_events retention default is "
+        f"{settings.event_retention_period!r}, not 7 days. The default is what "
+        "bounds job_events on every deployment that never touches the "
+        "setting; changing it changes behaviour for all of them."
+    )
+
+
+def test_zero_event_retention_disables_the_sweep_rather_than_deleting_everything() -> None:
+    """``TASKQ_EVENT_RETENTION_PERIOD=0`` turns the sweep off.
+
+    Zero reads two opposite ways for an age-bounded DELETE: "keep nothing
+    older than now" (delete every event in the table) or "no window
+    configured" (do not sweep). For a deletion loop the safe reading of a
+    misconfiguration is off, and that is the one this project ships — the
+    inverse of the prune family's zero-means-archive-immediately, so the
+    inversion is worth pinning explicitly.
+
+    The two halves belong together: the settings layer accepts zero and
+    carries it as the disable sentinel, while the sweep function itself
+    refuses it, because at the function boundary zero has no safe meaning
+    and a caller passing it through is a wiring bug that would otherwise
+    empty the table.
+    """
+    settings = WorkerSettings.load_from_dict(
+        {"TASKQ_PG_DSN": _DUMMY_DSN, "TASKQ_EVENT_RETENTION_PERIOD": "0"},
+        validate=False,
+    )
+    assert settings.event_retention_period == timedelta(0), (
+        "TASKQ_EVENT_RETENTION_PERIOD=0 must load as timedelta(0), the documented disable sentinel"
+    )
+
+    sweep = _event_retention_sweep()
+    with pytest.raises(ValueError, match="positive"):
+        # A conn is never reached: the guard must fire on the argument.
+        asyncio.run(sweep(cast("Any", None), schema="taskq", retention=timedelta(0), batch_size=10))
+
+
+def test_negative_event_retention_is_rejected_at_settings_load() -> None:
+    """A negative retention window is an operator typo with no coherent
+    meaning, and it is rejected where the operator can still see it — at
+    settings load, on the worker's own boot path — rather than surfacing
+    later as an inexplicable sweep error on a leader tick."""
+    with pytest.raises(Exception, match=r"(?i)negative|greater|positive|invalid"):
+        WorkerSettings.load_from_dict(
+            {"TASKQ_PG_DSN": _DUMMY_DSN, "TASKQ_EVENT_RETENTION_PERIOD": "-1d"},
+            validate=False,
+        )
 
 
 async def _seed_events(
@@ -229,4 +301,136 @@ async def test_event_retention_preserves_the_reclaim_outbox_slice(
         "crash-reclaim outbox under a trailing-watermark protocol; an age "
         "sweep must carve it out explicitly, whatever happens to every "
         "other kind."
+    )
+
+
+# ── churn stays diagnosable after the event timeline is reclaimed ──────
+
+
+async def test_attempt_and_retry_counters_survive_event_retention(
+    module_pg_schema: ModulePgSchema,
+    clean_pg_conn: asyncpg.Connection,
+) -> None:
+    """Event retention reclaims the timeline; it must not reclaim the
+    counters on the job row that make churn diagnosable.
+
+    A job cycling through retries and admission denials is exactly the
+    job whose event history ages out first, because it produces the most
+    events. If the age sweep can reach the row's own accounting —
+    ``attempt``, ``max_attempts``, ``snooze_count``,
+    ``rate_limit_blocked_count`` — then the loudest symptom of a
+    misconfigured queue disappears precisely on the jobs that exhibit it
+    most, and the operator is left with a live job and no way to tell a
+    job on its first attempt from one that has been churning for a week.
+    """
+    schema = module_pg_schema.schema_name
+    sweep = _event_retention_sweep()
+
+    worker_id = new_uuid()
+    await create_worker(clean_pg_conn, schema, worker_id)
+    job_id = await create_running_job(
+        clean_pg_conn,
+        schema,
+        worker_id,
+        lock_expires_at=datetime.now(UTC) + timedelta(minutes=5),
+        attempt=4,
+        max_attempts=9,
+        with_events=False,
+    )
+    await clean_pg_conn.execute(
+        f'UPDATE "{schema}".jobs SET snooze_count = 7, rate_limit_blocked_count = 22 WHERE id = $1',
+        job_id,
+    )
+    await _seed_events(clean_pg_conn, schema, job_id, occurred_at=_OLD, count=6)
+
+    while await sweep(
+        clean_pg_conn,
+        schema=schema,
+        retention=timedelta(days=30),
+        batch_size=2,
+    ):
+        pass
+
+    assert await _event_count(clean_pg_conn, schema, job_id) == 0, (
+        "test premise: the churning job's aged events must actually be reclaimed, "
+        "or this test proves nothing about what survives the sweep"
+    )
+    row = await clean_pg_conn.fetchrow(
+        f"SELECT status, attempt, max_attempts, snooze_count, rate_limit_blocked_count "
+        f'FROM "{schema}".jobs WHERE id = $1',
+        job_id,
+    )
+    assert row is not None, (
+        "event retention deleted the job row itself — a live running job vanished "
+        "from the jobs table because its events aged out"
+    )
+    assert (
+        row["status"],
+        row["attempt"],
+        row["max_attempts"],
+        row["snooze_count"],
+        row["rate_limit_blocked_count"],
+    ) == ("running", 4, 9, 7, 22), (
+        "the job row's churn accounting changed when its event timeline was "
+        f"reclaimed; row is now {dict(row)!r}. Attempt, retry budget, snooze and "
+        "aggregated denial counts are the only remaining evidence of churn once "
+        "the per-event rows are gone, and they live on the row for exactly that "
+        "reason"
+    )
+
+
+async def test_event_retention_touches_no_attempt_audit_rows(
+    module_pg_schema: ModulePgSchema,
+    clean_pg_conn: asyncpg.Connection,
+) -> None:
+    """``job_attempts`` is a separate audit surface with its own lifetime.
+
+    The two tables are both per-job history, and a retention sweep that
+    reached across would silently take the attempt audit with it. Attempt
+    rows are what answers "how did this job fail the last six times" long
+    after the event stream has been trimmed, so an operator investigating
+    churn on an old job needs them to outlive the event window.
+    """
+    schema = module_pg_schema.schema_name
+    sweep = _event_retention_sweep()
+
+    worker_id = new_uuid()
+    await create_worker(clean_pg_conn, schema, worker_id)
+    job_id = await create_running_job(
+        clean_pg_conn,
+        schema,
+        worker_id,
+        lock_expires_at=datetime.now(UTC) + timedelta(minutes=5),
+        attempt=3,
+        with_events=False,
+    )
+    for attempt_no in (1, 2):
+        await clean_pg_conn.execute(
+            f'INSERT INTO "{schema}".job_attempts '
+            "(job_id, attempt, worker_id, started_at, finished_at, outcome, error_class) "
+            "VALUES ($1, $2, $3, $4, $4, 'failed', 'ValueError')",
+            job_id,
+            attempt_no,
+            worker_id,
+            _OLD,
+        )
+    await _seed_events(clean_pg_conn, schema, job_id, occurred_at=_OLD, count=4)
+
+    while await sweep(
+        clean_pg_conn,
+        schema=schema,
+        retention=timedelta(days=30),
+        batch_size=2,
+    ):
+        pass
+
+    surviving_attempts = await clean_pg_conn.fetchval(
+        f'SELECT count(*) FROM "{schema}".job_attempts WHERE job_id = $1',
+        job_id,
+    )
+    assert int(surviving_attempts) == 2, (
+        f"the event-retention sweep left {surviving_attempts} of 2 attempt audit "
+        "rows. job_attempts is a distinct surface with its own retention; an "
+        "event sweep that reaches it destroys the per-attempt failure history "
+        "an operator reads when diagnosing churn, and does so invisibly"
     )

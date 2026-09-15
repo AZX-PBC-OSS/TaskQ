@@ -2,9 +2,9 @@
 
 Verifies that retry_job:
 - Re-pends a failed/crashed/cancelled job with cleared error fields
-- Keeps attempt monotonic (never reset — the Oban/River admin-retry
-  precedent) and raises max_attempts to GREATEST(max_attempts,
-  attempt + 1) so the budget gates open
+- Keeps attempt monotonic (never reset — the attempt counter is the epoch
+  identifier for the job's attempt record) and raises max_attempts to
+  GREATEST(max_attempts, attempt + 1) so the budget gates open
 - Resets cancel_phase=0, scheduled_at=now()
 - Returns True for retryable jobs, False for non-retryable ones
 - Fires a wake NOTIFY (verified via wake subscriber on InMemoryBackend)
@@ -78,8 +78,8 @@ class TestInMemoryRetryJob:
         assert row.attempt == 1, (
             "MONOTONIC-ATTEMPT CONTRACT: retry_job must never reset the "
             f"attempt counter — observed {row.attempt!r}. A reset revisits "
-            "the spent epoch's attempt numbers (the PG twin's job_attempts "
-            "PRIMARY KEY collision, pinned in "
+            "the spent epoch's attempt numbers, causing a PRIMARY KEY "
+            "collision on the attempt record (verified in "
             "tests/test_retry_job_attempt_epoch_pk.py)."
         )
         assert row.max_attempts == 3, (
@@ -205,10 +205,9 @@ class TestInMemoryRetryJob:
         assert row is not None
         assert row.cancel_phase == CancelPhase.NONE
         assert row.cancel_requested_at is None, (
-            "FRESH-EPOCH CONTRACT: the twin mirrors PG's retry_job SET "
-            "clause, which clears cancel_requested_at alongside "
-            "cancel_phase — a stale request stamp on a re-pended row "
-            "diverges from the PG contract source (pinned in "
+            "FRESH-EPOCH CONTRACT: retry_job clears cancel_requested_at "
+            "alongside cancel_phase — a stale request stamp on a re-pended "
+            "row breaks the cancel safety contract (verified in "
             "tests/test_rt_diff_terminal.py)."
         )
 

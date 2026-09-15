@@ -11,18 +11,14 @@ fleet-wide, which is issue #141's production-evidenced complaint: a
 misconfigured fleet cannot be told apart from a correctly-sized one
 from the database.
 
-Every vendored system that reports worker state reports this number:
-good_job's process rows carry the schedulers' stats including
-``max_threads`` / ``available_threads``
-(``vendor/good_job/app/models/good_job/process.rb`` —
-``state: process_state`` with ``GoodJob::Scheduler.instances.map(&:stats)``);
-sidekiq heartbeats ``concurrency`` and ``busy`` into its process entry
-every 5 seconds (``vendor/sidekiq/lib/sidekiq/launcher.rb`` —
-``transaction.hset(key, ..., "concurrency", @config.total_concurrency,
-"busy", curstate.size, ...)``). The pin holds the minimum of that
-contract: the ``register_worker`` write carries the effective binding
-concurrency, in the row's metadata where the schema already has a
-place for worker facts. Red today — only ``notify_enabled`` is written.
+Worker state systems report the effective binding concurrency to make
+fleet capacity diagnosable: knowing the max thread / concurrency count
+per worker, an operator can see at a glance whether the fleet is
+correctly sized or whether a capacity incident points to
+misconfiguration. The metadata schema already has a place for worker
+facts — the write that carries effective binding concurrency lives
+there, alongside the other row attributes. Red today — only
+``notify_enabled`` is written.
 """
 
 import json
@@ -61,7 +57,7 @@ async def test_register_worker_reports_effective_binding_concurrency() -> None:
     assert metadata.get("max_concurrency") == 7, (
         "the workers row must carry the worker's effective binding concurrency — "
         "the number that sizes local_queue and bounds every dispatch — so a "
-        "capacity incident is diagnosable from the database. good_job reports "
-        "max_threads in its process rows and sidekiq heartbeats concurrency "
-        f"every 5s; ours wrote only {sorted(metadata)}"
+        "capacity incident is diagnosable from the database without reading "
+        "the worker's runtime state. Metadata carries: "
+        f"{sorted(metadata)}"
     )

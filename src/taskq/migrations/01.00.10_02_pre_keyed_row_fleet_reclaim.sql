@@ -14,13 +14,12 @@
 -- so steady-state cardinality after enough worker deaths is one bucket
 -- per key ever materialised by a process that later died — unbounded.
 --
--- THE SHAPE (vendor/solid_queue's Semaphore): per-key rows carry their
--- own staleness. Semaphore#attempt_decrement / attempt_increment
--- refresh expires_at inside the very UPDATE that changes the value, and
--- Dispatcher::Maintenance#expire_semaphores then runs a bounded
--- delete_all over the expired scope — refresh-on-use plus a bounded
--- expiry sweep, instead of registry bookkeeping that dies with the
--- process. This migration adds the two row-borne halves of that shape:
+-- THE SHAPE: per-key rows carry their own staleness stamp, refreshed
+-- on each acquire/release/upsert operation that already touches the row.
+-- The maintenance leader then runs a bounded sweep to delete expired rows
+-- — refresh-on-use plus a bounded expiry sweep, instead of registry
+-- bookkeeping that dies with the process. This migration adds the two
+-- row-borne halves of that shape:
 --
 --   keyed         marks the rows the fleet sweep may delete. True ONLY
 --                 on rows created by a keyed materialisation: a

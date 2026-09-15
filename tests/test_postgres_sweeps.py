@@ -16,7 +16,7 @@ import asyncpg
 import pytest
 
 from taskq._ids import new_uuid
-from taskq.backend._protocol import JobId
+from taskq.backend._protocol import ErrorInfo, JobId
 from taskq.backend.clock import SystemClock
 from taskq.backend.postgres import PostgresBackend
 from taskq.constants import RECLAIM_EVENT_VISIBILITY_DELAY, wake_channel
@@ -58,6 +58,21 @@ async def _create_reservation_slot(
         held_by_worker_id,
         datetime.now(UTC) if job_id else None,
         lease_expires_at,
+    )
+
+
+async def _seed_job_attempts_row(conn: _Conn, schema: str, job_id: UUID, attempt: int) -> None:
+    """Insert the job_attempts row a prior retry, crash reclaim, or admin
+    retry would already have written for this job's current attempt number."""
+    await conn.execute(
+        f"""INSERT INTO \"{schema}\".job_attempts
+            (job_id, attempt, started_at, finished_at, outcome,
+             error_class, error_message, error_traceback, duration_ms,
+             worker_id, metadata)
+            VALUES ($1, $2, clock_timestamp(), clock_timestamp(), 'failed',
+                    'SomeTransientError', 'boom', NULL, 5, NULL, '{{}}'::jsonb)""",
+        job_id,
+        attempt,
     )
 
 
@@ -235,6 +250,77 @@ class TestSweepExpiredLocks:
         assert attempts[0]["worker_id"] == worker_id
         assert len(events) == 2
         assert events[0]["kind"] == "state_change"
+
+    async def test_indefinite_job_is_re_pended_past_its_max_attempts(
+        self, clean_jobs_app: JobsApp
+    ) -> None:
+        """A crash reclaim must not terminalise an ``indefinite`` job that
+        has run more attempts than ``max_attempts``.
+
+        For ``retry_kind='indefinite'`` the retry budget is the
+        ``schedule_to_close`` deadline; ``max_attempts`` is documented as
+        ignored for the retry decision, and the consumer's own failure
+        path honours that — it reschedules an indefinite job whatever its
+        attempt number. A worker crash is a less conclusive event than a
+        failed execution, so it must not be the one thing that ends such a
+        job early.
+
+        The operator symptom when it does: a job configured to wait out a
+        downstream outage lands in ``crashed`` with hours of deadline
+        budget left, and the row carries no ``error_class`` at all, so
+        nothing on it explains why the work stopped.
+        """
+        deps = clean_jobs_app.deps
+        schema = deps.settings.schema_name
+        worker_id = new_uuid()
+        deadline = datetime.now(UTC) + timedelta(hours=6)
+
+        async with deps.worker_pool.acquire() as conn:
+            await create_worker(conn, schema, worker_id)
+            job_id = await create_running_job(
+                conn,
+                schema,
+                worker_id,
+                lock_expires_at=datetime.now(UTC) - timedelta(seconds=10),
+                attempt=3,
+                max_attempts=3,
+                retry_kind="indefinite",
+                schedule_to_close=deadline,
+            )
+
+            count = await PostgresBackend.sweep_expired_locks(
+                conn,
+                _CANCEL_GRACE,
+                _CLEANUP_GRACE,
+                schema=schema,
+            )
+
+        assert count == 1
+
+        async with deps.worker_pool.acquire() as conn:
+            row = await conn.fetchrow(
+                f"SELECT status, finished_at, error_class, schedule_to_close "
+                f'FROM "{schema}".jobs WHERE id = $1',
+                job_id,
+            )
+
+        assert row is not None
+        assert row["schedule_to_close"] is not None, (
+            "the scenario requires a job whose deadline budget is still open"
+        )
+        assert row["schedule_to_close"] > datetime.now(UTC), (
+            "the scenario requires a deadline that has not yet passed"
+        )
+        assert row["status"] == "pending", (
+            f"an indefinite job with an open schedule_to_close was reclaimed to "
+            f"{row['status']!r} instead of being handed back for another attempt; "
+            f"max_attempts does not bound an indefinite job's retries, and the row "
+            f"carries error_class={row['error_class']!r}, so an operator has "
+            f"nothing on the job explaining why it stopped"
+        )
+        assert row["finished_at"] is None, (
+            "a job handed back for another attempt must not carry a finished_at"
+        )
 
     async def test_reclaim_after_worker_row_cleanup(self, clean_jobs_app: JobsApp) -> None:
         """Reclaiming a job whose lock-holding worker's row is already
@@ -1337,6 +1423,104 @@ class TestSweepDeadlineExceeded:
 
         assert count == 0
 
+    async def test_exhausted_budget_retry_past_deadline_is_swept_to_failed(
+        self, clean_jobs_app: JobsApp
+    ) -> None:
+        """The deadline sweep must resolve an admin-retried job that has
+        already spent its whole retry budget and whose deadline has passed.
+
+        ``retry_job`` keeps ``attempt`` monotonic and only raises
+        ``max_attempts``; it never rebases ``schedule_to_close``. The row
+        therefore returns to 'pending' at the same attempt number whose
+        ``job_attempts`` row the original failure already wrote, with a
+        deadline in the past. Dispatch is gated on ``schedule_to_close IS
+        NULL OR schedule_to_close > statement_timestamp()``, so that
+        attempt number is never climbed and Sweep 2 is the only thing that
+        can ever touch the row again.
+
+        The sweep must therefore tolerate a job whose current attempt
+        already owns an attempt row: it fails the job terminally with
+        ``DeadlineExceeded`` rather than colliding on ``job_attempts_pkey``
+        and rolling back its whole batch. A job that can never be
+        dispatched and can never be swept is a permanent leak.
+        """
+        deps = clean_jobs_app.deps
+        backend = clean_jobs_app.backend
+        schema = deps.settings.schema_name
+        worker_id = new_uuid()
+
+        error = ErrorInfo(
+            error_class="TransientError",
+            error_message="boom",
+            error_traceback=None,
+        )
+
+        async with deps.worker_pool.acquire() as conn:
+            await create_worker(conn, schema, worker_id)
+            # A job whose deadline already passed while it was running.
+            job_id = await create_running_job(
+                conn,
+                schema,
+                worker_id,
+                max_attempts=1,
+                attempt=1,
+                lock_expires_at=datetime.now(UTC) + timedelta(minutes=5),
+                schedule_to_close=datetime.now(UTC) - timedelta(seconds=10),
+                with_events=False,
+            )
+
+            # Original failure: writes the (job_id, attempt=1) row in
+            # job_attempts.
+            assert await backend.mark_failed_or_retry(job_id, worker_id, error, None, attempt=1)
+            row = await conn.fetchrow(
+                f'SELECT status, attempt FROM "{schema}".jobs WHERE id = $1', job_id
+            )
+            assert row is not None and row["status"] == "failed" and row["attempt"] == 1
+
+            # Admin retry: attempt stays at 1 (not reset to 0), and
+            # schedule_to_close is left untouched — still in the past.
+            assert await backend.retry_job(job_id)
+            retried = await conn.fetchrow(
+                f'SELECT status, attempt, schedule_to_close FROM "{schema}".jobs WHERE id = $1',
+                job_id,
+            )
+            assert retried is not None
+            assert retried["status"] == "pending"
+            assert retried["attempt"] == 1
+            assert retried["schedule_to_close"] < datetime.now(UTC)
+
+            # Dispatch cannot pick it up (schedule_to_close already passed),
+            # so nothing climbs its attempt. The deadline sweep is the only
+            # thing that will ever touch this job again, and the job's
+            # current attempt already owns a job_attempts row.
+            try:
+                swept_count = await PostgresBackend.sweep_deadline_exceeded(
+                    conn,
+                    schema=schema,
+                )
+            except asyncpg.UniqueViolationError as exc:
+                pytest.fail(
+                    "sweep_deadline_exceeded raised UniqueViolationError on "
+                    f"job_attempts_pkey sweeping a retried, past-deadline job: {exc!r}. "
+                    "The sweep must tolerate a job whose current attempt already "
+                    "owns an attempt row instead of rolling back its batch."
+                )
+
+        assert swept_count >= 1, (
+            "the past-deadline retried job must be swept, not skipped: dispatch "
+            "cannot pick it up, so nothing else will ever resolve it"
+        )
+
+        async with deps.worker_pool.acquire() as conn:
+            final = await conn.fetchrow(
+                f'SELECT status, error_class, finished_at FROM "{schema}".jobs WHERE id = $1',
+                job_id,
+            )
+        assert final is not None
+        assert final["status"] == "failed"
+        assert final["error_class"] == "DeadlineExceeded"
+        assert final["finished_at"] is not None
+
     async def test_running_job_not_touched(self, clean_jobs_app: JobsApp) -> None:
         """Running jobs with schedule_to_close in the past are NOT
         swept — Sweep 2 only targets pending/scheduled."""
@@ -1373,6 +1557,365 @@ class TestSweepDeadlineExceeded:
             )
 
         assert count == 0
+
+    async def test_overdue_job_with_existing_attempt_row_is_still_failed(
+        self, clean_jobs_app: JobsApp
+    ) -> None:
+        """A pending job can legitimately sit at a nonzero ``attempt`` that
+        already owns a ``job_attempts`` row: a transient retry, a crash
+        reclaim that re-pends the job, and an admin ``retry_job`` all keep
+        ``attempt`` unchanged and leave an attempt row behind for it. If the
+        deadline then passes before the job is redispatched, Sweep 2 is the
+        only thing that will ever resolve the row, because dispatch skips
+        rows past ``schedule_to_close``. It must fail the job cleanly rather
+        than colliding on ``job_attempts_pkey``.
+        """
+        deps = clean_jobs_app.deps
+        schema = deps.settings.schema_name
+
+        async with deps.worker_pool.acquire() as conn:
+            job_id = await create_pending_job(
+                conn,
+                schema,
+                schedule_to_close=datetime.now(UTC) - timedelta(seconds=10),
+                status="pending",
+            )
+            await conn.execute(
+                f'UPDATE "{schema}".jobs SET attempt = 1 WHERE id = $1',
+                job_id,
+            )
+            await _seed_job_attempts_row(conn, schema, job_id, 1)
+
+            try:
+                count = await PostgresBackend.sweep_deadline_exceeded(
+                    conn,
+                    schema=schema,
+                )
+            except asyncpg.UniqueViolationError as exc:
+                pytest.fail(
+                    "sweep_deadline_exceeded raised UniqueViolationError on "
+                    f"job_attempts_pkey for a job with an existing attempt row: {exc!r}. "
+                    "The sweep must handle a pre-existing job_attempts row for the "
+                    "job's current attempt instead of colliding."
+                )
+
+        assert count == 1
+
+        async with deps.worker_pool.acquire() as conn:
+            row = await conn.fetchrow(
+                f'SELECT status, error_class, finished_at FROM "{schema}".jobs WHERE id = $1',
+                job_id,
+            )
+        assert row is not None
+        assert row["status"] == "failed"
+        assert row["error_class"] == "DeadlineExceeded"
+        assert row["finished_at"] is not None
+
+    async def test_bystander_job_swept_despite_colliding_sibling_in_same_batch(
+        self, clean_jobs_app: JobsApp
+    ) -> None:
+        """Sweep 2 writes its ``job_attempts`` rows as one batched INSERT
+        inside a single transaction, so a primary-key collision raised by
+        one job rolls back every job swept in that call. An ordinary
+        never-dispatched overdue job must still be failed even when another
+        job in the same batch has an attempt row at its current attempt
+        number. Otherwise a single wedged job strands every other overdue
+        job in pending/scheduled indefinitely, since dispatch also skips
+        rows past ``schedule_to_close`` and every subsequent tick hits the
+        same collision.
+        """
+        deps = clean_jobs_app.deps
+        schema = deps.settings.schema_name
+
+        async with deps.worker_pool.acquire() as conn:
+            # Already ran attempt 1, owns a job_attempts row for it, deadline past.
+            colliding_job_id = await create_pending_job(
+                conn,
+                schema,
+                job_id=new_uuid(),
+                schedule_to_close=datetime.now(UTC) - timedelta(seconds=10),
+                status="pending",
+            )
+            await conn.execute(
+                f'UPDATE "{schema}".jobs SET attempt = 1 WHERE id = $1',
+                colliding_job_id,
+            )
+            await _seed_job_attempts_row(conn, schema, colliding_job_id, 1)
+
+            # Ordinary never-dispatched overdue job: attempt 0, no attempt row.
+            bystander_job_id = await create_pending_job(
+                conn,
+                schema,
+                job_id=new_uuid(),
+                schedule_to_close=datetime.now(UTC) - timedelta(seconds=10),
+                status="pending",
+            )
+
+            try:
+                await PostgresBackend.sweep_deadline_exceeded(
+                    conn,
+                    schema=schema,
+                )
+            except asyncpg.UniqueViolationError as exc:
+                pytest.fail(
+                    "sweep_deadline_exceeded's batch transaction rolled back "
+                    f"entirely because of one colliding job: {exc!r}. This strands "
+                    "every other overdue job in pending/scheduled, since dispatch "
+                    "also skips schedule_to_close-expired rows."
+                )
+
+        async with deps.worker_pool.acquire() as conn:
+            bystander_row = await conn.fetchrow(
+                f'SELECT status, error_class FROM "{schema}".jobs WHERE id = $1',
+                bystander_job_id,
+            )
+        assert bystander_row is not None
+        assert bystander_row["status"] == "failed", (
+            "bystander job was collaterally rolled back and left stuck in "
+            f"'{bystander_row['status']}' by a colliding sibling's failure in the "
+            "same batch transaction"
+        )
+        assert bystander_row["error_class"] == "DeadlineExceeded"
+
+    async def test_admin_retry_of_past_deadline_job_is_swept_to_failed(
+        self, clean_jobs_app: JobsApp
+    ) -> None:
+        """An admin ``retry_job`` of a job whose ``schedule_to_close`` has
+        already passed must still end up terminal via Sweep 2.
+
+        ``retry_job`` keeps ``attempt`` monotonic rather than resetting it,
+        and it does not rebase ``schedule_to_close``. The retried row
+        therefore sits ``pending`` at the same attempt number whose
+        ``job_attempts`` row the original failure already wrote, with a
+        deadline in the past. Dispatch skips rows past
+        ``schedule_to_close``, so the attempt number is never climbed and
+        Sweep 2 is the only thing that can ever resolve the row. The sweep
+        must fail it cleanly, without colliding on ``job_attempts_pkey``
+        and without silently leaving it pending forever.
+        """
+        deps = clean_jobs_app.deps
+        backend = clean_jobs_app.backend
+        schema = deps.settings.schema_name
+        worker_id = new_uuid()
+
+        error = ErrorInfo(
+            error_class="TransientError",
+            error_message="boom",
+            error_traceback=None,
+        )
+
+        async with deps.worker_pool.acquire() as conn:
+            await create_worker(conn, schema, worker_id)
+            job_id = await create_running_job(
+                conn,
+                schema,
+                worker_id,
+                max_attempts=1,
+                attempt=1,
+                lock_expires_at=datetime.now(UTC) + timedelta(minutes=5),
+                schedule_to_close=datetime.now(UTC) - timedelta(seconds=10),
+                with_events=False,
+            )
+
+            # The real dispatched run fails, writing job_attempts(job_id, 1).
+            assert await backend.mark_failed_or_retry(job_id, worker_id, error, None, attempt=1)
+            attempts_before = await conn.fetch(
+                f'SELECT attempt FROM "{schema}".job_attempts WHERE job_id = $1',
+                job_id,
+            )
+            assert {a["attempt"] for a in attempts_before} == {1}
+
+            # The operator re-runs it. The row goes back to pending at the
+            # same attempt, still past its deadline.
+            assert await backend.retry_job(job_id)
+            retried = await conn.fetchrow(
+                f'SELECT status, attempt, schedule_to_close FROM "{schema}".jobs WHERE id = $1',
+                job_id,
+            )
+            assert retried is not None
+            assert retried["status"] == "pending"
+            assert retried["schedule_to_close"] < datetime.now(UTC)
+
+            try:
+                swept_count = await PostgresBackend.sweep_deadline_exceeded(
+                    conn,
+                    schema=schema,
+                )
+            except asyncpg.UniqueViolationError as exc:
+                pytest.fail(
+                    "sweep_deadline_exceeded raised UniqueViolationError sweeping an "
+                    f"admin-retried job past its deadline: {exc!r}. retry_job must not "
+                    "leave a pending row whose current attempt already owns a "
+                    "job_attempts row, and/or the sweep must not reuse a spent "
+                    "attempt number."
+                )
+
+        assert swept_count >= 1, (
+            "the past-deadline retried job must actually be swept, not skipped: "
+            "nothing else will ever resolve it"
+        )
+
+        async with deps.worker_pool.acquire() as conn:
+            final = await conn.fetchrow(
+                f'SELECT status, error_class FROM "{schema}".jobs WHERE id = $1',
+                job_id,
+            )
+        assert final is not None
+        assert final["status"] == "failed"
+        assert final["error_class"] == "DeadlineExceeded"
+
+    async def test_transient_retry_past_deadline_is_swept_to_failed(
+        self, clean_jobs_app: JobsApp
+    ) -> None:
+        """A job re-pended by an ordinary transient retry must still be
+        sweepable once its ``schedule_to_close`` passes.
+
+        The retried arm of ``mark_failed_or_retry`` writes a
+        ``job_attempts`` row for the attempt it just spent and leaves the
+        job ``scheduled`` at that same attempt number. No operator action
+        is needed to reach this state, so it is the most common way a
+        pending/scheduled row comes to own an attempt row for its current
+        attempt. If the deadline passes before the backoff elapses, Sweep 2
+        must fail the job rather than colliding on ``job_attempts_pkey``.
+        """
+        deps = clean_jobs_app.deps
+        backend = clean_jobs_app.backend
+        schema = deps.settings.schema_name
+        worker_id = new_uuid()
+
+        error = ErrorInfo(
+            error_class="TransientError",
+            error_message="boom",
+            error_traceback=None,
+        )
+
+        async with deps.worker_pool.acquire() as conn:
+            await create_worker(conn, schema, worker_id)
+            # Budget remains, so the terminal write takes the retried arm.
+            job_id = await create_running_job(
+                conn,
+                schema,
+                worker_id,
+                max_attempts=3,
+                attempt=1,
+                lock_expires_at=datetime.now(UTC) + timedelta(minutes=5),
+                with_events=False,
+            )
+
+            assert await backend.mark_failed_or_retry(
+                job_id, worker_id, error, timedelta(minutes=5), attempt=1
+            )
+            retried = await conn.fetchrow(
+                f'SELECT status, attempt FROM "{schema}".jobs WHERE id = $1',
+                job_id,
+            )
+            assert retried is not None
+            assert retried["status"] == "scheduled"
+            assert retried["attempt"] == 1
+            attempts_before = await conn.fetch(
+                f'SELECT attempt FROM "{schema}".job_attempts WHERE job_id = $1',
+                job_id,
+            )
+            assert {a["attempt"] for a in attempts_before} == {1}
+
+            # The deadline lapses while the row waits out its backoff.
+            await conn.execute(
+                f"UPDATE \"{schema}\".jobs SET schedule_to_close = now() - interval '10 seconds' WHERE id = $1",
+                job_id,
+            )
+
+            try:
+                swept_count = await PostgresBackend.sweep_deadline_exceeded(
+                    conn,
+                    schema=schema,
+                )
+            except asyncpg.UniqueViolationError as exc:
+                pytest.fail(
+                    "sweep_deadline_exceeded raised UniqueViolationError sweeping a "
+                    f"transiently retried job past its deadline: {exc!r}. The retried "
+                    "arm's own job_attempts row must not wedge the deadline sweep."
+                )
+
+        assert swept_count >= 1
+
+        async with deps.worker_pool.acquire() as conn:
+            final = await conn.fetchrow(
+                f'SELECT status, error_class FROM "{schema}".jobs WHERE id = $1',
+                job_id,
+            )
+        assert final is not None
+        assert final["status"] == "failed"
+        assert final["error_class"] == "DeadlineExceeded"
+
+    async def test_repeated_ticks_do_not_wedge_on_a_previously_attempted_job(
+        self, clean_jobs_app: JobsApp
+    ) -> None:
+        """The deadline sweep converges: a job that already ran an attempt
+        is resolved on the first tick, and every later tick over the same
+        table is a clean no-op.
+
+        Tolerating an existing ``job_attempts`` row once is not enough. The
+        sweep runs on a fixed leader cadence over the whole table, so a row
+        it cannot resolve is a row it re-selects on every tick forever —
+        the pathology is not one raised error but an unbounded series of
+        them, each one aborting that tick's transaction and taking every
+        overdue sibling down with it while the leader's error rate climbs
+        with no job ever reaching a terminal state.
+
+        Convergence is therefore the property worth pinning, and it is
+        observable without reading any internals: the job is terminal after
+        one tick, subsequent ticks sweep zero rows, and none of them raises.
+        """
+        deps = clean_jobs_app.deps
+        schema = deps.settings.schema_name
+
+        async with deps.worker_pool.acquire() as conn:
+            job_id = await create_pending_job(
+                conn,
+                schema,
+                schedule_to_close=datetime.now(UTC) - timedelta(seconds=10),
+                status="pending",
+            )
+            await conn.execute(
+                f'UPDATE "{schema}".jobs SET attempt = 1 WHERE id = $1',
+                job_id,
+            )
+            await _seed_job_attempts_row(conn, schema, job_id, 1)
+
+            counts: list[int] = []
+            for tick in range(3):
+                try:
+                    counts.append(
+                        await PostgresBackend.sweep_deadline_exceeded(conn, schema=schema)
+                    )
+                except asyncpg.PostgresError as exc:
+                    pytest.fail(
+                        f"sweep_deadline_exceeded raised on tick {tick + 1} over a job "
+                        f"that already owns a job_attempts row for its attempt: {exc!r}. "
+                        "A row the sweep cannot resolve is re-selected every tick, so "
+                        "this failure repeats forever and aborts each tick's whole batch."
+                    )
+
+        assert counts[0] == 1, (
+            f"first tick swept {counts[0]} rows, expected the one overdue job. A job "
+            "that already ran an attempt must still be resolvable by the deadline "
+            "sweep — nothing else will ever terminate it, since dispatch skips rows "
+            "past schedule_to_close."
+        )
+        assert counts[1:] == [0, 0], (
+            f"the deadline sweep kept selecting the same job across ticks: {counts}. "
+            "Once resolved the row must fall out of the sweep's candidate set, or the "
+            "leader burns a batch on it on every tick indefinitely."
+        )
+
+        async with deps.worker_pool.acquire() as conn:
+            row = await conn.fetchrow(
+                f'SELECT status, error_class FROM "{schema}".jobs WHERE id = $1',
+                job_id,
+            )
+        assert row is not None
+        assert row["status"] == "failed"
+        assert row["error_class"] == "DeadlineExceeded"
 
 
 # ── Sweep 4: sweep_leaked_reservation_slots ──────────────────────────

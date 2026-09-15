@@ -227,9 +227,22 @@ remaining steps. Later steps only execute when earlier ones did not match or rai
     single-process producers therefore stay exact in practice.
 
    Operational note: the lock exists only for capped actors on the single-enqueue path, is keyed
-   `taskq:max_pending:<schema>:<actor>` (hashed via `hashtextextended`), and is transaction-scoped
-   — it shows in `pg_locks` only for the duration of a contended enqueue. Actors without
-   `max_pending` never touch it.
+   `taskq:max_pending:<schema>:<actor>` (hashed via `hashtextextended`), and is transaction-scoped.
+   On a connection TaskQ opens and commits itself for the enqueue, it shows in `pg_locks` only for
+   the duration of that contended enqueue. But when the enqueue runs on a **caller-owned, already
+   open transaction** — the shape `ctx.jobs` uses for a transactional actor's sub-enqueue — the
+   lock is held until *that caller's* commit or rollback, not released early. A transactional
+   actor's `start_to_close` is unbounded by default, so a sub-enqueue to a capped actor early in
+   the actor body can hold the lock for the actor's entire run. Any other producer to that same
+   actor queues behind the whole parent transaction and can hit `MaxPendingLockTimeoutError` even
+   though the actor is nowhere near its cap. This is deliberate — releasing the lock before the
+   caller's commit would let the count and the insert drift apart across the caller's own
+   uncommitted work — but it means the lock's true duration is the caller transaction's lifetime,
+   not "one contended enqueue," whenever the caller supplies the connection. Actors without
+   `max_pending` never touch it. **In-memory backend note:** `InMemoryBackend` enforces
+   `max_pending` with a plain in-process count and takes no advisory lock at all, so
+   InMemoryBackend-based tests cannot reproduce or catch a regression of this transactional-holder
+   lock-duration cost — only a Postgres-backed test observes it.
 5. **`idempotency_key` upsert** — if `idempotency_key` is provided and matches an existing row,
    returns the existing handle with `was_existing=True`.
 6. **Job INSERT** — inserts the new row and returns a handle with `was_existing=False`.
@@ -248,10 +261,9 @@ remaining steps. Later steps only execute when earlier ones did not match or rai
 - **No TTL.** `idempotency_scope` decouples the dedupe horizon by *namespace*, not by *time* —
   there is no `idempotency_ttl` parameter. A key within a scope still dedupes **until pruned**,
   same as before scope existed, just confined to that namespace. This is deliberate: a real
-  sliding-window TTL can't be a single static unique index the way scope can (every mature queue
-  that offers one — Oban, River — trades away the atomic `ON CONFLICT` insert or buckets time
-  into the key itself). Need "dedupe for an hour, not forever"? Encode the window into the scope
-  string yourself for now.
+  sliding-window TTL cannot be enforced by a single static unique index. TaskQ uses scope
+  to decouple the horizon, preserving the atomic `ON CONFLICT` insert. Need "dedupe for an
+  hour, not forever"? Encode the window into the scope string yourself for now.
 - **Rolling-deploy note:** mid-upgrade (the `pre` migration applied, `post` not yet), reusing a
   key under two *different* scopes raises `ScopedIdempotencyMigrationPendingError` instead of
   silently deduping against the wrong scope's job — in either direction, so an unscoped call
@@ -1171,7 +1183,7 @@ Frozen dataclass. All fields are optional.
 |---|---|---|---|
 | `queue` | `str \| None` | `None` | Filter by queue name. |
 | `status` | `JobStatus \| Sequence[JobStatus] \| None` | `None` | Filter by current status — a single status (`"pending"`) or a sequence (`["pending", "running"]`). An empty sequence matches no jobs; unknown values raise `ValueError`. Mutually exclusive with `active`. |
-| `active` | `bool \| None` | `None` | Meta-filter by terminality: `True` selects non-terminal statuses (pending, scheduled, running), `False` selects terminal ones. **Not Celery's 'active'** (currently-executing only) — here it means 'not yet finished'. Mutually exclusive with `status`. |
+| `active` | `bool \| None` | `None` | Meta-filter by terminality: `True` selects non-terminal statuses (pending, scheduled, running), `False` selects terminal ones. This is broader than just currently-executing jobs — it includes all work not yet finished. Mutually exclusive with `status`. |
 | `actor` | `str \| None` | `None` | Filter by actor name. |
 | `identity_key` | `IdentityKey \| None` | `None` | Filter by identity key. |
 | `batch_id` | `UUID \| None` | `None` | Filter by batch ID. |
@@ -1439,7 +1451,7 @@ from taskq.exceptions import (
 | Exception | Raised when |
 |---|---|
 | `MaxPendingExceededError` | `enqueue()` called when `pending + scheduled` count >= `max_pending`. Fields: `actor` (str), `current_count` (int), `max_pending` (int). |
-| `MaxPendingLockTimeoutError` | `enqueue()` on a capped actor could not acquire the per-`(schema, actor)` serialization advisory lock within its budget (default 5 s) — too many concurrent producers, cap check never ran. Same `BackpressureError` family as `MaxPendingExceededError`; same response (retry later or shed load). Fields: `actor` (str), `timeout_ms` (float). |
+| `MaxPendingLockTimeoutError` | `enqueue()` on a capped actor could not acquire the per-`(schema, actor)` serialization advisory lock within its budget (default 5 s) — cap check never ran. Two distinct causes: too many concurrent producers racing the same actor, **or** a single long-running caller transaction holding the lock for its own lifetime (e.g. a transactional actor's `ctx.jobs` sub-enqueue to a capped actor, held until that actor's commit/rollback — see the operational note above). Same `BackpressureError` family as `MaxPendingExceededError`; same response (retry later or shed load; for the transactional-holder cause, also check for a long-running actor sub-enqueueing to this capped actor). Fields: `actor` (str), `timeout_ms` (float). |
 | `UniqueForLockTimeoutError` | `enqueue()` with `unique_for` + `identity_key` could not acquire the per-`(schema, actor, identity_key)` single-flight advisory lock within its budget (default 5 s, `DEFAULT_UNIQUE_FOR_LOCK_TIMEOUT_MS`) — the dedup answer for one identity could not be determined in time; nothing was inserted. NOT a `BackpressureError` (no capacity problem) and not counted in `taskq.backpressure.errors`. Response: retry the same enqueue — it typically dedupes against the winner's row (`was_existing=True`). Fields: `actor` (str), `identity_key` (str), `timeout_ms` (float). |
 | `BatchMaxPendingExceededError` | A bulk enqueue (`enqueue_batch()` / `enqueue_batch_fast()` / the chunked arm of `enqueue_batch_streaming()`) partitioned admission per actor and refused some: the within-cap actors' items were inserted first, then this raises. Fields: `refusals` (list of `MaxPendingExceededError`, one per over-cap actor), `refused_indices` (actor -> indices into the caller's items), `admitted_count` (int). Not a `MaxPendingExceededError` subclass — part of the batch is already stored; retry only the refused items or rely on idempotency keys. An `except BackpressureError` handler catches this too and must consult `admitted_count` / `refused_indices` before any whole-batch retry. |
 | `SingletonCollisionError` | `enqueue()` called for a singleton actor that already has an active job. Fields: `actor` (str), `blocking_job_id` (UUID or None), `retry_after` (timedelta or None). |

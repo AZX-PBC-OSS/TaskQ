@@ -1,0 +1,349 @@
+"""`taskq doctor`: a read-only capacity and configuration health report.
+
+TaskQ deliberately refuses to fail boot on anything short of structural
+stored-config drift — a worker that can do work must start. The cost of
+that choice is that a whole family of misconfigurations produces no
+error anywhere: an actor with no stored ``actor_config`` row never
+dispatches, a ``queues`` row left behind by a queue move caps an actor
+nobody thinks is capped, a stored ``max_concurrent=0`` drains an actor
+that looks configured. `doctor` is the surface that pays that cost back:
+one command an operator runs against a live deployment to see every one
+of those conditions at once, named and explained.
+
+Two properties make it usable, and both are pinned here. It is read-only
+— an operator must be able to run it against production during an
+incident without wondering whether it will write anything. And it never
+exits non-zero on a warning: a diagnostic that fails the shell trains
+people to stop running it, and `doctor` reports exactly the conditions
+TaskQ has decided are workable. The non-zero-on-drift gate is a
+different command (`actor-config diff`), which exists to be a CI gate.
+
+Unit tier: the database reads are faked at the ``taskq.cli`` boundary,
+following ``tests/test_cli_actor_config_diff_exit_code.py``.
+"""
+
+from collections.abc import Mapping
+from typing import Any
+
+import pytest
+from pydantic import BaseModel
+from typer.testing import CliRunner
+
+from taskq.actor import ActorRef, actor
+from taskq.actor_config_ops import ActorConfigRow
+from taskq.cli import app
+from taskq.worker.queue_ops import QueueRow
+
+runner = CliRunner()
+
+
+class _Payload(BaseModel):
+    value: int
+
+
+@actor(name="doctor_alpha", queue="default")
+async def _doctor_alpha(payload: _Payload) -> None: ...
+
+
+@actor(name="doctor_beta", queue="batch")
+async def _doctor_beta(payload: _Payload) -> None: ...
+
+
+_REGISTRY: Mapping[str, ActorRef[Any, Any]] = {
+    "doctor_alpha": _doctor_alpha,
+    "doctor_beta": _doctor_beta,
+}
+_REGISTRY_PATH = "tests.test_cli_doctor:_REGISTRY"
+
+# Writing SQL verbs: any of these appearing in a statement the command
+# issued means `doctor` is no longer read-only.
+_WRITE_VERBS = ("insert", "update", "delete", "truncate", "drop", "alter", "create")
+
+
+def _row(
+    actor_name: str,
+    *,
+    queue: str,
+    max_concurrent: int | None = None,
+    max_pending: int | None = None,
+) -> ActorConfigRow:
+    return ActorConfigRow(
+        actor=actor_name,
+        max_concurrent=max_concurrent,
+        max_pending=max_pending,
+        queue=queue,
+        result_ttl=None,
+        metadata={},
+        updated_at="2026-01-01 00:00:00+00",
+    )
+
+
+def _patch_db(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    actor_rows: list[ActorConfigRow],
+    queue_rows: list[QueueRow],
+) -> list[str]:
+    """Fake the doctor's reads at the ``taskq.cli`` boundary.
+
+    Returns the list every statement the command executes is recorded
+    into, so the read-only property can be asserted rather than assumed.
+    """
+    executed: list[str] = []
+
+    class _FakeConn:
+        async def execute(self, query: str, *args: Any) -> str:
+            executed.append(query)
+            return "OK"
+
+        async def fetch(self, query: str, *args: Any) -> list[Any]:
+            executed.append(query)
+            return []
+
+        async def fetchval(self, query: str, *args: Any) -> Any:
+            executed.append(query)
+            return 0
+
+        async def fetchrow(self, query: str, *args: Any) -> Any:
+            executed.append(query)
+            return None
+
+        async def close(self) -> None: ...
+
+    async def fake_connect(dsn: str) -> Any:
+        return _FakeConn()
+
+    async def fake_list_actor_configs(conn: Any, **kwargs: Any) -> list[ActorConfigRow]:
+        return actor_rows
+
+    async def fake_list_queues(conn: Any, **kwargs: Any) -> list[QueueRow]:
+        return queue_rows
+
+    monkeypatch.setattr("taskq.cli.asyncpg.connect", fake_connect)
+    monkeypatch.setattr("taskq.cli.list_actor_configs", fake_list_actor_configs)
+    monkeypatch.setattr("taskq.cli.list_queues", fake_list_queues)
+    return executed
+
+
+def _invoke(*extra: str) -> Any:
+    return runner.invoke(app, ["doctor", "--actors", _REGISTRY_PATH, *extra])
+
+
+def test_doctor_reports_actor_with_no_stored_config_row_as_never_dispatching(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The dispatch capacity gate joins ``actor_config``, so a registered
+    actor with no row is not merely uncapped — it is never selected at
+    all. Nothing fails anywhere; the jobs simply accumulate pending. This
+    is the condition `doctor` most exists to surface, so the report must
+    say what actually happens, not just note the row's absence."""
+    _patch_db(
+        monkeypatch,
+        actor_rows=[_row("doctor_alpha", queue="default")],
+        queue_rows=[],
+    )
+
+    result = _invoke()
+
+    assert "doctor_beta" in result.output
+    assert "never dispatches" in result.output.lower()
+
+
+def test_doctor_reports_queue_cap_staleness(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A ``queues`` row for a queue no actor is assigned to is a leftover — a
+    queue move retires the assignment but the row's cap survives, and the
+    next actor moved onto that queue silently inherits a cap nobody chose.
+    The stale row is inert until it is not, which is exactly why it
+    belongs in a health report rather than in an error."""
+    _patch_db(
+        monkeypatch,
+        actor_rows=[
+            _row("doctor_alpha", queue="default"),
+            _row("doctor_beta", queue="batch"),
+        ],
+        queue_rows=[
+            QueueRow(name="default", mode="strict_fifo", max_concurrent=None),
+            QueueRow(name="batch", mode="strict_fifo", max_concurrent=4),
+            QueueRow(name="retired_tier", mode="round_robin", max_concurrent=2),
+        ],
+    )
+
+    result = _invoke()
+
+    assert "retired_tier" in result.output
+    assert "stale" in result.output.lower()
+
+
+def test_doctor_labels_drain_mode_explicitly(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A stored ``max_concurrent=0`` is a deliberate drain, and an actor in
+    drain mode is indistinguishable from a broken one by its symptoms:
+    jobs enqueue and never run. The label is what separates "someone did
+    this on purpose" from an incident."""
+    _patch_db(
+        monkeypatch,
+        actor_rows=[
+            _row("doctor_alpha", queue="default", max_concurrent=0),
+            _row("doctor_beta", queue="batch", max_concurrent=4),
+        ],
+        queue_rows=[],
+    )
+
+    result = _invoke()
+
+    assert "drain" in result.output.lower(), (
+        "a zero stored cap must be labelled drain mode, not printed as a bare 0"
+    )
+
+
+def test_doctor_labels_stored_null_capacity_as_uncapped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``NULL`` means "no actor-level cap" — a real configuration, not
+    missing data. Printed as a blank it reads as a partially written row
+    and sends the operator looking for a problem that is not there."""
+    _patch_db(
+        monkeypatch,
+        actor_rows=[_row("doctor_alpha", queue="default", max_concurrent=None)],
+        queue_rows=[],
+    )
+
+    result = _invoke()
+
+    assert "uncapped" in result.output.lower()
+
+
+def test_doctor_reports_incoherent_max_pending_below_max_concurrent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``max_pending`` below ``max_concurrent`` cannot ever be satisfied: the
+    actor is allowed fewer queued jobs than it is allowed to run at once,
+    so the cap it was given is unreachable. Neither value is invalid on
+    its own, which is why only a combination check can catch it."""
+    _patch_db(
+        monkeypatch,
+        actor_rows=[_row("doctor_alpha", queue="default", max_concurrent=10, max_pending=2)],
+        queue_rows=[],
+    )
+
+    result = _invoke()
+
+    assert "doctor_alpha" in result.output
+    assert "max_pending" in result.output
+
+
+def test_doctor_reports_queue_cap_below_actor_cap_as_incoherent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An actor cap above its queue's cap can never be reached — the queue
+    binds first. It is the "I raised the cap and nothing happened" report
+    in its stored form, and only visible by reading two tables together."""
+    _patch_db(
+        monkeypatch,
+        actor_rows=[_row("doctor_alpha", queue="default", max_concurrent=20)],
+        queue_rows=[QueueRow(name="default", mode="strict_fifo", max_concurrent=2)],
+    )
+
+    result = _invoke()
+
+    assert "doctor_alpha" in result.output
+    assert "default" in result.output
+
+
+def test_doctor_never_exits_non_zero_on_warnings(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A diagnostic that fails the shell on findings gets wrapped in
+    ``|| true`` and then ignored. Every condition `doctor` reports is one
+    TaskQ has decided a worker should keep running through, so reporting
+    them must not be an error. Gating on drift is `actor-config diff`'s
+    job, and keeping the two separate is what lets each be trusted."""
+    _patch_db(
+        monkeypatch,
+        actor_rows=[
+            # Every warnable condition at once: drain mode, an unreachable
+            # actor cap under a smaller queue cap, and (via doctor_beta
+            # having no row) the never-dispatches case.
+            _row("doctor_alpha", queue="default", max_concurrent=0, max_pending=1),
+        ],
+        queue_rows=[QueueRow(name="retired_tier", mode="strict_fifo", max_concurrent=1)],
+    )
+
+    result = _invoke()
+
+    assert result.exit_code == 0, (
+        f"doctor must exit 0 while reporting warnings; got {result.exit_code}: {result.output}"
+    )
+
+
+def test_doctor_is_read_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Operators run `doctor` mid-incident against production. It must not be
+    a command anyone has to reason about before running: no statement it
+    issues may write. A reporting tool that repairs what it finds also
+    destroys the evidence of what went wrong."""
+    executed = _patch_db(
+        monkeypatch,
+        actor_rows=[_row("doctor_alpha", queue="default", max_concurrent=0)],
+        queue_rows=[QueueRow(name="retired_tier", mode="strict_fifo", max_concurrent=1)],
+    )
+
+    result = _invoke()
+
+    assert result.exit_code == 0, (
+        "the read-only property is only meaningful once the command runs; "
+        f"exit_code={result.exit_code} output={result.output!r}"
+    )
+    offenders = [
+        statement
+        for statement in executed
+        if any(verb in statement.lower() for verb in _WRITE_VERBS)
+    ]
+    assert offenders == [], f"doctor issued writing statements: {offenders}"
+
+
+def test_doctor_on_a_healthy_deployment_exits_zero_and_reports_no_findings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Control: with every registered actor seeded and every queue row
+    matching a live assignment there is nothing to report. Without this,
+    a command that unconditionally printed every warning string would
+    pass every test above."""
+    _patch_db(
+        monkeypatch,
+        actor_rows=[
+            _row("doctor_alpha", queue="default", max_concurrent=4, max_pending=100),
+            _row("doctor_beta", queue="batch", max_concurrent=2, max_pending=100),
+        ],
+        queue_rows=[
+            QueueRow(name="default", mode="strict_fifo", max_concurrent=None),
+            QueueRow(name="batch", mode="strict_fifo", max_concurrent=None),
+        ],
+    )
+
+    result = _invoke()
+
+    assert result.exit_code == 0
+    lowered = result.output.lower()
+    assert "never dispatches" not in lowered
+    assert "stale" not in lowered
+    assert "drain" not in lowered
+
+
+def test_doctor_does_not_gate_boot(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`doctor` is a separate command, not a step the worker runs. Pinning
+    that the worker entry point does not call it keeps the diagnostic
+    from quietly becoming a boot dependency — which would hand it the
+    power to refuse a worker that can do work."""
+    import ast
+    from pathlib import Path
+
+    import taskq.worker._bootstrap as bootstrap_mod
+
+    source = Path(bootstrap_mod.__file__).read_text()
+    tree = ast.parse(source)
+
+    called = {
+        node.func.id if isinstance(node.func, ast.Name) else node.func.attr
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name | ast.Attribute)
+    }
+    assert not any("doctor" in name for name in called), (
+        "worker bootstrap must not invoke doctor — a diagnostic must never gate boot"
+    )

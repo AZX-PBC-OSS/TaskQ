@@ -2408,3 +2408,82 @@ async def test_cancelled_consumer_reraises_when_terminal_write_fails() -> None:
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
+
+
+async def test_denial_on_budget_exhausted_job_never_reaches_a_terminal_write() -> None:
+    """An admission denial routes to the deferral seam no matter how spent
+    the job's retry budget is.
+
+    The consumer is where a denial could most easily be mistaken for a
+    failure: it is fielded in the same region of code that handles actor
+    exceptions, and the job in hand already carries an incremented attempt
+    from the claim. Pinning the routing at its worst case -- a
+    ``non_retryable`` job already at its ceiling, the shape for which every
+    failure path leads straight to a terminal write -- proves the branch is
+    chosen by what happened (nothing ran) rather than by the job's budget
+    state.
+
+    Operationally this is the guarantee that a saturated bucket or a
+    mis-sized rate limit cannot kill work. A denial says the fleet had no
+    slot; it says nothing about the job, so the terminal-write seam must
+    stay untouched and the job must leave the consumer rescheduled.
+    """
+    rl_reg = _StubRateLimitRegistry(
+        acquire_side_effect=ReservationUnavailable(
+            bucket_name="gpu_pool",
+            retry_after=timedelta(seconds=5),
+            source="reservation",
+        ),
+    )
+    backend = _FakeBackend()
+    clk: Clock = FakeClock(_NOW)
+    cfg = StubActorConfig(retry=RetryPolicy(kind="non_retryable", max_attempts=1, jitter=0.0))
+    # Already at the ceiling, and with no schedule_to_close there is no
+    # deadline arm that could legitimately end this job either.
+    job = make_job_row(
+        attempt=1,
+        max_attempts=1,
+        retry_kind="non_retryable",
+        schedule_to_close=None,
+    )
+
+    async def never_called_actor(_job: object, _ctx: JobContext[BaseModel]) -> object:
+        raise AssertionError("actor body should not run on denial")
+
+    result = await consume_one_job(
+        as_backend(backend),
+        job,
+        _WORKER_ID,
+        run_actor=never_called_actor,
+        actor_config=cfg,
+        payload_type=EmptyPayload,
+        clock=clk,
+        rate_limit_registry=rl_reg,
+        rate_limits=[],
+        reservations=["gpu_pool"],
+    )
+
+    assert result == "scheduled", (
+        f"a denied job left the consumer as {result!r}. An admission denial "
+        "is 'come back later': the job must be rescheduled until capacity "
+        "frees or its schedule-to-close expires, whatever its retry budget."
+    )
+    assert len(backend.mark_failed_or_retry_calls) == 0, (
+        "the consumer routed an admission denial through the terminal-write "
+        "seam because the job's budget was spent. The budget bounds failed "
+        "EXECUTIONS, and a denied job never executed -- routing on budget "
+        "state lets a queue misconfiguration terminally fail work that "
+        "merely never got a slot."
+    )
+    assert len(backend.mark_snoozed_calls) == 1, (
+        "an admission denial must be expressed as a deferral on the snooze "
+        "seam -- the one write that reschedules without spending budget and "
+        "without minting a per-denial attempt or event row."
+    )
+    snooze_call = backend.mark_snoozed_calls[0]
+    assert snooze_call["outcome"] == "reservation_denied", (
+        f"the deferral carried outcome {snooze_call['outcome']!r}; the "
+        "outcome keys the aggregated denial counter on the job row, which "
+        "is the only durable record of contention now that denials write no "
+        "job_events and no job_attempts rows."
+    )

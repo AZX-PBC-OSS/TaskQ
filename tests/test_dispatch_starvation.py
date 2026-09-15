@@ -524,3 +524,142 @@ def test_enqueue_priority_validation() -> None:
 
     args = build_enqueue_args(test_enq_prio_actor, DummyPayload(), priority=-32768)
     assert args.priority == -32768
+
+
+# ── Actor count above the dispatch limit ────────────────────────────────
+
+
+async def _seed_uncapped_backlog(
+    backend: InMemoryBackend, actors: list[str], queue: str, depth: int
+) -> None:
+    """Register each actor uncapped and give it *depth* due, equal-priority jobs.
+
+    Uncapped is the point: nothing about any actor's own configuration limits
+    how much of it may run, so whatever a dispatch round leaves behind was
+    left behind by selection, not by a capacity rule.
+    """
+    for name in actors:
+        backend.register_actor_config(actor=name, max_concurrent=None)
+        await _enqueue_bulk(backend, name, queue, depth, max_concurrent=None)
+
+
+async def _drain_tally(
+    backend: InMemoryBackend,
+    worker_id: UUID,
+    queues: list[str],
+    limit: int,
+    rounds: int,
+) -> dict[str, int]:
+    """Run *rounds* dispatch rounds, completing every claim, and tally the
+    claims each actor received. Completing each round's claims models a
+    fleet whose workers keep up: no actor is held back by its own in-flight
+    count, so any actor never claimed was excluded by dispatch selection.
+    """
+    tally: dict[str, int] = {}
+    for _ in range(rounds):
+        dispatched = await backend.dispatch_batch(worker_id, queues, limit, _LOCK_LEASE)
+        for job in dispatched:
+            tally[job.actor] = tally.get(job.actor, 0) + 1
+        for job in dispatched:
+            await backend.mark_succeeded(job.id, worker_id, result={})
+    return tally
+
+
+@pytest.mark.asyncio
+async def test_every_actor_with_backlog_is_eventually_claimed() -> None:
+    """More uncapped actors with pending work than the dispatch limit: every
+    actor must eventually be claimed.
+
+    A worker dispatches at most ``max_concurrency`` jobs per round, so a
+    deployment registering more actors than that has more actors holding
+    pending work than one round can carry. The surplus actors must be served
+    on a later round. If selection is a stable total order over all actors'
+    head jobs, the same prefix wins every round and the remaining actors
+    never run at all -- an operator sees jobs for those actors sit pending
+    forever with no error, no denial and no alert, while the queue drains
+    briskly for everyone else.
+    """
+    backend = _make_backend()
+    wid = new_uuid()
+    actors = [f"actor_{i:02d}" for i in range(20)]
+    limit = 5
+    await _seed_uncapped_backlog(backend, actors, "default", 30)
+
+    tally = await _drain_tally(backend, wid, ["default"], limit=limit, rounds=20)
+
+    starved = sorted(name for name in actors if tally.get(name, 0) == 0)
+    assert not starved, (
+        f"{len(starved)} of {len(actors)} actors were never claimed across 20 dispatch "
+        f"rounds at limit {limit}, while every one of them held 30 pending jobs the "
+        f"whole time: {starved}. Claims went entirely to "
+        f"{sorted(k for k, v in tally.items() if v)}. Work for the starved actors "
+        f"never runs -- there is no cap, no denial and no failure to observe, so the "
+        f"only symptom is jobs that stay pending forever."
+    )
+
+
+@pytest.mark.asyncio
+async def test_surplus_actors_are_served_when_spread_across_queues() -> None:
+    """Splitting the same surplus actors across several subscribed queues does
+    not rescue the ones the dispatch limit leaves out.
+
+    An operator whose actors are not all being served reaches first for queue
+    separation -- give the quiet actors their own queue and subscribe the same
+    worker to both. That is only a fix if the round's selection considers the
+    queues independently. If the round ranks every subscribed queue's actors
+    into one order and cuts at the limit, the new queue changes nothing and the
+    same actors stay dark, which makes the natural remedy look like it did not
+    work.
+    """
+    backend = _make_backend()
+    wid = new_uuid()
+    busy = [f"busy_{i:02d}" for i in range(8)]
+    quiet = [f"quiet_{i:02d}" for i in range(4)]
+    limit = 5
+    await _seed_uncapped_backlog(backend, busy, "busy_queue", 40)
+    await _seed_uncapped_backlog(backend, quiet, "quiet_queue", 40)
+
+    tally = await _drain_tally(backend, wid, ["busy_queue", "quiet_queue"], limit=limit, rounds=20)
+
+    starved_quiet = sorted(name for name in quiet if tally.get(name, 0) == 0)
+    assert not starved_quiet, (
+        f"moving actors to their own queue did not get them dispatched: "
+        f"{starved_quiet} held 40 pending jobs each on a dedicated, subscribed queue "
+        f"and were never claimed across 20 rounds at limit {limit}. Claims: "
+        f"{ {k: v for k, v in sorted(tally.items()) if v} }. An operator who separates "
+        f"queues to unblock quiet actors sees the quiet queue stay at full depth."
+    )
+
+
+@pytest.mark.asyncio
+async def test_an_actor_added_to_a_busy_fleet_starts_dispatching() -> None:
+    """A newly registered actor on a queue that already has more actors than
+    the dispatch limit must start getting claims.
+
+    This is the deploy-time shape: a fleet is running and draining fine, a
+    release adds one more actor, and its first jobs arrive. The new actor's
+    work has to run. If selection is a stable order over all actors' head jobs
+    and the limit cuts before the newcomer, its jobs stay pending indefinitely
+    with nothing in logs, metrics or job state to show why -- the release looks
+    successful and the feature is simply dead.
+    """
+    backend = _make_backend()
+    wid = new_uuid()
+    incumbents = [f"incumbent_{i:02d}" for i in range(10)]
+    limit = 4
+    await _seed_uncapped_backlog(backend, incumbents, "default", 40)
+
+    warmup = await _drain_tally(backend, wid, ["default"], limit=limit, rounds=5)
+    assert sum(warmup.values()) > 0, "fixture broken: the fleet claimed nothing at all"
+
+    newcomer = "newcomer"
+    await _seed_uncapped_backlog(backend, [newcomer], "default", 20)
+    after = await _drain_tally(backend, wid, ["default"], limit=limit, rounds=20)
+
+    assert after.get(newcomer, 0) > 0, (
+        f"a newly deployed actor never dispatched: {newcomer} held 20 pending jobs and "
+        f"got zero claims across 20 rounds at limit {limit} on a queue already carrying "
+        f"{len(incumbents)} actors. Claims went to "
+        f"{ {k: v for k, v in sorted(after.items()) if v} }. The operator's release "
+        f"reports success while the new actor's jobs never run."
+    )

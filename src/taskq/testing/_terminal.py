@@ -647,10 +647,10 @@ async def _mark_snoozed(
     # The non-consuming deferral floor: a zero/now delay would park the
     # job 'pending' at the head of the dispatch order and make it
     # instantly re-claimable — one claim/refund round trip per cycle
-    # monopolising a worker slot (River rejects a non-future snooze;
-    # Oban requires a positive delay).  The floored delay is the SINGLE
-    # effective delay: the deadline comparison below uses it too, the
-    # conservative direction, mirroring the SQL arms' GREATEST().
+    # monopolising a worker slot. A positive delay is required to prevent
+    # this thrashing. The floored delay is the SINGLE effective delay: the
+    # deadline comparison below uses it too, the conservative direction,
+    # mirroring the SQL arms' GREATEST().
     effective_delay = max(delay, MIN_DEFERRAL_INTERVAL)
     new_scheduled_at = now + effective_delay
 

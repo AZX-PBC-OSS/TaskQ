@@ -135,11 +135,10 @@ def _jittered_poll_interval(interval: float, rng: random.Random) -> float:
     Every producer in an idle fleet otherwise sleeps the same interval
     in phase, and any transient event (a GC pause, a network blip, a
     coordinated restart) re-synchronizes them into periodic DB load
-    spikes — river jitters its fetch poll for exactly this reason
-    (vendor/river/producer.go, jitteredFetchPollInterval). The
-    jitter is multiplicative-symmetric, the repo's jitter convention
-    (retry.compute_backoff), so the mean wait stays the configured
-    interval; river's band is +0..10%.
+    spikes. Jittering the poll interval breaks that synchronization and
+    spreads requests across time. The jitter is multiplicative-symmetric,
+    the repo's jitter convention (retry.compute_backoff), so the mean
+    wait stays the configured interval; the band is ±_POLL_JITTER_FRACTION.
     """
     return interval * rng.uniform(1.0 - _POLL_JITTER_FRACTION, 1.0 + _POLL_JITTER_FRACTION)
 
@@ -272,13 +271,10 @@ async def producer_loop(
                 # producer's accounting — qsize drops there, not at job
                 # completion — and the consumer loops set slot_freed at
                 # exactly that point, so the next claim begins the
-                # moment a slot frees instead of on the next poll tick
-                # (river wakes its producer the same way when a job
-                # result frees a worker slot: vendor/river/producer.go,
-                # jobResultCh case). Bounded, not bare: an
-                # event that is never set (broken wiring, a
-                # consumer-less worker) must still leave this loop
-                # re-checking on the fallback cadence.
+                # moment a slot frees instead of on the next poll tick.
+                # Bounded, not bare: an event that is never set (broken
+                # wiring, a consumer-less worker) must still leave this
+                # loop re-checking on the fallback cadence.
                 with contextlib.suppress(TimeoutError):
                     await asyncio.wait_for(slot_freed.wait(), timeout=_SLOT_REFILL_POLL_SECONDS)
                 slot_freed.clear()
@@ -706,8 +702,7 @@ async def register_worker(pool: asyncpg.Pool, settings: WorkerSettings) -> UUID:
     # The workers row carries the capacity this worker actually runs at:
     # ``max_concurrency`` sizes ``local_queue`` and bounds every dispatch,
     # so a fleet's effective parallelism stays queryable from the database
-    # (good_job reports ``max_threads`` in its process rows; sidekiq
-    # heartbeats ``concurrency``).
+    # for monitoring and coordination.
     metadata: dict[str, object] = {
         "notify_enabled": notify_enabled,
         "max_concurrency": settings.max_concurrency,

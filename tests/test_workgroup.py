@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 import signal
 import sys
+import textwrap
 import time
 from collections.abc import Coroutine
 from pathlib import Path
@@ -1976,3 +1977,206 @@ def test_health_query_timeout_constant_is_the_documented_default() -> None:
     import taskq.worker.workgroup as workgroup_mod
 
     assert workgroup_mod._HEALTH_QUERY_TIMEOUT_SECS == 2.0
+
+
+# ── Actor registry reachability at config load ──────────────────────
+
+
+def _write_actors_module(tmp_path: Path, module_name: str, body: str) -> None:
+    """Write an importable actors module under tmp_path and put it on sys.path."""
+    (tmp_path / f"{module_name}.py").write_text(textwrap.dedent(body))
+    if str(tmp_path) not in sys.path:
+        sys.path.insert(0, str(tmp_path))
+
+
+def test_actor_queue_no_child_consumes_warns_loudly_and_still_loads(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An actor on a queue no child consumes warns loudly; the load still succeeds.
+
+    A workgroup is never the whole fleet. Another workgroup, another
+    deployment, or a worker started by hand may consume that queue, so this
+    supervisor cannot prove the queue is stranded -- only that *it* does not
+    serve it. Refusing here would stop a set of children that can do real
+    work over a condition the process cannot actually decide, so the
+    governing rule is that a worker able to do work never fails to start.
+
+    Diagnosability then rests entirely on the log line, which is why it must
+    be loud and must name both the actor and the queue: without it, jobs for
+    that actor enqueue successfully and pend forever with no signal anywhere.
+    Refusal stays reserved for structural drift in stored configuration.
+    """
+    import structlog
+
+    monkeypatch.chdir(tmp_path)
+    _write_actors_module(
+        tmp_path,
+        "wg_actors_stranded",
+        """
+        from pydantic import BaseModel
+        from taskq.actor import actor
+
+        class Payload(BaseModel):
+            pass
+
+        @actor(queue="cron")
+        async def cron_job(payload: Payload) -> None:
+            pass
+
+        @actor(queue="default")
+        async def default_job(payload: Payload) -> None:
+            pass
+
+        registry = {"cron_job": cron_job, "default_job": default_job}
+        """.strip("\n"),
+    )
+
+    toml = textwrap.dedent(
+        """
+        actors = "wg_actors_stranded:registry"
+
+        [[workers]]
+        name = "api"
+        queues = ["default"]
+
+        [[workers]]
+        name = "api2"
+        queues = ["default"]
+        """
+    ).strip()
+
+    with structlog.testing.capture_logs() as captured:
+        cfg = load_workgroup_config(_write_toml(tmp_path, toml))
+
+    # The load succeeds: these two children consume "default" and can work.
+    assert cfg.actors == "wg_actors_stranded:registry"
+    assert [w.name for w in cfg.workers] == ["api", "api2"]
+
+    warnings = [e for e in captured if e.get("log_level") in {"warning", "error", "critical"}]
+    assert warnings, "no loud log entry emitted for the unconsumed actor queue"
+    blob = repr(warnings)
+    assert "cron_job" in blob, f"warning does not name the actor: {warnings!r}"
+    assert "cron" in blob, f"warning does not name the queue: {warnings!r}"
+    # The covered actor is healthy and must not be implicated.
+    assert "default_job" not in blob, f"healthy actor flagged as stranded: {warnings!r}"
+
+
+def test_actor_queues_covered_by_the_child_union_load_clean(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A heterogeneous fleet whose children's queues cover every actor loads clean.
+
+    Different children consuming disjoint queue subsets while sharing one
+    actor registry is the normal split-queue deployment, not a fault. The
+    stranding check keys off the union across all children, so this
+    configuration must load without complaint -- a check that fired here
+    would flag every healthy workgroup and train operators to ignore it.
+    Since a warning is now the only signal the unconsumed-queue condition
+    has, a false one costs the real one its meaning.
+    """
+    import structlog
+
+    monkeypatch.chdir(tmp_path)
+    _write_actors_module(
+        tmp_path,
+        "wg_actors_covered",
+        """
+        from pydantic import BaseModel
+        from taskq.actor import actor
+
+        class Payload(BaseModel):
+            pass
+
+        @actor(queue="cron")
+        async def cron_job(payload: Payload) -> None:
+            pass
+
+        @actor(queue="default")
+        async def default_job(payload: Payload) -> None:
+            pass
+
+        registry = {"cron_job": cron_job, "default_job": default_job}
+        """.strip("\n"),
+    )
+
+    toml = textwrap.dedent(
+        """
+        actors = "wg_actors_covered:registry"
+
+        [[workers]]
+        name = "api"
+        queues = ["default"]
+
+        [[workers]]
+        name = "cron_worker"
+        queues = ["cron"]
+        """
+    ).strip()
+
+    with structlog.testing.capture_logs() as captured:
+        cfg = load_workgroup_config(_write_toml(tmp_path, toml))
+
+    assert cfg.actors == "wg_actors_covered:registry"
+    loud = [e for e in captured if e.get("log_level") in {"warning", "error", "critical"}]
+    assert not loud, f"healthy split-queue workgroup produced a warning: {loud!r}"
+
+
+def test_unresolvable_actors_reference_is_rejected_at_config_load(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An ``actors`` reference that cannot be resolved must fail config load.
+
+    ``module:attr`` shape alone does not mean the module imports or that the
+    attribute exists. When the reference is unresolvable, every child
+    crashes on import the moment it is spawned, and the supervisor reads
+    that as a run of child exits: it restarts each one on backoff until the
+    burst budget is exhausted, so the operator sees a cascade of respawns
+    rather than the single real cause. The supervisor can resolve the
+    reference once, up front, and refuse with a message that names it.
+    """
+    monkeypatch.chdir(tmp_path)
+    toml = textwrap.dedent(
+        """
+        actors = "wg_actors_absent_module:registry"
+
+        [[workers]]
+        name = "api"
+        queues = ["default"]
+        """
+    ).strip()
+
+    with pytest.raises(ValueError, match="wg_actors_absent_module"):
+        load_workgroup_config(_write_toml(tmp_path, toml))
+
+
+def test_missing_actors_attribute_is_rejected_at_config_load(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An ``actors`` module that imports but lacks the named attribute must fail load.
+
+    The importable-module half can succeed while the attribute half fails,
+    which is the easier typo to make and produces exactly the same
+    spawn-crash-respawn cascade. Both halves have to be resolved at load
+    time for the check to be worth anything.
+    """
+    monkeypatch.chdir(tmp_path)
+    _write_actors_module(
+        tmp_path,
+        "wg_actors_no_attr",
+        """
+        other_name = {}
+        """,
+    )
+
+    toml = textwrap.dedent(
+        """
+        actors = "wg_actors_no_attr:registry"
+
+        [[workers]]
+        name = "api"
+        queues = ["default"]
+        """
+    ).strip()
+
+    with pytest.raises(ValueError, match="registry"):
+        load_workgroup_config(_write_toml(tmp_path, toml))

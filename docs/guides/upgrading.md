@@ -534,10 +534,11 @@ a bound, not a counter). Two behaviours follow from that:
 * **Actor-requested deferrals are unbounded, and never spend budget.**
   A `Snooze`, or a `RetryAfter(consume_budget=False)` honouring a
   server 429, refunds the dispatch claim's `attempt` increment
-  (`attempt - 1`, floored at 0 — the Oban/River snooze convention), so a
-  job can wait out an unready downstream indefinitely: `attempt`
-  oscillates and never walks toward the smallint ceiling, and
-  `max_attempts` never moves. Backoff keys off real executions only.
+  (`attempt - 1`, floored at 0) — when work is deferred without executing,
+  the attempt reservation is released so the job can wait out an unready
+  downstream indefinitely: `attempt` oscillates and never walks toward the
+  smallint ceiling, and `max_attempts` never moves. Backoff keys off real
+  executions only.
 * **Admission denials are budget-bounded.** A reservation/rate-limit
   denial leaves the claim's increment standing, and a
   non-`indefinite` job with no `schedule_to_close` now terminally fails

@@ -576,8 +576,7 @@ async def test_register_worker_metadata_carries_binding_concurrency(
     ``settings.max_concurrency`` sizes ``local_queue`` and bounds every
     dispatch, so the registration write carries it in the row's metadata
     next to ``notify_enabled`` — a fleet's effective parallelism stays
-    queryable from the database (good_job reports ``max_threads`` in its
-    process rows; sidekiq heartbeats ``concurrency``).
+    queryable from the database without introspection into worker code.
     """
     mock_conn = AsyncMock()
     mock_pool = MagicMock()

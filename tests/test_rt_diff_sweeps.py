@@ -162,6 +162,38 @@ async def test_diff_sweep2_deadline_after_retry_attempt_pk(pg_dsn: str) -> None:
     )
 
 
+async def test_diff_sweep2_deadline_retried_job_does_not_wedge(pg_dsn: str) -> None:
+    """Red-team test for issue #176: S2 must fail an overdue job that already
+    ran an attempt (retry arm wrote a job_attempts row at the same attempt
+    number) WITHOUT raising ``UniqueViolationError`` on the ``job_attempts_pkey``
+    and without leaving the job wedged at 'scheduled' forever.
+
+    Expected/correct behavior: the deadline sweep should terminally fail the
+    job (status='failed') exactly as it does for a never-dispatched overdue
+    job, on both backends, with no unhandled exception. Today on PG the sweep's
+    batched INSERT collides with the (job_id, attempt) row the retry arm
+    already wrote, raises UniqueViolationError, rolls back the whole sweep
+    batch, and leaves the job stuck at 'scheduled' — reproducing exactly what
+    issue #176 describes (and rewedging on every subsequent tick).
+    """
+    mem, pg = await run_differential(_s2_deadline_retried_job, pg_dsn=pg_dsn)
+    # The sweep must not have raised — 'sweep' should record the swept count
+    # (an int), never an exception class name like "UniqueViolationError".
+    assert pg["records"]["sweep"] != "UniqueViolationError", (
+        f"deadline sweep raised UniqueViolationError on job_attempts_pkey "
+        f"instead of terminally failing the retried-then-overdue job "
+        f"(pg records: {pg['records']!r})"
+    )
+    # The job must actually leave 'scheduled' and land 'failed', matching the
+    # never-dispatched-overdue-job contract (test_diff_sweep2_deadline_never_dispatched).
+    assert pg["jobs"]["retried"]["status"] == "failed", (
+        f"job left wedged at {pg['jobs']['retried']['status']!r} instead of "
+        f"'failed' — sweep 2 never terminally wrote the overdue retried job "
+        f"(this is the production wedge from issue #176: the job, and every "
+        f"other overdue job batched behind it, never leaves pending/scheduled)"
+    )
+
+
 async def _s3_promotion(side: DiffSide) -> None:
     await side.enqueue("due", scheduled_in=10.0)
     await side.enqueue("notdue", scheduled_in=300.0)

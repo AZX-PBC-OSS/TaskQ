@@ -527,10 +527,9 @@ class LoopScopeSlotView:
     permits one operation per connection, so healthy actors raised
     ``InterfaceError`` (misattributed to the actor, retry budget burned),
     and the actor's own writes sat outside its slot's transaction
-    (issue #116 — the same one-session-per-transaction rule every
-    vendored prior art holds: procrastinate runs each job with its own
-    connector state, river runs one JobExecutor per active job, oban
-    wraps each job-stage query in its own transaction).
+    (issue #116 — each job's work must run in isolation within its
+    transaction; sharing a connection across concurrent jobs violates
+    that isolation and causes writes to land outside any job's boundary).
 
     The shadow reaches one level further than the mapping itself: a
     LOOP-scoped FACTORY whose dependency closure reaches a shadowed type

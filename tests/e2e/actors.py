@@ -136,8 +136,8 @@ async def sync_user_profile(
     SNOOZES for the snooze kind: a non-consuming deferral refunds the
     claim's attempt increment, so ``ctx.attempt`` stays at 1 across
     snooze cycles — an actor that snoozes N times then succeeds counts
-    deferrals (``ctx.snooze_count``, the Oban snoozed-meta /
-    River snoozes-counter convention), not attempts.
+    deferrals (``ctx.snooze_count``), not attempts, because the snooze
+    refunds the attempt budget without consuming work.
     """
     await _record_effect(
         pool,

@@ -735,7 +735,7 @@ async def run_until_drained(backend: "InMemoryBackend") -> None:
             # Production's generic-exception escape routes this failure
             # through _handle_generic_exception and applies the batch
             # hook with the handler's terminal outcome before returning
-            # — a batch completes on any terminal member, GoodJob-aligned
+            # — a batch completes when any member reaches terminal status
             # — so the mirror sets the failed outcome and falls through
             # to the shared hook call below.
             outcome = "failed"
@@ -760,9 +760,10 @@ async def run_until_drained(backend: "InMemoryBackend") -> None:
             # was actor-originated — absorb it and keep draining. On the
             # absorb arm production's CancelledError handler applies the
             # batch hook with "cancelled" best-effort before the re-raise
-            # — the row is terminal, so the batch completes immediately,
-            # GoodJob-aligned — and the mirror does the same: the outcome
-            # is set here and the shared hook call below applies it.
+            # — the row is terminal, so the batch completes immediately
+            # (batch completes when any member reaches terminal status)
+            # — and the mirror does the same: the outcome is set here
+            # and the shared hook call below applies it.
             task = asyncio.current_task()
             if task is not None and task.cancelling() > 0:
                 raise

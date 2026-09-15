@@ -58,8 +58,7 @@ class JobContext[P: BaseModel]:
     ``consume_budget=False``) at dispatch time. Such a deferral refunds
     the claim's attempt increment, so ``attempt`` alone cannot count
     snooze cycles — an actor that wants to snooze N times and then
-    succeed keys off ``snooze_count`` (the Oban snoozed-meta /
-    River snoozes-counter convention), not off ``attempt``.
+    succeed keys off ``snooze_count``, not off ``attempt``.
     """
 
     job_id: UUID

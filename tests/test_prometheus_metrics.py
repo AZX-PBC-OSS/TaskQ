@@ -454,6 +454,89 @@ def test_rules_yaml_histogram_bucket_names_match_bridge(env: _PromEnv) -> None:
             )
 
 
+# ── Issue #192: TaskQScheduledBacklogGrowing `and` joins mismatched labels ──
+
+
+def _extract_and_operand_metric_names(expr: str) -> list[str]:
+    """Pull the two bare metric-family names joined by a top-level ` and ` in a
+    simple `<vector> and <vector>` PromQL expression (no `on`/`ignoring`)."""
+    import re
+
+    left, sep, right = expr.partition(" and ")
+    assert sep, f"expected an unqualified ' and ' in expr: {expr!r}"
+    # Each side looks like: deriv(NAME{...}[15m]) > 0   or   NAME > 300
+    names = []
+    for side in (left, right):
+        m = re.search(r"([A-Za-z_:][A-Za-z0-9_:]*)\s*(?:\{|[<>=!]|$)", side.strip())
+        assert m, f"could not find a metric name in and-operand: {side!r}"
+        names.append(m.group(1))
+    return names
+
+
+def test_scheduled_backlog_growing_and_operands_have_compatible_labels(
+    env: _PromEnv,
+) -> None:
+    """Issue #192 (red): TaskQScheduledBacklogGrowing's `and` can never fire
+    because its two operands carry different label sets.
+
+    PromQL vector-to-vector `and` (with no `on`/`ignoring` modifier) only
+    pairs series whose label sets are IDENTICAL. `taskq_jobs_by_status` is
+    emitted with a `status` label (_observe_jobs_by_status in obs/_otel.py
+    yields Observation(count, {"status": status})), while
+    `taskq_jobs_oldest_due_age_seconds` is emitted with NO labels at all
+    (_observe_oldest_due_age yields a bare Observation(...) with no
+    attributes). The `and` in the alert expression therefore has no matching
+    pairs, ever, regardless of how bad the real backlog stall is.
+
+    This test drives the real OTel->Prometheus bridge with the production
+    gauge shapes, scrapes actual exposition text, and asserts the label sets
+    on both sides of the `and` in the shipped rules.yaml expression are
+    compatible (equal). It currently fails, proving the alert is dead on
+    arrival.
+    """
+    import re
+
+    # Populate the two gauges the way the real callbacks do: `by_status` is
+    # per-status labeled, `oldest_due_age_seconds` is emitted bare.
+    meter = env.meter()
+    meter.create_observable_gauge(
+        "taskq.jobs.by_status",
+        unit="1",
+        callbacks=[lambda _: [Observation(7, {"status": "scheduled"})]],
+    )
+    meter.create_observable_gauge(
+        "taskq.jobs.oldest_due_age_seconds",
+        unit="s",
+        callbacks=[lambda _: [Observation(600.0)]],
+    )
+    text = env.scrape()
+
+    data = yaml.safe_load(_RULES_YAML.read_text())
+    rule = next(
+        r for r in data["groups"][0]["rules"] if r.get("alert") == "TaskQScheduledBacklogGrowing"
+    )
+    left_name, right_name = _extract_and_operand_metric_names(rule["expr"])
+
+    def _label_keys_for(metric_name: str) -> set[str]:
+        for line in text.splitlines():
+            if line.startswith(f"{metric_name}{{") or line.startswith(f"{metric_name} "):
+                m = re.match(rf"^{re.escape(metric_name)}(\{{([^}}]*)\}})?", line)
+                assert m
+                labels_blob = m.group(2) or ""
+                return {kv.split("=", 1)[0] for kv in labels_blob.split(",") if kv}
+        raise AssertionError(f"metric {metric_name!r} not found in scrape output:\n{text}")
+
+    left_labels = _label_keys_for(left_name)
+    right_labels = _label_keys_for(right_name)
+
+    assert left_labels == right_labels, (
+        f"TaskQScheduledBacklogGrowing joins {left_name!r} (labels={left_labels}) "
+        f"and {right_name!r} (labels={right_labels}) with an unqualified `and`; "
+        "PromQL vector `and` requires identical label sets to pair series, so "
+        "with these mismatched label sets the alert can never fire."
+    )
+
+
 # ── ImportError without [prometheus] extra ─────────────────
 
 

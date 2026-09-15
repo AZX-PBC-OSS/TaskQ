@@ -372,7 +372,15 @@ async def test_running_to_scheduled_retry_after_no_consume(
 async def test_running_to_scheduled_reservation_denied(
     memory_jobs: InMemoryBackend,
 ) -> None:
-    """running → scheduled via mark_snoozed(outcome='reservation_denied')."""
+    """A reservation denial reschedules without spending retry budget.
+
+    Being refused admission is a "come back later" answer about capacity,
+    not an execution of the job: the actor never ran, so nothing about
+    the job was tried and nothing may be charged against its retry
+    budget. The claim's attempt increment is refunded, no attempt row is
+    written, and the aggregated denial counter on the row is the whole
+    durable record of the contention.
+    """
     job_id, worker_id = await _enqueue_and_dispatch(memory_jobs)
 
     result = await memory_jobs.mark_snoozed(
@@ -396,6 +404,104 @@ async def test_running_to_scheduled_reservation_denied(
     assert len(attempts) == 0
     assert row.rate_limit_blocked_count == 1
     assert row.snooze_count == 0
+    # No budget consumed: the claim's increment is refunded, exactly as
+    # an actor-requested deferral refunds it, so a job that is denied a
+    # slot a thousand times still has its full budget for its first real
+    # execution.
+    assert row.attempt == 0
+    assert row.max_attempts == 3
+
+
+# ── denial at spent budget reschedules, never terminally fails ──
+
+
+async def test_denial_at_spent_budget_reschedules_not_fails(
+    memory_jobs: InMemoryBackend,
+) -> None:
+    """An admission denial can never by itself terminally fail a job.
+
+    A rate-limit or reservation denial carries the semantics of an HTTP
+    429 with Retry-After: the job is rescheduled indefinitely with
+    backoff until capacity frees, and only its schedule-to-close
+    deadline may end it. A queue or rate-limit misconfiguration must not
+    be able to kill work that simply never got a slot, so a job whose
+    attempt counter already sits at its ceiling — and which carries no
+    close deadline — is still rescheduled rather than failed with
+    MaxAttemptsExceeded.
+    """
+    job_id, worker_id = await _enqueue_and_dispatch(
+        memory_jobs, max_attempts=1, retry_kind="transient"
+    )
+
+    row = await memory_jobs.get(job_id)
+    assert row is not None
+    # The claim put the row at its ceiling with no deadline to exit by:
+    # the only exit a denial could invent here is a terminal one.
+    assert row.attempt == row.max_attempts
+    assert row.schedule_to_close is None
+
+    result = await memory_jobs.mark_snoozed(
+        job_id,
+        worker_id,
+        delay=timedelta(seconds=5),
+        outcome="rate_limit_denied",
+        attempt=1,
+    )
+    assert result == "scheduled"
+
+    row = await memory_jobs.get(job_id)
+    assert row is not None
+    assert row.status == "scheduled"
+    assert row.error_class is None
+    assert row.finished_at is None
+    # Contention stays visible through the aggregated counter, not
+    # through a terminal state.
+    assert row.rate_limit_blocked_count == 1
+
+    # No per-denial bookkeeping rows on either surface.
+    attempts = await memory_jobs.get_attempts(job_id)
+    assert len(attempts) == 0
+    events = await memory_jobs.get_events(job_id)
+    assert not any(
+        e.detail.get("error_class") == "MaxAttemptsExceeded"
+        for e in events
+        if e.kind == "state_change"
+    )
+
+
+# ── a denied job's only terminal exit is its schedule-to-close ──
+
+
+async def test_denial_terminal_exit_is_the_deadline(
+    memory_jobs: InMemoryBackend,
+) -> None:
+    """Expiry, not budget, is what finally ends a perpetually denied job.
+
+    Rescheduling a denied job indefinitely is only safe because the
+    schedule-to-close deadline still bounds it. When the next admission
+    retry would land past that deadline the job fails terminally through
+    the normal deadline path — DeadlineExceeded, the honest cause —
+    never through the retry budget.
+    """
+    deadline = _START + timedelta(seconds=10)
+    job_id, worker_id = await _enqueue_and_dispatch(
+        memory_jobs, max_attempts=1, retry_kind="transient", schedule_to_close=deadline
+    )
+
+    result = await memory_jobs.mark_snoozed(
+        job_id,
+        worker_id,
+        delay=timedelta(seconds=30),
+        outcome="rate_limit_denied",
+        attempt=1,
+    )
+    assert result == "failed"
+
+    row = await memory_jobs.get(job_id)
+    assert row is not None
+    assert row.status == "failed"
+    assert row.error_class == "DeadlineExceeded"
+    assert row.finished_at is not None
 
 
 # ── running → scheduled via mark_failed_or_retry Branch B ───────
@@ -513,7 +619,15 @@ async def test_scheduled_to_cancelled(memory_jobs: InMemoryBackend) -> None:
 async def test_running_to_cancelled_cooperative(
     memory_jobs: InMemoryBackend,
 ) -> None:
-    """running → cancelled cooperative (cancel_phase=1 preserved)."""
+    """A cooperative cancel is auditable from the row alone.
+
+    Every other terminal path stamps an error_class naming why the job
+    ended; a cancel that leaves it NULL makes a job that stopped itself
+    on request indistinguishable from one that was forcibly abandoned,
+    so an operator reconstructing what happened has only the logs. The
+    terminal write records a distinguishing cause alongside the
+    preserved cancel phase.
+    """
     job_id, worker_id = await _enqueue_and_dispatch(memory_jobs)
 
     ok = await memory_jobs.write_cancel_request(job_id, reason="user")
@@ -530,6 +644,14 @@ async def test_running_to_cancelled_cooperative(
     assert row.status == "cancelled"
     assert row.finished_at is not None
     assert row.cancel_phase == CancelPhase.COOPERATIVE
+    assert row.error_class is not None, (
+        "a cooperative cancel wrote no cause — cancel origin is not reconstructable from the row"
+    )
+
+    attempts = await memory_jobs.get_attempts(job_id)
+    assert len(attempts) == 1
+    assert attempts[0].outcome == "cancelled"
+    assert attempts[0].error_class == row.error_class
 
 
 # ── running → cancelled forced (cp=2 preserved) ─────────────────
@@ -538,7 +660,14 @@ async def test_running_to_cancelled_cooperative(
 async def test_running_to_cancelled_forced(
     memory_jobs: InMemoryBackend,
 ) -> None:
-    """running → cancelled forced (cancel_phase=2 preserved)."""
+    """A forced cancel records a cause distinct from a cooperative one.
+
+    The two paths mean different things operationally: a cooperative
+    cancel is an actor that noticed the request and stopped cleanly, a
+    forced one is an actor that had to be interrupted. Telling them
+    apart in the database — not only in logs — is what lets an operator
+    see that actors are ignoring cancellation requests.
+    """
     job_id, worker_id = await _enqueue_and_dispatch(memory_jobs)
 
     await memory_jobs.write_cancel_request(job_id, reason="user")
@@ -556,6 +685,21 @@ async def test_running_to_cancelled_forced(
     assert row.status == "cancelled"
     assert row.finished_at is not None
     assert row.cancel_phase == CancelPhase.FORCED
+    assert row.error_class is not None, (
+        "a forced cancel wrote no cause — cancel origin is not reconstructable from the row"
+    )
+
+    # The same run through the cooperative path must land a different
+    # cause, or the column carries no information.
+    coop_id, coop_worker = await _enqueue_and_dispatch(memory_jobs)
+    await memory_jobs.write_cancel_request(coop_id, reason="user")
+    assert await memory_jobs.mark_cancelled(coop_id, coop_worker, attempt=1) is True
+    coop_row = await memory_jobs.get(coop_id)
+    assert coop_row is not None
+    assert coop_row.error_class != row.error_class, (
+        "a forced cancel and a cooperative cancel wrote the same cause — "
+        "the two are indistinguishable from the database"
+    )
 
 
 # ── running → abandoned (cp=2, cleanup grace elapsed) ───────────
@@ -564,7 +708,13 @@ async def test_running_to_cancelled_forced(
 async def test_running_to_abandoned(
     memory_jobs: InMemoryBackend,
 ) -> None:
-    """running → abandoned (cancel_phase=2, cleanup grace elapsed)."""
+    """An abandoned job's attempt row names abandonment as the cause.
+
+    An abandon is the outcome where the worker gave up waiting for an
+    actor that would not stop; its audit row must say so rather than
+    reading like any other cancellation, since it is the signal that
+    cleanup grace was exhausted.
+    """
     job_id, worker_id = await _enqueue_and_dispatch(memory_jobs)
 
     await memory_jobs.write_cancel_request(job_id, reason="timeout")
@@ -581,6 +731,10 @@ async def test_running_to_abandoned(
     attempts = await memory_jobs.get_attempts(job_id)
     assert len(attempts) == 1
     assert attempts[0].outcome == "cancelled"
+    assert attempts[0].error_class is not None, (
+        "an abandoned job's attempt row wrote no cause — an abandon is "
+        "indistinguishable from a clean cancel in the audit trail"
+    )
 
 
 # ── running → crashed via reclaim_expired_locks ──────────────────

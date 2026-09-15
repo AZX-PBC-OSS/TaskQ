@@ -563,10 +563,10 @@ class JobsClient:
           like the pre-scope global behavior, just scoped to that
           namespace. This is a deliberate scope decision, not an
           oversight: a real sliding-window TTL cannot be expressed as a
-          single static unique index the way scope can — every mature
-          job queue that offers one (Oban, River) either gives up the
-          atomic ``INSERT ... ON CONFLICT`` for a check-then-insert lock
-          (weaker concurrency guarantee) or buckets time into the key
+          single static unique index the way scope can — a sliding
+          window would require either abandoning the atomic ``INSERT
+          ... ON CONFLICT`` for a check-then-insert lock (weaker
+          concurrency guarantee) or encoding time-bucketing into the key
           itself (coarser, edge-artifact-prone semantics). If your use
           case genuinely needs "dedupe for the next hour, not forever,"
           encode the window into the scope yourself (e.g. a
@@ -1553,11 +1553,10 @@ class JobsClient:
         sequence of statuses (e.g. ``JobFilter(status=["pending",
         "running"])``).
 
-        ``filter.active`` is a meta-filter — **not Celery's 'active'**:
-        ``active=True`` selects *non-terminal* statuses (pending,
-        scheduled, running — 'not yet finished', not 'currently
-        executing') and ``active=False`` selects terminal ones.  See
-        :class:`JobFilter` for full semantics.
+        ``filter.active`` is a meta-filter: ``active=True`` selects
+        *non-terminal* statuses (pending, scheduled, running — 'not yet
+        finished', not 'currently executing') and ``active=False`` selects
+        terminal ones.  See :class:`JobFilter` for full semantics.
 
         ``next_cursor`` is returned for every ordering, encoded from the
         columns that ordering actually sorts by, and is only ``None`` on

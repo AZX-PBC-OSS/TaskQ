@@ -1159,3 +1159,229 @@ def test_ops_footgun_registry_names_the_inversion_trap() -> None:
         "the lease reclaims first), or warn at dispatch where both values "
         "are known — either satisfies this pin."
     )
+
+
+# ── non-positive stored heartbeat_timeout must never govern ──────────
+
+
+@pytest.mark.integration
+async def test_non_positive_stored_heartbeat_timeout_never_reclaims_a_healthy_holder(
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_schema: ModulePgSchema,
+) -> None:
+    """A stored ``heartbeat_timeout`` of zero or a negative interval must
+    be inert: the heartbeat arm must leave such a row running and let its
+    lease govern, exactly as it does for a row that carries no knob at
+    all.
+
+    Enqueue validation refuses a non-positive ``heartbeat_timeout``, but
+    that is the only gate in the system. A row can carry ``0`` or a
+    negative interval by any path that writes the column directly — rows
+    stored before the knob was validated and enforced, a manual UPDATE,
+    any future write path — and the column carries no CHECK constraint.
+    With such a value ``last_heartbeat_at + heartbeat_timeout <
+    statement_timestamp()`` is true from the instant the row is written,
+    so a maximally healthy holder, beating right now with an hour of
+    lease left, is reclaimed as a false crash on the very first sweep.
+
+    Operationally this is worse than the documented lower-bound sizing
+    trap: that trap at least requires a genuinely missed beat. A
+    degenerate stored value needs none — the row is eligible before the
+    holder could possibly have missed anything, so a rolling upgrade
+    silently discards in-flight work fleet-wide.
+    """
+    schema = module_pg_schema.schema_name
+    worker_id = new_uuid()
+    await create_worker(clean_pg_conn, schema, worker_id)
+
+    # Healthy, actively-heartbeating job — degenerate zero timeout only.
+    zero_timeout = await _seed_hb_running_job(
+        clean_pg_conn,
+        schema,
+        worker_id,
+        heartbeat_age=timedelta(0),
+        heartbeat_timeout=timedelta(0),
+        lease_expires_in=timedelta(hours=1),
+    )
+    # Same shape with a negative stored timeout (also unreachable via
+    # enqueue, also unguarded by any schema constraint or sweep check).
+    negative_timeout = await _seed_hb_running_job(
+        clean_pg_conn,
+        schema,
+        worker_id,
+        heartbeat_age=timedelta(0),
+        heartbeat_timeout=timedelta(seconds=-5),
+        lease_expires_in=timedelta(hours=1),
+    )
+    # Control: a real, positive, well-sized timeout with the same fresh
+    # beat must NOT be reclaimed.
+    control = await _seed_hb_running_job(
+        clean_pg_conn,
+        schema,
+        worker_id,
+        heartbeat_age=timedelta(0),
+        heartbeat_timeout=timedelta(seconds=30),
+        lease_expires_in=timedelta(hours=1),
+    )
+
+    count = await PostgresBackend.sweep_expired_locks(clean_pg_conn, _GRACE, _GRACE, schema=schema)
+
+    assert await _job_status(clean_pg_conn, schema, control) == "running", (
+        "control row (positive, well-sized heartbeat_timeout, fresh beat) "
+        "was reclaimed — seeding or sweep call is broken, not the bug under test."
+    )
+    assert await _job_status(clean_pg_conn, schema, zero_timeout) == "running", (
+        f"a job with heartbeat_timeout=0 and a beat stamped at seed time (no "
+        f"missed heartbeat whatsoever, lease valid for another hour) was "
+        f"reclaimed by the sweep (count={count}). The heartbeat arm guards "
+        f"only `heartbeat_timeout IS NOT NULL`, with no positivity conjunct, "
+        f"and the column carries no CHECK constraint — so a non-positive "
+        f"stored value reclaims a perfectly healthy running job as a false "
+        f"crash on the very first sweep after dispatch."
+    )
+    assert await _job_status(clean_pg_conn, schema, negative_timeout) == "running", (
+        f"a healthy, actively-heartbeating job with heartbeat_timeout=-5s was "
+        f"reclaimed by the sweep (count={count}) with zero missed beats — the "
+        f"heartbeat arm must treat a non-positive stored timeout as inert and "
+        f"let the lease govern."
+    )
+
+
+@pytest.mark.integration
+async def test_heartbeat_timeout_at_the_documented_sizing_leaves_a_beating_holder_alone(
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_schema: ModulePgSchema,
+) -> None:
+    """A job sized exactly as the ops guide instructs — ``heartbeat_timeout``
+    at twice the fleet's heartbeat interval and comfortably below the lock
+    lease — must survive every sweep while its holder keeps beating.
+
+    This is the sizing an operator who follows the documentation actually
+    deploys, so it is the shape that must never produce a false reclaim.
+    The row is swept twice with a beat refreshed in between, which is what
+    a live holder does: a reclaim here would mean the enforcement arm eats
+    healthy work at the only sizing the guide blesses.
+    """
+    schema = module_pg_schema.schema_name
+    worker_id = new_uuid()
+    await create_worker(clean_pg_conn, schema, worker_id)
+    # Documented window: >= 2x heartbeat_interval, < lock_lease.
+    heartbeat_interval = timedelta(seconds=5)
+    lock_lease = timedelta(seconds=60)
+    timeout = 2 * heartbeat_interval
+    assert timeout < lock_lease, "the fixture must sit inside the documented window"
+
+    job_id = await _seed_hb_running_job(
+        clean_pg_conn,
+        schema,
+        worker_id,
+        # One interval of silence: a holder beating on schedule.
+        heartbeat_age=heartbeat_interval,
+        heartbeat_timeout=timeout,
+        lease_expires_in=lock_lease,
+    )
+
+    for _ in range(2):
+        count = await PostgresBackend.sweep_expired_locks(
+            clean_pg_conn, _GRACE, _GRACE, schema=schema
+        )
+        assert count == 0, (
+            f"the sweep reclaimed {count} rows while the only running job was "
+            "beating on schedule at the documented sizing (heartbeat_timeout = "
+            "2x heartbeat_interval, below lock_lease) — heartbeat enforcement "
+            "must never touch a healthy holder."
+        )
+        assert await _job_status(clean_pg_conn, schema, job_id) == "running"
+        # The holder's next beat lands.
+        await clean_pg_conn.execute(
+            f'UPDATE "{schema}".jobs SET last_heartbeat_at = clock_timestamp() WHERE id = $1',
+            job_id,
+        )
+
+    assert await _attempt_count(clean_pg_conn, schema, job_id) == 0, (
+        "a healthy holder must accrue no crash attempt rows"
+    )
+    assert await _event_count(clean_pg_conn, schema, job_id) == 0, (
+        "a healthy holder must accrue no reclaim events"
+    )
+
+
+async def test_twin_treats_a_non_positive_stored_heartbeat_timeout_as_inert() -> None:
+    """Backend parity for the non-positive stored timeout: the in-memory
+    twin must leave a zero or negative ``heartbeat_timeout`` row running
+    on a fresh beat, exactly as the SQL arm must.
+
+    The twin is the backend every consumer test runs against, so a twin
+    that reclaims these rows hides the production defect from the whole
+    suite — and a twin that keeps reclaiming them after the SQL is fixed
+    breaks the seam-equivalence contract from the other direction.
+    """
+    backend = _twin_backend()
+    zero_timeout = _twin_running_row(
+        backend,
+        heartbeat_at=_TWIN_START,
+        heartbeat_timeout=timedelta(0),
+        lease=_TWIN_START + timedelta(hours=1),
+    )
+    negative_timeout = _twin_running_row(
+        backend,
+        heartbeat_at=_TWIN_START,
+        heartbeat_timeout=timedelta(seconds=-5),
+        lease=_TWIN_START + timedelta(hours=1),
+    )
+    control = _twin_running_row(
+        backend,
+        heartbeat_at=_TWIN_START - timedelta(hours=1),
+        heartbeat_timeout=timedelta(seconds=30),
+        lease=_TWIN_START + timedelta(hours=1),
+    )
+
+    await backend.reclaim_expired_locks(_GRACE, _GRACE)
+
+    control_row = await backend.get(control)
+    assert control_row is not None and control_row.status != "running", (
+        "the twin's heartbeat arm did not run (the control row is still "
+        "running), so the assertions below prove nothing."
+    )
+    for job_id, label in ((zero_timeout, "zero"), (negative_timeout, "negative")):
+        row = await backend.get(job_id)
+        assert row is not None and row.status == "running", (
+            f"the twin reclaimed a healthy, freshly-beating job carrying a "
+            f"{label} stored heartbeat_timeout — a non-positive timeout must be "
+            "inert on both backends, leaving the lease to govern."
+        )
+
+
+async def test_twin_heartbeat_attempt_row_does_not_claim_the_lock_expired() -> None:
+    """Backend parity for the reclaim audit trail: the twin's attempt row
+    for a heartbeat reclaim must name the heartbeat deadline, never a lock
+    expiry.
+
+    The heartbeat arm selects a row precisely because its lease is still
+    valid, so an attempt row asserting "lock expired" is a falsehood an
+    operator reconciling ``job_attempts`` against ``jobs`` cannot resolve.
+    Both backends write this audit surface, so both must tell the truth.
+    """
+    backend = _twin_backend()
+    job_id = _twin_running_row(
+        backend,
+        heartbeat_at=_TWIN_START - timedelta(hours=1),
+        heartbeat_timeout=timedelta(seconds=30),
+        lease=_TWIN_START + timedelta(hours=1),
+        max_attempts=1,
+        attempt=1,
+    )
+
+    count = await backend.reclaim_expired_locks(_GRACE, _GRACE)
+    assert count == 1
+
+    attempts = backend._attempts.get(job_id, [])
+    assert len(attempts) == 1, f"the heartbeat reclaim must write one attempt row, got {attempts!r}"
+    attempt = attempts[-1]
+    assert attempt.outcome == "crashed"
+    assert "lock expired" not in str(attempt.error_message), (
+        f"the twin's attempt row for a HEARTBEAT reclaim says "
+        f"{attempt.error_message!r}, but the arm selected this row with its "
+        "lease an hour in the future — the audit trail must name the "
+        "heartbeat deadline that actually fired."
+    )

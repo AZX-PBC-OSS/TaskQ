@@ -290,3 +290,75 @@ async def test_cancel_where_returns_bulk_cancel_result_type() -> None:
     result = await backend.cancel_where(JobFilter(tags=("x",)), reason=None)
 
     assert isinstance(result, BulkCancelResult)
+
+
+async def test_bulk_cancel_marks_origin_consistently_with_single_job_cancel() -> None:
+    """A job cancelled by a bulk filter carries the same cancel-origin
+    marker on its row as the same job cancelled one at a time.
+
+    Bulk cancel is how an operator offboards a tenant or aborts a bad
+    deploy, and it is exactly the moment monitoring needs to say *why*
+    thousands of rows went terminal. If the bulk path writes a different
+    marker from the single-job path — or none at all — a cancelled-jobs
+    dashboard splits into two populations that mean the same thing, and
+    the bulk one is the population with no explanation attached.
+    """
+    backend = InMemoryBackend(clock=FakeClock(_NOW))
+
+    single = await backend.enqueue(make_enqueue_args(tags=("single",), scheduled_at=_NOW))
+    bulk = await backend.enqueue(make_enqueue_args(tags=("bulk",), scheduled_at=_NOW))
+
+    await backend.write_cancel_request(single.id, "offboard")
+    await backend.cancel_where(JobFilter(tags=("bulk",)), reason="offboard")
+
+    single_row = await backend.get(single.id)
+    bulk_row = await backend.get(bulk.id)
+    assert single_row is not None
+    assert bulk_row is not None
+    assert single_row.status == bulk_row.status == "cancelled"
+
+    assert bulk_row.error_class is not None, (
+        "a bulk-cancelled job row carries no cancel-origin marker, so a "
+        "mass cancellation is indistinguishable on the row from any other "
+        "terminal cancel"
+    )
+    assert bulk_row.error_class == single_row.error_class, (
+        "the bulk-cancel and single-job cancel paths stamp different "
+        f"cancel-origin markers ({bulk_row.error_class!r} vs "
+        f"{single_row.error_class!r}); the same outcome must read the same "
+        "way whichever path produced it"
+    )
+
+
+async def test_bulk_cancelled_job_leaves_terminal_timeline_entry() -> None:
+    """Every job a bulk cancel terminates keeps a terminal-cancel entry on
+    its event timeline.
+
+    The bulk path writes its events in bounded batches rather than one per
+    call, which is the shape most likely to lose a transition under
+    batching. No cancelled job may end with a timeline that never shows it
+    ending.
+    """
+    backend = InMemoryBackend(clock=FakeClock(_NOW))
+
+    rows = [
+        await backend.enqueue(make_enqueue_args(tags=("tenant-acme",), scheduled_at=_NOW))
+        for _ in range(3)
+    ]
+
+    await backend.cancel_where(JobFilter(tags=("tenant-acme",)), reason="offboard")
+
+    for row in rows:
+        updated = await backend.get(row.id)
+        assert updated is not None
+        assert updated.status == "cancelled"
+        events = await backend.get_events(row.id)
+        terminal = [
+            e
+            for e in events
+            if e.kind == "state_change" and (e.detail or {}).get("to_state") == "cancelled"
+        ]
+        assert terminal, (
+            "a bulk-cancelled job left no terminal-cancel entry on its event "
+            f"timeline; kinds were {[e.kind for e in events]}"
+        )

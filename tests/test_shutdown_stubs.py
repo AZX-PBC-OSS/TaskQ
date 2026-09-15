@@ -1,9 +1,10 @@
 """Unit tests for producer_loop_stub and consumer_loop_stub.
 
-— producer exits on producer_stop_event / shutdown_event.
-— consumer deregister-ordering and exception paths.
-— except-chain ordering (CancelledError not routed to generic Exception).
-Race-winner cleanup — no pending-task leaks.
+- producer exits on producer_stop_event / shutdown_event.
+- consumer deregister-ordering and exception paths.
+- except-chain ordering (CancelledError not routed to generic Exception).
+- race-winner cleanup, no pending-task leaks.
+- consumer stops dequeuing once DRAINING cedes its rows to another worker.
 """
 
 import asyncio
@@ -525,3 +526,70 @@ async def test_no_pending_task_leak_consumer_cancelled_before_dequeue() -> None:
 
     after = len(asyncio.all_tasks(loop))
     assert before == after
+
+
+# ── DRAINING ownership handoff ───────────────────────────────────
+
+
+async def test_consumer_stub_stops_dequeuing_once_producer_stop_is_set() -> None:
+    """A job still in local_queue when DRAINING begins must not be run here.
+
+    Shutdown re-pends every local_queue row this worker holds back to
+    status='pending' immediately after setting producer_stop_event, which cedes
+    ownership of those rows to whatever worker claims them next. The in-memory
+    copy sitting in local_queue is then stale: running it executes the same job
+    body twice, once under this worker's attempt and once under the claimer's.
+
+    producer_stop_event is the only signal available at that moment.
+    shutdown_event fires only after the full DRAINING/CANCELLING/FORCING/
+    ABANDONING sequence completes, so a consumer that guards on shutdown_event
+    alone keeps dequeuing for the entire length of the shutdown.
+    """
+    deps = _stub_deps()
+    job = _make_job(actor="drain_handoff_actor")
+
+    queue: asyncio.Queue[JobRow] = asyncio.Queue()
+    queue.put_nowait(job)
+
+    shutdown_event = asyncio.Event()
+    backend = _make_backend_mock()
+    worker_id = new_uuid()
+
+    consumer_task = asyncio.create_task(
+        consumer_loop_stub(
+            deps,
+            queue,
+            shutdown_event,
+            backend=backend,
+            worker_id=worker_id,
+            stub_work_timeout=60.0,
+        ),
+    )
+
+    # DRAINING entry: producer_stop_event without shutdown_event.
+    await asyncio.sleep(0)
+    deps.producer_stop_event.set()
+
+    # Several turns for the loop to act on (or ignore) the signal.
+    for _ in range(10):
+        await asyncio.sleep(0)
+        if deps.active_jobs.count() > 0:
+            break
+
+    registered_while_draining = deps.active_jobs.count() > 0
+
+    shutdown_event.set()
+    consumer_task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await asyncio.wait_for(consumer_task, timeout=1.0)
+
+    assert not registered_while_draining, (
+        "consumer_loop_stub registered a local_queue job after "
+        "producer_stop_event was set with shutdown_event still unset. That row "
+        "has already been re-pended and handed to another worker, so running it "
+        "here executes the job body twice."
+    )
+
+    # No terminal write for a job this worker no longer owns.
+    backend.mark_succeeded.assert_not_called()  # type: ignore[attr-defined]
+    backend.mark_cancelled.assert_not_called()  # type: ignore[attr-defined]

@@ -3,11 +3,10 @@
 """CONTRACT UNDER ATTACK: the admin ``retry_job`` escape hatch leaves the
 re-run job resolvable by the queue's own machinery.
 
-``retry_job`` keeps ``attempt`` monotonic (never reset — the Oban/River
-admin-retry precedent) and raises the ``max_attempts`` ceiling so the
-budget gates open, so a re-dispatched job climbs to fresh attempt
-numbers and no attempt-row write revisits a spent epoch's
-``job_attempts`` PRIMARY KEY (job_id, attempt). This file pins the
+``retry_job`` keeps ``attempt`` monotonic (never reset) and raises the
+``max_attempts`` ceiling so the budget gates open, so a re-dispatched job
+climbs to fresh attempt numbers and no attempt-row write revisits a spent
+epoch's ``job_attempts`` PRIMARY KEY (job_id, attempt). This file pins the
 consequence contracts that motivated the fix; a reintroduced epoch
 reset would make every one of them fire again:
 
@@ -170,9 +169,9 @@ async def test_epoch2_collision_must_not_strand_job_running(
     assert spent is not None and spent.status == "failed" and spent.attempt == 1
     assert [a.attempt for a in await backend.get_attempts(job_id)] == [1]
 
-    # The operator's escape hatch: attempt stays at its spent value (the
-    # admin-retry precedent never resets the counter) and the ceiling
-    # rises so the budget gates open; the row re-pends.
+    # The operator's escape hatch: attempt stays at its spent value (never
+    # reset) and the ceiling rises so the budget gates open; the row
+    # re-pends.
     assert await backend.retry_job(job_id)
     repended = await backend.get(job_id)
     assert repended is not None and repended.status == "pending"

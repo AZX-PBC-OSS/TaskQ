@@ -49,10 +49,15 @@ from typer.testing import CliRunner
 
 from taskq._ids import new_job_id, new_uuid
 from taskq.actor_config import ActorConfig
-from taskq.actor_config_ops import ActorQueueMoveResult, move_actor_queue
+from taskq.actor_config_ops import (
+    _MOVE_BACKLOG_BATCH_SQL,  # pyright: ignore[reportPrivateUsage]  # Why: the drain's own statement is the oracle for per-batch cost; a copy here would drift from the shipped one.
+    ActorQueueMoveResult,
+    move_actor_queue,
+)
 from taskq.backend._dispatch_sql import DISPATCH_STRICT_FIFO_SQL
 from taskq.backend._dispatch_sql import dispatch_batch as dispatch_batch_sql
 from taskq.backend._protocol import EnqueueArgs
+from taskq.backend._sql_templates import render
 from taskq.cli import app
 from taskq.exceptions import ActorConfigDriftList, ActorNotFoundError
 from taskq.testing.fixtures import ModulePgSchema
@@ -237,6 +242,28 @@ async def _enqueue(
     await backend.enqueue_batch(args, connection=conn)
 
 
+async def _enqueue_one(conn: asyncpg.Connection, schema: str, *, actor: str, queue: str) -> object:
+    """Enqueue a single due job through the production path, returning its id."""
+    settings = cron_settings(schema)
+    backend = make_backend(settings)
+    job_id = new_job_id()
+    await backend.enqueue_batch(
+        [
+            EnqueueArgs(
+                id=job_id,
+                actor=actor,
+                queue=queue,
+                payload={"probe": actor},
+                max_attempts=3,
+                retry_kind="transient",
+                scheduled_at=_DUE,
+            )
+        ],
+        connection=conn,
+    )
+    return job_id
+
+
 async def _dispatch(
     conn: asyncpg.Connection, schema: str, queues: list[str], limit_n: int
 ) -> list[asyncpg.Record]:
@@ -266,6 +293,18 @@ async def _count_jobs(
         status,
     )
     return int(total or 0)
+
+
+def _plan_buffers(node: dict[str, Any]) -> int:
+    """Total shared buffers hit+read across a JSON EXPLAIN plan tree.
+
+    Buffers track the rows a statement actually visited, so they expose a
+    batch re-walking already-moved rows without depending on machine speed.
+    """
+    total = int(node.get("Shared Hit Blocks", 0)) + int(node.get("Shared Read Blocks", 0))
+    for child in node.get("Plans", []):
+        total += _plan_buffers(child)
+    return total
 
 
 class TestMoveActorQueue:
@@ -452,6 +491,245 @@ class TestMoveActorQueue:
         assert new_q["mode"] == "strict_fifo"
         assert new_q["max_concurrent"] == 9
 
+    async def test_retry_of_never_claimed_job_is_claimable_on_the_actors_current_queue(
+        self, clean_pg_conn: asyncpg.Connection, module_pg_schema: ModulePgSchema
+    ) -> None:
+        """A job terminalized before it was ever claimed, then retried by an
+        operator after the actor moved, must still reach a consumer of the
+        actor's CURRENT queue.
+
+        An operator retry is a re-pended tail, not a producer placement: the
+        row keeps its original queue label as an audit trail, but dispatch
+        routes it by the actor's stored assignment. Operators are told to stop
+        consuming the source queue once every producer ships the new literal,
+        so a tail that routed by its stale label instead would be stranded
+        permanently — pending, due, and invisible to every running consumer.
+        """
+        schema = module_pg_schema.schema_name
+        conn = clean_pg_conn
+        sql = render(schema)
+
+        await sync_actor_config(
+            conn,
+            [ActorConfig(actor=_ACTOR, max_concurrent=None, queue=_OLD_QUEUE)],
+            schema=schema,
+        )
+
+        # A job enqueued (and never claimed) before the move, then cancelled
+        # while still pending, so started_at stays NULL.
+        job_id = await _enqueue_one(conn, schema, actor=_ACTOR, queue=_OLD_QUEUE)
+        cancel_rec = await conn.fetchrow(sql.cancel_pending_scheduled, job_id)
+        assert cancel_rec is not None, "setup: job must cancel while still pending"
+
+        started_at = await conn.fetchval(
+            f'SELECT started_at FROM "{schema}".jobs WHERE id = $1', job_id
+        )
+        assert started_at is None, "setup: job must never have been claimed"
+
+        # The actor moves. There is no backlog to drain (the job is terminal),
+        # so this only flips the assignment.
+        await move_actor_queue(conn, _ACTOR, _NEW_QUEUE, schema=schema)
+
+        # The operator now runs a consumer of the new queue only, and an admin
+        # retries the pre-move cancellation.
+        retry_rec = await conn.fetchrow(sql.retry_job, job_id)
+        assert retry_rec is not None, "retry_job must accept the terminal row"
+
+        row = await conn.fetchrow(
+            f'SELECT status, queue, started_at FROM "{schema}".jobs WHERE id = $1', job_id
+        )
+        assert row is not None
+        assert row["status"] == "pending"
+
+        claimed = await _dispatch(conn, schema, [_NEW_QUEUE], 10)
+        claimed_ids = {r["id"] for r in claimed}
+        assert job_id in claimed_ids, (
+            "admin-retried never-claimed job is stranded on the retired "
+            f"source queue {row['queue']!r} instead of being routed to the "
+            f"actor's current assignment {_NEW_QUEUE!r}; a consumer of only "
+            "the target queue never sees it"
+        )
+
+    async def test_move_reports_pending_jobs_still_carrying_the_old_queue(
+        self, clean_pg_conn: asyncpg.Connection, module_pg_schema: ModulePgSchema
+    ) -> None:
+        """The move must report how many pending jobs still carry the source
+        queue label, so the operator knows what residual the retired queue's
+        consumers still have to serve.
+
+        The move deliberately does not chase every row: a stale producer keeps
+        enqueueing to the source queue, and those strays stay served by the
+        source queue's consumers. That trade-off is only safe if it is
+        *visible* — the operator's decision of when to stop consuming the
+        source queue depends on a count, not a guess. The move onto the queue
+        the actor already occupies stays a refusal: it is a no-op the operator
+        must be told about, and the drain is not the recovery surface for
+        producer-placed strays.
+        """
+        schema = module_pg_schema.schema_name
+        conn = clean_pg_conn
+
+        await sync_actor_config(
+            conn,
+            [ActorConfig(actor=_ACTOR, max_concurrent=None, queue=_OLD_QUEUE)],
+            schema=schema,
+        )
+        await _enqueue(conn, schema, actor=_ACTOR, queue=_OLD_QUEUE, count=2)
+
+        result = await move_actor_queue(conn, _ACTOR, _NEW_QUEUE, schema=schema)
+        assert result.jobs_moved == 2
+
+        # A stale producer, still running the old literal, places one more job
+        # on the retired source queue after the flip.
+        await _enqueue(conn, schema, actor=_ACTOR, queue=_OLD_QUEUE, count=1)
+
+        rerun_refused = False
+        try:
+            await move_actor_queue(conn, _ACTOR, _NEW_QUEUE, schema=schema)
+        except ValueError:
+            rerun_refused = True
+        assert rerun_refused, (
+            "a move onto the queue the actor already occupies must stay a "
+            "refusal; the drain is not the recovery path for producer-placed "
+            "strays"
+        )
+
+        # The residual the operator must plan for is reported, not inferred.
+        residual = getattr(result, "pending_jobs_on_old_queue", None)
+        assert residual is not None, (
+            "ActorQueueMoveResult must report how many pending jobs still "
+            "carry the source queue label; without it the operator has no "
+            "supported way to know when the retired queue can stop being "
+            "consumed"
+        )
+
+    async def test_drain_batch_cost_does_not_grow_as_the_backlog_moves(
+        self, clean_pg_conn: asyncpg.Connection, module_pg_schema: ModulePgSchema
+    ) -> None:
+        """Each drain batch costs the same whether it is the first batch of the
+        backlog or the last, so total drain time is linear in the backlog and
+        not quadratic.
+
+        The drain re-selects "the next ``batch_size`` of this actor's rows
+        still carrying the source queue" on every pass. If the plan fixes only
+        one of ``actor``/``queue`` in an index condition and leaves the other
+        as a post-scan filter, every later batch re-walks the population that
+        earlier batches already rewrote onto the target: batch N pays for the
+        (N-1) * batch_size rows already moved. Operationally that is the
+        difference between a routine queue move and a drain that keeps blowing
+        its own per-batch statement timeout the deeper the backlog gets — and
+        it only shows up on the backlogs large enough that an operator most
+        needs the command to work.
+
+        Measured as buffers touched, which tracks rows actually visited rather
+        than wall clock, so the pin does not turn into a timing flake.
+        """
+        schema = module_pg_schema.schema_name
+        conn = clean_pg_conn
+        batch_size = 20
+        total = batch_size * 10
+
+        await sync_actor_config(
+            conn,
+            [ActorConfig(actor=_ACTOR, max_concurrent=None, queue=_OLD_QUEUE)],
+            schema=schema,
+        )
+        await _enqueue(conn, schema, actor=_ACTOR, queue=_OLD_QUEUE, count=total)
+        await conn.execute(f'ANALYZE "{schema}".jobs')
+
+        drain_sql = _MOVE_BACKLOG_BATCH_SQL.format(schema=schema)
+        per_batch_buffers: list[int] = []
+        while True:
+            plan_rows = await conn.fetch(
+                f"EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) {drain_sql}",
+                _ACTOR,
+                _OLD_QUEUE,
+                _NEW_QUEUE,
+                batch_size,
+            )
+            plan = json.loads(plan_rows[0][0])[0]["Plan"]
+            per_batch_buffers.append(_plan_buffers(plan))
+            remaining = await _count_jobs(
+                conn, schema, actor=_ACTOR, queue=_OLD_QUEUE, status="pending"
+            )
+            if remaining == 0:
+                break
+
+        assert len(per_batch_buffers) >= 5, (
+            f"expected the backlog to drain over several batches; got "
+            f"{len(per_batch_buffers)} batches for {total} rows at "
+            f"batch_size={batch_size}"
+        )
+        first, last = per_batch_buffers[0], per_batch_buffers[-1]
+        assert last <= first * 3, (
+            "the last drain batch touched far more buffers than the first, so "
+            "each batch is re-walking the part of the backlog earlier batches "
+            "already moved onto the target queue — the quadratic-drain "
+            f"mechanism. Buffers per batch: {per_batch_buffers!r}"
+        )
+
+    async def test_large_backlog_drains_completely_under_the_per_batch_deadline(
+        self, clean_pg_conn: asyncpg.Connection, module_pg_schema: ModulePgSchema
+    ) -> None:
+        """A backlog far larger than one batch drains to completion without any
+        batch hitting its own statement timeout, and every pending and
+        scheduled row ends up on the target queue.
+
+        The per-batch deadline is a safety net against a single pathological
+        statement, not a ceiling on how much backlog the command can handle:
+        the bound belongs to the batch, and the loop keeps going. An operator
+        moving a deep queue must get one completed move, not a cancelled
+        statement that strands half the backlog on a queue they were told to
+        stop consuming.
+        """
+        schema = module_pg_schema.schema_name
+        conn = clean_pg_conn
+        total = 400
+        scheduled = 25
+
+        await sync_actor_config(
+            conn,
+            [ActorConfig(actor=_ACTOR, max_concurrent=None, queue=_OLD_QUEUE)],
+            schema=schema,
+        )
+        await _enqueue(conn, schema, actor=_ACTOR, queue=_OLD_QUEUE, count=total)
+        await _enqueue(
+            conn, schema, actor=_ACTOR, queue=_OLD_QUEUE, count=scheduled, scheduled_at=_FUTURE
+        )
+        # A neighbour on the same source queue: the drain predicate is scoped
+        # to the moving actor, so these must be left exactly where they are.
+        await _enqueue(conn, schema, actor=_OTHER_ACTOR, queue=_OLD_QUEUE, count=10)
+
+        result = await move_actor_queue(
+            conn, _ACTOR, _NEW_QUEUE, schema=schema, batch_size=25, statement_timeout_ms=5_000
+        )
+
+        assert result.jobs_moved == total + scheduled
+        assert (
+            await _count_jobs(conn, schema, actor=_ACTOR, queue=_OLD_QUEUE, status="pending") == 0
+        )
+        assert (
+            await _count_jobs(conn, schema, actor=_ACTOR, queue=_OLD_QUEUE, status="scheduled") == 0
+        )
+        assert (
+            await _count_jobs(conn, schema, actor=_ACTOR, queue=_NEW_QUEUE, status="pending")
+            == total
+        )
+        assert (
+            await _count_jobs(conn, schema, actor=_ACTOR, queue=_NEW_QUEUE, status="scheduled")
+            == scheduled
+        )
+        assert (
+            await _count_jobs(conn, schema, actor=_OTHER_ACTOR, queue=_OLD_QUEUE, status="pending")
+            == 10
+        )
+        assert (
+            await conn.fetchval(
+                f'SELECT queue FROM "{schema}".actor_config WHERE actor = $1', _ACTOR
+            )
+            == _NEW_QUEUE
+        )
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # CLI tier: `taskq actor-config move-queue ACTOR NEW_QUEUE`
@@ -513,4 +791,179 @@ def test_cli_move_queue_refusal_exit_2(monkeypatch: pytest.MonkeyPatch) -> None:
     result = runner.invoke(app, ["actor-config", "move-queue", _ACTOR, _OLD_QUEUE])
 
     assert result.exit_code == 2
-    assert "already assigned" in result.stderr
+
+
+def test_cli_move_queue_statement_timeout_uses_documented_exit_code(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A drain-batch statement timeout must surface as one of the command's
+    own documented exit codes, never as an unhandled traceback.
+
+    The move's backlog drain runs as bounded batches under a per-batch
+    server-side ``statement_timeout``, so a large backlog can abort a batch
+    with a Postgres query cancellation. The command documents exactly three
+    exit codes — 0 moved, 2 refusal, 3 no stored row — and a raw driver
+    error escaping past them turns a bounded, re-runnable drain into an
+    unreadable failure for the operator scripting the move.
+    """
+    _patch_move(
+        monkeypatch,
+        exc=asyncpg.exceptions.QueryCanceledError("canceling statement due to statement timeout"),
+    )
+
+    result = runner.invoke(app, ["actor-config", "move-queue", _ACTOR, _NEW_QUEUE])
+
+    assert result.exit_code in (0, 2, 3), (
+        f"move-queue must exit with one of its documented codes (0, 2, 3) on a "
+        f"drain-batch statement timeout, not escape uncaught; got exit_code="
+        f"{result.exit_code!r} exception={result.exception!r}"
+    )
+    assert not isinstance(result.exception, asyncpg.exceptions.QueryCanceledError), (
+        "QueryCanceledError from a drain-batch statement timeout escaped the CLI "
+        "uncaught instead of being translated to a documented exit code"
+    )
+    # The drain commits per batch, so an aborted run leaves real partial
+    # progress: the operator must be told the move is incomplete and
+    # re-runnable, not left to infer it from an exit code alone.
+    assert "move-queue" in result.stderr or "re-run" in result.stderr, (
+        "an aborted drain must tell the operator the move is incomplete and "
+        f"safe to re-run; stderr={result.stderr!r}"
+    )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CLI tier: `taskq queue migrate ACTOR --to QUEUE`
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# The queue move is a queue-lifecycle operation, and an operator reaching for
+# it is thinking about queues, not about the actor_config table it happens to
+# be stored in. It is reachable under the `queue` noun with the target named
+# by an explicit `--to` option rather than positionally: the two arguments of
+# a move are an actor and a queue, and two bare positionals are exactly the
+# shape an operator gets backwards under pressure — with the consequence that
+# the backlog drains onto the wrong queue.
+
+
+def test_queue_migrate_moves_the_actor_and_reports_the_move(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The command exists under the queue noun, takes the target as ``--to``,
+    and reports the move it performed."""
+    moved = ActorQueueMoveResult(
+        actor=_ACTOR,
+        from_queue=_OLD_QUEUE,
+        to_queue=_NEW_QUEUE,
+        jobs_moved=3,
+        running_jobs_left=1,
+        queues_row_carried=True,
+    )
+    _patch_move(monkeypatch, result=moved)
+
+    result = runner.invoke(app, ["queue", "migrate", _ACTOR, "--to", _NEW_QUEUE])
+
+    assert result.exit_code == 0, f"stderr: {result.stderr}"
+    assert _OLD_QUEUE in result.output
+    assert _NEW_QUEUE in result.output
+
+
+def test_queue_migrate_reports_pending_jobs_still_on_the_old_queue(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The operator's next decision after a move is when to stop consuming the
+    retired queue, and the only safe answer is a count.
+
+    The move deliberately leaves producer-placed strays on the source queue —
+    a stale producer keeps enqueueing there until its deploy lands — so the
+    source queue's consumers must stay up for an interval the command is the
+    only thing that can measure. Printing the move without the residual makes
+    the retirement a guess, and guessing wrong strands work on a queue nobody
+    consumes any more.
+    """
+    moved = ActorQueueMoveResult(
+        actor=_ACTOR,
+        from_queue=_OLD_QUEUE,
+        to_queue=_NEW_QUEUE,
+        jobs_moved=3,
+        running_jobs_left=1,
+        queues_row_carried=True,
+    )
+    # The residual field is the move result's own reporting surface; the CLI
+    # must surface it rather than leave it to the caller to query by hand.
+    object.__setattr__(moved, "pending_jobs_on_old_queue", 2)
+    _patch_move(monkeypatch, result=moved)
+
+    result = runner.invoke(app, ["queue", "migrate", _ACTOR, "--to", _NEW_QUEUE])
+
+    combined = result.output + result.stderr
+    assert "2" in combined and _OLD_QUEUE in combined, (
+        "the command must report how many pending jobs still carry the old "
+        f"queue; output={combined!r}"
+    )
+
+
+def test_queue_migrate_leaves_no_partial_move_on_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed migrate must not leave the deployment half-moved.
+
+    The coordinated writes of a move — the stored assignment, the target
+    ``queues`` row carrying the source's mode and cap — are what make the
+    target queue able to serve the actor at all. Landing the assignment
+    without the queues row silently degrades a round_robin queue to
+    strict_fifo and drops its cap; landing the queues row without the
+    assignment configures a queue nothing routes to. Applied in one
+    transaction, a failure leaves the deployment exactly where it started
+    and the operator with one action to take: run it again.
+    """
+    _patch_move(monkeypatch, exc=ValueError("assignment changed concurrently"))
+
+    result = runner.invoke(app, ["queue", "migrate", _ACTOR, "--to", _NEW_QUEUE])
+
+    assert not isinstance(result.exception, ValueError), (
+        "a refusal must surface as an exit code, not an escaped traceback"
+    )
+    # Exit 2 is the move surface's documented refusal code. Pinning the exact
+    # code (rather than "non-zero") keeps this from passing vacuously on the
+    # exit 2 typer returns for a command it does not recognise.
+    assert result.exit_code == 2, (
+        f"a concurrent-assignment refusal must exit 2; got {result.exit_code}: {result.output!r}"
+    )
+    assert "assignment changed concurrently" in (result.output + result.stderr), (
+        "the refusal's reason must reach the operator, not just its exit code"
+    )
+
+
+def test_queue_migrate_unknown_actor_uses_the_documented_exit_code(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An actor with no stored row has nothing to move, and the operator
+    scripting a migration needs to tell that apart from a refusal — the
+    exit codes are shared with the move surface they wrap."""
+    _patch_move(monkeypatch, exc=ActorNotFoundError("tqm_ghost"))
+
+    result = runner.invoke(app, ["queue", "migrate", "tqm_ghost", "--to", _NEW_QUEUE])
+
+    assert result.exit_code == 3
+
+
+def test_queue_migrate_requires_the_target_queue_to_be_named_explicitly() -> None:
+    """Without ``--to``, the command must refuse rather than guess.
+
+    Two bare positionals — an actor and a queue, both plain strings — are
+    the shape an operator inverts under pressure, and an inverted move
+    drains the backlog onto a queue that was never the target. The explicit
+    option is what makes the argument order unmistakable.
+    """
+    missing_target = runner.invoke(app, ["queue", "migrate", _ACTOR])
+    assert missing_target.exit_code != 0, "a migrate with no target queue must not be accepted"
+
+    # The command itself must exist, or the refusal above is just typer
+    # rejecting an unknown subcommand and this pin means nothing.
+    help_result = runner.invoke(app, ["queue", "migrate", "--help"])
+    assert help_result.exit_code == 0, (
+        f"`taskq queue migrate` must exist; got {help_result.exit_code}: {help_result.output!r}"
+    )
+    assert "--to" in help_result.output, (
+        "the target queue must be named by an explicit --to option, so the "
+        "actor and the queue can never be transposed"
+    )

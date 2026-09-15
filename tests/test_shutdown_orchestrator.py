@@ -205,6 +205,81 @@ async def test_phase_ordering_and_backend_calls(monkeypatch: pytest.MonkeyPatch)
     assert 0.7 < clock.time_val < 1.0
 
 
+async def test_consumers_are_stopped_before_claimed_work_is_handed_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Dispatch stops before the hand-back sweeps, never after.
+
+    The hand-back is a single statement over the rows this worker currently
+    holds. If the producer were still claiming while it ran, a row claimed a
+    moment later would be missed by the sweep and left running and locked to a
+    worker that is exiting — stranded until its lock lease expires, minutes of
+    dead latency on a job nobody is running.
+
+    Stopping dispatch first closes that window: after the stop event, no new
+    row can join the set the sweep is about to release, so every claimed row
+    is handed back, and handed back once.
+
+    The phase marker must also be visible before either step, since health
+    endpoints and the consumer loops read it to decide they are draining.
+    """
+    import taskq.worker.shutdown as shutdown_mod
+    from taskq.worker.shutdown import ShutdownPhase
+
+    registry = FakeActiveJobRegistry([])
+    settings = _worker_settings(cancellation_grace=0.0, cleanup_grace=0.0)
+    deps = _make_deps(registry=registry, settings=settings)
+
+    order: list[str] = []
+    observed_phase: list[ShutdownPhase] = []
+    producer_stopped_at_drain: list[bool] = []
+
+    async def _recording_drain(d: WorkerDeps, w: UUID) -> int:
+        order.append("hand_back")
+        observed_phase.append(d.shutdown_phase)
+        producer_stopped_at_drain.append(d.producer_stop_event.is_set())
+        return 0
+
+    monkeypatch.setattr(shutdown_mod, "drain_local_queue_to_pending", _recording_drain)
+
+    original_set = deps.producer_stop_event.set
+
+    def _recording_set() -> None:
+        order.append("stop_dispatch")
+        original_set()
+
+    deps.producer_stop_event.set = _recording_set  # type: ignore[method-assign] # Why: recording wrapper to observe the ordering of the two DRAINING steps.
+
+    backend = AsyncMock(spec=Backend)
+    backend.write_cancel_escalation = AsyncMock(return_value=True)
+    backend.mark_abandoned = AsyncMock(return_value=True)
+
+    clock = FakeClock()
+    fake_loop = Mock()
+    _patch_clock(monkeypatch, clock, fake_loop)
+
+    await orchestrate_shutdown(
+        deps,
+        deps.settings,
+        new_uuid(),
+        asyncio.Event(),
+        None,
+        backend=backend,
+    )
+
+    assert order == ["stop_dispatch", "hand_back"], (
+        "consumers must stop taking new work before claimed work is handed "
+        "back; a claim landing between the two steps is missed by the sweep "
+        f"and stranded locked until lease expiry. Observed order: {order!r}"
+    )
+    assert producer_stopped_at_drain == [True]
+    assert observed_phase == [ShutdownPhase.DRAINING], (
+        "the draining phase marker must already be readable when the "
+        "hand-back runs — health endpoints and consumer loops read it to "
+        f"decide they are draining. Observed: {observed_phase!r}"
+    )
+
+
 # ── Shielded cleanup ─────────────────────────────────────────────
 
 

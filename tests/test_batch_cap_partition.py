@@ -6,11 +6,10 @@ when ANY single actor's group exceeded its cap — all-or-nothing across
 actors. A parent enqueuing a mixed-actor sub-batch where ONE child actor
 is capped lost the whole call: nothing enqueued for anyone.
 
-The evolved contract (vendor prior art: pgqueuer's dequeue capacity gates
-bind per entrypoint — the multi-entrypoint statement admits the
-entrypoints with free room instead of failing wholesale; river's
-InsertMany shows whole-batch atomicity is the norm only where no
-per-actor constraint exists): an over-cap actor's items are refused as a
+The evolved contract: multi-entrypoint admission routes items with free
+room instead of failing wholesale, and whole-batch atomicity is the
+appropriate model only where no per-actor constraint exists. Thus: an
+over-cap actor's items are refused as a
 group (never partially filled — the single path refuses a capped enqueue
 outright, and filling "up to" the cap would admit items whose ordering
 the caller never chose), every other actor's items are admitted, and the

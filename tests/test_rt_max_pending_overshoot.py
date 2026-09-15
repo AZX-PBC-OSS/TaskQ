@@ -5,8 +5,9 @@ Hypothesis: ``max_pending`` is a check-then-insert count
 slot-index backstop — unlike ``unique_for``, which takes a
 transaction-scoped advisory lock, and unlike singleton, which has the
 ``jobs_singleton_uniq`` backstop with a typed ``UniqueViolation``
-catch (upstream precedent: pgqueuer v1.4.0 fixed count-then-insert
-overshoot with capacity-slot partial unique indexes).
+catch. Count-then-insert races can be prevented by enforcing partial
+unique indexes on capacity slots: a database constraint that reserves
+the bounded capacity and prevents the overshoot at insertion time.
 
 Every batch tier below must refuse an over-cap actor loudly rather than
 admit it silently. Since #149 the refusal is PARTITIONED per actor: the

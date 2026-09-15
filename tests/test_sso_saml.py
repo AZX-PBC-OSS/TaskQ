@@ -128,6 +128,70 @@ def test_full_round_trip_default_auth_only() -> None:
     assert resp.json()["sub"] == "user-saml-1"
 
 
+def test_login_succeeds_when_idp_acs_post_is_genuinely_cross_site() -> None:
+    """Issue #180 (red): a hosted IdP (Entra, Okta, OneLogin, Google...) lives
+    on a different registrable domain than the admin UI, so the ACS callback
+    it POSTs to is a genuine cross-site POST. Real browsers do not attach a
+    cookie carrying an explicit SameSite=Lax attribute to a cross-site POST
+    (the Chrome Lax+POST 2-minute leniency applies only to cookies with no
+    SameSite attribute at all, not ones explicitly marked Lax) — see
+    _issue_request_cookie in src/taskq/web/admin/auth/saml.py, which sets
+    samesite="lax" on the taskq_saml_request cookie the callback depends on.
+
+    A correct implementation must let a legitimate, correctly-signed IdP
+    response complete login even when the browser withheld that cookie on
+    the cross-site POST (e.g. via a server-side pending-request store keyed
+    by RelayState/request_id, or a SameSite=None cookie, or equivalent) —
+    this is exactly the documented Entra/OneLogin/Okta flow in
+    docs/guides/sso.md. This test simulates the cookie being withheld (as a
+    real browser would on the cross-site POST) and asserts login still
+    succeeds. It currently fails: the callback hard-rejects with "no
+    pending SAML AuthnRequest for this browser" before any assertion
+    validation, so the flow is broken for every hosted-IdP deployment.
+    Note: FastAPI's TestClient (used elsewhere in this file) does not
+    enforce SameSite cookie semantics itself, so this test simulates the
+    drop explicitly by using a second client with no shared cookie jar,
+    rather than relying on TestClient for cross-site cookie behavior.
+    """
+    config = _config()
+    app = _make_app(config)
+    client = _client(app)
+
+    request_id = _do_login(client)
+
+    # Simulate what a real browser does on the cross-site ACS POST from the
+    # IdP: the SameSite=Lax cookie is withheld. A fresh client shares no
+    # cookie jar with the one that performed /login, but carries a valid,
+    # correctly-signed assertion answering that real pending AuthnRequest —
+    # exactly what the IdP sends back in a genuine hosted-IdP deployment.
+    saml_response = build_saml_response(nameid="user-saml-1", in_response_to=request_id)
+    cookieless_client = TestClient(app, base_url=_TEST_BASE_URL)
+    resp = cookieless_client.post(
+        "/admin/callback",
+        data={"SAMLResponse": saml_response},
+        follow_redirects=False,
+    )
+
+    # Correct behavior: a legitimate, correctly-signed IdP response for a
+    # real pending login must establish a session, even though the browser
+    # (correctly, per spec) did not carry the explicit SameSite=Lax cookie
+    # across the IdP's cross-site POST.
+    assert resp.status_code == 302
+    assert resp.headers["location"] == "/admin", (
+        "expected a successful cross-site SAML login to redirect to the "
+        f"app, got redirect to {resp.headers.get('location')!r} instead — "
+        "the ACS callback rejected a legitimate IdP response because the "
+        "SameSite=Lax AuthnRequest cookie was (correctly, per browser "
+        "spec) not sent on the cross-site POST (issue #180)"
+    )
+    assert "taskq_session=" in resp.headers.get("set-cookie", ""), (
+        "expected a session cookie to be set after a legitimate cross-site "
+        "SAML login; issue #180: the AuthnRequest cookie is SameSite=Lax "
+        "and is dropped by real browsers on the IdP's cross-site ACS POST, "
+        "so no session is ever established for a hosted IdP"
+    )
+
+
 def test_callback_sets_session_cookie() -> None:
     config = _config()
     app = _make_app(config)
@@ -280,3 +344,81 @@ def test_saml_logout_clears_session() -> None:
     set_cookie = resp.headers.get("set-cookie", "")
     assert "taskq_session=" in set_cookie
     assert "Max-Age=0" in set_cookie or "expires=" in set_cookie.lower()
+
+
+# ── Cross-site ACS must not be bought by weakening cookie policy ──────────
+
+
+def test_session_cookie_keeps_its_hardened_policy_after_cross_site_login() -> None:
+    """The session cookie stays HttpOnly and non-cross-site after ACS login.
+
+    Making the cross-site ACS callback work is about the short-lived
+    AuthnRequest binding, not the session. The session cookie is the standing
+    credential for the whole admin UI: relaxing it to ``SameSite=None`` to get
+    a hosted IdP working would hand every cross-site request that reaches the
+    admin mount an authenticated identity, converting an SSO-integration fix
+    into a CSRF surface that outlives it by the session lifetime.
+
+    Pinned on the exact response that completes a login, so a fix that reaches
+    green by loosening the session cookie fails here instead of shipping.
+    """
+    config = _config()
+    app = _make_app(config)
+    client = _client(app)
+
+    request_id = _do_login(client)
+    saml_response = build_saml_response(nameid="user-saml-1", in_response_to=request_id)
+    resp = _post_saml_response(client, saml_response)
+
+    session_cookie = next(
+        (
+            header
+            for header in resp.headers.get_list("set-cookie")
+            if header.startswith("taskq_session=")
+        ),
+        "",
+    )
+    assert session_cookie, "login set no session cookie to inspect"
+    assert "HttpOnly" in session_cookie, (
+        f"session cookie must stay HttpOnly, got {session_cookie!r}"
+    )
+    lowered = session_cookie.lower()
+    assert "samesite=none" not in lowered, (
+        "session cookie must not be relaxed to SameSite=None to make the "
+        f"cross-site ACS callback work, got {session_cookie!r}"
+    )
+    assert "samesite=lax" in lowered or "samesite=strict" in lowered, (
+        "session cookie must carry an explicit non-cross-site SameSite "
+        f"attribute, got {session_cookie!r}"
+    )
+
+
+def test_cookieless_acs_post_without_a_pending_login_is_still_rejected() -> None:
+    """A correctly-signed assertion answering no live login mints no session.
+
+    The cross-site fix relaxes *where the AuthnRequest binding is stored*, not
+    *whether it is checked*. Accepting any well-signed assertion would let a
+    captured or IdP-initiated response log an attacker's browser in, so the
+    binding must still refuse a response that answers no AuthnRequest this
+    deployment actually issued — the property the cookie gate was protecting.
+    """
+    config = _config()
+    app = _make_app(config)
+
+    # No /login: nothing is pending anywhere, neither in a cookie nor in any
+    # server-side store a fix might introduce.
+    saml_response = build_saml_response(
+        nameid="user-saml-1", in_response_to="_never-issued-by-this-deployment"
+    )
+    client = _client(app)
+    resp = client.post(
+        "/admin/callback",
+        data={"SAMLResponse": saml_response},
+        follow_redirects=False,
+    )
+
+    assert resp.status_code == 302
+    assert "error=authentication+failed" in resp.headers.get("location", "")
+    assert "taskq_session=" not in resp.headers.get("set-cookie", ""), (
+        "an assertion answering no pending AuthnRequest must not establish a session"
+    )

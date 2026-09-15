@@ -529,10 +529,12 @@ class TestAttemptEpochFencing:
     The worker fence (``status='running' AND locked_by_worker=$n``) cannot
     distinguish attempt N's stale handler from attempt N+1's live one on
     the SAME worker after a reclaim/redispatch; the attempt conjunct is
-    the second, deeper fence (Oban's ``ack_query``:
-    ``attempted_at == ^job.attempted_at``). Every write that cannot
-    present the row's CURRENT attempt — a stale epoch, or no epoch at all
-    — must no-op through the same machinery as the worker fence.
+    the second, deeper fence. A write that fences on the current attempt
+    epoch (``attempt == $attempt``) guards against a stale handler's
+    terminal write landing on a row it no longer owns after the same worker
+    reclaimed and redispatched it. Every write that cannot present the
+    row's CURRENT attempt — a stale epoch, or no epoch at all — must
+    no-op through the same machinery as the worker fence.
     """
 
     async def test_mark_succeeded_stale_attempt_no_ops(self) -> None:
@@ -1363,8 +1365,12 @@ class TestSnoozePastDeadline:
 
 
 class TestSnoozeOutcomeParameter:
-    """G-5: mark_snoozed accepts an outcome parameter (default "snoozed").
-    The ReservationUnavailable handler passes outcome="reservation_denied".
+    """mark_snoozed accepts an outcome parameter (default "snoozed").
+
+    The denial handler passes outcome="reservation_denied" /
+    "rate_limit_denied". A denial is admission backpressure — "come back
+    later" — so its whole durable record is the aggregated counter on the
+    job row: no attempt row, no event row.
     """
 
     async def test_in_memory_snooze_outcome_reservation_denied(self) -> None:
@@ -1391,6 +1397,120 @@ class TestSnoozeOutcomeParameter:
         assert len(attempts) == 0
         assert row.rate_limit_blocked_count == 1
         assert row.snooze_count == 0
+
+
+# ── admission denials carry 429 semantics ───────────────────────────────
+
+
+class TestDenialNeverConsumesRetryBudget:
+    """An admission denial is "come back later", not a failed attempt.
+
+    A rate-limit or reservation denial means the job never ran: no actor
+    code executed, nothing failed. Charging it a retry attempt lets a
+    queue or rate-limit misconfiguration kill work that simply never got
+    a slot — a job with a retry budget of three dies after three
+    denials, having done nothing wrong. So a denial refunds the claim's
+    attempt increment exactly like an actor-requested deferral, and the
+    job is rescheduled indefinitely until capacity frees or its
+    schedule-to-close deadline expires. Contention stays diagnosable
+    through the aggregated denial counter on the row.
+    """
+
+    @pytest.mark.parametrize("outcome", ["reservation_denied", "rate_limit_denied"])
+    async def test_in_memory_denial_refunds_claim_attempt(self, outcome: str) -> None:
+        backend = _make_backend()
+        job_id, wid = await _enqueue_and_dispatch(backend, max_attempts=3)
+
+        row = await backend.get(job_id)
+        assert row is not None
+        assert row.attempt == 1
+
+        result = await backend.mark_snoozed(
+            job_id,
+            wid,
+            timedelta(seconds=30),
+            outcome=outcome,  # type: ignore[arg-type]  # Why: parametrized SnoozeOutcome literal
+            attempt=1,
+        )
+        assert result == "scheduled"
+
+        row = await backend.get(job_id)
+        assert row is not None
+        assert row.status == "scheduled"
+        assert row.attempt == 0, "a denial must not spend the job's retry budget"
+        assert row.rate_limit_blocked_count == 1
+        assert row.snooze_count == 0
+
+    @pytest.mark.parametrize("outcome", ["reservation_denied", "rate_limit_denied"])
+    async def test_in_memory_denial_at_budget_ceiling_reschedules(self, outcome: str) -> None:
+        """A denial never terminally fails a job by itself.
+
+        Even for a job already sitting at its retry ceiling with no
+        schedule-to-close deadline, a denial reschedules. Terminal
+        failure on this path belongs to the deadline, never to the
+        admission gate.
+        """
+        backend = _make_backend()
+        job_id, wid = await _enqueue_and_dispatch(backend, max_attempts=3, retry_kind="transient")
+
+        row = backend._jobs[job_id]  # type: ignore[reportPrivateUsage]  # Why: test-only private access
+        backend._jobs[job_id] = replace(row, attempt=3)  # type: ignore[reportPrivateUsage]  # Why: test-only private access
+
+        result = await backend.mark_snoozed(
+            job_id,
+            wid,
+            timedelta(seconds=30),
+            outcome=outcome,  # type: ignore[arg-type]  # Why: parametrized SnoozeOutcome literal
+            attempt=3,
+        )
+        assert result == "scheduled", "a denial must never produce a terminal failure"
+
+        row = await backend.get(job_id)
+        assert row is not None
+        assert row.status == "scheduled"
+        assert row.error_class is None
+        assert row.rate_limit_blocked_count == 1
+
+        # No per-denial bookkeeping rows: the counter is the record.
+        assert len(await backend.get_attempts(job_id)) == 0
+        events = await backend.get_events(job_id)
+        assert [e for e in events if e.kind == "state_change"] == events[:1]
+
+    async def test_in_memory_repeated_denials_never_exhaust_budget(self) -> None:
+        """Indefinite denial is the point: contention must not kill work.
+
+        Denied far more times than the job's retry ceiling allows, the
+        job stays reschedulable and the denial counter — the operator's
+        only view of the bottleneck — keeps rising.
+        """
+        backend = _make_backend()
+        job_id, wid = await _enqueue_and_dispatch(backend, max_attempts=3, retry_kind="transient")
+
+        for expected in range(1, 8):
+            row = backend._jobs[job_id]  # type: ignore[reportPrivateUsage]  # Why: test-only private access
+            backend._jobs[job_id] = replace(
+                row,
+                status="running",
+                locked_by_worker=wid,
+                lock_expires_at=_START + timedelta(seconds=60),
+                attempt=row.attempt + 1,
+            )
+            current = backend._jobs[job_id]  # type: ignore[reportPrivateUsage]  # Why: test-only private access
+            result = await backend.mark_snoozed(
+                job_id,
+                wid,
+                timedelta(seconds=30),
+                outcome="rate_limit_denied",
+                attempt=current.attempt,
+            )
+            assert result == "scheduled", f"denial {expected} terminalised the job"
+
+            row = await backend.get(job_id)
+            assert row is not None
+            assert row.status == "scheduled"
+            assert row.rate_limit_blocked_count == expected
+
+        assert len(await backend.get_attempts(job_id)) == 0
 
 
 # ── Idempotent noop on second mark_snoozed call ─────────────────────────

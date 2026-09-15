@@ -10,9 +10,9 @@ Exercises branches not covered by ``test_consumer.py`` and
   parent still succeeds, lost child logged.
 - ``CancelledError`` with an ``ABANDON_PENDING`` active-jobs entry
   re-raises without calling ``mark_cancelled``.
-- ``_consume_autonomous`` cooperative-cancel path: actor succeeds but the
-  active-jobs entry has ``cancel_phase >= COOPERATIVE`` → ``mark_cancelled``
-  runs instead of ``mark_succeeded``.
+- ``_consume_autonomous`` cooperative-cancel path: the actor observes a cancel
+  request, degrades and returns a value → the value is stored and the job
+  succeeds, because the actor's outcome decides the terminal state.
 """
 
 import asyncio
@@ -425,10 +425,19 @@ async def test_cancel_with_abandon_pending_re_raises_without_mark_cancelled() ->
 # ── _consume_autonomous cooperative-cancel path ─────────────────────────
 
 
-async def test_autonomous_cooperative_cancel_marks_cancelled_not_succeeded() -> None:
-    """When the actor succeeds but the active-jobs entry has
-    ``cancel_phase >= COOPERATIVE``, ``_consume_autonomous`` calls
-    ``mark_cancelled`` and returns early — ``mark_succeeded`` is NOT called."""
+async def test_autonomous_cooperative_cancel_keeps_the_actors_result() -> None:
+    """An actor that degrades under a cancel request and returns has succeeded.
+
+    ``cancel_phase >= COOPERATIVE`` on the active-jobs entry says a cancel was
+    requested during the attempt; it does not say the actor abandoned its work.
+    An actor that observed the request, wound down and returned a value
+    completed its unit of work, so the value is stored and the job is
+    succeeded — discarding it would destroy completed work on a terminal job
+    that nothing re-runs. Abandonment is signalled by raising, not returning.
+
+    The full contract, including the transactional path and the raising
+    complement, is pinned in ``tests/test_cooperative_cancel_outcome.py``.
+    """
     active_jobs = ActiveJobRegistry()
     backend = _TxBackend()
     clk: Clock = FakeClock(_NOW)
@@ -452,11 +461,17 @@ async def test_autonomous_cooperative_cancel_marks_cancelled_not_succeeded() -> 
         active_jobs=active_jobs,
     )
 
-    # consume_one_job returns "succeeded" after _consume_autonomous returns,
-    # but the terminal write was mark_cancelled, not mark_succeeded.
     assert result == "succeeded"
-    assert len(backend.mark_cancelled_calls) == 1
-    assert len(backend.mark_succeeded_calls) == 0
+    assert len(backend.mark_cancelled_calls) == 0, (
+        "an actor that returned a value under a cancel request was written as "
+        "cancelled, discarding the result it computed"
+    )
+    assert len(backend.mark_succeeded_calls) == 1, (
+        "the actor's returned value must be stored by a success write"
+    )
+    assert backend.mark_succeeded_calls[0][2] == {"ok": True}, (
+        "the stored result must be the value the actor actually returned"
+    )
 
 
 # ── _consume_autonomous: explicit params override deps (no pool) ─────────

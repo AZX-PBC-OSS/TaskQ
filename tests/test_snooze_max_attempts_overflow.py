@@ -68,6 +68,61 @@ def test_retry_policy_rejects_out_of_smallint_range_max_attempts() -> None:
     )
 
 
+def test_enqueue_args_rejects_out_of_smallint_range_max_attempts() -> None:
+    """``EnqueueArgs`` itself must refuse a ``max_attempts`` that cannot
+    fit the ``jobs.max_attempts smallint NOT NULL`` column
+    (migrations/01.00.00_01_pre_initial.sql:82).
+
+    ``RetryPolicy`` guards the client-facing construction path, but
+    ``EnqueueArgs.__post_init__`` (backend/_protocol.py) is the actual
+    boundary every enqueue path funnels through — including callers that
+    build ``EnqueueArgs`` directly from a raw DB column instead of through
+    ``RetryPolicy`` (e.g. ``cron_loop.py`` reading ``actor_config.max_attempts``,
+    ``web/admin/ops.py``). Today ``__post_init__`` only checks the
+    schedule_to_close mutual-exclusion and NUL-byte text fields; it has no
+    max_attempts bound at all, so this out-of-range construction succeeds
+    silently instead of raising — a defect this test pins as failing until
+    fixed.
+    """
+    with pytest.raises((ValueError, ValidationError)) as exc_info:
+        EnqueueArgs(
+            id=new_job_id(),
+            actor="foo",
+            queue="default",
+            payload={},
+            max_attempts=_SMALLINT_MAX + 1,
+            retry_kind="fixed",
+            scheduled_at=None,
+        )
+
+    assert "smallint" in str(exc_info.value).lower(), (
+        "EnqueueArgs accepted max_attempts=32768, which does not fit the "
+        "smallint jobs.max_attempts column. Any raw EnqueueArgs construction "
+        "(direct backend use, cron re-enqueue of an actor_config row, "
+        "web/admin/ops.py) bypasses RetryPolicy's guard entirely and must be "
+        "bounded at the protocol layer itself."
+    )
+
+
+def test_enqueue_args_rejects_negative_max_attempts() -> None:
+    """``EnqueueArgs(max_attempts=-5, ...)`` must also be rejected.
+
+    A negative max_attempts is nonsensical domain-wise (a job cannot have
+    fewer than zero attempts) even though it technically fits inside the
+    smallint's signed range; it should never reach the jobs table.
+    """
+    with pytest.raises((ValueError, ValidationError)):
+        EnqueueArgs(
+            id=new_job_id(),
+            actor="foo",
+            queue="default",
+            payload={},
+            max_attempts=-5,
+            retry_kind="fixed",
+            scheduled_at=None,
+        )
+
+
 def test_retry_policy_rejects_max_attempts_that_cannot_absorb_one_snooze() -> None:
     """A job enqueued at exactly 32767 has no defensive headroom left.
 

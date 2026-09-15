@@ -24,16 +24,20 @@ No ``pytestmark`` — must run under ``pytest -m "not integration"``.
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from typing import Any, Self
 
 import asyncpg
 import pytest
 
+from taskq._close import CLOSE_TIMEOUT_SECS
 from taskq.connections import WorkerConnections
 from taskq.settings import WorkerSettings
 from taskq.worker.deps import open_worker_deps
 
 # ── Test helpers ───────────────────────────────────────────────────────
+
+_ROOT = Path(__file__).resolve().parent.parent
 
 # Production's documented bounds for the notify factory call and the
 # LISTEN execute, shrunk so a production-side bound fires well inside the
@@ -246,3 +250,71 @@ async def test_bootstrap_notify_listen_execute_is_bounded() -> None:
     assert deps.notify_conn is notify
     async with asyncio.timeout(_TEST_BUDGET_SECS):
         await cm.__aexit__(None, None, None)
+
+
+# ── The reconnect lock hold is bounded, and operators are told how long ──
+
+
+def test_notify_reconnect_lock_hold_worst_case_is_documented_for_operators() -> None:
+    """The worst-case time ``notify_reconnect_lock`` can stay held is
+    stated on an operator-facing surface.
+
+    Every step inside the lock is individually bounded — the factory call
+    by ``reload_factory_timeout``, each channel's ``LISTEN`` execute and
+    ``add_listener`` by ``notify_listener_setup_timeout``, the failed
+    connection's close by the shared close budget — but the operator
+    consequence is the SUM, not any one bound. At shipped defaults a
+    fully pathological reconnect serializes to roughly a minute and a
+    half during which a SIGHUP credential reload reports the notify
+    connection as failed and dispatch runs on the poll fallback. That
+    looks exactly like a hung worker to somebody watching a rotation, so
+    it belongs in the docs rather than only in source comments: an
+    operator who knows the number waits it out instead of restarting the
+    fleet mid-rotation.
+
+    The arithmetic itself is asserted from the shipped defaults rather
+    than hard-coded, so lowering a bound without updating the prose fails
+    here too.
+    """
+    settings = WorkerSettings.load_from_dict(
+        {"TASKQ_PG_DSN": "postgresql://fake:fake@fake:5432/fake"}
+    )
+    channels = 3  # wake, events, worker-scoped — notify_listener_loop's fixed set
+    worst_case = (
+        settings.reload_factory_timeout
+        + channels * 2 * settings.notify_listener_setup_timeout
+        + CLOSE_TIMEOUT_SECS
+    )
+    assert worst_case == pytest.approx(95.0), (
+        "the shipped bounds no longer sum to the documented worst case — "
+        f"computed {worst_case}s; update the operator-facing text together "
+        "with the bound that changed"
+    )
+
+    surfaces = {
+        path: path.read_text()
+        for path in (
+            _ROOT / "docs" / "guides" / "ops.md",
+            _ROOT / "docs" / "guides" / "configuration.md",
+            _ROOT / "docs" / "guides" / "troubleshooting.md",
+        )
+        if path.exists()
+    }
+    assert surfaces, "expected at least one operator guide to audit"
+
+    def _mentions_the_hold(text: str) -> bool:
+        lowered = text.lower()
+        return "notify_reconnect_lock" in lowered or (
+            "notify" in lowered and "reconnect" in lowered and "95" in text
+        )
+
+    documented = [path.name for path, text in surfaces.items() if _mentions_the_hold(text)]
+    assert documented, (
+        "no operator guide describes the notify-reconnect lock hold. A "
+        f"reconnect can hold notify_reconnect_lock for up to ~{worst_case:.0f}s "
+        "at shipped defaults, during which a credential reload reports "
+        "notify_conn as failed and dispatch falls back to polling — "
+        "indistinguishable from a wedged worker to an operator watching a "
+        "rotation. Name the bound and its consequence in ops.md (or "
+        "configuration.md / troubleshooting.md), not only in source comments."
+    )

@@ -289,12 +289,10 @@ rejected with `ValueError` at `JobFilter` construction so both backends
 fail identically.  `status` and `active` are mutually exclusive —
 specifying both raises `ValueError`.
 
-The `active` meta-filter selects statuses by terminality.  **Despite the
-name, this is not Celery/Flower's 'active'** (currently-executing tasks
-only): `active=True` selects all non-terminal statuses (pending,
-scheduled, running — 'not yet finished') and `active=False` the terminal
-ones; the non-terminal set is derived from `ACTIVE_STATUSES` in
-`statemachine.py`.
+The `active` meta-filter selects statuses by terminality. `active=True`
+selects all non-terminal statuses (pending, scheduled, running — 'not yet
+finished') and `active=False` the terminal ones; the non-terminal set is
+derived from `ACTIVE_STATUSES` in `statemachine.py`.
 
 `BACKEND_PROTOCOL_VERSION` is a `ClassVar[int]` (currently `3`). Both backends
 assert this constant matches at import time, preventing silent protocol drift.

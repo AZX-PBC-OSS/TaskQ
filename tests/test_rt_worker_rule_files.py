@@ -240,3 +240,199 @@ def test_rule_file_parses_with_expected_alert_count(rules_path: Path) -> None:
     assert names == {r["alert"] for r in _rules_from(other)}, (
         f"{rules_path.name} and its sibling carry different alert sets"
     )
+
+
+#: Which taskq_* series carry which label names when the bridge emits them
+#: (per obs/_otel.py). A series absent from this map carries no labels, the
+#: common case for singleton gauges like taskq_jobs_oldest_due_age_seconds.
+_SERIES_LABELS: dict[str, frozenset[str]] = {
+    "taskq_jobs_by_status": frozenset({"status"}),
+    "taskq_jobs_oldest_due_age_seconds": frozenset(),
+    "taskq_jobs_running_lease_expired": frozenset(),
+    "taskq_maintenance_leader_sweep_last_success_seconds": frozenset({"sweep_name"}),
+    "taskq_maintenance_leader_sweep_batch_size": frozenset({"sweep_name"}),
+    "taskq_maintenance_leader_sweep_batch_size_configured": frozenset({"sweep_name"}),
+}
+
+#: Matches `<series_name>{<label filters>}` or a bare `<series_name>`.
+_SELECTOR_RE = re.compile(r"\btaskq_[a-z0-9_]+(?:\{([^}]*)\})?")
+#: An `ignoring(...)` / `on(...)` vector-matching modifier.
+_MODIFIER_RE = re.compile(r"\b(?:ignoring|on)\s*\(")
+#: Comparison operators that, between two instant vectors, join the same way
+#: `and` does. `>` and friends against a scalar literal are not joins at all.
+_COMPARISON_RE = re.compile(r"\s(==|!=|<=|>=|<|>)\s")
+
+
+def _selector_labels(selector_text: str) -> frozenset[str]:
+    """Labels a single `taskq_*{...}` selector carries: the union of its
+    inline filter labels and the labels the series is emitted with."""
+    match = _SELECTOR_RE.search(selector_text)
+    assert match, f"no taskq_* series found in {selector_text!r}"
+    name_match = re.match(r"taskq_[a-z0-9_]+", selector_text[match.start() :])
+    assert name_match is not None
+    name = name_match.group(0)
+    inline_filters = match.group(1) or ""
+    inline_labels = frozenset(re.findall(r"([a-zA-Z_][a-zA-Z0-9_]*)\s*=", inline_filters))
+    base_labels = _SERIES_LABELS.get(name, frozenset())
+    return inline_labels | base_labels
+
+
+def _iter_vector_joins(expr: str, operator_re: re.Pattern[str]):
+    """Yield (lhs_text, rhs_text, has_modifier) for each top-level join on
+    `operator_re` found in the expression."""
+    joined = " ".join(expr.split())
+    for m in operator_re.finditer(joined):
+        # Crude split at the operator; good enough for these alert
+        # expressions, which carry a single join each.
+        lhs = joined[: m.start()]
+        rest = joined[m.end() :]
+        has_modifier = bool(_MODIFIER_RE.match(rest))
+        rhs = _MODIFIER_RE.sub("", rest, count=1) if has_modifier else rest
+        if has_modifier:
+            # Strip the "label1, label2) " tail of ignoring(...)/on(...).
+            rhs = re.sub(r"^[^)]*\)\s*", "", rhs)
+        yield lhs, rhs, has_modifier
+
+
+@pytest.mark.parametrize("rules_path", [_RULES_YAML, _K8S_RULES_YAML])
+def test_boolean_joins_use_compatible_or_modified_label_sets(rules_path: Path) -> None:
+    """Every vector and/or/unless join between two taskq_* series must either
+    compare identical label sets, or explicitly carry an ignoring(...)/on(...)
+    modifier that reconciles the mismatch.
+
+    Without one of these, Prometheus's `and` is an inner join on identical
+    label sets: a left side carrying {status="scheduled"} never matches a
+    label-less right side, the joined vector is permanently empty, and the
+    alert can never fire. Nothing reports this, because a vector match that
+    produces no results is valid PromQL, not an error.
+    """
+    rules = _rules_from(rules_path)
+    violations: list[str] = []
+    bool_join_re = re.compile(r"\s(?:and|or|unless)\s")
+
+    for rule in rules:
+        expr = str(rule.get("expr", ""))
+        if not re.search(r"\btaskq_[a-z0-9_]+.*\b(and|or|unless)\b.*taskq_[a-z0-9_]+", expr):
+            continue
+        for lhs, rhs, has_modifier in _iter_vector_joins(expr, bool_join_re):
+            if not (re.search(r"\btaskq_", lhs) and re.search(r"\btaskq_", rhs)):
+                continue
+            if has_modifier:
+                # An explicit ignoring()/on() modifier is the author's
+                # deliberate reconciliation of a label mismatch. Trust it.
+                continue
+            lhs_labels = _selector_labels(lhs)
+            rhs_labels = _selector_labels(rhs)
+            if lhs_labels != rhs_labels:
+                violations.append(
+                    f"{rules_path.name}: alert {rule.get('alert')!r} joins series "
+                    f"with mismatched label sets ({sorted(lhs_labels)} vs "
+                    f"{sorted(rhs_labels)}) with no ignoring()/on() modifier. "
+                    "This join can never produce results, so the alert can "
+                    "never fire. expr: " + expr.strip()
+                )
+
+    assert not violations, "\n".join(violations)
+
+
+@pytest.mark.parametrize("rules_path", [_RULES_YAML, _K8S_RULES_YAML])
+def test_vector_comparisons_use_compatible_or_modified_label_sets(rules_path: Path) -> None:
+    """A comparison between two taskq_* instant vectors joins on label sets
+    exactly the way `and` does, so those operands must match too.
+
+    TaskQSweepDegraded compares the used batch size against the configured
+    size gauge-to-gauge; that only works because both series carry the same
+    sweep_name label. Should either side gain or lose a dimension, the
+    comparison silently drops to an empty vector and the alert stops firing
+    while still looking well-formed in the rule file. Comparisons against a
+    scalar literal carry no such risk and are not joins.
+    """
+    rules = _rules_from(rules_path)
+    violations: list[str] = []
+
+    for rule in rules:
+        expr = str(rule.get("expr", ""))
+        # Boolean joins are the other test's subject; split on them first so a
+        # comparison on one side is never paired with an operand on the other.
+        for segment in re.split(r"\s(?:and|or|unless)\s", " ".join(expr.split())):
+            for lhs, rhs, has_modifier in _iter_vector_joins(segment, _COMPARISON_RE):
+                if not (re.search(r"\btaskq_", lhs) and re.search(r"\btaskq_", rhs)):
+                    continue
+                if has_modifier:
+                    continue
+                lhs_labels = _selector_labels(lhs)
+                rhs_labels = _selector_labels(rhs)
+                if lhs_labels != rhs_labels:
+                    violations.append(
+                        f"{rules_path.name}: alert {rule.get('alert')!r} compares series "
+                        f"with mismatched label sets ({sorted(lhs_labels)} vs "
+                        f"{sorted(rhs_labels)}) with no ignoring()/on() modifier. "
+                        "The comparison yields an empty vector, so the alert can "
+                        "never fire. expr: " + expr.strip()
+                    )
+
+    assert not violations, "\n".join(violations)
+
+
+@pytest.mark.parametrize("rules_path", [_RULES_YAML, _K8S_RULES_YAML])
+def test_backlog_alerts_make_an_unconsumed_actor_visible(rules_path: Path) -> None:
+    """The backlog-growing alert family must be able to name an actor whose
+    jobs accumulate and are never consumed — in BOTH rule files.
+
+    A worker that can do work never refuses to start, so an actor whose
+    queue no child of this supervisor consumes boots with a warning and
+    then runs silently forever. Monitoring is the only remaining way an
+    operator learns that those jobs are piling up. A backlog series
+    aggregated fleet-wide, or attributable only to a queue, cannot answer
+    "which actor is starving": a busy queue shared by several actors looks
+    identical to healthy load while one actor's jobs never move.
+
+    So at least one alert must evaluate backlog depth or oldest-pending age
+    at actor granularity — an ``actor`` dimension in a selector, a
+    ``by (actor)`` / ``by (queue, actor)`` aggregation, or an ``actor``
+    grouping label — and name that actor in its rendered summary so the
+    page points at the starving actor rather than at a number.
+    """
+    rules = _rules_from(rules_path)
+    backlog_rules = [
+        rule
+        for rule in rules
+        if re.search(
+            r"\btaskq_(?:queue_depth|jobs_by_status|jobs_oldest_due_age_seconds"
+            r"|jobs_oldest_pending_age_seconds)\b",
+            str(rule.get("expr", "")),
+        )
+    ]
+    assert backlog_rules, (
+        f"{rules_path.name} carries no backlog alert at all — an actor whose "
+        "jobs are never consumed would be invisible"
+    )
+
+    actor_aware = []
+    for rule in backlog_rules:
+        expr = " ".join(str(rule.get("expr", "")).split())
+        has_actor_dimension = bool(
+            re.search(r"\{[^}]*\bactor\s*[=!~]", expr)
+            or re.search(r"\b(?:by|on|group_left|group_right)\s*\([^)]*\bactor\b", expr)
+        )
+        if has_actor_dimension:
+            actor_aware.append(rule)
+
+    assert actor_aware, (
+        f"{rules_path.name}: no backlog alert evaluates depth or oldest-pending "
+        "age at actor granularity. Every backlog expr here aggregates away the "
+        "actor, so an actor whose queue nothing consumes is indistinguishable "
+        "from healthy load on a busy shared queue — and the boot-time warning "
+        "is the only other signal an operator ever gets. Exprs seen: "
+        + "; ".join(
+            f"{r.get('alert')!r}: {' '.join(str(r.get('expr', '')).split())}" for r in backlog_rules
+        )
+    )
+
+    for rule in actor_aware:
+        text = " ".join(str(v) for v in rule.get("annotations", {}).values())
+        assert "$labels.actor" in text, (
+            f"{rules_path.name}: alert {rule['alert']!r} groups backlog by actor "
+            "but its annotations never render $labels.actor — the page reports a "
+            "starving actor without naming it"
+        )

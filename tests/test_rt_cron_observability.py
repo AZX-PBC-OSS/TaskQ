@@ -473,6 +473,526 @@ class TestCronFireSpanAttribution:
         assert dict(planned[0].attributes or {})["taskq.cron_schedule_id"] == str(schedule_id)
 
 
+class TestAutoDisableTelemetryFollowsTheCommit:
+    """An auto-disable that the COMMIT rolled back must not be announced.
+
+    Auto-disable is the most consequential thing cron telemetry reports:
+    the ``cron schedule auto-disabled`` log line and the disabled-count
+    gauge tell operators a schedule has stopped firing and needs human
+    attention. ``tick_cron`` runs inside the leader's transaction, so the
+    COMMIT that actually flips ``enabled`` to false happens after
+    ``tick_cron`` returns. When that COMMIT fails the whole transaction
+    rolls back and the schedule stays enabled and keeps its old strike
+    count. Announcing the auto-disable anyway sends operators to
+    investigate a schedule that is still running, and moves the gauge
+    away from the state the database holds. Emission must therefore be
+    gated on the transaction committing, not merely on every statement
+    of the tick having run.
+    """
+
+    async def test_failed_commit_announces_no_auto_disable(
+        self,
+        clean_pg_conn: asyncpg.Connection,
+        module_pg_schema: ModulePgSchema,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A schedule one strike short of the auto-disable threshold
+        fails, so the tick would disable it and announce that. The COMMIT
+        then fails, rolling the disable back. The row must still be
+        enabled at its old count, and no auto-disable log line, ERROR
+        ``cron fire`` span or failure-metric delta may survive.
+        """
+        _, exporter = setup_tracer(monkeypatch)
+        schema = module_pg_schema.schema_name
+        settings = cron_settings(schema)
+        await seed_actor_config(clean_pg_conn, schema, _ACTOR)
+        schedule_id = await seed_schedule(
+            clean_pg_conn,
+            schema,
+            actor=_ACTOR,
+            name="auto-disable-when-commit-fails",
+            cron_expr=_HOURLY,
+            next_fire_at=hour_floor(datetime.now(UTC)),
+            payload_factory=_BAD_FACTORY,
+            # Threshold is 3, so this tick's strike is the disabling one.
+            consecutive_failures=2,
+        )
+
+        cron_failure_calls: list[tuple[str, int]] = []
+        monkeypatch.setattr(
+            cron_loop,
+            "record_cron_failure",
+            lambda actor, delta: cron_failure_calls.append((actor, delta)),
+        )
+
+        # DEFERRABLE INITIALLY DEFERRED: Postgres evaluates this trigger
+        # only at COMMIT time, strictly after every statement the tick
+        # runs (its failures UPDATE and any telemetry emission). It always
+        # raises, so the COMMIT itself fails deterministically.
+        await clean_pg_conn.execute(
+            f'CREATE OR REPLACE FUNCTION "{schema}".commit_gate_fail_disable() '
+            "RETURNS trigger AS $$ "
+            "BEGIN RAISE EXCEPTION 'commit-gate: forced commit failure'; END; "
+            "$$ LANGUAGE plpgsql"
+        )
+        await clean_pg_conn.execute(
+            "CREATE CONSTRAINT TRIGGER commit_gate_fail_disable_trg "
+            f'AFTER UPDATE ON "{schema}".cron_schedules '
+            "DEFERRABLE INITIALLY DEFERRED "
+            f'FOR EACH ROW EXECUTE FUNCTION "{schema}".commit_gate_fail_disable()'
+        )
+
+        worker_id = new_uuid()
+        with (
+            structlog.testing.capture_logs() as captured,
+            pytest.raises(asyncpg.RaiseError, match="commit-gate"),
+        ):
+            async with clean_pg_conn.transaction():
+                fired = await tick_cron(
+                    clean_pg_conn, settings, make_backend(settings), schema, worker_id
+                )
+                assert fired == 0
+
+        # The DB rolled the whole transaction back: still enabled, still
+        # at the pre-tick strike count.
+        row = await schedule_row(clean_pg_conn, schema, schedule_id)
+        assert row["enabled"] is True
+        assert row["consecutive_failures"] == 2
+        assert row["last_fire_error"] is None
+
+        disabled_events = [e for e in captured if e["event"] == "cron schedule auto-disabled"]
+        assert disabled_events == [], (
+            "a failed COMMIT must not announce an auto-disable it rolled "
+            f"back -- the schedule is still enabled; saw {disabled_events}"
+        )
+        failed_events = [e for e in captured if e["event"] == "cron fire failed"]
+        assert failed_events == [], (
+            "a failed COMMIT must not leave a strike log line behind for "
+            f"the strike it rolled back; saw {failed_events}"
+        )
+
+        spans = exporter.spans_named("cron fire")
+        struck_spans = [s for s in spans if s.status.status_code == StatusCode.ERROR]
+        assert struck_spans == [], (
+            "a failed COMMIT must not leave an ERROR-status 'cron fire' "
+            f"span behind for the strike it rolled back; saw {struck_spans}"
+        )
+
+        assert cron_failure_calls == [], (
+            "a failed COMMIT must not leave a record_cron_failure metric "
+            f"delta behind for the strike it rolled back; saw {cron_failure_calls}"
+        )
+
+
+class TestNoStrikeTelemetryWithoutACommit:
+    """A cron strike that never reaches durable storage must leave no
+    telemetry behind either.
+
+    The failure telemetry a tick produces (the ERROR ``cron fire`` span,
+    the ``cron fire failed`` log line, the ``record_cron_failure`` metric
+    delta) describes a strike the DB is supposed to have persisted on the
+    schedule row. ``tick_cron`` runs inside the leader's transaction, so
+    the COMMIT that makes the strike durable happens after ``tick_cron``
+    returns. When that COMMIT fails, the whole transaction rolls back and
+    the schedule row keeps no record of the strike. Telemetry that went
+    out anyway leaves operators reading a failure count and an error span
+    for something the database says never happened, which corrupts alert
+    thresholds and makes the auto-disable trail unreconstructable from
+    the row. Export must therefore be gated on the transaction actually
+    committing, not merely on every statement of the tick having run.
+    """
+
+    async def test_failed_commit_exports_no_strike_telemetry(
+        self,
+        clean_pg_conn: asyncpg.Connection,
+        module_pg_schema: ModulePgSchema,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A failing schedule strikes, then the COMMIT that would persist
+        the strike fails. The schedule row must show no strike, and the
+        log, the span exporter and the failure metric must all be
+        untouched by it.
+        """
+        _, exporter = setup_tracer(monkeypatch)
+        schema = module_pg_schema.schema_name
+        settings = cron_settings(schema)
+        await seed_actor_config(clean_pg_conn, schema, _ACTOR)
+        schedule_id = await seed_schedule(
+            clean_pg_conn,
+            schema,
+            actor=_ACTOR,
+            name="no-telemetry-when-commit-fails",
+            cron_expr=_HOURLY,
+            next_fire_at=hour_floor(datetime.now(UTC)),
+            payload_factory=_BAD_FACTORY,
+        )
+
+        cron_failure_calls: list[tuple[str, int]] = []
+        monkeypatch.setattr(
+            cron_loop,
+            "record_cron_failure",
+            lambda actor, delta: cron_failure_calls.append((actor, delta)),
+        )
+
+        # DEFERRABLE INITIALLY DEFERRED: Postgres evaluates this trigger
+        # only at COMMIT time, strictly after every statement the tick
+        # runs (its UPDATE of consecutive_failures/last_fire_error and
+        # any telemetry emission). It always raises, so the COMMIT itself
+        # fails deterministically.
+        await clean_pg_conn.execute(
+            f'CREATE OR REPLACE FUNCTION "{schema}".commit_gate_fail() '
+            "RETURNS trigger AS $$ "
+            "BEGIN RAISE EXCEPTION 'commit-gate: forced commit failure'; END; "
+            "$$ LANGUAGE plpgsql"
+        )
+        await clean_pg_conn.execute(
+            "CREATE CONSTRAINT TRIGGER commit_gate_fail_trg "
+            f'AFTER UPDATE ON "{schema}".cron_schedules '
+            "DEFERRABLE INITIALLY DEFERRED "
+            f'FOR EACH ROW EXECUTE FUNCTION "{schema}".commit_gate_fail()'
+        )
+
+        worker_id = new_uuid()
+        with (
+            structlog.testing.capture_logs() as captured,
+            pytest.raises(asyncpg.RaiseError, match="commit-gate"),
+        ):
+            async with clean_pg_conn.transaction():
+                fired = await tick_cron(
+                    clean_pg_conn, settings, make_backend(settings), schema, worker_id
+                )
+                assert fired == 0
+
+        # The DB rolled the whole transaction back: no strike persisted.
+        row = await schedule_row(clean_pg_conn, schema, schedule_id)
+        assert row["consecutive_failures"] == 0
+        assert row["last_fire_error"] is None
+
+        failed_events = [e for e in captured if e["event"] == "cron fire failed"]
+        assert failed_events == [], (
+            "a failed COMMIT must not leave a 'cron fire failed' log line "
+            f"behind for the strike it rolled back; saw {failed_events}"
+        )
+
+        spans = exporter.spans_named("cron fire")
+        struck_spans = [s for s in spans if s.status.status_code == StatusCode.ERROR]
+        assert struck_spans == [], (
+            "a failed COMMIT must not leave an ERROR-status 'cron fire' "
+            f"span behind for the strike it rolled back; saw {struck_spans}"
+        )
+
+        assert cron_failure_calls == [], (
+            "a failed COMMIT must not leave a record_cron_failure metric "
+            f"delta behind for the strike it rolled back; saw {cron_failure_calls}"
+        )
+
+    async def test_failed_commit_exports_no_success_telemetry(
+        self,
+        clean_pg_conn: asyncpg.Connection,
+        module_pg_schema: ModulePgSchema,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The success path needs the same commit gate as the strike path.
+
+        A schedule with prior failures fires, so the tick would emit a
+        ``cron fired`` log, a ``record_published_message`` count and a
+        ``record_cron_failure`` reset for the full prior count. The COMMIT
+        then fails, rolling back both the advanced ``next_fire_at`` and the
+        counter reset. Exporting anyway understates the actor's failure
+        gauge against a DB row that still holds the old count, and claims
+        a message was published for a job the enqueue rolled back too.
+        """
+        schema = module_pg_schema.schema_name
+        settings = cron_settings(schema)
+        await seed_actor_config(clean_pg_conn, schema, _ACTOR, queue=_QUEUE)
+        schedule_id = await seed_schedule(
+            clean_pg_conn,
+            schema,
+            actor=_ACTOR,
+            name="success-when-commit-fails",
+            cron_expr=_HOURLY,
+            next_fire_at=hour_floor(datetime.now(UTC)),
+            consecutive_failures=2,
+        )
+
+        cron_failure_calls: list[tuple[str, int]] = []
+        published: list[tuple[str, str]] = []
+        monkeypatch.setattr(
+            cron_loop,
+            "record_cron_failure",
+            lambda actor, delta: cron_failure_calls.append((actor, delta)),
+        )
+        monkeypatch.setattr(
+            cron_loop,
+            "record_published_message",
+            lambda actor, queue: published.append((actor, queue)),
+        )
+
+        await clean_pg_conn.execute(
+            f'CREATE OR REPLACE FUNCTION "{schema}".commit_gate_fail_ok() '
+            "RETURNS trigger AS $$ "
+            "BEGIN RAISE EXCEPTION 'commit-gate: forced commit failure'; END; "
+            "$$ LANGUAGE plpgsql"
+        )
+        await clean_pg_conn.execute(
+            "CREATE CONSTRAINT TRIGGER commit_gate_fail_ok_trg "
+            f'AFTER UPDATE ON "{schema}".cron_schedules '
+            "DEFERRABLE INITIALLY DEFERRED "
+            f'FOR EACH ROW EXECUTE FUNCTION "{schema}".commit_gate_fail_ok()'
+        )
+
+        worker_id = new_uuid()
+        with (
+            structlog.testing.capture_logs() as captured,
+            pytest.raises(asyncpg.RaiseError, match="commit-gate"),
+        ):
+            async with clean_pg_conn.transaction():
+                fired = await tick_cron(
+                    clean_pg_conn, settings, make_backend(settings), schema, worker_id
+                )
+                assert fired == 1
+
+        # The DB rolled back: the prior failure count is untouched.
+        row = await schedule_row(clean_pg_conn, schema, schedule_id)
+        assert row["consecutive_failures"] == 2
+
+        fired_events = [e for e in captured if e["event"] == "cron fired"]
+        assert fired_events == [], (
+            "a failed COMMIT must not leave a 'cron fired' log line behind "
+            f"for the fire it rolled back; saw {fired_events}"
+        )
+        assert published == [], (
+            "a failed COMMIT must not count a published message for the "
+            f"enqueue it rolled back; saw {published}"
+        )
+        assert cron_failure_calls == [], (
+            "a failed COMMIT must not apply the failure-count reset it "
+            f"rolled back; saw {cron_failure_calls}"
+        )
+
+
+class TestFailureGaugeIsDerivedFromTheDatabase:
+    """``taskq.cron.consecutive_failures`` must report the failing-schedule
+    count the database holds, not a balance this process accumulated.
+
+    A per-process running balance can only ever be right about deltas this
+    process itself applied. Schedules are enabled, disabled and deleted by
+    clients, by the CLI and by the admin UI — all outside the worker that
+    emits the metric — and each of those actions clears or removes a
+    ``cron_schedules.consecutive_failures`` value the worker once counted
+    up. A worker cannot emit another process's delta, so the balance drifts
+    permanently upward: an actor whose only failing schedule was deleted a
+    month ago still reports a non-zero failure level forever, and an alert
+    on the series becomes unreadable at exactly the moment an operator
+    needs it.
+
+    The contract: the value is derived from database state on each tick, so
+    every out-of-process change self-corrects on the next tick and no
+    stranded residue survives.
+    """
+
+    async def _cron_failure_points(
+        self, reader: InMemoryMetricReader
+    ) -> list[tuple[dict[str, object], int]]:
+        data = reader.get_metrics_data()
+        assert data is not None
+        return [
+            (dict(p.attributes or {}), int(p.value))
+            for rm in data.resource_metrics
+            for sm in rm.scope_metrics
+            for m in sm.metrics
+            if m.name == "taskq.cron.consecutive_failures"
+            for p in m.data.data_points
+            if isinstance(p, NumberDataPoint)
+        ]
+
+    async def test_out_of_process_enable_disable_and_delete_self_correct(
+        self,
+        clean_pg_conn: asyncpg.Connection,
+        module_pg_schema: ModulePgSchema,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Two failing schedules build a count; another process then clears
+        one and deletes the other. The next tick's emitted value must match
+        what the database says — zero — with no residue from the strikes
+        this worker counted.
+        """
+        schema = module_pg_schema.schema_name
+        settings = cron_settings(schema)
+        await seed_actor_config(clean_pg_conn, schema, _ACTOR, queue=_QUEUE)
+        due = hour_floor(datetime.now(UTC))
+        cleared_id = await seed_schedule(
+            clean_pg_conn,
+            schema,
+            actor=_ACTOR,
+            name="failing-then-re-enabled-elsewhere",
+            cron_expr=_HOURLY,
+            next_fire_at=due,
+            payload_factory=_BAD_FACTORY,
+        )
+        deleted_id = await seed_schedule(
+            clean_pg_conn,
+            schema,
+            actor=_ACTOR,
+            name="failing-then-deleted-elsewhere",
+            cron_expr=_HOURLY,
+            next_fire_at=due,
+            payload_factory=_BAD_FACTORY,
+        )
+        survivor_id = await seed_schedule(
+            clean_pg_conn,
+            schema,
+            actor=_ACTOR,
+            name="still-failing",
+            cron_expr=_HOURLY,
+            next_fire_at=due,
+            payload_factory=_BAD_FACTORY,
+        )
+
+        reader = InMemoryMetricReader()
+        meter = MeterProvider(metric_readers=[reader]).get_meter("taskq-cron-failure-gauge")
+        monkeypatch.setattr(otel_mod, "_otel_enabled", True)
+        monkeypatch.setattr(
+            otel_mod,
+            "_cron_consecutive_failures",
+            meter.create_up_down_counter("taskq.cron.consecutive_failures", unit="1"),
+        )
+
+        async def _tick() -> int:
+            async with clean_pg_conn.transaction():
+                return await tick_cron(
+                    clean_pg_conn, settings, make_backend(settings), schema, new_uuid()
+                )
+
+        async def _make_due(*schedule_ids: UUID) -> None:
+            await clean_pg_conn.execute(
+                f'UPDATE "{schema}".cron_schedules SET next_fire_at = $2 '  # noqa: S608  # Why: schema is a test-fixture identifier; values are $-bound.
+                "WHERE id = ANY($1::uuid[])",
+                [*schedule_ids],
+                due,
+            )
+
+        # All three strike once: the database and the metric agree at 3.
+        assert await _tick() == 0
+        assert await self._cron_failure_points(reader) == [({"actor": _ACTOR}, 3)], (
+            "baseline: with three failing schedules on one actor the series "
+            "must read 3 — if it does not, the rest of this test proves nothing"
+        )
+
+        # Another process intervenes between ticks: one schedule's strike
+        # history is cleared (the shape a disable/re-enable leaves behind),
+        # the other schedule is deleted outright. Neither action passes
+        # through this worker, so neither can emit a compensating delta.
+        await clean_pg_conn.execute(
+            f'UPDATE "{schema}".cron_schedules '  # noqa: S608  # Why: schema is a test-fixture identifier; values are $-bound.
+            "SET consecutive_failures = 0, last_fire_error = NULL, next_fire_at = $2 "
+            "WHERE id = $1",
+            cleared_id,
+            due + timedelta(hours=2),
+        )
+        await clean_pg_conn.execute(
+            f'DELETE FROM "{schema}".cron_schedules WHERE id = $1',  # noqa: S608  # Why: schema is a test-fixture identifier; id is $-bound.
+            deleted_id,
+        )
+
+        # The survivor strikes again on the next tick; the database now
+        # holds exactly 2 failures for the actor (the survivor's), and the
+        # cleared schedule is not due so it contributes nothing.
+        await _make_due(survivor_id)
+        assert await _tick() == 0
+
+        db_total = await clean_pg_conn.fetchval(
+            f'SELECT COALESCE(SUM(consecutive_failures), 0) FROM "{schema}".cron_schedules '  # noqa: S608  # Why: schema is a test-fixture identifier; actor is $-bound.
+            "WHERE actor = $1",
+            _ACTOR,
+        )
+        assert int(db_total) == 2, "test premise: the survivor alone now carries two strikes"
+
+        points = await self._cron_failure_points(reader)
+        assert points == [({"actor": _ACTOR}, 2)], (
+            "the reported failure level must equal the database's own sum for "
+            f"the actor ({db_total}); saw {points}. A per-process balance "
+            "cannot see the clear or the delete another process performed, so "
+            "it strands their strikes permanently and the series never "
+            "returns to zero even when no schedule is failing at all"
+        )
+
+    async def test_value_returns_to_zero_once_no_schedule_is_failing(
+        self,
+        clean_pg_conn: asyncpg.Connection,
+        module_pg_schema: ModulePgSchema,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """When every failing schedule is gone from the database, the next
+        tick must report zero.
+
+        This is the operator-facing property: "is any schedule failing right
+        now" has to be answerable from the series. A residue-carrying
+        balance answers "did anything ever fail on a worker that is still
+        running", which is not an alertable question.
+        """
+        schema = module_pg_schema.schema_name
+        settings = cron_settings(schema)
+        await seed_actor_config(clean_pg_conn, schema, _ACTOR, queue=_QUEUE)
+        due = hour_floor(datetime.now(UTC))
+        failing_id = await seed_schedule(
+            clean_pg_conn,
+            schema,
+            actor=_ACTOR,
+            name="failing-then-gone",
+            cron_expr=_HOURLY,
+            next_fire_at=due,
+            payload_factory=_BAD_FACTORY,
+        )
+        healthy_id = await seed_schedule(
+            clean_pg_conn,
+            schema,
+            actor=_ACTOR,
+            name="healthy",
+            cron_expr=_HOURLY,
+            next_fire_at=due + timedelta(hours=2),
+        )
+
+        reader = InMemoryMetricReader()
+        meter = MeterProvider(metric_readers=[reader]).get_meter("taskq-cron-failure-zero")
+        monkeypatch.setattr(otel_mod, "_otel_enabled", True)
+        monkeypatch.setattr(
+            otel_mod,
+            "_cron_consecutive_failures",
+            meter.create_up_down_counter("taskq.cron.consecutive_failures", unit="1"),
+        )
+
+        async def _tick() -> int:
+            async with clean_pg_conn.transaction():
+                return await tick_cron(
+                    clean_pg_conn, settings, make_backend(settings), schema, new_uuid()
+                )
+
+        assert await _tick() == 0
+        assert await self._cron_failure_points(reader) == [({"actor": _ACTOR}, 1)]
+
+        # The failing schedule is deleted by another process entirely.
+        await clean_pg_conn.execute(
+            f'DELETE FROM "{schema}".cron_schedules WHERE id = $1',  # noqa: S608  # Why: schema is a test-fixture identifier; id is $-bound.
+            failing_id,
+        )
+        await clean_pg_conn.execute(
+            f'UPDATE "{schema}".cron_schedules SET next_fire_at = $2 WHERE id = $1',  # noqa: S608  # Why: schema is a test-fixture identifier; values are $-bound.
+            healthy_id,
+            due,
+        )
+
+        assert await _tick() == 1, "the healthy schedule fires on this tick"
+
+        points = await self._cron_failure_points(reader)
+        assert points == [({"actor": _ACTOR}, 0)], (
+            "with no failing schedule left in the database the actor's series "
+            f"must read 0; saw {points}. Residue here means an operator "
+            "cannot tell a currently-failing actor from one whose failures "
+            "were resolved by a delete or a re-enable somewhere else"
+        )
+
+
 # ── Helpers ────────────────────────────────────────────────────────────
 
 _ONE_MINUTE = timedelta(minutes=1)

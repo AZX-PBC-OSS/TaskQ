@@ -37,15 +37,28 @@ the emitter is imported through the ``taskq.worker.run`` re-export seam,
 matching ``tests/test_worker_startup_warnings.py``.
 """
 
+import logging
 from pathlib import Path
 
+import asyncpg
+import pytest
 import structlog.testing
 from pydantic import BaseModel, TypeAdapter
 
-from taskq.actor import ActorRef
+from taskq._ids import new_base62
+from taskq.actor import ActorRef, actor
+from taskq.migrate import apply_pending
+from taskq.obs import setup_logging
 from taskq.retry import RetryPolicy
 from taskq.settings import WorkerSettings
-from taskq.worker.run import _emit_unconsumed_queue_startup_warnings, _startup_log
+from taskq.testing.fixtures import _open_pg_backend_on_schema
+from taskq.testing.health import unique_health_sock_path
+from taskq.testing.jobs import make_enqueue_args
+from taskq.worker.run import (
+    _emit_unconsumed_queue_startup_warnings,
+    _startup_log,
+    worker_main_async,
+)
 
 _AGGREGATE_EVENT = "actors-on-unconsumed-queues"
 _EMPTY_QUEUES_EVENT = "worker-consumes-no-queues"
@@ -362,4 +375,253 @@ def test_main_wires_the_warning_after_worker_id_and_before_sync() -> None:
     assert emit.lineno < min(s.lineno for s in sync_calls), (
         "the emit call must come BEFORE sync_actor_config, whose drift "
         "raise or pool-acquire stall would swallow the warning"
+    )
+
+
+# ── The warning never becomes a refusal ──────────────────────────────
+
+
+@pytest.mark.integration
+async def test_worker_with_actors_on_unconsumed_queues_still_boots_and_works(
+    pg_dsn: str,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A worker whose registry contains an actor on a queue it does not
+    consume must still start and must still run the work it CAN run.
+
+    Queue coverage is a fleet-wide fact no single worker can decide: a
+    sibling worker elsewhere may well consume that queue, and heterogeneous
+    fleets that split queues across workers are the normal deployment. If
+    this condition refused the boot, scaling a fleet out by adding a worker
+    that serves a queue subset would take that worker down instead, and the
+    operator would see a crash loop rather than the queue coverage warning.
+    The behaviour asserted here is: boot succeeds, the warning is emitted,
+    and a job on the consumed queue actually reaches a terminal success.
+    """
+    schema = f"twuq_{new_base62()}".lower()
+    conn = await asyncpg.connect(pg_dsn)
+    try:
+        await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        await apply_pending(conn, schema=schema)
+    finally:
+        await conn.close()
+
+    ran: list[str] = []
+
+    class _Value(BaseModel):
+        marker: str
+
+    @actor(name="served_actor", queue="default")
+    async def served_actor(payload: _Value) -> None:
+        ran.append(payload.marker)
+
+    @actor(name="unserved_actor", queue="reports")
+    async def unserved_actor(payload: _Value) -> None:  # pragma: no cover - never dispatched
+        ran.append("unserved")
+
+    registry = {"served_actor": served_actor, "unserved_actor": unserved_actor}
+
+    settings = WorkerSettings.load_from_dict(
+        {
+            "pg_dsn": pg_dsn,
+            "schema_name": schema,
+            "queues": "default",
+            "health_socket_path": unique_health_sock_path("unconsumed_queue"),
+        }
+    )
+
+    stack, _deps, backend = await _open_pg_backend_on_schema(pg_dsn, schema_name=schema)
+    try:
+        await backend.enqueue(
+            make_enqueue_args(
+                actor="served_actor",
+                queue="default",
+                payload={"marker": "ran"},
+            )
+        )
+    finally:
+        await stack.aclose()
+
+    # Observe the warning where an operator observes it: the stdlib logging
+    # stream. ``setup_logging`` is the production configurator and is
+    # idempotent, so this only guarantees the routing is in place rather
+    # than depending on some earlier test in the session having set it up.
+    setup_logging(level="INFO", log_format="json")
+    with caplog.at_level(logging.WARNING):
+        code = await worker_main_async(
+            settings,
+            actor_registry=registry,
+            cron_registry=[],
+            until_idle=True,
+            idle_settle_window=0.3,
+            idle_poll_interval=0.1,
+            idle_max_runtime=45.0,
+        )
+
+    assert code == 0, "a worker that can serve its own queues must not refuse to start"
+    assert ran == ["ran"], (
+        "the worker must still execute jobs on the queue it does consume; "
+        f"handler invocations: {ran}"
+    )
+
+    coverage_records = [
+        record for record in caplog.records if _AGGREGATE_EVENT in record.getMessage()
+    ]
+    assert len(coverage_records) == 1, (
+        "the unconsumed queue must produce exactly one loud boot warning, "
+        f"got {len(coverage_records)}"
+    )
+    record = coverage_records[0]
+    assert record.levelno == logging.WARNING, (
+        "the coverage gap is diagnosable-but-workable: a warning, never an error"
+    )
+    message = record.getMessage()
+    assert "unserved_actor" in message and "reports" in message, (
+        f"the warning must name the actor and its queue so the operator can act: {message}"
+    )
+
+    verify_conn = await asyncpg.connect(pg_dsn)
+    try:
+        statuses = await verify_conn.fetch(
+            f'SELECT actor, status FROM "{schema}".jobs'  # noqa: S608  # Why: schema is a test-generated identifier, not user input.
+        )
+    finally:
+        await verify_conn.close()
+
+    assert [(row["actor"], row["status"]) for row in statuses] == [("served_actor", "succeeded")], (
+        "the job on the consumed queue must reach a terminal success"
+    )
+
+
+# ── The queue that routes is the stored assignment ───────────────────
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("stored_queue", ["default", "retired_tier"])
+async def test_boot_queue_coverage_discriminates_on_the_stored_assignment(
+    pg_dsn: str,
+    caplog: pytest.LogCaptureFixture,
+    stored_queue: str,
+) -> None:
+    """Boot's queue-coverage signal must tell apart an actor whose stored
+    assignment this worker consumes from one whose stored assignment it does
+    not — the literal is the same in both cases.
+
+    The stored assignment is the operator-owned one: it is what an actor move
+    rewrites, what the cron leader's fires follow, and what routes every
+    re-pended row. A worker holding a literal that disagrees with it is the
+    normal, blessed state during the rolling deploy that ships the matching
+    code, so a signal that fires on literal-vs-stored disagreement alone says
+    nothing about coverage: it fires just as loudly on the healthy deploy
+    window as on the actor whose routed work nothing can claim.
+
+    Both parameters here run the identical registry and subscription and
+    differ only in the stored assignment, so a coverage signal that cannot
+    separate them is not a coverage signal. Whether *any* worker consumes the
+    queue stays a fleet-wide question this process cannot answer — hence a
+    warning and never a refusal, which the pin also asserts.
+    """
+    consumed = stored_queue == "default"
+    schema = f"twsa_{new_base62()}".lower()
+    conn = await asyncpg.connect(pg_dsn)
+    try:
+        await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        await apply_pending(conn, schema=schema)
+    finally:
+        await conn.close()
+
+    ran: list[str] = []
+
+    class _Value(BaseModel):
+        marker: str
+
+    @actor(name="moved_actor", queue="default")
+    async def moved_actor(payload: _Value) -> None:
+        ran.append(payload.marker)
+
+    registry = {"moved_actor": moved_actor}
+
+    settings = WorkerSettings.load_from_dict(
+        {
+            "pg_dsn": pg_dsn,
+            "schema_name": schema,
+            "queues": "default",
+            "health_socket_path": unique_health_sock_path("stored_assignment"),
+        }
+    )
+
+    # The stored assignment is the only thing that varies between the two
+    # parameters. The code literal names "default" either way, so nothing
+    # about the registry or the subscription distinguishes them.
+    conn = await asyncpg.connect(pg_dsn)
+    try:
+        await conn.execute(
+            f'INSERT INTO "{schema}".actor_config (actor, queue) VALUES ($1, $2)',  # noqa: S608  # Why: schema is a test-generated identifier, not user input.
+            "moved_actor",
+            stored_queue,
+        )
+    finally:
+        await conn.close()
+
+    stack, _deps, backend = await _open_pg_backend_on_schema(pg_dsn, schema_name=schema)
+    try:
+        await backend.enqueue(
+            make_enqueue_args(
+                actor="moved_actor",
+                queue="default",
+                payload={"marker": "ran"},
+            )
+        )
+    finally:
+        await stack.aclose()
+
+    setup_logging(level="INFO", log_format="json")
+    with caplog.at_level(logging.WARNING):
+        code = await worker_main_async(
+            settings,
+            actor_registry=registry,
+            cron_registry=[],
+            until_idle=True,
+            idle_settle_window=0.3,
+            idle_poll_interval=0.1,
+            idle_max_runtime=45.0,
+        )
+
+    assert code == 0, "queue coverage is a warning, never a refusal"
+    assert ran == ["ran"], (
+        f"the worker must still run the work it can claim; handler invocations: {ran}"
+    )
+
+    warnings = [
+        record.getMessage() for record in caplog.records if record.levelno >= logging.WARNING
+    ]
+    coverage_warnings = [
+        message
+        for message in warnings
+        if _AGGREGATE_EVENT in message or _EMPTY_QUEUES_EVENT in message
+    ]
+
+    if consumed:
+        assert coverage_warnings == [], (
+            "this worker consumes the actor's stored assignment, so its routed "
+            "work is claimable here and no coverage warning belongs at boot: "
+            f"{coverage_warnings}"
+        )
+        return
+
+    assert coverage_warnings, (
+        "boot emitted no queue-coverage warning although this actor's stored "
+        f"assignment is {stored_queue!r}, a queue this worker does not consume "
+        "— so every re-pended row and every cron fire for it routes somewhere "
+        "this process cannot claim. The coverage check reads the "
+        "@actor(queue=...) literal ('default', which this worker does consume) "
+        "instead of the stored assignment, so the one state where the actor's "
+        "routed work provably cannot be claimed here is the state it stays "
+        f"silent for. Warnings emitted: {warnings}"
+    )
+    assert any(
+        "moved_actor" in message and stored_queue in message for message in coverage_warnings
+    ), (
+        "the coverage warning must name the actor and the queue its work is "
+        f"routed to, so an operator can act on it directly: {coverage_warnings}"
     )

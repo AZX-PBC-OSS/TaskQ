@@ -891,13 +891,12 @@ class DuplicateIdempotencyKeyError(TaskQError):
     abort is deliberate bulk-import semantics, unchanged by the
     classification this error introduced). The non-fast paths never
     raise for this condition: their ``ON CONFLICT`` arbiter dedupes and
-    RETURNS the existing row, so no pre-existing typed error expressed
-    "this pair is already enqueued" — hence this class, following
-    pgqueuer's ``DuplicateJobError`` precedent (a typed domain error for
-    a deduplication-constraint violation on the enqueue path, raised by
-    their in-memory adapter too). Distinct from
-    :class:`ScopedIdempotencyMigrationPendingError`, which is the
-    rolling-deploy window's cross-scope reuse signal.
+    RETURNS the existing row, so a typed domain error for a
+    deduplication-constraint violation on the enqueue path does not exist
+    there — hence this class, expressing the same idempotency constraint
+    at the bulk-import boundary in both the SQL and in-memory backends.
+    Distinct from :class:`ScopedIdempotencyMigrationPendingError`, which is
+    the rolling-deploy window's cross-scope reuse signal.
 
     ``idempotency_key`` / ``idempotency_scope`` carry the offending pair
     when it could be attributed: the InMemory mirror detects it exactly,

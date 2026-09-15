@@ -42,9 +42,10 @@ async def _extract_state_change_transitions(
 async def test_full_snooze_round_trip() -> None:
     """Full snooze round-trip: enqueue → dispatch → Snooze → scheduled_to_pending → dispatch → succeed.
 
-    The snooze refunds the claim's attempt increment (Oban/River
-    convention), so one snooze cycle + one final successful dispatch
-    leaves the attempt at 1 — the deferral never walks the counter.
+    The snooze refunds the claim's attempt increment, so one snooze
+    cycle + one final successful dispatch leaves the attempt at 1 — the
+    deferral never walks the counter. A deferred work unit that did not
+    execute does not consume an attempt slot.
     """
     backend = _make_backend()
 

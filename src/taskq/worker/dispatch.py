@@ -507,12 +507,9 @@ async def dispatch_one_job(
                 except asyncio.CancelledError:
                     outcome = "cancelled"
                     consumer_span.set_status(StatusCode.ERROR, "cancelled")
-                    # A batch completes on ANY terminal member — GoodJob's
-                    # per-job finish hook runs the completion check for
-                    # every finished job, discarded included
-                    # (vendor/good_job/app/models/good_job/batch_record.rb,
-                    # _continue_discard_or_finish: on_discard fires and
-                    # jobs_finished_at/on_finish still land) — so a
+                    # A batch completes on ANY terminal member: the
+                    # batch-completion hook runs per-job for all terminal
+                    # outcomes (succeeded, failed, cancelled). So a
                     # cancelled last member must complete its batch here,
                     # not a sweep-interval later. Best-effort for the same
                     # reason consume's own mark_cancelled on this path is

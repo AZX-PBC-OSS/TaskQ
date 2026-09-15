@@ -329,10 +329,11 @@ If a job's queue has a registered cap, the worker prepends that reservation to t
 acquire list before running the actor — transparent to actor code, no `@actor` argument
 needed. This is the "implicit, not per-actor opt-in" behavior the issue asked for.
 
-### Prior art
+### How it works
 
-This mirrors Oban Pro's `global_limit` with queue partitioning — a fleet-wide cap applied
-per-queue rather than opted into per worker/actor.
+The queue-level cap is a fleet-wide limit applied per-queue rather than opted into per
+worker or actor. This ensures consistent behavior across all workers in a deployment without
+requiring per-actor configuration.
 
 ---
 

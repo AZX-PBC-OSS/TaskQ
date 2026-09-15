@@ -9,9 +9,10 @@ columns are unbounded ``text``
 sanitizes NUL, never truncates) nor ``src/taskq/backend/_terminal.py``
 (``_mark_failed`` / ``_mark_retry`` bind ``ErrorInfo`` fields verbatim,
 unlike the ``MAX_RESULT_BYTES`` / ``ResultTooLarge`` cap on the success
-path) bounds them. Upstream precedent: Que truncates errors to 500/10k
-chars in SQL with CHECK constraints, and GoodJob hit
-``PG::ProgramLimitExceeded`` from large error payloads.
+path) bounds them. Without bounds, hostile error text can cause server
+resource exhaustion and database bloat; the solution is to enforce
+maximum lengths on error fields at construction time using CHECK
+constraints or explicit truncation.
 
 Attack: fail a job with a 1MB exception message + 1MB traceback through
 the real terminal-write path (``PostgresBackend.mark_failed_or_retry``

@@ -7,13 +7,14 @@ Two dispatch-loop latencies these pins hold:
   consumer loops set at their ``local_queue.get()`` (the point a queue
   slot actually frees — ``qsize`` drops at get, not at job completion),
   bounded by the fallback interval so a never-set event cannot park the
-  producer. River wakes its producer the same way when a job result
-  frees a worker slot (vendor/river/producer.go, jobResultCh).
+  producer. Waking on a slot-release event is the mechanism to remove
+  latency when slots free: the producer claims the next job the instant
+  a slot releases, not after waiting out a poll interval.
 * Fallback poll jitter — an idle fleet polling the same interval in
   phase re-synchronizes after any transient event into periodic DB load
-  spikes; the empty-dispatch wait is jittered ±10% (river's
-  jitteredFetchPollInterval reasoning), seeded per-producer like the
-  retry RNG.
+  spikes; the empty-dispatch wait is jittered ±10% to spread the fleet's
+  polls across the interval rather than ticking in unison, seeded
+  per-producer like the retry RNG.
 
 Timing is deliberately NOT the gate: the wake pin asserts the producer
 needed no poll sleep at all (a sleep recorder — the event wake is

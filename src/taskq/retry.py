@@ -240,10 +240,9 @@ def compute_backoff(
 
     ``max_retry_backoff`` is the global ceiling applied *after*
     ``policy.cap`` — i.e. ``effective_cap = min(policy.cap, max_retry_backoff)``.
-    This matches Dramatiq's ``min(max_backoff, DEFAULT_MAX_BACKOFF)`` pattern
-    and prevents a
-    misconfigured per-actor ``RetryPolicy(cap=timedelta(days=365))`` from
-    stranding jobs for a year with no operator visibility.
+    The global cap prevents a misconfigured per-actor
+    ``RetryPolicy(cap=timedelta(days=365))`` from stranding jobs for a year
+    with no operator visibility — a defensive layer beyond the policy's own cap.
     Callers that hold ``WorkerSettings`` should pass
     ``settings.max_retry_backoff``; the default 24 h matches
     ``WorkerSettings.max_retry_backoff``.

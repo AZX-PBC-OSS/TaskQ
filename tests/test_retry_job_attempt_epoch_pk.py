@@ -10,18 +10,14 @@ numbers and the next terminal write inserted at (job_id, N) again —
 ``duplicate key value violates unique constraint "job_attempts_pkey"``
 — a revisited-primary-key violation the consumer's terminal-write infra
 family misclassified as transient, stranding the row ``running``. The
-operator's decision follows the vendored admin-retry precedent — Oban's
-``retry_job`` never touches the counter and raises the ceiling
-(``GREATEST(max_attempts, attempt + 1)``,
-vendor/oban/lib/oban/engines/basic.ex:366-372); River's ``JobRetry``
-likewise leaves ``attempt`` alone and bumps ``max_attempts`` only when
-the budget is exhausted
-(vendor/river/riverdriver/riverpgxv5/internal/dbsqlc/river_job.sql:514-516)
-— so a re-run climbs to fresh attempt numbers and the collision is
-unrepresentable. Every assertion here fails if anyone reintroduces the
-epoch reset. The in-memory twin mirrors the same semantics (its attempt
-store is a list, not keyed, so the PK itself is PG-only — the monotonic
-counter and ceiling are pinned for it in tests/test_in_memory_retry_job.py).
+correct approach: leave ``attempt`` alone and raise the ceiling
+(``GREATEST(max_attempts, attempt + 1)``) so the budget gates open on
+re-run. This way a re-run climbs to fresh attempt numbers and the
+collision is unrepresentable. Every assertion here fails if anyone
+reintroduces the epoch reset. The in-memory twin mirrors the same
+semantics (its attempt store is a list, not keyed, so the PK itself is
+PG-only — the monotonic counter and ceiling are pinned for it in
+tests/test_in_memory_retry_job.py).
 """
 
 from datetime import UTC, datetime, timedelta

@@ -51,10 +51,10 @@ def _flush_update_sql(schema: str) -> str:
     """Render the single-source-of-truth progress flush UPDATE.
 
     One statement carries a bounded batch of rows columnar-style — the
-    unnest-array bulk-writer shape the vendored corpus converged on
-    (river's columnar arrays, graphile's unnest-joined set operation,
-    procrastinate's composite array), sized by ``_FLUSH_BATCH_ROWS`` so
-    no statement ever runs long (the #120 doctrine). Each unnest row is
+    unnest-array bulk-writer shape reduces the number of parameters
+    and makes merge operations efficient (array-side operations merge
+    per-row without row-by-row iteration), sized by ``_FLUSH_BATCH_ROWS``
+    so no statement ever runs long (the #120 doctrine). Each unnest row is
     fenced PER ROW (running + this worker + this attempt epoch) and
     merges PER ROW (monotone base + delta on ``progress_seq``,
     last-writer-wins ``||`` merge on ``progress_state``); a row whose

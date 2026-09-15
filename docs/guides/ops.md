@@ -38,7 +38,7 @@ Mechanics live in the canonical guides (linked throughout); this page is about *
 6. [Classifying failures: terminal, retryable, transient](#6-classifying-failures-terminal-retryable-transient)
 7. [Waiting politely: rate limits, `Snooze`, `RetryAfter`, `Retry-After`](#7-waiting-politely-rate-limits-snooze-retryafter-retry-after)
 8. [Observability and alerting](#8-observability-and-alerting)
-9. [Migrating from Celery](#9-migrating-from-celery)
+9. [Porting workers from other queue systems](#9-porting-workers-from-other-queue-systems)
 10. [The footgun index](#10-the-footgun-index)
 11. [Adoption checklist](#11-adoption-checklist)
 
@@ -401,6 +401,17 @@ factories — a partial override yields a worker that starts, dispatches nothing
 `leader-elected`. The slot pool is not one of them: it is worker-internal and takes its
 credentials from `pg_credential_provider` or the direct DSN. Full reference:
 [managed-identities.md](managed-identities.md).
+
+**The notify reconnect lock's worst-case hold.** A NOTIFY connection reconnect (health-check
+failure, or a `SIGHUP` credential reload) serializes on `notify_reconnect_lock` for the sum of
+every step inside it: the credential factory call (`TASKQ_RELOAD_FACTORY_TIMEOUT`, 30s default),
+each of the three channels' `LISTEN` execute and `add_listener` registration
+(`TASKQ_NOTIFY_LISTENER_SETUP_TIMEOUT`, 10s default, ×2 steps ×3 channels = 60s), and the failed
+connection's bounded close (5s) — **~95s at shipped defaults**. Every individual step is bounded,
+so this is never a hang, but for that whole span a concurrent `SIGHUP` reload reports the notify
+connection as failed and dispatch runs on the poll fallback instead of NOTIFY wakeups — to an
+operator watching a rotation that looks identical to a wedged worker. It resolves on its own;
+widening any of the three timeouts above raises this worst case by the same amount.
 
 ### Database performance knobs
 
@@ -982,31 +993,31 @@ sure something **scrapes** `/jobs/health/metrics` (see
 
 ---
 
-## 9. Migrating from Celery
+## 9. Porting workers from other queue systems
 
-Concept mapping for teams porting workers:
+TaskQ's core concepts and their operational equivalents for teams moving from background job systems:
 
-| Celery | TaskQ | Notes |
+| Concept | TaskQ feature | Notes |
 |---|---|---|
-| `--concurrency` (prefork) | `TASKQ_MAX_CONCURRENCY` | asyncio coroutines, not processes — CPU-bound work must move to threads/executors |
-| `soft_time_limit` | `start_to_close` | cooperative cancellation of the attempt |
-| `time_limit` (SIGKILL) | — | no per-job process kill; see the sync-actor caveat in [§2](#2-timeouts-start_to_close-and-schedule_to_close) |
-| `visibility_timeout` | `lock_lease` (60 s) + leader sweep | worker death → reclaim → retry |
-| `acks_late` / `reject_on_worker_lost` | default behavior | at-least-once via lease reclaim |
-| `max_retries` + `retry_backoff` | `RetryPolicy(max_attempts, backoff, base, cap, jitter)` | jitter is ±20% multiplicative, not full jitter — and it does not decorrelate synchronized cohorts (see [§6](#6-classifying-failures-terminal-retryable-transient)) |
-| `autoretry_for` | default (all exceptions retry under the policy) | list the *terminal* ones instead: `non_retryable_exceptions` |
-| `rate_limit="100/m"` | `TokenBucket` / `SlidingWindow` on the actor | fleet-wide, Redis- or PG-backed; keyed refs for per-tenant quotas |
-| `countdown=` / `eta=` | `scheduled_at` | timezone-aware; ~1 s promotion precision |
-| `expires=` | `retry.time_budget` → `schedule_to_close` (`time_budget` requires `kind="indefinite"`) | interval from enqueue, server clock |
-| `task_id` dedup hacks | `idempotency_key` (+ scope) | DB-enforced; duplicates return the existing job — mind the key-discipline rules in [§5](#5-fan-out-at-scale-chunks-cursors-idempotency) |
-| `chord` | batch `finalizer` + `wait_for_batch`, or app-level run accounting | [§5 Patterns B/C](#5-fan-out-at-scale-chunks-cursors-idempotency) |
-| `chain` / `canvas` | `ctx.jobs.enqueue(...)` from the actor body | transactional on a LOOP-scope conn (per-slot connections make it safe at any `max_concurrency`; session-state inheritance still needs a single-slot worker), autonomous otherwise — [§5](#5-fan-out-at-scale-chunks-cursors-idempotency) |
-| `task_routes` | `@actor(queue=...)` + worker `TASKQ_QUEUES` | routing is by queue, not by broker exchange |
-| `priority=` (queue priority) | `@actor(priority=...)` / `enqueue(priority=...)` | higher dispatches first; stamped at enqueue — see [§3](#starvation-priority-and-fairness) |
-| `fair_queues` / per-tenant fairness | `round_robin` mode + `fairness_key` | the mode must be set explicitly — see [§3](#starvation-priority-and-fairness) |
-| worker `-n` names | `worker_label` (+ `worker_group` OTel label) | labels only — no routing semantics |
-| `celery beat` | `@cron(...)` | fires on schedule regardless of the previous fire; overlap suppression has traps — see [§5 — Cron](#cron-and-scheduled-workloads) |
-| DLQ plugin | `on_retry_exhausted` + `ErrorReporter` | no built-in queue — route where you want it |
+| Concurrency model | `TASKQ_MAX_CONCURRENCY` | asyncio coroutines, not processes — CPU-bound work must move to threads/executors |
+| Soft timeout per attempt | `start_to_close` | cooperative cancellation of the attempt |
+| Hard process kill per job | — | no per-job process kill; see the sync-actor caveat in [§2](#2-timeouts-start_to_close-and-schedule_to_close) |
+| Visibility timeout for dead workers | `lock_lease` (60 s) + leader sweep | worker death → reclaim → retry |
+| At-least-once delivery | default behavior | lease reclaim on worker loss |
+| Backoff algorithm | `RetryPolicy(max_attempts, backoff, base, cap, jitter)` | jitter is ±20% multiplicative, not full jitter — and it does not decorrelate synchronized cohorts (see [§6](#6-classifying-failures-terminal-retryable-transient)) |
+| Retry configuration | default (all exceptions retry under the policy) | list the *terminal* ones instead: `non_retryable_exceptions` |
+| Rate limiting per actor | `TokenBucket` / `SlidingWindow` on the actor | fleet-wide, Redis- or PG-backed; keyed refs for per-tenant quotas |
+| Delayed scheduling | `scheduled_at` | timezone-aware; ~1 s promotion precision |
+| Time budget for entire job lifetime | `retry.time_budget` → `schedule_to_close` (`time_budget` requires `kind="indefinite"`) | interval from enqueue, server clock |
+| Deduplication of reruns | `idempotency_key` (+ scope) | DB-enforced; duplicates return the existing job — mind the key-discipline rules in [§5](#5-fan-out-at-scale-chunks-cursors-idempotency) |
+| Job dependency chains (many-to-one) | batch `finalizer` + `wait_for_batch`, or app-level run accounting | [§5 Patterns B/C](#5-fan-out-at-scale-chunks-cursors-idempotency) |
+| Job workflows (chaining) | `ctx.jobs.enqueue(...)` from the actor body | transactional on a LOOP-scope conn (per-slot connections make it safe at any `max_concurrency`; session-state inheritance still needs a single-slot worker), autonomous otherwise — [§5](#5-fan-out-at-scale-chunks-cursors-idempotency) |
+| Task routing | `@actor(queue=...)` + worker `TASKQ_QUEUES` | routing is by queue, not by broker exchange |
+| Job priority | `@actor(priority=...)` / `enqueue(priority=...)` | higher dispatches first; stamped at enqueue — see [§3](#starvation-priority-and-fairness) |
+| Per-tenant fairness | `round_robin` mode + `fairness_key` | the mode must be set explicitly — see [§3](#starvation-priority-and-fairness) |
+| Worker labeling | `worker_label` (+ `worker_group` OTel label) | labels only — no routing semantics |
+| Scheduled job execution (cron) | `@cron(...)` | fires on schedule regardless of the previous fire; overlap suppression has traps — see [§5 — Cron](#cron-and-scheduled-workloads) |
+| Dead-letter queue routing | `on_retry_exhausted` + `ErrorReporter` | no built-in queue — route where you want it |
 
 ---
 
@@ -1069,6 +1080,7 @@ The condensed "know this before your first incident" list. Each row links to the
 | BYO `PoolFactory` counted as one pool | three full-sized pools (plus the conditional per-slot pool on that path), budget blown | factory is invoked once per role ([§4](#bring-your-own-pools-change-the-arithmetic)) |
 | TaskQ client handed the request handlers' pool | silent whole-process deadlock at `pool_max` | dedicated small pool — [§4](#bring-your-own-pools-change-the-arithmetic) |
 | Token auth without reload | healthy for an hour, then cannot connect | `TASKQ_RELOAD_INTERVAL` inside token lifetime, all five roles ([§4](#managed-identities-and-token-rotation)) |
+| NOTIFY reconnect mid-rotation looks like a hang | dispatch on poll fallback, `SIGHUP` reload reports notify as failed, for up to ~95s | `notify_reconnect_lock`'s worst-case hold is the sum of its bounded steps, not a hang — [§4](#managed-identities-and-token-rotation) |
 | `terminationGracePeriodSeconds` < shutdown worst case | SIGKILL mid-drain, `crashed` jobs | grace ≥ cancellation + cleanup + ~32 s tail ([deployment.md](deployment.md#health-probes)) |
 | One job longer than the shutdown budget | watchdog force-exits; *sibling* in-flight jobs die too | size the grace to your slowest actor, or cap it with `start_to_close` ([§2](#2-timeouts-start_to_close-and-schedule_to_close)) |
 | Drained `refill_per_second=0` bucket, no deadline | job re-queues every 5 s forever | add refill or `schedule_to_close` ([§7](#7-waiting-politely-rate-limits-snooze-retryafter-retry-after)) |

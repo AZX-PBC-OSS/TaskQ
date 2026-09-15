@@ -32,6 +32,8 @@ import asyncpg
 import pytest
 
 from taskq._ids import new_base62, new_uuid
+from taskq.backend._dispatch_sql import DISPATCH_STRICT_FIFO_SQL
+from taskq.backend._dispatch_sql import dispatch_batch as dispatch_batch_sql
 from taskq.backend.clock import SystemClock
 from taskq.backend.postgres import PostgresBackend
 from taskq.exceptions import SingletonCollisionError
@@ -233,5 +235,169 @@ async def test_stranded_singleton_blocker_refuses_every_enqueue_forever(pg_dsn: 
             "every enqueue for this actor is refused forever with no advisory hint."
         )
     finally:
+        await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        await conn.close()
+
+
+# ── The assignment-routed strand shape ───────────────────────────────
+
+
+_ASSIGNMENT_ACTOR = "assignment_routed_actor"
+_SERVED_LABEL_QUEUE = "served-label-queue"
+_UNSERVED_ASSIGNMENT_QUEUE = "unserved-assignment-queue"
+
+
+async def _seed_assignment_routed_strand(conn: asyncpg.Connection, schema: str) -> UUID:
+    """Seed a re-pended row whose routing queue no worker serves.
+
+    A re-pended row (``status='pending'`` with ``started_at`` set) is
+    routed by its actor's stored assignment, not by the queue label it
+    carries — the label survives only as an audit trail of where the row
+    was originally placed. So the row below is claimable by a consumer of
+    ``_UNSERVED_ASSIGNMENT_QUEUE`` and by no one else, while its label
+    still names a queue the fleet does serve.
+    """
+    await conn.execute(
+        f'INSERT INTO "{schema}".actor_config (actor, queue) VALUES ($1, $2)',
+        _ASSIGNMENT_ACTOR,
+        _UNSERVED_ASSIGNMENT_QUEUE,
+    )
+    job_id = new_uuid()
+    await conn.execute(
+        f'INSERT INTO "{schema}".jobs '
+        "(id, actor, queue, payload, max_attempts, retry_kind, status, attempt, "
+        " scheduled_at, started_at) "
+        "VALUES ($1, $2, $3, '{}'::jsonb, 3, 'transient', 'pending', 1, "
+        " clock_timestamp(), clock_timestamp())",
+        job_id,
+        _ASSIGNMENT_ACTOR,
+        _SERVED_LABEL_QUEUE,
+    )
+    await conn.execute(
+        f'INSERT INTO "{schema}".workers (id, hostname, pid, queues) VALUES ($1, $2, $3, $4)',
+        new_uuid(),
+        "worker-host",
+        4242,
+        [_SERVED_LABEL_QUEUE],
+    )
+    return job_id
+
+
+async def _claims(
+    conn: asyncpg.Connection, schema: str, queues: list[str], *, rounds: int = 3
+) -> set[UUID]:
+    """Run real dispatch rounds for a consumer of *queues*; return claimed ids."""
+    claimed: set[UUID] = set()
+    for _round in range(rounds):
+        rows = await dispatch_batch_sql(
+            conn,
+            sql=DISPATCH_STRICT_FIFO_SQL.format(schema=schema),
+            queues=queues,
+            limit_n=10,
+            worker_id=new_uuid(),
+            lock_lease=timedelta(seconds=30),
+        )
+        claimed.update(row["id"] for row in rows)
+    return claimed
+
+
+async def test_repended_row_routed_to_an_unserved_queue_is_undispatchable(
+    pg_dsn: str,
+) -> None:
+    """A re-pended row whose actor's stored assignment names a queue no
+    worker serves can never be claimed, however many consumers run.
+
+    This is the strand shape a queue move leaves behind when the target
+    queue's consumers were never stood up, and it is the one an operator
+    is least equipped to reason about: the row is pending, due, and
+    carries a queue label the fleet visibly serves, so every surface that
+    reads the label says the work is on a healthy queue. Dispatch does not
+    read the label for such a row — the assignment routes it — so the only
+    consumer that could claim it is the one nobody is running.
+
+    The control half of the pin matters as much as the failure half: a
+    consumer of the assignment queue claims the row immediately, which is
+    what makes "unclaimable" a statement about the fleet's subscriptions
+    rather than about the row being malformed.
+    """
+    schema = f"tarq_{new_base62()}".lower()
+    conn = await asyncpg.connect(pg_dsn)
+    try:
+        await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        await apply_pending(conn, schema=schema)
+        job_id = await _seed_assignment_routed_strand(conn, schema)
+
+        by_label_consumer = await _claims(conn, schema, [_SERVED_LABEL_QUEUE])
+        assert job_id not in by_label_consumer, (
+            "setup expectation: the row's routing queue is the actor's stored "
+            "assignment, so a consumer of the label queue must not claim it"
+        )
+
+        row = await conn.fetchrow(
+            f'SELECT status, queue FROM "{schema}".jobs WHERE id = $1', job_id
+        )
+        assert row is not None
+        assert row["status"] == "pending", (
+            "the row must still be pending and due after the label consumer's "
+            f"rounds; it is {row['status']!r}"
+        )
+        assert row["queue"] == _SERVED_LABEL_QUEUE, (
+            "the row must still carry the label naming a served queue, which is "
+            "what makes the strand invisible to every label-keyed surface"
+        )
+
+        by_assignment_consumer = await _claims(conn, schema, [_UNSERVED_ASSIGNMENT_QUEUE])
+        assert job_id in by_assignment_consumer, (
+            "control: a consumer of the actor's stored assignment queue must "
+            "claim the row, proving it is dispatchable work stranded by the "
+            "fleet's subscriptions rather than an unclaimable row"
+        )
+    finally:
+        await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        await conn.close()
+
+
+async def test_stranded_detector_sees_the_assignment_routed_strand(
+    pg_dsn: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The stranded-jobs gauge must count a re-pended row whose actor's
+    stored assignment names a queue no worker serves.
+
+    The detector is the fleet's only surface that can decide "no worker
+    anywhere serves this" — a single booting worker cannot, which is why
+    it warns instead of refusing. It answers that question by testing the
+    row's queue label against the ``workers`` table. For a re-pended row
+    the label is not the routing queue, so the detector asks its question
+    about the wrong queue: it reports healthy while the row is
+    permanently undispatchable.
+
+    An operator hits this after moving an actor onto a queue whose
+    consumers were never started. Nothing fails: the jobs are pending and
+    due, the queue on their label is served, the gauge is zero, and the
+    retries simply never run.
+    """
+    schema = f"tarq_{new_base62()}".lower()
+    conn = await asyncpg.connect(pg_dsn)
+    pool: asyncpg.Pool | None = None
+    try:
+        await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        await apply_pending(conn, schema=schema)
+        await _seed_assignment_routed_strand(conn, schema)
+
+        pool = await asyncpg.create_pool(pg_dsn, min_size=1, max_size=2)
+        gauge = await _run_stranded_detector_once(pg_dsn, pool, schema, monkeypatch)
+
+        assert gauge.get(_ASSIGNMENT_ACTOR, 0) >= 1, (
+            "the stranded-jobs gauge must count the re-pended row routed to "
+            f"{_UNSERVED_ASSIGNMENT_QUEUE!r}, which no worker serves; the gauge "
+            f"published {gauge!r}. The detector tests the row's queue LABEL "
+            f"({_SERVED_LABEL_QUEUE!r}, which a live worker does serve) against "
+            "the workers table, but a re-pended row is routed by its actor's "
+            "stored assignment — so the one surface that can see a fleet-wide "
+            "strand reports healthy while the work can never be claimed"
+        )
+    finally:
+        if pool is not None:
+            await pool.close()
         await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
         await conn.close()

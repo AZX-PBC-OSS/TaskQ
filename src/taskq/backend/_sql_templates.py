@@ -221,13 +221,13 @@ def render(schema: str) -> SqlTemplates:
         # N's stale handler from attempt N+1's live one on the SAME
         # worker after a stall → sweep reclaim → same-worker redispatch:
         # the stale handler's write matches (id, running, worker) and
-        # falsely terminalises the redispatched attempt. Oban fences
-        # exactly this with an attempt-identity epoch on every terminal
-        # write (ack_query: ``attempted_at == ^job.attempted_at`` —
-        # vendor/oban/lib/oban/engines/basic.ex). The epoch is the
-        # handler's dispatch-time job-row attempt snapshot, threaded from
-        # every call site; a mismatched epoch — a stale handler, or a
-        # caller that cannot present one ($k IS NULL never satisfies the
+        # falsely terminalises the redispatched attempt. Fence the
+        # redispatched attempt with an attempt-identity epoch on every
+        # terminal write so a stale attempt's terminal write cannot land
+        # on the row it no longer owns. The epoch is the handler's
+        # dispatch-time job-row attempt snapshot, threaded from every
+        # call site; a mismatched epoch — a stale handler, or a caller
+        # that cannot present one ($k IS NULL never satisfies the
         # equality) — makes the UPDATE match no row and the write no-ops
         # through the same machinery as the worker fence (rowcount 0 →
         # False / WorkerOwnershipMismatch / "noop", no publish).
@@ -550,22 +550,13 @@ SELECT * FROM upd""",
         #     returned and the gap `max_attempts - attempt` is exactly
         #     what it was before the claim.  A job can honour downstream
         #     429s indefinitely: attempt oscillates between N and N+1 and
-        #     never walks toward the smallint ceiling.  This is the
-        #     convention the vendored corpus is unanimous on — Oban's
-        #     snooze rolls back the attempt and preserves "the original
-        #     max_attempts... no matter how many times a job snoozes"
-        #     while counting snoozes in the job's meta
-        #     (vendor/oban/lib/oban/worker.ex:273-278,
-        #     engines/basic.ex:274-285 `inc: [attempt: -1]`); River's
-        #     snooze/interrupt pass `attempt-1` with a `snoozes` metadata
-        #     counter (vendor/river/internal/jobexecutor/job_executor.go:396-420);
-        #     graphile-worker-rs refunds on recovery
-        #     (`attempts = GREATEST(0, attempts - 1)`).  The only ceiling
-        #     raises anywhere in the corpus are explicit admin retry
-        #     actions (River's JobRetry
-        #     riverdriver/riverdatabasesql/internal/dbsqlc/river_job.sql.go:1263,
-        #     Oban's retry_job engines/basic.ex:370) — no system widens
-        #     the budget automatically.
+        #     never walks toward the smallint ceiling.  A deferral that
+        #     never ran refunds the attempt: the claim was released without
+        #     work being done, so the budget is untouched.  The ceiling
+        #     itself is immutable here: a deferral restores the attempt it
+        #     borrowed rather than widening `max_attempts`, so the budget
+        #     an operator configured is the budget the job gets.  Only an
+        #     explicit admin retry raises the ceiling.
         #   * An admission denial ($7 = 'reservation_denied' /
         #     'rate_limit_denied') leaves the claim's increment standing:
         #     the system's own backpressure is budget-bounded, so a
@@ -643,14 +634,14 @@ WITH params AS (
            -- delay would park the job 'pending' at clock_timestamp() at
            -- the head of the dispatch order (ORDER BY scheduled_at),
            -- instantly re-claimable — one claim/refund round trip per
-           -- cycle monopolising a worker slot. River rejects a
-           -- non-future snooze; Oban requires a positive delay. The
-           -- consuming arms keep the raw delay: an immediate consuming
-           -- retry is a real execution, bounded by the budget it
-           -- spends. effective_delay is the arm's SINGLE delay —
-           -- status, scheduled_at and every deadline comparison read
-           -- it, so the snoozed and deadline arms partition exactly
-           -- (a row can never match neither).
+           -- cycle monopolising a worker slot. A non-future snooze must
+           -- be rejected: a zero delay would cause immediate re-claim and
+           -- burn worker slots. The consuming arms keep the raw delay: an
+           -- immediate consuming retry is a real execution, bounded by the
+           -- budget it spends. effective_delay is the arm's SINGLE delay —
+           -- status, scheduled_at and every deadline comparison read it,
+           -- so the snoozed and deadline arms partition exactly (a row can
+           -- never match neither).
             GREATEST($3::interval, {_MIN_DEFERRAL_INTERVAL_SQL}) AS effective_delay,
             $4::jsonb AS metadata_update,
             $5::int AS progress_seq,
@@ -1263,23 +1254,17 @@ WHERE l.relation = '"{s}".job_events'::regclass
         # whole table at most once per TTL window per process.
         list_actor_max_pending=f'SELECT actor, max_pending FROM "{s}".actor_config',
         # ── Admin operations ───────────────────────────────────────
-        # Monotonic attempt, per the vendored admin-retry precedent:
-        # Oban's retry_job leaves the counter at its spent value and
-        # raises the ceiling (GREATEST(max_attempts, attempt + 1),
-        # vendor/oban/lib/oban/engines/basic.ex:366-372); River's
-        # JobRetry likewise never touches attempt and bumps max_attempts
-        # only when the budget is exhausted (CASE WHEN attempt =
-        # max_attempts, vendor/river/riverdriver/riverpgxv5/internal/
-        # dbsqlc/river_job.sql:514-516). A reset to 0 made the
-        # re-dispatch revisit the spent epoch's numbers (dispatch claims
-        # at attempt + 1, so a reset row climbs back through every spent
-        # number), and the next attempt-row INSERT collided on
+        # Monotonic attempt: admin-retry must leave the attempt counter at
+        # its spent value and raise the ceiling instead. Resetting to 0
+        # made the re-dispatch revisit the spent epoch's numbers (dispatch
+        # claims at attempt + 1, so a reset row climbs back through every
+        # spent number), and the next attempt-row INSERT collided on
         # job_attempts_pkey (job_id, attempt) — a data defect the
-        # consumer's terminal-write infra family misclassified as
-        # transient, stranding the row running with every reclaim cycle
-        # dying on the same spent key. attempt is therefore NOT assigned
-        # here: the re-run climbs to fresh numbers and every
-        # attempt-row write lands on a fresh key. The ceiling raise
+        # consumer's terminal-write infra family misclassified as transient,
+        # stranding the row running with every reclaim cycle dying on the
+        # same spent key. attempt is therefore NOT assigned here: the re-run
+        # climbs to fresh numbers and every attempt-row write lands on a
+        # fresh key. The ceiling raise
         # opens the budget gates (the reclaim sweep's re-pend branch,
         # the terminal arms) for at least one fresh execution, while a
         # mid-budget re-run keeps its remaining budget (GREATEST is a

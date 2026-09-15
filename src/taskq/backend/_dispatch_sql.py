@@ -42,22 +42,19 @@ The geometry below pins each stage to the round's own constants:
   does not offer).
 * ``top_ids`` finalizes the LIMIT-ed id set BEFORE the statement
   touches the heap a second time, and ``locked`` then drives ``jobs``
-  by primary key through a correlated LATERAL — the fence doctrine of
-  oban's ``subset`` CTE (basic engine fetch_jobs: "the Postgres planner
-  may choose to generate a plan that executes a nested loop over the
-  LIMITing subquery... use a CTE as an optimization fence") and river's
-  ``JobGetAvailable`` (a bounded, locked CTE whose UPDATE joins by
-  ``river_job.id = locked_jobs.id``).
+  by primary key through a correlated LATERAL — a materialized CTE is an
+  optimization fence: the planner may otherwise choose a nested loop over
+  the LIMITing subquery. A bounded, locked CTE whose UPDATE joins by
+  id ensures the dispatch never re-optimizes across the candidacy cut
+  and respects the admission decision made by top_ids.
 * the terminal UPDATE re-finds its rows through
   ``j.id = ANY(ARRAY(SELECT id FROM eligible))`` — the id array
   materializes once as an InitPlan and the ScalarArrayOp is served
   either as a Bitmap Index Scan on the primary key (deep backlogs) or
   as a scan-level filter (shallow ones); both carry at most ``limit_n``
   rows of work per node.
-* every LIMIT bound is a direct ``$n`` parameter — river ships exactly
-  this form (``LIMIT $5::integer`` in JobGetAvailable) — because a
-  parameter folds to a literal in custom plans, where a subquery bound
-  never folds.  The bounds that must hold even under a generic plan do
+* every LIMIT bound is a direct ``$n`` parameter — because a parameter
+  folds to a literal in custom plans, where a subquery bound never folds.  The bounds that must hold even under a generic plan do
   not rely on estimates at all: they are structural (correlated
   laterals, ORDER BY + LIMIT probes, the one-shot id array), which is
   why this CTE family must never return to subquery LIMITs — the v1
@@ -354,8 +351,8 @@ identity_dedup AS (
 -- MATERIALIZED is load-bearing, not documentation: ranked is the fence
 -- that finalizes the candidate ranks before top_ids cuts the round's id
 -- set. Inlining it would let the planner re-optimize across the cut and
--- re-derive the whole chain per downstream reference (the same fence
--- doctrine as oban's subset CTE), and the window over the bounded
+-- re-derive the whole chain per downstream reference (a materialized CTE
+-- as an optimization fence prevents that), and the window over the bounded
 -- candidate set is cheap to materialize once.
 ranked AS MATERIALIZED (
   SELECT id.*,

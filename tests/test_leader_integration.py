@@ -9,6 +9,7 @@ intervals (10.0 s) would make each test wait ~12 s.
 """
 
 import asyncio
+import logging
 from contextlib import AsyncExitStack, suppress
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
@@ -21,10 +22,11 @@ from taskq.backend._protocol import JobId
 from taskq.backend.clock import SystemClock
 from taskq.backend.postgres import PostgresBackend
 from taskq.constants import schema_lock_name, wake_channel
+from taskq.obs import setup_logging
 from taskq.settings import WorkerSettings
 from taskq.testing.fixtures import _create_worker
 from taskq.worker.deps import WorkerDeps, open_worker_deps
-from taskq.worker.heartbeat import isolate_self
+from taskq.worker.heartbeat import heartbeat_loop, isolate_self
 from taskq.worker.leader import MaintenanceLeader
 
 pytestmark = pytest.mark.integration
@@ -936,3 +938,229 @@ async def test_ti8_fanout_outstanding_counter_reaches_zero(
         assert outstanding == 0
     finally:
         await stack.aclose()
+
+
+# ── Losing an election is normal, not a fault ─────────────────────
+
+
+async def _run_pod(
+    deps: WorkerDeps,
+    backend: PostgresBackend,
+    worker_id: UUID,
+    shutdown: asyncio.Event,
+) -> tuple[asyncio.Task[None], asyncio.Task[None]]:
+    """Start one pod's election loop plus its heartbeat loop.
+
+    Both are required for a pod to look alive to the rest of the fleet: the
+    leader's ``maintenance_leader.last_seen_at`` lease is pinged by the
+    heartbeat tick, so a leader running without one reads as a dead holder
+    to every other pod. A test that started only the election loop would be
+    exercising a pod shape production never runs.
+    """
+    leader = MaintenanceLeader(deps, worker_id, backend, clock=SystemClock())
+    election_task = asyncio.create_task(leader.run(shutdown))
+    heartbeat_task = asyncio.create_task(heartbeat_loop(deps, worker_id, shutdown))
+    return election_task, heartbeat_task
+
+
+def _events(caplog: pytest.LogCaptureFixture, event: str) -> list[logging.LogRecord]:
+    """Records whose rendered message carries *event*.
+
+    Read off the stdlib logging stream rather than ``structlog.testing.
+    capture_logs``: whether that capture sees anything depends on whether
+    some earlier test in the session happened to configure structlog, so a
+    log assertion built on it passes or fails by test ordering. Pairs with
+    ``_route_logs_to_stdlib``, which makes the routing explicit.
+    """
+    return [record for record in caplog.records if event in record.getMessage()]
+
+
+def _route_logs_to_stdlib() -> None:
+    """Bind structlog to the stdlib logging stream ``caplog`` observes.
+
+    ``setup_logging`` is the production configurator and is idempotent, so
+    this is a no-op once anything (a worker boot, an earlier test) has
+    already configured logging — the point is that these tests never depend
+    on that having happened.
+    """
+    setup_logging(level="DEBUG", log_format="json")
+
+
+@pytest.mark.asyncio
+async def test_losing_pod_emits_no_error_and_keeps_retrying(
+    pg_dsn: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    """In a fleet, all but one pod loses every election, forever. That is the
+    normal steady state and must never surface as an error.
+
+    If losing looked like a fault, every multi-pod deployment would page on
+    every heartbeat interval, and the one signal that actually matters — a
+    fleet with no leader at all — would be buried under noise from the
+    healthy majority. The losing pod must also keep its election loop alive
+    so it can take over when the leader dies.
+    """
+    (
+        _schema,
+        stack_a,
+        deps_a,
+        backend_a,
+        wid_a,
+        stack_b,
+        deps_b,
+        backend_b,
+        wid_b,
+    ) = await _open_two(pg_dsn, f"test_leader_{new_base62()}")
+
+    try:
+        shutdown = asyncio.Event()
+
+        _route_logs_to_stdlib()
+        with caplog.at_level(logging.DEBUG):
+            election_a, hb_a = await _run_pod(deps_a, backend_a, wid_a, shutdown)
+            election_b, hb_b = await _run_pod(deps_b, backend_b, wid_b, shutdown)
+            tasks = [election_a, hb_a, election_b, hb_b]
+            try:
+                # Long enough for several full election cycles, so the loser
+                # has lost repeatedly rather than once.
+                await asyncio.sleep(6 * _HEARTBEAT_INTERVAL)
+
+                assert int(deps_a.is_leader.is_set()) + int(deps_b.is_leader.is_set()) == 1, (
+                    "exactly one pod must hold leadership"
+                )
+                loser_task = election_a if deps_b.is_leader.is_set() else election_b
+                assert not loser_task.done(), (
+                    "the losing pod's election loop must stay alive so it can take over"
+                )
+            finally:
+                shutdown.set()
+                for task in tasks:
+                    task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await asyncio.gather(*tasks, return_exceptions=True)
+
+        errors = [record for record in caplog.records if record.levelno >= logging.ERROR]
+        assert errors == [], (
+            "a pod that merely lost the election must not emit an error-level "
+            f"signal; got {[record.getMessage() for record in errors]}"
+        )
+        assert _events(caplog, "leader-elected"), (
+            "sanity: the captured log stream must contain the election activity "
+            "this test is asserting over"
+        )
+        assert _events(caplog, "leader-retry"), (
+            "sanity: the losing pod's retry activity must be present in the stream"
+        )
+    finally:
+        await stack_b.aclose()
+        await stack_a.aclose()
+
+
+@pytest.mark.asyncio
+async def test_healthy_fleet_elects_once_with_no_leadership_churn(
+    pg_dsn: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Two healthy pods must produce exactly one election, not a handover
+    cycle where each pod repeatedly mistakes the other for dead.
+
+    Leadership churn is invisible in a single-pod test and expensive in
+    production: every handover tears down the leader's dedicated connection
+    and restarts sweeps mid-flight, so a fleet that churns does maintenance
+    work in permanently interrupted slices while looking elected throughout.
+    """
+    (
+        _schema,
+        stack_a,
+        deps_a,
+        backend_a,
+        wid_a,
+        stack_b,
+        deps_b,
+        backend_b,
+        wid_b,
+    ) = await _open_two(pg_dsn, f"test_leader_{new_base62()}")
+
+    try:
+        shutdown = asyncio.Event()
+
+        _route_logs_to_stdlib()
+        with caplog.at_level(logging.DEBUG):
+            election_a, hb_a = await _run_pod(deps_a, backend_a, wid_a, shutdown)
+            election_b, hb_b = await _run_pod(deps_b, backend_b, wid_b, shutdown)
+            tasks = [election_a, hb_a, election_b, hb_b]
+            try:
+                await asyncio.sleep(8 * _HEARTBEAT_INTERVAL)
+            finally:
+                shutdown.set()
+                for task in tasks:
+                    task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await asyncio.gather(*tasks, return_exceptions=True)
+
+        elections = _events(caplog, "leader-elected")
+        assert len(elections) == 1, (
+            "a healthy two-pod fleet must elect exactly once over its lifetime; "
+            f"got {len(elections)} elections, indicating leadership churn"
+        )
+        reclaims = _events(caplog, "leader-holder-reclaimed")
+        assert reclaims == [], (
+            "no pod may terminate a live leader's backend while its lease is "
+            f"being pinged; got {len(reclaims)} reclaims of a healthy holder"
+        )
+    finally:
+        await stack_b.aclose()
+        await stack_a.aclose()
+
+
+@pytest.mark.asyncio
+async def test_joining_pod_does_not_displace_the_incumbent_leader(pg_dsn: str) -> None:
+    """Scaling a fleet up must not cause leadership churn.
+
+    An operator adding capacity expects the existing leader to keep leading.
+    A design where the newcomer wins — or where both briefly believe they
+    lead — would run leader-only work twice or stall it mid-sweep at every
+    deploy, which is exactly when the fleet is least able to absorb it.
+    """
+    (
+        schema,
+        stack_a,
+        deps_a,
+        backend_a,
+        wid_a,
+        stack_b,
+        deps_b,
+        backend_b,
+        wid_b,
+    ) = await _open_two(pg_dsn, f"test_leader_{new_base62()}")
+
+    try:
+        shutdown = asyncio.Event()
+        election_a, hb_a = await _run_pod(deps_a, backend_a, wid_a, shutdown)
+        tasks: list[asyncio.Task[None]] = [election_a, hb_a]
+        try:
+            await asyncio.wait_for(deps_a.is_leader.wait(), timeout=5 * _HEARTBEAT_INTERVAL + 3)
+
+            election_b, hb_b = await _run_pod(deps_b, backend_b, wid_b, shutdown)
+            tasks.extend([election_b, hb_b])
+            await asyncio.sleep(4 * _HEARTBEAT_INTERVAL)
+
+            assert deps_a.is_leader.is_set(), "the incumbent must keep leadership"
+            assert not deps_b.is_leader.is_set(), "the joining pod must not displace the incumbent"
+            assert not election_a.done(), "the incumbent's loop must survive the newcomer joining"
+
+            async with deps_a.dispatcher_pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    f'SELECT worker_id FROM "{schema}".maintenance_leader WHERE singleton = true'
+                )
+            assert row is not None
+            assert UUID(str(row["worker_id"])) == wid_a, (
+                "the stored leader row must still name the incumbent"
+            )
+        finally:
+            shutdown.set()
+            for task in tasks:
+                task.cancel()
+            with suppress(asyncio.CancelledError):
+                await asyncio.gather(*tasks, return_exceptions=True)
+    finally:
+        await stack_b.aclose()
+        await stack_a.aclose()

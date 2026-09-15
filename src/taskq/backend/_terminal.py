@@ -36,7 +36,8 @@ Invariants preserved verbatim from the three-statement form:
   attempt conjunct ``AND attempt = $k``, the handler's dispatch-time
   job-row attempt snapshot threaded from every call site: a stale
   attempt's write after a same-worker reclaim/redispatch no-ops exactly
-  like a different worker's late write, Oban's ``ack_query`` contract)
+  like a different worker's late write, fencing stale attempts so their
+  terminal writes cannot land on rows they no longer own)
   decides everything, and an empty ``upd`` CTE makes the INSERT CTEs
   insert nothing and the final ``SELECT`` return no row — the exact
   ``rec is None`` / ``WorkerOwnershipMismatch`` / ``False`` contract,
@@ -325,10 +326,11 @@ async def _mark_succeeded_on_conn(
     worker fence: ``attempt = $8`` must match the row's current attempt,
     so a stale handler's write (a same-worker reclaim/redispatch moved
     the row to a later attempt) no-ops exactly like a different worker's
-    late write — Oban's ``ack_query`` contract. ``attempt=None`` — a
-    caller that cannot present the epoch — binds NULL, which never
-    satisfies the equality: a write that cannot prove which attempt it
-    terminates must not terminate any attempt.
+    late write — stale attempts cannot land their terminal writes on rows
+    they no longer own. ``attempt=None`` — a caller that cannot present
+    the epoch — binds NULL, which never satisfies the equality: a write
+    that cannot prove which attempt it terminates must not terminate any
+    attempt.
 
     ``result_bytes`` carries the caller's own orjson encoding of *result*
     (the worker consumer serializes exactly once and passes the bytes);

@@ -147,9 +147,9 @@ zero delay parks the job ``pending`` at ``clock_timestamp()`` — first
 in every dispatch round (``ORDER BY scheduled_at``) and instantly
 re-claimable, so one job monopolises a worker slot in a claim/refund
 round trip per cycle.  Both non-consuming arms therefore apply
-``GREATEST(delay, this interval)``; the vendored corpus guards the same
-edge outright (River rejects a non-future snooze; Oban requires a
-positive snooze delay).
+``GREATEST(delay, this interval)`` to guard the same edge: a non-future
+delay is rejected outright because it feeds back into the head of the
+dispatch queue, monopolising a slot.
 
 A consuming ``RetryAfter`` is exempt: an immediate retry is a real
 execution, bounded by the budget it spends, not a deferral competing
@@ -159,8 +159,9 @@ for the head of the dispatch order.
 DEFAULT_MAX_RETRY_BACKOFF: Final[timedelta] = timedelta(hours=24)
 """Default ceiling on a single retry's backoff.
 
-Why 24 h: it is one standard on-call rotation, and it mirrors Dramatiq's
-DEFAULT_MAX_BACKOFF. The effective ceiling is
+Why 24 h: it is one standard on-call rotation, so a job whose backoff has
+reached the ceiling is retried at least once per shift and never waits
+longer than the window in which someone is watching. The effective ceiling is
 ``WorkerSettings.max_retry_backoff``; this is the value that setting
 defaults to, and the fallback every retry-computation signature carries
 so a caller that constructs one directly (tests, the in-memory backend)
@@ -253,13 +254,12 @@ overloaded database then aborts the batch server-side
 (``QueryCanceledError``, SQLSTATE 57014 — the transient family the
 :class:`~taskq.backend._sweeps.SweepBatchSizer` breaker counts), and the
 breaker latches a reduced batch size for the next attempt, instead of the
-client cancelling with no degradation signal. River's job cleaner pairs a
-30 s per-query timeout with a reduced-batch circuit breaker
-(``vendor/river/rivershared/riversharedmaintenance/
-river_shared_maintenance.go``); the dispatcher pool's shared command
-timeout is the tighter ceiling this family must live under, so the
-reduced tier — not a longer timeout — is what makes a loaded database
-drainable. The effective value is derived from the configured
+client cancelling with no degradation signal. A maintenance loop pairs a
+per-query timeout with a reduced-batch circuit breaker so an overloaded
+database can drain under controlled batch sizes; the dispatcher pool's
+shared command timeout is the tighter ceiling this family must live under,
+so the reduced tier — not a longer timeout — is what makes a loaded
+database drainable. The effective value is derived from the configured
 ``dispatcher_command_timeout`` by the prune loops
 (:mod:`taskq.worker._leader_sweeps`); this constant is the signature
 default for direct callers and matches the default deployment shape.

@@ -331,6 +331,147 @@ async def test_election_loser_records_contention_and_failure_and_retries(
         await holder.close()
 
 
+# ── #193: a stable 2-worker fleet must not look like sustained contention ──
+
+
+async def test_stable_follower_does_not_sustain_contention_like_a_stuck_holder(
+    module_pg_schema: ModulePgSchema,
+    election_metrics: InMemoryMetricReader,
+) -> None:
+    """Issue #193: ``TaskQLeaderLockContention`` fires permanently in any
+    fleet with more than one worker.
+
+    docs/guides/runbooks.md#taskqleaderlockcontention is explicit that
+    ``taskq_leader_lock_contention_total`` rising is supposed to
+    distinguish two situations: "the legitimately-elected leader during
+    handover (benign, and filtered out by the sustained-rate alert) or a
+    stuck/dead one" — and that "healthy contention...is brief and
+    intermittent, which is why the alert requires a sustained rate."
+
+    But a HEALTHY, STABLE fleet is not just a brief handover: as long as
+    a second worker exists and stays a follower, it re-attempts
+    ``pg_try_advisory_lock`` and loses every single heartbeat forever,
+    because the losing branch of ``MaintenanceLeader._election_loop``
+    calls ``record_lock_contention`` unconditionally (leader.py) with no
+    staleness/duration gate — there is nothing in the recorder
+    (``record_lock_contention`` in obs/_otel.py) or the loop that
+    distinguishes "brief handover overlap" from "this follower has been
+    losing every heartbeat for the life of the process."
+
+    This test elects one worker leader, then runs a second worker's
+    election loop for enough real heartbeats to exceed what any
+    "brief and intermittent" handover window could plausibly mean, while
+    the first worker's leadership is never disturbed (a stable fleet, not
+    a handover). The contention counter must stop growing once the fleet
+    is stable — it currently does not, which is the defect: every
+    healthy N>1 fleet sustains the alert's rate condition forever, and
+    the runbook's own recovery check ("stops rising") can never be
+    satisfied while the second worker keeps running.
+    """
+    from taskq.testing.otel import counter_data_points
+
+    pg_dsn = module_pg_schema.pg_dsn
+    schema = module_pg_schema.schema_name
+    lock_name = schema_lock_name("maintenance_leader", schema)
+
+    ledger_leader = _FactoryLedger(pg_dsn)
+    worker_leader = new_uuid()
+    await _register_worker(pg_dsn, schema, worker_leader)
+    leader = _election_leader(pg_dsn, schema, ledger_leader, worker_leader)
+
+    ledger_follower = _FactoryLedger(pg_dsn)
+    worker_follower = new_uuid()
+    await _register_worker(pg_dsn, schema, worker_follower)
+    follower = _election_leader(pg_dsn, schema, ledger_follower, worker_follower)
+
+    try:
+        # Establish a genuinely stable fleet: worker_leader wins and keeps
+        # the lock for the whole test — no handover ever occurs.
+        await _await_election(leader)
+        assert leader._deps.is_leader.is_set() is True  # pyright: ignore[reportPrivateUsage]  # Why: the deps the leader was constructed with.
+
+        def _contention_value() -> int:
+            points = [
+                dp
+                for dp in counter_data_points(election_metrics, _CONTENTION_METRIC)
+                if dp.attributes == {"lock": lock_name}
+            ]
+            return int(points[0].value) if points else 0
+
+        async def _keep_leader_lease_fresh(stop: asyncio.Event) -> None:
+            # Production keeps ``maintenance_leader.last_seen_at`` fresh via
+            # the leader's separate heartbeat loop (leader.py:108, "rides
+            # the heartbeat") which is not exercised by driving
+            # ``_election_loop`` alone in this harness. Ping it here so the
+            # reclaim probe sees a genuinely live leader instead of a test
+            # artifact of an unpinged lease — the fleet this test models is
+            # healthy and stable, not a stuck/dead holder.
+            conn = await asyncpg.connect(pg_dsn)
+            try:
+                while not stop.is_set():
+                    await conn.execute(
+                        f'UPDATE "{schema}".maintenance_leader '  # noqa: S608  # Why: schema is the module fixture's validated identifier; no user input.
+                        "SET last_seen_at = clock_timestamp() WHERE singleton = true"
+                    )
+                    with contextlib.suppress(TimeoutError):
+                        await asyncio.wait_for(stop.wait(), timeout=0.05)
+            finally:
+                await conn.close()
+
+        lease_stop = asyncio.Event()
+        lease_task = asyncio.create_task(_keep_leader_lease_fresh(lease_stop))
+
+        # Run the follower's election loop for a first window of several
+        # heartbeats (heartbeat_interval=0.1s on this fixture's settings).
+        shutdown = asyncio.Event()
+        task = asyncio.create_task(follower._election_loop(shutdown))  # pyright: ignore[reportPrivateUsage]  # Why: driving the production election loop IS the test.
+        try:
+            await asyncio.sleep(0.6)
+            first_window_value = _contention_value()
+            assert first_window_value > 0, (
+                "test setup: the follower must have lost at least once "
+                "before the steady-state window is measured"
+            )
+
+            # A second, equally long window, with the fleet still stable
+            # (worker_leader never demoted, never restarted) — this is
+            # what the runbook calls the steady state, not a handover.
+            await asyncio.sleep(0.6)
+            second_window_value = _contention_value()
+        finally:
+            shutdown.set()
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+            lease_stop.set()
+            with contextlib.suppress(asyncio.CancelledError):
+                await lease_task
+
+        assert leader._deps.is_leader.is_set() is True, (  # pyright: ignore[reportPrivateUsage]  # Why: see above.
+            "test invariant broken: the leader must remain elected for the "
+            "whole measurement window for this to be a 'stable fleet', not "
+            "a handover"
+        )
+
+        # The defect: contention keeps climbing at the same rate in the
+        # second window as the first, indistinguishable from a stuck
+        # holder, even though nothing unhealthy is happening — the second
+        # worker is simply, permanently, a follower.
+        assert second_window_value == first_window_value, (
+            "a stable fleet (leader never demoted) must not keep "
+            "accumulating lock_contention once past the initial election "
+            "settling — record_lock_contention is called unconditionally "
+            "on every lost heartbeat with no staleness/duration gate, so "
+            f"contention grew from {first_window_value} to "
+            f"{second_window_value} across a second full window with no "
+            "handover in progress; this is exactly issue #193's "
+            "'fires permanently in any fleet with more than one worker'"
+        )
+    finally:
+        await ledger_leader.close_all()
+        await ledger_follower.close_all()
+
+
 # ── W10: demote, then the next worker wins the SAME schema ───────────────
 
 

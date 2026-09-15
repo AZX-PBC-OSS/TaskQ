@@ -65,6 +65,13 @@ _NARROWER_BY_DESIGN: Final[dict[tuple[str, str], str]] = {
     ): "Why: stdlib `limit` and **kwds are never passed by the CLI; the double takes "
     "the single positional path actually exercised.",
     (
+        "test_cli_doctor.py",
+        "taskq.cli.asyncpg.connect",
+    ): "Why: asyncpg.connect declares 23 parameters. Every CLI call site builds its "
+    "connection as connect(str(settings.pg_dsn)) with that single positional "
+    "argument and no kwargs, so the double covers the whole surface the command "
+    "under test can reach.",
+    (
         "test_heartbeat_isolate.py",
         "asyncpg.connect",
     ): "Why: asyncpg.connect declares 23 parameters. Modelling them to silence this "

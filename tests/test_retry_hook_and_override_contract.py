@@ -56,6 +56,42 @@ def test_retry_override_rejects_negative_delay() -> None:
         RetryOverride(delay=timedelta(microseconds=-1))
 
 
+def test_retry_override_delay_documents_that_it_does_not_extend_the_job_budget() -> None:
+    """``RetryOverride.delay``'s docs must name what the delay does *not* buy:
+    it schedules the next attempt, it does not extend the job's deadline.
+
+    The field's advertised use is honouring a server-supplied
+    ``Retry-After``, and an upstream under pressure will happily hand back
+    an hour. That delay is clamped by ``max_retry_backoff`` but nothing
+    reconciles it with the job's own ``schedule_to_close``: if the next
+    attempt lands past that deadline, the deadline sweep fails the job
+    terminally before any worker looks at it. The actor did the polite,
+    documented thing — obeyed the upstream's backoff — and lost the work
+    for it.
+
+    The clamp is not the answer, because the two bounds mean different
+    things: ``max_retry_backoff`` stops one absurd delay, while
+    schedule-to-close is the caller's statement of how long the result is
+    still worth having. What a reader needs, at the point where they decide
+    to return a delay, is that the two interact and which one wins. A caveat
+    in the field's own documentation is the cheapest place to put it,
+    because it is the surface an integration author actually reads.
+    """
+    doc = RetryOverride.__doc__ or ""
+    lowered = doc.lower()
+
+    assert "schedule_to_close" in lowered or "schedule-to-close" in lowered, (
+        "RetryOverride's documentation never mentions schedule_to_close, so a "
+        "reader honouring a long Retry-After has no warning that the delay can "
+        "push the next attempt past the job's deadline and terminally fail it"
+    )
+    assert any(word in lowered for word in ("does not extend", "not extend", "never extends")), (
+        "the documentation must say plainly that a delay does not extend the "
+        "job's budget; naming the deadline without saying the delay cannot "
+        "move it leaves the reader to guess the direction of the interaction"
+    )
+
+
 # ── on_retry_exhausted: a synchronous hook that returns a value ──────
 
 

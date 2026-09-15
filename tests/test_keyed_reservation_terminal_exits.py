@@ -20,9 +20,9 @@ path of the job that caused it):
 * **worker death** — the registry that tracks the key is gone with the
   process, so no eviction ever records the rows: the one terminal exit
   with NO deletion path today (fleet-wide, only a row-carried staleness
-  marker + fleet sweep can close it — the solid_queue
-  ``Semaphore.expired.in_batches(&:delete_all)`` shape). NOT pinned
-  red here; it is the documented residual gap.
+  marker + fleet sweep can close it — a batch delete of expired rows on
+  the next sweep cycle). NOT pinned red here; it is the documented
+  residual gap.
 
 The static-bucket control in the denial pin (a statically pre-registered
 bucket's rows SURVIVE the eviction+drain) guards the invariant the

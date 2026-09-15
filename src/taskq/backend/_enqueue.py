@@ -354,10 +354,9 @@ async def _batch_cap_refusals(
     only a preflight HIT bypasses the cap on the single path, and the
     batch cannot know hits without a per-item preflight that would
     defeat bulk throughput; a batch mixing unique_for retries near the
-    cap may refuse loudly rather than admit silently.) pgqueuer's
-    capacity-slot indexes (v1.4.0) are the heavyweight version of this
-    guarantee; the count here is exact for the single statement it
-    guards. Concurrent bulk batches on separate connections can still
+    cap may refuse loudly rather than admit silently.) A capacity-slot
+    index is the heavyweight version of this guarantee; the count here is
+    exact for the single statement it guards. Concurrent bulk batches on separate connections can still
     race (count-then-insert without a serializing lock — the
     single-enqueue path takes one, bulk paths deliberately do not, for
     throughput); that residual is documented, not silent.
@@ -603,16 +602,13 @@ async def _enqueue_on_conn(
         # releases at transaction end, so on a bare caller connection (every
         # statement its own transaction) the lock below would release before
         # the statement it exists to guard. For max_pending that is the
-        # count-then-insert race pgqueuer closed with capacity-slot indexes
-        # (v1.4.0, #761/#774/#777) — overlapping counts each see room. For
+        # count-then-insert race — overlapping counts each see room. For
         # unique_for it is the same defect on the identity preflight: two
         # dispatchers both run the preflight before either commits, both see
         # nothing, and both insert (measured: 100 concurrent enqueues
-        # produced 6 rows). Oban runs its unique insert inside a transaction
-        # (vendor/oban/lib/oban/engines/basic.ex) and GoodJob wraps its
-        # concurrency check in requires_new
-        # (vendor/good_job/lib/good_job/active_job_extensions/concurrency.rb)
-        # — the standard shape for a check-then-insert guarantee. Wrapping
+        # produced 6 rows). The standard pattern for a check-then-insert
+        # guarantee is to run the unique insert inside a transaction where a
+        # lock holds across both the preflight/count and the INSERT. Wrapping
         # makes the lock span the preflight/count and the INSERT; the
         # recursion terminates because the inner call observes the open
         # transaction. Callers that already hold a transaction are
@@ -650,10 +646,9 @@ async def _enqueue_on_conn(
         #      cannot vary by actor.
         # A lock, unlike an index, serializes exactly the callers that race
         # and leaves the window and state-set semantics to the preflight.
-        # (Same conclusion as graphile-worker's design by omission: it offers
-        # only a permanent job_key upsert index, no windowed dedup, because a
-        # window cannot be an index predicate; the queues that dedup by index
-        # — graphile-worker, pgqueuer's dedupe_key — dedup forever.)
+        # An index predicate cannot express a window or adapt per actor, so
+        # queues that dedup by permanent index cannot offer windowed dedup;
+        # they dedup forever instead.
         #
         # Transaction-scoped, not session-scoped: it releases on COMMIT with
         # no unlock call to leak on an error path, and it is safe under
@@ -1692,10 +1687,8 @@ async def _enqueue_batch_fast(
                 # raise for this condition -- their ON CONFLICT arbiter
                 # dedupes and RETURNS the existing row -- so there was
                 # no typed error to reuse; DuplicateIdempotencyKeyError
-                # is this path's own, following pgqueuer's
-                # DuplicateJobError precedent (typed domain error for a
-                # dedup-constraint violation, raised by their in-memory
-                # adapter too). The offending pair is attributed by
+                # is this path's own, a typed domain error for a
+                # dedup-constraint violation. The offending pair is attributed by
                 # MATCHING the detail against the batch's own candidates
                 # (see _attribute_duplicate_pair): named exactly when the
                 # rendering is unambiguous -- including comma-bearing

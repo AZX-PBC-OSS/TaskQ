@@ -333,10 +333,10 @@ async def _enqueue_batch(
             # and unique_for items are conservatively fully counted toward
             # the cap instead. A mirror that deduped here would certify dedup
             # production never performs. Whether the batch tier SHOULD honor
-            # unique_for is a pending owner decision (River enforces batch
-            # uniqueness with a partial unique index + ON CONFLICT,
-            # vendor/river/riverpgxv5/internal/dbsqlc/river_job.sql);
-            # this restores parity with current production behavior, it does
+            # unique_for is a pending owner decision; bulk operations commonly
+            # use partial unique indices with ON CONFLICT to enforce
+            # uniqueness at write time rather than preflight checks. This
+            # restores parity with current production behavior, it does
             # not adjudicate it.
             row = await _enqueue(self, replace(args, max_pending=None, unique_for=None))
             rows.append(row)

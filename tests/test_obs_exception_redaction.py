@@ -127,6 +127,109 @@ def test_uri_query_param_password_is_masked(raw: str) -> None:
     assert "sslmode=require" in safe or "db.internal" in safe
 
 
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "could not connect to postgresql://db/jobs?PASSWORD=hunter2",
+        "postgresql://db/jobs?PassWord=hunter2",
+        "postgres://h/db?sslmode=require&PWD=hunter2 failed",
+    ],
+)
+def test_query_param_password_is_masked_whatever_its_case(raw: str) -> None:
+    # Why case matters: libpq connection parameter names are case-insensitive
+    # and psql, ORMs and operator-typed DSNs all echo back whatever casing was
+    # written, so a mask keyed to one exact spelling misses the same parameter
+    # written any other way and ships the value verbatim.
+    safe = safe_exception_message(Exception(raw))
+    assert "hunter2" not in safe
+    assert "***" in safe
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "postgresql://db/jobs?sslmode=verify-full&sslpassword=hunter2",
+        "postgresql://db/jobs?sslmode=verify-full&SSLPASSWORD=hunter2",
+    ],
+)
+def test_sslpassword_query_param_is_masked(raw: str) -> None:
+    # `sslpassword` is libpq's passphrase for the client SSL key: a credential
+    # in its own right, and one that a password-family name set spelled out
+    # literally is easy to omit.
+    safe = safe_exception_message(Exception(raw))
+    assert "hunter2" not in safe
+    # sslmode is not a credential and stays intact, so the message keeps
+    # saying which TLS posture the failed connection was using.
+    assert "sslmode=verify-full" in safe
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "host=db port=5432 dbname=jobs user=app password=hunter2",
+        "host=db user=app PASSWORD=hunter2",
+        "host=db user=app sslpassword=hunter2",
+    ],
+)
+def test_libpq_keyword_value_dsn_password_is_masked(raw: str) -> None:
+    # The libpq keyword/value conninfo form carries no `://` and no `?`/`&`,
+    # so neither URI mask can bite on it, yet it is a routine shape: it is
+    # what a constructed conninfo string and psycopg's own connection errors
+    # render into the message text.
+    safe = safe_exception_message(Exception(raw))
+    assert "hunter2" not in safe
+    # Structural, non-secret keywords survive so the message stays diagnostic.
+    assert "host=db" in safe
+    assert "user=app" in safe
+
+
+def test_query_param_password_containing_at_sign_is_fully_masked() -> None:
+    # A password may legally contain an unencoded `@`. If the masked value
+    # class treats `@` as a boundary it stops early and the tail of the secret
+    # rides along after the `***`, which is a partial credential disclosure
+    # and enough to shorten a brute force considerably.
+    safe = safe_exception_message(Exception("postgresql://db/jobs?password=hun@ter2"))
+    assert "hun@ter2" not in safe
+    assert "ter2" not in safe
+    assert "password=***" in safe
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "postgresql://app:hunter2@db:5432/jobs",
+        "postgresql://:hunter2@db:5432/jobs",
+        "redis://:hunter2@cache:6379/0",
+        "postgresql://db/jobs?password=hunter2",
+        "postgresql://db/jobs?PASSWORD=hunter2",
+        "postgresql://db/jobs?sslmode=verify-full&sslpassword=hunter2",
+        "host=db port=5432 dbname=jobs user=app password=hunter2",
+    ],
+)
+def test_no_connection_string_shape_ships_a_plaintext_password(raw: str) -> None:
+    """Every connection-string spelling TaskQ can meet must mask its secret.
+
+    The credential mask runs unconditionally, outside the redaction toggle,
+    because this text is what reaches log lines and OTel span attributes --
+    it leaves the trust boundary whatever the toggle is set to. A shape the
+    mask does not recognise is therefore a silent credential disclosure to
+    whatever telemetry backend is configured.
+    """
+    import taskq.obs._redact_exc as redact_mod
+
+    assert "hunter2" not in safe_exception_message(Exception(raw))
+
+    # And with redaction relaxed: the toggle exists so an operator can get row
+    # values back while debugging, and the debugging case that wants a row
+    # value never wants a password. Masking that the toggle can switch off is
+    # not a credential guarantee at all.
+    redact_mod.set_exception_redaction_enabled(False)
+    try:
+        assert "hunter2" not in safe_exception_message(Exception(raw))
+    finally:
+        redact_mod.set_exception_redaction_enabled(True)
+
+
 def test_uri_with_userinfo_and_query_param_password_masks_both() -> None:
     # Why the exact shape: a DSN can carry both spellings at once and the two
     # masks run in sequence, so this pins the ordering -- each fires exactly

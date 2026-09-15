@@ -516,11 +516,10 @@ async def test_flush_loop_fenced_out_row_dropped_while_sibling_flushes() -> None
 async def test_flush_tick_batches_all_dirty_buffers_into_one_statement() -> None:
     """One flush tick reaches the backend exactly once regardless of dirty
     count: every dirty buffer's row rides ONE batched multi-row UPDATE —
-    the unnest-array shape the vendored bulk writers converged on (river's
-    columnar arrays, graphile's unnest-joined set op, procrastinate's
-    composite array). The recorded statement's unnest arrays carry both
-    job ids with their per-row deltas and attempt epochs, the fencing
-    gate stays per-row over the unnest rows, and both rows update.
+    columnar arrays (unnest-array form) carry both job ids with their
+    per-row deltas and attempt epochs. The recorded statement's unnest
+    arrays keep the fencing gate per-row over the unnest rows, and both
+    rows update.
     """
     conn = AsyncMock()
 
@@ -702,6 +701,87 @@ async def test_flush_tick_drains_in_bounded_batches_with_a_tick_cap() -> None:
     assert len(still_dirty) == 300 - _FLUSH_MAX_BATCHES_PER_TICK * _FLUSH_BATCH_ROWS, (
         f"the remainder ({300 - _FLUSH_MAX_BATCHES_PER_TICK * _FLUSH_BATCH_ROWS} "
         f"buffers) must stay dirty for the next tick; got {len(still_dirty)} dirty"
+    )
+
+
+async def test_flush_tick_cost_is_flat_up_to_the_batch_bound() -> None:
+    """A tick's database cost does not grow with the number of dirty
+    buffers, up to the batch bound: one statement and one connection
+    checkout, whether one buffer is dirty or the bound's worth are.
+
+    Why it matters operationally: progress reporting is the surface a
+    chatty actor drives hardest, and a tick whose cost tracked the dirty
+    count would turn a busy worker's own progress calls into the thing
+    that stalls its progress loop — a feedback loop that gets worse
+    exactly when an operator is watching progress because jobs are slow.
+    The flat shape is what makes the coalescing interval, not the
+    concurrency, the thing that sizes the flush load.
+    """
+    per_size_costs: dict[int, tuple[int, int]] = {}
+
+    for dirty_count in (1, 2, _FLUSH_BATCH_ROWS // 2, _FLUSH_BATCH_ROWS):
+        conn = AsyncMock()
+
+        async def _fetch(*args: object) -> list[dict[str, object]]:
+            job_ids = args[1] if len(args) > 1 else None
+            if not isinstance(job_ids, list):
+                return []
+            typed_ids = cast("list[UUID]", job_ids)  # pyright: ignore[reportUnknownVariableType]  # Why: the fake conn's *args are object; the pins only ever bind UUID lists.
+            return [{"id": job_id, "progress_seq": 9} for job_id in typed_ids]
+
+        conn.fetch.side_effect = _fetch
+
+        acquires = 0
+        pool = MagicMock()
+        pool.get_size.return_value = _POOL_SIZE
+
+        @asynccontextmanager
+        async def _acquire(_conn: AsyncMock = conn) -> AsyncGenerator[AsyncMock, None]:
+            nonlocal acquires
+            acquires += 1
+            yield _conn
+
+        pool.acquire = _acquire
+
+        buffers: dict[UUID, _ProgressBuffer] = {}
+        for _ in range(dirty_count):
+            job_id = new_uuid()
+            buf = _ProgressBuffer(job_id=job_id, base_seq=0)
+            buf.pending_seq_delta = 1
+            buf.pending_state["step"] = 1
+            buf.attempt = 2
+            buf.dirty = True
+            buffers[job_id] = buf
+
+        shutdown = asyncio.Event()
+
+        async def _stop(_event: asyncio.Event = shutdown) -> None:
+            await asyncio.sleep(0.05)
+            _event.set()
+
+        await asyncio.gather(
+            progress_flush_loop(
+                lambda _pool=pool: _pool,  # pyright: ignore[reportUnknownLambdaType, reportUnknownArgumentType]  # Why: default-bound so each loop iteration's pool double is captured, not the last one.
+                "taskq_test",
+                _WORKER_ID,
+                buffers,
+                0.15,
+                shutdown,
+            ),
+            _stop(),
+        )
+
+        assert all(buf.dirty is False for buf in buffers.values()), (
+            f"{dirty_count} dirty buffers did not all drain in one tick"
+        )
+        per_size_costs[dirty_count] = (conn.fetch.await_count, acquires)
+
+    assert set(per_size_costs.values()) == {(1, 1)}, (
+        "a tick's cost must be one statement on one connection checkout for any "
+        f"dirty count up to the batch bound ({_FLUSH_BATCH_ROWS}); measured "
+        f"(statements, acquires) per dirty count: {per_size_costs} — a cost that "
+        "scales with the dirty count makes a busy worker's own progress calls "
+        "stall its flush loop"
     )
 
 

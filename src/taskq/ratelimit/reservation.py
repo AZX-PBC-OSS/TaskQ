@@ -12,12 +12,12 @@ stamps the fleet-reclaim bookkeeping on ``reservation_slots``: the
 ``keyed`` mark (set at materialisation by
 :class:`ConcurrencyReservation`'s ``keyed`` flag) and the
 ``last_used_at`` staleness stamp, refreshed by the very UPDATE/INSERT
-that already touches the row — the solid_queue Semaphore shape. The
-maintenance leader's ``sweep_idle_keyed_rows`` deletes keyed rows
-unused past the operator horizon, closing the residual where a keyed
-bucket's rows orphan when the worker that materialised them dies (the
-in-process registry bookkeeping that would otherwise name them dies
-with the process).
+that already touches the row — coupling staleness tracking to the row
+modification that drives progress. The maintenance leader's
+``sweep_idle_keyed_rows`` deletes keyed rows unused past the operator
+horizon, closing the residual where a keyed bucket's rows orphan when
+the worker that materialised them dies (the in-process registry
+bookkeeping that would otherwise name them dies with the process).
 
 The in-memory backend (``_InMemorySlotTable``) is the unit-test substitute for
 PG and mirrors the slot-row model as a ``dict[str, dict[int, _SlotState]]``
@@ -91,13 +91,12 @@ ON CONFLICT (bucket_name, slot_index) DO UPDATE SET
 # microsecond skew between the WHERE's and the SELECT's own
 # ``clock_timestamp()`` evaluations inside this one statement.
 #
-# The last_used_at stamp rides the acquired arm's UPDATE — the
-# solid_queue Semaphore shape (attempt_decrement refreshes expires_at
-# inside the very UPDATE that takes the slot): the row the acquire
-# touches is the row whose staleness must reset, with no dedicated
-# stamping round trip. Only the acquired row is stamped; the fleet
-# reclaim sweep groups by bucket and decides on max(last_used_at), so
-# one fresh slot row keeps the whole bucket live.
+# The last_used_at stamp rides the acquired arm's UPDATE — the same
+# statement that modifies the row also refreshes its staleness mark,
+# avoiding a dedicated stamping round trip. Only the acquired row is
+# stamped; the fleet reclaim sweep groups by bucket and decides on
+# max(last_used_at), so one fresh slot row keeps the whole bucket
+# live.
 _ACQUIRE_SQL_TEMPLATE = """\
 WITH free_slot AS (
     SELECT slot_index FROM "{schema}".reservation_slots

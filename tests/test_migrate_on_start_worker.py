@@ -117,3 +117,24 @@ def test_deployment_guide_does_not_claim_drift_detects_a_stale_schema() -> None:
     text = (_ROOT / "docs" / "guides" / "deployment.md").read_text()
     assert "fail with `ActorConfigDriftList` if the schema is stale" not in text
     assert "does **not** detect a stale *schema*" in text
+
+
+def test_upgrading_guide_does_not_tell_operators_the_worker_applies_migrations() -> None:
+    """The upgrade guide's migration step must not send operators toward a
+    worker crash-loop.
+
+    Step 4 of ``upgrading.md`` used to read "Apply migrations explicitly, or
+    let the worker apply them at startup via ``TASKQ_MIGRATE_ON_START=true``".
+    The worker never honours that setting (it only warns and ignores it —
+    see ``test_worker_bootstrap_warns_when_the_setting_is_set`` above), and
+    since the pending-migrations boot guard landed, an operator who follows
+    that literal advice now gets a crash-loop instead of a silent no-op: the
+    schema stays unmigrated, the worker refuses to start, and the failure is
+    opaque unless the operator already knows the setting does nothing there.
+    """
+    text = (_ROOT / "docs" / "guides" / "upgrading.md").read_text()
+    assert "let the worker apply them at startup" not in text
+    assert "ui serve" in text, (
+        "the guide must point the automatic-migration path at `taskq ui "
+        "serve`, the only process that honours TASKQ_MIGRATE_ON_START"
+    )

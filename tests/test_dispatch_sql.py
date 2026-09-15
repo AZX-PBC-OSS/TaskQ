@@ -115,8 +115,8 @@ class TestDispatchStrictFifoSql:
         whole index range and the terminal joins get planned as hash
         joins over a Seq Scan of the entire pending backlog — the
         measured 1.04ms→55.8ms (1k→200k) depth scaling of issue #130.
-        Direct $n parameters fold in custom plans (river ships exactly
-        this: LIMIT $5::integer in JobGetAvailable).
+        Direct $n parameters fold in custom-plan row estimates, unlike
+        subquery bounds which never fold.
         """
         for variant, sql in (
             ("strict_fifo", DISPATCH_STRICT_FIFO_SQL),
@@ -326,13 +326,13 @@ class TestDispatchStrictFifoSql:
             )
 
     def test_contains_vendor_derived_structural_patterns(self) -> None:
-        """Verify structural patterns derived from vendor precedents are present:
-        - FOR UPDATE OF ... SKIP LOCKED (river-style atomicity)
-        - DISTINCT ON for per-identity dedup (procrastinate-style serialization)
-        - boolean_gate concurrency cap (pgqueuer-style LEFT JOIN + COUNT)
-        - LATERAL per-actor subquery (oban-style subset CTE fence)
+        """Verify essential structural patterns are present:
+        - FOR UPDATE OF ... SKIP LOCKED for atomic row locking
+        - DISTINCT ON for per-identity dedup and serialization
+        - boolean_gate concurrency cap via LEFT JOIN + COUNT
+        - LATERAL per-actor subquery for bounded subset exploration
         - the id set finalized before the heap re-join, bounded by a
-          parameterized LIMIT (river JobGetAvailable's locked_jobs shape)
+          parameterized LIMIT for depth-safe execution
         """
         rendered = DISPATCH_STRICT_FIFO_SQL.format(schema="taskq")
         assert "FOR UPDATE OF j2 SKIP LOCKED" in rendered

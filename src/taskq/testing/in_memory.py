@@ -764,11 +764,10 @@ class InMemoryBackend:
             return False
         # Monotonic attempt with the ceiling raised just enough to open
         # the budget gates, mirroring the PG statement's
-        # LEAST(GREATEST(max_attempts, attempt + 1), 32767) (the vendored
-        # admin-retry precedent: Oban's retry_job and River's JobRetry
-        # never reset the counter). A re-run climbs to fresh attempt
-        # numbers — the twin's dispatch claim stamps attempt + 1 — so no
-        # attempt-row writer can revisit a spent epoch's key. At the
+        # LEAST(GREATEST(max_attempts, attempt + 1), 32767): the attempt
+        # counter never resets across retries. A re-run climbs to fresh
+        # attempt numbers — the twin's dispatch claim stamps attempt + 1 —
+        # so no attempt-row writer can revisit a spent epoch's key. At the
         # smallint bound the ceiling cannot rise further and the retry
         # is refused — the row stays terminal — rather than re-pending
         # a job the next claim could only overflow.

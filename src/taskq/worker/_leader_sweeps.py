@@ -96,12 +96,10 @@ _STRANDED_REWARN_SECS: float = 3600.0
 #: breaker counts) and the next attempt runs at the latched reduced tier,
 #: instead of the client cancelling with no degradation signal. 80% leaves
 #: a full round-trip margin at the default 5 s pool timeout (4 s server
-#: bound). River's job cleaner pairs a 30 s per-query timeout with a
-#: reduced-batch circuit breaker
-#: (vendor/river/rivershared/riversharedmaintenance/river_shared_maintenance.go);
-#: the dispatcher pool's shared command timeout is the tighter ceiling
-#: this family lives under, so the reduced tier — not a longer timeout —
-#: is what makes a loaded database drainable.
+#: bound). Pairing a per-query timeout with a reduced-batch circuit breaker
+#: ensures the server-side bound is the tighter ceiling this family lives
+#: under, so the reduced tier — not a longer timeout — is what makes a
+#: loaded database drainable.
 _PRUNE_TIMEOUT_FRACTION: Final[float] = 0.8
 
 #: Intra-day retry backoff for a FAILED prune/archive-expiry attempt: 60 s
@@ -109,12 +107,11 @@ _PRUNE_TIMEOUT_FRACTION: Final[float] = 0.8
 #: guard is deliberate policy and stays — the retry fills only the
 #: failure half, so a prune that keeps failing under load retries within
 #: the day instead of waiting for tomorrow's cron fire, while a day that
-#: succeeded is never pruned twice. 60 s sits between the vendors' cadences
-#: (Oban and River retry their pruners every 30 s; GoodJob every 10 min) —
-#: fast enough to drain behind a passing load spike, slow enough not to
-#: pile onto the database that just aborted the batch. Module-level (not
-#: settings) so tests shrink it without threading a knob through every
-#: loop, the same contract DEFAULT_MAX_CONSECUTIVE_UNEXPECTED carries.
+#: succeeded is never pruned twice. 60 s is fast enough to drain behind a
+#: passing load spike, yet slow enough not to pile onto the database that
+#: just aborted the batch. Module-level (not settings) so tests shrink it
+#: without threading a knob through every loop, the same contract
+#: DEFAULT_MAX_CONSECUTIVE_UNEXPECTED carries.
 _PRUNE_RETRY_BACKOFF_INITIAL_SECS: float = 60.0
 _PRUNE_RETRY_BACKOFF_CAP_SECS: float = 1800.0
 

@@ -1426,19 +1426,19 @@ async def sweep_expired_events(
 
 _SWEEP_IDLE_KEYED_BUCKETS_SQL = """\
 -- Bounded batch + MATERIALIZED, same rationale as the sibling sweeps
--- above (good_job's cleanup_preserved_jobs is the ordered-bounded-batch
--- prior: ORDER BY age, LIMIT per statement, loop to drain): LIMIT $2
--- caps one call's DELETE at $2 rows (one row per bucket for this
--- table); MATERIALIZED stops the planner from inlining the LIMIT-ed
--- CTE into the DELETE in a way that could remove more rows than the
--- LIMIT; ORDER BY (last_used_at, bucket_name) pins the window to the
--- keyed partial index keyed on exactly (last_used_at) (the
--- ORDER-BY-pins-the-scan rule above), so the drain is deterministic
--- (oldest-first, stable under tied stamps) and the ordered scan stops
--- at the LIMIT in the backlog case and at the age boundary in the empty
--- case; no keyset cursor because every windowed row is deleted by this
--- same statement, so the eligible set shrinks monotonically per
--- committed batch.
+-- above: LIMIT $2 caps one call's DELETE at $2 rows (one row per bucket
+-- for this table); MATERIALIZED stops the planner from inlining the
+-- LIMIT-ed CTE into the DELETE in a way that could remove more rows
+-- than the LIMIT. ORDER BY age, LIMIT per statement, loop to drain —
+-- each tick deletes the oldest eligible rows and stops at the LIMIT in
+-- the backlog case and at the age boundary in the empty case. ORDER BY
+-- (last_used_at, bucket_name) pins the window to the keyed partial
+-- index keyed on exactly (last_used_at) (the ORDER-BY-pins-the-scan
+-- rule above), so the drain is deterministic (oldest-first, stable
+-- under tied stamps) and the ordered scan stops at the LIMIT in the
+-- backlog case and at the age boundary in the empty case; no keyset
+-- cursor because every windowed row is deleted by this same statement,
+-- so the eligible set shrinks monotonically per committed batch.
 --
 -- statement_timestamp() (STABLE) instead of clock_timestamp() (VOLATILE)
 -- is what lets the planner use rate_limit_buckets_keyed_last_used_idx
@@ -1484,13 +1484,13 @@ _SWEEP_IDLE_KEYED_SLOTS_SQL = """\
 -- Three CTEs, one whole-bucket contract: lock, decide, delete.
 -- `stale` names candidate buckets off the keyed partial index (keyed
 -- AND stamp past the horizon). `locked` then takes FOR UPDATE over
--- EVERY row of each candidate bucket — a locking read, so under READ
--- COMMITTED each row is re-fetched at its LATEST committed version (the
--- solid_queue Semaphore shape: `Semaphore.lock.find_by(key:)` waits out
--- the concurrent writer and reads the post-write row before deciding).
--- `reclaimable` re-verifies the whole-bucket vetoes over `locked`'s
--- output — the latest versions, not the statement snapshot — and the
--- DELETE removes exactly the rows both later CTEs approved, by ctid.
+-- EVERY row of each candidate bucket — a locking read that re-fetches
+-- each row at its LATEST committed version under READ COMMITTED
+-- isolation, blocking concurrent writers and ensuring the decision sees
+-- the post-write state before deleting. `reclaimable` re-verifies the
+-- whole-bucket vetoes over `locked`'s output — the latest versions, not
+-- the statement snapshot — and the DELETE removes exactly the rows both
+-- later CTEs approved, by ctid.
 -- A bucket must be reclaimed WHOLE or not at all: a partial delete
 -- would silently shrink the bucket's configured capacity, and the
 -- acquire-path heal only fires at ZERO rows (a partially-deleted bucket

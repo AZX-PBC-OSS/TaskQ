@@ -1,12 +1,17 @@
 """Unit tests for drain_local_queue_to_pending and ShutdownPhase enum."""
 
+import asyncio
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from typing import Any, cast
+from unittest.mock import MagicMock
 
 import asyncpg
 import pytest
 
 from taskq._ids import new_uuid
+from taskq.backend._protocol import JobId
+from taskq.context import JobContext
 from taskq.settings import WorkerSettings
 from taskq.worker.deps import WorkerDeps
 from taskq.worker.shutdown import ShutdownPhase, drain_local_queue_to_pending
@@ -227,4 +232,101 @@ async def test_drain_local_queue_uses_transient_pg_errors_not_handrolled() -> No
     assert rowcount == 0, "InterfaceError must be treated as transient, not fatal"
     assert any(entry.get("event") == "drain-local-queue-failed" for entry in captured), (
         f"expected a drain-local-queue-failed warning, got: {captured}"
+    )
+
+
+# ── Hand-back excludes jobs a consumer is already executing ────────
+
+
+async def test_drain_excludes_jobs_a_consumer_is_already_executing() -> None:
+    """A job with a live consumer on this worker is never handed back to pending.
+
+    The hand-back exists for rows this worker claimed but never started: the
+    local_queue backlog. A row whose consumer is already running is the exact
+    opposite case — clearing its lock would publish it to the fleet while this
+    worker's consumer is still inside the actor body, so the job body runs a
+    second time on the claimer while the first run is still in flight. The
+    cancelling / forcing / abandoning phases own those rows and drive them to
+    a terminal state; DRAINING must leave them alone.
+
+    The discriminator is this process's own in-flight registry, because the
+    row itself carries no "a consumer took it" mark — the dispatch claim
+    stamps started_at at claim time for every claimed row alike.
+    """
+    worker_id = new_uuid()
+    pool = FakePool()
+    settings = _worker_settings("taskq")
+    deps = WorkerDeps(
+        settings=settings,
+        dispatcher_pool=pool,  # type: ignore[arg-type] # Why: FakePool drop-in for asyncpg.Pool in unit tests.
+        heartbeat_pool=pool,  # type: ignore[arg-type]
+        worker_pool=pool,  # type: ignore[arg-type]
+        notify_conn=None,
+        leader_conn=None,
+    )
+
+    running_ids = [JobId(new_uuid()) for _ in range(2)]
+    for jid in running_ids:
+        await deps.active_jobs.register(
+            jid,
+            cast("asyncio.Task[object]", MagicMock()),
+            cast("JobContext[Any]", MagicMock()),
+        )
+
+    await drain_local_queue_to_pending(deps, worker_id)
+
+    assert len(pool.execute_calls) == 1
+    sql, args = pool.execute_calls[0]
+    assert args[0] == worker_id
+    assert len(args) == 2, (
+        "the hand-back UPDATE must bind the in-flight job ids so rows with a "
+        f"live consumer are excluded from the re-pend; bound args were {args!r}"
+    )
+    assert set(cast("list[object]", args[1])) == set(running_ids), (
+        "every job registered as in-flight on this worker must appear in the "
+        f"exclusion list; got {args[1]!r} for registry {running_ids!r}"
+    )
+    assert "<>" in sql or "NOT" in sql.upper(), (
+        f"the bound in-flight ids must be used as an exclusion predicate: {sql!r}"
+    )
+
+
+async def test_drain_hands_back_at_most_once_across_repeated_calls() -> None:
+    """A second hand-back pass re-pends nothing that the first already released.
+
+    The hand-back predicate is scoped to rows still locked by this worker, so a
+    retried or re-entered DRAINING phase cannot release a row twice — the first
+    pass cleared the lock, and the second matches nothing. This is what makes
+    "handed back exactly once" a property of the statement rather than of
+    shutdown being called exactly once: a drain-monitor trigger racing a
+    SIGTERM, or a retry after a transient failure, must not reopen a row that
+    another worker has since re-claimed and started.
+    """
+    worker_id = new_uuid()
+    pool = FakePool()
+    settings = _worker_settings("taskq")
+    deps = WorkerDeps(
+        settings=settings,
+        dispatcher_pool=pool,  # type: ignore[arg-type] # Why: FakePool drop-in for asyncpg.Pool in unit tests.
+        heartbeat_pool=pool,  # type: ignore[arg-type]
+        worker_pool=pool,  # type: ignore[arg-type]
+        notify_conn=None,
+        leader_conn=None,
+    )
+
+    await drain_local_queue_to_pending(deps, worker_id)
+
+    sql, args = pool.execute_calls[0]
+    assert args[0] == worker_id
+    normalised = " ".join(sql.split())
+    assert "locked_by_worker=$1" in normalised.replace(" = ", "=")
+    assert "status='running'" in normalised.replace(" = ", "=").replace('"', "'"), (
+        "the hand-back must be scoped to rows this worker still holds "
+        f"(locked_by_worker + status='running'): {normalised!r}"
+    )
+    assert "locked_by_worker=NULL" in normalised.replace(" = ", "="), (
+        f"the hand-back must clear the lock, so a second pass matches nothing: {normalised!r}"
+    )
+    assert "status='pending'" in normalised.replace(" = ", "="), (
+        f"the hand-back must set the row back to pending: {normalised!r}"
     )

@@ -788,8 +788,8 @@ class TaskQ:
         """List jobs matching *filter*, returning a :class:`JobPage`.
 
         Delegates to :meth:`JobsClient.list` — note ``filter.active``
-        is not Celery's 'active' ('currently executing'); it selects by
-        terminality ('not yet finished').  See :class:`JobFilter`.
+        selects by terminality ('not yet finished'), not by execution
+        status ('currently executing').  See :class:`JobFilter`.
         """
         return await self._require_open().list(filter)
 

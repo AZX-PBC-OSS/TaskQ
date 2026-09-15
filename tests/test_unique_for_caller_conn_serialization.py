@@ -15,11 +15,10 @@ spans that caller's transaction, and the enqueue path opens nothing.
 These are unit pins: the wrap itself is the observable, recorded by a
 connection stand-in that notes which statements ran with a transaction
 open, so the serialization precondition is verified without a database.
-Oban runs its unique insert inside a transaction
-(vendor/oban/lib/oban/engines/basic.ex:81-83) and GoodJob wraps its
-concurrency check in ``requires_new``
-(vendor/good_job/lib/good_job/active_job_extensions/concurrency.rb:110)
-— the same conclusion reached by the queues that ship this guarantee.
+Transaction-scoped serialization is the standard approach for deduplication
+and concurrency caps: the check and insert must share one advisory-lock
+scope to prevent concurrent dispatchers from racing. This is the guarantee
+TaskQ provides.
 """
 
 from datetime import UTC, datetime, timedelta

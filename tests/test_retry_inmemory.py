@@ -682,11 +682,18 @@ async def test_indefinite_no_time_budget_retries_forever() -> None:
 # ── snooze-family terminal hooks see the POST-write row ──────────────────
 
 
-async def test_on_retry_exhausted_sees_post_write_row_on_denial_budget() -> None:
-    """A denial-budget terminalisation hands on_retry_exhausted the
-    POST-write row: status='failed', error_class='MaxAttemptsExceeded',
-    the standing (un-refunded) attempt — not the dispatch-time 'running'
-    snapshot a hook cannot distinguish from a live job."""
+async def test_admission_denial_never_consumes_budget_or_fails_the_job() -> None:
+    """An admission denial is "come back later", never a failure: a job
+    denied a reservation while standing at its retry ceiling is
+    rescheduled, not terminalised, its attempt is refunded rather than
+    spent, and the exhausted hook does not fire.
+
+    A queue or rate-limit misconfiguration must not be able to kill work
+    that simply never got a slot — a denial's only terminal exit is the
+    job's own schedule-to-close deadline. Contention stays visible
+    through the aggregated denial counter on the row, so the denial
+    writes no per-denial event or attempt rows.
+    """
     hook_calls: list[tuple[JobRow, BaseException]] = []
 
     def on_exhausted(job_row: JobRow, exc: BaseException) -> None:
@@ -719,16 +726,28 @@ async def test_on_retry_exhausted_sees_post_write_row_on_denial_budget() -> None
 
     row = await backend.get(args.id)
     assert row is not None
-    assert row.status == "failed"
-    assert row.error_class == "MaxAttemptsExceeded"
+    # Rescheduled for a later admission attempt — never terminal, and
+    # never MaxAttemptsExceeded.
+    assert row.status in ("scheduled", "pending"), f"denial terminalised the job: {row.status}"
+    assert row.error_class != "MaxAttemptsExceeded"
+    assert row.finished_at is None
+    # The denial refunds the claim's increment: the budget is untouched.
+    assert row.attempt == 0, f"denial consumed retry budget: attempt={row.attempt}"
+    assert row.max_attempts == 1, "max_attempts is a bound, never bumped by a denial"
+    # Contention stays observable through the aggregated counter.
+    assert row.rate_limit_blocked_count >= 1
 
-    assert len(hook_calls) == 1
-    hook_row, _hook_exc = hook_calls[0]
-    assert hook_row.status == "failed"
-    assert hook_row.error_class == "MaxAttemptsExceeded"
-    # An admission denial leaves the claim's increment standing: the
-    # post-write attempt is the dispatched value.
-    assert hook_row.attempt == 1
+    # No terminal failure means no exhausted hook.
+    assert hook_calls == []
+
+    # No per-denial bookkeeping rows.
+    assert await backend.get_attempts(args.id) == []
+    denial_events = [
+        e
+        for e in await backend.get_events(args.id)
+        if e.detail.get("to_state") in ("failed", "scheduled")
+    ]
+    assert denial_events == [], f"denial wrote per-denial event rows: {denial_events}"
 
 
 async def test_on_retry_exhausted_sees_post_write_row_on_snooze_deadline() -> None:

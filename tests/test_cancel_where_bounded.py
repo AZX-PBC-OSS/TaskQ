@@ -50,6 +50,7 @@ partial progress and a re-run resumes where it stopped.
 
 from __future__ import annotations
 
+import json
 from collections.abc import AsyncGenerator, Sequence
 from contextlib import asynccontextmanager
 from typing import Any
@@ -921,4 +922,356 @@ async def test_pins_returned_count_equals_the_number_actually_cancelled(
     assert len(cancel_requests) == len(cancellable)
     assert all(parse_detail(r["detail"]) == {} for r in cancel_requests), (
         "reason=None must serialise to an empty detail object"
+    )
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# LAYER 3 — the scaling contract. Layer 1 bounds what ONE transaction does;
+# these bound how the drain behaves ACROSS transactions as the backlog
+# grows. A bulk cancel that is bounded per batch can still be unusable at
+# scale in two ways an operator feels and no layer-1 assertion can see:
+# each batch costing more than the last (quadratic total drain), and a
+# batch's cost growing with jobs the filter never matches (coupling one
+# tenant's offboard to every other tenant's backlog).
+# ══════════════════════════════════════════════════════════════════════════
+
+
+def _plan_rows_discarded(node: dict[str, Any]) -> int:
+    """Total rows the plan visited and then threw away, across the tree.
+
+    ``Rows Removed by Filter`` times ``Actual Loops`` is the exact count of
+    rows a node touched that contributed nothing to the result -- the
+    measure of wasted work, deterministic for a fixed seed and independent
+    of machine speed.
+
+    Buffers are deliberately NOT the oracle here. A drain that re-walks
+    every already-cancelled row still shows nearly flat buffer counts
+    while the whole table fits in shared cache, so a buffer-based
+    assertion passes at test scale and says nothing about the backlog
+    depth where the drain actually fails. Discarded rows expose the
+    re-walk at any size.
+    """
+    total = int(node.get("Rows Removed by Filter", 0) or 0) * int(node.get("Actual Loops", 1) or 1)
+    for child in node.get("Plans", []):
+        total += _plan_rows_discarded(child)
+    return total
+
+
+class _StatementRecordingPool:
+    """Pool stand-in that records the first drive statement and its params,
+    then lets the real drain proceed untouched."""
+
+    def __init__(self, pool: Any) -> None:
+        self._pool = pool
+        self.statements: list[tuple[str, tuple[object, ...]]] = []
+
+    @asynccontextmanager
+    async def acquire(self, **kwargs: object) -> AsyncGenerator[Any]:
+        async with self._pool.acquire(**kwargs) as conn:
+            outer = self
+
+            class _Recorder:
+                def __init__(self, inner: Any) -> None:
+                    self._inner = inner
+
+                async def fetchrow(self, sql: str, *args: object) -> Any:
+                    outer.statements.append((sql, args))
+                    return await self._inner.fetchrow(sql, *args)
+
+                def __getattr__(self, name: str) -> Any:
+                    return getattr(self._inner, name)
+
+            yield _Recorder(conn)
+
+
+async def test_drain_batch_cost_does_not_grow_as_the_backlog_is_cancelled(
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
+) -> None:
+    """Every batch of a bulk cancel costs the same whether it is the first
+    batch of the backlog or the last, so a deep offboard finishes in time
+    linear in the backlog rather than quadratic in it.
+
+    The drive statement re-selects "the next ``batch_size`` matching
+    pending/scheduled rows" on every pass. If the plan cannot skip the rows
+    earlier batches already moved to ``cancelled`` -- because the filter's
+    predicate is a post-scan filter rather than an index condition, or the
+    ``ORDER BY id`` forces a fresh sort of the whole match population each
+    time -- then batch N pays for the (N-1) * batch_size rows already
+    cancelled. Operationally that is the difference between an offboard an
+    operator can run on a real tenant and one that keeps tripping its own
+    per-batch statement timeout the deeper it gets, stranding the tail on
+    exactly the backlogs where the command matters most. Nothing errors;
+    the drain just stops finishing.
+
+    Measured as rows the plan visited and discarded per batch, which is the
+    wasted work itself rather than a proxy for it, so the pin holds at any
+    table size and does not turn into a timing flake.
+    """
+    schema = module_pg_schema.schema_name
+    conn = clean_pg_conn
+    render(schema)
+    batch_size = 20
+    total = batch_size * 10
+
+    job_ids = [new_uuid() for _ in range(total)]
+    await _seed_jobs(conn, schema, job_ids, status="pending", tags=["tenant-acme"])
+    await conn.execute(f'ANALYZE "{schema}".jobs')
+
+    # Capture the exact production drive statement rather than re-spelling
+    # the CTE here: a rewritten implementation must stay measured.
+    recording = _StatementRecordingPool(module_pg_pool)
+    probe_id = [new_uuid()]
+    await _seed_jobs(conn, schema, probe_id, status="pending", tags=["probe-only"])
+    await _cancel_where(
+        recording,  # type: ignore[arg-type]  # Why: duck-typed pool; only acquire() is used.
+        schema,
+        render(schema),
+        JobFilter(tags=("probe-only",)),
+        None,
+        batch_size=batch_size,
+    )
+    drive_sql, _probe_args = recording.statements[0]
+
+    per_batch_discarded: list[int] = []
+    while True:
+        plan_rows = await conn.fetch(
+            f"EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) {drive_sql}",  # Why: drive_sql is the production constant captured above; its only interpolation is the fixture schema identifier.
+            ["tenant-acme"],
+            batch_size,
+        )
+        plan = json.loads(plan_rows[0][0])[0]["Plan"]
+        per_batch_discarded.append(_plan_rows_discarded(plan))
+        remaining = await conn.fetchval(
+            f'SELECT count(*) FROM "{schema}".jobs '  # noqa: S608  # Why: schema is a test-fixture identifier, validated by render() above.
+            "WHERE status IN ('pending', 'scheduled') AND tags @> ARRAY['tenant-acme']::text[]"
+        )
+        if remaining == 0:
+            break
+
+    assert len(per_batch_discarded) >= 5, (
+        f"expected the backlog to drain over several batches; got "
+        f"{len(per_batch_discarded)} batches for {total} rows at batch_size={batch_size}"
+    )
+    # The bound is the batch, not the backlog: a batch that skips the rows
+    # earlier batches cancelled discards at most a batch-sized handful
+    # whatever pass it is on. A batch that re-walks them discards
+    # (N-1) * batch_size, which crosses this bound almost immediately.
+    worst = max(per_batch_discarded)
+    assert worst <= batch_size * 2, (
+        "a cancel batch visited and discarded far more rows than one batch's "
+        "worth, so each pass is re-walking the part of the match set earlier "
+        "batches already cancelled: total drain work is quadratic in backlog "
+        "depth, and on a real backlog the later batches blow their own "
+        "statement timeout and strand the tail. Rows discarded per batch: "
+        f"{per_batch_discarded!r}"
+    )
+
+
+async def test_drain_batch_cost_is_independent_of_non_matching_backlog(
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
+) -> None:
+    """One tenant's bulk cancel costs the same whether the table holds only
+    that tenant's jobs or a large backlog belonging to everyone else.
+
+    An operator offboarding one tenant is issuing a filtered write; the
+    filter is the whole point. If the drive statement's cost tracks the
+    table's total pending population rather than the match set, then every
+    tenant's offboard slows down as the fleet grows, and the only symptom
+    is a command that used to finish and now times out -- with nothing
+    about that tenant's own backlog having changed, so nothing in their
+    metrics explains it.
+
+    The match set is held fixed at one small cohort while the unrelated
+    backlog grows by two orders of magnitude, and the assertion is on rows
+    the production drive statement visited and discarded, so it measures
+    the wasted work itself at any table size rather than a cache-sensitive
+    proxy for it.
+    """
+    schema = module_pg_schema.schema_name
+    conn = clean_pg_conn
+    render(schema)
+    batch_size = 20
+    matching = 20
+
+    async def _drive_discarded() -> int:
+        recording = _StatementRecordingPool(module_pg_pool)
+        probe = [new_uuid()]
+        await _seed_jobs(conn, schema, probe, status="pending", tags=["probe-only"])
+        await _cancel_where(
+            recording,  # type: ignore[arg-type]  # Why: duck-typed pool; only acquire() is used.
+            schema,
+            render(schema),
+            JobFilter(tags=("probe-only",)),
+            None,
+            batch_size=batch_size,
+        )
+        drive_sql, _ = recording.statements[0]
+        plan_rows = await conn.fetch(
+            f"EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) {drive_sql}",  # Why: drive_sql is the production constant captured above; its only interpolation is the fixture schema identifier.
+            ["tenant-acme"],
+            batch_size,
+        )
+        return _plan_rows_discarded(json.loads(plan_rows[0][0])[0]["Plan"])
+
+    # Baseline: only the match set exists.
+    await _seed_jobs(
+        conn, schema, [new_uuid() for _ in range(matching)], status="pending", tags=["tenant-acme"]
+    )
+    await conn.execute(f'ANALYZE "{schema}".jobs')
+    small_backlog_discarded = await _drive_discarded()
+
+    # The match set is unchanged; every other tenant's backlog grows.
+    for tenant in range(20):
+        await _seed_jobs(
+            conn,
+            schema,
+            [new_uuid() for _ in range(100)],
+            status="pending",
+            tags=[f"tenant-other-{tenant}"],
+        )
+    await conn.execute(f'ANALYZE "{schema}".jobs')
+    large_backlog_discarded = await _drive_discarded()
+
+    # The bound is absolute, not a ratio: a filtered write whose cost is
+    # scoped to its match set discards at most a batch's worth of rows
+    # however deep the rest of the table gets. A ratio would let the
+    # baseline's own waste license proportional growth.
+    assert large_backlog_discarded <= batch_size * 2, (
+        "a filtered bulk cancel visited and discarded far more rows once "
+        "other tenants' jobs were present, so its cost tracks the table's "
+        "whole pending population rather than the match set: every tenant's "
+        "offboard slows as the fleet grows, with nothing in that tenant's own "
+        f"metrics to explain it. Rows discarded: small={small_backlog_discarded} "
+        f"large={large_backlog_discarded}"
+    )
+
+
+async def test_partial_drain_progress_is_durable_and_a_rerun_resumes(
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
+) -> None:
+    """A bulk cancel interrupted mid-drain leaves the batches it already
+    committed cancelled on disk, and a re-run finishes the remainder
+    without re-cancelling or double-counting what already landed.
+
+    This is what makes a large backlog completable at all: the operator
+    whose offboard died against a deep queue re-runs the same command and
+    it converges, rather than restarting from zero every time and never
+    finishing. Durability of partial progress is only observable from
+    outside the failed call -- the raised exception carries no count -- so
+    it has to be read off the rows and off the second call's result.
+
+    The interruption is injected at a true boundary (the pool hands out a
+    connection that refuses to drive a further batch), not by patching the
+    drain's internals, so the code path that commits each batch is the
+    production one.
+    """
+    schema = module_pg_schema.schema_name
+    conn = clean_pg_conn
+    render(schema)
+    batch_size = 25
+    total = 200
+
+    job_ids = [new_uuid() for _ in range(total)]
+    await _seed_jobs(conn, schema, job_ids, status="pending", tags=["tenant-acme"])
+    untouched = [new_uuid() for _ in range(13)]
+    await _seed_jobs(conn, schema, untouched, status="pending", tags=["tenant-keep"])
+
+    class _FailAfterNBatches:
+        """Pool stand-in whose connections stop driving after *n* batches."""
+
+        def __init__(self, pool: Any, n: int) -> None:
+            self._pool = pool
+            self._n = n
+            self.batches = 0
+
+        @asynccontextmanager
+        async def acquire(self, **kwargs: object) -> AsyncGenerator[Any]:
+            async with self._pool.acquire(**kwargs) as inner:
+                outer = self
+
+                class _Conn:
+                    def __init__(self, c: Any) -> None:
+                        self._c = c
+
+                    async def fetchrow(self, sql: str, *args: object) -> Any:
+                        if outer.batches >= outer._n:
+                            raise ConnectionResetError("drain interrupted")
+                        outer.batches += 1
+                        return await self._c.fetchrow(sql, *args)
+
+                    def __getattr__(self, name: str) -> Any:
+                        return getattr(self._c, name)
+
+                yield _Conn(inner)
+
+    interrupted = _FailAfterNBatches(module_pg_pool, 3)
+    with pytest.raises(ConnectionResetError):
+        await _cancel_where(
+            interrupted,  # type: ignore[arg-type]  # Why: duck-typed pool; only acquire() is used.
+            schema,
+            render(schema),
+            JobFilter(tags=("tenant-acme",)),
+            None,
+            batch_size=batch_size,
+        )
+
+    committed = await conn.fetchval(
+        f'SELECT count(*) FROM "{schema}".jobs '  # noqa: S608  # Why: schema is a test-fixture identifier, validated by render() above.
+        "WHERE status = 'cancelled' AND tags @> ARRAY['tenant-acme']::text[]"
+    )
+    assert committed > 0, (
+        "the batches that committed before the interruption must be durable; a "
+        "drain that rolls everything back can never complete a backlog larger "
+        "than one batch under any real failure rate"
+    )
+    assert committed < total, (
+        "the interruption must have landed mid-drain for this pin to mean "
+        f"anything; {committed} of {total} were already cancelled"
+    )
+
+    # The re-run: same command, same filter, no operator bookkeeping.
+    result, _notify = await _cancel_where(
+        module_pg_pool,
+        schema,
+        render(schema),
+        JobFilter(tags=("tenant-acme",)),
+        None,
+        batch_size=batch_size,
+    )
+
+    assert result.cancelled_directly == total - committed, (
+        "the re-run must report only the rows IT cancelled -- rows an earlier "
+        "run already committed are skipped by the status predicate, not "
+        "re-cancelled and not re-counted"
+    )
+    final_cancelled = await conn.fetchval(
+        f'SELECT count(*) FROM "{schema}".jobs '  # noqa: S608  # Why: schema is a test-fixture identifier, validated by render() above.
+        "WHERE status = 'cancelled' AND tags @> ARRAY['tenant-acme']::text[]"
+    )
+    assert final_cancelled == total, "the re-run must converge the whole match set"
+
+    # Exactly one state_change per job across BOTH runs: a resumed drain
+    # that re-walked committed rows would double-write their events.
+    event_rows = await conn.fetchval(
+        f'SELECT count(*) FROM "{schema}".job_events e '  # noqa: S608  # Why: schema is a test-fixture identifier, validated by render() above.
+        f'JOIN "{schema}".jobs j ON j.id = e.job_id '
+        "WHERE e.kind = 'state_change' AND j.tags @> ARRAY['tenant-acme']::text[]"
+    )
+    assert event_rows == total, (
+        f"expected exactly one state_change per cancelled job across both runs; "
+        f"got {event_rows} for {total} jobs"
+    )
+
+    still_pending = await conn.fetchval(
+        f'SELECT count(*) FROM "{schema}".jobs '  # noqa: S608  # Why: schema is a test-fixture identifier, validated by render() above.
+        "WHERE status = 'pending' AND tags @> ARRAY['tenant-keep']::text[]"
+    )
+    assert still_pending == len(untouched), (
+        "the interrupted drain and its re-run must both stay inside the filter"
     )

@@ -379,6 +379,103 @@ async def test_ti4_drain_to_pending(
         assert row.locked_by_worker is None
 
 
+async def test_draining_hands_back_only_jobs_no_consumer_is_running(
+    clean_jobs_app: JobsApp,
+) -> None:
+    """Graceful shutdown hands a claimed job back at most once and never both ways.
+
+    Two rows are claimed by the same worker. One is the local_queue backlog:
+    claimed, no consumer, never started executing. The other has a live
+    consumer inside the actor body, represented by an entry in the in-flight
+    registry exactly as the consumer loop registers it.
+
+    The backlog row must come back to pending with its lock cleared so another
+    worker can take it — that is the hand-back, and it happens once. The
+    executing row must stay locked and running: publishing it to the fleet
+    while its consumer is still in the actor body is how one job becomes two
+    executions. Those rows are the cancelling / forcing / abandoning phases'
+    business, and this phase must not touch them.
+
+    Operationally this is the difference between a rolling deploy that moves
+    queued work to the surviving pods and one that silently double-charges a
+    customer for every job that happened to be mid-flight when the pod got
+    its SIGTERM.
+    """
+    deps = clean_jobs_app.deps
+    backend = clean_jobs_app.backend
+    worker_id = new_uuid()
+
+    backlog_id = new_uuid()
+    executing_id = new_uuid()
+    for jid in (backlog_id, executing_id):
+        await backend.enqueue(
+            EnqueueArgs(
+                id=JobId(jid),
+                actor="test_actor",
+                queue="default",
+                payload={},
+                max_attempts=3,
+                retry_kind="transient",
+                scheduled_at=_immediate(),
+            )
+        )
+
+    # Both rows carry the shape the dispatch claim leaves behind: running,
+    # locked by this worker, started_at stamped at claim. The database row
+    # cannot tell the two cases apart — only this process's registry can.
+    await _mark_jobs_running(deps, [backlog_id, executing_id], worker_id)
+
+    active = _fake_active_job(job_id=executing_id)
+    try:
+        await deps.active_jobs.register(active.job_id, active.task, active.ctx)
+
+        drained = await drain_local_queue_to_pending(deps, worker_id)
+
+        assert drained == 1, (
+            "exactly the one claimed-but-unstarted row may be handed back; "
+            f"the hand-back released {drained} rows"
+        )
+
+        backlog_row = await backend.get(JobId(backlog_id))
+        assert backlog_row is not None
+        assert backlog_row.status == "pending", (
+            "a job claimed but never started must be handed back to pending so "
+            f"another worker can run it; status was {backlog_row.status!r}"
+        )
+        assert backlog_row.locked_by_worker is None, (
+            "the hand-back must clear the lock, otherwise the row is pending "
+            "but still fenced to a worker that is going away"
+        )
+
+        executing_row = await backend.get(JobId(executing_id))
+        assert executing_row is not None
+        assert executing_row.status == "running", (
+            "a job whose consumer is inside the actor body must stay running "
+            "through DRAINING and be resolved by the later cancel phases; "
+            f"status was {executing_row.status!r}"
+        )
+        assert executing_row.locked_by_worker == worker_id, (
+            "unlocking a job that is still executing here publishes it to the "
+            "fleet while the first run is in flight — the same job body then "
+            f"runs twice; locked_by_worker was {executing_row.locked_by_worker!r}"
+        )
+
+        # A second pass — a drain-monitor trigger racing a signal, or a retry
+        # after a transient failure — must release nothing further. Hand-back
+        # is once per claim, not once per shutdown attempt.
+        again = await drain_local_queue_to_pending(deps, worker_id)
+        assert again == 0, (
+            "a repeated hand-back pass must match no rows: the first pass "
+            "cleared the lock, and re-pending a row another worker has since "
+            f"claimed would strand or duplicate it; released {again} rows"
+        )
+    finally:
+        await deps.active_jobs.deregister(active.job_id)
+        active.task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await active.task
+
+
 async def test_ti5_heartbeat_during_cancelling(
     clean_jobs_app: JobsApp,
 ) -> None:

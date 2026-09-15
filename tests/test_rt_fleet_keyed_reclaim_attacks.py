@@ -5,10 +5,10 @@
 The feature under attack: keyed ``reservation_slots`` /
 ``rate_limit_buckets`` rows carry their own staleness (the ``keyed``
 mark plus ``last_used_at``, refreshed by the acquire / release / upsert
-statements that already touch them — the solid_queue Semaphore shape),
-and the maintenance leader's ``sweep_idle_keyed_rows`` deletes marked
-rows unused past ``keyed_row_reclaim_period``, one bounded committed
-batch per tick per table. The author's pins
+statements that already touch them — piggybacking freshness on statements
+already in flight), and the maintenance leader's ``sweep_idle_keyed_rows``
+deletes marked rows unused past ``keyed_row_reclaim_period``, one bounded
+committed batch per tick per table. The author's pins
 (``tests/test_keyed_row_fleet_reclaim.py`` and the wiring/capture
 siblings) cover the steady states: orphan reclamation, static
 immortality, the redis-backend publish, the acquire/release stamps, the

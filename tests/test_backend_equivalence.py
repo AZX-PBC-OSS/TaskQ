@@ -904,16 +904,21 @@ async def test_retry_after_indefinite_tier_ignores_max_attempts(
 async def test_reservation_unavailable_produces_metadata_annotated_snooze(
     backend_pair: Backend,
 ) -> None:
-    """mark_snoozed with
-    metadata_update={"awaiting": "reservation:gpu_pool"},
-    outcome="reservation_denied" returns "scheduled" → row's
-    metadata['awaiting'] == 'reservation:gpu_pool', attempt row with
-    outcome='reservation_denied'.
+    """An admission denial is "come back later", not a failed execution.
+
+    A reservation denial reschedules the job with its annotation
+    (``metadata['awaiting']``), refunds the claim's attempt increment so
+    the retry budget is untouched, and leaves its whole durable record on
+    the row: the aggregated denial counter, no attempt row and no event
+    row. Both backends must agree — a capacity shortfall that spends
+    budget would let a queue misconfiguration kill work that simply never
+    got a slot.
     """
     job_id, wid = await _enqueue_dispatch_any(backend_pair)
 
     epoch_row = await backend_pair.get(job_id)
     assert epoch_row is not None
+    assert epoch_row.attempt == 1
     result = await backend_pair.mark_snoozed(
         job_id,
         wid,
@@ -928,6 +933,15 @@ async def test_reservation_unavailable_produces_metadata_annotated_snooze(
     assert row is not None
     assert row.metadata.get("awaiting") == "reservation:gpu_pool"
 
+    # The denial never consumes retry budget: the claim's increment is
+    # refunded exactly as an actor-requested deferral refunds it, so a
+    # job denied a slot arbitrarily often still gets its full budget of
+    # real executions once capacity frees.
+    assert row.attempt == 0, "an admission denial consumed the job's retry budget"
+    assert row.max_attempts == epoch_row.max_attempts, (
+        "an admission denial widened the job's retry ceiling"
+    )
+
     attempts = await backend_pair.get_attempts(job_id)
     # The denial is counted on the row's denial counter; no attempt row,
     # no event row.
@@ -937,6 +951,82 @@ async def test_reservation_unavailable_produces_metadata_annotated_snooze(
 
     events = await _get_events(backend_pair, job_id)
     _assert_no_snooze_event_row(events)
+
+
+async def test_admission_denial_at_exhausted_budget_still_reschedules(
+    backend_pair: Backend,
+) -> None:
+    """An admission denial can never by itself terminally fail a job.
+
+    A job sitting at or beyond ``max_attempts`` that is denied a
+    rate-limit slot is rescheduled, not failed: it never ran, so there is
+    no execution to blame and ``MaxAttemptsExceeded`` would be a lie about
+    what happened. Only the schedule-to-close deadline ends such a job.
+    Both backends must agree, or a saturated bucket destroys work on one
+    of them.
+    """
+    job_id, wid = await _enqueue_dispatch_any(backend_pair, max_attempts=3, retry_kind="transient")
+    # No schedule_to_close: budget exhaustion is the only candidate exit,
+    # and it must not be taken.
+    await _force_job_state(backend_pair, job_id, attempt=3, schedule_to_close=None)
+
+    epoch_row = await backend_pair.get(job_id)
+    assert epoch_row is not None
+    result = await backend_pair.mark_snoozed(
+        job_id,
+        wid,
+        timedelta(seconds=30),
+        outcome="rate_limit_denied",
+        attempt=epoch_row.attempt,
+    )
+    assert result == "scheduled", (
+        "an admission denial terminally failed a job that never got a slot"
+    )
+
+    row = await backend_pair.get(job_id)
+    assert row is not None
+    assert row.status == "scheduled"
+    assert row.error_class is None
+    # The claim's increment is refunded: the denial spends no budget.
+    assert row.attempt == 2
+    assert row.rate_limit_blocked_count == 1
+
+    attempts = await backend_pair.get_attempts(job_id)
+    assert len(attempts) == 0
+
+    events = await _get_events(backend_pair, job_id)
+    _assert_no_snooze_event_row(events)
+
+
+async def test_admission_denial_past_schedule_to_close_fails_on_the_deadline(
+    backend_pair: Backend,
+) -> None:
+    """Deadline expiry is the one terminal exit a denied job has.
+
+    When the reschedule point would land past ``schedule_to_close`` the job
+    fails through the normal deadline path — ``DeadlineExceeded``, never
+    ``MaxAttemptsExceeded`` — so an operator reading the row learns the job
+    ran out of time waiting for capacity rather than out of retries.
+    """
+    deadline = _now_for(backend_pair) + timedelta(seconds=5)
+    job_id, wid = await _enqueue_dispatch_any(backend_pair, max_attempts=3, retry_kind="transient")
+    await _force_job_state(backend_pair, job_id, attempt=3, schedule_to_close=deadline)
+
+    epoch_row = await backend_pair.get(job_id)
+    assert epoch_row is not None
+    result = await backend_pair.mark_snoozed(
+        job_id,
+        wid,
+        timedelta(seconds=30),
+        outcome="rate_limit_denied",
+        attempt=epoch_row.attempt,
+    )
+    assert result == "failed"
+
+    row = await backend_pair.get(job_id)
+    assert row is not None
+    assert row.status == "failed"
+    assert row.error_class == "DeadlineExceeded"
 
 
 async def test_mark_snoozed_idempotent_returns_noop(backend_pair: Backend) -> None:

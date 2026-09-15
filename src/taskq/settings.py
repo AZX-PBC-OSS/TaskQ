@@ -1076,9 +1076,8 @@ class WorkerSettings(TaskQSettings):
             "TASKQ_MAX_RETRY_BACKOFF (interval). Global ceiling on retry backoff "
             "per attempt - caps the per-actor RetryPolicy.cap so a misconfigured "
             "actor (e.g. cap=timedelta(days=365)) cannot strand jobs for an "
-            "unreasonably long time. Default 24 h: conservative, matches one "
-            "standard on-call rotation, and mirrors Dramatiq's DEFAULT_MAX_BACKOFF "
-            "philosophy "
+            "unreasonably long time. Default 24 h: conservative, aligns with a "
+            "standard on-call rotation period"
         ),
     )
 

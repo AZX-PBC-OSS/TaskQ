@@ -473,6 +473,211 @@ class TestSyncHungFactory:
         )
 
 
+class TestDefaultTimeoutsCollideIntoWholeTickRollback:
+    """Reproduction of issue #174: at the shipped matching defaults
+    (``dispatcher_command_timeout`` == ``cron_payload_factory_timeout`` ==
+    5.0s), a hung payload factory does not take a per-schedule strike —
+    it takes down the WHOLE tick, including every healthy schedule batched
+    alongside it.
+
+    ``resolve_payload``'s per-factory ``asyncio.wait_for`` and the leader's
+    whole-tick ``asyncio.timeout`` are armed at the same instant with the
+    same duration, so which one fires is a genuine race with no
+    deterministic winner. The contract this test attacks is the one
+    ``cron_loop.py``'s per-row ``except Exception as exc:`` (the only
+    guard around ``_plan_fire``) cannot honor even in principle:
+    ``asyncio.CancelledError`` — what the outer ``asyncio.timeout``
+    delivers — is a ``BaseException`` in Python >= 3.8, so it is NOT
+    caught there. When the outer deadline wins the race, the cancellation
+    propagates straight past the per-row handler, aborts ``tick_cron``
+    entirely, and the transaction rolls back: the hung schedule gets no
+    named strike (contradicting docs/guides/cron.md's "increments
+    consecutive_failures" claim) AND the healthy peer schedule planned in
+    the same batch loses its committed, already-computed advance —
+    ``next_fire_at`` stays at the old due timestamp for BOTH schedules.
+    Because ``next_fire_at`` never advances, the identical batch is
+    selected again on the very next tick: an unbounded livelock that
+    produces zero strike telemetry, not the bounded per-factory failure
+    the docs promise.
+
+    This test drives the exact shipped defaults (no override), unlike
+    every other test in this file which pins ``TASKQ_CRON_PAYLOAD_FACTORY_TIMEOUT``
+    away from the collision to get a deterministic per-factory strike.
+    """
+
+    async def test_hung_factory_at_matching_defaults_rolls_back_the_healthy_peer_too(
+        self,
+        clean_pg_conn: asyncpg.Connection,
+        module_pg_schema: ModulePgSchema,
+    ) -> None:
+        """Two due schedules, one with a factory that hangs forever: at
+        the shipped 5.0s/5.0s default collision, the tick must end (the
+        whole-tick asyncio.timeout still bounds IT), but when it ends via
+        cancellation neither schedule's next_fire_at has advanced — the
+        healthy peer's own already-computed, uncontested advance was
+        rolled back along with the hung one's failure. A correctly
+        isolated per-schedule failure model would leave the healthy peer
+        FIRED and its next_fire_at advanced regardless of which schedule
+        hung beside it.
+        """
+        schema = module_pg_schema.schema_name
+        # The shipped defaults: NOT overridden away from each other. This
+        # is the exact collision the issue's docstring warning
+        # (taskq/cron.py's _await_factory_bounded) describes and that no
+        # cross-field validator or default change enforces.
+        settings = cron_settings(schema)
+        assert (
+            settings.dispatcher_command_timeout == settings.cron_payload_factory_timeout == 5.0
+        ), (
+            "test premise: the shipped defaults must still collide — if this "
+            "fails, a fix already decoupled the two timeouts and this "
+            "reproduction is obsolete"
+        )
+        await seed_actor_config(clean_pg_conn, schema, _ACTOR)
+        due = hour_floor(datetime.now(UTC))
+        await seed_schedule(
+            clean_pg_conn,
+            schema,
+            actor=_ACTOR,
+            name="async-hung-collision",
+            cron_expr=_HOURLY,
+            next_fire_at=due,
+            payload_factory="tests.test_rt_cron_hang_livelock.async_hang_factory",
+        )
+        healthy_id = await seed_schedule(
+            clean_pg_conn,
+            schema,
+            actor=_ACTOR,
+            name="healthy-peer-collision",
+            cron_expr=_HOURLY,
+            next_fire_at=due,
+        )
+
+        backend = make_backend(settings)
+        worker_id = new_uuid()
+
+        with _async_hang() as (entered, _gate):
+            started = time.monotonic()
+            outcome = "returned"
+            try:
+                await asyncio.wait_for(
+                    _run_leader_shaped_tick(clean_pg_conn, settings, backend, schema, worker_id),
+                    timeout=_BOUND_S,
+                )
+            except (TimeoutError, asyncio.CancelledError):
+                outcome = "cut by a deadline"
+            elapsed = time.monotonic() - started
+
+        assert entered.is_set(), (
+            "vacuous run: the tick never reached the hung factory, so nothing "
+            "here proves anything about the collision"
+        )
+        assert elapsed < _BOUND_S, (
+            f"the tick took {elapsed:.1f}s to end ({outcome}) — it should still be "
+            f"bounded by the whole-tick asyncio.timeout even at the colliding defaults"
+        )
+
+        healthy_row = await clean_pg_conn.fetchrow(
+            f'SELECT next_fire_at, consecutive_failures FROM "{schema}".cron_schedules '  # noqa: S608
+            f"WHERE id = $1",
+            healthy_id,
+        )
+        assert healthy_row is not None
+        assert healthy_row["next_fire_at"] > due, (
+            "issue #174 reproduced: at the shipped matching defaults "
+            "(dispatcher_command_timeout == cron_payload_factory_timeout == 5.0s), "
+            "the whole-tick asyncio.timeout's CancelledError propagates past "
+            "cron_loop.py's per-row `except Exception` (CancelledError is a "
+            "BaseException, not caught there), aborting tick_cron entirely. The "
+            f"transaction rolled back and the HEALTHY peer schedule's next_fire_at "
+            f"({healthy_row['next_fire_at']}) was never advanced past its due "
+            f"timestamp ({due}) even though it carried no hung factory and no error "
+            "of its own — a single stuck cron factory wedges every other due "
+            "schedule in its batch, indefinitely, with zero per-schedule strike "
+            "telemetry (consecutive_failures stayed "
+            f"{healthy_row['consecutive_failures']}). The identical batch is "
+            "selected again on the next tick: livelock, not the documented "
+            "per-factory failure."
+        )
+
+
+class TestHungFactoryStrikesAtShippedDefaults:
+    """A hung payload factory must accrue a strike under the timeouts that
+    actually ship, not only under a hand-tuned pair.
+
+    Strike accounting is what eventually auto-disables a schedule nobody is
+    watching: a factory that hangs on every fire is exactly the case the
+    three-strike auto-disable exists for, because it costs a full deadline
+    of the cron lock every tick forever. A hang that ends the tick without
+    recording anything on the row leaves the schedule permanently due, with
+    an empty ``last_fire_error`` and a zero failure count — the operator
+    sees an idle-looking schedule and a cron loop quietly burning its
+    budget. Escaping the strike must not be possible merely because the
+    whole-tick deadline and the per-factory deadline happen to be equal at
+    shipped defaults.
+    """
+
+    async def test_hung_factory_records_its_strike_under_shipped_timeouts(
+        self,
+        clean_pg_conn: asyncpg.Connection,
+        module_pg_schema: ModulePgSchema,
+    ) -> None:
+        """One due schedule whose factory hangs, run under the shipped
+        defaults with no timeout override: after the tick, the row must
+        carry a strike and a ``last_fire_error`` naming the factory that
+        hung.
+        """
+        schema = module_pg_schema.schema_name
+        settings = cron_settings(schema)
+        await seed_actor_config(clean_pg_conn, schema, _ACTOR)
+        due = hour_floor(datetime.now(UTC))
+        hung_id = await seed_schedule(
+            clean_pg_conn,
+            schema,
+            actor=_ACTOR,
+            name="hung-at-shipped-defaults",
+            cron_expr=_HOURLY,
+            next_fire_at=due,
+            payload_factory="tests.test_rt_cron_hang_livelock.async_hang_factory",
+        )
+
+        backend = make_backend(settings)
+        worker_id = new_uuid()
+
+        with (
+            _async_hang() as (entered, _gate),
+            contextlib.suppress(TimeoutError, asyncio.CancelledError),
+        ):
+            await asyncio.wait_for(
+                _run_leader_shaped_tick(clean_pg_conn, settings, backend, schema, worker_id),
+                timeout=_BOUND_S,
+            )
+
+        assert entered.is_set(), (
+            "vacuous run: the tick never reached the hung factory, so nothing "
+            "here proves anything about its strike"
+        )
+
+        row = await clean_pg_conn.fetchrow(
+            f'SELECT consecutive_failures, last_fire_error FROM "{schema}".cron_schedules '  # noqa: S608  # Why: schema is a test-fixture identifier; id is $-bound.
+            "WHERE id = $1",
+            hung_id,
+        )
+        assert row is not None
+        assert row["consecutive_failures"] == 1, (
+            "a hung payload factory must take a per-schedule strike under the "
+            "timeouts that ship; it recorded "
+            f"{row['consecutive_failures']}. Without it the schedule never "
+            "reaches the auto-disable threshold and keeps costing a full "
+            "deadline of the cron advisory lock on every tick, forever"
+        )
+        assert "async_hang_factory" in (row["last_fire_error"] or ""), (
+            "the stored failure must name the factory that hung — it is the "
+            "only thing distinguishing it from every other schedule's factory; "
+            f"got {row['last_fire_error']!r}"
+        )
+
+
 class TestFactoryDeadlineIsTunable:
     """The per-factory deadline is a setting that reaches the factory call.
 

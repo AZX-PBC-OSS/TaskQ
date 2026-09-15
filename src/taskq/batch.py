@@ -305,15 +305,15 @@ def decide_batch_status(
 _TERMINAL_NOT_IN_SQL = ",".join(f"'{s}'" for s in TERMINAL_STATUSES)
 
 # One statement per poll for wait_for_batch: the member counts and the
-# batches row travel together (Faktory's BATCH STATUS shape) instead of a
-# row fetch followed by a counts fetch — two sequential round trips of
-# pure latency for the finalizer loop. The counts subquery has no GROUP
-# BY and therefore always yields exactly one row; the batches row joins
-# by primary key on that row, so a batch with no row (enqueue_batch_fast
-# members carry batch_id metadata only) still reports its counts, and a
-# row with no members still reports its fields — the expected_size the
-# empty-batch decision reads. A joined-away row would surface as all-NULL
-# batch fields, which the reader turns into batch_row=None.
+# batches row travel together in a single statement instead of a separate
+# row fetch and counts fetch — two sequential round trips of pure latency
+# for the finalizer loop. The counts subquery has no GROUP BY and therefore
+# always yields exactly one row; the batches row joins by primary key on
+# that row, so a batch with no row (enqueue_batch_fast members carry
+# batch_id metadata only) still reports its counts, and a row with no
+# members still reports its fields — the expected_size the empty-batch
+# decision reads. A joined-away row would surface as all-NULL batch fields,
+# which the reader turns into batch_row=None.
 _WFB_SELECT = (
     "SELECT c.total, c.succeeded, c.failed, c.cancelled, c.crashed,"
     " c.abandoned, c.in_flight,"
