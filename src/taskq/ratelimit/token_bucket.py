@@ -952,10 +952,12 @@ class TokenBucket:
         # correctly at birth — a keyed PG bucket's row must never depend
         # on a side quest's outcome for its reclamation bookkeeping.
         preseed_sql = (
-            f'INSERT INTO "{schema}".rate_limit_buckets (bucket_name, kind, state, updated_at, keyed, last_used_at) '  # noqa: S608  # Why: schema_name pre-validated; values are $1/$2/$3-bound
+            f'INSERT INTO "{schema}".rate_limit_buckets (bucket_name, kind, state, updated_at, keyed, last_used_at) '  # noqa: S608  # Why: schema_name pre-validated; values are $1/$2/$3/$4-bound
             f"VALUES ($1, 'token_bucket', "
             f"jsonb_build_object('tokens', $2::float8, "
-            f"'ts', EXTRACT(EPOCH FROM clock_timestamp())), clock_timestamp(), $3, clock_timestamp()) "
+            f"'ts', EXTRACT(EPOCH FROM clock_timestamp()), "
+            f"'capacity', $2::float8, 'refill_per_second', $4::float8), "
+            f"clock_timestamp(), $3, clock_timestamp()) "
             f"ON CONFLICT (bucket_name) DO NOTHING"
         )
         select_sql = (
@@ -987,7 +989,9 @@ class TokenBucket:
                 # to `capacity` tokens. Pre-seed a full-capacity row
                 # (idempotent — DO NOTHING on conflict) so the very first
                 # acquire also serializes on the row lock below.
-                await conn.execute(preseed_sql, self._name, self._capacity, self._keyed)
+                await conn.execute(
+                    preseed_sql, self._name, self._capacity, self._keyed, self._refill
+                )
                 return await conn.fetchrow(select_sql, self._name)
 
             row: asyncpg.Record | None = None
@@ -1089,7 +1093,21 @@ class TokenBucket:
             # _jsonb_param serializes via orjson — passing a dict directly
             # to conn.execute fails because asyncpg does not auto-encode
             # Python dicts as jsonb.
-            state_param = jsonb_param({"tokens": tokens, "ts": now})
+            # capacity and refill_per_second ride the state so the row can
+            # be judged without the bucket's declaration: the fleet-reclaim
+            # sweep and the eviction drain both need to know whether an idle
+            # row still carries consumed quota, and a fixed quota
+            # (refill_per_second = 0) never recovers on its own — deleting
+            # such a row lets the next acquire re-preseed at full capacity
+            # and re-admit a budget the tenant already spent.
+            state_param = jsonb_param(
+                {
+                    "tokens": tokens,
+                    "ts": now,
+                    "capacity": self._capacity,
+                    "refill_per_second": self._refill,
+                }
+            )
             # updated_at, the state ts, and the fleet-reclaim stamps
             # (last_used_at refresh, keyed re-mark) are all server-domain
             # now

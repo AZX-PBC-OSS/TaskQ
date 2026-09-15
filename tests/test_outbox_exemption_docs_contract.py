@@ -59,9 +59,7 @@ def test_settings_py_does_not_overstate_outbox_exemption() -> None:
 
 def test_upgrading_guide_does_not_overstate_outbox_exemption() -> None:
     text = (_DOCS / "guides" / "upgrading.md").read_text()
-    section = text.split("### `job_events` rows past the retention period are deleted", 1)[1][
-        :2000
-    ]
+    section = text.split("### `job_events` rows past the retention period are deleted", 1)[1][:2000]
     normalized = " ".join(section.split())
     assert "is exempt at any setting" not in normalized, (
         "upgrading.md still claims the lock_expired outbox slice is "

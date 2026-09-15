@@ -1630,7 +1630,7 @@ class Backend(Protocol):
         outcome: SnoozeOutcome = "snoozed",
         attempt: int | None = None,
         denial_reason: DenialReason = "capacity",
-    ) -> Literal["scheduled", "failed", "failed:MaxAttemptsExceeded", "noop"]:
+    ) -> Literal["scheduled", "failed", "noop"]:
         """Release a running job back to the queue without consuming retry
         budget.
 
@@ -1653,24 +1653,16 @@ class Backend(Protocol):
         deferral reschedules at least that far out, so a zero delay
         cannot park the job at the head of the dispatch order.
 
-        *denial_reason* discriminates the two causes of a denial-class
-        outcome (:data:`DenialReason`) and binds the non-consuming arm:
-        ``"capacity"`` (the default) is a real saturation denial — the
-        store answered "full" — and the retry budget still bounds the
-        loop below.  ``"unavailable"`` is the store failing to answer —
-        infrastructure backpressure about a job whose actor never ran —
-        so the claim's attempt increment is refunded (exactly the way
-        the ``snoozed`` arm refunds it) and no terminal arm can fire:
-        the job stays retryable across a sustained outage and keeps its
-        original budget when the store returns.
-
-        The retry budget still bounds the loop for ``"capacity"``
-        denials: a non-``indefinite`` job at ``attempt >= max_attempts``
-        with no ``schedule_to_close`` fails terminally
-        (``"failed:MaxAttemptsExceeded"``) instead of rescheduling
-        forever; a job carrying ``schedule_to_close`` reschedules until
-        its deadline (``"failed"``, ``DeadlineExceeded``); an
-        ``indefinite`` job reschedules by explicit policy.
+        No outcome here spends retry budget: every one of them refunds
+        the claim's attempt increment, because in none of them did a
+        handler run.  An admission denial — whether the store answered
+        "full" (*denial_reason* ``"capacity"``) or failed to answer
+        (``"unavailable"``) — is the queue's own "come back later", so
+        charging it would make how many real retries a job gets depend
+        on how saturated the bucket was while the job waited.  The one
+        terminal exit is the caller's own deadline: a reschedule point
+        past ``schedule_to_close`` returns ``"failed"``
+        (``DeadlineExceeded``).
         """
         ...
 

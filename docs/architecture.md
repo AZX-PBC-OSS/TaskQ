@@ -340,10 +340,16 @@ constant at import time, the same pattern `PostgresBackend` and
 `InMemoryBackend` use (`_EXPECTED_PROTOCOL_VERSION` + `RuntimeError`), so a
 contract bump fails fast instead of drifting silently.
 
-`retry_job` resets a terminal job (`failed`, `crashed`, or `cancelled`) back to
-`pending` so it can be re-dispatched. Returns `True` if the job was retried,
-`False` if it was not in a retryable state. The admin UI exposes this via the
-`POST /jobs/{job_id}/retry` endpoint.
+`retry_job` puts a job that has come to rest back to `pending` so it can be
+re-dispatched. Every resting state is a valid source — `failed`, `crashed`,
+`cancelled`, `abandoned` and `succeeded` — because an operator re-run means
+"run this again": `succeeded` records that the actor returned without raising,
+not that the result was right, and `abandoned` means a deploy interrupted the
+job. A `running` job is refused, because re-pending a row while an attempt is
+live races that attempt's terminal write and the job could execute twice; a
+`pending` or `scheduled` job is refused because it is already queued to run.
+Returns `True` if the job was retried, `False` otherwise. The admin UI exposes
+this via the `POST /jobs/{job_id}/retry` endpoint.
 
 `subscribe_cancel_wake` is the cancel-signal analogue of `subscribe_wake`: it
 yields an `asyncio.Event` that is set whenever a cancel NOTIFY arrives, allowing

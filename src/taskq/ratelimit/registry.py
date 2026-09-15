@@ -64,6 +64,9 @@ from typing import TYPE_CHECKING, TypeVar
 import structlog
 from pydantic import BaseModel, ValidationError
 
+from taskq.backend._sweeps import (  # pyright: ignore[reportPrivateUsage]  # Why: the eviction drain and the fleet sweep must agree exactly on which rows still hold consumed quota — one predicate, no second hand-maintained copy.
+    _no_consumed_quota_sql,
+)
 from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining
     _KEYED_KEY_RE,  # pyright: ignore[reportPrivateUsage]
@@ -2038,13 +2041,24 @@ class RateLimitRegistry:
 
 # The reclaim drain's rate-limit statement, beside the publish statement
 # whose rows it reclaims (the same locality as the reservation reclaim
-# templates in ratelimit/reservation.py). No lease guard, unlike the
-# reservation twin: a rate_limit_buckets row has no holder, so nothing
-# survives the DELETE and the drain runs no survivor probe.
-_RECLAIM_RATE_LIMIT_SLICE_DELETE_SQL_TEMPLATE = """\
-DELETE FROM "{schema}".rate_limit_buckets
+# templates in ratelimit/reservation.py). A rate_limit_buckets row has no
+# holder, so there is no lease guard like the reservation twin's — but
+# idleness is still not evidence the row is safe to delete. For a
+# PG-backed bucket the row IS the state, so deleting one that still holds
+# consumed fixed quota lets the next acquire re-preseed at full capacity
+# and re-admit a budget the tenant already spent — the exact damage the
+# memory backend's eviction exemption prevents on the instance side.
+# Idle eviction exists to bound registry growth, not to reset quotas, so
+# it must do neither. The guard is shared with the fleet sweep
+# (_no_consumed_quota_sql) so the two cannot disagree about which rows
+# are safe. A vetoed name still leaves the pending set — every sliced
+# name does — and the fleet sweep is its backstop once the quota is no
+# longer consumed.
+_RECLAIM_RATE_LIMIT_SLICE_DELETE_SQL_TEMPLATE = f"""\
+DELETE FROM "{{schema}}".rate_limit_buckets
 WHERE bucket_name = ANY($1)
-RETURNING bucket_name"""
+  AND {_no_consumed_quota_sql()}
+RETURNING bucket_name"""  # noqa: S608  # Why: the only interpolation is this module's own constant predicate; schema is caller-formatted from the _IDENT_RE-validated setting and bucket_name is $1-bound
 
 
 async def _upsert_rate_limit_bucket_row(

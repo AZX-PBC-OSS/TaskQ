@@ -537,94 +537,75 @@ WITH upd AS (
     FROM upd
 )
 SELECT * FROM upd""",
-        # A non-consuming deferral never spends retry budget, and the
-        # ceiling is never a counter — no arm here raises max_attempts.
-        # HOW the budget is preserved differs by who asked for the
-        # deferral:
+        # No arm of this statement spends retry budget, and the ceiling
+        # is never a counter — no arm here raises max_attempts.
+        #
+        # Every outcome REFUNDS the claim's attempt increment: attempt -
+        # 1, floored at 0.  Dispatch stamped attempt = attempt + 1 when
+        # it claimed the row, and in none of these outcomes did a handler
+        # run, so the increment is returned and the gap `max_attempts -
+        # attempt` is exactly what it was before the claim.
         #
         #   * An actor-requested deferral ($7 = 'snoozed' — the Snooze
         #     exception, or a server Retry-After honoured without budget)
-        #     REFUNDS the claim's attempt increment: attempt - 1, floored
-        #     at 0.  Dispatch stamped attempt = attempt + 1 when it
-        #     claimed the row; the actor never ran, so the increment is
-        #     returned and the gap `max_attempts - attempt` is exactly
-        #     what it was before the claim.  A job can honour downstream
-        #     429s indefinitely: attempt oscillates between N and N+1 and
-        #     never walks toward the smallint ceiling.  A deferral that
-        #     never ran refunds the attempt: the claim was released without
-        #     work being done, so the budget is untouched.  The ceiling
-        #     itself is immutable here: a deferral restores the attempt it
-        #     borrowed rather than widening `max_attempts`, so the budget
-        #     an operator configured is the budget the job gets.  Only an
-        #     explicit admin retry raises the ceiling.
+        #     never executed, so a job can honour downstream 429s
+        #     indefinitely: attempt oscillates between N and N+1 and
+        #     never walks toward the smallint ceiling.
         #   * An admission denial ($7 = 'reservation_denied' /
-        #     'rate_limit_denied') leaves the claim's increment standing:
-        #     the system's own backpressure is budget-bounded, so a
-        #     saturated bucket fails the job out at attempt >=
-        #     max_attempts instead of re-queueing it forever (measured in
-        #     production under the unbounded shape: one job denied 1,014
-        #     times, 6.5M job_events rows).  Jobs that must wait out a
-        #     saturation express it explicitly: retry_kind 'indefinite',
-        #     or a schedule_to_close deadline.
+        #     'rate_limit_denied') is the queue's own "come back later",
+        #     not a failed execution — no handler ran, and the row says
+        #     nothing about the job.  Charging it would make how many
+        #     real retries a job gets depend on how saturated the bucket
+        #     was while the job waited: a retry policy that is
+        #     load-dependent and unreproducible, with nothing on the row
+        #     to explain the shortfall.  A denial's only terminal exit is
+        #     the job's own schedule_to_close deadline, below.
+        #
+        # The ceiling itself is immutable here: a deferral restores the
+        # attempt it borrowed rather than widening `max_attempts`, so the
+        # budget an operator configured is the budget the job gets.  Only
+        # an explicit admin retry raises the ceiling.
         #
         # Both paths are counted on the job row (snooze_count /
         # rate_limit_blocked_count, keyed by $7) instead of minting
-        # per-occurrence rows.
+        # per-occurrence rows, so a sustained saturation stays observable
+        # without the unbounded event volume a per-denial row mints
+        # (measured under an earlier per-denial shape: one job denied
+        # 1,014 times, 6.5M job_events rows).
         #
-        # Three arms, exhaustive and mutually exclusive over every
-        # fenced row:
-        #   snoozed            — an actor-requested deferral (always,
-        #                        while the deadline allows), OR an
-        #                        admission denial while budget remains
-        #                        (attempt < max_attempts, any kind), OR
-        #                        the kind is indefinite, OR the job
-        #                        carries schedule_to_close (its own
-        #                        terminal exit — the deadline, not the
-        #                        budget, ends that job);
-        #   max_attempts_failed — the complement, admission denials
-        #                        only: a non-indefinite job at
-        #                        attempt >= max_attempts with no close
-        #                        deadline;
-        #   deadline_failed     — the reschedule point passes
-        #                        schedule_to_close.
-        # $9 (denial_reason) splits the denial rows across those arms:
-        # 'capacity' (a saturation denial — the store answered "full")
-        # keeps the bounded budget-consuming loop above; 'unavailable'
-        # (the store could not answer — infra backpressure about a job
-        # whose actor never ran) takes the NON-CONSUMING shape of the
-        # 'snoozed' arm — the claim's attempt increment is refunded and
-        # the max_attempts arm is unreachable, so a sustained outage
-        # keeps the job retryable with its original budget intact. The
-        # refund revisits attempt numbers, which is collision-safe here
-        # for the same reason the 'snoozed' arm's refund is: a
-        # non-terminal snooze/denial writes no job_attempts rows, so no
-        # writer ever lands on the revisited keys.
+        # Two arms, exhaustive and mutually exclusive over every fenced
+        # row:
+        #   snoozed         — the reschedule point still fits the job's
+        #                     schedule_to_close, or it carries none;
+        #   deadline_failed — the reschedule point passes it.
+        #
         # A non-terminal snooze/denial writes NO job_attempts/job_events
         # rows — it is admission control, not an execution; the outcome
-        # counters on the row and OTEL carry it.  Terminal arms write
-        # their rows uniformly with every other terminal transition.
+        # counters on the row and OTEL carry it.  The terminal deadline
+        # arm writes its rows uniformly with every other terminal
+        # transition.
         #
-        # job_attempts PK hazard for the max_attempts_failed arm: the arm
-        # inserts at (job_id, attempt) WITHOUT dispatch having advanced
-        # attempt, so the insert is safe only if no row at that key can
-        # already exist.  The fence (status='running' AND
-        # locked_by_worker=$2 AND attempt=$8) guarantees the job has been
-        # running-owned by this worker at this attempt epoch since
-        # dispatch stamped attempt=N.  Every writer at (job, N) ends that running window
-        # first: the terminal mark_* writes transition the row out of
-        # 'running', and sweep-1's reclaim — the only writer that acts on
-        # a running row this worker no longer owns — either terminalises
-        # (exhausted branch) or requires attempt < max_attempts (retry
-        # branch), whose row at N is followed by a dispatch increment to
+        # job_attempts PK hazard for the deadline arm: it inserts at
+        # (job_id, attempt) WITHOUT dispatch having advanced attempt, so
+        # the insert is safe only if no row at that key can already
+        # exist.  The fence (status='running' AND locked_by_worker=$2 AND
+        # attempt=$8) guarantees the job has been running-owned by this
+        # worker at this attempt epoch since dispatch stamped attempt=N.
+        # Every writer at (job, N) ends that running window first: the
+        # terminal mark_* writes transition the row out of 'running', and
+        # sweep-1's reclaim — the only writer that acts on a running row
+        # this worker no longer owns — either terminalises or hands the
+        # job back, whose row at N is followed by a dispatch increment to
         # N+1 before any snooze caller can run again.  Two statements
         # racing on the same running row serialise on the row lock and
         # the loser's fence re-check finds status no longer 'running', so
-        # exactly one writer per (job, N) can ever commit.  The collision
-        # was attempted in a test and is unconstructible within a job's
-        # single attempt-number epoch, and the one cross-epoch revisitor
-        # is gone: retry_job keeps attempt monotonic (it raises the
-        # max_attempts ceiling instead of resetting the counter — see the
-        # retry_job template's comment).
+        # exactly one writer per (job, N) can ever commit.  The refund
+        # revisits attempt numbers, collision-safe for the same reason: a
+        # non-terminal snooze/denial writes no job_attempts rows, so no
+        # writer ever lands on the revisited keys.  The one cross-epoch
+        # revisitor is gone: retry_job keeps attempt monotonic (it raises
+        # the max_attempts ceiling instead of resetting the counter — see
+        # the retry_job template's comment).
         mark_snoozed=f"""\
 WITH params AS (
     SELECT $1::uuid AS job_id,
@@ -658,11 +639,13 @@ snoozed AS (
         last_heartbeat_at = NULL,
         cancel_phase = 0,
         cancel_requested_at = NULL,
-        -- 'unavailable' rides the 'snoozed' refund: the store's failure
-        -- to answer is not an execution, so the claim's attempt
-        -- increment is returned exactly as an actor-requested deferral
-        -- returns it.
-        attempt = CASE WHEN $7::text = 'snoozed' OR $9::text = 'unavailable' THEN GREATEST(j.attempt - 1, 0) ELSE j.attempt END,
+        -- Every arm of this statement refunds the claim's attempt
+        -- increment. An actor-requested deferral did not execute, and
+        -- neither did an admission denial: no handler ran, so nothing
+        -- may be charged to the budget the operator sized for real
+        -- runs. Charging denials would make how many real retries a job
+        -- gets depend on how saturated the bucket was while it waited.
+        attempt = GREATEST(j.attempt - 1, 0),
         snooze_count = CASE WHEN $7::text = 'snoozed' THEN j.snooze_count + 1 ELSE j.snooze_count END,
         rate_limit_blocked_count = CASE WHEN $7::text IN ('reservation_denied', 'rate_limit_denied') THEN j.rate_limit_blocked_count + 1 ELSE j.rate_limit_blocked_count END,
         metadata = j.metadata || COALESCE((SELECT metadata_update FROM params), '{{}}'::jsonb),
@@ -674,39 +657,7 @@ snoozed AS (
       AND j.attempt = (SELECT attempt FROM params)
       AND (j.schedule_to_close IS NULL
            OR clock_timestamp() + (SELECT effective_delay FROM params) <= j.schedule_to_close)
-      AND ($7::text = 'snoozed'
-           OR $9::text = 'unavailable'
-           OR j.retry_kind = 'indefinite'
-           OR j.attempt < j.max_attempts
-           OR j.schedule_to_close IS NOT NULL)
     RETURNING j.*, 'snoozed'::text AS outcome_branch, clock_timestamp() AS now_ts
-),
-max_attempts_failed AS (
-    UPDATE "{s}".jobs j
-    SET status = 'failed',
-        finished_at = clock_timestamp(),
-        error_class = 'MaxAttemptsExceeded',
-        error_message = 'retry budget exhausted',
-        error_traceback = NULL,
-        locked_by_worker = NULL,
-        lock_expires_at = NULL,
-        last_heartbeat_at = NULL,
-        progress_seq = (SELECT progress_seq FROM params),
-        progress_state = CASE WHEN (SELECT progress_state FROM params) IS NOT NULL THEN COALESCE(j.progress_state, '{{}}'::jsonb) || (SELECT progress_state FROM params) ELSE j.progress_state END
-    WHERE j.id = (SELECT job_id FROM params)
-      AND j.status = 'running'
-      AND j.locked_by_worker = (SELECT worker_id FROM params)
-      AND j.attempt = (SELECT attempt FROM params)
-      AND $7::text IN ('reservation_denied', 'rate_limit_denied')
-      -- An infra denial can never terminalise: the store's failure to
-      -- answer says nothing about the job, and MaxAttemptsExceeded
-      -- asserts the actor ran and failed max_attempts times.
-      AND $9::text <> 'unavailable'
-      AND j.retry_kind <> 'indefinite'
-      AND j.attempt >= j.max_attempts
-      AND j.schedule_to_close IS NULL
-      AND NOT EXISTS (SELECT 1 FROM snoozed)
-    RETURNING j.*, 'max_attempts_failed'::text AS outcome_branch, clock_timestamp() AS now_ts
 ),
 deadline_failed AS (
     UPDATE "{s}".jobs j
@@ -727,30 +678,10 @@ deadline_failed AS (
       AND j.schedule_to_close IS NOT NULL
       AND clock_timestamp() + (SELECT effective_delay FROM params) > j.schedule_to_close
       AND NOT EXISTS (SELECT 1 FROM snoozed)
-      AND NOT EXISTS (SELECT 1 FROM max_attempts_failed)
     RETURNING j.*, 'failed'::text AS outcome_branch, clock_timestamp() AS now_ts
 ),
 holder AS (
     SELECT id FROM "{s}".workers WHERE id = $2 FOR KEY SHARE
-),
-max_attempts_att AS (
-    INSERT INTO "{s}".job_attempts
-    (job_id, attempt, started_at, finished_at, outcome,
-     error_class, error_message, error_traceback, duration_ms, worker_id, metadata)
-    SELECT m.id, m.attempt, m.started_at, clock_timestamp(), 'failed',
-           'MaxAttemptsExceeded', 'retry budget exhausted', NULL,
-           trunc(EXTRACT(EPOCH FROM (m.finished_at - m.started_at)) * 1000)::int,
-           (SELECT id FROM holder), '{{}}'::jsonb
-    FROM max_attempts_failed m
-),
-max_attempts_evt AS (
-    INSERT INTO "{s}".job_events
-    (job_id, occurred_at, kind, detail)
-    SELECT m.id, clock_timestamp(), 'state_change',
-           jsonb_build_object('from_state', 'running', 'to_state', 'failed',
-                              'error_class', 'MaxAttemptsExceeded',
-                              'worker_id', $2::text)
-    FROM max_attempts_failed m
 ),
 deadline_att AS (
     INSERT INTO "{s}".job_attempts
@@ -772,7 +703,6 @@ deadline_evt AS (
     FROM deadline_failed d
 )
 SELECT * FROM snoozed
-UNION ALL SELECT * FROM max_attempts_failed
 UNION ALL SELECT * FROM deadline_failed""",
         mark_retry_after_consume_true=f"""\
 WITH params AS (
@@ -1311,7 +1241,21 @@ WITH retried AS (
         result_size_bytes = NULL,
         result_expires_at = NULL
     WHERE id = $1
-      AND status IN ('failed', 'crashed', 'cancelled')
+      -- An operator re-run is "run this again", so every state a job can
+      -- come to rest in is a valid source, including 'succeeded' (the
+      -- replay path after a bad deploy: the status records that the actor
+      -- returned without raising, never that the result was right) and
+      -- 'abandoned' (a deploy interrupted the job; it did not fail, and
+      -- it is the state most likely to need a manual re-run).
+      --
+      -- 'running' is the one exclusion, and it is a correctness
+      -- constraint rather than a policy choice: re-pending a row while
+      -- an attempt is live races that attempt's terminal write, and the
+      -- job can execute twice concurrently. The pending/scheduled states
+      -- are excluded because the job is already queued to run — there is
+      -- nothing to put back, and re-pending would discard its place in
+      -- the dispatch order and its remaining budget.
+      AND status NOT IN ('running', 'pending', 'scheduled')
       -- The retry must leave the row budget-eligible: the raised ceiling
       -- has to exceed the spent attempt. It always does except at the
       -- smallint bound (attempt = 32767), where raising is impossible --

@@ -91,7 +91,9 @@ def test_max_pending_lock_timeout_error_table_names_transactional_holder_cause()
     via ctx.jobs) is a distinct, currently-undocumented cause."""
     text = (_DOCS / "guides" / "jobs-clients.md").read_text()
     marker = "| `MaxPendingLockTimeoutError` |"
-    assert marker in text, "the MaxPendingLockTimeoutError error-table row has moved or been removed"
+    assert marker in text, (
+        "the MaxPendingLockTimeoutError error-table row has moved or been removed"
+    )
     row = text[text.index(marker) : text.index(marker) + 800]
 
     assert "too many concurrent producers, cap check never ran." not in row, (
