@@ -682,45 +682,6 @@ async def _handle_reservation_class_denied(
             delay_seconds=retry_after.total_seconds(),
         )
         return "scheduled"
-    elif tri == "failed:MaxAttemptsExceeded":
-        span.add_event(
-            "lifecycle.failed",
-            attributes={
-                "from_state": "running",
-                "to_state": "failed",
-                "error_class": "MaxAttemptsExceeded",
-                "bucket_name": e.bucket_name,
-            },
-        )
-        hook_row = await _post_write_row(backend, job)
-        _log_job_failed(
-            log,
-            job,
-            cause="MaxAttemptsExceeded",
-            error_class="MaxAttemptsExceeded",
-            bucket_name=e.bucket_name,
-        )
-        log_state_change(
-            log,
-            from_state="running",
-            to_state="failed",
-            cause="MaxAttemptsExceeded",
-            bucket_name=e.bucket_name,
-        )
-        await invoke_on_retry_exhausted(
-            actor_config.on_retry_exhausted,
-            hook_row,
-            RuntimeError("MaxAttemptsExceeded"),
-            actor_config.on_retry_exhausted_timeout,
-            log=log,
-        )
-        await invoke_error_reporter(
-            error_reporter,
-            hook_row,
-            RuntimeError("MaxAttemptsExceeded"),
-            log=log,
-        )
-        return "failed"
     elif tri == "failed":
         span.add_event(
             "lifecycle.failed",

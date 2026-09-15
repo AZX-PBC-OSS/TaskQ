@@ -176,6 +176,7 @@ from taskq.constants import (
     DEFAULT_EVENT_WRITER_BATCH_SIZE,
     DEFAULT_EVENT_WRITER_STATEMENT_TIMEOUT_MS,
     DEFAULT_KEYED_ROW_RECLAIM_BATCH_SIZE,
+    DEFAULT_MAX_RETRY_BACKOFF,
     DEFAULT_RECLAIM_POLL_LIMIT,
     RECLAIM_EVENT_VISIBILITY_DELAY,
     events_channel,
@@ -646,7 +647,7 @@ class PostgresBackend:
         outcome: SnoozeOutcome = "snoozed",
         attempt: int | None = None,
         denial_reason: DenialReason = "capacity",
-    ) -> Literal["scheduled", "failed", "failed:MaxAttemptsExceeded", "noop"]:
+    ) -> Literal["scheduled", "failed", "noop"]:
         return await _mark_snoozed(
             self._worker_pool,
             self._sql,
@@ -1063,6 +1064,10 @@ class PostgresBackend:
                     schema=self._schema_name,
                     batch_size=size,
                     statement_timeout_ms=timeout_ms,
+                    # The operator's global backoff ceiling reaches the
+                    # reclaim path here — the same value the consumer's
+                    # failure path hands compute_backoff.
+                    max_retry_backoff=self._deps.settings.max_retry_backoff,
                 ),
             )
 
@@ -1075,6 +1080,7 @@ class PostgresBackend:
         schema: str,
         batch_size: int = DEFAULT_EVENT_WRITER_BATCH_SIZE,
         statement_timeout_ms: int = DEFAULT_EVENT_WRITER_STATEMENT_TIMEOUT_MS,
+        max_retry_backoff: timedelta = DEFAULT_MAX_RETRY_BACKOFF,
     ) -> int:
         return await sweep_expired_locks(
             conn,
@@ -1083,6 +1089,7 @@ class PostgresBackend:
             schema=schema,
             batch_size=batch_size,
             statement_timeout_ms=statement_timeout_ms,
+            max_retry_backoff=max_retry_backoff,
         )
 
     @staticmethod

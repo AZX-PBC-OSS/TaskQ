@@ -24,6 +24,10 @@ from taskq.backend._sql import (
     build_heartbeat_sql,
     parse_rowcount,
 )
+from taskq.backend._sweeps import (  # pyright: ignore[reportPrivateUsage]  # Why: isolate and the reclaim sweep must decide a job's budget and its hand-back delay identically — one fragment, no second hand-maintained copy.
+    _RECLAIM_DELAY_SQL,
+    _RECLAIM_HAS_BUDGET_SQL,
+)
 from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining
 )
@@ -170,13 +174,31 @@ async def heartbeat_loop(
                 "heartbeat-tick-unexpected-error",
                 worker_id=str(worker_id),
             )
+        # The wait is anchored to the tick's START, not its end, so the
+        # beat cadence is the interval however long the tick took. A
+        # fixed post-tick sleep instead makes the cadence
+        # tick_duration + interval, and a tick may legitimately run for
+        # nearly a whole interval — the pool acquire above is bounded at
+        # exactly that. One slow or failed tick then stretches the gap
+        # between good beats to roughly twice the interval, which is the
+        # very sizing the ops guide calls the safe floor for a per-job
+        # heartbeat_timeout: the knob's own guidance would be unable to
+        # tolerate a single transient blip, and a worker that is alive,
+        # lease-valid and beating again would lose its job to the sweep.
+        # The heartbeat's promise to the reclaim arm is a beat every
+        # interval; this is where that promise is kept. A tick that
+        # overruns the interval waits zero and re-enters immediately,
+        # which is the correct urgency — it is already late — and cannot
+        # become a hot loop, because the next tick's own pool acquire is
+        # bounded at the interval and paces it.
+        remaining = max(0.0, interval - (time.monotonic() - tick_start))
         if cancel_wake_event is not None:
-            # Wait up to interval, but wake immediately on a cancel NOTIFY.
+            # Wait out the remainder, but wake immediately on a cancel NOTIFY.
             with contextlib.suppress(asyncio.TimeoutError):
-                await asyncio.wait_for(cancel_wake_event.wait(), timeout=interval)
+                await asyncio.wait_for(cancel_wake_event.wait(), timeout=remaining)
             cancel_wake_event.clear()
         else:
-            await asyncio.sleep(interval)
+            await asyncio.sleep(remaining)
 
 
 _SELECT_RUNNING_JOBS_SQL_TEMPLATE = (
@@ -197,7 +219,8 @@ _SELECT_RUNNING_JOBS_SQL_TEMPLATE = (
 # 'WorkerCrashed' — a heartbeat-lost worker may still be alive but
 # partitioned, while Sweep 1 assumes the worker is gone.
 
-# Branch-for-branch mirror of _sweeps.py's _SWEEP_1_SQL SET clause — the
+# Branch-for-branch mirror of _sweeps.py's _SWEEP_1_SQL SET clause,
+# sharing its budget predicate and hand-back delay verbatim — the
 # property test tests/test_leader_property.py asserts row-state
 # equivalence between this path and the sweep, so any branch change there
 # (cancel-state reset on retry, 'cancelled' label for an exhausted
@@ -212,12 +235,22 @@ _SELECT_RUNNING_JOBS_SQL_TEMPLATE = (
 # shutdown is not a crash-reclaim), so the visibility-delay
 # co-monotonicity motivation for clock_timestamp() does not apply — it is
 # kept anyway so the two templates stay structurally identical.
-_ISOLATE_JOB_SQL_TEMPLATE = """\
-UPDATE "{schema}".jobs
+#
+#: The statement is built as ONE constant: the literal with the sweep's
+#: shared fragments substituted by name (``str.replace``, not ``format``,
+#: so ``{schema}`` stays the only placeholder the caller renders).
+#: ``$3`` is the effective-cap ceiling (max_retry_backoff, seconds),
+#: this statement's third parameter after the job id and worker id — the
+#: sweep's shared delay fragment carries the placeholder as
+#: ``{max_backoff_seconds}`` precisely so each statement binds the index
+#: its own parameter layout assigns.
+_ISOLATE_JOB_SQL_TEMPLATE = (
+    """\
+UPDATE "{schema}".jobs j
 SET status = CASE
-        WHEN attempt < max_attempts AND retry_kind != 'non_retryable'
+        WHEN {has_budget}
             THEN 'pending'::"{schema}".job_status
-        WHEN cancel_phase != 0
+        WHEN j.cancel_phase != 0
             THEN 'cancelled'::"{schema}".job_status
         ELSE 'crashed'::"{schema}".job_status
     END,
@@ -226,16 +259,21 @@ SET status = CASE
     cancel_phase = 0,
     cancel_requested_at = NULL,
     scheduled_at = CASE
-        WHEN attempt < max_attempts AND retry_kind != 'non_retryable'
-            THEN clock_timestamp() + interval '5 seconds'
-        ELSE scheduled_at
+        WHEN {has_budget}
+            THEN clock_timestamp() + {reclaim_delay}
+        ELSE j.scheduled_at
     END,
     finished_at = CASE
-        WHEN NOT (attempt < max_attempts AND retry_kind != 'non_retryable')
+        WHEN NOT ({has_budget})
             THEN clock_timestamp()
-        ELSE finished_at
+        ELSE j.finished_at
     END
-WHERE id = $1 AND status = 'running' AND locked_by_worker = $2"""
+WHERE j.id = $1 AND j.status = 'running' AND j.locked_by_worker = $2""".replace(
+        "{has_budget}", _RECLAIM_HAS_BUDGET_SQL
+    )
+    .replace("{reclaim_delay}", _RECLAIM_DELAY_SQL)
+    .replace("{max_backoff_seconds}", "$3")
+)
 
 
 async def isolate_self(
@@ -252,6 +290,11 @@ async def isolate_self(
     select_running_jobs_sql = _SELECT_RUNNING_JOBS_SQL_TEMPLATE.format(schema=schema)
     isolate_job_sql = _ISOLATE_JOB_SQL_TEMPLATE.format(schema=schema)
     insert_attempt_sql = INSERT_ATTEMPT_SQL.format(schema=schema)
+    # The reclaim delay's effective ceiling, bound per statement — the
+    # same operator knob the sweep binds as its own parameter, so a
+    # heartbeat-lost hand-back lands on the same schedule the leader's
+    # reclaim would have stamped.
+    max_backoff_seconds = deps.settings.max_retry_backoff.total_seconds()
     jobs_pending_count = 0
     jobs_crashed_count = 0
     jobs_cancelled_count = 0
@@ -288,7 +331,9 @@ async def isolate_self(
                         # WHOLE transaction and collapses the isolation of
                         # rows that are still this worker's. Only the
                         # winner of the transition writes the attempt row.
-                        tag = await conn.execute(isolate_job_sql, row["id"], worker_id)
+                        tag = await conn.execute(
+                            isolate_job_sql, row["id"], worker_id, max_backoff_seconds
+                        )
                         if parse_rowcount(tag) == 0:
                             lost_race += 1
                             continue

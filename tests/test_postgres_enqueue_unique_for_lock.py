@@ -76,8 +76,18 @@ def _unique_for_args() -> object:
 
 
 def _inserted_record() -> dict[str, object]:
-    """A RETURNING * shaped record for the fake conn's INSERT arm."""
-    return asdict(make_job_row(status="pending", actor=_UNIQUE_FOR_ACTOR, identity_key=_IDENTITY))
+    """A RETURNING * shaped record for the fake conn's INSERT arm.
+
+    ``JobRow``'s retry-curve fields are typed ``timedelta`` (application
+    domain); the ``jobs`` row stores them as ``_seconds`` float columns
+    (see migration 01.00.12_03) and ``_job_row_from_record`` reads them by
+    that column name — the one field family ``asdict`` cannot shape
+    correctly for a RETURNING-* stand-in, so it is patched here.
+    """
+    row = asdict(make_job_row(status="pending", actor=_UNIQUE_FOR_ACTOR, identity_key=_IDENTITY))
+    row["retry_base_seconds"] = row.pop("retry_base").total_seconds()
+    row["retry_cap_seconds"] = row.pop("retry_cap").total_seconds()
+    return row
 
 
 class _NullSavepoint:

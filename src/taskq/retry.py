@@ -19,7 +19,14 @@ from typing import Final, Literal, NamedTuple, Protocol, Self
 from uuid import UUID
 
 import structlog
-from pydantic import BaseModel, ConfigDict, ValidationError, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
 from taskq.backend._protocol import Backend, ErrorInfo, JobId, JobRow, RetryKind
 from taskq.constants import DEFAULT_MAX_RETRY_BACKOFF, MIN_DEFERRAL_INTERVAL
@@ -280,12 +287,35 @@ class RetryOverride(BaseModel):
     duration instead of the policy's computed exponential/linear
     backoff, while ``max_retry_backoff`` still applies as a safety
     ceiling so a malicious or malformed header cannot strand a job.
+
+    A ``delay`` schedules the next attempt; it does not extend the job's
+    budget, in either dimension. It does not spare the attempt — the
+    retry still counts against ``max_attempts`` unless ``kind`` is also
+    set, or the actor raises ``RetryAfter(consume_budget=False)``. And it
+    does not move the job's ``schedule_to_close``: an upstream under
+    pressure will happily hand back an hour, and if the delay puts the
+    next attempt past that deadline the deadline sweep fails the job
+    terminally before any worker looks at it. ``max_retry_backoff`` does
+    not protect against this — the two bounds mean different things, one
+    stopping a single absurd delay and the other stating how long the
+    caller still wants the result — and where they disagree
+    schedule-to-close wins.
     """
 
     model_config = ConfigDict(frozen=True)
 
     kind: RetryKind | None = None
-    delay: timedelta | None = None
+    delay: timedelta | None = Field(
+        default=None,
+        description=(
+            "Delay before the next attempt, overriding the policy's computed "
+            "backoff. A delay alone does not spare the attempt budget: the "
+            "retry still counts against max_attempts unless kind is also set, "
+            "or the actor raises RetryAfter(consume_budget=False). Nor does it "
+            "extend schedule_to_close — a delay landing past that deadline "
+            "fails the job terminally."
+        ),
+    )
 
     @field_validator("delay")
     @classmethod

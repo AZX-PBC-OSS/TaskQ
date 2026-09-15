@@ -339,12 +339,24 @@ async def test_property_sweep_equivalence(
                 )
 
             isolate_sql = _ISOLATE_JOB_SQL_TEMPLATE.format(schema=schema)
-            await conn.execute(isolate_sql, job_id_a, worker_id_a)
+            # The reclaim delay's effective-cap ceiling — both statements
+            # bind the same operator knob so the equivalence comparison is
+            # between the two paths, not between two ceilings.
+            await conn.execute(
+                isolate_sql,
+                job_id_a,
+                worker_id_a,
+                deps.settings.max_retry_backoff.total_seconds(),
+            )
 
             pg_now_before = await conn.fetchval("SELECT clock_timestamp()")
             assert isinstance(pg_now_before, datetime)
             await PostgresBackend.sweep_expired_locks(
-                conn, cancel_grace, cleanup_grace, schema=schema
+                conn,
+                cancel_grace,
+                cleanup_grace,
+                schema=schema,
+                max_retry_backoff=deps.settings.max_retry_backoff,
             )
             pg_now_after = await conn.fetchval("SELECT clock_timestamp()")
             assert isinstance(pg_now_after, datetime)

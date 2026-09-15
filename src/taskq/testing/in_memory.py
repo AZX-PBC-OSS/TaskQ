@@ -67,6 +67,7 @@ from taskq.backend.statemachine import ACTIVE_STATUSES
 from taskq.constants import (
     DEFAULT_CHUNK_SIZE,
     DEFAULT_EVENT_WRITER_BATCH_SIZE,
+    DEFAULT_MAX_RETRY_BACKOFF,
     DEFAULT_RECLAIM_POLL_LIMIT,
     MAX_RESULT_BYTES,
 )
@@ -243,11 +244,17 @@ class InMemoryBackend:
         *,
         actor_configs: Iterable[ActorConfig] | None = None,
         result_max_bytes: int = MAX_RESULT_BYTES,
+        max_retry_backoff: timedelta = DEFAULT_MAX_RETRY_BACKOFF,
     ) -> None:
         self._clock = clock
         self._result_max_bytes = result_max_bytes
         self._cancellation_grace = cancellation_grace_period
         self._cleanup_grace = cleanup_grace_period
+        # The WorkerSettings.max_retry_backoff knob, carried the same way
+        # the grace knobs above are: the reclaim sweep twin clamps the
+        # reschedule delay at min(row cap, this ceiling), mirroring the
+        # PG sweep's bound parameter.
+        self._max_retry_backoff = max_retry_backoff
         self._worker_id: UUID = new_uuid()
         self._rng = rng
 
@@ -637,7 +644,7 @@ class InMemoryBackend:
         outcome: SnoozeOutcome = "snoozed",
         attempt: int | None = None,
         denial_reason: DenialReason = "capacity",
-    ) -> Literal["scheduled", "failed", "failed:MaxAttemptsExceeded", "noop"]:
+    ) -> Literal["scheduled", "failed", "noop"]:
         return await _mark_snoozed(
             self,
             job_id,
@@ -781,7 +788,17 @@ class InMemoryBackend:
 
     async def retry_job(self, job_id: JobId) -> bool:
         row = self._jobs.get(job_id)
-        if row is None or row.status not in ("failed", "crashed", "cancelled"):
+        # An operator re-run is "run this again", so every state a job can
+        # come to rest in is a valid source, including 'succeeded' (the
+        # replay path after a bad deploy) and 'abandoned' (a deploy
+        # interrupted the job; it did not fail). 'running' is the one
+        # exclusion, and it is a correctness constraint rather than a
+        # policy choice: re-pending a row while an attempt is live races
+        # that attempt's terminal write and the job can execute twice
+        # concurrently. 'pending'/'scheduled' are excluded because the job
+        # is already queued — there is nothing to put back, and re-pending
+        # would discard its place in the dispatch order.
+        if row is None or row.status in ("running", "pending", "scheduled"):
             return False
         # Monotonic attempt with the ceiling raised just enough to open
         # the budget gates, mirroring the PG statement's

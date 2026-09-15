@@ -438,6 +438,7 @@ async def run_explain(backend: PostgresBackend, n_seed: int) -> list[str]:
             QUEUE,
         )
         from taskq.backend._sweeps import _SWEEP_1_SQL, _SWEEP_3_SQL
+        from taskq.constants import DEFAULT_MAX_RETRY_BACKOFF
 
         out += await explain_conn(
             conn,
@@ -473,6 +474,7 @@ async def run_explain(backend: PostgresBackend, n_seed: int) -> list[str]:
             timedelta(seconds=0),
             timedelta(seconds=0),
             100,
+            DEFAULT_MAX_RETRY_BACKOFF.total_seconds(),
         )
 
     return out

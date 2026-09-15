@@ -5,7 +5,7 @@ live apart from :class:`~taskq.backend.postgres.PostgresBackend` for
 reuse (e.g. the rate-limit modules) and unit testing.
 """
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Literal
 
 from taskq._json import NUL_JSONB_ERROR, dumps_jsonb_str, loads
@@ -187,6 +187,10 @@ def _job_row_from_record(rec: "asyncpg.Record") -> JobRow:
         snooze_count=rec["snooze_count"],
         rate_limit_blocked_count=rec["rate_limit_blocked_count"],
         interrupt_count=rec["interrupt_count"],
+        retry_base=timedelta(seconds=rec["retry_base_seconds"]),
+        retry_cap=timedelta(seconds=rec["retry_cap_seconds"]),
+        retry_backoff=rec["retry_backoff"],  # type: ignore[arg-type]  # Why: DB text column; domain is CHECK-constrained to the Literal's values
+        retry_jitter=rec["retry_jitter"],
     )
 
 

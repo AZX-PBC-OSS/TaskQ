@@ -82,6 +82,7 @@ from taskq.constants import (
     DEFAULT_CHUNK_SIZE,
     DEFAULT_EVENT_WRITER_BATCH_SIZE,
     DEFAULT_EVENT_WRITER_STATEMENT_TIMEOUT_MS,
+    DEFAULT_MAX_RETRY_BACKOFF,
     MAX_RESULT_BYTES,
     RECLAIM_EVENT_VISIBILITY_DELAY,
     progress_channel,
@@ -270,6 +271,11 @@ class _ClientSettings:
     max_pending_lock_timeout_ms: float = 5000.0
     unique_for_lock_timeout_ms: float = 5000.0
     idempotency_lock_timeout_ms: float = 5000.0
+    # The reclaim sweep's backoff ceiling, declared on BackendSettings: a
+    # client-built backend that runs the sweep binds this as the delay
+    # clamp's $N. The default mirrors WorkerSettings' (24 h), so a
+    # client-built backend behaves exactly as an unconfigured worker would.
+    max_retry_backoff: timedelta = DEFAULT_MAX_RETRY_BACKOFF
 
 
 @dataclass(slots=True)

@@ -340,10 +340,16 @@ constant at import time, the same pattern `PostgresBackend` and
 `InMemoryBackend` use (`_EXPECTED_PROTOCOL_VERSION` + `RuntimeError`), so a
 contract bump fails fast instead of drifting silently.
 
-`retry_job` resets a terminal job (`failed`, `crashed`, or `cancelled`) back to
-`pending` so it can be re-dispatched. Returns `True` if the job was retried,
-`False` if it was not in a retryable state. The admin UI exposes this via the
-`POST /jobs/{job_id}/retry` endpoint.
+`retry_job` puts a job that has come to rest back to `pending` so it can be
+re-dispatched. Every resting state is a valid source — `failed`, `crashed`,
+`cancelled`, `abandoned` and `succeeded` — because an operator re-run means
+"run this again": `succeeded` records that the actor returned without raising,
+not that the result was right, and `abandoned` means a deploy interrupted the
+job. A `running` job is refused, because re-pending a row while an attempt is
+live races that attempt's terminal write and the job could execute twice; a
+`pending` or `scheduled` job is refused because it is already queued to run.
+Returns `True` if the job was retried, `False` otherwise. The admin UI exposes
+this via the `POST /jobs/{job_id}/retry` endpoint.
 
 `subscribe_cancel_wake` is the cancel-signal analogue of `subscribe_wake`: it
 yields an `asyncio.Event` that is set whenever a cancel NOTIFY arrives, allowing
@@ -432,6 +438,21 @@ additionally writes a fleet-wide-pollable `job_events` outbox row in the same
 transaction as the reclaim UPDATE.  Consumers observe crash-reclaimed jobs via
 `Backend.poll_reclaim_events(after_id)` or `TaskQ.watch_reclaims(after_id)`
 without enumerating every `job_id`.
+
+A `running → pending` reclaim (crash or heartbeat) reschedules through the
+job's own `RetryPolicy` — base, cap, backoff kind and jitter — exactly as an
+application-level failure does, not a hardcoded flat interval, and clamped at
+the same effective cap: the lesser of the policy's `cap` and the operator's
+`TASKQ_MAX_RETRY_BACKOFF` ceiling (24 h default). The sweep
+runs on a leader that need not host the crashed job's actor at all, so the
+curve cannot be read from a live registration; instead it is stamped onto
+the row at enqueue time (`retry_base_seconds` / `retry_cap_seconds` /
+`retry_backoff` / `retry_jitter`, migration
+`01.00.12_03_pre_reclaim_retry_policy.sql`) from the enqueuing client's
+`ActorRef.retry`, the same way `max_attempts` and `retry_kind` already are.
+Jitter is evaluated per row, so a fleet-wide event that reclaims a whole
+cohort at once spreads their `scheduled_at` across a band instead of
+stamping every row with the same instant.
 
 Delivery is **at-least-once, and gap-free under a bounded-transaction-duration
 assumption** — not an unconditional guarantee. `job_events.id` (`bigserial`)
