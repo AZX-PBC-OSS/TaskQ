@@ -856,6 +856,10 @@ async def _enqueue_on_conn(
                 args.result_ttl,
                 list(args.tags),
                 args.schedule_to_close,
+                args.retry_base.total_seconds(),
+                args.retry_cap.total_seconds(),
+                args.retry_backoff,
+                args.retry_jitter,
             )
             if idempotency_bounded_wait:
                 # Restore before the savepoint's RELEASE — see above. The
@@ -1161,6 +1165,10 @@ async def _enqueue_batch(
     span_ids: list[str | None] = []
     result_ttls: list[timedelta | None] = []
     tag_jsons: list[str] = []
+    retry_bases: list[float] = []
+    retry_caps: list[float] = []
+    retry_backoffs: list[str] = []
+    retry_jitters: list[float] = []
 
     # Why annotate per item during the build: this loop serializes every
     # item BEFORE any SQL runs, so the first NUL-bearing item aborts the
@@ -1221,6 +1229,10 @@ async def _enqueue_batch(
         # dumps_jsonb_str wrapper guards it before the value ever reaches
         # Postgres.
         tag_jsons.append(item_tags_jsonb_param(args.tags, idx=index_base + idx, actor=args.actor))
+        retry_bases.append(args.retry_base.total_seconds())
+        retry_caps.append(args.retry_cap.total_seconds())
+        retry_backoffs.append(args.retry_backoff)
+        retry_jitters.append(args.retry_jitter)
 
     async def _insert_on_conn(
         conn: ConnLike,
@@ -1283,7 +1295,8 @@ async def _enqueue_batch(
         # refusals): the filter is skipped entirely and the arrays alias
         # through unchanged — the partition costs the common case nothing.
         # Order matches sql.enqueue_batch's binding order exactly (scopes
-        # before keys, stc_raws last).
+        # before keys, stc_raws last, the retry-curve scalars appended
+        # after it).
         insert_cols: list[list[Any]] = [
             ids,
             actors,
@@ -1307,6 +1320,10 @@ async def _enqueue_batch(
             result_ttls,
             tag_jsons,
             stc_raws,
+            retry_bases,
+            retry_caps,
+            retry_backoffs,
+            retry_jitters,
         ]
         if refusals:
             keep = [i for i, a in enumerate(args_list) if a.actor not in refused_names]
@@ -1593,6 +1610,10 @@ async def _enqueue_batch_fast(
                     args.metadata, idx=index_base + idx, field="metadata", actor=args.actor
                 ),
                 list(args.tags),
+                args.retry_base.total_seconds(),
+                args.retry_cap.total_seconds(),
+                args.retry_backoff,
+                args.retry_jitter,
             )
         )
 

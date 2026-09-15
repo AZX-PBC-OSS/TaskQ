@@ -29,14 +29,17 @@ Postgres does not apply.
 
 A note on what the contract requires of the schema. The reclaim statements run
 entirely inside Postgres, on a leader worker that need not host the crashed
-job's actor at all, and neither ``jobs`` nor ``actor_config`` stores the
-backoff curve today: ``RetryPolicy`` lives in the worker process, and
-``EnqueueArgs`` carries only ``retry_kind`` and ``max_attempts``. So satisfying
-these tests means giving the reclaim path a source for the curve — persisting
-it per job at enqueue, or per actor on ``actor_config`` — which is a schema
-change, not a call-site change. The tests deliberately assert the observable
-outcome (the delay, and its spread across a cohort) rather than any particular
-storage, so whichever source is chosen they keep holding.
+job's actor at all, so ``RetryPolicy`` living only in the worker process (as
+it did before this fix) left reclaim with no source for the curve. The
+``jobs`` row now stamps it: ``retry_base_seconds`` / ``retry_cap_seconds`` /
+``retry_backoff`` / ``retry_jitter`` (migration
+``01.00.12_03_pre_reclaim_retry_policy.sql``), populated from the enqueuing
+client's live ``ActorRef.retry`` exactly as ``max_attempts`` and
+``retry_kind`` already were (``taskq.client._args``), and exposed on
+``EnqueueArgs`` for direct-backend callers such as this test. The tests
+deliberately assert the observable outcome (the delay, and its spread across
+a cohort) rather than the storage mechanism, so a future change of source
+keeps them holding as long as the row is still where reclaim reads it.
 """
 
 from dataclasses import replace
@@ -49,6 +52,7 @@ from taskq._ids import new_job_id, new_uuid
 from taskq.backend import Backend, EnqueueArgs
 from taskq.backend._protocol import JobId
 from taskq.backend.postgres import PostgresBackend
+from taskq.constants import DEFAULT_MAX_RETRY_BACKOFF
 from taskq.retry import RetryPolicy, compute_backoff
 from taskq.testing.in_memory import InMemoryBackend
 
@@ -73,6 +77,23 @@ _PROTECTIVE_POLICY = RetryPolicy(
 #: message can tell an operator what they are actually getting.
 _FLAT_RECLAIM_DELAY = timedelta(seconds=5)
 
+#: A policy whose cap sits above the operator's global backoff ceiling. With
+#: ``backoff='fixed'`` the curve is flat at base, so every jitter draw lands
+#: above the ceiling and the clamp — not the draw — decides the stamped
+#: delay, deterministically.
+_WIDE_POLICY = RetryPolicy(
+    backoff="fixed",
+    base=timedelta(days=3),
+    cap=timedelta(days=7),
+    jitter=0.2,
+    max_attempts=5,
+)
+
+#: Slack for the gap between the test's clock read and the sweep's own
+#: clock_timestamp() — orders of magnitude below the multi-day miss a
+#: missing clamp produces, so the band stays decisive.
+_CLOCK_GAP_SLACK = timedelta(seconds=30)
+
 
 async def _worker_of(backend: Backend) -> UUID:
     """A worker id that exists in the backend's ``workers`` table."""
@@ -93,7 +114,9 @@ async def _worker_of(backend: Backend) -> UUID:
     return worker_id
 
 
-async def _enqueue(backend: Backend, *, max_attempts: int = 5) -> JobId:
+async def _enqueue(
+    backend: Backend, *, max_attempts: int = 5, policy: RetryPolicy = _PROTECTIVE_POLICY
+) -> JobId:
     job_id = new_job_id()
     await backend.enqueue(
         EnqueueArgs(
@@ -104,6 +127,14 @@ async def _enqueue(backend: Backend, *, max_attempts: int = 5) -> JobId:
             max_attempts=max_attempts,
             retry_kind="transient",
             scheduled_at=_START,
+            # The retry-curve scalars a real enqueue stamps from the
+            # actor's live ActorRef (taskq.client._args) — see this
+            # module's docstring on why the reclaim contract requires a
+            # source for the curve on the row itself.
+            retry_base=policy.base,
+            retry_cap=policy.cap,
+            retry_backoff=policy.backoff,
+            retry_jitter=policy.jitter,
         )
     )
     return job_id
@@ -277,4 +308,81 @@ async def test_reclaim_jitters_a_cohort_reclaimed_together(
         f"jitter (±{band}) precisely to spread this, and the reclaim path is the "
         f"one path that ignores it — it stamps a flat {_FLAT_RECLAIM_DELAY} on "
         f"every row"
+    )
+
+
+async def test_reclaim_delay_is_capped_by_the_global_backoff_ceiling(
+    backend_pair: Backend,
+) -> None:
+    """A policy cap above the operator ceiling does not carry a reclaim past it.
+
+    The failure path clamps every retry delay at ``min(policy.cap,
+    max_retry_backoff)`` — 24 hours at the default
+    (``WorkerSettings.max_retry_backoff``). Crash/heartbeat reclaim is the
+    same rescheduling decision and must clamp at the same value on both
+    backends: a row stamped with a multi-day cap otherwise comes back days
+    later on Postgres while the in-memory twin says hours — the twin
+    certifying a delay Postgres never applies.
+    """
+    worker_id = await _worker_of(backend_pair)
+    job_id = await _enqueue(backend_pair, policy=_WIDE_POLICY)
+    await _claim(backend_pair, job_id, worker_id)
+
+    delay = await _reclaim_delay(backend_pair, job_id)
+
+    assert delay >= DEFAULT_MAX_RETRY_BACKOFF, (
+        f"a crash-reclaimed job was rescheduled {delay} out, under the "
+        f"{DEFAULT_MAX_RETRY_BACKOFF} ceiling: with a policy whose every "
+        "jitter draw exceeds the ceiling, the clamp — not a smaller value — "
+        "must decide the delay"
+    )
+    assert delay <= DEFAULT_MAX_RETRY_BACKOFF + _CLOCK_GAP_SLACK, (
+        f"a crash-reclaimed job with retry_cap={_WIDE_POLICY.cap} was "
+        f"rescheduled {delay} out, past the {DEFAULT_MAX_RETRY_BACKOFF} "
+        "operator ceiling. The failure path clamps at min(policy.cap, "
+        "max_retry_backoff); reclaim must apply the same effective cap or an "
+        "actor's multi-day cap strands reclaimed jobs for days"
+    )
+
+
+async def test_reclaim_delay_honours_a_non_default_backoff_ceiling(
+    backend_pair: Backend,
+) -> None:
+    """The operator's configured ``max_retry_backoff`` — not a hardcoded
+    constant — is the ceiling reclaim applies.
+
+    A smaller operator ceiling tightens the clamp on both backends; this is
+    what stops a misconfigured per-actor cap from stranding reclaimed jobs
+    past the fleet's own bound.
+    """
+    ceiling = timedelta(hours=2)
+    if isinstance(backend_pair, InMemoryBackend):
+        # Why: the twin's WorkerSettings-knob seam is its constructor, which
+        # the shared fixture owns; the sweep reads the value per call, so
+        # setting it before the call is the same wiring a configured twin
+        # has.
+        backend_pair._max_retry_backoff = ceiling  # pyright: ignore[reportPrivateUsage]
+    else:
+        assert isinstance(backend_pair, PostgresBackend)
+        # Why: the operator knob lives on WorkerSettings inside the backend's
+        # deps, and the sweep reads it per call — the same seam the suite's
+        # interval-shrinking tests use.
+        backend_pair._deps.settings.max_retry_backoff = ceiling  # pyright: ignore[reportPrivateUsage]
+    worker_id = await _worker_of(backend_pair)
+    job_id = await _enqueue(backend_pair, policy=_WIDE_POLICY)
+    await _claim(backend_pair, job_id, worker_id)
+
+    delay = await _reclaim_delay(backend_pair, job_id)
+
+    assert delay >= ceiling, (
+        f"a crash-reclaimed job was rescheduled {delay} out, under the "
+        f"operator's configured {ceiling} ceiling: with a policy whose every "
+        "jitter draw exceeds the ceiling, the clamp — not a smaller value — "
+        "must decide the delay"
+    )
+    assert delay <= ceiling + _CLOCK_GAP_SLACK, (
+        f"a crash-reclaimed job was rescheduled {delay} out under an "
+        f"operator-configured max_retry_backoff of {ceiling} — the reclaim "
+        "path kept the 24 h default (or the policy cap) instead of the "
+        "configured ceiling, so the knob does not reach the sweep"
     )

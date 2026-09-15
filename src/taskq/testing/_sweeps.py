@@ -33,6 +33,7 @@ from taskq.backend._sweeps import (  # pyright: ignore[reportPrivateUsage]  # Wh
 )
 from taskq.constants import DEFAULT_EVENT_WRITER_BATCH_SIZE
 from taskq.obs import record_deadline_exceeded_swept
+from taskq.retry import RetryPolicy, compute_backoff
 
 if TYPE_CHECKING:
     from taskq.testing.in_memory import InMemoryBackend
@@ -216,9 +217,18 @@ async def _reclaim_expired_locks(
         # carries no heartbeat_timeout / no heartbeat yet (NULL +
         # interval is NULL in PG; the ternary's guard mirrors that
         # None-propagation for the arithmetic below).
+        # A non-positive stored timeout is inert, mirroring the SQL's
+        # `heartbeat_timeout > interval '0'`: enqueue validation refuses
+        # one but it is the only gate and the column carries no CHECK, so
+        # a direct write can leave a zero or negative interval behind,
+        # and with one the deadline is already past the instant the row
+        # is written — a healthy holder beating right now would be
+        # reclaimed as a false crash. The lease governs instead.
         heartbeat_deadline: datetime | None = (
             row.last_heartbeat_at + row.heartbeat_timeout
-            if row.last_heartbeat_at is not None and row.heartbeat_timeout is not None
+            if row.last_heartbeat_at is not None
+            and row.heartbeat_timeout is not None
+            and row.heartbeat_timeout > timedelta(0)
             else None
         )
         # One if/elif, conjuncts ordered so each None-guard precedes the
@@ -276,8 +286,44 @@ async def _reclaim_expired_locks(
         )
         self._attempts.setdefault(job_id, []).append(attempt_row)
 
-        if row.attempt < row.max_attempts and row.retry_kind != "non_retryable":
-            new_scheduled = now + timedelta(seconds=5)
+        # The same budget question the SQL asks (see
+        # _sweeps._RECLAIM_HAS_BUDGET_SQL): 'indefinite' has no attempt
+        # ceiling — its schedule_to_close deadline is its budget — while
+        # every other kind is bounded by max_attempts, and
+        # 'non_retryable' has no second attempt at all.
+        if row.retry_kind == "indefinite" or (
+            row.attempt < row.max_attempts and row.retry_kind != "non_retryable"
+        ):
+            # The row's own stamped RetryPolicy curve, mirroring
+            # _RECLAIM_RAW_BACKOFF_SQL / _RECLAIM_DELAY_SQL exactly:
+            # compute_backoff is the single implementation every other
+            # retry path (failure, Retry-After, snooze) shares, so this
+            # is the SAME curve a live actor's failure backoff would
+            # produce for this attempt — jittered per row, mirroring the
+            # SQL's per-row random(): a fleet-wide event hands a whole
+            # cohort back at once, and one instant for all of them would
+            # land on the recovering fleet as a synchronised wave. The
+            # ceiling is the operator's max_retry_backoff, the value the
+            # PG statement binds as its {max_backoff_seconds} parameter —
+            # min(row cap, ceiling) on both sides.
+            row_policy = RetryPolicy(
+                backoff=row.retry_backoff,
+                base=row.retry_base,
+                cap=row.retry_cap,
+                jitter=row.retry_jitter,
+            )
+            # compute_backoff requires attempt >= 1 (its own domain is
+            # 1-indexed); a running row with attempt=0 is reachable only by
+            # direct construction (dispatch always stamps attempt >= 1 —
+            # see _dispatch_sql.py's `attempt = j.attempt + 1`), the same
+            # "direct-SQL-reachable, not production-reachable" class the
+            # heartbeat arm's NULL last_heartbeat_at guard documents. The
+            # SQL side floors the exponent at GREATEST(attempt - 1, 0)
+            # rather than raising, so attempt=0 mirrors attempt=1's curve
+            # here too instead of crashing the sweep.
+            new_scheduled = now + compute_backoff(
+                row_policy, max(row.attempt, 1), max_retry_backoff=self._max_retry_backoff
+            )
             self._jobs[job_id] = replace(
                 row,
                 status="pending",

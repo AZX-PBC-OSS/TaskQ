@@ -24,7 +24,7 @@ import pytest
 import structlog
 
 from taskq.backend.postgres import _SWEEP_1_SQL
-from taskq.constants import DEFAULT_EVENT_WRITER_BATCH_SIZE
+from taskq.constants import DEFAULT_EVENT_WRITER_BATCH_SIZE, DEFAULT_MAX_RETRY_BACKOFF
 from taskq.testing.assertions import assert_job_status
 from taskq.testing.fixtures import ModulePgSchema
 from taskq.testing.pg import create_running_job, reset_schema, setup_running_job
@@ -372,13 +372,16 @@ async def test_sweep1_consistency(module_pg_schema: ModulePgSchema) -> None:
             )
 
             # Third argument is the sweep's batch cap (LIMIT $3), added when
-            # the sweep was bounded; the production default bound is used so
-            # this direct-SQL drive mirrors what the sweep loop executes.
+            # the sweep was bounded; the fourth is the reclaim delay's
+            # effective-cap ceiling ($4, max_retry_backoff in seconds). The
+            # production defaults are used so this direct-SQL drive mirrors
+            # what the sweep loop executes.
             await conn.execute(
                 _SWEEP_1_SQL.format(schema=schema),
                 timedelta(seconds=30),
                 timedelta(seconds=30),
                 DEFAULT_EVENT_WRITER_BATCH_SIZE,
+                DEFAULT_MAX_RETRY_BACKOFF.total_seconds(),
             )
 
             row = await conn.fetchrow(

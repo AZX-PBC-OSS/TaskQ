@@ -217,6 +217,12 @@ def _job_row(
         # just that the DDL accepts them.
         "snooze_count": i % 5,
         "rate_limit_blocked_count": i % 3,
+        # Retry-curve columns (01.00.12_03): deterministic non-default
+        # values, same round-trip rationale as the counters above.
+        "retry_base_seconds": 1.0 + (i % 10),
+        "retry_cap_seconds": 3600.0 + (i % 10),
+        "retry_backoff": ("exponential", "linear", "fixed")[i % 3],
+        "retry_jitter": (i % 5) / 10.0,
     }
 
 

@@ -565,6 +565,17 @@ class EnqueueArgs:
     unique_states: tuple[JobStatus, ...] = ("pending", "scheduled", "running")
     metadata: dict[str, object] = field(default_factory=dict[str, object])
     tags: tuple[str, ...] = ()
+    # RetryPolicy's backoff-curve scalars, stamped from the actor's live
+    # registration at enqueue time (taskq.client._args builds this from
+    # ``ref.retry``). Crash/heartbeat reclaim reads these columns to
+    # reschedule on the job's own curve instead of a hardcoded flat
+    # interval — the reclaim sweep runs on a leader that need not have
+    # the actor registered at all, so the row is the only source it can
+    # reach. Defaults reproduce RetryPolicy's own field defaults.
+    retry_base: timedelta = timedelta(seconds=5)
+    retry_cap: timedelta = timedelta(hours=1)
+    retry_backoff: Literal["exponential", "linear", "fixed"] = "exponential"
+    retry_jitter: float = 0.2
 
     def __post_init__(self) -> None:
         if self.schedule_to_close is not None and self.schedule_to_close_interval is not None:
@@ -692,6 +703,18 @@ class JobRow:
     since enqueue.  Trailing default: rows materialised before the
     counters existed read 0.
     """
+    retry_base: timedelta = timedelta(seconds=5)
+    """``RetryPolicy.base`` stamped at enqueue time — the source crash
+    and heartbeat reclaim read to reschedule on this job's own curve.
+    Trailing default: rows materialised before the column existed read
+    ``RetryPolicy``'s own default.
+    """
+    retry_cap: timedelta = timedelta(hours=1)
+    """``RetryPolicy.cap`` stamped at enqueue time."""
+    retry_backoff: Literal["exponential", "linear", "fixed"] = "exponential"
+    """``RetryPolicy.backoff`` stamped at enqueue time."""
+    retry_jitter: float = 0.2
+    """``RetryPolicy.jitter`` stamped at enqueue time."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -1269,6 +1292,11 @@ class BackendSettings(Protocol):
     # speculative-lock conflict on the single-enqueue path; default
     # DEFAULT_IDEMPOTENCY_LOCK_TIMEOUT_MS (5 s).
     idempotency_lock_timeout_ms: float
+    # Global ceiling on one attempt's backoff, applied by the reclaim
+    # sweep's reschedule (min of the row's stamped cap and this value);
+    # default DEFAULT_MAX_RETRY_BACKOFF (24 h). Read where the sweep's
+    # $4 ceiling parameter is bound.
+    max_retry_backoff: timedelta
 
 
 @runtime_checkable
@@ -1630,7 +1658,7 @@ class Backend(Protocol):
         outcome: SnoozeOutcome = "snoozed",
         attempt: int | None = None,
         denial_reason: DenialReason = "capacity",
-    ) -> Literal["scheduled", "failed", "failed:MaxAttemptsExceeded", "noop"]:
+    ) -> Literal["scheduled", "failed", "noop"]:
         """Release a running job back to the queue without consuming retry
         budget.
 
@@ -1653,24 +1681,16 @@ class Backend(Protocol):
         deferral reschedules at least that far out, so a zero delay
         cannot park the job at the head of the dispatch order.
 
-        *denial_reason* discriminates the two causes of a denial-class
-        outcome (:data:`DenialReason`) and binds the non-consuming arm:
-        ``"capacity"`` (the default) is a real saturation denial — the
-        store answered "full" — and the retry budget still bounds the
-        loop below.  ``"unavailable"`` is the store failing to answer —
-        infrastructure backpressure about a job whose actor never ran —
-        so the claim's attempt increment is refunded (exactly the way
-        the ``snoozed`` arm refunds it) and no terminal arm can fire:
-        the job stays retryable across a sustained outage and keeps its
-        original budget when the store returns.
-
-        The retry budget still bounds the loop for ``"capacity"``
-        denials: a non-``indefinite`` job at ``attempt >= max_attempts``
-        with no ``schedule_to_close`` fails terminally
-        (``"failed:MaxAttemptsExceeded"``) instead of rescheduling
-        forever; a job carrying ``schedule_to_close`` reschedules until
-        its deadline (``"failed"``, ``DeadlineExceeded``); an
-        ``indefinite`` job reschedules by explicit policy.
+        No outcome here spends retry budget: every one of them refunds
+        the claim's attempt increment, because in none of them did a
+        handler run.  An admission denial — whether the store answered
+        "full" (*denial_reason* ``"capacity"``) or failed to answer
+        (``"unavailable"``) — is the queue's own "come back later", so
+        charging it would make how many real retries a job gets depend
+        on how saturated the bucket was while the job waited.  The one
+        terminal exit is the caller's own deadline: a reschedule point
+        past ``schedule_to_close`` returns ``"failed"``
+        (``DeadlineExceeded``).
         """
         ...
 
@@ -1762,7 +1782,19 @@ class Backend(Protocol):
 
     # ── Admin operations ──────────────────────────────────────────────
     async def retry_job(self, job_id: JobId) -> bool:
-        """Re-run a terminal job (failed/crashed/cancelled) by re-pending it.
+        """Re-run a job that has come to rest, by re-pending it.
+
+        An operator re-run is "run this again", so every terminal status
+        is a valid source: ``failed``/``crashed``/``cancelled``, and also
+        ``succeeded`` (the replay path after a bad deploy — the status
+        records that the actor returned, never that its side effects were
+        right) and ``abandoned`` (an infrastructure interruption, not a
+        failure). ``running`` is excluded on correctness grounds:
+        re-pending a row while an attempt is live races that attempt's
+        terminal write and the job can execute twice concurrently.
+        ``pending``/``scheduled`` are excluded because the job is already
+        queued — there is nothing to put back, and re-pending would
+        discard its place in the dispatch order.
 
         The attempt counter is NOT reset: an idempotent admin operation
         must not restart the counter, so a re-run job climbs to fresh

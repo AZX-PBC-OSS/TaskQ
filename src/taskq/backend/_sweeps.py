@@ -118,6 +118,7 @@ from taskq.constants import (
     DEFAULT_EVENT_WRITER_BATCH_SIZE,
     DEFAULT_EVENT_WRITER_STATEMENT_TIMEOUT_MS,
     DEFAULT_KEYED_ROW_RECLAIM_BATCH_SIZE,
+    DEFAULT_MAX_RETRY_BACKOFF,
     RECLAIM_OUTBOX_RETENTION_MULTIPLIER,
     wake_channel,
 )
@@ -154,7 +155,92 @@ logger: structlog.stdlib.BoundLogger = get_logger(__name__)
 # atomically via WHERE status='running', which is the single-source guard
 # that the transition is valid.
 
-_SWEEP_1_SQL = """\
+_RECLAIM_HAS_BUDGET_SQL = "(j.retry_kind = 'indefinite' OR (j.attempt < j.max_attempts AND j.retry_kind != 'non_retryable'))"
+"""Whether a reclaimed job still has an attempt to give.
+
+The same budget dimensions every other retry arbiter reads (see the
+``mark_snoozed`` / ``mark_failed_or_retry`` templates): ``indefinite`` has
+no attempt ceiling — its ``schedule_to_close`` deadline is its budget, and
+the deadline sweep is what ends it — while every other kind is bounded by
+``max_attempts``, and ``non_retryable`` has no second attempt at all.
+
+Held as one fragment because the reclaim statement asks the same question
+three times (which status to write, whether to reschedule, whether to
+stamp a finish), and three hand-maintained copies is how the
+``indefinite`` kind came to match none of them."""
+
+# The exponent clamp mirrors taskq.retry.compute_backoff's
+# _MAX_BACKOFF_EXPONENT exactly (see that module's comment for the
+# derivation: 2.0 ** 1023 is the largest power of two a float holds, and
+# already dwarfs every practical cap, so clamping the exponent cannot
+# change the curve). Postgres' `^` on double precision does not raise on
+# overflow the way Python's int ** would — it saturates at the domain's
+# Infinity — but the clamp keeps the SQL expression a literal mirror of
+# the Python one rather than relying on that IEEE-754 behaviour to agree
+# across two implementations.
+_RECLAIM_BACKOFF_MAX_EXPONENT_SQL = "1023"
+
+# The effective ceiling every clamp in the curve reads: the lesser of the
+# row's stamped cap and the operator's global ``max_retry_backoff`` — the
+# same ``min(policy.cap, max_retry_backoff)`` compute_backoff applies on
+# the failure path. Held as one fragment so the three clamp sites (the
+# exponential and linear arms' raw clamps, and the final post-jitter
+# clamp) cannot drift on what "the cap" is. ``{max_backoff_seconds}`` is
+# a named placeholder, not a ``$N``: the two statements embedding it (the
+# reclaim sweep and the heartbeat isolate) carry different parameter
+# layouts, so each binds the index its own layout assigns at the same
+# place it binds the other shared fragments.
+_RECLAIM_EFFECTIVE_CAP_SQL = "LEAST(j.retry_cap_seconds, {max_backoff_seconds}::float8)"
+
+# raw_seconds: the unjittered curve value for this row's (base, cap,
+# backoff, attempt) — byte-for-byte the same three-way branch and
+# LEAST(effective-cap, ...) clamp compute_backoff applies for
+# attempt=j.attempt (a reclaimed row's attempt is the CURRENT,
+# not-yet-refunded claim dispatch stamped, 1-indexed the same as
+# compute_backoff's parameter — see mark_failed_or_retry's call site).
+# Only the exponential arm's EXPONENT is attempt-1 (compute_backoff:
+# ``2.0 ** min(attempt - 1, _MAX_BACKOFF_EXPONENT)``); the linear arm
+# multiplies by attempt itself (``base_s * attempt``), not attempt-1 —
+# the GREATEST(j.attempt - 1, 0) clamp below applies ONLY to the
+# exponent, matching that asymmetry exactly.
+_RECLAIM_RAW_BACKOFF_SQL = (
+    "(CASE j.retry_backoff "
+    f"WHEN 'exponential' THEN LEAST({_RECLAIM_EFFECTIVE_CAP_SQL}, "
+    "j.retry_base_seconds * power(2.0, LEAST(GREATEST(j.attempt - 1, 0), "
+    f"{_RECLAIM_BACKOFF_MAX_EXPONENT_SQL}))) "
+    f"WHEN 'linear' THEN LEAST({_RECLAIM_EFFECTIVE_CAP_SQL}, "
+    "j.retry_base_seconds * j.attempt) "
+    "ELSE j.retry_base_seconds "
+    "END)"
+)
+"""``compute_backoff``'s raw (pre-jitter) curve value, evaluated in SQL
+from the row's own stamped policy columns rather than a live
+``RetryPolicy`` object — see the migration's comment for why the columns
+exist."""
+
+_RECLAIM_DELAY_SQL = (
+    f"(LEAST({_RECLAIM_EFFECTIVE_CAP_SQL}, {_RECLAIM_RAW_BACKOFF_SQL} "
+    "* (1.0 + j.retry_jitter * (2.0 * random() - 1.0)))) * interval '1 second'"
+)
+"""How far out a reclaimed job is rescheduled — the job's own
+``RetryPolicy`` curve (base, cap, backoff kind, jitter), stamped on the
+row at enqueue time, evaluated exactly as
+:func:`taskq.retry.compute_backoff` would for this attempt, including its
+ceiling: the lesser of the row's stamped cap and the operator's
+``max_retry_backoff``, bound per statement through the
+``{max_backoff_seconds}`` placeholder.
+
+A fleet-wide event — a node drain, a zone loss, an OOM sweep across a
+deployment — expires many leases at once, and one sweep hands the whole
+cohort back.  A flat delay would stamp every row with the same instant,
+so the entire backlog would become due together and land on the
+still-recovering fleet as one synchronised wave.  The multiplicative-
+symmetric jitter here is the same spreading mechanism the failure
+backoff applies, evaluated per row (``random()`` is VOLATILE), so the
+cohort arrives spread across a band instead of at a point."""
+
+
+_SWEEP_1_BODY = """\
 -- Leader-only reclaim sweep (per architecture §Leader Election).  FOR
 -- UPDATE SKIP LOCKED is kept so the SQL is safe if the sweep is ever run
 -- concurrently; the production leader loop serializes it.
@@ -174,6 +260,18 @@ _SWEEP_1_SQL = """\
 --   holder's fresh beats keep the arm quiet. NULL last_heartbeat_at
 --   (direct-SQL-reachable only — dispatch always stamps it) is never
 --   eligible: NULL + interval is NULL, so the row waits for its lease.
+--   The knob test is `heartbeat_timeout > interval '0'`, not merely NOT
+--   NULL: enqueue validation refuses a non-positive value but it is the
+--   only gate, and the column carries no CHECK, so any direct write —
+--   a row stored before the knob was enforced, a manual UPDATE — can
+--   leave a zero or negative interval behind. With one, `last_beat +
+--   timeout < now` is true from the instant the row is written, and a
+--   maximally healthy holder beating right now with an hour of lease
+--   left is reclaimed as a false crash on the very first sweep. A
+--   degenerate value is inert: the lease governs, as it does with no
+--   knob at all. NULL > interval '0' is NULL, so the NOT-NULL case is
+--   still excluded, and the comparison stays compatible with the
+--   partial index's own IS NOT NULL predicate.
 --
 -- The arms are DISJOINT by construction — the heartbeat arm requires
 -- lock_expires_at >= statement_timestamp(), so a row that is both
@@ -306,7 +404,7 @@ heartbeat_arm AS MATERIALIZED (
     SELECT id, locked_by_worker, 'heartbeat_timeout'::text AS reason
     FROM "{schema}".jobs
     WHERE status = 'running'
-      AND heartbeat_timeout IS NOT NULL
+      AND heartbeat_timeout > interval '0'
       AND lock_expires_at >= statement_timestamp()
       AND last_heartbeat_at < statement_timestamp()
       AND last_heartbeat_at + heartbeat_timeout < statement_timestamp()
@@ -324,7 +422,7 @@ snap AS (
 )
 UPDATE "{schema}".jobs j
 SET status = CASE
-        WHEN j.attempt < j.max_attempts AND j.retry_kind != 'non_retryable'
+        WHEN {has_budget}
             THEN 'pending'::"{schema}".job_status
         WHEN j.cancel_phase != 0
             THEN 'cancelled'::"{schema}".job_status
@@ -335,12 +433,12 @@ SET status = CASE
     cancel_phase = 0,
     cancel_requested_at = NULL,
     scheduled_at = CASE
-        WHEN j.attempt < j.max_attempts AND j.retry_kind != 'non_retryable'
-            THEN clock_timestamp() + interval '5 seconds'
+        WHEN {has_budget}
+            THEN clock_timestamp() + {reclaim_delay}
         ELSE j.scheduled_at
     END,
     finished_at = CASE
-        WHEN NOT (j.attempt < j.max_attempts AND j.retry_kind != 'non_retryable')
+        WHEN NOT ({has_budget})
             THEN clock_timestamp()
         ELSE j.finished_at
     END
@@ -348,6 +446,19 @@ FROM snap
 WHERE j.id = snap.id
 RETURNING j.id, j.status, j.attempt, j.started_at, snap.locked_by_worker,
           snap.reason AS reclaim_reason, clock_timestamp() AS now_ts"""
+
+#: The sweep with its shared fragments bound, still carrying ``{schema}``
+#: for the caller. The fragments are substituted by name rather than
+#: through ``format`` so this stays a one-placeholder template — callers
+#: and tests render it with ``.format(schema=...)`` and nothing else.
+#: ``$4`` is the effective-cap ceiling (max_retry_backoff, seconds), the
+#: statement's fourth parameter after the two grace intervals and the
+#: batch LIMIT.
+_SWEEP_1_SQL = (
+    _SWEEP_1_BODY.replace("{has_budget}", _RECLAIM_HAS_BUDGET_SQL)
+    .replace("{reclaim_delay}", _RECLAIM_DELAY_SQL)
+    .replace("{max_backoff_seconds}", "$4")
+)
 
 _SWEEP_2_SQL = """\
 -- Bounded batch + MATERIALIZED, same rationale as _SWEEP_1_SQL's comment
@@ -876,6 +987,7 @@ async def sweep_expired_locks(
     schema: str,
     batch_size: int = DEFAULT_EVENT_WRITER_BATCH_SIZE,
     statement_timeout_ms: int = DEFAULT_EVENT_WRITER_STATEMENT_TIMEOUT_MS,
+    max_retry_backoff: timedelta = DEFAULT_MAX_RETRY_BACKOFF,
 ) -> int:
     """Sweep 1: reclaim running jobs whose holder broke its liveness
     promise, one bounded batch per eligibility arm per call.
@@ -891,7 +1003,11 @@ async def sweep_expired_locks(
     backlog a batch at a time.  For each reclaimed job:
 
     - If attempts remain and retry is allowed: transition to
-      ``'pending'`` with ``scheduled_at = clock_timestamp() + 5s`` backoff.
+      ``'pending'`` with ``scheduled_at = clock_timestamp() + <delay>``,
+      the delay derived from the row's own stamped retry curve (see
+      ``_RECLAIM_DELAY_SQL``) and clamped at the lesser of the row's cap
+      and *max_retry_backoff* — the operator's global ceiling, the same
+      effective cap the failure path's ``compute_backoff`` applies.
     - Otherwise, if a cancel request was still in-flight
       (``cancel_phase != 0``): transition to ``'cancelled'`` — the
       caller's explicit request is the honest terminal label.
@@ -972,7 +1088,9 @@ async def sweep_expired_locks(
 
     async with conn.transaction():
         prev_timeout = await _apply_batch_statement_timeout(conn, statement_timeout_ms)
-        rows = await conn.fetch(sql, cancel_grace, cleanup_grace, batch_size)
+        rows = await conn.fetch(
+            sql, cancel_grace, cleanup_grace, batch_size, max_retry_backoff.total_seconds()
+        )
 
         if rows:
             job_ids: list[JobId] = []
@@ -1424,7 +1542,7 @@ async def sweep_expired_events(
     return count
 
 
-_SWEEP_IDLE_KEYED_BUCKETS_SQL = """\
+_SWEEP_IDLE_KEYED_BUCKETS_BODY = """\
 -- Bounded batch + MATERIALIZED, same rationale as the sibling sweeps
 -- above: LIMIT $2 caps one call's DELETE at $2 rows (one row per bucket
 -- for this table); MATERIALIZED stops the planner from inlining the
@@ -1456,11 +1574,28 @@ _SWEEP_IDLE_KEYED_BUCKETS_SQL = """\
 -- duplicate sweep (or an acquire flipping the mark between window and
 -- DELETE) a no-op rather than a count-inflating rewrite — same shape
 -- as _SWEEP_EVENT_TTL_SQL.
+--
+-- Idleness alone is not evidence that a row is safe to delete, which is
+-- what the sibling reservation_slots arm's whole-bucket veto encodes.
+-- The analogue here is the bucket's own quota state: a fixed quota
+-- (refill_per_second = 0) is drained forever by design, so a row still
+-- short of its capacity carries live consumed state however long nobody
+-- has touched it. Deleting it lets the next acquire re-preseed via ON
+-- CONFLICT DO NOTHING at full capacity, over-admitting against a budget
+-- that was already spent, and there is no lease or hold concept here to
+-- cover the case. A refilling bucket needs no veto: its tokens converge
+-- back to capacity on their own, so an idle row past the horizon is
+-- genuinely spent-free. Rows written before capacity and the refill rate
+-- rode the state read as refilling (the COALESCE default), which is the
+-- safe direction for a table whose pre-upgrade rows are overwhelmingly
+-- the refilling kind and whose fixed-quota rows re-acquire into the new
+-- shape on first use.
 WITH expired AS MATERIALIZED (
     SELECT bucket_name
     FROM "{schema}".rate_limit_buckets
     WHERE keyed
       AND last_used_at < statement_timestamp() - $1::interval
+      AND {no_consumed_quota_unqualified}
     ORDER BY last_used_at, bucket_name
     LIMIT $2
 )
@@ -1469,7 +1604,32 @@ USING expired
 WHERE b.bucket_name = expired.bucket_name
   AND b.keyed
   AND b.last_used_at < statement_timestamp() - $1::interval
+  AND {no_consumed_quota_b}
 RETURNING b.bucket_name"""
+
+
+def _no_consumed_quota_sql(alias: str = "") -> str:
+    """Whether a ``rate_limit_buckets`` row is free of spent quota.
+
+    The one place this question is asked, shared by the fleet sweep and
+    the per-worker eviction drain so the two cannot disagree about which
+    rows are safe to delete.  *alias* qualifies the ``state`` column for
+    a statement that has one.
+    """
+    state = f"{alias}.state" if alias else "state"
+    return (
+        f"(COALESCE(({state}->>'refill_per_second')::double precision, 1) > 0 "
+        f"OR COALESCE(({state}->>'tokens')::double precision, 0) "
+        f">= COALESCE(({state}->>'capacity')::double precision, 0))"
+    )
+
+
+#: The bucket sweep with its quota predicate bound, still carrying
+#: ``{schema}`` for the caller — one placeholder, as before.
+_SWEEP_IDLE_KEYED_BUCKETS_SQL = _SWEEP_IDLE_KEYED_BUCKETS_BODY.replace(
+    "{no_consumed_quota_unqualified}", _no_consumed_quota_sql()
+).replace("{no_consumed_quota_b}", _no_consumed_quota_sql("b"))
+
 
 _SWEEP_IDLE_KEYED_SLOTS_SQL = """\
 -- Bounded batch + MATERIALIZED, same rationale as the sibling sweeps
@@ -1481,9 +1641,27 @@ _SWEEP_IDLE_KEYED_SLOTS_SQL = """\
 -- CTE into the DELETE. ORDER BY min(last_used_at) makes the drain
 -- oldest-bucket-first and deterministic (bucket_name tiebreak).
 --
+-- The freshness veto is an anti-join INSIDE the window, not only a
+-- verdict after it, because a bucket configured for more concurrency
+-- than it ever uses keeps permanently idle high-index slot rows. Such a
+-- bucket sorts to the front on its per-row minimum however live it
+-- actually is, consumes one of the LIMIT's slots, and is then correctly
+-- spared by the whole-bucket verdict below. With enough of them a
+-- genuine dead-worker orphan never enters the window at all and the tick
+-- nets zero deletions, tick after tick — their minimum never advances,
+-- because the rows supplying it are never touched — so unreclaimed rows
+-- accumulate without bound. Excluding a bucket with any fresh row up
+-- front makes the window's membership agree with the verdict: a bucket
+-- that cannot be reclaimed does not occupy a slot in the batch. The
+-- anti-join keeps the outer scan's index range bound intact (the
+-- horizon is still a per-row predicate on the keyed partial index), so
+-- the probe costs one bucket_name-keyed lookup per candidate rather
+-- than a scan of the table.
+--
 -- Three CTEs, one whole-bucket contract: lock, decide, delete.
 -- `stale` names candidate buckets off the keyed partial index (keyed
--- AND stamp past the horizon). `locked` then takes FOR UPDATE over
+-- rows past the horizon, with no fresh sibling). `locked` then
+-- takes FOR UPDATE over
 -- EVERY row of each candidate bucket — a locking read that re-fetches
 -- each row at its LATEST committed version under READ COMMITTED
 -- isolation, blocking concurrent writers and ensuring the decision sees
@@ -1528,12 +1706,18 @@ _SWEEP_IDLE_KEYED_SLOTS_SQL = """\
 -- bucket was vetoed anyway, because every writer on these rows either
 -- stamps last_used_at fresh or holds a live lease).
 WITH stale AS MATERIALIZED (
-    SELECT bucket_name
-    FROM "{schema}".reservation_slots
-    WHERE keyed
-      AND last_used_at < statement_timestamp() - $1::interval
-    GROUP BY bucket_name
-    ORDER BY min(last_used_at), bucket_name
+    SELECT s.bucket_name
+    FROM "{schema}".reservation_slots s
+    WHERE s.keyed
+      AND s.last_used_at < statement_timestamp() - $1::interval
+      AND NOT EXISTS (
+          SELECT 1
+          FROM "{schema}".reservation_slots f
+          WHERE f.bucket_name = s.bucket_name
+            AND f.last_used_at >= statement_timestamp() - $1::interval
+      )
+    GROUP BY s.bucket_name
+    ORDER BY min(s.last_used_at), s.bucket_name
     LIMIT $2
 ),
 locked AS MATERIALIZED (

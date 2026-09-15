@@ -26,6 +26,7 @@ from taskq.backend.postgres import PostgresBackend
 from taskq.constants import (
     DEFAULT_EVENT_WRITER_BATCH_SIZE,
     DEFAULT_EVENT_WRITER_STATEMENT_TIMEOUT_MS,
+    DEFAULT_MAX_RETRY_BACKOFF,
     MAX_RESULT_BYTES,
 )
 from taskq.migrate import apply_pending
@@ -86,6 +87,10 @@ class _TestBackendSettings:
     max_pending_lock_timeout_ms: float = 5000.0
     unique_for_lock_timeout_ms: float = 5000.0
     idempotency_lock_timeout_ms: float = 5000.0
+    # Reclaim-sweep backoff ceiling declared on BackendSettings — same
+    # doctrine as every knob above. Default mirrors WorkerSettings'
+    # (24 h, the module constant).
+    max_retry_backoff: timedelta = DEFAULT_MAX_RETRY_BACKOFF
 
 
 @dataclass

@@ -138,15 +138,27 @@ class TestInMemoryRetryJob:
 
         assert result is False
 
-    async def test_retry_succeeded_returns_false(self) -> None:
-        """retry_job returns False for a succeeded job."""
+    async def test_retry_succeeded_returns_true(self) -> None:
+        """retry_job re-pends a succeeded job for a replay.
+
+        An operator re-run means "run this again": a succeeded job's status
+        records that the actor returned without raising, not that the result
+        was right, so a bug shipped and fixed afterward must still have a
+        supported path to re-run the jobs that ran against it. See
+        Backend.retry_job's docstring and
+        tests/test_retry_job_source_states_parity.py for the full contract
+        (every terminal state is a valid source; only 'running' is refused).
+        """
         backend = _make_backend()
         job_id = await _enqueue_job(backend)
         _set_job_status(backend, job_id, "succeeded")
 
         result = await backend.retry_job(job_id)
 
-        assert result is False
+        assert result is True
+        row = await backend.get(job_id)
+        assert row is not None
+        assert row.status in ("pending", "scheduled")
 
     async def test_retry_nonexistent_returns_false(self) -> None:
         """retry_job returns False for a non-existent job."""

@@ -497,7 +497,10 @@ class TestEnqueueArgsRoundTrip:
         assert flds["scheduled_at"].default_factory is MISSING
 
     def test_field_count(self) -> None:
-        expected = 25
+        # +4 retry-curve scalars (retry_base/retry_cap/retry_backoff/
+        # retry_jitter): stamped onto the jobs row at enqueue so the
+        # reclaim sweep can reschedule on the job's own policy.
+        expected = 29
         assert len(fields(EnqueueArgs)) == expected
 
     def test_frozen(self) -> None:
@@ -543,7 +546,10 @@ class TestJobRowRoundTrip:
         assert flds["status"].type is JobStatus
 
     def test_field_count(self) -> None:
-        expected = 40  # field list + tags + the two denial/snooze counters
+        # field list + tags + the two denial/snooze counters + the four
+        # retry-curve scalars read back off the jobs row (the reclaim
+        # sweep's policy source).
+        expected = 44
         assert len(fields(JobRow)) == expected
 
     def test_frozen(self) -> None:

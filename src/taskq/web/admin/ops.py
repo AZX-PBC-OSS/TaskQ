@@ -30,6 +30,9 @@ from taskq.cron import (
 )
 from taskq.ratelimit.registry import RateLimitRegistry
 from taskq.settings import TaskQSettings
+from taskq.web.admin._constants import (
+    _TERMINAL_STATUSES,  # pyright: ignore[reportPrivateUsage]  # Why: shared constants published by the admin constants module; private prefix scopes them within the admin package.
+)
 from taskq.web.admin._factory import (
     get_backend,
     get_base_path,
@@ -451,15 +454,29 @@ def register(router: APIRouter) -> None:
                 status_code=503, detail="Backend not configured for admin operations"
             )
 
-        _retryable_statuses: frozenset[str] = frozenset({"failed", "crashed", "cancelled"})
-
+        # A job is retryable from every state ``Backend.retry_job`` accepts
+        # as a source: every terminal status (see its docstring — an
+        # operator re-run is "run this again", and that includes
+        # 'succeeded' and 'abandoned', not just the failure statuses).
+        # ``_TERMINAL_STATUSES`` (admin/_constants.py) is that same set —
+        # the list/detail pages already use it to mean "this job is done" —
+        # so this gate derives from it rather than hand-maintaining a
+        # second, narrower copy that silently falls behind the backend's
+        # actual contract.
         job = await backend.get(JobId(job_id))
         if job is None:
             raise HTTPException(status_code=404, detail="Job not found")
-        if job.status not in _retryable_statuses:
+        if job.status not in _TERMINAL_STATUSES:
             raise HTTPException(status_code=409, detail="Job is not in a retryable state")
 
-        await backend.retry_job(JobId(job_id))
+        # The read above is only a pre-check: the write's own guard is the
+        # arbiter. A False means the row left a retryable state between the
+        # two (a concurrent claim or transition won the race) — or the spent
+        # attempt sits at the smallint ceiling — so the write applied to
+        # nothing and the operator must hear conflict, not success.
+        retried = await backend.retry_job(JobId(job_id))
+        if not retried:
+            raise HTTPException(status_code=409, detail="Job is not in a retryable state")
 
         return RedirectResponse(url=f"{base_path}/jobs/{job_id}", status_code=303)
 

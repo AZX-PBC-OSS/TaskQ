@@ -86,6 +86,10 @@ def _full_record(*, job_id: UUID | None = None) -> dict[str, object]:
         "tags": [],
         "snooze_count": 0,
         "rate_limit_blocked_count": 0,
+        "retry_base_seconds": 5.0,
+        "retry_cap_seconds": 3600.0,
+        "retry_backoff": "exponential",
+        "retry_jitter": 0.2,
     }
 
 

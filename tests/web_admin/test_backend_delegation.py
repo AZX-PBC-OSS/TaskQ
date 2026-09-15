@@ -228,3 +228,29 @@ def test_retry_succeeds_for_cancelled_job(
     resp = client.post(f"/jobs/{jid}/retry", data={"csrf_token": token}, follow_redirects=False)
     assert resp.status_code == 303  # pyright: ignore[reportUnknownMemberType]
     assert len(backend.retry_calls) == 1
+
+
+def test_retry_returns_409_when_the_fenced_write_loses_the_race(
+    monkeypatch: pytest.MonkeyPatch,
+    make_app_with_backend: Callable[..., Any],
+) -> None:
+    """POST /jobs/{id}/retry returns 409 when the job left a retryable state
+    between the route's read and the backend's conditional write.
+
+    The route's own status check passes (the row was terminal at read time),
+    but ``retry_job``'s guarded write matched no row — a concurrent
+    transition won the race — so the backend returns False. Reporting a
+    redirect-to-success there would be a failure that looks like a success:
+    the operator is told the job was re-run when nothing was re-pended.
+    """
+    monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
+    jid = new_job_id()
+    job_row = _stub_job_row(jid, status="failed")
+    backend = StubBackend(job_row=job_row, retry_result=False)
+    client, backend = make_app_with_backend(backend=backend)
+
+    token = _get_csrf_token(client)
+    resp = client.post(f"/jobs/{jid}/retry", data={"csrf_token": token})
+
+    assert resp.status_code == 409  # pyright: ignore[reportUnknownMemberType]
+    assert len(backend.retry_calls) == 1

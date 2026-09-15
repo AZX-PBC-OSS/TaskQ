@@ -138,7 +138,11 @@ async def reindex_bucket(payload: Payload) -> None: ...
   by the leader's sweep even while its lease — the global `TASKQ_LOCK_LEASE`
   (default 60 s) — is still valid: the shorter of the two deadlines governs. Size it
   `>= 2x` the fleet's `TASKQ_HEARTBEAT_INTERVAL`; a value below one heartbeat
-  interval reclaims a healthy job on a single missed beat. The same rule names the
+  interval reclaims a healthy job on a single missed beat. `2x` is enough to
+  absorb one transient beat because the heartbeat loop anchors its wait to each
+  tick's start rather than its end: a slow or failed tick does not push the next
+  beat out by its own duration, so the gap after one miss is one interval, not
+  two. The same rule names the
   upper-bound trap: a `heartbeat_timeout` at or above `TASKQ_LOCK_LEASE` never
   governs — the lease deadline (last beat + lease) always precedes the heartbeat
   deadline (last beat + timeout), so the lease arm reclaims first and the per-job
@@ -151,8 +155,10 @@ async def reindex_bucket(payload: Payload) -> None: ...
 ### How a worker death is recovered
 
 `lock_lease` (60 s default) is the visibility timeout. The leader's sweep runs every
-`sweep_interval` (30 s default), so worst-case reclaim is ~90 s, then the job retries with a 5 s
-backoff — or lands `crashed` if attempts are exhausted. Invariants that keep this safe:
+`sweep_interval` (30 s default), so worst-case reclaim is ~90 s, then the job retries on its own
+`RetryPolicy` backoff curve (base, cap, backoff kind, jitter — the same curve an
+application-level failure would use, not a flat interval) — or lands `crashed` if attempts are
+exhausted. Invariants that keep this safe:
 `lock_lease >= 4 * heartbeat_interval`, and the watchdog kills a stalled loop *before* its leases
 expire. Don't lower `TASKQ_LOCK_LEASE` without re-checking both
 ([configuration.md — Validation Constraints](configuration.md#validation-constraints)).

@@ -65,6 +65,7 @@ from taskq.backend._sweeps import (  # pyright: ignore[reportPrivateUsage]  # Wh
 )
 from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining
+    DEFAULT_MAX_RETRY_BACKOFF,
     DEFAULT_PRUNE_BATCH_SIZE,  # pyright: ignore[reportPrivateUsage]  # Why: the production batch/retention the daily prune runs with; the corpus is seeded around them.
     DEFAULT_PRUNE_RETENTION,  # pyright: ignore[reportPrivateUsage]  # Why: same.
     RECLAIM_OUTBOX_RETENTION_MULTIPLIER,
@@ -603,6 +604,7 @@ async def test_sweep_1_snap_is_index_bounded(audit_schema: Any, pg_dsn: str) -> 
             timedelta(seconds=30),
             timedelta(seconds=10),
             100,
+            DEFAULT_MAX_RETRY_BACKOFF.total_seconds(),
         )
         _assert_index_cond(
             plan,
@@ -638,6 +640,7 @@ async def test_sweep_1_heartbeat_arm_is_index_bounded(audit_schema: Any, pg_dsn:
             timedelta(seconds=30),
             timedelta(seconds=10),
             100,
+            DEFAULT_MAX_RETRY_BACKOFF.total_seconds(),
         )
         _assert_index_cond(
             plan,
@@ -1744,9 +1747,7 @@ async def event_ttl_schema(pg_dsn: str) -> Any:
         await conn.close()
 
 
-async def test_event_retention_window_is_index_bounded(
-    event_ttl_schema: str, pg_dsn: str
-) -> None:
+async def test_event_retention_window_is_index_bounded(event_ttl_schema: str, pg_dsn: str) -> None:
     """The retention sweep's ordinary-events window must seek
     ``job_events_occurred_at_idx`` with the age bound as an Index Cond.
 
@@ -1759,9 +1760,7 @@ async def test_event_retention_window_is_index_bounded(
     counter to say so."""
     conn = await asyncpg.connect(pg_dsn)
     try:
-        plan = await _explain(
-            conn, _event_ttl_sql(event_ttl_schema), _EV_RETENTION, _EV_BATCH
-        )
+        plan = await _explain(conn, _event_ttl_sql(event_ttl_schema), _EV_RETENTION, _EV_BATCH)
         _assert_index_cond(
             plan,
             "job_events_occurred_at_idx",
@@ -1788,9 +1787,7 @@ async def test_event_retention_outbox_arm_is_index_bounded(
     exists to prevent."""
     conn = await asyncpg.connect(pg_dsn)
     try:
-        plan = await _explain(
-            conn, _event_ttl_sql(event_ttl_schema), _EV_RETENTION, _EV_BATCH
-        )
+        plan = await _explain(conn, _event_ttl_sql(event_ttl_schema), _EV_RETENTION, _EV_BATCH)
         # The outbox arm's bound is retention x the multiplier; the server
         # folds that to a single interval literal, so the arm's Index Cond
         # is distinguished from the ordinary arm's by the folded value.

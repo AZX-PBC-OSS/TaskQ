@@ -53,6 +53,7 @@ from typer.testing import CliRunner
 from taskq._json import loads
 from taskq.cli import app
 from taskq.client._taskq import TaskQ
+from taskq.constants import DEFAULT_MAX_RETRY_BACKOFF
 
 runner = CliRunner()
 
@@ -169,8 +170,6 @@ def _capture_ui_app(
     """
     import uvicorn
 
-    import taskq.cli as cli_mod
-
     captured: dict[str, Any] = {}
 
     def _fake_uvicorn_run(app: Any, **kwargs: Any) -> None:
@@ -180,7 +179,9 @@ def _capture_ui_app(
 
     redis_url: str | None = None
     if create_pool is not None:
-        monkeypatch.setattr(cli_mod.asyncpg, "create_pool", create_pool)
+        # The module-top asyncpg import is the same module object
+        # taskq.cli binds, so patching it patches the cli path.
+        monkeypatch.setattr(asyncpg, "create_pool", create_pool)
     if from_url_result is not None:
         import redis.asyncio as aioredis
 
@@ -834,14 +835,16 @@ def test_ui_serve_command_passes_command_timeout_to_pool_factory(
 
 # ── Protocol completeness: the settings doubles declare every knob ─────
 
-_LOCK_BUDGET_FIELDS: tuple[tuple[str, float], ...] = (
+_KNOB_DEFAULT_FIELDS: tuple[tuple[str, Any], ...] = (
     ("max_pending_lock_timeout_ms", 5000.0),
     ("unique_for_lock_timeout_ms", 5000.0),
     ("idempotency_lock_timeout_ms", 5000.0),
+    ("max_retry_backoff", DEFAULT_MAX_RETRY_BACKOFF),
 )
-"""The three BackendSettings lock-budget members and the defaults they
-must carry — WorkerSettings' own (5000.0 each, the module constants the
-backend's defensive getattr fallbacks supply).
+"""The BackendSettings members whose defaults the doubles must carry —
+WorkerSettings' own (5000.0 ms each for the enqueue lock budgets, the
+module constants the backend's defensive getattr fallbacks supply;
+24 h for the reclaim sweep's backoff ceiling).
 
 Why presence is asserted via getattr and not runtime_checkable isinstance:
 a runtime protocol isinstance inspects only METHOD members on Python
@@ -853,8 +856,14 @@ execution environment relaxes for argument passing)."""
 _MISSING: Final[Any] = object()
 
 
-def _assert_lock_budget_fields(settings_object: Any, double_name: str) -> None:
-    for field, expected in _LOCK_BUDGET_FIELDS:
+def _assert_declared_knobs(settings_object: Any, double_name: str) -> None:
+    # The presence set is derived from the protocol, not hand-listed: a
+    # knob added to BackendSettings must appear on every settings object
+    # the backend can receive, and a hand-list stops at the members its
+    # author remembered.
+    from taskq.backend._protocol import BackendSettings
+
+    for field in BackendSettings.__annotations__:
         value = getattr(settings_object, field, _MISSING)
         assert value is not _MISSING, (
             f"{double_name} must declare BackendSettings.{field} — the "
@@ -862,8 +871,10 @@ def _assert_lock_budget_fields(settings_object: Any, double_name: str) -> None:
             "PostgresBackend must carry the knobs, so the contract is "
             "checkable rather than hoped for."
         )
-        assert value == expected, (
-            f"{double_name}.{field} must mirror WorkerSettings' default ({expected}), got {value!r}"
+    for field, expected in _KNOB_DEFAULT_FIELDS:
+        assert getattr(settings_object, field) == expected, (
+            f"{double_name}.{field} must mirror WorkerSettings' default ({expected}), got "
+            f"{getattr(settings_object, field)!r}"
         )
 
 
@@ -871,12 +882,12 @@ def test_client_settings_satisfies_backend_settings_protocol() -> None:
     """``_ClientSettings`` declares every ``BackendSettings`` member — the
     protocol's own doctrine: every settings object that reaches a
     PostgresBackend must carry the knobs, so the contract is checkable
-    rather than hoped for. The three enqueue lock-budget fields are the
-    completion; the backend's defensive getattr fallbacks stay for
-    undeclared doubles."""
+    rather than hoped for. The enqueue lock-budget fields and the reclaim
+    backoff ceiling carry value pins; the backend's defensive getattr
+    fallbacks stay for undeclared doubles."""
     from taskq.client._taskq import _ClientSettings
 
-    _assert_lock_budget_fields(_ClientSettings(schema_name="taskq"), "_ClientSettings")
+    _assert_declared_knobs(_ClientSettings(schema_name="taskq"), "_ClientSettings")
 
 
 def test_web_admin_settings_double_satisfies_backend_settings_protocol() -> None:
@@ -884,4 +895,4 @@ def test_web_admin_settings_double_satisfies_backend_settings_protocol() -> None
     contract as ``_ClientSettings`` — same doctrine, same fields."""
     from tests.test_web_admin_integration import _TestBackendSettings
 
-    _assert_lock_budget_fields(_TestBackendSettings(), "_TestBackendSettings")
+    _assert_declared_knobs(_TestBackendSettings(), "_TestBackendSettings")

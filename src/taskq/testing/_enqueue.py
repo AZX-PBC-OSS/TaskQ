@@ -202,6 +202,10 @@ async def _enqueue(self: "InMemoryBackend", args: EnqueueArgs) -> JobRow:
         span_id=args.span_id,
         metadata=stored_metadata,
         tags=args.tags,
+        retry_base=args.retry_base,
+        retry_cap=args.retry_cap,
+        retry_backoff=args.retry_backoff,
+        retry_jitter=args.retry_jitter,
     )
 
     if args.id in self._jobs:

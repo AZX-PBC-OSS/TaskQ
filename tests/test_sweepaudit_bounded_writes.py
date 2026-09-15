@@ -135,7 +135,7 @@ _EXEMPT: dict[str, tuple[str, str]] = {
         "keyed single maintenance_leader row",
     ),
     "_ISOLATE_JOB_SQL_TEMPLATE": (
-        "WHERE id = $1",
+        "WHERE j.id = $1",
         "keyed single running job (watchdog self-isolation)",
     ),
     "_RELEASE_FENCED_SQL_TEMPLATE": (

@@ -1531,12 +1531,8 @@ class TestMarkSucceededResultExpiryFallback:
                 None,
                 "snoozed",
                 # The trailing 1 is the attempt-epoch fence bind ($8) —
-                # the seeded row is at attempt 1. "capacity" is the
-                # denial-reason bind ($9): this write is an
-                # actor-requested deferral, not a denial, so the reason
-                # rides its default.
+                # the seeded row is at attempt 1.
                 1,
-                "capacity",
             )
             assert rec is not None
             assert rec["outcome_branch"] == "snoozed"
