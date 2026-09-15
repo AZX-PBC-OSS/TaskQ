@@ -40,8 +40,9 @@ import contextlib
 import functools
 import importlib.metadata
 import time
-from collections.abc import Callable, Generator, Iterable, Sequence
+from collections.abc import Callable, Generator, Iterable, Mapping, Sequence
 from typing import Literal, Protocol
+from weakref import WeakKeyDictionary
 
 import structlog
 from opentelemetry import metrics, trace
@@ -61,6 +62,8 @@ __all__ = [
     "ConsumedOutcome",
     "get_meter",
     "get_tracer",
+    "otel_enabled",
+    "reconcile_cron_failures",
     "record_archived_jobs",
     "record_backpressure_error",
     "record_cancel_requested",
@@ -113,6 +116,19 @@ def set_otel_enabled(enabled: bool) -> None:
     """
     global _otel_enabled
     _otel_enabled = enabled
+
+
+def otel_enabled() -> bool:
+    """Whether telemetry emission is currently enabled.
+
+    Read at call time, never imported by value: the flag is module state
+    flipped once by worker startup (see :func:`set_otel_enabled`), and a
+    reader checks it to skip WORK whose only consumer is a metric — a
+    query whose result only a reconcile would export is a wasted round
+    trip when the flag is off.  The emitters themselves stay gated
+    individually regardless.
+    """
+    return _otel_enabled
 
 
 @functools.lru_cache(maxsize=1)
@@ -558,16 +574,15 @@ def record_process_duration(actor: str, queue: str, elapsed: float) -> None:
 #: failure path emits the raw schedule-row actor and schedule rows accept
 #: any string at creation time, so the label is capped at the emitter
 #: (``_bounded_cron_actor`` below) rather than carried as-is.  The
-#: alerting purpose survives the relabel: a schedule stuck failing
-#: repeatedly keeps adding +1 to its actor's balance every tick.  The
-#: converse does not hold -- a non-zero balance does not mean a failing
-#: schedule, because an auto-disabled, re-enabled or deleted schedule
-#: strands its count on the actor's balance forever (re-enabling resets
-#: the DB column from the client process, which cannot emit a
-#: worker-counter delta), so the balance is a diagnostic, not the alert
-#: signal.  What the summed balance loses -- WHICH schedule -- no shipped
-#: consumer ever read: the alert fires on ``taskq.cron.disabled_schedules``
-#: and points the operator at ``cron_schedules.last_fire_error``;
+#: alerting purpose survives the relabel: the series carries the actor's
+#: outstanding failure count and both directions hold, because each tick
+#: reconciles it against the database's own sum read over the whole
+#: ``cron_schedules`` table (``reconcile_cron_failures``) rather than
+#: accumulating this process's deltas -- an enable, disable or delete
+#: performed anywhere in the fleet self-corrects on the next tick with
+#: due work, and the value returns to zero when no schedule is failing.
+#: What the summed value loses -- WHICH schedule -- no shipped consumer
+#: ever read: ``cron_schedules.last_fire_error`` names it, and
 #: per-schedule debugging lives on the log lines and span attributes
 #: named above.
 #:
@@ -1263,18 +1278,17 @@ def _bounded_cron_actor(actor: str) -> str:
 _cron_consecutive_failures = get_meter().create_up_down_counter(
     "taskq.cron.consecutive_failures",
     description=(
-        "Cron execution failure balance per actor, via +1 per failure and "
-        "-count on a successful reset. The balance is the SUM over the "
-        "actor's schedules and can carry permanent residue from schedules "
-        "that were disabled, re-enabled (the client-side enable resets the "
-        "DB column with no metric delta) or deleted -- the authoritative "
-        "per-schedule counts are cron_schedules.consecutive_failures and "
-        "the logs; alert on taskq.cron.disabled_schedules instead. The "
-        "actor label is capped at the first 100 distinct names per process "
-        "(overflow collapses to '_other_'). Per-schedule attribution is on "
-        "the cron fired / cron fire failed log lines and the cron-fire "
-        "span attribute taskq.cron_schedule_id, not on this label -- see "
-        "the cardinality note above _lock_expires_in_seconds."
+        "Cron execution failures currently outstanding per actor: the SUM "
+        "of cron_schedules.consecutive_failures over the actor's schedules. "
+        "Each tick reconciles the series against that sum over the whole "
+        "table, so enables, disables and deletes performed by any process "
+        "self-correct on the next tick with due work and the value returns "
+        "to zero once no schedule is failing. The actor label is capped "
+        "at the first 100 distinct names per process (overflow collapses "
+        "to '_other_'). Per-schedule attribution is on the cron fired / "
+        "cron fire failed log lines and the cron-fire span's per-schedule "
+        "identity attribute, not on this label -- see the cardinality note "
+        "above _lock_expires_in_seconds."
     ),
     unit="1",
 )
@@ -1330,7 +1344,83 @@ def record_cron_failure(actor: str, delta: int) -> None:
     """
     if not _otel_enabled:
         return
-    _cron_consecutive_failures.add(delta, {"actor": _bounded_cron_actor(actor)})
+    label = _bounded_cron_actor(actor)
+    _cron_consecutive_failures.add(delta, {"actor": label})
+    level = _cron_failure_level()
+    level[label] = level.get(label, 0) + delta
+
+
+_cron_failure_levels: "WeakKeyDictionary[object, dict[str, int]]" = WeakKeyDictionary()
+"""Per-instrument record of the value put on each actor's failure series.
+
+An UpDownCounter only accepts deltas, so reconciling it against the
+database's own count needs the level the deltas have reached — see
+:func:`reconcile_cron_failures`.  Keyed by the instrument because the
+level describes THAT instrument's series: a fresh instrument starts from
+zero and must not inherit a level accumulated on another one.
+"""
+
+
+def _cron_failure_level() -> dict[str, int]:
+    """The level ledger for the failure counter currently installed."""
+    level = _cron_failure_levels.get(_cron_consecutive_failures)
+    if level is None:
+        level = {}
+        _cron_failure_levels[_cron_consecutive_failures] = level
+    return level
+
+
+def reconcile_cron_failures(totals: Mapping[str, int]) -> None:
+    """Move each actor's failure series onto *totals*, the database's own
+    summed ``cron_schedules.consecutive_failures`` per actor.
+
+    The series answers "is any schedule failing right now", and only the
+    database knows.  Schedules are enabled, disabled and deleted by
+    clients, by the CLI and by the admin UI, every one of them outside
+    the process that emits this metric, and each of those actions clears
+    or removes a count some worker counted up.  A worker cannot emit
+    another process's delta, so a balance built from this process's
+    deltas alone can only drift upward: an actor whose last failing
+    schedule was deleted a month ago would report a failure level
+    forever, and an alert on the series becomes unreadable exactly when
+    an operator needs it.  Reconciling against the database each tick
+    makes every out-of-process change self-correct on the next tick with
+    due work.
+
+    *totals* must be the complete per-actor truth — every actor with a
+    failing schedule anywhere in the table (see ``_actor_failure_totals``),
+    not the slice one tick's batch happened to touch.  A batch covers only
+    DUE schedules, so an actor whose failing schedule was deleted or
+    disabled with nothing left due never appears in a batch again; under a
+    batch-scoped *totals* its level would strand at its last value.  An
+    actor ABSENT from *totals* therefore reads as a true zero — the
+    database holds no failing schedule for it — and its series is returned
+    to zero here.
+
+    Respects ``_otel_enabled`` — no-op when False.
+    """
+    if not _otel_enabled:
+        return
+    wanted: dict[str, int] = {}
+    for actor, total in totals.items():
+        label = _bounded_cron_actor(actor)
+        # Distinct actors can share the overflow label, so their totals
+        # sum onto the one series they share.
+        wanted[label] = wanted.get(label, 0) + total
+    level = _cron_failure_level()
+    for label, target in wanted.items():
+        delta = target - level.get(label, 0)
+        if delta:
+            _cron_consecutive_failures.add(delta, {"actor": label})
+        level[label] = target
+    # *totals* is the complete truth, so a label the database no longer
+    # reports is a schedule set that stopped failing somewhere else —
+    # return it to zero rather than stranding its last level.
+    for label in list(level):
+        if label not in wanted:
+            stranded = level.pop(label)
+            if stranded:
+                _cron_consecutive_failures.add(-stranded, {"actor": label})
 
 
 _disabled_schedules_count: int = 0

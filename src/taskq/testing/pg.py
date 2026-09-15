@@ -90,8 +90,57 @@ _TRUNCATE_TABLES: tuple[str, ...] = (
 )
 
 
+_migrated_triggers: dict[str, frozenset[tuple[str, str]]] = {}
+"""Per-schema trigger set as the migrations left it, captured on first reset.
+
+A test that installs a trigger — a commit-time constraint trigger to make
+a COMMIT fail, say — changes the schema's DDL, which no TRUNCATE undoes.
+The next test on the module's shared schema then meets a rule it never
+asked for, so its failure reads as a defect in the code under test.  The
+snapshot is what lets a reset put the DDL back.
+"""
+
+
+async def _reset_triggers(conn: _Conn, schema: str) -> None:
+    """Drop triggers on the dynamic tables that the migrations did not
+    install, restoring the schema's DDL to its migrated state.
+
+    The first call for a schema records the migrated set instead — it runs
+    in per-test setup, before any test body can add one.
+
+    The trigger and table names come from the catalog and are interpolated
+    into the DROP, so they pass the project's identifier validation first
+    (the same rule every user-sourced identifier follows): a name the rule
+    cannot admit fails loudly here rather than being interpolated raw —
+    a quote inside it would break out of the quoted identifier.
+    """
+    rows = await conn.fetch(
+        "SELECT c.relname AS table_name, t.tgname AS trigger_name "
+        "FROM pg_trigger t "
+        "JOIN pg_class c ON c.oid = t.tgrelid "
+        "JOIN pg_namespace n ON n.oid = c.relnamespace "
+        "WHERE n.nspname = $1 AND NOT t.tgisinternal AND c.relname = ANY($2::text[])",
+        schema,
+        list(_TRUNCATE_TABLES),
+    )
+    present = {(str(row["table_name"]), str(row["trigger_name"])) for row in rows}
+    migrated = _migrated_triggers.get(schema)
+    if migrated is None:
+        _migrated_triggers[schema] = frozenset(present)
+        return
+    extra = sorted(present - migrated)
+    # Validate the whole drop list before issuing any DROP: a reset that
+    # fails halfway leaves the schema in neither state.
+    for table, trigger in extra:
+        if not _IDENT_RE.match(table) or not _IDENT_RE.match(trigger):
+            raise ValueError(f"invalid trigger identifier {trigger!r} on table {table!r}")
+    for table, trigger in extra:
+        await conn.execute(f'DROP TRIGGER "{trigger}" ON "{schema}"."{table}"')
+
+
 async def truncate_schema(conn: _Conn, schema: str) -> None:
-    """Truncate all dynamic tables in FK-safe order using CASCADE.
+    """Truncate all dynamic tables in FK-safe order using CASCADE, and drop
+    triggers a previous test added to them.
 
     Leaves ``schema_migrations`` intact.  Safe to call repeatedly.
     """
@@ -99,6 +148,7 @@ async def truncate_schema(conn: _Conn, schema: str) -> None:
         raise ValueError(f"invalid schema name {schema!r}")
     for table in _TRUNCATE_TABLES:
         await conn.execute(f'TRUNCATE TABLE "{schema}"."{table}" CASCADE')
+    await _reset_triggers(conn, schema)
 
 
 async def seed_actors(

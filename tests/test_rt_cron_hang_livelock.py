@@ -66,6 +66,7 @@ from .test_rt_cron_harness import (
     cron_settings,
     hour_floor,
     make_backend,
+    schedule_row,
     seed_actor_config,
     seed_schedule,
 )
@@ -675,6 +676,123 @@ class TestHungFactoryStrikesAtShippedDefaults:
             "the stored failure must name the factory that hung — it is the "
             "only thing distinguishing it from every other schedule's factory; "
             f"got {row['last_fire_error']!r}"
+        )
+
+
+class TestHungFactoryBatchCannotLivelockTheTick:
+    """A batch full of simultaneously-due hung factories must not overrun
+    the whole-tick deadline in aggregate.
+
+    The per-factory deadline bounds ONE factory's wait. A tick's batch can
+    hold up to ``cron_tick_limit`` (default 100) due schedules, and the
+    planning loop awaits each factory in turn — so the BATCH's aggregate
+    factory wait is what the leader's whole-tick ``asyncio.timeout``
+    actually races. Any per-factory floor that lets each wait exceed the
+    tick's remaining budget (even by 50 ms) sums past the whole-tick
+    deadline once a dozen-plus hung factories share a batch: the outer
+    deadline wins, its ``CancelledError`` aborts the tick, the transaction
+    rolls back every strike, and the identical batch is re-selected on the
+    very next tick — forever. The tick must instead stop funding factory
+    waits once its budget is spent: the remaining factory-backed schedules
+    take an immediate, named strike and the tick commits inside its
+    deadline.
+    """
+
+    async def test_a_batch_of_hung_factories_still_commits_strikes_and_fires_the_peer(
+        self,
+        clean_pg_conn: asyncpg.Connection,
+        module_pg_schema: ModulePgSchema,
+    ) -> None:
+        """20 due schedules on one hung factory plus one healthy static
+        peer: the leader-shaped tick must RETURN inside its own deadline
+        (not be cut by it), every hung schedule must carry a committed
+        strike (the path to auto-disable), the schedules the budget could
+        not fund must name the budget exhaustion as their failure reason,
+        and the healthy peer must have fired and advanced."""
+        schema = module_pg_schema.schema_name
+        settings = cron_settings(schema)
+        await seed_actor_config(clean_pg_conn, schema, _ACTOR)
+        due = hour_floor(datetime.now(UTC))
+        hung_count = 20
+        hung_ids = [
+            await seed_schedule(
+                clean_pg_conn,
+                schema,
+                actor=_ACTOR,
+                name=f"hung-batch-{i}",
+                cron_expr=_HOURLY,
+                next_fire_at=due,
+                payload_factory="tests.test_rt_cron_hang_livelock.async_hang_factory",
+            )
+            for i in range(hung_count)
+        ]
+        healthy_id = await seed_schedule(
+            clean_pg_conn,
+            schema,
+            actor=_ACTOR,
+            name="healthy-peer-batch",
+            cron_expr=_HOURLY,
+            next_fire_at=due,
+        )
+
+        backend = make_backend(settings)
+        worker_id = new_uuid()
+
+        with _async_hang() as (entered, _gate):
+            started = time.monotonic()
+            outcome = "returned"
+            fired: int | None = None
+            try:
+                fired = await asyncio.wait_for(
+                    _run_leader_shaped_tick(clean_pg_conn, settings, backend, schema, worker_id),
+                    timeout=_BOUND_S,
+                )
+            except (TimeoutError, asyncio.CancelledError):
+                outcome = "cut by a deadline"
+            elapsed = time.monotonic() - started
+
+        assert entered.is_set(), (
+            "vacuous run: the tick never reached the hung factory, so nothing "
+            "here proves anything about the batch"
+        )
+        assert fired is not None and outcome == "returned", (
+            f"the tick over {hung_count} hung factories did not return — it was "
+            f"{outcome} after {elapsed:.1f}s. The per-factory waits summed past "
+            "the whole-tick deadline, the outer asyncio.timeout's CancelledError "
+            "aborted tick_cron, and the transaction rolled back every strike: "
+            "the identical batch is selected again next tick — livelock"
+        )
+        assert elapsed < _BOUND_S
+        assert fired == 1, "exactly the healthy static-peer schedule fired"
+
+        hung_rows = [
+            await schedule_row(clean_pg_conn, schema, schedule_id) for schedule_id in hung_ids
+        ]
+        for schedule_id, row in zip(hung_ids, hung_rows, strict=True):
+            assert row["consecutive_failures"] == 1, (
+                f"schedule {schedule_id} recorded {row['consecutive_failures']} "
+                "strikes — a rolled-back tick leaves the whole batch at zero, "
+                "so auto-disable is unreachable and the livelock has no telemetry"
+            )
+        budget_exhausted = [
+            row for row in hung_rows if "budget exhausted" in (row["last_fire_error"] or "")
+        ]
+        assert len(budget_exhausted) >= hung_count - 2, (
+            f"only {len(budget_exhausted)} of {hung_count} hung schedules were "
+            "failed immediately with a tick-budget-exhausted reason — at most "
+            "two real factory waits can fit inside the tick's funded budget, "
+            "so every later schedule must be struck without waiting; waiting "
+            "for each is exactly the aggregate overrun that cancels the tick"
+        )
+
+        healthy_row = await clean_pg_conn.fetchrow(
+            f'SELECT next_fire_at FROM "{schema}".cron_schedules WHERE id = $1',  # noqa: S608  # Why: schema is a test-fixture identifier; id is $-bound.
+            healthy_id,
+        )
+        assert healthy_row is not None
+        assert healthy_row["next_fire_at"] > due, (
+            "the healthy peer's advance was rolled back with the aborted tick — "
+            "a hung batch must not take down schedules that carry no factory"
         )
 
 

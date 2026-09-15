@@ -17,7 +17,7 @@ from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 import pytest
-from asyncpg.exceptions import UniqueViolationError
+from asyncpg.exceptions import InterfaceError, UniqueViolationError
 from opentelemetry import trace
 from opentelemetry.trace import StatusCode
 
@@ -98,6 +98,7 @@ class _FakeCronConn(FakeConn):
         self.actor_config_rows = actor_config_rows if actor_config_rows is not None else []
         self._disabled_count = disabled_count
         self.fetch_calls: list[tuple[str, tuple[object, ...]]] = []
+        self.fetchrow_calls: list[tuple[str, tuple[object, ...]]] = []
         self.read_due_schedules = False
 
     async def fetchval(self, sql: str, *args: object) -> object:
@@ -109,6 +110,16 @@ class _FakeCronConn(FakeConn):
         if "COUNT" in sql:
             return self._disabled_count
         raise AssertionError(f"unexpected fetchval: {sql}")
+
+    async def fetchrow(self, sql: str, *args: object) -> object:
+        """Answer the tick's one single-row read: the per-actor failure
+        totals aggregate (an empty totals object — this fake holds no
+        failing rows). Any other ``fetchrow`` is a new read the fake does
+        not model."""
+        self.fetchrow_calls.append((sql, args))
+        if "jsonb_object_agg" in sql:
+            return _FakeCronRecord({"totals": "{}"})
+        raise AssertionError(f"unexpected fetchrow: {sql}")
 
     async def fetch(self, sql: str, *args: object) -> list[_FakeCronRecord]:
         self.fetch_calls.append((sql, args))
@@ -1560,3 +1571,150 @@ async def test_cancelled_error_mid_savepoint_rolls_back_and_writes_no_strikes(
     ]
     assert error_spans == []
     assert _success_updates(conn) == []
+
+
+# ── the factory deadline's budget math ─────────────────────────────────
+#
+# The per-factory deadline is ``min(cron_payload_factory_timeout, what the
+# tick has left of its whole-tick budget after the write reserve)``.  Any
+# floor under that clamp lets each factory wait exceed the budget the tick
+# actually has — and a batch of hung factories sums those floors past the
+# leader's whole-tick ``asyncio.timeout``: the outer deadline wins, the
+# tick's transaction rolls back every strike, and the identical batch is
+# re-selected next tick.  A tick whose budget is spent must therefore
+# fund NO further factory wait (None), and the planning loop turns that
+# into an immediate, named per-schedule failure.
+
+
+class TestFactoryDeadlineMath:
+    """The clamp/reserve/exhaustion edges of the per-factory deadline."""
+
+    def test_configured_budget_applies_when_the_tick_has_room(self) -> None:
+        settings = _cron_settings(
+            DISPATCHER_COMMAND_TIMEOUT="5.0", CRON_PAYLOAD_FACTORY_TIMEOUT="2.0"
+        )
+        assert cron_loop._factory_deadline(settings, 0.0) == 2.0
+
+    def test_the_write_reserve_stays_unspent(self) -> None:
+        settings = _cron_settings(
+            DISPATCHER_COMMAND_TIMEOUT="5.0", CRON_PAYLOAD_FACTORY_TIMEOUT="5.0"
+        )
+        # A fresh tick at the matching defaults: the clamp holds the 10%
+        # write reserve back from the factory.
+        assert cron_loop._factory_deadline(settings, 0.0) == 4.5
+        # Two seconds in, the clamp tracks what the tick actually has left.
+        assert cron_loop._factory_deadline(settings, 2.0) == 2.5
+
+    def test_a_spent_tick_funds_no_factory_wait(self) -> None:
+        settings = _cron_settings(
+            DISPATCHER_COMMAND_TIMEOUT="5.0", CRON_PAYLOAD_FACTORY_TIMEOUT="5.0"
+        )
+        assert cron_loop._factory_deadline(settings, 4.5) is None, (
+            "a tick at the edge of its funded budget must not grant even a "
+            "minimal wait — per-factory floors are what sum a hung batch "
+            "past the whole-tick deadline"
+        )
+        assert cron_loop._factory_deadline(settings, 100.0) is None
+
+
+# ── the commit-gate fallback is loud ───────────────────────────────────
+#
+# A connection that cannot carry the gate's session-scoped LISTEN (a
+# transaction-pooling proxy shape) gets its telemetry emitted inline —
+# pre-commit precision lost.  That degradation must be a named warning:
+# emitted silently, telemetry that can describe an uncommitted
+# transaction is indistinguishable from the commit-gated kind, and a
+# failure has come to look exactly like a success.
+
+
+class _GatelessCronConn(_FakeCronConn):
+    """A connection that cannot carry the commit gate's LISTEN: the server
+    pid reads fine but listener registration fails, the shape a
+    transaction-pooling proxy in front of Postgres presents."""
+
+    def get_server_pid(self) -> int:
+        # Implausible backend pid: the armed-emission map is keyed by pid
+        # and shares this process with real-PG tests, so the fake must not
+        # collide with a real session's entry.
+        return 2**30
+
+    async def remove_listener(self, *_args: object) -> None:
+        return None
+
+    async def add_listener(self, *_args: object) -> None:
+        raise InterfaceError("cannot LISTEN through a transaction-pooling proxy")
+
+
+async def test_commit_gate_fallback_warns_and_still_emits_inline() -> None:
+    """add_listener raising InterfaceError: the tick still fires, the
+    fallback logs one warning naming the cause, and the tick's own
+    telemetry is still emitted (inline) rather than lost."""
+    import structlog.testing
+
+    row = _make_schedule_row(actor="gateless_actor", next_fire_at=_NOW)
+    conn = _GatelessCronConn(
+        schedule_rows=[row],
+        actor_config_rows=[_make_actor_config_row(actor="gateless_actor")],
+    )
+    backend = InMemoryBackend(clock=FakeClock(_NOW))
+
+    with structlog.testing.capture_logs() as captured:
+        fired = await _tick(conn, _cron_settings(), backend)
+
+    assert fired == 1
+    fallback_warnings = [e for e in captured if e["event"] == "cron-commit-gate-unavailable"]
+    assert len(fallback_warnings) == 1, (
+        "the commit gate's failure must be a loud, named warning — a silent "
+        "fallback makes telemetry that can describe an uncommitted "
+        "transaction indistinguishable from the gated kind"
+    )
+    assert fallback_warnings[0]["log_level"] == "warning"
+    assert "transaction-pooling proxy" in str(fallback_warnings[0].get("error", "")), (
+        "the warning must name the cause"
+    )
+    assert len([e for e in captured if e["event"] == "cron fired"]) == 1, (
+        "the tick's telemetry must still be emitted inline — losing the "
+        "whole failure trail costs more than the commit-time precision the "
+        "gate buys"
+    )
+
+
+# ── the failure-totals round trip is gated on telemetry being on ───────
+#
+# The per-tick per-actor failure aggregate has exactly one consumer: the
+# failure-gauge reconcile in the emission.  With telemetry disabled that
+# reconcile is a no-op, so the aggregate is one wasted round trip on every
+# non-empty tick.
+
+
+async def test_failure_totals_round_trip_only_when_telemetry_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A non-empty tick with telemetry disabled must not issue the totals
+    query at all; re-enabled, exactly one totals read runs per tick."""
+    import taskq.obs._otel as otel_mod
+
+    row = _make_schedule_row(
+        actor="quiet_actor",
+        payload_factory="nonexistent.module.fn",
+        next_fire_at=_NOW,
+    )
+    conn = _FakeCronConn(
+        schedule_rows=[row],
+        actor_config_rows=[_make_actor_config_row(actor="quiet_actor")],
+    )
+    backend = InMemoryBackend(clock=FakeClock(_NOW))
+
+    monkeypatch.setattr(otel_mod, "_otel_enabled", False)
+    await _tick(conn, _cron_settings(), backend)
+    assert conn.fetchrow_calls == [], (
+        "the failure-totals aggregate ran with telemetry disabled — one "
+        "wasted round trip on every non-empty tick"
+    )
+
+    monkeypatch.setattr(otel_mod, "_otel_enabled", True)
+    await _tick(conn, _cron_settings(), backend)
+    totals_reads = [sql for sql, _args in conn.fetchrow_calls if "jsonb_object_agg" in sql]
+    assert len(totals_reads) == 1, (
+        "with telemetry enabled the reconcile's source query runs exactly once per non-empty tick"
+    )

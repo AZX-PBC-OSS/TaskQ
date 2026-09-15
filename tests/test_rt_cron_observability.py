@@ -770,6 +770,92 @@ class TestNoStrikeTelemetryWithoutACommit:
             f"rolled back; saw {cron_failure_calls}"
         )
 
+    async def test_a_healthy_tick_after_a_rolled_back_one_still_reports(
+        self,
+        clean_pg_conn: asyncpg.Connection,
+        module_pg_schema: ModulePgSchema,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The commit gate is armed fresh on every tick, not once per
+        connection: a tick whose COMMIT fails must not leave the
+        connection permanently unable to report telemetry.
+
+        The first tick strikes a schedule and its COMMIT is forced to
+        fail, so (per the sibling test above) no telemetry survives it.
+        The trigger is then dropped and a second, healthy tick runs on
+        the SAME connection -- the same session the commit gate's
+        listener and armed-emission map are keyed by. That second tick's
+        own strike must still be reported: a rolled-back tick's stale
+        arming must not shadow the next tick's.
+        """
+        schema = module_pg_schema.schema_name
+        settings = cron_settings(schema)
+        await seed_actor_config(clean_pg_conn, schema, _ACTOR)
+        schedule_id = await seed_schedule(
+            clean_pg_conn,
+            schema,
+            actor=_ACTOR,
+            name="recovers-after-rolled-back-commit",
+            cron_expr=_HOURLY,
+            next_fire_at=hour_floor(datetime.now(UTC)),
+            payload_factory=_BAD_FACTORY,
+        )
+
+        cron_failure_calls: list[tuple[str, int]] = []
+        monkeypatch.setattr(
+            cron_loop,
+            "record_cron_failure",
+            lambda actor, delta: cron_failure_calls.append((actor, delta)),
+        )
+
+        await clean_pg_conn.execute(
+            f'CREATE OR REPLACE FUNCTION "{schema}".commit_gate_fail_recover() '
+            "RETURNS trigger AS $$ "
+            "BEGIN RAISE EXCEPTION 'commit-gate: forced commit failure'; END; "
+            "$$ LANGUAGE plpgsql"
+        )
+        await clean_pg_conn.execute(
+            "CREATE CONSTRAINT TRIGGER commit_gate_fail_recover_trg "
+            f'AFTER UPDATE ON "{schema}".cron_schedules '
+            "DEFERRABLE INITIALLY DEFERRED "
+            f'FOR EACH ROW EXECUTE FUNCTION "{schema}".commit_gate_fail_recover()'
+        )
+
+        worker_id = new_uuid()
+        with pytest.raises(asyncpg.RaiseError, match="commit-gate"):
+            async with clean_pg_conn.transaction():
+                fired = await tick_cron(
+                    clean_pg_conn, settings, make_backend(settings), schema, worker_id
+                )
+                assert fired == 0
+        assert cron_failure_calls == [], "the rolled-back tick's strike must not export"
+
+        await clean_pg_conn.execute(
+            f'DROP TRIGGER commit_gate_fail_recover_trg ON "{schema}".cron_schedules'
+        )
+        await clean_pg_conn.execute(
+            f'UPDATE "{schema}".cron_schedules SET next_fire_at = $2 WHERE id = $1',  # noqa: S608  # Why: schema is a test-fixture identifier; values are $-bound.
+            schedule_id,
+            hour_floor(datetime.now(UTC)),
+        )
+
+        async with clean_pg_conn.transaction():
+            fired = await tick_cron(
+                clean_pg_conn, settings, make_backend(settings), schema, worker_id
+            )
+            assert fired == 0
+
+        row = await schedule_row(clean_pg_conn, schema, schedule_id)
+        assert row["consecutive_failures"] == 1, (
+            "the second tick's strike must persist in the database"
+        )
+        assert cron_failure_calls == [(_ACTOR, 1)], (
+            "a healthy tick on the same connection as an earlier rolled-back "
+            f"one must still export its own strike; saw {cron_failure_calls} "
+            "-- a connection must not lose cron telemetry permanently after "
+            "one bad tick"
+        )
+
 
 class TestFailureGaugeIsDerivedFromTheDatabase:
     """``taskq.cron.consecutive_failures`` must report the failing-schedule
@@ -917,6 +1003,89 @@ class TestFailureGaugeIsDerivedFromTheDatabase:
             "returns to zero even when no schedule is failing at all"
         )
 
+    async def test_actor_whose_failing_schedule_is_deleted_with_nothing_due_self_corrects(
+        self,
+        clean_pg_conn: asyncpg.Connection,
+        module_pg_schema: ModulePgSchema,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The stranded-actor case: an actor fails (its series reads 1),
+        another process then deletes that schedule outright, and the actor
+        has NOTHING due on the next tick — the tick's batch never touches
+        it. The reconcile must still return the actor's series to the
+        database's truth (zero), because the totals it reconciles against
+        cover every actor with a failing schedule, not only the batch's.
+        """
+        schema = module_pg_schema.schema_name
+        settings = cron_settings(schema)
+        gone_actor = "rt_obs_gone_actor"
+        await seed_actor_config(clean_pg_conn, schema, gone_actor, queue=_QUEUE)
+        await seed_actor_config(clean_pg_conn, schema, _ACTOR, queue=_QUEUE)
+        due = hour_floor(datetime.now(UTC))
+        gone_id = await seed_schedule(
+            clean_pg_conn,
+            schema,
+            actor=gone_actor,
+            name="failing-then-deleted-with-nothing-due",
+            cron_expr=_HOURLY,
+            next_fire_at=due,
+            payload_factory=_BAD_FACTORY,
+        )
+        ticking_id = await seed_schedule(
+            clean_pg_conn,
+            schema,
+            actor=_ACTOR,
+            name="keeps-the-next-tick-nonempty",
+            cron_expr=_HOURLY,
+            next_fire_at=due + timedelta(hours=2),
+        )
+
+        reader = InMemoryMetricReader()
+        meter = MeterProvider(metric_readers=[reader]).get_meter("taskq-cron-gone-actor")
+        monkeypatch.setattr(otel_mod, "_otel_enabled", True)
+        monkeypatch.setattr(
+            otel_mod,
+            "_cron_consecutive_failures",
+            meter.create_up_down_counter("taskq.cron.consecutive_failures", unit="1"),
+        )
+
+        async def _tick() -> int:
+            async with clean_pg_conn.transaction():
+                return await tick_cron(
+                    clean_pg_conn, settings, make_backend(settings), schema, new_uuid()
+                )
+
+        # The schedule strikes once: the database and the series agree at 1.
+        assert await _tick() == 0
+        points = {p[0].get("actor"): p[1] for p in await self._cron_failure_points(reader)}
+        assert points.get(gone_actor) == 1, (
+            "baseline: the failing actor must report one failure before the "
+            f"rest of this test proves anything; saw {points}"
+        )
+
+        # Another process deletes the failing schedule outright. Nothing
+        # for that actor is ever due again.
+        await clean_pg_conn.execute(
+            f'DELETE FROM "{schema}".cron_schedules WHERE id = $1',  # noqa: S608  # Why: schema is a test-fixture identifier; id is $-bound.
+            gone_id,
+        )
+        await clean_pg_conn.execute(
+            f'UPDATE "{schema}".cron_schedules SET next_fire_at = $2 WHERE id = $1',  # noqa: S608  # Why: schema is a test-fixture identifier; values are $-bound.
+            ticking_id,
+            due,
+        )
+
+        # The next tick's batch contains only the other actor's schedule.
+        assert await _tick() == 1, "the healthy schedule fires on this tick"
+
+        points = {p[0].get("actor"): p[1] for p in await self._cron_failure_points(reader)}
+        assert points.get(gone_actor) == 0, (
+            f"the deleted schedule's actor must return to the database's truth "
+            f"(zero) on the next tick even though no tick batch ever examined "
+            f"it again; saw {points}. A reconcile scoped to the tick's own "
+            "batch actors strands the actor's last reported level forever"
+        )
+
     async def test_value_returns_to_zero_once_no_schedule_is_failing(
         self,
         clean_pg_conn: asyncpg.Connection,
@@ -990,6 +1159,124 @@ class TestFailureGaugeIsDerivedFromTheDatabase:
             f"must read 0; saw {points}. Residue here means an operator "
             "cannot tell a currently-failing actor from one whose failures "
             "were resolved by a delete or a re-enable somewhere else"
+        )
+
+
+class TestReconciliationLeavesUntouchedActorsAlone:
+    """An actor the database still shows failing keeps its reported level
+    even when no schedule of its was due this tick.
+
+    ``reconcile_cron_failures`` receives totals read over the whole
+    ``cron_schedules`` table (``_actor_failure_totals``), not just the
+    tick's own batch — so an actor with failing schedules that simply were
+    not due this tick still appears in the totals with the count the
+    database holds. Zeroing it would erase an outstanding failure count
+    from the exported series while the database still holds it, exactly
+    the kind of drift the reconciliation exists to prevent, just pointed
+    the other way.
+    """
+
+    async def _cron_failure_points(
+        self, reader: InMemoryMetricReader
+    ) -> list[tuple[dict[str, object], int]]:
+        data = reader.get_metrics_data()
+        assert data is not None
+        return [
+            (dict(p.attributes or {}), int(p.value))
+            for rm in data.resource_metrics
+            for sm in rm.scope_metrics
+            for m in sm.metrics
+            if m.name == "taskq.cron.consecutive_failures"
+            for p in m.data.data_points
+            if isinstance(p, NumberDataPoint)
+        ]
+
+    async def test_an_actor_absent_from_the_tick_keeps_its_reported_level(
+        self,
+        clean_pg_conn: asyncpg.Connection,
+        module_pg_schema: ModulePgSchema,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Two actors each carry a failing schedule. Once both are due and
+        struck, one actor's schedule is pushed far into the future so a
+        later tick never examines it. That later tick's reconciliation
+        must not report the untouched actor as having zero failures --
+        the database still holds its strike.
+        """
+        schema = module_pg_schema.schema_name
+        settings = cron_settings(schema)
+        untouched_actor = "rt_obs_untouched_actor"
+        due = hour_floor(datetime.now(UTC))
+        await seed_actor_config(clean_pg_conn, schema, _ACTOR, queue=_QUEUE)
+        await seed_actor_config(clean_pg_conn, schema, untouched_actor, queue=_QUEUE)
+        touched_id = await seed_schedule(
+            clean_pg_conn,
+            schema,
+            actor=_ACTOR,
+            name="stays-due-every-tick",
+            cron_expr=_HOURLY,
+            next_fire_at=due,
+            payload_factory=_BAD_FACTORY,
+        )
+        untouched_id = await seed_schedule(
+            clean_pg_conn,
+            schema,
+            actor=untouched_actor,
+            name="goes-quiet-after-first-strike",
+            cron_expr=_HOURLY,
+            next_fire_at=due,
+            payload_factory=_BAD_FACTORY,
+        )
+
+        reader = InMemoryMetricReader()
+        meter = MeterProvider(metric_readers=[reader]).get_meter("taskq-cron-reconcile-untouched")
+        monkeypatch.setattr(otel_mod, "_otel_enabled", True)
+        monkeypatch.setattr(
+            otel_mod,
+            "_cron_consecutive_failures",
+            meter.create_up_down_counter("taskq.cron.consecutive_failures", unit="1"),
+        )
+
+        async def _tick() -> int:
+            async with clean_pg_conn.transaction():
+                return await tick_cron(
+                    clean_pg_conn, settings, make_backend(settings), schema, new_uuid()
+                )
+
+        # Both actors strike once: both series read 1.
+        assert await _tick() == 0
+        points = {p[0].get("actor"): p[1] for p in await self._cron_failure_points(reader)}
+        assert points == {_ACTOR: 1, untouched_actor: 1}, (
+            "baseline: both actors must show one failure before the rest of "
+            f"this test proves anything; saw {points}"
+        )
+
+        # The untouched actor's schedule is pushed out of this tick's due
+        # window; the other actor's stays due so the next tick's batch
+        # includes it but never touches the untouched actor's schedule.
+        await clean_pg_conn.execute(
+            f'UPDATE "{schema}".cron_schedules SET next_fire_at = $2 WHERE id = $1',  # noqa: S608  # Why: schema is a test-fixture identifier; values are $-bound.
+            untouched_id,
+            due + timedelta(days=1),
+        )
+        await clean_pg_conn.execute(
+            f'UPDATE "{schema}".cron_schedules SET next_fire_at = $2 WHERE id = $1',  # noqa: S608  # Why: schema is a test-fixture identifier; values are $-bound.
+            touched_id,
+            due,
+        )
+
+        assert await _tick() == 0
+        row = await schedule_row(clean_pg_conn, schema, untouched_id)
+        assert row["consecutive_failures"] == 1, (
+            "test premise: the database still holds the untouched actor's strike"
+        )
+
+        points = {p[0].get("actor"): p[1] for p in await self._cron_failure_points(reader)}
+        assert points.get(untouched_actor) == 1, (
+            "a tick that never examined this actor must not zero its "
+            f"reported failure level; saw {points}. The database still "
+            "holds the strike -- reconciliation must only move actors the "
+            "tick's own batch actually examined"
         )
 
 

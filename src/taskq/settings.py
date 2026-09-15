@@ -1607,10 +1607,12 @@ class WorkerSettings(TaskQSettings):
         validator=_positive_finite_float,
         description="TASKQ_CRON_PAYLOAD_FACTORY_TIMEOUT. Per-call deadline "
         "for a cron schedule's payload factory (both the off-loop call and "
-        "the coroutine a factory returns). Default 5.0s. Tune it BELOW the "
-        "leader's whole-tick deadline (dispatcher_command_timeout) so the "
-        "named per-schedule failure this deadline records is what fires, "
-        "not the whole-tick cancellation.",
+        "the coroutine a factory returns). Default 5.0s. The tick clamps it "
+        "to stay strictly inside what is left of the leader's whole-tick "
+        "deadline (dispatcher_command_timeout), so the named per-schedule "
+        "failure this deadline records is what fires, never the whole-tick "
+        "cancellation; a value at or above that deadline is therefore an "
+        "upper bound, not the effective one.",
     )
 
     # ── Until-idle drain mode ────────────────────────────────────────────
