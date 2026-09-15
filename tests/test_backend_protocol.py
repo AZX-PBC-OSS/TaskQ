@@ -215,9 +215,9 @@ class TestRuntimeCheckable:
 
 
 class TestMethodCount:
-    def test_exactly_forty_eight_public_members(self) -> None:
+    def test_exactly_forty_nine_public_members(self) -> None:
         public = [m for m in dir(Backend) if not m.startswith("_")]
-        assert len(public) == 48, f"Expected 48 public members, got {len(public)}: {public}"
+        assert len(public) == 49, f"Expected 49 public members, got {len(public)}: {public}"
 
     def test_all_member_names_present(self) -> None:
         expected = {
@@ -237,6 +237,7 @@ class TestMethodCount:
             "mark_abandoned",
             "mark_snoozed",
             "mark_retry_after",
+            "mark_interrupted",
             "retry_job",
             "write_attempt",
             "get_attempts",
@@ -543,7 +544,7 @@ class TestJobRowRoundTrip:
         assert flds["status"].type is JobStatus
 
     def test_field_count(self) -> None:
-        expected = 40  # field list + tags + the two denial/snooze counters
+        expected = 41  # field list + tags + the denial/snooze counters + the interrupt counter
         assert len(fields(JobRow)) == expected
 
     def test_frozen(self) -> None:

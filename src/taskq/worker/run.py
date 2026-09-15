@@ -63,6 +63,7 @@ from taskq.worker._transient import TRANSIENT_PG_ERRORS
 from taskq.worker.cancel import make_cancel_controller
 from taskq.worker.deps import WorkerDeps
 from taskq.worker.dispatch import SlotPoolAcquireError, dispatch_one_job
+from taskq.worker.shutdown import drain_local_queue_to_pending
 
 __all__ = [  # pyright: ignore[reportUnsupportedDunderAll]  # Why: _main is lazily re-exported via __getattr__
     "_main",
@@ -242,6 +243,10 @@ async def producer_loop(
         max_concurrency=settings.max_concurrency,
         worker_id=str(worker_id),
     )
+    # Set once any claim round commits rows. Guards the exit hand-back
+    # below: a producer that never claimed cannot hold a locked row, so
+    # its exit owes the fleet no write (the common idle-shutdown shape).
+    made_a_claim = False
 
     async with contextlib.AsyncExitStack() as stack:
         wake_event: asyncio.Event | None = None
@@ -294,6 +299,7 @@ async def producer_loop(
                 continue
 
             if jobs:
+                made_a_claim = True
                 for job in jobs:
                     await local_queue.put(job)
                 if wake_event is not None:
@@ -333,6 +339,31 @@ async def producer_loop(
 
             if wake_event is not None:
                 wake_event.clear()
+
+    # Exit hand-back, on the DRAINING path only (producer_stop_event is
+    # what the orchestrator sets at DRAINING entry): the DRAINING pass
+    # re-pends what this worker held when it ran, but a claim round already
+    # in flight at that moment commits AFTER it — the producer only
+    # observes the stop event between rounds. Those rows are locked to a
+    # process on its way out and no later phase sees them (they never reach
+    # the active-jobs registry), so the producer hands back whatever it
+    # still holds as its own last act on that path: by loop exit no further
+    # claim of this worker's can commit, which is exactly the ordering the
+    # single DRAINING pass could not give. The statement is the same
+    # bounded, registry-excluding, attempt-refunding one (idempotent — a
+    # row the first pass already released no longer matches), and its
+    # failure mode is the helper's own (log + return 0; the lease-expiry
+    # sweep remains the backstop). A bare shutdown_event exit (the
+    # external-stop path, no orchestration) keeps the lease-reclaim shape
+    # it has always had.
+    if producer_stop_event.is_set() and made_a_claim:
+        handed_back = await drain_local_queue_to_pending(deps, worker_id)
+        if handed_back:
+            _producer_log.info(
+                "producer-exit-handback",
+                worker_id=str(worker_id),
+                rows_re_pended=handed_back,
+            )
 
     reason = "producer_stop_event" if producer_stop_event.is_set() else "shutdown_event"
     _producer_log.info("producer-loop-exit", reason=reason)
@@ -404,28 +435,39 @@ async def consumer_loop_stub(
     sentinel, writes terminal state via ``backend`` (shielded), and deregisters
     in ``finally``.
     """
-    while not shutdown_event.is_set():
+    while not (shutdown_event.is_set() or deps.producer_stop_event.is_set()):
         q_get = asyncio.create_task(local_queue.get())
         shut_wait = asyncio.create_task(shutdown_event.wait())
+        stop_wait = asyncio.create_task(deps.producer_stop_event.wait())
         try:
             _done, pending = await asyncio.wait(
-                [q_get, shut_wait],
+                [q_get, shut_wait, stop_wait],
                 return_when=asyncio.FIRST_COMPLETED,
             )
             for task in pending:
                 task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await task
-            if shut_wait in _done and q_get not in _done:
+            if q_get not in _done:
+                # A stop signal won the race and nothing was taken.
                 return
-            # Why fall through on a both-done turn: the get has already
-            # TAKEN the job out of local_queue — returning here would
-            # discard it with no consumer run, no terminal write, and no
-            # release, leaving recovery to lock-lease expiry. The taken
+            if deps.producer_stop_event.is_set():
+                # DRAINING owns every row this worker holds: the get TAKEN
+                # a row on the same turn the drain began. The hand-back
+                # re-pends it to the fleet (the take moved only the
+                # in-process queue entry, never the DB row), so running
+                # the stale local copy here would execute the job body
+                # twice. Return without dispatching.
+                return
+            # Why fall through on a shutdown_event-only both-done turn:
+            # the get has already TAKEN the job out of local_queue and no
+            # drain owns it (producer_stop_event is unset) — returning here
+            # would discard it with no consumer run, no terminal write, and
+            # no release, leaving recovery to lock-lease expiry. The taken
             # job runs this final iteration; the outer while's shutdown
             # check then exits the loop.
         finally:
-            for task in [q_get, shut_wait]:
+            for task in (q_get, shut_wait, stop_wait):
                 if not task.done():
                     task.cancel()
 
@@ -554,28 +596,46 @@ async def di_consumer_loop(
         )
     clock: Clock = clock_obj
 
-    while not shutdown_event.is_set():
+    while not (shutdown_event.is_set() or deps.producer_stop_event.is_set()):
         q_get = asyncio.create_task(local_queue.get())
         shut_wait = asyncio.create_task(shutdown_event.wait())
+        stop_wait = asyncio.create_task(deps.producer_stop_event.wait())
         try:
             _done, pending = await asyncio.wait(
-                [q_get, shut_wait],
+                [q_get, shut_wait, stop_wait],
                 return_when=asyncio.FIRST_COMPLETED,
             )
             for task in pending:
                 task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await task
-            if shut_wait in _done and q_get not in _done:
+            if q_get not in _done:
+                # A stop signal won the race and nothing was taken.
                 return
-            # Why fall through on a both-done turn: the get has already
-            # TAKEN the job out of local_queue — returning here would
-            # discard it with no dispatch, no terminal write, and no
-            # release, leaving recovery to lock-lease expiry. The taken
-            # job runs this final iteration; the outer while's shutdown
-            # check then exits the loop.
+            if deps.producer_stop_event.is_set():
+                # DRAINING owns every row this worker holds: the get TAKEN
+                # a row on the same turn the drain began. Running it would
+                # double-execute — the row is locked to this worker and
+                # never reached the active-jobs registry, so the hand-back
+                # (the orchestrator's DRAINING pass for rows claimed before
+                # it ran, the producer's exit pass for a claim round that
+                # committed after) re-pends it to the fleet while this
+                # loop's stale local copy would also run here. Return
+                # without dispatching. The taken row needs no release from
+                # THIS loop: the take moved only the in-process queue
+                # entry, never the DB row, so whichever hand-back pass
+                # runs finds it exactly as claimed.
+                return
+            # Why fall through on a shutdown_event-only both-done turn:
+            # the get has already TAKEN the job out of local_queue and no
+            # drain owns it (producer_stop_event is unset — this is the
+            # external-exit path, not a graceful-shutdown orchestration) —
+            # returning here would discard it with no dispatch, no
+            # terminal write, and no release, leaving recovery to
+            # lock-lease expiry. The taken job runs this final iteration;
+            # the outer while's shutdown check then exits the loop.
         finally:
-            for task in [q_get, shut_wait]:
+            for task in (q_get, shut_wait, stop_wait):
                 if not task.done():
                     task.cancel()
 

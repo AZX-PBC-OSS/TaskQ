@@ -5,20 +5,40 @@ Consumers (``orchestrate_shutdown``, health endpoints) MUST observe
 per-phase work.  Value ``NONE (0)`` means the worker is running normally.
 
 Phase ordering invariant:
-NONE (0) → DRAINING (1) → CANCELLING (2) → FORCING (3) → ABANDONING (4).
+NONE (0) → DRAINING (1) → CANCELLING (2) → FORCING (3) → RELEASING (4).
 
 SIGQUIT is not registered; produces a core dump on Linux. Use tini or
 ``ulimit -c 0`` for containerised deployments.
 
 The second-SIGTERM contract: if the second SIGTERM arrives during
-FORCING or ABANDONING, setting ``escalate_event`` is a no-op — the
+FORCING or RELEASING, setting ``escalate_event`` is a no-op — the
 orchestrator is already past CANCELLING.
+
+What the phases owe the work: a deploy is an infrastructure event, so it
+never terminalises a job and never spends its budget. Rows claimed but
+never started are handed back at DRAINING (attempt refunded; the producer
+repeats the hand-back on exit so a claim round in flight at the signal is
+caught too). Rows mid-execution get the cooperative cancel at CANCELLING
+and the forced cancel at FORCING; an actor that unwinds is *interrupted* —
+released back to the fleet, attempt refunded — and one still alive past
+both graces is interrupted with a hold at RELEASING (released only once
+the process is provably gone). ``abandoned`` stays on the operator-cancel
+ladder (the row carries ``cancel_requested_at``): the FORCING escalation
+probe and the RELEASING ``mark_interrupted`` fence keep an operator's
+request ahead of any release. Vendor shape: River releases soft-stopped
+jobs with the attempt refunded and lets an operator cancel win
+(``vendor/river/internal/jobexecutor/job_executor.go``'s
+``softStopped`` branch; ``river_job.sql``'s ``JobSetStateIfRunningMany``);
+Sidekiq requeues before killing because losing a job is worse than
+running it twice (``vendor/sidekiq/lib/sidekiq/manager.rb``
+``hard_shutdown``).
 """
 
 import asyncio
 import os
 import signal
 import sys
+from datetime import timedelta
 from enum import IntEnum
 from typing import TYPE_CHECKING
 from uuid import UUID
@@ -31,10 +51,17 @@ from taskq.backend._protocol import Backend, CancelPhase
 from taskq.backend._sql import (
     parse_rowcount,  # pyright: ignore[reportPrivateUsage]  # Why: parse_rowcount is the canonical command-tag parser; used identically in worker/cancel.py.
 )
+from taskq.backend._sql_templates import (
+    _ATTEMPT_REFUND_SQL,  # pyright: ignore[reportPrivateUsage]  # Why: the one shared attempt-refund fragment — the drain's hand-back is the same non-consuming release shape as the template arms that interpolate it.
+)
 from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining.
 )
+from taskq.context import CancelOrigin
 from taskq.obs import get_logger
+from taskq.progress._buffer import (
+    _terminal_seq_and_state,  # pyright: ignore[reportPrivateUsage]  # Why: the release write carries the coalesced buffer exactly as the consumer's own terminal writes do — one seq/state projection, not a second copy.
+)
 from taskq.worker._transient import TRANSIENT_PG_ERRORS
 from taskq.worker._watchdog import dump_task_stacks
 
@@ -71,17 +98,28 @@ class ShutdownPhase(IntEnum):
     """Worker shutdown phase.
 
     NONE       — running normally.
-    DRAINING   — stop accepting new dispatch, finish in-flight jobs.
-    CANCELLING — cooperative cancel of remaining jobs.
-    FORCING    — force-cancel grace, terminal writes shielded.
-    ABANDONING — pod must be replaced to reclaim slots.
+    DRAINING   — stop accepting new dispatch, hand back claimed-but-unstarted
+                 jobs (attempt refunded).
+    CANCELLING — cooperative cancel of remaining jobs; stamps the shutdown
+                 origin on each signalled job.
+    FORCING    — force-cancel grace, terminal writes shielded; the cancel
+                 escalation write doubles as the origin probe (it lands only
+                 on rows already carrying an operator's cancel request).
+    RELEASING  — release jobs whose actors never unwound back to the fleet
+                 (``mark_interrupted``: attempt refunded, held until this
+                 process is provably gone); jobs under an operator cancel
+                 still reach ``abandoned`` here.
+
+    The value 4 was ``ABANDONING`` before the release phase stopped
+    abandoning — the integer is unchanged, so ``/health`` JSON and the CLI
+    table keep their numbers; only the label moved to what the phase does.
     """
 
     NONE = 0
     DRAINING = 1
     CANCELLING = 2
     FORCING = 3
-    ABANDONING = 4
+    RELEASING = 4
 
 
 async def drain_local_queue_to_pending(deps: "WorkerDeps", worker_id: UUID) -> int:
@@ -95,6 +133,18 @@ async def drain_local_queue_to_pending(deps: "WorkerDeps", worker_id: UUID) -> i
     pool exhaustion or connection error the helper logs a warning and
     returns 0 so the recovery sweep acts as the backstop rather than a
     deadlocked shutdown.
+
+    Two callers, one pass each, both on this worker's way out: the
+    orchestrator's DRAINING phase, and the producer loop's own exit (a
+    claim round in flight when the stop event landed commits after the
+    DRAINING pass; the producer's exit pass is the one write that cannot
+    be overtaken by this worker's next claim, because there is none).
+    Both refund the claim's attempt increment through the shared
+    ``_ATTEMPT_REFUND_SQL`` fragment — a claim that never reached an
+    actor bought nothing, so it spends nothing (the same idiom the
+    snooze / interruption release arms carry; the refund is floored at 0
+    and a second pass matches no rows, so the two passes together are
+    exactly-once).
 
     Why no ``started_at IS NULL`` conjunct: the dispatch claim CTE
     stamps ``started_at = clock_timestamp()`` AT CLAIM
@@ -120,9 +170,17 @@ async def drain_local_queue_to_pending(deps: "WorkerDeps", worker_id: UUID) -> i
     # the bare comprehension infers list[JobId], and list invariance
     # would refuse the uuid[] bind parameter's declared type below.
     active_ids: list[UUID] = [active.job_id for active in deps.active_jobs.all()]
+    # The attempt refund: the claim stamped attempt + 1 for an execution
+    # this hand-back says never happened, so the increment goes back —
+    # the same non-consuming-release idiom the snooze/unavailable and
+    # interruption arms carry (_ATTEMPT_REFUND_SQL; River refunds the same
+    # way on a soft stop, vendor/river/internal/jobexecutor/job_executor.go
+    # `max(jobRow.Attempt-1, 0)`). Without it every rolling deploy spends
+    # one retry of every claimed-but-unstarted job's budget. The alias
+    # ``j`` is what the shared fragment qualifies on.
     sql = (
-        f"UPDATE \"{schema}\".jobs SET status='pending', locked_by_worker=NULL, "  # noqa: S608  # Why: schema validated against _IDENT_RE before interpolation; asyncpg has no parameter binding for identifiers (same rationale as migrate.py).
-        f"lock_expires_at=NULL "
+        f"UPDATE \"{schema}\".jobs j SET status='pending', locked_by_worker=NULL, "  # noqa: S608  # Why: schema validated against _IDENT_RE before interpolation; asyncpg has no parameter binding for identifiers (same rationale as migrate.py).
+        f"lock_expires_at=NULL, attempt = {_ATTEMPT_REFUND_SQL} "
         f"WHERE locked_by_worker=$1 AND status='running'"
     )
     # The exclusion clause is only bound when there is something to
@@ -153,6 +211,46 @@ async def drain_local_queue_to_pending(deps: "WorkerDeps", worker_id: UUID) -> i
         return 0
 
 
+def _release_hold(
+    deps: "WorkerDeps",
+    settings: "WorkerSettings",
+    loop: asyncio.AbstractEventLoop,
+) -> timedelta:
+    """The hold a RELEASING-phase release carries.
+
+    A job released while its coroutine may still be alive in this process
+    must not be claimable by another pod until this process cannot touch it
+    any more. The shutdown watchdog force-exits at
+    ``termination_grace_period`` counted from the shutdown's start, so the
+    hold is the budget's remaining share (zero is fine: the release then
+    lands pending, and a past-budget process is already on borrowed time).
+    With ``watchdog_enabled = False`` there is no guaranteed exit, so the
+    hold is ``lock_lease`` — the bound the lease-expiry path already imposes
+    today, now without spending the attempt.
+    """
+    if not settings.watchdog_enabled:
+        return timedelta(seconds=settings.lock_lease)
+    started_at = deps.shutdown_started_at
+    if started_at is None:
+        # Unreachable through orchestrate_shutdown (DRAINING stamps it
+        # first); the defensive shape is the full budget, the same bound
+        # the watchdog enforces from the first signal.
+        return timedelta(seconds=settings.termination_grace_period)
+    remaining = settings.termination_grace_period - (loop.time() - started_at)
+    return timedelta(seconds=max(0.0, remaining))
+
+
+def _cancel_origin_counts(deps: "WorkerDeps") -> dict[str, int]:
+    """Active-job cancel-origin tallies for the CANCELLING phase log."""
+    counts: dict[str, int] = {"operator": 0, "shutdown": 0}
+    for active in deps.active_jobs.all():
+        if active.cancel_origin is CancelOrigin.OPERATOR:
+            counts["operator"] += 1
+        elif active.cancel_origin is CancelOrigin.SHUTDOWN:
+            counts["shutdown"] += 1
+    return counts
+
+
 async def orchestrate_shutdown(
     deps: "WorkerDeps",
     settings: "WorkerSettings",
@@ -164,7 +262,7 @@ async def orchestrate_shutdown(
 ) -> int:
     """Run the four-phase shutdown orchestration.
 
-    Phases are DRAINING → CANCELLING → FORCING → ABANDONING, followed by
+    Phases are DRAINING → CANCELLING → FORCING → RELEASING, followed by
     TaskQ-owned ``leader_conn`` close and ``shutdown_event.set()``.  Each
     phase is assigned to ``deps.shutdown_phase`` BEFORE any per-phase work.
     Returns 0 on clean exit.
@@ -190,13 +288,6 @@ async def orchestrate_shutdown(
         # ── Phase 2: CANCELLING ────────────────────────────────────────
         deps.shutdown_phase = ShutdownPhase.CANCELLING
         cancel_grace = settings.cancellation_grace_period
-        _log.info(
-            "shutdown-phase",
-            kind="shutdown_phase",
-            phase="CANCELLING",
-            active_jobs_count=deps.active_jobs.count(),
-            elapsed_seconds=loop.time() - t0,
-        )
         for active in deps.active_jobs.all():
             active.ctx.cancel_event.set()
             if active.cancel_phase < CancelPhase.COOPERATIVE:
@@ -204,6 +295,26 @@ async def orchestrate_shutdown(
                 active.cancel_observed_at = loop.time()
             elif active.cancel_observed_at is None:
                 active.cancel_observed_at = loop.time()
+            # Stamp the shutdown as the cancel's origin — unless an
+            # operator's cancel was already observed (the controller's
+            # PG-observation arms stamp OPERATOR; the row says who asked).
+            # The consumer's terminal routing reads the origin: SHUTDOWN
+            # releases the attempt back to the fleet (interrupted), an
+            # operator's keeps the cancel ladder. A later operator cancel
+            # still wins: the controller overrides the stamp on its next
+            # observation, and mark_interrupted's cancel_phase = 0 fence
+            # declines the row either way.
+            if active.cancel_origin is CancelOrigin.NONE:
+                active.cancel_origin = CancelOrigin.SHUTDOWN
+                active.ctx._set_cancel_origin(CancelOrigin.SHUTDOWN)  # pyright: ignore[reportPrivateUsage]  # Why: the orchestrator is the designated shutdown-side writer of the context's origin stamp (set alongside cancel_event.set(), per the field's contract).
+        _log.info(
+            "shutdown-phase",
+            kind="shutdown_phase",
+            phase="CANCELLING",
+            active_jobs_count=deps.active_jobs.count(),
+            cancel_origin_counts=_cancel_origin_counts(deps),
+            elapsed_seconds=loop.time() - t0,
+        )
 
         deadline = loop.time() + cancel_grace
         while loop.time() < deadline and deps.active_jobs.count() > 0:
@@ -227,7 +338,18 @@ async def orchestrate_shutdown(
                 # races escalating cancellation, so a detached write here can
                 # be double-cancelled — its outcome must be retrieved (see
                 # taskq._shield).
-                await shield_with_retrieval(
+                #
+                # The escalation write doubles as the origin probe: it lands
+                # only when the row is at cancel_phase = 1, i.e. carrying an
+                # operator's cancel request. A SHUTDOWN-stamped entry whose
+                # probe lands was racing an unobserved operator cancel (the
+                # heartbeat poll had not seen the row yet) — the row says
+                # who asked, so the entry re-stamps OPERATOR and stays on
+                # the operator ladder (RELEASING abandons it past the
+                # graces). A probe that misses on an OPERATOR-stamped entry
+                # means the row moved under the ladder (already terminal or
+                # reclaimed); that is logged, never silently discarded.
+                escalated = await shield_with_retrieval(
                     backend.write_cancel_escalation(active.job_id, worker_id, phase=2)
                 )
             except Exception as e:
@@ -237,6 +359,21 @@ async def orchestrate_shutdown(
                     error=str(e),
                 )
                 continue
+            if escalated and active.cancel_origin is CancelOrigin.SHUTDOWN:
+                active.cancel_origin = CancelOrigin.OPERATOR
+                active.ctx._set_cancel_origin(CancelOrigin.OPERATOR)  # pyright: ignore[reportPrivateUsage]  # Why: the orchestrator is the designated shutdown-side writer of the context's origin stamp (per the field's contract).
+                _log.info(
+                    "force-cancel-escalation-observed-operator-cancel",
+                    kind="cancel_origin",
+                    job_id=str(active.job_id),
+                    worker_id=str(worker_id),
+                )
+            elif not escalated and active.cancel_origin is CancelOrigin.OPERATOR:
+                _log.warning(
+                    "force-cancel-escalation-unmatched",
+                    job_id=str(active.job_id),
+                    worker_id=str(worker_id),
+                )
             active.task.cancel()
             active.cancel_phase = CancelPhase.FORCED
 
@@ -244,26 +381,107 @@ async def orchestrate_shutdown(
         while loop.time() < deadline and deps.active_jobs.count() > 0:  # noqa: ASYNC110  # Why: poll-for-exit with deadline is the intentional design for shutdown phases; the timed grace period cannot be expressed with Event alone.
             await asyncio.sleep(0.1)
 
-        # ── Phase 4: ABANDONING ────────────────────────────────────────
-        deps.shutdown_phase = ShutdownPhase.ABANDONING
+        # ── Phase 4: RELEASING ─────────────────────────────────────────
+        # Every entry still registered belongs to an actor that ignored
+        # both cancels. The shutdown owes it a release, not a verdict:
+        # mark_interrupted hands the row back to the fleet with the claim's
+        # attempt increment refunded, HELD behind the rest of this
+        # process's termination budget so no other pod can claim the row
+        # while this one might still touch it (Sidekiq's requeue-before-
+        # kill ordering — the release lands before the process dies, never
+        # after — with the overlap Sidekiq accepts closed by the hold).
+        deps.shutdown_phase = ShutdownPhase.RELEASING
+        hold = _release_hold(deps, settings, loop)
         _log.info(
             "shutdown-phase",
             kind="shutdown_phase",
-            phase="ABANDONING",
+            phase="RELEASING",
             active_jobs_count=deps.active_jobs.count(),
             elapsed_seconds=loop.time() - t0,
         )
+        released_count = 0
+        noop_count = 0
+        abandoned_count = 0
         for active in deps.active_jobs.all():
+            # An OPERATOR entry belongs to the cancel ladder, never to a
+            # release: one shielded write (mark_abandoned's phase-2 /
+            # NULL-lease guard decides — the FORCING probe put the row at
+            # phase 2 by construction), the phase's pre-rename shape
+            # exactly.
+            if active.cancel_origin is CancelOrigin.OPERATOR:
+                try:
+                    if await shield_with_retrieval(backend.mark_abandoned(active.job_id)):
+                        abandoned_count += 1
+                except asyncio.CancelledError:
+                    pass
+                except Exception as exc:
+                    _log.warning(
+                        "abandon-pg-write-failed",
+                        job_id=str(active.job_id),
+                        error=str(exc),
+                    )
+                continue
+            _buf = deps.progress_buffers.get(active.job_id)
+            _seq, _state = _terminal_seq_and_state(_buf)
             try:
-                await shield_with_retrieval(backend.mark_abandoned(active.job_id))
+                outcome = await shield_with_retrieval(
+                    backend.mark_interrupted(
+                        active.job_id,
+                        worker_id,
+                        attempt=active.ctx.attempt,
+                        hold=hold,
+                        progress_seq=_seq,
+                        progress_state=_state if _buf is not None and _buf.dirty else None,
+                    )
+                )
             except asyncio.CancelledError:
-                pass
+                continue
             except Exception as exc:
                 _log.warning(
-                    "abandon-pg-write-failed",
+                    "release-pg-write-failed",
                     job_id=str(active.job_id),
                     error=str(exc),
                 )
+                continue
+            if outcome == "noop":
+                # The fence declined: the row is no longer this worker's to
+                # release (its own consumer already terminalised it, or an
+                # operator cancel landed on it between FORCING and
+                # RELEASING). The row is the arbiter of origin: a
+                # cancel-carrying row gets the ladder's terminal write,
+                # whose own guard decides (a phase-1 row rides the cancel
+                # controller's remaining rungs; a terminal row matches
+                # nothing).
+                noop_count += 1
+                _log.debug(
+                    "release-interrupted-noop",
+                    job_id=str(active.job_id),
+                    worker_id=str(worker_id),
+                    cancel_origin=int(active.cancel_origin),
+                )
+                try:
+                    if await shield_with_retrieval(backend.mark_abandoned(active.job_id)):
+                        abandoned_count += 1
+                except asyncio.CancelledError:
+                    pass
+                except Exception as exc:
+                    _log.warning(
+                        "abandon-pg-write-failed",
+                        job_id=str(active.job_id),
+                        error=str(exc),
+                    )
+            else:
+                released_count += 1
+        _log.info(
+            "shutdown-phase",
+            kind="shutdown_phase",
+            phase="RELEASING",
+            released=released_count,
+            held_seconds=hold.total_seconds(),
+            noop=noop_count,
+            abandoned=abandoned_count,
+            elapsed_seconds=loop.time() - t0,
+        )
 
         # ── leader_conn close ──────────────────────────────────
         # Why the owns_leader_conn guard: the ownership contract ("TaskQ

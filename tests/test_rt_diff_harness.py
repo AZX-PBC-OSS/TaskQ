@@ -738,6 +738,7 @@ class DiffSide:
             "result_size_bytes": row.result_size_bytes,
             "snooze_count": row.snooze_count,
             "rate_limit_blocked_count": row.rate_limit_blocked_count,
+            "interrupt_count": row.interrupt_count,
             "cancel_phase": int(row.cancel_phase),
             "cancel_requested_at": _bucket(row.cancel_requested_at, now),
             "locked_by_worker": self.worker_token(row.locked_by_worker),

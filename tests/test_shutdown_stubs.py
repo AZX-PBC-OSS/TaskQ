@@ -542,7 +542,7 @@ async def test_consumer_stub_stops_dequeuing_once_producer_stop_is_set() -> None
 
     producer_stop_event is the only signal available at that moment.
     shutdown_event fires only after the full DRAINING/CANCELLING/FORCING/
-    ABANDONING sequence completes, so a consumer that guards on shutdown_event
+    RELEASING sequence completes, so a consumer that guards on shutdown_event
     alone keeps dequeuing for the entire length of the shutdown.
     """
     deps = _stub_deps()

@@ -15,7 +15,7 @@ from taskq._ids import new_uuid
 from taskq.backend._protocol import Backend, CancelPhase, JobId
 from taskq.client._enqueuer import SubJobEnqueuer
 from taskq.connections import ConnFactory, PoolFactory, WorkerConnections
-from taskq.context import JobContext
+from taskq.context import CancelOrigin, JobContext
 from taskq.obs import bind_job_context
 from taskq.settings import WorkerSettings
 from taskq.testing.in_memory import PassthroughPayload
@@ -158,7 +158,16 @@ def _make_deps(
 
 
 async def test_phase_ordering_and_backend_calls(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Phases transition in order; backend called at correct phases."""
+    """Phases transition in order; the release — never abandonment — ends each job.
+
+    Two jobs still registered past both graces belong to actors that never
+    unwound. The orchestration must: stamp the shutdown origin at
+    CANCELLING, force-cancel at FORCING (the escalation probe declines —
+    these rows carry no operator cancel), and RELEASE each at RELEASING via
+    ``mark_interrupted`` with the remaining termination budget as the hold.
+    ``mark_abandoned`` is the operator ladder's terminal and has no work
+    here.
+    """
     import taskq.worker.shutdown as shutdown_mod
 
     job_a = _make_fake_active_job(job_id=UUID("11111111-1111-1111-1111-111111111111"))
@@ -168,7 +177,10 @@ async def test_phase_ordering_and_backend_calls(monkeypatch: pytest.MonkeyPatch)
     deps = _make_deps(registry=registry, settings=settings)
 
     backend = AsyncMock(spec=Backend)
-    backend.write_cancel_escalation = AsyncMock(return_value=True)
+    # The probe shape: these rows carry no operator cancel (cancel_phase
+    # = 0), so the escalation write declines them.
+    backend.write_cancel_escalation = AsyncMock(return_value=False)
+    backend.mark_interrupted = AsyncMock(return_value="scheduled")
     backend.mark_abandoned = AsyncMock(return_value=True)
 
     mock_drain = AsyncMock(return_value=0)
@@ -198,9 +210,23 @@ async def test_phase_ordering_and_backend_calls(monkeypatch: pytest.MonkeyPatch)
     for job in (job_a, job_b):
         assert job.ctx.cancel_event.is_set()
         assert job.cancel_phase == CancelPhase.FORCED
+        assert job.cancel_origin is CancelOrigin.SHUTDOWN
 
+    # The probe reads each row once at FORCING; neither matched (no
+    # operator cancel in flight), so nothing is escalated to phase 2.
     assert backend.write_cancel_escalation.call_count == 2
-    assert backend.mark_abandoned.call_count == 2
+    # Both jobs are released back to the fleet at RELEASING — the shutdown
+    # never terminalises them.
+    assert backend.mark_interrupted.call_count == 2
+    for call in backend.mark_interrupted.call_args_list:
+        assert call.kwargs["attempt"] == 1
+        # The hold is the remaining termination budget: 60s grace counted
+        # from DRAINING, minus the ~0.8-0.9s the two grace windows consume
+        # on the fake clock (the 0.1s sleep quantum plus float drift can
+        # overshoot a grace boundary by one step).
+        hold = call.kwargs["hold"]
+        assert hold.total_seconds() == pytest.approx(60.0 - 0.8, abs=0.15)
+    assert backend.mark_abandoned.call_count == 0
 
     assert 0.7 < clock.time_val < 1.0
 
@@ -428,8 +454,13 @@ async def test_forcing_failure_isolation(monkeypatch: pytest.MonkeyPatch) -> Non
     assert job3.cancel_phase == CancelPhase.FORCED
 
 
-async def test_abandoning_failure_isolation(monkeypatch: pytest.MonkeyPatch) -> None:
-    """ABANDONING variant. Single PG write failure isolates that job."""
+async def test_releasing_failure_isolation(monkeypatch: pytest.MonkeyPatch) -> None:
+    """RELEASING variant. One failed release write isolates that job.
+
+    A PG error releasing job1 must not stop job2 and job3 from being
+    handed back to the fleet — the phase releases what it can and lets the
+    lease-expiry sweep backstop the one whose write failed.
+    """
     import taskq.worker.shutdown as shutdown_mod
 
     job1 = _make_fake_active_job(job_id=UUID("11111111-1111-1111-1111-111111111111"))
@@ -440,18 +471,18 @@ async def test_abandoning_failure_isolation(monkeypatch: pytest.MonkeyPatch) -> 
     deps = _make_deps(registry=registry, settings=settings)
 
     backend = AsyncMock(spec=Backend)
-    wce_succeeded = [True, True, True, True, True, True]
-    abandon_call_count = 0
+    backend.write_cancel_escalation = AsyncMock(return_value=False)
+    release_call_count = 0
 
-    async def _failing_abandon(job_id: JobId) -> bool:
-        nonlocal abandon_call_count
-        abandon_call_count += 1
-        if abandon_call_count == 1:
-            raise asyncpg.PostgresConnectionError("abandon failed for job1")
-        return True
+    async def _failing_release(*args: object, **kwargs: object) -> str:
+        nonlocal release_call_count
+        release_call_count += 1
+        if release_call_count == 1:
+            raise asyncpg.PostgresConnectionError("release failed for job1")
+        return "scheduled"
 
-    backend.write_cancel_escalation = AsyncMock(side_effect=wce_succeeded)
-    backend.mark_abandoned = AsyncMock(side_effect=_failing_abandon)
+    backend.mark_interrupted = AsyncMock(side_effect=_failing_release)
+    backend.mark_abandoned = AsyncMock(return_value=True)
 
     mock_drain = AsyncMock(return_value=0)
     monkeypatch.setattr(shutdown_mod, "drain_local_queue_to_pending", mock_drain)
@@ -471,7 +502,10 @@ async def test_abandoning_failure_isolation(monkeypatch: pytest.MonkeyPatch) -> 
         backend=backend,
     )
 
-    assert backend.mark_abandoned.call_count == 3
+    assert backend.mark_interrupted.call_count == 3
+    # No operator cancel is in flight anywhere, so the operator ladder's
+    # terminal write never runs.
+    assert backend.mark_abandoned.call_count == 0
 
 
 # ── Empty active_jobs ────────────────────────────────────────────
@@ -511,8 +545,14 @@ async def test_empty_active_jobs(monkeypatch: pytest.MonkeyPatch) -> None:
 # ── Race winner ──────────────────────────────────────────────────
 
 
-async def test_race_winner_not_abandoned(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Job that deregisters mid-CANCELLING is not marked abandoned."""
+async def test_race_winner_not_released(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A job that deregisters mid-CANCELLING is not released either.
+
+    The job's own consumer terminalised it (that is what deregistering
+    means), so by RELEASING there is no entry — the phase must not write
+    against a row it can no longer see. Neither the release nor the
+    operator ladder's terminal write may fire.
+    """
     import taskq.worker.shutdown as shutdown_mod
 
     job = _make_fake_active_job()
@@ -521,7 +561,8 @@ async def test_race_winner_not_abandoned(monkeypatch: pytest.MonkeyPatch) -> Non
     deps = _make_deps(registry=registry, settings=settings)
 
     backend = AsyncMock(spec=Backend)
-    backend.write_cancel_escalation = AsyncMock(return_value=True)
+    backend.write_cancel_escalation = AsyncMock(return_value=False)
+    backend.mark_interrupted = AsyncMock(return_value="scheduled")
     backend.mark_abandoned = AsyncMock(return_value=True)
 
     mock_drain = AsyncMock(return_value=0)
@@ -543,7 +584,10 @@ async def test_race_winner_not_abandoned(monkeypatch: pytest.MonkeyPatch) -> Non
             registry.set_jobs([])
         await clock.sleep(delta)
 
-    monkeypatch.setattr(shutdown_mod.asyncio, "sleep", _sleep_with_deregister)
+    # asyncio.sleep is resolved on the asyncio module at call time; patching
+    # it here is exactly what the orchestrator sees (and what the pre-rename
+    # suite did through the shutdown module's re-import).
+    monkeypatch.setattr(asyncio, "sleep", _sleep_with_deregister)
 
     await orchestrate_shutdown(
         deps,
@@ -554,6 +598,7 @@ async def test_race_winner_not_abandoned(monkeypatch: pytest.MonkeyPatch) -> Non
         backend=backend,
     )
 
+    backend.mark_interrupted.assert_not_called()
     backend.mark_abandoned.assert_not_called()
 
 
@@ -676,7 +721,7 @@ async def test_second_signal_fast_advance(monkeypatch: pytest.MonkeyPatch) -> No
     )
 
     elapsed = asyncio.get_running_loop().time() - t0
-    assert elapsed < 11.0  # CANCELLING breaks early (~0.1s) + cleanup_grace (10s) + ABANDONING
+    assert elapsed < 11.0  # CANCELLING breaks early (~0.1s) + cleanup_grace (10s) + RELEASING
 
 
 # ── leader_conn close ───────────────────────────────────────────────────
@@ -1260,9 +1305,16 @@ def _adversarial_job_setups(draw: st.DrawFn) -> list[tuple[UUID, str]]:
 async def test_adversarial_actor_invariant(
     setups: list[tuple[UUID, str]],
 ) -> None:
-    """Every job either deregistered cooperatively or marked abandoned."""
-    import taskq.worker.shutdown as shutdown_mod
+    """Every job is either deregistered by its own consumer or released.
 
+    The invariant a deploy owes the fleet: whatever the actor did —
+    unwound cooperatively, ignored the cancel, or swallowed it — the
+    shutdown accounts for the row exactly once. Jobs still registered at
+    RELEASING are interrupted (released back to the fleet with the attempt
+    refunded); jobs that deregistered mid-flight are their consumers' own
+    outcomes. Nothing is abandoned: abandonment belongs to the operator
+    ladder, and no operator cancel is in flight anywhere here.
+    """
     active_jobs: list[_ActiveJob] = []
     for job_id, _behaviour in setups:
         active_jobs.append(_make_fake_active_job(job_id=job_id))
@@ -1272,7 +1324,10 @@ async def test_adversarial_actor_invariant(
     deps = _make_deps(registry=registry, settings=settings)
 
     backend = AsyncMock(spec=Backend)
-    backend.write_cancel_escalation = AsyncMock(return_value=True)
+    # No row carries an operator cancel, so the escalation probe declines
+    # every entry.
+    backend.write_cancel_escalation = AsyncMock(return_value=False)
+    backend.mark_interrupted = AsyncMock(return_value="scheduled")
     backend.mark_abandoned = AsyncMock(return_value=True)
 
     deregs: set[UUID] = set()
@@ -1291,7 +1346,7 @@ async def test_adversarial_actor_invariant(
     with (
         patch("taskq.worker.shutdown.drain_local_queue_to_pending", AsyncMock(return_value=0)),
         patch.object(  # type: ignore[unused-ignore] # Why: suppress F841 for unused-variable from with-statement; variable is referenced by the context manager.
-            shutdown_mod.asyncio,
+            asyncio,  # the orchestrator resolves asyncio.sleep on the asyncio module at call time
             "sleep",
             _tracking_sleep,
         ),
@@ -1310,14 +1365,20 @@ async def test_adversarial_actor_invariant(
 
     assert result == 0
 
-    abandoned_ids: set[UUID] = set()
-    for call_args in backend.mark_abandoned.mock_calls:  # type: ignore[union-attr] # Why: AsyncMock(spec=Backend) mock_calls iterates call objects whose args attribute is not visible to the protocol type checker.
-        abandoned_ids.add(call_args.args[0])
+    released_ids: set[UUID] = set()
+    for call_args in backend.mark_interrupted.mock_calls:  # type: ignore[union-attr] # Why: AsyncMock(spec=Backend) mock_calls iterates call objects whose args attribute is not visible to the protocol type checker.
+        released_ids.add(call_args.args[0])
 
     total_ids = {job_id for job_id, _ in setups}
-    covered = deregs | abandoned_ids
-    assert covered == total_ids
+    covered = deregs | released_ids
+    assert covered == total_ids, (
+        "every in-flight job must be accounted for exactly once at shutdown: "
+        f"deregistered by its consumer {sorted(deregs)} or released "
+        f"{sorted(released_ids)} — uncovered: {sorted(total_ids - covered)}"
+    )
 
     for job_id, behaviour in setups:
         if behaviour == "cooperative":
             assert job_id in deregs
+
+    backend.mark_abandoned.assert_not_called()

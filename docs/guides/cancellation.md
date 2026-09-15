@@ -127,7 +127,7 @@ async def long_running(payload: Payload, ctx: JobContext[Payload]) -> Result:
 
 `ctx.cancellation_requested` is `ctx.cancel_event.is_set()` — a non-blocking, non-awaited property. It is safe to check inside tight loops.
 
-If the actor returns normally after observing the cancel signal, the job is still marked `cancelled`. The consumer checks `entry.cancel_phase >= CancelPhase.COOPERATIVE` after the actor returns and routes to `mark_cancelled` rather than `mark_succeeded`. The return value is discarded.
+Cancellation is a request, and the actor's own outcome decides the terminal state: an actor that observes the request, winds down deliberately (flush what it computed, close what it opened), and **returns** a value has *succeeded* — the result is persisted and the job records `succeeded`. An actor that abandons its unit of work signals that by **raising** `asyncio.CancelledError` (or letting it propagate); the job records `cancelled`. A cancel request that lands while the actor runs never by itself discards a completed result.
 
 For actors with a single long `await`, awaiting `ctx.cancel_event.wait()` directly allows the actor to wake as soon as the signal arrives:
 
@@ -153,6 +153,33 @@ except asyncio.CancelledError:
 ```
 
 Always re-raise `asyncio.CancelledError` or let it propagate. The consumer's exception handler takes care of the terminal write.
+
+### Shutdown is not an operator cancel — `ctx.cancel_origin`
+
+A rolling deploy (SIGTERM, a drain-monitor trigger) signals the same `cancel_event`, but it is an *infrastructure* event, not a request to discard the work. When the grace windows expire with the job still running, the worker **releases** it back to the fleet — `pending` (or `scheduled` behind a hold) with the claim's attempt increment **refunded** — and the row's `interrupt_count` bumps. The job is then claimed and run by a surviving pod. Shutdown never writes `cancelled` or `abandoned`.
+
+Actors can tell the two signals apart with `ctx.cancel_origin`:
+
+```python
+from taskq.context import CancelOrigin
+
+
+@actor
+async def exporter(payload: Payload, ctx: JobContext[Payload]) -> Result:
+    ...
+    if ctx.cancellation_requested:
+        if ctx.cancel_origin is CancelOrigin.SHUTDOWN:
+            # The process is going away and this attempt will be re-run:
+            # checkpoint what you can and raise, rather than returning a
+            # partial result the fleet cannot use as-is.
+            await ctx.progress(data={"cursor": cursor})
+            raise asyncio.CancelledError
+        # An operator asked to stop this job for good: the partial result
+        # is the answer — returning it records the job succeeded.
+        return Result(partial=True, rows_written=n)
+```
+
+The read model: on `SHUTDOWN` the attempt is retried by another pod with its budget intact, so prefer to checkpoint (progress state is carried onto the released row) and raise; on `OPERATOR` the job terminalises, so a partial result you return is kept. The distinction is by origin, not by exception type — the row itself is the final arbiter, so an operator cancel that races a deploy still ends the job.
 
 ---
 
@@ -228,7 +255,7 @@ except JobFailed as exc:
 | Status | Meaning in cancellation context |
 |---|---|
 | `cancelled` | The job was cancelled successfully via the cooperative or forced path. |
-| `abandoned` | The actor did not exit within `cancellation_grace_period + cleanup_grace_period`; the worker wrote `abandoned` via `mark_abandoned`. |
+| `abandoned` | The actor did not exit within `cancellation_grace_period + cleanup_grace_period` after an *operator's* cancel request; the worker wrote `abandoned` via `mark_abandoned`. Shutdown never produces `abandoned` — a deploy releases (interrupts) the job back to the fleet instead. |
 | `failed` | The job failed before the cancel request was processed. A `cancel()` call on a `failed` job returns `cancellation_initiated=False`. |
 | `crashed` | The worker's lock expired and the recovery sweep reclaimed the job. The cancel request, if any, was not processed. |
 
@@ -239,6 +266,8 @@ A cancel request against a job in any terminal status (`succeeded`, `failed`, `c
 ## 9. Cancellation and retries
 
 Cancellation does not consume retry budget. Once a job transitions to `cancelled` or `abandoned`, it is immediately terminal and will not be retried, regardless of `max_attempts` or `retry_kind`.
+
+An interruption by shutdown refunds the attempt too: the claim's increment is returned (`interrupt_count` on the row counts the release), so a job interrupted on every deploy never walks toward `max_attempts` — it is rescheduled until it finishes or its `schedule_to_close` expires.
 
 This is distinct from a `TimeoutError` or unhandled exception, both of which go through the normal retry decision logic (`decide_after_failure`) and may reschedule the job if budget remains.
 

@@ -51,6 +51,7 @@ __all__ = [
     "_mark_abandoned",
     "_mark_cancelled",
     "_mark_failed_or_retry",
+    "_mark_interrupted",
     "_mark_retry_after",
     "_mark_snoozed",
     "_mark_succeeded",
@@ -1021,6 +1022,130 @@ async def _mark_retry_after(
         cause="retry_after",
     )
     return "scheduled"
+
+
+async def _mark_interrupted(
+    self: "InMemoryBackend",
+    job_id: JobId,
+    worker_id: UUID,
+    *,
+    attempt: int,
+    hold: timedelta,
+    progress_seq: int = 0,
+    progress_state: dict[str, object] | None = None,
+) -> Literal["pending", "scheduled", "failed:DeadlineExceeded", "noop"]:
+    row = self._jobs.get(job_id)
+    # The fence mirrors the SQL arm conjunct-for-conjunct: running, owned
+    # by this worker, at the presented attempt epoch, and outside any
+    # operator cancel (cancel_phase = 0 — an operator cancel in flight wins
+    # and reads back as "noop", River's cancel_attempted_at precedence).
+    if (
+        row is None
+        or row.status != "running"
+        or row.locked_by_worker != worker_id
+        or row.attempt != attempt
+        or row.cancel_phase != CancelPhase.NONE
+    ):
+        return "noop"
+
+    now = self._clock.now()
+    # The hold floor mirrors the params CTE's CASE: a positive hold is
+    # floored at the non-consuming deferral floor; a zero hold stays zero
+    # so the release lands pending immediately (the row is genuinely free
+    # and the actor is gone — the floor exists to stop deferral loops and
+    # an interruption is not one).
+    effective_hold = max(hold, MIN_DEFERRAL_INTERVAL) if hold > timedelta(0) else timedelta(0)
+    new_scheduled_at = now + effective_hold
+
+    # The deadline arm mirrors the SQL's deadline_failed CTE (checked first
+    # here exactly as _mark_snoozed's twin orders it — the orders are
+    # observably equivalent because the release arm's deadline guard and
+    # this arm's NOT EXISTS chain partition the rows identically).
+    if row.schedule_to_close is not None and new_scheduled_at > row.schedule_to_close:
+        deadline_merged_progress = _merge_progress(row.progress_state, progress_state)
+        self._jobs[job_id] = replace(
+            row,
+            status="failed",
+            finished_at=now,
+            error_class="DeadlineExceeded",
+            error_message="schedule_to_close reached before next dispatch",
+            error_traceback=None,
+            locked_by_worker=None,
+            lock_expires_at=None,
+            last_heartbeat_at=None,
+            progress_seq=max(row.progress_seq, progress_seq),
+            progress_state=deadline_merged_progress,
+        )
+        self._append_attempt(
+            job_id=job_id,
+            attempt=row.attempt,
+            started_at=row.started_at,
+            now=now,
+            outcome="failed",
+            error_class="DeadlineExceeded",
+            error_message="schedule_to_close reached before next dispatch",
+            error_traceback=None,
+            worker_id=worker_id,
+        )
+        self._append_state_change_event(
+            job_id=job_id,
+            from_state="running",
+            to_state="failed",
+            now=now,
+            error_class="DeadlineExceeded",
+            worker_id=worker_id,
+        )
+        logger.debug(
+            "state-change",
+            kind="state_change",
+            from_state="running",
+            to_state="failed",
+            job_id=str(job_id),
+        )
+        return "failed:DeadlineExceeded"
+
+    # The release arm. The claim's attempt increment is refunded (floored
+    # at 0) exactly as the snooze/unavailable arms refund it; no attempt
+    # row is written (an interruption is not an execution outcome); one
+    # state_change event with reason 'interrupted' records the transition
+    # and interrupt_count carries the aggregate on the row.
+    released_status: Literal["scheduled", "pending"] = (
+        "scheduled" if effective_hold > timedelta(0) else "pending"
+    )
+    merged_progress = _merge_progress(row.progress_state, progress_state)
+    self._jobs[job_id] = replace(
+        row,
+        status=released_status,
+        scheduled_at=new_scheduled_at,
+        finished_at=None,
+        locked_by_worker=None,
+        lock_expires_at=None,
+        last_heartbeat_at=None,
+        cancel_phase=CancelPhase.NONE,
+        cancel_requested_at=None,
+        attempt=max(row.attempt - 1, 0),
+        interrupt_count=row.interrupt_count + 1,
+        progress_seq=max(row.progress_seq, progress_seq),
+        progress_state=merged_progress,
+    )
+    self._append_state_change_event(
+        job_id=job_id,
+        from_state="running",
+        to_state=released_status,
+        now=now,
+        reason="interrupted",
+        worker_id=worker_id,
+        hold_seconds=effective_hold.total_seconds(),
+    )
+    logger.debug(
+        "state-change",
+        kind="state_change",
+        from_state="running",
+        to_state=released_status,
+        job_id=str(job_id),
+        reason="interrupted",
+    )
+    return released_status
 
 
 async def _write_attempt(self: "InMemoryBackend", attempt: AttemptRow) -> None:

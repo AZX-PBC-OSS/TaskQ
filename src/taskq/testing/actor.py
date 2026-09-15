@@ -117,6 +117,9 @@ class FakeBackend:
         mark_retry_after_return: Literal[
             "scheduled", "failed:DeadlineExceeded", "failed:MaxAttemptsExceeded", "noop"
         ] = "scheduled",
+        mark_interrupted_return: Literal[
+            "pending", "scheduled", "failed:DeadlineExceeded", "noop"
+        ] = "pending",
     ) -> None:
         self.mark_succeeded_calls: list[
             tuple[UUID, UUID, dict[str, object] | None, bytes | None]
@@ -124,6 +127,7 @@ class FakeBackend:
         self.mark_cancelled_calls: list[dict[str, object]] = []
         self.mark_snoozed_calls: list[dict[str, object]] = []
         self.mark_retry_after_calls: list[dict[str, object]] = []
+        self.mark_interrupted_calls: list[dict[str, object]] = []
         self.mark_failed_or_retry_calls: list[dict[str, object]] = []
         self._mark_snoozed_return: Literal[
             "scheduled", "failed", "failed:MaxAttemptsExceeded", "noop"
@@ -131,6 +135,9 @@ class FakeBackend:
         self._mark_retry_after_return: Literal[
             "scheduled", "failed:DeadlineExceeded", "failed:MaxAttemptsExceeded", "noop"
         ] = mark_retry_after_return
+        self._mark_interrupted_return: Literal[
+            "pending", "scheduled", "failed:DeadlineExceeded", "noop"
+        ] = mark_interrupted_return
 
     async def enqueue(self, args: EnqueueArgs) -> JobRow:
         raise NotImplementedError
@@ -290,6 +297,28 @@ class FakeBackend:
             }
         )
         return self._mark_retry_after_return
+
+    async def mark_interrupted(
+        self,
+        job_id: UUID,
+        worker_id: UUID,
+        *,
+        attempt: int,
+        hold: timedelta,
+        progress_seq: int = 0,
+        progress_state: dict[str, object] | None = None,
+    ) -> Literal["pending", "scheduled", "failed:DeadlineExceeded", "noop"]:
+        self.mark_interrupted_calls.append(
+            {
+                "job_id": job_id,
+                "worker_id": worker_id,
+                "attempt": attempt,
+                "hold": hold,
+                "progress_seq": progress_seq,
+                "progress_state": progress_state,
+            }
+        )
+        return self._mark_interrupted_return
 
     async def write_attempt(self, attempt: AttemptRow) -> None:
         pass

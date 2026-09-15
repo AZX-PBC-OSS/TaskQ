@@ -427,7 +427,7 @@ Add a `PodDisruptionBudget` (`minAvailable: 1`, selector matching `app: taskq-wo
     Setting this just above `TASKQ_TERMINATION_GRACE_PERIOD` is **not enough**,
     and is the sizing mistake most likely to bite you.
 
-    The shutdown phases (DRAINING → CANCELLING → FORCING → ABANDONING) are
+    The shutdown phases (DRAINING → CANCELLING → FORCING → RELEASING) are
     bounded by `TASKQ_CANCELLATION_GRACE_PERIOD` + `TASKQ_CLEANUP_GRACE_PERIOD`,
     but the bounded-close tail that unwinds *after* them is **additive**, and
     nothing *enforces* that it fits inside `TASKQ_TERMINATION_GRACE_PERIOD` —
@@ -462,9 +462,9 @@ Add a `PodDisruptionBudget` (`minAvailable: 1`, selector matching `app: taskq-wo
     custom grace combinations, not for the shipped defaults.
 
     If the kubelet SIGKILLs mid-unwind, in-flight `write_cancel_escalation` /
-    `mark_abandoned` terminal writes may not land; those jobs are left `running`
+    `mark_interrupted` release writes may not land; those jobs are left `running`
     and recovered later by the leader's crash-reclaim sweep after `lock_lease`
-    expires, rather than finalizing cleanly.
+    expires, rather than being released cleanly.
 
 ---
 

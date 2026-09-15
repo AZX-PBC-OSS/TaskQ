@@ -118,6 +118,28 @@ class Pod:
             active_jobs=self.deps.active_jobs,
         )
 
+    def start(
+        self,
+        job: JobRow,
+        handler: Callable[[FleetPayload, Any], Awaitable[object]],
+        *,
+        actor_config: StubActorConfig,
+    ) -> asyncio.Task[object]:
+        """Start one claimed job through the production attempt path WITHOUT
+        awaiting it to completion.
+
+        ``Pod.run`` awaits ``consume_one_job``, so no scenario built on it
+        can have a job mid-execution when a pod stops. ``start`` schedules
+        the same call as a task: the job registers in
+        ``deps.active_jobs`` (``consume_one_job``'s own registration, the
+        same entry ``di_consumer_loop`` produces in production) while the
+        caller drives on — which is the only way the shutdown
+        orchestration's CANCELLING / FORCING / RELEASING phases ever see a
+        running actor in a fleet scenario. The caller owns the task's
+        lifecycle: join or cancel it once the scenario's pod is stopped.
+        """
+        return asyncio.create_task(self.run(job, handler, actor_config=actor_config))
+
 
 @dataclass(slots=True)
 class Fleet:

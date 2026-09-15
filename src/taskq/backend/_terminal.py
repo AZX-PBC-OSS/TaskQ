@@ -144,6 +144,8 @@ from taskq.obs import (
     get_logger,
     log_cancel_phase_change,
     log_state_change,
+    record_job_interrupted,
+    record_job_interrupted_noop,
 )
 
 if TYPE_CHECKING:
@@ -155,6 +157,7 @@ __all__ = [
     "_mark_abandoned",
     "_mark_cancelled",
     "_mark_failed_or_retry",
+    "_mark_interrupted",
     "_mark_retry",
     "_mark_retry_after",
     "_mark_snoozed",
@@ -891,6 +894,79 @@ async def _mark_retry_after(
     )
     if branch == "max_attempts_failed":
         return "failed:MaxAttemptsExceeded"
+    return "failed:DeadlineExceeded"
+
+
+# ── mark_interrupted ───────────────────────────────────────────────────
+
+
+async def _mark_interrupted(
+    pool: "asyncpg.Pool",
+    sql: SqlTemplates,
+    job_id: JobId,
+    worker_id: UUID,
+    *,
+    attempt: int,
+    hold: timedelta,
+    progress_seq: int = 0,
+    progress_state: dict[str, object] | None = None,
+    acquire_timeout: float = DEFAULT_TERMINAL_POOL_ACQUIRE_TIMEOUT_S,
+) -> Literal["pending", "scheduled", "failed:DeadlineExceeded", "noop"]:
+    """Release a running attempt this worker cannot finish (process going
+    away): refund the claim's attempt increment, count the interruption on
+    the row, write one ``reason='interrupted'`` event. Fenced on ownership,
+    attempt epoch and ``cancel_phase = 0`` — an operator cancel in flight
+    wins and reads back as ``"noop"`` (River: a row whose
+    ``cancel_attempted_at`` is set is cancelled, never re-available —
+    river_job.sql ``JobSetStateIfRunningMany``). A hold that would outlive
+    ``schedule_to_close`` fails the row on the deadline instead.
+    """
+    branch: str
+    async with pool.acquire(timeout=acquire_timeout) as conn:
+        rec = await conn.fetchrow(
+            sql.mark_interrupted,
+            job_id,
+            worker_id,
+            attempt,
+            hold,
+            progress_seq,
+            _progress_jsonb_escaped(progress_state),
+        )
+        if rec is None:
+            # Fenced out — the row moved (reclaim, a terminal write, or an
+            # operator cancel in flight). Instrumented per the project rule
+            # that a no-op on a release path must not look like a release.
+            record_job_interrupted_noop(None)
+            return "noop"
+
+        branch = rec["outcome_branch"]
+
+    if branch == "released":
+        row_status: str = rec["status"]
+        record_job_interrupted(rec["actor"], held=row_status == "scheduled")
+        log_state_change(
+            logger,
+            from_state="running",
+            to_state=row_status,
+            job_id=str(job_id),
+            worker_id=str(worker_id),
+            attempt=rec["attempt"],
+            reason="interrupted",
+        )
+        return "pending" if row_status == "pending" else "scheduled"
+
+    # deadline_failed arm: the hold would have outlived the job's own
+    # schedule_to_close, so the job fails on the deadline like every
+    # deferral arm's deadline exit.
+    log_state_change(
+        logger,
+        from_state="running",
+        to_state="failed",
+        job_id=str(job_id),
+        worker_id=str(worker_id),
+        attempt=rec["attempt"],
+        reason="schedule_to_close",
+    )
     return "failed:DeadlineExceeded"
 
 

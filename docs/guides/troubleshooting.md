@@ -297,6 +297,23 @@ Check whether the actor suppresses `asyncio.CancelledError` — a `try/except as
 - **Increase grace periods:** if the actor needs more cleanup time, raise `TASKQ_CANCELLATION_GRACE_PERIOD` and `TASKQ_CLEANUP_GRACE_PERIOD`. Constraints: `cancellation + cleanup < lock_lease` and `< termination_grace_period - 5.0`.
 - **Not retryable:** `abandoned` jobs cannot be retried via `backend.retry_job()`. Only `failed`, `crashed`, and `cancelled` can be retried.
 
+### Shutdown never lands here — read `interrupt_count` instead
+
+A deploy that interrupts a running job does not produce `abandoned`: the job is released back to
+the fleet (`pending`, or `scheduled` behind the remaining termination budget when the actor never
+unwound) with its attempt refunded. You see it on the row and the timeline, not in a terminal
+state:
+
+```sql
+SELECT id, status, attempt, interrupt_count FROM {schema}.jobs WHERE id = $1;
+-- one state_change event per release carries detail->>'reason' = 'interrupted'
+```
+
+A job whose `interrupt_count` climbs without ever finishing is too long for your deploy cadence:
+it is re-run from scratch on every deploy. Bound it with `schedule_to_close` (the deadline fails
+it terminally instead of releasing it forever), or checkpoint through `ctx.progress()` — the
+released row carries the last checkpoint — and resume on re-claim.
+
 ---
 
 ## 5. NOTIFY connection failures

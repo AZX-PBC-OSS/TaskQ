@@ -7,7 +7,7 @@ keeps going, commits, and buffers rows that the single hand-back pass has
 already looked past.
 
 Those rows are locked to a process that is on its way out. They are not in
-the in-flight registry, so the CANCELLING, FORCING and ABANDONING phases
+the in-flight registry, so the CANCELLING, FORCING and RELEASING phases
 never see them either, and the orchestration reports a clean exit with them
 still marked running. For a Kubernetes rolling deploy that is up to one
 concurrency window of work per pod that stops moving the moment the pod goes

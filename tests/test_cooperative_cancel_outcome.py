@@ -33,6 +33,7 @@ import pytest
 from pydantic import BaseModel
 
 from taskq._ids import new_uuid
+from taskq._json import loads
 from taskq.backend._protocol import CancelPhase, EnqueueArgs, JobRow
 from taskq.backend.clock import Clock
 from taskq.context import JobContext
@@ -69,7 +70,9 @@ class _TransactionalBackend(FakeBackend):
 
     def __init__(self) -> None:
         super().__init__()
-        self.mark_succeeded_with_conn_calls: list[tuple[UUID, dict[str, object] | None]] = []
+        self.mark_succeeded_with_conn_calls: list[
+            tuple[UUID, dict[str, object] | None, bytes | None]
+        ] = []
 
     async def enqueue(self, args: EnqueueArgs) -> JobRow:
         return make_job_row()
@@ -90,7 +93,11 @@ class _TransactionalBackend(FakeBackend):
         result_bytes: bytes | None = None,
         attempt: int | None = None,
     ) -> bool:
-        self.mark_succeeded_with_conn_calls.append((job_id, result))
+        # The consumer serializes the actor's return exactly once and hands
+        # the backend ``result_bytes`` (the dict form stays None on that
+        # path) — record the bytes so the assertions decode the exact value
+        # the row would store.
+        self.mark_succeeded_with_conn_calls.append((job_id, result, result_bytes))
         return await self.mark_succeeded(
             job_id,
             worker_id,
@@ -195,10 +202,13 @@ async def test_autonomous_actor_returning_after_observing_cancel_succeeds() -> N
         f"terminal write never reached mark_succeeded "
         f"(cancel writes: {len(backend.mark_cancelled_calls)})"
     )
-    _job_id, _worker, result, _result_bytes = backend.mark_succeeded_calls[0]
-    assert result == _DEGRADED_RESULT, (
+    _job_id, _worker, _result, result_bytes = backend.mark_succeeded_calls[0]
+    # The consumer serializes once and hands the backend result_bytes (the
+    # dict slot stays None on that path — tests/test_consumer_result_serialization.py
+    # pins the call shape); the stored value is the decode of those bytes.
+    assert result_bytes is not None and loads(result_bytes) == _DEGRADED_RESULT, (
         "the degraded result the actor computed must be the result stored on "
-        f"the job, so callers and batches downstream can read it; got {result!r}"
+        f"the job, so callers and batches downstream can read it; got {result_bytes!r}"
     )
     assert outcome == "succeeded", (
         "the outcome reported to the consumer's caller must match the state "
@@ -249,9 +259,9 @@ async def test_transactional_actor_returning_after_observing_cancel_succeeds() -
         "transaction so its writes and its result commit together; it never "
         "ran"
     )
-    _job_id, result = backend.mark_succeeded_with_conn_calls[0]
-    assert result == _DEGRADED_RESULT, (
-        f"the degraded result must be committed with the actor's writes; got {result!r}"
+    _job_id, _result, result_bytes = backend.mark_succeeded_with_conn_calls[0]
+    assert result_bytes is not None and loads(result_bytes) == _DEGRADED_RESULT, (
+        f"the degraded result must be committed with the actor's writes; got {result_bytes!r}"
     )
     assert outcome == "succeeded", (
         f"the reported outcome must match the persisted state, got {outcome!r}"

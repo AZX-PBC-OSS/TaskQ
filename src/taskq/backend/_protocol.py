@@ -158,6 +158,10 @@ __all__ = [
 #     order — a claim/refund hot loop monopolising a worker slot.
 #     consume_budget=True keeps the raw delay (an immediate consuming
 #     retry is a real execution, bounded by the budget it spends).
+#     mark_interrupted added (required) — the shutdown release primitive:
+#     a pre-v3 implementation lacks the method, and the consumer's
+#     shutdown routing would otherwise raise AttributeError mid-cancel
+#     (loud, not silent), so it folds into the unreleased v3.
 BACKEND_PROTOCOL_VERSION: Final[int] = 3
 
 # ── Type aliases (PEP 695) ─────────────────────────────────────────────
@@ -691,6 +695,13 @@ class JobRow:
     """Coalesced count of admission denials (reservation / rate-limit)
     since enqueue.  Trailing default: rows materialised before the
     counters existed read 0.
+    """
+    interrupt_count: int = 0
+    """Coalesced count of infrastructure interruptions (a running attempt
+    released back to the queue by a worker shutdown) since enqueue — the
+    claim's attempt increment was refunded on each, so ``attempt`` alone
+    cannot count them.  Trailing default: rows materialised before the
+    counter existed read 0.
     """
 
 
@@ -1685,6 +1696,57 @@ class Backend(Protocol):
         progress_state: dict[str, object] | None = None,
         attempt: int | None = None,
     ) -> Literal["scheduled", "failed:DeadlineExceeded", "failed:MaxAttemptsExceeded", "noop"]: ...
+
+    async def mark_interrupted(
+        self,
+        job_id: JobId,
+        worker_id: UUID,
+        *,
+        attempt: int,
+        hold: timedelta,
+        progress_seq: int = 0,
+        progress_state: dict[str, object] | None = None,
+    ) -> Literal["pending", "scheduled", "failed:DeadlineExceeded", "noop"]:
+        """Release a running attempt this worker cannot finish because the
+        process is going away.
+
+        The interruption is a non-consuming release of a *started* attempt:
+        the claim's increment is refunded exactly the way the snooze /
+        ``unavailable`` / actor-not-found arms return it
+        (``GREATEST(attempt - 1, 0)``), no ``job_attempts`` row is written
+        (an interruption is not an execution outcome), one ``job_events``
+        state_change with ``detail.reason = 'interrupted'`` records the
+        transition, and the row's ``interrupt_count`` is bumped. This is
+        River's soft-stop shape transplanted: the attempt is handed back
+        with its budget untouched
+        (``vendor/river/internal/jobexecutor/job_executor.go``'s
+        ``softStopped`` branch calling ``JobSetStateInterrupted`` with
+        ``max(attempt-1, 0)``).
+
+        *hold* > 0 parks the row ``scheduled`` until the releasing process
+        is provably gone (a job released while its coroutine may still be
+        alive in this process must not be claimable elsewhere until then);
+        *hold* = 0 lands the row ``pending`` at the head of the order — the
+        row is genuinely free and the actor is gone, so no deferral floor
+        applies. A hold that would push the row past its
+        ``schedule_to_close`` fails the job on the deadline instead
+        (``"failed:DeadlineExceeded"``), the same terminal exit every
+        deferral arm honours.
+
+        Fenced on ownership, the attempt epoch, and ``cancel_phase = 0``:
+        an operator cancel in flight wins and the call returns ``"noop"``
+        so the caller routes to the cancel ladder (the row carries the
+        operator's request; the deploy must not launder it into a release —
+        River's ``JobSetStateIfRunningMany`` resolves the same collision
+        the same way, cancelling rather than releasing a row whose
+        ``cancel_attempted_at`` is set).
+
+        *attempt* is the attempt-identity epoch — see
+        :meth:`mark_succeeded`. Here it is required, not optional: a
+        release that cannot prove which attempt it is handing back must
+        not touch the row (``"noop"``).
+        """
+        ...
 
     # ── Attempt history ─────────────────────────────────────────────────
     async def write_attempt(self, attempt: AttemptRow) -> None: ...

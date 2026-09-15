@@ -762,7 +762,9 @@ Two more states worth naming because they mean *infrastructure*, not your code:
   exhausted. Crash labels are `WorkerCrashed` (assumed gone) and `HeartbeatLost` (alive but
   partitioned).
 - **`abandoned`** — only ever produced by *cancellation* escalation: a force-cancel whose cleanup
-  did not finish within the grace periods. A timeout or exception never produces `abandoned`.
+  did not finish within the grace periods after an operator's cancel request. A timeout or
+  exception never produces `abandoned` — and **shutdown never produces it either**: a deploy
+  releases (interrupts) the job back to the fleet with its attempt refunded instead.
 
 !!! note "Infra failures during the terminal write leave the job `running` — on purpose"
     If Postgres itself errors while recording the outcome, the row is left `running` and
@@ -771,12 +773,15 @@ Two more states worth naming because they mean *infrastructure*, not your code:
     on a dead worker; the sweep owns it.
 
 !!! warning "A routine SIGTERM drain sets the same cancel event an operator cancel does"
-    `ctx.cancel_event` / `ctx.should_abort()` fire during *every* rolling deploy's drain phase —
-    if your actor treats "cancelled" as "close the run as cancelled and return", the job records
-    **`succeeded`** (it returned normally), no retry runs, and successor enqueues never happen:
-    the chain dies silently on every deploy. Distinguish drain from operator intent with your own
-    persisted state, and on cancel, either re-raise or arrange a successor — never return
-    normally. See [cancellation.md](cancellation.md).
+    `ctx.cancel_event` / `ctx.should_abort()` fire during *every* rolling deploy's drain phase.
+    What the row records is the actor's own outcome: if your actor treats "cancelled" as "close
+    the run as cancelled and return", the job records **`succeeded`** (it returned normally), no
+    retry runs, and successor enqueues never happen — a chain whose actor returns early on cancel
+    dies on every deploy. Read `ctx.cancel_origin` to tell the deploy apart from the operator:
+    on `SHUTDOWN` the attempt is released and re-run by the fleet with its budget refunded, so
+    checkpoint via progress state and re-raise; on `OPERATOR` the job terminalises, so the
+    partial result you return is the one kept. See
+    [cancellation.md — Shutdown is not an operator cancel](cancellation.md#shutdown-is-not-an-operator-cancel-ctxcancel_origin).
 
 ---
 
@@ -1083,6 +1088,7 @@ The condensed "know this before your first incident" list. Each row links to the
 | NOTIFY reconnect mid-rotation looks like a hang | dispatch on poll fallback, `SIGHUP` reload reports notify as failed, for up to ~95s | `notify_reconnect_lock`'s worst-case hold is the sum of its bounded steps, not a hang — [§4](#managed-identities-and-token-rotation) |
 | `terminationGracePeriodSeconds` < shutdown worst case | SIGKILL mid-drain, `crashed` jobs | grace ≥ cancellation + cleanup + ~32 s tail ([deployment.md](deployment.md#health-probes)) |
 | One job longer than the shutdown budget | watchdog force-exits; *sibling* in-flight jobs die too | size the grace to your slowest actor, or cap it with `start_to_close` ([§2](#2-timeouts-start_to_close-and-schedule_to_close)) |
+| Actors longer than `cancellation_grace_period + cleanup_grace_period` | interrupted on every deploy and re-run from scratch (`interrupt_count` climbs, work restarts); only `schedule_to_close` ends the loop | bound them with `schedule_to_close`, or checkpoint via progress state and resume on re-claim ([§6](#6-classifying-failures-terminal-retryable-transient), [cancellation.md](cancellation.md#shutdown-is-not-an-operator-cancel-ctxcancel_origin)) |
 | Drained `refill_per_second=0` bucket, no deadline | job re-queues every 5 s forever | add refill or `schedule_to_close` ([§7](#7-waiting-politely-rate-limits-snooze-retryafter-retry-after)) |
 | Redis in dev, none in prod | worker refuses to start in prod only | decide the limiter backend per environment ([§7](#7-waiting-politely-rate-limits-snooze-retryafter-retry-after)) |
 | Worker without a Redis client expected to publish progress | SSE/progress silently empty, no error | progress fanout needs Redis; PG snapshotting still works — [progress.md](progress.md) |

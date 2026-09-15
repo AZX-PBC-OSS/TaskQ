@@ -160,6 +160,7 @@ from taskq.backend._terminal import (
     _mark_abandoned,
     _mark_cancelled,
     _mark_failed_or_retry,
+    _mark_interrupted,
     _mark_retry_after,
     _mark_snoozed,
     _mark_succeeded,
@@ -682,6 +683,28 @@ class PostgresBackend:
             progress_seq=progress_seq,
             progress_state=progress_state,
             attempt=attempt,
+            acquire_timeout=self._deps.settings.dispatcher_command_timeout,
+        )
+
+    async def mark_interrupted(
+        self,
+        job_id: JobId,
+        worker_id: UUID,
+        *,
+        attempt: int,
+        hold: timedelta,
+        progress_seq: int = 0,
+        progress_state: dict[str, object] | None = None,
+    ) -> Literal["pending", "scheduled", "failed:DeadlineExceeded", "noop"]:
+        return await _mark_interrupted(
+            self._worker_pool,
+            self._sql,
+            job_id,
+            worker_id,
+            attempt=attempt,
+            hold=hold,
+            progress_seq=progress_seq,
+            progress_state=progress_state,
             acquire_timeout=self._deps.settings.dispatcher_command_timeout,
         )
 

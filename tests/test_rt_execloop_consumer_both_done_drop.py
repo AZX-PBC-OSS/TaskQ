@@ -81,6 +81,10 @@ class _DepsStub:
             }
         )
         self.drain_failures = 0
+        # The consumer loops read the DRAINING signal off deps; the real
+        # WorkerDeps always carries it. Unset here: these tests exercise
+        # the shutdown_event-only both-done turn.
+        self.producer_stop_event = asyncio.Event()
 
 
 class _ScopeStub:

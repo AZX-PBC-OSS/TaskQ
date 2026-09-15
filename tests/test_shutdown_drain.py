@@ -104,7 +104,7 @@ def test_shutdown_phase_values() -> None:
     assert ShutdownPhase.DRAINING == 1
     assert ShutdownPhase.CANCELLING == 2
     assert ShutdownPhase.FORCING == 3
-    assert ShutdownPhase.ABANDONING == 4
+    assert ShutdownPhase.RELEASING == 4
 
 
 # ── SQL shape ──────────────────────────────────────────────────────

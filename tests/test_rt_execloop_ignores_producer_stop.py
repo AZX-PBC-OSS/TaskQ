@@ -13,7 +13,7 @@ loop guard is ``while not shutdown_event.is_set()`` (src/taskq/worker/run.py,
 di_consumer_loop) — it never reads ``deps.producer_stop_event`` or
 ``deps.shutdown_phase``. ``shutdown_event`` itself is only set at the very
 end of the full 4-phase orchestration (shutdown.py:313), after DRAINING,
-the entire CANCELLING grace period, FORCING, and ABANDONING have all run.
+the entire CANCELLING grace period, FORCING, and RELEASING have all run.
 So a job already sitting in local_queue when DRAINING enters is re-pended in
 the DB (claimable by another worker) while this loop happily dispatches its
 own stale copy of the same job, because neither ``producer_stop_event`` nor
@@ -159,7 +159,7 @@ async def test_di_consumer_loop_stops_dequeuing_once_draining_starts(
     # shutdown_phase -> DRAINING, producer_stop_event.set() — WITHOUT
     # setting shutdown_event, exactly as the real orchestrator does (it only
     # sets shutdown_event at the very end, after CANCELLING/FORCING/
-    # ABANDONING have all completed — shutdown.py:313).
+    # RELEASING have all completed — shutdown.py:313).
     await asyncio.sleep(0)
     deps.shutdown_phase = ShutdownPhase.DRAINING
     deps.producer_stop_event.set()

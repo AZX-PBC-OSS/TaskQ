@@ -996,6 +996,52 @@ def record_ratelimit_denial(backend: str) -> None:
     ).add(1, {"backend": backend})
 
 
+def record_job_interrupted(actor: str, *, held: bool) -> None:
+    """Bump the jobs.interrupted counter.
+
+    Called when a worker shutdown releases a running attempt back to the
+    fleet (``mark_interrupted`` landed). ``held`` buckets the release by
+    whether the row was parked behind a hold (the actor was still running
+    when the graces expired) or re-pended immediately — the split an
+    operator reads to see whether deploys are interrupting responsive or
+    unresponsive actors. Attributes: actor, hold ("0" | ">0").
+    Respects ``_otel_enabled`` — no-op when False.
+    """
+    if not _otel_enabled:
+        return
+    _lazy_counter(
+        "taskq.jobs.interrupted",
+        description=(
+            "Running attempts released back to the fleet by a worker "
+            "shutdown (the claim's attempt increment is refunded). "
+            "Attributes: actor, hold ('0' | '>0')."
+        ),
+    ).add(1, {"actor": actor, "hold": ">0" if held else "0"})
+
+
+def record_job_interrupted_noop(actor: str | None) -> None:
+    """Bump the jobs.interrupted_noop counter.
+
+    Called when ``mark_interrupted``'s fence declines the release (the row
+    moved: a reclaim, a terminal write, or an operator cancel in flight
+    owns it). A silent no-op here is the failure mode the project rule
+    names — an interruption that looks released but never landed — so the
+    fenced-out path is instrumented alongside the success path.
+    ``actor`` is None when the fenced-out read cannot attribute one.
+    Respects ``_otel_enabled`` — no-op when False.
+    """
+    if not _otel_enabled:
+        return
+    _lazy_counter(
+        "taskq.jobs.interrupted_noop",
+        description=(
+            "mark_interrupted calls declined by the fence (row not "
+            "running-owned at the attempt epoch, or an operator cancel in "
+            "flight). Attributes: actor (when attributable)."
+        ),
+    ).add(1, {"actor": actor if actor is not None else ""})
+
+
 def record_enqueue_dedup(dedup_reason: str) -> None:
     """Bump the enqueue.dedups counter.
 

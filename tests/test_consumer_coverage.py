@@ -16,7 +16,6 @@ Exercises branches not covered by ``test_consumer.py`` and
 """
 
 import asyncio
-from contextlib import suppress
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
@@ -26,6 +25,7 @@ import structlog
 from pydantic import BaseModel, TypeAdapter
 
 from taskq._ids import new_uuid
+from taskq._json import dumps as _json_dumps
 from taskq.actor import ActorRef
 from taskq.backend._protocol import CancelPhase, EnqueueArgs, JobRow
 from taskq.backend.clock import Clock
@@ -469,7 +469,9 @@ async def test_autonomous_cooperative_cancel_keeps_the_actors_result() -> None:
     assert len(backend.mark_succeeded_calls) == 1, (
         "the actor's returned value must be stored by a success write"
     )
-    assert backend.mark_succeeded_calls[0][2] == {"ok": True}, (
+    # Slot [3], not [2]: the consumer serializes once and hands the backend
+    # result_bytes (the dict slot stays None on that path).
+    assert backend.mark_succeeded_calls[0][3] == _json_dumps({"ok": True}), (
         "the stored result must be the value the actor actually returned"
     )
 
@@ -693,11 +695,19 @@ async def test_batch_id_extracted_from_metadata_runs_actor() -> None:
 # ── Transactional cooperative cancel: actor succeeds but cancel observed ─
 
 
-async def test_transactional_cooperative_cancel_marks_cancelled() -> None:
-    """When the actor succeeds inside a LOOP-scope transaction but the
-    active-jobs entry has ``cancel_phase >= COOPERATIVE``, a CancelledError
-    is raised inside the transaction; the outer handler marks the job
-    cancelled and discards the sub-enqueue buffer."""
+async def test_transactional_cooperative_cancel_keeps_the_actors_result() -> None:
+    """The return-under-cancel contract on the LOOP-scope transactional path.
+
+    When the actor observes the cancel request (the active-jobs entry reads
+    ``cancel_phase >= COOPERATIVE``) but completes its unit of work and
+    RETURNS, the attempt is a success: the result commits inside the actor's
+    own transaction and the outcome reports it. A cancel request is not a
+    verdict over completed work — raising through the transaction here
+    instead would roll back writes the actor finished and record
+    ``cancelled`` over a value the worker already holds. The raising
+    complement (an actor that abandons by raising CancelledError IS
+    cancelled) is pinned in ``tests/test_cooperative_cancel_outcome.py``.
+    """
     active_jobs = ActiveJobRegistry()
     backend = _TxBackend()
     clk: Clock = FakeClock(_NOW)
@@ -715,25 +725,24 @@ async def test_transactional_cooperative_cancel_marks_cancelled() -> None:
         entry.cancel_phase = CancelPhase.COOPERATIVE
         return {"ok": True}
 
-    with suppress(asyncio.CancelledError):
-        await consume_one_job(
-            as_backend(backend),
-            job,
-            _WORKER_ID,
-            run_actor=actor,
-            actor_config=cfg,
-            payload_type=EmptyPayload,
-            clock=clk,
-            enqueuer=enqueuer,
-            transaction_conn=_FakeConnection(),
-            active_jobs=active_jobs,
-        )
+    outcome = await consume_one_job(
+        as_backend(backend),
+        job,
+        _WORKER_ID,
+        run_actor=actor,
+        actor_config=cfg,
+        payload_type=EmptyPayload,
+        clock=clk,
+        enqueuer=enqueuer,
+        transaction_conn=_FakeConnection(),
+        active_jobs=active_jobs,
+    )
 
-    # The transaction did not commit (CancelledError rolled it back), so
-    # mark_succeeded_with_conn was NOT called; mark_cancelled was.
-    assert len(backend.mark_succeeded_with_conn_calls) == 0
-    assert len(backend.mark_cancelled_calls) == 1
-    assert enqueuer.pending_count == 0
+    # The actor returned, so the transaction committed and the success write
+    # ran inside it; nothing was routed to the cancel write.
+    assert outcome == "succeeded"
+    assert len(backend.mark_succeeded_with_conn_calls) == 1
+    assert len(backend.mark_cancelled_calls) == 0
 
 
 # ── Transactional Snooze: savepoint rollback failure is warned ───────────
