@@ -588,7 +588,14 @@ def test_enqueue_args_unique_for_none_by_default() -> None:
 
 
 def test_enqueue_args_unique_states_default() -> None:
-    """EnqueueArgs() omitting unique_states defaults to ('pending', 'scheduled', 'running')."""
+    """EnqueueArgs() omitting unique_states gets the shipped default.
+
+    The default covers ``succeeded`` (the state that says the work
+    already happened) and excludes the failure states. (This pin
+    previously asserted the narrower three-state default; the window
+    deliberately widened to cover success, and the explicit three-state
+    set remains the opt-out.)
+    """
     args = EnqueueArgs(
         id=new_job_id(),
         actor="test",
@@ -598,7 +605,7 @@ def test_enqueue_args_unique_states_default() -> None:
         retry_kind="transient",
         scheduled_at=_START,
     )
-    assert args.unique_states == ("pending", "scheduled", "running")
+    assert args.unique_states == ("pending", "scheduled", "running", "succeeded")
 
 
 # ── unique_for / unique_states: JobsClient.enqueue wiring ───────────────

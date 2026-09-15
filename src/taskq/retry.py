@@ -34,6 +34,7 @@ from taskq.constants import (
     MAX_ATTEMPTS_SMALLINT_CEILING,
     MAX_ENQUEUABLE_MAX_ATTEMPTS,
     MIN_DEFERRAL_INTERVAL,
+    check_max_attempts_domain,
 )
 from taskq.exceptions import (
     PayloadValidationError,
@@ -44,6 +45,7 @@ from taskq.exceptions import (
 
 __all__ = [
     "MAX_ATTEMPTS_SMALLINT_CEILING",
+    "MAX_ENQUEUABLE_MAX_ATTEMPTS",
     "ActorConfigLike",
     "Fail",
     "JobRetryState",
@@ -82,20 +84,7 @@ class RetryPolicy(BaseModel):
     @field_validator("max_attempts")
     @classmethod
     def _validate_max_attempts(cls, v: int) -> int:
-        if v < 1:
-            raise ValueError("max_attempts must be >= 1")
-        # Why: max_attempts lands in the smallint jobs.max_attempts column
-        # (migrations/01.00.00_01_pre_initial.sql), and the policy layer is
-        # the boundary that refuses values the column cannot hold — the
-        # same treatment the other client-accepted smallint (priority)
-        # gets at client/_args.py and actor.py. One of defensive headroom
-        # is retained (see MAX_ENQUEUABLE_MAX_ATTEMPTS).
-        if v > MAX_ENQUEUABLE_MAX_ATTEMPTS:
-            raise ValueError(
-                f"max_attempts must fit the smallint jobs.max_attempts column "
-                f"with one of defensive headroom (<= {MAX_ENQUEUABLE_MAX_ATTEMPTS}), "
-                f"got {v}"
-            )
+        check_max_attempts_domain(v)
         return v
 
     @model_validator(mode="after")

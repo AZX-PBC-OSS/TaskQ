@@ -1062,7 +1062,7 @@ async def apply_pending_locked(
     dsn: str | None = None,
     *,
     schema: str,
-    phase: Phase | None = None,
+    phase: Phase | None = "pre",
     target: str | None = None,
     max_steps: int | None = None,
     conn: asyncpg.Connection | None = None,
@@ -1093,6 +1093,21 @@ async def apply_pending_locked(
     Raises :class:`SystemExit` on failure so the calling process aborts
     cleanly.  This is the recommended entry point for CLI ``--migrate``
     and admin sidecar ``TASKQ_MIGRATE_ON_START`` paths.
+
+    ``phase`` defaults to ``"pre"`` because this entry point fires on
+    process lifecycle events nobody sequences — a pod restart, a rollout,
+    an autoscale event — not on an operator's decision. A post-phase
+    migration exists precisely to be withheld until the whole fleet is
+    confirmed upgraded, and no single process can know that, so applying
+    one here would let a restart close a rolling-deploy overlap window
+    mid-rollout. Dropping the old single-column idempotency index while
+    the not-yet-upgraded half of the fleet is still issuing
+    ``ON CONFLICT (idempotency_key)`` takes that half's ENTIRE enqueue
+    path down: the arbiter index is resolved at plan time, so every
+    enqueue fails regardless of row values. The post phase stays behind
+    the operator's explicit ``taskq migrate up --phase post``; pass
+    ``phase=None`` to apply every phase from a context that has that
+    knowledge.
     """
     if conn is not None and conn_factory is not None:
         raise ValueError("apply_pending_locked: provide 'conn' or 'conn_factory', not both")

@@ -28,6 +28,7 @@ from taskq.backend._protocol import (
     EnqueueArgs,
     JobRow,
     batch_cap_groups,
+    first_duplicate_idempotency_pair,
 )
 from taskq.backend._records import (
     _job_row_from_record,
@@ -133,16 +134,18 @@ _COMPOSITE_IDEMPOTENCY_KEY_CONSTRAINT_NAME = "jobs_idempotency_scope_key_uniq"
 # unescaped), so a scope containing ", " makes the detail positionally
 # AMBIGUOUS -- scope "a, b" key "c" reports
 # "Key (idempotency_scope, idempotency_key)=(a, b, c) already exists.",
-# which a left-to-right split mis-reads as scope "a" key "b, c". The
-# attribution therefore does not parse the detail at all: it renders each
-# of the batch's own (scope, key) candidates into PG's detail format and
-# matches. Exactly one rendering equal to the server's detail names the
-# pair honestly (comma-space scopes included); zero matches (a localized
-# or truncated detail, a non-raw rendering) or more than one (two
-# distinct candidate pairs producing the same detail text) degrade to
-# unattributed-but-typed -- never a wrong pair. The in-memory mirror
-# attributes exactly by construction; PG parity is best-effort with this
-# verified fallback.
+# which a left-to-right split mis-reads as scope "a" key "b, c", and a
+# localized or truncated message renders nothing matchable at all. The
+# COPY conflict branch therefore never PARSES the detail: attribution is
+# resolved from the batch's own contents plus a targeted post-abort
+# SELECT (see _attribute_copy_duplicate). This template survives only as
+# the residual fallback for the narrow case where the conflicting row
+# cannot be resolved from the table either (committed and deleted again
+# by a concurrent transaction in the gap between the abort and the
+# lookup): it renders each of the batch's own candidates into PG's
+# detail format and matches, naming the pair when exactly one rendering
+# equals the server's detail and degrading to unattributed-but-typed
+# otherwise -- never a wrong pair.
 _COMPOSITE_IDEMPOTENCY_DETAIL_TEMPLATE = (
     "Key (idempotency_scope, idempotency_key)=({scope}, {key}) already exists."
 )
@@ -307,7 +310,10 @@ def _attribute_duplicate_pair(
     detail: str | None,
     candidates: "set[tuple[str, str]]",
 ) -> tuple[str | None, str | None]:
-    """Best-effort attribution of a composite-index COPY violation.
+    """Residual attribution of a composite-index COPY violation from the
+    server's detail text — the fallback for when
+    :func:`_attribute_copy_duplicate` cannot resolve the conflicting row
+    from the table (a committed-and-instantly-deleted racer).
 
     Returns the unique candidate pair whose rendered detail equals the
     server's *detail*, or (None, None) when no candidate matches or the
@@ -325,6 +331,57 @@ def _attribute_duplicate_pair(
     if len(matches) == 1:
         return matches[0]
     return (None, None)
+
+
+async def _attribute_copy_duplicate(
+    conn: ConnLike,
+    sql: SqlTemplates,
+    admitted_args: list[EnqueueArgs],
+    detail: str | None,
+) -> tuple[str | None, str | None]:
+    """Resolve the pair a COPY composite-index violation aborted on —
+    exactly, and independent of the driver's error text.
+
+    Runs on the conflict branch only, after the savepoint wrapping the
+    COPY has rolled the statement back, so the caller's transaction scope
+    answers queries again. COPY writes the batch in order and aborts at
+    the first row whose pair the partial unique index already holds; the
+    holder is either a COMMITTED table row or an earlier row of this same
+    COPY. A unique-violation report means the conflicting transaction
+    committed (had it rolled back, the COPY would have proceeded), so a
+    fresh SELECT under READ COMMITTED sees every committed holder — and
+    the savepoint rollback has removed this COPY's own rows, so the
+    in-batch holders are reconstructed from the batch itself by
+    :func:`first_duplicate_idempotency_pair`, the same pure rule the
+    in-memory mirror applies over its own index. The result names the
+    offending pair exactly for every in-batch duplicate and every
+    raced-against-storage duplicate, whether or not the server's detail
+    text was ambiguous, localized, or truncated.
+
+    The one shape the resolution cannot see is a conflicting row that a
+    concurrent transaction committed and deleted again in the gap between
+    the abort and the SELECT; there the detail-text match is the last
+    word, degrading to unattributed-but-typed rather than guessing.
+    """
+    keyed = [
+        (args.idempotency_scope, str(args.idempotency_key))
+        for args in admitted_args
+        if args.idempotency_key is not None
+    ]
+    stored_pairs: set[tuple[str, str]] = set()
+    if keyed:
+        recs = await conn.fetch(
+            sql.enqueue_batch_fetch_existing,
+            [scope for scope, _ in keyed],
+            [key for _, key in keyed],
+        )
+        stored_pairs = {
+            (str(rec["idempotency_scope"]), str(rec["idempotency_key"])) for rec in recs
+        }
+    pair = first_duplicate_idempotency_pair(admitted_args, stored_pairs)
+    if pair is not None:
+        return pair
+    return _attribute_duplicate_pair(detail, set(keyed))
 
 
 async def _batch_cap_refusals(
@@ -690,14 +747,16 @@ async def _enqueue_on_conn(
         )
         if existing_rec is not None:
             row = _job_row_from_record(existing_rec)
-            # Same shared helper as the idempotency seam. The DEFAULT
-            # unique_states exclude terminal states, but the set is
-            # caller-configurable (@actor(unique_states=...)), and a
-            # window that folds a terminal state in can hand a weeks-old
-            # dead row back as a successful enqueue — the case the helper
-            # warns on. The full field set (idempotency_scope included)
-            # and the terminal-status escalation both come with the
-            # helper; the per-site truth is the dedup_reason alone.
+            # Same shared helper as the idempotency seam. A window that
+            # matches a terminal state can hand a weeks-old row back as a
+            # successful enqueue — for ``succeeded`` that is the intended
+            # outcome (the work already happened), but the set is
+            # caller-configurable (@actor(unique_states=...)) and a
+            # failure state folded in strands the new work, which is the
+            # case the helper warns on. The full field set
+            # (idempotency_scope included) and the terminal-status
+            # escalation both come with the helper; the per-site truth is
+            # the dedup_reason alone.
             _log_enqueue_dedup(row, dedup_reason="unique_for")
             return row
 
@@ -1673,12 +1732,26 @@ async def _enqueue_batch_fast(
             fixup_cols = [[col[i] for i in keep] for col in fixup_cols]
 
         try:
-            result = await conn.copy_records_to_table(
-                "jobs",
-                records=copy_records,
-                columns=sql.copy_enqueue_columns,
-                schema_name=schema,
-            )
+            # Why a savepoint around the COPY when the batch carries
+            # idempotency keys: a unique violation is a STATEMENT error
+            # that poisons the surrounding transaction, and the exact
+            # attribution below resolves the conflicting row with a
+            # targeted SELECT that must run inside the caller's scope —
+            # the savepoint's rollback restores that scope before the
+            # lookup (the same discipline the single-enqueue path's
+            # savepoint-isolated arms follow). The happy path pays one
+            # SAVEPOINT/RELEASE pair per batch, never per row; batches
+            # without idempotency keys cannot violate the partial
+            # composite index (its predicate is idempotency_key IS NOT
+            # NULL) and skip the wrapper entirely.
+            keyed_batch = any(args.idempotency_key is not None for args in admitted_args)
+            async with _optional_savepoint(conn, enabled=keyed_batch):
+                result = await conn.copy_records_to_table(
+                    "jobs",
+                    records=copy_records,
+                    columns=sql.copy_enqueue_columns,
+                    schema_name=schema,
+                )
         except UniqueViolationError as exc:
             if exc.constraint_name == _LEGACY_IDEMPOTENCY_KEY_CONSTRAINT_NAME:
                 # Rolling-deploy overlap window (see _enqueue_on_conn's
@@ -1714,24 +1787,21 @@ async def _enqueue_batch_fast(
                 # dedupes and RETURNS the existing row -- so there was
                 # no typed error to reuse; DuplicateIdempotencyKeyError
                 # is this path's own, a typed domain error for a
-                # dedup-constraint violation. The offending pair is attributed by
-                # MATCHING the detail against the batch's own candidates
-                # (see _attribute_duplicate_pair): named exactly when the
-                # rendering is unambiguous -- including comma-bearing
-                # scopes, which a positional parse mis-reads --
-                # and unattributed-but-typed on ambiguity (two distinct
-                # pairs rendering to the same detail text) or on a
-                # localized/truncated detail. During the 01.00.03 rolling
+                # dedup-constraint violation. The offending pair is
+                # resolved exactly from the batch's own contents plus a
+                # post-abort lookup of the stored pairs
+                # (_attribute_copy_duplicate) — never parsed from the
+                # violation's detail text, which renders values raw and
+                # unquoted and is ambiguous under positional reading (a
+                # comma-bearing scope) or unusable outright (a localized
+                # or truncated message). During the 01.00.03 rolling
                 # window a same-pair duplicate may instead be reported
                 # against the legacy index, which the branch above
                 # already converts -- that carve-out is pre-existing
                 # documented behavior for this path, unchanged here.
-                batch_candidates = {
-                    (args.idempotency_scope, str(args.idempotency_key))
-                    for args in args_list
-                    if args.idempotency_key is not None
-                }
-                dup_scope, dup_key = _attribute_duplicate_pair(exc.detail, batch_candidates)
+                dup_scope, dup_key = await _attribute_copy_duplicate(
+                    conn, sql, admitted_args, exc.detail
+                )
                 logger.info(
                     "batch-fast-duplicate-idempotency-key",
                     batch_size=len(args_list),

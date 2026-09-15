@@ -52,9 +52,11 @@ import structlog
 from pydantic import BaseModel, TypeAdapter
 
 from taskq.backend._protocol import (
+    DEFAULT_UNIQUE_STATES,
     JobStatus,
     _validate_queue_name,  # pyright: ignore[reportPrivateUsage]  # Why: the canonical queue-name validator; the enqueue path (client._args) runs the same one, so the charset cannot drift between the two chokepoints.
 )
+from taskq.constants import check_priority_domain
 from taskq.ratelimit.refs import KeyedRateLimitRef, KeyedReservationRef
 from taskq.ratelimit.reservation import ConcurrencyReservation
 from taskq.ratelimit.sliding_window import SlidingWindow
@@ -217,7 +219,7 @@ class ActorRef[P: BaseModel, R: BaseModel | None]:
         max_pending: int | None = None,
         metadata: dict[str, object] | None = None,
         unique_for: timedelta | None = None,
-        unique_states: tuple[JobStatus, ...] = ("pending", "scheduled", "running"),
+        unique_states: tuple[JobStatus, ...] = DEFAULT_UNIQUE_STATES,
         start_to_close: timedelta | None = None,
         rate_limits: list[str | KeyedRateLimitRef | TokenBucket | SlidingWindow] | None = None,
         reservations: list[str | KeyedReservationRef | ConcurrencyReservation] | None = None,
@@ -352,7 +354,7 @@ def actor[P: BaseModel, R: BaseModel | None](  # pyright: ignore[reportInvalidTy
     max_pending: int | None = None,
     metadata: dict[str, object] | None = None,
     unique_for: timedelta | None = None,
-    unique_states: tuple[JobStatus, ...] = ("pending", "scheduled", "running"),
+    unique_states: tuple[JobStatus, ...] = DEFAULT_UNIQUE_STATES,
     start_to_close: timedelta | None = None,
     rate_limits: list[str | KeyedRateLimitRef | TokenBucket | SlidingWindow] | None = None,
     reservations: list[str | KeyedReservationRef | ConcurrencyReservation] | None = None,
@@ -377,7 +379,7 @@ def actor[P: BaseModel, R: BaseModel | None](  # pyright: ignore[reportInvalidTy
     max_pending: int | None = None,
     metadata: dict[str, object] | None = None,
     unique_for: timedelta | None = None,
-    unique_states: tuple[JobStatus, ...] = ("pending", "scheduled", "running"),
+    unique_states: tuple[JobStatus, ...] = DEFAULT_UNIQUE_STATES,
     start_to_close: timedelta | None = None,
     rate_limits: list[str | KeyedRateLimitRef | TokenBucket | SlidingWindow] | None = None,
     reservations: list[str | KeyedReservationRef | ConcurrencyReservation] | None = None,
@@ -470,15 +472,19 @@ def actor[P: BaseModel, R: BaseModel | None](  # pyright: ignore[reportInvalidTy
             surprises at JSONB serialization time. Pass ``None`` to
             get an empty ``dict`` (the default).
 
-        unique_states: The set of job statuses to consider "active" for
-            ``unique_for`` deduplication. Defaults to
-            ``("pending", "scheduled", "running")`` — terminal states
-            (``succeeded``, ``failed``, ``cancelled``) are excluded so
-            that a completed job does not block re-enqueue of the same
-            identity. To include succeeded jobs, pass
-            ``unique_states=("pending", "scheduled", "running",
-            "succeeded")``. Misconfigured terminal states block
-            re-enqueue after success (which is rarely intended).
+        unique_states: The set of job statuses a ``unique_for`` window
+            matches. Defaults to ``("pending", "scheduled", "running",
+            "succeeded")``: the window means "at most one job for this
+            identity in this period", and ``succeeded`` is the state that
+            says the work already happened — the precise condition the
+            window exists to detect. The remaining terminal states
+            (``failed``, ``cancelled``, ``crashed``, ``abandoned``) are
+            excluded because they mean the work did NOT happen, so
+            matching them would let one failure suppress the identity for
+            the rest of the window. To block only concurrent execution,
+            pass ``unique_states=("pending", "scheduled", "running")``;
+            adding a failure state suppresses re-enqueue after a failure,
+            which is rarely intended.
     """
 
     def _wrap(handler: Callable[..., object]) -> ActorRef[P, R]:
@@ -550,7 +556,7 @@ def _build_ref[P: BaseModel, R: BaseModel | None](  # pyright: ignore[reportInva
     max_pending: int | None = None,
     metadata: dict[str, object] | None,
     unique_for: timedelta | None = None,
-    unique_states: tuple[JobStatus, ...] = ("pending", "scheduled", "running"),
+    unique_states: tuple[JobStatus, ...] = DEFAULT_UNIQUE_STATES,
     start_to_close: timedelta | None = None,
     rate_limits: list[str | KeyedRateLimitRef | TokenBucket | SlidingWindow] | None = None,
     reservations: list[str | KeyedReservationRef | ConcurrencyReservation] | None = None,
@@ -602,11 +608,7 @@ def _build_ref[P: BaseModel, R: BaseModel | None](  # pyright: ignore[reportInva
             f"actor handler {fn.__qualname__!r} priority must be an int; "
             f"got {type(priority).__name__!r}.",
         )
-    if priority < -32768 or priority > 32767:
-        raise ValueError(
-            f"actor handler {fn.__qualname__!r} priority must fit "
-            f"smallint range (-32768..32767); got {priority}.",
-        )
+    check_priority_domain(priority, what=f"actor handler {fn.__qualname__!r} priority")
 
     if max_pending is not None and (not isinstance(max_pending, int) or max_pending < 0):  # pyright: ignore[reportUnnecessaryIsInstance]  # Why: runtime guard against callers that bypass the type checker.
         raise ValueError(

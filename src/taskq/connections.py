@@ -32,7 +32,7 @@ configuration error (caught in :meth:`WorkerConnections.__post_init__`).
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -49,6 +49,8 @@ __all__ = [
     "PoolFactory",
     "RedisFactory",
     "WorkerConnections",
+    "bounded_lock_budget_ms",
+    "lock_budget_command_timeout_secs",
     "statement_cache_kwargs",
 ]
 
@@ -105,6 +107,75 @@ def statement_cache_kwargs(settings: TaskQSettings | None = None) -> dict[str, i
         "statement_cache_size": settings.statement_cache_size,
         "max_cached_statement_lifetime": settings.max_cached_statement_lifetime,
     }
+
+
+#: Fraction of a connection's per-query bound an enqueue lock budget may
+#: occupy. The remainder is what the server's refusal needs to be raised,
+#: unwound to the savepoint and written back down the wire before the
+#: client-side timer fires; a fifth of the bound is generous for a round
+#: trip and still leaves the wait dominated by the budget itself.
+_LOCK_BUDGET_COMMAND_TIMEOUT_SHARE = 0.8
+
+
+def bounded_lock_budget_ms(budget_ms: float, command_timeout_secs: float | None) -> float:
+    """Clamp one enqueue lock budget to fit inside its connection's bound.
+
+    Each of the enqueue path's bounded waits is enforced server-side by a
+    ``lock_timeout`` GUC whose expiry is the point: it produces the typed
+    refusal (``MaxPendingLockTimeoutError``, ``UniqueForLockTimeoutError``,
+    ``IdempotencyKeyLockTimeoutError``) naming which contention the caller
+    lost and that retrying is the right response.
+
+    A budget at or above the connection's own per-query timeout can never
+    deliver that. asyncpg starts its client-side timer before the
+    ``SET LOCAL lock_timeout`` has even executed, so it always fires
+    first: the caller gets a bare ``TimeoutError`` naming nothing, the
+    warning line never logs, the backpressure counter never moves, and
+    the typed refusal is unreachable code. Clamping is what makes the
+    configured budget mean what it says — an unclamped budget is not a
+    longer wait, it is no verdict at all.
+
+    ``command_timeout_secs`` of ``None`` is a connection with no
+    client-side bound, so the budget stands as configured; so does a
+    budget of ``0`` or less, which is the operator asking for an
+    unbounded wait (the ``lock_timeout`` GUC convention).
+    """
+    if command_timeout_secs is None or command_timeout_secs <= 0 or budget_ms <= 0:
+        return budget_ms
+    return min(budget_ms, command_timeout_secs * 1000.0 * _LOCK_BUDGET_COMMAND_TIMEOUT_SHARE)
+
+
+def lock_budget_command_timeout_secs(
+    budgets_ms: Iterable[tuple[float, float]],
+    *,
+    floor_secs: float,
+) -> float:
+    """The per-query bound a TaskQ-built pool must carry to deliver its
+    configured enqueue lock budgets.
+
+    *floor_secs* is the bound sized for the shipped defaults — at the
+    defaults each budget is delivered clamped to the floor's
+    :data:`_LOCK_BUDGET_COMMAND_TIMEOUT_SHARE` share by
+    :func:`bounded_lock_budget_ms`, so the floor is exactly what the
+    pre-knob pool carried and a deployment that sets nothing keeps it.
+
+    Each pair in *budgets_ms* is ``(configured_ms, default_ms)`` for one
+    knob. A budget configured ABOVE its shipped default cannot be
+    delivered inside the floor — the clamp would silently cap it back —
+    so the bound is re-derived as ``configured / share``: the widened
+    budget occupies the same share of a larger bound, the clamp no
+    longer bites, and the server-side ``lock_timeout`` still fires
+    before the client-side timer (the race the clamp exists to win).
+    Budgets at or below their default never move the bound, and neither
+    does a non-positive one: an unbounded lock wait cannot fit inside
+    any finite bound, and dropping the pool's per-query bound to honor
+    one would remove the black-hole guard every other query relies on.
+    """
+    bound = floor_secs
+    for configured_ms, default_ms in budgets_ms:
+        if configured_ms > default_ms:
+            bound = max(bound, configured_ms / 1000.0 / _LOCK_BUDGET_COMMAND_TIMEOUT_SHARE)
+    return bound
 
 
 # ── Factory type aliases (PEP 695) ─────────────────────────────────────

@@ -40,9 +40,13 @@ __all__ = [
     "RECLAIM_EVENT_VISIBILITY_DELAY",
     "RECLAIM_OUTBOX_RETENTION_MULTIPLIER",
     "RESERVATION_RETRY_HINT_MARGIN",
+    "SMALLINT_MAX",
+    "SMALLINT_MIN",
     "WAKE_CHANNEL_FMT",
     "WORKER_CHANNEL_FMT",
     "base_name_collides_with_reserved_prefix",
+    "check_max_attempts_domain",
+    "check_priority_domain",
     "events_channel",
     "progress_channel",
     "progress_global_channel",
@@ -427,6 +431,67 @@ boundary. Nothing else depends on the value: there is no CHECK constraint
 on ``jobs.result_size_bytes`` and the result is never carried in a Redis
 event payload.
 """
+
+SMALLINT_MIN: Final[int] = -32768
+"""Lower bound of the Postgres ``smallint`` domain."""
+
+SMALLINT_MAX: Final[int] = 32767
+"""Upper bound of the Postgres ``smallint`` domain.
+
+``jobs.priority``, ``jobs.max_attempts`` and ``jobs.attempt`` are all
+``smallint`` (``migrations/01.00.00_01_pre_initial.sql``). Every layer
+that accepts one of those values from a caller refuses out-of-domain
+input against these two constants, so the refusal cannot drift between
+the client, the actor declaration and the backend boundary.
+"""
+
+MAX_ATTEMPTS_SMALLINT_CEILING: Final[int] = SMALLINT_MAX
+"""The ``jobs.max_attempts`` column's domain ceiling."""
+
+MAX_ENQUEUABLE_MAX_ATTEMPTS: Final[int] = MAX_ATTEMPTS_SMALLINT_CEILING - 1
+"""Largest ``max_attempts`` a fresh enqueue or policy may carry.
+
+One below the column ceiling, retained as a defensive margin: a row
+parked at exactly the ceiling has no headroom for any statement that
+needs to add one to a max_attempts-derived value. Rows can still legally
+REACH the ceiling — a snooze arm's saturating increment parks a snoozed
+job there — which is why the retry layer clamps row-stored values back
+into this bound before reconstructing a policy.
+"""
+
+
+def check_priority_domain(value: int, *, what: str = "priority") -> None:
+    """Refuse a ``priority`` outside the ``smallint`` column's domain.
+
+    Shared by every layer that accepts a priority so the arithmetic is
+    stated once: the client override, the actor declaration, and the
+    enqueue-boundary struct all raise the same refusal for the same
+    value. ``what`` names the caller's parameter, so the message points
+    at the argument to fix rather than at a column in a driver
+    traceback.
+    """
+    if value < SMALLINT_MIN or value > SMALLINT_MAX:
+        raise ValueError(
+            f"{what} must fit smallint range ({SMALLINT_MIN}..{SMALLINT_MAX}), got {value}"
+        )
+
+
+def check_max_attempts_domain(value: int, *, what: str = "max_attempts") -> None:
+    """Refuse a ``max_attempts`` outside the enqueuable range.
+
+    Below one the job is dispatchable but can never complete — the first
+    failure finds no budget left — so the value is refused rather than
+    stored. Above :data:`MAX_ENQUEUABLE_MAX_ATTEMPTS` the column has no
+    headroom left to raise the ceiling on a reclaim.
+    """
+    if value < 1:
+        raise ValueError(f"{what} must be >= 1, got {value}")
+    if value > MAX_ENQUEUABLE_MAX_ATTEMPTS:
+        raise ValueError(
+            f"{what} must fit the smallint jobs.max_attempts column with one of "
+            f"defensive headroom (<= {MAX_ENQUEUABLE_MAX_ATTEMPTS}), got {value}"
+        )
+
 
 BTREE_MAX_ITEM_BYTES: Final[int] = 2704
 """Postgres btree v4 maximum index-entry size, in bytes.

@@ -57,7 +57,7 @@ async def process_order(payload: OrderPayload) -> OrderResult: ...
 | `max_pending` | `int \| None` | `None` | Queue-depth backpressure cap — see [`max_pending` backpressure](#max_pending-backpressure). Only the *seed* value: once a worker has synced this actor once, a non-NULL stored `actor_config.max_pending` is authoritative and this literal is ignored — tune it live with `taskq actor-config set`, see [ActorConfig sync](workers.md#actorconfig-sync). |
 | `metadata` | `dict[str, object] \| None` | `{}` | Arbitrary key-value metadata stored in `actor_config.metadata` (JSONB). Must be a plain `dict`; mapping proxies and frozendicts are rejected at decoration time. The key `"singleton"` is reserved by the library. |
 | `unique_for` | `timedelta \| None` | `None` | Deduplication window — see [`unique_for` deduplication](#unique_for-deduplication). |
-| `unique_states` | `tuple[JobStatus, ...]` | `("pending", "scheduled", "running")` | Job statuses considered "active" for `unique_for` dedup. Terminal states are excluded by default so a completed job does not block re-enqueue. |
+| `unique_states` | `tuple[JobStatus, ...]` | `("pending", "scheduled", "running", "succeeded")` | Job statuses a `unique_for` window matches. `succeeded` is included because it is the state that says the work already happened; the failure states are excluded so one failure does not suppress the identity for the rest of the window. |
 | `start_to_close` | `timedelta \| None` | `None` | Per-attempt execution timeout. Precedence (first wins): per-enqueue `start_to_close` > this actor default > `TASKQ_DEFAULT_START_TO_CLOSE`. `None` means no per-attempt timeout unless a worker-wide default is set. See [Retries — `start_to_close` vs `schedule_to_close`](retries.md#7-start_to_close-vs-schedule_to_close). |
 | `rate_limits` | `list[str] \| None` | `[]` | Named rate-limit buckets this actor consumes — see [Rate limits and reservations](#rate-limits-and-reservations). |
 | `reservations` | `list[str \| KeyedReservationRef] \| None` | `[]` | Named concurrency reservation slots this actor claims. A `KeyedReservationRef` derives per-key (session/tenant) reservation buckets from the job payload at dispatch time — see [Rate limits and reservations](#rate-limits-and-reservations). |
@@ -551,9 +551,18 @@ async def sync_account(payload: SyncPayload) -> None: ...
   dispatch CTE's `running_identities` filter remains as the backstop for cross-window races.
 - When a dedup match is found, `JobHandle.was_existing` is `True` and the handle wraps the
   existing job row.
-- `unique_states` controls which statuses count as "active" for the window check. Terminal states
-  (`succeeded`, `failed`, `cancelled`) are excluded from the default so a finished job does not
-  block re-enqueue.
+- `unique_states` controls which statuses the window check matches. The default is
+  `("pending", "scheduled", "running", "succeeded")`: the window means "at most one job for this
+  identity in this period", and `succeeded` is the state that says the work already happened —
+  without it the identity would be free again the instant the first job completed, so a
+  re-delivered webhook or a double-clicked button inside a still-open window would run the work a
+  second time. The failure states (`failed`, `cancelled`, `crashed`, `abandoned`) are excluded
+  because they mean the work did *not* happen; matching them would let one transient failure
+  suppress every later attempt for the rest of the window. To block only concurrent execution,
+  pass `unique_states=("pending", "scheduled", "running")` explicitly.
+- A dedup onto a job that is already finished is reported: the enqueue logs a `WARN`-level
+  `enqueue-dedup` line naming the matched status, and `JobHandle.deduplicated_onto_terminal` is
+  `True` so the caller can branch without re-reading the row.
 
 ```python
 handle = await client.enqueue(

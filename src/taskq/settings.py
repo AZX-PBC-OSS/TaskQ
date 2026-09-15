@@ -509,6 +509,89 @@ class TaskQSettings(DotEnvConfig):
         "Same TaskQ-built-pools-only scope as statement_cache_size.",
     )
 
+    # -- Enqueue advisory-lock budgets ------------------------------------
+    # Defaults are the values of taskq.backend._enqueue's
+    # DEFAULT_MAX_PENDING_LOCK_TIMEOUT_MS / DEFAULT_UNIQUE_FOR_LOCK_TIMEOUT_MS
+    # / DEFAULT_IDEMPOTENCY_LOCK_TIMEOUT_MS (5 s each) — written as literals,
+    # not imported, because that module binds the asyncpg driver at import
+    # time and this module is imported by the driver-free testing boundary
+    # (taskq.testing.settings). The PostgresBackend enqueue wrappers read
+    # these fields at the lock use sites (the dispatch_oversample plumbing
+    # pattern); a deployment that sets none of them keeps the exact
+    # pre-knob ceilings the module constants supplied.
+    #
+    # Declared here rather than on WorkerSettings because enqueue is a
+    # CLIENT path: a producer process builds TaskQSettings and never a
+    # WorkerSettings, so budgets that lived on the subclass were
+    # unreachable from the side that actually takes these locks. The
+    # client's own per-query pool bound follows these knobs rather than
+    # the reverse: TaskQ sizes the pools it builds from them
+    # (client._taskq's _CLIENT_POOL_COMMAND_TIMEOUT_SECS floor, re-derived
+    # upward by connections.lock_budget_command_timeout_secs when a budget
+    # is widened past its default here) and then delivers each budget
+    # clamped to 80% of that bound (connections.bounded_lock_budget_ms),
+    # so the server-side lock_timeout always fires before the pool's
+    # client-side timer and the refusal is the typed one.
+    max_pending_lock_timeout_ms: float = Field(
+        default=5000.0,
+        description="TASKQ_MAX_PENDING_LOCK_TIMEOUT_MS (milliseconds). Bounded "
+        "wait for the max_pending advisory lock on the single-enqueue path "
+        "(the count-then-insert serialization per capped actor). Exhaustion "
+        "raises MaxPendingLockTimeoutError — the same typed backpressure "
+        "treatment as a cap rejection, and denials consume retry budget, so "
+        "widen this during an outage that slows lock holders rather than "
+        "letting the fixed ceiling convert slow holders into refused "
+        "enqueues. Widening past the default re-derives the per-query bound "
+        "of every pool the TaskQ client builds itself, so the wider budget "
+        "is delivered end to end; at or below the default the client path "
+        "delivers the budget clamped to 80% of that pool bound (4 s at the "
+        "defaults), the margin the server-side lock_timeout needs to fire "
+        "before the pool's own timer. 0 or less waits indefinitely "
+        "server-side (the lock_timeout GUC convention shared with the "
+        "sibling budgets) — a pool TaskQ builds still applies its per-query "
+        "bound, so set a large finite value there instead.",
+    )
+    unique_for_lock_timeout_ms: float = Field(
+        default=5000.0,
+        description="TASKQ_UNIQUE_FOR_LOCK_TIMEOUT_MS (milliseconds). Bounded "
+        "wait for the unique_for single-flight advisory lock on the "
+        "single-enqueue path (the identity preflight-then-insert "
+        "serialization). Exhaustion raises UniqueForLockTimeoutError with "
+        "retry-yields-dedup guidance; the correct contention outcome is "
+        "usually the dedup return, so a unique_for caller may want a longer "
+        "wait than the max_pending budget before giving up on the answer. "
+        "Separate knob from max_pending_lock_timeout_ms because the two "
+        "budgets bound different semantics (identity dedup vs capacity "
+        "admission). Widening past the default re-derives the per-query "
+        "bound of every pool the TaskQ client builds itself (see "
+        "TASKQ_MAX_PENDING_LOCK_TIMEOUT_MS for the delivery rule); at or "
+        "below the default the client path delivers the budget clamped to "
+        "80% of that pool bound. 0 or less waits indefinitely server-side "
+        "(the lock_timeout GUC convention shared with the sibling budgets) "
+        "— a pool TaskQ builds still applies its per-query bound, so set a "
+        "large finite value there instead.",
+    )
+    idempotency_lock_timeout_ms: float = Field(
+        default=5000.0,
+        description="TASKQ_IDEMPOTENCY_LOCK_TIMEOUT_MS (milliseconds). Bounded "
+        "wait for the idempotency token INSERT's speculative-lock conflict "
+        "on the single-enqueue path — another transaction's UNCOMMITTED row "
+        "with the same (idempotency_scope, idempotency_key) pair. On a "
+        "transactional consumer the holder is the actor's own open "
+        "transaction (unbounded by default), so this budget bounds the "
+        "VICTIM; exhaustion raises IdempotencyKeyLockTimeoutError, meaning "
+        "the dedup answer could not be determined in time — retry the same "
+        "enqueue, which typically dedupes against the now-visible winner. "
+        "Widening past the default re-derives the per-query bound of every "
+        "pool the TaskQ client builds itself (see "
+        "TASKQ_MAX_PENDING_LOCK_TIMEOUT_MS for the delivery rule); at or "
+        "below the default the client path delivers the budget clamped to "
+        "80% of that pool bound. 0 or less waits indefinitely server-side "
+        "(the lock_timeout GUC convention shared with the sibling budgets) "
+        "— a pool TaskQ builds still applies its per-query bound, so set a "
+        "large finite value there instead.",
+    )
+
     @classmethod
     def load(
         cls,
@@ -795,56 +878,6 @@ class WorkerSettings(TaskQSettings):
         "home queue is not subscribed. Default False (override-safe).",
     )
 
-    # -- Enqueue advisory-lock budgets ------------------------------------
-    # Defaults are the values of taskq.backend._enqueue's
-    # DEFAULT_MAX_PENDING_LOCK_TIMEOUT_MS / DEFAULT_UNIQUE_FOR_LOCK_TIMEOUT_MS
-    # / DEFAULT_IDEMPOTENCY_LOCK_TIMEOUT_MS (5 s each) — written as literals,
-    # not imported, because that module binds the asyncpg driver at import
-    # time and this module is imported by the driver-free testing boundary
-    # (taskq.testing.settings). The PostgresBackend enqueue wrappers read
-    # these fields at the lock use sites (the dispatch_oversample plumbing
-    # pattern); a deployment that sets none of them keeps the exact
-    # pre-knob ceilings the module constants supplied.
-    max_pending_lock_timeout_ms: float = Field(
-        default=5000.0,
-        description="TASKQ_MAX_PENDING_LOCK_TIMEOUT_MS (milliseconds). Bounded "
-        "wait for the max_pending advisory lock on the single-enqueue path "
-        "(the count-then-insert serialization per capped actor). Exhaustion "
-        "raises MaxPendingLockTimeoutError — the same typed backpressure "
-        "treatment as a cap rejection, and denials consume retry budget, so "
-        "widen this during an outage that slows lock holders rather than "
-        "letting the fixed ceiling convert slow holders into refused "
-        "enqueues. 0 or less waits indefinitely (the lock_timeout GUC "
-        "convention shared with the sibling budgets).",
-    )
-    unique_for_lock_timeout_ms: float = Field(
-        default=5000.0,
-        description="TASKQ_UNIQUE_FOR_LOCK_TIMEOUT_MS (milliseconds). Bounded "
-        "wait for the unique_for single-flight advisory lock on the "
-        "single-enqueue path (the identity preflight-then-insert "
-        "serialization). Exhaustion raises UniqueForLockTimeoutError with "
-        "retry-yields-dedup guidance; the correct contention outcome is "
-        "usually the dedup return, so a unique_for caller may want a longer "
-        "wait than the max_pending budget before giving up on the answer. "
-        "Separate knob from max_pending_lock_timeout_ms because the two "
-        "budgets bound different semantics (identity dedup vs capacity "
-        "admission). 0 or less waits indefinitely (the lock_timeout GUC "
-        "convention shared with the sibling budgets).",
-    )
-    idempotency_lock_timeout_ms: float = Field(
-        default=5000.0,
-        description="TASKQ_IDEMPOTENCY_LOCK_TIMEOUT_MS (milliseconds). Bounded "
-        "wait for the idempotency token INSERT's speculative-lock conflict "
-        "on the single-enqueue path — another transaction's UNCOMMITTED row "
-        "with the same (idempotency_scope, idempotency_key) pair. On a "
-        "transactional consumer the holder is the actor's own open "
-        "transaction (unbounded by default), so this budget bounds the "
-        "VICTIM; exhaustion raises IdempotencyKeyLockTimeoutError, meaning "
-        "the dedup answer could not be determined in time — retry the same "
-        "enqueue, which typically dedupes against the now-visible winner. "
-        "0 or less waits indefinitely (the lock_timeout GUC convention "
-        "shared with the sibling budgets).",
-    )
     heartbeat_pool_size: int = Field(
         default=4,
         ge=1,

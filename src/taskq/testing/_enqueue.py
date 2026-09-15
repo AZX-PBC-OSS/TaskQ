@@ -17,6 +17,7 @@ from taskq.backend._protocol import (
     EnqueueArgs,
     JobRow,
     batch_cap_groups,
+    first_duplicate_idempotency_pair,
 )
 from taskq.backend._records import item_jsonb_param, item_tags_jsonb_param
 from taskq.exceptions import (
@@ -63,10 +64,8 @@ async def _enqueue(self: "InMemoryBackend", args: EnqueueArgs) -> JobRow:
             existing_row = max(candidates, key=lambda r: r.created_at)
             # Same shared helper as the idempotency seam below and as the
             # PG path: one field set, one terminal-target escalation, and
-            # per-site truth in dedup_reason alone. The default
-            # unique_states never match a terminal row, but a
-            # caller-configured set can — and a dead target must be as
-            # loud here as it is on the sibling arm.
+            # per-site truth in dedup_reason alone. A dead target must be
+            # as loud here as it is on the sibling arm.
             _log_enqueue_dedup(existing_row, dedup_reason="unique_for")
             return _read_copy(existing_row)
 
@@ -301,6 +300,7 @@ async def _enqueue_batch(
     # the poisoned item's index and left the good prefix stored —
     # certifying code that leaves phantom rows behind on PG.
     _check_batch_job_ids(self, admitted_args)
+    _check_batch_singletons(self, admitted_args)
     # Why a function-level import: the dedup WARNING budget lives with
     # the PG enqueue path (taskq.backend._enqueue), whose module scope
     # imports the asyncpg driver; the testing package's import surface
@@ -381,6 +381,67 @@ def _check_batch_job_ids(self: "InMemoryBackend", admitted_args: list[EnqueueArg
                 f"(job id {args.id} appears twice in this batch)"
             )
         seen.add(args.id)
+
+
+def _check_batch_singletons(self: "InMemoryBackend", admitted_args: list[EnqueueArgs]) -> None:
+    """Reject the whole batch BEFORE any insert when an admitted singleton
+    item collides — with a live singleton job or another singleton item for
+    the same actor in this batch.
+
+    The PG bulk tier is one ``unnest`` INSERT in one transaction, so the
+    partial unique index covering live singleton rows aborts the entire
+    statement and admits nothing — including the items that precede the
+    colliding one. The per-item loop below discovers the collision at the
+    offending item's index and would leave the good prefix stored, which
+    certifies application code that on Postgres leaves no such rows behind.
+
+    The refusal carries the typed backpressure error the single-enqueue
+    preflight raises, not the driver's constraint violation: a singleton
+    collision is a retryable admission denial, and a caller must be able
+    to branch on it without reading a driver traceback.
+
+    The live-row scan matches on ``is True``, the same predicate the
+    single-enqueue preflight and Postgres' partial unique index
+    (``metadata @> '{"singleton": true}'``) apply: a truthy-but-not-true
+    metadata value (``1``, ``"yes"``) never armed singleton enforcement
+    at insert time on either backend, so it must not block a batch here
+    either.
+    """
+    from datetime import timedelta
+
+    now = self._clock.now()
+    live: dict[str, JobRow] = {}
+    for row in self._jobs.values():
+        if (
+            row.status in ("pending", "scheduled", "running")
+            and row.metadata.get("singleton") is True
+        ):
+            live.setdefault(row.actor, row)
+    claimed: set[str] = set()
+    for args in admitted_args:
+        if args.metadata.get("singleton") is not True:
+            continue
+        blocking = live.get(args.actor)
+        if blocking is None and args.actor not in claimed:
+            claimed.add(args.actor)
+            continue
+        retry_after: timedelta | None = None
+        blocking_id: UUID | None = None
+        if blocking is not None:
+            blocking_id = blocking.id
+            if blocking.schedule_to_close is not None and blocking.schedule_to_close > now:
+                retry_after = blocking.schedule_to_close - now
+        logger.info(
+            "singleton-collision",
+            actor=args.actor,
+            blocking_job_id=str(blocking_id) if blocking_id is not None else None,
+            detection_path="preflight_check",
+        )
+        raise SingletonCollisionError(
+            actor=args.actor,
+            blocking_job_id=blocking_id,
+            retry_after=retry_after,
+        )
 
 
 def _check_batch_jsonb(args_list: list[EnqueueArgs], *, index_base: int = 0) -> None:
@@ -482,11 +543,12 @@ async def _enqueue_batch_fast(
     # item-by-item, which reported a count that included rows PG would
     # never have written (protocol parity; see
     # Backend.enqueue_batch_fast's docstring). The mirror raises the
-    # SAME typed classification the PG COPY path now gives
+    # SAME typed classification the PG COPY path gives
     # (DuplicateIdempotencyKeyError, not a raw asyncpg violation) — and
-    # names the offending pair exactly, since the detecting loop knows
-    # it (the PG path best-effort matches the violation's detail line
-    # against the batch's candidates).
+    # names the offending pair through the SAME shared rule
+    # (first_duplicate_idempotency_pair: first item in batch order whose
+    # pair repeats an earlier item or is already stored), so the two
+    # backends cannot drift on which pair gets named.
     from taskq.exceptions import DuplicateIdempotencyKeyError
 
     # Why this check ORDER: PG's fast path surfaces defects build-loop
@@ -515,26 +577,21 @@ async def _enqueue_batch_fast(
             }
             refused_names = {r.actor for r in refusals}
             admitted_args = [a for a in args_list if a.actor not in refused_names]
-    seen: set[tuple[str, str]] = set()
     # Only the ADMITTED items' pairs can violate: the PG COPY contains
     # only admitted records, so an in-batch or stored duplicate among
     # refused items never aborts it.
-    for args in admitted_args:
-        if args.idempotency_key is None:
-            continue
-        pair = (args.idempotency_scope, str(args.idempotency_key))
-        if pair in seen or pair in self._idempotency_index:
-            logger.info(
-                "batch-fast-duplicate-idempotency-key",
-                batch_size=len(args_list),
-                idempotency_key=pair[1],
-                idempotency_scope=pair[0],
-            )
-            raise DuplicateIdempotencyKeyError(
-                idempotency_key=pair[1],
-                idempotency_scope=pair[0],
-            )
-        seen.add(pair)
+    duplicate_pair = first_duplicate_idempotency_pair(admitted_args, self._idempotency_index.keys())
+    if duplicate_pair is not None:
+        logger.info(
+            "batch-fast-duplicate-idempotency-key",
+            batch_size=len(args_list),
+            idempotency_key=duplicate_pair[1],
+            idempotency_scope=duplicate_pair[0],
+        )
+        raise DuplicateIdempotencyKeyError(
+            idempotency_key=duplicate_pair[1],
+            idempotency_scope=duplicate_pair[0],
+        )
     # Insert the admitted subset with cap enforcement off: the partition
     # above is this tier's only admission decision, and re-running the
     # aggregate inside _enqueue_batch would refuse again (it is not the

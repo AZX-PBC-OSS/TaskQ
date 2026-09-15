@@ -35,6 +35,7 @@ Passing an existing pool (e.g. shared with the rest of the application)::
 
 import asyncio
 import contextlib
+import os
 from collections.abc import AsyncGenerator, AsyncIterator, Iterable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -54,6 +55,7 @@ if TYPE_CHECKING:
 
     from taskq.auth import PgCredentialProvider
     from taskq.connections import ConnFactory, PoolFactory
+    from taskq.settings import TaskQSettings
 
 from taskq._close import CLOSE_TIMEOUT_SECS, close_conn_bounded, close_pool_bounded
 from taskq.actor import ActorRef
@@ -78,6 +80,11 @@ from taskq.batch_policy import BatchFailurePolicy
 from taskq.client._actors import ActorsClient
 from taskq.client._handle import JobHandle
 from taskq.client._jobs import JobsClient
+from taskq.connections import (
+    bounded_lock_budget_ms,
+    lock_budget_command_timeout_secs,
+    statement_cache_kwargs,
+)
 from taskq.constants import (
     DEFAULT_CHUNK_SIZE,
     DEFAULT_EVENT_WRITER_BATCH_SIZE,
@@ -118,7 +125,75 @@ without it, and client processes arm no watchdogs to convert the hang
 into a crash. Caller-supplied ``pool_factory``/``pool`` instances stay
 caller-owned (their timeouts are their choice), the same doctrine the
 worker applies to caller-supplied pools. Module-level so tests shrink it
-as a seam."""
+as a seam.
+
+The value here is the FLOOR the bound takes at the shipped lock-budget
+defaults; :func:`_client_pool_command_timeout_secs` re-derives it upward
+when an operator widens an enqueue lock budget past its default, so the
+widened server-side wait still fires before this client-side timer."""
+
+_ENQUEUE_LOCK_BUDGET_FIELDS: Final[tuple[str, ...]] = (
+    "max_pending_lock_timeout_ms",
+    "unique_for_lock_timeout_ms",
+    "idempotency_lock_timeout_ms",
+)
+"""The ``TaskQSettings`` field names of the three enqueue advisory-lock
+budgets — listed once so the env overlay, the pool-bound derivation, and
+the clamp below cannot drift onto different spellings."""
+
+
+def _lock_budget_env_overlay() -> dict[str, str]:
+    """The operator's ``TASKQ_*_LOCK_TIMEOUT_MS`` env values, as a
+    ``load_from_dict`` overlay.
+
+    ``TaskQ.open()`` resolves its settings through ``load_from_dict`` so
+    the constructor's own arguments stay authoritative; that loader reads
+    the dict and nothing else, so the budget knobs' documented env
+    channel is probed here and folded in — without it a producer process
+    could never reach the knobs the client pool's per-query bound is
+    derived from. The env names come from the model's own field metadata
+    rather than restated literals, so a field rename moves both sides at
+    once.
+    """
+    from dotenvmodel.loading import get_env_var_name
+
+    from taskq.settings import TaskQSettings
+
+    overlay: dict[str, str] = {}
+    fields = TaskQSettings.get_fields()
+    for field_name in _ENQUEUE_LOCK_BUDGET_FIELDS:
+        _field_type, field_info = fields[field_name]
+        env_name = get_env_var_name(field_name, field_info.alias, TaskQSettings.env_prefix)
+        value = os.environ.get(env_name)
+        if value is not None:
+            overlay[env_name] = value
+    return overlay
+
+
+def _lock_budget_pairs(settings: "TaskQSettings") -> list[tuple[float, float]]:
+    """``(configured, shipped default)`` per lock-budget knob — the input
+    :func:`taskq.connections.lock_budget_command_timeout_secs` derives the
+    pool bound from. The defaults are read off the model's field metadata,
+    never restated."""
+    pairs: list[tuple[float, float]] = []
+    fields = type(settings).get_fields()
+    for field_name in _ENQUEUE_LOCK_BUDGET_FIELDS:
+        _field_type, field_info = fields[field_name]
+        pairs.append((float(getattr(settings, field_name)), float(field_info.default)))
+    return pairs
+
+
+def _client_pool_command_timeout_secs() -> float:
+    """The per-query bound every client-built pool carries: the floor at
+    the shipped defaults, re-derived upward when the operator's env widens
+    an enqueue lock budget past its default (see
+    :func:`taskq.connections.lock_budget_command_timeout_secs`)."""
+    from taskq.settings import TaskQSettings
+
+    return lock_budget_command_timeout_secs(
+        _lock_budget_pairs(TaskQSettings.load_from_dict(_lock_budget_env_overlay())),
+        floor_secs=_CLIENT_POOL_COMMAND_TIMEOUT_SECS,
+    )
 
 
 @lru_cache(maxsize=1)
@@ -265,9 +340,11 @@ class _ClientSettings:
     # backend's enqueue wrappers read them at the lock use sites
     # (PostgresBackend._enqueue_lock_budgets — its defensive getattr
     # fallbacks stay for settings objects that predate the fields).
-    # Defaults mirror WorkerSettings' (5000.0 each — the module constants
-    # the fallbacks supply), so a client-built backend behaves exactly as
-    # before the contract was declared.
+    # Carried from the loaded TaskQSettings rather than fixed here: the
+    # client is the side that TAKES these locks, so an operator's
+    # TASKQ_*_LOCK_TIMEOUT_MS must reach the backend it builds. The
+    # literals are the same field defaults, for the construction sites
+    # that pass no settings.
     max_pending_lock_timeout_ms: float = 5000.0
     unique_for_lock_timeout_ms: float = 5000.0
     idempotency_lock_timeout_ms: float = 5000.0
@@ -366,6 +443,11 @@ class TaskQ:
         poll_timeout: float = 30.0,
         reclaim_event_visibility_delay: timedelta | None = None,
     ) -> None:
+        # True when every connection the client will use came from a pool
+        # TaskQ built itself, so its per-query bound is known here. A
+        # caller-supplied pool or factory is caller-owned — its timeouts
+        # are its choice, the same doctrine the worker applies.
+        self._pool_bound_is_ours = pool is None and pool_factory is None
         if pg_provider is not None:
             if dsn is None:
                 raise ValueError(
@@ -385,7 +467,10 @@ class TaskQ:
                 pg_provider,
                 min_size=min_pool_size,
                 max_size=max_pool_size,
-                command_timeout=_CLIENT_POOL_COMMAND_TIMEOUT_SECS,
+                # Derived from the operator's lock budgets, not the bare
+                # floor: the budgets are env-configured, so the derivation
+                # reads the same values open()'s settings load will see.
+                command_timeout=_client_pool_command_timeout_secs(),
             )
             dsn = None
 
@@ -453,7 +538,6 @@ class TaskQ:
 
         from taskq.backend.clock import SystemClock
         from taskq.backend.postgres import PostgresBackend
-        from taskq.connections import statement_cache_kwargs
         from taskq.settings import TaskQSettings
 
         # Route the Redis URL through load_from_dict so it is coerced and
@@ -462,11 +546,35 @@ class TaskQ:
         # before pool creation so the DSN-built pool resolves its
         # statement-cache kwargs through the same settings instance the
         # client hands the backend — one settings flow, not two (and
-        # validation failure now fails fast, before a pool is opened).
-        load_data: dict[str, str] = {"TASKQ_SCHEMA_NAME": self._schema}
+        # validation failure now fails fast, before a pool is opened). The
+        # lock-budget overlay folds the operator's TASKQ_*_LOCK_TIMEOUT_MS
+        # env values into the dict load: that loader reads only the dict,
+        # and the constructor's own arguments stay authoritative (they are
+        # written last).
+        load_data: dict[str, str] = _lock_budget_env_overlay()
+        load_data["TASKQ_SCHEMA_NAME"] = self._schema
         if self._redis_url is not None:
             load_data["TASKQ_REDIS_URL"] = self._redis_url
         settings = TaskQSettings.load_from_dict(load_data)
+
+        # The per-query bound the enqueue lock budgets must fit inside,
+        # derived BEFORE the pool is built: at the shipped defaults it is
+        # exactly _CLIENT_POOL_COMMAND_TIMEOUT_SECS (the floor), and a
+        # budget widened past its default re-derives the bound upward so
+        # the widened server-side lock_timeout still fires first — the
+        # clamp below then never silently caps an operator's widening.
+        # Known only for pools TaskQ builds itself (the DSN pool below and
+        # the pg_provider sugar's factory, which __init__ derived the same
+        # way); a caller-supplied pool or factory is caller-owned, its
+        # timeouts are its choice, and guessing one would clamp a budget
+        # against a bound that is not there.
+        pool_command_timeout = (
+            lock_budget_command_timeout_secs(
+                _lock_budget_pairs(settings), floor_secs=_CLIENT_POOL_COMMAND_TIMEOUT_SECS
+            )
+            if self._pool_bound_is_ours
+            else None
+        )
 
         if self._pool is None:
             if self._pool_factory is not None:
@@ -495,7 +603,7 @@ class TaskQ:
                     dsn=self._dsn,
                     min_size=self._min_pool_size,
                     max_size=self._max_pool_size,
-                    command_timeout=_CLIENT_POOL_COMMAND_TIMEOUT_SECS,
+                    command_timeout=pool_command_timeout,
                     statement_cache_size=stmt_kwargs["statement_cache_size"],
                     max_cached_statement_lifetime=stmt_kwargs["max_cached_statement_lifetime"],
                 )
@@ -505,7 +613,26 @@ class TaskQ:
         pool = self._pool
         assert pool is not None
         deps = _ClientDeps(
-            settings=_ClientSettings(schema_name=self._schema),
+            settings=_ClientSettings(
+                schema_name=self._schema,
+                # Clamped against the pool's own per-query bound: a budget
+                # the connection will not wait out cannot produce the typed
+                # refusal it exists for (see bounded_lock_budget_ms). The
+                # bound above was derived from these same budgets, so the
+                # clamp is the safety net that keeps the server-side
+                # lock_timeout first, not a silent cap on a widened budget.
+                # Pools the caller supplies keep their own timeouts, so
+                # their budgets stand as configured.
+                max_pending_lock_timeout_ms=bounded_lock_budget_ms(
+                    settings.max_pending_lock_timeout_ms, pool_command_timeout
+                ),
+                unique_for_lock_timeout_ms=bounded_lock_budget_ms(
+                    settings.unique_for_lock_timeout_ms, pool_command_timeout
+                ),
+                idempotency_lock_timeout_ms=bounded_lock_budget_ms(
+                    settings.idempotency_lock_timeout_ms, pool_command_timeout
+                ),
+            ),
             worker_pool=pool,
             heartbeat_pool=pool,
         )

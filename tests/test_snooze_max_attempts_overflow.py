@@ -295,14 +295,23 @@ async def _in_memory_running_job_at_ceiling(
     max_attempts: int,
 ) -> tuple[InMemoryBackend, JobId, UUID]:
     """Enqueue + dispatch one running job at *max_attempts* on the
-    in-memory mirror — the same row shape ``_seed`` builds for PG."""
+    in-memory mirror — the same row shape ``_seed`` builds for PG.
+
+    ``EnqueueArgs`` refuses the top-of-domain value (one of defensive
+    headroom — see ``MAX_ENQUEUABLE_MAX_ATTEMPTS``), so the seed enqueues
+    inside the enqueuable bound and then writes the ceiling onto the
+    stored row directly, exactly as the PG side's ``create_running_job``
+    bypasses the enqueue boundary with a direct INSERT.
+    """
+    from dataclasses import replace
+
     backend = InMemoryBackend(clock=FakeClock(_MEM_NOW))
     args = EnqueueArgs(
         id=new_job_id(),
         actor="mem_ceiling_actor",
         queue="default",
         payload={},
-        max_attempts=max_attempts,
+        max_attempts=min(max_attempts, 32766),
         retry_kind="transient",
         scheduled_at=_MEM_NOW - timedelta(seconds=1),
     )
@@ -313,6 +322,12 @@ async def _in_memory_running_job_at_ceiling(
     worker_id = new_uuid()
     dispatched = await backend.dispatch_batch(worker_id, ["default"], 1, timedelta(seconds=60))
     assert len(dispatched) == 1
+    if max_attempts > 32766:
+        job_id = dispatched[0].id
+        backend._jobs[job_id] = replace(  # type: ignore[reportPrivateUsage]  # Why: test-only private access — parks the stored row at the column ceiling the enqueue boundary now refuses, mirroring the PG side's direct-INSERT seed.
+            backend._jobs[job_id],  # type: ignore[reportPrivateUsage]  # Why: test-only private access
+            max_attempts=max_attempts,
+        )
     return backend, dispatched[0].id, worker_id
 
 

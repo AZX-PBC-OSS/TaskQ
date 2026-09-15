@@ -352,13 +352,14 @@ class PostgresBackend:
 
         Why a defensive ``getattr`` with the module-constant fallback rather
         than the direct read every other BackendSettings knob takes: the
-        TaskQ client's settings object (``taskq.client._ClientSettings``)
-        is constructed in client space and predates these fields — a direct
-        read would AttributeError every client-built backend's enqueue. The
-        fallback is the same 5 s constant the module functions defaulted to
-        before the knob existed, so an undeclared settings object behaves
-        exactly as it did yesterday, and the moment it declares the field
-        the operator's value flows through.
+        protocol's settings object is satisfied by structural duck-typing,
+        so a settings implementation written OUTSIDE this repo's settings
+        classes (an embedder's own BackendSettings stand-in) may predate
+        these fields — a direct read would AttributeError that object's
+        every enqueue. The fallback is the same 5 s constant the module
+        functions defaulted to before the knob existed, so an undeclared
+        settings object behaves exactly as it did yesterday, and the moment
+        it declares the field the operator's value flows through.
         """
         settings = self._deps.settings
         return (

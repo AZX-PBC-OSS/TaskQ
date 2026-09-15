@@ -285,6 +285,90 @@ class TestTU11DuplicateKeyTypedError:
                 [EnqueueItem(actor_ref=_test_actor, payload=_Payload(value=2), idempotency_key=key)]
             )
 
+    async def test_ambiguous_shape_batch_names_the_repeating_pair(self) -> None:
+        """The in-memory analog of the ambiguous-detail integration pins:
+        two distinct pairs that would render to the SAME server violation
+        text (``("a, b", "c")`` and ``("a", "b, c")`` both render
+        ``(a, b, c)``), only one of them repeated. The mirror names the
+        repeating pair exactly — the same answer the PG path gives, from
+        the same shared rule, so the attribution can never drift between
+        backends on the shapes where the driver's text is useless."""
+        backend = _make_backend()
+        client = _make_client(backend)
+        items = [
+            EnqueueItem(
+                actor_ref=_test_actor,
+                payload=_Payload(value=1),
+                idempotency_key="c",
+                idempotency_scope="a, b",
+            ),
+            EnqueueItem(
+                actor_ref=_test_actor,
+                payload=_Payload(value=2),
+                idempotency_key="c",
+                idempotency_scope="a, b",
+            ),
+            # The foil: a distinct pair whose rendered violation detail is
+            # indistinguishable from the repeating pair's. Appears once.
+            EnqueueItem(
+                actor_ref=_test_actor,
+                payload=_Payload(value=3),
+                idempotency_key="b, c",
+                idempotency_scope="a",
+            ),
+        ]
+
+        with pytest.raises(DuplicateIdempotencyKeyError) as exc_info:
+            await client.enqueue_batch_fast(items)
+
+        assert exc_info.value.idempotency_scope == "a, b"
+        assert exc_info.value.idempotency_key == "c"
+        assert len(backend._jobs) == 0  # type: ignore[reportPrivateUsage]  # Why: test-only admission check
+
+    async def test_two_distinct_duplicate_pairs_name_the_first_repeat(self) -> None:
+        """Two DIFFERENT pairs each repeat in one batch. The statement
+        aborts on the pair whose repeat it reaches first in batch order —
+        the attribution must name that pair and never the later one, so a
+        second duplicate cannot mask which collision actually fired."""
+        backend = _make_backend()
+        client = _make_client(backend)
+        items = [
+            EnqueueItem(
+                actor_ref=_test_actor,
+                payload=_Payload(value=1),
+                idempotency_key="k1",
+                idempotency_scope="s1",
+            ),
+            # The later duplicate: present but its repeat comes last, so
+            # the statement never reaches it.
+            EnqueueItem(
+                actor_ref=_test_actor,
+                payload=_Payload(value=2),
+                idempotency_key="k2",
+                idempotency_scope="s2",
+            ),
+            # The first repeat in batch order — the actual violator.
+            EnqueueItem(
+                actor_ref=_test_actor,
+                payload=_Payload(value=3),
+                idempotency_key="k1",
+                idempotency_scope="s1",
+            ),
+            EnqueueItem(
+                actor_ref=_test_actor,
+                payload=_Payload(value=4),
+                idempotency_key="k2",
+                idempotency_scope="s2",
+            ),
+        ]
+
+        with pytest.raises(DuplicateIdempotencyKeyError) as exc_info:
+            await client.enqueue_batch_fast(items)
+
+        assert exc_info.value.idempotency_scope == "s1"
+        assert exc_info.value.idempotency_key == "k1"
+        assert len(backend._jobs) == 0  # type: ignore[reportPrivateUsage]  # Why: test-only admission check
+
 
 class TestTUBatchTierUniqueForParity:
     """Actor-declared ``unique_for`` is not applied on the batch tiers —
@@ -944,21 +1028,22 @@ class TestTI9PayloadValidationFailureIntegration:
 
 @pytest.mark.integration
 class TestTIScopeAttributionVerification:
-    """The COPY duplicate classification's attribution is verified against
-    the batch's own (scope, key) candidates before it is trusted.
+    """The COPY duplicate classification's attribution never parses the
+    server's violation detail.
 
     Postgres renders the composite-index violation detail with RAW,
     unquoted values — a scope containing ``, `` makes the detail ambiguous
     under positional parsing: scope ``run,A`` key ``k`` reports
     ``Key (idempotency_scope, idempotency_key)=(run,A, k) already exists.``,
     which a left-to-right split mis-reads as scope ``run`` key ``A, k``.
-    The attribution therefore MATCHES the rendered detail against each
-    candidate pair instead of parsing it: the unique candidate whose
-    rendered detail equals the server's detail is attributed exactly, and
-    genuinely ambiguous renderings (two distinct candidate pairs producing
-    the same detail text) degrade to unattributed-but-typed — never a
-    wrong pair (the in-memory mirror attributes exactly by construction;
-    PG parity is best-effort with a verified fallback)."""
+    The attribution is instead resolved from the batch's own contents plus
+    a targeted post-abort lookup of the stored pairs: the first item in
+    batch order whose pair repeats an earlier item or is already stored
+    is named, exactly, whether or not the detail text was usable (the
+    in-memory mirror names it by the same shared rule). The detail-text
+    match survives only as the residual fallback for a conflicting row
+    that vanished between the abort and the lookup — and even there it
+    degrades to unattributed rather than guessing."""
 
     async def test_comma_space_scope_duplicate_attributed_exactly(self, pg_dsn: str) -> None:
         import asyncpg
@@ -999,11 +1084,16 @@ class TestTIScopeAttributionVerification:
         assert exc_info.value.idempotency_scope == "run,A"
         assert exc_info.value.idempotency_key == key
 
-    async def test_ambiguous_comma_space_pairs_degrade_to_unattributed(self, pg_dsn: str) -> None:
+    async def test_ambiguous_comma_space_pairs_attribute_exactly(self, pg_dsn: str) -> None:
         """Two DISTINCT candidate pairs render to the same detail text —
-        ``(a, b, c)`` is both ``("a, b", "c")`` and ``("a", "b, c")`` — so
-        the detail cannot name one pair honestly: the attribution fields
-        degrade to None (typed error, no attribution) instead of guessing."""
+        ``(a, b, c)`` is both ``("a, b", "c")`` and ``("a", "b, c")`` — but
+        only one of them repeats inside the batch, and the batch's own
+        contents say which: the refusal names the repeating pair exactly.
+
+        This pin previously asserted the degrade (both fields None on an
+        ambiguous rendering); exact in-batch attribution superseded it —
+        the answer never came from the detail text, so the text's
+        ambiguity no longer costs the operator the pair."""
         import asyncpg
 
         from taskq import TaskQ
@@ -1045,9 +1135,9 @@ class TestTIScopeAttributionVerification:
             with pytest.raises(DuplicateIdempotencyKeyError) as exc_info:
                 await tq.enqueue_batch_fast(items)
         assert not isinstance(exc_info.value, asyncpg.UniqueViolationError)
-        # Ambiguous rendering: neither pair is named — never a guess.
-        assert exc_info.value.idempotency_scope is None
-        assert exc_info.value.idempotency_key is None
+        # The repeating pair is named exactly; the foil is not implicated.
+        assert exc_info.value.idempotency_scope == "a, b"
+        assert exc_info.value.idempotency_key == "c"
 
         conn = await asyncpg.connect(pg_dsn)
         try:
@@ -1195,6 +1285,69 @@ class TestInBatchDuplicateAttributionIsExact:
         assert exc_info.value.idempotency_key == long_key, (
             "attribution must survive a key the server's violation detail cannot reproduce in full"
         )
+
+    async def test_two_distinct_duplicate_pairs_name_the_first_repeat(self, pg_dsn: str) -> None:
+        """Two DIFFERENT pairs each repeat in one COPY batch. Postgres
+        aborts on the pair whose repeat the statement reaches first in
+        batch order; the attribution must name that pair — the same
+        answer the in-memory mirror gives by the shared rule — and never
+        the later duplicate."""
+        import asyncpg
+
+        from taskq import TaskQ
+        from taskq.migrate import apply_pending
+
+        schema = "taskq_test_batch_fast_inbatch_two_dups"
+        conn = await asyncpg.connect(pg_dsn)
+        try:
+            await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+            await apply_pending(conn, schema=schema)
+        finally:
+            await conn.close()
+
+        items = [
+            EnqueueItem(
+                actor_ref=_test_actor,
+                payload=_Payload(value=1),
+                idempotency_key="k1",
+                idempotency_scope="s1",
+            ),
+            # The later duplicate: present but its repeat comes last, so
+            # the statement never reaches it.
+            EnqueueItem(
+                actor_ref=_test_actor,
+                payload=_Payload(value=2),
+                idempotency_key="k2",
+                idempotency_scope="s2",
+            ),
+            # The first repeat in batch order — the actual violator.
+            EnqueueItem(
+                actor_ref=_test_actor,
+                payload=_Payload(value=3),
+                idempotency_key="k1",
+                idempotency_scope="s1",
+            ),
+            EnqueueItem(
+                actor_ref=_test_actor,
+                payload=_Payload(value=4),
+                idempotency_key="k2",
+                idempotency_scope="s2",
+            ),
+        ]
+
+        async with TaskQ(dsn=pg_dsn, schema=schema) as tq:
+            with pytest.raises(DuplicateIdempotencyKeyError) as exc_info:
+                await tq.enqueue_batch_fast(items)
+
+        assert exc_info.value.idempotency_scope == "s1"
+        assert exc_info.value.idempotency_key == "k1"
+
+        conn = await asyncpg.connect(pg_dsn)
+        try:
+            count = await conn.fetchval(f'SELECT count(*) FROM "{schema}".jobs')  # noqa: S608
+            assert count == 0, "the refusal is all-or-nothing; no row may survive it"
+        finally:
+            await conn.close()
 
 
 @pytest.mark.integration
