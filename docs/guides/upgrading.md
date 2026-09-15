@@ -43,8 +43,8 @@ This is a deliberate tradeoff, not a missing feature:
    This lists every discovered migration and whether it has already been
    applied, without changing anything.
 
-4. **Apply migrations explicitly**, or let the worker apply them at startup
-   via `TASKQ_MIGRATE_ON_START=true`:
+4. **Apply migrations explicitly**, from a pre-deploy job or init container
+   that runs before any worker starts:
 
    ```shell
    taskq migrate up
@@ -53,6 +53,13 @@ This is a deliberate tradeoff, not a missing feature:
    The command is idempotent — migrations already recorded in
    `{schema}.schema_migrations` are skipped. See [cli.md](cli.md#taskq-migrate-up)
    for the full option reference (`--phase`, `--target`, `--max-steps`).
+
+   `TASKQ_MIGRATE_ON_START=true` is **not** a substitute here: it is honoured
+   only by `taskq ui serve`, which runs as a single process. The worker
+   ignores it (and warns when it is set) — N worker replicas racing to migrate
+   is the hazard the migration advisory lock exists to prevent — and a worker
+   started against a schema still missing a `pre`-phase migration refuses to
+   boot rather than running against a schema behind its code.
 
 ## Non-transactional migrations
 

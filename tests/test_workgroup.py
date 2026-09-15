@@ -450,10 +450,36 @@ def _write_toml(tmp_path: Path, content: str) -> Path:
     return p
 
 
-def test_from_toml_valid_config(tmp_path: Path) -> None:
+def test_from_toml_valid_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A well-formed TOML config loads into dataclasses with defaults applied."""
+    monkeypatch.chdir(tmp_path)
+    _write_actors_module(
+        tmp_path,
+        "wg_actors_valid_config",
+        """
+        from pydantic import BaseModel
+        from taskq.actor import actor
+
+        class Payload(BaseModel):
+            pass
+
+        @actor(queue="default")
+        async def default_job(payload: Payload) -> None:
+            pass
+
+        @actor(queue="high")
+        async def high_job(payload: Payload) -> None:
+            pass
+
+        @actor(queue="cron")
+        async def cron_job(payload: Payload) -> None:
+            pass
+
+        registry = {"default_job": default_job, "high_job": high_job, "cron_job": cron_job}
+        """.strip("\n"),
+    )
     toml = """
-actors = "myapp.actors:registry"
+actors = "wg_actors_valid_config:registry"
 
 [defaults]
 poll_interval = 2.0
@@ -478,7 +504,7 @@ check_interval = 10
 stale_after = 30
 """
     cfg = load_workgroup_config(_write_toml(tmp_path, toml))
-    assert cfg.actors == "myapp.actors:registry"
+    assert cfg.actors == "wg_actors_valid_config:registry"
     assert cfg.supervisor.shutdown_grace == 45.0
     assert cfg.supervisor.burst_limit == 5
     assert cfg.supervisor.backoff_initial == 0.5  # default
@@ -873,8 +899,15 @@ async def test_stream_output_keeps_reading_a_real_child_after_a_huge_line() -> N
     assert "after" in lines, f"stream stopped after the huge line: {lines!r}"
 
 
-def test_worker_spec_stream_limit_from_toml_and_validated(tmp_path: Path) -> None:
-    base = 'actors = "mod:attr"\n[[workers]]\nname = "w"\nqueues = ["default"]\nstream_limit = {}\n'
+def test_worker_spec_stream_limit_from_toml_and_validated(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    _write_actors_module(tmp_path, "wg_actors_stream_limit", "registry = {}")
+    base = (
+        'actors = "wg_actors_stream_limit:registry"\n'
+        '[[workers]]\nname = "w"\nqueues = ["default"]\nstream_limit = {}\n'
+    )
     path = tmp_path / "wg.toml"
     path.write_text(base.format(65536))
     assert load_workgroup_config(path).workers[0].stream_limit == 65536

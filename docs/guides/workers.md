@@ -341,6 +341,14 @@ The 1.5 factor provides headroom for terminal writes that occur just after a job
 
 When a LOOP-scope `asyncpg.Connection` is registered and `max_concurrency > 1`, the setting also sizes a fourth pool — the per-slot transaction pool (`max_concurrency + 1` direct connections, fully warmed at boot) that carries every per-job transaction: the actor's own writes (the actor receives its slot connection by injection), the terminal write, and transactional sub-enqueues. It is always direct-DSN and worker-internal: there is deliberately no `WorkerConnections` slot for it, and a worker that cannot open it fails to boot.
 
+#### Session state on slot connections
+
+At `max_concurrency = 1` the actor runs on the registered connection itself, so everything configured on it applies by construction. Above that the actor runs on a slot connection. Before it builds the pool, the worker reads the registered connection's **live session state** — its `search_path` and its `role` — and opens every slot connection with those values as startup settings. Unqualified table references and RLS-driving roles therefore resolve identically at every concurrency, whether the application set them with a connect keyword, from an `init` hook, or with a plain `SET` after connecting. The worker logs `slot_pool_inherits_registered_session` naming what it carried across; if a value cannot be read it logs `slot-pool-registered-session-unreadable` at WARN rather than falling back silently.
+
+Reading before the build is what keeps the pool warm: the slot connections are opened during the build, so state applied afterwards would reach only connections re-established lazily on first acquire — putting connection establishment, and a managed-identity credential fetch, back into the dispatch path. It is also what makes the state survive a SIGHUP credential rotation, which rebuilds the pool from the same factory.
+
+**Type codecs are not carried across.** A codec registered on a live connection with `set_type_codec` is stored inside the driver's per-connection state, which exposes no way to read it back, so the worker cannot replay it onto the slot connections. A codec installed that way is present at `max_concurrency = 1` and absent above it, and the symptom is silent: the query still succeeds and returns the driver's default representation. Register codecs in a way that applies to every connection the application opens — a `connection_class` subclass, or an `init` hook on the pool or connection factory — rather than by calling `set_type_codec` on one resolved connection.
+
 `dispatcher_pool_size` (default `4`) and `heartbeat_pool_size` (default `4`) are independent pools; both always use the direct DSN.
 
 The worker spawns exactly `max_concurrency` consumer loop coroutines. They are cooperatively concurrent — asyncio, not threads. CPU-bound work should be offloaded to a thread pool executor via `asyncio.get_running_loop().run_in_executor`.

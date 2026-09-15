@@ -568,13 +568,17 @@ taskq workgroup validate CONFIG
 |---|---|---|
 | `CONFIG` | `PATH` | Path to the workgroup TOML configuration file. |
 
-Prints a summary of each worker's configuration. Exits 1 if the config is missing, malformed, or contains invalid values (e.g. negative poll interval, misconfigured health check thresholds).
+Prints a summary of each worker's configuration. Exits 1 if the config is missing, malformed, contains invalid values (e.g. negative poll interval, misconfigured health check thresholds), or names an `actors` reference that cannot be resolved — an unimportable module, a module that raises on import, or a missing attribute.
+
+Validation **imports the `actors` module**, so it must run where the application is importable — the same interpreter and `PYTHONPATH` the workgroup would start under. Resolving the reference here is what makes the check worth having: every child imports it the moment it is spawned, so an unresolvable reference crashes each one at import and the supervisor sees only a run of child exits, restarting them on backoff until the burst budget is spent. A CI or lint invocation that runs without the application on `sys.path` will report a valid config as invalid; run it from the deployment image instead.
+
+Resolving the reference is also what lets validate warn about an actor whose queue no `[[workers]]` entry consumes. That is a warning, never an exit-1 condition: another workgroup or deployment may consume the queue, and no single supervisor can know the whole fleet.
 
 **Example:**
 
 ```shell
 taskq workgroup validate workgroup.toml
-# config OK — 2 worker(s), actors='myapp.actors:registry'
+# config OK — 2 worker(s), actors='billing.actors:registry'
 #   api: queues=['default'] poll=0.5s concurrency=8 health=off
 #   batch: queues=['email', 'report'] poll=5.0s concurrency=2 health=on
 ```

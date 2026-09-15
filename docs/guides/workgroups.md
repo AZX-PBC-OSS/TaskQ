@@ -96,7 +96,9 @@ The supervisor blocks until SIGTERM or SIGINT.
 taskq workgroup validate workgroup.toml
 ```
 
-Prints a summary of the config and each worker without starting any processes. Exits 1 if the config is invalid.
+Prints a summary of the config and each worker without starting any processes. Exits 1 if the config is invalid, including an `actors` reference that cannot be resolved.
+
+Validation imports the `actors` module to resolve that reference, so run it where the application is importable — the deployment image, not a bare CI checkout. Resolving up front turns a spawn-crash-and-respawn cascade, whose real cause is buried under the restarts, into one message naming the reference. It also lets validate warn about an actor whose queue no `[[workers]]` entry consumes; that stays a warning, because another workgroup or deployment may consume it and no single supervisor knows the whole fleet.
 
 On shutdown:
 1. SIGTERM is forwarded to every child process.
