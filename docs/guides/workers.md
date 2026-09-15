@@ -179,7 +179,7 @@ Actors declare which queue they target via `@actor(queue="...")`. A worker that 
 
 An actor registered on a queue this worker does not consume is **stranded from this worker's perspective**: `enqueue` keeps succeeding (any client can insert into any queue), but this worker's dispatch CTE filters `jobs.queue = ANY($queues)` and will never claim those jobs. If no *other* worker consumes the queue either, the jobs sit `pending` forever with no error anywhere — the silent pile-up failure mode.
 
-This is deliberately a warning, not a fatal error, because a split-queue topology is legitimate: one process consuming `["default"]` while another consumes `["cron"]` is a normal deployment shape. At bootstrap, every worker whose registry contains an actor targeting a queue outside its own subscription logs one warning:
+This is deliberately a warning, not a fatal error, because a split-queue topology is legitimate: one process consuming `["default"]` while another consumes `["cron"]` is a normal deployment shape. The check is judged against the **stored** `actor_config.queue` when a stored row already exists — the assignment `taskq queue migrate` rewrites and the cron leader's fires follow — falling back to the `@actor(queue=...)` literal only for an actor with no stored row yet (this check runs before the row is seeded on a first-ever boot). A worker whose code literal has not yet caught up with a fleet-wide queue move is the normal, blessed state during a rolling deploy, so judging coverage by the literal alone would warn on that healthy window instead of on the actor whose routed work nothing can actually claim. At bootstrap, every worker whose registry contains an actor routed to a queue outside its own subscription logs one warning:
 
 ```
 actors-on-unconsumed-queues  actors={"mailer": "email", "nightly": "cron"}  queues=["cron", "email"]  worker_queues=["default"]
@@ -189,7 +189,7 @@ The `note` field spells out the condition under which it is a real problem: only
 
 How to detect and resolve stranding:
 
-- **At startup**: the `actors-on-unconsumed-queues` warning names every affected actor, its declared queue, and this worker's subscription, with the distinct unconsumed queue names in the `queues` field.
+- **At startup**: the `actors-on-unconsumed-queues` warning names every affected actor, the queue that actually routes it (the stored assignment when one exists), and this worker's subscription, with the distinct unconsumed queue names in the `queues` field.
 - **After the fact**: `taskq actor-config list` shows each registered actor's stored `queue` column — cross-check that every queue appearing there is consumed by *some* worker's `TASKQ_QUEUES` / `--queues`. The admin UI's Jobs page (`taskq ui serve`) shows pending jobs per queue and makes a growing backlog on one queue visible.
 - **Fix**: either add the actor's queue to this worker (`TASKQ_QUEUES=default,cron` / repeat the `--queues` flag), or point the actor at a consumed queue via `@actor(queue=...)` and re-register (see [troubleshooting.md](troubleshooting.md) — "Jobs stuck in `pending`").
 

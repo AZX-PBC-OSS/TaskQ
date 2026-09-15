@@ -21,11 +21,15 @@ instead of subtracting in your own clock domain.
 
 ## TaskQScheduledBacklogGrowing
 
-**What fired.** `deriv(taskq_jobs_by_status{status="scheduled"}[15m]) > 0 and taskq_jobs_oldest_due_age_seconds > 300` for 5 minutes: the scheduled backlog is growing AND the oldest due job has been waiting more than 5 minutes. Together these mean promotion from `scheduled` to `pending` is not keeping up — or not happening at all.
+**What fired.** `taskq_jobs_oldest_due_age_seconds > 300 and taskq_jobs_scheduled_count > (taskq_jobs_scheduled_count offset 5m)` for 5 minutes: the oldest due job has been waiting more than 5 minutes AND the `scheduled` job count is HIGHER than it was 5 minutes ago. Together these mean promotion from `scheduled` to `pending` is not keeping up with arrivals — not merely behind on one slow-to-clear job.
+
+An earlier form of this alert joined the oldest-due-age gauge against its own value 5 minutes back. That self-join is satisfied by a perfectly healthy, steadily draining backlog for the entire time its current straggler waits its turn — the age of "whichever job is currently oldest" climbs monotonically right up until that one job is promoted, regardless of how healthily everything behind it drains — so the join degenerated to a bare `age > 300` threshold and paged on healthy operation. Count, not the single oldest item's age, is what distinguishes "stalled" from "one slow straggler": a `scheduled` count that is flat or falling while jobs promote on schedule is healthy no matter how long the current straggler has waited.
+
+`taskq_jobs_scheduled_count` is a label-less twin of `taskq_jobs_by_status{status="scheduled"}`, sampled by the same leader tick — it exists so the two `and` operands carry identical (empty) label sets. Prometheus pairs the two sides of a vector `and` (or comparison) only when their label sets are identical, with no `on`/`ignoring` modifier here to reconcile a mismatch, and it reports a non-matching join as an empty result rather than an error — so a version of this alert that joined the per-`status` depth gauge directly against the label-less age gauge could never fire, however bad the stall.
 
 **How to confirm.**
 
-- Metrics: `taskq_jobs_by_status{status="scheduled"}` rising while `{status="pending"}` is flat; `taskq_jobs_oldest_due_age_seconds` climbing.
+- Metrics: `taskq_jobs_oldest_due_age_seconds` climbing; `taskq_jobs_scheduled_count` (equivalently `taskq_jobs_by_status{status="scheduled"}`) rising while `{status="pending"}` is flat.
 - SQL — jobs that are due for promotion right now:
 
   ```sql
@@ -175,11 +179,13 @@ Extra workers consume `pending` jobs faster but promote nothing.
 
 ## TaskQLeaderLockContention
 
-**What fired.** `rate(taskq_leader_lock_contention_total[10m]) > 0` sustained for 10 minutes: maintenance-lock acquisitions are being lost to another session. The counter is recorded by the *losing* side at every maintenance acquisition point, labeled by `lock`. The lock key is schema-qualified — `taskq:maintenance_leader:<schema>`, built by `taskq.constants.schema_lock_name` — so contention is always between sessions of the **same schema**: a second schema in the same database takes a different key and cannot starve this one (the cross-schema silent starvation the unqualified lock name allowed is fixed). What sustained contention on a schema-qualified lock means: same-schema double-election attempts that keep losing (two pods of this deployment racing each other every heartbeat), or a stuck/long-held session sitting on this schema's key.
+**What fired.** `sum(rate(taskq_leader_lock_contention_total[10m])) > 0 and sum(taskq_maintenance_leader_is_leader) < 1` sustained for 10 minutes: maintenance-lock acquisitions are being lost AND no worker holds leadership. The counter is recorded by the *losing* side at every maintenance acquisition point, labeled by `lock`.
+
+The leader-count operand is what makes this alertable at all. A healthy multi-worker fleet has exactly one winner per election round and every other worker records a loss, so a lost-acquire rate above zero is the **normal steady state** of any fleet larger than one worker — an alert on that rate alone pages on health and trains operators to silence it. Losses while the leader count has fallen below one is the genuine signature: nobody ever wins. Both operands are summed to fleet-wide scalars so the vector join pairs; an `and` between series carrying different label sets never matches, and Prometheus reports that as an empty result rather than an error. The lock key is schema-qualified — `taskq:maintenance_leader:<schema>`, built by `taskq.constants.schema_lock_name` — so contention is always between sessions of the **same schema**: a second schema in the same database takes a different key and cannot starve this one (the cross-schema silent starvation the unqualified lock name allowed is fixed). What sustained contention on a schema-qualified lock means: same-schema double-election attempts that keep losing (two pods of this deployment racing each other every heartbeat), or a stuck/long-held session sitting on this schema's key.
 
 **How to confirm.**
 
-- Metric: `taskq_leader_lock_contention_total` rising, labeled by `lock` — confirm the label is your schema's `taskq:maintenance_leader:<schema>`. If the rate equals the election attempt rate (`taskq_leader_election_attempts_total`), this worker never wins.
+- Metric: `taskq_leader_lock_contention_total` rising, labeled by `lock` — confirm the label is your schema's `taskq:maintenance_leader:<schema>`. Read it beside `sum(taskq_maintenance_leader_is_leader)`: a rising rate with that sum at 1 is an ordinary fleet electing a leader, not an incident. A rate that equals the election attempt rate (`taskq_leader_election_attempts_total`) fleet-wide, with the sum at 0, means no worker ever wins.
 - SQL — advisory lock holders and waiters:
 
   ```sql

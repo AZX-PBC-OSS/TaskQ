@@ -31,11 +31,14 @@ from taskq.obs import (
     record_lock_contention,
     record_sweep_success,
     record_sweep_timeout,
+    update_actor_backlog_cache,
+    update_actor_oldest_pending_age_cache,
     update_jobs_by_status_cache,
     update_oldest_due_age_cache,
     update_queue_depth_cache,
     update_reservation_slots_cache,
     update_running_lease_expired_cache,
+    update_scheduled_count_cache,
     update_stranded_jobs_cache,
 )
 from taskq.ratelimit.registry import (
@@ -1346,13 +1349,32 @@ _QUERY_OLDEST_DUE_AGE_SQL_TEMPLATE = (
 # jobs_running_lock_expires_idx (partial on status='running', keyed on
 # lock_expires_at) from an Index Cond that terminates at the boundary to a
 # post-scan Filter walking the whole running population — per worker, per
-# interval. The zombie count is the zombie-running DETECTOR (#101): running
+# interval. The zombie count is the zombie-running detector: running
 # rows with a past lease are invisible in jobs.by_status (a healthy running
 # count) and in the miss counters (a dead worker emits nothing), and this one
 # statement is the direct count.
 _QUERY_RUNNING_LEASE_EXPIRED_SQL_TEMPLATE = (
     'SELECT count(*) FROM "{schema}".jobs '
     "WHERE status = 'running' AND lock_expires_at < statement_timestamp()"
+)
+# Depth and oldest-pending age per (actor, queue), from ONE grouped
+# aggregate so the two can never describe different moments: depth alone
+# is ambiguous (a deep queue that drains is healthy throughput) and age
+# alone cannot say how much is waiting. Both columns come from
+# jobs_actor_dispatch_idx — (actor, queue, priority DESC, scheduled_at,
+# id) partial on status='pending' — so the grouping is an index-only scan
+# of the pending population with no heap access, and never touches the
+# finished rows that dominate a mature table. scheduled_at, not
+# created_at, is the waiting-since clock for a pending row: it is when
+# the job became eligible, and it is the column the index already
+# carries. PENDING, not scheduled: the unconsumed-actor condition is rows
+# no consumer takes, distinct from scheduled rows awaiting promotion.
+_QUERY_ACTOR_BACKLOG_SQL_TEMPLATE = (
+    "SELECT actor, queue, count(*) AS depth, "
+    "EXTRACT(EPOCH FROM (clock_timestamp() - MIN(scheduled_at)))::float8 AS oldest_age "
+    'FROM "{schema}".jobs '
+    "WHERE status = 'pending' "
+    "GROUP BY actor, queue"
 )
 
 
@@ -1382,12 +1404,13 @@ async def _backlog_detection_loop(ctx: SweepContext, shutdown: asyncio.Event) ->
     by_status_sql = _QUERY_JOBS_BY_STATUS_SQL_TEMPLATE.format(schema=schema)
     oldest_due_sql = _QUERY_OLDEST_DUE_AGE_SQL_TEMPLATE.format(schema=schema)
     expired_lease_sql = _QUERY_RUNNING_LEASE_EXPIRED_SQL_TEMPLATE.format(schema=schema)
+    actor_backlog_sql = _QUERY_ACTOR_BACKLOG_SQL_TEMPLATE.format(schema=schema)
     while not shutdown.is_set():
         ctx.deps.liveness.tick(
             "leader.backlog_detection", period=ctx.deps.settings.queue_depth_interval
         )
         try:
-            # One connection for all three statements: the gauges answer one
+            # One connection for every statement: the gauges answer one
             # question (is work moving?) and must not straddle two
             # snapshots.
             async with ctx.deps.dispatcher_pool.acquire(
@@ -1396,9 +1419,34 @@ async def _backlog_detection_loop(ctx: SweepContext, shutdown: asyncio.Event) ->
                 status_rows = await conn.fetch(by_status_sql)
                 oldest_due: float | None = await conn.fetchval(oldest_due_sql)
                 expired_lease: int | None = await conn.fetchval(expired_lease_sql)
-            update_jobs_by_status_cache(
-                {str(row["status"]): int(row["count"]) for row in status_rows}
-            )
+                # This read is isolated from the fleet-wide ones above: a
+                # GROUP BY over the whole pending population is the
+                # widest-shaped statement in the tick and the first to hit
+                # the statement timeout under the incident it exists to
+                # expose, and its failure must not cost the tick the samples
+                # below — frozen scheduled-count / oldest-due-age operands
+                # make the backlog-growing comparison silently false while
+                # the loop stays alive. The empty fallback clears the
+                # per-actor caches below rather than freezing them at
+                # readings the worker can no longer see, and the failure
+                # rides the actor sampler's log path: the tick degrades
+                # visibly, never silently.
+                try:
+                    actor_rows = await conn.fetch(actor_backlog_sql)
+                except Exception as exc:
+                    log.warning(
+                        "actor-backlog-sampling-failed",
+                        kind="actor_backlog_sampling_failed",
+                        worker_id=str(ctx.worker_id),
+                        error=repr(exc),
+                    )
+                    actor_rows = []
+            status_counts = {str(row["status"]): int(row["count"]) for row in status_rows}
+            update_jobs_by_status_cache(status_counts)
+            # Label-less twin of the "scheduled" row above — see
+            # update_scheduled_count_cache's docstring for why it exists
+            # separately from the by-status gauge.
+            update_scheduled_count_cache(status_counts.get("scheduled", 0))
             # MIN(scheduled_at) over an empty set is NULL — nothing is due,
             # which the gauge expresses as 0.0, not as a missing sample.
             update_oldest_due_age_cache(oldest_due if oldest_due is not None else 0.0)
@@ -1408,6 +1456,36 @@ async def _backlog_detection_loop(ctx: SweepContext, shutdown: asyncio.Event) ->
             update_running_lease_expired_cache(
                 int(expired_lease) if expired_lease is not None else 0
             )
+            # Per-actor attribution is isolated end to end from the
+            # fleet-wide detectors above, which are already written by this
+            # point: a failed fetch substituted the empty snapshot (logged on
+            # the actor sampler's path) and a malformed row is caught here,
+            # so neither costs the tick its promotion-stall and
+            # zombie-running samples. An actor that drains to empty must also
+            # stop reporting rather than freeze at its last depth, so both
+            # caches are rebuilt whole from the snapshot and a vanished
+            # (actor, queue) pair vanishes from the series instead of ageing
+            # forever at a stale value.
+            try:
+                update_actor_backlog_cache(
+                    {
+                        (str(row["actor"]), str(row["queue"])): int(row["depth"])
+                        for row in actor_rows
+                    }
+                )
+                update_actor_oldest_pending_age_cache(
+                    {
+                        (str(row["actor"]), str(row["queue"])): float(row["oldest_age"] or 0.0)
+                        for row in actor_rows
+                    }
+                )
+            except Exception as exc:
+                log.warning(
+                    "actor-backlog-sampling-failed",
+                    kind="actor_backlog_sampling_failed",
+                    worker_id=str(ctx.worker_id),
+                    error=repr(exc),
+                )
         except Exception as exc:
             log.warning(
                 "backlog-detection-sampling-failed",

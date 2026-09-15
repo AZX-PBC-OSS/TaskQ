@@ -165,6 +165,55 @@ def test_sweep_degraded_expr_compares_actual_to_configured_series() -> None:
         )
 
 
+@pytest.mark.parametrize("rules_path", [_RULES_YAML, _K8S_RULES_YAML])
+def test_scheduled_backlog_growing_asserts_count_growth_not_self_referenced_age(
+    rules_path: Path,
+) -> None:
+    """TaskQScheduledBacklogGrowing must compare a genuine growth signal —
+    a job COUNT rising over the window — not join
+    taskq_jobs_oldest_due_age_seconds against itself.
+
+    taskq_jobs_oldest_due_age_seconds tracks whichever single job is
+    currently oldest-due: its value climbs monotonically toward that one
+    job's own promotion regardless of how healthily everything behind it
+    is draining. `taskq_jobs_oldest_due_age_seconds >=
+    taskq_jobs_oldest_due_age_seconds offset 5m` is therefore satisfied
+    by a perfectly healthy, steadily draining backlog for the entire
+    5-minute straggler wait — the "growing" half of the check adds
+    nothing beyond the bare `age > 300` threshold it is supposed to
+    sharpen. The fix compares a count series (taskq_jobs_scheduled_count,
+    the label-less twin of taskq_jobs_by_status{status="scheduled"})
+    against its own value 5 minutes ago: a draining backlog's scheduled
+    count is flat or falling even while one straggler ages past 5
+    minutes, so this form does not fire on it.
+    """
+    rules = _rules_from(rules_path)
+    rule = next(r for r in rules if r.get("alert") == "TaskQScheduledBacklogGrowing")
+    expr = " ".join(str(rule["expr"]).split())
+
+    assert "taskq_jobs_oldest_due_age_seconds >= taskq_jobs_oldest_due_age_seconds" not in expr, (
+        f"{rules_path.name}: TaskQScheduledBacklogGrowing still self-joins the "
+        f"oldest-due-age gauge against its own offset value — that pairing is "
+        f"satisfied by a healthy draining backlog for the whole straggler wait "
+        f"and degenerates to a bare age>300 threshold. expr: {expr}"
+    )
+    assert "taskq_jobs_scheduled_count" in expr, (
+        f"{rules_path.name}: TaskQScheduledBacklogGrowing must reference "
+        f"taskq_jobs_scheduled_count (or an equivalent count series) growing "
+        f"over the window, not just the oldest item's age. expr: {expr}"
+    )
+    growth_check = re.search(
+        r"taskq_jobs_scheduled_count\s*>\s*\(?\s*taskq_jobs_scheduled_count\s+offset\s+\d+[smh]",
+        expr,
+    )
+    assert growth_check, (
+        f"{rules_path.name}: TaskQScheduledBacklogGrowing must compare "
+        f"taskq_jobs_scheduled_count against its own value from earlier in the "
+        f"window (a `> ... offset ...` growth comparison), not merely reference "
+        f"it. expr: {expr}"
+    )
+
+
 def test_both_rule_files_carry_the_five_new_alerts() -> None:
     """The two files must move together: all five new alerts present in
     both, at warning severity (they are degradation signals, not
