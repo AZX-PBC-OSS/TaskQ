@@ -216,12 +216,16 @@ async def test_diff_dispatch_identity_dedup_best_candidate(pg_dsn: str) -> None:
     assert pg["records"]["dispatched"] == ["high"]
 
 
-async def _oversample_truncation_starvation(side: DiffSide) -> None:
+async def _oversample_window_blocked_by_running_identity(side: DiffSide) -> None:
     # Four pending jobs share the identity of a RUNNING job and sort ahead
-    # of the fifth (different identity). PG's strict-FIFO lateral reads only
-    # residual * oversample = 2 * 2 = 4 candidates per queue — exactly the
-    # four blocked-identity jobs — so the identity-dedup stage drops every
-    # candidate and NOTHING dispatches. The mirror takes all candidates.
+    # of the fifth (different identity). The strict-FIFO lateral's base
+    # window reads only residual * oversample = 2 * 2 = 4 candidates per
+    # queue — exactly the four blocked-identity jobs — so identity dedup
+    # drops every candidate in the first pass. With a claimable row still
+    # pending behind the window, the round widens the window and the
+    # deeper row dispatches: an empty round is only legitimate when NO
+    # claimable rows remain. Both backends must walk the same expansion
+    # schedule or the differential diverges on exactly this shape.
     await side.plant(
         "running-k",
         status="running",
@@ -237,19 +241,21 @@ async def _oversample_truncation_starvation(side: DiffSide) -> None:
     side.record("dispatched", dispatched)
 
 
-async def test_diff_dispatch_oversample_truncation_starvation(pg_dsn: str) -> None:
-    """PG's oversample-bounded candidate lateral can starve a dispatchable job
-    the mirror happily dispatches — the mirror must model the truncation."""
-    mem, pg = await run_differential(_oversample_truncation_starvation, pg_dsn=pg_dsn)
+async def test_diff_dispatch_oversample_window_expansion(pg_dsn: str) -> None:
+    """A fully-blocked base window does not end the round: the window widens
+    and the claimable job behind the blocked cohort dispatches — identically
+    on both backends."""
+    mem, pg = await run_differential(_oversample_window_blocked_by_running_identity, pg_dsn=pg_dsn)
     assert_mirror(
         "the dispatch candidate set is bounded by residual * oversample per "
-        "(actor, queue) on PG; when identity dedup removes that entire "
-        "truncated set, the round dispatches NOTHING — the mirror must not "
-        "see past the truncation and dispatch work PG never would",
+        "(actor, queue); when identity dedup removes that entire base window "
+        "and claimable rows remain behind it, the round re-claims with a "
+        "widened window — the mirror walks the same doubling schedule and "
+        "reaches the same row",
         mem,
         pg,
     )
-    assert pg["records"]["dispatched"] == []
+    assert pg["records"]["dispatched"] == ["free"]
 
 
 async def _zero_actor_config(side: DiffSide) -> None:

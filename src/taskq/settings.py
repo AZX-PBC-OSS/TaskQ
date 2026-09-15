@@ -776,7 +776,15 @@ class WorkerSettings(TaskQSettings):
         "gathering in the dispatch SQL. Each LATERAL reads residual x oversample "
         "candidates. Higher values absorb more identity collisions and "
         "multi-producer contention. Default 2 (tolerates 50% dupe identities). "
-        "Set 1 when no identity_key is used and single-producer.",
+        "Set 1 when no identity_key is used and single-producer. "
+        "The window also bounds how far one dispatch round can slide past rows "
+        "locked by concurrent dispatchers: oversample dispatchers polling the "
+        "same (actor, queue) can hold the whole window at once, so size it at "
+        "or above the number of dispatchers that routinely poll the same "
+        "actor+queue. A round that finds its whole window locked expands it "
+        "geometrically (up to 8x) while claimable rows remain, which covers "
+        "transient oversubscription — the setting governs the steady state "
+        "so the common case never pays the expansion round trip.",
     )
     dispatch_scope_by_home_queue: bool = Field(
         default=False,

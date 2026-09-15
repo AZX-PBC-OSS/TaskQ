@@ -29,7 +29,7 @@ from taskq.backend._sql_templates import SqlTemplates
 from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining
 )
-from taskq.obs import get_logger
+from taskq.obs import get_logger, record_dispatch_duration, record_dispatch_failure
 
 if TYPE_CHECKING:
     import asyncpg
@@ -66,6 +66,24 @@ _live_queue_mode_caches: "weakref.WeakSet[QueueModeCache]" = weakref.WeakSet()
 """Every cache a live backend instance owns, so the queue-ops seam can
 clear them all without holding backend references. Weak: a backend's
 cache must not outlive (or keep alive) the backend that owns it."""
+
+_MAX_DISPATCH_WINDOW_EXPANSIONS: Final[int] = 3
+"""How many times one dispatch round may widen its candidate window after
+coming back empty.
+
+Each expansion doubles the per-cohort candidate window
+(``residual * oversample * 2**expansions``), so three expansions absorb a
+transient lock-out by up to ``oversample * 8`` concurrent dispatchers on
+one (actor, queue) — 16 at the default oversample of 2 — before the
+round reports empty and defers to the next tick. The steady-state sizing
+rule lives on ``WorkerSettings.dispatch_oversample``: an oversample at
+or above the number of dispatchers polling the same (actor, queue) keeps
+the common case expansion-free. The claim's own per-round bounds are
+untouched — every re-run still admits at most ``limit_n`` rows, and each
+candidate probe stays an ORDER BY + LIMIT index read whose cost is
+independent of backlog depth — so expansion multiplies the round's
+constant factor, never its depth coupling.
+"""
 
 
 class QueueModeCache:
@@ -196,13 +214,26 @@ async def _dispatch_batch(
     row either. The claim's observability rides the ``kind='dispatch'``
     log line and OTEL span in ``_dispatch_sql.dispatch_batch``.
     """
+    queue_attr = queues[0] if queues else ""
     async with dispatcher_pool.acquire(timeout=acquire_timeout) as conn:
         queue_modes = (
             queue_mode_cache.resolved_modes(queues) if queue_mode_cache is not None else None
         )
         async with conn.transaction():
             if queue_modes is None:
-                modes_by_queue = await _resolve_queue_modes_by_queue(conn, queues, schema)
+                # Mode resolution runs before the dispatch CTE is issued, so
+                # a failure here never reaches the dispatch helper's own
+                # telemetry. Recording the round here keeps the whole
+                # failure class visible: a producer whose every round dies
+                # resolving modes is otherwise silent on every metric, and
+                # reads exactly like a pod polling an idle queue.
+                resolve_started = time.monotonic()
+                try:
+                    modes_by_queue = await _resolve_queue_modes_by_queue(conn, queues, schema)
+                except Exception:
+                    record_dispatch_duration(queue_attr, time.monotonic() - resolve_started)
+                    record_dispatch_failure(queue_attr)
+                    raise
                 if queue_mode_cache is not None:
                     queue_mode_cache.store(modes_by_queue)
                 # An empty queue list resolves to the strict variant (the
@@ -221,15 +252,56 @@ async def _dispatch_batch(
                 if "round_robin" in queue_modes
                 else sql.dispatch_strict_fifo
             )
-            records = await dispatch_batch_helper(
-                conn,
-                sql=sql_stmt,
-                queues=queues,
-                limit_n=limit,
-                worker_id=worker_id,
-                lock_lease=lock_lease,
-                oversample=dispatch_oversample,
-            )
+            oversample = dispatch_oversample
+            expansions = 0
+            while True:
+                records = await dispatch_batch_helper(
+                    conn,
+                    sql=sql_stmt,
+                    queues=queues,
+                    limit_n=limit,
+                    worker_id=worker_id,
+                    lock_lease=lock_lease,
+                    oversample=oversample,
+                )
+                if records or expansions >= _MAX_DISPATCH_WINDOW_EXPANSIONS:
+                    break
+                # An empty round means one of two things: nothing
+                # claimable remains, or every row of the candidate
+                # window is row-locked by peers — the window is
+                # deliberately bounded (residual x oversample per cohort
+                # probe) and SKIP LOCKED slides only within it, so more
+                # than oversample dispatchers on one (actor, queue) can
+                # lock the whole window and starve the rest while deeper
+                # rows sit unlocked. The probe arbitrates before a wider
+                # re-run is paid for: no pending routable rows (the idle
+                # case, by far the commonest empty round) costs one
+                # LIMIT-1 probe and ends the round. A round that returns
+                # empty never holds row locks — zero admissions means
+                # nothing passed the lock stage — so re-executing with a
+                # doubled window starts lock-clean, and the expansion
+                # bound keeps a permanently saturated round from
+                # re-running without limit.
+                probe_started = time.monotonic()
+                try:
+                    probe_rows = await conn.fetch(sql.dispatch_claimable_probe, queues)
+                except Exception:
+                    record_dispatch_duration(queue_attr, time.monotonic() - probe_started)
+                    record_dispatch_failure(queue_attr)
+                    raise
+                if not probe_rows:
+                    break
+                expansions += 1
+                oversample = dispatch_oversample * (2**expansions)
+                logger.debug(
+                    "dispatch-window-expansion",
+                    queues=queues,
+                    expansion=expansions,
+                    oversample=oversample,
+                )
+            # Claims deliberately write NO job_events rows (see this
+            # function's docstring above): the dispatch log line and OTEL
+            # span carry the observability.
     return [_job_row_from_record(rec) for rec in records]
 
 

@@ -716,6 +716,11 @@ async def _mark_snoozed(
         )
         return "failed"
 
+    # There is deliberately no budget gate here, mirroring the SQL
+    # statement's arms: a deferral's only terminal exit is the deadline
+    # arm above.  Being refused a slot is not an execution, so it cannot
+    # exhaust a budget only executions spend.
+    #
     # PG's snooze arm binds metadata_update through jsonb_param (the
     # NUL-guarded serialization) and merges it server-side
     # (j.metadata || update), so the update's values read back as PG's

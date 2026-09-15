@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from typing import Final
 
 from taskq.backend._dispatch_sql import (
+    DISPATCH_CLAIMABLE_PROBE_SQL,
     DISPATCH_ROUND_ROBIN_SQL,
     DISPATCH_STRICT_FIFO_SQL,
 )
@@ -177,6 +178,7 @@ class SqlTemplates:
     # ── Dispatch SQL templates ─────────────────────────────────────
     dispatch_strict_fifo: str
     dispatch_round_robin: str
+    dispatch_claimable_probe: str
 
     # ── Static read SQL ────────────────────────────────────────────
     get_events: str
@@ -620,7 +622,10 @@ SELECT * FROM upd""",
         # ever lands on a revisited PK (job_id, attempt).  The deadline
         # arm writes its rows uniformly with every other terminal
         # transition, at the attempt number dispatch stamped and no
-        # refund has returned.
+        # refund has returned.  There is deliberately no budget arm: the
+        # retry ceiling has exactly one enforcement point — a real
+        # execution's terminal write — because only an execution spends
+        # budget; admission control never does.
         #
         # job_attempts PK hazard for the deadline arm: it inserts at
         # (job_id, attempt) WITHOUT dispatch having advanced attempt, so
@@ -695,6 +700,9 @@ snoozed AS (
       AND j.status = 'running'
       AND j.locked_by_worker = (SELECT worker_id FROM params)
       AND j.attempt = (SELECT attempt FROM params)
+      -- The reschedule point is the ONLY admission condition: a deferral
+      -- that never ran spends nothing, so nothing but the job's own
+      -- deadline can refuse it.
       AND (j.schedule_to_close IS NULL
            OR clock_timestamp() + (SELECT effective_delay FROM params) <= j.schedule_to_close)
     RETURNING j.*, 'snoozed'::text AS outcome_branch, clock_timestamp() AS now_ts
@@ -1328,6 +1336,7 @@ SELECT * FROM "{s}".job_attempts WHERE job_id = $1 ORDER BY attempt""",
         # ── Dispatch SQL templates ─────────────────────────────────
         dispatch_strict_fifo=DISPATCH_STRICT_FIFO_SQL.format(schema=s),
         dispatch_round_robin=DISPATCH_ROUND_ROBIN_SQL.format(schema=s),
+        dispatch_claimable_probe=DISPATCH_CLAIMABLE_PROBE_SQL.format(schema=s),
         # ── Static read SQL ────────────────────────────────────────
         get_events=f"""\
 SELECT id AS event_id, job_id, occurred_at, kind, detail

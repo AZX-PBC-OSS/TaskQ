@@ -684,7 +684,14 @@ identity_dedup      → DISTINCT ON (actor, identity_key) for identity-gated job
                       UNION ALL non-identity jobs
 ranked              → ROW_NUMBER() OVER (PARTITION BY actor ORDER BY …) as pending_rank
                       (round_robin: ORDER BY fairness_rank, priority; strict_fifo: ORDER BY priority)
-locked              → FOR UPDATE SKIP LOCKED, LIMIT limit_n
+                      MATERIALIZED — the optimization fence that finalizes ranks before the cut
+capped_ranked       → the ranked rows of actors carrying a max_concurrent cap
+top_ids             → capped actors only: the pre-lock window, LIMIT limit_n
+locked              → capped: FOR UPDATE SKIP LOCKED over the top_ids window
+sliding_locked      → uncapped: ORDER BY + LIMIT limit_n + FOR UPDATE SKIP LOCKED at one
+                      query level, so the lock node slides past peers' locked rows down
+                      the window instead of stopping at it
+claimed             → locked UNION ALL sliding_locked
 eligible_candidates → LEFT JOIN actor_config for max_concurrent
                       LEFT JOIN running_per_actor for in_flight count
                       BOOLEAN gate: in_flight < max_concurrent
@@ -696,7 +703,8 @@ UPDATE jobs         → WHERE j.id IN eligible AND j.status = 'pending'
 
 ### Key correctness invariants
 
-1. `FOR UPDATE SKIP LOCKED` is confined to the `locked` CTE. PostgreSQL forbids
+1. `FOR UPDATE SKIP LOCKED` is confined to the two lock-step CTEs (`locked` for
+   capped actors, `sliding_locked` for uncapped). PostgreSQL forbids
    window functions and `FOR UPDATE` in the same `SELECT`; the `candidates`
    passthrough CTE is mandatory.
 
@@ -717,7 +725,11 @@ UPDATE jobs         → WHERE j.id IN eligible AND j.status = 'pending'
    identity serialization. `residual` is the actor's remaining dispatch slots this
    round; oversampling reads a multiple of that per-actor LATERAL, not a multiple of
    the overall `limit_n`. Under pathological workloads (all candidates share one
-   identity) the producer retries on the next tick.
+   identity) the producer retries on the next tick. The window also bounds the
+   SKIP LOCKED slide under concurrent dispatchers: a round whose whole window is
+   row-locked by peers re-runs the claim with a geometrically doubled window (up to
+   8×, gated by a bounded `LIMIT 1` claimable-rows probe so idle rounds stay one
+   statement), then defers to the next tick.
 
 ---
 

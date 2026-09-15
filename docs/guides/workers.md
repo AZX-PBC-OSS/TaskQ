@@ -277,6 +277,14 @@ capacity. The `oversample` multiplier (default `2`, env `TASKQ_DISPATCH_OVERSAMP
 absorbs identity-key collisions and multi-producer contention without reducing dispatch
 yield. Set to `1` when no `identity_key` is used and single-producer deployment.
 
+The candidate window also bounds how far one dispatch round can slide past rows locked
+by concurrent dispatchers: `oversample` dispatchers polling the same (actor, queue) can
+hold the whole window at once, and a round that finds its whole window locked expands
+the window geometrically (up to 8×) while claimable rows remain. The expansion covers
+transient oversubscription; size `oversample` at or above the number of dispatchers
+that routinely poll the same actor+queue so the steady state never pays the expansion
+round trip.
+
 **`dispatch_scope_by_home_queue`:** When enabled (`TASKQ_DISPATCH_SCOPE_BY_HOME_QUEUE=true`),
 the `per_actor_capacity` CTE filters to actors whose home queue is in the worker's
 subscribed queue list. This lowers the per-cycle probe count (fewer LATERAL subqueries)

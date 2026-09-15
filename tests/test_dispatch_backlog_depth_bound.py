@@ -47,6 +47,7 @@ import pytest
 from taskq import migrate as migrate_mod
 from taskq._ids import new_base62, new_uuid
 from taskq.backend._dispatch_sql import (
+    DISPATCH_CLAIMABLE_PROBE_SQL,
     DISPATCH_ROUND_ROBIN_SQL,
     DISPATCH_STRICT_FIFO_SQL,
 )
@@ -216,6 +217,50 @@ async def test_dispatch_row_work_is_depth_bounded(
             f"depth — {shallow_widest:.0f} rows of work at {_SHALLOW_DEPTH} "
             f"pending vs {deep_widest:.0f} at {_DEEP_DEPTH} "
             f"(ratio bound {_DEPTH_RATIO_BOUND}x)."
+        )
+    finally:
+        await conn.close()
+
+
+async def test_claimable_probe_row_work_is_depth_bounded(pg_dsn: str, depth_schema: str) -> None:
+    """The empty-round claimable-rows probe stays a first-entry index read
+    at every backlog depth.
+
+    The probe gates window expansion on an empty dispatch round, so it runs
+    exactly where the backlog may be deep; a depth-proportional probe would
+    tax every idle round with the walk the claim statement is built to
+    avoid. Its inner probes are LIMIT-1 reads with no ORDER BY — the first
+    matching entry answers — so the widest plan node is the one-row
+    actor_config scan plus one matched probe row at any depth.
+    """
+    rendered = DISPATCH_CLAIMABLE_PROBE_SQL.format(schema=depth_schema)
+    conn = await asyncpg.connect(pg_dsn)
+    try:
+        widest_by_depth: dict[int, float] = {}
+        for depth in (_SHALLOW_DEPTH, _DEEP_DEPTH):
+            await _seed_due_backlog(conn, depth_schema, depth)
+            rows = await conn.fetch(
+                f"EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) {rendered}",
+                [_QUEUE],
+            )
+            raw = rows[0]["QUERY PLAN"]
+            document: Any = json.loads(raw) if isinstance(raw, str) else raw
+            top: dict[str, Any] = document[0]
+            nodes = _plan_node_row_counts(top["Plan"])
+            widest, label = nodes[0]
+            widest_by_depth[depth] = widest
+            assert widest <= 100, (
+                f"claimable probe: at a {depth}-row due backlog the widest plan "
+                f"node ({label}) did {widest:.0f} rows of work — the probe is a "
+                f"LIMIT-1 first-entry read and must stay at a handful of rows "
+                f"whatever the depth. Widest nodes: {nodes[:5]}."
+            )
+        assert widest_by_depth[_DEEP_DEPTH] <= _DEPTH_RATIO_BOUND * max(
+            widest_by_depth[_SHALLOW_DEPTH], 1.0
+        ), (
+            f"claimable probe: row work grows with backlog depth — "
+            f"{widest_by_depth[_SHALLOW_DEPTH]:.0f} at {_SHALLOW_DEPTH} pending vs "
+            f"{widest_by_depth[_DEEP_DEPTH]:.0f} at {_DEEP_DEPTH}."
         )
     finally:
         await conn.close()
