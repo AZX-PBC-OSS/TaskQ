@@ -9,7 +9,9 @@ downstream modules (schedule CRUD, cron loop, admin ops).
 import asyncio
 import importlib
 import inspect
+import threading
 from collections.abc import Awaitable, Callable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any, Final, cast
@@ -68,6 +70,59 @@ _FACTORY_TIMEOUT_S: Final = 5.0
 a factory: the call itself (run off the event loop) and, for a factory that
 returns a coroutine, the await of that coroutine back on the loop."""
 
+_FACTORY_POOL_SIZE: Final = 4
+"""Worker threads in the cron payload-factory pool.
+
+Payload resolution is bookkeeping ahead of an enqueue — reading a
+counter, formatting a timestamp, a small query — and one tick resolves
+its due schedules one at a time, so a handful of threads is ample
+concurrency.  The bound is the point: the deadline cuts how long a tick
+WAITS on a factory, never how long the factory runs, so every call a
+hung factory swallows parks its thread until the factory itself returns,
+which a truly hung one never does.  A bounded pool caps what a
+permanently hung schedule can strand at this many threads and then
+degrades to a per-tick timeout — the strike the schedule earns — rather
+than minting a thread per tick forever."""
+
+_factory_pool: ThreadPoolExecutor | None = None
+_factory_pool_lock = threading.Lock()
+
+
+def _payload_factory_pool() -> ThreadPoolExecutor:
+    """The cron-owned executor sync payload factories run on.
+
+    Separate from the event loop's DEFAULT executor on purpose: that pool
+    is what sync actor bodies check out of, so sharing it couples schedule
+    ticks to actor load in both directions.  A saturated pool delays an
+    instantaneous factory past its deadline while the tick holds the cron
+    advisory lock, and — the worse direction — every thread a hung factory
+    strands is one the fleet's actor execution capacity permanently loses,
+    a slow-motion outage no cron signal explains.
+
+    Created on first use and never shut down: it outlives any one tick by
+    design (a stranded thread is exactly what cannot be joined), and a
+    process that resolves a payload once resolves them for its lifetime.
+    """
+    global _factory_pool
+    with _factory_pool_lock:
+        if _factory_pool is None:
+            _factory_pool = ThreadPoolExecutor(
+                max_workers=_FACTORY_POOL_SIZE,
+                thread_name_prefix="taskq-cron-factory",
+            )
+        return _factory_pool
+
+
+async def _call_factory_off_loop(factory: Callable[[], Any]) -> object:
+    """Call *factory* on the cron pool and await its result.
+
+    The loop-side wait is what the caller's deadline cuts; the call itself
+    keeps running on its thread until it returns, so the wrapper never
+    claims to have stopped the factory — only to have stopped waiting.
+    """
+    loop = asyncio.get_running_loop()
+    return await asyncio.wrap_future(_payload_factory_pool().submit(factory), loop=loop)
+
 
 async def _await_factory_bounded(
     payload_factory: str,
@@ -111,21 +166,22 @@ async def resolve_payload(
     """Resolve payload from a factory dotted path or static metadata.
 
     If *payload_factory* is set, resolves the dotted path via
-    :func:`_resolve_factory` and calls it.  The call itself runs OFF the
-    event loop — :func:`asyncio.to_thread`, the standard-library mechanism
-    for a callable that may block and the same one sync actors run under —
-    bounded by the 5 s per-factory ``wait_for``, so a sync factory that
-    blocks is cut at the deadline instead of freezing every timer on the
-    loop (this bound and the caller's whole-tick deadline alike) while the
-    tick holds the cron advisory lock.  A factory that RETURNS a coroutine
-    keeps loop affinity: the coroutine is awaited back on the loop under
-    the same ``wait_for``.  ``BaseModel`` results are converted via
+    :func:`_resolve_factory` and calls it.  A coroutine FUNCTION is called
+    on the loop — calling one only constructs a coroutine object, so it
+    can neither block nor benefit from a thread — and the coroutine it
+    returns is awaited on the loop under the per-factory deadline.  Any
+    other callable may block, so it runs on the cron pool
+    (:func:`_payload_factory_pool`) bounded by the same deadline: called
+    inline, a blocking factory freezes every timer on the loop — this
+    bound and the caller's whole-tick deadline alike — while the tick
+    holds the cron advisory lock.  ``BaseModel`` results are converted via
     ``.model_dump()``; ``dict`` results are returned as-is.  Raises
     ``TypeError`` for unexpected return types.
 
-    Thread-safety contract: a sync payload factory may run on a worker
+    Thread-safety contract: a sync payload factory runs on a cron pool
     thread — it must be thread-safe and must not require the event loop;
-    a coroutine-returning factory keeps loop affinity.
+    a coroutine function and the coroutine any factory returns keep loop
+    affinity.
 
     If no *payload_factory*, extracts ``static_payload`` from
     *raw_metadata*.  Returns ``{}`` if neither is set.
@@ -134,21 +190,27 @@ async def resolve_payload(
         TypeError: factory returned an unexpected type (not dict or
             BaseModel).
         TimeoutError: the factory call, or the coroutine it returned,
-            outlived the 5 s per-factory deadline; the message names the
-            factory.
+            outlived *timeout_s* (:data:`_FACTORY_TIMEOUT_S` when not
+            given); the message names the factory and the deadline that
+            fired.
         ImportError / AttributeError: propagated from :func:`_resolve_factory`.
     """
     if payload_factory is not None:
         factory = _resolve_factory(payload_factory)
-        # The call runs off the loop: called inline, a sync factory that
-        # blocks freezes every timer on the loop — this deadline and the
-        # caller's whole-tick asyncio.timeout alike — so the tick holds
-        # the cron advisory lock for as long as the factory blocks.
-        # asyncio.to_thread is the standard-library off-loop mechanism,
-        # the same one sync actors run under.
-        result: object = await _await_factory_bounded(
-            payload_factory, asyncio.to_thread(factory), timeout_s=timeout_s
-        )
+        result: object
+        if inspect.iscoroutinefunction(factory):
+            # Calling a coroutine function only builds a coroutine object:
+            # nothing to block on, and a thread hop would only queue that
+            # construction behind whatever holds the pool.
+            result = factory()
+        else:
+            # Anything else may block, and called inline a blocking factory
+            # freezes every timer on the loop — this deadline and the
+            # caller's whole-tick deadline alike — so the tick would hold
+            # the cron advisory lock for as long as the factory blocks.
+            result = await _await_factory_bounded(
+                payload_factory, _call_factory_off_loop(factory), timeout_s=timeout_s
+            )
         if inspect.iscoroutine(result):
             # A coroutine-returning factory keeps loop affinity: its body
             # runs here, on the loop, under the same deadline.

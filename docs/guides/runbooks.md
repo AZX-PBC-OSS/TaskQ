@@ -19,9 +19,48 @@ instead of subtracting in your own clock domain.
 
 ---
 
+## TaskQQueueDepthHigh
+
+**What fired.** `taskq_jobs_actor_backlog{actor!=""} > 1000 and taskq_jobs_oldest_pending_age_seconds > 900` for 5 minutes: one actor on one queue has held more than 1000 pending jobs for 5 minutes AND its oldest pending job is over 15 minutes old. The alert labels name the pair — `{{ $labels.actor }}` on `{{ $labels.queue }}`.
+
+**Why this is per-actor, not per-queue.** A queue-summed depth cannot separate *one actor on this queue is never consumed* from *this queue is busy*: the shared queue keeps moving, so no depth threshold is crossed while one actor's rows pile up forever. Split by actor, the unconsumed actor is the series that rises without bound while its siblings stay flat. Depth alone is still ambiguous — a deep queue that drains is healthy throughput — so the age operand carries the other half: an actor nobody consumes has a pending job whose age grows with wall clock, while a busy actor's oldest pending job stays bounded by its drain rate however deep the queue gets. Both series carry the same `(actor, queue)` labels, so the `and` joins per-actor without a modifier.
+
+This is the *only* signal the unconsumed-actor condition produces. A worker never refuses to start because an actor's queue has no consumer — in a multi-worker or workgroup fleet no single supervisor can know what consumes a queue — so the condition raises no error, fails no job, and leaves every health probe green.
+
+**How to confirm.**
+
+- Metrics: `taskq_jobs_actor_backlog` for the named pair rising while its siblings on the same queue stay flat; `taskq_jobs_oldest_pending_age_seconds` for that pair climbing at roughly 1s/s (the signature of work nothing is taking).
+- SQL — pending depth and oldest-pending age by actor and queue, the same grouping the sampler uses:
+
+  ```sql
+  SELECT actor, queue, count(*) AS depth,
+         clock_timestamp() - min(scheduled_at) AS oldest_pending
+  FROM taskq.jobs
+  WHERE status = 'pending'
+  GROUP BY actor, queue
+  ORDER BY oldest_pending DESC;
+  ```
+
+- SQL — does this actor have a stored row at all? Dispatch derives its candidates from `actor_config`, so an actor without a row dispatches nothing anywhere:
+
+  ```sql
+  SELECT actor, queue, max_concurrent FROM taskq.actor_config WHERE actor = '<actor>';
+  ```
+
+**How to remediate.**
+
+1. **Nothing consumes the queue.** Confirm some worker's `TASKQ_QUEUES` (or `--queues`) includes `{{ $labels.queue }}`. Each worker logs `actors-on-unconsumed-queues` at boot listing actors it serves but does not dispatch for; that warning is per-process, so a fleet-wide answer means checking every deployment. Add the queue to a worker's subscription.
+2. **No `actor_config` row.** Seed it by deploying a worker that registers the actor, or with `taskq actor-config set`. Until the row exists the jobs can never be claimed.
+3. **Drain mode or a cap of zero.** Check `max_concurrent` from the SQL above and the boot-time `actor-resolved-capacity` line, which names the resolved number *and the layer that produced it* (process cap, actor cap, queue cap, reservation, or singleton) — that line is the fastest way to find which of the four surfaces is binding.
+4. **Genuinely under-provisioned.** Depth high but the age operand falling means the backlog *is* draining, just slowly; scale out the workers consuming that queue.
+
+---
+
 ## TaskQScheduledBacklogGrowing
 
-**What fired.** `deriv(taskq_jobs_by_status{status="scheduled"}[15m]) > 0 and taskq_jobs_oldest_due_age_seconds > 300` for 5 minutes: the scheduled backlog is growing AND the oldest due job has been waiting more than 5 minutes. Together these mean promotion from `scheduled` to `pending` is not keeping up — or not happening at all.
+**What fired.** `deriv(taskq_jobs_by_status{status="scheduled"}[15m]) > 0 and taskq_jobs_by_status{status="scheduled"} > 0 and ignoring(status) taskq_jobs_oldest_due_age_seconds > 300` for 5 minutes: the scheduled backlog is growing, scheduled work is actually present, AND the oldest due job has been waiting more than 5 minutes. Together these mean promotion from `scheduled` to `pending` is not keeping up — or not happening at all.
+
+The `ignoring(status)` modifier is load-bearing, not decoration. PromQL's `and` is an inner join on identical label sets: `taskq_jobs_by_status` carries a `status` label and `taskq_jobs_oldest_due_age_seconds` is a single fleet-wide gauge with none, so without the modifier the two sides never pair, the joined vector is permanently empty, and the alert cannot fire however bad the stall gets. Nothing reports this — a vector match that yields no results is valid PromQL, not an error. If you rewrite this expression, re-check the label sets on both sides of every `and`.
 
 **How to confirm.**
 
@@ -92,11 +131,14 @@ the triage below before touching replica counts.
 
 1. Check `TaskQSweepTimeouts` and `TaskQSweepDegraded` — if either is firing,
    the database cannot finish the sweep's batches and that is the root cause.
-2. If a stuck session of this schema holds the advisory lock (a partitioned
-   former leader that never released): terminate that session
-   (`SELECT pg_terminate_backend(<pid>);`). Schemas in one database now
-   always use distinct lock keys — the keys are schema-qualified — so a
-   foreign-schema holder is no longer a possible cause.
+2. Check the role row: `SELECT worker_id, expires_at - clock_timestamp()
+   FROM "<schema>".maintenance_leader WHERE singleton = true;`. A horizon
+   already in the past that no pod takes over means the survivors cannot
+   reach or write that table — the role is free and nobody can claim it.
+   A horizon in the future means a live holder that is not sweeping, which
+   is a leader-side problem, not an election one. A partitioned former
+   leader needs no intervention: its horizon lapses on its own and needs no
+   privilege to displace.
 3. If no lock contention and no timeouts: check leader health
    (`sum(taskq_maintenance_leader_is_leader) == 1` — the
    `TaskQLeaderSplitBrainOrNoLeader` alert covers the zero-leader case) and
@@ -111,7 +153,7 @@ Extra workers consume `pending` jobs faster but promote nothing.
 
 ## TaskQSweepTimeouts
 
-**What fired.** `rate(taskq_maintenance_leader_sweep_timeouts_total[5m]) > 0` for 5 minutes: sweep batches are being aborted by deadlines (`TimeoutError` on the client) or server-side cancels (`QueryCanceledError` from `statement_timeout`). The database cannot finish bounded batches.
+**What fired.** `rate(taskq_maintenance_leader_sweep_timeouts_total[5m]) > 0` for 5 minutes: a sweep or gauge sampler is not completing. For a batch sweep (`sweep_name` of `scheduled_to_pending`, `prune`, `job_events_retention`, …) the batch was aborted by a deadline (`TimeoutError` on the client) or a server-side cancel (`QueryCanceledError` from `statement_timeout`) and the database cannot finish bounded batches. For a gauge sampler (`queue_depth`, `backlog_detection`, `reservation_slots`, `stranded_jobs`) the read failed outright, so the gauge it feeds is serving a stale cache — every dashboard it draws flattens out, which looks identical to a drained queue.
 
 **How to confirm.**
 
@@ -193,12 +235,16 @@ Extra workers consume `pending` jobs faster but promote nothing.
 
 **How to remediate.**
 
-1. Identify the winning session from the SQL above. Because the key is schema-qualified, a holder belonging to another schema or deployment sharing this database is **not** the cause — it holds a different key. The holder is a session of this same schema: either the legitimately-elected leader during handover (benign, and filtered out by the sustained-rate alert) or a stuck/dead one.
-2. Terminate the stale holder if it is dead weight
-   (`SELECT pg_terminate_backend(<pid>);`). The maintenance lock is
-   session-scoped, and a partitioned session that never sends a FIN holds
-   it until the server reaps the backend — bounded by the server's
-   `tcp_keepalives_*` settings (minutes, not forever).
+1. Identify the winning session from the SQL above. Because the key is schema-qualified, a holder belonging to another schema or deployment sharing this database is **not** the cause — it holds a different key. The holder is a session of this same schema: either a pod mid-election during a handover (benign, and filtered out by the sustained-rate alert) or a session holding the lock with no role behind it.
+2. Check the role row: `SELECT worker_id, expires_at FROM
+   "<schema>".maintenance_leader WHERE singleton = true;`. The counter rises
+   only while the lock is held by a session and that row is ABSENT — a
+   holder that never got as far as claiming the role. A row that is present
+   means leadership is settled and this alert should clear on its own; if
+   it does not, the holders are changing, which is a handover that is not
+   converging. Nothing needs terminating either way: leadership no longer
+   depends on the lock, and a survivor takes the role once the row's
+   `expires_at` lapses.
 3. **Upgrade discipline:** the schema-qualified names replaced the
    unqualified (`taskq:maintenance_leader`) ones outright, and the two are
    NOT overlap-compatible — a mixed old/new fleet holds different keys, so

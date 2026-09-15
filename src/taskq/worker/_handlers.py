@@ -89,6 +89,7 @@ type AttemptOutcome = Literal[
 __all__ = [
     "AttemptOutcome",
     "_TerminalWriteFailed",
+    "_TerminalWriteFencedOut",
     "_dispatch_exception",
     "_handle_generic_exception",
     "_handle_reservation_class_denied",
@@ -139,6 +140,33 @@ class _TerminalWriteFailed(BaseException):
     def __init__(self, infra_exc: BaseException) -> None:
         self.infra_exc = infra_exc
         super().__init__("terminal write failed")
+
+
+class _TerminalWriteFencedOut(BaseException):
+    """Control-flow sentinel: a terminal write's fence matched no row.
+
+    Every terminal write is fenced on the job id, ``running`` status,
+    holding worker and attempt number, and reports a clause that matched
+    nothing as a plain ``False``. That happens when the lock lease
+    expired and the row was re-pended and re-claimed — possibly by this
+    same worker at a later attempt, which the worker fence alone cannot
+    detect. The row never transitioned under this attempt, so this
+    attempt terminated nothing: its side effects must not be committed,
+    its hooks must not fire, and no terminal event may be published.
+
+    Raising rather than returning a boolean is what closes the class. A
+    caller cannot reach the code after a fenced write without handling
+    this, so the broken form — reading the write's outcome and carrying
+    on — is not expressible at a call site.
+
+    Extends :class:`BaseException` for the same reason
+    :class:`_TerminalWriteFailed` does: the generic ``except Exception``
+    dispatch clauses must not re-route it into actor-failure handling.
+    """
+
+    def __init__(self, write: str) -> None:
+        self.write = write
+        super().__init__(f"{write} matched no row")
 
 
 def _log_terminal_write_failed(
@@ -640,45 +668,6 @@ async def _handle_reservation_class_denied(
             delay_seconds=retry_after.total_seconds(),
         )
         return "scheduled"
-    elif tri == "failed:MaxAttemptsExceeded":
-        span.add_event(
-            "lifecycle.failed",
-            attributes={
-                "from_state": "running",
-                "to_state": "failed",
-                "error_class": "MaxAttemptsExceeded",
-                "bucket_name": e.bucket_name,
-            },
-        )
-        hook_row = await _post_write_row(backend, job)
-        _log_job_failed(
-            log,
-            job,
-            cause="MaxAttemptsExceeded",
-            error_class="MaxAttemptsExceeded",
-            bucket_name=e.bucket_name,
-        )
-        log_state_change(
-            log,
-            from_state="running",
-            to_state="failed",
-            cause="MaxAttemptsExceeded",
-            bucket_name=e.bucket_name,
-        )
-        await invoke_on_retry_exhausted(
-            actor_config.on_retry_exhausted,
-            hook_row,
-            RuntimeError("MaxAttemptsExceeded"),
-            actor_config.on_retry_exhausted_timeout,
-            log=log,
-        )
-        await invoke_error_reporter(
-            error_reporter,
-            hook_row,
-            RuntimeError("MaxAttemptsExceeded"),
-            log=log,
-        )
-        return "failed"
     elif tri == "failed":
         span.add_event(
             "lifecycle.failed",

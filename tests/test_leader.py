@@ -100,6 +100,11 @@ def _is_server_clock_read(sql: str) -> bool:
     return "clock_timestamp()" in sql
 
 
+def _is_role_claim(sql: str) -> bool:
+    """Whether *sql* is the statement that claims maintenance leadership."""
+    return "maintenance_leader" in sql and "ON CONFLICT (singleton)" in sql
+
+
 class FakeConn:
     """Lightweight asyncpg.Connection stand-in with fetchval + execute recording."""
 
@@ -112,6 +117,7 @@ class FakeConn:
         on_close: Callable[[], None] | None = None,
     ) -> None:
         self.fetchval_calls: list[tuple[str, tuple[object, ...]]] = []
+        self.fetchrow_calls: list[tuple[str, tuple[object, ...]]] = []
         self.execute_calls: list[tuple[str, tuple[object, ...]]] = []
         self._closed = False
         self.close_calls = 0
@@ -148,7 +154,24 @@ class FakeConn:
         return "UPDATE 1"
 
     async def fetchrow(self, sql: str, *args: object) -> object | None:
-        return None
+        self.fetchrow_calls.append((sql, args))
+        if not _is_role_claim(sql):
+            return None
+        # The role claim is a write that reports back the term it stamped,
+        # so it is recorded and hooked as a write: a test that fails this
+        # connection's writes, or that asserts the claim reached the
+        # database, is asking about this statement.
+        self.execute_calls.append((sql, args))
+        if self._on_execute is not None:
+            self._on_execute()
+        # The real database answers with the term it stamped whenever no
+        # live holder has the role, and this double has no held role to
+        # model: nothing here ever writes one. So the claim succeeds, which
+        # is what the database would do. The tests that need an election to
+        # FAIL fail it where a real fleet does — at the transition lock, on
+        # a connection configured to lose it.
+        now = datetime.now(UTC)
+        return {"elected_at": now, "expires_at": now + timedelta(seconds=40)}
 
     async def fetch(self, sql: str, *args: object) -> Sequence[object]:
         return []

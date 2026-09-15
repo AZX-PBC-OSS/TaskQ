@@ -40,6 +40,7 @@ Key correctness invariants ():
 import asyncio
 from collections import deque
 from dataclasses import dataclass, field
+from enum import IntEnum
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 from uuid import UUID
 
@@ -65,7 +66,13 @@ from taskq.obs import get_logger, get_meter, log_cancel_phase_change
 if TYPE_CHECKING:
     from taskq.worker.deps import WorkerDeps
 
-__all__ = ["ActiveJobRegistry", "CancelController", "_ActiveJob", "make_cancel_controller"]
+__all__ = [
+    "ActiveJobRegistry",
+    "CancelController",
+    "CancelOrigin",
+    "_ActiveJob",
+    "make_cancel_controller",
+]
 
 _log: structlog.stdlib.BoundLogger = get_logger(__name__)
 
@@ -222,6 +229,14 @@ class _CancelController:
 
         for active in self._deps.active_jobs.all():
             db_phase = db_phases.get(active.job_id, CancelPhase.NONE)
+
+            if db_phase >= CancelPhase.COOPERATIVE:
+                # The poll only returns rows with cancel_requested_at set,
+                # so an observed phase means an operator asked for this
+                # job specifically. That outranks a shutdown origin
+                # stamped concurrently: the row says the cancel is about
+                # the job, not about the process leaving.
+                active.cancel_origin = CancelOrigin.OPERATOR
 
             # ── Phase 1: cooperative observation ─────────────────────
             if (
@@ -431,6 +446,26 @@ def make_cancel_controller(
     return _CancelController(deps, worker_id, backend)
 
 
+class CancelOrigin(IntEnum):
+    """Who asked for the in-flight attempt to stop.
+
+    The distinction the consumer routes on. An operator cancel is a
+    decision about this job, so it ends the job; an infrastructure
+    cancel — a deploy, a drain — is a statement about this process, so
+    it releases the job for someone else to run. The exception both
+    deliver is the same ``CancelledError``, which is why origin and not
+    exception type is what tells them apart.
+
+    The DB row is still the final arbiter: an operator cancel that
+    landed on the row while a shutdown was in flight wins, because the
+    release write is fenced on ``cancel_phase = 0``.
+    """
+
+    NONE = 0
+    OPERATOR = 1
+    SHUTDOWN = 2
+
+
 @dataclass
 class _ActiveJob:
     """In-flight job entry in the ActiveJobRegistry.
@@ -455,6 +490,7 @@ class _ActiveJob:
     ctx: JobContext[BaseModel]
     cancel_phase: CancelPhase = CancelPhase.NONE
     cancel_observed_at: float | None = field(default=None)  # loop.time(), not wall clock
+    cancel_origin: CancelOrigin = CancelOrigin.NONE
 
 
 class ActiveJobRegistry:

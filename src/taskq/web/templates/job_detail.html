@@ -33,7 +33,7 @@
                 </button>
             </form>
             {% endif %}
-            {% if job.status in ("failed", "crashed", "cancelled") and not is_archived %}
+            {% if job.status not in retry_source_exclusions and not is_archived %}
             <form method="post" action="{{ base_path }}/jobs/{{ job.id }}/retry" class="inline">
                 <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
                 <button type="submit" onclick="return confirm('Retry job {{ job.id }}?')"

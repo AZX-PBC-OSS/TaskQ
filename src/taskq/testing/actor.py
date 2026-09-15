@@ -10,6 +10,7 @@ from uuid import UUID
 from pydantic import BaseModel
 
 from taskq._ids import new_job_id, new_uuid
+from taskq._json import decode_result_bytes
 from taskq.backend._protocol import (
     BACKEND_PROTOCOL_VERSION,
     AttemptRow,
@@ -20,13 +21,14 @@ from taskq.backend._protocol import (
     EnqueueArgs,
     ErrorInfo,
     EventRow,
+    InterruptOutcome,
     JobFilter,
     JobRow,
     ScheduleCreateArgs,
     ScheduleUpdateArgs,
     SnoozeOutcome,
 )
-from taskq.retry import OnRetryExhausted, OnSuccess, RetryClassifierHook, RetryPolicy
+from taskq.retry import OnCancel, OnRetryExhausted, OnSuccess, RetryClassifierHook, RetryPolicy
 
 __all__ = [
     "EmptyPayload",
@@ -35,6 +37,16 @@ __all__ = [
     "as_backend",
     "default_actor_config",
 ]
+
+
+def _decoded_result(result_bytes: bytes | None) -> dict[str, object] | None:
+    """Read back a serialized result the way the row's jsonb column does."""
+    if result_bytes is None:
+        return None
+    decoded: object = decode_result_bytes(result_bytes)
+    if not isinstance(decoded, dict):
+        return None
+    return cast("dict[str, object]", decoded)
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,6 +58,8 @@ class StubActorConfig:
     on_retry_exhausted_timeout: float = 3.0
     on_success: OnSuccess | None = None
     on_success_timeout: float = 3.0
+    on_cancel: OnCancel | None = None
+    on_cancel_timeout: float = 3.0
 
 
 def default_actor_config() -> StubActorConfig:
@@ -111,9 +125,7 @@ class FakeBackend:
     def __init__(
         self,
         *,
-        mark_snoozed_return: Literal[
-            "scheduled", "failed", "failed:MaxAttemptsExceeded", "noop"
-        ] = "scheduled",
+        mark_snoozed_return: Literal["scheduled", "failed", "noop"] = "scheduled",
         mark_retry_after_return: Literal[
             "scheduled", "failed:DeadlineExceeded", "failed:MaxAttemptsExceeded", "noop"
         ] = "scheduled",
@@ -123,11 +135,10 @@ class FakeBackend:
         ] = []
         self.mark_cancelled_calls: list[dict[str, object]] = []
         self.mark_snoozed_calls: list[dict[str, object]] = []
+        self.mark_interrupted_calls: list[dict[str, object]] = []
         self.mark_retry_after_calls: list[dict[str, object]] = []
         self.mark_failed_or_retry_calls: list[dict[str, object]] = []
-        self._mark_snoozed_return: Literal[
-            "scheduled", "failed", "failed:MaxAttemptsExceeded", "noop"
-        ] = mark_snoozed_return
+        self._mark_snoozed_return: Literal["scheduled", "failed", "noop"] = mark_snoozed_return
         self._mark_retry_after_return: Literal[
             "scheduled", "failed:DeadlineExceeded", "failed:MaxAttemptsExceeded", "noop"
         ] = mark_retry_after_return
@@ -161,7 +172,12 @@ class FakeBackend:
         result_bytes: bytes | None = None,
         attempt: int | None = None,
     ) -> bool:
-        self.mark_succeeded_calls.append((job_id, worker_id, result, result_bytes))
+        # The consumer serializes the actor's return value exactly once and
+        # sends it as result_bytes, so a double that recorded only the
+        # `result` parameter would report None for every real success.
+        # Decoding mirrors what PostgresBackend stores on the row.
+        recorded = result if result is not None else _decoded_result(result_bytes)
+        self.mark_succeeded_calls.append((job_id, worker_id, recorded, result_bytes))
         return True
 
     async def mark_succeeded_with_conn(
@@ -241,6 +257,28 @@ class FakeBackend:
     ) -> bool:
         return False
 
+    async def mark_interrupted(
+        self,
+        job_id: UUID,
+        worker_id: UUID,
+        *,
+        attempt: int,
+        hold: timedelta,
+        progress_seq: int = 0,
+        progress_state: dict[str, object] | None = None,
+    ) -> InterruptOutcome:
+        self.mark_interrupted_calls.append(
+            {
+                "job_id": job_id,
+                "worker_id": worker_id,
+                "attempt": attempt,
+                "hold": hold,
+                "progress_seq": progress_seq,
+                "progress_state": progress_state,
+            }
+        )
+        return "scheduled" if hold > timedelta(0) else "pending"
+
     async def mark_snoozed(
         self,
         job_id: UUID,
@@ -253,7 +291,7 @@ class FakeBackend:
         outcome: SnoozeOutcome = "snoozed",
         attempt: int | None = None,
         denial_reason: DenialReason = "capacity",
-    ) -> Literal["scheduled", "failed", "failed:MaxAttemptsExceeded", "noop"]:
+    ) -> Literal["scheduled", "failed", "noop"]:
         self.mark_snoozed_calls.append(
             {
                 "job_id": job_id,

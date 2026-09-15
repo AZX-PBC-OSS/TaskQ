@@ -25,6 +25,7 @@ __all__ = [
     "create_running_job",
     "create_worker",
     "create_workered_running_job",
+    "drop_test_triggers",
     "get_job_triple",
     "parse_detail",
     "reset_schema",
@@ -121,6 +122,42 @@ async def seed_actors(
     )
 
 
+_MIGRATION_TRIGGERS: frozenset[str] = frozenset({"tr_notify_job_insert"})
+"""Triggers the migrations install, which a reset must keep.
+
+Everything else attached to a dynamic table was attached by a test, and
+attachments outlive TRUNCATE — see :func:`drop_test_triggers`."""
+
+
+async def drop_test_triggers(conn: _Conn, schema: str) -> None:
+    """Drop triggers a test attached to a dynamic table.
+
+    A trigger survives TRUNCATE, so one test's probe — the usual shape is
+    a DEFERRABLE constraint trigger that forces a COMMIT to fail — stays
+    armed for every later test sharing the schema and makes them fail on
+    a transaction they never asked to break.  Attribution is by name
+    against :data:`_MIGRATION_TRIGGERS`: what the migrations installed
+    stays, what a test installed goes.
+    """
+    if not _IDENT_RE.match(schema):
+        raise ValueError(f"invalid schema name {schema!r}")
+    rows = await conn.fetch(
+        "SELECT t.tgname AS name, c.relname AS table_name "
+        "FROM pg_trigger t "
+        "JOIN pg_class c ON c.oid = t.tgrelid "
+        "JOIN pg_namespace n ON n.oid = c.relnamespace "
+        "WHERE n.nspname = $1 AND NOT t.tgisinternal AND c.relname = ANY($2::text[])",
+        schema,
+        list(_TRUNCATE_TABLES),
+    )
+    for row in rows:
+        if str(row["name"]) in _MIGRATION_TRIGGERS:
+            continue
+        await conn.execute(
+            f'DROP TRIGGER IF EXISTS "{row["name"]}" ON "{schema}"."{row["table_name"]}"'
+        )
+
+
 async def reset_schema(
     conn: _Conn,
     schema: str,
@@ -131,7 +168,12 @@ async def reset_schema(
 
     Tests needing a custom actor set can pass ``actors=[...]``;
     tests that need an empty actor_config can pass ``actors=[]``.
+
+    Test-attached triggers are dropped first: they survive TRUNCATE and
+    would otherwise carry one test's failure injection into every later
+    test on the schema (see :func:`drop_test_triggers`).
     """
+    await drop_test_triggers(conn, schema)
     await truncate_schema(conn, schema)
     await seed_actors(conn, schema, actors=actors)
 

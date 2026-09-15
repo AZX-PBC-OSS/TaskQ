@@ -28,12 +28,20 @@ _WORKERS_SQL = (
 
 # The watchdog freshness verdict is computed by the SERVER — the same
 # single-arbiter shape as queues.py's worker-liveness predicates
-# (last_seen_at is written by PG, so only PG can measure its age without
+# (the timestamps are written by PG, so only PG can measure them without
 # mixing the admin process's clock into the comparison).
+#
+# It reads the recorded horizon in preference to the ping because the
+# horizon is what every peer's election actually consults: an operator
+# reading "healthy" here is being told the same thing the fleet is acting
+# on. The ping remains the answer for a row written by a release that
+# records no horizon.
 _LEADER_SQL = (
     "SELECT ml.*, w.hostname, w.pid, "
     "w.last_seen_at AS worker_last_seen, "
-    "(ml.last_seen_at > clock_timestamp() - make_interval(secs => {live_secs})) AS watchdog_healthy "
+    "(CASE WHEN ml.expires_at IS NOT NULL THEN ml.expires_at >= clock_timestamp() "
+    "ELSE ml.last_seen_at > clock_timestamp() - make_interval(secs => {live_secs}) END) "
+    "AS watchdog_healthy "
     'FROM "{schema}".maintenance_leader ml '
     'JOIN "{schema}".workers w ON ml.worker_id = w.id'
 )

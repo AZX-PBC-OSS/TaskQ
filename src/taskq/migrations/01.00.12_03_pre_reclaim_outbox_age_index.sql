@@ -1,0 +1,60 @@
+-- Partial index serving the job_events retention sweep's outbox age-cap
+-- arm (taskq/backend/_sweeps.py's _SWEEP_EVENT_TTL_SQL, expired_outbox
+-- CTE). Forward-only; there is no down migration. To revert, restore
+-- from backup. The literal "{schema}" token is substituted at apply time
+-- by the migration runner.
+--
+-- ── Why a second index over the same slice ──────────────────────────
+-- job_events_reclaim_idx (01.00.02_01) already covers this predicate,
+-- but it is keyed on id alone because its reader — poll_reclaim_events —
+-- tails by cursor. The retention sweep asks the other question: which of
+-- these rows are older than the age cap. Against an id-keyed index that
+-- bound can only be a post-scan Filter, so the arm reads every
+-- unconsumed outbox row on every tick and discards nearly all of them.
+--
+-- That population is exempt from ordinary retention by design, and in a
+-- fleet whose watch_reclaims consumer lags or is absent it grows for the
+-- life of the deployment. The arm that exists to bound the outbox would
+-- then be the one statement whose cost is unbounded in the outbox's own
+-- size. Keying on occurred_at makes the age bound an Index Cond that
+-- stops the scan at the boundary, so a drained tick costs the same at
+-- sixty thousand exempt rows as at two hundred.
+--
+-- The id tiebreak keeps the arm's ORDER BY servable from this index
+-- without a sort: id and occurred_at are co-monotonic under the
+-- visibility-delay doctrine (constants.py RECLAIM_EVENT_VISIBILITY_DELAY),
+-- so an (occurred_at, id) ordered scan is the oldest-first order the arm
+-- already drains in.
+--
+-- ── Why the predicate is verbatim ───────────────────────────────────
+-- A partial index serves a query only when the planner can prove the
+-- query implies the index predicate, and a verbatim repeat of the
+-- predicate (same literals, same parentheses, no COALESCE) is that
+-- proof. This WHERE clause must stay character-identical to the
+-- expired_outbox CTE's carve-out and to job_events_reclaim_idx's. The
+-- bare (detail->>'reason') form is correct for the positive arm: a
+-- missing reason key makes the predicate NULL-false, which is an
+-- ordinary row this arm must not touch.
+--
+-- ── Why plain CREATE INDEX, not CONCURRENTLY ────────────────────────
+-- Same reason as 01.00.07_01 and 01.00.02_01: the runner wraps each
+-- migration in a transaction and serializes concurrent migrators on an
+-- advisory lock, and CREATE INDEX CONCURRENTLY both is forbidden inside
+-- a transaction block and would wait on that advisory-lock waiter — a
+-- cycle the deadlock detector breaks by failing the apply.
+--
+-- OPS NOTE (locks), same caveat as 01.00.02_01 and 01.00.07_01: the
+-- CREATE INDEX below takes a write-blocking lock on job_events for the
+-- duration of the build, and job_events is written on essentially every
+-- lifecycle transition. Build time is proportional to the size of the
+-- outbox slice only (the predicate is partial), which is small in a
+-- fleet with a healthy watch_reclaims consumer. Operators with a large
+-- unconsumed outbox should run the equivalent `CREATE INDEX
+-- CONCURRENTLY IF NOT EXISTS job_events_reclaim_age_idx ON
+-- "{schema}".job_events (occurred_at, id) WHERE kind = 'state_change'
+-- AND (detail->>'reason') = 'lock_expired'` manually outside the
+-- migration runner during a maintenance window, then let this migration
+-- no-op via IF NOT EXISTS.
+CREATE INDEX IF NOT EXISTS job_events_reclaim_age_idx
+    ON "{schema}".job_events (occurred_at, id)
+    WHERE kind = 'state_change' AND (detail->>'reason') = 'lock_expired';

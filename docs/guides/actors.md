@@ -57,7 +57,7 @@ async def process_order(payload: OrderPayload) -> OrderResult: ...
 | `max_pending` | `int \| None` | `None` | Queue-depth backpressure cap — see [`max_pending` backpressure](#max_pending-backpressure). Only the *seed* value: once a worker has synced this actor once, a non-NULL stored `actor_config.max_pending` is authoritative and this literal is ignored — tune it live with `taskq actor-config set`, see [ActorConfig sync](workers.md#actorconfig-sync). |
 | `metadata` | `dict[str, object] \| None` | `{}` | Arbitrary key-value metadata stored in `actor_config.metadata` (JSONB). Must be a plain `dict`; mapping proxies and frozendicts are rejected at decoration time. The key `"singleton"` is reserved by the library. |
 | `unique_for` | `timedelta \| None` | `None` | Deduplication window — see [`unique_for` deduplication](#unique_for-deduplication). |
-| `unique_states` | `tuple[JobStatus, ...]` | `("pending", "scheduled", "running")` | Job statuses considered "active" for `unique_for` dedup. Terminal states are excluded by default so a completed job does not block re-enqueue. |
+| `unique_states` | `tuple[JobStatus, ...]` | `("pending", "scheduled", "running", "succeeded")` | Job statuses a `unique_for` window suppresses duplicates against. `succeeded` is included because it is the state that says the work already happened — the condition the window exists to detect. The failure-terminal states (`failed`, `cancelled`, `crashed`, `abandoned`) are excluded so one transient failure cannot suppress the rest of the window. Pass `("pending", "scheduled", "running")` for the narrower "block only concurrent execution" rule. |
 | `start_to_close` | `timedelta \| None` | `None` | Per-attempt execution timeout. Precedence (first wins): per-enqueue `start_to_close` > this actor default > `TASKQ_DEFAULT_START_TO_CLOSE`. `None` means no per-attempt timeout unless a worker-wide default is set. See [Retries — `start_to_close` vs `schedule_to_close`](retries.md#7-start_to_close-vs-schedule_to_close). |
 | `rate_limits` | `list[str] \| None` | `[]` | Named rate-limit buckets this actor consumes — see [Rate limits and reservations](#rate-limits-and-reservations). |
 | `reservations` | `list[str \| KeyedReservationRef] \| None` | `[]` | Named concurrency reservation slots this actor claims. A `KeyedReservationRef` derives per-key (session/tenant) reservation buckets from the job payload at dispatch time — see [Rate limits and reservations](#rate-limits-and-reservations). |
@@ -67,7 +67,24 @@ async def process_order(payload: OrderPayload) -> OrderResult: ...
 | `on_retry_exhausted_timeout` | `float` | `3.0` | Seconds allowed for `on_retry_exhausted` to complete before it is abandoned. |
 | `on_success` | `OnSuccess \| None` | `None` | Callback invoked when the job succeeds, after the transaction commits. Receives `(job_row, result)`. Mirrors `on_retry_exhausted` with a timeout guard — see [Retries — `on_success` hook](retries.md#on_success-hook). |
 | `on_success_timeout` | `float` | `3.0` | Seconds allowed for `on_success` to complete before it is abandoned. |
+| `on_cancel` | `OnCancel \| None` | `None` | Callback invoked when a running job ends cancelled, beside the terminal write. Receives `(job_row)` — a cancelled attempt produced no result. Best-effort and timeout-bounded like the hooks above. |
+| `on_cancel_timeout` | `float` | `3.0` | Seconds allowed for `on_cancel` to complete before it is abandoned. |
 | `priority` | `int` | `0` | Default dispatch priority for jobs enqueued without an explicit `priority=`. Must fit `smallint` range (-32768..32767). |
+
+!!! warning "`on_cancel` cannot fire for a job cancelled before it ran"
+    The hook runs on the worker that was executing the attempt. A job cancelled
+    while still `pending` or `scheduled` never reached a worker, so no hook of
+    any kind runs for it and none can: there is no attempt to clean up after.
+    Releasing whatever such a job had reserved *before* it was enqueued stays
+    with whoever issued the cancel. This matters because the cancel an operator
+    issues most often — on a job sitting in the queue — is exactly the one the
+    hook cannot see, so cleanup that must happen for every cancellation belongs
+    on the caller's side of the enqueue, not in `on_cancel`.
+
+    Tell the two apart on the row: a cancel that reached a running actor stamps
+    `error_class = 'CancelledCooperatively'`, one that never started stamps
+    `'CancelledBeforeStart'`, and an actor that had to be taken away after the
+    cancellation graces stamps `'CancelAbandoned'`.
 
 !!! danger "`max_concurrent`, `max_pending` and `result_ttl` are seed-only — changing the literal does nothing on an existing deployment"
     These three are **operator-owned once a row exists**. The startup UPSERT omits

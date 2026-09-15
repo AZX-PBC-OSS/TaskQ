@@ -26,17 +26,23 @@ from taskq._json import (
 )
 from taskq._json import dumps as _json_dumps
 from taskq.backend._protocol import (
+    DENIAL_OUTCOMES,
     AttemptRow,
     CancelPhase,
     DenialReason,
     ErrorInfo,
+    InterruptOutcome,
     JobId,
     JobRow,
     SnoozeOutcome,
     validate_denial_reason,
     validate_snooze_outcome,
 )
-from taskq.constants import MIN_DEFERRAL_INTERVAL
+from taskq.constants import (
+    CANCEL_ORIGIN_ABANDONED,
+    CANCEL_ORIGIN_COOPERATIVE,
+    MIN_DEFERRAL_INTERVAL,
+)
 from taskq.exceptions import (
     ResultTooLarge,
     UnencodableValue,
@@ -51,6 +57,7 @@ __all__ = [
     "_mark_abandoned",
     "_mark_cancelled",
     "_mark_failed_or_retry",
+    "_mark_interrupted",
     "_mark_retry_after",
     "_mark_snoozed",
     "_mark_succeeded",
@@ -61,6 +68,16 @@ __all__ = [
 ]
 
 logger: structlog.stdlib.BoundLogger = structlog.get_logger("taskq.testing.in_memory")
+
+
+def _refunded_attempt(attempt: int) -> int:
+    """Twin of ``ATTEMPT_REFUND_SQL`` — see it for the reasoning.
+
+    Every non-consuming release of a claimed attempt returns the claim's
+    increment through this one expression, so the in-memory arms cannot
+    drift from each other or from Postgres.
+    """
+    return max(attempt - 1, 0)
 
 
 def _merge_progress(
@@ -480,6 +497,7 @@ async def _mark_cancelled(
         finished_at=now,
         locked_by_worker=None,
         lock_expires_at=None,
+        error_class=CANCEL_ORIGIN_COOPERATIVE,
         progress_seq=progress_seq,
         progress_state=merged_progress,
     )
@@ -489,7 +507,7 @@ async def _mark_cancelled(
         started_at=row.started_at,
         now=now,
         outcome="cancelled",
-        error_class=None,
+        error_class=CANCEL_ORIGIN_COOPERATIVE,
         error_message=None,
         error_traceback=None,
         worker_id=worker_id,
@@ -499,6 +517,7 @@ async def _mark_cancelled(
         from_state="running",
         to_state="cancelled",
         now=now,
+        error_class=CANCEL_ORIGIN_COOPERATIVE,
         worker_id=worker_id,
     )
     logger.debug(
@@ -509,6 +528,109 @@ async def _mark_cancelled(
         job_id=str(job_id),
     )
     return True
+
+
+async def _mark_interrupted(
+    self: "InMemoryBackend",
+    job_id: JobId,
+    worker_id: UUID,
+    *,
+    attempt: int,
+    hold: timedelta,
+    progress_seq: int = 0,
+    progress_state: dict[str, object] | None = None,
+) -> InterruptOutcome:
+    """Twin of the PG release — see ``Backend.mark_interrupted``."""
+    row = self._jobs.get(job_id)
+    if row is None:
+        return "noop"
+    # The cancel_phase conjunct is the operator-wins fence: a cancel
+    # request already on the row outranks this process going away.
+    if (
+        row.status != "running"
+        or row.locked_by_worker != worker_id
+        or row.attempt != attempt
+        or row.cancel_phase != CancelPhase.NONE
+    ):
+        return "noop"
+
+    now = self._clock.now()
+    release_at = now + hold
+    merged_progress = _merge_progress(row.progress_state, progress_state)
+
+    if row.schedule_to_close is not None and release_at > row.schedule_to_close:
+        self._jobs[job_id] = replace(
+            row,
+            status="failed",
+            finished_at=now,
+            error_class="DeadlineExceeded",
+            error_message="schedule_to_close reached before next dispatch",
+            error_traceback=None,
+            locked_by_worker=None,
+            lock_expires_at=None,
+            last_heartbeat_at=None,
+            progress_seq=progress_seq,
+            progress_state=merged_progress,
+        )
+        self._append_attempt(
+            job_id=job_id,
+            attempt=row.attempt,
+            started_at=row.started_at,
+            now=now,
+            outcome="failed",
+            error_class="DeadlineExceeded",
+            error_message="schedule_to_close reached before next dispatch",
+            error_traceback=None,
+            worker_id=worker_id,
+        )
+        self._append_state_change_event(
+            job_id=job_id,
+            from_state="running",
+            to_state="failed",
+            now=now,
+            error_class="DeadlineExceeded",
+            worker_id=worker_id,
+        )
+        return "failed:DeadlineExceeded"
+
+    released_status: Literal["pending", "scheduled"] = (
+        "scheduled" if hold > timedelta(0) else "pending"
+    )
+    # No attempt row: an interruption is not an execution outcome, which
+    # is also what makes the refunded attempt number safe to revisit.
+    self._jobs[job_id] = replace(
+        row,
+        status=released_status,
+        scheduled_at=release_at,
+        finished_at=None,
+        locked_by_worker=None,
+        lock_expires_at=None,
+        last_heartbeat_at=None,
+        cancel_phase=CancelPhase.NONE,
+        cancel_requested_at=None,
+        attempt=_refunded_attempt(row.attempt),
+        interrupt_count=row.interrupt_count + 1,
+        progress_seq=progress_seq,
+        progress_state=merged_progress,
+    )
+    self._append_state_change_event(
+        job_id=job_id,
+        from_state="running",
+        to_state=released_status,
+        now=now,
+        worker_id=worker_id,
+        reason="interrupted",
+        hold_seconds=hold.total_seconds(),
+    )
+    logger.debug(
+        "state-change",
+        kind="state_change",
+        from_state="running",
+        to_state=released_status,
+        reason="interrupted",
+        job_id=str(job_id),
+    )
+    return released_status
 
 
 async def _write_cancel_escalation(
@@ -577,6 +699,7 @@ async def _mark_abandoned(
         row,
         status="abandoned",
         finished_at=now,
+        error_class=CANCEL_ORIGIN_ABANDONED,
         progress_seq=progress_seq,
         progress_state=merged_progress,
     )
@@ -586,7 +709,7 @@ async def _mark_abandoned(
         started_at=row.started_at,
         now=now,
         outcome="cancelled",
-        error_class=None,
+        error_class=CANCEL_ORIGIN_ABANDONED,
         error_message=None,
         error_traceback=None,
         worker_id=row.locked_by_worker,
@@ -596,6 +719,7 @@ async def _mark_abandoned(
         from_state="running",
         to_state="abandoned",
         now=now,
+        error_class=CANCEL_ORIGIN_ABANDONED,
         worker_id=row.locked_by_worker,
     )
     logger.debug(
@@ -620,7 +744,7 @@ async def _mark_snoozed(
     outcome: SnoozeOutcome = "snoozed",
     attempt: int | None = None,
     denial_reason: DenialReason = "capacity",
-) -> Literal["scheduled", "failed", "failed:MaxAttemptsExceeded", "noop"]:
+) -> Literal["scheduled", "failed", "noop"]:
     # Caller-input validation precedes the state fence, matching the PG
     # terminal's order (its guard runs before the fencing UPDATE): an
     # illegal outcome raises loudly whatever the job's state — the same
@@ -657,10 +781,9 @@ async def _mark_snoozed(
     # Arm order here is deadline → max_attempts → snooze; the fused SQL
     # checks snoozed → max_attempts → deadline with NOT EXISTS chaining.
     # The orders are observably equivalent: a past-deadline row matches
-    # the deadline arm under either order (the snooze arm's deadline
-    # guard and the max_attempts arm's schedule_to_close IS NULL both
-    # exclude it first in the SQL), and every other row's arm choice
-    # depends only on its own predicate.
+    # the deadline arm under either order (the snooze arm's own deadline
+    # guard excludes it first in the SQL), and every other row's arm
+    # choice depends only on its own predicate.
     if row.schedule_to_close is not None and new_scheduled_at > row.schedule_to_close:
         deadline_merged_progress = _merge_progress(row.progress_state, progress_state)
         self._jobs[job_id] = replace(
@@ -673,6 +796,12 @@ async def _mark_snoozed(
             locked_by_worker=None,
             lock_expires_at=None,
             last_heartbeat_at=None,
+            # The denial that ran the job out of road is still a denial
+            # the job absorbed, and with no per-denial rows minted the
+            # aggregate is its only durable record — mirroring the SQL
+            # deadline arm's outcome-keyed CASE.
+            rate_limit_blocked_count=row.rate_limit_blocked_count
+            + (1 if outcome in DENIAL_OUTCOMES else 0),
             progress_seq=progress_seq,
             progress_state=deadline_merged_progress,
         )
@@ -704,67 +833,6 @@ async def _mark_snoozed(
         )
         return "failed"
 
-    # The admission-denial budget gate: the exact complement of the
-    # snooze arm's guard for DENIAL outcomes only — a non-indefinite job
-    # at attempt >= max_attempts with no close deadline has no remaining
-    # exit except the terminal one.  An actor-requested deferral
-    # (outcome 'snoozed') never reaches this gate: its budget is
-    # refunded below.  A job carrying schedule_to_close reschedules until
-    # its deadline (its own terminal exit); an indefinite job reschedules
-    # by policy.  An 'unavailable' denial never reaches it either: the
-    # store's failure to answer is infra backpressure about a job whose
-    # actor never ran, so it can never terminalise — it takes the
-    # non-consuming snooze arm below (mirroring the SQL arms' $9
-    # predicates).
-    if (
-        outcome in ("reservation_denied", "rate_limit_denied")
-        and denial_reason != "unavailable"
-        and row.attempt >= row.max_attempts
-        and row.retry_kind != "indefinite"
-        and (row.schedule_to_close is None)
-    ):
-        maxatt_merged_progress = _merge_progress(row.progress_state, progress_state)
-        self._jobs[job_id] = replace(
-            row,
-            status="failed",
-            finished_at=now,
-            error_class="MaxAttemptsExceeded",
-            error_message="retry budget exhausted",
-            error_traceback=None,
-            locked_by_worker=None,
-            lock_expires_at=None,
-            last_heartbeat_at=None,
-            progress_seq=progress_seq,
-            progress_state=maxatt_merged_progress,
-        )
-        self._append_attempt(
-            job_id=job_id,
-            attempt=row.attempt,
-            started_at=row.started_at,
-            now=now,
-            outcome="failed",
-            error_class="MaxAttemptsExceeded",
-            error_message="retry budget exhausted",
-            error_traceback=None,
-            worker_id=worker_id,
-        )
-        self._append_state_change_event(
-            job_id=job_id,
-            from_state="running",
-            to_state="failed",
-            now=now,
-            error_class="MaxAttemptsExceeded",
-            worker_id=worker_id,
-        )
-        logger.debug(
-            "state-change",
-            kind="state_change",
-            from_state="running",
-            to_state="failed",
-            job_id=str(job_id),
-        )
-        return "failed:MaxAttemptsExceeded"
-
     # PG's snooze arm binds metadata_update through jsonb_param (the
     # NUL-guarded serialization) and merges it server-side
     # (j.metadata || update), so the update's values read back as PG's
@@ -780,15 +848,15 @@ async def _mark_snoozed(
         "scheduled" if new_scheduled_at > now else "pending"
     )
     merged_progress = _merge_progress(row.progress_state, progress_state)
-    # A non-terminal snooze/denial writes no attempt/event rows and never
-    # touches max_attempts (the ceiling is a bound, not a counter).  An
+    # A deferral writes no attempt/event rows and never touches
+    # max_attempts (the ceiling is a bound, not a counter). An
     # actor-requested deferral REFUNDS the claim's attempt increment
-    # (floored at 0) so downstream-429 snoozing is unbounded and never
-    # walks the column; an admission denial leaves the increment
-    # standing (budget-bounded backpressure) — unless the store could
-    # not answer ('unavailable': infra backpressure about a job that
-    # never executed, refunded exactly like the actor-requested
-    # deferral, mirroring the SQL arm's $9 CASE).  The outcome-keyed
+    # (floored at 0) — it did not run, so the increment dispatch stamped
+    # is returned. An admission denial does NOT touch attempt: admission
+    # runs in-process on the same claimed attempt (no re-dispatch/re-claim
+    # happens between denials), so decrementing here would walk the
+    # counter down across repeated denials instead of leaving it exactly
+    # where the claim, still fenced against, put it. The outcome-keyed
     # counters on the row are the deferral's whole durable record,
     # mirroring the SQL arms' CASE increments.
     self._jobs[job_id] = replace(
@@ -799,14 +867,10 @@ async def _mark_snoozed(
         locked_by_worker=None,
         lock_expires_at=None,
         last_heartbeat_at=None,
-        attempt=(
-            max(row.attempt - 1, 0)
-            if outcome == "snoozed" or denial_reason == "unavailable"
-            else row.attempt
-        ),
+        attempt=_refunded_attempt(row.attempt),
         snooze_count=row.snooze_count + (1 if outcome == "snoozed" else 0),
         rate_limit_blocked_count=row.rate_limit_blocked_count
-        + (1 if outcome in ("reservation_denied", "rate_limit_denied") else 0),
+        + (1 if outcome in DENIAL_OUTCOMES else 0),
         metadata=new_metadata,
         cancel_phase=CancelPhase.NONE,
         cancel_requested_at=None,
@@ -971,7 +1035,7 @@ async def _mark_retry_after(
     # counts itself on the row's snooze counter.  A consuming one IS a
     # real execution: its attempt increment stands and it keeps writing
     # its rows below.
-    new_attempt = row.attempt if consume_budget else max(row.attempt - 1, 0)
+    new_attempt = row.attempt if consume_budget else _refunded_attempt(row.attempt)
     retry_status: Literal["scheduled", "pending"] = (
         "scheduled" if new_scheduled_at > now else "pending"
     )

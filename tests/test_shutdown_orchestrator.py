@@ -58,6 +58,11 @@ def _worker_settings(
             "TASKQ_TERMINATION_GRACE_PERIOD": str(termination_grace),
             "TASKQ_LOCK_LEASE": str(lock_lease),
             "TASKQ_HEARTBEAT_INTERVAL": str(heartbeat_interval),
+            # The maintenance role's lease carries the same four-beat
+            # invariant the job lease does, so it moves with the heartbeat
+            # here for the same reason lock_lease is passed at all: this
+            # helper is about the grace budgets, not the leases.
+            "TASKQ_LEADER_LEASE": str(lock_lease),
         }
     )
 
@@ -1197,6 +1202,10 @@ def test_grace_budget_accepted(
             "TASKQ_TERMINATION_GRACE_PERIOD": str(term_g),
             "TASKQ_LOCK_LEASE": str(lock_l),
             "TASKQ_HEARTBEAT_INTERVAL": str(hb_int),
+            # The maintenance role's lease carries the same four-beat
+            # invariant as lock_l, so the draw that satisfies one satisfies
+            # the other and the grace boundaries stay the only thing tested.
+            "TASKQ_LEADER_LEASE": str(lock_l),
             "TASKQ_WATCHDOG_LOOP_LAG_BUDGET": str(lock_l / 2),
             # Half the derived budget so the warn-vs-budget invariant
             # stays quiet wherever the draw lands.

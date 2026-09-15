@@ -13,6 +13,9 @@ from uuid import UUID
 
 __all__ = [
     "BTREE_MAX_ITEM_BYTES",
+    "CANCEL_ORIGIN_ABANDONED",
+    "CANCEL_ORIGIN_COOPERATIVE",
+    "CANCEL_ORIGIN_PENDING",
     "DEFAULT_CHUNK_SIZE",
     "DEFAULT_EVENT_RETENTION_BATCH_SIZE",
     "DEFAULT_EVENT_RETENTION_PERIOD",
@@ -29,6 +32,8 @@ __all__ = [
     "DEFAULT_RESERVATION_BACKOFF",
     "EVENTS_CHANNEL_FMT",
     "IDEMPOTENCY_KEY_BYTES_CEILING",
+    "MAX_ATTEMPTS_SMALLINT_CEILING",
+    "MAX_ENQUEUABLE_MAX_ATTEMPTS",
     "MAX_IDEMPOTENCY_KEY_BYTES",
     "MAX_RESULT_BYTES",
     "MIN_DEFERRAL_INTERVAL",
@@ -38,9 +43,13 @@ __all__ = [
     "RECLAIM_EVENT_VISIBILITY_DELAY",
     "RECLAIM_OUTBOX_RETENTION_MULTIPLIER",
     "RESERVATION_RETRY_HINT_MARGIN",
+    "SMALLINT_MAX",
+    "SMALLINT_MIN",
     "WAKE_CHANNEL_FMT",
     "WORKER_CHANNEL_FMT",
     "base_name_collides_with_reserved_prefix",
+    "check_non_negative_duration",
+    "check_smallint_domain",
     "events_channel",
     "progress_channel",
     "progress_global_channel",
@@ -135,6 +144,37 @@ expiry instant never guarantees the slot is free anyway. Sub-second
 hints are additionally floored by ``MIN_DEFERRAL_INTERVAL`` downstream,
 so the margin's real work is on multi-second lease horizons where it is
 noise by design.
+"""
+
+CANCEL_ORIGIN_COOPERATIVE: Final[str] = "CancelledCooperatively"
+"""``error_class`` a running attempt's own cancel write stamps.
+
+The actor was running, observed the cancel and stopped — the worker's
+terminal write is the one that moved the row.
+"""
+
+CANCEL_ORIGIN_ABANDONED: Final[str] = "CancelAbandoned"
+"""``error_class`` the abandon write stamps.
+
+The actor did not yield within the cancellation graces, so the ladder
+took the row away from it. Operationally distinct from a cooperative
+cancel: this actor needs looking at.
+"""
+
+CANCEL_ORIGIN_PENDING: Final[str] = "CancelledBeforeStart"
+"""``error_class`` a cancel of a not-yet-running job stamps.
+
+The job never reached a worker, so no attempt exists to explain and no
+actor-level hook can have run for it. Covers the single-job request and
+the bulk filter alike — the same outcome must read the same way whichever
+path produced it.
+
+Why ``error_class`` rather than a new column or a ``job_status`` value:
+the three origins are one dimension of one terminal state, every terminal
+failure path already self-describes through this column, and the admin
+UI, ``taskq doctor`` and the archive all read it already. A status enum
+change would break every consumer of the eight-value union for a
+distinction that is not a different state.
 """
 
 MIN_DEFERRAL_INTERVAL: Final[timedelta] = timedelta(seconds=1)
@@ -453,6 +493,73 @@ can turn a valid enqueue into a raw ``index row size ... exceeds btree
 version 4 maximum`` error from Postgres.
 """
 
+SMALLINT_MIN: Final[int] = -32768
+SMALLINT_MAX: Final[int] = 32767
+"""The ``smallint`` column domain every small integer column shares.
+
+``jobs.max_attempts`` and ``jobs.priority`` are both ``smallint``
+(``migrations/01.00.00_01_pre_initial.sql``), so a value outside this
+range cannot be stored at all: the driver raises a bare ``OverflowError``
+from its int16 codec before the statement ever reaches the server, while
+the in-memory mirror — which has no column to overflow — accepts it.
+Every guard reads these names rather than repeating the literals, so the
+domain is stated once.
+"""
+
+MAX_ATTEMPTS_SMALLINT_CEILING: Final[int] = SMALLINT_MAX
+"""The ``jobs.max_attempts`` column's smallint domain ceiling.
+
+Named separately from :data:`SMALLINT_MAX` because the retry policy
+reconstruction clamps against *this* column's ceiling specifically, and
+the column-named constant keeps the reason legible at those sites.
+"""
+
+MAX_ENQUEUABLE_MAX_ATTEMPTS: Final[int] = MAX_ATTEMPTS_SMALLINT_CEILING - 1
+"""Largest ``max_attempts`` an enqueue or a fresh retry policy may carry.
+
+One below the column ceiling, retained as a defensive margin: a row
+parked at exactly 32767 has no headroom for any future statement that
+needs to add one to a max_attempts-derived value, so the guards refuse
+the top-of-domain value the way they refuse values past the column
+entirely. Rows can still legally REACH the ceiling — earlier releases'
+snooze arms parked a snoozed 32766-job there — which is why the policy
+reconstruction clamps row-stored values back into this bound.
+
+Lives in this leaf module because the policy layer, the enqueue boundary
+and the in-memory mirror all bound against it and none of them can import
+the others.
+"""
+
+
+def check_smallint_domain(value: int, /, *, what: str) -> None:
+    """Raise ``ValueError`` if *value* cannot be stored in a ``smallint``.
+
+    The driver otherwise rejects an out-of-domain integer with a bare
+    ``OverflowError`` raised inside its codec — an untyped error naming an
+    int16 range, with no parameter name in it — while the in-memory
+    mirror stores the same value happily. Checking the domain in Python
+    names the argument the caller passed and makes the two backends
+    refuse identically.
+    """
+    if value < SMALLINT_MIN or value > SMALLINT_MAX:
+        raise ValueError(
+            f"{what} must fit smallint range ({SMALLINT_MIN}..{SMALLINT_MAX}), got {value}"
+        )
+
+
+def check_non_negative_duration(value: timedelta | None, /, *, what: str) -> None:
+    """Raise ``ValueError`` if *value* is a negative duration.
+
+    A negative deadline or lifetime is not a shorter bound — it is one
+    already in the past at the moment it is written, so the job it governs
+    is past its own deadline on its first dispatch, and a negative result
+    lifetime expires the result before the write that stores it. Postgres
+    stores a negative ``interval`` without complaint, so nothing
+    downstream will catch this.
+    """
+    if value is not None and value < timedelta(0):
+        raise ValueError(f"{what} must not be negative, got {value}")
+
 
 def schema_lock_name(purpose: str, schema: str) -> str:
     """Schema-qualified advisory-lock name: ``taskq:{purpose}:{schema}``.
@@ -654,3 +761,33 @@ def progress_global_channel(schema: str) -> str:
     if not _IDENT_RE.match(schema):
         raise ValueError(f"invalid schema identifier: {schema!r}")
     return PROGRESS_GLOBAL_CHANNEL_FMT.format(schema=schema)
+
+
+def no_consumed_quota_sql(alias: str = "") -> str:
+    """SQL predicate: a ``rate_limit_buckets`` row is free of spent quota.
+
+    Lives here, in the leaf both layers already import, because the same
+    question is asked from two different layers — the maintenance
+    leader's fleet reclaim sweep and the registry's per-worker eviction
+    drain — and the two must never disagree about which rows are safe to
+    delete.
+
+    A row is safe when its quota still refills (an idle refilling bucket
+    is back at capacity by the time anyone reads it, so deleting it loses
+    nothing) or when it is already full. The remaining case — a FIXED
+    quota (``refill_per_second == 0``) that has been partially spent — is
+    drained forever by design, and its row IS that state: deleting it
+    lets the next acquire re-preseed at full capacity and re-admit a
+    budget the tenant already used.
+
+    The COALESCE defaults keep a row written before the quota shape was
+    persisted (or by an interop writer) deletable rather than immortal:
+    an unknown refill reads as refilling. *alias* qualifies the ``state``
+    column for a statement that has one.
+    """
+    state = f"{alias}.state" if alias else "state"
+    return (
+        f"(COALESCE(({state}->>'refill_per_second')::double precision, 1) > 0 "
+        f"OR COALESCE(({state}->>'tokens')::double precision, 0) "
+        f">= COALESCE(({state}->>'capacity')::double precision, 0))"
+    )

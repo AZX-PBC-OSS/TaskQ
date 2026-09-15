@@ -122,6 +122,7 @@ from taskq.backend._protocol import (
     ConnLike,
     DenialReason,
     ErrorInfo,
+    InterruptOutcome,
     JobId,
     JobRow,
     SnoozeOutcome,
@@ -144,6 +145,8 @@ from taskq.obs import (
     get_logger,
     log_cancel_phase_change,
     log_state_change,
+    record_job_interrupted,
+    record_job_interrupted_noop,
 )
 
 if TYPE_CHECKING:
@@ -155,6 +158,7 @@ __all__ = [
     "_mark_abandoned",
     "_mark_cancelled",
     "_mark_failed_or_retry",
+    "_mark_interrupted",
     "_mark_retry",
     "_mark_retry_after",
     "_mark_snoozed",
@@ -755,7 +759,7 @@ async def _mark_snoozed(
     attempt: int | None = None,
     denial_reason: DenialReason = "capacity",
     acquire_timeout: float = DEFAULT_TERMINAL_POOL_ACQUIRE_TIMEOUT_S,
-) -> Literal["scheduled", "failed", "failed:MaxAttemptsExceeded", "noop"]:
+) -> Literal["scheduled", "failed", "noop"]:
     # The statement's arms key on exactly the three SnoozeOutcome values;
     # PG cannot reject an unknown bind value inside the statement itself,
     # so this boundary owns the check (the in-memory twin raises the
@@ -784,10 +788,10 @@ async def _mark_snoozed(
             return "noop"
 
         branch = rec["outcome_branch"]
-        # A non-terminal snooze/denial writes no attempt/event rows and no
-        # timestamps of its own — it increments the outcome-keyed counter
-        # on the row (see _sql_templates.mark_snoozed).  The terminal
-        # max_attempts arm writes its attempt row and state_change event
+        # A deferral writes no attempt/event rows and no timestamps of
+        # its own — it increments the outcome-keyed counter on the row
+        # (see _sql_templates.mark_snoozed).  Only the deadline arm is
+        # terminal, and it writes its attempt row and state_change event
         # exactly like every other terminal transition.
 
     if branch == "snoozed":
@@ -800,17 +804,6 @@ async def _mark_snoozed(
             attempt=rec["attempt"],
         )
         return "scheduled"
-    if branch == "max_attempts_failed":
-        log_state_change(
-            logger,
-            from_state="running",
-            to_state="failed",
-            job_id=str(job_id),
-            worker_id=str(worker_id),
-            attempt=rec["attempt"],
-            cause="max_attempts",
-        )
-        return "failed:MaxAttemptsExceeded"
     log_state_change(
         logger,
         from_state="running",
@@ -820,6 +813,79 @@ async def _mark_snoozed(
         attempt=rec["attempt"],
     )
     return "failed"
+
+
+# ── mark_interrupted ───────────────────────────────────────────────────
+
+
+async def _mark_interrupted(
+    pool: "asyncpg.Pool",
+    sql: SqlTemplates,
+    job_id: JobId,
+    worker_id: UUID,
+    *,
+    attempt: int,
+    hold: timedelta,
+    progress_seq: int = 0,
+    progress_state: dict[str, object] | None = None,
+    acquire_timeout: float = DEFAULT_TERMINAL_POOL_ACQUIRE_TIMEOUT_S,
+) -> InterruptOutcome:
+    """Release a running attempt this worker cannot finish.
+
+    ``"noop"`` means the fence matched nothing: another writer already
+    moved the row, or an operator cancel is in flight on it. The caller
+    routes a ``"noop"`` to the cancel ladder rather than assuming the
+    release landed — the row, not this process, decides.
+    """
+    async with pool.acquire(timeout=acquire_timeout) as conn:
+        rec = await conn.fetchrow(
+            sql.mark_interrupted,
+            job_id,
+            worker_id,
+            attempt,
+            hold,
+            progress_seq,
+            _progress_jsonb_escaped(progress_state),
+        )
+    if rec is None:
+        # The fence matched nothing, so the row is unread and its actor
+        # unknown here; the counter carries the job id in the log line
+        # beside it rather than a made-up attribute.
+        logger.info(
+            "interrupt-fenced-out",
+            kind="interrupt_fenced_out",
+            job_id=str(job_id),
+            worker_id=str(worker_id),
+            attempt=attempt,
+        )
+        record_job_interrupted_noop()
+        return "noop"
+
+    branch: str = rec["outcome_branch"]
+    if branch == "released":
+        to_state: str = rec["status"]
+        log_state_change(
+            logger,
+            from_state="running",
+            to_state=to_state,
+            job_id=str(job_id),
+            worker_id=str(worker_id),
+            attempt=rec["attempt"],
+            reason="interrupted",
+        )
+        record_job_interrupted(rec["actor"], held=hold > timedelta(0))
+        return "pending" if to_state == "pending" else "scheduled"
+
+    log_state_change(
+        logger,
+        from_state="running",
+        to_state="failed",
+        job_id=str(job_id),
+        worker_id=str(worker_id),
+        attempt=rec["attempt"],
+        error_class="DeadlineExceeded",
+    )
+    return "failed:DeadlineExceeded"
 
 
 # ── mark_retry_after ───────────────────────────────────────────────────

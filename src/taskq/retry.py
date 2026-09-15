@@ -19,10 +19,22 @@ from typing import Final, Literal, NamedTuple, Protocol, Self
 from uuid import UUID
 
 import structlog
-from pydantic import BaseModel, ConfigDict, ValidationError, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
 from taskq.backend._protocol import Backend, ErrorInfo, JobId, JobRow, RetryKind
-from taskq.constants import DEFAULT_MAX_RETRY_BACKOFF, MIN_DEFERRAL_INTERVAL
+from taskq.constants import (
+    DEFAULT_MAX_RETRY_BACKOFF,
+    MAX_ATTEMPTS_SMALLINT_CEILING,
+    MAX_ENQUEUABLE_MAX_ATTEMPTS,
+    MIN_DEFERRAL_INTERVAL,
+)
 from taskq.exceptions import (
     PayloadValidationError,
     ResultTooLarge,
@@ -32,9 +44,11 @@ from taskq.exceptions import (
 
 __all__ = [
     "MAX_ATTEMPTS_SMALLINT_CEILING",
+    "MAX_ENQUEUABLE_MAX_ATTEMPTS",
     "ActorConfigLike",
     "Fail",
     "JobRetryState",
+    "OnCancel",
     "OnRetryExhausted",
     "OnSuccess",
     "Retry",
@@ -47,31 +61,12 @@ __all__ = [
     "apply_jitter",
     "compute_backoff",
     "decide_after_failure",
+    "invoke_on_cancel",
     "invoke_on_retry_exhausted",
     "invoke_on_success",
     "safe_mark_failed_or_retry",
     "time_budget_as_interval",
 ]
-
-MAX_ATTEMPTS_SMALLINT_CEILING: Final[int] = 32767
-"""The ``jobs.max_attempts`` column's smallint domain ceiling.
-
-The column is ``smallint`` (migrations/01.00.00_01_pre_initial.sql), so
-32767 is the largest value any row can hold. Shared here because the
-validation below, the in-memory mirror and any future writer must not
-drift on what the ceiling is."""
-
-MAX_ENQUEUABLE_MAX_ATTEMPTS: Final[int] = MAX_ATTEMPTS_SMALLINT_CEILING - 1
-"""Largest ``RetryPolicy.max_attempts`` a fresh policy may carry.
-
-One below the column ceiling, retained as a defensive margin: a row
-parked at exactly 32767 has no headroom for any future statement that
-needs to add one to a max_attempts-derived value, so the policy guard
-refuses the value the way it refuses values past the column entirely
-(:func:`RetryPolicy._validate_max_attempts`). Rows can still legally
-REACH the ceiling — earlier releases' snooze arms parked a snoozed
-32766-job there — which is why :func:`decide_after_failure` clamps
-row-stored values back into this bound before reconstructing a policy."""
 
 
 class RetryPolicy(BaseModel):
@@ -280,12 +275,31 @@ class RetryOverride(BaseModel):
     duration instead of the policy's computed exponential/linear
     backoff, while ``max_retry_backoff`` still applies as a safety
     ceiling so a malicious or malformed header cannot strand a job.
+
+    A ``delay`` moves the next attempt; it does not extend the job's
+    budget in either dimension. The attempt is still spent (use
+    :class:`~taskq.exceptions.RetryAfter` with ``consume_budget=False``
+    for a wait that costs no attempt), and ``schedule_to_close`` is
+    unchanged — an upstream that hands back an hour can push the next
+    attempt past that deadline, where the deadline sweep fails the job
+    terminally before any worker looks at it. The two bounds mean
+    different things: ``max_retry_backoff`` stops one absurd delay,
+    while schedule-to-close states how long the result is still worth
+    having, and the deadline wins.
     """
 
     model_config = ConfigDict(frozen=True)
 
     kind: RetryKind | None = None
-    delay: timedelta | None = None
+    delay: timedelta | None = Field(
+        default=None,
+        description=(
+            "Backoff for this occurrence, replacing the policy's computed curve. "
+            "Delaying the next attempt does not spare the attempt budget — the "
+            "attempt is still spent — and does not extend schedule_to_close. For a "
+            "wait that costs no budget, raise RetryAfter(consume_budget=False)."
+        ),
+    )
 
     @field_validator("delay")
     @classmethod
@@ -459,6 +473,20 @@ that need a typed result re-validate via the actor's
 """
 
 
+type OnCancel = Callable[[JobRow], Awaitable[None] | None]
+"""Hook fired when a job ends cancelled. Receives the terminal ``JobRow``.
+
+No result argument, unlike :data:`OnSuccess`: an actor that abandoned
+its unit of work produced none. The row is the terminal one, so a hook
+reading ``status`` sees ``cancelled``.
+
+The hook fires only for a job that reached a worker and was cancelled
+while running. A job cancelled while still ``pending`` or ``scheduled``
+never enters a worker, so no hook of any kind can run for it — that
+bookkeeping stays with whoever issued the cancel.
+"""
+
+
 class ActorConfigLike(Protocol):
     """Structural shape the adapter needs from the per-actor registration
     record. The eventual concrete ActorConfig class will
@@ -489,6 +517,12 @@ class ActorConfigLike(Protocol):
 
     @property
     def on_success_timeout(self) -> float: ...  # seconds; default 3.0
+
+    @property
+    def on_cancel(self) -> OnCancel | None: ...
+
+    @property
+    def on_cancel_timeout(self) -> float: ...  # seconds; default 3.0
 
 
 def decide_after_failure(
@@ -604,6 +638,65 @@ def decide_after_failure(
     )
 
 
+async def _invoke_hook(
+    call: Callable[[], Awaitable[None] | None],
+    job_row: JobRow,
+    timeout: float,  # noqa: ASYNC109  Why: parameter name matches the hook contracts; asyncio.wait_for requires a timeout value, not asyncio.timeout() context manager
+    *,
+    name: str,
+    log: structlog.stdlib.BoundLogger | None,
+) -> None:
+    """Run one actor-supplied lifecycle hook, best-effort and bounded.
+
+    Every hook in this module shares one contract: user code runs beside
+    a terminal write that has already been decided, so neither a raising
+    hook nor a hanging one may change what the job does. Failures are
+    logged at WARNING under a name-keyed event and never propagate; a
+    hook that returns an awaitable is bounded by *timeout*.
+
+    *call* is a thunk rather than the hook plus its arguments because the
+    argument lists differ per hook and a signature union would erase
+    them; the thunk keeps each caller's types exact.
+    """
+    logger: structlog.stdlib.BoundLogger = (
+        log if log is not None else structlog.get_logger("taskq.retry")
+    )
+
+    try:
+        hook_result = call()
+    except Exception as exc:
+        logger.warning(
+            f"{name.replace('_', '-')}-hook-failed",
+            job_id=str(job_row.id),
+            actor=job_row.actor,
+            hook=name,
+            error=repr(exc),
+        )
+        return
+
+    if hook_result is None or not inspect.isawaitable(hook_result):
+        return
+
+    try:
+        await asyncio.wait_for(hook_result, timeout=timeout)
+    except TimeoutError:
+        logger.warning(
+            f"{name.replace('_', '-')}-hook-timeout",
+            job_id=str(job_row.id),
+            actor=job_row.actor,
+            hook=name,
+            timeout_seconds=timeout,
+        )
+    except Exception as exc:
+        logger.warning(
+            f"{name.replace('_', '-')}-hook-failed",
+            job_id=str(job_row.id),
+            actor=job_row.actor,
+            hook=name,
+            error=repr(exc),
+        )
+
+
 async def invoke_on_retry_exhausted(
     hook: OnRetryExhausted | None,
     job_row: JobRow,
@@ -612,51 +705,16 @@ async def invoke_on_retry_exhausted(
     *,
     log: structlog.stdlib.BoundLogger | None = None,
 ) -> None:
-    """Invoke the on_retry_exhausted hook with timeout guard .
-
-    If the hook is None, returns immediately. If the hook returns a
-    coroutine, wraps the await in asyncio.wait_for with the given
-    timeout. TimeoutError and other exceptions are caught and logged at
-    WARNING; they never propagate to the caller.
-    """
+    """Invoke the on_retry_exhausted hook, best-effort and timeout-bounded."""
     if hook is None:
         return
-
-    logger: structlog.stdlib.BoundLogger = (
-        log if log is not None else structlog.get_logger("taskq.retry")
+    await _invoke_hook(
+        lambda: hook(job_row, exception),
+        job_row,
+        timeout,
+        name="on_retry_exhausted",
+        log=log,
     )
-
-    try:
-        result = hook(job_row, exception)
-    except Exception as exc:
-        logger.warning(
-            "on-retry-exhausted-hook-failed",
-            job_id=str(job_row.id),
-            actor=job_row.actor,
-            hook="on_retry_exhausted",
-            error=repr(exc),
-        )
-        return
-
-    if result is not None and inspect.isawaitable(result):
-        try:
-            await asyncio.wait_for(result, timeout=timeout)
-        except TimeoutError:
-            logger.warning(
-                "on-retry-exhausted-hook-timeout",
-                job_id=str(job_row.id),
-                actor=job_row.actor,
-                hook="on_retry_exhausted",
-                timeout_seconds=timeout,
-            )
-        except Exception as exc:
-            logger.warning(
-                "on-retry-exhausted-hook-failed",
-                job_id=str(job_row.id),
-                actor=job_row.actor,
-                hook="on_retry_exhausted",
-                error=repr(exc),
-            )
 
 
 async def invoke_on_success(
@@ -667,51 +725,36 @@ async def invoke_on_success(
     *,
     log: structlog.stdlib.BoundLogger | None = None,
 ) -> None:
-    """Invoke the on_success hook with timeout guard.
+    """Invoke the on_success hook, best-effort and timeout-bounded."""
+    if hook is None:
+        return
+    await _invoke_hook(
+        lambda: hook(job_row, result),
+        job_row,
+        timeout,
+        name="on_success",
+        log=log,
+    )
 
-    If the hook is None, returns immediately. If the hook returns an
-    awaitable, wraps the await in asyncio.wait_for with the given
-    timeout. TimeoutError and other exceptions are caught and logged at
-    WARNING; they never propagate to the caller.
+
+async def invoke_on_cancel(
+    hook: OnCancel | None,
+    job_row: JobRow,
+    timeout: float,  # noqa: ASYNC109  Why: parameter name matches the on_cancel contract; asyncio.wait_for requires a timeout value, not asyncio.timeout() context manager
+    *,
+    log: structlog.stdlib.BoundLogger | None = None,
+) -> None:
+    """Invoke the on_cancel hook, best-effort and timeout-bounded.
+
+    Runs beside the terminal write that moved the job to ``cancelled``,
+    so it can neither block that write nor undo it: work cut short still
+    has to release whatever it held, and a hook that could raise into
+    this path would leave the row ``running`` behind a lease only the
+    reclaim sweep clears.
     """
     if hook is None:
         return
-
-    logger: structlog.stdlib.BoundLogger = (
-        log if log is not None else structlog.get_logger("taskq.retry")
-    )
-
-    try:
-        hook_result = hook(job_row, result)
-    except Exception as exc:
-        logger.warning(
-            "on-success-hook-failed",
-            job_id=str(job_row.id),
-            actor=job_row.actor,
-            hook="on_success",
-            error=repr(exc),
-        )
-        return
-
-    if hook_result is not None and inspect.isawaitable(hook_result):
-        try:
-            await asyncio.wait_for(hook_result, timeout=timeout)
-        except TimeoutError:
-            logger.warning(
-                "on-success-hook-timeout",
-                job_id=str(job_row.id),
-                actor=job_row.actor,
-                hook="on_success",
-                timeout_seconds=timeout,
-            )
-        except Exception as exc:
-            logger.warning(
-                "on-success-hook-failed",
-                job_id=str(job_row.id),
-                actor=job_row.actor,
-                hook="on_success",
-                error=repr(exc),
-            )
+    await _invoke_hook(lambda: hook(job_row), job_row, timeout, name="on_cancel", log=log)
 
 
 async def safe_mark_failed_or_retry(

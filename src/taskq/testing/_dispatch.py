@@ -4,6 +4,7 @@
 ``self: InMemoryBackend`` as the first parameter.
 """
 
+import secrets
 from collections import defaultdict as _dd
 from dataclasses import replace
 from datetime import timedelta
@@ -11,6 +12,7 @@ from typing import TYPE_CHECKING, Final
 from uuid import UUID
 
 from taskq.backend._protocol import JobRow, QueueMode
+from taskq.constants import SMALLINT_MAX
 from taskq.testing._reads import _read_copy
 
 if TYPE_CHECKING:
@@ -77,6 +79,21 @@ async def _dispatch_batch(
     # "was claimed" marker: dispatch stamps it and no re-pend path on
     # either backend clears it (attempt is NOT a marker — the
     # snooze/refund arms give the claim's increment back).
+    # A fresh ordering of the registered actors per round, mirroring PG's
+    # actor_rotation CTE (backend/_dispatch_sql.py): least-loaded first,
+    # broken by a fresh random draw. Without it the round's cut is a
+    # stable total order over every actor's head job, so the same prefix
+    # of actors wins every round and the rest never run. The key is per
+    # ACTOR, so an actor's own jobs keep their exact priority order; only
+    # which actors win the contested slots rotates.
+    _rotation: dict[str, tuple[int, float]] = {
+        _actor: (
+            running_per_actor.get(_actor, 0),
+            secrets.randbelow(1 << 52) / float(1 << 52),
+        )
+        for _actor in self._actor_configs_meta
+    }
+
     candidates: list[JobRow] = []
     _fairness_rank: dict[UUID, int] = {}
     for _actor, _cfg in self._actor_configs_meta.items():
@@ -209,6 +226,7 @@ async def _dispatch_batch(
             _pending_rank[r.id],
             _fairness_rank[r.id] if _use_round_robin else 0,
             -r.priority,
+            _rotation[r.actor],
             r.scheduled_at,
             r.id,
         ),
@@ -257,7 +275,12 @@ async def _dispatch_batch(
             error_traceback=None,
             result=None,
             result_size_bytes=None,
-            attempt=row.attempt + 1,
+            # Saturating, mirroring PG's LEAST(attempt + 1, ...) clamp:
+            # the attempt column is a smallint there, so an
+            # indefinite-retry job that reaches the ceiling must pin
+            # rather than make the claim statement raise and abort the
+            # whole batch alongside it.
+            attempt=min(row.attempt + 1, SMALLINT_MAX),
         )
         self._jobs[row.id] = updated
         self._append_state_change_event(

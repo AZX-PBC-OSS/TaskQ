@@ -303,20 +303,89 @@ def _log_enqueue_dedup_warn_summary(budget: _DedupWarnBudget, *, dedup_reason: s
     )
 
 
+def _singleton_collision_from_batch(
+    args_list: "list[EnqueueArgs]",
+) -> SingletonCollisionError:
+    """Build the typed singleton refusal for a bulk INSERT's violation.
+
+    The actor is taken from the batch's own singleton items rather than
+    from the violation's detail line, for the same reason in-batch
+    duplicate attribution is structural: the detail renders raw values, is
+    locale-dependent and is truncated. When the batch carries singleton
+    items for exactly one actor that actor IS the offender; with several,
+    the statement aborted whole and the server does not say which came
+    first, so the refusal stays unattributed rather than guessing.
+
+    ``blocking_job_id`` is always unset here: the bulk statement reports a
+    constraint, not the row it conflicted with, and the aborted
+    transaction cannot be queried for it.
+    """
+    singleton_actors = {args.actor for args in args_list if args.metadata.get("singleton") is True}
+    actor = next(iter(singleton_actors)) if len(singleton_actors) == 1 else ""
+    logger.info(
+        "singleton-collision",
+        actor=actor or None,
+        blocking_job_id=None,
+        detection_path="unique_violation_catch",
+    )
+    return SingletonCollisionError(actor=actor, blocking_job_id=None, retry_after=None)
+
+
+def _repeated_pair_in_batch(
+    args_list: "list[EnqueueArgs]",
+) -> tuple[str, str] | None:
+    """The first (scope, key) pair that appears more than once in *args_list*.
+
+    Returns the first repeat in item order, so the candidate offered to
+    attribution is deterministic rather than dependent on which row the
+    server happened to reject.
+    """
+    seen: set[tuple[str, str]] = set()
+    for args in args_list:
+        if args.idempotency_key is None:
+            continue
+        pair = (args.idempotency_scope, str(args.idempotency_key))
+        if pair in seen:
+            return pair
+        seen.add(pair)
+    return None
+
+
 def _attribute_duplicate_pair(
     detail: str | None,
-    candidates: "set[tuple[str, str]]",
+    args_list: "list[EnqueueArgs]",
 ) -> tuple[str | None, str | None]:
-    """Best-effort attribution of a composite-index COPY violation.
+    """Name the (scope, key) pair a composite-index COPY violation rejected.
 
-    Returns the unique candidate pair whose rendered detail equals the
-    server's *detail*, or (None, None) when no candidate matches or the
-    rendering is ambiguous. Callers pass the batch's own (scope, key)
-    candidate set -- the violating pair is always among the batch's items
-    (an in-batch duplicate or an item raced against a stored row).
+    The single site that decides attribution for this path, so no caller
+    can report a pair the evidence does not support.
+
+    A pair the batch repeats is named outright: two items carrying the
+    same (scope, key) cannot both be written, and which pair repeats is a
+    fact about the caller's list rather than about what the server chose
+    to say afterwards. That answer survives a detail the text alone could
+    not settle — and those are exactly the batches an operator most needs
+    named, because Postgres renders the colliding values raw and unquoted
+    (a comma-bearing scope makes ``(a, b, c)`` read as both ``("a, b",
+    "c")`` and ``("a", "b, c")``), localizes the text and truncates it.
+
+    Failing that, the collision was against a row committed earlier, which
+    the batch alone cannot identify, and the detail is the only evidence
+    left. Each of the batch's own candidates is rendered into the server's
+    format and compared rather than the detail being parsed, so a
+    comma-space scope stays attributable; anything but exactly one match
+    yields (None, None), leaving the error typed but unattributed.
     """
+    repeated = _repeated_pair_in_batch(args_list)
+    if repeated is not None:
+        return repeated
     if not detail:
         return (None, None)
+    candidates = {
+        (args.idempotency_scope, str(args.idempotency_key))
+        for args in args_list
+        if args.idempotency_key is not None
+    }
     matches = [
         (scope, key)
         for scope, key in candidates
@@ -1335,6 +1404,22 @@ async def _enqueue_batch(
                     batch_size=len(admitted_args),
                 )
                 raise _LegacyIdempotencyKeyConflictError(detail=str(exc), original=exc) from exc
+            if exc.constraint_name == _SINGLETON_CONSTRAINT_NAME:
+                # Same typed refusal the single-enqueue path gives for the
+                # same constraint: a singleton collision is a refusal the
+                # caller catches and continues from, not a driver fault,
+                # and leaking the raw violation here made the entry point
+                # chosen decide the exception type for identical input.
+                # The statement is one INSERT over the whole admitted
+                # batch, so it aborts whole and nothing is written.
+                #
+                # The actor comes from the batch's own items, not from
+                # parsing the violation's detail line: the detail names
+                # column values, is locale- and version-dependent, and is
+                # truncated on long values — while exactly one actor in
+                # this batch can be the offender, which makes the
+                # attribution structural and deterministic.
+                raise _singleton_collision_from_batch(admitted_args) from exc
             raise
 
         inserted_ids: set[UUID] = {rec["id"] for rec in returning_recs}
@@ -1688,24 +1773,14 @@ async def _enqueue_batch_fast(
                 # dedupes and RETURNS the existing row -- so there was
                 # no typed error to reuse; DuplicateIdempotencyKeyError
                 # is this path's own, a typed domain error for a
-                # dedup-constraint violation. The offending pair is attributed by
-                # MATCHING the detail against the batch's own candidates
-                # (see _attribute_duplicate_pair): named exactly when the
-                # rendering is unambiguous -- including comma-bearing
-                # scopes, which a positional parse mis-reads --
-                # and unattributed-but-typed on ambiguity (two distinct
-                # pairs rendering to the same detail text) or on a
-                # localized/truncated detail. During the 01.00.03 rolling
-                # window a same-pair duplicate may instead be reported
-                # against the legacy index, which the branch above
-                # already converts -- that carve-out is pre-existing
+                # dedup-constraint violation. Naming the offending pair is
+                # _attribute_duplicate_pair's sole responsibility; it stays
+                # unattributed-but-typed rather than guess. During the
+                # 01.00.03 rolling window a same-pair duplicate may instead
+                # be reported against the legacy index, which the branch
+                # above already converts -- that carve-out is pre-existing
                 # documented behavior for this path, unchanged here.
-                batch_candidates = {
-                    (args.idempotency_scope, str(args.idempotency_key))
-                    for args in args_list
-                    if args.idempotency_key is not None
-                }
-                dup_scope, dup_key = _attribute_duplicate_pair(exc.detail, batch_candidates)
+                dup_scope, dup_key = _attribute_duplicate_pair(exc.detail, args_list)
                 logger.info(
                     "batch-fast-duplicate-idempotency-key",
                     batch_size=len(args_list),

@@ -340,9 +340,17 @@ constant at import time, the same pattern `PostgresBackend` and
 `InMemoryBackend` use (`_EXPECTED_PROTOCOL_VERSION` + `RuntimeError`), so a
 contract bump fails fast instead of drifting silently.
 
-`retry_job` resets a terminal job (`failed`, `crashed`, or `cancelled`) back to
-`pending` so it can be re-dispatched. Returns `True` if the job was retried,
-`False` if it was not in a retryable state. The admin UI exposes this via the
+`retry_job` puts a job that has come to rest back to `pending` so it can be
+re-dispatched. An operator re-run is "run this again", so every resting state
+is a valid source — including `succeeded` (the status records that the actor
+returned without raising, never that the result was right, so this is the
+replay path after a bad deploy) and `abandoned` (a deploy interrupted the job;
+it did not fail). Only `running` (a live attempt owns the row, and re-pending
+it would race that attempt's terminal write) and `pending`/`scheduled` (already
+queued — there is nothing to put back) are refused. The spent `attempt` is
+kept and `max_attempts` is raised to fund the re-run, so the job's audit
+history stays intact. Returns `True` if the job was retried, `False` if it was
+not in a valid source state. The admin UI exposes this via the
 `POST /jobs/{job_id}/retry` endpoint.
 
 `subscribe_cancel_wake` is the cancel-signal analogue of `subscribe_wake`: it
@@ -860,25 +868,51 @@ Source: `src/taskq/worker/leader.py`.
 
 ### Mechanism
 
-Leader election uses a PostgreSQL session-level advisory lock
-(`pg_try_advisory_lock`) on a schema-qualified name
-(`taskq:maintenance_leader:<schema>`, built by
-`taskq.constants.schema_lock_name`). The
-lock is acquired over `deps.leader_conn` — a dedicated, non-pooled connection.
+Leadership is the `maintenance_leader` row. A pod holds the role while the
+row names its `worker_id` and the `expires_at` on it is in the future; the
+pair `(worker_id, elected_at)` fences every later statement of that term.
+All of it is written over `deps.leader_conn` — a dedicated, non-pooled
+connection.
 
-On each heartbeat tick, each pod calls `pg_try_advisory_lock`:
-- If acquired: upserts `maintenance_leader` table row, sets `deps.is_leader` event.
-- If not acquired: waits; retries on next tick.
+On each heartbeat tick:
+- **A follower** runs one claim statement. It takes the row when no live
+  holder has it, and comes back empty otherwise. Empty is the ordinary
+  follower answer, not an error.
+- **The holder** renews, extending `expires_at` by `leader_lease` from the
+  server's clock. A renewal that matches no row means the term is over — a
+  peer has the role, or the horizon lapsed — and the pod stands down.
+- **A leaving pod** resigns, deleting its own row under the term fence, so a
+  successor takes the role on its next cycle rather than after a lease
+  nobody is renewing.
 
-The `maintenance_leader` table is queryable for observability and the admin UI, but
-the advisory lock is the authoritative source of truth for election.
+Why a row and not the session: an advisory lock is released when the server
+decides a session has ended, which for a holder that stops working without
+closing its connection is a horizon measured in hours, and one no deployment
+setting bounds. A horizon the holder writes is bounded by `leader_lease`,
+and displacing a lapsed holder needs no privilege beyond the `UPDATE` on
+that row every worker already has.
+
+Split brain is prevented locally rather than by asking the server. A leader
+trusts its term only until `attempt_started + leader_lease - 1s` on its own
+monotonic clock, and every leader-gated loop consults `deps.leading()` per
+iteration; a peer may not take the row until the server's `expires_at`,
+which was stamped at or after that same `attempt_started` plus a full lease.
+The two windows cannot meet.
+
+The advisory lock survives as a handover courtesy. A new-release leader takes
+it so a pod from the release that predates the horizon cannot elect
+alongside; holding it also proves no session holds it, which is what lets a
+survivor displace a holder whose process is provably gone without waiting out
+a horizon that will never move again. It is never required and never waited
+on.
 
 ### What the leader does
 
 `MaintenanceLeader` runs eleven cooperative loops in a `TaskGroup`:
 
-1. **Election loop** — acquires and renews the advisory lock.
-2. **Watchdog** — detects stale lock state; refreshes `last_seen_at`.
+1. **Election loop** — claims the role, and renews it every heartbeat.
+2. **Watchdog** — probes a second dedicated connection so a partition is
+   detected faster than the lease alone would notice it.
 3. **Scheduled-wake (Sweep 3)** — promotes `scheduled` → `pending` when
    `scheduled_at <= statement_timestamp()` (a STABLE bound, so
    `jobs_scheduled_wake_idx` serves it as an index condition). Sends
@@ -1005,9 +1039,16 @@ begins, so health endpoints and consumers can observe the current phase:
 | `DRAINING` | 1 | Stop accepting new dispatch; re-pend locked-but-unstarted jobs |
 | `CANCELLING` | 2 | Cooperative cancel of remaining in-flight jobs (set `cancel_event`) |
 | `FORCING` | 3 | Force-cancel grace: `task.cancel()` + `write_cancel_escalation(phase=2)` |
-| `ABANDONING` | 4 | Pod must be replaced; `mark_abandoned` for any remaining jobs |
+| `RELEASING` | 4 | `mark_interrupted` for anything still in flight — re-pended, attempt refunded; `mark_abandoned` only for jobs an operator cancelled |
 
-Phase ordering invariant: `NONE → DRAINING → CANCELLING → FORCING → ABANDONING`.
+Phase ordering invariant: `NONE → DRAINING → CANCELLING → FORCING → RELEASING`.
+
+A shutdown never decides a job's terminal state. "This process is leaving"
+says nothing about whether the job can succeed, so interrupted work is
+released back to the fleet with its claim's attempt increment refunded and
+`interrupt_count` bumped. Only an operator cancel — a decision about the
+job itself — keeps the ladder that ends in `abandoned`. The phase integer
+is unchanged from the release where value 4 was named `ABANDONING`.
 
 ### Signal handling
 

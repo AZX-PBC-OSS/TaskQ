@@ -52,6 +52,7 @@ return contract.
 from __future__ import annotations
 
 import math
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Final
 from uuid import UUID
@@ -157,6 +158,14 @@ SELECT actor, max_concurrent, max_pending, queue, result_ttl,
  WHERE actor = $1
 """.strip()
 
+_SELECT_ACTOR_CONFIGS_SQL = """
+SELECT actor, max_concurrent, max_pending, queue, result_ttl,
+       metadata::text AS metadata, updated_at::text AS updated_at
+  FROM "{schema}".actor_config
+ WHERE actor = ANY($1::text[])
+ ORDER BY actor
+""".strip()
+
 # Each capacity column is only overwritten when its paired boolean
 # "touch" flag is true; otherwise the CASE expression preserves the
 # current value. This lets one statement express "set to N", "clear to
@@ -190,6 +199,23 @@ async def list_actor_configs(conn: ConnLike, *, schema: str = "taskq") -> list[A
     if not _IDENT_RE.match(schema):
         raise ValueError(f"invalid schema identifier: {schema!r}")
     rows = await conn.fetch(_LIST_ACTOR_CONFIG_SQL.format(schema=schema))
+    return [_row_to_dataclass(row) for row in rows]
+
+
+async def select_actor_configs(
+    conn: ConnLike, actors: Sequence[str], *, schema: str = "taskq"
+) -> list[ActorConfigRow]:
+    """Return the stored rows for *actors*, ordered by actor name.
+
+    Bounded by the caller's own list rather than reading the whole table:
+    a worker resolves capacity only for the actors it registered, and the
+    stored population is fleet-wide.
+    """
+    if not _IDENT_RE.match(schema):
+        raise ValueError(f"invalid schema identifier: {schema!r}")
+    if not actors:
+        return []
+    rows = await conn.fetch(_SELECT_ACTOR_CONFIGS_SQL.format(schema=schema), list(actors))
     return [_row_to_dataclass(row) for row in rows]
 
 
@@ -384,6 +410,18 @@ _MOVE_COUNT_RUNNING_SQL = """
 SELECT count(*) FROM "{schema}".jobs WHERE actor = $1 AND status = 'running'
 """.strip()
 
+# Measured AFTER the flip: the drain moves every row it can see at batch
+# time, but a stale producer can land a fresh row on the source queue in
+# the window between the drain's last batch and this count (or, by
+# deliberate design, after the flip entirely). The operator's "when can I
+# stop consuming the source queue" decision needs this exact residual, not
+# the drain's own moved-count, which only ever reports what THIS call
+# already rewrote.
+_MOVE_COUNT_PENDING_ON_OLD_QUEUE_SQL = """
+SELECT count(*) FROM "{schema}".jobs
+ WHERE actor = $1 AND queue = $2 AND status IN ('pending', 'scheduled')
+""".strip()
+
 # Keyed single row by the table's primary key.
 _MOVE_SET_ASSIGNMENT_SQL = """
 UPDATE "{schema}".actor_config
@@ -424,6 +462,12 @@ class ActorQueueMoveResult:
     jobs_moved: int
     running_jobs_left: int
     queues_row_carried: bool
+    #: Pending/scheduled rows still carrying ``from_queue``'s label,
+    #: counted after the flip. The drain does not chase every row (a
+    #: stale producer keeps landing strays on the source queue), so this
+    #: is the operator's only supported way to know when the source
+    #: queue's consumers can safely stop.
+    pending_jobs_on_old_queue: int = 0
 
 
 async def move_actor_queue(
@@ -601,6 +645,15 @@ async def move_actor_queue(
                 actor,
                 new_queue,
             )
+
+            # After the flip, so a stray landed on the source queue during
+            # the drain window is already counted in the residual an
+            # operator plans against.
+            pending_on_old_queue = await conn.fetchval(
+                _MOVE_COUNT_PENDING_ON_OLD_QUEUE_SQL.format(schema=schema),
+                actor,
+                from_queue,
+            )
     except Exception as exc:
         # Log-then-reraise, never swallow: the count names writes that are
         # already committed and that the raised exception cannot carry.
@@ -624,6 +677,7 @@ async def move_actor_queue(
         jobs_moved=jobs_moved,
         running_jobs_left=int(running_left or 0),
         queues_row_carried=queues_row_carried,
+        pending_jobs_on_old_queue=int(pending_on_old_queue or 0),
     )
 
 

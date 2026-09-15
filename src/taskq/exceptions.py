@@ -104,6 +104,12 @@ class SingletonCollisionError(BackpressureError):
         super().__init__(actor)
 
 
+_MAX_PENDING_EXCEEDED_HINT = (
+    "This is backpressure, not a failure: raise Snooze(delay) instead of "
+    "letting it reach the retry classifier and spend the actor's retry budget."
+)
+
+
 class MaxPendingExceededError(BackpressureError):
     """Raised when an actor's max_pending queue-depth limit is reached.
 
@@ -112,6 +118,8 @@ class MaxPendingExceededError(BackpressureError):
     The caller decides whether to retry, fail, or wait; the library does
     not block on capacity.
     """
+
+    hint = _MAX_PENDING_EXCEEDED_HINT
 
     def __init__(self, actor: str, current_count: int, max_pending: int) -> None:
         self.current_count = current_count
@@ -768,9 +776,10 @@ class SchemaNotMigratedError(TaskQError):
     def __init__(self, schema: str) -> None:
         self.schema = schema
         super().__init__(
-            f"TaskQ schema {schema!r} is missing or not migrated. "  # noqa: S608  # Why: human-readable error message, not a SQL query; ruff's SQL-injection heuristic false-positives on the word "schema" near f-string interpolation.
-            f"Run `taskq migrate up` to create/update it, or set "
-            f"TASKQ_MIGRATE_ON_START=true to migrate automatically at worker startup."
+            f"TaskQ schema {schema!r} is missing or not migrated. "  # Why: human-readable error message, not a SQL query; ruff's SQL-injection heuristic false-positives on the word "schema" near f-string interpolation.
+            f"Run `taskq migrate up` to create/update it. "
+            f"TASKQ_MIGRATE_ON_START is consumed only by `taskq ui serve`; "
+            f"the worker ignores it and will not auto-migrate."
         )
 
 

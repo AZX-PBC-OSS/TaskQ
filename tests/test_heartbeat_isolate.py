@@ -5,6 +5,10 @@ import asyncio
 import pytest
 
 from taskq._ids import new_uuid
+from taskq.backend._sweeps import (  # pyright: ignore[reportPrivateUsage]  # Why: the disposition shape under test IS the sweep's shared fragments; asserting a transcription of them would let the two drift.
+    _RECLAIM_DELAY_SQL,
+    _RECLAIM_HAS_BUDGET_SQL,
+)
 from taskq.settings import WorkerSettings
 from taskq.worker.deps import WorkerDeps
 from taskq.worker.heartbeat import isolate_self
@@ -244,11 +248,15 @@ async def test_isolate_self_honours_fr12_case_shape() -> None:
         shutdown = asyncio.Event()
         await isolate_self(deps, new_uuid(), shutdown)
         assert runner is not None
-        assert "attempt < max_attempts AND retry_kind != 'non_retryable'" in runner
-        assert "clock_timestamp() + interval '5 seconds'" in runner
-        assert "NOT (attempt < max_attempts AND retry_kind != 'non_retryable')" in runner
-        assert "WHERE id = $1" in runner
-        assert "locked_by_worker = $2" in runner
+        # Isolate and the reclaim sweep dispose of a job identically, so
+        # the shape asserted here is the sweep's own shared fragments —
+        # the budget question and the jittered hand-back delay — rather
+        # than a second transcription of them that could drift.
+        assert _RECLAIM_HAS_BUDGET_SQL in runner
+        assert f"clock_timestamp() + {_RECLAIM_DELAY_SQL}" in runner
+        assert f"NOT ({_RECLAIM_HAS_BUDGET_SQL})" in runner
+        assert "WHERE j.id = $1" in runner
+        assert "j.locked_by_worker = $2" in runner
     finally:
         apg.connect = orig_connect  # type: ignore[method-assign]
 

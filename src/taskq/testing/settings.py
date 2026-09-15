@@ -73,6 +73,12 @@ def make_integration_settings_dict(pg_dsn: str, **overrides: str) -> dict[str, s
 _CHAOS_DEFAULTS = {
     "heartbeat_interval": 1.0,
     "lock_lease": 4.0,
+    # The maintenance role's lease moves with the heartbeat for the same
+    # reason the job lease does: a chaos test that kills a leader is waiting
+    # out this horizon before a survivor may take over, and at production
+    # timings that wait is longer than any such test should run. Kept at the
+    # same four-beat slack the validated invariant requires.
+    "leader_lease": 4.0,
     # Kept alongside the shortened lease so the pair stays inside the
     # lag-lease invariant (1.2 + 1.0 < 4.0) even when applied to settings
     # loaded from elsewhere.

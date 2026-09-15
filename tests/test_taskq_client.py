@@ -438,9 +438,7 @@ class TestEnqueue:
                 async with TaskQ(dsn=pg_dsn, schema=_SCHEMA_LABEL) as tq:
                     with pytest.raises(IdempotencyKeyLockTimeoutError) as excinfo:
                         await asyncio.wait_for(
-                            tq.enqueue(
-                                _test_actor, _Payload(value=1), idempotency_key=key
-                            ),
+                            tq.enqueue(_test_actor, _Payload(value=1), idempotency_key=key),
                             timeout=20.0,
                         )
                 assert "idempotency_key" in repr(excinfo.value), (

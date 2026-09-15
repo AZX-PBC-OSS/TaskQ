@@ -58,6 +58,7 @@ from taskq.obs import (
     log_state_change,
     record_ratelimit_acquire_dependency_failure,
     record_sub_enqueue_failure,
+    record_terminal_write_fenced_out,
     safe_start_span,
 )
 from taskq.progress._buffer import (
@@ -75,6 +76,7 @@ from taskq.ratelimit.sliding_window import SlidingWindow
 from taskq.ratelimit.token_bucket import TokenBucket
 from taskq.retry import (
     ActorConfigLike,
+    invoke_on_cancel,
     invoke_on_success,
 )
 from taskq.settings import WorkerSettings
@@ -85,8 +87,9 @@ from taskq.worker._handlers import (
     _handle_reservation_class_denied,
     _log_terminal_write_failed,
     _TerminalWriteFailed,
+    _TerminalWriteFencedOut,
 )
-from taskq.worker.cancel import ActiveJobRegistry
+from taskq.worker.cancel import ActiveJobRegistry, CancelOrigin
 from taskq.worker.deps import POOL_INFRA_EXCEPTIONS, WorkerDeps
 
 if TYPE_CHECKING:
@@ -95,6 +98,63 @@ if TYPE_CHECKING:
 _log: structlog.stdlib.BoundLogger = get_logger(__name__)
 
 _OK = object()
+
+
+async def _fenced(write: Awaitable[bool], *, name: str, job: JobRow) -> None:
+    """Issue a fenced terminal write and refuse to continue if it no-ops.
+
+    Every terminal write in this module goes through here. The shield is
+    the one the terminal writes have always carried — shutdown races the
+    write, so a detached write's outcome must be retrieved rather than
+    dropped (see :mod:`taskq._shield`) — and the outcome is then read
+    exactly once, here, instead of at each call site.
+
+    Returning nothing is the point. A helper handing the boolean back
+    would leave every caller free to ignore it again, which is the defect
+    this exists to remove; a write that matched no row leaves through
+    :class:`_TerminalWriteFencedOut`, so a caller cannot reach the code
+    after a fenced write without handling the rejection. The broken form
+    — read the outcome, carry on regardless — is not expressible.
+    """
+    if await shield_with_retrieval(write):
+        return
+    _log.warning(
+        "terminal-write-fenced-out",
+        kind="terminal_write_fenced_out",
+        write=name,
+        job_id=str(job.id),
+        actor=job.actor,
+        attempt=job.attempt,
+    )
+    record_terminal_write_fenced_out(job.actor, name)
+    raise _TerminalWriteFencedOut(name)
+
+
+async def _rollback_actor_savepoint(
+    transaction_conn: ConnLike,
+    job: JobRow,
+    log: structlog.stdlib.BoundLogger,
+) -> None:
+    """Undo the actor's writes without losing the enclosing transaction.
+
+    The savepoint brackets the actor body alone, so rolling back to it
+    discards what the actor wrote while leaving the transaction usable
+    for the caller's own bookkeeping. A rollback that itself fails is
+    logged and swallowed: the enclosing ``transaction()`` context aborts
+    everything on its way out, which is the same outcome by a blunter
+    route, and raising here would replace the reason the caller is
+    unwinding with a secondary error.
+    """
+    try:
+        await transaction_conn.execute("ROLLBACK TO SAVEPOINT _tq_actor")
+    except Exception as exc:
+        log.warning(
+            "savepoint_rollback_failed",
+            kind="savepoint_rollback_failed",
+            job_id=str(job.id),
+            error_class=type(exc).__name__,
+            error_message=str(exc),
+        )
 
 
 def _rate_limit_dependency_exceptions() -> tuple[type[BaseException], ...]:
@@ -669,6 +729,15 @@ async def consume_one_job(
                     log_state_change(ctx.log, from_state="running", to_state="succeeded")
                     return "succeeded"
 
+        except _TerminalWriteFencedOut:
+            # The write matched no row: the job is pending or running
+            # under a later attempt and this dispatch terminated nothing.
+            # No success event, no state-change log, no terminal publish
+            # — reporting any of them would tell the caller and the
+            # operator that an attempt which lost the row completed the
+            # job. "noop" is the value batch policy already ignores.
+            return "noop"
+
         except asyncio.CancelledError:
             if _completion is _OK:
                 raise
@@ -678,6 +747,48 @@ async def consume_one_job(
                 entry = active_jobs.get(job.id)
                 if entry is not None and entry.cancel_phase >= CancelPhase.ABANDON_PENDING:
                     raise
+                if entry is not None and entry.cancel_origin is CancelOrigin.SHUTDOWN:
+                    # This process is going away; nothing about that says
+                    # the job cannot succeed. Release it rather than
+                    # terminalise it, with the claim's attempt refunded.
+                    # Hold zero: the actor has just exited here, so the
+                    # row is genuinely free for the next claimer.
+                    _interrupt_buf = (
+                        _progress_buffers.pop(job.id, None)
+                        if _progress_buffers is not None
+                        else None
+                    )
+                    _int_seq, _int_state = _terminal_seq_and_state(_interrupt_buf)
+                    interrupt_outcome = await shield_with_retrieval(
+                        backend.mark_interrupted(
+                            job.id,
+                            worker_id,
+                            attempt=job.attempt,
+                            hold=timedelta(0),
+                            progress_seq=_int_seq,
+                            progress_state=_int_state
+                            if _interrupt_buf is not None and _interrupt_buf.dirty
+                            else None,
+                        )
+                    )
+                    if interrupt_outcome != "noop":
+                        consumer_span.add_event(
+                            "lifecycle.interrupted",
+                            attributes={
+                                "from_state": "running",
+                                "to_state": interrupt_outcome,
+                            },
+                        )
+                        log_state_change(
+                            ctx.log,
+                            from_state="running",
+                            to_state=interrupt_outcome,
+                            reason="interrupted",
+                        )
+                        raise
+                    # "noop": an operator cancel reached the row first and
+                    # outranks the deploy. Fall through to the cancel
+                    # write, which is now the truthful outcome.
             consumer_span.add_event(
                 "lifecycle.cancelled",
                 attributes={"from_state": "running", "to_state": "cancelled"},
@@ -687,18 +798,19 @@ async def consume_one_job(
                 _progress_buffers.pop(job.id, None) if _progress_buffers is not None else None
             )
             _cancel_seq, _cancel_state = _terminal_seq_and_state(_cancel_buf)
+            _cancel_landed = False
+            cancel_write = backend.mark_cancelled(
+                job.id,
+                worker_id,
+                progress_seq=_cancel_seq,
+                progress_state=_cancel_state
+                if _cancel_buf is not None and _cancel_buf.dirty
+                else None,
+                attempt=job.attempt,
+            )
             try:
-                await shield_with_retrieval(
-                    backend.mark_cancelled(
-                        job.id,
-                        worker_id,
-                        progress_seq=_cancel_seq,
-                        progress_state=_cancel_state
-                        if _cancel_buf is not None and _cancel_buf.dirty
-                        else None,
-                        attempt=job.attempt,
-                    )
-                )
+                await _fenced(cancel_write, name="mark_cancelled", job=job)
+                _cancel_landed = True
             except _TERMINAL_WRITE_INFRA_EXCEPTIONS as infra_exc:
                 # Why: the terminal write is best-effort on this path — the
                 # row stays 'running' and lock-lease expiry reclaims it
@@ -707,18 +819,35 @@ async def consume_one_job(
                 # infra error into generic job-failure handling eats a
                 # TaskGroup cancellation and hangs __aexit__ forever.
                 _log_terminal_write_failed(_log, job, None, infra_exc)
-            if _effective_redis is not None and _effective_settings is not None:
-                await _publish_state_change_event(
-                    _effective_redis,
-                    _effective_settings,
-                    job.id,
-                    job.actor,
-                    None,
-                    status="cancelled",
-                    terminal=True,
-                    _override_seq=_cancel_seq,
-                    _override_pending_state=_cancel_state,
+            except _TerminalWriteFencedOut:
+                # The row is already running elsewhere under a later
+                # attempt. Announcing it cancelled would terminalise, for
+                # every listener, a job that is at that moment executing.
+                # The CancelledError still propagates: this attempt was
+                # cancelled even though it moved nothing.
+                pass
+            if _cancel_landed:
+                # Best-effort, bounded, and deliberately after the write:
+                # a hook that hangs or raises must not be able to leave
+                # the row 'running' behind a lease only the sweep clears.
+                await invoke_on_cancel(
+                    actor_config.on_cancel,
+                    job,
+                    actor_config.on_cancel_timeout,
+                    log=job_log,
                 )
+                if _effective_redis is not None and _effective_settings is not None:
+                    await _publish_state_change_event(
+                        _effective_redis,
+                        _effective_settings,
+                        job.id,
+                        job.actor,
+                        None,
+                        status="cancelled",
+                        terminal=True,
+                        _override_seq=_cancel_seq,
+                        _override_pending_state=_cancel_state,
+                    )
             raise
 
         except _TerminalWriteFailed:
@@ -883,10 +1012,11 @@ async def _consume_transactional(
                 # sits between the actor's return and this assignment, so
                 # the two windows cannot blur.
                 actor_finished = True
-                if active_jobs is not None:
-                    entry = active_jobs.get(job.id)
-                    if entry is not None and entry.cancel_phase >= CancelPhase.COOPERATIVE:
-                        raise asyncio.CancelledError()
+                # No cancel branch after the actor returned: a cancel
+                # request is a request, and this actor answered it by
+                # completing and handing back a value. Its writes and its
+                # result are one unit and commit together. Abandonment is
+                # signalled by raising, not by returning.
                 if (
                     progress_buffers is not None
                     and worker_pool is not None
@@ -905,35 +1035,36 @@ async def _consume_transactional(
                     result,
                     settings.result_max_bytes if settings is not None else MAX_RESULT_BYTES,
                 )
+                tx_success_write = backend.mark_succeeded_with_conn(
+                    transaction_conn,
+                    job.id,
+                    worker_id,
+                    result_bytes=result_bytes,
+                    progress_seq=_pseq,
+                    progress_state=_pstate,
+                    fallback_result_ttl=fallback_result_ttl,
+                    attempt=job.attempt,
+                )
                 try:
-                    await backend.mark_succeeded_with_conn(
-                        transaction_conn,
-                        job.id,
-                        worker_id,
-                        result_bytes=result_bytes,
-                        progress_seq=_pseq,
-                        progress_state=_pstate,
-                        fallback_result_ttl=fallback_result_ttl,
-                        attempt=job.attempt,
-                    )
+                    await _fenced(tx_success_write, name="mark_succeeded_with_conn", job=job)
                 except _TERMINAL_WRITE_INFRA_EXCEPTIONS as infra_exc:
                     _log_terminal_write_failed(log, job, None, infra_exc)
                     raise _TerminalWriteFailed(infra_exc) from infra_exc
+                except _TerminalWriteFencedOut:
+                    # The row moved on under a later attempt, so the
+                    # guarantee this path sells — the actor's writes and
+                    # the job's transition commit together — can only be
+                    # honoured by committing neither. Releasing anyway
+                    # would let a stale attempt's side effects become
+                    # durable for a job that is running elsewhere.
+                    await _rollback_actor_savepoint(transaction_conn, job, log)
+                    raise
                 if _pbuf is not None:
                     _pbuf.dirty = False
                 await transaction_conn.execute("RELEASE SAVEPOINT _tq_actor")
             except (Snooze, RetryAfter) as exc:
                 _preserved_exc = exc
-                try:
-                    await transaction_conn.execute("ROLLBACK TO SAVEPOINT _tq_actor")
-                except Exception as exc:
-                    log.warning(
-                        "savepoint_rollback_failed",
-                        kind="savepoint_rollback_failed",
-                        job_id=str(job.id),
-                        error_class=type(exc).__name__,
-                        error_message=str(exc),
-                    )
+                await _rollback_actor_savepoint(transaction_conn, job, log)
                 _re_enqueue_list = enqueuer.drain_for_re_enqueue()
 
         if _preserved_exc is not None:
@@ -1026,6 +1157,13 @@ async def _consume_transactional(
                 _override_pending_state=_tx_pstate,
             )
         return "succeeded"
+    except _TerminalWriteFencedOut:
+        # The actor's writes were already rolled back to the savepoint.
+        # "noop" is the outcome batch policy ignores: nothing about this
+        # job is this dispatch's to move, so no counter budges and no
+        # completion attempt fires. on_success and the terminal publish
+        # are skipped by not reaching them.
+        return "noop"
     except asyncio.CancelledError:
         # Why: asyncio.shield decouples outer cancellation from the
         # inner task. If the inner task already completed successfully
@@ -1115,41 +1253,15 @@ async def _consume_autonomous(
         worker_pool if worker_pool is not None else (deps.worker_pool if deps is not None else None)
     )
 
+    # A cancel request arriving while the actor ran does not decide the
+    # terminal state; the actor's own outcome does. This one returned a
+    # value, so it completed its unit of work — the guide teaches exactly
+    # that wind-down shape (observe the request, clean up, return what
+    # you computed), and writing it as cancelled would discard a result
+    # the worker is holding for a job nothing re-runs. An actor that
+    # abandons its work says so by raising, which the CancelledError
+    # handler in consume_one_job routes to the cancel write.
     result = await asyncio.wait_for(run_actor(job, ctx), timeout=timeout)
-
-    if active_jobs is not None:
-        entry = active_jobs.get(job.id)
-        if entry is not None and entry.cancel_phase >= CancelPhase.COOPERATIVE:
-            _cancel_buf = (
-                progress_buffers.pop(job.id, None) if progress_buffers is not None else None
-            )
-            _cancel_seq, _cancel_state = _terminal_seq_and_state(_cancel_buf)
-            await shield_with_retrieval(
-                backend.mark_cancelled(
-                    job.id,
-                    worker_id,
-                    progress_seq=_cancel_seq,
-                    progress_state=_cancel_state
-                    if _cancel_buf is not None and _cancel_buf.dirty
-                    else None,
-                    attempt=job.attempt,
-                )
-            )
-            if _cancel_buf is not None:
-                _cancel_buf.dirty = False
-            if _auto_redis is not None and _auto_settings is not None:
-                await _publish_state_change_event(
-                    _auto_redis,
-                    _auto_settings,
-                    job.id,
-                    job.actor,
-                    None,
-                    status="cancelled",
-                    terminal=True,
-                    _override_seq=_cancel_seq,
-                    _override_pending_state=_cancel_state,
-                )
-            return
 
     if progress_buffers is not None and _auto_pool is not None and _auto_settings is not None:
         await shield_with_retrieval(
@@ -1171,18 +1283,17 @@ async def _consume_autonomous(
         result,
         _auto_settings.result_max_bytes if _auto_settings is not None else MAX_RESULT_BYTES,
     )
+    success_write = backend.mark_succeeded(
+        job.id,
+        worker_id,
+        result_bytes=result_bytes,
+        progress_seq=_pseq,
+        progress_state=_pstate,
+        fallback_result_ttl=fallback_result_ttl,
+        attempt=job.attempt,
+    )
     try:
-        await shield_with_retrieval(
-            backend.mark_succeeded(
-                job.id,
-                worker_id,
-                result_bytes=result_bytes,
-                progress_seq=_pseq,
-                progress_state=_pstate,
-                fallback_result_ttl=fallback_result_ttl,
-                attempt=job.attempt,
-            )
-        )
+        await _fenced(success_write, name="mark_succeeded", job=job)
     except _TERMINAL_WRITE_INFRA_EXCEPTIONS as infra_exc:
         _log_terminal_write_failed(log, job, None, infra_exc)
         raise _TerminalWriteFailed(infra_exc) from infra_exc

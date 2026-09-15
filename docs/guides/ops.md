@@ -138,7 +138,11 @@ async def reindex_bucket(payload: Payload) -> None: ...
   by the leader's sweep even while its lease — the global `TASKQ_LOCK_LEASE`
   (default 60 s) — is still valid: the shorter of the two deadlines governs. Size it
   `>= 2x` the fleet's `TASKQ_HEARTBEAT_INTERVAL`; a value below one heartbeat
-  interval reclaims a healthy job on a single missed beat. The same rule names the
+  interval reclaims a healthy job on a single missed beat. `2x` is enough to
+  absorb one transient beat because the heartbeat loop anchors its wait to each
+  tick's start rather than its end: a slow or failed tick does not push the next
+  beat out by its own duration, so the gap after one miss is one interval, not
+  two. The same rule names the
   upper-bound trap: a `heartbeat_timeout` at or above `TASKQ_LOCK_LEASE` never
   governs — the lease deadline (last beat + lease) always precedes the heartbeat
   deadline (last beat + timeout), so the lease arm reclaims first and the per-job
@@ -205,7 +209,9 @@ taskq actor-config set my_actor --max-concurrent 10
 
 The exception: **`max_pending`** — a NULL stored value falls back to the code literal, so its
 declarations work on deploy. (`max_pending` rejects enqueues past the queued depth with
-`MaxPendingExceededError`, surfaced as `taskq.backpressure.errors`.)
+`MaxPendingExceededError`, surfaced as `taskq.backpressure.errors` with `kind="max_pending"` — the
+counter also fires for identity-lock timeouts under other `kind` values, so filter on `kind` rather
+than alerting on the raw total.)
 
 Two viable ownership postures — pick one deliberately:
 
@@ -761,8 +767,11 @@ Two more states worth naming because they mean *infrastructure*, not your code:
 - **`crashed`** — the worker died (or lost its heartbeat) mid-attempt with the retry budget
   exhausted. Crash labels are `WorkerCrashed` (assumed gone) and `HeartbeatLost` (alive but
   partitioned).
-- **`abandoned`** — only ever produced by *cancellation* escalation: a force-cancel whose cleanup
-  did not finish within the grace periods. A timeout or exception never produces `abandoned`.
+- **`abandoned`** — only ever produced by *operator-cancellation* escalation: a force-cancel whose
+  cleanup did not finish within the grace periods. A timeout or exception never produces
+  `abandoned`, and neither does a shutdown: work interrupted by a deploy, drain or eviction is
+  released back to the queue with its attempt refunded, because "this process is leaving" says
+  nothing about whether the job can succeed. Rows carry `error_class = 'CancelAbandoned'`.
 
 !!! note "Infra failures during the terminal write leave the job `running` — on purpose"
     If Postgres itself errors while recording the outcome, the row is left `running` and
@@ -784,11 +793,17 @@ Two more states worth naming because they mean *infrastructure*, not your code:
 
 ### Rate-limit denial is a snooze, not a failure
 
-When an actor's rate limit or reservation denies admission, the actor body **never runs**: the
-job is rescheduled at `now + retry_after` (computed by the limiter store in the DB/Redis clock
-domain), the slot is freed, and **no retry budget is consumed**. The attempt row records
-`rate_limit_denied` / `reservation_denied` and `metadata.awaiting` names the bucket. A denied job
-waits in Postgres — this is not busy-spinning in the worker.
+An admission denial has HTTP-429 semantics: "come back later," infinitely retryable. When an
+actor's rate limit or reservation denies admission, the actor body **never runs**: the job is
+rescheduled at `now + retry_after` (computed by the limiter store in the DB/Redis clock domain),
+the slot is freed, and **no retry budget is consumed**. A denial writes no `job_events` or
+`job_attempts` row — per-denial rows were an unbounded-growth vector — so the aggregated
+`rate_limit_blocked_count` counter on the job row is the durable, per-job signal of how much
+contention a job has absorbed; `metadata.awaiting` names the bucket it is waiting on. A denied
+job waits in Postgres — this is not busy-spinning in the worker. A job denied indefinitely is
+bounded only by its `schedule_to_close` deadline: once that expires, the normal deadline path
+fails it terminally. A denial never terminally fails a job by itself — a queue or rate-limit
+misconfiguration must not be able to kill work that simply never got a slot.
 
 ```python
 from taskq.ratelimit import SlidingWindow, TokenBucket, registry
@@ -854,8 +869,8 @@ connection errors the limiter falls back to the PG implementation by default
 
 | Signal | Consumes budget | Reschedules at | Use for |
 |---|---|---|---|
-| `raise Snooze(delay)` | **No** — `max_attempts` is bumped to keep the invariant `attempt < max_attempts` | `now + delay` | waiting for a condition (batch completion, external state) |
-| `raise RetryAfter(delay)` | **Yes** (default) — bounded by `max_attempts`, terminal `MaxAttemptsExceeded` when out | `now + delay` | a retry that should wait a *known* time (429s) |
+| `raise Snooze(delay)` | **No** — the retry budget is left unspent, not the ceiling raised | `now + delay` | waiting for a condition (batch completion, external state) |
+| `raise RetryAfter(delay)` | **Yes** (default) — bounded by `max_attempts`, terminally fails when the budget is spent | `now + delay` | a retry that should wait a *known* time (429s) |
 | `raise RetryAfter(delay, consume_budget=False)` | No (snooze semantics) | `now + delay` | known-delay wait that must never exhaust the budget |
 
 A classifier `RetryOverride(delay=...)` is the type-level variant — it applies to a whole
@@ -927,7 +942,7 @@ Every job emits an `enqueue` PRODUCER span, a `process` CONSUMER span (linked, w
 | `taskq.jobs.by_status` (by status — `pending` and `scheduled` reported separately) | which side of promotion the backlog sits on |
 | `taskq.jobs.oldest_due_age_seconds` | how long the oldest due `scheduled` job has waited for promotion |
 | `taskq_maintenance_leader_sweep_last_success_seconds` (by sweep) | per-sweep stalls — a sweep that stops completing |
-| `taskq_maintenance_leader_sweep_timeouts_total` (by sweep) | batches aborted by deadlines or server-side cancels |
+| `taskq_maintenance_leader_sweep_timeouts_total` (by sweep) | batches aborted by deadlines or server-side cancels, and gauge-sampler reads that failed outright |
 | `taskq.jobs.stranded` (gauge) | jobs whose actor has no `actor_config` row — can never dispatch |
 | `taskq.dispatch.duration` | dispatch contention (PgBouncer/pool trouble) |
 | `taskq.worker.slot_pool.acquire_failures` / `taskq.worker.slot_pool.connections_in_use` | per-slot pool exhaustion and saturation — an acquire failure is infrastructure (the job is left for lock-lease reclaim, not failed); the gauge pinned at the pool maximum with zero acquire failures is saturation, visible below the acquire-failure cliff |
@@ -1049,6 +1064,8 @@ The condensed "know this before your first incident" list. Each row links to the
 | `start_to_close` expected to kill a sync actor's thread | job marked timed out, side effects continue anyway | sync actors keep running — poll `ctx.should_abort()` ([actors.md](actors.md#sync-actors)) |
 | `heartbeat_timeout` set below one heartbeat interval | healthy jobs reclaimed on a single missed beat | size it `>= 2x` `TASKQ_HEARTBEAT_INTERVAL` — the per-job analogue of the `lock_lease >= 4 x heartbeat_interval` invariant ([§2](#2-timeouts-start_to_close-and-schedule_to_close)) |
 | `heartbeat_timeout` at or above the fleet's `TASKQ_LOCK_LEASE` | the per-job budget silently never governs: the lease deadline (last beat + lease) always precedes the heartbeat deadline (last beat + timeout), so the lease arm reclaims first and the knob no-ops — the reclaim event honestly names `cause='lock_expired'` | size it inside the window: `>= 2x` `TASKQ_HEARTBEAT_INTERVAL` and below `TASKQ_LOCK_LEASE` ([§2](#2-timeouts-start_to_close-and-schedule_to_close)) |
+| `TASKQ_HEARTBEAT_INTERVAL` raised without `TASKQ_LEADER_LEASE` | the worker refuses to start: `leader_lease >= 4 x heartbeat_interval` is validated at load, the same four-beat slack `lock_lease` carries | move the pair together — the maintenance leader renews its claim on the role once per heartbeat, so the lease has to outlast four of them ([configuration.md](configuration.md#leader-lease-vs-heartbeat-interval)) |
+| Waiting on a stale maintenance leader, or terminating its backend | nothing to wait for and nothing to kill: the role is a row with a horizon on it, and a survivor takes it once that horizon passes | leave it alone; a leader lost without a clean exit is replaced within `TASKQ_LEADER_LEASE` + `TASKQ_HEARTBEAT_INTERVAL` ([troubleshooting.md](troubleshooting.md#no-leader-elected)) |
 | Retry window shorter than routine provider blips | terminal exhaustion on an ordinary 5xx | fewer attempts, longer `base` ([§6](#6-classifying-failures-terminal-retryable-transient)) |
 | Snoozing finalizer with a tight `time_budget` | `DeadlineExceeded` mid-batch | size the budget to batch duration + retries; `time_budget` requires `kind="indefinite"` ([§5](#5-fan-out-at-scale-chunks-cursors-idempotency)) |
 | `max_retry_backoff` raised, long backoffs still capped | retries at 24 h ceiling | the ceiling is `min(policy.cap, TASKQ_MAX_RETRY_BACKOFF)` ([retries.md](retries.md#3-backoff-algorithms)) |
@@ -1089,6 +1106,7 @@ The condensed "know this before your first incident" list. Each row links to the
 | `max_concurrent=0` set as a "disable" | actor silently stops dispatching; jobs pile up `pending` | `0` is drain mode — use it deliberately, drain with it, then restore |
 | Redis-backed limiter without `TASKQ_REDIS_URL` | worker refuses to start | fail-fast by design — configure Redis or use `backend="postgres"` ([§7](#7-waiting-politely-rate-limits-snooze-retryafter-retry-after)) |
 | Suppressing `asyncio.CancelledError` in an actor | cancel phase escalates to `abandoned` | never catch it — [cancellation.md](cancellation.md) |
+| Actor longer than `cancellation_grace_period` + `cleanup_grace_period` | interrupted on every deploy and re-run from scratch, indefinitely; `interrupt_count` climbs | bound it with `schedule_to_close`, or checkpoint via progress state so a re-run resumes ([workers.md](workers.md)) |
 | Two workers, same health socket path | second worker's health server fails | unique `TASKQ_HEALTH_SOCKET_PATH` per process |
 | Cancel expected to survive a crash-retry | retried attempt runs uncancelled | retry arms reset cancel state by design — re-cancel if still needed |
 | Exporter env var set, telemetry expected | nothing collected, silently | exporter must be configured in-process — [§8](#8-observability-and-alerting) |

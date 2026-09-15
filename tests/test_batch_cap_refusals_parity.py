@@ -120,7 +120,8 @@ async def _pg_refusals(
         _Record({"actor": actor_name, "cnt": cnt}) for actor_name, cnt in existing_counts.items()
     ]
     override_records = [
-        _Record({"actor": actor_name, "max_pending": cap}) for actor_name, cap in override_caps.items()
+        _Record({"actor": actor_name, "max_pending": cap})
+        for actor_name, cap in override_caps.items()
     ]
     stored_records = [
         _Record(

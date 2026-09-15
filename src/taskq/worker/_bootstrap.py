@@ -32,6 +32,7 @@ from taskq._di.scopes import LoopScope, ProcessScope, ThreadScope, make_resolver
 from taskq._dsn import dsn_host as _dsn_host
 from taskq.actor import ActorRef
 from taskq.actor_config import ActorConfig
+from taskq.actor_config_ops import ActorConfigRow, select_actor_configs
 from taskq.auth import PgCredentialProvider, make_pg_pool_factory
 from taskq.backend._protocol import Backend, JobRow, ScheduleCreateArgs
 from taskq.backend.clock import Clock, SystemClock
@@ -60,7 +61,7 @@ from taskq.obs import (
 )
 from taskq.progress._flush import progress_flush_loop
 from taskq.ratelimit._provider import register_rate_limit_registry, register_redis_pool
-from taskq.ratelimit.refs import KeyedRateLimitRef
+from taskq.ratelimit.refs import KeyedRateLimitRef, KeyedReservationRef
 from taskq.ratelimit.registry import RateLimitRegistry
 from taskq.ratelimit.registry import registry as rl_registry
 from taskq.ratelimit.reservation import ConcurrencyReservation
@@ -75,10 +76,12 @@ from taskq.worker.health import HealthServer
 from taskq.worker.heartbeat import heartbeat_loop
 from taskq.worker.leader import MaintenanceLeader
 from taskq.worker.notify import notify_listener_loop
+from taskq.worker.queue_ops import QueueRow
 from taskq.worker.shutdown import ShutdownPhase, install_signal_handlers
 from taskq.worker.startup import sync_actor_config
 
 __all__ = [
+    "_emit_resolved_capacity_startup_lines",
     "_emit_sub_enqueue_startup_warnings",
     "_emit_unconsumed_queue_startup_warnings",
     "_main",
@@ -298,6 +301,94 @@ def _slot_pool_factory(
     return _dsn_slot_pool_factory
 
 
+async def _inherit_registered_connection_setup(
+    pool: asyncpg.Pool,
+    registered: asyncpg.Connection,
+    *,
+    size: int,
+) -> None:
+    """Make every per-slot connection carry the registered connection's
+    session-level configuration: role and search_path.
+
+    ``expire_connections()`` only bumps the pool's generation counter — it
+    does not know what to set on the reconnect it lazily triggers, so
+    every slot silently reconnects to the driver's bare defaults (a perf
+    regression: a warm, fully-sized pool goes cold) while the session
+    state itself — the actual bug — is never restored. The fix has to
+    do two things asyncpg's own hooks were built for: reset every
+    ALREADY-OPEN slot connection now, and arrange for any FUTURE
+    reconnect (idle recycle, ``max_inactive_connection_lifetime``, a
+    later ``expire_connections()``) to pick the same state back up.
+
+    ``role`` and ``search_path`` are chosen because they are exactly the
+    session state ``SET`` (not connect-time ``server_settings``) is the
+    ordinary way applications configure post-connect — the shape the
+    review found silently dropped — and because both are cheaply
+    observable on a live connection (``current_user`` after
+    authentication reflects any ``SET ROLE`` already applied; ``SHOW
+    search_path`` likewise), unlike a registered type codec, which is a
+    client-side Python callable asyncpg keeps no introspectable record
+    of on the connection object at all.
+
+    Mechanism: ``setup``, not ``init`` — asyncpg's pool runs
+    ``Connection.reset()`` (``RESET ALL``) on every ``release()``, which
+    wipes anything ``SET`` at connect time before the connection is ever
+    handed out a second time, so only ``setup`` (re-run on every
+    ``acquire()``) is durable. Both ``Pool._setup`` and each
+    ``PoolConnectionHolder._setup`` are plain ``__slots__`` instance
+    attributes — the same tier ``expire_connections()`` itself mutates
+    for ``_generation`` — reassigned here after the pool already exists:
+    the pool-level one governs any holder created later (pool growth),
+    and each holder's own copy (captured once, in ``Pool._initialize()``,
+    already run by the time this function sees the pool) is reassigned
+    directly since it never re-reads the pool's attribute. One
+    acquire/release per slot then runs the new ``setup`` against every
+    already-open connection — safe here because the pool is freshly
+    opened and fully warmed (``min_size == max_size``), so nothing else
+    holds a slot yet.
+    """
+    # Sequential, not gather(): asyncpg permits one operation per
+    # connection at a time, and *registered* is a single live connection.
+    role = await registered.fetchval("SELECT current_user")
+    search_path = await registered.fetchval("SHOW search_path")
+
+    async def _apply(conn: asyncpg.Connection) -> None:
+        if role:
+            await conn.execute(f'SET ROLE "{role}"')
+        if search_path:
+            await conn.execute("SELECT set_config('search_path', $1, false)", search_path)
+
+    # Why *setup*, not *init*: the pool's own reset query (``RESET ALL``,
+    # run by Connection.reset() on every release() — asyncpg.pool's
+    # documented per-release behaviour) wipes any session-level SET made
+    # at connect time before the connection is ever handed out a second
+    # time. Only *setup*, which asyncpg re-runs on every acquire, survives
+    # that reset — so the inherited state has to be wired there, not into
+    # *init*, or it silently disappears after the first release.
+    existing_setup = pool._setup  # pyright: ignore[reportPrivateUsage]  # Why: see docstring — the same tier expire_connections() itself mutates.
+
+    async def _setup_with_inherited_state(conn: asyncpg.Connection) -> None:
+        if existing_setup is not None:
+            await existing_setup(conn)
+        await _apply(conn)
+
+    pool._setup = _setup_with_inherited_state  # pyright: ignore[reportPrivateUsage]  # Why: governs any holder created after this point (pool growth); moot here (min_size == max_size) but correct.
+    # Why per-holder, not pool-level alone: PoolConnectionHolder captures
+    # its own `_setup` copy once, in Pool._initialize() — already run by
+    # the time this function sees the pool — so a holder that already
+    # exists never re-reads pool._setup. Both attributes are plain
+    # __slots__ instance attributes, not compiled internals.
+    for holder in pool._holders:  # pyright: ignore[reportPrivateUsage]
+        holder._setup = _setup_with_inherited_state  # pyright: ignore[reportPrivateUsage]
+
+    # One acquire/release per slot to run the now-wired setup against
+    # every already-open connection — acquire() invokes holder._setup
+    # itself, so this needs no separate _apply pass.
+    slots = [await pool.acquire() for _ in range(size)]
+    for slot_conn in slots:
+        await pool.release(slot_conn)
+
+
 async def _maybe_open_slot_pool(
     loop_scope: LoopScope,
     settings: WorkerSettings,
@@ -356,6 +447,25 @@ async def _maybe_open_slot_pool(
             "credentials."
         ) from exc
 
+    registered_conn = resolved[asyncpg.Connection]
+    if isinstance(registered_conn, asyncpg.Connection):
+        registered_conn = cast(asyncpg.Connection, registered_conn)
+        try:
+            await asyncio.wait_for(
+                _inherit_registered_connection_setup(
+                    pool, registered_conn, size=settings.max_concurrency + 1
+                ),
+                timeout=settings.reload_factory_timeout,
+            )
+        except Exception as exc:
+            raise RuntimeError(
+                f"slot pool on host {host!r} could not inherit the registered "
+                f"connection's session state (SET ROLE / search_path): {exc!r} — "
+                "a slot connection whose session state silently diverges from "
+                "the one the application configured reads and writes against "
+                "the wrong role or schema without raising anything."
+            ) from exc
+
     async def _close_slot_pool(p: asyncpg.Pool = pool) -> None:
         # Why default-arg binding and module-global reads at call time:
         # same loop-safety and monkeypatch seams as _resolve_pool's
@@ -410,6 +520,8 @@ def _emit_unconsumed_queue_startup_warnings(
     settings: WorkerSettings,
     actor_registry: Mapping[str, ActorRef[Any, Any]],
     log: structlog.stdlib.BoundLogger,
+    *,
+    stored_rows: Mapping[str, ActorConfigRow] | None = None,
 ) -> None:
     """Emit at most one startup warning about served actors on queues this
     worker does not consume.
@@ -423,8 +535,22 @@ def _emit_unconsumed_queue_startup_warnings(
     holds both each served actor's declared queue and its own consumed
     queues, is the first place the mismatch is knowable.
 
+    The queue that actually routes an actor's work is the *stored*
+    ``actor_config.queue`` assignment, not the ``@actor(queue=...)``
+    code literal: an actor move (``taskq actor-config move-queue``)
+    rewrites the stored row, and every re-pended row and cron fire
+    follows it, while the literal only seeds the row on first sight
+    (``sync_actor_config``, ``ON CONFLICT DO NOTHING`` on ``queue``).
+    A rolling deploy running old code with a stale literal is the
+    normal, blessed disagreement case — checking the literal against it
+    would warn on every healthy deploy window while staying silent on
+    the one state where the actor's routed work provably cannot be
+    claimed here. ``stored_rows`` is keyed by actor name; an actor with
+    no stored row yet (never synced) falls back to its code literal,
+    since nothing has moved it anywhere.
+
     Aggregated, not per-actor: one event whose ``actors`` field maps each
-    affected actor name to its declared queue (the shape documented in
+    affected actor name to its routed queue (the shape documented in
     docs/guides/workers.md), with the distinct unconsumed queue names in
     ``queues``. Empty ``settings.queues`` is a different, unambiguous
     failure — a worker that dispatches nothing — and gets its own single
@@ -454,8 +580,12 @@ def _emit_unconsumed_queue_startup_warnings(
         )
         return
 
+    def _routed_queue(ref: ActorRef[Any, Any]) -> str:
+        row = stored_rows.get(ref.name) if stored_rows is not None else None
+        return row.queue if row is not None else ref.queue
+
     consumed = set(settings.queues)
-    offending = [ref for ref in actor_registry.values() if ref.queue not in consumed]
+    offending = [ref for ref in actor_registry.values() if _routed_queue(ref) not in consumed]
     if not offending:
         return
     # Why: ONE aggregated event per boot, not one per actor — workgroup
@@ -465,23 +595,178 @@ def _emit_unconsumed_queue_startup_warnings(
     # healthy heterogeneous fleets this warning blesses, training
     # operators to filter it. The per-actor detail survives in the
     # structured fields so alerting on a specific actor still works:
-    # ``actors`` maps name → declared queue (docs/guides/workers.md's
+    # ``actors`` maps name → routed queue (docs/guides/workers.md's
     # documented shape — two parallel name/queue lists could not express
     # who is on which queue), sorted for byte-stable event content.
     log.warning(
         "actors-on-unconsumed-queues",
-        actors={ref.name: ref.queue for ref in sorted(offending, key=lambda r: r.name)},
-        queues=sorted({ref.queue for ref in offending}),
+        actors={ref.name: _routed_queue(ref) for ref in sorted(offending, key=lambda r: r.name)},
+        queues=sorted({_routed_queue(ref) for ref in offending}),
         worker_queues=list(settings.queues),
         note=(
             "this worker serves these actors but never dispatches their "
             "jobs: the dispatch claim matches only the worker's own queues, "
             "so their jobs sit pending until a worker consuming each "
-            "declared queue appears. Intended when another worker in the "
+            "routed queue appears. Intended when another worker in the "
             "fleet consumes the queue; if none does, those jobs never run "
             "— add the queue to some worker's TASKQ_QUEUES / --queues."
         ),
     )
+
+
+def _reservation_name(entry: str | KeyedReservationRef | ConcurrencyReservation) -> str:
+    """The registered name of a declared reservation entry.
+
+    A reservation may be declared as a bare name, a keyed ref, or a
+    constructed instance. Only the name is ever logged: the objects are not
+    JSON-encodable, and the production renderer drops a whole record it
+    cannot serialise -- losing the line for exactly the actors whose
+    reservation layer it exists to reveal.
+    """
+    if isinstance(entry, str):
+        return entry
+    if isinstance(entry, KeyedReservationRef):
+        return entry.base_name
+    return entry.name
+
+
+def _reservation_slots(entry: str | KeyedReservationRef | ConcurrencyReservation) -> int | None:
+    """The slot count a declared reservation caps the actor at, when knowable.
+
+    ``None`` for a bare-name declaration: the instance lives in the rate-limit
+    registry, which this pass does not consult. An unknown count is reported
+    as present-but-unquantified rather than guessed -- a fabricated number
+    would either win the ``min()`` and print a cap that does not exist, or
+    lose it and hide the layer that actually binds.
+    """
+    return None if isinstance(entry, str) else entry.slots
+
+
+def _emit_resolved_capacity_startup_lines(
+    settings: WorkerSettings,
+    actor_registry: Mapping[str, ActorRef[Any, Any]],
+    *,
+    stored_rows: Mapping[str, ActorConfigRow],
+    queue_rows: Mapping[str, QueueRow],
+    log: structlog.stdlib.BoundLogger,
+) -> None:
+    """Publish the concurrency each registered actor actually resolves to.
+
+    Capacity is resolved from four surfaces no single view shows together:
+    the worker's own ``max_concurrency``, the stored
+    ``actor_config.max_concurrent``, the ``queues`` row cap for the actor's
+    assigned queue, and the actor's declared reservations / ``singleton``.
+    The smallest binds, so an operator who raises the wrong one sees no
+    change at all. Each line carries both the number and the layer that
+    produced it, turning a four-surface archaeology exercise into a grep.
+
+    Never raises and never refuses boot: every condition named here --
+    drain mode, an unseeded row, an unconsumed queue, divergence -- is
+    diagnosable but workable, and a worker that can do work must start.
+    """
+    consumed = set(settings.queues)
+    for name in sorted(actor_registry):
+        ref = actor_registry[name]
+        reservations = [_reservation_name(entry) for entry in ref.reservations or ()]
+        stored = stored_rows.get(name)
+
+        common: dict[str, Any] = {
+            "actor": name,
+            "reservations": reservations,
+            "process_cap": settings.max_concurrency,
+        }
+
+        if stored is None:
+            # The dispatch capacity gate joins actor_config, so an actor
+            # with no stored row dispatches nothing ANYWHERE -- the row is
+            # fleet-global, so this is knowable from here. Reporting the
+            # code literal would actively mislead.
+            log.info(
+                "actor-resolved-capacity",
+                **common,
+                queue=ref.queue,
+                resolved=0,
+                binding="no-stored-row",
+                actor_cap="uncapped",
+                queue_cap=None,
+                drain_mode=False,
+                consumed_here=False,
+            )
+            continue
+
+        # The stored assignment routes the work, so it -- not the literal --
+        # decides which queue this actor's jobs land on.
+        queue = stored.queue
+        queue_row = queue_rows.get(queue)
+        queue_cap = queue_row.max_concurrent if queue_row is not None else None
+
+        # Ordered so that a tie is resolved to the narrowest-scoped layer --
+        # the one an operator must change for anything to move.
+        layers: list[tuple[int, str]] = [(settings.max_concurrency, "process")]
+        if queue_cap is not None:
+            layers.insert(0, (queue_cap, "queue"))
+        if stored.max_concurrent is not None:
+            layers.insert(0, (stored.max_concurrent, "actor"))
+        for entry in ref.reservations or ():
+            slots = _reservation_slots(entry)
+            if slots is not None:
+                layers.insert(0, (slots, "reservation"))
+        if ref.singleton:
+            # Pins the actor to one in-flight job regardless of every
+            # numeric cap above it, so it binds on a tie: reporting
+            # "1 (actor)" would send an operator to raise a stored cap
+            # that cannot possibly help.
+            layers.insert(0, (1, "singleton"))
+
+        resolved, binding = min(layers, key=lambda layer: layer[0])
+        if reservations and not any(
+            _reservation_slots(entry) is not None for entry in ref.reservations or ()
+        ):
+            # Every declared reservation here is a bare name, so its slot
+            # count lives in the rate-limit registry and is unreadable from
+            # this pass. It gates admission from outside both tables, so it
+            # can only ever narrow `resolved` further -- naming a numeric
+            # layer would send an operator to raise a cap that is already
+            # not the constraint. The number stays the provable upper bound.
+            binding = "reservation"
+
+        log.info(
+            "actor-resolved-capacity",
+            **common,
+            queue=queue,
+            resolved=resolved,
+            binding=binding,
+            actor_cap="uncapped" if stored.max_concurrent is None else stored.max_concurrent,
+            queue_cap=queue_cap,
+            # Zero is the value most likely to be read as "unset" by both a
+            # human and a falsy check, so deliberate drain mode says so.
+            drain_mode=stored.max_concurrent == 0,
+            # This process only. Another worker in the fleet may consume the
+            # queue, which no single supervisor can know -- the aggregated
+            # unconsumed-queue warning is the signal, this is the per-actor
+            # detail beside the number.
+            consumed_here=queue in consumed,
+        )
+
+        if stored.max_concurrent != ref.max_concurrent:
+            # The startup UPSERT leaves capacity columns alone once a row
+            # exists, so a deployed literal change is silently ignored.
+            # Legitimate -- stored capacity is operator-owned -- but "my
+            # change did nothing" is the most expensive way to discover it.
+            # Warning, not info: unlike the per-field override record this
+            # names the one field that throttles dispatch, in both
+            # directions, including a stored cap the code never declares.
+            log.warning(
+                "actor-config-capacity-divergence",
+                actor=name,
+                declared=ref.max_concurrent,
+                stored=stored.max_concurrent,
+                note=(
+                    "the stored actor_config capacity wins over the "
+                    "@actor(...) literal once a row exists; change it with "
+                    "`taskq actor-config set`"
+                ),
+            )
 
 
 def _resolve_rl_registry(
@@ -743,7 +1028,15 @@ async def _refuse_boot_on_pending_migrations(deps: WorkerDeps, settings: WorkerS
                 f'SELECT version FROM "{settings.schema_name}".schema_migrations',  # noqa: S608  # Why: schema validated against _IDENT_RE at the top of this helper; asyncpg cannot bind identifiers.
             )
             applied = {str(r["version"]) for r in ledger_rows}
-    pending = [m.key for m in discover() if m.key not in applied]
+    # Only "pre" is boot-blocking: the documented phased-migration rollout
+    # (see e.g. 01.00.09_01_post_drop_actor_fairness_dispatch_index.sql's
+    # header) applies "pre", rolls the new worker release out across the
+    # whole fleet, and only then applies "post" — a schema sitting in that
+    # exact, instructed middle state (pre applied, post intentionally not
+    # yet applied) must let new-release workers boot, not refuse them.
+    # taskq.migrate.apply_pending already models this via its own `phase`
+    # filter; mirrored here rather than widened to every pending migration.
+    pending = [m.key for m in discover() if m.phase == "pre" and m.key not in applied]
     if pending:
         raise RuntimeError(
             f"schema {settings.schema_name!r} is missing {len(pending)} migration(s) "
@@ -1144,16 +1437,37 @@ async def _main(
         structlog.contextvars.bind_contextvars(worker_id=str(worker_id))
 
         if actor_registry is not None:
-            # Why: in this block, not the earlier actor_registry block
-            # above. Tradeoff: the earlier block needs nothing from the
-            # database — it would warn even when worker registration
-            # fails on a bad DSN or a pool stall — but it runs before
-            # bind_contextvars, so its warnings carry no worker_id
-            # correlation with the workers-table row; this block has the
-            # correlation and still precedes the sync_actor_config
-            # round-trip below, whose drift raise or pool-acquire stall
-            # would swallow a warning placed after it (issue #90).
-            _emit_unconsumed_queue_startup_warnings(settings, actor_registry, _startup_log)
+            # Why: in this block, not the pre-existing helper — this block
+            # runs after bind_contextvars, so its warning carries the
+            # worker_id correlation with the workers-table row, and still
+            # precedes sync_actor_config below, whose drift raise or
+            # pool-acquire stall would swallow a warning placed after it
+            # (issue #90). Reads stored rows itself, pre-sync: the coverage
+            # check keys off the stored actor_config.queue, not the
+            # @actor(queue=...) literal, because an actor move rewrites the
+            # stored row and every re-pended row and cron fire follows it —
+            # an actor with no stored row yet falls back to its literal,
+            # since nothing has moved it anywhere.
+            _pre_sync_stored_rows: list[ActorConfigRow] = []
+            try:
+                async with deps.dispatcher_pool.acquire(
+                    timeout=settings.dispatcher_command_timeout
+                ) as conn:
+                    _pre_sync_stored_rows = await select_actor_configs(
+                        conn, sorted(actor_registry), schema=settings.schema_name
+                    )
+            except Exception as exc:
+                # Best-effort: an actor with no readable stored row falls
+                # back to its code literal inside the emitter below, same
+                # as an actor that has simply never been synced.
+                _startup_log.warning("unconsumed-queue-stored-rows-failed", error=repr(exc))
+            _emit_unconsumed_queue_startup_warnings(
+                settings,
+                actor_registry,
+                _startup_log,
+                stored_rows={row.actor: row for row in _pre_sync_stored_rows},
+            )
+
             actor_configs = [
                 ActorConfig(
                     actor=ref.name,
@@ -1227,7 +1541,7 @@ async def _main(
                 timeout=settings.dispatcher_command_timeout
             ) as conn:
                 cap_rows = await conn.fetch(
-                    f'SELECT name, max_concurrent FROM "{settings.schema_name}".queues '  # noqa: S608  # Why: schema validated at construction and re-checked above; asyncpg cannot bind identifiers.
+                    f'SELECT name, mode, max_concurrent FROM "{settings.schema_name}".queues '  # noqa: S608  # Why: schema validated at construction and re-checked above; asyncpg cannot bind identifiers.
                     f"WHERE name = ANY($1) AND max_concurrent IS NOT NULL",
                     settings.queues,
                 )
@@ -1238,6 +1552,42 @@ async def _main(
                 f"01.00.04_01_pre_queue_concurrency.sql has not been applied. "
                 f"Apply pending migrations before starting workers."
             ) from exc
+
+        if actor_registry is not None:
+            # After sync_actor_config, so every registered actor is
+            # guaranteed a stored row to resolve against: reporting from a
+            # pre-sync read would label a freshly deployed actor as
+            # never-dispatching on its very first boot. Best-effort — the
+            # lines are observability, and a worker that can do work starts.
+            try:
+                async with deps.dispatcher_pool.acquire(
+                    timeout=settings.dispatcher_command_timeout
+                ) as conn:
+                    stored_actor_rows = await select_actor_configs(
+                        conn, sorted(actor_registry), schema=settings.schema_name
+                    )
+                _emit_resolved_capacity_startup_lines(
+                    settings,
+                    actor_registry,
+                    stored_rows={row.actor: row for row in stored_actor_rows},
+                    # Only queues this worker consumes: cap_rows is already
+                    # filtered to settings.queues, and a cap from any other
+                    # queue is one this process never applies.
+                    queue_rows={
+                        row["name"]: QueueRow(
+                            name=row["name"],
+                            mode=row["mode"],
+                            max_concurrent=row["max_concurrent"],
+                        )
+                        for row in cap_rows
+                    },
+                    log=_startup_log,
+                )
+            except Exception as exc:
+                _startup_log.warning(
+                    "resolved-capacity-lines-failed",
+                    error=repr(exc),
+                )
 
         queue_cap_reservations: list[ConcurrencyReservation] = []
         for row in cap_rows:

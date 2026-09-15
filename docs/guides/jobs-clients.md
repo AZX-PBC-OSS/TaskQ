@@ -193,10 +193,11 @@ remaining steps. Later steps only execute when earlier ones did not match or rai
     answers. A producer that exhausts the budget gets `UniqueForLockTimeoutError` (this enqueue
     wrote nothing; on a caller-owned transaction durability is the caller's decision) instead of
     queueing indefinitely behind a same-key stampede or a black-holed holder. That error is
-    deliberately **not** in the `BackpressureError` family and bumps no
-    `taskq.backpressure.errors` counter — nothing about capacity is wrong; the dedup answer for
-    one identity could not be determined in time. The correct response is to **retry the same
-    enqueue**: once the winner's row is visible, the retry typically returns it as a dedup hit
+    deliberately **not** in the `BackpressureError` family, but it does bump
+    `taskq.backpressure.errors` with `kind="unique_for_lock_timeout"` so the contention stays
+    observable — nothing about capacity is wrong; the dedup answer for one identity could not be
+    determined in time, so filter this `kind` out before alerting on the counter as a capacity
+    signal. The correct response is to **retry the same enqueue**: once the winner's row is visible, the retry typically returns it as a dedup hit
     (`was_existing=True`). `0` or less disables the bound entirely (the unbounded queueing
     behavior), matching Postgres' own `lock_timeout = 0` convention.
 3. **Singleton pre-flight** — if `ref.singleton` is `True`, checks for an existing active job for

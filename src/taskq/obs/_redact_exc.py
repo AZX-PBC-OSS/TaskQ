@@ -93,17 +93,59 @@ _PG_DETAIL_ESCAPED_RE = re.compile(
 #: form still reads ``scheme://:***@host``.
 _URI_CRED_RE = re.compile(r"(\b[a-zA-Z][a-zA-Z0-9+.-]*://[^\s:/@]*):([^\s@]+)@")
 
+#: Credential-bearing key names, normalised to lowercase. This is the single
+#: list every matcher below draws from — libpq itself treats connection
+#: parameter names case-insensitively (``PASSWORD``, ``PassWord`` and
+#: ``password`` all mean the same keyword), and psql / ORMs / operator-typed
+#: DSNs all echo back whatever casing was written. A mask keyed to one exact
+#: spelling per name misses every other casing of the same parameter, so
+#: matching is done case-insensitively against this one set rather than by
+#: hand-enumerating casings. ``sslpassword`` is libpq's passphrase for the
+#: client SSL key -- a credential in its own right, not a spelling of
+#: ``password``, so it is listed explicitly rather than derived.
+_CREDENTIAL_KEY_NAMES = ("password", "passphrase", "passwd", "pwd", "sslpassword")
+_CREDENTIAL_KEY_ALTERNATION = "|".join(_CREDENTIAL_KEY_NAMES)
+
 #: password-family credentials in a URI QUERY STRING. Group 1 is the ``?``/``&``
-#: delimiter plus the parameter name — kept verbatim so the masked form still
-#: names which setting carried the credential — and group 2 is the value. The
-#: name set is deliberately tight to the password family: broader names
-#: (``secret``, ``token``, …) would redact non-credential parameters, which
-#: is its own bug. The value class stops at whitespace, ``&`` (the next
-#: parameter) and ``@`` (the userinfo boundary), so it never overruns the
-#: parameter it belongs to. No scheme prefix is demanded: a query string
-#: rides on bare ``host/db?password=…`` text too, and gating on ``://``
-#: would miss exactly that shape.
-_URI_PARAM_CRED_RE = re.compile(r"([?&](?:password|passphrase|passwd|pwd)=)([^\s&@]+)")
+#: delimiter plus the parameter name — kept verbatim (original casing) so the
+#: masked form still names which setting carried the credential — and group 2
+#: is the value. The name set is deliberately tight to the password family:
+#: broader names (``secret``, ``token``, …) would redact non-credential
+#: parameters, which is its own bug. The value class stops at whitespace and
+#: ``&`` (the next parameter) only -- NOT ``@``: a password may legally
+#: contain an unencoded ``@`` (RFC 3986 allows it outside userinfo), and this
+#: regex always runs after :data:`_URI_CRED_RE` has already masked any
+#: userinfo credential to ``:***@``, so there is no remaining userinfo
+#: boundary for the value class to protect against overrunning. No scheme
+#: prefix is demanded: a query string rides on bare ``host/db?password=…``
+#: text too, and gating on ``://`` would miss exactly that shape. Matched
+#: case-insensitively so ``PASSWORD=``/``PassWord=``/``PWD=`` are covered
+#: alongside the lowercase spelling.
+_URI_PARAM_CRED_RE = re.compile(
+    rf"([?&](?:{_CREDENTIAL_KEY_ALTERNATION})=)([^\s&]+)", re.IGNORECASE
+)
+
+#: password-family credentials in the libpq KEYWORD/VALUE conninfo form
+#: (``host=db user=app password=hunter2``) -- no ``://`` and no ``?``/``&``,
+#: so neither URI mask above can bite on it, yet it is a routine shape: a
+#: constructed conninfo string and psycopg's own connection errors render
+#: into exactly this text. Group 1 is the keyword (original casing kept) plus
+#: ``=``; group 2 is the value, which under libpq's own conninfo grammar is
+#: either a run of non-space, non-quote characters or a ``'single-quoted'``
+#: token (libpq allows escaped quotes inside via ``\'``, matched here as an
+#: alternation so a quoted password is fully consumed rather than stopping at
+#: an internal quote). Matched case-insensitively for the same reason as the
+#: URI parameter form.
+_LIBPQ_KEYWORD_CRED_RE = re.compile(
+    rf"(?<![?&])\b(?:{_CREDENTIAL_KEY_ALTERNATION})=(?:'(?:\\.|[^'\\])*'|\S+)",
+    re.IGNORECASE,
+)
+
+
+def _mask_libpq_keyword_cred(match: re.Match[str]) -> str:
+    keyword = match.group(0).split("=", 1)[0]
+    return f"{keyword}=***"
+
 
 #: Default bound on scrubbed message text. 2000 to match
 #: ``web/admin/jobs.py``'s ``_TRACEBACK_DISPLAY_LIMIT`` — one number for "how
@@ -183,8 +225,13 @@ def _scrub_text(text: str) -> str:
         text = _PG_DETAIL_ESCAPED_RE.sub("", text)
     if "://" in text:
         text = _URI_CRED_RE.sub(r"\1:***@", text)
-    if "password=" in text or "passphrase=" in text or "passwd=" in text or "pwd=" in text:
-        return _URI_PARAM_CRED_RE.sub(r"\1***", text)
+    # Case-insensitive prefilter: cheap enough at error-storm rates, and the
+    # only way to skip the regex passes without missing a casing the
+    # patterns themselves would catch.
+    lowered = text.lower()
+    if "=" in text and any(f"{name}=" in lowered for name in _CREDENTIAL_KEY_NAMES):
+        text = _URI_PARAM_CRED_RE.sub(r"\1***", text)
+        text = _LIBPQ_KEYWORD_CRED_RE.sub(_mask_libpq_keyword_cred, text)
     return text
 
 

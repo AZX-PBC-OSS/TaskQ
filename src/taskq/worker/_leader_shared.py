@@ -252,6 +252,22 @@ _QUERY_RESERVATION_SLOTS_SQL_TEMPLATE = (
     'SELECT bucket_name, count(*) FROM "{schema}".reservation_slots '
     "WHERE job_id IS NOT NULL GROUP BY bucket_name"
 )
+# Depth and oldest-pending age come out of ONE grouped scan so the two
+# gauges can never describe two different moments -- a depth sampled before
+# a drain and an age sampled after it would read as an actor recovering when
+# it is not. 'pending' only: the unconsumed-actor condition is rows that are
+# eligible and nobody takes, which is exactly the pending population;
+# scheduled rows are awaiting promotion and are the oldest-DUE-age gauge's
+# subject. MIN(scheduled_at) is the eligibility instant of the longest-
+# waiting row, so its age is how long this actor has gone unserved.
+# clock_timestamp() is a measured value, not a bound, so it stays volatile.
+_QUERY_ACTOR_BACKLOG_SQL_TEMPLATE = (
+    "SELECT actor, queue, count(*) AS depth, "
+    "EXTRACT(EPOCH FROM (clock_timestamp() - MIN(scheduled_at)))::float8 AS oldest_age "
+    'FROM "{schema}".jobs '
+    "WHERE status = 'pending' "
+    "GROUP BY actor, queue"
+)
 
 # Explicit (not `j.*` / `ja.*`) column lists for the jobs -> jobs_archive and
 # job_attempts -> job_attempts_archive INSERTs below. `jobs_archive` mirrors

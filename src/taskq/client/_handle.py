@@ -94,6 +94,27 @@ class JobHandle[R: BaseModel | None]:
         return self._row.id
 
     @property
+    def deduplicated_onto_terminal(self) -> bool:
+        """Whether this enqueue deduplicated onto a job that already finished.
+
+        ``was_existing`` cannot carry this on its own: it is True for every
+        dedup, and the overwhelmingly common dedup — onto a live pending or
+        running job — is the mechanism working, the whole point of an
+        idempotency key or a ``unique_for`` window. The case that needs a
+        signal is the rare, silent one, where the enqueue matched a job
+        that had already reached a terminal state: no worker will pick this
+        work up, and with a long dedup horizon the caller can wait weeks
+        before anyone notices.
+
+        Telling the two apart otherwise costs a follow-up read of the row's
+        status, which callers who trust ``was_existing`` never make — so the
+        failure looks exactly like the success right up until the work was
+        needed. The enqueue already knew the answer: it matched a row and
+        read its status to decide whether to warn.
+        """
+        return self.was_existing and self._row.status in TERMINAL_STATUSES
+
+    @property
     def actor_name(self) -> str:
         """The actor this job targets."""
         return self._row.actor

@@ -688,13 +688,34 @@ class TokenBucket:
             self._script_lock,
         )
 
+    def _pg_state(self, tokens: float, ts: float) -> dict[str, object]:
+        """The persisted ``rate_limit_buckets.state`` for this bucket.
+
+        Carries the quota SHAPE (``capacity``, ``refill_per_second``)
+        alongside the live reading, because the row is read by processes
+        that do not have this bucket's configuration: the fleet reclaim
+        sweep must tell a fixed quota (``refill_per_second == 0``, drained
+        forever by design) from an ordinary refilling one before it may
+        delete a row for idleness. Without the shape on the row, a
+        partially spent fixed quota is indistinguishable from a full
+        refilling bucket, and deleting it lets the next acquire re-preseed
+        at full capacity — quota silently restored, over-admitting against
+        a budget that was already spent.
+        """
+        return {
+            "tokens": tokens,
+            "ts": ts,
+            "capacity": self._capacity,
+            "refill_per_second": self._refill,
+        }
+
     async def _refund_pg(
         self,
         count: float,
         pg_pool: "asyncpg.Pool | None",
         settings: "WorkerSettings | None",
         *,
-        lock_timeout_ms: float = DEFAULT_TOKEN_BUCKET_LOCK_TIMEOUT_MS,
+        lock_timeout_ms: float | None = None,
     ) -> None:
         """Refund tokens on the PG backend using FOR UPDATE on rate_limit_buckets.
 
@@ -727,6 +748,8 @@ class TokenBucket:
             raise RateLimitDependencyUnavailable("pg_pool not injected for postgres backend refund")
         if settings is None:
             raise RuntimeError("settings not injected for postgres backend refund")
+        if lock_timeout_ms is None:
+            lock_timeout_ms = settings.token_bucket_lock_timeout_ms
 
         schema = settings.schema_name
 
@@ -807,7 +830,7 @@ class TokenBucket:
             tokens = min(self._capacity, tokens + elapsed * self._refill)
             tokens = min(self._capacity, tokens + count)
 
-            state_param = jsonb_param({"tokens": tokens, "ts": now})
+            state_param = jsonb_param(self._pg_state(tokens, now))
             await conn.execute(update_sql, state_param, self._name)
 
     async def _acquire_memory(self, count: float, clock: Clock | None) -> RateLimitDecision:
@@ -909,7 +932,7 @@ class TokenBucket:
         pg_pool: "asyncpg.Pool | None",
         settings: "WorkerSettings | None",
         *,
-        lock_timeout_ms: float = DEFAULT_TOKEN_BUCKET_LOCK_TIMEOUT_MS,
+        lock_timeout_ms: float | None = None,
     ) -> RateLimitDecision:
         """PG fallback path using FOR UPDATE on rate_limit_buckets.
 
@@ -938,6 +961,8 @@ class TokenBucket:
             raise RateLimitDependencyUnavailable("pg_pool not injected for postgres backend")
         if settings is None:
             raise RuntimeError("settings not injected for postgres backend")
+        if lock_timeout_ms is None:
+            lock_timeout_ms = settings.token_bucket_lock_timeout_ms
 
         schema = settings.schema_name
 
@@ -955,7 +980,9 @@ class TokenBucket:
             f'INSERT INTO "{schema}".rate_limit_buckets (bucket_name, kind, state, updated_at, keyed, last_used_at) '  # noqa: S608  # Why: schema_name pre-validated; values are $1/$2/$3-bound
             f"VALUES ($1, 'token_bucket', "
             f"jsonb_build_object('tokens', $2::float8, "
-            f"'ts', EXTRACT(EPOCH FROM clock_timestamp())), clock_timestamp(), $3, clock_timestamp()) "
+            f"'ts', EXTRACT(EPOCH FROM clock_timestamp()), "
+            f"'capacity', $4::float8, 'refill_per_second', $5::float8"
+            f"), clock_timestamp(), $3, clock_timestamp()) "
             f"ON CONFLICT (bucket_name) DO NOTHING"
         )
         select_sql = (
@@ -987,7 +1014,14 @@ class TokenBucket:
                 # to `capacity` tokens. Pre-seed a full-capacity row
                 # (idempotent — DO NOTHING on conflict) so the very first
                 # acquire also serializes on the row lock below.
-                await conn.execute(preseed_sql, self._name, self._capacity, self._keyed)
+                await conn.execute(
+                    preseed_sql,
+                    self._name,
+                    self._capacity,
+                    self._keyed,
+                    self._capacity,
+                    self._refill,
+                )
                 return await conn.fetchrow(select_sql, self._name)
 
             row: asyncpg.Record | None = None
@@ -1089,7 +1123,7 @@ class TokenBucket:
             # _jsonb_param serializes via orjson — passing a dict directly
             # to conn.execute fails because asyncpg does not auto-encode
             # Python dicts as jsonb.
-            state_param = jsonb_param({"tokens": tokens, "ts": now})
+            state_param = jsonb_param(self._pg_state(tokens, now))
             # updated_at, the state ts, and the fleet-reclaim stamps
             # (last_used_at refresh, keyed re-mark) are all server-domain
             # now

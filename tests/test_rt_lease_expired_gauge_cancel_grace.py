@@ -203,7 +203,9 @@ async def test_gauge_freezes_at_last_good_value_when_sampling_fails(
 
         @asynccontextmanager
         async def acquire(
-            self, *, timeout: float | None = None  # noqa: ASYNC109  # Why: mirrors asyncpg.Pool.acquire's keyword-only timeout.
+            self,
+            *,
+            timeout: float | None = None,  # noqa: ASYNC109  # Why: mirrors asyncpg.Pool.acquire's keyword-only timeout.
         ) -> AsyncGenerator[object, None]:
             self.calls += 1
             if self.calls == 1:

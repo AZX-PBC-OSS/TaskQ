@@ -17,6 +17,7 @@ still reschedules: with no increment at all there is no overflow to
 guard against, so the crash-free property holds trivially.
 """
 
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
@@ -26,7 +27,7 @@ from pydantic import ValidationError
 
 from taskq._ids import new_job_id, new_uuid
 from taskq.backend._protocol import EnqueueArgs, JobId
-from taskq.retry import RetryPolicy
+from taskq.retry import MAX_ENQUEUABLE_MAX_ATTEMPTS, RetryPolicy
 from taskq.testing.clock import FakeClock
 from taskq.testing.fixtures import JobsApp
 from taskq.testing.in_memory import InMemoryBackend
@@ -294,19 +295,34 @@ async def test_snooze_below_ceiling_keeps_ceiling_fixed(
 async def _in_memory_running_job_at_ceiling(
     max_attempts: int,
 ) -> tuple[InMemoryBackend, JobId, UUID]:
-    """Enqueue + dispatch one running job at *max_attempts* on the
-    in-memory mirror — the same row shape ``_seed`` builds for PG."""
+    """Dispatch one running job at *max_attempts* on the in-memory mirror —
+    the same row shape ``_seed`` builds for PG.
+
+    ``max_attempts`` is placed on the stored row directly, as ``_seed``'s
+    ``create_running_job`` INSERT does on PG, rather than carried through
+    ``enqueue``. A row AT the column ceiling is a legitimate stored state —
+    an earlier release's snooze arm parked snoozed jobs there, which is the
+    very state these tests exercise — but it is not an ENQUEUABLE one: the
+    enqueue boundary refuses the top-of-domain value because a row parked
+    there has no headroom left for a statement that adds to it. Seeding
+    through the boundary would assert the boundary's rule instead of the
+    snooze arm's.
+    """
     backend = InMemoryBackend(clock=FakeClock(_MEM_NOW))
     args = EnqueueArgs(
         id=new_job_id(),
         actor="mem_ceiling_actor",
         queue="default",
         payload={},
-        max_attempts=max_attempts,
+        max_attempts=MAX_ENQUEUABLE_MAX_ATTEMPTS,
         retry_kind="transient",
         scheduled_at=_MEM_NOW - timedelta(seconds=1),
     )
     await backend.enqueue(args)
+    backend._jobs[args.id] = replace(  # pyright: ignore[reportPrivateUsage]  # Why: test-only private access; the mirror's PG twin reaches the same stored state with a direct INSERT (testing.pg.create_running_job).
+        backend._jobs[args.id],  # pyright: ignore[reportPrivateUsage]  # Why: same
+        max_attempts=max_attempts,
+    )
     # Register the actor so dispatch_batch finds it (mirrors PG's
     # actor_config requirement — candidates come FROM the registry).
     backend.register_actor_config(actor="mem_ceiling_actor")

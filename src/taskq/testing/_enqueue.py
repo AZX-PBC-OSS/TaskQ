@@ -297,6 +297,7 @@ async def _enqueue_batch(
     # the poisoned item's index and left the good prefix stored —
     # certifying code that leaves phantom rows behind on PG.
     _check_batch_job_ids(self, admitted_args)
+    _check_batch_singletons(self, admitted_args)
     # Why a function-level import: the dedup WARNING budget lives with
     # the PG enqueue path (taskq.backend._enqueue), whose module scope
     # imports the asyncpg driver; the testing package's import surface
@@ -377,6 +378,46 @@ def _check_batch_job_ids(self: "InMemoryBackend", admitted_args: list[EnqueueArg
                 f"(job id {args.id} appears twice in this batch)"
             )
         seen.add(args.id)
+
+
+def _check_batch_singletons(self: "InMemoryBackend", admitted_args: list[EnqueueArgs]) -> None:
+    """Reject the whole batch BEFORE any insert when an admitted singleton
+    item collides — with a live singleton job or another singleton item for
+    the same actor in this batch.
+
+    Same shape and reasoning as :func:`_check_batch_job_ids`: the PG bulk
+    tier is one ``unnest`` INSERT in one transaction, so the partial unique
+    index on the singleton predicate aborts the whole statement and commits
+    nothing. Without the preflight the per-item loop stores every item
+    preceding the colliding one — including unrelated actors' items and
+    their idempotency index entries — leaving rows PG would never have
+    written. A surviving index entry is the worse half: it permanently
+    dedupes every later enqueue carrying that key onto a job the call never
+    committed, so the work silently never runs.
+    """
+    live_singleton_actors = {
+        row.actor
+        for row in self._jobs.values()
+        if row.metadata.get("singleton") is True
+        and row.status in ("pending", "scheduled", "running")
+    }
+    seen: set[str] = set()
+    for args in admitted_args:
+        if args.metadata.get("singleton") is not True:
+            continue
+        if args.actor in live_singleton_actors or args.actor in seen:
+            logger.info(
+                "singleton-collision",
+                actor=args.actor,
+                blocking_job_id=None,
+                detection_path="preflight_check",
+            )
+            raise SingletonCollisionError(
+                actor=args.actor,
+                blocking_job_id=None,
+                retry_after=None,
+            )
+        seen.add(args.actor)
 
 
 def _check_batch_jsonb(args_list: list[EnqueueArgs], *, index_base: int = 0) -> None:

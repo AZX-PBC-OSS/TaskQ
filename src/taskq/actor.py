@@ -52,14 +52,23 @@ import structlog
 from pydantic import BaseModel, TypeAdapter
 
 from taskq.backend._protocol import (
+    DEFAULT_UNIQUE_STATES,
     JobStatus,
     _validate_queue_name,  # pyright: ignore[reportPrivateUsage]  # Why: the canonical queue-name validator; the enqueue path (client._args) runs the same one, so the charset cannot drift between the two chokepoints.
 )
+from taskq.constants import SMALLINT_MAX, SMALLINT_MIN
 from taskq.ratelimit.refs import KeyedRateLimitRef, KeyedReservationRef
 from taskq.ratelimit.reservation import ConcurrencyReservation
 from taskq.ratelimit.sliding_window import SlidingWindow
 from taskq.ratelimit.token_bucket import TokenBucket
-from taskq.retry import OnRetryExhausted, OnSuccess, RetryClassifierHook, RetryPolicy
+from taskq.retry import (
+    ActorConfigLike,
+    OnCancel,
+    OnRetryExhausted,
+    OnSuccess,
+    RetryClassifierHook,
+    RetryPolicy,
+)
 
 if TYPE_CHECKING:
     from taskq.context import JobContext
@@ -179,6 +188,8 @@ class ActorRef[P: BaseModel, R: BaseModel | None]:
         "metadata",
         "name",
         "non_retryable_exceptions",
+        "on_cancel",
+        "on_cancel_timeout",
         "on_retry_exhausted",
         "on_retry_exhausted_timeout",
         "on_success",
@@ -217,7 +228,7 @@ class ActorRef[P: BaseModel, R: BaseModel | None]:
         max_pending: int | None = None,
         metadata: dict[str, object] | None = None,
         unique_for: timedelta | None = None,
-        unique_states: tuple[JobStatus, ...] = ("pending", "scheduled", "running"),
+        unique_states: tuple[JobStatus, ...] = DEFAULT_UNIQUE_STATES,
         start_to_close: timedelta | None = None,
         rate_limits: list[str | KeyedRateLimitRef | TokenBucket | SlidingWindow] | None = None,
         reservations: list[str | KeyedReservationRef | ConcurrencyReservation] | None = None,
@@ -227,6 +238,8 @@ class ActorRef[P: BaseModel, R: BaseModel | None]:
         on_retry_exhausted_timeout: float = 3.0,
         on_success: OnSuccess | None = None,
         on_success_timeout: float = 3.0,
+        on_cancel: OnCancel | None = None,
+        on_cancel_timeout: float = 3.0,
         priority: int = 0,
     ) -> None:
         self.name = name
@@ -258,11 +271,25 @@ class ActorRef[P: BaseModel, R: BaseModel | None]:
         self.on_retry_exhausted_timeout = on_retry_exhausted_timeout
         self.on_success = on_success
         self.on_success_timeout = on_success_timeout
+        self.on_cancel = on_cancel
+        self.on_cancel_timeout = on_cancel_timeout
         self.priority = priority
         # Single storage slot. Call shape varies by handler — the
         # dispatcher (or :meth:`__call__`) routes based on
         # :attr:`wants_ctx`, :attr:`dependencies`, and :attr:`is_sync`.
         self._fn: Callable[..., object] = fn
+
+    @property
+    def config(self) -> ActorConfigLike:
+        """This ref, viewed as the per-actor config the consumer reads.
+
+        The registration record and the config are one object here, so
+        the property is a named view rather than a second store — it
+        exists so callers can say what they need (the retry policy and
+        the lifecycle hooks) instead of reaching for the whole ref, and
+        so the structural contract is asserted at one place.
+        """
+        return self
 
     @property
     def fn(self) -> Callable[..., object]:
@@ -352,7 +379,7 @@ def actor[P: BaseModel, R: BaseModel | None](  # pyright: ignore[reportInvalidTy
     max_pending: int | None = None,
     metadata: dict[str, object] | None = None,
     unique_for: timedelta | None = None,
-    unique_states: tuple[JobStatus, ...] = ("pending", "scheduled", "running"),
+    unique_states: tuple[JobStatus, ...] = DEFAULT_UNIQUE_STATES,
     start_to_close: timedelta | None = None,
     rate_limits: list[str | KeyedRateLimitRef | TokenBucket | SlidingWindow] | None = None,
     reservations: list[str | KeyedReservationRef | ConcurrencyReservation] | None = None,
@@ -362,6 +389,8 @@ def actor[P: BaseModel, R: BaseModel | None](  # pyright: ignore[reportInvalidTy
     on_retry_exhausted_timeout: float = 3.0,
     on_success: OnSuccess | None = None,
     on_success_timeout: float = 3.0,
+    on_cancel: OnCancel | None = None,
+    on_cancel_timeout: float = 3.0,
     priority: int = 0,
 ) -> Callable[[Callable[..., object]], ActorRef[P, R]]: ...  # pyright: ignore[reportInvalidTypeVarUse]  # Why: TypeVars P, R are intentional for variance-free generics; each appears once in the return type of this overload.
 def actor[P: BaseModel, R: BaseModel | None](  # pyright: ignore[reportInvalidTypeVarUse]  # Why: TypeVars P, R are intentional for variance-free generics; each appears in the return type of overloaded signatures.
@@ -377,7 +406,7 @@ def actor[P: BaseModel, R: BaseModel | None](  # pyright: ignore[reportInvalidTy
     max_pending: int | None = None,
     metadata: dict[str, object] | None = None,
     unique_for: timedelta | None = None,
-    unique_states: tuple[JobStatus, ...] = ("pending", "scheduled", "running"),
+    unique_states: tuple[JobStatus, ...] = DEFAULT_UNIQUE_STATES,
     start_to_close: timedelta | None = None,
     rate_limits: list[str | KeyedRateLimitRef | TokenBucket | SlidingWindow] | None = None,
     reservations: list[str | KeyedReservationRef | ConcurrencyReservation] | None = None,
@@ -387,6 +416,8 @@ def actor[P: BaseModel, R: BaseModel | None](  # pyright: ignore[reportInvalidTy
     on_retry_exhausted_timeout: float = 3.0,
     on_success: OnSuccess | None = None,
     on_success_timeout: float = 3.0,
+    on_cancel: OnCancel | None = None,
+    on_cancel_timeout: float = 3.0,
     priority: int = 0,
 ) -> ActorRef[P, R] | Callable[[ActorHandler[P, R]], ActorRef[P, R]]:
     """Register an async handler as a typed :class:`ActorRef`.
@@ -470,15 +501,23 @@ def actor[P: BaseModel, R: BaseModel | None](  # pyright: ignore[reportInvalidTy
             surprises at JSONB serialization time. Pass ``None`` to
             get an empty ``dict`` (the default).
 
-        unique_states: The set of job statuses to consider "active" for
-            ``unique_for`` deduplication. Defaults to
-            ``("pending", "scheduled", "running")`` — terminal states
-            (``succeeded``, ``failed``, ``cancelled``) are excluded so
-            that a completed job does not block re-enqueue of the same
-            identity. To include succeeded jobs, pass
-            ``unique_states=("pending", "scheduled", "running",
-            "succeeded")``. Misconfigured terminal states block
-            re-enqueue after success (which is rarely intended).
+        unique_states: The set of job statuses a ``unique_for`` window
+            suppresses duplicates against. Defaults to
+            ``("pending", "scheduled", "running", "succeeded")``:
+            ``succeeded`` is included because it is the state that says
+            the work already happened, which is what the window exists to
+            detect — leaving it out would free the identity the instant
+            the first job completed, so the window would stop protecting
+            it exactly when it had something to protect. The
+            failure-terminal states (``failed``, ``cancelled``,
+            ``crashed``, ``abandoned``) are excluded: that work did not
+            happen, so a single transient failure must not suppress the
+            rest of the window. For the narrower "block only concurrent
+            execution" rule, pass
+            ``unique_states=("pending", "scheduled", "running")``.
+            Folding a failure-terminal state in strands the new work for
+            the rest of the window; the enqueue warns and the returned
+            handle reports ``deduplicated_onto_terminal`` when it happens.
     """
 
     def _wrap(handler: Callable[..., object]) -> ActorRef[P, R]:
@@ -503,6 +542,8 @@ def actor[P: BaseModel, R: BaseModel | None](  # pyright: ignore[reportInvalidTy
             on_retry_exhausted_timeout=on_retry_exhausted_timeout,
             on_success=on_success,
             on_success_timeout=on_success_timeout,
+            on_cancel=on_cancel,
+            on_cancel_timeout=on_cancel_timeout,
             priority=priority,
         )
 
@@ -550,7 +591,7 @@ def _build_ref[P: BaseModel, R: BaseModel | None](  # pyright: ignore[reportInva
     max_pending: int | None = None,
     metadata: dict[str, object] | None,
     unique_for: timedelta | None = None,
-    unique_states: tuple[JobStatus, ...] = ("pending", "scheduled", "running"),
+    unique_states: tuple[JobStatus, ...] = DEFAULT_UNIQUE_STATES,
     start_to_close: timedelta | None = None,
     rate_limits: list[str | KeyedRateLimitRef | TokenBucket | SlidingWindow] | None = None,
     reservations: list[str | KeyedReservationRef | ConcurrencyReservation] | None = None,
@@ -560,6 +601,8 @@ def _build_ref[P: BaseModel, R: BaseModel | None](  # pyright: ignore[reportInva
     on_retry_exhausted_timeout: float = 3.0,
     on_success: OnSuccess | None = None,
     on_success_timeout: float = 3.0,
+    on_cancel: OnCancel | None = None,
+    on_cancel_timeout: float = 3.0,
     priority: int = 0,
 ) -> ActorRef[P, R]:  # pyright: ignore[reportInvalidTypeVarUse]  # Why: TypeVars P, R are intentional for variance-free generics; each appears once in the return type of _build_ref.
     """Introspect ``fn``'s annotations and construct an :class:`ActorRef`.
@@ -602,10 +645,10 @@ def _build_ref[P: BaseModel, R: BaseModel | None](  # pyright: ignore[reportInva
             f"actor handler {fn.__qualname__!r} priority must be an int; "
             f"got {type(priority).__name__!r}.",
         )
-    if priority < -32768 or priority > 32767:
+    if priority < SMALLINT_MIN or priority > SMALLINT_MAX:
         raise ValueError(
             f"actor handler {fn.__qualname__!r} priority must fit "
-            f"smallint range (-32768..32767); got {priority}.",
+            f"smallint range ({SMALLINT_MIN}..{SMALLINT_MAX}); got {priority}.",
         )
 
     if max_pending is not None and (not isinstance(max_pending, int) or max_pending < 0):  # pyright: ignore[reportUnnecessaryIsInstance]  # Why: runtime guard against callers that bypass the type checker.
@@ -759,5 +802,7 @@ def _build_ref[P: BaseModel, R: BaseModel | None](  # pyright: ignore[reportInva
         on_retry_exhausted_timeout=on_retry_exhausted_timeout,
         on_success=on_success,
         on_success_timeout=on_success_timeout,
+        on_cancel=on_cancel,
+        on_cancel_timeout=on_cancel_timeout,
         priority=priority,
     )

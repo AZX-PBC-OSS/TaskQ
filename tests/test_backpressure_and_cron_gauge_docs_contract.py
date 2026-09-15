@@ -72,9 +72,10 @@ def test_deployment_guide_backpressure_errors_mention_names_the_kind_dimension()
 def test_jobs_clients_guide_unique_for_lock_timeout_admits_it_bumps_the_counter() -> None:
     text = (_DOCS / "guides" / "jobs-clients.md").read_text()
     section = text[text.index("bounded") : text.index("bounded") + 2000]
-    assert "bumps no" not in section or "backpressure.errors" not in section.split("bumps no", 1)[
-        1
-    ][:80], (
+    assert (
+        "bumps no" not in section
+        or "backpressure.errors" not in section.split("bumps no", 1)[1][:80]
+    ), (
         "the unique_for lock-timeout paragraph must not claim it bumps no "
         "taskq.backpressure.errors counter -- record_backpressure_error is called "
         "with kind='unique_for_lock_timeout' on that path"

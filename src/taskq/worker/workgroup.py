@@ -46,10 +46,12 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import importlib
 import signal
 import sys
 import time
 import tomllib
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import timedelta
 from pathlib import Path
@@ -61,6 +63,7 @@ import structlog
 
 from taskq._close import CLOSE_TIMEOUT_SECS, close_pool_bounded
 from taskq._ids import new_uuid
+from taskq.actor import ActorRef
 from taskq.connections import statement_cache_kwargs
 from taskq.constants import (
     _IDENT_RE as _SCHEMA_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining; same pattern as run.py.
@@ -309,8 +312,94 @@ def _optional_str(cfg: dict[str, Any], key: str, fallback: str | None) -> str | 
 
 
 def load_workgroup_config(path: Path) -> WorkgroupConfig:
-    """Load a workgroup configuration from a TOML file."""
-    return WorkgroupConfig.from_toml(path)
+    """Load a workgroup configuration from a TOML file.
+
+    Raises ``ValueError`` only for structural drift this process can
+    resolve locally (an unresolvable ``actors`` reference, invalid numeric
+    domains). An actor queue no configured child consumes is not
+    structural — another workgroup may serve it — so it only warns.
+    """
+    cfg = WorkgroupConfig.from_toml(path)
+    # A resolvable actors reference is structural: the exact same ref is
+    # forwarded verbatim to every child's --actors flag, so a broken
+    # reference is a certainty for every child, not a maybe. Resolve it
+    # once, here, rather than let each child discover it independently.
+    _resolve_actors_registry(cfg.actors)
+    _warn_unconsumed_actor_queues(cfg)
+    return cfg
+
+
+def _resolve_actors_registry(actors: str) -> Mapping[str, ActorRef[Any, Any]]:
+    """Resolve a ``module:attr`` actors reference to its registry, or raise ``ValueError``.
+
+    Every child crashes on import the instant an unresolvable reference is
+    forwarded to it, and the supervisor reads that as a run of child exits:
+    it restart-loops each one on backoff until the burst budget is spent,
+    burying the one real cause under a cascade of respawns. Resolving here,
+    once, at load time, turns that cascade into a single refusal that names
+    the broken reference — the same module:attr resolution the worker CLI
+    performs, minus the typer-specific error plumbing this module has no
+    use for.
+    """
+    module_name, sep, attr_name = actors.partition(":")
+    if not sep or not module_name or not attr_name:
+        raise ValueError(f"actors must be module:attr syntax, got {actors!r}")
+
+    try:
+        module = importlib.import_module(module_name)
+    except Exception as exc:
+        raise ValueError(f"failed to import actors module {module_name!r}: {exc}") from exc
+
+    try:
+        raw: Any = getattr(module, attr_name)
+    except AttributeError:
+        raise ValueError(
+            f"attribute {attr_name!r} not found in actors module {module_name!r}"
+        ) from None
+
+    if isinstance(raw, Mapping):
+        return cast(Mapping[str, ActorRef[Any, Any]], raw)
+    if not isinstance(raw, (str, bytes)) and hasattr(raw, "__iter__"):
+        items: list[Any] = list(raw)
+        registry: dict[str, ActorRef[Any, Any]] = {
+            r.name: r for r in items if isinstance(r, ActorRef)
+        }
+        return registry
+    raise ValueError(
+        f"expected Mapping[str, ActorRef] or Iterable[ActorRef] at {actors}; "
+        f"got {type(raw).__name__}"
+    )
+
+
+def _warn_unconsumed_actor_queues(cfg: WorkgroupConfig) -> None:
+    """Log a loud warning for every actor whose queue no configured child consumes.
+
+    Never raises: this workgroup is not the whole fleet, and another
+    workgroup or a hand-started worker may serve the queue this one does
+    not. Refusing here would stop children that can do real work over a
+    condition this process cannot actually decide — the governing rule is
+    that a worker able to do work never fails to start. The log line is
+    the entire diagnostic surface for a stranded queue, so it names both
+    the actor and the queue.
+    """
+    try:
+        registry = _resolve_actors_registry(cfg.actors)
+    except ValueError:
+        # Unresolvable references are rejected earlier, in _validate_config;
+        # this is defence-in-depth, not the primary check.
+        return
+
+    consumed_queues = {q for w in cfg.workers for q in w.queues}
+    for name, ref in registry.items():
+        if ref.queue not in consumed_queues:
+            logger.warning(
+                "workgroup.actor_queue_unconsumed",
+                actor=name,
+                queue=ref.queue,
+                note="no configured worker in this workgroup consumes this queue — "
+                "jobs for this actor will enqueue and pend forever unless another "
+                "workgroup or worker serves it",
+            )
 
 
 def _validate_config(cfg: WorkgroupConfig) -> None:

@@ -56,13 +56,14 @@ from taskq.constants import (
 from taskq.context import JobContext
 from taskq.exceptions import MissingProvider
 from taskq.obs import bind_job_context, get_logger
-from taskq.retry import OnRetryExhausted, OnSuccess, RetryClassifierHook, RetryPolicy
+from taskq.retry import OnCancel, OnRetryExhausted, OnSuccess, RetryClassifierHook, RetryPolicy
 from taskq.settings import WorkerSettings
 from taskq.worker._bootstrap import worker_main, worker_main_async
 from taskq.worker._transient import TRANSIENT_PG_ERRORS
 from taskq.worker.cancel import make_cancel_controller
 from taskq.worker.deps import WorkerDeps
 from taskq.worker.dispatch import SlotPoolAcquireError, dispatch_one_job
+from taskq.worker.shutdown import drain_local_queue_to_pending
 
 __all__ = [  # pyright: ignore[reportUnsupportedDunderAll]  # Why: _main is lazily re-exported via __getattr__
     "_main",
@@ -82,6 +83,9 @@ if TYPE_CHECKING:
     # names below; runtime resolution stays in __getattr__ to defer the
     # _bootstrap import cost.
     from taskq.worker._bootstrap import (
+        _emit_resolved_capacity_startup_lines as _emit_resolved_capacity_startup_lines,
+    )
+    from taskq.worker._bootstrap import (
         _emit_sub_enqueue_startup_warnings as _emit_sub_enqueue_startup_warnings,
     )
     from taskq.worker._bootstrap import (
@@ -97,8 +101,10 @@ def __getattr__(name: str) -> object:
         "_main",
         "_emit_sub_enqueue_startup_warnings",
         "_emit_unconsumed_queue_startup_warnings",
+        "_emit_resolved_capacity_startup_lines",
     ):
         from taskq.worker._bootstrap import (
+            _emit_resolved_capacity_startup_lines,
             _emit_sub_enqueue_startup_warnings,
             _emit_unconsumed_queue_startup_warnings,
             _main,
@@ -108,6 +114,7 @@ def __getattr__(name: str) -> object:
             "_main": _main,
             "_emit_sub_enqueue_startup_warnings": _emit_sub_enqueue_startup_warnings,
             "_emit_unconsumed_queue_startup_warnings": _emit_unconsumed_queue_startup_warnings,
+            "_emit_resolved_capacity_startup_lines": _emit_resolved_capacity_startup_lines,
         }[name]
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
@@ -163,6 +170,8 @@ class _DispatchActorConfig:
     on_retry_exhausted_timeout: float = 3.0
     on_success: OnSuccess | None = None
     on_success_timeout: float = 3.0
+    on_cancel: OnCancel | None = None
+    on_cancel_timeout: float = 3.0
 
 
 def make_heartbeat_kwargs(
@@ -186,6 +195,37 @@ def make_heartbeat_kwargs(
         "cancel_controller": make_cancel_controller(deps, worker_id, backend),
         "cancel_wake_event": cancel_wake_event,
     }
+
+
+def _taking_new_work_stopped(deps: WorkerDeps, shutdown_event: asyncio.Event) -> bool:
+    """Whether a consumer loop may still take a job off ``local_queue``.
+
+    DRAINING sets ``producer_stop_event`` and immediately re-pends every
+    row this worker claimed but has not started, ceding them to whatever
+    worker claims them next. A local_queue copy of such a row is stale
+    from that moment: running it executes the same job body twice, once
+    under this worker's refunded attempt and once under the claimer's.
+
+    ``shutdown_event`` cannot serve as the signal — it fires only after
+    the whole phase sequence completes, so a loop guarding on it alone
+    keeps dequeuing for the entire length of the shutdown.
+    """
+    return shutdown_event.is_set() or deps.producer_stop_event.is_set()
+
+
+def _stop_signal_waiters(
+    deps: WorkerDeps, shutdown_event: asyncio.Event
+) -> list[asyncio.Task[bool]]:
+    """Waiters for every signal that stops a consumer taking new work.
+
+    Returned rather than awaited so the caller's existing cancel-pending
+    cleanup owns them: a waiter spawned inside a helper coroutine would
+    outlive that coroutine's own cancellation as a pending task.
+    """
+    return [
+        asyncio.create_task(deps.producer_stop_event.wait()),
+        asyncio.create_task(shutdown_event.wait()),
+    ]
 
 
 async def producer_loop(
@@ -335,6 +375,20 @@ async def producer_loop(
                 wake_event.clear()
 
     reason = "producer_stop_event" if producer_stop_event.is_set() else "shutdown_event"
+    # A claim round already in flight when the stop signal arrived commits
+    # AFTER the orchestrator's single hand-back pass has looked past those
+    # rows. Nothing else can see them: they never reach a consumer, so no
+    # shutdown phase iterating the active-jobs registry finds them either,
+    # and they would sit 'running' locked to a departed pod until the lock
+    # lease lapsed — a reclaim that then charges the wait as a crashed
+    # attempt against a job that never ran. The producer is the only party
+    # that knows when its own round committed, so it hands its post-stop
+    # claims back itself, before reporting its exit.
+    # The helper is fenced on this worker's own still-'running' rows minus
+    # the active-jobs registry, so a pass that races the orchestrator's
+    # releases nothing twice and never touches a row a consumer holds.
+    if producer_stop_event.is_set():
+        await drain_local_queue_to_pending(deps, worker_id)
     _producer_log.info("producer-loop-exit", reason=reason)
     deps.liveness.forget("producer")
 
@@ -396,40 +450,44 @@ async def consumer_loop_stub(
 ) -> None:
     """Pull one job per iteration, register, sleep sentinel, write terminal status.
 
-    Outer loop: ``while not shutdown_event.is_set()``.
-    Races ``local_queue.get()`` against ``shutdown_event.wait()``; on shutdown
-    win the queue waiter is cancelled and the stub returns cleanly.
+    Outer loop: ``while not _draining(deps, shutdown_event)``.
+    Races ``local_queue.get()`` against the stop signals; on a stop win the
+    queue waiter is cancelled and the stub returns cleanly.
 
     On job get the stub registers in ``deps.active_jobs``, awaits a cancellable
     sentinel, writes terminal state via ``backend`` (shielded), and deregisters
     in ``finally``.
     """
-    while not shutdown_event.is_set():
+    while not _taking_new_work_stopped(deps, shutdown_event):
         q_get = asyncio.create_task(local_queue.get())
-        shut_wait = asyncio.create_task(shutdown_event.wait())
+        stop_waits = _stop_signal_waiters(deps, shutdown_event)
         try:
             _done, pending = await asyncio.wait(
-                [q_get, shut_wait],
+                [q_get, *stop_waits],
                 return_when=asyncio.FIRST_COMPLETED,
             )
             for task in pending:
                 task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await task
-            if shut_wait in _done and q_get not in _done:
+            if q_get not in _done:
                 return
-            # Why fall through on a both-done turn: the get has already
-            # TAKEN the job out of local_queue — returning here would
-            # discard it with no consumer run, no terminal write, and no
-            # release, leaving recovery to lock-lease expiry. The taken
-            # job runs this final iteration; the outer while's shutdown
-            # check then exits the loop.
         finally:
-            for task in [q_get, shut_wait]:
+            for task in [q_get, *stop_waits]:
                 if not task.done():
                     task.cancel()
 
         job: JobRow = q_get.result()
+
+        # A both-done turn: the get has already TAKEN the job out of
+        # local_queue, and DRAINING has ceded that row to whoever claims
+        # it next. Running it here is the double execution; dropping it
+        # is work destroyed. Putting it back is neither — the hand-back
+        # pass reads the DB, not this queue, and the row is released
+        # with its attempt refunded either way.
+        if _taking_new_work_stopped(deps, shutdown_event):
+            local_queue.put_nowait(job)
+            return
 
         # Slot-release point: the get() above dropped qsize by one, so a
         # saturated producer can claim again — wake it now (see
@@ -538,9 +596,9 @@ async def di_consumer_loop(
 ) -> None:
     """Pull one job per iteration and dispatch via dispatch_one_job.
 
-    Outer loop: ``while not shutdown_event.is_set()``.
-    Races ``local_queue.get()`` against ``shutdown_event.wait()``; on shutdown
-    win the queue waiter is cancelled and the loop returns cleanly.
+    Outer loop: ``while not _taking_new_work_stopped(deps, shutdown_event)``.
+    Races ``local_queue.get()`` against the stop signals; on a stop win the
+    queue waiter is cancelled and the loop returns cleanly.
 
     Each job is dispatched through dispatch_one_job which composes
     build_actor_scope + consume_one_job, providing DI-aware actor
@@ -554,32 +612,36 @@ async def di_consumer_loop(
         )
     clock: Clock = clock_obj
 
-    while not shutdown_event.is_set():
+    while not _taking_new_work_stopped(deps, shutdown_event):
         q_get = asyncio.create_task(local_queue.get())
-        shut_wait = asyncio.create_task(shutdown_event.wait())
+        stop_waits = _stop_signal_waiters(deps, shutdown_event)
         try:
             _done, pending = await asyncio.wait(
-                [q_get, shut_wait],
+                [q_get, *stop_waits],
                 return_when=asyncio.FIRST_COMPLETED,
             )
             for task in pending:
                 task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await task
-            if shut_wait in _done and q_get not in _done:
+            if q_get not in _done:
                 return
-            # Why fall through on a both-done turn: the get has already
-            # TAKEN the job out of local_queue — returning here would
-            # discard it with no dispatch, no terminal write, and no
-            # release, leaving recovery to lock-lease expiry. The taken
-            # job runs this final iteration; the outer while's shutdown
-            # check then exits the loop.
         finally:
-            for task in [q_get, shut_wait]:
+            for task in [q_get, *stop_waits]:
                 if not task.done():
                     task.cancel()
 
         job: JobRow = q_get.result()
+
+        # A both-done turn: the get has already TAKEN the job out of
+        # local_queue, and DRAINING has ceded that row to whoever claims
+        # it next. Running it here is the double execution; dropping it
+        # is work destroyed. Putting it back is neither — the hand-back
+        # pass reads the DB, not this queue, and the row is released
+        # with its attempt refunded either way.
+        if _taking_new_work_stopped(deps, shutdown_event):
+            local_queue.put_nowait(job)
+            return
 
         # Slot-release point: the get() above dropped qsize by one, so a
         # saturated producer can claim again — wake it now (see
@@ -636,6 +698,8 @@ async def di_consumer_loop(
             on_retry_exhausted_timeout=actor_ref.on_retry_exhausted_timeout,
             on_success=actor_ref.on_success,
             on_success_timeout=actor_ref.on_success_timeout,
+            on_cancel=actor_ref.on_cancel,
+            on_cancel_timeout=actor_ref.on_cancel_timeout,
         )
         try:
             outcome = await dispatch_one_job(

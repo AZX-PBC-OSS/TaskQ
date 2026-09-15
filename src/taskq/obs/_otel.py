@@ -40,7 +40,7 @@ import contextlib
 import functools
 import importlib.metadata
 import time
-from collections.abc import Callable, Generator, Iterable, Sequence
+from collections.abc import Callable, Generator, Iterable, Mapping, Sequence
 from typing import Literal, Protocol
 
 import structlog
@@ -61,6 +61,7 @@ __all__ = [
     "ConsumedOutcome",
     "get_meter",
     "get_tracer",
+    "reconcile_cron_failures",
     "record_archived_jobs",
     "record_backpressure_error",
     "record_cancel_requested",
@@ -68,6 +69,7 @@ __all__ = [
     "record_cron_failure",
     "record_deadline_exceeded_swept",
     "record_dispatch_duration",
+    "record_dispatch_failure",
     "record_election_attempt",
     "record_error_reporter_failure",
     "record_expired_archive_jobs",
@@ -88,6 +90,8 @@ __all__ = [
     "record_sub_enqueue_failure",
     "safe_start_span",
     "set_otel_enabled",
+    "update_actor_backlog_cache",
+    "update_actor_oldest_pending_age_cache",
     "update_disabled_schedules_count",
     "update_heartbeat_consecutive_failures",
     "update_keyed_reclaim_pending",
@@ -479,6 +483,31 @@ def record_dispatch_duration(queue: str, elapsed: float) -> None:
     _dispatch_duration.record(elapsed, {"queue": _bounded_queue(queue)})
 
 
+_dispatch_failures = get_meter().create_counter(
+    "taskq.dispatch.failures",
+    description=(
+        "Dispatch rounds that raised instead of returning a batch, labeled "
+        "by queue (capped -- see _bounded_queue) and error_type (exception "
+        "class name). A producer that fails every round keeps its process "
+        "up and leaves its backlog pending, so without this series a total "
+        "dispatch outage is indistinguishable from an idle queue."
+    ),
+    unit="1",
+)
+
+
+def record_dispatch_failure(queue: str, error_type: str) -> None:
+    """Bump the dispatch.failures counter.
+
+    ``error_type`` is the exception class name — bounded by the driver's
+    own exception hierarchy, not by anything caller-supplied.
+    Respects ``_otel_enabled`` — no-op when False.
+    """
+    if not _otel_enabled:
+        return
+    _dispatch_failures.add(1, {"queue": _bounded_queue(queue), "error_type": error_type})
+
+
 _consumed_messages = get_meter().create_counter(
     "messaging.client.consumed.messages",
     description=(
@@ -559,17 +588,13 @@ def record_process_duration(actor: str, queue: str, elapsed: float) -> None:
 #: any string at creation time, so the label is capped at the emitter
 #: (``_bounded_cron_actor`` below) rather than carried as-is.  The
 #: alerting purpose survives the relabel: a schedule stuck failing
-#: repeatedly keeps adding +1 to its actor's balance every tick.  The
-#: converse does not hold -- a non-zero balance does not mean a failing
-#: schedule, because an auto-disabled, re-enabled or deleted schedule
-#: strands its count on the actor's balance forever (re-enabling resets
-#: the DB column from the client process, which cannot emit a
-#: worker-counter delta), so the balance is a diagnostic, not the alert
-#: signal.  What the summed balance loses -- WHICH schedule -- no shipped
-#: consumer ever read: the alert fires on ``taskq.cron.disabled_schedules``
-#: and points the operator at ``cron_schedules.last_fire_error``;
-#: per-schedule debugging lives on the log lines and span attributes
-#: named above.
+#: repeatedly keeps adding +1 to its actor's series every tick, and both
+#: directions hold, because the tick reconciles the series against the
+#: database's own sum for the actors it measured
+#: (:func:`reconcile_cron_failures`) rather than leaving it a balance of
+#: the deltas one process happened to emit.  What the summed value loses
+#: -- WHICH schedule -- rides the log lines and span attributes named
+#: above, and ``cron_schedules.last_fire_error`` holds the reason.
 #:
 #: The ``worker_id`` parameters below are kept: they are part of the published
 #: ``taskq.obs`` surface, and dropping them would be a breaking change for a
@@ -793,6 +818,78 @@ _stranded_jobs_gauge = get_meter().create_observable_gauge(
 )
 
 
+_actor_backlog_cache: dict[tuple[str, str], int] = {}
+_actor_oldest_pending_age_cache: dict[tuple[str, str], float] = {}
+
+
+def update_actor_backlog_cache(data: dict[tuple[str, str], int]) -> None:
+    """Replace the per-(actor, queue) pending-depth cache from the sampler.
+
+    Queue-summed depth cannot separate "one actor on this queue is never
+    consumed" from "this queue is busy": the shared queue keeps moving, so
+    no depth threshold is crossed while one actor's rows pile up forever.
+    Split by actor, the unconsumed actor is the series that rises without
+    bound while its siblings stay flat.
+
+    An empty dict clears the gauge, so recovery is visible too.
+    """
+    global _actor_backlog_cache
+    _actor_backlog_cache = dict(data)
+
+
+def update_actor_oldest_pending_age_cache(data: dict[tuple[str, str], float]) -> None:
+    """Replace the per-(actor, queue) oldest-pending-age cache from the sampler.
+
+    Depth alone is ambiguous -- a deep queue that drains is healthy
+    throughput. Age is what separates the two: an actor nobody consumes has
+    a pending job whose age grows with wall clock, while a busy actor's
+    oldest pending job stays bounded by its drain rate however deep the
+    queue gets. Distinct from the fleet-wide oldest-DUE-age gauge, which
+    measures promotion (scheduled -> pending) and reads 0.0 for work that
+    is already pending and simply never taken.
+    """
+    global _actor_oldest_pending_age_cache
+    _actor_oldest_pending_age_cache = dict(data)
+
+
+# Both callbacks carry exactly {actor, queue}. Actor and queue names are
+# bounded by the deployment's own registration; a job, worker or schedule id
+# riding along here would make the series that exists to be alerted on the
+# series that cannot be stored.
+def _observe_actor_backlog(options: CallbackOptions) -> Iterable[Observation]:
+    for (actor, queue), depth in _actor_backlog_cache.items():
+        yield Observation(depth, {"actor": actor, "queue": queue})
+
+
+_actor_backlog_gauge = get_meter().create_observable_gauge(
+    name="taskq.jobs.actor_backlog",
+    description=(
+        "Pending jobs per (actor, queue) pair. An actor whose jobs are never "
+        "consumed raises no refusal and fails no job -- its rows simply "
+        "accumulate -- so this series is where that condition surfaces."
+    ),
+    unit="1",
+    callbacks=[_observe_actor_backlog],
+)
+
+
+def _observe_actor_oldest_pending_age(options: CallbackOptions) -> Iterable[Observation]:
+    for (actor, queue), age in _actor_oldest_pending_age_cache.items():
+        yield Observation(age, {"actor": actor, "queue": queue})
+
+
+_actor_oldest_pending_age_gauge = get_meter().create_observable_gauge(
+    name="taskq.jobs.oldest_pending_age_seconds",
+    description=(
+        "Seconds since the oldest still-pending job per (actor, queue) pair "
+        "was enqueued. Grows with wall clock for an actor nothing consumes; "
+        "stays bounded by the drain rate for a busy one."
+    ),
+    unit="s",
+    callbacks=[_observe_actor_oldest_pending_age],
+)
+
+
 _reservation_slots_cache: dict[str, int] = {}
 
 
@@ -886,6 +983,72 @@ def record_sub_enqueue_failure(actor: str, count: int) -> None:
             "enqueued but was not. Attributes: actor (parent job's actor)."
         ),
     ).add(count, {"actor": actor})
+
+
+def record_job_interrupted(actor: str, *, held: bool) -> None:
+    """Count a running attempt released because its worker is going away.
+
+    The rate is how much work a deployment's rollouts are re-running.
+    ``held`` distinguishes a job whose actor had already exited (released
+    immediately) from one still alive in the dying process (parked until
+    that process is provably gone) — a sustained ``held`` rate means
+    actors are outliving the cancellation graces, which is the sizing
+    signal an operator acts on. Respects ``_otel_enabled``.
+    """
+    if not _otel_enabled:
+        return
+    _lazy_counter(
+        "taskq.jobs.interrupted",
+        description=(
+            "Running attempts released back to the queue by a worker "
+            "shutdown, with the claim's attempt refunded. Attributes: "
+            "actor, hold ('0' released immediately, '>0' held until the "
+            "releasing process is gone)."
+        ),
+    ).add(1, {"actor": actor, "hold": ">0" if held else "0"})
+
+
+def record_job_interrupted_noop() -> None:
+    """Count an interrupt write whose fence matched no row.
+
+    Either another writer moved the row first or an operator cancel is in
+    flight on it — the shutdown deliberately loses both races. Counted
+    because a failure path that emits nothing is a failure path nobody
+    can see; a rising rate means shutdowns and cancels are colliding.
+    Respects ``_otel_enabled``.
+    """
+    if not _otel_enabled:
+        return
+    _lazy_counter(
+        "taskq.jobs.interrupted_noop",
+        description=(
+            "Interrupt writes that matched no row because the job had "
+            "already moved or an operator cancel was in flight."
+        ),
+    ).add(1)
+
+
+def record_terminal_write_fenced_out(actor: str, write: str) -> None:
+    """Count a terminal write whose fence matched no row.
+
+    The write found the job no longer running under this attempt: the
+    lease lapsed and the row was re-claimed, possibly by this same worker
+    at a later attempt. The attempt's work is discarded rather than
+    reported, so the rate here is how often leases are being lost —
+    silent at-least-twice execution before this was detected, and wasted
+    actor time after. Attributes: actor, write (the backend method).
+    Respects ``_otel_enabled`` — no-op when False.
+    """
+    if not _otel_enabled:
+        return
+    _lazy_counter(
+        "taskq.jobs.terminal_write_fenced_out",
+        description=(
+            "Terminal writes that matched no row because the job was no "
+            "longer running under the writing attempt. Attributes: actor, "
+            "write (backend method name)."
+        ),
+    ).add(1, {"actor": actor, "write": write})
 
 
 _ratelimit_refund_failures = get_meter().create_counter(
@@ -1263,21 +1426,38 @@ def _bounded_cron_actor(actor: str) -> str:
 _cron_consecutive_failures = get_meter().create_up_down_counter(
     "taskq.cron.consecutive_failures",
     description=(
-        "Cron execution failure balance per actor, via +1 per failure and "
-        "-count on a successful reset. The balance is the SUM over the "
-        "actor's schedules and can carry permanent residue from schedules "
-        "that were disabled, re-enabled (the client-side enable resets the "
-        "DB column with no metric delta) or deleted -- the authoritative "
-        "per-schedule counts are cron_schedules.consecutive_failures and "
-        "the logs; alert on taskq.cron.disabled_schedules instead. The "
-        "actor label is capped at the first 100 distinct names per process "
-        "(overflow collapses to '_other_'). Per-schedule attribution is on "
-        "the cron fired / cron fire failed log lines and the cron-fire "
-        "span attribute taskq.cron_schedule_id, not on this label -- see "
-        "the cardinality note above _lock_expires_in_seconds."
+        "Outstanding cron failure count per actor: the SUM of "
+        "cron_schedules.consecutive_failures over the actor's schedules. "
+        "Each tick reconciles the series against that sum for every actor "
+        "it measured, so a clear, a disable or a delete performed by any "
+        "process self-corrects on the next tick that measures the actor "
+        "and the value returns to zero once none of its schedules is "
+        "failing. The actor label is capped at the first 100 distinct "
+        "names per process (overflow collapses to '_other_'). "
+        "Per-schedule attribution is on the cron fired / cron fire failed "
+        "log lines and the cron-fire span, not on this label -- see the "
+        "cardinality note above _lock_expires_in_seconds."
     ),
     unit="1",
 )
+
+_cron_failure_levels: dict[str, int] = {}
+"""Per-label running total of everything this process has emitted into
+:data:`_cron_consecutive_failures`, keyed by the BOUNDED label value.
+
+An UpDownCounter is a delta instrument: nothing can read its current
+value back, so reconciling it against the database requires knowing what
+this process already put in.  Keyed by bounded label because overflow
+actors share the ``_other_`` series and must reconcile as that one
+series, not as the names that collapsed onto it."""
+
+_cron_failure_levels_instrument: object = _cron_consecutive_failures
+"""The instrument :data:`_cron_failure_levels` describes.
+
+The ledger is only meaningful for the instrument that received its adds;
+a replaced instrument starts at zero and a level carried over from the
+previous one would make the first reconciliation emit a correction for
+deltas the new instrument never saw."""
 
 
 _cron_lock_contention = get_meter().create_counter(
@@ -1307,13 +1487,27 @@ def record_cron_lock_contention(worker_id: str) -> None:
     _cron_lock_contention.add(1)
 
 
+def _emit_cron_failure_delta(label: str, delta: int) -> None:
+    """Add *delta* to the failure series for an already-bounded *label* and
+    keep :data:`_cron_failure_levels` in step with it."""
+    global _cron_failure_levels_instrument
+    if _cron_failure_levels_instrument is not _cron_consecutive_failures:
+        _cron_failure_levels.clear()
+        _cron_failure_levels_instrument = _cron_consecutive_failures
+    _cron_consecutive_failures.add(delta, {"actor": label})
+    _cron_failure_levels[label] = _cron_failure_levels.get(label, 0) + delta
+
+
 def record_cron_failure(actor: str, delta: int) -> None:
     """Record a cron failure delta on the UpDownCounter.
 
     On failure, callers add ``+1`` per failure. On success, callers add
     ``-current_count`` for that schedule to reset the counter to zero —
     a simple ``add(-1)`` would leave a non-zero cumulative value if
-    there were multiple consecutive failures.
+    there were multiple consecutive failures.  The per-tick deltas keep
+    the series moving in step with the writes the tick makes; the
+    reconciliation in :func:`reconcile_cron_failures` is what makes the
+    value TRUE for changes no delta could describe.
 
     Labeled by ``actor``, admitted through the same cap as ``queue``:
     the failure path emits the raw ``cron_schedules.actor`` string and
@@ -1323,14 +1517,52 @@ def record_cron_failure(actor: str, delta: int) -> None:
     above ``_bounded_cron_actor``).  Schedules on one actor share a
     series, and the per-schedule attribution the caller already holds
     rides on the ``cron fired`` / ``cron fire failed`` log lines and the
-    cron-fire span instead — ``schedule_id`` is a per-row,
-    runtime-minted UUID and identity-like (see the cardinality note
-    above ``_lock_expires_in_seconds``).
+    cron-fire span instead — a schedule id is a per-row, runtime-minted
+    UUID and identity-like (see the cardinality note above
+    ``_lock_expires_in_seconds``).
     Respects ``_otel_enabled`` — no-op when False.
     """
     if not _otel_enabled:
         return
-    _cron_consecutive_failures.add(delta, {"actor": _bounded_cron_actor(actor)})
+    _emit_cron_failure_delta(_bounded_cron_actor(actor), delta)
+
+
+def reconcile_cron_failures(totals: Mapping[str, int]) -> None:
+    """Move each measured actor's failure series onto the database's own
+    outstanding-failure sum.
+
+    *totals* maps actor name to the summed ``consecutive_failures`` the
+    database holds for that actor, as measured inside the committing
+    transaction.  A worker can only ever emit deltas for the strikes and
+    resets IT applied, but schedules are cleared, disabled, re-enabled and
+    deleted by clients, by the CLI and by the admin UI — every one of
+    those zeroes or removes a count some worker counted up, with no
+    process able to emit the compensating delta.  Left to the deltas
+    alone the series drifts permanently upward and an alert on it becomes
+    unreadable, so each measured actor is moved onto the measured sum.
+
+    ONLY the actors present in *totals* are touched.  A tick measures the
+    actors it looked at and can speak for no others: reconciling an
+    absent actor would drive a still-failing actor's series to zero on
+    every tick that happened not to select one of its schedules.
+    Actors past the label cap share the ``_other_`` series, so their sums
+    are combined before the correction — reconciling them one at a time
+    would have each overwrite the last on the series they share, and only
+    the final one would be represented.  That shared series is only as
+    true as the tick's coverage of the actors on it, which is the price
+    of the cap; a named actor's own series is exact.
+    Respects ``_otel_enabled`` — no-op when False.
+    """
+    if not _otel_enabled:
+        return
+    measured: dict[str, int] = {}
+    for actor, total in totals.items():
+        label = _bounded_cron_actor(actor)
+        measured[label] = measured.get(label, 0) + total
+    for label, total in measured.items():
+        correction = total - _cron_failure_levels.get(label, 0)
+        if correction:
+            _emit_cron_failure_delta(label, correction)
 
 
 _disabled_schedules_count: int = 0
@@ -1382,11 +1614,15 @@ _disabled_schedules_gauge = get_meter().create_observable_gauge(
 
 
 def record_sweep_timeout(sweep_name: str) -> None:
-    """Count a sweep call that was cut short by a deadline or server cancel.
+    """Count a sweep or sampler call that did not complete.
 
-    Called on the failure path (``TimeoutError`` / ``QueryCanceledError``),
-    never the success path. Any sustained rate means sweeps are being
-    aborted, not merely slow. Respects ``_otel_enabled`` — no-op when False.
+    Called on the failure path, never the success path. Batch sweeps count
+    the deadline family (``TimeoutError`` / ``QueryCanceledError``); gauge
+    samplers count every read failure, because a reset connection mutes the
+    gauge they feed exactly as completely as a cancelled query does, and a
+    gauge serving a stale cache is indistinguishable from a healthy flat
+    line. Any sustained rate means work is not finishing.
+    Respects ``_otel_enabled`` — no-op when False.
     """
     if not _otel_enabled:
         return
@@ -1396,9 +1632,10 @@ def record_sweep_timeout(sweep_name: str) -> None:
 _sweep_timeouts = get_meter().create_counter(
     "taskq.maintenance_leader.sweep_timeouts",
     description=(
-        "Sweep calls aborted by a deadline or server-side statement cancel, "
-        "labeled by sweep_name. A non-zero rate means sweeps are being "
-        "cancelled, not completing slowly."
+        "Sweep and gauge-sampler calls that did not complete, labeled by "
+        "sweep_name: batch sweeps aborted by a deadline or server-side "
+        "statement cancel, and sampler reads that failed outright. A "
+        "non-zero rate means work is being aborted, not completing slowly."
     ),
     unit="1",
 )

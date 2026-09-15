@@ -353,6 +353,38 @@ def _unlink_stale_socket(path: str) -> None:
         probe.close()
 
 
+def _bind_unix_socket(path: str) -> socket.socket:
+    """Bind a listening unix socket at *path*, refusing to displace a live one.
+
+    Binding is done here rather than by handing the path to the event loop
+    because the loop's own unix-server helper removes whatever socket file
+    it finds at the path before binding its own. That is a reasonable
+    default for a process that owns its path, and exactly wrong for a path
+    two processes can see: the newcomer takes the address silently, and from
+    then on every probe an orchestrator directs at the first worker is
+    answered by the second. The first worker keeps running and keeps
+    claiming jobs while its own liveness, readiness and shutdown phase have
+    become unobservable at the only address anyone was told to ask.
+
+    Binding the socket ourselves makes the collision what it should be: an
+    ``EADDRINUSE`` the operator sees at boot. A path with nothing listening
+    on it has already been cleared by :func:`_unlink_stale_socket`, so a
+    crashed predecessor still costs nobody a restart.
+
+    :raises OSError: the address is in use by a live listener, or the bind
+        failed for any other reason.
+    """
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        sock.bind(path)
+        sock.listen(socket.SOMAXCONN)
+        sock.setblocking(False)
+    except BaseException:
+        sock.close()
+        raise
+    return sock
+
+
 async def _read_request_head(
     reader: asyncio.StreamReader,
     *,
@@ -424,15 +456,16 @@ class HealthServer:
         if deps.settings.health_tasks_enabled:
             old_umask = os.umask(0o077)
             try:
-                self._server = await asyncio.start_unix_server(
-                    self._handle_unix, path=self._socket_path
-                )
+                sock = _bind_unix_socket(self._socket_path)
             finally:
                 os.umask(old_umask)
         else:
-            self._server = await asyncio.start_unix_server(
-                self._handle_unix, path=self._socket_path
-            )
+            sock = _bind_unix_socket(self._socket_path)
+        try:
+            self._server = await asyncio.start_unix_server(self._handle_unix, sock=sock)
+        except BaseException:
+            sock.close()
+            raise
         # Capture the inode we just bound so `stop()` can later verify it
         # still owns this path before unlinking — a slow-shutting-down
         # worker must never delete a *replacement* worker's fresh socket

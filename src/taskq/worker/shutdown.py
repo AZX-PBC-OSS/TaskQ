@@ -5,13 +5,19 @@ Consumers (``orchestrate_shutdown``, health endpoints) MUST observe
 per-phase work.  Value ``NONE (0)`` means the worker is running normally.
 
 Phase ordering invariant:
-NONE (0) → DRAINING (1) → CANCELLING (2) → FORCING (3) → ABANDONING (4).
+NONE (0) → DRAINING (1) → CANCELLING (2) → FORCING (3) → RELEASING (4).
+
+A shutdown never decides a job's terminal state. Work interrupted by a
+deploy, a drain or an eviction is released back to the fleet with its
+attempt refunded, because "this process is leaving" says nothing about
+whether the job can succeed. Only an operator cancel — a decision about
+the job itself — keeps the terminal ladder that ends in ``abandoned``.
 
 SIGQUIT is not registered; produces a core dump on Linux. Use tini or
 ``ulimit -c 0`` for containerised deployments.
 
 The second-SIGTERM contract: if the second SIGTERM arrives during
-FORCING or ABANDONING, setting ``escalate_event`` is a no-op — the
+FORCING or RELEASING, setting ``escalate_event`` is a no-op — the
 orchestrator is already past CANCELLING.
 """
 
@@ -19,6 +25,7 @@ import asyncio
 import os
 import signal
 import sys
+from datetime import timedelta
 from enum import IntEnum
 from typing import TYPE_CHECKING
 from uuid import UUID
@@ -31,12 +38,14 @@ from taskq.backend._protocol import Backend, CancelPhase
 from taskq.backend._sql import (
     parse_rowcount,  # pyright: ignore[reportPrivateUsage]  # Why: parse_rowcount is the canonical command-tag parser; used identically in worker/cancel.py.
 )
+from taskq.backend._sql_templates import ATTEMPT_REFUND_SQL
 from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining.
 )
 from taskq.obs import get_logger
 from taskq.worker._transient import TRANSIENT_PG_ERRORS
 from taskq.worker._watchdog import dump_task_stacks
+from taskq.worker.cancel import CancelOrigin
 
 if TYPE_CHECKING:
     from taskq.settings import WorkerSettings
@@ -74,18 +83,31 @@ class ShutdownPhase(IntEnum):
     DRAINING   — stop accepting new dispatch, finish in-flight jobs.
     CANCELLING — cooperative cancel of remaining jobs.
     FORCING    — force-cancel grace, terminal writes shielded.
-    ABANDONING — pod must be replaced to reclaim slots.
+    RELEASING  — hand whatever is still in flight back to the fleet.
+
+    The integers are the wire format: ``/health`` reports them and the
+    CLI tables them, so they never change. Only value 4's NAME changed,
+    when the phase stopped terminalising work and started releasing it —
+    an operator reading a phase at the moment a pod dies must not be told
+    a confident wrong thing about what happened to their jobs.
     """
 
     NONE = 0
     DRAINING = 1
     CANCELLING = 2
     FORCING = 3
-    ABANDONING = 4
+    RELEASING = 4
 
 
 async def drain_local_queue_to_pending(deps: "WorkerDeps", worker_id: UUID) -> int:
     """Re-pend every job this worker claimed but never started.
+
+    The claim that put a row in this worker's buffer already stamped
+    ``attempt + 1``; the hand-back is the statement that no execution
+    happened, so the increment is returned through the shared refund
+    expression. Without it ``attempt`` climbs once per deploy for a job
+    that never ran, and the budget an operator sized for real failures is
+    spent absorbing their own rollouts.
 
     Issues a single bounded-timeout UPDATE that clears the lock on rows
     where ``locked_by_worker = $worker_id AND status = 'running'``,
@@ -121,16 +143,16 @@ async def drain_local_queue_to_pending(deps: "WorkerDeps", worker_id: UUID) -> i
     # would refuse the uuid[] bind parameter's declared type below.
     active_ids: list[UUID] = [active.job_id for active in deps.active_jobs.all()]
     sql = (
-        f"UPDATE \"{schema}\".jobs SET status='pending', locked_by_worker=NULL, "  # noqa: S608  # Why: schema validated against _IDENT_RE before interpolation; asyncpg has no parameter binding for identifiers (same rationale as migrate.py).
-        f"lock_expires_at=NULL "
-        f"WHERE locked_by_worker=$1 AND status='running'"
+        f"UPDATE \"{schema}\".jobs j SET status='pending', locked_by_worker=NULL, "  # noqa: S608  # Why: schema validated against _IDENT_RE before interpolation; asyncpg has no parameter binding for identifiers (same rationale as migrate.py).
+        f"lock_expires_at=NULL, attempt={ATTEMPT_REFUND_SQL} "
+        f"WHERE j.locked_by_worker=$1 AND j.status='running'"
     )
     # The exclusion clause is only bound when there is something to
     # exclude: an empty registry (the common drained-worker case) keeps
     # the single-parameter statement shape the helper has always issued.
     params: list[UUID | list[UUID]] = [worker_id]
     if active_ids:
-        sql += " AND id <> ALL($2::uuid[])"
+        sql += " AND j.id <> ALL($2::uuid[])"
         params.append(active_ids)
 
     try:
@@ -153,6 +175,32 @@ async def drain_local_queue_to_pending(deps: "WorkerDeps", worker_id: UUID) -> i
         return 0
 
 
+def _release_hold(
+    deps: "WorkerDeps",
+    settings: "WorkerSettings",
+    loop: asyncio.AbstractEventLoop,
+) -> timedelta:
+    """How long a released row must stay unclaimable.
+
+    A job released while its coroutine is still alive in this process
+    must not be claimable elsewhere until this process can no longer
+    touch it. With the watchdog on, that instant is known: it force-exits
+    at ``termination_grace_period`` measured from the start of shutdown,
+    so the hold is whatever remains of that budget.
+
+    With the watchdog disabled nothing guarantees an exit, so the hold
+    falls back to ``lock_lease`` — the same bound the lease-expiry path
+    imposes today, now without spending the attempt to get it.
+    """
+    if not settings.watchdog_enabled:
+        return timedelta(seconds=settings.lock_lease)
+    started_at = deps.shutdown_started_at
+    if started_at is None:
+        return timedelta(seconds=settings.termination_grace_period)
+    remaining = settings.termination_grace_period - (loop.time() - started_at)
+    return timedelta(seconds=max(0.0, remaining))
+
+
 async def orchestrate_shutdown(
     deps: "WorkerDeps",
     settings: "WorkerSettings",
@@ -164,7 +212,7 @@ async def orchestrate_shutdown(
 ) -> int:
     """Run the four-phase shutdown orchestration.
 
-    Phases are DRAINING → CANCELLING → FORCING → ABANDONING, followed by
+    Phases are DRAINING → CANCELLING → FORCING → RELEASING, followed by
     TaskQ-owned ``leader_conn`` close and ``shutdown_event.set()``.  Each
     phase is assigned to ``deps.shutdown_phase`` BEFORE any per-phase work.
     Returns 0 on clean exit.
@@ -199,6 +247,12 @@ async def orchestrate_shutdown(
         )
         for active in deps.active_jobs.all():
             active.ctx.cancel_event.set()
+            # Only where no origin is recorded yet: an operator cancel the
+            # controller already observed keeps its origin, because the
+            # row says that cancel is about the job rather than about
+            # this process leaving.
+            if active.cancel_origin is CancelOrigin.NONE:
+                active.cancel_origin = CancelOrigin.SHUTDOWN
             if active.cancel_phase < CancelPhase.COOPERATIVE:
                 active.cancel_phase = CancelPhase.COOPERATIVE
                 active.cancel_observed_at = loop.time()
@@ -222,21 +276,35 @@ async def orchestrate_shutdown(
             elapsed_seconds=loop.time() - t0,
         )
         for active in deps.active_jobs.all():
-            try:
-                # shield_with_retrieval, not plain asyncio.shield: shutdown
-                # races escalating cancellation, so a detached write here can
-                # be double-cancelled — its outcome must be retrieved (see
-                # taskq._shield).
-                await shield_with_retrieval(
-                    backend.write_cancel_escalation(active.job_id, worker_id, phase=2)
-                )
-            except Exception as e:
-                _log.warning(
-                    "force-cancel-pg-write-failed",
-                    job_id=str(active.job_id),
-                    error=str(e),
-                )
-                continue
+            # The escalation write advances an OPERATOR cancel from phase 1
+            # to phase 2. A shutdown-origin entry's row sits at phase 0 —
+            # nobody wrote a cancel request for it — so the statement's
+            # `cancel_phase = 1` guard could only ever match nothing, and
+            # issuing it would be a guaranteed no-op whose False reads
+            # like a failure. Skipping it is what leaves the escalation's
+            # unmatched result meaningful.
+            if active.cancel_origin is CancelOrigin.OPERATOR:
+                try:
+                    # shield_with_retrieval, not plain asyncio.shield: shutdown
+                    # races escalating cancellation, so a detached write here can
+                    # be double-cancelled — its outcome must be retrieved (see
+                    # taskq._shield).
+                    escalated = await shield_with_retrieval(
+                        backend.write_cancel_escalation(active.job_id, worker_id, phase=2)
+                    )
+                except Exception as e:
+                    _log.warning(
+                        "force-cancel-pg-write-failed",
+                        job_id=str(active.job_id),
+                        error=str(e),
+                    )
+                    continue
+                if not escalated:
+                    _log.warning(
+                        "force-cancel-escalation-unmatched",
+                        kind="force_cancel_escalation_unmatched",
+                        job_id=str(active.job_id),
+                    )
             active.task.cancel()
             active.cancel_phase = CancelPhase.FORCED
 
@@ -244,26 +312,89 @@ async def orchestrate_shutdown(
         while loop.time() < deadline and deps.active_jobs.count() > 0:  # noqa: ASYNC110  # Why: poll-for-exit with deadline is the intentional design for shutdown phases; the timed grace period cannot be expressed with Event alone.
             await asyncio.sleep(0.1)
 
-        # ── Phase 4: ABANDONING ────────────────────────────────────────
-        deps.shutdown_phase = ShutdownPhase.ABANDONING
+        # ── Phase 4: RELEASING ─────────────────────────────────────────
+        deps.shutdown_phase = ShutdownPhase.RELEASING
+        hold = _release_hold(deps, settings, loop)
         _log.info(
             "shutdown-phase",
             kind="shutdown_phase",
-            phase="ABANDONING",
+            phase="RELEASING",
             active_jobs_count=deps.active_jobs.count(),
+            hold_seconds=hold.total_seconds(),
             elapsed_seconds=loop.time() - t0,
         )
+        released = 0
+        noop = 0
+        abandoned = 0
         for active in deps.active_jobs.all():
+            if active.cancel_origin is CancelOrigin.OPERATOR:
+                # The operator asked for this job to stop, so the ladder
+                # they started owns its terminal state — an unresponsive
+                # actor under an operator cancel is still abandoned.
+                try:
+                    if await shield_with_retrieval(backend.mark_abandoned(active.job_id)):
+                        abandoned += 1
+                except asyncio.CancelledError:
+                    pass
+                except Exception as exc:
+                    _log.warning(
+                        "abandon-pg-write-failed",
+                        job_id=str(active.job_id),
+                        error=str(exc),
+                    )
+                continue
             try:
-                await shield_with_retrieval(backend.mark_abandoned(active.job_id))
+                outcome = await shield_with_retrieval(
+                    backend.mark_interrupted(
+                        active.job_id,
+                        worker_id,
+                        attempt=active.ctx.attempt,
+                        hold=hold,
+                    )
+                )
             except asyncio.CancelledError:
                 pass
             except Exception as exc:
                 _log.warning(
-                    "abandon-pg-write-failed",
+                    "interrupt-pg-write-failed",
                     job_id=str(active.job_id),
                     error=str(exc),
                 )
+            else:
+                if outcome == "noop":
+                    # An operator cancel landed on the row after this
+                    # entry was stamped, or the job's own consumer
+                    # released it first. Either way the row has moved on
+                    # and this process must not write over it.
+                    noop += 1
+                    _log.debug(
+                        "interrupt-fenced-out",
+                        kind="interrupt_fenced_out",
+                        job_id=str(active.job_id),
+                    )
+                else:
+                    released += 1
+        _log.info(
+            "shutdown-phase-releasing-result",
+            kind="shutdown_phase",
+            phase="RELEASING",
+            released=released,
+            noop=noop,
+            abandoned=abandoned,
+            hold_seconds=hold.total_seconds(),
+        )
+
+        # ── leadership handback ────────────────────────────────
+        # Resigning the role is what makes a replacement pod's takeover take
+        # one election cycle instead of the remainder of a lease nobody is
+        # renewing. It runs BEFORE the connection close below, because the
+        # statement needs that connection; it is fenced on this pod's term,
+        # so it can only ever give up a role this pod still holds. Imported
+        # here rather than at module scope: the leader module reaches this
+        # one through deps, so a top-level import would close a cycle.
+        from taskq.worker.leader import resign_leadership
+
+        await resign_leadership(deps, worker_id)
 
         # ── leader_conn close ──────────────────────────────────
         # Why the owns_leader_conn guard: the ownership contract ("TaskQ
@@ -272,10 +403,9 @@ async def orchestrate_shutdown(
         # is also left in place for caller-owned conns: the leader
         # election loop keeps running until shutdown_event fires (finally
         # block below), and a None leader_conn would make it open a
-        # *fresh* conn and possibly re-acquire the advisory lock
-        # mid-shutdown. For TaskQ-owned conns, close+null releases the
-        # advisory lock early so a replacement pod can take over before
-        # the SIGTERM budget expires.
+        # *fresh* conn and possibly re-acquire the role mid-shutdown. For
+        # TaskQ-owned conns, close+null also releases the transition
+        # advisory lock with the session.
         #
         # Why set → null → close, in that order (two races, one ordering):
         # (a) the bounded close can park for seconds, so shutdown_event is

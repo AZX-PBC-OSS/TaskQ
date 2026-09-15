@@ -60,7 +60,16 @@ ON CONFLICT (actor) DO UPDATE SET
 # literal: the disagreement is real drift to surface. The check is written
 # out explicitly below rather than joined to this tuple so that
 # difference stays visible at the comparison site.
-_CAPACITY_FIELDS = ("max_concurrent", "max_pending", "result_ttl")
+#
+# ``max_concurrent`` is deliberately excluded: it is the one capacity
+# field that also gates dispatch, so
+# ``_emit_resolved_capacity_startup_lines`` (which runs later in bootstrap,
+# once every registered actor is guaranteed a stored row) reports its
+# divergence at WARNING under ``actor-config-capacity-divergence`` —
+# alongside the resolved number and the layer that binds it, which this
+# pass cannot know. Reporting it again here would double-emit the same
+# drift under a second event name for no added information.
+_CAPACITY_FIELDS = ("max_pending", "result_ttl")
 
 # Fields where a stored/registered mismatch indicates a real correctness
 # bug rather than a deliberate operator override — no operator surface can
@@ -83,12 +92,16 @@ async def sync_actor_config(
       2. For each registered actor with a stored row, compare the
          registered value to the stored value field by field:
 
-         - **Capacity fields** (``max_concurrent``, ``max_pending``,
-           ``result_ttl``) are operator-owned once a row exists. A
-           differing registered literal is logged at
-           ``actor-config-capacity-override`` (info level — this is an
-           expected operator override, not a bug) and never raises. The
-           stored value is left untouched by the UPSERT below.
+         - **Capacity fields** (``max_pending``, ``result_ttl``) are
+           operator-owned once a row exists. A differing registered
+           literal is logged at ``actor-config-capacity-override`` (info
+           level — this is an expected operator override, not a bug) and
+           never raises. The stored value is left untouched by the UPSERT
+           below. ``max_concurrent`` is the same kind of override but is
+           reported downstream instead, by
+           ``_emit_resolved_capacity_startup_lines`` under
+           ``actor-config-capacity-divergence`` — the only pass that also
+           knows the resolved dispatch number and the layer binding it.
          - **The queue assignment** is likewise operator-owned once a row
            exists (moved by `taskq actor-config move-queue`): a differing
            literal is logged at ``actor-config-queue-override`` (warning

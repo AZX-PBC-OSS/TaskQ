@@ -66,6 +66,7 @@ from taskq.backend._sweeps import (
 )
 from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining
+    CANCEL_ORIGIN_PENDING,
     DEFAULT_EVENT_WRITER_BATCH_SIZE,
     DEFAULT_EVENT_WRITER_STATEMENT_TIMEOUT_MS,
 )
@@ -189,14 +190,29 @@ async def _cancel_where(
         ORDER BY id
         LIMIT ${limit_ph}
     ),
+    -- MATERIALIZED so the UPDATE's scan of jobs is DRIVEN from this
+    -- batch's ids. Inlined, the planner is free to scan jobs and apply
+    -- the status predicate as a post-scan filter, which re-visits and
+    -- re-rejects every row earlier batches already cancelled — the whole
+    -- quadratic term, and invisible in the bounded `matching` CTE above.
+    prev AS MATERIALIZED (
+        SELECT id, status AS prev_status
+        FROM matching
+    ),
     cancelled AS (
         UPDATE "{schema}".jobs AS j
-        SET status = 'cancelled', finished_at = clock_timestamp()
-        FROM (
-            SELECT id, status AS prev_status
-            FROM matching
-        ) AS prev
+        -- Same cancel-origin marker the single-job path stamps: the same
+        -- outcome must read the same way whichever path produced it, or a
+        -- cancelled-jobs dashboard splits into two populations that mean
+        -- one thing and only one of them carries an explanation.
+        SET status = 'cancelled', finished_at = clock_timestamp(),
+            error_class = '{CANCEL_ORIGIN_PENDING}'
+        FROM prev
         WHERE j.id = prev.id
+          -- EPQ re-check, load-bearing: a dispatcher that claimed this
+          -- row (pending -> running) between the CTE's snapshot and this
+          -- UPDATE's row lock must drop out rather than be cancelled
+          -- mid-flight.
           AND j.status IN ('pending', 'scheduled')
         RETURNING j.id, prev.prev_status
     )

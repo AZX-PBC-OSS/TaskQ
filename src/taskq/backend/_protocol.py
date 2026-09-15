@@ -43,12 +43,21 @@ else:
 from pydantic import AfterValidator, BaseModel, ConfigDict
 
 from taskq._json import check_no_nul_str
-from taskq.constants import DEFAULT_CHUNK_SIZE, DEFAULT_RECLAIM_POLL_LIMIT
+from taskq.constants import (
+    DEFAULT_CHUNK_SIZE,
+    DEFAULT_RECLAIM_POLL_LIMIT,
+    MAX_ENQUEUABLE_MAX_ATTEMPTS,
+    check_non_negative_duration,
+    check_smallint_domain,
+)
 
 __all__ = [
     "BACKEND_PROTOCOL_VERSION",
+    "DEFAULT_UNIQUE_STATES",
+    "DENIAL_OUTCOMES",
     "DST_STRATEGIES",
     "JOB_STATUS_VALUES",
+    "RETRY_SOURCE_EXCLUSIONS",
     "SNOOZE_OUTCOME_VALUES",
     "AttemptOutcome",
     "AttemptRow",
@@ -68,6 +77,7 @@ __all__ = [
     "EventRow",
     "IdempotencyKey",
     "IdentityKey",
+    "InterruptOutcome",
     "JobFilter",
     "JobId",
     "JobPage",
@@ -185,6 +195,35 @@ so validation can never drift from the type.  Used by
 reach a backend.
 """
 
+DEFAULT_UNIQUE_STATES: Final[tuple[JobStatus, ...]] = (
+    "pending",
+    "scheduled",
+    "running",
+    "succeeded",
+)
+"""Job statuses a ``unique_for`` window suppresses duplicates against.
+
+``unique_for`` expresses "at most one job for this identity in this
+period", and callers reach for it because the work is not safe to repeat:
+a re-delivered webhook, a retried API call, a double-clicked button.
+``succeeded`` is therefore in the set — it is the state that says the
+work already happened, which is the precise condition the window exists
+to detect. Leaving it out would free the identity the instant the first
+job completes, so the window would stop protecting it exactly when it had
+something to protect, and the faster the work finished the wider the
+unguarded gap.
+
+The failure-terminal states are deliberately absent. A job that failed,
+was cancelled, crashed or was abandoned did *not* do the work, so
+suppressing the next request for the rest of the window would turn one
+transient failure into a whole window of silently dropped work.
+
+Callers wanting the narrower "block only concurrent execution" rule pass
+it explicitly as ``unique_states``; a caller may equally fold a
+failure-terminal state in, which is what the terminal-target dedup
+warning exists for.
+"""
+
 type AttemptOutcome = Literal[
     "succeeded",
     "failed",
@@ -195,6 +234,16 @@ type AttemptOutcome = Literal[
     "reservation_denied",
     "rate_limit_denied",
 ]
+
+type InterruptOutcome = Literal["pending", "scheduled", "failed:DeadlineExceeded", "noop"]
+""":meth:`Backend.mark_interrupted`'s four answers.
+
+``"pending"`` — released and immediately claimable. ``"scheduled"`` — held
+until the releasing process is provably gone. ``"failed:DeadlineExceeded"``
+— the hold reached past the job's own ``schedule_to_close``. ``"noop"`` —
+the fence matched no row, so the caller must route to the cancel ladder
+rather than assume the release landed.
+"""
 
 type SnoozeOutcome = Literal["snoozed", "reservation_denied", "rate_limit_denied"]
 """The outcomes :meth:`Backend.mark_snoozed`'s statement arms key on.
@@ -223,6 +272,47 @@ Derived from the ``SnoozeOutcome`` Literal itself (the canonical
 declaration) so the guard's legal set can never drift from the type —
 the same single-source pattern as :data:`JOB_STATUS_VALUES` and
 :data:`DST_STRATEGIES`.
+"""
+
+DENIAL_OUTCOMES: Final[frozenset[SnoozeOutcome]] = frozenset(
+    {"reservation_denied", "rate_limit_denied"}
+)
+"""The :data:`SnoozeOutcome` values that mean admission refused a slot.
+
+The complement of ``'snoozed'``, which is the actor asking to come back
+later.  Both backends key ``rate_limit_blocked_count`` on this set, on
+the rescheduling arm and on the deadline arm alike, so the membership
+test exists once rather than once per arm per backend.
+"""
+
+
+RETRY_SOURCE_EXCLUSIONS: Final[frozenset[JobStatus]] = frozenset(
+    {"running", "pending", "scheduled"}
+)
+"""The statuses :meth:`Backend.retry_job` refuses as a re-run source.
+
+An operator re-run is "run this again", so every state a job can come to
+rest in is a valid source — ``succeeded`` included (the status records
+that the actor returned without raising, never that the result was
+right, so this is the replay path after a bad deploy) and ``abandoned``
+included (a deploy interrupted the job; it did not fail, and it is the
+state most likely to need a manual re-run).
+
+Each exclusion is a correctness constraint rather than a judgement about
+whether the work deserves repeating:
+
+``running``
+    a live attempt owns the row.  Re-pending it races that attempt's
+    terminal write and the job can execute twice concurrently.
+``pending`` / ``scheduled``
+    the job is already queued to run.  There is nothing to put back, and
+    re-pending would discard its place in the dispatch order and raise
+    ``max_attempts`` to fund a run that has not happened yet.
+
+Read by both backends' ``retry_job``, by the admin endpoint's gate, and
+by the job-detail template's button, so the rule is stated once instead
+of once per surface — the drift that let the endpoint keep refusing what
+the backends had already been taught to accept.
 """
 
 
@@ -562,7 +652,7 @@ class EnqueueArgs:
     span_id: str | None = None
     result_ttl: timedelta | None = None
     unique_for: timedelta | None = None
-    unique_states: tuple[JobStatus, ...] = ("pending", "scheduled", "running")
+    unique_states: tuple[JobStatus, ...] = DEFAULT_UNIQUE_STATES
     metadata: dict[str, object] = field(default_factory=dict[str, object])
     tags: tuple[str, ...] = ()
 
@@ -573,7 +663,60 @@ class EnqueueArgs:
                 "if both are desired, pass only schedule_to_close (datetime) — "
                 "the interval form is the actor-declaration default."
             )
+        self._check_column_domains()
         self._check_no_nul_text()
+
+    def _check_column_domains(self) -> None:
+        """Reject values no row can hold, or that are already expired.
+
+        Enforced here for the same reason as the NUL guard below: this
+        struct is the boundary every enqueue path funnels through, so a
+        value refused here cannot be wrong at any path downstream, and a
+        path added later inherits the refusal rather than reopening the
+        gap.
+
+        Each of these otherwise fails late, differently on each backend,
+        and unrecognisably:
+
+        ``max_attempts`` below 1 is dispatchable but can never complete —
+        the first transient failure finds no budget left, so the work dies
+        on attempt one under a policy the caller never expressed. Past the
+        enqueuable ceiling it reaches Postgres as a check-constraint
+        violation naming a column, or as the driver's bare int16
+        ``OverflowError``, while the in-memory mirror stores it happily.
+
+        A ``priority`` outside the smallint domain is likewise an
+        in-memory success and a driver-level overflow on Postgres, so a
+        suite validated against the mirror certifies an enqueue
+        production refuses.
+
+        A negative deadline or lifetime stores fine on both: every
+        dispatch of such a job is instantly past its own deadline, and a
+        negative ``result_ttl`` expires the result before the write that
+        stores it.
+        """
+        if self.max_attempts < 1:
+            raise ValueError(f"max_attempts must be >= 1, got {self.max_attempts}")
+        # The enqueuable ceiling, one below the column domain: a row parked
+        # at exactly the column's top has no headroom for any statement
+        # that adds one to a max_attempts-derived value, so an enqueue is
+        # refused there the same way it is refused past the column
+        # entirely. Rows already stored at the ceiling stay legal — the
+        # policy reconstruction clamps them back into this bound.
+        if self.max_attempts > MAX_ENQUEUABLE_MAX_ATTEMPTS:
+            raise ValueError(
+                f"max_attempts must fit the smallint jobs.max_attempts column "
+                f"with one of defensive headroom (<= {MAX_ENQUEUABLE_MAX_ATTEMPTS}), "
+                f"got {self.max_attempts}"
+            )
+        check_smallint_domain(self.priority, what="priority")
+        check_non_negative_duration(self.start_to_close, what="start_to_close")
+        check_non_negative_duration(self.heartbeat_timeout, what="heartbeat_timeout")
+        check_non_negative_duration(self.result_ttl, what="result_ttl")
+        check_non_negative_duration(self.unique_for, what="unique_for")
+        check_non_negative_duration(
+            self.schedule_to_close_interval, what="schedule_to_close_interval"
+        )
 
     def _check_no_nul_text(self) -> None:
         """Reject a NUL (U+0000) in any caller-supplied value bound as text.
@@ -646,8 +789,6 @@ class JobRow:
     id: JobId
     actor: str
     queue: str
-    identity_key: IdentityKey | None
-    fairness_key: str | None
     payload: dict[str, object]
     payload_schema_ver: int
     status: JobStatus
@@ -655,32 +796,40 @@ class JobRow:
     attempt: int
     max_attempts: int
     retry_kind: RetryKind
-    schedule_to_close: datetime | None
-    start_to_close: timedelta | None
-    heartbeat_timeout: timedelta | None
     created_at: datetime
     scheduled_at: datetime
-    started_at: datetime | None
-    finished_at: datetime | None
-    last_heartbeat_at: datetime | None
-    locked_by_worker: UUID | None
-    lock_expires_at: datetime | None
-    cancel_requested_at: datetime | None
-    cancel_phase: CancelPhase
-    error_class: str | None
-    error_message: str | None
-    error_traceback: str | None
-    progress_state: dict[str, object]
-    progress_seq: int
-    result: dict[str, object] | None
-    result_size_bytes: int | None
-    result_expires_at: datetime | None
-    idempotency_key: IdempotencyKey | None
-    idempotency_scope: str
-    trace_id: str | None
-    span_id: str | None
-    metadata: dict[str, object]
-    tags: tuple[str, ...]
+    # Every field below reads a column that is nullable, defaulted, or
+    # empty-valued in the schema, so its default here is the value the
+    # row actually carries when nothing has set it. Keeping them
+    # defaulted lets a caller name the columns its case is about (a
+    # terminal row for a hook, a claimed row for a fence) without
+    # restating three dozen NULLs that carry no meaning.
+    identity_key: IdentityKey | None = None
+    fairness_key: str | None = None
+    schedule_to_close: datetime | None = None
+    start_to_close: timedelta | None = None
+    heartbeat_timeout: timedelta | None = None
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    last_heartbeat_at: datetime | None = None
+    locked_by_worker: UUID | None = None
+    lock_expires_at: datetime | None = None
+    cancel_requested_at: datetime | None = None
+    cancel_phase: CancelPhase = CancelPhase.NONE
+    error_class: str | None = None
+    error_message: str | None = None
+    error_traceback: str | None = None
+    progress_state: dict[str, object] = field(default_factory=dict[str, object])
+    progress_seq: int = 0
+    result: dict[str, object] | None = None
+    result_size_bytes: int | None = None
+    result_expires_at: datetime | None = None
+    idempotency_key: IdempotencyKey | None = None
+    idempotency_scope: str = ""
+    trace_id: str | None = None
+    span_id: str | None = None
+    metadata: dict[str, object] = field(default_factory=dict[str, object])
+    tags: tuple[str, ...] = ()
     snooze_count: int = 0
     """Coalesced count of non-consuming deferrals (``Snooze`` and
     ``RetryAfter(consume_budget=False)``) since enqueue — the job-row
@@ -691,6 +840,14 @@ class JobRow:
     """Coalesced count of admission denials (reservation / rate-limit)
     since enqueue.  Trailing default: rows materialised before the
     counters existed read 0.
+    """
+    interrupt_count: int = 0
+    """Times a running attempt was released by a worker shutdown, with the
+    claim's attempt increment refunded.  Infrastructure interrupting work
+    is invisible in ``attempt`` by design, so this counter is what
+    separates "this job keeps being interrupted by deploys" from "this
+    job keeps failing".  Trailing default: rows materialised before the
+    counter existed read 0.
     """
 
 
@@ -1618,6 +1775,36 @@ class Backend(Protocol):
         progress_state: dict[str, object] | None = None,
     ) -> bool: ...
 
+    async def mark_interrupted(
+        self,
+        job_id: JobId,
+        worker_id: UUID,
+        *,
+        attempt: int,
+        hold: timedelta,
+        progress_seq: int = 0,
+        progress_state: dict[str, object] | None = None,
+    ) -> InterruptOutcome:
+        """Release a running attempt this worker cannot finish because the
+        process is going away.
+
+        Non-consuming: the claim's attempt increment is refunded, no
+        ``job_attempts`` row is written (an interruption is not an
+        execution outcome), ``interrupt_count`` is bumped and one
+        ``job_events`` transition is left behind.
+
+        *hold* greater than zero parks the row ``scheduled`` until the
+        releasing process is provably gone, so nothing else can claim a
+        row whose coroutine may still be alive here; zero releases it
+        ``pending`` immediately.
+
+        Fenced on ownership, attempt epoch and ``cancel_phase = 0``. An
+        operator cancel in flight therefore wins and the call answers
+        ``"noop"``, which the caller routes to the cancel ladder: the row
+        decides the outcome, not the departing process.
+        """
+        ...
+
     async def mark_snoozed(
         self,
         job_id: JobId,
@@ -1630,47 +1817,43 @@ class Backend(Protocol):
         outcome: SnoozeOutcome = "snoozed",
         attempt: int | None = None,
         denial_reason: DenialReason = "capacity",
-    ) -> Literal["scheduled", "failed", "failed:MaxAttemptsExceeded", "noop"]:
+    ) -> Literal["scheduled", "failed", "noop"]:
         """Release a running job back to the queue without consuming retry
         budget.
 
         *attempt* is the attempt-identity epoch — see
         :meth:`mark_succeeded`; a fenced-out write returns ``"noop"``.
 
-        A non-terminal snooze/denial writes NO ``job_attempts`` /
-        ``job_events`` rows — it is admission control or a voluntary
-        deferral, not an execution — and is counted on the job row
-        (``snooze_count``, or ``rate_limit_blocked_count`` when *outcome*
-        is a denial) plus OTEL.  ``max_attempts`` is never raised: the
-        ceiling is a bound, not a counter.
+        A deferral writes NO ``job_attempts`` / ``job_events`` rows — it
+        is admission control or a voluntary deferral, not an execution —
+        and is counted on the job row (``snooze_count``, or
+        ``rate_limit_blocked_count`` when *outcome* is a denial) plus
+        OTEL.  ``max_attempts`` is never raised: the ceiling is a bound,
+        not a counter.  Every outcome refunds the claim's attempt
+        increment, so no number of deferrals walks the job toward its
+        ceiling.
 
         *outcome* admits only the three deferral outcomes
         (:data:`SnoozeOutcome`) — the statement's arms key on exactly
         those; an execution outcome has no arm (PG would leave the job
         stranded ``running``) and raises ``ValueError`` at the boundary
         on both backends instead.  *delay* is floored at
-        :data:`taskq.constants.MIN_DEFERRAL_INTERVAL`: a non-consuming
-        deferral reschedules at least that far out, so a zero delay
-        cannot park the job at the head of the dispatch order.
+        :data:`taskq.constants.MIN_DEFERRAL_INTERVAL`: a deferral
+        reschedules at least that far out, so a zero delay cannot park
+        the job at the head of the dispatch order.
 
-        *denial_reason* discriminates the two causes of a denial-class
-        outcome (:data:`DenialReason`) and binds the non-consuming arm:
-        ``"capacity"`` (the default) is a real saturation denial — the
-        store answered "full" — and the retry budget still bounds the
-        loop below.  ``"unavailable"`` is the store failing to answer —
-        infrastructure backpressure about a job whose actor never ran —
-        so the claim's attempt increment is refunded (exactly the way
-        the ``snoozed`` arm refunds it) and no terminal arm can fire:
-        the job stays retryable across a sustained outage and keeps its
-        original budget when the store returns.
+        *denial_reason* records which admission answer arrived
+        (:data:`DenialReason`): ``"capacity"`` (the default) is a
+        saturation denial — the store answered "full" — and
+        ``"unavailable"`` is the store failing to answer.  Neither
+        changes what the denial costs, because in both cases the actor
+        never ran; the value is carried for observability.
 
-        The retry budget still bounds the loop for ``"capacity"``
-        denials: a non-``indefinite`` job at ``attempt >= max_attempts``
-        with no ``schedule_to_close`` fails terminally
-        (``"failed:MaxAttemptsExceeded"``) instead of rescheduling
-        forever; a job carrying ``schedule_to_close`` reschedules until
-        its deadline (``"failed"``, ``DeadlineExceeded``); an
-        ``indefinite`` job reschedules by explicit policy.
+        An admission denial never terminalises the job.  Capacity is a
+        property of the deployment, not of the work, so a denied job
+        reschedules until a slot frees; its only terminal exit is its
+        own ``schedule_to_close`` passing, which fails it ``"failed"``
+        (``DeadlineExceeded``) through the deadline arm.
         """
         ...
 
@@ -1762,7 +1945,11 @@ class Backend(Protocol):
 
     # ── Admin operations ──────────────────────────────────────────────
     async def retry_job(self, job_id: JobId) -> bool:
-        """Re-run a terminal job (failed/crashed/cancelled) by re-pending it.
+        """Re-run a job by re-pending it from any state it rests in.
+
+        Every status outside :data:`RETRY_SOURCE_EXCLUSIONS` is a valid
+        source, ``succeeded`` and ``abandoned`` included; see that set for
+        why each of ``running``, ``pending`` and ``scheduled`` is refused.
 
         The attempt counter is NOT reset: an idempotent admin operation
         must not restart the counter, so a re-run job climbs to fresh

@@ -996,6 +996,18 @@ class TaskQ:
         a long outage drains at query speed (full batches are re-polled
         immediately, not one batch per *poll_timeout*).
 
+        The built-in retention sweep prunes independently of your cursor:
+        this outbox slice (``kind='state_change'`` AND
+        ``detail->>'reason'='lock_expired'``) is exempt from the normal
+        ``TASKQ_EVENT_RETENTION_PERIOD`` window, but not forever — it is
+        still deleted by age alone once ``occurred_at`` exceeds
+        ``retention * RECLAIM_OUTBOX_RETENTION_MULTIPLIER`` (100x
+        retention; see :data:`taskq.constants.RECLAIM_OUTBOX_RETENTION_MULTIPLIER`).
+        A consumer whose cursor lags past that 100x age loses reclaim
+        events silently, with no error on either side — size your
+        consumer's worst-case lag against it, independent of the
+        cursor-based pruning guidance above.
+
         Shutdown and backpressure
         -------------------------
         This is a pull-based async generator: events are fetched only as

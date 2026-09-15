@@ -182,8 +182,8 @@ The `POST /jobs/{job_id}/cancel` and `POST /jobs/{job_id}/retry` endpoints are
 **write operations** gated by `TASKQ_ADMIN_ACTIONS_ENABLED` (default `false`).
 When `admin_actions_enabled` is `false`, both endpoints return `403`. Set
 `TASKQ_ADMIN_ACTIONS_ENABLED=true` to enable them. Both are CSRF-protected.
-Cancel writes a cancel request to Postgres; retry resets a terminal job to
-`pending` via `backend.retry_job`. Ensure the authentication layer covers
+Cancel writes a cancel request to Postgres; retry puts a job that has come to
+rest back to `pending` via `backend.retry_job`. Ensure the authentication layer covers
 these endpoints in production — they can modify job state.
 
 ---
@@ -263,7 +263,7 @@ Cancels a non-terminal job by writing a cancel request via `backend.write_cancel
 
 ### `POST /admin/jobs/{job_id}/retry`
 
-Resets a terminal job (`failed`, `crashed`, or `cancelled`) back to `pending` via `backend.retry_job`, allowing it to be re-dispatched by a worker. Returns `403` if `admin_actions_enabled` is `false`, `404` if the job does not exist, `409` if the job is not in a retryable state. Redirects to the job detail page on success. The retry resets `attempt` to 0, clears error fields, and sets `status='pending'`.
+Puts a job that has come to rest back to `pending` via `backend.retry_job`, allowing it to be re-dispatched by a worker. Every resting state is a valid source, including `succeeded` (the replay path after a bad deploy) and `abandoned` (a deploy interrupted the job). Only `running` (a live attempt owns the row) and `pending`/`scheduled` (already queued) are refused, with `409`. Returns `403` if `admin_actions_enabled` is `false`, `404` if the job does not exist. Redirects to the job detail page on success. The retry clears error and result fields, keeps the spent `attempt`, and raises `max_attempts` to fund the re-run.
 
 ### `GET /admin/jobs/count`
 

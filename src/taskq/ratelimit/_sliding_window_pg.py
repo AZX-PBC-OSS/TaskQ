@@ -284,7 +284,7 @@ async def _acquire_pg_log(
     settings: "WorkerSettings | None",
     request_id: UUID | None,
     *,
-    lock_timeout_ms: float = DEFAULT_SLIDING_WINDOW_LOCK_TIMEOUT_MS,
+    lock_timeout_ms: float | None = None,
 ) -> RateLimitDecision:
     """Acquire log-style against PG.
 
@@ -307,6 +307,8 @@ async def _acquire_pg_log(
         raise RuntimeError("settings not injected for postgres backend")
     if request_id is None:
         raise RuntimeError("request_id required for log-style PG acquire")
+    if lock_timeout_ms is None:
+        lock_timeout_ms = settings.sliding_window_lock_timeout_ms
 
     window_ms = int(self._window.total_seconds() * 1000)
     schema = settings.schema_name
@@ -457,7 +459,7 @@ async def _acquire_pg_gcra(
     pg_pool: "asyncpg.Pool | None",
     settings: "WorkerSettings | None",
     *,
-    lock_timeout_ms: float = DEFAULT_SLIDING_WINDOW_LOCK_TIMEOUT_MS,
+    lock_timeout_ms: float | None = None,
 ) -> RateLimitDecision:
     """Acquire GCRA-style against PG.
 
@@ -483,6 +485,8 @@ async def _acquire_pg_gcra(
         raise RateLimitDependencyUnavailable("pg_pool not injected for postgres backend")
     if settings is None:
         raise RuntimeError("settings not injected for postgres backend")
+    if lock_timeout_ms is None:
+        lock_timeout_ms = settings.sliding_window_lock_timeout_ms
 
     window_ms = int(self._window.total_seconds() * 1000)
     window_seconds = window_ms / 1000.0

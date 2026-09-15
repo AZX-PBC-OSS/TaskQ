@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 from uuid import UUID
 
 from taskq.backend._protocol import BulkCancelResult, CancelPhase, JobFilter
+from taskq.constants import CANCEL_ORIGIN_PENDING
 
 if TYPE_CHECKING:
     from taskq.testing.in_memory import InMemoryBackend
@@ -48,12 +49,14 @@ async def _cancel_where(
                 row,
                 status="cancelled",
                 finished_at=now,
+                error_class=CANCEL_ORIGIN_PENDING,
             )
             self._append_state_change_event(
                 job_id=row.id,
                 from_state=row.status,
                 to_state="cancelled",
                 now=now,
+                error_class=CANCEL_ORIGIN_PENDING,
             )
             self._append_cancel_request_event(row.id, now, reason)
             cancelled_ids.append(row.id)

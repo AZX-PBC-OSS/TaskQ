@@ -685,12 +685,12 @@ At dispatch time the worker calls `registry.acquire_for_actor()`:
 1. Reservations are acquired first, in declaration order.
 2. Rate limits are acquired next, in declaration order.
 3. If any acquisition is denied, all previously acquired resources are released in reverse order (rollback) and `ReservationUnavailable` is raised.
-4. A rate-limited job transitions to `snoozed` status (not failed or retried) and is re-promoted to `pending` when the snooze period expires. You will see `snoozed` in the admin UI for these jobs.
+4. A rate-limited job stays `scheduled` with `run_at` pushed to `now + retry_after` (not failed or retried) — `job_status` has no `snoozed` value; query the job row's `status` column and `run_at` to find these jobs, and watch the aggregated `rate_limit_blocked_count` on the row for how much contention it has absorbed.
 5. After the actor completes, reservation slots are released. Rate-limit tokens are consumed permanently (not refunded).
 
 If `RateLimitDecision.retry_after` is `None` (fixed quota with `refill_per_second=0`), the registry substitutes `DEFAULT_RESERVATION_BACKOFF = timedelta(seconds=5)` before raising `ReservationUnavailable`.
 
-**Queue depth under sustained rate limiting:** Jobs accumulate as `snoozed` under sustained rate-limit pressure. They do not consume retry budget. There is no built-in backpressure beyond `max_pending` on the actor — monitor queue depth via the admin UI or OTel metrics.
+**Queue depth under sustained rate limiting:** Jobs accumulate as `scheduled` with a future `run_at` under sustained rate-limit pressure. They do not consume retry budget. There is no built-in backpressure beyond `max_pending` on the actor — monitor queue depth via the admin UI or OTel metrics.
 
 Primitives referenced **by name** must be registered before the worker starts (actor-declared
 **instances** are registered by the worker at bootstrap instead — see

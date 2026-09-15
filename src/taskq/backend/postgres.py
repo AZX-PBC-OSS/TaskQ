@@ -20,7 +20,7 @@ import asyncio
 from collections.abc import Awaitable, Callable, Iterable
 from contextlib import AbstractAsyncContextManager as AsyncContextManager
 from datetime import datetime, timedelta
-from typing import ClassVar, Literal
+from typing import ClassVar, Final, Literal
 from uuid import UUID
 
 import asyncpg
@@ -93,6 +93,7 @@ from taskq.backend._protocol import (
     EnqueueArgs,
     ErrorInfo,
     EventRow,
+    InterruptOutcome,
     JobFilter,
     JobId,
     JobRow,
@@ -160,6 +161,7 @@ from taskq.backend._terminal import (
     _mark_abandoned,
     _mark_cancelled,
     _mark_failed_or_retry,
+    _mark_interrupted,
     _mark_retry_after,
     _mark_snoozed,
     _mark_succeeded,
@@ -205,6 +207,15 @@ __all__ = [
 ]
 
 logger: structlog.stdlib.BoundLogger = get_logger(__name__)
+
+#: Share of the per-query ``command_timeout`` a server-side lock wait may
+#: occupy.  The remainder is the round trip that carries the server's
+#: refusal back after the wait expires: without it the client's cancel
+#: races the typed error and usually wins, which is the whole defect the
+#: clamp exists to close.  Four fifths keeps the operator's configured
+#: budget intact wherever it already fits inside the query bound — the
+#: clamp only bites when the two were set to collide.
+_LOCK_BUDGET_COMMAND_TIMEOUT_FRACTION: Final[float] = 0.8
 
 _meter = get_meter()
 _cancel_notify_sent_counter = _meter.create_counter(
@@ -360,10 +371,49 @@ class PostgresBackend:
         """
         settings = self._deps.settings
         return (
-            getattr(settings, "max_pending_lock_timeout_ms", DEFAULT_MAX_PENDING_LOCK_TIMEOUT_MS),
-            getattr(settings, "unique_for_lock_timeout_ms", DEFAULT_UNIQUE_FOR_LOCK_TIMEOUT_MS),
-            getattr(settings, "idempotency_lock_timeout_ms", DEFAULT_IDEMPOTENCY_LOCK_TIMEOUT_MS),
+            self._bounded_lock_budget(
+                getattr(
+                    settings, "max_pending_lock_timeout_ms", DEFAULT_MAX_PENDING_LOCK_TIMEOUT_MS
+                )
+            ),
+            self._bounded_lock_budget(
+                getattr(settings, "unique_for_lock_timeout_ms", DEFAULT_UNIQUE_FOR_LOCK_TIMEOUT_MS)
+            ),
+            self._bounded_lock_budget(
+                getattr(
+                    settings, "idempotency_lock_timeout_ms", DEFAULT_IDEMPOTENCY_LOCK_TIMEOUT_MS
+                )
+            ),
         )
+
+    def _bounded_lock_budget(self, budget_ms: float) -> float:
+        """Keep a server-side lock wait strictly inside the client-side
+        per-query bound that covers the same statement.
+
+        The pools TaskQ builds carry ``command_timeout``, whose timer
+        starts when the query is sent — before the statement that arms the
+        server-side ``lock_timeout`` has even executed. A budget equal to
+        (or above) that bound therefore never expires first: asyncpg
+        cancels the query and the caller sees a bare ``TimeoutError``
+        instead of the typed refusal, with none of the refusal's warning
+        log or its backpressure counter. The two bounds ship at the same
+        5 s value, so at defaults this was every contended enqueue.
+
+        The margin leaves room for the round trip that delivers the
+        server's refusal after the wait expires, so the typed error
+        reaches the caller rather than racing the client's cancel.
+        ``0`` (or less) means wait indefinitely and is passed through
+        untouched — an operator asking for an unbounded server wait has
+        chosen the client bound as the only one.
+        """
+        if budget_ms <= 0:
+            return budget_ms
+        command_timeout: float | None = getattr(
+            self._deps.settings, "dispatcher_command_timeout", None
+        )
+        if command_timeout is None or command_timeout <= 0:
+            return budget_ms
+        return min(budget_ms, command_timeout * 1000.0 * _LOCK_BUDGET_COMMAND_TIMEOUT_FRACTION)
 
     async def enqueue_with_conn(
         self,
@@ -633,6 +683,28 @@ class PostgresBackend:
             acquire_timeout=self._deps.settings.dispatcher_command_timeout,
         )
 
+    async def mark_interrupted(
+        self,
+        job_id: JobId,
+        worker_id: UUID,
+        *,
+        attempt: int,
+        hold: timedelta,
+        progress_seq: int = 0,
+        progress_state: dict[str, object] | None = None,
+    ) -> InterruptOutcome:
+        return await _mark_interrupted(
+            self._worker_pool,
+            self._sql,
+            job_id,
+            worker_id,
+            attempt=attempt,
+            hold=hold,
+            progress_seq=progress_seq,
+            progress_state=progress_state,
+            acquire_timeout=self._deps.settings.dispatcher_command_timeout,
+        )
+
     async def mark_snoozed(
         self,
         job_id: JobId,
@@ -645,7 +717,7 @@ class PostgresBackend:
         outcome: SnoozeOutcome = "snoozed",
         attempt: int | None = None,
         denial_reason: DenialReason = "capacity",
-    ) -> Literal["scheduled", "failed", "failed:MaxAttemptsExceeded", "noop"]:
+    ) -> Literal["scheduled", "failed", "noop"]:
         return await _mark_snoozed(
             self._worker_pool,
             self._sql,

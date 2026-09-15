@@ -427,7 +427,7 @@ Add a `PodDisruptionBudget` (`minAvailable: 1`, selector matching `app: taskq-wo
     Setting this just above `TASKQ_TERMINATION_GRACE_PERIOD` is **not enough**,
     and is the sizing mistake most likely to bite you.
 
-    The shutdown phases (DRAINING → CANCELLING → FORCING → ABANDONING) are
+    The shutdown phases (DRAINING → CANCELLING → FORCING → RELEASING) are
     bounded by `TASKQ_CANCELLATION_GRACE_PERIOD` + `TASKQ_CLEANUP_GRACE_PERIOD`,
     but the bounded-close tail that unwinds *after* them is **additive**, and
     nothing *enforces* that it fits inside `TASKQ_TERMINATION_GRACE_PERIOD` —
@@ -635,7 +635,7 @@ See [workers.md — Queue dispatch modes](workers.md#queue-dispatch-modes).
 
     With `max_concurrent=2` and 3 replicas you can see 6 concurrent executions. For a memory- or GPU-bound actor that is an OOMKill, a restart, and a re-dispatch.
 
-    **If you need a strict cap**, use the per-queue leased-slot reservation instead: `taskq queues set-max-concurrent <queue> --max-concurrent N`. Slots are physical rows and each acquire is a single read-and-write statement on one row, so there is no read-then-decide window. See [rate-limiting.md](rate-limiting.md#queue-level-concurrency-cap). Note it is read once at worker startup, so changing it needs a worker restart, and it bounds a *queue*, not an actor. `max_pending` (per-actor via `@actor(max_pending=N)`) caps queued `pending` jobs; when exceeded, `enqueue` is rejected and `taskq.backpressure.errors` is incremented. Monitor `taskq.queue.depth` (leader samples every 15s) for backlog and `taskq.backpressure.errors` for sustained producer pressure.
+    **If you need a strict cap**, use the per-queue leased-slot reservation instead: `taskq queues set-max-concurrent <queue> --max-concurrent N`. Slots are physical rows and each acquire is a single read-and-write statement on one row, so there is no read-then-decide window. See [rate-limiting.md](rate-limiting.md#queue-level-concurrency-cap). Note it is read once at worker startup, so changing it needs a worker restart, and it bounds a *queue*, not an actor. `max_pending` (per-actor via `@actor(max_pending=N)`) caps queued `pending` jobs; when exceeded, `enqueue` is rejected and `taskq.backpressure.errors` is incremented with `kind="max_pending"`. Monitor `taskq.queue.depth` (leader samples every 15s) for backlog and `taskq.backpressure.errors` for sustained producer pressure — the counter's `kind` label also fires for identity-lock timeouts (`unique_for_lock_timeout`, `idempotency_lock_timeout`), which are contention signals, not capacity signals, so filter on `kind` before alerting.
 
 ### Connection pool sizing
 

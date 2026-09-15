@@ -43,8 +43,7 @@ This is a deliberate tradeoff, not a missing feature:
    This lists every discovered migration and whether it has already been
    applied, without changing anything.
 
-4. **Apply migrations explicitly**, or let the worker apply them at startup
-   via `TASKQ_MIGRATE_ON_START=true`:
+4. **Apply migrations explicitly**:
 
    ```shell
    taskq migrate up
@@ -52,7 +51,9 @@ This is a deliberate tradeoff, not a missing feature:
 
    The command is idempotent — migrations already recorded in
    `{schema}.schema_migrations` are skipped. See [cli.md](cli.md#taskq-migrate-up)
-   for the full option reference (`--phase`, `--target`, `--max-steps`).
+   for the full option reference (`--phase`, `--target`, `--max-steps`). `TASKQ_MIGRATE_ON_START`
+   is consumed only by `taskq ui serve`; the worker ignores it entirely and will refuse to boot
+   on pending migrations rather than apply them.
 
 ## Non-transactional migrations
 
@@ -468,9 +469,11 @@ Per-worker attribution is unchanged on the channels where cardinality is
 free: `worker_id` is bound onto every log line via contextvars, and
 `taskq.worker_id` is a cron-fire span attribute. The `record_*` helpers
 still accept their `worker_id` argument — only the dimension is gone.
-`taskq.cron.consecutive_failures` keeps its `schedule_id` dimension:
-schedules are a bounded, operator-created set, and
-`cron_auto_disable_threshold` is evaluated per schedule.
+`taskq.cron.consecutive_failures` is dimensioned by `actor`, not by
+`schedule_id` — a dashboard grouped by `schedule_id` loses its series
+entirely. Group by `actor`, and read `cron_schedules` for the
+per-schedule failure counts that `cron_auto_disable_threshold` is
+evaluated against.
 
 ### `taskq._json.dumps()` requires `str` dict keys
 
@@ -539,20 +542,71 @@ a bound, not a counter). Two behaviours follow from that:
   downstream indefinitely: `attempt` oscillates and never walks toward the
   smallint ceiling, and `max_attempts` never moves. Backoff keys off real
   executions only.
-* **Admission denials are budget-bounded.** A reservation/rate-limit
-  denial leaves the claim's increment standing, and a
-  non-`indefinite` job with no `schedule_to_close` now terminally fails
-  with `MaxAttemptsExceeded` when its retry budget is spent, rather
-  than re-queueing forever against a saturated bucket. Jobs that must
-  wait out a saturation express it explicitly: `retry_kind
-  'indefinite'`, or a `schedule_to_close` deadline (the deadline, not
-  the budget, ends a deadline-carrying job).
+* **Admission denials have HTTP-429 semantics.** A reservation/rate-limit
+  denial never consumes the job's retry budget and never by itself
+  terminally fails a job — it is "come back later," rescheduled with
+  backoff indefinitely until capacity frees. A queue or rate-limit
+  misconfiguration must not be able to kill a job that simply never got
+  a slot. The only bound on a job denied forever is its
+  `schedule_to_close` deadline: once that expires, the normal deadline
+  path fails it, not the denial itself. A denial writes no
+  `job_events` or `job_attempts` row — per-denial rows were an
+  unbounded-growth vector — so the aggregated `rate_limit_blocked_count`
+  counter on the job row is the durable, per-job record of the
+  contention it absorbed.
 
-  The `schedule_to_close` deadline is the terminal exit for the
-  deferral paths only — a consuming `RetryAfter` (the default,
-  `consume_budget=True`) at a spent budget terminally fails regardless
-  of a future deadline: a consuming retry is a real execution, so its
-  budget exhaustion ends the job, deadline or no deadline.
+  This is distinct from a consuming `RetryAfter` (the default,
+  `consume_budget=True`): that path is a real execution, so its budget
+  exhaustion still ends the job with `MaxAttemptsExceeded` regardless of
+  a future deadline. Only *admission* denials — the job never ran — get
+  the unconditional 429 treatment.
+
+---
+
+## Maintenance leadership moved off the connection and onto the row
+
+Leadership used to be a session-scoped advisory lock. A leader that stopped
+working without closing its connection — a frozen host, a stopped process, a
+partition that black-holed traffic — kept that lock until the server's own
+keepalive reaping closed the session, hours at stock settings, with the whole
+maintenance plane down for the duration. Recovery meant terminating the
+holder's backend, a privilege managed Postgres commonly reserves, so where it
+was unavailable there was no recovery at all.
+
+Leadership is now the `maintenance_leader` row, held while the `expires_at`
+on it is in the future. The holder renews every `TASKQ_HEARTBEAT_INTERVAL`;
+a survivor takes the role once the horizon lapses, needing no privilege
+beyond the `UPDATE` it already has on that row.
+
+**What you need to do.**
+
+1. **Apply the pre migration** `01.00.12_01_pre_leader_lease.sql` before the
+   new pods start, as the pre phase always requires. It adds one nullable
+   column and does not rewrite the table.
+2. **Check `TASKQ_LEADER_LEASE`** if you have raised
+   `TASKQ_HEARTBEAT_INTERVAL` above 10s. The new setting defaults to 40s and
+   is validated `>= 4 x heartbeat_interval`, the same slack `TASKQ_LOCK_LEASE`
+   carries; a fleet outside it will not start.
+3. **Drop `pg_terminate_backend` from your leader runbooks.** Nothing in the
+   recovery path needs it any more, and the reclaim that used it is gone.
+
+**During the roll**, a pod from the previous release holds the role through
+the advisory lock and its `last_seen_at` ping. New pods defer to a fresh
+ping whatever the row's `expires_at` says, and a new leader takes the lock
+as a courtesy so an old pod cannot elect alongside it. There is a single
+leader throughout; handovers may be more visible than usual in the
+`leader-elected` / `leadership-lost` logs while both generations are running.
+
+**Failover bound** at defaults: a leader lost without a clean exit is
+replaced within `leader_lease + heartbeat_interval` — 50s — against hours,
+or never, before. A pod that shuts down cleanly resigns, so its successor
+takes over within one election cycle.
+
+**`taskq_leader_lock_contention_total` now means something narrower.** It
+counted every lost election, which in any fleet larger than one worker meant
+it rose forever and the alert it backs could never clear. It now counts only
+a lock held with no role row behind it. Dashboards that graphed the old
+always-rising counter will go flat.
 
 ---
 
@@ -583,6 +637,42 @@ a no-op (it now properly refunds tokens, capped at capacity, via `FOR
 UPDATE` on `rate_limit_buckets`). Both were released behaviour — a
 release-and-retry cycle never gave the slot back — so fixed-quota buckets
 may again admit work that had been permanently locked out.
+
+### `unique_for` windows now cover the completed state
+
+The default `unique_states` was `("pending", "scheduled", "running")` and is
+now `("pending", "scheduled", "running", "succeeded")`.
+
+`unique_for` expresses "at most one job for this identity in this period", and
+it is reached for because the work is not safe to repeat — a re-delivered
+webhook, a retried API call, a double-clicked button. Under the old default the
+window covered only unfinished jobs, so the identity was free again the instant
+the first job succeeded: a second enqueue inside a still-open window created a
+second job that ran the work for real. The report went out twice, the payment
+was captured twice — and the faster the first job completed, the wider the
+unguarded gap, so the failure was likeliest exactly when the system was healthy.
+
+The failure-terminal states (`failed`, `cancelled`, `crashed`, `abandoned`) stay
+out of the default deliberately. That work did *not* happen, so suppressing the
+next request for the rest of the window would turn one transient failure into a
+whole window of silently dropped work.
+
+**Expect fewer jobs after upgrading**: enqueues that previously created a second
+job inside an open window now return the completed job's handle instead, with
+`was_existing` set. If you relied on the old behaviour to re-run work inside a
+window — a periodic refresh keyed by a stable identity, say — ask for the
+narrower rule explicitly:
+
+```python
+@actor(unique_for=timedelta(hours=1), unique_states=("pending", "scheduled", "running"))
+async def refresh_report(payload: ReportPayload) -> None: ...
+```
+
+Folding a failure-terminal state into `unique_states` yourself strands the new
+work for the rest of the window. That case is no longer silent: the enqueue logs
+a WARN-level `enqueue_deduplicated` naming the matched status, and the returned
+handle reports `deduplicated_onto_terminal`, so a caller can branch on it
+without a second read of the row.
 
 ### `@actor(...)` capacity literals no longer win over the stored row
 
@@ -884,8 +974,12 @@ message now names only the ref, matching the sanitization contract
 `job_events` rows older than `TASKQ_EVENT_RETENTION_PERIOD` (default 7
 days) are now deleted by a leader sweep regardless of parent-job status;
 `timedelta(0)` disables it; the crash-reclaim outbox slice
-(`kind='state_change' AND detail->>'reason'='lock_expired'`) is exempt at
-any setting.
+(`kind='state_change' AND detail->>'reason'='lock_expired'`) is exempt
+from this window, but not deleted forever: it is still removed once
+`occurred_at` exceeds `retention * RECLAIM_OUTBOX_RETENTION_MULTIPLIER`
+(100x the configured retention). A deployment with a short retention
+period and a reclaim-event consumer lagging past that 100x age silently
+loses events with no error — size your consumer's cursor lag against it.
 
 ---
 
@@ -1323,7 +1417,7 @@ Previously one capped actor aborted the whole call with
   stream-global). The atomic path keeps the legacy all-or-nothing
   contract and still raises plain `MaxPendingExceededError`.
 
-### `taskq.cron.consecutive_failures` is relabeled and bounded
+### `taskq.cron.consecutive_failures` is relabeled, bounded and reconciled
 
 > **Unreleased.** Breaking for dashboards and alert rules keyed on the
   old label.
@@ -1334,7 +1428,12 @@ onto the fixed `_other_` value) instead of the per-schedule UUID.
 Dashboards grouping by `schedule_id` lose their series on upgrade.
 Per-schedule attribution lives on the `cron fired` / `cron fire failed`
 log lines and the `cron fire` span's `taskq.cron_schedule_id` attribute.
-The per-actor balance can carry permanent residue from disabled,
-re-enabled or deleted schedules — `cron_schedules.consecutive_failures`
-and the logs are authoritative; alert on
-`taskq.cron.disabled_schedules > 0` rather than on this balance.
+
+The value is now derived from database state rather than accumulated as
+a per-process balance: each tick reconciles the series against the summed
+`cron_schedules.consecutive_failures` for the actors whose schedules it
+selected. Clears, disables and deletes made in any process self-correct
+on the next tick that measures the actor, and the series returns to zero
+once none of the actor's schedules is failing — so it is now alertable in
+its own right, where the old balance carried permanent residue and was
+not.

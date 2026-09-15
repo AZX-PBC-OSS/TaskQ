@@ -228,11 +228,17 @@ they represent safety-critical signals.
 | `taskq.ratelimit.denials` | `1` | `backend` | Rate-limit decisions that denied admission. Bucket names are not a dimension (caller-controlled cardinality). | yes |
 | `taskq.ratelimit.acquire_dependency_failures` | `1` | `error_type` | Rate-limit acquires that failed on a store dependency (Redis or the PG fallback) and were failed closed as denials — an availability signal, distinct from `taskq.reservation.denials` (admission decisions). Read the two together before scaling a bucket; `error_type` is the exception class name. | yes |
 | `taskq.reservation.denials` | `1` | `source` | Reservation/rate-limit admission denials surfaced to a worker handler. `source` is `reservation` or `rate_limit`. Bucket names are not a dimension. | yes |
+
+These OTel counters are fleet-wide rates — they say the fleet is shedding admissions, not which
+job has been starving. A denial writes no `job_events` and no `job_attempts` row, so the
+aggregated `rate_limit_blocked_count` column on the job row is the only durable, per-job view of
+the contention a single job absorbed — query it when one job is mysteriously slow while the
+fleet-wide counters above look healthy.
 | `taskq.pruned.jobs` | `1` | `actor`, `status` | Jobs moved from `jobs` to `jobs_archive` by the prune sweep (Sweep 5). | yes |
 | `taskq.archived.jobs` | `1` | `status` | Same prune-sweep event, status-only view (no actor dimension). | yes |
 | `taskq.expired_archive.jobs` | `1` | `status` | Jobs hard-deleted from `jobs_archive` by the archive expiry sweep (Sweep 6). | yes |
 | `taskq.maintenance_leader.sweep_rows` | — | `sweep_name` | Rows affected per sweep tick. | yes |
-| `taskq.maintenance_leader.sweep_timeouts` | `1` | `sweep_name` | Sweep calls aborted by a deadline or server-side statement cancel. A non-zero rate means sweeps are being cancelled, not completing slowly. | yes |
+| `taskq.maintenance_leader.sweep_timeouts` | `1` | `sweep_name` | Sweep and gauge-sampler calls that did not complete: batch sweeps aborted by a deadline or server-side statement cancel, and sampler reads that failed outright. A non-zero rate means work is being aborted, not completing slowly. | yes |
 | `taskq.leader.lock_contention` | `1` | `lock` | Advisory-lock acquisitions lost to another session, recorded by the losing side. | yes |
 | `taskq.cron.lock_contention` | `1` | — | Cron ticks that returned without firing because another session held the cron advisory lock. A sustained rate equal to the tick rate means cron is not running anywhere (a partitioned holder never releasing the transaction-scoped lock); a brief low rate is leader-handover overlap. | yes |
 
@@ -278,7 +284,7 @@ or zero row sample.
 
 | Metric name | Unit | Attributes | Description |
 |---|---|---|---|
-| `taskq.cron.consecutive_failures` | `1` | `actor` | Per-actor summed balance of consecutive cron execution failures: `+1` per failed fire, `-count` on a successful reset. Schedules on one actor share one series, so the balance is the sum over that actor's schedules — **including permanent residue**: an auto-disabled schedule leaves its count behind, re-enabling resets the DB column with no metric delta (the reset runs client-side, in another process), and deleting a schedule strands its count, so a healthy multi-schedule actor can sit permanently non-zero. The authoritative per-schedule counts are the `cron_schedules.consecutive_failures` column and the `cron fired` / `cron fire failed` / `cron schedule auto-disabled` logs (plus the `taskq.cron_schedule_id` attribute on the `cron fire` span); alert on `taskq.cron.disabled_schedules > 0` (the shipped `rules.yaml` alert) rather than on this balance. The `actor` label is capped: the first 100 distinct names a process sees keep their series, later names collapse onto `_other_`. |
+| `taskq.cron.consecutive_failures` | `1` | `actor` | Per-actor outstanding cron failure count: the sum of `cron_schedules.consecutive_failures` over that actor's schedules, which share one series. Each tick reconciles the series against that sum for the actors whose schedules it selected, so clears, disables and deletes made in **any** process self-correct on the next tick that measures the actor, and the value returns to zero once none of its schedules is failing. Actors a tick did not select are left untouched — a tick speaks only for what it looked at, so a rarely-due failing schedule keeps its contribution between its own ticks. Per-schedule attribution is on the `cron fired` / `cron fire failed` / `cron schedule auto-disabled` logs and the `taskq.cron_schedule_id` attribute on the `cron fire` span. Emitted only once the tick's transaction commits: a strike the database rolled back leaves no delta behind. The `actor` label is capped: the first 100 distinct names a process sees keep their series, later names collapse onto `_other_`. |
 
 ### Dimension cardinality
 

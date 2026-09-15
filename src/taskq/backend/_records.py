@@ -186,6 +186,7 @@ def _job_row_from_record(rec: "asyncpg.Record") -> JobRow:
         tags=tuple(rec["tags"]) if rec["tags"] else (),
         snooze_count=rec["snooze_count"],
         rate_limit_blocked_count=rec["rate_limit_blocked_count"],
+        interrupt_count=rec["interrupt_count"],
     )
 
 

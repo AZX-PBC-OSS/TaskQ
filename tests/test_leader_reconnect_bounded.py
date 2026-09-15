@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
 
@@ -81,7 +81,16 @@ class _FakeConn:
         return "UPDATE 1"
 
     async def fetchrow(self, sql: str, *args: object) -> object | None:
-        return None
+        # The role claim reports back the term it stamped, or nothing when a
+        # live holder already has the role; it follows the same verdict the
+        # lock read is configured with (mirrors test_leader.py's fake).
+        if "maintenance_leader" not in sql or "ON CONFLICT (singleton)" not in sql:
+            return None
+        self.execute_calls.append((sql, args))
+        if self._fetchval_result is not True:
+            return None
+        now = datetime.now(UTC)
+        return {"elected_at": now, "expires_at": now + timedelta(seconds=40)}
 
     async def fetch(self, sql: str, *args: object) -> list[object]:
         return []

@@ -212,13 +212,20 @@ def test_unique_for_default_is_none() -> None:
 
 
 def test_unique_states_default() -> None:
-    """@actor() produces an ActorRef with unique_states == ('pending', 'scheduled', 'running')."""
+    """@actor() produces an ActorRef whose unique_for window covers the
+    completed state as well as the unfinished ones.
+
+    ``succeeded`` is in the default because it is the state that says the
+    work already happened, which is what the window exists to detect; the
+    failure-terminal states are out because that work did not happen and
+    must not be suppressed for the rest of the window.
+    """
 
     @actor
     async def my_actor(payload: SimplePayload, *args: object, **kwargs: object) -> None:
         pass
 
-    assert my_actor.unique_states == ("pending", "scheduled", "running")
+    assert my_actor.unique_states == ("pending", "scheduled", "running", "succeeded")
 
 
 def test_unique_for_round_trip() -> None:

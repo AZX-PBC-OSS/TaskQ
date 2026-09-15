@@ -89,6 +89,13 @@ class _DetectorDeps:
         self.is_leader.set()
         self.liveness = Mock()
 
+    def leading(self) -> bool:
+        # The detector loop gates on leading(), not is_leader alone (see
+        # WorkerDeps.leading's docstring): this stub has no term-staleness
+        # window to model, so it collapses to the event this fixture holds
+        # set for the test's lifetime.
+        return self.is_leader.is_set()
+
 
 async def _run_stranded_detector_once(
     pg_dsn: str, pool: asyncpg.Pool, schema: str, monkeypatch: pytest.MonkeyPatch

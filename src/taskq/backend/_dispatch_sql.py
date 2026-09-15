@@ -113,6 +113,7 @@ from taskq.backend._protocol import ConnLike
 from taskq.obs import (
     get_logger,
     record_dispatch_duration,
+    record_dispatch_failure,
     safe_start_span,
 )
 from taskq.obs._redact_exc import record_exception_safe, safe_exception_message
@@ -175,6 +176,35 @@ running_identities AS (
   FROM "{schema}".jobs
   WHERE status = 'running' AND identity_key IS NOT NULL
 ),
+-- A fresh ordering of the registered actors per round. Without it the
+-- round's cut is a stable total order: every actor's head job carries
+-- pending_rank 1, so once more actors hold pending work than a round
+-- admits, the tiebreak among those rank-1 rows decides, it decides the
+-- same way every round, and the winners immediately refill their own
+-- rank-1 slot from their own backlog. The actors below the cut never
+-- move up and never run -- no cap, no denial, no error, just work that
+-- stays pending for ever while the queue's throughput looks healthy.
+--
+-- Two terms. Running load first: an actor already holding work in
+-- flight yields its contested slot to one holding less, so a fleet whose
+-- workers are still busy covers its actors in order of how little each
+-- is already getting -- the term that makes coverage converge whenever
+-- claimed work is still in flight. A fresh draw settles the rest, so
+-- actors at equal load do not re-derive the same order round after
+-- round. Re-deriving the ordering per round is the established remedy
+-- for starvation in a multi-cohort fetch.
+--
+-- The key is per ACTOR, not per row, so an actor's own jobs keep their
+-- exact priority order; only which actors win the contested slots
+-- rotates. Priority still dominates the ordering everywhere downstream
+-- -- rotation breaks ties, it never reorders across priorities.
+actor_rotation AS MATERIALIZED (
+  SELECT ac.actor,
+         COALESCE(r.in_flight, 0) AS rot_load,
+         random() AS rot_draw
+  FROM "{schema}".actor_config ac
+  LEFT JOIN running_per_actor r ON r.actor = ac.actor
+),
 -- Idle-actor prefilter: without it, candidates CROSS JOINs every
 -- actor_config row with every subscribed queue and runs the lateral
 -- index seek once per (actor, queue) pair even when the actor has no
@@ -222,8 +252,11 @@ per_actor_capacity AS (
     CASE WHEN ac.max_concurrent IS NULL
          THEN (SELECT limit_n FROM params)
          ELSE GREATEST(ac.max_concurrent - COALESCE(r.in_flight, 0), 0)
-    END AS residual
+    END AS residual,
+    ac.max_concurrent IS NOT NULL AS capped,
+    rot.rot_load, rot.rot_draw
   FROM "{schema}".actor_config ac
+  JOIN actor_rotation rot ON rot.actor = ac.actor
   CROSS JOIN params p
   LEFT JOIN running_per_actor r ON r.actor = ac.actor
   CROSS JOIN LATERAL (
@@ -266,8 +299,11 @@ repend_capacity AS (
     CASE WHEN ac.max_concurrent IS NULL
          THEN (SELECT limit_n FROM params)
          ELSE GREATEST(ac.max_concurrent - COALESCE(r.in_flight, 0), 0)
-    END AS residual
+    END AS residual,
+    ac.max_concurrent IS NOT NULL AS capped,
+    rot.rot_load, rot.rot_draw
   FROM "{schema}".actor_config ac
+  JOIN actor_rotation rot ON rot.actor = ac.actor
   CROSS JOIN params p
   LEFT JOIN running_per_actor r ON r.actor = ac.actor
   WHERE ac.queue = ANY(p.queues)
@@ -319,7 +355,8 @@ rr_tail_keys AS (
 candidates AS (
   (SELECT j.id, j.actor, j.identity_key, j.fairness_key,
           __FAIRNESS_RANK_COLUMN__,
-          j.priority, j.scheduled_at, pac.residual
+          j.priority, j.scheduled_at, pac.residual, pac.capped,
+          pac.rot_load, pac.rot_draw
   FROM per_actor_capacity pac
   CROSS JOIN LATERAL unnest((SELECT queues FROM params)) AS sq(queue_name)
   CROSS JOIN LATERAL (
@@ -334,7 +371,8 @@ __REPENDED_LATERAL__
 identity_dedup AS (
   (
     SELECT DISTINCT ON (c.actor, c.identity_key)
-      c.id, c.actor, c.fairness_key, c.fairness_rank, c.priority, c.scheduled_at, c.residual
+      c.id, c.actor, c.fairness_key, c.fairness_rank, c.priority, c.scheduled_at,
+      c.residual, c.capped, c.rot_load, c.rot_draw
     FROM candidates c
     LEFT JOIN running_identities ri ON ri.actor = c.actor AND ri.identity_key = c.identity_key
     WHERE ri.identity_key IS NULL
@@ -343,7 +381,8 @@ identity_dedup AS (
   )
   UNION ALL
   (
-    SELECT c.id, c.actor, c.fairness_key, c.fairness_rank, c.priority, c.scheduled_at, c.residual
+    SELECT c.id, c.actor, c.fairness_key, c.fairness_rank, c.priority, c.scheduled_at,
+           c.residual, c.capped, c.rot_load, c.rot_draw
     FROM candidates c
     WHERE c.identity_key IS NULL
   )
@@ -362,48 +401,104 @@ ranked AS MATERIALIZED (
     ) AS pending_rank
   FROM identity_dedup id
 ),
--- The round's id set is finalized HERE, before the statement touches
--- the heap again: top_ids carries every column locked needs (rank,
--- fairness rank, ordering keys), so the lock step below never has to
--- re-join a candidate CTE back onto ranked -- a re-join the planner
--- can execute as a materialize-rescan or hash join whose row work
--- grows with the candidate set instead of staying at limit_n.
+-- The claim path splits by whether the actor carries a concurrency cap,
+-- because the two populations want opposite things from the lock step.
+--
+-- CAPPED work must decide its admission set BEFORE locking. The cap is
+-- the point: if the lock node sits underneath the round's LIMIT, SKIP
+-- LOCKED slides down the backlog past rows a peer holds and keeps
+-- taking replacements until the LIMIT is met -- which is precisely how
+-- a fleet over-admits past a per-actor cap when several dispatchers run
+-- at once. So the capped arm windows first, sized to the actor's OWN
+-- remaining capacity rather than to the round's batch, and re-applies
+-- the same bound after the lock. A window sized to the batch alone
+-- would be capacity-blind; a scan unbounded by capacity is the inverse
+-- hazard.
+--
+-- UNCAPPED work has no such arithmetic to protect, and windowing it
+-- before the lock is what makes a second dispatcher worthless: two
+-- dispatchers compute the SAME pre-lock window, the winner holds locks
+-- across all of it, and the loser SKIP LOCKEDs every row and returns
+-- empty while claimable rows sit unlocked one page deeper. So the
+-- uncapped arm takes no pre-lock cut: its candidate probes are already
+-- bounded per (actor, queue) cohort, the lock step slides freely across
+-- that probe set, and the round's LIMIT is applied to what SURVIVES the
+-- skip. A dispatcher then comes back empty only when no unlocked
+-- claimable row remains -- never merely because its first-ranked
+-- candidates were held.
+--
+-- Postgres places LockRows BELOW Limit at the same query level, and the
+-- lock node resumes with the next tuple on a would-block, which is what
+-- makes the uncapped arm slide instead of stall.
+--
 -- LIMIT $2 (a direct parameter, never a (SELECT ... FROM params)
 -- subquery): a parameter folds to its bound value in a custom plan's
 -- row estimates, where a subquery bound never folds and the garbage
 -- estimate cascades through the CTE chain until the terminal joins
 -- believe the round carries millions of rows.
 top_ids AS (
-  SELECT id, actor, fairness_key, fairness_rank,
-         priority, scheduled_at, pending_rank, residual
-  FROM ranked
-  ORDER BY pending_rank, priority DESC, scheduled_at, id
-  LIMIT $2::int
+  SELECT r.id, r.fairness_rank, r.pending_rank, r.priority, r.scheduled_at,
+         r.residual, r.rot_load, r.rot_draw
+  FROM ranked r
+  WHERE r.capped
+    AND r.pending_rank <= LEAST($2::int, r.residual)
+  ORDER BY r.pending_rank, r.priority DESC, r.rot_load, r.rot_draw,
+           r.scheduled_at, r.id
 ),
--- Lock step: FOR UPDATE row locks taken on a set already bounded by
--- top_ids' LIMIT, driving jobs by primary key through a correlated
--- LATERAL. The correlation on t.id denies the planner's hash-join
+-- Both arms drive jobs by primary key through a correlated LATERAL.
+-- The correlation on the candidate id denies the planner's hash-join
 -- option -- the option that, at shallow depths, is genuinely cheaper
 -- than 50 pkey probes and is therefore chosen on honest costs (a seq
--- scan of a 1k-row backlog beats 50 random probes) -- so the lock
--- step is a nested loop of at most limit_n index probes at EVERY
--- depth. FOR UPDATE inside a FROM-clause subquery is legal, and the
--- pending re-check is the race guard for rows that lost a race for
--- their lock... SKIP LOCKED leaves those rows for the dispatcher that
--- holds them.
+-- scan of a 1k-row backlog beats 50 random probes) -- so the lock step
+-- is a nested loop of bounded index probes at EVERY depth. FOR UPDATE
+-- inside a FROM-clause subquery is legal, and the pending re-check is
+-- the race guard for rows that lost a race for their lock; SKIP LOCKED
+-- leaves those rows for the dispatcher that holds them.
+-- The uncapped arm's candidate order is settled in its OWN materialized
+-- CTE so that arm's lock step carries no ORDER BY of its own. That is the
+-- whole mechanism: a sort above the lock would have to pull -- and
+-- therefore LOCK -- every candidate before the round's LIMIT could cut,
+-- turning a batch of 5 into a hold on the entire probe window and
+-- leaving a concurrent dispatcher nothing at all. With the order already
+-- settled, Limit sits directly above LockRows and stops as soon as it
+-- has enough rows, so a dispatcher locks at most limit_n rows and its
+-- peer finds the rest of the probe window free.
+slide_order AS MATERIALIZED (
+  SELECT t.id, t.fairness_rank, t.pending_rank, t.priority, t.scheduled_at,
+         t.residual, t.rot_load, t.rot_draw
+  FROM ranked t
+  WHERE NOT t.capped
+  ORDER BY t.pending_rank, t.priority DESC, t.rot_load, t.rot_draw,
+           t.scheduled_at, t.id
+),
 locked AS (
-  SELECT j.id, j.actor, j.identity_key, j.fairness_key, t.fairness_rank,
-         j.priority, j.scheduled_at, t.pending_rank, t.residual
-  FROM top_ids t
-  CROSS JOIN LATERAL (
-    SELECT j2.id, j2.actor, j2.identity_key, j2.fairness_key,
-           j2.priority, j2.scheduled_at
-    FROM "{schema}".jobs j2
-    WHERE j2.id = t.id
-      AND j2.status = 'pending'
-    FOR UPDATE OF j2 SKIP LOCKED
-  ) j
-  ORDER BY t.pending_rank, t.priority DESC, t.scheduled_at, t.id
+  (SELECT j.id, j.actor, j.identity_key, j.fairness_key, t.fairness_rank,
+          j.priority, j.scheduled_at, t.pending_rank, t.residual,
+          t.rot_load, t.rot_draw
+   FROM top_ids t
+   CROSS JOIN LATERAL (
+     SELECT j2.id, j2.actor, j2.identity_key, j2.fairness_key,
+            j2.priority, j2.scheduled_at
+     FROM "{schema}".jobs j2
+     WHERE j2.id = t.id
+       AND j2.status = 'pending'
+     FOR UPDATE OF j2 SKIP LOCKED
+   ) j
+   LIMIT $2::int)
+  UNION ALL
+  (SELECT j.id, j.actor, j.identity_key, j.fairness_key, t.fairness_rank,
+          j.priority, j.scheduled_at, t.pending_rank, t.residual,
+          t.rot_load, t.rot_draw
+   FROM slide_order t
+   CROSS JOIN LATERAL (
+     SELECT j2.id, j2.actor, j2.identity_key, j2.fairness_key,
+            j2.priority, j2.scheduled_at
+     FROM "{schema}".jobs j2
+     WHERE j2.id = t.id
+       AND j2.status = 'pending'
+     FOR UPDATE OF j2 SKIP LOCKED
+   ) j
+   LIMIT $2::int)
 ),
 eligible_candidates AS (
   SELECT l.*,
@@ -427,7 +522,8 @@ eligible AS (
   FROM eligible_candidates ec
   WHERE ec.max_concurrent IS NULL
      OR ec.actor_rank <= ec.max_concurrent - ec.in_flight
-  ORDER BY ec.pending_rank, ec.fairness_rank NULLS LAST, ec.priority DESC, ec.scheduled_at
+  ORDER BY ec.pending_rank, ec.fairness_rank NULLS LAST, ec.priority DESC,
+           ec.rot_load, ec.rot_draw, ec.scheduled_at
   LIMIT $2::int
 )
 UPDATE "{schema}".jobs j
@@ -442,7 +538,17 @@ SET status = 'running',
     error_traceback = NULL,
     result = NULL,
     result_size_bytes = NULL,
-    attempt = j.attempt + 1
+    -- The increment saturates at the attempt column's smallint ceiling
+    -- instead of overflowing. One statement claims the WHOLE batch, so a
+    -- single indefinite-retry row parked at the ceiling would otherwise
+    -- make this statement raise and abort the claim of every healthy job
+    -- selected beside it -- and because that row is re-selected every
+    -- round, the queue would stop draining for good. A counter pinned at
+    -- its ceiling still reports "very many attempts"; a queue that never
+    -- drains again reports nothing at all. Clamping the OPERAND is what
+    -- keeps the addition from overflowing before any outer clamp could
+    -- see it.
+    attempt = LEAST(j.attempt, 32766) + 1
 -- The UPDATE finds its rows through a one-shot id array, not a
 -- FROM-clause join against eligible: a join's strategy is the
 -- planner's choice, and at shallow depths the whole-backlog seq scan
@@ -475,14 +581,22 @@ RETURNING j.*;
 # proportional to the number of fairness cohorts in the table, never
 # to any cohort's depth.
 #
-# The recursive term cannot be correlated, so the enumeration is global
-# over every (actor, queue, cohort) with a pending row, and the
-# candidates lateral below joins it down to the round's (actor, queue)
-# pairs; the join filters in memory over the materialized recursion
-# output, bounded by the cohort count. The recursive term also cannot
-# reference other CTEs, so it cannot pre-scope itself to the round's
-# queues; that costs nothing but enumeration steps for other queues'
-# cohorts, never probe work.
+# The recursive term cannot be correlated and cannot reference other
+# CTEs, but it CAN read the statement's own parameters, which is how the
+# walk stays scoped to the round: the queue-membership, due-time and
+# never-claimed predicates are repeated verbatim in both the seed and
+# the recursive step, so the enumeration steps once per cohort the round
+# can actually probe. Without them a small dispatch on one queue paid an
+# enumeration step per cohort existing ANYWHERE in the table -- other
+# teams' queues and not-yet-due rows included -- which couples every
+# queue's dispatch latency to fleet-wide cohort count. The predicates
+# are exactly the candidates probe's own, so no cohort the probe would
+# have found is enumerated away.
+#
+# The candidates lateral below still filters the enumeration down to its
+# own (actor, queue) pair, because the walk is shared across the round's
+# pairs; that filter is in-memory work over the materialized recursion
+# output, bounded by the round's cohort count.
 #
 # COALESCE(fairness_key, '__null__') is the partition identity the
 # whole round-robin path shares (window PARTITION BY, probe equality,
@@ -498,6 +612,9 @@ rr_keys AS (
            COALESCE(j3.fairness_key, '__null__') AS fkey
     FROM "{schema}".jobs j3
     WHERE j3.status = 'pending'
+      AND j3.started_at IS NULL
+      AND j3.queue = ANY($1::text[])
+      AND j3.scheduled_at <= statement_timestamp()
     ORDER BY j3.actor, j3.queue, COALESCE(j3.fairness_key, '__null__')
     LIMIT 1
   )
@@ -509,6 +626,9 @@ rr_keys AS (
            COALESCE(j4.fairness_key, '__null__') AS fkey
     FROM "{schema}".jobs j4
     WHERE j4.status = 'pending'
+      AND j4.started_at IS NULL
+      AND j4.queue = ANY($1::text[])
+      AND j4.scheduled_at <= statement_timestamp()
       AND (j4.actor, j4.queue, COALESCE(j4.fairness_key, '__null__'))
           > (cur.actor, cur.queue, cur.fkey)
     ORDER BY j4.actor, j4.queue, COALESCE(j4.fairness_key, '__null__')
@@ -639,7 +759,8 @@ _ROUND_ROBIN_CANDIDATES_LATERAL = """\
 _REPENDED_STRICT_FIFO_LATERAL = """\
     SELECT p.id, p.actor, p.identity_key, p.fairness_key,
            NULL::bigint AS fairness_rank,
-           p.priority, p.scheduled_at, rc.residual
+           p.priority, p.scheduled_at, rc.residual, rc.capped,
+           rc.rot_load, rc.rot_draw
     FROM repend_capacity rc
     CROSS JOIN rr_tail_keys tk
     CROSS JOIN LATERAL (
@@ -670,7 +791,8 @@ _REPENDED_STRICT_FIFO_LATERAL = """\
 # admitted each round, so neither series can starve the other.
 _REPENDED_ROUND_ROBIN_LATERAL = """\
     SELECT w.id, w.actor, w.identity_key, w.fairness_key,
-           w.fairness_rank, w.priority, w.scheduled_at, rc.residual
+           w.fairness_rank, w.priority, w.scheduled_at, rc.residual, rc.capped,
+           rc.rot_load, rc.rot_draw
     FROM repend_capacity rc
     CROSS JOIN LATERAL (
       SELECT c.id, c.actor, c.identity_key, c.fairness_key,
@@ -784,11 +906,18 @@ async def dispatch_batch(
             "taskq.batch_size": limit_n,
         },
     ) as span:
+        t0 = time.monotonic()
         try:
-            t0 = time.monotonic()
             rows = await conn.fetch(sql, queue_list, limit_n, worker_id, lock_lease, oversample)
-            elapsed = time.monotonic() - t0
         except Exception as exc:
+            # A round that raised is still a round: it consumed database
+            # time and produced no work. Emitting its latency and a typed
+            # failure count is what separates a producer failing every
+            # round from an idle queue -- the process stays up, the
+            # liveness probe stays green, and the backlog stays pending
+            # exactly as it would with nothing to do.
+            record_dispatch_duration(queue_attr, time.monotonic() - t0)
+            record_dispatch_failure(queue_attr, type(exc).__name__)
             # Why redacted: this text leaves the trust boundary for whatever
             # telemetry backend is configured. str() of an asyncpg
             # PostgresError appends the server's DETAIL line, which quotes the
@@ -797,6 +926,7 @@ async def dispatch_batch(
             span.set_status(StatusCode.ERROR, safe_exception_message(exc))
             record_exception_safe(span, exc)
             raise
+        elapsed = time.monotonic() - t0
         returned_count = len(rows)
         span.set_status(StatusCode.OK)
         logger.info(

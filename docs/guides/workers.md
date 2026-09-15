@@ -55,7 +55,7 @@ A trip emits `worker-watchdog-trip` at CRITICAL (labelled by detector), dumps ev
 
 Observability surfaces: send `SIGUSR2` to dump the same task-stack payload on demand (not available on Windows); `GET /tasks` on the health socket serves it as JSON when `TASKQ_HEALTH_TASKS_ENABLED=true`; the `/ready` body reports `loop_tick_ages` and `shutdown_elapsed_seconds`, and a stale loop flips readiness to 503 with a `stale_loops` reason. The OTel instruments are `taskq.worker.watchdog_trips_total` (by detector), `taskq.worker.shutdown_duration_seconds`, `taskq.worker.loop_tick_age_seconds` (by loop), and `taskq.worker.sibling_crashes_total` (by loop).
 
-**Shutdown orchestrator.** Handles SIGTERM/SIGINT. Drives the four-phase sequence: DRAINING → CANCELLING → FORCING → ABANDONING, then sets `shutdown_event` so all TaskGroup siblings return.
+**Shutdown orchestrator.** Handles SIGTERM/SIGINT. Drives the four-phase sequence: DRAINING → CANCELLING → FORCING → RELEASING, then sets `shutdown_event` so all TaskGroup siblings return.
 
 **DI scope chain.** Three scope containers — `ProcessScope`, `ThreadScope`, `LoopScope` — are bootstrapped in sequence after `open_worker_deps`. They resolve declared dependencies for actors at dispatch time using `build_actor_scope`, which opens a per-invocation TRANSIENT scope. TRANSIENT teardown runs after each job regardless of outcome.
 
@@ -520,13 +520,20 @@ SIGTERM (or SIGINT) triggers `orchestrate_shutdown`. A second signal fast-advanc
 | DRAINING | 1 | Sets `producer_stop_event`; calls `drain_local_queue_to_pending` to re-pend locked-but-not-started rows |
 | CANCELLING | 2 | Sets `cancel_event` on all in-flight jobs; waits up to `cancellation_grace_period` for cooperative exit |
 | FORCING | 3 | Writes `cancel_phase=2` to Postgres for remaining jobs, calls `task.cancel()`; waits up to `cleanup_grace_period` |
-| ABANDONING | 4 | Calls `mark_abandoned` on any still-running jobs; closes `leader_conn` (releasing the advisory lock) |
+| RELEASING | 4 | Calls `mark_interrupted` on any still-running job — re-pended, attempt refunded, `interrupt_count` bumped — reserving `mark_abandoned` for jobs an operator cancelled; closes `leader_conn` (releasing the advisory lock) |
 
 **DRAINING phase detail.** `drain_local_queue_to_pending` re-pends only DB-level rows where `status='running' AND started_at IS NULL`. Jobs already in the in-process asyncio queue are processed normally if the consumer is still running, or reclaimed by the sweep after `lock_lease` expires if not.
 
-**ABANDONING phase detail.** The ABANDONING phase writes terminal state externally (not from the job's own task) via `mark_abandoned`. The job's asyncio task is cancelled, not awaited to completion. The task will receive `CancelledError`; any pending shield calls in the consumer may or may not succeed.
+**RELEASING phase detail.** The phase writes externally (not from the job's own task), and what it writes depends on *who asked*. A job the deploy interrupted is released via `mark_interrupted`: back to the queue, claim's attempt increment refunded, `interrupt_count` bumped, no `job_attempts` row — an interruption is not an execution outcome, and infrastructure does not get to decide whether work succeeded. A job an *operator* cancelled keeps the existing ladder and is abandoned. The write is fenced on `cancel_phase = 0`, so a cancel request that raced the deploy wins.
 
-After ABANDONING completes, `shutdown_event` is set and all TaskGroup siblings return.
+A job whose coroutine is still alive in the dying process is released `scheduled` rather than `pending`, held for the remainder of the termination budget (or `lock_lease` when the watchdog is disabled), so no other worker can claim a row this process might still touch. Promotion then rides the leader's `scheduled_to_pending` tick like any retry.
+
+The job's asyncio task is cancelled, not awaited to completion. The task will receive `CancelledError`; any pending shield calls in the consumer may or may not succeed.
+
+After RELEASING completes, `shutdown_event` is set and all TaskGroup siblings return.
+
+!!! warning "An actor longer than the graces is interrupted on every deploy"
+    An actor whose runtime exceeds `cancellation_grace_period + cleanup_grace_period` never finishes during a rollout: each deploy interrupts it and it re-runs from scratch, indefinitely. Nothing caps that on purpose — a cap would put infrastructure back in charge of a job's outcome. `interrupt_count` on the row and the `taskq.jobs.interrupted` counter are how you see it; bound such work with `schedule_to_close`, or checkpoint it through progress state so a re-run resumes.
 
 **Timing constraints** (validated at startup):
 

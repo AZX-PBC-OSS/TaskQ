@@ -378,9 +378,14 @@ def test_env_prefix_loading(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("TASKQ_PG_DSN", _DSN)
     monkeypatch.setenv("TASKQ_LOCK_LEASE", "120")
     monkeypatch.setenv("TASKQ_HEARTBEAT_INTERVAL", "20")
+    # The maintenance role's lease carries the same four-beat invariant this
+    # heartbeat has to satisfy; set alongside so the prefix is what is under
+    # test rather than the lease boundaries.
+    monkeypatch.setenv("TASKQ_LEADER_LEASE", "120")
     s = WorkerSettings.load()
     assert s.lock_lease == 120.0
     assert s.heartbeat_interval == 20.0
+    assert s.leader_lease == 120.0
 
 
 # ── Defaults ──────────────────────────────────────────────────────────────
@@ -536,6 +541,11 @@ def test_lock_lease_invariant_universality(lock_lease: float, heartbeat_interval
         # quiet wherever the draw lands and the 4x boundary stays the only
         # one under test.
         "TASKQ_WATCHDOG_LOOP_LAG_WARN_BUDGET": str(lock_lease * 0.35),
+        # The maintenance role's lease carries the same 4x invariant against
+        # the same heartbeat, so tracking lock_lease keeps it quiet exactly
+        # where the draw satisfies the boundary under test, and violating
+        # alongside it where the draw does not.
+        "TASKQ_LEADER_LEASE": str(lock_lease),
     }
     should_raise = lock_lease < 4 * heartbeat_interval
 

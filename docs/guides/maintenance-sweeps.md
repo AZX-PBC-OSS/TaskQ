@@ -259,9 +259,12 @@ budget.
 ### What degradation looks like
 
 - `taskq.maintenance_leader.sweep_timeouts` (counter, by `sweep_name`) — any
-  sustained rate means batches are being aborted, not completing slowly. The
+  sustained rate means work is being aborted, not completing slowly. The
   `cron` label on this counter is the cron tick's own deadline, not a batch
-  timeout.
+  timeout. Gauge samplers (`queue_depth`, `backlog_detection`,
+  `reservation_slots`, `stranded_jobs`) count every failed read here, not only
+  the deadline family: a sampler that cannot read leaves its gauge serving the
+  last value it cached, which is indistinguishable from a healthy flat line.
 - `taskq.maintenance_leader.sweep_batch_size` vs
   `taskq.maintenance_leader.sweep_batch_size_configured` (label-matched pair,
   same worker) — used below configured is the reduced tier.

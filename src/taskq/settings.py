@@ -837,6 +837,39 @@ class WorkerSettings(TaskQSettings):
         "0 or less waits indefinitely (the lock_timeout GUC convention "
         "shared with the sibling budgets).",
     )
+    # -- Rate-limiter PG admission row-lock budgets -----------------------
+    # Defaults are the values of the module constants they supersede
+    # (DEFAULT_TOKEN_BUCKET_LOCK_TIMEOUT_MS in taskq.ratelimit.token_bucket,
+    # DEFAULT_SLIDING_WINDOW_LOCK_TIMEOUT_MS in
+    # taskq.ratelimit._sliding_window_pg, 5 s each) — written as literals,
+    # not imported, for the same driver-free import-boundary reason as the
+    # enqueue budgets above. The PG acquire/refund call sites read these
+    # fields when no explicit lock_timeout_ms override is given, the exact
+    # shape production callers use; a deployment that sets neither env var
+    # keeps the pre-knob ceiling.
+    token_bucket_lock_timeout_ms: float = Field(
+        default=5000.0,
+        description="TASKQ_TOKEN_BUCKET_LOCK_TIMEOUT_MS (milliseconds). Bounded "
+        "wait for the token-bucket rate limiter's PG row lock (the "
+        "rate_limit_buckets FOR UPDATE on both the acquire and refund arms). "
+        "On acquire exhaustion the limiter fails closed (a denial, never an "
+        "admission); on refund exhaustion the refund raises, since a quiet "
+        "no-op would leave spent tokens unreturned. Widen this during an "
+        "outage that slows lock holders rather than letting the fixed "
+        "ceiling convert slow holders into denials. 0 or less waits "
+        "indefinitely (the lock_timeout GUC convention shared with the "
+        "sibling budgets).",
+    )
+    sliding_window_lock_timeout_ms: float = Field(
+        default=5000.0,
+        description="TASKQ_SLIDING_WINDOW_LOCK_TIMEOUT_MS (milliseconds). "
+        "Bounded wait for the sliding-window rate limiter's PG lock -- the "
+        "per-bucket advisory lock on the log-style acquire and the "
+        "rate_limit_buckets FOR UPDATE on the GCRA-style acquire. On "
+        "exhaustion the acquire fails closed (a denial, never an "
+        "admission). 0 or less waits indefinitely (the lock_timeout GUC "
+        "convention shared with the sibling budgets).",
+    )
     heartbeat_pool_size: int = Field(
         default=4,
         ge=1,
@@ -880,6 +913,14 @@ class WorkerSettings(TaskQSettings):
         ge=1.0,
         description="TASKQ_LOCK_LEASE (seconds). Time before a held lock is "
         "reclaimed by the recovery sweep. "
+        "Must be >= 4 * heartbeat_interval.",
+    )
+    leader_lease: float = Field(
+        default=40.0,
+        ge=1.0,
+        description="TASKQ_LEADER_LEASE (seconds). How long the maintenance "
+        "leader's claim on the role is trusted without a renewal; another pod "
+        "takes leadership once it lapses. Renewed every heartbeat_interval. "
         "Must be >= 4 * heartbeat_interval.",
     )
     max_heartbeat_failures: int = Field(
@@ -965,8 +1006,12 @@ class WorkerSettings(TaskQSettings):
         "prune family's zero-means-archive-immediately: for a brand-new "
         "deletion loop the safe misconfiguration is off. The "
         "crash-reclaim outbox slice (kind='state_change' AND "
-        "detail->>'reason'='lock_expired') is exempt from the sweep at any "
-        "setting. Negative values raise at settings load.",
+        "detail->>'reason'='lock_expired') is exempt from THIS retention "
+        "window, but not deleted forever: it is still removed once "
+        "occurred_at exceeds retention * RECLAIM_OUTBOX_RETENTION_MULTIPLIER "
+        "(100x) so an undeletable table never accumulates. A consumer "
+        "lagging past that age loses reclaim events silently. Negative "
+        "values raise at settings load.",
     )
     event_retention_batch_size: int = Field(
         default=DEFAULT_EVENT_RETENTION_BATCH_SIZE,
@@ -1716,6 +1761,22 @@ class WorkerSettings(TaskQSettings):
                     value=self.lock_lease,
                     error_msg=(
                         f"lock_lease ({self.lock_lease}) must be >= 4 * heartbeat_interval "
+                        f"({4 * self.heartbeat_interval})"
+                    ),
+                )
+            )
+
+        # leader_lease invariant, the same four-beat slack lock_lease carries:
+        # the lease is renewed once per heartbeat_interval, so a shorter lease
+        # would lapse on ordinary jitter and hand the maintenance role to a
+        # peer while the incumbent is healthy.
+        if self.leader_lease < 4 * self.heartbeat_interval:
+            errors.append(
+                ValidationError(
+                    field_name="leader_lease",
+                    value=self.leader_lease,
+                    error_msg=(
+                        f"leader_lease ({self.leader_lease}) must be >= 4 * heartbeat_interval "
                         f"({4 * self.heartbeat_interval})"
                     ),
                 )

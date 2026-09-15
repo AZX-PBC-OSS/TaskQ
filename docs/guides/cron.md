@@ -81,8 +81,9 @@ cron(
 ### Payload factory
 
 Pass `payload_factory="module.path.to_callable"` for dynamic payloads. The factory is
-resolved via `importlib.import_module` + `getattr` and cached. Async factories are awaited
-with a 5-second timeout:
+resolved via `importlib.import_module` + `getattr` and cached. Every factory is bounded by
+`TASKQ_CRON_PAYLOAD_FACTORY_TIMEOUT` (default 5s), narrowed further when a tick's remaining
+resolution budget is smaller — see [Payload factory deadlines](#payload-factory-deadlines):
 
 ```python
 # myapp/payloads.py
@@ -105,6 +106,27 @@ cron("0 * * * *", "hourly_sync", payload_factory="myapp.payloads.make_sync_paylo
 
 The factory may return a `dict` (used as-is) or a `BaseModel` (converted via `.model_dump()`).
 Any other return type raises `TypeError`.
+
+### Payload factory deadlines
+
+A coroutine function is called on the event loop — calling one only builds a coroutine
+object — and the coroutine it returns is awaited there. Every other callable may block, so
+it runs on a small thread pool cron owns, never the event loop's default executor that sync
+actor bodies run on. That separation matters in both directions: a saturated actor pool
+cannot delay a schedule tick, and a hung factory cannot eat actor execution capacity.
+
+Each factory call gets the smaller of `TASKQ_CRON_PAYLOAD_FACTORY_TIMEOUT` and what is left
+of the tick's resolution budget — half the whole-tick deadline
+(`TASKQ_DISPATCHER_COMMAND_TIMEOUT`), with the other half reserved for the tick's writes and
+its commit. Several hung factories in one batch therefore cost the budget once between them,
+not once each. When the deadline fires, that schedule takes a strike naming the factory in
+`last_fire_error` and the rest of the batch fires normally; the tick is never cancelled
+wholesale by one stuck factory.
+
+The deadline bounds how long the tick **waits**, not how long the factory runs. A blocking
+factory keeps its pool thread until it returns on its own, so a schedule whose factory hangs
+on every fire degrades cron's resolution concurrency until the auto-disable threshold takes
+the schedule out of rotation. That is what the strike accounting is for.
 
 ---
 
@@ -333,19 +355,37 @@ the cron loop:
 3. Computes `next_fire_at` as usual and continues.
 
 After a configurable number of consecutive failures, the schedule is auto-disabled. The
-`taskq.cron.consecutive_failures` up-down counter tracks the failure balance per actor:
-schedules on one actor share one series, so the balance is the sum over that actor's
-schedules — including any residue from schedules that were disabled, re-enabled or deleted
-(which no later delta removes; the `cron_schedules.consecutive_failures` column and the
-logs are the authoritative per-schedule counts). Per-schedule attribution lives on the
-`cron fired`, `cron fire failed` and `cron schedule auto-disabled` log lines and the
-`taskq.cron_schedule_id` attribute of the `cron fire` span. The
-`taskq.cron.disabled_schedules` observable gauge tracks the count of disabled schedules —
-that gauge, not the balance, is the alert signal.
+`taskq.cron.consecutive_failures` series carries the outstanding failure count per actor:
+schedules on one actor share one series, so the value is the sum of
+`cron_schedules.consecutive_failures` over that actor's schedules. Each tick reconciles the
+series against that sum for **the actors it measured** — the actors whose schedules were due
+on that tick — so a clear, a disable or a delete performed by any other process (a client,
+the CLI, the admin UI) self-corrects on the next tick that measures the actor, and the value
+returns to zero once none of the actor's schedules is failing. Actors the tick did not look
+at are left alone: a tick can only speak for what it selected.
 
-Calling `handle.enable()` resets `consecutive_failures` to 0 and clears `last_fire_error`
-(the metric balance is not adjusted — a client process cannot emit a worker-counter
-delta).
+Per-schedule attribution lives on the `cron fired`, `cron fire failed` and
+`cron schedule auto-disabled` log lines and the `taskq.cron_schedule_id` attribute of the
+`cron fire` span. The `taskq.cron.disabled_schedules` observable gauge tracks the count of
+disabled schedules.
+
+Calling `handle.enable()` resets `consecutive_failures` to 0 and clears `last_fire_error`;
+the series follows on the next tick that measures the actor.
+
+### Telemetry follows the commit
+
+A cron tick runs inside a transaction, and everything it reports describes rows it has
+written but not yet committed. Failure telemetry — the `cron fire failed` and
+`cron schedule auto-disabled` log lines, the ERROR-status `cron fire` span, the metric
+deltas — and success telemetry alike are held until that transaction commits, and dropped
+if it rolls back. A strike the database did not keep leaves no trace behind, so an operator
+reading a failure count or an error span is reading something the row can confirm.
+
+The signal that the transaction committed comes from Postgres itself, over a notification
+queued inside the tick: such a notification is delivered only on commit and discarded on
+rollback. If that channel cannot be armed, the tick emits its telemetry immediately and logs
+`cron-commit-gate-unarmed` — an instrumentation channel that fails degrades to
+over-reporting, never to silence.
 
 ---
 

@@ -41,6 +41,7 @@ from taskq.backend._cursor import (
 from taskq.backend._notify import _SubscriberContext
 from taskq.backend._protocol import (
     BACKEND_PROTOCOL_VERSION,
+    RETRY_SOURCE_EXCLUSIONS,
     AttemptOutcome,
     AttemptRow,
     BatchCounts,
@@ -53,6 +54,7 @@ from taskq.backend._protocol import (
     EnqueueArgs,
     ErrorInfo,
     EventRow,
+    InterruptOutcome,
     JobFilter,
     JobId,
     JobRow,
@@ -65,6 +67,7 @@ from taskq.backend._protocol import (
 from taskq.backend.clock import Clock
 from taskq.backend.statemachine import ACTIVE_STATUSES
 from taskq.constants import (
+    CANCEL_ORIGIN_PENDING,
     DEFAULT_CHUNK_SIZE,
     DEFAULT_EVENT_WRITER_BATCH_SIZE,
     DEFAULT_RECLAIM_POLL_LIMIT,
@@ -148,6 +151,7 @@ from taskq.testing._terminal import (
     _mark_abandoned,
     _mark_cancelled,
     _mark_failed_or_retry,
+    _mark_interrupted,
     _mark_retry_after,
     _mark_snoozed,
     _mark_succeeded,
@@ -265,6 +269,12 @@ class InMemoryBackend:
         # cannot park the drain forever beside a row that already says
         # abandoned. None whenever no attempt is executing.
         self._inflight_attempt: tuple[JobId, asyncio.Task[object]] | None = None
+        #: Jobs whose attempt the escalation tick force-cancelled. The
+        #: runner awaits attempts inline, so that cancel lands on the
+        #: drain task itself; this set is how the drain recognises the
+        #: cancellation as its own and absorbs it instead of handing an
+        #: unrequested CancelledError to a caller.
+        self._self_cancelled_jobs: set[JobId] = set()
         self._wake_subscribers: set[asyncio.Event] = set()
         self._cancel_wake_subscribers: set[asyncio.Event] = set()
         self._actor_stubs: dict[str, StubFn] = {}
@@ -624,6 +634,26 @@ class InMemoryBackend:
     ) -> bool:
         return await _mark_abandoned(self, job_id, progress_seq, progress_state)
 
+    async def mark_interrupted(
+        self,
+        job_id: JobId,
+        worker_id: UUID,
+        *,
+        attempt: int,
+        hold: timedelta,
+        progress_seq: int = 0,
+        progress_state: dict[str, object] | None = None,
+    ) -> InterruptOutcome:
+        return await _mark_interrupted(
+            self,
+            job_id,
+            worker_id,
+            attempt=attempt,
+            hold=hold,
+            progress_seq=progress_seq,
+            progress_state=progress_state,
+        )
+
     async def mark_snoozed(
         self,
         job_id: JobId,
@@ -636,7 +666,7 @@ class InMemoryBackend:
         outcome: SnoozeOutcome = "snoozed",
         attempt: int | None = None,
         denial_reason: DenialReason = "capacity",
-    ) -> Literal["scheduled", "failed", "failed:MaxAttemptsExceeded", "noop"]:
+    ) -> Literal["scheduled", "failed", "noop"]:
         return await _mark_snoozed(
             self,
             job_id,
@@ -718,12 +748,14 @@ class InMemoryBackend:
                 row,
                 status="cancelled",
                 finished_at=now,
+                error_class=CANCEL_ORIGIN_PENDING,
             )
             self._append_state_change_event(
                 job_id=job_id,
                 from_state=prev_status,
                 to_state="cancelled",
                 now=now,
+                error_class=CANCEL_ORIGIN_PENDING,
             )
             self._append_cancel_request_event(job_id, now, reason)
             logger.debug(
@@ -760,7 +792,13 @@ class InMemoryBackend:
 
     async def retry_job(self, job_id: JobId) -> bool:
         row = self._jobs.get(job_id)
-        if row is None or row.status not in ("failed", "crashed", "cancelled"):
+        # An operator re-run is "run this again", so every state a job can
+        # come to rest in is a valid source, including 'succeeded' (the
+        # replay path after a bad deploy) and 'abandoned' (a deploy
+        # interrupted the job; it did not fail). The exclusions are
+        # correctness constraints rather than policy choices — the same
+        # set the PG predicate renders and the admin surfaces read.
+        if row is None or row.status in RETRY_SOURCE_EXCLUSIONS:
             return False
         # Monotonic attempt with the ceiling raised just enough to open
         # the budget gates, mirroring the PG statement's
@@ -790,6 +828,14 @@ class InMemoryBackend:
             error_message=None,
             error_traceback=None,
             scheduled_at=self._clock.now(),
+            # Twin of the PG statement's started_at = COALESCE(started_at,
+            # clock_timestamp()): retry_job is the one re-pend path that
+            # also accepts a never-claimed row, and started_at is the
+            # discriminator _dispatch.py's routing reads to put a re-pended
+            # row in the assignment-routed population. Left None, an
+            # admin-retried never-claimed job would keep routing by its own
+            # stale queue label instead of the actor's current assignment.
+            started_at=row.started_at if row.started_at is not None else self._clock.now(),
             finished_at=None,
             result=None,
             result_size_bytes=None,

@@ -115,6 +115,7 @@ PgBouncer recommendation threshold), see [ops.md — Sizing](ops.md#4-sizing-wor
 |---|---|---|---|---|
 | `TASKQ_HEARTBEAT_INTERVAL` | `float` (seconds) | `10.0` | Period between heartbeat ticks. | Min: 0.5 |
 | `TASKQ_LOCK_LEASE` | `float` (seconds) | `60.0` | Time before an unrenewed job lock is reclaimed by the sweep. Must be >= 4 × `TASKQ_HEARTBEAT_INTERVAL`, and must exceed `TASKQ_WATCHDOG_LOOP_LAG_BUDGET` + `TASKQ_HEARTBEAT_INTERVAL` (a stalled loop dies before its leases expire). | Min: 1.0; see [Validation Constraints](#validation-constraints) |
+| `TASKQ_LEADER_LEASE` | `float` (seconds) | `40.0` | How long the maintenance leader's claim on the role is trusted without a renewal. The holder renews every `TASKQ_HEARTBEAT_INTERVAL`; once the horizon it wrote has passed, any surviving pod takes the role on its next election cycle. A leader lost without a clean exit is replaced within `leader_lease + heartbeat_interval`. | Min: 1.0; `leader_lease >= 4 × heartbeat_interval` |
 | `TASKQ_MAX_HEARTBEAT_FAILURES` | `int` | `3` | Consecutive heartbeat failures before the worker self-terminates. | Min: 1 |
 
 ### Leader Sweep Intervals
@@ -422,6 +423,16 @@ lock_lease >= 4 × heartbeat_interval
 Rationale: tolerates three consecutive missed heartbeats before the sweep reclaims the lock, preventing false abandonment under transient PG connectivity issues.
 
 Error pattern: `lock_lease must be >= 4 * heartbeat_interval`
+
+### Leader lease vs heartbeat interval
+
+```
+leader_lease >= 4 × heartbeat_interval
+```
+
+Rationale: the maintenance leader renews its claim on the role once per heartbeat, so the same four-beat slack applies — a shorter lease would lapse on ordinary jitter and hand the role to a peer while the incumbent is healthy.
+
+Error pattern: `leader_lease must be >= 4 * heartbeat_interval`
 
 ### Termination budget
 

@@ -134,6 +134,19 @@ _EXEMPT: dict[str, tuple[str, str]] = {
         "WHERE worker_id = $1",
         "keyed single maintenance_leader row",
     ),
+    "_LEADER_ELECT_SQL_TEMPLATE": (
+        "ON CONFLICT (singleton)",
+        "the one maintenance_leader row; the singleton primary key admits "
+        "exactly one, so the claim writes one row or none",
+    ),
+    "_LEADER_RENEW_SQL_TEMPLATE": (
+        "WHERE singleton = true AND worker_id = $1 AND elected_at = $2",
+        "the one maintenance_leader row, further fenced on the renewing pod's own term",
+    ),
+    "_LEADER_RESIGN_SQL_TEMPLATE": (
+        "WHERE singleton = true AND worker_id = $1 AND elected_at = $2",
+        "the one maintenance_leader row, further fenced on the resigning pod's own term",
+    ),
     "_ISOLATE_JOB_SQL_TEMPLATE": (
         "WHERE id = $1",
         "keyed single running job (watchdog self-isolation)",

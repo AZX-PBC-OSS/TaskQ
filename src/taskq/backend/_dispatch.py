@@ -30,7 +30,7 @@ from taskq.backend._sql_templates import SqlTemplates
 from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining
 )
-from taskq.obs import get_logger
+from taskq.obs import get_logger, record_dispatch_duration, record_dispatch_failure
 
 if TYPE_CHECKING:
     import asyncpg
@@ -192,7 +192,21 @@ async def _dispatch_batch(
         )
         async with conn.transaction():
             if queue_modes is None:
-                modes_by_queue = await _resolve_queue_modes_by_queue(conn, queues, schema)
+                # Resolving the queues' modes runs before the dispatch CTE
+                # is ever issued, so a failure here never reaches the
+                # helper's own span or histogram. Without its own emission
+                # this whole failure class -- a lock timeout or reset while
+                # reading queues.mode -- leaves an empty metric stream even
+                # though the producer retries it for ever.
+                resolve_started = time.monotonic()
+                try:
+                    modes_by_queue = await _resolve_queue_modes_by_queue(conn, queues, schema)
+                except Exception as exc:
+                    record_dispatch_duration(
+                        queues[0] if queues else "", time.monotonic() - resolve_started
+                    )
+                    record_dispatch_failure(queues[0] if queues else "", type(exc).__name__)
+                    raise
                 if queue_mode_cache is not None:
                     queue_mode_cache.store(modes_by_queue)
                 # An empty queue list resolves to the strict variant (the

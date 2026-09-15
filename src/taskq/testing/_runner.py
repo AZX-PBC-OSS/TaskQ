@@ -34,7 +34,7 @@ from taskq.backend.statemachine import TERMINAL_STATUSES
 from taskq.batch import BatchCompletionStatus, apply_batch_terminal_outcome, decide_batch_status
 from taskq.context import JobContext
 from taskq.exceptions import PayloadValidationError, Snooze
-from taskq.retry import OnRetryExhausted, OnSuccess, RetryClassifierHook, RetryPolicy
+from taskq.retry import OnCancel, OnRetryExhausted, OnSuccess, RetryClassifierHook, RetryPolicy
 from taskq.testing._reads import _event_read_copy, _read_copy
 
 if TYPE_CHECKING:
@@ -59,6 +59,19 @@ code where strict parameter checking is not required and the actor signature
 varies.  Stubs MAY be ``async def`` or plain ``def``; ``run_until_drained``
 inspects the return value with ``isinstance(result, Awaitable)`` and awaits
 accordingly.
+"""
+
+
+_MAX_CONSECUTIVE_DENIAL_ROUNDS: int = 1_000
+"""Bounds ``run_until_drained`` against a permanently-denying actor.
+
+An admission denial has 429 semantics: the BACKEND reschedules the job
+indefinitely and never terminalises it on its own.  Nothing about that
+contract bounds a synchronous test helper that keeps calling back into
+it, though, so the helper carries its own limit — generous enough that
+no legitimate multi-round denial scenario in the suite comes close to
+it, but finite, so a bucket that never frees returns promptly instead
+of hanging the event loop.
 """
 
 
@@ -193,6 +206,8 @@ class _InMemoryActorConfig:
     on_retry_exhausted_timeout: float = 3.0
     on_success: OnSuccess | None = None
     on_success_timeout: float = 3.0
+    on_cancel: OnCancel | None = None
+    on_cancel_timeout: float = 3.0
     result_ttl: timedelta | None = None
     payload_type: type[BaseModel] = PassthroughPayload
 
@@ -584,11 +599,17 @@ async def tick_cancel_polling(backend: "InMemoryBackend") -> None:
             # abandoned.  The row is terminal BEFORE the cancel: the
             # attempt's mark_cancelled path then no-ops against the
             # abandoned row instead of racing a second terminal write,
-            # and the drain task's own cancellation propagates through
-            # run_until_drained's caller-cancel arm (Task.cancelling()).
+            # and the drain absorbs its own cancel (see below).
             if abandoned:
                 inflight = backend._inflight_attempt  # pyright: ignore[reportPrivateUsage]  # Why: test runner helper intentionally accesses private InMemoryBackend state; this module is co-located with the backend and owns this access pattern.
                 if inflight is not None and inflight[0] == job_id:
+                    # Recorded before the cancel, so the drain's handler
+                    # can tell this self-inflicted stop from the caller's.
+                    # Task.cancelling() alone cannot: both raise it, and
+                    # production separates them structurally — there, the
+                    # cancel lands on the attempt task while the dispatch
+                    # loop, a different task, carries on.
+                    backend._self_cancelled_jobs.add(job_id)  # pyright: ignore[reportPrivateUsage]  # Why: test runner helper intentionally accesses private InMemoryBackend state; this module is co-located with the backend and owns this access pattern.
                     inflight[1].cancel()
 
     # Cleanup: remove cancel-tracking state for terminal jobs to prevent
@@ -642,8 +663,32 @@ async def run_until_drained(backend: "InMemoryBackend") -> None:
     lock_lease=timedelta(seconds=60))`` where *queues* is derived from
     the set of queues currently in use (all unique queue names from
     ``_jobs.values()``).  This mirrors the single-worker model.
+
+    Admission denials bound the LOOP rather than ending a job.  A denial
+    is "come back later" — it reschedules the job indefinitely and never
+    terminalises it — so the backend itself never stops a permanently
+    saturated bucket's job: it stays 'scheduled' for ever, exactly as
+    production would leave it.  The drain HELPER still has to return,
+    though, so it bounds its own progress instead: every dispatch round
+    that ends in a denial with no OTHER job advancing counts against
+    ``_MAX_CONSECUTIVE_DENIAL_ROUNDS``, and a round where anything makes
+    real progress (a job runs, or a fresh candidate becomes dispatchable)
+    resets the counter.  Advancing a ``FakeClock`` to the next
+    ``scheduled_at`` when nothing is currently dispatchable gives a
+    denied job another look at whatever capacity that advance may have
+    freed — most legitimate multi-round denial tests resolve in a
+    handful of rounds, so the bound is generous.  Hitting it simply
+    RETURNS, exactly like reaching the end of the dispatchable set: the
+    job under test is left exactly where the backend put it (scheduled,
+    never terminal, budget untouched), which is what a caller asserting
+    on a permanently-denied job's row expects — a bucket that never
+    frees is a normal scenario to exercise, not an error, and the bound
+    exists only so the helper cannot spin the event loop for ever
+    finding that out.
     """
     from taskq.worker._consumer import consume_one_job
+
+    consecutive_denial_rounds = 0
 
     while True:
         # Step 1: promote scheduled→pending (the backend's own clock is
@@ -666,14 +711,18 @@ async def run_until_drained(backend: "InMemoryBackend") -> None:
                 # No scheduled jobs at all — fully drained.
                 return
 
-            # Advance clock if FakeClock, else return.
+            # Advance clock if FakeClock, else return: production code
+            # wouldn't call run_until_drained with a real clock. Every
+            # advance gives a denied job another look at whatever
+            # capacity may have freed by next_at — real termination for
+            # a permanently-denying actor is enforced where the denial
+            # is actually observed, below, by
+            # _MAX_CONSECUTIVE_DENIAL_ROUNDS, not here.
             move_to = getattr(backend._clock, "move_to", None)  # pyright: ignore[reportPrivateUsage]  # Why: test runner helper intentionally accesses private InMemoryBackend state; this module is co-located with the backend and owns this access pattern.
-            if callable(move_to):
-                move_to(next_at)
-                continue
-            else:
-                # Production code wouldn't call run_until_drained
+            if not callable(move_to):
                 return
+            move_to(next_at)
+            continue
 
         # Step 4: delegate per-job execution to consume_one_job
         job = dispatched[0]
@@ -706,6 +755,11 @@ async def run_until_drained(backend: "InMemoryBackend") -> None:
         if current_task is not None:
             registration = (job.id, current_task)
             backend._inflight_attempt = registration  # pyright: ignore[reportPrivateUsage]  # Why: test runner helper intentionally accesses private InMemoryBackend state; this module is co-located with the backend and owns this access pattern.
+        # The denial counter is the discriminator the outcome cannot
+        # give: a denial collapses to "scheduled", indistinguishable
+        # from an actor-requested snooze that a later pass may well get
+        # past.
+        denials_before = job.rate_limit_blocked_count
         try:
             outcome = await consume_one_job(
                 backend,
@@ -765,15 +819,50 @@ async def run_until_drained(backend: "InMemoryBackend") -> None:
             # — and the mirror does the same: the outcome is set here
             # and the shared hook call below applies it.
             task = asyncio.current_task()
-            if task is not None and task.cancelling() > 0:
+            self_inflicted = job.id in backend._self_cancelled_jobs  # pyright: ignore[reportPrivateUsage]  # Why: test runner helper intentionally accesses private InMemoryBackend state; this module is co-located with the backend and owns this access pattern.
+            backend._self_cancelled_jobs.discard(job.id)  # pyright: ignore[reportPrivateUsage]  # Why: same co-located private-state access.
+            if self_inflicted:
+                # The runner both requested and received this
+                # cancellation. Absorbing it is only half the contract:
+                # the injected cancel must also be balanced with
+                # uncancel(), or the elevated count follows the task for
+                # ever and a surrounding TaskGroup re-raises at its next
+                # checkpoint though every child succeeded. CPython's own
+                # timeout and TaskGroup do exactly this after absorbing a
+                # cancellation they injected.
+                if task is not None:
+                    task.uncancel()
+                # The row is already terminal (abandoned, written before
+                # the cancel), so nothing more is owed here and the drain
+                # goes on to the next job — production's dispatch loop
+                # likewise survives cancelling one attempt.
+                outcome = "cancelled"
+            elif task is not None and task.cancelling() > 0:
                 raise
-            outcome = "cancelled"
+            else:
+                outcome = "cancelled"
         finally:
             # Identity-guarded: a concurrent run_until_drained on the same
             # backend may have registered its own attempt over ours — only
             # clear what this dispatch registered.
             if registration is not None and backend._inflight_attempt is registration:  # pyright: ignore[reportPrivateUsage]  # Why: test runner helper intentionally accesses private InMemoryBackend state; this module is co-located with the backend and owns this access pattern.
                 backend._inflight_attempt = None  # pyright: ignore[reportPrivateUsage]  # Why: test runner helper intentionally accesses private InMemoryBackend state; this module is co-located with the backend and owns this access pattern.
+
+        after = backend._jobs.get(job.id)  # pyright: ignore[reportPrivateUsage]  # Why: test runner helper intentionally accesses private InMemoryBackend state; this module is co-located with the backend and owns this access pattern.
+        if after is not None and after.rate_limit_blocked_count > denials_before:
+            consecutive_denial_rounds += 1
+            if consecutive_denial_rounds >= _MAX_CONSECUTIVE_DENIAL_ROUNDS:
+                # A bucket that stays saturated for this many consecutive
+                # rounds is never going to free within a bounded
+                # simulation. Returning leaves the job exactly where the
+                # backend already put it -- scheduled, never terminal,
+                # budget untouched -- which is the correct, assertable
+                # end state for a caller exercising this exact scenario.
+                return
+        else:
+            # Anything else is forward progress — a job ran, or took a
+            # deferral a later pass may get past.
+            consecutive_denial_rounds = 0
 
         try:
             await apply_batch_terminal_outcome(backend, job, outcome)

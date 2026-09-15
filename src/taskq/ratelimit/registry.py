@@ -71,6 +71,7 @@ from taskq.constants import (
     DEFAULT_MAX_KEYED_RESERVATIONS,
     DEFAULT_RESERVATION_BACKOFF,
     QUEUE_CONCURRENCY_PREFIX,
+    no_consumed_quota_sql,
 )
 from taskq.exceptions import PayloadValidationError, ReservationUnavailable
 from taskq.obs import (
@@ -2041,10 +2042,20 @@ class RateLimitRegistry:
 # templates in ratelimit/reservation.py). No lease guard, unlike the
 # reservation twin: a rate_limit_buckets row has no holder, so nothing
 # survives the DELETE and the drain runs no survivor probe.
-_RECLAIM_RATE_LIMIT_SLICE_DELETE_SQL_TEMPLATE = """\
-DELETE FROM "{schema}".rate_limit_buckets
+#
+# The quota guard is the same predicate the fleet sweep applies, shared
+# from one helper so the two reclamation paths cannot disagree about
+# which rows are safe to delete. Eviction exists to bound registry
+# growth, not to reset quotas: a memory-backed fixed-quota bucket is
+# exempted in-process because its state lives on the instance, and for a
+# PG-backed bucket the row IS that state, so deleting it does the
+# identical damage — the next acquire re-preseeds at full capacity and
+# re-admits a budget the tenant already spent.
+_RECLAIM_RATE_LIMIT_SLICE_DELETE_SQL_TEMPLATE = f"""\
+DELETE FROM "{{schema}}".rate_limit_buckets
 WHERE bucket_name = ANY($1)
-RETURNING bucket_name"""
+  AND {no_consumed_quota_sql()}
+RETURNING bucket_name"""  # noqa: S608  # Why: the only interpolation is this package's own constant predicate; schema stays a caller-formatted placeholder and bucket_name is $1-bound.
 
 
 async def _upsert_rate_limit_bucket_row(

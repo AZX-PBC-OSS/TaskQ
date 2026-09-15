@@ -1,8 +1,11 @@
 """Tests for taskq workgroup CLI subcommand: start and validate."""
 
+import sys
+import textwrap
 from pathlib import Path
 from typing import Any
 
+import pytest
 from typer.testing import CliRunner
 
 from taskq.cli import app
@@ -63,17 +66,41 @@ def test_workgroup_start_happy_path(monkeypatch: Any, tmp_path: Path) -> None:
 # ── workgroup validate ─────────────────────────────────────────────────────
 
 
-def test_workgroup_validate_happy_path(tmp_path: Path) -> None:
+def test_workgroup_validate_happy_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """workgroup validate reports 'config OK' and a summary line per worker."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "cli_wg_actors_happy_path.py").write_text(
+        textwrap.dedent(
+            """
+            from pydantic import BaseModel
+            from taskq.actor import actor
+
+            class Payload(BaseModel):
+                pass
+
+            @actor(queue="default")
+            async def default_job(payload: Payload) -> None:
+                pass
+
+            registry = {"default_job": default_job}
+            """
+        ).strip("\n")
+    )
+    if str(tmp_path) not in sys.path:
+        sys.path.insert(0, str(tmp_path))
+
     config_path = tmp_path / "workgroup.toml"
-    config_path.write_text(_MINIMAL_VALID_TOML)
+    config_path.write_text(
+        'actors = "cli_wg_actors_happy_path:registry"\n\n'
+        '[[workers]]\nname = "api"\nqueues = ["default"]\n'
+    )
 
     result = runner.invoke(app, ["workgroup", "validate", str(config_path)])
     assert result.exit_code == 0, f"stderr: {result.stderr}"
     plain = plain_cli_output(result.output)
     assert "config OK" in plain
     assert "1 worker(s)" in plain
-    assert "actors='myapp.actors:registry'" in plain
+    assert "actors='cli_wg_actors_happy_path:registry'" in plain
     assert "api:" in plain
     assert "health=off" in plain
 

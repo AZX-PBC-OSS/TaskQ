@@ -2,15 +2,29 @@ groups:
   - name: taskq.rules
     rules:
       - alert: TaskQQueueDepthHigh
-        expr: taskq_queue_depth > 1000
+        expr: taskq_jobs_actor_backlog{actor!=""} > 1000 and taskq_jobs_oldest_pending_age_seconds > 900
         for: 5m
         labels:
           severity: warning
         annotations:
-          summary: "TaskQ queue {{ $labels.queue }} depth is {{ $value }}"
+          summary: "TaskQ actor {{ $labels.actor }} on queue {{ $labels.queue }} has {{ $value }} pending jobs that are not draining"
           description: >-
-            Queue depth has been above threshold (1000) for 5 minutes.
-            Operators should override the threshold in their own rule
+            Actor {{ $labels.actor }} on queue {{ $labels.queue }} has held
+            more than 1000 pending jobs for 5 minutes AND its oldest pending
+            job is over 15 minutes old — the backlog is not draining.
+            Evaluated per (actor, queue) rather than per queue: a queue-summed
+            depth cannot separate "one actor here is never consumed" from
+            "this queue is busy", because the shared queue keeps moving while
+            one actor's rows pile up forever. Depth alone is ambiguous — a
+            deep queue that drains is healthy throughput — so the age operand
+            is what distinguishes the two; both series carry the same
+            (actor, queue) labels, so the join is per-actor. A worker never
+            refuses to start because an actor's queue has no consumer (no
+            single supervisor in a multi-worker fleet knows what consumes a
+            queue), so this alert is the only signal that condition produces.
+            Check that some worker's TASKQ_QUEUES includes
+            {{ $labels.queue }} and that the actor has an actor_config row.
+            Operators should override the thresholds in their own rule
             configuration.
 
       - alert: TaskQHeartbeatMisses
@@ -46,9 +60,12 @@ groups:
         annotations:
           summary: "TaskQ abandoned jobs detected"
           description: >-
-            Any abandoned job is concerning — it means a worker died during
-            shutdown phase 4 (ABANDONING) without cleaning up. Inspect
-            job_attempts with outcome=abandoned.
+            Any abandoned job is concerning — an operator cancelled it and
+            the actor did not yield within the cancellation graces, so the
+            worker took the attempt away from it. A deploy never produces
+            this: work interrupted by a shutdown is released back to the
+            queue with its attempt refunded. Inspect job_attempts with
+            outcome=cancelled and error_class=CancelAbandoned.
 
       - alert: TaskQLockExpiringSoon
         expr: histogram_quantile(0.99, rate(taskq_lock_expires_in_seconds_bucket[5m])) < 30
@@ -113,16 +130,22 @@ groups:
             affected schedule(s) and fix the payload_factory.
 
       - alert: TaskQScheduledBacklogGrowing
-        expr: deriv(taskq_jobs_by_status{status="scheduled"}[15m]) > 0 and taskq_jobs_oldest_due_age_seconds > 300
+        expr: deriv(taskq_jobs_by_status{status="scheduled"}[15m]) > 0 and taskq_jobs_by_status{status="scheduled"} > 0 and ignoring(status) taskq_jobs_oldest_due_age_seconds > 300
         for: 5m
         labels:
           severity: warning
         annotations:
           summary: "TaskQ scheduled backlog is growing while due jobs wait over 5m"
           description: >-
-            The scheduled backlog is growing (positive 15m derivative) AND
-            the oldest due job has been waiting more than 5 minutes —
-            promotion from scheduled to pending is stalled. Runbook:
+            The scheduled backlog is growing (positive 15m derivative),
+            scheduled work is actually present, AND the oldest due job has
+            been waiting more than 5 minutes — promotion from scheduled to
+            pending is stalled. The age operand carries no status label
+            (it is a single fleet-wide gauge), so it is joined with
+            ignoring(status); without that modifier the vector match has no
+            pairs and the alert can never fire. A draining backlog retires
+            its oldest job and the age drops, so this stays quiet under
+            healthy load. Runbook:
             docs/guides/runbooks.md#taskqscheduledbackloggrowing.
 
       - alert: TaskQPromotionStalled
@@ -144,10 +167,12 @@ groups:
         labels:
           severity: warning
         annotations:
-          summary: "TaskQ sweep batches are being aborted by deadlines or server-side cancels"
+          summary: "TaskQ sweeps or gauge samplers are not completing"
           description: >-
             Sweep batches are being aborted by deadlines or server-side
-            cancels — the database cannot finish bounded batches. Runbook:
+            cancels, or a gauge sampler's read is failing outright — a
+            sampler that cannot read leaves its gauge serving a stale
+            value that looks like a healthy flat line. Runbook:
             docs/guides/runbooks.md#taskqsweeptimeouts.
 
       - alert: TaskQSweepDegraded

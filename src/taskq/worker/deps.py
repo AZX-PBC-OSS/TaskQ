@@ -14,6 +14,7 @@ import sys
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import AsyncExitStack, asynccontextmanager, suppress
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import TYPE_CHECKING
 from uuid import UUID
 
@@ -176,6 +177,33 @@ async def open_dedicated_conn(
     return conn
 
 
+#: How far short of its own lease a leader stops trusting its term. The
+#: leader's window opens when it starts an attempt; the server's opens a
+#: full lease after the write that attempt lands, which is strictly later.
+#: Standing down one margin early keeps the two from meeting even when the
+#: round trip is instantaneous, and leaves only a clock-RATE difference
+#: (offset cancels: both sides measure a duration from their own instant)
+#: able to close the gap — which would have to exceed the margin across a
+#: whole lease.
+LEADER_TRUST_MARGIN_SECS: float = 1.0
+
+
+@dataclass(frozen=True, slots=True)
+class LeaderTerm:
+    """One won term of maintenance leadership.
+
+    ``elected_at`` is the server-clock instant the winning write stamped; it
+    fences every later statement of this term, so a renewal or resignation
+    issued after a peer has taken over matches no row and changes nothing.
+    ``trusted_until`` is on the event loop's monotonic clock, which no
+    system-clock adjustment can move backwards or forwards under a running
+    term.
+    """
+
+    elected_at: datetime
+    trusted_until: float
+
+
 @dataclass
 class WorkerDeps:
     """Stable named handle for worker pools and connections.
@@ -207,6 +235,9 @@ class WorkerDeps:
     # yields or after it exits.
     _exit_stack: AsyncExitStack | None = None
     is_leader: asyncio.Event = field(default_factory=asyncio.Event)
+    # The term behind ``is_leader``. Set and cleared together with it by the
+    # election loop; ``leading()`` is what leader-gated work consults.
+    leader_term: LeaderTerm | None = None
     producer_stop_event: asyncio.Event = field(default_factory=asyncio.Event)
     active_jobs: ActiveJobRegistry = field(default_factory=ActiveJobRegistry)
     shutdown_phase: ShutdownPhase = ShutdownPhase.NONE
@@ -312,6 +343,33 @@ class WorkerDeps:
     Read by the drain monitor to determine the exit code. The counter is
     incremented unconditionally in all modes, but is only read in
     until-idle mode — in non-idle mode it is never consulted."""
+
+    def leading(self) -> bool:
+        """Whether leader-gated work may run in this iteration.
+
+        Every leader-gated loop consults this per iteration rather than
+        reading :attr:`is_leader` alone. The event answers "was this pod
+        elected"; only the term can answer "is that still true *now*", which
+        is the question a loop entering an iteration after a long suspension
+        — a stop-the-world pause, a descheduled host, a starved event loop —
+        is really asking. The lapse is decided locally and needs no round
+        trip: the process stands itself down before any peer is entitled to
+        take over, so the two windows cannot overlap.
+
+        A set event with no term behind it means no term is being tracked at
+        all — an embedder driving the loops itself, or a caller that manages
+        leadership outside this process. That is deference, not a lapse:
+        withholding the work would silently stop maintenance for a
+        deployment that never asked for the lease to arbitrate. What the
+        term can do is say STOP, and a term that is present and lapsed says
+        exactly that.
+        """
+        if not self.is_leader.is_set():
+            return False
+        term = self.leader_term
+        if term is None:
+            return True
+        return asyncio.get_running_loop().time() < term.trusted_until
 
     def request_reload(self) -> None:
         """Programmatic credential hot-reload trigger for embedders.

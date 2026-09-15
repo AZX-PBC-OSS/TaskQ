@@ -31,6 +31,8 @@ from taskq.obs import (
     record_lock_contention,
     record_sweep_success,
     record_sweep_timeout,
+    update_actor_backlog_cache,
+    update_actor_oldest_pending_age_cache,
     update_jobs_by_status_cache,
     update_oldest_due_age_cache,
     update_queue_depth_cache,
@@ -47,6 +49,7 @@ from taskq.ratelimit.registry import (
 from taskq.worker._leader_shared import (
     _EK2,
     _EK3,
+    _QUERY_ACTOR_BACKLOG_SQL_TEMPLATE,
     _QUERY_QUEUE_DEPTH_SQL_TEMPLATE,
     _QUERY_RESERVATION_SLOTS_SQL_TEMPLATE,
     SweepContext,
@@ -209,6 +212,34 @@ def _is_deadline_family(exc: BaseException) -> bool:
     return type(exc) is TimeoutError or isinstance(exc, asyncpg.QueryCanceledError)
 
 
+def _sampler_read_failed(
+    ctx: SweepContext, event: str, kind: str, sweep_name: str, exc: Exception
+) -> None:
+    """Report a gauge sampler whose read did not complete.
+
+    The metric arm is the load-bearing half. A sampler feeds a cache that
+    the gauge keeps serving after the read stops working, so a dead
+    detector paints the same flat line as a drained queue: nothing fails,
+    no job is affected, and the only trace is a log line no alert rule
+    reads. Counting the incomplete read under the sampler's own
+    ``sweep_name`` is what lets a rule fire on a detector that has stopped
+    detecting.
+
+    Every failure family counts here, not just the deadline one: a reset
+    connection mutes the gauge exactly as completely as a cancelled query,
+    and the remediation question ("is this loop still reading?") is the
+    same for both.
+    """
+    record_sweep_timeout(sweep_name)
+    log.warning(
+        event,
+        kind=kind,
+        worker_id=str(ctx.worker_id),
+        error_class=type(exc).__name__,
+        error_message=str(exc),
+    )
+
+
 async def _drain_bounded(
     ctx: SweepContext,
     shutdown: asyncio.Event,
@@ -230,7 +261,11 @@ async def _drain_bounded(
     caller marks the iteration unclean so the backstop streak is not reset.
     """
     for _ in range(ctx.deps.settings.sweep_drain_batches - 1):
-        if shutdown.is_set():
+        # A drain stops at the first batch boundary after the role is lost,
+        # for the same reason it stops at shutdown: each batch is committed,
+        # so stopping is a pause the next holder resumes from, and carrying
+        # on would be doing the role's work without the role.
+        if shutdown.is_set() or not ctx.deps.leading():
             break
         # Ticking between calls keeps detector 2 from ageing the loop out
         # during a long drain; name and period match the loop's outer tick.
@@ -348,7 +383,7 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
 
     while not shutdown.is_set():
         ctx.deps.liveness.tick("leader.sweep", period=ctx.deps.settings.sweep_interval)
-        if ctx.deps.is_leader.is_set():
+        if ctx.deps.leading():
             iteration_clean = True
             try:
                 # Sweep 1: reclaim_expired_locks
@@ -1017,7 +1052,7 @@ async def _prune_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
             # one's capped rung.
             retry_backoff = None
 
-        if not ctx.deps.is_leader.is_set():
+        if not ctx.deps.leading():
             # A wake that finds the pod leaderless is a MISSED fire, not a
             # done day: the loop top recomputes the next fire from the cron
             # expression, and for a daily cron that is tomorrow, so a
@@ -1195,7 +1230,7 @@ async def _archive_expiry_loop(ctx: SweepContext, shutdown: asyncio.Event) -> No
             # a fresh backoff sequence (same rule as _prune_loop).
             retry_backoff = None
 
-        if not ctx.deps.is_leader.is_set():
+        if not ctx.deps.leading():
             # Same missed-fire contract as _prune_loop: the loop top would
             # recompute the next fire from the daily cron (tomorrow), so a
             # leadership flap at the fire second defers archive expiry by
@@ -1306,7 +1341,7 @@ async def _queue_depth_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
     sql = _QUERY_QUEUE_DEPTH_SQL_TEMPLATE.format(schema=schema)
     while not shutdown.is_set():
         ctx.deps.liveness.tick("leader.queue_depth", period=ctx.deps.settings.queue_depth_interval)
-        if ctx.deps.is_leader.is_set():
+        if ctx.deps.leading():
             try:
                 async with ctx.deps.dispatcher_pool.acquire(
                     timeout=ctx.deps.settings.dispatcher_command_timeout
@@ -1315,11 +1350,12 @@ async def _queue_depth_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
                 cache: dict[str, int] = {row["queue"]: row["count"] for row in rows}
                 update_queue_depth_cache(cache)
             except Exception as exc:
-                log.warning(
+                _sampler_read_failed(
+                    ctx,
                     "queue-depth-sampling-failed",
-                    kind="queue_depth_sampling_failed",
-                    worker_id=str(ctx.worker_id),
-                    error=repr(exc),
+                    "queue_depth_sampling_failed",
+                    "queue_depth",
+                    exc,
                 )
         await _sleep_interruptible(shutdown, ctx.deps.settings.queue_depth_interval)
 
@@ -1382,12 +1418,13 @@ async def _backlog_detection_loop(ctx: SweepContext, shutdown: asyncio.Event) ->
     by_status_sql = _QUERY_JOBS_BY_STATUS_SQL_TEMPLATE.format(schema=schema)
     oldest_due_sql = _QUERY_OLDEST_DUE_AGE_SQL_TEMPLATE.format(schema=schema)
     expired_lease_sql = _QUERY_RUNNING_LEASE_EXPIRED_SQL_TEMPLATE.format(schema=schema)
+    actor_backlog_sql = _QUERY_ACTOR_BACKLOG_SQL_TEMPLATE.format(schema=schema)
     while not shutdown.is_set():
         ctx.deps.liveness.tick(
             "leader.backlog_detection", period=ctx.deps.settings.queue_depth_interval
         )
         try:
-            # One connection for all three statements: the gauges answer one
+            # One connection for all four statements: the gauges answer one
             # question (is work moving?) and must not straddle two
             # snapshots.
             async with ctx.deps.dispatcher_pool.acquire(
@@ -1396,8 +1433,25 @@ async def _backlog_detection_loop(ctx: SweepContext, shutdown: asyncio.Event) ->
                 status_rows = await conn.fetch(by_status_sql)
                 oldest_due: float | None = await conn.fetchval(oldest_due_sql)
                 expired_lease: int | None = await conn.fetchval(expired_lease_sql)
+                actor_backlog_rows = await conn.fetch(actor_backlog_sql)
             update_jobs_by_status_cache(
                 {str(row["status"]): int(row["count"]) for row in status_rows}
+            )
+            # Depth and age are split out of the one grouped result so both
+            # gauges describe the same snapshot. A group always has at least
+            # one row, so MIN(scheduled_at) is never NULL here; the None arm
+            # only tolerates a stubbed read.
+            update_actor_backlog_cache(
+                {
+                    (str(row["actor"]), str(row["queue"])): int(row["depth"])
+                    for row in actor_backlog_rows
+                }
+            )
+            update_actor_oldest_pending_age_cache(
+                {
+                    (str(row["actor"]), str(row["queue"])): float(row["oldest_age"] or 0.0)
+                    for row in actor_backlog_rows
+                }
             )
             # MIN(scheduled_at) over an empty set is NULL — nothing is due,
             # which the gauge expresses as 0.0, not as a missing sample.
@@ -1409,11 +1463,12 @@ async def _backlog_detection_loop(ctx: SweepContext, shutdown: asyncio.Event) ->
                 int(expired_lease) if expired_lease is not None else 0
             )
         except Exception as exc:
-            log.warning(
+            _sampler_read_failed(
+                ctx,
                 "backlog-detection-sampling-failed",
-                kind="backlog_detection_sampling_failed",
-                worker_id=str(ctx.worker_id),
-                error=repr(exc),
+                "backlog_detection_sampling_failed",
+                "backlog_detection",
+                exc,
             )
         await _sleep_interruptible(shutdown, ctx.deps.settings.queue_depth_interval)
 
@@ -1435,7 +1490,7 @@ async def _reservation_slots_loop(ctx: SweepContext, shutdown: asyncio.Event) ->
         ctx.deps.liveness.tick(
             "leader.reservation_slots", period=ctx.deps.settings.reservation_slots_interval
         )
-        if ctx.deps.is_leader.is_set():
+        if ctx.deps.leading():
             try:
                 async with ctx.deps.dispatcher_pool.acquire(
                     timeout=ctx.deps.settings.dispatcher_command_timeout
@@ -1444,11 +1499,12 @@ async def _reservation_slots_loop(ctx: SweepContext, shutdown: asyncio.Event) ->
                 cache: dict[str, int] = {row["bucket_name"]: row["count"] for row in rows}
                 update_reservation_slots_cache(cache)
             except Exception as exc:
-                log.warning(
+                _sampler_read_failed(
+                    ctx,
                     "reservation-slots-sampling-failed",
-                    kind="reservation_slots_sampling_failed",
-                    worker_id=str(ctx.worker_id),
-                    error=repr(exc),
+                    "reservation_slots_sampling_failed",
+                    "reservation_slots",
+                    exc,
                 )
         await _sleep_interruptible(shutdown, ctx.deps.settings.reservation_slots_interval)
 
@@ -1462,10 +1518,21 @@ async def _stranded_jobs_loop(ctx: SweepContext, shutdown: asyncio.Event) -> Non
       ``per_actor_capacity``, which is ``FROM actor_config``, so a row
       whose actor has no config row is invisible to every dispatch round.
     - **unserved queue**: dispatch probes only the queues in the
-      dispatching worker's subscription (the candidates lateral's
-      ``j2.queue = sq.queue_name`` annihilates every other pair), so a
-      row on a queue NO registered worker serves is invisible fleet-wide
-      while its actor_config row exists and no deadline can fail it.
+      dispatching worker's subscription, so a row whose routing queue NO
+      registered worker serves is invisible fleet-wide while its
+      actor_config row exists and no deadline can fail it.
+
+    A row's routing queue is not always the queue label it carries.
+    Dispatch splits on the durable was-claimed marker: a never-claimed
+    row (``started_at IS NULL``) is matched by its own label, because
+    producer placement governs until the first claim; a re-pended row
+    (``started_at IS NOT NULL``) is matched by its actor's stored
+    assignment, so a move's tails drain through the target's consumers
+    instead of stranding on a retired source queue. The detector reads
+    the same discriminator, because testing the label for a re-pended row
+    reports healthy for exactly the strand that surface exists to see —
+    an actor reassigned to a queue nothing serves, whose rows keep an
+    audit label the fleet does still serve.
 
     The unserved-queue predicate is fleet-wide by construction: the
     ``workers`` table carries every registered worker's subscription,
@@ -1495,16 +1562,28 @@ async def _stranded_jobs_loop(ctx: SweepContext, shutdown: asyncio.Event) -> Non
              ARRAY[]::text[]
            ) AS unserved_queues
     FROM (
-        SELECT j.actor,
-               j.queue,
+        SELECT r.actor,
+               r.queue,
+               r.no_actor_config,
                NOT EXISTS (
-                 SELECT 1 FROM "{schema}".actor_config ac WHERE ac.actor = j.actor
-               ) AS no_actor_config,
-               NOT EXISTS (
-                 SELECT 1 FROM "{schema}".workers w WHERE j.queue = ANY(w.queues)
+                 SELECT 1 FROM "{schema}".workers w WHERE r.queue = ANY(w.queues)
                ) AS unserved_queue
-        FROM "{schema}".jobs j
-        WHERE j.status IN ('pending', 'scheduled')
+        FROM (
+            SELECT j.actor,
+                   -- The queue dispatch would actually route this row on:
+                   -- its own label while never claimed, its actor's stored
+                   -- assignment once re-pended. Resolved once here so the
+                   -- serving test below and the queue the event reports are
+                   -- the same value — an operator is told the queue to
+                   -- staff, not the stale label the row still carries.
+                   CASE WHEN j.started_at IS NULL THEN j.queue
+                        ELSE COALESCE(ac.queue, j.queue)
+                   END AS queue,
+                   ac.actor IS NULL AS no_actor_config
+            FROM "{schema}".jobs j
+            LEFT JOIN "{schema}".actor_config ac ON ac.actor = j.actor
+            WHERE j.status IN ('pending', 'scheduled')
+        ) r
     ) s
     WHERE s.no_actor_config OR s.unserved_queue
     GROUP BY s.actor
@@ -1535,7 +1614,7 @@ async def _stranded_jobs_loop(ctx: SweepContext, shutdown: asyncio.Event) -> Non
             "leader.stranded_jobs", period=ctx.deps.settings.stranded_jobs_interval
         )
         await _sleep_interruptible(shutdown, ctx.deps.settings.stranded_jobs_interval)
-        if not ctx.deps.is_leader.is_set():
+        if not ctx.deps.leading():
             continue
         try:
             async with ctx.deps.worker_pool.acquire(
@@ -1543,10 +1622,12 @@ async def _stranded_jobs_loop(ctx: SweepContext, shutdown: asyncio.Event) -> Non
             ) as conn:
                 rows = await conn.fetch(sql)
         except Exception as exc:
-            log.warning(
+            _sampler_read_failed(
+                ctx,
                 "stranded-jobs-query-failed",
-                error_class=type(exc).__name__,
-                error_message=str(exc),
+                "stranded_jobs_query_failed",
+                "stranded_jobs",
+                exc,
             )
             continue
         current: dict[str, int] = {}

@@ -193,31 +193,23 @@ No rows from the first query = no leader. Check the admin UI at `/admin/leader` 
 
 ### Fix
 
-- **No leader:** ensure at least one worker is running. Failover SLA is `heartbeat_interval + 1s`.
+- **No leader:** ensure at least one worker is running. A leader that goes silent is replaced within `leader_lease + heartbeat_interval` (50s at defaults) without operator action.
 - **PgBouncer:** set `TASKQ_PG_DSN_DIRECT` to bypass PgBouncer. See [PgBouncer compatibility](workers.md#pgbouncer-compatibility).
-- **Stale leader:** force-release the advisory lock by terminating the backend. The election lock is schema-qualified (`taskq:maintenance_leader:<schema>`, built by `taskq.constants.schema_lock_name`), so the LIKE pattern below matches the shared prefix and any schema suffix:
+- **Stale leader:** nothing to do — wait. Leadership is held by the `maintenance_leader` row's `expires_at`, a horizon the holder itself writes and renews every `heartbeat_interval`. Once it passes, any surviving pod takes the role on its next election cycle, using no privilege beyond the `UPDATE` it already has on that row. Check what the row says:
 
 ```sql
-SELECT pg_terminate_backend(pid)
-FROM pg_stat_activity
-WHERE query LIKE '%pg_try_advisory_lock%taskq:maintenance_leader%';
+SELECT worker_id,
+       expires_at,
+       expires_at - clock_timestamp() AS lease_remaining,
+       clock_timestamp() - last_seen_at AS since_last_renewal
+FROM "<your-schema>".maintenance_leader
+WHERE singleton = true;
 ```
 
-For a session whose query text does not carry the name (the worker binds it as a parameter), match the lock itself instead — the key is a single bigint (`classid = 0`), so compare `objid` against the qualified name's hash for your schema:
+A `lease_remaining` in the past that no pod takes over means the survivors cannot reach or write this table — check their connectivity and the role's grants on the schema, not the leader.
 
-```sql
-SELECT pg_terminate_backend(pid)
-FROM pg_stat_activity
-WHERE pid IN (
-    SELECT pid FROM pg_locks
-    WHERE locktype = 'advisory' AND classid = 0
-      AND objid = hashtextextended('taskq:maintenance_leader:<your-schema>', 0)
-      AND granted
-);
-```
-
-!!! warning
-    Only use `pg_terminate_backend` when the leader is confirmed stale (no `last_seen_at` update for > 60s). It forces an election cycle.
+!!! note
+    Terminating the previous holder's backend is no longer part of any recovery path. Earlier releases held the role on a session-scoped advisory lock, which a holder that died without closing its connection kept until the server reaped the session — hours, and unrecoverable at all where `pg_terminate_backend` was a reserved privilege. The lock survives only as a handover courtesy during an upgrade and is never required.
 
 ---
 
@@ -295,7 +287,7 @@ Check whether the actor suppresses `asyncio.CancelledError` — a `try/except as
 - **Always re-raise `asyncio.CancelledError`:** never swallow it. Let it propagate so the consumer can call `mark_cancelled`.
 - **Check cancellation boundaries:** ensure the actor observes `ctx.cancellation_requested` at natural loop boundaries. For single long `await` calls, use `ctx.cancel_event.wait()`.
 - **Increase grace periods:** if the actor needs more cleanup time, raise `TASKQ_CANCELLATION_GRACE_PERIOD` and `TASKQ_CLEANUP_GRACE_PERIOD`. Constraints: `cancellation + cleanup < lock_lease` and `< termination_grace_period - 5.0`.
-- **Not retryable:** `abandoned` jobs cannot be retried via `backend.retry_job()`. Only `failed`, `crashed`, and `cancelled` can be retried.
+- **Put abandoned work back:** `abandoned` means a deploy interrupted the job, not that it failed, so `backend.retry_job()` re-pends it like any other resting state. Only `running` (a live attempt owns the row) and `pending`/`scheduled` (already queued) are refused.
 
 ---
 
@@ -430,16 +422,9 @@ Check the admin UI at `/admin/workers` — the `is_leader` column shows which wo
 ### Fix
 
 - **No leader:** ensure at least one worker is running with a valid `TASKQ_PG_DSN_DIRECT`. Election is attempted every `heartbeat_interval`.
-- **PgBouncer:** set `TASKQ_PG_DSN_DIRECT` to bypass PgBouncer. Session-level advisory locks are silently released by transaction-mode pooling.
-- **Stale leader:** if the watchdog has not detected it, force-release by terminating the backend:
-
-```sql
-SELECT pg_terminate_backend(pid)
-FROM pg_stat_activity
-WHERE pid IN (SELECT pid FROM pg_locks WHERE locktype = 'advisory' AND mode = 'exclusive');
-```
-
-- **Multiple schemas:** each schema gets its own advisory lock namespace. Verify `TASKQ_SCHEMA_NAME` is consistent across all workers. Failover SLA is `heartbeat_interval + 1s`; if slower, check that `leader_conn` uses a direct DSN and the watchdog health check (every 5s) is not blocked.
+- **PgBouncer:** set `TASKQ_PG_DSN_DIRECT` to bypass PgBouncer. The role itself survives transaction-mode pooling — it lives in a row, not a session — but the leader's dedicated connections still need a direct DSN.
+- **Stale leader:** wait. The role's `expires_at` is the horizon; once it passes a survivor takes over on its next election cycle. See [No leader elected](#no-leader-elected) for the query that shows what the row says.
+- **Multiple schemas:** each schema has its own `maintenance_leader` row and its own lock namespace. Verify `TASKQ_SCHEMA_NAME` is consistent across all workers. Failover takes up to `leader_lease + heartbeat_interval`; if slower, check that `leader_conn` uses a direct DSN and that the survivors can write the schema's `maintenance_leader` row.
 
 ---
 
@@ -511,7 +496,7 @@ GROUP BY actor;
 - **Missing `[redis]` extra:** `uv add "taskq-py[redis]"`.
 - **In-memory backend:** switch to `backend="redis"` or `backend="postgres"` for multi-worker deployments. Memory is for tests only.
 - **Primitives not registered:** register all primitives on the `registry` singleton before the worker starts. DI validation checks each actor's `rate_limits`/`reservations` names at startup.
-- **Reservation slots out of sync:** call `sync_slots()` after changing slot counts. Sustained rate limiting accumulates jobs as `snoozed` (no retry budget consumed) — monitor queue depth, as there is no built-in backpressure beyond `max_pending`.
+- **Reservation slots out of sync:** call `sync_slots()` after changing slot counts. Sustained rate limiting accumulates jobs as `scheduled` with a future `run_at` (no retry budget consumed) — monitor queue depth, as there is no built-in backpressure beyond `max_pending`. Denials write no per-denial `job_events`/`job_attempts` row, so the aggregated `rate_limit_blocked_count` on the job row is the per-job signal of how much contention it has absorbed.
 
 ```python
 from taskq.ratelimit import sync_slots

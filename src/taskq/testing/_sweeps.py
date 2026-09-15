@@ -27,9 +27,12 @@ from typing import TYPE_CHECKING
 import structlog
 
 from taskq.backend._protocol import AttemptRow, CancelPhase, JobId, JobRow
+from taskq.backend._records import compute_duration_ms
 from taskq.backend._sweeps import (  # pyright: ignore[reportPrivateUsage]  # Why: the twins must enforce the identical contract the Postgres sweeps enforce — one validator, one message map, one seam, no drift.
     _ATTEMPT_MESSAGES,
     _validate_positive,
+    reclaim_delay,
+    reclaim_has_budget,
 )
 from taskq.constants import DEFAULT_EVENT_WRITER_BATCH_SIZE
 from taskq.obs import record_deadline_exceeded_swept
@@ -86,16 +89,6 @@ async def _deadline_sweep(
 ) -> int:
     _validate_positive("batch_size", batch_size)
     now = self._clock.now()
-    # Select the whole bounded batch FIRST: on PG the transition UPDATE,
-    # the batched job_attempts INSERT, and the event INSERT share one
-    # transaction (sweep_deadline_exceeded), so an attempt-row primary-key
-    # collision on ANY selected row aborts the ENTIRE batch — every
-    # selected job stays pending/scheduled, nothing is written. The twin
-    # selects, validates every planned (job_id, attempt) key against the
-    # stored attempt rows and in-batch duplicates, and only then mutates:
-    # a collision raises the same typed UniqueViolationError PG's batched
-    # INSERT raises (job_attempts_pkey), never a silent duplicate append
-    # that completes the transition PG would leave torn down.
     selected: list[tuple[JobId, JobRow]] = []
     for job_id, row in list(self._jobs.items()):
         if len(selected) >= batch_size:
@@ -107,25 +100,21 @@ async def _deadline_sweep(
         ):
             selected.append((job_id, row))
 
-    if selected:
-        # Why a function-level import: the driver-free import-surface
-        # convention (taskq.testing imports no asyncpg at module scope);
-        # this raise path only ever runs where the driver is installed.
-        from asyncpg.exceptions import UniqueViolationError
-
-        _existing = {(a.job_id, a.attempt) for rows in self._attempts.values() for a in rows}
-        _seen: set[tuple[JobId, int]] = set()
-        for job_id, row in selected:
-            _key = (job_id, row.attempt)
-            if _key in _existing or _key in _seen:
-                raise UniqueViolationError(
-                    'duplicate key value violates unique constraint "job_attempts_pkey" '
-                    f"(job {job_id} attempt {row.attempt} already has an attempt row)"
-                )
-            _seen.add(_key)
-
     count = 0
     for job_id, row in selected:
+        # Mirrors the twin's attempt resolution: a job can reach this sweep
+        # with its current attempt already spent, because a transient
+        # retry, a crash reclaim and an admin retry all re-pend the row
+        # without advancing the counter and each leaves the attempt row for
+        # the execution that did happen. The number therefore comes from the
+        # rows already stored, capped at the smallint ceiling, and an
+        # already-stored key keeps its recorded outcome rather than being
+        # overwritten by this sweep's synthetic one.
+        stored = self._attempts.get(job_id, [])
+        attempt_no = min(
+            max(row.attempt, max((a.attempt for a in stored), default=row.attempt - 1) + 1),
+            32767,
+        )
         self._jobs[job_id] = replace(
             row,
             status="failed",
@@ -133,20 +122,22 @@ async def _deadline_sweep(
             error_class="DeadlineExceeded",
             error_message="schedule_to_close reached before next dispatch",
         )
-        attempt_row = AttemptRow(
-            job_id=job_id,
-            attempt=row.attempt,
-            started_at=row.started_at if row.started_at is not None else now,
-            finished_at=now,
-            outcome="failed",
-            error_class="DeadlineExceeded",
-            error_message="schedule_to_close reached before next dispatch",
-            error_traceback=None,
-            duration_ms=None,
-            worker_id=None,
-            metadata={},
-        )
-        self._attempts.setdefault(job_id, []).append(attempt_row)
+        if not any(a.attempt == attempt_no for a in stored):
+            self._attempts.setdefault(job_id, []).append(
+                AttemptRow(
+                    job_id=job_id,
+                    attempt=attempt_no,
+                    started_at=row.started_at if row.started_at is not None else now,
+                    finished_at=now,
+                    outcome="failed",
+                    error_class="DeadlineExceeded",
+                    error_message="schedule_to_close reached before next dispatch",
+                    error_traceback=None,
+                    duration_ms=compute_duration_ms(row.started_at, now),
+                    worker_id=None,
+                    metadata={},
+                )
+            )
         self._append_state_change_event(
             job_id=job_id,
             from_state=row.status,
@@ -216,9 +207,18 @@ async def _reclaim_expired_locks(
         # carries no heartbeat_timeout / no heartbeat yet (NULL +
         # interval is NULL in PG; the ternary's guard mirrors that
         # None-propagation for the arithmetic below).
+        # A non-positive stored timeout is inert, mirroring the SQL's
+        # `heartbeat_timeout > interval '0'`: enqueue validation refuses
+        # one but it is the only gate and the column carries no CHECK, so
+        # a direct write can leave a zero or negative interval behind,
+        # and with one the deadline is already past the instant the row
+        # is written — a healthy holder beating right now would be
+        # reclaimed as a false crash. The lease governs instead.
         heartbeat_deadline: datetime | None = (
             row.last_heartbeat_at + row.heartbeat_timeout
-            if row.last_heartbeat_at is not None and row.heartbeat_timeout is not None
+            if row.last_heartbeat_at is not None
+            and row.heartbeat_timeout is not None
+            and row.heartbeat_timeout > timedelta(0)
             else None
         )
         # One if/elif, conjuncts ordered so each None-guard precedes the
@@ -276,8 +276,21 @@ async def _reclaim_expired_locks(
         )
         self._attempts.setdefault(job_id, []).append(attempt_row)
 
-        if row.attempt < row.max_attempts and row.retry_kind != "non_retryable":
-            new_scheduled = now + timedelta(seconds=5)
+        # The same budget question the SQL asks, asked through the same
+        # predicate (see _sweeps._RECLAIM_HAS_BUDGET_SQL): 'indefinite'
+        # has no attempt ceiling — its schedule_to_close deadline is its
+        # budget — while every other kind is bounded by max_attempts, and
+        # 'non_retryable' has no second attempt at all.
+        if reclaim_has_budget(
+            attempt=row.attempt,
+            max_attempts=row.max_attempts,
+            retry_kind=row.retry_kind,
+        ):
+            # Jittered per row, mirroring the SQL's per-row random(): a
+            # fleet-wide event hands a whole cohort back at once, and one
+            # instant for all of them lands on the recovering fleet as a
+            # synchronised wave.
+            new_scheduled = now + reclaim_delay()
             self._jobs[job_id] = replace(
                 row,
                 status="pending",
