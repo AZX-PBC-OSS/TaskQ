@@ -63,7 +63,6 @@ async def heartbeat_loop(
         update_worker_liveness_sql,
         update_jobs_lock_sql,
         update_reservation_leases_sql,
-        update_leader_ping_sql,
     ) = build_heartbeat_sql(schema)
 
     while not shutdown.is_set():
@@ -99,8 +98,6 @@ async def heartbeat_loop(
                             raise OSError(
                                 f"cancel_controller.run_in_tx failed: {hook_exc!r}"
                             ) from hook_exc
-                    if deps.is_leader.is_set():
-                        await conn.execute(update_leader_ping_sql, worker_id)
             except BaseException:
                 _tick_raised = True
                 raise

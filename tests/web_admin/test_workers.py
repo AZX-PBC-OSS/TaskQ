@@ -173,6 +173,57 @@ def test_leader_template_renders_leader_info(
     assert "Healthy" in html
 
 
+def test_leader_template_renders_lease_expiry(
+    monkeypatch: pytest.MonkeyPatch, stub_pool: _StubPool
+) -> None:
+    """leader.html shows the lease's expires_at — the instant the fleet
+    will act on if the holder stops renewing; an operator reading the
+    leader page needs it to reason about failover."""
+    monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
+    bundle = create_router(stub_pool)  # pyright: ignore[reportArgumentType]  # Why: test duck-type pool.
+    env = bundle.templates
+    template = env.get_template("leader.html")
+    html = template.render(
+        leader={
+            "hostname": "leader-1",
+            "pid": 9999,
+            "elected_at": "2025-01-01T00:00:00+00:00",
+            "expires_at": "2025-01-01T00:00:40+00:00",
+            "last_seen_at": "2025-01-01T00:00:10+00:00",
+            "worker_last_seen": "2025-01-01T00:00:10+00:00",
+        },
+        watchdog_healthy=True,
+    )
+    assert "Lease Expires" in html
+    assert "2025-01-01T00:00:40+00:00" in html
+
+
+def test_leader_template_renders_dash_when_holder_has_no_lease(
+    monkeypatch: pytest.MonkeyPatch, stub_pool: _StubPool
+) -> None:
+    """leader.html renders the em-dash fallback when expires_at is NULL —
+    a row written by a release that predates the lease column carries none,
+    and the page must say so instead of rendering 'None'."""
+    monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
+    bundle = create_router(stub_pool)  # pyright: ignore[reportArgumentType]  # Why: test duck-type pool.
+    env = bundle.templates
+    template = env.get_template("leader.html")
+    html = template.render(
+        leader={
+            "hostname": "leader-1",
+            "pid": 9999,
+            "elected_at": "2025-01-01T00:00:00+00:00",
+            "expires_at": None,
+            "last_seen_at": "2025-01-01T00:00:10+00:00",
+            "worker_last_seen": "2025-01-01T00:00:10+00:00",
+        },
+        watchdog_healthy=True,
+    )
+    assert "Lease Expires" in html
+    assert "None" not in html
+    assert "—" in html
+
+
 def test_leader_template_unhealthy_watchdog(
     monkeypatch: pytest.MonkeyPatch, stub_pool: _StubPool
 ) -> None:

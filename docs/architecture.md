@@ -862,25 +862,65 @@ Source: `src/taskq/worker/leader.py`.
 
 ### Mechanism
 
-Leader election uses a PostgreSQL session-level advisory lock
-(`pg_try_advisory_lock`) on a schema-qualified name
-(`taskq:maintenance_leader:<schema>`, built by
-`taskq.constants.schema_lock_name`). The
-lock is acquired over `deps.leader_conn` — a dedicated, non-pooled connection.
+Leadership is a lease on the `maintenance_leader` row. The holder writes an
+`expires_at` of its own choosing (`leader_lease`, default 40 s) and renews it
+every `heartbeat_interval` over `deps.leader_conn` — a dedicated, non-pooled
+connection — under a term fenced by `(worker_id, elected_at)`. Any pod may
+take the row over once that instant has passed.
 
-On each heartbeat tick, each pod calls `pg_try_advisory_lock`:
-- If acquired: upserts `maintenance_leader` table row, sets `deps.is_leader` event.
-- If not acquired: waits; retries on next tick.
+On each heartbeat tick, a pod that is not leading runs one statement that
+claims the row if it is unclaimed or its holder has gone quiet, and returns
+nothing if a live holder owns it. A pod that is leading renews instead, and
+its renewal returning nothing means a successor holds the row.
 
-The `maintenance_leader` table is queryable for observability and the admin UI, but
-the advisory lock is the authoritative source of truth for election.
+"Gone quiet" means both of the liveness signals the row can carry have
+stopped: the lease the holder chose has expired, and its `last_seen_at` has
+been silent for four heartbeat intervals. Two are needed because during a
+roll the row can be written by two protocols — a pod from a release that
+predates the lease names four columns in its upsert and leaves whatever
+`expires_at` it found in place, so the expiry alone would judge a pod that is
+pinging every tick to be dead. Requiring both costs nothing against the
+failover bound: the lease is never shorter than four heartbeat intervals, so
+for a pod that does lease the expiry is always the later horizon.
+
+Split-brain is prevented by a local trust window rather than a per-statement
+fence: the leader trusts its term only until `attempt_started + leader_lease -
+1 s` on its own monotonic clock and stands down before that, while peers may
+take over only after the server's `expires_at`, which was written after that
+same instant plus the full lease. Every leader-gated loop consults
+`deps.leading()` on each iteration rather than the bare `is_leader` event, so
+a process resuming from a suspension finds the gate already closed. Clock
+offset between machines is irrelevant; each side measures a duration from its
+own instant.
+
+The election loop sets the event and the term together and clears them
+together, and it clears them before any await that could release the courtesy
+lock — a peer must never be able to elect while this process still reads
+`leading()` as true. The two are exposed separately because `is_leader` is
+what the watchdog parks on and what the gauge and health report publish, while
+the term is what narrows how long that role is trusted between renewals.
+
+The schema-qualified advisory lock (`taskq:maintenance_leader:<schema>`, built
+by `taskq.constants.schema_lock_name`) is still taken after winning. It keeps a
+pod from a release that knows only the lock from leading beside a lease holder
+during a roll. It is never required and never waited on: the row alone decides
+the election in every state — held, lapsed, or absent — so a lock that
+outlives the row behind it (a candidate dead between its lock attempt and its
+election write, a departed leader's lingering session) blocks nothing.
+Recovery from a holder that died without closing its session depends only on
+the lease, and so needs no privilege beyond `UPDATE` on the row. A graceful
+stop hands over faster than the lapse: the leader's teardown resigns the row,
+so a follower's next election cycle already finds it free. Failover from a
+holder that dies without a FIN is bounded by `leader_lease +
+heartbeat_interval` plus one round trip.
 
 ### What the leader does
 
 `MaintenanceLeader` runs eleven cooperative loops in a `TaskGroup`:
 
-1. **Election loop** — acquires and renews the advisory lock.
-2. **Watchdog** — detects stale lock state; refreshes `last_seen_at`.
+1. **Election loop** — claims and renews the leadership lease.
+2. **Watchdog** — detects a lost connection to Postgres on a dedicated monitor
+   connection, faster than the renewal cadence would.
 3. **Scheduled-wake (Sweep 3)** — promotes `scheduled` → `pending` when
    `scheduled_at <= statement_timestamp()` (a STABLE bound, so
    `jobs_scheduled_wake_idx` serves it as an index condition). Sends

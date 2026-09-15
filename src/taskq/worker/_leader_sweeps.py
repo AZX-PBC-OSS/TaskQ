@@ -230,7 +230,10 @@ async def _drain_bounded(
     caller marks the iteration unclean so the backstop streak is not reset.
     """
     for _ in range(ctx.deps.settings.sweep_drain_batches - 1):
-        if shutdown.is_set():
+        # Demotion stops the drain at the same batch boundary shutdown does:
+        # each batch is committed, so stopping is a pause the successor
+        # resumes from rather than work lost.
+        if shutdown.is_set() or not ctx.deps.leading():
             break
         # Ticking between calls keeps detector 2 from ageing the loop out
         # during a long drain; name and period match the loop's outer tick.
@@ -348,7 +351,7 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
 
     while not shutdown.is_set():
         ctx.deps.liveness.tick("leader.sweep", period=ctx.deps.settings.sweep_interval)
-        if ctx.deps.is_leader.is_set():
+        if ctx.deps.leading():
             iteration_clean = True
             try:
                 # Sweep 1: reclaim_expired_locks
@@ -1017,7 +1020,7 @@ async def _prune_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
             # one's capped rung.
             retry_backoff = None
 
-        if not ctx.deps.is_leader.is_set():
+        if not ctx.deps.leading():
             # A wake that finds the pod leaderless is a MISSED fire, not a
             # done day: the loop top recomputes the next fire from the cron
             # expression, and for a daily cron that is tomorrow, so a
@@ -1195,7 +1198,7 @@ async def _archive_expiry_loop(ctx: SweepContext, shutdown: asyncio.Event) -> No
             # a fresh backoff sequence (same rule as _prune_loop).
             retry_backoff = None
 
-        if not ctx.deps.is_leader.is_set():
+        if not ctx.deps.leading():
             # Same missed-fire contract as _prune_loop: the loop top would
             # recompute the next fire from the daily cron (tomorrow), so a
             # leadership flap at the fire second defers archive expiry by
@@ -1306,7 +1309,7 @@ async def _queue_depth_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
     sql = _QUERY_QUEUE_DEPTH_SQL_TEMPLATE.format(schema=schema)
     while not shutdown.is_set():
         ctx.deps.liveness.tick("leader.queue_depth", period=ctx.deps.settings.queue_depth_interval)
-        if ctx.deps.is_leader.is_set():
+        if ctx.deps.leading():
             try:
                 async with ctx.deps.dispatcher_pool.acquire(
                     timeout=ctx.deps.settings.dispatcher_command_timeout
@@ -1435,7 +1438,7 @@ async def _reservation_slots_loop(ctx: SweepContext, shutdown: asyncio.Event) ->
         ctx.deps.liveness.tick(
             "leader.reservation_slots", period=ctx.deps.settings.reservation_slots_interval
         )
-        if ctx.deps.is_leader.is_set():
+        if ctx.deps.leading():
             try:
                 async with ctx.deps.dispatcher_pool.acquire(
                     timeout=ctx.deps.settings.dispatcher_command_timeout
@@ -1535,7 +1538,7 @@ async def _stranded_jobs_loop(ctx: SweepContext, shutdown: asyncio.Event) -> Non
             "leader.stranded_jobs", period=ctx.deps.settings.stranded_jobs_interval
         )
         await _sleep_interruptible(shutdown, ctx.deps.settings.stranded_jobs_interval)
-        if not ctx.deps.is_leader.is_set():
+        if not ctx.deps.leading():
             continue
         try:
             async with ctx.deps.worker_pool.acquire(

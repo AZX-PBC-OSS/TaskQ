@@ -491,9 +491,12 @@ async def orchestrate_shutdown(
         # election loop keeps running until shutdown_event fires (finally
         # block below), and a None leader_conn would make it open a
         # *fresh* conn and possibly re-acquire the advisory lock
-        # mid-shutdown. For TaskQ-owned conns, close+null releases the
-        # advisory lock early so a replacement pod can take over before
-        # the SIGTERM budget expires.
+        # mid-shutdown. For TaskQ-owned conns, close+null frees the
+        # session (and with it the courtesy election lock) before the
+        # SIGTERM budget expires; the lease ROW is freed separately — the
+        # leader runtime's own teardown resigns it over a conn that
+        # survives this close (leader.py's resign), so the ordering here
+        # cannot strand it.
         #
         # Why set → null → close, in that order (two races, one ordering):
         # (a) the bounded close can park for seconds, so shutdown_event is

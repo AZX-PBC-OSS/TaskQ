@@ -47,6 +47,10 @@
                 <dt class="text-slate-500">Elected</dt>
                 <dd class="text-xs text-slate-500 whitespace-nowrap">{{ leader.elected_at }}</dd>
             </div>
+            <div class="flex justify-between">
+                <dt class="text-slate-500">Lease Expires</dt>
+                <dd class="text-xs text-slate-500 whitespace-nowrap">{{ leader.expires_at or "—" }}</dd>
+            </div>
         </dl>
     </div>
 

@@ -115,6 +115,7 @@ PgBouncer recommendation threshold), see [ops.md — Sizing](ops.md#4-sizing-wor
 |---|---|---|---|---|
 | `TASKQ_HEARTBEAT_INTERVAL` | `float` (seconds) | `10.0` | Period between heartbeat ticks. | Min: 0.5 |
 | `TASKQ_LOCK_LEASE` | `float` (seconds) | `60.0` | Time before an unrenewed job lock is reclaimed by the sweep. Must be >= 4 × `TASKQ_HEARTBEAT_INTERVAL`, and must exceed `TASKQ_WATCHDOG_LOOP_LAG_BUDGET` + `TASKQ_HEARTBEAT_INTERVAL` (a stalled loop dies before its leases expire). | Min: 1.0; see [Validation Constraints](#validation-constraints) |
+| `TASKQ_LEADER_LEASE` | `float` (seconds) | `40.0` | How long the maintenance leader's lease is trusted without a renewal; another pod takes leadership once it lapses, so this plus `TASKQ_HEARTBEAT_INTERVAL` bounds failover from a leader that went silent. Renewed every heartbeat interval, and never honoured at less than 4 of them — raising the heartbeat interval alone raises the effective lease rather than shortening the renewal margin. | Min: 1.0 |
 | `TASKQ_MAX_HEARTBEAT_FAILURES` | `int` | `3` | Consecutive heartbeat failures before the worker self-terminates. | Min: 1 |
 
 ### Leader Sweep Intervals

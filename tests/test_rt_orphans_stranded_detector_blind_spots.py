@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import timedelta
+from typing import cast
 from unittest.mock import Mock
 from uuid import UUID
 
@@ -42,6 +43,7 @@ from taskq.settings import WorkerSettings
 from taskq.testing.jobs import make_enqueue_args
 from taskq.worker._leader_shared import SweepContext
 from taskq.worker._leader_sweeps import _stranded_jobs_loop
+from taskq.worker.deps import WorkerDeps
 
 pytestmark = pytest.mark.integration
 
@@ -88,6 +90,15 @@ class _DetectorDeps:
         self.is_leader = asyncio.Event()
         self.is_leader.set()
         self.liveness = Mock()
+        self.leader_term = None
+
+    def leading(self) -> bool:
+        """The per-iteration gate, answered the way a live worker answers it.
+
+        Bound to the production predicate rather than restated so this fake
+        cannot drift into its own idea of what leading means.
+        """
+        return bool(WorkerDeps.leading(cast(WorkerDeps, self)))
 
 
 async def _run_stranded_detector_once(

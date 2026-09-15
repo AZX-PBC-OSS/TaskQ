@@ -15,7 +15,6 @@ __all__ = [
     "INSERT_EVENT_SQL",
     "POLL_CANCEL_FLAGS_SQL",
     "UPDATE_JOBS_LOCK_SQL_TEMPLATE",
-    "UPDATE_LEADER_PING_SQL_TEMPLATE",
     "UPDATE_RESERVATION_LEASES_SQL_TEMPLATE",
     "UPDATE_WORKER_LIVENESS_SQL_TEMPLATE",
     "build_heartbeat_sql",
@@ -158,16 +157,18 @@ UPDATE_RESERVATION_LEASES_SQL_TEMPLATE = (
     "SELECT id FROM \"{schema}\".jobs WHERE locked_by_worker = $1 AND status = 'running'"
     ")"
 )
-UPDATE_LEADER_PING_SQL_TEMPLATE = (
-    'UPDATE "{schema}".maintenance_leader SET last_seen_at = clock_timestamp() WHERE worker_id = $1'
-)
 
 
-def build_heartbeat_sql(schema: str) -> tuple[str, str, str, str]:
-    """Render the four heartbeat SQL templates for *schema*.
+def build_heartbeat_sql(schema: str) -> tuple[str, str, str]:
+    """Render the three heartbeat SQL templates for *schema*.
 
     Validates *schema* against the canonical identifier regex before
     formatting.
+
+    ``maintenance_leader`` is deliberately absent: that row carries the
+    maintenance lease and is written only by the election loop, under the
+    fence of the term it holds. An unfenced refresh from this loop would
+    keep a lapsed holder's row un-takeable.
     """
     if not _IDENT_RE.match(schema):
         raise ValueError(f"invalid schema identifier: {schema!r}")
@@ -175,5 +176,4 @@ def build_heartbeat_sql(schema: str) -> tuple[str, str, str, str]:
         UPDATE_WORKER_LIVENESS_SQL_TEMPLATE.format(schema=schema),
         UPDATE_JOBS_LOCK_SQL_TEMPLATE.format(schema=schema),
         UPDATE_RESERVATION_LEASES_SQL_TEMPLATE.format(schema=schema),
-        UPDATE_LEADER_PING_SQL_TEMPLATE.format(schema=schema),
     )

@@ -14,6 +14,7 @@ import sys
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import AsyncExitStack, asynccontextmanager, suppress
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import TYPE_CHECKING
 from uuid import UUID
 
@@ -176,6 +177,26 @@ async def open_dedicated_conn(
     return conn
 
 
+@dataclass(slots=True, frozen=True)
+class LeaderTerm:
+    """One period of maintenance leadership, fenced and locally time-boxed.
+
+    ``elected_at`` is the server clock instant the lease row was written
+    with; it is the fence token every renewal and the resign carry, so a
+    statement issued after a takeover cannot touch the successor's row.
+
+    ``trusted_until`` is on this process's monotonic clock and is always
+    earlier than the server's ``expires_at`` for the same attempt: it is
+    measured from *before* the round trip and is one margin shorter, so
+    this process stops acting as leader strictly before any peer may
+    legally take over. Clock offset between the two machines is
+    irrelevant — each side measures a duration from its own instant.
+    """
+
+    elected_at: datetime
+    trusted_until: float
+
+
 @dataclass
 class WorkerDeps:
     """Stable named handle for worker pools and connections.
@@ -207,6 +228,11 @@ class WorkerDeps:
     # yields or after it exits.
     _exit_stack: AsyncExitStack | None = None
     is_leader: asyncio.Event = field(default_factory=asyncio.Event)
+    # Set and cleared together with is_leader by the election loop. Kept
+    # separate because is_leader is what the watchdog parks on and what the
+    # gauge and health report expose, while the term is what leader-gated
+    # work must consult per iteration (see `leading`).
+    leader_term: LeaderTerm | None = None
     producer_stop_event: asyncio.Event = field(default_factory=asyncio.Event)
     active_jobs: ActiveJobRegistry = field(default_factory=ActiveJobRegistry)
     shutdown_phase: ShutdownPhase = ShutdownPhase.NONE
@@ -312,6 +338,44 @@ class WorkerDeps:
     Read by the drain monitor to determine the exit code. The counter is
     incremented unconditionally in all modes, but is only read in
     until-idle mode — in non-idle mode it is never consulted."""
+
+    def lead(self, term: LeaderTerm) -> None:
+        """Take the leader role for *term*.
+
+        The invariant: the flag is never set without a term, and clearing
+        (``stop_leading``) always drops both — no path can leave a half-set
+        role behind. A renewal does NOT move the pair; it replaces the term
+        in place (the election loop assigns ``leader_term`` directly), which
+        keeps the flag set while the term's trust window rolls forward.
+        """
+        self.leader_term = term
+        self.is_leader.set()
+
+    def stop_leading(self) -> None:
+        """Give up the leader role."""
+        self.is_leader.clear()
+        self.leader_term = None
+
+    def leading(self) -> bool:
+        """Whether leader-gated work may run in THIS iteration.
+
+        Every leader-gated loop consults this per iteration rather than the
+        bare ``is_leader`` event: a process suspended between two iterations
+        (SIGSTOP, a long GC pause, a partitioned event loop) resumes with the
+        event still set and its lease long since taken over by a peer. The
+        monotonic trust window is what makes that resumption a no-op.
+
+        The event remains the authority on the role; the term only narrows
+        how long that authority is trusted between renewals. A role held
+        without a term is therefore led, not refused — an embedder that
+        drives ``is_leader`` itself has taken on the coordination the term
+        would otherwise bound, and silently declining to do the maintenance
+        work would strand every sweep with nothing in any log to say why.
+        """
+        if not self.is_leader.is_set():
+            return False
+        term = self.leader_term
+        return term is None or asyncio.get_running_loop().time() < term.trusted_until
 
     def request_reload(self) -> None:
         """Programmatic credential hot-reload trigger for embedders.
@@ -961,9 +1025,9 @@ async def reload_credentials(
     ``notify_conn`` is rebuilt through the listener's
     ``reconnect_notify_conn`` helper, which re-issues LISTEN and
     re-registers callbacks. ``leader_conn`` is closed and nulled (not
-    swapped): the leader election watchdog observes the None and reopens
-    through ``leader_conn_factory`` on its next tick, re-acquiring the
-    advisory lock.
+    swapped): the leader election loop observes the None, stands down,
+    and reopens through ``leader_conn_factory`` on its next tick,
+    re-electing on the lease row.
 
     New pools are registered on ``deps._exit_stack`` (the ``AsyncExitStack``
     from ``open_worker_deps``) for LIFO teardown at shutdown. Old pools are
@@ -1096,26 +1160,27 @@ async def reload_credentials(
                 failed.append("notify_conn")
 
         # ── leader_conn ────────────────────────────────────────────
-        # The leader election loop has its own watchdog that detects a dead
-        # leader_conn, clears is_leader, and reopens via _open_leader_conn
-        # (which uses deps.leader_conn_factory when set). We trigger that
-        # failover path by closing the current leader_conn — the watchdog
-        # reopens with a fresh credential and re-acquires the advisory lock.
-        # This is the same path as a PG connection drop, so it's well-tested.
+        # The leader election loop detects a dead leader_conn, stands down,
+        # and reopens via _open_leader_conn (which uses
+        # deps.leader_conn_factory when set). We trigger that path by
+        # closing the current leader_conn — the loop reopens with a fresh
+        # credential and re-elects itself on the lease row (the recorded
+        # holder's arm admits its own row while that lease is live, so the
+        # reload costs a re-election, not a lease lapse). This is the same
+        # path as a PG connection drop, so it's well-tested.
         #
         # The old conn is closed inline (bounded) BEFORE nulling — a
-        # background close would let the watchdog's re-election race the
-        # old session's lock release, guaranteeing a first-attempt
-        # pg_try_advisory_lock failure. On timeout the close moves to a
-        # background task that terminates the conn.
+        # background close would leave the re-election racing the old
+        # session's teardown. On timeout the close moves to a background
+        # task that terminates the conn.
         #
         # This ALSO rebuilds MaintenanceLeader's other dedicated connections
         # (_leader_monitor_conn, _cron_conn) as a side effect: re-election
         # (triggered by leader_conn becoming None while is_leader is still
         # set) reopens both through the same leader_conn_factory before
-        # re-setting is_leader — see leader.py's _election_loop `if got_lock:`
-        # branch. So a single SIGHUP rotates every leader-owned connection,
-        # not just leader_conn, even though this function never touches
+        # re-setting is_leader — see leader.py's _election_loop win branch.
+        # So a single SIGHUP rotates every leader-owned connection, not
+        # just leader_conn, even though this function never touches
         # _leader_monitor_conn/_cron_conn directly.
         if deps.leader_conn_factory is not None and deps.leader_conn is not None:
             old_leader = deps.leader_conn

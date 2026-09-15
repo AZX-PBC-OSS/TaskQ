@@ -73,6 +73,13 @@ def make_integration_settings_dict(pg_dsn: str, **overrides: str) -> dict[str, s
 _CHAOS_DEFAULTS = {
     "heartbeat_interval": 1.0,
     "lock_lease": 4.0,
+    # The maintenance lease shortens with the job lease and for the same
+    # reason: it is the horizon a survivor waits out before taking leadership
+    # from a holder that went silent, so leaving it at the production default
+    # makes every failover in a chaos test wait a production lease while every
+    # other clock around it runs in seconds. Four heartbeats is the floor
+    # `resolved_leader_lease` enforces, so this is the shortest honoured value.
+    "leader_lease": 4.0,
     # Kept alongside the shortened lease so the pair stays inside the
     # lag-lease invariant (1.2 + 1.0 < 4.0) even when applied to settings
     # loaded from elsewhere.
@@ -86,7 +93,7 @@ _CHAOS_DEFAULTS = {
 def shorten_chaos_settings(*deps_list: Any) -> Generator[None, None, None]:
     """Context manager: temporarily shorten timing on WorkerDeps for chaos tests.
 
-    Sets heartbeat→1s, lock_lease→4s (retains invariant), and zeroes
+    Sets heartbeat→1s, both leases→4s (retaining their invariants), and zeroes
     cancellation/cleanup grace.  Settings are restored on exit.
     """
     saved: dict[int, dict[str, Any]] = {}
