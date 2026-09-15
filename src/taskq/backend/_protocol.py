@@ -12,7 +12,7 @@ creating a circular dependency through the re-export boundary in
 
 import asyncio
 import re
-from collections.abc import Iterable, Sequence
+from collections.abc import Container, Iterable, Sequence
 from contextlib import AbstractAsyncContextManager as AsyncContextManager
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -43,10 +43,16 @@ else:
 from pydantic import AfterValidator, BaseModel, ConfigDict
 
 from taskq._json import check_no_nul_str
-from taskq.constants import DEFAULT_CHUNK_SIZE, DEFAULT_RECLAIM_POLL_LIMIT
+from taskq.constants import (
+    DEFAULT_CHUNK_SIZE,
+    DEFAULT_RECLAIM_POLL_LIMIT,
+    check_max_attempts_domain,
+    check_priority_domain,
+)
 
 __all__ = [
     "BACKEND_PROTOCOL_VERSION",
+    "DEFAULT_UNIQUE_STATES",
     "DST_STRATEGIES",
     "JOB_STATUS_VALUES",
     "SNOOZE_OUTCOME_VALUES",
@@ -183,6 +189,32 @@ Derived from the ``JobStatus`` Literal itself (the canonical declaration)
 so validation can never drift from the type.  Used by
 :meth:`JobFilter.__post_init__` to reject unknown statuses before they
 reach a backend.
+"""
+
+DEFAULT_UNIQUE_STATES: Final[tuple[JobStatus, ...]] = (
+    "pending",
+    "scheduled",
+    "running",
+    "succeeded",
+)
+"""Job statuses a ``unique_for`` window matches unless the caller narrows it.
+
+``unique_for`` reads as "at most one job for this identity in this
+period", and the reason a caller reaches for it is that the work is not
+safe to repeat. ``succeeded`` is therefore in the set: it is the state
+that says the work already happened, which is the precise condition the
+window exists to detect. Leaving it out would free the identity the
+instant the first job completed — so the faster the work succeeds, the
+wider the unguarded remainder of the window, and the failure would be
+likeliest exactly when the system is healthy.
+
+The other terminal states stay out, and for the mirror-image reason:
+``failed``, ``cancelled``, ``crashed`` and ``abandoned`` all mean the
+work did NOT happen, so matching them would let one transient failure
+suppress every later attempt for the rest of the window.
+
+Callers who want the narrower "block only concurrent execution" rule
+spell the three unfinished states explicitly.
 """
 
 type AttemptOutcome = Literal[
@@ -562,7 +594,7 @@ class EnqueueArgs:
     span_id: str | None = None
     result_ttl: timedelta | None = None
     unique_for: timedelta | None = None
-    unique_states: tuple[JobStatus, ...] = ("pending", "scheduled", "running")
+    unique_states: tuple[JobStatus, ...] = DEFAULT_UNIQUE_STATES
     metadata: dict[str, object] = field(default_factory=dict[str, object])
     tags: tuple[str, ...] = ()
 
@@ -573,7 +605,39 @@ class EnqueueArgs:
                 "if both are desired, pass only schedule_to_close (datetime) — "
                 "the interval form is the actor-declaration default."
             )
+        self._check_column_domains()
         self._check_no_nul_text()
+
+    def _check_column_domains(self) -> None:
+        """Reject a value outside the domain of the column it lands in.
+
+        Enforced here, at the struct every enqueue path funnels through
+        (single, batch, the ``COPY``-based fast batch, the atomic batch,
+        and the InMemory mirror), for the same reason the NUL guard below
+        is: a producer building the struct directly, a batch helper and
+        the clients all inherit one refusal, so no later path can
+        reintroduce the gap.
+
+        Without it the two backends disagree at runtime. Postgres refuses
+        an out-of-domain smallint with a raw driver error naming a
+        constraint or a column — a bare exception no caller has a handler
+        for — while the in-memory twin stores the value, so a suite
+        validated in memory certifies an enqueue production rejects. The
+        negative durations are worse than either: both backends store
+        them, and every dispatch of that job is instantly past its own
+        deadline.
+        """
+        check_max_attempts_domain(self.max_attempts)
+        check_priority_domain(self.priority)
+        for value, what in (
+            (self.start_to_close, "start_to_close"),
+            (self.heartbeat_timeout, "heartbeat_timeout"),
+            (self.result_ttl, "result_ttl"),
+            (self.schedule_to_close_interval, "schedule_to_close_interval"),
+            (self.unique_for, "unique_for"),
+        ):
+            if value is not None and value < timedelta(0):
+                raise ValueError(f"{what} must not be negative, got {value}")
 
     def _check_no_nul_text(self) -> None:
         """Reject a NUL (U+0000) in any caller-supplied value bound as text.
@@ -633,6 +697,41 @@ def batch_cap_groups(args_list: list[EnqueueArgs]) -> dict[str, tuple[int, int]]
         if args.actor not in caps or cap < caps[args.actor]:
             caps[args.actor] = cap
     return {actor: (counts[actor], caps[actor]) for actor in counts}
+
+
+def first_duplicate_idempotency_pair(
+    args_list: Iterable[EnqueueArgs],
+    stored_pairs: Container[tuple[str, str]],
+) -> tuple[str, str] | None:
+    """The ``(idempotency_scope, idempotency_key)`` pair a batch write
+    aborts on, derived from the batch itself — never from driver text.
+
+    A bulk insert with no ``ON CONFLICT`` arbiter (the COPY fast path)
+    aborts at the FIRST item whose pair the unique index already holds,
+    and items are written in batch order — so the offending pair is the
+    first one that repeats an earlier item or appears among
+    *stored_pairs*. Postgres renders the violation's detail with raw,
+    unquoted values (a scope containing ``", "`` makes it positionally
+    ambiguous, and long values can be truncated), so an attribution that
+    parses the server's text mis-names exactly the pairs an operator most
+    needs named; the batch's own contents carry the answer losslessly.
+    Two different pairs repeated in one batch resolve to the one the
+    statement hits first, deterministically.
+
+    Pure function over the args; lives here (not in the PG bulk path) so
+    the in-memory mirror — which must not import driver-bound modules —
+    attributes the identical pair (its ``stored_pairs`` is its own
+    idempotency index; the PG path's is a targeted post-abort SELECT).
+    """
+    seen: set[tuple[str, str]] = set()
+    for args in args_list:
+        if args.idempotency_key is None:
+            continue
+        pair = (args.idempotency_scope, str(args.idempotency_key))
+        if pair in seen or pair in stored_pairs:
+            return pair
+        seen.add(pair)
+    return None
 
 
 @dataclass(frozen=True, slots=True)

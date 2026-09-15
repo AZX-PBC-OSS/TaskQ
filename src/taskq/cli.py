@@ -1380,10 +1380,15 @@ def _ui_serve(
         )
 
         if run_migrate:
+            # Explicitly pre-only: this fires on a process lifecycle
+            # event, and the post phase is the operator's call once the
+            # fleet has finished rolling.
             if conn_factory is not None:
-                await migrate_mod.apply_pending_locked(conn_factory=conn_factory, schema=schema)
+                await migrate_mod.apply_pending_locked(
+                    conn_factory=conn_factory, schema=schema, phase="pre"
+                )
             else:
-                await migrate_mod.apply_pending_locked(pg_dsn, schema=schema)
+                await migrate_mod.apply_pending_locked(pg_dsn, schema=schema, phase="pre")
 
         async with AsyncExitStack() as stack:
             # A credential-provider pool passes password= as an async

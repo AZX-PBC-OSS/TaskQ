@@ -561,6 +561,47 @@ a bound, not a counter). Two behaviours follow from that:
 These change what your code *does* without changing what it *accepts*. Nothing
 raises, so nothing points you at the call site — audit for them explicitly.
 
+### `unique_for`'s default `unique_states` now includes `succeeded`
+
+> **Unreleased.** Breaking for actors using `unique_for` without an
+> explicit `unique_states`.
+
+The default `unique_states` was `("pending", "scheduled", "running")`; it is
+now `("pending", "scheduled", "running", "succeeded")`. `unique_for` reads as
+"at most one job for this identity in this period" — leaving `succeeded` out
+freed the identity the instant the first job completed, so a re-delivered
+webhook or a double-clicked button inside a still-open window could run the
+work a second time. The failure states (`failed`, `cancelled`, `crashed`,
+`abandoned`) remain excluded: they mean the work did not happen, so matching
+them would let one transient failure suppress every later attempt for the
+rest of the window. This matches the default every comparable job queue
+ships (the completed state is included in the uniqueness check by default).
+
+To keep the old "block only concurrent execution" behaviour, pass
+`unique_states=("pending", "scheduled", "running")` explicitly on the actor.
+
+A dedup onto a job that already finished is now surfaced: the enqueue logs a
+`WARN`-level `enqueue_deduplicated` line naming the matched status, and
+`JobHandle.deduplicated_onto_terminal` is `True`.
+
+### `migrate.apply_pending_locked` defaults to the `pre` phase only
+
+`apply_pending_locked(...)` previously applied **every** pending migration when
+called without a `phase` argument; it now applies only `pre`-phase migrations.
+The entry point exists to fire on process lifecycle events — a pod restart, a
+rollout, an autoscale event — that nobody sequences, and a `post`-phase
+migration exists precisely to be withheld until the whole fleet is confirmed
+upgraded. Letting a restart apply one would close a rolling-deploy overlap
+window mid-rollout (for example, dropping the old single-column idempotency
+index while half the fleet still issues `ON CONFLICT (idempotency_key)` takes
+that half's entire enqueue path down).
+
+If you call `apply_pending_locked` from your own deploy tooling and relied on
+the old all-phases default, pass `phase=None` explicitly to restore it — from a
+context that knows the fleet is fully upgraded. The operator-sequenced path is
+unchanged: `taskq migrate up --phase post` remains the way to close out a
+phased migration.
+
 ### Rate-limit refunds now credit the store that paid
 
 If you run `backend="redis"` rate limits with `rate_limit_pg_fallback_enabled`

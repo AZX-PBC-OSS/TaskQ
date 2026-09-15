@@ -40,9 +40,9 @@ from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Any
 
-import pytest
 from pydantic import BaseModel
 
+from taskq import actor
 from taskq.backend._enqueue import _batch_cap_refusals as _pg_batch_cap_refusals
 from taskq.backend._protocol import EnqueueArgs
 from taskq.backend._sql_templates import render as render_sql
@@ -52,8 +52,6 @@ from taskq.testing.clock import FakeClock
 from taskq.testing.in_memory import InMemoryBackend
 
 from .test_enqueue_coverage import _FakeEnqueueConn, _Record
-
-from taskq import actor
 
 _SCHEMA_LABEL = "taskq"
 _SQL = render_sql(_SCHEMA_LABEL)
@@ -120,7 +118,8 @@ async def _pg_refusals(
         _Record({"actor": actor_name, "cnt": cnt}) for actor_name, cnt in existing_counts.items()
     ]
     override_records = [
-        _Record({"actor": actor_name, "max_pending": cap}) for actor_name, cap in override_caps.items()
+        _Record({"actor": actor_name, "max_pending": cap})
+        for actor_name, cap in override_caps.items()
     ]
     stored_records = [
         _Record(

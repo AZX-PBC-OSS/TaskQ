@@ -898,16 +898,19 @@ class DuplicateIdempotencyKeyError(TaskQError):
     Distinct from :class:`ScopedIdempotencyMigrationPendingError`, which is
     the rolling-deploy window's cross-scope reuse signal.
 
-    ``idempotency_key`` / ``idempotency_scope`` carry the offending pair
-    when it could be attributed: the InMemory mirror detects it exactly,
-    and the PG path attributes by MATCHING the violation's detail line
-    against the batch's own candidate pairs — exact whenever the detail's
-    rendering is unambiguous (including comma-bearing scopes), and both
-    ``None`` when it is not (two distinct pairs whose values render to
-    the same detail text, or a localized/truncated detail — Postgres can
-    truncate long detail values). Never a wrong pair: ambiguity degrades
-    to unattributed rather than guessing. ``detail`` carries the postgres
-    detail verbatim when present.
+    ``idempotency_key`` / ``idempotency_scope`` carry the offending pair,
+    resolved exactly on both backends by one shared rule
+    (``first_duplicate_idempotency_pair``): the first item in batch order
+    whose pair repeats an earlier item or is already stored. The PG path
+    resolves the stored half with a targeted post-abort lookup inside the
+    caller's transaction scope — never by parsing the violation's detail
+    text, which renders values raw and unquoted (ambiguous under
+    positional reading for comma-bearing scopes, unusable when localized
+    or truncated). Both fields are ``None`` only when the conflicting
+    row could not be resolved at all — a committed-and-instantly-deleted
+    racer — where the detail-text match is the last word and still never
+    guesses. ``detail`` carries the postgres detail verbatim when
+    present.
 
     Resolution: pre-deduplicate the items, or use
     :meth:`~taskq.client.JobsClient.enqueue_batch`, which dedupes and

@@ -182,8 +182,8 @@ remaining steps. Later steps only execute when earlier ones did not match or rai
     `taskq:unique_for:<schema>:<actor>:<identity_key>`, hashed via `hashtextextended`), so two
     producers racing on the same logical entity cannot both insert — the loser's preflight finds
     the winner's row and returns it as the dedup hit. The lock **wait is bounded** — 5 s by
-    default (`DEFAULT_UNIQUE_FOR_LOCK_TIMEOUT_MS` in `taskq.backend._enqueue`; a module constant
-    tunable only through private kwargs today — settings plumbing is a filed follow-up): the
+    default, tunable with `TASKQ_UNIQUE_FOR_LOCK_TIMEOUT_MS` (see the `max_pending` paragraph
+    below for how pools the `TaskQ` client builds itself deliver a widened budget): the
     acquire is two-tier (`taskq._advisory.acquire_advisory_xact_lock_bounded`). An uncontended
     producer pays exactly one `pg_try_advisory_xact_lock` statement; a contended one queues
     server-side — Postgres' own lock scheduler hands the lock to the next waiter as each holder's
@@ -193,11 +193,13 @@ remaining steps. Later steps only execute when earlier ones did not match or rai
     answers. A producer that exhausts the budget gets `UniqueForLockTimeoutError` (this enqueue
     wrote nothing; on a caller-owned transaction durability is the caller's decision) instead of
     queueing indefinitely behind a same-key stampede or a black-holed holder. That error is
-    deliberately **not** in the `BackpressureError` family and bumps no
-    `taskq.backpressure.errors` counter — nothing about capacity is wrong; the dedup answer for
-    one identity could not be determined in time. The correct response is to **retry the same
-    enqueue**: once the winner's row is visible, the retry typically returns it as a dedup hit
-    (`was_existing=True`). `0` or less disables the bound entirely (the unbounded queueing
+    deliberately **not** in the `BackpressureError` family — nothing about capacity is wrong;
+    the dedup answer for one identity could not be determined in time — but it still records
+    against the `taskq.backpressure.errors` counter under its own
+    `kind='unique_for_lock_timeout'` label, so the refusal shows up on an operator's dashboard
+    without tripping alerts keyed on the capacity kinds. The correct response is to **retry the
+    same enqueue**: once the winner's row is visible, the retry typically returns it as a dedup
+    hit (`was_existing=True`). `0` or less disables the bound entirely (the unbounded queueing
     behavior), matching Postgres' own `lock_timeout = 0` convention.
 3. **Singleton pre-flight** — if `ref.singleton` is `True`, checks for an existing active job for
    this actor. Raises `SingletonCollisionError` on collision. Cron fires now carry the same
@@ -209,9 +211,9 @@ remaining steps. Later steps only execute when earlier ones did not match or rai
     by a transaction-scoped advisory lock (the same two-tier mechanism `unique_for` uses — one
     try-lock statement when uncontended, a server-side bounded blocking acquire when contended),
     so concurrent producers cannot slip between the check and the insert. The lock wait is
-    bounded — 5 s by default (`DEFAULT_MAX_PENDING_LOCK_TIMEOUT_MS` in
-    `taskq.backend._enqueue`; a module constant tunable only through private kwargs today —
-    settings plumbing is a filed follow-up): a producer that cannot acquire the lock within its
+    bounded — 5 s by default, tunable with `TASKQ_MAX_PENDING_LOCK_TIMEOUT_MS` (its
+    `unique_for` and `idempotency_key` siblings are `TASKQ_UNIQUE_FOR_LOCK_TIMEOUT_MS` and
+    `TASKQ_IDEMPOTENCY_LOCK_TIMEOUT_MS`): a producer that cannot acquire the lock within its
     budget gets `MaxPendingLockTimeoutError` instead of queueing behind every other racer, so
     burst tail latency is capped by the budget rather than growing linearly with the number of
     producers — while contended racers still queue server-side (draining at holder-release rate,
@@ -219,7 +221,22 @@ remaining steps. Later steps only execute when earlier ones did not match or rai
     timeout exactly like a cap rejection: retry later or shed load (both errors sit in the
     `BackpressureError` family and both record against the `taskq.backpressure.errors` counter).
     `0` or less disables the bound entirely, matching Postgres' own `lock_timeout = 0`
-    convention. Bulk paths (`enqueue_batch`,
+    convention.
+
+    On pools the `TaskQ` client builds itself (the `dsn=` and `pg_provider=` constructions),
+    the pool's per-query `command_timeout` is 5 s at these defaults and each lock budget is
+    delivered clamped to 80% of it — 4 s at the defaults. The margin is what lets the
+    server-side `lock_timeout` fire, and the typed error reach you, before the pool's
+    client-side timer would end the wait as a bare `TimeoutError`. Widening a budget past its
+    5 s default re-derives the pool's bound to fit the widened budget at the same margin, so a
+    larger `TASKQ_MAX_PENDING_LOCK_TIMEOUT_MS` (or its siblings) takes effect end to end;
+    budgets at or below the defaults change nothing about the pool. `0` or less asks the
+    server to wait indefinitely, which no client-built pool can honor — its per-query bound
+    still applies — so on that construction set a large finite value instead. Caller-supplied
+    pools (`pool=` / `pool_factory=`) keep their own `command_timeout` and budgets are
+    delivered as configured; keep your pool's per-query bound above any budget you widen.
+
+    Bulk paths (`enqueue_batch`,
     `enqueue_batch_fast`) and cron suppressions deliberately do **not** take the lock: their
     aggregated pre-insert count is exact for the batch it admits but **approximate under
     concurrency** — separate bulk connections can still race the count and the insert, and the

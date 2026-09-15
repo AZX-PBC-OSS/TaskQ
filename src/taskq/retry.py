@@ -22,7 +22,13 @@ import structlog
 from pydantic import BaseModel, ConfigDict, ValidationError, field_validator, model_validator
 
 from taskq.backend._protocol import Backend, ErrorInfo, JobId, JobRow, RetryKind
-from taskq.constants import DEFAULT_MAX_RETRY_BACKOFF, MIN_DEFERRAL_INTERVAL
+from taskq.constants import (
+    DEFAULT_MAX_RETRY_BACKOFF,
+    MAX_ATTEMPTS_SMALLINT_CEILING,
+    MAX_ENQUEUABLE_MAX_ATTEMPTS,
+    MIN_DEFERRAL_INTERVAL,
+    check_max_attempts_domain,
+)
 from taskq.exceptions import (
     PayloadValidationError,
     ResultTooLarge,
@@ -32,6 +38,7 @@ from taskq.exceptions import (
 
 __all__ = [
     "MAX_ATTEMPTS_SMALLINT_CEILING",
+    "MAX_ENQUEUABLE_MAX_ATTEMPTS",
     "ActorConfigLike",
     "Fail",
     "JobRetryState",
@@ -53,26 +60,6 @@ __all__ = [
     "time_budget_as_interval",
 ]
 
-MAX_ATTEMPTS_SMALLINT_CEILING: Final[int] = 32767
-"""The ``jobs.max_attempts`` column's smallint domain ceiling.
-
-The column is ``smallint`` (migrations/01.00.00_01_pre_initial.sql), so
-32767 is the largest value any row can hold. Shared here because the
-validation below, the in-memory mirror and any future writer must not
-drift on what the ceiling is."""
-
-MAX_ENQUEUABLE_MAX_ATTEMPTS: Final[int] = MAX_ATTEMPTS_SMALLINT_CEILING - 1
-"""Largest ``RetryPolicy.max_attempts`` a fresh policy may carry.
-
-One below the column ceiling, retained as a defensive margin: a row
-parked at exactly 32767 has no headroom for any future statement that
-needs to add one to a max_attempts-derived value, so the policy guard
-refuses the value the way it refuses values past the column entirely
-(:func:`RetryPolicy._validate_max_attempts`). Rows can still legally
-REACH the ceiling — earlier releases' snooze arms parked a snoozed
-32766-job there — which is why :func:`decide_after_failure` clamps
-row-stored values back into this bound before reconstructing a policy."""
-
 
 class RetryPolicy(BaseModel):
     """Policy controlling retry behaviour for an actor."""
@@ -90,20 +77,7 @@ class RetryPolicy(BaseModel):
     @field_validator("max_attempts")
     @classmethod
     def _validate_max_attempts(cls, v: int) -> int:
-        if v < 1:
-            raise ValueError("max_attempts must be >= 1")
-        # Why: max_attempts lands in the smallint jobs.max_attempts column
-        # (migrations/01.00.00_01_pre_initial.sql), and the policy layer is
-        # the boundary that refuses values the column cannot hold — the
-        # same treatment the other client-accepted smallint (priority)
-        # gets at client/_args.py and actor.py. One of defensive headroom
-        # is retained (see MAX_ENQUEUABLE_MAX_ATTEMPTS).
-        if v > MAX_ENQUEUABLE_MAX_ATTEMPTS:
-            raise ValueError(
-                f"max_attempts must fit the smallint jobs.max_attempts column "
-                f"with one of defensive headroom (<= {MAX_ENQUEUABLE_MAX_ATTEMPTS}), "
-                f"got {v}"
-            )
+        check_max_attempts_domain(v)
         return v
 
     @model_validator(mode="after")

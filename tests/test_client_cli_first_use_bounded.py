@@ -464,6 +464,133 @@ def test_taskq_pg_provider_pool_factory_carries_command_timeout(
     assert taskq_mod._CLIENT_POOL_COMMAND_TIMEOUT_SECS == 5.0
 
 
+# ── Enqueue lock budgets vs the client pool's per-query bound ──────────
+#
+# The typed lock-timeout refusals (MaxPendingLockTimeoutError and
+# siblings) fire server-side via a lock_timeout GUC — they only exist if
+# the budget fits inside the pool's per-query command_timeout with the
+# 80% share of headroom the refusal needs to unwind first. These pins
+# cover the wiring that makes an operator's TASKQ_*_LOCK_TIMEOUT_MS reach
+# that arithmetic on the client path: the env overlay, the pool-bound
+# derivation, and the clamp.
+
+
+def _deps_budgets(tq: TaskQ) -> tuple[float, float, float]:
+    """The three lock budgets the client's backend was actually handed."""
+    deps = tq._deps  # pyright: ignore[reportPrivateUsage]  # Why: the wiring under test is what open() hands the backend; no public accessor exposes it.
+    assert deps is not None
+    settings = deps.settings
+    return (
+        settings.max_pending_lock_timeout_ms,
+        settings.unique_for_lock_timeout_ms,
+        settings.idempotency_lock_timeout_ms,
+    )
+
+
+async def test_taskq_open_delivers_default_budgets_inside_the_pool_bound(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """At the shipped defaults the client path delivers each 5000 ms
+    budget at 80% of the pool's 5.0 s per-query bound — 4000 ms — so the
+    server-side lock_timeout fires before the client-side timer and the
+    refusal is the typed one, never a bare TimeoutError."""
+    import asyncpg as asyncpg_mod
+
+    captured_kwargs: dict[str, Any] = {}
+
+    def _recording_create_pool(*a: Any, **kw: Any) -> _FakePool:
+        captured_kwargs.update(kw)
+        return _FakePool("dsn")
+
+    monkeypatch.setattr(asyncpg_mod, "create_pool", _recording_create_pool)
+    tq = TaskQ(dsn="postgresql://x:x@localhost/x", schema="taskq")
+    async with asyncio.timeout(_TEST_BUDGET_SECS):
+        await tq.open()
+        budgets = _deps_budgets(tq)
+    async with asyncio.timeout(_TEST_BUDGET_SECS):
+        await tq.close()
+
+    assert captured_kwargs.get("command_timeout") == 5.0
+    assert budgets == (4000.0, 4000.0, 4000.0)
+
+
+async def test_taskq_open_operator_widened_budget_is_delivered_end_to_end(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An operator widening a budget past its default re-derives the
+    pool's per-query bound to fit it at the same 80% share — the widened
+    budget is delivered in full (not silently clamped to 4 s), and the
+    untouched siblings now fit the larger bound unclamped too."""
+    import asyncpg as asyncpg_mod
+
+    captured_kwargs: dict[str, Any] = {}
+
+    def _recording_create_pool(*a: Any, **kw: Any) -> _FakePool:
+        captured_kwargs.update(kw)
+        return _FakePool("dsn")
+
+    monkeypatch.setattr(asyncpg_mod, "create_pool", _recording_create_pool)
+    monkeypatch.setenv("TASKQ_IDEMPOTENCY_LOCK_TIMEOUT_MS", "30000")
+    tq = TaskQ(dsn="postgresql://x:x@localhost/x", schema="taskq")
+    async with asyncio.timeout(_TEST_BUDGET_SECS):
+        await tq.open()
+        budgets = _deps_budgets(tq)
+    async with asyncio.timeout(_TEST_BUDGET_SECS):
+        await tq.close()
+
+    assert captured_kwargs.get("command_timeout") == 37.5, (
+        "a 30000 ms budget needs a 37.5 s pool bound to keep its 80% share; "
+        f"got {captured_kwargs.get('command_timeout')!r}"
+    )
+    assert budgets == (5000.0, 5000.0, 30000.0)
+
+
+async def test_taskq_caller_supplied_pool_leaves_budgets_as_configured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A caller-owned pool's timeouts are the caller's own choice (the
+    worker's doctrine for caller pools): no derivation, no clamp — the
+    budgets stand as configured."""
+    monkeypatch.setenv("TASKQ_MAX_PENDING_LOCK_TIMEOUT_MS", "12000")
+    tq = TaskQ(pool=_FakePool("caller"), schema="taskq")  # type: ignore[arg-type]  # Why: the pool seam under test is duck-typed at open(); the fake covers the close path.
+    async with asyncio.timeout(_TEST_BUDGET_SECS):
+        await tq.open()
+        budgets = _deps_budgets(tq)
+    async with asyncio.timeout(_TEST_BUDGET_SECS):
+        await tq.close()
+
+    assert budgets == (12000.0, 5000.0, 5000.0)
+
+
+def test_taskq_pg_provider_pool_factory_derives_the_bound_from_a_widened_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The pg_provider sugar's pool factory carries the DERIVED bound too,
+    not the bare floor — otherwise the provider path would be the one
+    client pool where widening a lock budget silently does nothing."""
+
+    import taskq.auth as auth_mod
+
+    captured_kwargs: dict[str, Any] = {}
+
+    def _recording_factory(*a: Any, **kw: Any) -> Any:
+        captured_kwargs.update(kw)
+        return _black_hole_pool_factory(asyncio.Event())
+
+    monkeypatch.setattr(auth_mod, "make_pg_pool_factory", _recording_factory)
+    monkeypatch.setenv("TASKQ_UNIQUE_FOR_LOCK_TIMEOUT_MS", "20000")
+    TaskQ(
+        dsn="postgresql://u@h/db",
+        pg_provider=_Provider(),
+        schema="taskq",
+    )
+
+    assert captured_kwargs.get("command_timeout") == 25.0, (
+        "a 20000 ms budget needs a 25 s pool bound to keep its 80% share; "
+        f"got {captured_kwargs.get('command_timeout')!r}"
+    )
+
+
 # ── taskq ui serve: startup factory calls and eager redis are bounded ──
 
 

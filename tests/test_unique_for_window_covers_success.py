@@ -6,26 +6,21 @@ daily-report or process-this-webhook actor is asking for the work to happen once
 in the hour, and is relying on that to make a re-delivered webhook, a retried
 API call, or a double-clicked button harmless.
 
-The default ``unique_states`` is ``("pending", "scheduled", "running")``, so the
-window only covers jobs that have not finished yet. The moment the first job
-succeeds, the identity is free again and the next enqueue inside the same window
-creates a second job that runs for real — while the window the operator
-configured is still open.
+The default ``unique_states`` is ``("pending", "scheduled", "running",
+"succeeded")``, so the window keeps covering a job after it succeeds: the first
+job completing is the state that says the work already happened — the precise
+condition the window exists to detect. Before this default, the identity was
+freed the instant the first job succeeded, and the faster the work completed,
+the wider the unguarded remainder of the operator's window.
 
-That makes the guarantee the opposite of what the parameter reads like, and it
-fails in the direction that costs the most: deduplication is almost always
-reached for because the work is not safe to repeat. The report goes out twice,
-the payment is captured twice, the webhook is processed twice — and the faster
-the first job completes, the wider the unguarded window, so the failure is most
-likely exactly when the system is healthy.
+The failure states stay out of the default set, for the mirror-image reason:
+``failed``, ``cancelled``, ``crashed``, ``abandoned`` mean the work did *not*
+happen, so matching them would let one transient failure suppress every later
+attempt for the rest of the window.
 
-Excluding terminal states is the right instinct for the states that mean the
-work did *not* happen: a failed or cancelled job must not block a fresh attempt
-at the identity, or a single failure would suppress the work for the rest of the
-window. ``succeeded`` is the opposite case — it is the state that says the work
-already happened, which is the precise condition the window exists to detect.
-
-Both halves are pinned here so the fix cannot satisfy one by breaking the other.
+Both halves are pinned here so the guarantee cannot be widened or narrowed by
+accident: a duplicate inside the window dedups onto the succeeded job, and a
+failed job leaves the identity free.
 """
 
 from datetime import UTC, datetime, timedelta

@@ -18,6 +18,8 @@ from taskq.connections import (
     DEFAULT_MAX_CACHED_STATEMENT_LIFETIME,
     DEFAULT_STATEMENT_CACHE_SIZE,
     WorkerConnections,
+    bounded_lock_budget_ms,
+    lock_budget_command_timeout_secs,
     statement_cache_kwargs,
 )
 from taskq.settings import TaskQSettings, WorkerSettings
@@ -215,3 +217,60 @@ async def test_statement_cache_kwargs_env_round_trip(
         "statement_cache_size": 1024,
         "max_cached_statement_lifetime": 7200,
     }
+
+
+# ── Enqueue lock budgets vs the pool's per-query bound ────────────────
+
+
+def test_bounded_lock_budget_stands_when_the_pool_has_no_bound() -> None:
+    """A caller-owned pool carries no client-side bound TaskQ can know —
+    the budget must stand as configured, never clamped against a guess."""
+    assert bounded_lock_budget_ms(5000.0, None) == 5000.0
+
+
+def test_bounded_lock_budget_stands_for_an_unbounded_budget() -> None:
+    """A non-positive budget is the operator asking for an unbounded
+    server-side wait (the lock_timeout GUC convention) — the clamp never
+    invents a bound for it."""
+    assert bounded_lock_budget_ms(0.0, 5.0) == 0.0
+    assert bounded_lock_budget_ms(-1.0, 5.0) == -1.0
+
+
+def test_bounded_lock_budget_clamps_to_the_share_of_the_bound() -> None:
+    """The delivered budget fits inside the connection's per-query bound
+    with the share of headroom the refusal needs to unwind first — so the
+    server-side lock_timeout (typed error) fires before the client-side
+    timer (bare TimeoutError)."""
+    assert bounded_lock_budget_ms(5000.0, 5.0) == 4000.0
+    # Under the bound already: unchanged.
+    assert bounded_lock_budget_ms(1000.0, 5.0) == 1000.0
+
+
+def test_lock_budget_command_timeout_floor_at_the_shipped_defaults() -> None:
+    """At the shipped defaults the pool bound IS the floor — a deployment
+    that sets nothing keeps the pre-knob 5 s bound exactly."""
+    assert lock_budget_command_timeout_secs([(5000.0, 5000.0)] * 3, floor_secs=5.0) == 5.0
+
+
+def test_lock_budget_command_timeout_follows_a_widened_budget() -> None:
+    """A budget widened past its shipped default re-derives the bound so
+    the budget occupies the same share of it — the widening is delivered
+    end to end instead of being silently clamped back to the floor."""
+    bound = lock_budget_command_timeout_secs(
+        [(5000.0, 5000.0), (30000.0, 5000.0), (0.0, 5000.0)], floor_secs=5.0
+    )
+    assert bound == 30000.0 / 1000.0 / 0.8 == 37.5
+    # ... and the clamp then delivers the widened budget in full.
+    assert bounded_lock_budget_ms(30000.0, bound) == 30000.0
+    # A sibling left at its default now fits the larger bound unclamped.
+    assert bounded_lock_budget_ms(5000.0, bound) == 5000.0
+
+
+def test_lock_budget_command_timeout_ignores_narrowed_and_unbounded_budgets() -> None:
+    """Narrowing a budget, or setting 0 (unbounded server-side wait),
+    never moves the pool bound: the floor already delivers the narrowed
+    value's clamped share, and an unbounded wait cannot fit inside any
+    finite bound."""
+    assert (
+        lock_budget_command_timeout_secs([(1000.0, 5000.0), (0.0, 5000.0)], floor_secs=5.0) == 5.0
+    )

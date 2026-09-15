@@ -81,6 +81,7 @@ class JobHandle[R: BaseModel | None]:
         self._row = row
         self._result_adapter = result_adapter
         self.was_existing: bool = was_existing
+        self._deduplicated_onto_terminal: bool = was_existing and row.status in TERMINAL_STATUSES
         self._client = client
         self._backend: Backend = backend if backend is not None else client.backend  # pyright: ignore[reportOptionalMemberAccess]  # Why: client is guaranteed non-None when backend is None; the ValueError above ensures at least one is provided
         self._redis_client: "redis_async.Redis | None" = _redis_client  # noqa: UP037  # Why: redis_async is under TYPE_CHECKING; string annotation prevents a runtime import cycle.
@@ -92,6 +93,31 @@ class JobHandle[R: BaseModel | None]:
     def job_id(self) -> JobId:
         """The job's unique id."""
         return self._row.id
+
+    @property
+    def deduplicated_onto_terminal(self) -> bool:
+        """This enqueue deduplicated onto a job that had already finished.
+
+        ``was_existing`` cannot carry this on its own: it is ``True`` for
+        every dedup, and the overwhelmingly common dedup — onto a live
+        pending or running job — is the mechanism working, the whole
+        point of an identity key. The case that needs a signal is the
+        rare one where the match was a job that already reached a
+        terminal state: no worker will pick that work up, and with a long
+        dedup horizon the caller can wait for the rest of the window
+        before anyone notices, because the strand looks exactly like the
+        success until the work was needed.
+
+        Decided from the row the creating call handed back, so learning
+        this costs no second round trip — and frozen there rather than
+        re-read from the live row, because it is a verdict about the
+        enqueue, not about the job's status now: a dedup onto a running
+        job that later finishes was never a strand. It pairs with the
+        ``WARN``-level ``enqueue_deduplicated`` line the backend emits
+        for the same hit: that one is the operator's signal, this one is
+        the caller's.
+        """
+        return self._deduplicated_onto_terminal
 
     @property
     def actor_name(self) -> str:

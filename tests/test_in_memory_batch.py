@@ -763,3 +763,26 @@ class TestInMemoryEnqueueBatchSingletonAtomicity:
             "the call never committed; a later enqueue with the same key would "
             "dedup against a job that does not exist"
         )
+
+    async def test_truthy_non_true_singleton_metadata_does_not_block(self) -> None:
+        """A stored row whose metadata carries a truthy-but-not-``True``
+        ``singleton`` value (``1``) is not a live singleton blocker.
+
+        The singleton stamp is a JSON boolean: Postgres' partial unique
+        index matches ``metadata @> '{"singleton": true}'`` exactly, and
+        the single-enqueue preflights on both backends test ``is True``.
+        A batch preflight that matched on truthiness alone would refuse a
+        batch Postgres admits.
+        """
+        backend = _make_backend()
+        await backend.enqueue(
+            make_enqueue_args(actor="lenient-actor", queue="default", metadata={"singleton": 1})
+        )
+
+        rows = await backend.enqueue_batch([_singleton_args("lenient-actor")])
+
+        assert len(rows) == 1, (
+            "a stored metadata singleton value of 1 (truthy, but not the JSON "
+            "boolean true) blocked a batch singleton item — Postgres' partial "
+            "index matches only jsonb true, so the mirror must not refuse here"
+        )

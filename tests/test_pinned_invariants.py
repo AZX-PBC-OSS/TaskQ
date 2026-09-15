@@ -464,31 +464,39 @@ def _mutating_handlers(tree: ast.AST) -> list[tuple[ast.AsyncFunctionDef, set[st
     return out
 
 
-# ── PIN 5 — unique_for does not dedupe onto terminal jobs ───────────
+# ── PIN 5 — unique_for's window and the succeeded state ─────────────
+#
+# The default ``unique_states`` covers ``succeeded``: the window means
+# "at most one job for this identity in this period", and a succeeded
+# job is the state that says the work already happened — the precise
+# condition the window exists to detect (the default-side behavior is
+# pinned end to end in test_unique_for_window_covers_success.py). The
+# failure states stay out: they mean the work did NOT happen, so
+# matching them would let one transient failure suppress the identity
+# for the rest of the window. What survives from the narrower reading is
+# the explicit opt-out — spelling the three unfinished states keeps the
+# "block only concurrent execution" rule reachable — and that is what
+# this pin guards.
 
 
-async def test_unique_for_does_not_dedupe_onto_a_succeeded_job(
+async def test_unique_for_explicit_unfinished_states_do_not_dedupe_onto_a_succeeded_job(
     clean_jobs_app: JobsApp,
 ) -> None:
-    """PIN: with the default ``unique_states``, a ``unique_for`` enqueue that
-    lands after the prior job SUCCEEDED creates a NEW job — even inside the
-    uniqueness window.
+    """PIN: an explicit ``unique_states=("pending", "scheduled", "running")``
+    keeps the narrower single-flight rule — a ``unique_for`` enqueue that
+    lands after the prior job SUCCEEDED creates a NEW job, even inside the
+    window.
 
-    WHY IT MATTERS: ``EnqueueArgs.unique_states`` defaults to
-    ``("pending", "scheduled", "running")``
-    (``src/taskq/backend/_protocol.py``) — terminal states are deliberately
-    excluded, and ``src/taskq/actor.py`` warns callers about overriding it.
-    This is what makes ``unique_for`` a *single-flight* guard (one in flight
-    at a time) rather than an idempotency key (one ever). Periodic work that
-    re-enqueues the same identity every minute depends on it: fold terminal
-    states in and the second run is silently swallowed for the whole window,
-    with a job handle that looks successful.
-
-    UPCOMING CHANGE THIS PROTECTS AGAINST: work on the idempotency-key dedup
-    path, which (unlike this one) carries NO status predicate. The temptation
-    when unifying the two dedup paths is to give them one shared predicate.
-    If that unification pulls terminal states into the ``unique_for`` path,
-    this test is the thing that says no.
+    WHY IT MATTERS: the narrower set is the documented opt-out for work
+    whose repetition inside the window is safe and intended (e.g. a
+    periodic re-enqueue of the same identity every minute). If the
+    explicit set were dropped from the preflight predicate — or the
+    opt-out silently collapsed into the widened default — that work's
+    second run would be silently swallowed for the whole window, with a
+    job handle that looks successful. (This pin previously asserted the
+    same no-dedup outcome under the DEFAULT set; the default widened to
+    cover ``succeeded`` by deliberate decision, so the pin moved to the
+    explicit set that preserves the behavior.)
     """
     deps: WorkerDeps = clean_jobs_app.deps
     backend: PostgresBackend = clean_jobs_app.backend
@@ -508,9 +516,9 @@ async def test_unique_for_does_not_dedupe_onto_a_succeeded_job(
             scheduled_at=None,
             identity_key=identity,
             unique_for=unique_for,
-            # unique_states deliberately NOT passed: the pin is on the
-            # DEFAULT. Spelling it out here would make this test survive a
-            # widened default and pin only the mechanism, not the contract.
+            # unique_states spelled out deliberately: the pin is on the
+            # explicit narrower set, the opt-out from the widened default.
+            unique_states=("pending", "scheduled", "running"),
         )
 
     first_args = _args()
@@ -544,15 +552,17 @@ async def test_unique_for_does_not_dedupe_onto_a_succeeded_job(
     assert status == "succeeded", f"fixture: expected terminal 'succeeded', got {status!r}"
 
     # THE PIN: still well inside the 15-minute unique_for window, but the
-    # only prior job is terminal — so this must be a NEW job.
+    # only prior job is terminal — and the explicit narrow set does not
+    # cover it — so this must be a NEW job.
     third_args = _args()
     third = await backend.enqueue(third_args)
 
     assert third.id != first.id, (
-        "unique_for deduped onto a SUCCEEDED job. The default unique_states "
-        "excludes terminal states on purpose: unique_for is a single-flight "
-        "guard, not an idempotency key. Periodic re-enqueues of the same "
-        "identity are now silently swallowed for the whole window."
+        "unique_for deduped onto a SUCCEEDED job despite an explicit "
+        "unique_states=('pending', 'scheduled', 'running') — the narrower "
+        "single-flight opt-out collapsed into the widened default. Periodic "
+        "re-enqueues of the same identity are now silently swallowed for "
+        "the whole window."
     )
     assert third.id == third_args.id, "the new enqueue should be a fresh insert"
 
@@ -564,19 +574,22 @@ async def test_unique_for_does_not_dedupe_onto_a_succeeded_job(
     assert int(rows) == 2, f"expected exactly 2 rows for the identity, got {rows}"
 
 
-def test_unique_states_default_excludes_terminal_states() -> None:
-    """PIN: the ``unique_states`` DEFAULT literal is exactly the three
-    non-terminal states.
+def test_unique_states_default_covers_success_excludes_failures() -> None:
+    """PIN: the ``unique_states`` DEFAULT literal covers ``succeeded`` and
+    excludes the failure states.
 
-    WHY IT MATTERS: the behavioural pin above proves the runtime consequence;
-    this pins the declaration itself, so a change to the default is a failure
-    at the definition site with no PG required. The set is spelled out rather
-    than derived — the whole point is that adding ``succeeded``/``failed``/
-    ``cancelled`` must be a conscious, reviewed edit.
-
-    UPCOMING CHANGE THIS PROTECTS AGAINST: the idempotency-key dedup work
-    (that path has no status predicate); a shared predicate between the two
-    dedup paths would most naturally land as a widened default here.
+    WHY IT MATTERS: the behavioural pin for the runtime consequence lives
+    in test_unique_for_window_covers_success.py; this pins the declaration
+    itself, so a change to the default is a failure at the definition site
+    with no PG required. The set is spelled out rather than derived — the
+    whole point is that adding or removing a state must be a conscious,
+    reviewed edit. ``succeeded`` belongs: it is the state that says the
+    work already happened, the precise condition the window exists to
+    detect. ``failed``/``cancelled`` do not: they mean the work did NOT
+    happen, so covering them would let one failure suppress the identity
+    for the rest of the window. (This pin previously asserted the narrower
+    three-state literal; the default deliberately widened to cover
+    success.)
     """
     # Why dataclasses.fields rather than the class attribute: EnqueueArgs is a
     # slotted dataclass, so `EnqueueArgs.unique_states` is the slot descriptor,
@@ -589,8 +602,7 @@ def test_unique_states_default_excludes_terminal_states() -> None:
         f"exists to guard (got {default!r})"
     )
 
-    assert default == ("pending", "scheduled", "running")
-    assert "succeeded" not in default
+    assert default == ("pending", "scheduled", "running", "succeeded")
     assert "failed" not in default
     assert "cancelled" not in default
 
