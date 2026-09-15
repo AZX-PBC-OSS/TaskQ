@@ -27,15 +27,22 @@ running   → scheduled (Snooze or RetryAfter with future scheduled_at)
 | Status | Meaning |
 |---|---|
 | `pending` | Waiting in the queue; eligible for dispatch. |
-| `scheduled` | Enqueued with a future `scheduled_at`; not yet eligible. |
+| `scheduled` | Enqueued with a future `scheduled_at`; not yet eligible. Also the shape of an interrupted job whose hold has not elapsed (see below). |
 | `running` | Claimed by a worker; actor is executing. |
 | `succeeded` | Actor returned successfully; result stored. |
 | `failed` | Actor raised an unhandled exception and retry budget is exhausted, or `DeadlineExceeded`. |
 | `cancelled` | Cancelled before or during execution. |
 | `crashed` | Worker process died mid-execution (SIGKILL, OOM, etc.). |
-| `abandoned` | Heartbeat expired and no worker reclaimed the job within the lock lease window. |
+| `abandoned` | An operator's cancel request escalated and the actor did not exit within `cancellation_grace_period + cleanup_grace_period`. Never produced by a worker shutdown — a deploy releases the job back to the fleet instead. |
 
 Terminal statuses (`succeeded`, `failed`, `cancelled`, `crashed`, `abandoned`) have no further transitions.
+
+**Interruptions.** A graceful shutdown that reaches a still-running job releases it: the row
+returns to `pending` (or `scheduled` behind the remaining termination budget when the actor never
+unwound) with the claim's `attempt` increment refunded — infrastructure events never spend a job's
+budget. The row's `interrupt_count` column counts how often this has happened, and each release
+writes one `job_events` transition with `reason = 'interrupted'`. An operator cancel in flight
+when the deploy lands still wins the row.
 
 **Archival lifecycle.** After a terminal job's per-status retention period elapses (default: 30–90 days depending on status), the maintenance leader's prune sweep moves it from `jobs` to `jobs_archive`. After the archive retention period elapses (default: 1 year), the archive expiry sweep hard-deletes the row. The admin UI job-detail page follows this chain automatically. See [Configuration](configuration.md) for retention settings.
 
@@ -471,7 +478,7 @@ containment filter) and returns aggregated counts:
 | `failed` | `int` | Jobs that exhausted retries. |
 | `cancelled` | `int` | Cancelled jobs. |
 | `crashed` | `int` | Jobs that crashed without a clean failure. |
-| `abandoned` | `int` | Jobs abandoned after heartbeat timeout. |
+| `abandoned` | `int` | Jobs abandoned after an operator cancel outlasted the grace periods. |
 | `is_complete` | `bool` (computed) | `True` when `pending == 0`. |
 
 ```python

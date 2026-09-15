@@ -71,6 +71,7 @@ COPY_FROM_COLUMNS: Final[tuple[str, ...]] = (
     "tags",
     "snooze_count",
     "rate_limit_blocked_count",
+    "interrupt_count",
 )
 
 # Column list for the enqueue COPY path only.  Every omitted column is
@@ -91,6 +92,7 @@ _COPY_ENQUEUE_OMITTED: Final[frozenset[str]] = frozenset(
         "result_expires_at",
         "snooze_count",
         "rate_limit_blocked_count",
+        "interrupt_count",
     }
 )
 COPY_ENQUEUE_COLUMNS: Final[tuple[str, ...]] = tuple(
@@ -104,6 +106,24 @@ COPY_ENQUEUE_COLUMNS: Final[tuple[str, ...]] = tuple(
 _MIN_DEFERRAL_INTERVAL_SQL: Final[str] = (
     f"interval '{MIN_DEFERRAL_INTERVAL.total_seconds()} seconds'"
 )
+
+# The non-consuming release's attempt refund, ONE fragment shared by every
+# release arm that hands back an attempt the actor did not finish on its
+# own terms: mark_snoozed's 'snoozed'/'unavailable' arm,
+# mark_retry_after_consume_false's snoozed arm, mark_interrupted's release
+# arm, and the shutdown drain's hand-back (worker/shutdown.py imports this
+# constant). Dispatch stamps ``attempt = j.attempt + 1`` at claim
+# (backend/_dispatch_sql.py); a release that executed nothing returns the
+# increment, floored at 0. The refund revisits an attempt number, which is
+# collision-safe: a non-terminal release writes no job_attempts row, so the
+# PK (job_id, attempt) is never revisited by a writer (see the mark_snoozed
+# comment block below for the full argument). Vendor precedent for the
+# shape: Oban ``inc: [attempt: -1]``, River ``max(attempt-1, 0)``
+# (vendor/river/internal/jobexecutor/job_executor.go's softStopped branch),
+# graphile-worker-rs ``GREATEST(0, attempts - 1)``.
+# The reference is alias-qualified (``j.``): every consumer of the fragment
+# aliases its target table ``j``.
+_ATTEMPT_REFUND_SQL: Final[str] = "GREATEST(j.attempt - 1, 0)"
 
 
 @dataclass(frozen=True, slots=True)
@@ -119,6 +139,7 @@ class SqlTemplates:
     mark_snoozed: str
     mark_retry_after_consume_true: str
     mark_retry_after_consume_false: str
+    mark_interrupted: str
 
     # ── Shared INSERT templates ────────────────────────────────────
     insert_attempt_explicit: str
@@ -661,8 +682,9 @@ snoozed AS (
         -- 'unavailable' rides the 'snoozed' refund: the store's failure
         -- to answer is not an execution, so the claim's attempt
         -- increment is returned exactly as an actor-requested deferral
-        -- returns it.
-        attempt = CASE WHEN $7::text = 'snoozed' OR $9::text = 'unavailable' THEN GREATEST(j.attempt - 1, 0) ELSE j.attempt END,
+        -- returns it. The refund expression is the shared
+        -- _ATTEMPT_REFUND_SQL fragment (module header).
+        attempt = CASE WHEN $7::text = 'snoozed' OR $9::text = 'unavailable' THEN {_ATTEMPT_REFUND_SQL} ELSE j.attempt END,
         snooze_count = CASE WHEN $7::text = 'snoozed' THEN j.snooze_count + 1 ELSE j.snooze_count END,
         rate_limit_blocked_count = CASE WHEN $7::text IN ('reservation_denied', 'rate_limit_denied') THEN j.rate_limit_blocked_count + 1 ELSE j.rate_limit_blocked_count END,
         metadata = j.metadata || COALESCE((SELECT metadata_update FROM params), '{{}}'::jsonb),
@@ -949,7 +971,7 @@ snoozed AS (
         last_heartbeat_at = NULL,
         cancel_phase = 0,
         cancel_requested_at = NULL,
-        attempt = GREATEST(j.attempt - 1, 0),
+        attempt = {_ATTEMPT_REFUND_SQL},
         snooze_count = j.snooze_count + 1,
         progress_seq = (SELECT progress_seq FROM params),
         progress_state = CASE WHEN (SELECT progress_state FROM params) IS NOT NULL THEN COALESCE(j.progress_state, '{{}}'::jsonb) || (SELECT progress_state FROM params) ELSE j.progress_state END
@@ -1005,6 +1027,156 @@ deadline_evt AS (
     FROM deadline_failed d
 )
 SELECT * FROM snoozed
+UNION ALL SELECT * FROM deadline_failed""",
+        # mark_interrupted releases a RUNNING attempt the worker cannot
+        # finish because the process is going away (graceful shutdown past
+        # its graces). It is the non-consuming release of a *started*
+        # attempt: the claim's increment is refunded through the shared
+        # _ATTEMPT_REFUND_SQL fragment, no job_attempts row is written (an
+        # interruption is not an execution outcome — the same reasoning as
+        # the snooze/denial arms above), one job_events state_change with
+        # reason 'interrupted' records the transition, and interrupt_count
+        # bumps on the row (the same row-counter doctrine as
+        # snooze_count / rate_limit_blocked_count, 01.00.08_01). Vendor
+        # shape: River's soft-stop branch —
+        # vendor/river/internal/jobexecutor/job_executor.go
+        # (`isSoftStopCancelError` distinguishes the stop by the context's
+        # cause, not the error type; the softStopped branch calls
+        # JobSetStateInterrupted with `max(attempt-1, 0)`) and
+        # vendor/river/riverdriver/river_driver_interface.go
+        # (`JobSetStateInterrupted`: state available, reason interrupted).
+        #
+        # Two arms, exhaustive over every fenced row:
+        #   released        — the release itself. hold > 0 parks the row
+        #                     'scheduled' until the releasing process is
+        #                     provably gone (a row released while its
+        #                     coroutine may still be alive in this process
+        #                     must not be claimable elsewhere until then);
+        #                     hold = 0 lands 'pending' at the head of the
+        #                     order — the row is genuinely free and the
+        #                     actor is gone, so the non-consuming deferral
+        #                     floor applies only to a real hold, never to
+        #                     the zero case (River's interrupted job is
+        #                     available immediately).
+        #   deadline_failed — the hold would push the row past its
+        #                     schedule_to_close: the job fails on the
+        #                     deadline like every deferral arm's deadline
+        #                     exit, never parked past it into a state
+        #                     nothing terminalises.
+        #
+        # The fence carries `cancel_phase = 0` beside the ownership and
+        # attempt-epoch conjuncts: an operator cancel in flight WINS over
+        # the infrastructure interruption (the call returns no row and the
+        # caller routes to the cancel ladder). River resolves the same
+        # collision the same way — river_job.sql's JobSetStateIfRunningMany
+        # terminalises as 'cancelled', never 'available', when the row
+        # carries cancel_attempted_at. The cancel columns are reset on
+        # release exactly as mark_retry's arm does (the next attempt must
+        # not inherit a phase); the fence guarantees they were already 0,
+        # so an operator's audit columns are never wiped.
+        #
+        # progress_seq is GREATEST-merged, not assigned: the release can
+        # race the still-running actor's last flush, and a caller without
+        # the coalesced buffer (the shutdown orchestrator passes 0) must
+        # never regress the row's progress epoch.
+        mark_interrupted=f"""\
+WITH params AS (
+    SELECT $1::uuid AS job_id,
+           $2::uuid AS worker_id,
+           $3::int AS attempt,
+           -- A positive hold is floored at the non-consuming deferral
+           -- floor (the mark_snoozed params comment names the
+           -- slot-monopolisation hazard); a zero hold stays zero so the
+           -- release lands pending immediately.
+           CASE WHEN $4::interval > interval '0'
+                THEN GREATEST($4::interval, {_MIN_DEFERRAL_INTERVAL_SQL})
+                ELSE interval '0' END AS effective_hold,
+           $5::int AS progress_seq,
+           $6::jsonb AS progress_state
+),
+released AS (
+    UPDATE "{s}".jobs j
+    SET status = CASE WHEN (SELECT effective_hold FROM params) > interval '0'
+                      THEN 'scheduled'::"{s}".job_status ELSE 'pending'::"{s}".job_status END,
+        scheduled_at = clock_timestamp() + (SELECT effective_hold FROM params),
+        finished_at = NULL,
+        locked_by_worker = NULL,
+        lock_expires_at = NULL,
+        last_heartbeat_at = NULL,
+        cancel_phase = 0,
+        cancel_requested_at = NULL,
+        attempt = {_ATTEMPT_REFUND_SQL},
+        interrupt_count = j.interrupt_count + 1,
+        progress_seq = GREATEST(j.progress_seq, (SELECT progress_seq FROM params)),
+        progress_state = CASE WHEN (SELECT progress_state FROM params) IS NOT NULL
+                              THEN COALESCE(j.progress_state, '{{}}'::jsonb) || (SELECT progress_state FROM params)
+                              ELSE j.progress_state END
+    WHERE j.id = (SELECT job_id FROM params)
+      AND j.status = 'running'
+      AND j.locked_by_worker = (SELECT worker_id FROM params)
+      AND j.attempt = (SELECT attempt FROM params)
+      AND j.cancel_phase = 0
+      AND (j.schedule_to_close IS NULL
+           OR clock_timestamp() + (SELECT effective_hold FROM params) <= j.schedule_to_close)
+    RETURNING j.*, 'released'::text AS outcome_branch, clock_timestamp() AS now_ts
+),
+deadline_failed AS (
+    UPDATE "{s}".jobs j
+    SET status = 'failed',
+        finished_at = clock_timestamp(),
+        error_class = 'DeadlineExceeded',
+        error_message = 'schedule_to_close reached before next dispatch',
+        error_traceback = NULL,
+        locked_by_worker = NULL,
+        lock_expires_at = NULL,
+        last_heartbeat_at = NULL,
+        progress_seq = GREATEST(j.progress_seq, (SELECT progress_seq FROM params)),
+        progress_state = CASE WHEN (SELECT progress_state FROM params) IS NOT NULL
+                              THEN COALESCE(j.progress_state, '{{}}'::jsonb) || (SELECT progress_state FROM params)
+                              ELSE j.progress_state END
+    WHERE j.id = (SELECT job_id FROM params)
+      AND j.status = 'running'
+      AND j.locked_by_worker = (SELECT worker_id FROM params)
+      AND j.attempt = (SELECT attempt FROM params)
+      AND j.cancel_phase = 0
+      AND j.schedule_to_close IS NOT NULL
+      AND clock_timestamp() + (SELECT effective_hold FROM params) > j.schedule_to_close
+      AND NOT EXISTS (SELECT 1 FROM released)
+    RETURNING j.*, 'deadline_failed'::text AS outcome_branch, clock_timestamp() AS now_ts
+),
+holder AS (
+    SELECT id FROM "{s}".workers WHERE id = $2 FOR KEY SHARE
+),
+released_evt AS (
+    INSERT INTO "{s}".job_events
+    (job_id, occurred_at, kind, detail)
+    SELECT r.id, clock_timestamp(), 'state_change',
+           jsonb_build_object('from_state', 'running', 'to_state', r.status::text,
+                              'reason', 'interrupted',
+                              'worker_id', $2::text,
+                              'hold_seconds', EXTRACT(EPOCH FROM (SELECT effective_hold FROM params)))
+    FROM released r
+),
+deadline_att AS (
+    INSERT INTO "{s}".job_attempts
+    (job_id, attempt, started_at, finished_at, outcome,
+     error_class, error_message, error_traceback, duration_ms, worker_id, metadata)
+    SELECT d.id, d.attempt, d.started_at, clock_timestamp(), 'failed',
+           'DeadlineExceeded', 'schedule_to_close reached before next dispatch', NULL,
+           trunc(EXTRACT(EPOCH FROM (d.finished_at - d.started_at)) * 1000)::int,
+           (SELECT id FROM holder), '{{}}'::jsonb
+    FROM deadline_failed d
+),
+deadline_evt AS (
+    INSERT INTO "{s}".job_events
+    (job_id, occurred_at, kind, detail)
+    SELECT d.id, clock_timestamp(), 'state_change',
+           jsonb_build_object('from_state', 'running', 'to_state', 'failed',
+                              'error_class', 'DeadlineExceeded',
+                              'worker_id', $2::text)
+    FROM deadline_failed d
+)
+SELECT * FROM released
 UNION ALL SELECT * FROM deadline_failed""",
         # ── Shared INSERT templates ────────────────────────────────
         # Same holder-CTE idiom as INSERT_ATTEMPT_SQL (see _sql.py for the

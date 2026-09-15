@@ -271,7 +271,8 @@ class _ChaosPool:
 
 
 async def test_cooperative_cancel(pg_dsn: str) -> None:
-    """End-to-end cooperative cancel."""
+    """End-to-end cooperative cancel: the actor observes the request and
+    abandons the attempt by raising — the row terminalises as cancelled."""
     worker_id = new_uuid()
     async with _test_infra(pg_dsn, worker_id) as (deps, backend, settings):
         client = JobsClient(backend)
@@ -284,7 +285,9 @@ async def test_cooperative_cancel(pg_dsn: str) -> None:
             while not ctx.cancellation_requested:  # noqa: ASYNC110 # Why: intentional poll loop checking cancellation_requested; observable test behaviour
                 await asyncio.sleep(0.01)
             cancel_seen.set()
-            return "exit"
+            # Abandoning the unit of work is signalled by raising, never by
+            # returning: an actor that returns a value has succeeded.
+            raise asyncio.CancelledError
 
         actor_config = StubActorConfig(retry=RetryPolicy(kind="non_retryable", max_attempts=1))
 
@@ -311,7 +314,10 @@ async def test_cooperative_cancel(pg_dsn: str) -> None:
                 await asyncio.sleep(0.15)
                 result = await client.cancel(job_id)
                 assert result.cancellation_initiated is True
-                await asyncio.wait_for(consumer_task, timeout=5.0)
+                # The actor abandons by raising; consume_one_job re-raises
+                # the CancelledError after the terminal write.
+                with contextlib.suppress(asyncio.CancelledError):
+                    await asyncio.wait_for(consumer_task, timeout=5.0)
             finally:
                 if not consumer_task.done():
                     consumer_task.cancel()

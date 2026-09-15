@@ -18,12 +18,14 @@ frequency silently becomes the retry budget.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from datetime import UTC, datetime, timedelta
 
 import pytest
 
 from taskq._ids import new_base62
 from taskq.backend._protocol import JobId
+from taskq.testing.assertions import wait_for_condition
 from tests._fleet import Fleet, FleetPayload, fleet_actor_config, open_fleet
 
 pytestmark = pytest.mark.integration
@@ -396,6 +398,151 @@ async def test_concurrent_pods_cannot_both_finish_the_same_job(pg_dsn: str) -> N
             f"the job reads as {status!r} after a stale pod's terminal write; the live "
             "pod still holds it and has not finished, so the queue is now reporting an "
             "outcome for work that is still in progress."
+        )
+
+
+@pytest.mark.slow
+async def test_rolling_deploy_interrupts_running_jobs_and_the_fleet_finishes_them(
+    pg_dsn: str,
+) -> None:
+    """A pod stopped with actors mid-flight hands every one back — refunded,
+    held until the pod is gone, and finished by the fleet exactly once.
+
+    Eight jobs run on one pod, every actor slower than the grace periods —
+    the ordinary shape of a rolling deploy under load. The deploy must not
+    terminalise any of them (no ``cancelled``/``abandoned``/``crashed``),
+    must not spend their budget (each completes on its first spent
+    attempt), and must not let the surviving pod claim a held row before
+    the departing pod is provably gone. The interruption is counted on
+    each row, so a week of deploys is visible as deploys, not as the
+    jobs' own failures.
+    """
+    schema = f"fleet_interrupt_{new_base62()}".lower()
+    async with open_fleet(
+        pg_dsn,
+        schema=schema,
+        pods=("pod-1", "pod-2"),
+        actors=((_ACTOR, _QUEUE),),
+    ) as fleet:
+        job_ids = await fleet.enqueue(8, actor=_ACTOR, queue=_QUEUE, max_attempts=3)
+
+        departing = fleet.pod("pod-1")
+        claimed = await departing.claim([_QUEUE], 8)
+        assert len(claimed) == 8
+
+        started: dict[str, asyncio.Event] = {
+            str(row.payload["marker"]): asyncio.Event() for row in claimed
+        }
+        release_actors = asyncio.Event()
+        first_pod_runs: list[str] = []
+
+        async def slow_work(payload: FleetPayload, _ctx: object) -> object:
+            """Longer than both graces; swallows the forced cancel and parks.
+
+            This is not a misbehaving actor — it is the export/report/shape
+            of work that simply cannot finish inside a deploy's grace
+            window. The zombie's late return after the release must not
+            move the released row (the attempt epoch it carries is stale).
+            """
+            started[payload.marker].set()
+            first_pod_runs.append(payload.marker)
+            with contextlib.suppress(asyncio.CancelledError):
+                await asyncio.sleep(300)
+            await release_actors.wait()
+            return {"done": True}
+
+        tasks = [
+            departing.start(job, slow_work, actor_config=fleet_actor_config()) for job in claimed
+        ]
+        try:
+            # Every actor is mid-flight before the deploy lands.
+            await wait_for_condition(
+                lambda: departing.deps.active_jobs.count() == 8,
+                description="all 8 jobs registered as in-flight on the departing pod",
+                timeout=10.0,
+            )
+
+            exit_code = await fleet.stop_pod("pod-1", graceful=True)
+            assert exit_code == 0
+
+            assert await fleet.rows_locked_by(departing.worker_id) == [], (
+                "rows remain locked to a pod that has exited"
+            )
+
+            states = await fleet.job_states()
+            assert all(states[jid] == "scheduled" for jid in job_ids), (
+                "every interrupted row must be released behind the hold, not "
+                f"terminalised or left running: {states}"
+            )
+
+            rows = await fleet.fetch(
+                'SELECT id, attempt, interrupt_count, scheduled_at FROM "{schema}".jobs'
+            )
+            by_id = {row["id"]: row for row in rows}
+            for jid in job_ids:
+                assert by_id[jid]["attempt"] == 0, (
+                    "the claim's attempt increment was not refunded at release — "
+                    "the deploy spent budget on work it interrupted"
+                )
+                assert by_id[jid]["interrupt_count"] == 1
+            assert all(by_id[jid]["scheduled_at"] > datetime.now(UTC) for jid in job_ids), (
+                "held rows must not be due while the departing pod may still be alive"
+            )
+
+            # The surviving pod cannot claim held rows before the hold
+            # elapses — never two runners for one row.
+            survivor = fleet.pod("pod-2")
+            early = await survivor.claim([_QUEUE], 8)
+            assert early == [], "pod-2 claimed a row whose departing pod may still be running it"
+        finally:
+            # The interrupted actors' late writes race the released rows and
+            # lose (the refund moved the attempt epoch); join them quietly.
+            release_actors.set()
+            for task in tasks:
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await task
+
+        # The hold elapses (served on the row, as the suite's other deferral
+        # choreography does, rather than by sleeping through it) and the
+        # leader's promotion tick hands the rows to the fleet.
+        await fleet.fetch(
+            "UPDATE \"{schema}\".jobs SET scheduled_at = $1 WHERE status = 'scheduled'",
+            datetime.now(UTC) - timedelta(seconds=1),
+        )
+        survivor = fleet.pod("pod-2")
+        promoted = await survivor.backend.scheduled_to_pending()
+        assert promoted == 8
+
+        completed: list[str] = []
+
+        claimed_back = await survivor.claim([_QUEUE], 8)
+        assert {row.id for row in claimed_back} == set(job_ids), (
+            "the surviving pod could not re-claim the interrupted jobs once their holds elapsed"
+        )
+        for row in claimed_back:
+            assert row.attempt == 1, (
+                "the re-claim lands on the refunded epoch — the interruption cost the job no budget"
+            )
+
+        async def finish(payload: FleetPayload, _ctx: object) -> object:
+            completed.append(payload.marker)
+            return {"done": True}
+
+        for row in claimed_back:
+            outcome = await survivor.run(row, finish, actor_config=fleet_actor_config())
+            assert outcome == "succeeded"
+
+        states = await fleet.job_states()
+        for jid in job_ids:
+            assert states[jid] == "succeeded", (
+                f"the interrupted job finished {states[jid]!r} — the fleet must "
+                "complete what the deploy interrupted"
+            )
+        assert sorted(completed) == sorted(row.payload["marker"] for row in claimed_back), (
+            "each interrupted job ran exactly once after the deploy"
+        )
+        assert sorted(first_pod_runs) == sorted(row.payload["marker"] for row in claimed), (
+            "each interrupted job's first run was on the departed pod (the scenario's premise)"
         )
 
 

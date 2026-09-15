@@ -452,7 +452,7 @@ All conditions must pass for the response to be `200`. During any shutdown phase
 }
 ```
 
-`shutdown_phase` is `null` when `NONE`; otherwise the integer value (1=DRAINING, 2=CANCELLING, 3=FORCING, 4=ABANDONING).
+`shutdown_phase` is `null` when `NONE`; otherwise the integer value (1=DRAINING, 2=CANCELLING, 3=FORCING, 4=RELEASING).
 
 **Exit codes:**
 

@@ -58,8 +58,10 @@ spec:
           annotations:
             summary: "TaskQ abandoned jobs detected"
             description: >-
-              Any abandoned job is concerning — it means a worker died during
-              shutdown phase 4 (ABANDONING) without cleaning up. Inspect
+              Any abandoned job is concerning — it means an operator-requested
+              cancel outlasted the grace periods (the actor never exited).
+              Shutdowns never produce abandoned: a deploy releases
+              (interrupts) in-flight jobs back to the fleet instead. Inspect
               job_attempts with outcome=abandoned.
 
         - alert: TaskQLockExpiringSoon

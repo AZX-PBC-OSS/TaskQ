@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import threading
 from dataclasses import dataclass, field
+from enum import IntEnum
 from typing import TYPE_CHECKING
 from uuid import UUID
 
@@ -28,7 +29,29 @@ if TYPE_CHECKING:
     from taskq.progress._buffer import _ProgressBuffer
     from taskq.settings import WorkerSettings
 
-__all__ = ["JobContext"]
+__all__ = ["CancelOrigin", "JobContext"]
+
+
+class CancelOrigin(IntEnum):
+    """Who asked for the running attempt's cancellation.
+
+    The terminal routing for a cancelled attempt keys on the ORIGIN, not on
+    the exception type (a deploy and an operator cancel both surface as
+    ``CancelledError``) — River's ``isSoftStopCancelError`` makes the same
+    distinction through the context's cause
+    (``vendor/river/internal/jobexecutor/job_executor.go``).
+
+    NONE     — no cancel has been signalled.
+    OPERATOR — the row's ``cancel_requested_at`` was observed (the heartbeat
+               cancel poll), or the orchestrator's escalation probe found
+               the row already under an operator cancel.
+    SHUTDOWN — the shutdown orchestration (SIGTERM / drain monitor) asked.
+    """
+
+    NONE = 0
+    OPERATOR = 1
+    SHUTDOWN = 2
+
 
 _log: structlog.stdlib.BoundLogger = structlog.get_logger(__name__)
 
@@ -73,6 +96,7 @@ class JobContext[P: BaseModel]:
     span: Span | None = None
     cancel_event: asyncio.Event = field(default_factory=asyncio.Event)
     _abort_requested: threading.Event = field(default_factory=threading.Event)
+    _cancel_origin: CancelOrigin = CancelOrigin.NONE
     _progress_buffers: dict[UUID, _ProgressBuffer] | None = None
     _redis_client: redis_async.Redis | None = None  # type: ignore[type-arg]  # Why: redis-py stubs expose Redis as an unparameterised generic; type arg cannot be supplied without a stubs update.
     _worker_settings: WorkerSettings | None = None
@@ -82,6 +106,33 @@ class JobContext[P: BaseModel]:
     @property
     def cancellation_requested(self) -> bool:
         return self.cancel_event.is_set()
+
+    @property
+    def cancel_origin(self) -> CancelOrigin:
+        """Who asked for this attempt's cancellation.
+
+        Read it alongside :attr:`cancellation_requested` when the two
+        answers differ in what the actor should do: on a shutdown
+        (:attr:`CancelOrigin.SHUTDOWN`) the attempt is released back to the
+        fleet with its budget refunded, so an actor that can checkpoint
+        should prefer to stash progress and raise rather than return a
+        partial result; on an operator cancel
+        (:attr:`CancelOrigin.OPERATOR`) the job terminalises, so returning
+        the partial result is the only way to keep it.
+        """
+        return self._cancel_origin
+
+    def _set_cancel_origin(self, origin: CancelOrigin) -> None:
+        """Stamp the cancel origin. Called by the cancel controller and the
+        shutdown orchestrator alongside ``cancel_event.set()`` — never by
+        actor code.
+
+        ``object.__setattr__`` because the dataclass is frozen: the origin
+        is process state that arrives AFTER construction (the registry
+        entry's), exactly as the ``cancel_event``/``_abort_requested``
+        fields mutate through their own methods rather than assignment.
+        """
+        object.__setattr__(self, "_cancel_origin", origin)
 
     def check_cancelled(self) -> None:
         if self.cancel_event.is_set():

@@ -150,6 +150,11 @@ _PINNED_BY_TEST: dict[str, tuple[str, str, bool]] = {
         "test_in_memory_progress_state_with_nul_raises_value_error",
         False,
     ),
+    "mark_interrupted": (  # progress_state flows through _merge_progress; returns str literal
+        "tests.test_terminal_result_serialization",
+        "test_in_memory_progress_state_with_nul_raises_value_error",
+        False,
+    ),
 }
 
 #: Seams probed behaviourally in this file (below). ``get`` is the read-back

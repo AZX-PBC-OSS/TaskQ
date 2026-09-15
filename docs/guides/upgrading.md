@@ -554,6 +554,50 @@ a bound, not a counter). Two behaviours follow from that:
   of a future deadline: a consuming retry is a real execution, so its
   budget exhaustion ends the job, deadline or no deadline.
 
+### Graceful shutdown interrupts — it no longer terminalises in-flight work
+
+> **Unreleased.** Behaviour change with one additive pre migration
+> (`01.00.12_02_pre_job_interrupt_count.sql` — apply it before rolling
+> the code, as with every `pre` file).
+
+When a deploy's grace windows expire with a job still running, the worker
+no longer writes a terminal state for it. The job is *interrupted*:
+released back to the fleet as `pending` (actor unwound on the cancel) or
+`scheduled` behind the remaining `TASKQ_TERMINATION_GRACE_PERIOD` budget
+(actor never unwound — the row stays unclaimable until the exiting process
+is provably gone; with `TASKQ_WATCHDOG_ENABLED=false` the hold is
+`TASKQ_LOCK_LEASE`). The claim's `attempt` increment is refunded — the
+same idiom the snooze/denial arms use — so a deploy no longer spends a
+job's retry budget, and a job interrupted on every deploy is rescheduled
+until it finishes or its `schedule_to_close` fails it with
+`DeadlineExceeded`. The release writes one `job_events` transition with
+`reason = 'interrupted'` and bumps the new `interrupt_count` column on the
+row; `taskq.jobs.interrupted{actor,hold}` and
+`taskq.jobs.interrupted_noop` are the OTEL counters.
+
+What to audit:
+
+* **`abandoned` now means "operator cancel".** A graceful shutdown never
+  produces `cancelled` or `abandoned` for infrastructure reasons; any
+  alert or dashboard that reads those statuses as deploy noise should now
+  treat them as operator intent. (The abandoned-jobs alert is purely an
+  operator-cancel signal now.)
+* **Actors that return early on cancel persist that result.** A cancel
+  request — operator or deploy — no longer overrides an actor that
+  returns a value: returning records `succeeded` and keeps the result.
+  Actors that must not keep a partial result on a deploy should read
+  `ctx.cancel_origin` and re-raise on `SHUTDOWN` (see
+  [cancellation.md](cancellation.md#shutdown-is-not-an-operator-cancel-ctxcancel_origin)).
+* **The phase-4 name changed.** `ShutdownPhase.ABANDONING` is now
+  `ShutdownPhase.RELEASING` — the integer value `4` is unchanged, so
+  `/health` JSON and the CLI keep their numbers, but the `phase="RELEASING"`
+  log string and any code importing the old enum member must move.
+* **Long actors re-run from scratch on every deploy.** Anything longer
+  than `cancellation_grace_period + cleanup_grace_period` is interrupted
+  and re-claimed repeatedly; bound such actors with `schedule_to_close`
+  or checkpoint via progress state (the released row carries the last
+  checkpoint).
+
 ---
 
 ## Silent behaviour changes

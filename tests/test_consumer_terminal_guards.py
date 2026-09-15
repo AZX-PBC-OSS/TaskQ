@@ -15,6 +15,7 @@ assertion that depended on their *shape*:
 """
 
 import asyncio
+from contextlib import suppress
 from datetime import UTC, datetime
 from types import TracebackType
 from typing import Self
@@ -270,6 +271,14 @@ async def test_transactional_terminal_write_retires_the_progress_buffer() -> Non
 
 
 async def _cancelled_write(*, report_progress: bool) -> dict[str, object]:
+    """Drive the consumer's cancel-write path (an actor that abandons by
+    raising ``CancelledError``) and return the recorded write.
+
+    The actor signals abandonment by raising, never by returning — an actor
+    that returns under a cancel request has succeeded and takes the success
+    path instead (that contract lives in
+    ``tests/test_cooperative_cancel_outcome.py``).
+    """
     active_jobs = ActiveJobRegistry()
     backend = FakeBackend()
     clock: Clock = FakeClock(_NOW)
@@ -288,19 +297,20 @@ async def _cancelled_write(*, report_progress: bool) -> dict[str, object]:
         entry = active_jobs.get(running.id)
         assert entry is not None
         entry.cancel_phase = CancelPhase.COOPERATIVE
-        return {"ok": True}
+        raise asyncio.CancelledError
 
-    await consume_one_job(
-        as_backend(backend),
-        job,
-        _WORKER_ID,
-        deps=deps,
-        run_actor=actor,
-        actor_config=default_actor_config(),
-        payload_type=EmptyPayload,
-        clock=clock,
-        active_jobs=active_jobs,
-    )
+    with suppress(asyncio.CancelledError):
+        await consume_one_job(
+            as_backend(backend),
+            job,
+            _WORKER_ID,
+            deps=deps,
+            run_actor=actor,
+            actor_config=default_actor_config(),
+            payload_type=EmptyPayload,
+            clock=clock,
+            active_jobs=active_jobs,
+        )
 
     assert len(backend.mark_cancelled_calls) == 1
     return backend.mark_cancelled_calls[0]
@@ -620,8 +630,9 @@ async def test_fenced_cancel_write_does_not_publish_a_terminal_event() -> None:
     ``mark_cancelled`` is fenced the same way the success write is and
     returns ``False`` on the same reclaim race. The retry and failure
     handler already gates its publish on the write's own result, refusing
-    to announce a move the row never made. The cooperative-cancel branch
-    of the autonomous path owes subscribers the same honesty: a
+    to announce a move the row never made. The consumer's cancel branch —
+    reached when the actor abandons its unit of work by raising
+    ``CancelledError`` — owes subscribers the same honesty: a
     ``terminal=True`` ``status="cancelled"`` event for a row that another
     worker is still running tells every progress subscriber, and anything
     downstream of the stream, that the job is finished when it is not.
@@ -636,21 +647,22 @@ async def test_fenced_cancel_write_does_not_publish_a_terminal_event() -> None:
         entry = active_jobs.get(running.id)
         assert entry is not None
         entry.cancel_phase = CancelPhase.COOPERATIVE
-        return {"ok": True}
+        raise asyncio.CancelledError
 
-    await consume_one_job(
-        as_backend(backend),
-        job,
-        _WORKER_ID,
-        run_actor=actor,
-        actor_config=default_actor_config(),
-        payload_type=EmptyPayload,
-        clock=clock,
-        active_jobs=active_jobs,
-        redis_client=redis_client,  # pyright: ignore[reportArgumentType]  # Why: the parameter is typed redis.asyncio.Redis; _RecordingRedis supplies the pipeline()/publish() surface the publisher uses.
-        settings=_settings(),
-        transaction_conn=None,
-    )
+    with suppress(asyncio.CancelledError):
+        await consume_one_job(
+            as_backend(backend),
+            job,
+            _WORKER_ID,
+            run_actor=actor,
+            actor_config=default_actor_config(),
+            payload_type=EmptyPayload,
+            clock=clock,
+            active_jobs=active_jobs,
+            redis_client=redis_client,  # pyright: ignore[reportArgumentType]  # Why: the parameter is typed redis.asyncio.Redis; _RecordingRedis supplies the pipeline()/publish() surface the publisher uses.
+            settings=_settings(),
+            transaction_conn=None,
+        )
 
     assert len(backend.mark_cancelled_calls) == 1, "fixture broken: cancel write not attempted"
     terminal_cancels = [
@@ -789,13 +801,14 @@ class _FencedTxCancelBackend(_TxFakeBackend):
 async def test_fenced_transactional_cancel_does_not_publish_a_terminal_event() -> None:
     """The transactional cancel branch must respect its fence too.
 
-    When an actor observes cooperative cancellation on a slot-scoped
-    transaction, the consumer raises through to its cancel handler and
-    writes ``mark_cancelled``. That write is fenced exactly like the
-    success write and returns ``False`` on the same reclaim race. The
-    terminal ``cancelled`` publish must be gated on the write's own
-    result: announcing a cancellation the row never took strands every
-    subscriber on a job that is still running elsewhere.
+    When an actor abandons its unit of work on a slot-scoped transaction
+    (raises ``CancelledError``), the transaction rolls back and the
+    consumer's cancel handler writes ``mark_cancelled``. That write is
+    fenced exactly like the success write and returns ``False`` on the
+    same reclaim race. The terminal ``cancelled`` publish must be gated
+    on the write's own result: announcing a cancellation the row never
+    took strands every subscriber on a job that is still running
+    elsewhere.
     """
     active_jobs = ActiveJobRegistry()
     backend = _FencedTxCancelBackend()
@@ -808,21 +821,22 @@ async def test_fenced_transactional_cancel_does_not_publish_a_terminal_event() -
         entry = active_jobs.get(running.id)
         assert entry is not None
         entry.cancel_phase = CancelPhase.COOPERATIVE
-        return {"ok": True}
+        raise asyncio.CancelledError
 
-    await consume_one_job(
-        as_backend(backend),
-        job,
-        _WORKER_ID,
-        run_actor=actor,
-        actor_config=default_actor_config(),
-        payload_type=EmptyPayload,
-        clock=clock,
-        active_jobs=active_jobs,
-        redis_client=redis_client,  # pyright: ignore[reportArgumentType]  # Why: the parameter is typed redis.asyncio.Redis; _RecordingRedis supplies the pipeline()/publish() surface the publisher uses.
-        settings=_settings(),
-        transaction_conn=tx_conn,  # pyright: ignore[reportArgumentType]  # Why: the parameter is typed asyncpg.Connection; _RecordingTxConnection supplies the transaction()/execute() surface the consumer uses.
-    )
+    with suppress(asyncio.CancelledError):
+        await consume_one_job(
+            as_backend(backend),
+            job,
+            _WORKER_ID,
+            run_actor=actor,
+            actor_config=default_actor_config(),
+            payload_type=EmptyPayload,
+            clock=clock,
+            active_jobs=active_jobs,
+            redis_client=redis_client,  # pyright: ignore[reportArgumentType]  # Why: the parameter is typed redis.asyncio.Redis; _RecordingRedis supplies the pipeline()/publish() surface the publisher uses.
+            settings=_settings(),
+            transaction_conn=tx_conn,  # pyright: ignore[reportArgumentType]  # Why: the parameter is typed asyncpg.Connection; _RecordingTxConnection supplies the transaction()/execute() surface the consumer uses.
+        )
 
     assert len(backend.mark_cancelled_calls) == 1, "fixture broken: cancel write not attempted"
     terminal_cancels = [

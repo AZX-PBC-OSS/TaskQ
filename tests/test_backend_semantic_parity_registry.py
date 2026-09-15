@@ -121,6 +121,7 @@ _NO_SEMANTIC_SURFACE: dict[str, str] = {
     "mark_abandoned": "keyed single row named by job id",
     "mark_snoozed": "keyed single row named by job id",
     "mark_retry_after": "keyed single row named by job id",
+    "mark_interrupted": "keyed single row named by job id",
     "write_attempt": "caller supplies the attempt row",
     "write_cancel_request": "keyed single row named by job id",
     "write_cancel_escalation": "keyed single row named by job id",

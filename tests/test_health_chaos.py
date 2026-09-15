@@ -239,7 +239,7 @@ _phase_strategy = st.sampled_from(
         ShutdownPhase.DRAINING,
         ShutdownPhase.CANCELLING,
         ShutdownPhase.FORCING,
-        ShutdownPhase.ABANDONING,
+        ShutdownPhase.RELEASING,
     ]
 )
 

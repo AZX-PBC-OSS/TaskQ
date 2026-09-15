@@ -1,20 +1,22 @@
 """Graceful shutdown drain e2e — SIGTERM with in-flight jobs, no lost tasks.
 
 Scenario:
-SIGTERM a worker with a running job; verify the job is cooperatively
-cancelled and no tasks are lost.
+SIGTERM a worker with a running job; verify the job is interrupted
+(released back to the fleet, budget refunded) and no tasks are lost.
 
 The ``slow_deliver_webhook`` actor (actors.py) sleeps 3 s — longer than
 the e2e shutdown drain window (``cancellation_grace=1.0`` +
 ``cleanup_grace=1.0`` = 2.0 s).  On SIGTERM the worker's four-phase
-shutdown orchestration (DRAINING → CANCELLING → FORCING → ABANDONING)
+shutdown orchestration (DRAINING → CANCELLING → FORCING → RELEASING)
 cancels the in-flight task: the ``asyncio.sleep`` is interrupted by
 ``task.cancel()`` in the FORCING phase, so the actor never records its
-``finished`` effect and the job lands in a non-success terminal state.
+``finished`` effect and the job is RELEASED (``pending`` with the
+attempt refunded) — a deploy is an infrastructure event, never a verdict
+on the job.
 
-After the SIGTERM a replacement worker is started to prove the system
-is still functional — a new job enqueued on the same queue completes
-normally.
+After the SIGTERM a replacement worker is started: it claims the released
+job and runs it to completion — the deploy cost the work nothing but
+time.
 
 The autouse ``clean_e2e_state`` fixture is overridden for this module
 because the primary worker container is intentionally stopped mid-test;
@@ -171,18 +173,20 @@ async def test_sigterm_drains_inflight_job(
     e2e_worker_image: BuiltImage,
     run_id: str,
 ) -> None:
-    """SIGTERM a worker with a running job: job is cancelled, no ``finished``
-    effect, and a replacement worker can still process new jobs.
+    """SIGTERM a worker with a running job: the job is interrupted (released,
+    refunded) and the replacement worker runs it to completion.
 
     (a) The ``slow_deliver_webhook`` actor records ``started`` immediately,
     sleeps 3 s, then records ``finished``.  SIGTERM arrives during the
     sleep.  The shutdown orchestration cancels the task within the 2 s
-    grace window, so ``finished`` is never recorded and the job reaches a
-    non-success terminal state (``cancelled`` or ``abandoned``).
+    grace window; the interrupted attempt is released back to the fleet
+    (``pending``, attempt refunded, ``interrupt_count`` bumped) — never
+    terminalised by an infrastructure event.
 
     (b) A replacement worker container is started on the same schema/queue.
-    A fresh ``send_welcome_email`` job completes normally, proving the
-    system is still functional after the SIGTERM.
+    It claims the released job and runs it to completion — the deploy cost
+    the job nothing but time — and a fresh ``send_welcome_email`` job
+    completes normally, proving the system is functional after the SIGTERM.
     """
     from testcontainers.core.container import DockerContainer
 
@@ -210,27 +214,34 @@ async def test_sigterm_drains_inflight_job(
     wrapped = e2e_worker.container.get_wrapped_container()
     await asyncio.to_thread(wrapped.kill, signal="TERM")
 
-    # ── Phase 1 assertions: drain orchestration wrote a terminal state ──
-    # Poll to cancelled/abandoned — the test's actual docstring contract.
+    # ── Phase 1 assertions: drain orchestration released the job ────────
+    # Poll to the released state (pending/scheduled with the interruption
+    # counted and the attempt refunded) — the test's docstring contract.
     # A worker with NO drain orchestration at all (hard SIGTERM death, row
-    # stuck 'running') previously passed the fixed-sleep + != succeeded
-    # checks; polling to a drain-written terminal state closes that hole.
-    async def _drained_terminal() -> bool:
+    # stuck 'running') cannot satisfy it: the row would sit running until
+    # a lease sweep reclaims it with the attempt spent as a crash.
+    async def _drained_released() -> bool:
         rows = await fetch_job_rows(e2e_pg_pool, e2e_schema.schema_name, [handle.job_id])
-        return bool(rows) and rows[0]["status"] in ("cancelled", "abandoned")
+        return (
+            bool(rows)
+            and rows[0]["status"] in ("pending", "scheduled")
+            and rows[0]["interrupt_count"] >= 1
+            and rows[0]["attempt"] == 0
+        )
 
     await poll_until(
-        _drained_terminal,
+        _drained_released,
         timeout=30.0,
         description=(
-            f"job {handle.job_id} reaching cancelled/abandoned via the SIGTERM drain orchestration"
+            f"job {handle.job_id} released back to the fleet (pending, refunded, "
+            "interrupt_count bumped) by the SIGTERM drain orchestration"
         ),
     )
 
     finished = await fetch_effects(e2e_pg_pool, e2e_schema.schema_name, run_id, kind="finished")
     assert finished == [], (
         "job should not have a 'finished' effect — the actor was "
-        "cancelled mid-sleep by the SIGTERM shutdown orchestration"
+        "interrupted mid-sleep by the SIGTERM shutdown orchestration"
     )
 
     # ── Phase 2: replacement worker, verify system functional ─────────
@@ -279,6 +290,28 @@ async def test_sigterm_drains_inflight_job(
         assert len(effects) == 1, (
             f"replacement worker should have processed 1 job, got {len(effects)} 'send' effects"
         )
+
+        # The interrupted job: the replacement claims the released row and
+        # runs it to completion — the deploy re-ran the work exactly once,
+        # on its original attempt budget.
+        await wait_for_effects(
+            e2e_pg_pool,
+            e2e_schema.schema_name,
+            run_id,
+            kind="finished",
+            min_count=1,
+            timeout=30.0,
+        )
+        rows = await fetch_job_rows(e2e_pg_pool, e2e_schema.schema_name, [handle.job_id])
+        assert rows[0]["status"] == "succeeded", (
+            "the job interrupted by the SIGTERM must complete on the "
+            f"replacement worker, not be lost to it; got {rows[0]['status']}"
+        )
+        assert rows[0]["attempt"] == 1, (
+            "the interrupted attempt was refunded at release, so the "
+            "completion is the job's FIRST spent attempt — the deploy cost "
+            f"no budget; attempt reads {rows[0]['attempt']}"
+        )
     finally:
         await asyncio.to_thread(_stop_container, replacement)
 
@@ -303,9 +336,9 @@ async def test_graceful_drain_completes_short_job(
     remain intact.
 
     This is the complement of ``test_sigterm_drains_inflight_job``: that
-    test proves a long in-flight job (3 s) is cancelled by the shutdown
-    orchestration; this test proves a short job that completed before
-    SIGTERM is unaffected.
+    test proves a long in-flight job (3 s) is interrupted and released by
+    the shutdown orchestration; this test proves a short job that
+    completed before SIGTERM is unaffected.
     """
     handle = await e2e_client.enqueue(
         short_lived_job,
@@ -359,12 +392,13 @@ async def test_second_sigterm_escalates(
     ``task.cancel()`` is called on the in-flight job.
 
     The test measures the elapsed time from the first SIGTERM to the
-    job's terminal state. Without escalation, the minimum is
+    job's release. Without escalation, the minimum is
     ``cancellation_grace`` (1.0 s) + ``cleanup_grace`` (1.0 s) = 2.0 s.
-    With escalation, the CANCELLING phase is cut short, so the job
-    reaches terminal state faster. The assertion is that the job reaches
-    ``cancelled`` or ``abandoned`` and a ``finished`` effect is NOT
-    recorded (the actor was cancelled mid-sleep).
+    With escalation, the CANCELLING phase is cut short, so the job is
+    released faster. The assertion is that the job is back with the fleet
+    (``pending``/``scheduled``, attempt refunded, interruption counted)
+    and a ``finished`` effect is NOT recorded (the actor was cancelled
+    mid-sleep).
     """
     import time
 
@@ -390,14 +424,18 @@ async def test_second_sigterm_escalates(
     await asyncio.sleep(0.3)
     await asyncio.to_thread(wrapped.kill, signal="TERM")
 
-    async def _drained_terminal() -> bool:
+    async def _drained_released() -> bool:
         rows = await fetch_job_rows(e2e_pg_pool, e2e_schema.schema_name, [handle.job_id])
-        return bool(rows) and rows[0]["status"] in ("cancelled", "abandoned")
+        return (
+            bool(rows)
+            and rows[0]["status"] in ("pending", "scheduled")
+            and rows[0]["interrupt_count"] >= 1
+        )
 
     await poll_until(
-        _drained_terminal,
+        _drained_released,
         timeout=30.0,
-        description=(f"job {handle.job_id} reaching cancelled/abandoned via escalated SIGTERM"),
+        description=(f"job {handle.job_id} released back to the fleet via escalated SIGTERM"),
     )
     elapsed = time.monotonic() - t0
 

@@ -390,7 +390,8 @@ Defined in `src/taskq/backend/statemachine.py` and mirrored as a PG enum in
 ```
 pending   → running (dispatch), cancelled (cancel request), failed (deadline sweep)
 scheduled → pending (scheduled_to_pending sweep), cancelled, failed (deadline sweep)
-running   → succeeded, failed, cancelled, crashed, abandoned, scheduled (snooze/retry/RetryAfter)
+running   → succeeded, failed, cancelled, crashed, abandoned, scheduled (snooze/retry/RetryAfter),
+            pending/scheduled (shutdown interrupt), failed (hold past schedule_to_close)
 succeeded → (terminal)
 failed    → (terminal)
 cancelled → (terminal)
@@ -420,8 +421,9 @@ extends the active filter without a second edit.
 | running → scheduled | Consumer on `Snooze` / `RetryAfter` / transient retry |
 | running → cancelled | Consumer after cancel_phase=1 (cooperative) |
 | running → cancelled | `reclaim_expired_locks` sweep (leader, Sweep 1 — cancel in-flight, retries exhausted) |
-| running → abandoned | `CancelController.run_post_tx` (heartbeat, post-phase-3) |
+| running → abandoned | `CancelController.run_post_tx` (heartbeat, post-phase-3) / shutdown RELEASING phase (operator cancel in flight only) |
 | running → crashed | `reclaim_expired_locks` sweep (leader, Sweep 1) |
+| running → pending/scheduled | `mark_interrupted` (consumer on a shutdown-origin cancel; shutdown RELEASING phase) — the attempt is refunded, `interrupt_count` bumps |
 | pending/scheduled → cancelled | `write_cancel_request` (client) |
 | pending/scheduled → failed | `deadline_sweep` (leader, Sweep 2) |
 
@@ -1002,12 +1004,12 @@ begins, so health endpoints and consumers can observe the current phase:
 | Phase | Value | Meaning |
 |---|---|---|
 | `NONE` | 0 | Running normally |
-| `DRAINING` | 1 | Stop accepting new dispatch; re-pend locked-but-unstarted jobs |
-| `CANCELLING` | 2 | Cooperative cancel of remaining in-flight jobs (set `cancel_event`) |
-| `FORCING` | 3 | Force-cancel grace: `task.cancel()` + `write_cancel_escalation(phase=2)` |
-| `ABANDONING` | 4 | Pod must be replaced; `mark_abandoned` for any remaining jobs |
+| `DRAINING` | 1 | Stop accepting new dispatch; re-pend locked-but-unstarted jobs (attempt refunded) |
+| `CANCELLING` | 2 | Cooperative cancel of remaining in-flight jobs (set `cancel_event`, stamp the shutdown origin) |
+| `FORCING` | 3 | Force-cancel grace: `task.cancel()` + `write_cancel_escalation(phase=2)` (lands only on rows carrying an operator's cancel request) |
+| `RELEASING` | 4 | Release never-unwound jobs back to the fleet via `mark_interrupted` (attempt refunded, held behind the remaining termination budget); operator-cancelled jobs still reach `abandoned` |
 
-Phase ordering invariant: `NONE → DRAINING → CANCELLING → FORCING → ABANDONING`.
+Phase ordering invariant: `NONE → DRAINING → CANCELLING → FORCING → RELEASING`.
 
 ### Signal handling
 
