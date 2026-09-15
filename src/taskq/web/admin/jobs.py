@@ -16,7 +16,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from jinja2 import Environment
 
 from taskq.backend._cursor import CursorValue, JobOrdering, SortColumn
-from taskq.backend._protocol import Backend, JobId
+from taskq.backend._protocol import RETRY_SOURCE_EXCLUSIONS, Backend, JobId
 from taskq.constants import events_channel
 from taskq.settings import TaskQSettings
 from taskq.web._sse_limit import acquire_sse_slot
@@ -691,6 +691,7 @@ def register(router: APIRouter) -> None:
             attempts=attempts_list,
             events=events_list,
             terminal_statuses=_TERMINAL_STATUSES,
+            retry_source_exclusions=RETRY_SOURCE_EXCLUSIONS,
             is_archived=is_archived,
             archived_at=archived_at,
             realtime_mode=realtime_mode,

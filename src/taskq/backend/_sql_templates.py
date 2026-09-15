@@ -16,6 +16,7 @@ from taskq.backend._dispatch_sql import (
     DISPATCH_ROUND_ROBIN_SQL,
     DISPATCH_STRICT_FIFO_SQL,
 )
+from taskq.backend._protocol import RETRY_SOURCE_EXCLUSIONS
 from taskq.backend._sql import (
     CANCEL_ESCALATION_SQL,
     INSERT_EVENT_SQL,
@@ -28,6 +29,12 @@ from taskq.constants import (
 )
 
 __all__ = ["SqlTemplates", "render"]
+
+_RETRY_SOURCE_EXCLUSION_LIST: Final[str] = ", ".join(
+    f"'{status}'" for status in sorted(RETRY_SOURCE_EXCLUSIONS)
+)
+"""``retry_job``'s refused-source list, rendered from the shared set so
+the statement cannot drift from the twin, the admin gate or the button."""
 
 # COPY FROM column list — schema-independent, constant across all backends.
 COPY_FROM_COLUMNS: Final[tuple[str, ...]] = (
@@ -1276,8 +1283,8 @@ WHERE l.relation = '"{s}".job_events'::regclass
         # the whole claim batch.
         #
         # The reopened CTE is the batch-status reconciliation for the
-        # completed-batch membership lie: retry_job re-pends a failed/
-        # crashed/cancelled member with no batch awareness, and every
+        # completed-batch membership lie: retry_job re-pends a resting
+        # member with no batch awareness, and every
         # batch-status writer guards on status = 'active' (complete_batch,
         # abort_batch, the leader's complete_stale_batches), so a
         # terminal batch row sitting over re-pended membership was
@@ -1311,7 +1318,17 @@ WITH retried AS (
         result_size_bytes = NULL,
         result_expires_at = NULL
     WHERE id = $1
-      AND status IN ('failed', 'crashed', 'cancelled')
+      -- An operator re-run is "run this again", so every state a job can
+      -- come to rest in is a valid source, including 'succeeded' (the
+      -- replay path after a bad deploy: the status records that the actor
+      -- returned without raising, never that the result was right) and
+      -- 'abandoned' (a deploy interrupted the job; it did not fail, and
+      -- it is the state most likely to need a manual re-run). The
+      -- exclusions are correctness constraints rather than policy
+      -- choices, and they are rendered from RETRY_SOURCE_EXCLUSIONS —
+      -- the one set the twin, the admin gate and the retry button also
+      -- read — so no surface can go on refusing what the others accept.
+      AND status NOT IN ({_RETRY_SOURCE_EXCLUSION_LIST})
       -- The retry must leave the row budget-eligible: the raised ceiling
       -- has to exceed the spent attempt. It always does except at the
       -- smallint bound (attempt = 32767), where raising is impossible --

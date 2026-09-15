@@ -295,7 +295,7 @@ Check whether the actor suppresses `asyncio.CancelledError` — a `try/except as
 - **Always re-raise `asyncio.CancelledError`:** never swallow it. Let it propagate so the consumer can call `mark_cancelled`.
 - **Check cancellation boundaries:** ensure the actor observes `ctx.cancellation_requested` at natural loop boundaries. For single long `await` calls, use `ctx.cancel_event.wait()`.
 - **Increase grace periods:** if the actor needs more cleanup time, raise `TASKQ_CANCELLATION_GRACE_PERIOD` and `TASKQ_CLEANUP_GRACE_PERIOD`. Constraints: `cancellation + cleanup < lock_lease` and `< termination_grace_period - 5.0`.
-- **Not retryable:** `abandoned` jobs cannot be retried via `backend.retry_job()`. Only `failed`, `crashed`, and `cancelled` can be retried.
+- **Put abandoned work back:** `abandoned` means a deploy interrupted the job, not that it failed, so `backend.retry_job()` re-pends it like any other resting state. Only `running` (a live attempt owns the row) and `pending`/`scheduled` (already queued to run) are refused.
 
 ---
 

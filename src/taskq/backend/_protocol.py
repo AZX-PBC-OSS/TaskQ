@@ -49,6 +49,7 @@ __all__ = [
     "BACKEND_PROTOCOL_VERSION",
     "DST_STRATEGIES",
     "JOB_STATUS_VALUES",
+    "RETRY_SOURCE_EXCLUSIONS",
     "SNOOZE_OUTCOME_VALUES",
     "AttemptOutcome",
     "AttemptRow",
@@ -223,6 +224,36 @@ Derived from the ``SnoozeOutcome`` Literal itself (the canonical
 declaration) so the guard's legal set can never drift from the type —
 the same single-source pattern as :data:`JOB_STATUS_VALUES` and
 :data:`DST_STRATEGIES`.
+"""
+
+
+RETRY_SOURCE_EXCLUSIONS: Final[frozenset[JobStatus]] = frozenset(
+    {"running", "pending", "scheduled"}
+)
+"""The statuses :meth:`Backend.retry_job` refuses as a re-run source.
+
+An operator re-run is "run this again", so every state a job can come to
+rest in is a valid source — ``succeeded`` included (the status records
+that the actor returned without raising, never that the result was
+right, so this is the replay path after a bad deploy) and ``abandoned``
+included (a deploy interrupted the job; it did not fail, and it is the
+state most likely to need a manual re-run).
+
+Each exclusion is a correctness constraint rather than a judgement about
+whether the work deserves repeating:
+
+``running``
+    a live attempt owns the row.  Re-pending it races that attempt's
+    terminal write and the job can execute twice concurrently.
+``pending`` / ``scheduled``
+    the job is already queued to run.  There is nothing to put back, and
+    re-pending would discard its place in the dispatch order and raise
+    ``max_attempts`` to fund a run that has not happened yet.
+
+Read by both backends' ``retry_job``, by the admin endpoint's gate, and
+by the job-detail template's button, so the rule is stated once instead
+of once per surface — the drift that let the endpoint keep refusing what
+the backends had already been taught to accept.
 """
 
 
@@ -1762,7 +1793,11 @@ class Backend(Protocol):
 
     # ── Admin operations ──────────────────────────────────────────────
     async def retry_job(self, job_id: JobId) -> bool:
-        """Re-run a terminal job (failed/crashed/cancelled) by re-pending it.
+        """Re-run a job by re-pending it from any state it rests in.
+
+        Every status outside :data:`RETRY_SOURCE_EXCLUSIONS` is a valid
+        source, ``succeeded`` and ``abandoned`` included; see that set for
+        why each of ``running``, ``pending`` and ``scheduled`` is refused.
 
         The attempt counter is NOT reset: an idempotent admin operation
         must not restart the counter, so a re-run job climbs to fresh

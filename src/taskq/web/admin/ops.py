@@ -16,6 +16,7 @@ from jinja2 import Environment
 
 from taskq._ids import new_uuid
 from taskq.backend._protocol import (
+    RETRY_SOURCE_EXCLUSIONS,
     Backend,
     EnqueueArgs,
     JobId,
@@ -451,13 +452,20 @@ def register(router: APIRouter) -> None:
                 status_code=503, detail="Backend not configured for admin operations"
             )
 
-        _retryable_statuses: frozenset[str] = frozenset({"failed", "crashed", "cancelled"})
-
         job = await backend.get(JobId(job_id))
         if job is None:
             raise HTTPException(status_code=404, detail="Job not found")
-        if job.status not in _retryable_statuses:
-            raise HTTPException(status_code=409, detail="Job is not in a retryable state")
+        # The backends' own rule, read from the set they render their
+        # predicates from. A gate holding its own copy went on returning
+        # 409 for states the backends had been taught to accept, and the
+        # message named a reason that was not the real one.
+        if job.status in RETRY_SOURCE_EXCLUSIONS:
+            detail = (
+                "Job cannot be re-run while a worker is running it"
+                if job.status == "running"
+                else f"Job is already queued to run (status {job.status})"
+            )
+            raise HTTPException(status_code=409, detail=detail)
 
         await backend.retry_job(JobId(job_id))
 

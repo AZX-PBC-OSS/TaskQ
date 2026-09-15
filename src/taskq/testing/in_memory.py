@@ -41,6 +41,7 @@ from taskq.backend._cursor import (
 from taskq.backend._notify import _SubscriberContext
 from taskq.backend._protocol import (
     BACKEND_PROTOCOL_VERSION,
+    RETRY_SOURCE_EXCLUSIONS,
     AttemptOutcome,
     AttemptRow,
     BatchCounts,
@@ -760,7 +761,13 @@ class InMemoryBackend:
 
     async def retry_job(self, job_id: JobId) -> bool:
         row = self._jobs.get(job_id)
-        if row is None or row.status not in ("failed", "crashed", "cancelled"):
+        # An operator re-run is "run this again", so every state a job can
+        # come to rest in is a valid source, including 'succeeded' (the
+        # replay path after a bad deploy) and 'abandoned' (a deploy
+        # interrupted the job; it did not fail). The exclusions are
+        # correctness constraints rather than policy choices — the same
+        # set the PG predicate renders and the admin surfaces read.
+        if row is None or row.status in RETRY_SOURCE_EXCLUSIONS:
             return False
         # Monotonic attempt with the ceiling raised just enough to open
         # the budget gates, mirroring the PG statement's

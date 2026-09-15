@@ -255,7 +255,7 @@ Job detail. Shows the full job record, attempt history from `job_attempts`, and 
 
 If the job has already been pruned to `jobs_archive`, the page loads from the archive table instead; attempt history comes from `job_attempts_archive` and the event log is empty (events are not archived). An "archived" banner is shown at the top of the page.
 
-The job detail page includes a **Cancel** button (for non-terminal jobs) and a **Retry** button (for terminal jobs in `failed`, `crashed`, or `cancelled` state). Both are CSRF-protected POST forms. When `admin_actions_enabled` is `false` (the default), both buttons return `403` on submit; set `TASKQ_ADMIN_ACTIONS_ENABLED=true` to enable them.
+The job detail page includes a **Cancel** button (for non-terminal jobs) and a **Retry** button (for any job at rest — every state except `running`, `pending` and `scheduled`). Both are CSRF-protected POST forms. When `admin_actions_enabled` is `false` (the default), both buttons return `403` on submit; set `TASKQ_ADMIN_ACTIONS_ENABLED=true` to enable them.
 
 ### `POST /admin/jobs/{job_id}/cancel`
 
@@ -263,7 +263,7 @@ Cancels a non-terminal job by writing a cancel request via `backend.write_cancel
 
 ### `POST /admin/jobs/{job_id}/retry`
 
-Resets a terminal job (`failed`, `crashed`, or `cancelled`) back to `pending` via `backend.retry_job`, allowing it to be re-dispatched by a worker. Returns `403` if `admin_actions_enabled` is `false`, `404` if the job does not exist, `409` if the job is not in a retryable state. Redirects to the job detail page on success. The retry resets `attempt` to 0, clears error fields, and sets `status='pending'`.
+Puts a job that has come to rest back to `pending` via `backend.retry_job`, allowing it to be re-dispatched by a worker. Every resting state is a valid source — `failed`, `crashed`, `cancelled`, `abandoned` and `succeeded` — so the replay path after a bad deploy and the put-back path after a worker restart are both supported. Returns `403` if `admin_actions_enabled` is `false`, `404` if the job does not exist, `409` if the job is `running` (re-pending a live attempt could run it twice) or already queued as `pending`/`scheduled`. Redirects to the job detail page on success. The retry leaves `attempt` where it is and raises `max_attempts` just enough to fund one more run, clears error fields and any stored result, and sets `status='pending'`.
 
 ### `GET /admin/jobs/count`
 

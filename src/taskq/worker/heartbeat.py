@@ -24,6 +24,11 @@ from taskq.backend._sql import (
     build_heartbeat_sql,
     parse_rowcount,
 )
+from taskq.backend._sweeps import (  # pyright: ignore[reportPrivateUsage]  # Why: isolate and the reclaim sweep must decide a job's budget and its hand-back delay identically — one fragment, no second hand-maintained copy.
+    _RECLAIM_DELAY_SQL,
+    _RECLAIM_HAS_BUDGET_SQL,
+    reclaim_has_budget,
+)
 from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining
 )
@@ -173,13 +178,31 @@ async def heartbeat_loop(
                 "heartbeat-tick-unexpected-error",
                 worker_id=str(worker_id),
             )
+        # The wait is anchored to the tick's START, not its end, so the
+        # beat cadence is the interval however long the tick took. A
+        # fixed post-tick sleep instead makes the cadence
+        # tick_duration + interval, and a tick may legitimately run for
+        # nearly a whole interval — the pool acquire above is bounded at
+        # exactly that. One slow or failed tick then stretches the gap
+        # between good beats to roughly twice the interval, which is the
+        # very sizing the ops guide calls the safe floor for a per-job
+        # heartbeat_timeout: the knob's own guidance would be unable to
+        # tolerate a single transient blip, and a worker that is alive,
+        # lease-valid and beating again would lose its job to the sweep.
+        # The heartbeat's promise to the reclaim arm is a beat every
+        # interval; this is where that promise is kept. A tick that
+        # overruns the interval waits zero and re-enters immediately,
+        # which is the correct urgency — it is already late — and cannot
+        # become a hot loop, because the next tick's own pool acquire is
+        # bounded at the interval and paces it.
+        remaining = max(0.0, interval - (time.monotonic() - tick_start))
         if cancel_wake_event is not None:
-            # Wait up to interval, but wake immediately on a cancel NOTIFY.
+            # Wait out the remainder, but wake immediately on a cancel NOTIFY.
             with contextlib.suppress(asyncio.TimeoutError):
-                await asyncio.wait_for(cancel_wake_event.wait(), timeout=interval)
+                await asyncio.wait_for(cancel_wake_event.wait(), timeout=remaining)
             cancel_wake_event.clear()
         else:
-            await asyncio.sleep(interval)
+            await asyncio.sleep(remaining)
 
 
 _SELECT_RUNNING_JOBS_SQL_TEMPLATE = (
@@ -200,7 +223,8 @@ _SELECT_RUNNING_JOBS_SQL_TEMPLATE = (
 # 'WorkerCrashed' — a heartbeat-lost worker may still be alive but
 # partitioned, while Sweep 1 assumes the worker is gone.
 
-# Branch-for-branch mirror of _sweeps.py's _SWEEP_1_SQL SET clause — the
+# Branch-for-branch mirror of _sweeps.py's _SWEEP_1_SQL SET clause,
+# sharing its budget predicate and hand-back delay verbatim — the
 # property test tests/test_leader_property.py asserts row-state
 # equivalence between this path and the sweep, so any branch change there
 # (cancel-state reset on retry, 'cancelled' label for an exhausted
@@ -215,12 +239,12 @@ _SELECT_RUNNING_JOBS_SQL_TEMPLATE = (
 # shutdown is not a crash-reclaim), so the visibility-delay
 # co-monotonicity motivation for clock_timestamp() does not apply — it is
 # kept anyway so the two templates stay structurally identical.
-_ISOLATE_JOB_SQL_TEMPLATE = """\
-UPDATE "{schema}".jobs
+_ISOLATE_JOB_BODY = """\
+UPDATE "{schema}".jobs j
 SET status = CASE
-        WHEN attempt < max_attempts AND retry_kind != 'non_retryable'
+        WHEN {has_budget}
             THEN 'pending'::"{schema}".job_status
-        WHEN cancel_phase != 0
+        WHEN j.cancel_phase != 0
             THEN 'cancelled'::"{schema}".job_status
         ELSE 'crashed'::"{schema}".job_status
     END,
@@ -229,16 +253,22 @@ SET status = CASE
     cancel_phase = 0,
     cancel_requested_at = NULL,
     scheduled_at = CASE
-        WHEN attempt < max_attempts AND retry_kind != 'non_retryable'
-            THEN clock_timestamp() + interval '5 seconds'
-        ELSE scheduled_at
+        WHEN {has_budget}
+            THEN clock_timestamp() + {reclaim_delay}
+        ELSE j.scheduled_at
     END,
     finished_at = CASE
-        WHEN NOT (attempt < max_attempts AND retry_kind != 'non_retryable')
+        WHEN NOT ({has_budget})
             THEN clock_timestamp()
-        ELSE finished_at
+        ELSE j.finished_at
     END
-WHERE id = $1 AND status = 'running' AND locked_by_worker = $2"""
+WHERE j.id = $1 AND j.status = 'running' AND j.locked_by_worker = $2"""
+
+#: Isolate with the sweep's shared fragments bound, still carrying
+#: ``{schema}`` for the caller — one placeholder, as before.
+_ISOLATE_JOB_SQL_TEMPLATE = _ISOLATE_JOB_BODY.replace(
+    "{has_budget}", _RECLAIM_HAS_BUDGET_SQL
+).replace("{reclaim_delay}", _RECLAIM_DELAY_SQL)
 
 
 async def isolate_self(
@@ -295,9 +325,15 @@ async def isolate_self(
                         if parse_rowcount(tag) == 0:
                             lost_race += 1
                             continue
-                        is_pending = (  # pyright: ignore[reportUnknownVariableType]  # Why: row column accessor types unknown — propagates from conn.fetch() suppression.
-                            row["attempt"] < row["max_attempts"]
-                            and row["retry_kind"] != "non_retryable"
+                        # The statement's own budget question, asked
+                        # through the shared predicate rather than
+                        # restated — a tally that answered it differently
+                        # would report a disposition the UPDATE did not
+                        # write.
+                        is_pending = reclaim_has_budget(
+                            attempt=row["attempt"],
+                            max_attempts=row["max_attempts"],
+                            retry_kind=row["retry_kind"],
                         )
                         if is_pending:
                             pending += 1
