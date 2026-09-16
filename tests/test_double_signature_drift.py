@@ -98,6 +98,10 @@ _NARROWER_BY_DESIGN: Final[dict[tuple[str, str], str]] = {
         "taskq.cli.asyncpg.connect",
     ): "Why: as above — third-party breadth the CLI never uses.",
     (
+        "test_cli_job.py",
+        "taskq.cli.asyncpg.connect",
+    ): "Why: as above — third-party breadth the CLI never uses.",
+    (
         "test_cli_worker.py",
         "taskq.cli.importlib.import_module",
     ): "Why: the CLI never passes `package`; the double takes the name it asserts on.",
@@ -111,7 +115,7 @@ _NARROWER_BY_DESIGN: Final[dict[tuple[str, str], str]] = {
     ): "Why: as above — a sleep accelerator only ever handed a delay.",
     (
         "test_shutdown_orchestrator.py",
-        "taskq.worker.shutdown.asyncio.sleep",
+        "asyncio.sleep",
     ): "Why: as above — a sleep accelerator only ever handed a delay.",
     (
         "test_otel_contract.py",

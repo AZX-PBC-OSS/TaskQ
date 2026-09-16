@@ -30,6 +30,29 @@ _MOD_SEEN: set[str] = set()
 _REDIS_DB_SEEN: set[str] = set()
 
 
+@pytest.fixture(scope="module")
+def pg_schema_seen_at_setup(module_pg_schema: ModulePgSchema) -> str:
+    """The module schema, recorded once per (worker, module) at fixture SETUP.
+
+    The recording lives here, not in a test body, because pytest-randomly
+    reshuffles order within each xdist worker: any "a previous test body ran
+    first in this process" premise is an ordering dependence. Setup time is
+    order-invariant — every test that depends on this recorder compares
+    against the instance the module fixture actually handed out.
+    """
+    _MOD_SEEN.add(module_pg_schema.schema_name)
+    return module_pg_schema.schema_name
+
+
+@pytest.fixture(scope="module")
+def redis_url_seen_at_setup(module_redis_url: str) -> str:
+    """The module Redis URL, recorded once per (worker, module) at fixture
+    SETUP — same order-invariant recording as :func:`pg_schema_seen_at_setup`.
+    """
+    _REDIS_DB_SEEN.add(module_redis_url)
+    return module_redis_url
+
+
 # ── module_pg_schema is module-scoped ──────────────────────────
 
 
@@ -37,12 +60,20 @@ _REDIS_DB_SEEN: set[str] = set()
 class TestModulePgSchema:
     """Schema name is stable across tests in the same module."""
 
-    def test_schema_name_is_string(self, module_pg_schema: ModulePgSchema) -> None:
+    def test_schema_name_is_string(
+        self, module_pg_schema: ModulePgSchema, pg_schema_seen_at_setup: str
+    ) -> None:
         assert isinstance(module_pg_schema.schema_name, str)
         assert module_pg_schema.schema_name.startswith("tq_")
-        _MOD_SEEN.add(module_pg_schema.schema_name)
+        assert module_pg_schema.schema_name == pg_schema_seen_at_setup
 
-    def test_same_schema_name_as_previous_test(self, module_pg_schema: ModulePgSchema) -> None:
+    def test_same_schema_name_as_previous_test(
+        self, module_pg_schema: ModulePgSchema, pg_schema_seen_at_setup: str
+    ) -> None:
+        # The membership assert is the module-scope proof: a re-instantiated
+        # fixture would hand this test a different (or re-created) schema, so
+        # the URL/schema this test sees must be the one recorded at setup.
+        assert module_pg_schema.schema_name == pg_schema_seen_at_setup
         assert module_pg_schema.schema_name in _MOD_SEEN
 
     @pytest.mark.asyncio
@@ -66,12 +97,20 @@ class TestModulePgSchema:
 class TestModuleRedisUrl:
     """Redis DB id is stable across tests in the same module."""
 
-    def test_url_is_string(self, module_redis_url: str) -> None:
+    def test_url_is_string(self, module_redis_url: str, redis_url_seen_at_setup: str) -> None:
         assert isinstance(module_redis_url, str)
         assert module_redis_url.startswith("redis://")
-        _REDIS_DB_SEEN.add(module_redis_url)
+        assert module_redis_url == redis_url_seen_at_setup
 
-    def test_same_redis_url_as_previous_test(self, module_redis_url: str) -> None:
+    def test_same_redis_url_as_previous_test(
+        self, module_redis_url: str, redis_url_seen_at_setup: str
+    ) -> None:
+        # The membership assert is the module-scope proof: the fixture
+        # allocates a never-reused DB id per instantiation, so a
+        # re-instantiated fixture would hand this test a different URL. The
+        # recorded value is captured at fixture SETUP (order-invariant under
+        # pytest-randomly's per-worker shuffle), not by a sibling test body.
+        assert module_redis_url == redis_url_seen_at_setup
         assert module_redis_url in _REDIS_DB_SEEN
 
     def test_redis_is_reachable(self, module_redis_url: str) -> None:

@@ -9,6 +9,7 @@ from uuid import UUID
 import pytest
 
 from taskq.backend._protocol import JobRow, ScheduleCreateArgs
+from taskq.retry import RetryPolicy
 from taskq.testing.in_memory import InMemoryBackend
 
 
@@ -192,7 +193,11 @@ async def test_max_pending_batch_boundary_uses_ge() -> None:
         dependencies={},
         payload_type=_Payload,
         result_adapter=MagicMock(),
-        retry=MagicMock(),
+        # A real policy, not a MagicMock: the enqueue boundary domain-validates
+        # max_attempts (build_enqueue_args reads ref.retry.max_attempts into
+        # EnqueueArgs, whose __post_init__ refuses a non-int), so a mock's
+        # attribute spill fails the boundary this test drives.
+        retry=RetryPolicy(),
         result_ttl=None,
         max_pending=3,
     )

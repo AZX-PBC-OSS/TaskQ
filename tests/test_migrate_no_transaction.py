@@ -139,7 +139,15 @@ async def test_apply_pending_locked_applies_no_transaction_migration(
     pg_dsn: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The startup path (--migrate / TASKQ_MIGRATE_ON_START) holds a session
-    advisory lock — not a transaction — so CONCURRENTLY still works."""
+    advisory lock — not a transaction — so CONCURRENTLY still works.
+
+    The synthetic is a ``pre``-phase migration on purpose:
+    ``apply_pending_locked`` deliberately defaults to ``phase="pre"`` — the
+    post phase stays behind the operator's explicit ``taskq migrate up
+    --phase post`` because a startup event is nobody's decision to close the
+    rolling-deploy overlap window — so the startup path's no-transaction
+    mechanics are driven exactly as production reaches them.
+    """
     schema = f"mig_nt_lock_{new_base62()}".lower()
     conn = await asyncpg.connect(pg_dsn)
     try:
@@ -147,7 +155,7 @@ async def test_apply_pending_locked_applies_no_transaction_migration(
         real = await _bootstrap(conn, schema)
         m = _fake_migration(
             "90.02.00_01",
-            "post",
+            "pre",
             "-- taskq:no-transaction\n"
             "CREATE INDEX CONCURRENTLY IF NOT EXISTS nt_locked_idx "
             'ON "{schema}".jobs (status);\n',
@@ -212,7 +220,11 @@ async def test_discover_directive_parsing_applies_end_to_end(
         # Bootstrap via the REAL package dir; only then patch, so the
         # synthetic file is applied from the patched discovery below.
         await _bootstrap(conn, schema)
-        monkeypatch.setattr(migrate_mod.resources, "files", lambda _pkg: tmp_path)
+        # Patch the importlib.resources module the discover() implementation
+        # reads (migrate_mod.resources IS this same module object) — reached
+        # via this file's own import rather than through taskq.migrate,
+        # which does not export it.
+        monkeypatch.setattr(resources, "files", lambda _pkg: tmp_path)
 
         applied = await migrate_mod.apply_pending(conn, schema=schema)
 
@@ -680,7 +692,14 @@ async def test_apply_pending_locked_failure_self_diagnoses(
     ``apply_pending_locked`` (worker/UI startup) must abort with the SAME
     self-diagnosis the CLI prints — which migration failed, the partial
     state it left, the INVALID indexes it found, and the single action —
-    joined into ONE greppable SystemExit line, never a raw traceback."""
+    joined into ONE greppable SystemExit line, never a raw traceback.
+
+    The failing synthetic is ``pre``-phase on purpose:
+    ``apply_pending_locked`` deliberately defaults to ``phase="pre"`` (the
+    post phase stays behind the operator's explicit ``taskq migrate up
+    --phase post``), so the startup failure path is driven exactly as
+    production reaches it.
+    """
     schema = f"mig_nt_se_{new_base62()}".lower()
     conn = await asyncpg.connect(pg_dsn)
     try:
@@ -712,7 +731,7 @@ async def test_apply_pending_locked_failure_self_diagnoses(
 
         m = _fake_migration(
             "90.11.00_01",
-            "post",
+            "pre",
             "-- taskq:no-transaction\n"
             'CREATE TABLE "{schema}".se_persist (id int);\n'
             "THIS IS NOT VALID SQL;\n",

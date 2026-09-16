@@ -1,6 +1,6 @@
-"""Audit: exactly four code paths write status='scheduled'.
+"""Audit: exactly five code paths write status='scheduled'.
 
-The contract is that ``status='scheduled'`` is written by EXACTLY four
+The contract is that ``status='scheduled'`` is written by EXACTLY five
 authorised paths. Two tripwires enforce it:
 
 1. A runtime audit that calls every non-authorised Backend method on an
@@ -38,13 +38,14 @@ from taskq.backend.postgres import PostgresBackend
 from taskq.testing.in_memory import InMemoryBackend
 
 # ── Authorised writers ──────────────────────────────────────────
-# These four paths are EXCLUDED from the audit. If a new authorised
+# These five paths are EXCLUDED from the audit. If a new authorised
 # writer is added, update this tuple AND the test docstring.
 AUTHORISED_SCHEDULED_WRITERS: tuple[str, ...] = (
     "enqueue(future_scheduled_at)",
     "mark_snoozed",
     "mark_retry_after",
     "mark_failed_or_retry(branch_b)",
+    "mark_interrupted(release_arm)",
 )
 
 # ── Helpers ────────────────────────────────────────────────────────────
@@ -140,10 +141,10 @@ def _get_job(backend: InMemoryBackend, job_id: JobId) -> JobRow:
 # ── Runtime audit: non-authorised methods do NOT write 'scheduled' ─────
 
 
-async def test_fr5_audit_only_four_paths_write_scheduled(
+async def test_fr5_audit_only_authorised_paths_write_scheduled(
     memory_jobs: InMemoryBackend,
 ) -> None:
-    """T-FR5-AUDIT: only four paths write status='scheduled'."""
+    """T-FR5-AUDIT: only the authorised paths write status='scheduled'."""
     backend = memory_jobs
     worker_id = backend._worker_id  # type: ignore[reportPrivateUsage] # Why: test needs the internal worker_id for mark_* calls
 
@@ -174,6 +175,29 @@ async def test_fr5_audit_only_four_paths_write_scheduled(
     assert result is True
     post = _get_job(backend, job.id)
     assert post.status == "cancelled"
+    assert post.status != "scheduled"
+
+    # ── mark_interrupted, release arm (the fifth authorised writer): a
+    # running job the worker cannot finish, interrupted with a positive
+    # hold, re-pends to 'scheduled' for a future dispatch — the same
+    # running→scheduled deferral shape as mark_snoozed/mark_retry_after.
+    job = await _enqueue_running(backend)
+    released = await backend.mark_interrupted(
+        job.id, worker_id, attempt=job.attempt, hold=timedelta(seconds=30)
+    )
+    assert released == "scheduled"
+    post = _get_job(backend, job.id)
+    assert post.status == "scheduled"
+
+    # ── mark_interrupted, deadline arm: a hold that would outlive the
+    # job's own schedule_to_close fails the row on the deadline instead.
+    job = await _enqueue_running(backend, schedule_to_close=_CLOCK_START + timedelta(seconds=5))
+    deadline_failed = await backend.mark_interrupted(
+        job.id, worker_id, attempt=job.attempt, hold=timedelta(seconds=60)
+    )
+    assert deadline_failed == "failed:DeadlineExceeded"
+    post = _get_job(backend, job.id)
+    assert post.status == "failed"
     assert post.status != "scheduled"
 
     # ── write_cancel_escalation on a running/cp=1 job → still running ──
@@ -374,7 +398,7 @@ _AUTHORISED_METHOD_NAMES: frozenset[str] = frozenset(
 
 
 #: Every ``mark_*`` method on both backends, as reviewed against the
-#: four-authorised-writers contract. The runtime audit above exercises a
+#: five-authorised-writers contract. The runtime audit above exercises a
 #: hand-written sequence of calls, so it cannot notice a method nobody thought
 #: to add to it — this inventory is what forces that decision.
 _REVIEWED_MARK_METHODS: frozenset[str] = frozenset(
@@ -382,6 +406,7 @@ _REVIEWED_MARK_METHODS: frozenset[str] = frozenset(
         "mark_abandoned",
         "mark_cancelled",
         "mark_failed_or_retry",
+        "mark_interrupted",
         "mark_retry_after",
         "mark_snoozed",
         "mark_succeeded",
@@ -413,11 +438,11 @@ def test_no_unreviewed_mark_method_exists(cls: type) -> None:
     unreviewed = sorted(found - _REVIEWED_MARK_METHODS)
     assert not unreviewed, (
         f"{cls.__name__} has mark_* methods not reviewed against the "
-        "four-authorised-writers contract:\n"
+        "five-authorised-writers contract:\n"
         + "\n".join(f"  - {n}" for n in unreviewed)
         + "\n\nDecide whether each writes status='scheduled': if it does, it is a "
-        "fifth authorised path and AUTHORISED_SCHEDULED_WRITERS must say so; if "
-        "it does not, add a case to test_fr5_audit_only_four_paths_write_scheduled "
+        "new authorised path and AUTHORISED_SCHEDULED_WRITERS must say so; if "
+        "it does not, add a case to test_fr5_audit_only_authorised_paths_write_scheduled "
         "proving it. Then list it in _REVIEWED_MARK_METHODS."
     )
     missing = sorted(_REVIEWED_MARK_METHODS - found)

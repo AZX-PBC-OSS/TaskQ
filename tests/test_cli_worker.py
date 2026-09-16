@@ -449,9 +449,26 @@ def test_console_script_cwd_insertion_is_idempotent(monkeypatch: pytest.MonkeyPa
 
     from taskq.cli import _ensure_cwd_on_sys_path
 
-    monkeypatch.setattr(sys, "path", list(sys.path))
+    # Both frames are synthetic: the live ``sys.path`` cannot serve as the
+    # "cwd absent" frame under a full-suite run, because earlier tests invoke
+    # ``main()`` against the real ``sys.path`` and its insertion (correct
+    # production behaviour, no monkeypatch rollback) survives into this test's
+    # starting copy — the starting count there is a run-order artifact, not a
+    # property of the helper.
+    monkeypatch.setattr(sys, "path", ["/does-not-exist"])
 
     _ensure_cwd_on_sys_path()
     _ensure_cwd_on_sys_path()
 
     assert sys.path.count(os.getcwd()) == 1
+    assert sys.path[0] == os.getcwd()
+
+    # The ``python -m taskq`` shape: the cwd is already carried, and a
+    # re-run of the entry must not stack a duplicate behind it.
+    monkeypatch.setattr(sys, "path", [os.getcwd(), "/does-not-exist"])
+
+    _ensure_cwd_on_sys_path()
+    _ensure_cwd_on_sys_path()
+
+    assert sys.path.count(os.getcwd()) == 1
+    assert sys.path[0] == os.getcwd()

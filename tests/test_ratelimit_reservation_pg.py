@@ -229,6 +229,16 @@ async def test_sweep_4_reclaims_expired_slots(
     schema = module_pg_schema.schema_name
     bucket = _unique_name()
 
+    # Own the sweep's schema-wide input. Sweep 4's SQL deliberately carries
+    # no bucket filter (it reclaims every expired slot in the schema), and
+    # this module-scoped table outlives any single test: earlier tests' held
+    # slots expire on their own _LEASE wall clock and land in the count (and
+    # did, under a full-suite ordering that ran this test more than ten
+    # seconds after a sibling). Deleting them here disturbs no sibling —
+    # every test in this module builds its own uniquely named buckets.
+    async with module_pg_pool.acquire() as conn:
+        await conn.execute(f'DELETE FROM "{schema}".reservation_slots')
+
     res = ConcurrencyReservation(name=bucket, slots=2, lease=_LEASE, schema=schema)
     await res.ensure_slots(module_pg_pool)
 
