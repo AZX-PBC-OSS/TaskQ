@@ -270,6 +270,13 @@ async def create_pending_job(
     status: str = "pending",
     scheduled_at: datetime | None = None,
 ) -> UUID:
+    """Seed one job row directly. ``scheduled_at`` defaults to the
+    application clock's ``now()`` — a stamp a claim CTE comparing against
+    the database's ``statement_timestamp()`` reads as not-yet-due whenever
+    the database clock lags the application clock (Docker VM pause and NTP
+    drift both cause it). Seed a past margin or an explicit ``scheduled_at``
+    whenever the test then asserts the row is claimable.
+    """
     if not _IDENT_RE.match(schema):
         raise ValueError(f"invalid schema name {schema!r}")
     job_id = job_id or new_uuid()

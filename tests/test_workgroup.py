@@ -1164,29 +1164,58 @@ async def test_run_forever_spawn_failure_continues() -> None:
         raise OSError("spawn failed")
 
     config_path = Path("/tmp/fake_spawn_fail.toml")
+    signal_handlers: dict[int, Any] = {}
+    sigterm_registered = asyncio.Event()
+
+    def capture_handler(sig: int, handler: Any) -> None:
+        signal_handlers[sig] = handler
+        if sig == signal.SIGTERM:
+            sigterm_registered.set()
 
     with (
         patch("taskq.worker.workgroup.load_workgroup_config", return_value=config),
         patch("asyncio.create_subprocess_exec", side_effect=failing_exec),
         patch("asyncio.get_running_loop") as mock_loop,
     ):
-        mock_loop.return_value.add_signal_handler = MagicMock()
+        mock_loop.return_value.add_signal_handler = capture_handler
 
         from taskq.worker.workgroup import run_forever
 
         task = asyncio.create_task(run_forever(config_path))
-        # Event-driven wait on the spawn double: fires at the first
-        # attempt — a fixed sleep could observe zero attempts under
-        # startup starvation and fail the completion assert below for a
-        # reason that has nothing to do with the continue-on-failure
-        # behaviour under test.
+        # Event-driven waits on the spawn double and the handler-capture
+        # double — a fixed window races startup under load (fewer than
+        # one spawn attempt, handler missing) and fails the completion
+        # assert below for a reason that has nothing to do with the
+        # continue-on-failure behaviour under test.
         try:
             await asyncio.wait_for(first_attempt.wait(), timeout=5.0)
         except TimeoutError:
             pytest.fail("run_forever did not attempt its first spawn within 5.0s")
-        task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await task
+        # The signal handlers are installed AFTER the initial spawn loop,
+        # so the spawn attempt alone does not yet prove the supervisor is
+        # stoppable — wait for the registration the stop below drives.
+        try:
+            await asyncio.wait_for(sigterm_registered.wait(), timeout=5.0)
+        except TimeoutError:
+            pytest.fail("run_forever did not register its SIGTERM handler within 5.0s")
+
+        # Stop the supervisor the way an operator does: SIGTERM, then let
+        # run_forever complete its own graceful shutdown — the same stop
+        # shape test_run_forever_multiple_children_graceful_shutdown
+        # drives. A bare task.cancel() aborts the supervisor mid-
+        # _delay_then_respawn, whose asyncio.wait() does not cancel its
+        # inner futures when the caller itself is cancelled: the backoff
+        # sleep and the shutdown Event.wait went on running WITHOUT the
+        # supervisor, two tasks orphaned on the module loop. The signal
+        # path is clean in every interleaving — shutting_down set either
+        # skips the restart arm under the restart lock, or wins the
+        # _delay_then_respawn race and cancels-and-awaits its own sleep
+        # before the monitor's loop condition exits.
+        signal_handlers[signal.SIGTERM]()
+        try:
+            await asyncio.wait_for(task, timeout=3.0)
+        except TimeoutError:
+            pytest.fail("run_forever did not complete graceful shutdown within 3.0s")
 
     assert call_count >= 1
 

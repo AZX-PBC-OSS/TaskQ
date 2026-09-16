@@ -655,7 +655,7 @@ def pg_container(
         if abs(delta) > 0.25:
             print(
                 f"[TaskQ] application and database clocks diverge by {delta:+.3f}s "
-                "(positive = app ahead). While this persists, wall-clock comparisons "
+                "(positive = database ahead). While this persists, wall-clock comparisons "
                 "across the two domains are unreliable — VM pause/resume and NTP drift "
                 "are common causes. Same-statement single-domain comparisons (this "
                 "suite's timing tests) are unaffected."

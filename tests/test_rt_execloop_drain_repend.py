@@ -23,7 +23,7 @@ setting ``started_at``), so the existing pin never exercises the real claim
 shape and passes while the real drain re-pends nothing.
 """
 
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from typing import cast
 from uuid import UUID
 
@@ -82,7 +82,24 @@ async def test_drain_re_pends_dispatch_claimed_rows(pg_dsn: str) -> None:
         await conn.execute(f'CREATE SCHEMA "{schema}"')
         await apply_pending(conn, schema=schema)
         await seed_actors(conn, schema)
-        job_ids: list[UUID] = [await create_pending_job(conn, schema) for _ in range(3)]
+        # Stamp the rows due 60 s in the past — the dispatch family's clock
+        # discipline (test_dispatch_window_expansion.py seeds the same
+        # margin): the claim CTE's candidacy predicate compares
+        # scheduled_at against the DATABASE clock (statement_timestamp()),
+        # while create_pending_job's default stamps the APPLICATION clock
+        # — a cross-domain comparison that reads not-yet-due whenever the
+        # container clock lags the host by more than the seed-to-claim
+        # gap (observed in a coverage-weighted full run as "dispatch must
+        # claim 3 rows, got 0", the widened gap letting a sub-second lag
+        # flip all three rows). A 60 s past stamp keeps the row due under
+        # any divergence the suite's own conftest clock diagnostic treats
+        # as plausible — time controlled at the seed, never a wait.
+        job_ids: list[UUID] = [
+            await create_pending_job(
+                conn, schema, scheduled_at=datetime.now(UTC) - timedelta(seconds=60)
+            )
+            for _ in range(3)
+        ]
 
         # Claim exactly as the worker's producer does: the real dispatch CTE,
         # which stamps started_at = clock_timestamp() AT CLAIM.
