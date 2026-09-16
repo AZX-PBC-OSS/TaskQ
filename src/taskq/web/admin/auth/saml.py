@@ -7,7 +7,7 @@ when :func:`create_saml_auth` is called without the extra.
 """
 
 import time
-from typing import Any
+from typing import Any, Literal
 
 import structlog
 from fastapi import APIRouter, Request
@@ -33,6 +33,7 @@ _REQUEST_COOKIE_NAME: str = "taskq_saml_request"
 _REQUEST_MAX_AGE: int = 300
 _REPLAY_CACHE_MAX_ENTRIES: int = 10_000
 _REPLAY_FALLBACK_TTL_SECONDS: int = 3600
+_PENDING_REQUEST_MAX_ENTRIES: int = 10_000
 
 
 class SAMLAuthConfig(BaseModel):
@@ -116,8 +117,25 @@ def _request_serializer(secret: str) -> Any:
     return URLSafeTimedSerializer(secret, salt="taskq-saml-request")
 
 
+def _request_cookie_samesite(secure: bool) -> Literal["lax", "none"]:
+    """SameSite attribute for the AuthnRequest correlation cookie.
+
+    A hosted IdP lives on a different registrable domain, so its ACS POST is
+    cross-site and a browser withholds a cookie marked ``SameSite=Lax`` from
+    it. ``None`` is what makes the correlation cookie arrive, and it is
+    confined to this one short-lived, ACS-path-scoped, HttpOnly cookie: the
+    session cookie is the standing credential for the whole admin mount and
+    keeps its non-cross-site policy.
+
+    ``SameSite=None`` without ``Secure`` is rejected outright by browsers, so
+    a plain-http dev deployment keeps ``Lax`` -- there is no cross-site IdP to
+    serve in that configuration anyway.
+    """
+    return "none" if secure else "lax"
+
+
 def _issue_request_cookie(
-    response: Response, secret: str, request_id: str, *, secure: bool
+    response: Response, secret: str, request_id: str, *, secure: bool, path: str
 ) -> None:
     response.set_cookie(
         _REQUEST_COOKIE_NAME,
@@ -125,7 +143,8 @@ def _issue_request_cookie(
         max_age=_REQUEST_MAX_AGE,
         httponly=True,
         secure=secure,
-        samesite="lax",
+        samesite=_request_cookie_samesite(secure),
+        path=path,
     )
 
 
@@ -144,47 +163,110 @@ def _read_request_cookie(cookie: str, secret: str) -> str | None:
     return request_id
 
 
-def _clear_request_cookie(response: Response, secure: bool) -> None:
-    response.delete_cookie(_REQUEST_COOKIE_NAME, httponly=True, secure=secure, samesite="lax")
+def _clear_request_cookie(response: Response, secure: bool, path: str) -> None:
+    response.delete_cookie(
+        _REQUEST_COOKIE_NAME,
+        httponly=True,
+        secure=secure,
+        samesite=_request_cookie_samesite(secure),
+        path=path,
+    )
+
+
+class _ExpiringIdSet:
+    """Process-local set of SAML correlation IDs, each with its own expiry.
+
+    Both SAML ID gates need the same store: a bounded set of IDs that ages out
+    on its own. Entries past their expiry are dropped on every touch — an ID
+    past its window is already refused on the assertion's own timestamps, so
+    pruning it loses nothing — and the set is capped, evicting the
+    soonest-to-expire entry, so a flood of IDs cannot grow it without bound.
+
+    Process-local: a multi-process deployment runs one set per process, so a
+    presentation routed to a sibling process is not seen here. That is why
+    these gates sit alongside, not instead of, the signature and timestamp
+    validation that holds in every process.
+    """
+
+    def __init__(self, max_entries: int) -> None:
+        self._max_entries = max_entries
+        self._expiry_by_id: dict[str, float] = {}
+
+    def add(self, identifier: str, expiry: float, *, now: float) -> None:
+        self._prune_expired(now)
+        if len(self._expiry_by_id) >= self._max_entries:
+            soonest = min(self._expiry_by_id, key=self._expiry_by_id.__getitem__)
+            del self._expiry_by_id[soonest]
+        self._expiry_by_id[identifier] = expiry
+
+    def contains(self, identifier: str, *, now: float) -> bool:
+        self._prune_expired(now)
+        return identifier in self._expiry_by_id
+
+    def discard(self, identifier: str) -> None:
+        self._expiry_by_id.pop(identifier, None)
+
+    def _prune_expired(self, now: float) -> None:
+        expired = [key for key, expiry in self._expiry_by_id.items() if expiry <= now]
+        for key in expired:
+            del self._expiry_by_id[key]
 
 
 class _AssertionReplayCache:
-    """Process-local record of consumed assertion IDs, one instance per bundle.
+    """Record of consumed assertion IDs, one instance per bundle.
 
     A SAML assertion is single-use: once one has minted a session, a second
-    presentation of the same ID is a replay. The record lives in this process
-    only — a multi-process deployment runs one cache per process, so a replay
-    routed to a sibling process is not caught here; the InResponseTo binding
-    (every accepted assertion must answer this browser's own AuthnRequest) is
-    the check that does not depend on process locality. Entries expire with
-    their assertion's NotOnOrAfter — past that window the assertion is already
-    rejected on its timestamps, so pruning its ID loses nothing — and the
-    cache is capped, evicting the soonest-to-expire entry, so it can never
-    grow without bound.
+    presentation of the same ID is a replay. Entries expire with their
+    assertion's NotOnOrAfter.
     """
 
     def __init__(self) -> None:
-        self._expiry_by_assertion_id: dict[str, float] = {}
+        self._consumed = _ExpiringIdSet(_REPLAY_CACHE_MAX_ENTRIES)
 
     def consume(self, assertion_id: str, not_on_or_after: float | None, *, now: float) -> None:
         """Record an assertion ID as consumed; a second consume of the same ID raises."""
-        self._prune_expired(now)
-        if assertion_id in self._expiry_by_assertion_id:
+        if self._consumed.contains(assertion_id, now=now):
             raise ValueError("SAML assertion replayed")
         expiry = (
             not_on_or_after if not_on_or_after is not None else now + _REPLAY_FALLBACK_TTL_SECONDS
         )
-        if len(self._expiry_by_assertion_id) >= _REPLAY_CACHE_MAX_ENTRIES:
-            soonest = min(
-                self._expiry_by_assertion_id, key=self._expiry_by_assertion_id.__getitem__
-            )
-            del self._expiry_by_assertion_id[soonest]
-        self._expiry_by_assertion_id[assertion_id] = expiry
+        self._consumed.add(assertion_id, expiry, now=now)
 
-    def _prune_expired(self, now: float) -> None:
-        expired = [aid for aid, expiry in self._expiry_by_assertion_id.items() if expiry <= now]
-        for assertion_id in expired:
-            del self._expiry_by_assertion_id[assertion_id]
+
+class _PendingAuthnRequests:
+    """Record of AuthnRequest IDs this process issued and has not yet answered.
+
+    The correlation cookie binds an accepted assertion to the very browser
+    that started the login, which is the stronger property and stays the
+    preferred path. It cannot be the only path: the cookie rides a cross-site
+    POST from a hosted IdP, and a browser may withhold it however the cookie
+    is marked (third-party cookie blocking, a privacy mode, a redirect chain
+    that drops it). Without a second binding those deployments cannot log in
+    at all.
+
+    So an assertion arriving with no usable cookie is accepted only if, after
+    full signature and timestamp validation, its InResponseTo names an
+    AuthnRequest this process issued and has not yet spent. That keeps the
+    property the cookie gate was protecting -- no assertion answering a login
+    this deployment never started can mint a session, so a captured or
+    IdP-initiated response is still refused -- while losing only the
+    narrower binding to one browser. IDs expire with the AuthnRequest's own
+    lifetime and are spent on first use, so the window is a single login
+    attempt wide.
+    """
+
+    def __init__(self) -> None:
+        self._issued = _ExpiringIdSet(_PENDING_REQUEST_MAX_ENTRIES)
+
+    def issue(self, request_id: str, *, now: float) -> None:
+        self._issued.add(request_id, now + _REQUEST_MAX_AGE, now=now)
+
+    def spend(self, request_id: str, *, now: float) -> bool:
+        """Consume *request_id*; False when this process never issued it (or it aged out)."""
+        if not self._issued.contains(request_id, now=now):
+            return False
+        self._issued.discard(request_id)
+        return True
 
 
 def create_saml_auth(config: SAMLAuthConfig, *, base_path: str = "") -> AuthBundle:
@@ -208,8 +290,14 @@ def create_saml_auth(config: SAMLAuthConfig, *, base_path: str = "") -> AuthBund
         cookie_path=base_path or "/",
     )
     login_path = f"{base_path}/login"
+    # Scoped to the ACS route alone: the correlation cookie is marked for
+    # cross-site delivery, so every path it is offered on is a path a
+    # third-party page can cause it to be sent to. It is needed on exactly
+    # one.
+    callback_path = f"{base_path}/callback"
     settings_dict = _build_settings(config)
     replay_cache = _AssertionReplayCache()
+    pending_requests = _PendingAuthnRequests()
     router = APIRouter(tags=["sso-saml"])
 
     @router.get("/login")
@@ -221,12 +309,18 @@ def create_saml_auth(config: SAMLAuthConfig, *, base_path: str = "") -> AuthBund
             if not isinstance(request_id, str) or not request_id:
                 raise ValueError("AuthnRequest has no ID")
             response = RedirectResponse(url=sso_url, status_code=302)
-            # The callback accepts only an assertion answering the AuthnRequest
-            # this login minted; the ID travels to the browser in a signed
-            # cookie because the ACS POST returns through the browser, not
-            # through this process.
+            # The callback accepts only an assertion answering an AuthnRequest
+            # this login minted. The ID is recorded twice: in a signed cookie,
+            # which binds the answer to this very browser, and in the pending
+            # set, which still holds when the browser withholds that cookie on
+            # the IdP's cross-site POST.
+            pending_requests.issue(request_id, now=time.time())
             _issue_request_cookie(
-                response, config.session_secret, request_id, secure=config.secure_cookie
+                response,
+                config.session_secret,
+                request_id,
+                secure=config.secure_cookie,
+                path=callback_path,
             )
             return response
         except Exception:
@@ -242,17 +336,19 @@ def create_saml_auth(config: SAMLAuthConfig, *, base_path: str = "") -> AuthBund
     @router.post("/callback")
     async def callback(request: Request) -> Response:  # pyright: ignore[reportUnusedFunction]  # Why: registered via FastAPI decorator.
         try:
-            # The ACS endpoint answers this browser's own AuthnRequest and
-            # nothing else: the cookie gate below refuses POSTs with no
-            # pending request before any signature work, and the
-            # InResponseTo equality check after signature validation binds
-            # the accepted response to the request /login issued.
+            # Every accepted assertion answers an AuthnRequest this deployment
+            # issued. The correlation cookie carries that ID when the browser
+            # sent it, and is then the binding python3-saml itself enforces.
+            # When it is absent the response is still validated in full first,
+            # and only its VALIDATED InResponseTo is then looked up in the
+            # pending set -- so the unsigned parts of an attacker's POST never
+            # decide which AuthnRequest it is allowed to answer.
             request_cookie = request.cookies.get(_REQUEST_COOKIE_NAME)
-            if not request_cookie:
-                raise ValueError("no pending SAML AuthnRequest for this browser")
-            request_id = _read_request_cookie(request_cookie, config.session_secret)
-            if request_id is None:
-                raise ValueError("invalid SAML AuthnRequest cookie")
+            request_id = (
+                _read_request_cookie(request_cookie, config.session_secret)
+                if request_cookie
+                else None
+            )
 
             form = await request.form()
             post_data: dict[str, str] = {}
@@ -269,10 +365,16 @@ def create_saml_auth(config: SAMLAuthConfig, *, base_path: str = "") -> AuthBund
             # python3-saml compares InResponseTo only when the response
             # carries one, so an IdP-initiated response (no InResponseTo)
             # would pass process_response unanswered to any AuthnRequest;
-            # only this equality check refuses that shape.
+            # only this check refuses that shape.
             in_response_to = auth.get_last_response_in_response_to()
-            if in_response_to != request_id:
+            if not isinstance(in_response_to, str) or not in_response_to:
+                raise ValueError("SAML response answers no AuthnRequest")
+            if request_id is not None and in_response_to != request_id:
                 raise ValueError("SAML response does not answer this browser's AuthnRequest")
+            # Spent whichever gate admitted it: the ID is single-use either
+            # way, so a second POST of the same response finds nothing pending.
+            if not pending_requests.spend(in_response_to, now=time.time()):
+                raise ValueError("SAML response answers no pending AuthnRequest")
 
             # An assertion whose InResponseTo is absent (or otherwise valid but
             # captured) can be re-POSTed while its window is live; only a
@@ -325,12 +427,12 @@ def create_saml_auth(config: SAMLAuthConfig, *, base_path: str = "") -> AuthBund
             session_manager.set_session_cookie(response, identity)
             # The AuthnRequest ID is single-use: drop it whether the callback
             # succeeded or failed, so a second POST must begin a new login.
-            _clear_request_cookie(response, config.secure_cookie)
+            _clear_request_cookie(response, config.secure_cookie, callback_path)
             return response
         except Exception:
             logger.exception("saml-callback-error")
             resp = _error_redirect(base_path)
-            _clear_request_cookie(resp, config.secure_cookie)
+            _clear_request_cookie(resp, config.secure_cookie, callback_path)
             return resp
 
     @router.get("/logout")

@@ -183,6 +183,31 @@ def test_libpq_keyword_value_dsn_password_is_masked(raw: str) -> None:
     assert "user=app" in safe
 
 
+@pytest.mark.parametrize(
+    ("raw", "leaked"),
+    [
+        ("host=db user=app password='hun ter2'", "ter2"),
+        # libpq quoting honours \' and \\ escapes inside the quotes.
+        (r"host=db user=app password='it\'s secret'", "secret"),
+        ("host=db user=app PASSWORD='hun ter2'", "ter2"),
+    ],
+    ids=["quoted-with-space", "escaped-quote-inside", "quoted-uppercase-name"],
+)
+def test_libpq_quoted_password_value_is_masked(raw: str, leaked: str) -> None:
+    """libpq single-quotes a value that carries spaces (``password='a b'``).
+
+    A value class that stops at whitespace masks ``'hun`` and ships
+    ``ter2'`` — most of the credential verbatim. The mask must consume the
+    whole quoted value instead, escapes (``\\'``, ``\\\\``) included.
+    """
+    safe = safe_exception_message(Exception(raw))
+    assert leaked not in safe
+    assert "password=***" in safe.lower()
+    # Structural, non-secret keywords survive so the message stays diagnostic.
+    assert "host=db" in safe
+    assert "user=app" in safe
+
+
 def test_query_param_password_containing_at_sign_is_fully_masked() -> None:
     # A password may legally contain an unencoded `@`. If the masked value
     # class treats `@` as a boundary it stops early and the tail of the secret
@@ -306,6 +331,75 @@ def test_stacktrace_is_redacted_including_chained_causes() -> None:
     assert "s3cret" not in trace
     # Still a usable traceback.
     assert "RuntimeError" in trace
+    assert "UniqueViolationError" in trace
+
+
+def test_stacktrace_is_redacted_inside_an_exception_group() -> None:
+    """``traceback.format_exception`` prefixes every line of a sub-exception
+    inside an ``ExceptionGroup`` with a ``| `` marker, which a line-anchored
+    ``^DETAIL:`` pattern does not see through -- the row value must still be
+    dropped once that marker is stripped away."""
+    inner_exc = _unique_violation(
+        "Key (idempotency_key)=(" + "customer-90210" + ") already exists."
+    )
+    try:
+        try:
+            raise inner_exc
+        except asyncpg.exceptions.UniqueViolationError as inner:
+            raise ExceptionGroup("group", [inner]) from None
+    except ExceptionGroup as group:
+        span = _RecordingSpan()
+        record_exception_safe(span, group)  # type: ignore[arg-type]  # Why: structural stand-in for opentelemetry Span.
+
+    _, attrs = span.events[0]
+    trace = attrs["exception.stacktrace"]
+    assert "customer-90210" not in trace
+    # Still a usable traceback.
+    assert "ExceptionGroup" in trace
+    assert "UniqueViolationError" in trace
+
+
+def test_stacktrace_is_redacted_inside_a_nested_exception_group() -> None:
+    """A group inside a group deepens the ``| `` prefix (more leading
+    whitespace, repeated markers); the scrub must not be anchored to a
+    single prefix depth."""
+    inner_exc = _unique_violation("Key (identity_key)=(" + "tenant-55512" + ") already exists.")
+    try:
+        try:
+            try:
+                raise inner_exc
+            except asyncpg.exceptions.UniqueViolationError as inner:
+                raise ExceptionGroup("inner-group", [inner]) from None
+        except ExceptionGroup as inner_group:
+            raise ExceptionGroup("outer-group", [inner_group]) from None
+    except ExceptionGroup as outer_group:
+        span = _RecordingSpan()
+        record_exception_safe(span, outer_group)  # type: ignore[arg-type]  # Why: structural stand-in for opentelemetry Span.
+
+    _, attrs = span.events[0]
+    trace = attrs["exception.stacktrace"]
+    assert "tenant-55512" not in trace
+    assert "ExceptionGroup" in trace
+    assert "UniqueViolationError" in trace
+
+
+def test_stacktrace_is_redacted_under_except_star() -> None:
+    """``except*`` is the idiomatic way TaskQ's own ``TaskGroup`` siblings
+    catch ExceptionGroup; confirm the scrub holds on the exception it binds,
+    not only on a group constructed and caught with plain ``except``."""
+    inner_exc = _unique_violation("Key (fairness_key)=(" + "acme-77821" + ") already exists.")
+    try:
+        try:
+            raise inner_exc
+        except asyncpg.exceptions.UniqueViolationError as inner:
+            raise ExceptionGroup("group", [inner]) from None
+    except* asyncpg.exceptions.UniqueViolationError as caught:
+        span = _RecordingSpan()
+        record_exception_safe(span, caught)  # type: ignore[arg-type]  # Why: structural stand-in for opentelemetry Span.
+
+    _, attrs = span.events[0]
+    trace = attrs["exception.stacktrace"]
+    assert "acme-77821" not in trace
     assert "UniqueViolationError" in trace
 
 
@@ -591,6 +685,85 @@ def test_repr_flattened_detail_line_is_scrubbed_but_hint_survives() -> None:
     # Sensible single-line shape: the class, the primary template and the HINT
     # survive, and the repr's closing quote is kept rather than amputated.
     assert safe == "RuntimeError('some failure\\nHINT:  try another identity_key')"
+
+
+def test_repr_flattened_detail_inside_an_exception_group_is_scrubbed() -> None:
+    """A repr()-flattened ExceptionGroup still loses the DETAIL.
+
+    repr() of a group closes the sub-exception's message with a RUN of
+    closers — ``')])``: the exception's own ``')``, then the group's ``]``
+    and ``)`` — so a scrub terminator that admits only a lone ``')`` at
+    end-of-line never matches, and the row value ships verbatim.
+    """
+    from taskq.obs._redact_exc import scrub_exception_field
+
+    secret = "subject-31337"
+    group = ExceptionGroup(
+        "group",
+        [
+            RuntimeError(
+                "some failure\nDETAIL:  Key (identity_key)=(" + secret + ") already exists."
+            )
+        ],
+    )
+    flattened = repr(group)
+    # Precondition: the flattened form really does leak, or this test proves nothing.
+    assert secret in flattened
+
+    safe = scrub_exception_field("error", flattened)
+    assert isinstance(safe, str)  # Why: narrows the object return for the membership asserts.
+
+    # Exact shape: the group structure and primary message survive, the closers
+    # are kept, and only the DETAIL payload is gone.
+    assert safe == "ExceptionGroup('group', [RuntimeError('some failure')])"
+
+
+def test_repr_flattened_detail_inside_a_nested_exception_group_is_scrubbed() -> None:
+    """Each nesting level adds a ``])`` to the repr's closing run; the scrub
+    must not be anchored to one fixed run length."""
+    from taskq.obs._redact_exc import scrub_exception_field
+
+    secret = "tenant-55512"
+    group = ExceptionGroup(
+        "outer",
+        [
+            ExceptionGroup(
+                "inner",
+                [
+                    RuntimeError(
+                        "some failure\nDETAIL:  Key (identity_key)=(" + secret + ") exists."
+                    )
+                ],
+            )
+        ],
+    )
+    flattened = repr(group)
+    # Precondition: the flattened form really does leak, or this test proves nothing.
+    assert secret in flattened
+
+    safe = scrub_exception_field("error", flattened)
+    assert isinstance(safe, str)  # Why: narrows the object return for the membership asserts.
+
+    assert (
+        safe == "ExceptionGroup('outer', [ExceptionGroup('inner', [RuntimeError('some failure')])])"
+    )
+
+
+def test_repr_flattened_detail_without_a_safe_terminator_is_scrubbed_anyway() -> None:
+    """A DETAIL whose tail matches no safe delimiter is scrubbed through end
+    of line rather than shipped: a redaction miss must delete more text,
+    never less of the secret."""
+    from taskq.obs._redact_exc import scrub_exception_field
+
+    secret = "subject-31337"
+    # Unterminated repr: no closing quote and no further escaped newline, so
+    # neither precise terminator can fire.
+    flattened = "RuntimeError('some failure\\nDETAIL:  Key (identity_key)=(" + secret
+
+    safe = scrub_exception_field("error", flattened)
+    assert isinstance(safe, str)  # Why: narrows the object return for the membership asserts.
+
+    assert safe == "RuntimeError('some failure"
 
 
 def test_scrub_preserves_non_detail_escaped_newlines() -> None:
