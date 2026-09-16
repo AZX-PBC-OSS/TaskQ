@@ -373,29 +373,69 @@ class TokenBucket:
         marking rule)."""
         return self._keyed
 
-    def holds_consumed_memory_quota(self) -> bool:
-        """True if idle-evicting this bucket's registry entry would silently reset a consumed fixed quota.
+    def _state_payload(self, tokens: float, now: float) -> dict[str, object]:
+        """The ``rate_limit_buckets.state`` document for this bucket.
 
-        Only the memory backend stores token state on the instance
-        (``_mem_bucket``); Redis and PG keep state in the store — Redis
-        deliberately for 24 h for fixed-quota buckets (see
-        ``_compute_ttl_seconds``) — so a re-materialized bucket seamlessly
-        resumes prior state there, and eviction of those backends' registry
-        entries is always state-safe.
+        ``capacity`` and ``refill`` ride along with the accumulator so the
+        row is self-describing: the leader's fleet sweep decides whether
+        deleting a row would destroy live state, and it has only the row —
+        no instance, no actor config. Without them a fixed quota
+        (``refill == 0``) that has been partly spent is indistinguishable
+        from an ordinary idle bucket, and deleting it lets the next
+        acquire re-preseed at full capacity, over-admitting against a
+        budget that was already spent. Rows written before these keys
+        existed simply carry neither, and the sweep's veto treats a row it
+        cannot prove safe to delete as one it must keep.
+        """
+        return {
+            "tokens": tokens,
+            "ts": now,
+            "capacity": self._capacity,
+            "refill": self._refill,
+        }
 
-        For a memory fixed-quota (``refill_per_second == 0``) bucket that
-        has consumed any of its quota, eviction destroys that state
-        permanently: the next acquire materializes a fresh instance at FULL
-        capacity, silently resetting a quota designed to never refill.
-        (Refilling buckets are not exempt: their state converges back
-        toward full on its own, so eviction loses at most one refill
-        window's worth of tokens — an accepted, bounded divergence.)
+    def holds_consumed_quota(self) -> bool:
+        """True if idle-evicting this bucket would silently reset a consumed fixed quota.
+
+        Idle eviction exists to bound registry growth, not to hand back
+        capacity a tenant already spent. A fixed quota
+        (``refill_per_second == 0``) is drained forever by design, so
+        nothing about it recovers on its own and idleness is never
+        evidence that it is safe to discard. Refilling buckets are not
+        exempt: their state converges back toward full anyway, so eviction
+        loses at most one refill window's worth of tokens — an accepted,
+        bounded divergence.
+
+        What eviction destroys differs by where the state lives, and both
+        shapes lose the same budget:
+
+        * **memory** — token state lives on the instance, so eviction
+          discards it and the next acquire materializes at FULL capacity.
+          The instance is right here, so the exemption is exact: only a
+          bucket that has actually spent some quota is held.
+        * **postgres** — the ``rate_limit_buckets`` row IS the state, and
+          eviction's reclaim drain deletes it; the next acquire re-preseeds
+          via ``ON CONFLICT DO NOTHING`` at full capacity. Remaining tokens
+          are not readable without a round trip on this synchronous path,
+          so every PG fixed-quota bucket is held. Holding an unspent one
+          costs a registry entry; dropping a spent one over-admits against
+          a budget that is gone.
+
+        Redis keeps fixed-quota state for 24 h of its own accord (see
+        ``_compute_ttl_seconds``), so a re-materialized bucket resumes
+        prior state there and eviction is state-safe.
 
         Reads ``_tokens`` without the bucket's async lock; safe because the
         only caller (the registry's idle-eviction sweep) runs synchronously
         in the event loop with no await between this read and the dict pop,
         so the value is consistent at the sweep instant.
         """
+        if self._refill != 0.0:
+            return False
+        if self._backend == "postgres":
+            return True
+        if self._backend != "memory":
+            return False
         # Why the protected read: _InMemoryBucket._tokens is this module's
         # own accumulator, and the registry's idle-eviction sweep (the
         # only caller) runs synchronously with no await between this read
@@ -407,12 +447,7 @@ class TokenBucket:
             if self._mem_bucket is not None
             else None
         )
-        return (
-            self._backend == "memory"
-            and self._refill == 0.0
-            and tokens is not None
-            and tokens < self._capacity
-        )
+        return tokens is not None and tokens < self._capacity
 
     async def acquire(
         self,
@@ -807,7 +842,7 @@ class TokenBucket:
             tokens = min(self._capacity, tokens + elapsed * self._refill)
             tokens = min(self._capacity, tokens + count)
 
-            state_param = jsonb_param({"tokens": tokens, "ts": now})
+            state_param = jsonb_param(self._state_payload(tokens, now))
             await conn.execute(update_sql, state_param, self._name)
 
     async def _acquire_memory(self, count: float, clock: Clock | None) -> RateLimitDecision:
@@ -956,7 +991,7 @@ class TokenBucket:
             f"VALUES ($1, 'token_bucket', "
             f"jsonb_build_object('tokens', $2::float8, "
             f"'ts', EXTRACT(EPOCH FROM clock_timestamp()), "
-            f"'capacity', $2::float8, 'refill_per_second', $4::float8), "
+            f"'capacity', $4::float8, 'refill', $5::float8), "
             f"clock_timestamp(), $3, clock_timestamp()) "
             f"ON CONFLICT (bucket_name) DO NOTHING"
         )
@@ -990,7 +1025,12 @@ class TokenBucket:
                 # (idempotent — DO NOTHING on conflict) so the very first
                 # acquire also serializes on the row lock below.
                 await conn.execute(
-                    preseed_sql, self._name, self._capacity, self._keyed, self._refill
+                    preseed_sql,
+                    self._name,
+                    self._capacity,
+                    self._keyed,
+                    self._capacity,
+                    self._refill,
                 )
                 return await conn.fetchrow(select_sql, self._name)
 
@@ -1093,21 +1133,14 @@ class TokenBucket:
             # _jsonb_param serializes via orjson — passing a dict directly
             # to conn.execute fails because asyncpg does not auto-encode
             # Python dicts as jsonb.
-            # capacity and refill_per_second ride the state so the row can
-            # be judged without the bucket's declaration: the fleet-reclaim
-            # sweep and the eviction drain both need to know whether an idle
-            # row still carries consumed quota, and a fixed quota
-            # (refill_per_second = 0) never recovers on its own — deleting
-            # such a row lets the next acquire re-preseed at full capacity
-            # and re-admit a budget the tenant already spent.
-            state_param = jsonb_param(
-                {
-                    "tokens": tokens,
-                    "ts": now,
-                    "capacity": self._capacity,
-                    "refill_per_second": self._refill,
-                }
-            )
+            # capacity and refill ride the state (see _state_payload) so
+            # the row can be judged without the bucket's declaration: the
+            # fleet-reclaim sweep and the eviction drain both need to know
+            # whether an idle row still carries consumed quota, and a
+            # fixed quota (refill = 0) never recovers on its own —
+            # deleting such a row lets the next acquire re-preseed at full
+            # capacity and re-admit a budget the tenant already spent.
+            state_param = jsonb_param(self._state_payload(tokens, now))
             # updated_at, the state ts, and the fleet-reclaim stamps
             # (last_used_at refresh, keyed re-mark) are all server-domain
             # now

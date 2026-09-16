@@ -701,19 +701,24 @@ expired_outbox AS MATERIALIZED (
     -- makes the predicate NULL-false — an ordinary row this arm must not
     -- touch, correctly left to the main window above.
     --
-    -- ORDER BY id, not (occurred_at, id): id and occurred_at are
-    -- co-monotonic by the visibility-delay doctrine (constants.py
-    -- RECLAIM_EVENT_VISIBILITY_DELAY), so id order IS oldest-first here,
-    -- and the partial index is keyed on id — the ordered scan follows
-    -- the index and stops at the LIMIT, no top-N sort over the filtered
-    -- population. The scan cost is bounded by the outbox population
-    -- itself (unconsumed lock_expired rows), and this arm is what keeps
-    -- that population bounded — a self-draining set.
+    -- ORDER BY (occurred_at, id) pins the scan to job_events_reclaim_age_idx,
+    -- which is keyed on exactly those columns under this arm's verbatim
+    -- partial predicate: the age bound becomes an Index Cond that stops at
+    -- the boundary instead of a post-scan Filter over the whole unconsumed
+    -- outbox population, which is what makes a drained tick's cost flat in
+    -- that population rather than proportional to it. id and occurred_at
+    -- are co-monotonic by the visibility-delay doctrine (constants.py
+    -- RECLAIM_EVENT_VISIBILITY_DELAY), so this is the same oldest-first
+    -- drain order the id-keyed scan gave. The sibling
+    -- job_events_reclaim_idx stays keyed on id alone for the poll's
+    -- `id > cursor` tail. The scan cost is bounded by the outbox
+    -- population itself, and this arm is what keeps that population
+    -- bounded — a self-draining set.
     SELECT id
     FROM "{schema}".job_events
     WHERE kind = 'state_change' AND (detail->>'reason') = 'lock_expired'
       AND occurred_at < statement_timestamp() - $1::interval * {outbox_multiplier}
-    ORDER BY id
+    ORDER BY occurred_at, id
     LIMIT $2
 ),
 to_delete AS (
@@ -806,7 +811,17 @@ SELECT a.job_id, a.attempt,
        'failed', 'DeadlineExceeded', 'schedule_to_close reached before next dispatch',
        NULL, a.duration_ms, NULL, '{{}}'::jsonb
 FROM unnest($1::uuid[], $2::smallint[], $3::timestamptz[], $4::int[])
-    WITH ORDINALITY AS a(job_id, attempt, started_at, duration_ms, ord)"""
+    WITH ORDINALITY AS a(job_id, attempt, started_at, duration_ms, ord)
+-- A pending/scheduled row can legitimately sit at an attempt number that
+-- already ran: the transient-retry arm, a crash reclaim, and an operator
+-- retry all leave the spent attempt's row behind and keep the counter
+-- where it is. Dispatch excludes rows past schedule_to_close, so that
+-- counter can never climb again and this sweep is the only thing that can
+-- resolve the job. The existing row is the truthful record of what the
+-- actor actually did; the deadline lapsing afterwards is not a second
+-- execution, so the synthetic row yields to it rather than colliding and
+-- rolling back every sibling swept in the same statement.
+ON CONFLICT (job_id, attempt) DO NOTHING"""
 
 
 class _ReclaimedRow(NamedTuple):
@@ -1573,22 +1588,37 @@ _SWEEP_IDLE_KEYED_BUCKETS_BODY = """\
 -- duplicate sweep (or an acquire flipping the mark between window and
 -- DELETE) a no-op rather than a count-inflating rewrite — same shape
 -- as _SWEEP_EVENT_TTL_SQL.
+-- The consumed-fixed-quota veto is this table's analogue of the
+-- reservation_slots arm's whole-bucket vetoes: idleness alone is not
+-- evidence that a row is safe to delete. A fixed quota (refill 0) is
+-- drained forever by design, so a row that has spent part of one carries
+-- live state no elapsed time recovers. Deleting it lets the next
+-- acquire re-preseed at full capacity, over-admitting against a budget
+-- that was already spent, and a fixed-quota bucket has no lease or hold
+-- concept for any other guard to catch this. The bucket's own writes
+-- carry capacity and refill into state for exactly this decision.
 --
--- Idleness alone is not evidence that a row is safe to delete, which is
--- what the sibling reservation_slots arm's whole-bucket veto encodes.
--- The analogue here is the bucket's own quota state: a fixed quota
--- (refill_per_second = 0) is drained forever by design, so a row still
--- short of its capacity carries live consumed state however long nobody
--- has touched it. Deleting it lets the next acquire re-preseed via ON
--- CONFLICT DO NOTHING at full capacity, over-admitting against a budget
--- that was already spent, and there is no lease or hold concept here to
--- cover the case. A refilling bucket needs no veto: its tokens converge
--- back to capacity on their own, so an idle row past the horizon is
--- genuinely spent-free. Rows written before capacity and the refill rate
--- rode the state read as refilling (the COALESCE default), which is the
--- safe direction for a table whose pre-upgrade rows are overwhelmingly
--- the refilling kind and whose fixed-quota rows re-acquire into the new
--- shape on first use.
+-- The veto is fail-CLOSED on missing keys. A row is deleted only when
+-- the sweep can PROVE the delete is safe, and the proofs are exactly:
+--   (state->>'tokens') IS NULL — the row carries no token count at all
+--     (the keyed publish path writes an empty state document until the
+--     first acquire), so deleting it loses nothing;
+--   refill provably nonzero — a refilling bucket's state converges back
+--     to full on its own, so eviction forfeits at most a refill window;
+--   refill provably zero AND tokens provably at capacity — a fixed quota
+--     nothing was ever spent from, so the re-preseed reproduces the
+--     stored state instead of resetting it.
+-- Every other shape is kept: a row written before the capacity/refill
+-- keys existed carries a token count with nothing to evaluate it against
+-- (a partly spent fixed quota and a refilling bucket look identical), and
+-- a row the sweep cannot prove safe to delete is one it keeps. NULL
+-- three-valued logic does the keeping — every probe on a missing key
+-- reads NULL, and NULL satisfies no proof. The kept legacy population is
+-- bounded: the first acquire after the keys existed rewrites the row
+-- with the full document, so only rows nothing has touched since stay
+-- unprovable. The predicate itself is shared verbatim with the
+-- per-worker eviction drain via _no_consumed_quota_sql, so the two
+-- delete paths cannot disagree about which rows are safe.
 WITH expired AS MATERIALIZED (
     SELECT bucket_name
     FROM "{schema}".rate_limit_buckets
@@ -1608,18 +1638,26 @@ RETURNING b.bucket_name"""
 
 
 def _no_consumed_quota_sql(alias: str = "") -> str:
-    """Whether a ``rate_limit_buckets`` row is free of spent quota.
+    """Fail-closed proof that a ``rate_limit_buckets`` row is safe to delete.
 
     The one place this question is asked, shared by the fleet sweep and
     the per-worker eviction drain so the two cannot disagree about which
     rows are safe to delete.  *alias* qualifies the ``state`` column for
     a statement that has one.
+
+    Fail-CLOSED on missing keys (see the sweep body's comment for the
+    full proof table): a delete fires only when the row provably carries
+    no token count, or provably refills, or provably holds a fixed quota
+    nothing was ever spent from.  Every probe on a missing key reads
+    NULL, NULL satisfies no proof, and a row the predicate cannot prove
+    safe is kept.
     """
     state = f"{alias}.state" if alias else "state"
     return (
-        f"(COALESCE(({state}->>'refill_per_second')::double precision, 1) > 0 "
-        f"OR COALESCE(({state}->>'tokens')::double precision, 0) "
-        f">= COALESCE(({state}->>'capacity')::double precision, 0))"
+        f"(({state}->>'tokens') IS NULL "
+        f"OR ({state}->>'refill')::float8 <> 0 "
+        f"OR (({state}->>'refill')::float8 = 0 "
+        f"AND ({state}->>'tokens')::float8 >= ({state}->>'capacity')::float8))"
     )
 
 
@@ -1705,18 +1743,37 @@ _SWEEP_IDLE_KEYED_SLOTS_SQL = """\
 -- bucket was vetoed anyway, because every writer on these rows either
 -- stamps last_used_at fresh or holds a live lease).
 WITH stale AS MATERIALIZED (
-    SELECT s.bucket_name
+    -- The window must admit only buckets that can actually pass the
+    -- whole-bucket verdict below. A per-row minimum alone admits a live
+    -- bucket whose idle high-index slots are old while its working rows
+    -- are fresh; every such bucket is correctly vetoed, but it occupies a
+    -- window slot and its minimum never advances, so the same live
+    -- buckets refill the window tick after tick and a genuine dead-worker
+    -- orphan behind them is never reached — the sweep deletes nothing
+    -- while an orphan older than the horizon exists. The anti-join drops
+    -- those buckets before the LIMIT, so a bounded batch always carries
+    -- real candidates and the liveness vetoes below stay a concurrency
+    -- re-check rather than the primary filter.
+    --
+    -- Why an anti-join and not HAVING max(last_used_at): a HAVING over the
+    -- grouped set has to aggregate EVERY keyed row before it can filter,
+    -- so the window's cost becomes the fleet's whole live key cardinality
+    -- on every tick. The ordered min() scan still seeks
+    -- reservation_slots_keyed_last_used_idx and stops at the age
+    -- boundary, and the NOT EXISTS probe is an index lookup per candidate
+    -- group — bounded by the window, not by the table.
+    SELECT bucket_name
     FROM "{schema}".reservation_slots s
-    WHERE s.keyed
-      AND s.last_used_at < statement_timestamp() - $1::interval
+    WHERE keyed
+      AND last_used_at < statement_timestamp() - $1::interval
       AND NOT EXISTS (
-          SELECT 1
-          FROM "{schema}".reservation_slots f
-          WHERE f.bucket_name = s.bucket_name
-            AND f.last_used_at >= statement_timestamp() - $1::interval
+        SELECT 1
+        FROM "{schema}".reservation_slots f
+        WHERE f.bucket_name = s.bucket_name
+          AND f.last_used_at >= statement_timestamp() - $1::interval
       )
-    GROUP BY s.bucket_name
-    ORDER BY min(s.last_used_at), s.bucket_name
+    GROUP BY bucket_name
+    ORDER BY min(last_used_at), bucket_name
     LIMIT $2
 ),
 locked AS MATERIALIZED (

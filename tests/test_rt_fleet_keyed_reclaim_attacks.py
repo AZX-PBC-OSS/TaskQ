@@ -695,7 +695,11 @@ async def test_buckets_arm_delete_rechecks_the_stamp_under_a_late_acquire(pg_dsn
 
         # The real acquire-path upsert (token_bucket._acquire_pg's
         # upsert_sql, verbatim), held open inside a transaction: it
-        # locks the row and stamps it fresh, uncommitted.
+        # locks the row and stamps it fresh, uncommitted. The state is the
+        # refilling bucket's full document (this fixture's ref is
+        # capacity=5, refill_per_second=0.5): provably safe to delete, so
+        # only the fresh stamp can spare the row — anything the quota veto
+        # keeps would make this pin blind to a stamp re-check regression.
         upsert_sql = (
             f'INSERT INTO "{_schema()}".rate_limit_buckets '
             f"(bucket_name, kind, state, updated_at, keyed, last_used_at) "
@@ -707,7 +711,12 @@ async def test_buckets_arm_delete_rechecks_the_stamp_under_a_late_acquire(pg_dsn
         conn_a = await asyncpg.connect(pg_dsn)
         try:
             async with conn_a.transaction():
-                await conn_a.execute(upsert_sql, bucket, '{"tokens": 4.0, "ts": 0}', True)
+                await conn_a.execute(
+                    upsert_sql,
+                    bucket,
+                    '{"tokens": 4.0, "ts": 0, "capacity": 5.0, "refill": 0.5}',
+                    True,
+                )
                 sweep_task = asyncio.create_task(_sweep(pg_dsn))
                 await _await_lock_waiter(pool)
                 # Commit: the acquire's fresh stamp is visible — the

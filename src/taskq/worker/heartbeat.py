@@ -342,9 +342,15 @@ async def isolate_self(
                         if parse_rowcount(tag) == 0:
                             lost_race += 1
                             continue
+                        # Mirrors _RECLAIM_HAS_BUDGET_SQL, which the UPDATE
+                        # above applied: an 'indefinite' job's budget is its
+                        # schedule_to_close deadline, not max_attempts.
                         is_pending = (  # pyright: ignore[reportUnknownVariableType]  # Why: row column accessor types unknown — propagates from conn.fetch() suppression.
-                            row["attempt"] < row["max_attempts"]
-                            and row["retry_kind"] != "non_retryable"
+                            row["retry_kind"] != "non_retryable"
+                            and (
+                                row["retry_kind"] == "indefinite"
+                                or row["attempt"] < row["max_attempts"]
+                            )
                         )
                         if is_pending:
                             pending += 1

@@ -209,6 +209,29 @@ def _is_deadline_family(exc: BaseException) -> bool:
     return type(exc) is TimeoutError or isinstance(exc, asyncpg.QueryCanceledError)
 
 
+def _sampler_read_failed(
+    ctx: SweepContext, sampler_name: str, event: str, exc: BaseException
+) -> None:
+    """Report a gauge sampler whose read did not complete.
+
+    A sampler failure is the one failure in this module that leaves no trace
+    an alert rule can read: the gauge it feeds keeps serving its last value,
+    so depth stops rising and age stops growing — the same flat picture a
+    drained queue paints. No job fails and nothing is retried, so the warning
+    below is the only other signal, and warnings are not alertable. Every
+    failure is counted, not just the deadline family a completed-but-aborted
+    sweep reports: for a detector, "the read did not happen" is the whole
+    fault regardless of which error carried it.
+    """
+    record_sweep_timeout(sampler_name)
+    log.warning(
+        event,
+        kind=f"{sampler_name}_sampling_failed",
+        worker_id=str(ctx.worker_id),
+        error=repr(exc),
+    )
+
+
 async def _drain_bounded(
     ctx: SweepContext,
     shutdown: asyncio.Event,
@@ -1318,12 +1341,7 @@ async def _queue_depth_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
                 cache: dict[str, int] = {row["queue"]: row["count"] for row in rows}
                 update_queue_depth_cache(cache)
             except Exception as exc:
-                log.warning(
-                    "queue-depth-sampling-failed",
-                    kind="queue_depth_sampling_failed",
-                    worker_id=str(ctx.worker_id),
-                    error=repr(exc),
-                )
+                _sampler_read_failed(ctx, "queue_depth", "queue-depth-sampling-failed", exc)
         await _sleep_interruptible(shutdown, ctx.deps.settings.queue_depth_interval)
 
 
@@ -1412,12 +1430,7 @@ async def _backlog_detection_loop(ctx: SweepContext, shutdown: asyncio.Event) ->
                 int(expired_lease) if expired_lease is not None else 0
             )
         except Exception as exc:
-            log.warning(
-                "backlog-detection-sampling-failed",
-                kind="backlog_detection_sampling_failed",
-                worker_id=str(ctx.worker_id),
-                error=repr(exc),
-            )
+            _sampler_read_failed(ctx, "backlog_detection", "backlog-detection-sampling-failed", exc)
         await _sleep_interruptible(shutdown, ctx.deps.settings.queue_depth_interval)
 
 
@@ -1447,11 +1460,8 @@ async def _reservation_slots_loop(ctx: SweepContext, shutdown: asyncio.Event) ->
                 cache: dict[str, int] = {row["bucket_name"]: row["count"] for row in rows}
                 update_reservation_slots_cache(cache)
             except Exception as exc:
-                log.warning(
-                    "reservation-slots-sampling-failed",
-                    kind="reservation_slots_sampling_failed",
-                    worker_id=str(ctx.worker_id),
-                    error=repr(exc),
+                _sampler_read_failed(
+                    ctx, "reservation_slots", "reservation-slots-sampling-failed", exc
                 )
         await _sleep_interruptible(shutdown, ctx.deps.settings.reservation_slots_interval)
 
@@ -1469,6 +1479,14 @@ async def _stranded_jobs_loop(ctx: SweepContext, shutdown: asyncio.Event) -> Non
       ``j2.queue = sq.queue_name`` annihilates every other pair), so a
       row on a queue NO registered worker serves is invisible fleet-wide
       while its actor_config row exists and no deadline can fail it.
+      The queue tested is the one dispatch would actually route on, which
+      for a re-pended row (``pending`` with ``started_at`` set) is its
+      actor's stored assignment rather than the label the row carries —
+      that label survives only as an audit trail of where the row was
+      first placed. Testing the label instead reports healthy for exactly
+      the strand a queue move leaves behind when the target queue's
+      consumers were never started: the rows are pending and due, and
+      every label-keyed surface names a queue the fleet does serve.
 
     The unserved-queue predicate is fleet-wide by construction: the
     ``workers`` table carries every registered worker's subscription,
@@ -1515,6 +1533,7 @@ async def _stranded_jobs_loop(ctx: SweepContext, shutdown: asyncio.Event) -> Non
            ) AS unserved_queues
     FROM (
         SELECT r.actor,
+        SELECT r.actor,
                r.routing_queue,
                r.no_actor_config,
                NOT r.no_actor_config
@@ -1524,6 +1543,11 @@ async def _stranded_jobs_loop(ctx: SweepContext, shutdown: asyncio.Event) -> Non
                  ) AS unserved_queue
         FROM (
             SELECT j.actor,
+                   -- The queue dispatch routes on: the actor's stored
+                   -- assignment for a re-pended row, the row's own label
+                   -- otherwise — the assignment_routed marker is the
+                   -- single discriminator (the routing contract in
+                   -- taskq/backend/_dispatch_sql.py).
                    CASE WHEN j.assignment_routed THEN ac.queue ELSE j.queue END
                      AS routing_queue,
                    NOT EXISTS (
@@ -1571,8 +1595,16 @@ async def _stranded_jobs_loop(ctx: SweepContext, shutdown: asyncio.Event) -> Non
             ) as conn:
                 rows = await conn.fetch(sql)
         except Exception as exc:
+            # error_class/error_message (not the shared helper's error=repr(exc))
+            # and the stranded-jobs-query-failed name are a documented log
+            # contract (docs/guides/upgrading.md, "Sub-enqueue failure events
+            # carry error_class/error_message") — preserved here even though
+            # the read-failed-detector shape is otherwise shared.
+            record_sweep_timeout("stranded_jobs")
             log.warning(
                 "stranded-jobs-query-failed",
+                kind="stranded_jobs_query_failed",
+                worker_id=str(ctx.worker_id),
                 error_class=type(exc).__name__,
                 error_message=str(exc),
             )

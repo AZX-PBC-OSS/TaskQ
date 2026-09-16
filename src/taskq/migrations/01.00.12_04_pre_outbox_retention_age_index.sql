@@ -1,0 +1,34 @@
+-- The event-retention sweep's outbox age-cap arm. The crash-reclaim
+-- outbox slice is exempt from ordinary retention so a lagging consumer's
+-- watermark can still reach it, and that arm is the only thing that
+-- bounds the slice. job_events_reclaim_idx is keyed on id alone (its
+-- key order serves the poll's `id > cursor` cursor and must not change),
+-- so the arm's occurred_at bound survives only as a post-scan Filter:
+-- every tick walks the entire unconsumed outbox population and discards
+-- all of it. In a fleet whose reclaim consumer lags or was never stood
+-- up that population grows for the life of the deployment, so the tick
+-- meant to bound the outbox is itself unbounded in the outbox's size —
+-- and the steady-state tick that deletes nothing gets slower forever
+-- until the statement timeout fires and event retention silently stops.
+--
+-- Keyed (occurred_at, id) under the SAME partial predicate: the age
+-- bound becomes an Index Cond that stops at the boundary, and id trails
+-- it so the arm's ordered drain stays index-served. The predicate is
+-- VERBATIM the arm's carve-out (same literals, same parentheses) —
+-- partial-index predicate matching requires the query to repeat the
+-- index's predicate, and the verbatim repeat is the proof the planner
+-- matches it.
+--
+-- Forward-only; there is no down migration. To revert, restore from
+-- backup. The literal "{schema}" token is substituted at apply time by
+-- the migration runner.
+--
+-- Not CONCURRENTLY here: apply_pending wraps every migration in a
+-- transaction and Postgres forbids CREATE INDEX CONCURRENTLY inside a
+-- transaction block. Operators with a large job_events table should run
+-- the equivalent CREATE INDEX CONCURRENTLY IF NOT EXISTS statement
+-- manually during a maintenance window; the IF NOT EXISTS makes this
+-- migration then no-op.
+CREATE INDEX IF NOT EXISTS job_events_reclaim_age_idx
+    ON "{schema}".job_events (occurred_at, id)
+    WHERE kind = 'state_change' AND (detail->>'reason') = 'lock_expired';

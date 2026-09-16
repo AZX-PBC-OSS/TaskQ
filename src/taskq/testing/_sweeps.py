@@ -86,16 +86,16 @@ async def _deadline_sweep(
 ) -> int:
     _validate_positive("batch_size", batch_size)
     now = self._clock.now()
-    # Select the whole bounded batch FIRST: on PG the transition UPDATE,
-    # the batched job_attempts INSERT, and the event INSERT share one
-    # transaction (sweep_deadline_exceeded), so an attempt-row primary-key
-    # collision on ANY selected row aborts the ENTIRE batch — every
-    # selected job stays pending/scheduled, nothing is written. The twin
-    # selects, validates every planned (job_id, attempt) key against the
-    # stored attempt rows and in-batch duplicates, and only then mutates:
-    # a collision raises the same typed UniqueViolationError PG's batched
-    # INSERT raises (job_attempts_pkey), never a silent duplicate append
-    # that completes the transition PG would leave torn down.
+    # A pending/scheduled row can legitimately sit at an attempt number that
+    # already ran: the transient-retry arm, a crash reclaim, and an operator
+    # retry all leave the spent attempt's row behind and keep the counter
+    # where it is. Dispatch excludes rows past schedule_to_close, so that
+    # counter can never climb again and this sweep is the only thing that can
+    # resolve the job. The existing row is the truthful record of what the
+    # actor actually did; the deadline lapsing afterwards is not a second
+    # execution, so the synthetic row yields to it — the twin of PG's
+    # ON CONFLICT (job_id, attempt) DO NOTHING, which also keeps one
+    # already-attempted row from rolling back every sibling swept with it.
     selected: list[tuple[JobId, JobRow]] = []
     for job_id, row in list(self._jobs.items()):
         if len(selected) >= batch_size:
@@ -107,22 +107,7 @@ async def _deadline_sweep(
         ):
             selected.append((job_id, row))
 
-    if selected:
-        # Why a function-level import: the driver-free import-surface
-        # convention (taskq.testing imports no asyncpg at module scope);
-        # this raise path only ever runs where the driver is installed.
-        from asyncpg.exceptions import UniqueViolationError
-
-        _existing = {(a.job_id, a.attempt) for rows in self._attempts.values() for a in rows}
-        _seen: set[tuple[JobId, int]] = set()
-        for job_id, row in selected:
-            _key = (job_id, row.attempt)
-            if _key in _existing or _key in _seen:
-                raise UniqueViolationError(
-                    'duplicate key value violates unique constraint "job_attempts_pkey" '
-                    f"(job {job_id} attempt {row.attempt} already has an attempt row)"
-                )
-            _seen.add(_key)
+    written_keys = {(a.job_id, a.attempt) for rows in self._attempts.values() for a in rows}
 
     count = 0
     for job_id, row in selected:
@@ -133,20 +118,23 @@ async def _deadline_sweep(
             error_class="DeadlineExceeded",
             error_message="schedule_to_close reached before next dispatch",
         )
-        attempt_row = AttemptRow(
-            job_id=job_id,
-            attempt=row.attempt,
-            started_at=row.started_at if row.started_at is not None else now,
-            finished_at=now,
-            outcome="failed",
-            error_class="DeadlineExceeded",
-            error_message="schedule_to_close reached before next dispatch",
-            error_traceback=None,
-            duration_ms=None,
-            worker_id=None,
-            metadata={},
-        )
-        self._attempts.setdefault(job_id, []).append(attempt_row)
+        if (job_id, row.attempt) not in written_keys:
+            written_keys.add((job_id, row.attempt))
+            self._attempts.setdefault(job_id, []).append(
+                AttemptRow(
+                    job_id=job_id,
+                    attempt=row.attempt,
+                    started_at=row.started_at if row.started_at is not None else now,
+                    finished_at=now,
+                    outcome="failed",
+                    error_class="DeadlineExceeded",
+                    error_message="schedule_to_close reached before next dispatch",
+                    error_traceback=None,
+                    duration_ms=None,
+                    worker_id=None,
+                    metadata={},
+                )
+            )
         self._append_state_change_event(
             job_id=job_id,
             from_state=row.status,

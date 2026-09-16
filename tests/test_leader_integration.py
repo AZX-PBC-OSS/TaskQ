@@ -649,6 +649,71 @@ async def test_ti7_equivalence_cancel_phase_1_grace_divergence(pg_dsn: str) -> N
         await stack.aclose()
 
 
+@pytest.mark.asyncio
+async def test_isolate_self_hands_back_an_indefinite_job_past_max_attempts(
+    pg_dsn: str,
+) -> None:
+    """An ``indefinite`` job whose attempt counter already passed
+    ``max_attempts`` is re-pended by ``isolate_self``, not terminalised.
+
+    A running row can legitimately sit past its ``max_attempts``: the
+    indefinite kind's budget is its ``schedule_to_close`` deadline, not
+    the attempt count, so the consumer's own retry path keeps
+    rescheduling it, and the crash-reclaim sweep hands such a job back
+    (pinned for both backends in the reclaim retry-budget parity tests).
+    A heartbeat-lost worker isolating itself is the same class of event —
+    infrastructure, not a job failure — so the same hand-back must hold
+    on this path, leaving terminalisation to the deadline sweep where an
+    indefinite job's budget actually runs out.
+    """
+    schema, stack, deps, _backend, worker_id = await _open_single(
+        pg_dsn, f"test_leader_{new_base62()}"
+    )
+    try:
+        job_id = new_uuid()
+        now = datetime.now(UTC)
+        async with deps.dispatcher_pool.acquire() as conn:
+            await conn.execute(
+                f'INSERT INTO "{schema}".jobs (id, actor, queue, payload, max_attempts, retry_kind, status, priority, attempt, scheduled_at, schedule_to_close, locked_by_worker, lock_expires_at, started_at, last_heartbeat_at, cancel_phase) '
+                "VALUES ($1, $2, $3, $4::jsonb, $5, $6, 'running', 0, $7, $8, $9, $10, $11, $12, $13, $14)",
+                job_id,
+                "test_actor",
+                "default",
+                "{}",
+                2,
+                "indefinite",
+                3,  # already past max_attempts — the state only this kind reaches
+                now - timedelta(minutes=5),
+                now + timedelta(hours=6),  # the kind's real budget, still open
+                worker_id,
+                now + timedelta(minutes=5),
+                now - timedelta(minutes=2),
+                now - timedelta(minutes=2),
+                0,
+            )
+
+        await isolate_self(deps, worker_id, asyncio.Event())
+
+        async with deps.dispatcher_pool.acquire() as conn:
+            row = await conn.fetchrow(
+                f'SELECT status, finished_at FROM "{schema}".jobs WHERE id = $1',
+                job_id,
+            )
+
+        assert row is not None
+        assert row["status"] == "pending", (
+            f"isolate_self terminalised an indefinite job as {row['status']!r} at "
+            "attempt 3 with max_attempts 2 while its schedule_to_close deadline "
+            "was still open: max_attempts is not this kind's budget, so a "
+            "heartbeat-lost worker must hand the job back, not end it"
+        )
+        assert row["finished_at"] is None, (
+            "a job handed back for another attempt must not carry a finished_at"
+        )
+    finally:
+        await stack.aclose()
+
+
 # ── (deadline sweep): _sweep_loop drives deadline_exceeded end-to-end ──
 
 
