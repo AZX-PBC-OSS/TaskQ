@@ -85,6 +85,33 @@ def capacity_field_diverges(registered_value: object, stored_value: object) -> b
     return registered_value != stored_value
 
 
+async def read_stored_queue_assignments(
+    conn: ConnLike,
+    actors: Sequence[str],
+    *,
+    schema: str = "taskq",
+) -> dict[str, str]:
+    """Return ``{actor: queue}`` for the stored ``actor_config`` rows.
+
+    The stored assignment, not the ``@actor(queue=...)`` literal, is what
+    routes a job: the cron leader fires onto it and every re-pend follows
+    it, and `taskq actor-config move-queue` rewrites it without touching
+    any code. Actors with no row yet are absent from the mapping — their
+    literal is what the first sync will seed.
+
+    Never raises on a connection that cannot answer schema questions: the
+    boot path's duck-typed pool stubs return no rows, which degrades to
+    "no stored assignments known" rather than a boot failure, matching
+    the pending-migration guard's own degradation convention.
+    """
+    if not _IDENT_RE.match(schema):
+        raise ValueError(f"invalid schema identifier: {schema!r}")
+    if not actors:
+        return {}
+    rows = await conn.fetch(_SELECT_ACTOR_CONFIG_SQL.format(schema=schema), list(actors))
+    return {row["actor"]: row["queue"] for row in rows}
+
+
 async def sync_actor_config(
     conn: ConnLike,
     actor_configs: Sequence[ActorConfig],

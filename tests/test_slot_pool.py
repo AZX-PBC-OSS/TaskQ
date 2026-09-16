@@ -20,7 +20,11 @@ see its failure mode:
 * **Registered-connection setup** (integration, real PG): connections
   the pool hands out carry the session state the application configured
   on the LOOP-registered connection. Losing it turns a concurrency knob
-  into a silent behaviour change.
+  into a silent behaviour change. The read off the registered
+  connection (``_registered_session_state``) and the factory's
+  ``session_settings`` forwarding are pinned at unit level below: every
+  read failure must warn and leave the setting uninherited, never skip
+  it quietly.
 """
 
 from __future__ import annotations
@@ -34,9 +38,15 @@ from unittest.mock import AsyncMock, MagicMock
 
 import asyncpg
 import pytest
+import structlog.testing
 
 from taskq.settings import WorkerSettings
-from taskq.worker._bootstrap import _maybe_open_slot_pool, _slot_pool_factory
+from taskq.worker._bootstrap import (
+    _maybe_open_slot_pool,
+    _registered_session_state,
+    _slot_pool_factory,
+    _startup_log,
+)
 from taskq.worker.health import _ping_slot_pool
 
 
@@ -108,6 +118,135 @@ async def test_slot_pool_factory_is_provider_backed_when_given_provider() -> Non
         statement_cache_size=settings.statement_cache_size,
         max_cached_statement_lifetime=settings.max_cached_statement_lifetime,
     )
+
+
+async def test_slot_pool_factory_carries_session_settings_onto_dsn_built_pool() -> None:
+    """``session_settings`` reach ``asyncpg.create_pool`` as
+    ``server_settings`` — the channel that puts the registered
+    connection's session state on every connection the pool warms.
+    Dropped, and raising max_concurrency silently repoints unqualified
+    names and RLS roles back to the server defaults."""
+    settings = _make_settings(max_concurrency=4, pg_dsn_direct="postgresql://u:p@h:5432/db")
+    session = {"search_path": "app,public", "role": "app_role"}
+    create_pool = AsyncMock(return_value=MagicMock())
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr("taskq.worker._bootstrap.asyncpg.create_pool", create_pool)
+        factory = _slot_pool_factory(settings, None, session)
+        await factory()
+
+    assert create_pool.call_args.kwargs["server_settings"] == session
+
+
+def test_slot_pool_factory_forwards_session_settings_to_the_provider_backed_factory() -> None:
+    """The managed-identity branch forwards the same mapping to
+    ``make_pg_pool_factory`` — switching authentication must not switch
+    whether slot connections inherit the session state."""
+    settings = _make_settings(max_concurrency=4, pg_dsn_direct="postgresql://u:p@h:5432/db")
+    provider = MagicMock()
+    session = {"search_path": "app,public"}
+    make_pg_pool_factory = MagicMock()
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr("taskq.worker._bootstrap.make_pg_pool_factory", make_pg_pool_factory)
+        _slot_pool_factory(settings, provider, session)
+
+    assert make_pg_pool_factory.call_args.kwargs["server_settings"] == session
+
+
+async def test_slot_pool_factory_passes_no_settings_when_there_is_nothing_to_inherit() -> None:
+    """No mapping and an empty mapping behave alike: the worker with
+    nothing to inherit builds exactly the pool it always built — the
+    DSN branch passes the driver's own default, the provider branch
+    adds no kwarg."""
+    settings = _make_settings(max_concurrency=4, pg_dsn_direct="postgresql://u:p@h:5432/db")
+
+    for session in (None, {}):
+        create_pool = AsyncMock(return_value=MagicMock())
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr("taskq.worker._bootstrap.asyncpg.create_pool", create_pool)
+            factory = _slot_pool_factory(settings, None, session)
+            await factory()
+        assert create_pool.call_args.kwargs["server_settings"] is None
+
+        provider = MagicMock()
+        make_pg_pool_factory = MagicMock()
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr("taskq.worker._bootstrap.make_pg_pool_factory", make_pg_pool_factory)
+            _slot_pool_factory(settings, provider, session)
+        assert "server_settings" not in make_pg_pool_factory.call_args.kwargs
+
+
+# ── Registered-connection session state read ─────────────────────────────
+#
+# Unit pins for the read half of the carry-over: what the live session
+# holds, the pool inherits; what cannot be read is warned about and left
+# at the server default, never skipped quietly (a silent no-op here is
+# indistinguishable from the defect the read exists to eliminate).
+
+
+async def test_registered_session_state_reads_the_live_values() -> None:
+    """Both inherited settings come back as read from the live session —
+    not from connect-time parameters, so a post-connect ``SET`` (an
+    ``init`` hook, or a statement right after ``connect()``) is seen."""
+    settings = _make_settings(max_concurrency=2, pg_dsn_direct="postgresql://u:p@h:5432/db")
+    answers = {
+        "SHOW search_path": "app,public",
+        "SELECT current_setting('role')": "app_role",
+    }
+
+    async def fetchval(query: str) -> object:
+        return answers[query]
+
+    with structlog.testing.capture_logs() as logs:
+        state = await _registered_session_state(
+            SimpleNamespace(fetchval=fetchval), settings, _startup_log
+        )
+
+    assert state == {"search_path": "app,public", "role": "app_role"}
+    assert [e for e in logs if e["event"] == "slot-pool-registered-session-unreadable"] == [], (
+        f"a healthy read must not warn: {logs}"
+    )
+
+
+async def test_registered_session_state_warns_and_omits_a_setting_that_cannot_be_read() -> None:
+    """A failed read warns naming the setting and inherits the readable
+    half — the slot pool falls back to the server default for exactly
+    one setting, loudly, never for both and never silently."""
+    settings = _make_settings(max_concurrency=2, pg_dsn_direct="postgresql://u:p@h:5432/db")
+
+    async def fetchval(query: str) -> object:
+        if "current_setting" in query:
+            raise OSError("connection closed mid-read")
+        return "app,public"
+
+    with structlog.testing.capture_logs() as logs:
+        state = await _registered_session_state(
+            SimpleNamespace(fetchval=fetchval), settings, _startup_log
+        )
+
+    assert state == {"search_path": "app,public"}
+    matches = [e for e in logs if e["event"] == "slot-pool-registered-session-unreadable"]
+    assert len(matches) == 1, f"exactly one unreadable warning expected: {logs}"
+    assert matches[0]["log_level"] == "warning"
+    assert matches[0]["setting"] == "role"
+    assert "connection closed mid-read" in matches[0]["error"]
+
+
+async def test_registered_session_state_warns_and_inherits_nothing_when_unqueryable() -> None:
+    """A registration that cannot answer a query (a duck-typed stand-in,
+    not a live connection) degrades to the server defaults with one
+    warning — the boot harnesses register such stand-ins, and breaking
+    boot over a coverage read would be a worse failure."""
+    settings = _make_settings(max_concurrency=2, pg_dsn_direct="postgresql://u:p@h:5432/db")
+
+    with structlog.testing.capture_logs() as logs:
+        state = await _registered_session_state(object(), settings, _startup_log)
+
+    assert state == {}
+    matches = [e for e in logs if e["event"] == "slot-pool-registered-session-unreadable"]
+    assert len(matches) == 1, f"exactly one unreadable warning expected: {logs}"
+    assert matches[0]["log_level"] == "warning"
 
 
 # ── Supply rule (real PG) ────────────────────────────────────────────────
