@@ -143,25 +143,6 @@ so the margin's real work is on multi-second lease horizons where it is
 noise by design.
 """
 
-MAX_ATTEMPTS_SMALLINT_CEILING: Final[int] = 32767
-"""The ``jobs.max_attempts`` column's smallint domain ceiling.
-
-The column is ``smallint`` (migrations/01.00.00_01_pre_initial.sql), so
-32767 is the largest value any row can hold. Shared here because the
-enqueue boundary, the policy validator and the in-memory mirror must not
-drift on what the ceiling is."""
-
-MAX_ENQUEUABLE_MAX_ATTEMPTS: Final[int] = MAX_ATTEMPTS_SMALLINT_CEILING - 1
-"""Largest ``max_attempts`` a fresh retry policy may carry.
-
-One below the column ceiling, retained as a defensive margin: a row
-parked at exactly 32767 has no headroom for any future statement that
-needs to add one to a max_attempts-derived value, so the policy guard
-refuses the value the way it refuses values past the column entirely.
-Rows can still legally REACH the ceiling — earlier releases' snooze arms
-parked a snoozed 32766-job there — which is why the retry decision clamps
-row-stored values back into this bound before reconstructing a policy."""
-
 MIN_DEFERRAL_INTERVAL: Final[timedelta] = timedelta(seconds=1)
 """Minimum effective delay a NON-consuming deferral reschedules out.
 
