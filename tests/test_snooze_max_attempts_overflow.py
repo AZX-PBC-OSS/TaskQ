@@ -134,7 +134,7 @@ def test_enqueue_args_rejects_non_integer_max_attempts() -> None:
     construction path — already rejects the same value via pydantic's
     strict int coercion (``RetryPolicy(max_attempts=3.5)`` raises
     ``ValidationError``), so this is a parity gap between the two
-    layers issue #164 was meant to close: ``EnqueueArgs`` is supposed to
+    layers: ``EnqueueArgs`` is supposed to
     be the one common boundary every enqueue path funnels through, and
     it is currently laxer than the policy layer that feeds it.
 
@@ -174,7 +174,7 @@ def test_enqueue_args_rejects_none_max_attempts_with_typed_error() -> None:
     to catch, not the "max_attempts must be >= 1" ``ValueError`` every
     other bad value gets. A bare ``TypeError`` escaping the enqueue
     boundary instead of a typed domain refusal is exactly the class of
-    failure issue #164 was about: an untyped exception a caller cannot
+    failure a typed boundary must refuse: an untyped exception a caller cannot
     usefully handle, escaping in place of a deliberate refusal.
     """
     with pytest.raises(ValueError) as exc_info:

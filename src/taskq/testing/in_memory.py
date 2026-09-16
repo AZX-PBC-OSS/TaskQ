@@ -281,7 +281,7 @@ class InMemoryBackend:
         self._actor_configs: dict[str, _InMemoryActorConfig] = {}
         self._actor_configs_meta: dict[str, ActorConfig] = {}
         # Mirror of actor_config.last_claimed_at (the cross-round actor
-        # rotation stamp the dispatch cut orders by, criterion 65 parity):
+        # rotation stamp the dispatch cut orders by):
         # PG stamps claiming actors with the statement's wall time, which
         # is strictly increasing across rounds; a frozen FakeClock cannot
         # supply that, so the twin stamps with a per-backend tick

@@ -271,8 +271,8 @@ def test_every_write_statement_is_bounded_or_registered() -> None:
     carry its own LIMIT inside a windowing CTE. If the statement truly
     cannot grow with the backlog (keyed, config-cardinality, or
     worker-scoped), register it in ``_EXEMPT`` above *with the reason*;
-    that reason is the review. See constitution, "Maintenance and
-    background work is bounded per transaction."
+    that reason is the review — maintenance and background
+    work is bounded per transaction.
     """
     unregistered: list[str] = []
     wrong_scope: list[str] = []

@@ -16,6 +16,8 @@ would fail if that arm's increment ever dropped or regressed relative to
 the in-memory twin.
 """
 
+# ruff: noqa: S608  # Why: every f-string SQL below interpolates only this module's validated fixture schema; all values are $n-bound.
+
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -62,8 +64,7 @@ async def test_final_denial_before_deadline_is_counted_on_postgres(
 
     async with deps.worker_pool.acquire() as conn:
         row = await conn.fetchrow(
-            f'SELECT rate_limit_blocked_count, attempt, status FROM "{schema}".jobs '
-            "WHERE id = $1",
+            f'SELECT rate_limit_blocked_count, attempt, status FROM "{schema}".jobs WHERE id = $1',
             job_id,
         )
     assert row is not None

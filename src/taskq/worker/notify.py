@@ -259,7 +259,7 @@ async def reconnect_notify_conn(
             )
         # Why bounded: a hung credential provider or TCP connect parked the
         # health-check reconnect loop here while holding
-        # notify_reconnect_lock (#156). reload_factory_timeout is the SAME
+        # notify_reconnect_lock. reload_factory_timeout is the SAME
         # bound the SIGHUP reload path applies to every factory call
         # (deps.reload_credentials) — not a second mechanism — and its
         # exhaustion here behaves like any factory failure: the retry
@@ -277,7 +277,8 @@ async def reconnect_notify_conn(
             for channel, on_notify in channels:
                 # Why bounded: a rebuilt conn can complete the factory
                 # handshake and still black-hole on the LISTEN execute —
-                # the same shape #155 fixed for health queries — parking
+                # the same black-hole shape the health-check query bound
+                # closes — parking
                 # the reconnect loop (and notify_reconnect_lock) past
                 # every other bound. The SAME
                 # notify_listener_setup_timeout that bounds the
@@ -299,7 +300,7 @@ async def reconnect_notify_conn(
             # conn - otherwise it leaks until GC with a ResourceWarning.
             # Why bounded: the conn being closed here failed LISTEN setup,
             # so it may already be half-dead; an unbounded close could
-            # stall the reconnect loop (#38). The helper never raises
+            # stall the reconnect loop. The helper never raises
             # (except CancelledError, which must propagate), so the
             # original exception is always re-raised below.
             await close_conn_bounded(new_conn, "notify", CLOSE_TIMEOUT_SECS, mid_run=True)
@@ -323,7 +324,7 @@ async def reconnect_notify_conn(
 
             async def _close_old() -> None:
                 # Why bounded: this is the same dead-PG hang class as
-                # deps._drain_old_conn (#38) - an unbounded close would
+                # deps._drain_old_conn - an unbounded close would
                 # leak the background task forever (never completing,
                 # never collected). The helper bounds the wait, terminates
                 # on timeout, and never raises, subsuming the old
@@ -416,7 +417,7 @@ async def _health_check_loop(
                 # Why bounded: close can raise on a half-dead socket and must
                 # be swallowed to enter the reconnect loop - and a dead PG
                 # can block close() indefinitely, which would stall the
-                # health-check loop before reconnect even starts (#38). The
+                # health-check loop before reconnect even starts. The
                 # helper bounds the wait, terminates on timeout, and never
                 # raises, subsuming the old suppress(Exception).
                 await close_conn_bounded(conn, "notify", CLOSE_TIMEOUT_SECS, mid_run=True)

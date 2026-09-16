@@ -68,7 +68,7 @@ EXIT_WATCHDOG = 2
 
 # Hard wall on the pre-exit metrics flush. force_flush has no usable
 # timeout against a hung OTLP collector (the gRPC exporter ignores
-# timeout_millis, see opentelemetry#2663, and self-bounds at 10s+), so the
+# timeout_millis, and self-bounds at 10s+), so the
 # flush runs on a daemon thread with this join deadline: a wedged exporter
 # costs at most this many seconds, never more, and the thread dies with
 # the process on os._exit.

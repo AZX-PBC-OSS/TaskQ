@@ -1,11 +1,11 @@
-"""Red-team attacks on two release-candidate surfaces (b2f2123).
+"""Red-team attacks on two worker surfaces.
 
-Surface A — commit e5d2154's per-slot transactional connections: the
+Surface A — the per-slot transactional connections: the
 dispatch path acquires one slot-pool connection per job and shadows the
 LOOP-registered ``asyncpg.Connection`` for the actor invocation through
 ``LoopScopeSlotView`` (``taskq/_di/scopes.py``), so concurrent slots can
-never interleave operations on one connection (issue #116; constitution
-line 97). The DIRECT-injection half of that claim is pinned green in
+never interleave operations on one connection (the LoopScopeSlotView
+contract). The DIRECT-injection half of that claim is pinned green in
 ``tests/test_loop_conn_per_slot.py``; these attacks go after the seams
 that pin does not cover:
 
@@ -16,11 +16,11 @@ that pin does not cover:
   shadowed scope-containers map);
 - a LOOP-scoped helper factory (the "database pools, HTTP clients" DI
   shape) bakes the ONE registered connection into a bootstrap-resolved
-  singleton every concurrent slot's actor receives — constitution line
-  97 extends the no-sharing rule to "any object derived from a shared
-  connection (an enqueuer, a helper)";
+  singleton every concurrent slot's actor receives — the no-sharing
+  rule extends to "any object derived from a shared connection (an
+  enqueuer, a helper)";
 - pool exhaustion under slots: every connection checked out plus one
-  more acquire must be a bounded, typed failure (the #162 class), not an
+  more acquire must be a bounded, typed failure, not an
   unbounded park;
 - teardown while a slot holds its connection: the deps exit-stack unwind
   must stay bounded (``close_pool_bounded``'s graceful window then
@@ -32,7 +32,7 @@ Surface B — the DI scopes first-use change: ``_main`` calls the scope
 bootstraps bare (``worker/_bootstrap.py``) and
 ``ScopeContainer.get_or_create`` awaits user-registered async factories
 with no bound (``taskq/_di/scopes.py`` — the class sweep's Tier-2 item).
-The #162 wave bounded every ``WorkerConnections`` factory open
+The bounded-bootstrap work covered every ``WorkerConnections`` factory open
 (``tests/test_deps_bootstrap_bounded.py``); the DI registry's own
 first-use awaits were NOT touched. The attack drives the REAL ``_main``
 bootstrap with a black-holed user factory at the real seam, with a
@@ -438,16 +438,16 @@ async def test_loop_scoped_helper_does_not_carry_the_registered_connection_into_
     clean_jobs_app: JobsApp,
     module_pg_schema: ModulePgSchema,
 ) -> None:
-    """ATTACK — constitution line 97's helper clause against the per-slot
+    """ATTACK — the no-sharing rule's helper clause against the per-slot
     view's headline claim.
 
     A LOOP-scoped factory whose parameter injects the LOOP-registered
     connection is resolved ONCE at ``LoopScope.bootstrap`` (through the
     real scope containers, before any dispatch exists), so the singleton
     it produces bakes in whichever connection the factory saw then. The
-    per-slot fix's own contract (``LoopScopeSlotView`` docstring, issue
-    #116) is that "a LOOP-registered connection never reaches two
-    concurrent slots' actors", and constitution line 97 extends the rule
+    per-slot fix's own contract (the ``LoopScopeSlotView`` docstring)
+    is that "a LOOP-registered connection never reaches two
+    concurrent slots' actors", and the no-sharing rule extends
     to "any object derived from a shared connection (an enqueuer, a
     helper) is shared the same way" — a helper holding the ONE registered
     connection is exactly that object. The actor here depends ONLY on the
@@ -548,7 +548,7 @@ async def test_loop_scoped_helper_does_not_carry_the_registered_connection_into_
                 "concurrent slot's actor through the shared singleton — the "
                 "per-slot view's own contract says a LOOP-registered "
                 "connection never reaches two concurrent slots' actors "
-                "(issue #116), and constitution line 97 extends the rule to "
+                "(the LoopScopeSlotView contract), and the no-sharing rule extends to "
                 "any object derived from a shared connection ('an enqueuer, "
                 "a helper')"
             )
@@ -556,7 +556,7 @@ async def test_loop_scoped_helper_does_not_carry_the_registered_connection_into_
                 "the probing slot's actor received the ONE registered "
                 "LOOP-scope connection through its LOOP-scoped helper — the "
                 "shared-connection defect one level removed from direct "
-                "injection (issue #116)"
+                "injection"
             )
             assert helpers_seen["fail"].conn is not helpers_seen["probe"].conn, (
                 "two concurrent slots' actors resolved the same connection "
@@ -597,7 +597,7 @@ async def test_slot_pool_exhaustion_is_a_bounded_typed_failure(
     module_pg_schema: ModulePgSchema,
 ) -> None:
     """Every slot-pool connection checked out, then one more dispatch
-    acquire — the #162-class discipline. The acquire must time out into
+    acquire — the bounded-acquire discipline. The acquire must time out into
     the typed :class:`SlotPoolAcquireError` within
     ``dispatcher_command_timeout`` (never an unbounded park), the job row
     must stay claimed/running (infrastructure, not a job outcome —
@@ -701,8 +701,7 @@ async def test_slot_pool_exhaustion_is_a_bounded_typed_failure(
                         f"{_ACQUIRE_BUDGET_SECS:.0f}s in with "
                         f"dispatcher_command_timeout={_ACQUIRE_TIMEOUT_SECS}s "
                         "configured. The acquire must be bounded "
-                        "(SlotPoolAcquireError), not an unbounded park — the "
-                        "#162 class."
+                        "(SlotPoolAcquireError), not an unbounded park."
                     )
 
                 # Infrastructure, not a job outcome: the row stays
@@ -841,7 +840,7 @@ async def test_teardown_mid_slot_is_bounded_and_preserves_the_job_outcome(
                     f"connection: still suspended {_TEARDOWN_BUDGET_SECS:.0f}s "
                     "in. close_pool_bounded must bound the slot pool's close "
                     "(graceful window then terminate), so shutdown can never "
-                    "wedge on an in-flight dispatch — the #162 class."
+                    "wedge on an in-flight dispatch."
                 )
             teardown_elapsed = time.monotonic() - t0
 
@@ -1028,13 +1027,13 @@ async def test_worker_bootstrap_di_factory_first_use_is_bounded(
     pg_dsn: str,
     hang_scope: Scope,
 ) -> None:
-    """ATTACK — the #162 class at the DI registry's own first-use seam.
+    """ATTACK — the unbounded-first-use hazard at the DI registry's own first-use seam.
 
     A user-registered DI async factory that accepts the call and never
     returns must fail the REAL worker bootstrap (``_main`` → the scope
     bootstraps → ``ScopeContainer.get_or_create``'s bare await) within
     the configured bound. Every ``WorkerConnections`` factory open got
-    that treatment in the #162 wave (``reload_factory_timeout`` —
+    that treatment earlier (``reload_factory_timeout`` —
     ``tests/test_deps_bootstrap_bounded.py``); the DI registry's own
     factories run in the same pre-watchdog window (the loop keeps
     scheduling, so the lag watchdog never trips; the stale-tick
@@ -1086,7 +1085,7 @@ async def test_worker_bootstrap_di_factory_first_use_is_bounded(
                     "factories with no bound (taskq/_di/scopes.py) and _main "
                     "calls the scope bootstraps bare (worker/_bootstrap.py) — "
                     "the same pre-watchdog window every WorkerConnections "
-                    "factory open was bounded for in the #162 wave. A "
+                    "factory open was bounded for earlier. A "
                     "black-holed DI factory (the documented 'database pools, "
                     "HTTP clients' shape) wedges worker startup undetected."
                 )

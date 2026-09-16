@@ -134,7 +134,9 @@ async def test_retry_job_past_deadline_produces_a_dispatchable_row(
         # worker. dispatch_batch is production dispatch's own claim
         # query — if it refuses this row, the row can never run,
         # regardless of what the admin UI's redirect implied.
-        claimed = await backend.dispatch_batch(worker_id, ["default"], limit=1, lock_lease=timedelta(minutes=5))
+        claimed = await backend.dispatch_batch(
+            worker_id, ["default"], limit=1, lock_lease=timedelta(minutes=5)
+        )
 
         assert claimed, (
             "an admin-retried job past its own schedule_to_close is never "

@@ -437,7 +437,7 @@ async def test_batch_dedup_stampede_counts_every_hit_despite_warning_suppression
     the counter even where the per-hit WARNING budget suppresses the log
     lines — the counter is the rate signal that survives the flood bound.
 
-    The WARNING budget (``#140``) bounds per-hit terminal WARNINGs to
+    The WARNING budget bounds per-hit terminal WARNINGs to
     three plus one summary line; a stampede that once emitted 500
     WARNINGs now emits four. What it must NOT lose is the rate itself:
     the operator muting nothing still needs to see 500 dedups happened.

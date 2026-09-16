@@ -5,7 +5,7 @@ reconnect-re-fires-wake invariant, the backoff jitter sequence, and the
 reconnect exception-class matrix are pinned in tests/test_notify.py. This
 file pins the unpinned spontaneous-loss observables: the degraded
 ``taskq.notify.connected`` gauge (the distinguishable degraded outcome the
-constitution requires), flap recovery (a SECOND loss after a completed
+contract requires), flap recovery (a SECOND loss after a completed
 rebuild re-enters the reconnect machinery cleanly), and the missed-wake
 bound constant that carries the producer's poll fallback through a
 rebuild.

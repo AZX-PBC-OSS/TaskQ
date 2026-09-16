@@ -25,7 +25,6 @@ from taskq._ids import new_job_id, new_uuid
 from taskq.backend._dispatch_sql import DISPATCH_STRICT_FIFO_SQL
 from taskq.backend._dispatch_sql import dispatch_batch as dispatch_batch_sql
 from taskq.backend._protocol import EnqueueArgs
-from taskq.backend.postgres import PostgresBackend
 from taskq.testing.fixtures import ModulePgSchema
 
 from .test_rt_cron_harness import cron_settings, make_backend, seed_actor_config
@@ -43,14 +42,20 @@ async def _dispatch(
     conn: asyncpg.Connection, schema: str, sql_template: str, queues: list[str], limit_n: int
 ) -> list[asyncpg.Record]:
     return await dispatch_batch_sql(
-        conn, sql=sql_template.format(schema=schema), queues=queues, limit_n=limit_n,
-        worker_id=new_uuid(), lock_lease=_LEASE,
+        conn,
+        sql=sql_template.format(schema=schema),
+        queues=queues,
+        limit_n=limit_n,
+        worker_id=new_uuid(),
+        lock_lease=_LEASE,
     )
 
 
 class TestCappedActorRotation:
     async def test_capped_actors_rotate_across_rounds(
-        self, clean_pg_conn: asyncpg.Connection, module_pg_schema: ModulePgSchema,
+        self,
+        clean_pg_conn: asyncpg.Connection,
+        module_pg_schema: ModulePgSchema,
     ) -> None:
         schema = module_pg_schema.schema_name
         settings = cron_settings(schema)
@@ -69,8 +74,13 @@ class TestCappedActorRotation:
             )
         args_list = [
             EnqueueArgs(
-                id=new_job_id(), actor=name, queue=_QUEUE, payload={},
-                max_attempts=3, retry_kind="transient", scheduled_at=due,
+                id=new_job_id(),
+                actor=name,
+                queue=_QUEUE,
+                payload={},
+                max_attempts=3,
+                retry_kind="transient",
+                scheduled_at=due,
             )
             for name in actors
             for _ in range(_DEPTH_PER_ACTOR)
@@ -81,7 +91,9 @@ class TestCappedActorRotation:
         rounds_budget = tight_bound * 2
         first_served: dict[str, int] = {}
         for round_no in range(1, rounds_budget + 1):
-            rows = await _dispatch(clean_pg_conn, schema, DISPATCH_STRICT_FIFO_SQL, [_QUEUE], _LIMIT)
+            rows = await _dispatch(
+                clean_pg_conn, schema, DISPATCH_STRICT_FIFO_SQL, [_QUEUE], _LIMIT
+            )
             if not rows:
                 break
             ids = [row["id"] for row in rows]
@@ -95,9 +107,11 @@ class TestCappedActorRotation:
 
         never = sorted(a for a in actors if a not in first_served)
         max_round = max(first_served.values()) if first_served else None
-        print(f"\n[capped max_concurrent=1] tight_bound={tight_bound} "
-              f"max_first_served_round={max_round} never_served={len(never)} "
-              f"rounds_used={rounds_budget}")
+        print(
+            f"\n[capped max_concurrent=1] tight_bound={tight_bound} "
+            f"max_first_served_round={max_round} never_served={len(never)} "
+            f"rounds_used={rounds_budget}"
+        )
 
         assert not never, (
             f"{len(never)} capped actors never served within {rounds_budget} rounds: {never}. "

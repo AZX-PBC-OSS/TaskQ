@@ -1449,7 +1449,7 @@ async def test_run_forever_graceful_shutdown_via_signal() -> None:
     )
 
 
-# ── Bounded health-pool close at supervisor shutdown (#38) ──────────────
+# ── Bounded health-pool close at supervisor shutdown ────────────────────
 #
 # run_forever closed its health-check pool with a bare
 # ``await pg_pool.close()`` — a dead PG can block that indefinitely,
@@ -1754,7 +1754,7 @@ async def test_child_exit_events_carry_workgroup_identity() -> None:
     assert burst[0]["actors"] == "billing,email"
 
 
-# ── Health-check query bound (#155) ─────────────────────────────────────
+# ── Health-check query bound ────────────────────────────────────────────
 #
 # `_child_health_check` bounded only the pool acquire (2.0 s); the
 # fetchrow itself had no deadline. A server that accepts the query and
@@ -1999,7 +1999,7 @@ async def test_run_forever_black_holed_health_query_does_not_stall_the_loop(
 def test_health_query_timeout_constant_is_the_documented_default() -> None:
     """Pin the documented default for _HEALTH_QUERY_TIMEOUT_SECS.
 
-    Every #155 behaviour test monkeypatches the constant (raising=False),
+    Every health-query-bound behaviour test monkeypatches the constant (raising=False),
     so none of them would notice a silent default change — 2.0 -> 30.0
     would pass CI while multiplying the worst-case health-check stall
     fifteenfold. The docstring documents 2.0 (consistent with the

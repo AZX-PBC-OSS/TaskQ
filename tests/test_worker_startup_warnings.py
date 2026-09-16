@@ -14,8 +14,8 @@ never on log message format or field names, which are implementation
 details that change independently of behaviour.
 
 The exception is the ``note=`` remediation text of the two signals that
-tell an operator what each connection configuration means
-(#116): the retired shared-connection guard's note told operators to
+tell an operator what each connection configuration means:
+the retired shared-connection guard's note told operators to
 "register a pool instead of a single connection", but a LOOP-scope
 ``asyncpg.Pool`` registration silently disables transactional consume —
 the remediation was the defect. Those two notes' load-bearing claims are
@@ -120,7 +120,7 @@ class _EventSpy:
 class _NoteSpy(_EventSpy):
     """Also records each event's ``note=`` remediation text.
 
-    The remediation text is itself contract under issue #116: the retired
+    The remediation text is itself contract: the retired
     guard's note told operators to "register a pool instead of a single
     connection", but a LOOP-scope ``asyncpg.Pool`` registration silently
     DISABLES transactional consume (the transactional path keys on
@@ -180,7 +180,7 @@ async def _maybe_open(
     """Drive _maybe_open_slot_pool with a stubbed factory and deps.
 
     Returns (opened, spy, deps) so a test can assert on the activation
-    result, the emitted events (and, for the #116 note pins, the
+    result, the emitted events (and, for the note pins, the
     remediation text), and what landed on deps. The exit stack
     is unwound here (the fake pool's teardown callback runs), and the
     occupancy-gauge source is cleared so no later gauge collection in
@@ -454,12 +454,12 @@ async def test_autonomous_fallback_note_states_pool_registration_disables_transa
     None
 ):
     """The autonomous-fallback warning's remediation must tell the truth
-    about a LOOP-scope pool registration (issue #116).
+    about a LOOP-scope pool registration.
 
     The transactional path keys on ``asyncpg.Connection``; an operator who
     registers an ``asyncpg.Pool`` at ``Scope.LOOP`` instead still sees this
     warning — the pool does not activate transactional consume, it keeps
-    autonomous commit in force. The retired #116 guard's note said
+    autonomous commit in force. The retired guard's note said
     "register a pool instead of a single connection", sending exactly that
     operator down the silent-disable path; the note must now name the
     consequence of each shape.
@@ -487,8 +487,7 @@ async def test_autonomous_fallback_note_states_pool_registration_disables_transa
 
 
 async def test_per_slot_note_states_actors_transact_on_their_own_slot_connection() -> None:
-    """The per-slot mode announcement must state the actor-visible semantics
-    (issue #116).
+    """The per-slot mode announcement must state the actor-visible semantics.
 
     The per-slot pool carries more than TaskQ's own transactional writes:
     every job's actor resolves its slot connection — the connection that

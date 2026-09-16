@@ -2,8 +2,8 @@
 actor-facing field of the production JobContext.
 
 The class this file guards: an actor-facing field lands on the production
-:class:`taskq.context.JobContext` and its test mirrors drift — proven by
-issue #171, where ``snooze_count`` reached all three production
+:class:`taskq.context.JobContext` and its test mirrors drift — proven
+already: ``snooze_count`` reached all three production
 construction sites but not the in-memory runner's ``_StubContext`` or this
 mirror, so an actor written to the documented contract failed only under
 the test backend. ``taskq/testing/job_context.py`` states the invariant in
@@ -34,10 +34,12 @@ from taskq.testing.job_context import JobContext as TestingJobContext
 #: The mirror's documented additions beyond the production field shape.
 #: ``deps`` and ``abort_requested`` are the mirror's original extras;
 #: ``progress_reports`` is the harness half of the documented progress
-#: contract (issue #172's method surface): the fixture path has no
+#: contract (the mirrored method surface): the fixture path has no
 #: Redis/Postgres wiring, so reports are recorded on the context for
-#: the test to inspect rather than published.
-_MIRROR_EXTRAS = {"deps", "abort_requested", "progress_reports"}
+#: the test to inspect rather than published. ``cancel_origin`` is the
+#: documented cancellation contract (``ctx.cancel_origin`` tells a
+#: deploy apart from an operator cancel), mirrored for the harness.
+_MIRROR_EXTRAS = {"deps", "abort_requested", "progress_reports", "cancel_origin"}
 
 
 def _public_field_names(cls: type) -> set[str]:
@@ -56,7 +58,7 @@ def test_testing_job_context_carries_every_actor_facing_field() -> None:
     assert not missing, (
         "testing JobContext is missing actor-facing field(s) "
         f"{sorted(missing)} that production JobContext carries — the "
-        "issue-#171 drift class: add the field to the mirror (and to "
+        "mirror-drift class: add the field to the mirror (and to "
         "_StubContext / the actor_runner fixture if actors read it), or "
         "narrow the mirror docstring's parity claim if the omission is "
         "deliberate"

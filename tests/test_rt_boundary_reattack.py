@@ -122,7 +122,7 @@ async def attack_pool(pg_dsn: str) -> AsyncIterator[asyncpg.Pool]:
 
 
 # ══════════════════════════════════════════════════════════════════════
-# Fix 1 — the #139 denial-reason carve-out
+# Fix 1 — the denial-reason carve-out
 # ══════════════════════════════════════════════════════════════════════
 
 

@@ -1,5 +1,5 @@
 """Integration tests for the fleet-wide per-queue concurrency cap bootstrap
-(Part 1, issue #24).
+(Part 1).
 
 Mirrors the exact fixture/assertion conventions of
 ``tests/test_worker_bootstrap.py`` — all tests use the real PG container via

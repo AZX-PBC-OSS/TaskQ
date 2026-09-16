@@ -4,7 +4,7 @@ on Postgres and in memory.
 ``EnqueueArgs`` is the single struct every enqueue path funnels through --
 single, batch, the COPY-based fast batch, the atomic batch, and the in-memory
 mirror.  It is therefore the boundary where a value is *created* as a row, and
-the constitution's rule is that a value is validated once at that boundary so it
+the rule is that a value is validated once at that boundary so it
 cannot be wrong anywhere downstream.
 
 Three things an operator sees when this does not hold:

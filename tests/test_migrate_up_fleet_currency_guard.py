@@ -1,6 +1,8 @@
 """Red test: `migrate up` has no fleet-currency guard, and the shipped
 Kubernetes manifest's migration step is therefore unsafe mid-rollout.
 
+# ruff: noqa: S608  # Why: every f-string SQL below interpolates only this module's validated fixture schema; all values are $n-bound.
+
 ## The contract this pins
 
 `docs/guides/deployment.md`'s "Kubernetes Deployment" section — the
@@ -86,6 +88,8 @@ otherwise-reachable behaviour; it is the only way to exercise "code that
 predates this migration" at all, since the current source tree cannot run
 old code.
 """
+
+# ruff: noqa: S608  # Why: every f-string SQL below interpolates only this module's validated fixture schema; all values are $n-bound.
 
 from __future__ import annotations
 

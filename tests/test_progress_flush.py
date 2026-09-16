@@ -605,7 +605,7 @@ async def test_flush_tick_batches_all_dirty_buffers_into_one_statement() -> None
 
 
 async def test_flush_tick_drains_in_bounded_batches_with_a_tick_cap() -> None:
-    """The #120 doctrine: no flush statement ever carries more than
+    """The bounded-batch doctrine: no flush statement ever carries more than
     ``_FLUSH_BATCH_ROWS`` rows, and no tick issues more than
     ``_FLUSH_MAX_BATCHES_PER_TICK`` batches — an all-in-one statement
     over the whole dirty set is the long-running-statement trap (it
@@ -663,7 +663,7 @@ async def test_flush_tick_drains_in_bounded_batches_with_a_tick_cap() -> None:
     for call in conn.fetch.await_args_list:
         assert len(call.args[1]) <= _FLUSH_BATCH_ROWS, (
             f"a flush statement carried {len(call.args[1])} rows — the batch bound "
-            f"({_FLUSH_BATCH_ROWS}) is the #120 doctrine's guarantee that no "
+            f"({_FLUSH_BATCH_ROWS}) is the doctrine's guarantee that no "
             "statement runs long"
         )
     assert all(buf.dirty is False for buf in buffers.values())
@@ -786,7 +786,7 @@ async def test_flush_tick_cost_is_flat_up_to_the_batch_bound() -> None:
 
 
 async def test_flush_failing_batch_leaves_only_its_own_buffers_dirty() -> None:
-    """Per-batch failure isolation — the #120 doctrine's other half: a
+    """Per-batch failure isolation — the doctrine's other half: a
     failing batch is that batch's failure alone. 70 dirty buffers in 3
     bounded batches; the middle batch's statement fails — its 32
     buffers stay dirty with deltas intact while the first and third

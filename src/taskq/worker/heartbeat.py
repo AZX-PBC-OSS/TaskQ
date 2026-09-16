@@ -389,7 +389,7 @@ async def isolate_self(
         finally:
             # Why bounded: isolate_self only runs when PG is already
             # suspected dead (heartbeat failures exceeded), so this close is
-            # exactly the dead-PG hang case (#38) — unbounded, it would
+            # exactly the dead-PG hang case — unbounded, it would
             # wedge shutdown.set() below. The helper never raises, so a
             # close error can no longer mask an in-flight exception or be
             # misreported as an isolate-self failure.

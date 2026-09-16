@@ -241,7 +241,7 @@ def test_no_uncapped_sse_endpoint_remains() -> None:
 
 # ── Route-level: slot release on every early exit, 429 at the cap ──────────
 #
-# PR #74's headline failure mode: "a run of requests for missing jobs would
+# Headline failure mode: "a run of requests for missing jobs would
 # exhaust the cap without a single stream ever opening." The caps are taken
 # in the route handler but live in the streaming generator, so every early
 # exit between acquire and generator hand-off has to give the slot back.

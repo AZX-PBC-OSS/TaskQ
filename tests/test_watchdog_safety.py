@@ -329,7 +329,7 @@ async def test_trip_flush_is_bounded_against_a_hung_exporter(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """force_flush has no usable timeout against a hung OTLP collector (the
-    gRPC exporter ignores timeout_millis, opentelemetry#2663), so an
+    gRPC exporter ignores timeout_millis), so an
     unbounded flush would stall the force-exit it precedes, exactly when
     the process is already known to be wedged. The flush must run on a
     thread with a hard join deadline so trip() still exits promptly."""

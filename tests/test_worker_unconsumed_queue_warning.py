@@ -1,6 +1,6 @@
 """Worker startup warning for served actors on queues this worker does not consume.
 
-Issue #90: an actor registered ``@actor(queue="cron")`` with a worker
+The failure: an actor registered ``@actor(queue="cron")`` with a worker
 consuming only ``["default"]`` never dispatches. Enqueue succeeds, cron
 keeps firing, and the jobs sit pending forever because the dispatch CTE
 unnests ``$1::text[]`` — the worker's own ``settings.queues`` — and

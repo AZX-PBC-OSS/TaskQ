@@ -2221,7 +2221,7 @@ class TestGetReturnsIsolatedRowCopies:
     copied, so a caller mutating a freshly-read row cannot corrupt the
     backend's stored state.
 
-    Red-team finding reported during the #92 result-TTL work and
+    Red-team finding reported during the result-TTL work and
     deliberately left unfixed there: ``JobRow`` is frozen, but its dict
     fields (``payload``, ``progress_state``, ``result``, ``metadata``)
     are shared by reference — and only the expired branch of the read

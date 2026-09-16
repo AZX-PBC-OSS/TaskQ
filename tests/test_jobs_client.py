@@ -1622,7 +1622,7 @@ class TestDeleteSchedule:
         await client.delete_schedule(handle.schedule_id)
 
 
-# ── Bounded Redis close at client teardown (#38) ────────────────────────
+# ── Bounded Redis close at client teardown ──────────────────────────────
 #
 # _open_redis entered the Redis client on the exit stack
 # (``Redis.__aexit__`` → unbounded ``aclose()``) — a hung broker could

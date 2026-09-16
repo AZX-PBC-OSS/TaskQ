@@ -1,4 +1,4 @@
-"""Load-time hardening for worker-identity settings (PR #51 doctrine).
+"""Load-time hardening for worker-identity settings.
 
 Settings values that would crash — or hit opaque database errors — at
 worker registration must fail at settings load time with a clean error

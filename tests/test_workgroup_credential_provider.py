@@ -9,7 +9,7 @@ The contract these tests pin, layer by layer:
   covers a single fleet-wide provider only; the per-worker field is what
   lets a workgroup mix provider-backed and provider-less workers, which
   is what unblocks the Entra/managed-identity segment from adopting
-  workgroups (#101).
+  workgroups.
 * A load-time validator refuses a provider ref the child CLI could never
   resolve (the child would die before registering a heartbeat, and the
   supervisor restart-loops it against the burst budget with the real
@@ -144,7 +144,7 @@ async def test_spawned_child_acquires_connections_through_the_provider(
     """A child spawned the workgroup's way — ``--pg-credential-provider
     module:attr`` on its command line, no ``env=`` override — must resolve
     the ref IN THE CHILD and acquire its Postgres connections THROUGH the
-    provider (the #101 contract: children need the credential at connect
+    provider (children need the credential at connect
     time, so the Entra/managed-identity segment can adopt workgroups).
 
     The child's inherited ``TASKQ_PG_DSN`` is stripped of its userinfo, so

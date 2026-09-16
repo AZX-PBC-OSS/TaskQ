@@ -421,7 +421,7 @@ async def test_probe_state_is_per_worker_not_process_global() -> None:
 async def test_wedged_probe_degrades_to_a_failed_ping_not_a_hang() -> None:
     """A probe task left over from a torn-down event loop can never
     complete; joining it must be bounded by one ping budget and report
-    unready, never hang readiness (the constitution's every-wait-bounded
+    unready, never hang readiness (the every-wait-bounded
     rule). Simulated with a probe task that never completes."""
     pool = _SlowPool()
     deps = _deps_with_pool(pool)
@@ -606,7 +606,7 @@ async def test_slot_pool_boot_fails_loudly_when_the_inherited_role_is_unassumabl
         # superuser the container's default DSN authenticates as
         # (which can SET ROLE to anything, so the failure this test
         # pins would never trigger against it).
-        await bootstrap_conn.execute(f'CREATE ROLE "{unpriv_user}" LOGIN PASSWORD \'unpriv\'')
+        await bootstrap_conn.execute(f"CREATE ROLE \"{unpriv_user}\" LOGIN PASSWORD 'unpriv'")
         await bootstrap_conn.execute(f'CREATE ROLE "{target_role}" NOLOGIN')
 
         parts = urlsplit(module_pg_schema.pg_dsn)
@@ -651,8 +651,7 @@ async def test_slot_pool_boot_fails_loudly_when_the_inherited_role_is_unassumabl
                     log=_quiet_log(),
                 )
             assert deps.slot_pool is None, (
-                "a pool that failed to fully warm must not be left "
-                "partially installed on deps"
+                "a pool that failed to fully warm must not be left partially installed on deps"
             )
         finally:
             await stack.aclose()

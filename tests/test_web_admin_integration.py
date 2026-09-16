@@ -1063,8 +1063,8 @@ async def test_cancel_button_visibility(pool: asyncpg.Pool, conn: asyncpg.Connec
 # so the admin route's own precheck (job.status not in _TERMINAL_STATUSES)
 # and its delegation to backend.retry_job were only ever exercised through
 # a StubBackend in tests/web_admin/test_backend_delegation.py, which never
-# asserts on a real row afterward. This closes that gap for the two states
-# issue #216 widened.
+# asserts on a real row afterward. This closes that gap for the two
+# source states the route supports.
 
 
 async def _post_retry(
@@ -1141,7 +1141,7 @@ async def test_retry_abandoned_job_via_admin_http(
 ) -> None:
     """POST /admin/jobs/{id}/retry re-pends an abandoned job.
 
-    'abandoned' is the state issue #216 called out as most likely to need
+    'abandoned' is the state called out as most likely to need
     a manual re-run (a deploy interrupted the job, it did not fail), and
     it is the state that most needs the real HTTP route proven, not just
     the backend method.

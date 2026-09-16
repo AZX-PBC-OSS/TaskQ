@@ -11,7 +11,7 @@ path of the job that caused it):
   the consumer's outer ``finally`` releases the held slot
   (lease-fenced), so the row is FREE and the eviction+drain reclaims it.
   Pinned by ``tests/test_keyed_reservation_slot_reclamation.py``.
-* **pre-actor denial** (the #139 headline flow) — the acquire is denied
+* **pre-actor denial** (the headline flow) — the acquire is denied
   after the keyed bucket's rows were already materialised; nothing is
   held, the job snoozes. The rows must still reclaim: pinned here.
 * **abandon** — the holder's consumer dies without releasing; the lease
@@ -96,7 +96,7 @@ async def test_denied_keyed_reservation_leaves_zero_rows_after_eviction_drain(
 ) -> None:
     """A keyed bucket materialised by a DENIED acquire must reclaim.
 
-    The #139 headline flow: an actor declares a keyed reservation plus a
+    The headline flow: an actor declares a keyed reservation plus a
     static cap; the static cap is full, so the acquire is denied after
     the keyed bucket's slot rows were already ensured — the job snoozes
     (``mark_snoozed`` with ``outcome="reservation_denied"``) having
@@ -166,7 +166,7 @@ async def test_denied_keyed_reservation_leaves_zero_rows_after_eviction_drain(
 
         assert await _slot_rows(pool, denied_bucket) == 0, (
             f"the denial-materialised bucket {denied_bucket!r} left rows behind after "
-            "its key went idle and the eviction+drain ran — the #139 denial flow "
+            "its key went idle and the eviction+drain ran — the denial flow "
             "would accrue one bucket of rows per distinct denied key with no "
             "deletion exit"
         )

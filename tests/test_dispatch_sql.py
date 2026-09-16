@@ -82,8 +82,7 @@ class TestDispatchStrictFifoSql:
         carrier: the LIMIT rendered as a (SELECT ... FROM params)
         subquery the planner cannot fold, so the ranked→jobs re-join was
         estimated at the whole pending index range and planned as a hash
-        join over a Seq Scan of the entire backlog (issue #130's
-        O(depth) row work). The bound now lives in top_ids as a direct
+        join over a Seq Scan of the entire backlog (O(depth) row work). The bound now lives in top_ids as a direct
         $2 parameter (folds to its value in custom-plan estimates), and
         locked drives jobs by primary key through a correlated LATERAL —
         correlation denies the hash-join path, so the lock step is
@@ -114,7 +113,8 @@ class TestDispatchStrictFifoSql:
         estimate in ANY plan, so the candidate chain is estimated at the
         whole index range and the terminal joins get planned as hash
         joins over a Seq Scan of the entire pending backlog — the
-        measured 1.04ms→55.8ms (1k→200k) depth scaling of issue #130.
+        measured 1.04ms→55.8ms (1k→200k) depth scaling of that
+        unbounded shape.
         Direct $n parameters fold in custom-plan row estimates, unlike
         subquery bounds which never fold.
         """
@@ -413,8 +413,8 @@ class TestDispatchRoundRobinSql:
         A window function cannot short-circuit: the shipped shape
         computed ROW_NUMBER over EVERY due pending row and only then
         filtered fairness_rank <= residual * oversample, so the WindowAgg
-        (and the scan feeding it) paid full backlog depth every round
-        (issue #130). Per-cohort top-k probes yield the identical
+        (and the scan feeding it) paid full backlog depth every round.
+        Per-cohort top-k probes yield the identical
         surviving rows with identical ranks while the window's input is
         at most cohorts * residual * oversample rows per pair.
         """

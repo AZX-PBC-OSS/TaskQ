@@ -1440,7 +1440,7 @@ _ACTOR_BACKLOG_SAMPLE_CAP: Final[int] = 1000
 #   the dispatch CTE's keys walks), so enumeration costs one visit per
 #   pair, never one per row, and no pair's depth is ever walked. Every
 #   pair appears, however small: an unconsumed actor whose backlog is
-#   still shallow stays attributable (criterion-43 visibility does not
+#   still shallow stays attributable (bounded enumeration does not
 #   trade away small backlogs for the bound).
 # * ``sampled`` reads each pair's first _ACTOR_BACKLOG_SAMPLE_CAP
 #   pending rows in the index's own (priority DESC, scheduled_at, id)

@@ -547,7 +547,7 @@ async def test_an_old_release_pod_taking_over_the_row_does_not_open_a_stale_expi
     await lease_conn.execute(
         f'UPDATE "{schema}".maintenance_leader SET '
         f"expires_at = clock_timestamp() - interval '1 second' "
-        f'WHERE singleton = true',
+        f"WHERE singleton = true",
     )
 
     took = await _elect(lease_conn, schema, successor)

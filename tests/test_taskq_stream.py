@@ -9,7 +9,7 @@ Covers:
 - Redis transport: get_message loop yields JobEvent on state change,
   skips malformed messages, terminates on terminal.
 - PG transport: RuntimeError when dsn is None (pool-only construction).
-- Bounded owned-LISTEN-conn closes (#37): _stream_pg/_watch_reclaims_pg
+- Bounded owned-LISTEN-conn closes: _stream_pg/_watch_reclaims_pg
   teardown and watch_reclaims reconnect paths bound close() via
   close_conn_bounded — a dead PG cannot wedge the generator.
 """
@@ -322,7 +322,7 @@ async def test_taskq_init_rejects_pg_conn_factory_and_listen_conn() -> None:
         TaskQ(pool=object(), pg_conn_factory=lambda: None, listen_conn=object())  # type: ignore[arg-type]
 
 
-# ── Bounded owned-LISTEN-conn closes (#37) ───────────────────────────────
+# ── Bounded owned-LISTEN-conn closes ─────────────────────────────────────
 #
 # asyncpg's Connection.close() passes no timeout underneath, so against a
 # dead PG it can hang forever — contextlib.suppress(Exception) catches
@@ -395,7 +395,7 @@ async def test_stream_pg_finally_bounds_hung_owned_conn_close(
     assert fake_conn.terminated is True
 
 
-# ── watch_reclaims: bounded owned-conn closes (#37) ──────────────────────
+# ── watch_reclaims: bounded owned-conn closes ────────────────────────────
 #
 # The minimal _watch_reclaims_pg harness helpers are replicated from
 # tests/test_watch_reclaims.py — the same convention already used for

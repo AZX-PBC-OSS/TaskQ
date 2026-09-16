@@ -988,7 +988,7 @@ def test_libpq_password_survives_through_chained_cause_and_implicit_context() ->
         try:
             raise RuntimeError("postgresql://db/jobs?sslpassword=hunter2")
         except RuntimeError:
-            raise RuntimeError("outer failure, unrelated")
+            raise RuntimeError("outer failure, unrelated")  # noqa: B904  # Why: this case exists to exercise the implicit-__context__ chain; an explicit `from` would change the shape under test.
     except RuntimeError as outer2:
         span2 = _RecordingSpan()
         record_exception_safe(span2, outer2)  # type: ignore[arg-type]  # Why: structural stand-in for opentelemetry Span.

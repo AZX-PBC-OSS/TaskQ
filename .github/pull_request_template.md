@@ -20,4 +20,4 @@ uv run ruff format --check .
 
 ## Related Issues
 
-Fixes #123
+Fixes <issue number>

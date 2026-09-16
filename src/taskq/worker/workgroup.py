@@ -86,7 +86,7 @@ is truncated and reported (see :func:`_read_line`), never fatal.
 """
 
 _HEALTH_QUERY_TIMEOUT_SECS: float = 2.0
-"""Client-side deadline on the health-check query itself (#155).
+"""Client-side deadline on the health-check query itself.
 
 Why a bound: the pool acquire beside it is already bounded (2.0 s), but
 the query was not — a server that accepts the query and never answers
@@ -566,8 +566,8 @@ async def _child_health_check(
         async with pg_pool.acquire(timeout=2.0) as conn:
             # Why wait_for: the query must carry the deadline the acquire
             # already has — without it a black-holed server holds the
-            # caller's restart_lock past every other bound in the file
-            # (#155). A timeout lands in the except below like any other
+            # caller's restart_lock past every other bound in the file.
+            # A timeout lands in the except below like any other
             # transient DB failure: logged, counted, healthy until the
             # limit.
             row = await asyncio.wait_for(
@@ -1165,7 +1165,7 @@ async def run_forever(config_path: Path) -> None:
 
     if pg_pool:
         # Why bounded: the supervisor's health-pool close is the same
-        # dead-PG hang class as worker teardown (#38) — an unbounded close
+        # dead-PG hang class as worker teardown — an unbounded close
         # would wedge the supervisor between workgroup-shutdown-begin and
         # workgroup-shutdown-complete. The helper never raises and terminates the
         # pool on timeout.

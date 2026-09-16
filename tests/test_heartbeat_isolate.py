@@ -323,7 +323,7 @@ async def test_isolate_self_shields_terminal_writes() -> None:
         hb_mod.asyncio.shield = _real_shield  # type: ignore[method-assign]
 
 
-# ── Bounded conn close in the finally path (#38) ────────────────────────
+# ── Bounded conn close in the finally path ──────────────────────────────
 #
 # isolate_self only runs when PG is already suspected dead (heartbeat
 # failures exceeded); its ``finally: await conn.close()`` could then block

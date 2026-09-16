@@ -1,4 +1,4 @@
-"""Unit tests for the fleet-wide per-queue concurrency cap (Part 1, issue #24).
+"""Unit tests for the fleet-wide per-queue concurrency cap (Part 1).
 
 Tests ``queue_concurrency_reservation_name``, the core concurrency-correctness
 property under parallel ``acquire_for_actor`` dispatch across multiple actors,
@@ -102,7 +102,7 @@ async def test_concurrent_acquires_respect_2_slot_cap_across_multiple_actors() -
     """The fleet-wide queue concurrency cap is never exceeded, even under
     truly concurrent ``acquire_for_actor`` dispatch from multiple actors.
 
-    This is the core concurrency-correctness property from issue #24: a
+    This is the core concurrency-correctness property: a
     ``ConcurrencyReservation`` registered under
     ``queue_concurrency_reservation_name("orders")`` with ``slots=2`` must
     never allow more than 2 concurrent acquisitions simultaneously — not

@@ -30,11 +30,14 @@ from taskq._ids import new_uuid
 from taskq.backend._protocol import EnqueueArgs, JobId
 from taskq.testing.fixtures import JobsApp
 from taskq.testing.pg import create_worker
+from taskq.worker.deps import WorkerDeps
 
 pytestmark = pytest.mark.integration
 
 
-async def _claim_like_dispatch(deps, schema: str, job_id: JobId, worker_id) -> int:
+async def _claim_like_dispatch(
+    deps: WorkerDeps, schema: str, job_id: JobId, worker_id: JobId
+) -> int:
     """Claim a row the same shape dispatch_batch's CTE produces, with an
     ALREADY-EXPIRED lease -- the state a row is in when a departing worker's
     RELEASING phase is slow enough to overlap a leader's reclaim tick."""

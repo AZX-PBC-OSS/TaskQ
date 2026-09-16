@@ -747,7 +747,7 @@ async def test_swept_keyed_bucket_rematerialises_marked_and_fresh_on_the_next_ac
 ) -> None:
     """After a fleet sweep deletes a tracked keyed bucket's rows, the
     next acquire's denial-path heal re-materialises them — and the
-    re-born rows carry the mark and fresh stamps (the #160-era
+    re-born rows carry the mark and fresh stamps (the
     self-heal's interplay with the new fleet sweep: deletion is a
     transient denial, not a wedge)."""
     await _fresh_schema(pg_dsn)
@@ -794,7 +794,7 @@ async def test_swept_keyed_bucket_rematerialises_marked_and_fresh_on_the_next_ac
         assert await _slots_keyed(pool, bucket) is True, (
             "the heal's re-materialised rows lost the fleet-reclaimable mark: rows "
             "re-born through ensure_slots' INSERT arm must carry it or the bucket "
-            "reverts to the #139 orphan shape if this worker later dies"
+            "reverts to the orphan-row shape if this worker later dies"
         )
         assert await _slots_stamp_is_fresh(pool, bucket) is True, (
             "the heal's re-materialised rows were not freshly stamped: the horizon "

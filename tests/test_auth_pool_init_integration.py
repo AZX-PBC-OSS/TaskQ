@@ -1,4 +1,4 @@
-"""Integration test for ``make_pg_pool_factory(init=...)`` (issue #31).
+"""Integration test for ``make_pg_pool_factory(init=...)``.
 
 Against real Postgres: an ``init`` hook forwarded through the factory runs
 once per physical connection — on the initial connection, on connections

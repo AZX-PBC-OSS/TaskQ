@@ -1,8 +1,9 @@
-"""#165 — green pin: the PG and in-memory ``_batch_cap_refusals`` kernels
+"""Green pin: the PG and in-memory ``_batch_cap_refusals`` kernels
 must stay algorithmically identical.
 
-Issue #165 ("Cap-refusal logic is two hand-maintained implementations
-(PG and in-memory)") observes that beyond the shared ``batch_cap_groups``
+The design observation ("cap-refusal logic is two hand-maintained
+implementations (PG and in-memory)") is that beyond the shared
+``batch_cap_groups``
 helper (``taskq.backend._protocol``), the REST of the cap-refusal
 arithmetic — idempotency-pair dedup counting, effective-cap resolution
 (stored override vs. carried literal), the
@@ -22,13 +23,13 @@ is therefore a GREEN PIN: it drives BOTH implementations with the exact
 same input scenarios and asserts their outputs (refusal actor, current
 count, and cap) are identical, item for item. Today it passes because
 the two files happen to agree. A future edit to just one file — the
-exact failure mode #165 describes, e.g. changing the idempotency-dedupe
+exact failure mode the finding describes, e.g. changing the idempotency-dedupe
 key shape, the ``>`` vs ``>=`` cap comparison, or which of "stored
 override" / "carried literal" wins — will make this test fail even
 though no per-backend test alone would necessarily catch it, since each
 of those is written against only one implementation.
 
-Once #165's refactor lands (a shared pure kernel called from both
+Once the shared-kernel refactor lands (a shared pure kernel called from both
 backends), this test still passes trivially — at that point it is
 pinning an identity that is structurally guaranteed rather than
 independently maintained, which is fine.
@@ -193,7 +194,7 @@ def _refusal_facts(refusals: list[Any]) -> list[tuple[str, int, int]]:
 class TestCapRefusalParity:
     """Each scenario below is run through BOTH ``_batch_cap_refusals``
     implementations with matching seeded state, and the resulting
-    refusals must match exactly. This is the parity #165 says nothing
+    refusals must match exactly. This is the parity nothing
     in the type system enforces."""
 
     async def test_simple_over_cap_matches(self) -> None:

@@ -3004,7 +3004,7 @@ async def test_watchdog_closes_taskq_owned_leader_conn() -> None:
 
 # ── Bounded closes: hung close is terminated, fast close is not ─────────
 #
-# Issue #38: the election/watchdog/cron paths closed leader-owned dedicated
+# The election/watchdog/cron paths closed leader-owned dedicated
 # conns with a bare ``await conn.close()`` — a dead PG can block that
 # indefinitely, stalling the watchdog. These tests pin the bounded-close
 # discipline (asyncio.wait_for + terminate on timeout) applied via

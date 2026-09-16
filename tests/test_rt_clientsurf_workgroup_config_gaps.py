@@ -25,7 +25,7 @@ that cannot produce a working child:
 2. **``queues = []``** — a worker that consumes nothing. The supervisor
    validator rejects every other certainly-broken shape (poll_interval
    <= 0, missing names, duplicate names, an empty workers list), and the
-   project's own #90/#93 work (pinned at
+   project's own unconsumed-queue warning work (pinned at
    tests/test_worker_unconsumed_queue_warning.py:244-249) classifies a
    worker consuming no queues as "a certain misconfiguration rather than
    the ambiguous fleet case" — the worker child warns, but the workgroup

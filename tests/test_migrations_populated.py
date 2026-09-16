@@ -632,7 +632,7 @@ async def _assert_table_counts(
 # ── Migration-specific checks ─────────────────────────────────────────────
 # Generic per-step invariants (runner order, no INVALID indexes, ledger
 # use_transaction) apply to EVERY discovered key — unknown keys get ONLY
-# those, so future migrations (incl. PRs #25/#27's CIC index rebuilds)
+# those, so future migrations (including future CIC index rebuilds)
 # automatically join this harness the day they land. Entries below are for
 # migrations whose populated-DB effect deserves a sharper assertion.
 

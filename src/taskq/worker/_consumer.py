@@ -391,8 +391,7 @@ async def consume_one_job(
     )
     _needs_acquire = bool(_rl_limits or _rl_reservations) and rate_limit_registry is not None
 
-    # Resolve the typed model BEFORE rate-limit acquisition (restored PR #64
-    # semantics, reverted by merge 85bda35): an invalid payload must not
+    # Resolve the typed model BEFORE rate-limit acquisition: an invalid payload must not
     # acquire — and non-refundably burn — a rate-limit token for an actor
     # body that can never run. acquire_for_actor then receives the validated
     # BaseModel, so keyed refs either hit the registry's isinstance fast path

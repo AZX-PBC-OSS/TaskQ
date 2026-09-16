@@ -178,7 +178,7 @@ executions).
     caller ever needs rank order, sort client-side by the returned
     `pending_rank`-equivalent columns.
 
-### Shipped outcome (issue #130, supersedes the outline above)
+### Shipped outcome (supersedes the outline above)
 
 The fix that shipped keeps this section's diagnosis (the non-folding
 subquery LIMITs, the whole-backlog `locked`/UPDATE joins, v1's
@@ -269,7 +269,7 @@ independently of it. A 7-day default keeps the steady-state event table at
 shortest job-retention window (30 d) so events never outlive the shortest
 lived observation any operator could reasonably run.
 
-### Sweep SQL (PR-#120 / `_sweeps.py` pattern)
+### Sweep SQL (the `_sweeps.py` pattern)
 
 Batched `DELETE` by `occurred_at`, `MATERIALIZED` window, `statement_timestamp()`
 bound (index-cond eligible, see the two-clock doctrine in `_sweeps.py`),

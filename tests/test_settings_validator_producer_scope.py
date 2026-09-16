@@ -1,41 +1,38 @@
-"""Regression tests for PR #39 follow-up fixes.
+"""The settings validator's bounded-loop invariant must not certify the
+producer loop.
 
-Each test validates a specific issue from XBeg9's final approved review that
-was merged without being addressed (rcbevans: "To make progress I'll merge
-as is and address remaining comments suggestions in a follow up").
+The invariant's model (``timeout + period``) holds only for loops actually
+wrapped in ``asyncio.timeout`` — the scheduled-writer and cron loops. The
+producer's multi-statement ``dispatch_batch`` is not wrapped, so certifying
+it would make the invariant guarantee something false; the validator checks
+only wrapped loops and its error text names only the loop that failed.
 
-The tests are behavioral: they drive the real code with fake deps and
-assert the contract that XBeg9 identified as broken or missing.
+Where the rest of that review wave's behavioral pins live:
 
-Coverage map (where each fix's pin lives after the merge dedupe):
-
-- Fix 1 (cron transient-retry), Fix 2 (probe cleanup before guard raises),
-  Fix 3 (probe continue), Fix 5 (open_dedicated_conn connection timeout),
-  Fix 6 (cron timeout sleeps before re-issuing) and Fix 8
-  (QueryCanceledError classification) are pinned by the behavioral variants
-  in tests/test_watchdog_safety.py.
-- Fix 7 (settings description wording) was retired as a prose pin: the
-  behavior it gestured at — which loops the dispatcher_command_timeout
-  invariant actually checks — is pinned behaviorally by
-  tests/test_settings.py (test_producer_loop_not_checked_by_validator and
-  the reject/allow tests above it).
-- Fix 4 (validator must not check the producer loop) lives here.
+- cron transient-retry, probe cleanup before the guard raises, probe
+  continue, ``open_dedicated_conn`` connection timeout, cron timeout
+  sleeps before re-issuing, and ``QueryCanceledError`` classification
+  are pinned by the behavioral variants in tests/test_watchdog_safety.py.
+- the settings-description wording that gestured at which loops the
+  ``dispatcher_command_timeout`` invariant actually checks was retired
+  as a prose pin: the behavior is pinned by tests/test_settings.py
+  (test_producer_loop_not_checked_by_validator and the reject/allow
+  tests above it).
 """
 
 import pytest
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Fix 4: Settings validator must not claim the producer is bounded
+# The validator must not claim the producer loop is bounded
 # ═══════════════════════════════════════════════════════════════════════════
 #
-# XBeg9 (settings.py:1024): "Not asking you to fix the producer here — it's
-# never been bounded... What's new is this validator saying it's fine. The
-# model is timeout + period, which holds for scheduled_wake and cron because
-# you wrapped them. The producer isn't wrapped... Either wrap the producer
-# like the leader loops, or drop it from the validator and say per-statement
-# only."
+# The producer loop is not wrapped in asyncio.timeout, so the invariant's
+# timeout + period model does not hold for it. Either wrap the producer
+# like the leader loops, or drop it from the validator and document the
+# check as per-statement only.
 #
-# Fix: remove the producer from the invariant check; update the description.
+# The fix: remove the producer from the invariant check; update the
+# description.
 
 
 async def test_settings_validator_does_not_check_producer_loop() -> None:

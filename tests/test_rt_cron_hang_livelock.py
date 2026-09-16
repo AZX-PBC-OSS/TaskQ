@@ -1,4 +1,4 @@
-"""Red-team attacks on the cron tick's time bound vs a hung payload factory (#113).
+"""Red-team attacks on the cron tick's time bound vs a hung payload factory.
 
 The contract under attack: one cron tick over a due schedule whose
 ``payload_factory`` hangs must END — return or raise — within a bound the
@@ -475,7 +475,7 @@ class TestSyncHungFactory:
 
 
 class TestDefaultTimeoutsCollideIntoWholeTickRollback:
-    """Reproduction of issue #174: at the shipped matching defaults
+    """Reproduction: at the shipped matching defaults
     (``dispatcher_command_timeout`` == ``cron_payload_factory_timeout`` ==
     5.0s), a hung payload factory does not take a per-schedule strike —
     it takes down the WHOLE tick, including every healthy schedule batched
@@ -585,7 +585,7 @@ class TestDefaultTimeoutsCollideIntoWholeTickRollback:
         )
         assert healthy_row is not None
         assert healthy_row["next_fire_at"] > due, (
-            "issue #174 reproduced: at the shipped matching defaults "
+            "the defect reproduced: at the shipped matching defaults "
             "(dispatcher_command_timeout == cron_payload_factory_timeout == 5.0s), "
             "the whole-tick asyncio.timeout's CancelledError propagates past "
             "cron_loop.py's per-row `except Exception` (CancelledError is a "

@@ -143,7 +143,7 @@ delay = raw × uniform(1 - jitter, 1 + jitter)
 
 The result is clamped to `[0, effective_cap]`. With the default `jitter=0.2`, each computed delay varies by ±20% of the raw value. For example, a raw delay of 10s produces a value in `[8s, 12s]`.
 
-**Why not Full Jitter (`uniform(0, raw)`)?** Full Jitter collapses toward zero on attempt 1, causing a thundering-herd effect for high-volume actors. Multiplicative-symmetric jitter preserves the expected delay while still spreading retries across the fleet. (See Marc Brooker, "Exponential Backoff And Jitter", AWS Architecture Blog, and AWS .NET SDK issue #4341.)
+**Why not Full Jitter (`uniform(0, raw)`)?** Full Jitter collapses toward zero on attempt 1, causing a thundering-herd effect for high-volume actors. Multiplicative-symmetric jitter preserves the expected delay while still spreading retries across the fleet. (See Marc Brooker, "Exponential Backoff And Jitter", AWS Architecture Blog.)
 
 With `jitter=0.0`, `uniform(1, 1) = 1.0`, so the raw delay is returned exactly — there is no collapse to zero.
 

@@ -829,8 +829,8 @@ class TestTI7500ActorAggregatedMaxPending:
     """500-actor batch admission stays one backend call, one grouped count.
 
     The aggregated count query itself now lives in the backend tier
-    (``_batch_cap_refusals`` — the client-side pre-check was removed with
-    #149 because it aborted whole mixed-actor calls), so the count is
+    (``_batch_cap_refusals`` — the client-side pre-check was removed
+    because it aborted whole mixed-actor calls), so the count is
     unit-pinned against the fake-conn harness in
     tests/test_batch_cap_partition.py; this integration pin guards the
     caller-visible shape: one ``enqueue_batch`` backend call for the
@@ -1020,7 +1020,7 @@ class TestTN2MaxPendingExceededError:
     """Single-actor batch over its cap: refused whole with the typed batch error.
 
     Every item belongs to the one over-cap actor, so the backend's
-    per-actor partition (#149) admits nothing and raises
+    per-actor partition admits nothing and raises
     BatchMaxPendingExceededError — a BackpressureError sibling of
     MaxPendingExceededError, deliberately not a subclass — with zero
     rows written. Mixed-actor partition (healthy actors admitted) is

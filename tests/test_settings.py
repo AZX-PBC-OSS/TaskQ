@@ -1885,7 +1885,7 @@ def test_result_max_bytes_ceiling_matches_progress_data_max_bytes() -> None:
         _load(TASKQ_RESULT_MAX_BYTES="1023")
 
 
-# ── secrets are masked in settings reprs (issue #111) ──────────────────
+# ── secrets are masked in settings reprs ────────────────────────────────
 #
 # A settings repr reaches logs, debuggers, and crash tracebacks. The DSN
 # fields self-redact (dotenvmodel's BaseDsn masks the password in __repr__),

@@ -1,4 +1,4 @@
-"""Issue #104 — moving an actor between queues is ONE atomic operator action,
+"""Moving an actor between queues is ONE atomic operator action,
 and worker boot stays consistent at every intermediate state of the rolling
 deploy that ships the matching ``@actor(queue=...)`` literal.
 

@@ -865,7 +865,7 @@ class TestReconnectWidenedCatch:
         ), f"reconnect warning must log type(exc).__name__; got {warning_kwargs}"
 
 
-# ---- Reconnect resilience: a HUNG factory (#156) -----------------------------------------
+# ---- Reconnect resilience: a HUNG factory -----------------------------------------
 #
 # reconnect_notify_conn awaited factory() with no bound, so a hung
 # credential provider or TCP connect parked the health-check retry loop
@@ -1002,11 +1002,12 @@ class TestReconnectFactoryBound:
                     await task
 
 
-# ---- Reconnect resilience: a HUNG post-factory LISTEN execute (#156) ---------------------
+# ---- Reconnect resilience: a HUNG post-factory LISTEN execute ---------------------
 #
-# The factory bound alone does not close #156's threat model: a rebuilt
+# The factory bound alone does not close the threat model: a rebuilt
 # connection can complete the factory handshake and then black-hole on
-# the LISTEN execute — exactly the shape #155 fixed for health queries.
+# the LISTEN execute — exactly the black-hole shape the health-check
+# query bound closes.
 # Pre-fix, that execute was unbounded while the add_listener beside it
 # was bounded, so the reconnect loop parked inside execute() while
 # holding notify_reconnect_lock — poll dispatch kept working, but the
@@ -1375,7 +1376,7 @@ class TestReconnectKeepalive:
         keepalive_mock.assert_called_once_with(new_conn, label="notify")
 
 
-# ---- Bounded closes on reconnect/health-check error paths (#38) ------------------
+# ---- Bounded closes on reconnect/health-check error paths ------------------
 #
 # The reconnect LISTEN-setup-failure cleanup, the post-reconnect old-conn
 # drain, and the health-check error path all closed conns with a bare

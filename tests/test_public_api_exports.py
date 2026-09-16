@@ -138,7 +138,7 @@ def test_terminal_statuses_is_backend_reexport() -> None:
     """``taskq.TERMINAL_STATUSES`` IS ``taskq.backend.TERMINAL_STATUSES`` —
     the same object, not an equal copy. Identity, not ``==``: a hand-copied
     frozenset that has drifted in lockstep with nothing passes ``==`` and
-    defeats the drift pin — the exact failure mode issue #91 exists to
+    defeats the drift pin — the exact failure mode the re-export rule exists to
     prevent."""
     assert taskq.TERMINAL_STATUSES is taskq.backend.TERMINAL_STATUSES
 
@@ -199,7 +199,7 @@ def test_all_is_sorted() -> None:
     guard below turns any such export into a conscious decision instead of a
     silent conflict between this test and the lint.
 
-    The first constant (TERMINAL_STATUSES, issue #91) exposed that the old
+    The first constant (TERMINAL_STATUSES) exposed that the old
     cap-subsequence check and this one are incomparable: it both missed
     lowercase misplacement and rejected RUF022-legal group orderings (e.g.
     VALID_TRANSITIONS before AttemptOutcome in taskq.backend.__all__).

@@ -62,9 +62,7 @@ def _quiet_actor_names() -> list[str]:
 
 
 async def _set_priority(fleet: Fleet, actor: str, priority: int) -> None:
-    await fleet.fetch(
-        'UPDATE "{schema}".jobs SET priority = $2 WHERE actor = $1', actor, priority
-    )
+    await fleet.fetch('UPDATE "{schema}".jobs SET priority = $2 WHERE actor = $1', actor, priority)
 
 
 async def test_late_arriving_high_priority_actor_is_served_every_round(pg_dsn: str) -> None:
@@ -111,8 +109,7 @@ async def test_late_arriving_high_priority_actor_is_served_every_round(pg_dsn: s
                 first_miss = round_no
 
         remaining = await fleet.fetch(
-            "SELECT count(*) AS n FROM \"{schema}\".jobs "
-            "WHERE actor = $1 AND status = 'pending'",
+            "SELECT count(*) AS n FROM \"{schema}\".jobs WHERE actor = $1 AND status = 'pending'",
             urgent_actor,
         )
         urgent_still_pending = int(remaining[0]["n"])

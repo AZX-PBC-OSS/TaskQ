@@ -2,7 +2,7 @@
 
 """Red-team pins: fleet-wide reclamation of keyed rate-limit/reservation rows.
 
-The #139 residual these pins close: keyed ``reservation_slots`` /
+The residual these pins close: keyed ``reservation_slots`` /
 ``rate_limit_buckets`` rows orphan when the worker that materialised them
 DIES. The in-process reclamation machinery (the registry's idle eviction
 plus ``drain_pending_reservation_reclaims``) only ever names rows its OWN
@@ -970,7 +970,7 @@ async def test_orphan_reclaim_makes_progress_within_a_bounded_number_of_ticks(
 
 async def test_sweep_is_bounded_oldest_first_and_drains_per_call(pg_dsn: str) -> None:
     """One call deletes at most ``batch_size`` buckets (rows, for
-    ``rate_limit_buckets``) — the #120 doctrine's constant-size
+    ``rate_limit_buckets``) — the bounded-batch doctrine's constant-size
     committed batch per tick — oldest first, and repeated calls drain
     the backlog."""
     await _fresh_schema(pg_dsn)
@@ -1252,9 +1252,7 @@ async def test_concurrent_acquire_on_a_reclaim_candidate_never_partially_deletes
                 bucket,
                 int(lease),
             )
-        assert held is not None, (
-            "the sweep deleted the row backing a live, concurrently-held lease"
-        )
+        assert held is not None, "the sweep deleted the row backing a live, concurrently-held lease"
         assert deleted == 0, (
             f"the sweep reported {deleted} deletion(s) although the only "
             "candidate bucket in scope was contended by a concurrent acquire "

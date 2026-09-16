@@ -93,8 +93,8 @@ otel = [
     "opentelemetry-instrumentation>=0.64b0,<1",
 ]
 prometheus = [
-    # >=0.63b0 guarantees PrometheusMetricReader's public `registry=` kwarg
-    # (opentelemetry-python #5055); earlier releases hard-coded the global
+    # >=0.63b0 guarantees PrometheusMetricReader's public `registry=` kwarg;
+    # earlier releases hard-coded the global
     # REGISTRY, which is not safe for isolated metric scrapes.
     "opentelemetry-exporter-prometheus>=0.63b0,<1",
     "prometheus-client>=0.26.0,<1",

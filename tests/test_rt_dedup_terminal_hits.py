@@ -1,7 +1,7 @@
 """Red-team pin: the unique_for dedup arm's caller-detectability floor.
 
 The arm's terminal-hit ESCALATION contract (a dedup whose target job is
-terminal warns and names the status — issue #140's strand risk) is
+terminal warns and names the status — the strand risk) is
 pinned at its home in ``tests/test_dedup_logging.py``
 (``test_unique_for_dedup_onto_terminal_target_warns_with_status``,
 beside the idempotency-half twin), against the shared
@@ -10,7 +10,7 @@ duplicate of that pin this file carried while the contract was red was
 retired on landing (the red-team note's "one of the two pins should be
 retired" resolution, naming test_dedup_logging.py as the home).
 
-What this file keeps is the other half of the #140 story: the caller's
+What this file keeps is the other half of the story: the caller's
 own detection floor. ``unique_states`` is caller-configurable
 (``src/taskq/actor.py`` documents folding terminal states in), and a
 dedup onto a dead job strands the new work for up to ``unique_for`` —
@@ -57,7 +57,7 @@ async def _terminal_inclusive_actor(_payload: _DedupPayload) -> None:
 async def test_client_surfaced_terminal_dedup_is_caller_detectable() -> None:
     """Green pin: the caller can detect a terminal unique_for hit —
     ``was_existing`` is True and the handle's row carries the terminal
-    status. This is the observability floor that makes the #140 strand
+    status. This is the observability floor that makes the strand
     survivable: the escalation contract (the warning line) is the
     operator's signal, pinned at its home in test_dedup_logging.py, and
     the caller's signal is ``deduplicated_onto_terminal`` on the

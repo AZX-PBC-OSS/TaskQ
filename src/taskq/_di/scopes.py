@@ -92,7 +92,7 @@ class ScopeContainer:
     async def _await_factory[T](self, coro: Awaitable[T], *, type_: type) -> T:
         """Await a user-registered factory's first-use open, bounded.
 
-        ``factory_timeout`` is the #162 discipline applied at the DI
+        ``factory_timeout`` is the bounded-open discipline applied at the DI
         registry's own factory seam: a user factory that accepts the
         call and never returns (the black-holed credential endpoint —
         the documented "database pools, HTTP clients" shape) must fail
@@ -579,7 +579,7 @@ class LoopScopeSlotView:
     permits one operation per connection, so healthy actors raised
     ``InterfaceError`` (misattributed to the actor, retry budget burned),
     and the actor's own writes sat outside its slot's transaction
-    (issue #116 — each job's work must run in isolation within its
+    (each job's work must run in isolation within its
     transaction; sharing a connection across concurrent jobs violates
     that isolation and causes writes to land outside any job's boundary).
 
@@ -706,7 +706,7 @@ async def build_actor_scope(
     :class:`LoopScopeSlotView` that shadows the LOOP cache for this
     invocation only, actor parameters and nested LOOP-scoped
     dependencies alike — so a LOOP-registered connection never reaches
-    two concurrent slots' actors (issue #116), and a LOOP-scoped
+    two concurrent slots' actors, and a LOOP-scoped
     factory DERIVED from a shadowed type (a helper holding the
     connection) resolves per invocation instead of serving the
     bootstrap singleton that baked the registered connection in. ``None``

@@ -28,7 +28,7 @@ Why the existing guards could not catch any of them:
 pin ALIASING (does a seam hand out stored objects?) and SURFACE
 COMPLETENESS (is every public member classified?). Both reported green at
 the same commit where the two backends demonstrably selected different
-rows. The constitution requires the mirror to be "observably equivalent
+rows. The testing mirror's own contract is to be "observably equivalent
 ... at every seam"; those files implement a strict subset of that and
 read as though they implement all of it. This file guards the remaining
 half: SEMANTICS.

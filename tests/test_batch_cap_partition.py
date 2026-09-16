@@ -1,4 +1,4 @@
-"""#149 — bulk-tier cap enforcement partitions admission per actor.
+"""Bulk-tier cap enforcement partitions admission per actor.
 
 ``_batch_cap_refusals`` (PG) / ``_batch_cap_refusals`` (InMemory)
 (InMemory) refused the ENTIRE enqueue_batch / enqueue_batch_fast call
@@ -164,8 +164,8 @@ async def test_backend_enqueue_batch_exact_fill_is_admitted() -> None:
 
 
 async def test_backend_enqueue_batch_multi_refusal_attribution() -> None:
-    """TWO over-cap actors in one mixed batch (every earlier #149 test
-    refuses exactly one): ``refusals`` names BOTH, in group order (first
+    """TWO over-cap actors in one mixed batch (every earlier partition
+    test refuses exactly one): ``refusals`` names BOTH, in group order (first
     appearance in the caller's list), each with its own per-actor
     ``refused_indices``, and ``admitted_count`` counts only the healthy
     actor's items — everything a caller needs to retry several refused
@@ -483,7 +483,7 @@ async def test_pg_partition_refusal_logs_and_records_per_refused_actor(
     actor: one ``max-pending-exceeded`` warning and one
     ``record_backpressure_error(actor, kind="max_pending")`` call each —
     parity with the single-enqueue path's log+metric pair. Neither was
-    pinned by the #149 tests; an operator's backpressure dashboards read
+    pinned by the partition tests; an operator's backpressure dashboards read
     these, so a silent regression would blank them."""
     from taskq.backend import _enqueue as enqueue_mod
 

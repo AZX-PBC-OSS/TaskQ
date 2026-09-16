@@ -3,7 +3,7 @@ past a capped actor's max_concurrent when several pods contend, forcing
 the window-expansion loop to run?
 
 The issue thread for the under-claim fix names this explicitly as the
-inverse hazard: pgqueuer's own history (issue #761) is a lock node that
+inverse hazard: pgqueuer's own history is a lock node that
 slides past a capacity-bound window and over-admits. TaskQ's fix keeps a
 pre-lock window for capped actors specifically to avoid that, and adds a
 window-expansion retry when a round returns empty. This test stresses
@@ -82,7 +82,7 @@ async def test_capped_actor_over_admission_stays_within_documented_soft_cap_boun
             # completed yet, so in-flight after this round is exactly the
             # cumulative count of rows claimed and not yet finished.
             in_flight_rows = await fleet.fetch(
-                "SELECT count(*) AS n FROM \"{schema}\".jobs "
+                'SELECT count(*) AS n FROM "{schema}".jobs '
                 "WHERE actor = $1 AND status = 'running'",
                 _ACTOR,
             )

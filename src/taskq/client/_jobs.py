@@ -421,7 +421,7 @@ class JobsClient:
 
             # Why not stack.enter_async_context(client): Redis.__aexit__
             # calls aclose() UNBOUNDED — a hung broker would wedge
-            # JobsClient.close() (#38). initialize() preserves
+            # JobsClient.close(). initialize() preserves
             # __aenter__'s eager-setup semantics; the pushed callback
             # bounds the close instead (b072692 pattern).
             async def _close_client() -> None:
@@ -821,7 +821,7 @@ class JobsClient:
         # pairs that will dedupe instead of writing, and partitions
         # admission per actor. The old client-side aggregated pre-check
         # raised here for the WHOLE call — one capped actor aborted
-        # everyone's items (#149) — and its count was strictly less
+        # everyone's items — and its count was strictly less
         # informed than the backend's, so it was removed rather than
         # duplicated.
         effective_mp: dict[str, int | None] = {}

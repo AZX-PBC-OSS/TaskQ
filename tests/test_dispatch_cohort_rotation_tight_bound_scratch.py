@@ -46,21 +46,35 @@ async def _dispatch(
     conn: asyncpg.Connection, schema: str, sql_template: str, queues: list[str], limit_n: int
 ) -> list[asyncpg.Record]:
     return await dispatch_batch_sql(
-        conn, sql=sql_template.format(schema=schema), queues=queues, limit_n=limit_n,
-        worker_id=new_uuid(), lock_lease=_LEASE,
+        conn,
+        sql=sql_template.format(schema=schema),
+        queues=queues,
+        limit_n=limit_n,
+        worker_id=new_uuid(),
+        lock_lease=_LEASE,
     )
 
 
 async def _seed(
-    backend: PostgresBackend, conn: asyncpg.Connection, schema: str,
-    actors: list[str], queue: str, depth: int, due: datetime,
+    backend: PostgresBackend,
+    conn: asyncpg.Connection,
+    schema: str,
+    actors: list[str],
+    queue: str,
+    depth: int,
+    due: datetime,
 ) -> None:
     for name in actors:
         await seed_actor_config(conn, schema, name, queue=queue)
     args_list = [
         EnqueueArgs(
-            id=new_job_id(), actor=name, queue=queue, payload={},
-            max_attempts=3, retry_kind="transient", scheduled_at=due,
+            id=new_job_id(),
+            actor=name,
+            queue=queue,
+            payload={},
+            max_attempts=3,
+            retry_kind="transient",
+            scheduled_at=due,
         )
         for name in actors
         for _ in range(depth)
@@ -69,8 +83,12 @@ async def _seed(
 
 
 async def _first_round_served(
-    conn: asyncpg.Connection, schema: str, sql_template: str, queues: list[str],
-    limit_n: int, rounds: int,
+    conn: asyncpg.Connection,
+    schema: str,
+    sql_template: str,
+    queues: list[str],
+    limit_n: int,
+    rounds: int,
 ) -> dict[str, int]:
     """Map actor -> the 1-indexed round it was FIRST served in."""
     first_served: dict[str, int] = {}
@@ -97,7 +115,9 @@ class TestTightRotationBound:
     of the slack, that is itself a finding."""
 
     async def test_strict_fifo_tight_bound(
-        self, clean_pg_conn: asyncpg.Connection, module_pg_schema: ModulePgSchema,
+        self,
+        clean_pg_conn: asyncpg.Connection,
+        module_pg_schema: ModulePgSchema,
     ) -> None:
         schema = module_pg_schema.schema_name
         settings = cron_settings(schema)
@@ -114,10 +134,14 @@ class TestTightRotationBound:
 
         never = sorted(a for a in actors if a not in first_served)
         max_round = max(first_served.values()) if first_served else None
-        print(f"\n[strict_fifo] tight_bound={tight_bound} max_first_served_round={max_round} "
-              f"never_served={len(never)} rounds_used={slack_rounds}")
+        print(
+            f"\n[strict_fifo] tight_bound={tight_bound} max_first_served_round={max_round} "
+            f"never_served={len(never)} rounds_used={slack_rounds}"
+        )
 
-        assert not never, f"{len(never)} actors never served within {slack_rounds} rounds (2x tight bound {tight_bound}): {never}"
+        assert not never, (
+            f"{len(never)} actors never served within {slack_rounds} rounds (2x tight bound {tight_bound}): {never}"
+        )
         assert max_round is not None
         assert max_round <= tight_bound, (
             f"rotation bound is NOT tight: max first-served round was {max_round}, "
@@ -128,7 +152,9 @@ class TestTightRotationBound:
         )
 
     async def test_round_robin_mode_tight_bound(
-        self, clean_pg_conn: asyncpg.Connection, module_pg_schema: ModulePgSchema,
+        self,
+        clean_pg_conn: asyncpg.Connection,
+        module_pg_schema: ModulePgSchema,
     ) -> None:
         schema = module_pg_schema.schema_name
         settings = cron_settings(schema)
@@ -139,7 +165,8 @@ class TestTightRotationBound:
         await clean_pg_conn.execute(
             f'INSERT INTO "{schema}".queues (name, mode) VALUES ($1, $2) '
             "ON CONFLICT (name) DO UPDATE SET mode = EXCLUDED.mode",
-            _QUEUE, "round_robin",
+            _QUEUE,
+            "round_robin",
         )
 
         tight_bound = math.ceil(_ACTOR_COUNT / _LIMIT)
@@ -150,10 +177,14 @@ class TestTightRotationBound:
 
         never = sorted(a for a in actors if a not in first_served)
         max_round = max(first_served.values()) if first_served else None
-        print(f"\n[round_robin] tight_bound={tight_bound} max_first_served_round={max_round} "
-              f"never_served={len(never)} rounds_used={slack_rounds}")
+        print(
+            f"\n[round_robin] tight_bound={tight_bound} max_first_served_round={max_round} "
+            f"never_served={len(never)} rounds_used={slack_rounds}"
+        )
 
-        assert not never, f"{len(never)} actors never served within {slack_rounds} rounds (2x tight bound {tight_bound}): {never}"
+        assert not never, (
+            f"{len(never)} actors never served within {slack_rounds} rounds (2x tight bound {tight_bound}): {never}"
+        )
         assert max_round is not None
         assert max_round <= tight_bound, (
             f"rotation bound is NOT tight: max first-served round was {max_round}, "

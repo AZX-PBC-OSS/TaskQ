@@ -1,5 +1,5 @@
 """The in-memory dispatch twin mirrors the claim-time reservation
-headroom gate (criterion 65 parity with
+headroom gate (parity with
 ``src/taskq/backend/_dispatch_sql.py``'s ``reservation_holdings`` /
 ``reservation_headroom`` CTEs).
 

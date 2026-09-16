@@ -66,8 +66,6 @@ remain unmeasured.
 
 from __future__ import annotations
 
-from datetime import timedelta
-
 import pytest
 
 from taskq._ids import new_base62
@@ -132,7 +130,9 @@ async def test_a_saturated_rate_limit_does_not_starve_a_healthy_cohorts_round_ad
         drained = await bucket.acquire(pg_pool=pool, settings=fleet.settings)
         assert drained.allowed, "setup: bucket must start with its one token available"
         denied_probe = await bucket.acquire(pg_pool=pool, settings=fleet.settings)
-        assert not denied_probe.allowed, "setup: bucket must read as exhausted before the round loop"
+        assert not denied_probe.allowed, (
+            "setup: bucket must read as exhausted before the round loop"
+        )
 
         await fleet.enqueue(_THROTTLED_BACKLOG, actor=_THROTTLED, queue=_QUEUE)
         await fleet.enqueue(_HEALTHY_BACKLOG, actor=_HEALTHY, queue=_QUEUE)

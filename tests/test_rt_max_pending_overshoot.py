@@ -10,7 +10,7 @@ unique indexes on capacity slots: a database constraint that reserves
 the bounded capacity and prevents the overshoot at insertion time.
 
 Every batch tier below must refuse an over-cap actor loudly rather than
-admit it silently. Since #149 the refusal is PARTITIONED per actor: the
+admit it silently. The refusal is PARTITIONED per actor: the
 over-cap actor's items are refused as a group (nothing over cap is ever
 admitted — the pinned invariant below), every other actor's items are
 admitted, and ``BatchMaxPendingExceededError`` raises after the admitted
@@ -400,8 +400,8 @@ async def test_regular_enqueue_batch_rejects_oversized_aggregate() -> None:
     aggregate exceeds the cap.
 
     Documents the boundary of the finding: admission lives wholly in the
-    backend tier (the client-side aggregated pre-check was removed with
-    #149 — it aborted the whole call for one capped actor), which counts
+    backend tier (the client-side aggregated pre-check was removed —
+    it aborted the whole call for one capped actor), which counts
     once per batch, discounts idempotency pairs, and partitions per
     actor. A single-actor over-cap batch is refused whole with nothing
     admitted; the mixed-actor partition (healthy actors admitted) is

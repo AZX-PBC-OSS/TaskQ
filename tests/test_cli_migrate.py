@@ -100,7 +100,7 @@ def test_migrate_status_shows_applied_and_pending(monkeypatch: Any) -> None:
 def test_migrate_status_closes_connection(monkeypatch: Any) -> None:
     """migrate status closes the asyncpg connection even when the command succeeds.
 
-    No-regression pin for the bounded close (#38 follow-up): a healthy conn
+    No-regression pin for the bounded close: a healthy conn
     is closed exactly once and never terminated (passes pre- and post-fix).
     """
     fake_conn = _patch_connect(monkeypatch)
@@ -318,7 +318,7 @@ def test_migrate_up_lock_contention_exits_with_a_named_reason(monkeypatch: Any) 
 def test_migrate_up_closes_connection(monkeypatch: Any) -> None:
     """migrate up closes the asyncpg connection even when no migrations are pending.
 
-    No-regression pin for the bounded close (#38 follow-up): a healthy conn
+    No-regression pin for the bounded close: a healthy conn
     is closed exactly once and never terminated (passes pre- and post-fix).
     """
     fake_conn = _patch_connect(monkeypatch)

@@ -677,7 +677,7 @@ async def test_concurrent_transactional_slots_each_hold_their_own_di_connection(
 ) -> None:
     """Two concurrent transactional slots whose actors inject the LOOP-scope
     ``asyncpg.Connection`` must each receive the connection their own slot's
-    transaction runs on — never the ONE registered connection (issue #116).
+    transaction runs on — never the ONE registered connection.
 
     The per-slot pool already carries TaskQ's own transactional writes (the
     terminal write, transactional sub-enqueues — pinned above); this pin

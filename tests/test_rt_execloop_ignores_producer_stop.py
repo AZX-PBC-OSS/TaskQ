@@ -1,5 +1,5 @@
 """Red-team: DRAINING re-pends local_queue rows but di_consumer_loop keeps
-dequeuing them, producing double-execution of actor side effects (#178).
+dequeuing them, producing double-execution of actor side effects.
 
 Contract under attack: once DRAINING fires (``deps.producer_stop_event.set()``
 at shutdown.py:187, immediately followed by ``drain_local_queue_to_pending``
@@ -48,7 +48,7 @@ from taskq.worker.run import di_consumer_loop
 from taskq.worker.shutdown import ShutdownPhase
 
 _DOUBLE_EXEC_MSG = (
-    "CONTRACT (#178): once DRAINING sets deps.producer_stop_event and "
+    "CONTRACT: once DRAINING sets deps.producer_stop_event and "
     "re-pends this worker's local_queue rows back to 'pending' (claimable by "
     "another worker), THIS worker's di_consumer_loop must stop dequeuing "
     "them. VIOLATION: di_consumer_loop's outer guard is only "

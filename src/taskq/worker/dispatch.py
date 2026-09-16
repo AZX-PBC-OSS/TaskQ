@@ -311,7 +311,7 @@ async def dispatch_one_job(
     # LOOP-scope cache for this actor invocation (loop_slot_values
     # below), so an actor's own writes join THIS job's transaction and
     # a registered LOOP-scope connection is never shared across
-    # concurrent slots' actors (issue #116). The registered LOOP-scope
+    # concurrent slots' actors. The registered LOOP-scope
     # connection itself stays untouched — every non-actor reader
     # (bootstrap's activation check, the loop-level enqueuer's
     # provenance inference) still resolves it from the LOOP cache.
@@ -345,8 +345,7 @@ async def dispatch_one_job(
             # concurrent slots' actors can never interleave operations
             # on one connection — asyncpg permits one operation per
             # connection, so the shared shape raised InterfaceError
-            # inside healthy actors and burned their retry budget
-            # (issue #116).
+            # inside healthy actors and burned their retry budget.
             actor_loop_slot_values = {asyncpg.Connection: transaction_conn}
 
             async def _release_slot_conn(

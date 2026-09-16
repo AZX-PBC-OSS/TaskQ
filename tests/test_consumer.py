@@ -723,8 +723,8 @@ async def test_consumer_passes_validated_model_to_key_fn() -> None:
     assert received.tenant_id == "acme"
     assert len(reg.release_calls) == 1
 
-    # The consumer itself hands the validated BaseModel to acquire_for_actor
-    # (restored PR #64 semantics) — the registry's isinstance fast path then
+    # The consumer itself hands the validated BaseModel to acquire_for_actor;
+    # the registry's isinstance fast path then
     # applies, and key_fn never sees the raw wire dict.
     assert len(reg.acquire_calls) == 1
     acquire_payload = reg.acquire_calls[0]["payload"]

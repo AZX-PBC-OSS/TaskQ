@@ -32,7 +32,7 @@ _FLUSH_UNNEST_BINDING_ORDER: Final[tuple[str, ...]] = (
     "worker_id: UUID",  # the loop-wide owner, the gate's scalar conjunct
 )
 
-# The bounded-batch doctrine (the #120 lesson): no flush statement ever
+# The bounded-batch doctrine: no flush statement ever
 # carries more than this many rows, so every statement is short-lived and
 # independently bounded — an all-in-one statement over the whole dirty set
 # is the long-running-statement trap (it times out as a whole and stalls
@@ -54,7 +54,7 @@ def _flush_update_sql(schema: str) -> str:
     unnest-array bulk-writer shape reduces the number of parameters
     and makes merge operations efficient (array-side operations merge
     per-row without row-by-row iteration), sized by ``_FLUSH_BATCH_ROWS``
-    so no statement ever runs long (the #120 doctrine). Each unnest row is
+    so no statement ever runs long. Each unnest row is
     fenced PER ROW (running + this worker + this attempt epoch) and
     merges PER ROW (monotone base + delta on ``progress_seq``,
     last-writer-wins ``||`` merge on ``progress_state``); a row whose
@@ -242,7 +242,7 @@ async def _flush_dirty_set(
 ) -> None:
     """Flush one tick's dirty set in bounded row-batches.
 
-    The doctrine (the #120 lesson, deliberately re-applied here after a
+    The doctrine (deliberately re-applied here after a
     one-statement shape regressed it): an all-in-one statement over an
     unbounded dirty set is the long-running-statement trap — it times
     out as a whole, and the timeout kills the tick while the loop

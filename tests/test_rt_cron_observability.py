@@ -15,7 +15,7 @@ committed writes, with the values a real tick produces):
   auto-disabled`` events carry the firing ``worker_id``.
 * the ``cron fire`` span carries ``taskq.cron_schedule_id`` on both the
   planning-loop (success) path and the write-failure strike path — the
-  per-schedule attribution channel since the metric's relabel (#157).
+  per-schedule attribution channel since the metric's relabel.
 * the ``-> int`` return equals the number of successes — including a
   mixed batch where planning failures and successes share one tick.
 """
@@ -381,7 +381,7 @@ class TestObservabilityOnCommit:
 
 class TestCronFireSpanAttribution:
     """``taskq.cron_schedule_id`` on the ``cron fire`` span — the
-    per-schedule attribution channel since the metric's relabel (#157).
+    per-schedule attribution channel since the metric's relabel.
     Both span creation sites must stamp it: the planning loop (success
     path) and the write-failure strike path."""
 

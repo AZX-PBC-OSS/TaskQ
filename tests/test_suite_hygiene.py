@@ -72,7 +72,7 @@ production never constructs. See the section comment there.
 # claim was measured — revert the guarded thing, count what fails — rather than
 # asserted. Files where that measurement was made carry the numbers in a
 # comment at the site (test_schema_name_validator.py, test_shutdown_integration.py,
-# test_obs_exception_redaction.py, test_pr39_followup_fixes.py,
+# test_obs_exception_redaction.py, test_settings_validator_producer_scope.py,
 # test_drain_old_redis_bounded.py).
 
 import ast
@@ -211,8 +211,8 @@ def test_testing_pkg_no_module_level_schema_constant() -> None:
 # satisfies the gate as surely as our own. A false positive lands the
 # test's raced COMMIT early: test_rt_cancel_window_race.py's
 # deregistration preflight then saw the claimed row as committed
-# 'running' and refused with ActorHasActiveJobsError (PR #120's CI
-# failure, mechanism reproduced deterministically against a two-database
+# 'running' and refused with ActorHasActiveJobsError (a CI failure of the
+# unscoped gate, mechanism reproduced deterministically against a two-database
 # cluster), and test_rt_cancel_deadlock.py's holder would close the
 # deadlock cycle before the drain's event INSERT parked, inverting which
 # transaction's detector arms first. Every pg_stat_activity query in the

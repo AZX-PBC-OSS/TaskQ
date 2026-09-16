@@ -1,4 +1,4 @@
-"""The sweep loop's ``job_events`` retention wiring (#131).
+"""The sweep loop's ``job_events`` retention wiring.
 
 The retention seam itself (``sweep_expired_events`` — one bounded,
 committed batch per call, the crash-reclaim outbox slice carved out) is
@@ -149,7 +149,7 @@ async def _run_loop_until(ctx: SweepContext, done: Callable[[], bool]) -> None:
 async def test_sweep_loop_drives_event_retention_with_configured_window() -> None:
     """One leader tick invokes the retention sweep once, on the dispatcher
     pool, with the operator's configured window and batch size — the
-    wiring that turns ``sweep_expired_events`` into the #131 retention
+    wiring that turns ``sweep_expired_events`` into the retention
     drain (one committed batch per tick, deliberately NOT a
     ``_drain_bounded`` drain)."""
     deps = _deps(event_retention_period="3d")

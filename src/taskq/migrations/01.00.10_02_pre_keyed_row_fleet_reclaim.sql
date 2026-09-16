@@ -1,5 +1,5 @@
 -- Fleet-reclaim marking for keyed rate-limit / reservation rows (the
--- #139 residual). Forward-only; there is no down migration. To revert,
+-- keyed-row residual). Forward-only; there is no down migration. To revert,
 -- restore from backup. The literal "{schema}" token is substituted at
 -- apply time by the migration runner.
 --

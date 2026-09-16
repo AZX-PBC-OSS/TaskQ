@@ -78,8 +78,8 @@ def test_histogram_data_point_keeps_the_fields_taskq_reads() -> None:
 def test_prometheus_reader_accepts_the_registry_kwarg() -> None:
     """The reason the floor is 1.42.0 and not lower.
 
-    `opentelemetry-exporter-prometheus` 0.62b0 hard-codes the global REGISTRY
-    (opentelemetry-python #5055), so isolated metric scrapes are impossible.
+    `opentelemetry-exporter-prometheus` 0.62b0 hard-codes the global
+    REGISTRY, so isolated metric scrapes are impossible.
     0.63b0 added the public `registry=` kwarg and requires
     `opentelemetry-sdk~=1.42.0`, which is what pins the whole floor set to
     1.42.0. Measured: on 0.62b0 this suite produces 7 TypeErrors in

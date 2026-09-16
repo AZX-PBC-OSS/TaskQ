@@ -26,7 +26,7 @@ from taskq.auth import (
     make_redis_client_factory,
 )
 
-# Why: issue #91 — imported from taskq.backend (the public aggregation module,
+# Why: imported from taskq.backend (the public aggregation module,
 # not the _protocol/statemachine internals) so embedders spell "is this job
 # done" checks and JobStatus annotations (e.g. EnqueueArgs.unique_states)
 # without copying the five statuses into their own constants, which drift

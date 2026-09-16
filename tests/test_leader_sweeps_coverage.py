@@ -1458,9 +1458,10 @@ def test_bootstrap_dispatcher_pool_acquire_calls_pass_timeout_ast() -> None:
     """Structural backstop: every ``dispatcher_pool.acquire()`` call in
     ``taskq.worker._bootstrap`` must pass a ``timeout=`` keyword argument.
 
-    This invariant has recurred three times: PR #67 fixed 8 sites, a 9th
-    was found during a later merge in ``_leader_sweeps.py``, and two more
-    turned up in ``_bootstrap.py`` -- a file that branch never touched.
+    This invariant has recurred three times: eight sites were fixed in
+    one sweep, a ninth was found during a later merge in
+    ``_leader_sweeps.py``, and two more turned up in ``_bootstrap.py``
+    -- a file that earlier sweep never touched.
     Module-scope rather than restricted to functions named ``*_loop``
     (like the sibling check above): bootstrap's acquire sites live inside
     one large ``_main`` startup function, not per-concern loop functions,

@@ -429,7 +429,7 @@ def test_ui_serve_lifespan_creates_pool_and_redirects_root(
     assert pool.terminated is False
 
 
-# ── Bounded pool close at lifespan exit (#38) ───────────────────────────
+# ── Bounded pool close at lifespan exit ─────────────────────────────────
 #
 # The lifespan entered the pool on the AsyncExitStack (``Pool.__aexit__``
 # → unbounded ``close()``) — a dead PG could wedge UI shutdown. These
@@ -530,7 +530,7 @@ async def test_ui_serve_lifespan_fast_pool_close_not_terminated(
     assert pool.terminated is False
 
 
-# ── Bounded redis close at lifespan exit (#38 follow-up) ────────────────
+# ── Bounded redis close at lifespan exit ────────────────────────────────
 #
 # The lifespan entered the redis client on the AsyncExitStack
 # (``Redis.__aexit__`` → shielded, unbounded ``aclose()``) — a hung broker
@@ -718,7 +718,7 @@ def test_ui_serve_lifespan_creates_redis_client_when_redis_url_set(
     """_ui_serve's lifespan initializes the redis client eagerly when redis_url is set
     and closes it on shutdown.
 
-    Pins the post-#38 wiring: explicit ``initialize()`` (preserving
+    Pins the wired bounded close: explicit ``initialize()`` (preserving
     ``Redis.__aenter__``'s eager-setup semantics) plus a pushed
     bounded-aclose callback, instead of entering the client as an async
     context manager (whose ``__aexit__`` closes unbounded).

@@ -7,7 +7,7 @@ slot computation) — yet ``register_worker`` writes only hostname, pid,
 queues, label, instance, and ``{"notify_enabled": ...}`` into the
 ``workers`` row. The single most load-bearing number in a capacity
 incident — how many jobs each worker can actually run — is invisible
-fleet-wide, which is issue #141's production-evidenced complaint: a
+fleet-wide, which is the production-evidenced complaint: a
 misconfigured fleet cannot be told apart from a correctly-sized one
 from the database.
 

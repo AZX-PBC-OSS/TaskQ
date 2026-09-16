@@ -16,8 +16,6 @@ parity pin's coverage rather than replacing it.
 
 from __future__ import annotations
 
-from taskq.backend._protocol import EnqueueArgs
-
 from .test_batch_cap_refusals_parity import (
     _args,
     _capped_ref,

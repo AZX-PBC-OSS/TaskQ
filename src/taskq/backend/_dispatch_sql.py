@@ -784,7 +784,7 @@ eligible AS (
 -- this statement's statement_timestamp() (one value for the whole round,
 -- so same-round winners tie on the stamp and fall through to
 -- scheduled_at/id — exactly the tie shape the in-memory twin's per-round
--- tick produces, criterion 65 parity). The write is bounded by
+-- tick produces). The write is bounded by
 -- construction (at most limit_n distinct actors, each a primary-key
 -- probe) and CANNOT block: the driver's FOR UPDATE SKIP LOCKED takes
 -- only registry rows no peer holds, so the stamp never waits on a

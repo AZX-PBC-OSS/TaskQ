@@ -306,7 +306,7 @@ Migrations with operational impact add named ops-note sections under banner comm
 
 - **tests/test_migrations.py** applies the full bundled set to a real PostgreSQL and pins that a second `apply_pending` is a no-op.
 - **tests/test_migrations_populated.py** applies every bundled migration one step at a time onto seeded data. New migrations join this harness automatically — unknown keys get the generic per-step invariants — and its seeder intersects live columns from `information_schema`, so a future NOT NULL-without-default column fails there as the alarm. Review `_MIGRATION_SPECIFIC_CHECKS` when adding a migration whose populated-DB effect deserves a sharper assertion.
-- **`test_bundled_migrations_are_all_transactional`** (tests/test_migrations_unit.py) pins that no bundled migration carries the no-transaction directive yet. It becomes an allowlist once PRs #25/#27 land the first bundled no-transaction migration.
+- **`test_bundled_migrations_are_all_transactional`** (tests/test_migrations_unit.py) pins that no bundled migration carries the no-transaction directive yet. It becomes an allowlist once the first bundled no-transaction migration lands.
 - **Directive-parsing, transaction-control-guard, and statement-splitter unit tests** (tests/test_migrations_unit.py) pin every rule quoted above.
 - **`test_discover_directive_parsing_applies_end_to_end`** (tests/test_migrate_no_transaction.py) exercises the real `discover()` parse against a real database, directive-with-trailing-note included.
 - **`test_migrate_up_cli_reports_failed_no_transaction_migration`** (tests/test_migrate_no_transaction.py) proves the `migrate up` failure report end to end: what failed, what state it left the schema in, and the one action to take.
@@ -384,7 +384,7 @@ Brief description of what this PR does
 Describe how you tested these changes
 
 ## Related Issues
-Fixes #123
+Fixes <issue number>
 ```
 
 ## Code Review

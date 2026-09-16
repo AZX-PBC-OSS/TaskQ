@@ -27,9 +27,9 @@ from typing import Any
 import structlog
 from pydantic import BaseModel, TypeAdapter
 
+from taskq._json import structlog_serializer
 from taskq.actor import ActorRef
 from taskq.actor_config_ops import ActorConfigRow
-from taskq._json import structlog_serializer
 from taskq.ratelimit.reservation import ConcurrencyReservation
 from taskq.retry import RetryPolicy
 from taskq.settings import WorkerSettings
@@ -96,9 +96,7 @@ def test_object_shaped_reservation_survives_the_real_json_renderer() -> None:
     count that gates admission — not silently vanish because the object
     itself is not JSON-serializable."""
     settings = _make_settings(max_concurrency=8)
-    reservation = ConcurrencyReservation(
-        name="db_pool", slots=3, lease=timedelta(minutes=5)
-    )
+    reservation = ConcurrencyReservation(name="db_pool", slots=3, lease=timedelta(minutes=5))
     registry = {"alpha": _make_actor_ref(name="alpha", reservations=[reservation])}
 
     # Real production JSON renderer (taskq._json.structlog_serializer, the

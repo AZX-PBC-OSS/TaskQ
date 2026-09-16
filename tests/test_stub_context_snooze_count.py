@@ -6,7 +6,7 @@ deferral-cycled actors key off snoozes rather than ``attempt`` — every
 production construction site populates it from the job row
 (``worker/dispatch.py:373``, ``worker/_consumer.py:425``,
 ``worker/run.py:377``), the PG path is pinned end-to-end by
-``tests/e2e/actors.py:149``, and the runner mirror (issue #171) now
+``tests/e2e/actors.py:149``, and the runner mirror now
 populates it from the same row (``src/taskq/testing/_runner.py``), with
 the ``actor_runner`` fixture carrying the parameter so a deferral-cycled
 actor is exercisable through the harness beyond first dispatch. This pin
