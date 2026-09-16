@@ -1,55 +1,64 @@
 """Pin: PayloadValidationError.payload_schema_ver is a documented field
-that no production raise site ever populates -- it should carry the
-job's payload_schema_ver so an adopter can distinguish "this row
-predates a payload migration" from "this caller sent garbage", but on
-every real path today it is always None.
+that every production raise site must populate -- it carries the
+payload's schema version so an adopter can distinguish "this row
+predates a payload migration" from "this caller sent garbage".
 
 ``docs/guides/jobs-clients.md``'s error-handling table (the row for
 ``PayloadValidationError``, in the "Error handling" section) lists the
 exception's fields as "actor, payload_schema_ver, validation_errors" --
 presented as three fields an adopter can branch on. The constructor
 (``taskq/exceptions.py::PayloadValidationError.__init__``, around line
-367) does accept ``payload_schema_ver: str | None = None`` as a real
-keyword argument, and the JobRow column it shares a name with
+367) accepts ``payload_schema_ver: str | None = None``, and the JobRow
+column it shares a name with
 (``payload_schema_ver int NOT NULL DEFAULT 1`` --
 ``src/taskq/migrations/01.00.00_01_pre_initial.sql:78,347``) is real,
-threaded, and stored on every row. But the EXCEPTION field and the ROW
-COLUMN are different things today: the row column is a static internal
-provenance stamp (always ``1``), and the exception field is never
-wired to it or to anything else.
+threaded, and stored on every row.
 
 There are exactly four call sites across the whole source tree that
 construct ``PayloadValidationError`` (``grep -rn
-"raise PayloadValidationError("`` over ``src/taskq``):
+"raise PayloadValidationError("`` over ``src/taskq``, plus the two
+construct-without-raise helpers the batch paths return from):
 
-    1. taskq/_validation.py:41            (validate_actor_payload --
+    1. taskq/_validation.py            (validate_actor_payload --
        the shared helper both dispatch paths call)
-    2. taskq/backend/_records.py:83       (_nul_item_payload_error --
+    2. taskq/backend/_records.py       (_nul_item_payload_error --
        per-item NUL-byte rejection in batch jsonb serialization)
-    3. taskq/ratelimit/registry.py:645    (inside _resolve_key_fn_arg --
+    3. taskq/ratelimit/registry.py     (inside _resolve_key_fn_arg --
        KeyedRateLimitRef / KeyedReservationRef cross-model payload
        re-validation)
-    4. taskq/client/_jobs.py:121          (_item_payload_error --
+    4. taskq/client/_jobs.py           (_item_payload_error --
        streaming/chunked batch enqueue validation)
 
-None of the four pass ``payload_schema_ver=`` to the constructor today.
-Each test below drives one real call site (not just the exception
-constructor in isolation) and asserts the desired behaviour: the raised
-exception's ``payload_schema_ver`` is populated (site 1, 3, 4 -- which
-have a concrete row/job to read it from) or, for the one call site with
-no row context (site 2, a pre-INSERT jsonb-encoding guard that never
-sees a stored ``payload_schema_ver``), is at minimum reachable via a
-documented, non-None sentinel rather than silently indistinguishable
-from "the field was populated and happens to be empty". All four are
-RED today because the field is wired nowhere.
+What each site passes, and why (all pinned below):
+
+    * Sites 1, 3 and 4 have no older row in scope -- they validate
+      against the actor's CURRENTLY declared payload_type, so they pass
+      the version being validated against
+      (``str(CURRENT_PAYLOAD_SCHEMA_VER)``), which is also the version
+      an enqueue-time row is about to be stamped with.
+    * Site 2 fires before any row exists (a pre-INSERT jsonb-encoding
+      guard), so None is correct there -- pinned as a passing test so a
+      future maintainer does not mistake the legitimate None for the
+      gap the other sites had.
+    * The two WORKER-path call sites of site 1's helper hold the job
+      row and must pass the row's STORED version instead of the
+      current-version default: ``worker/_consumer.py``'s pre-acquire
+      fallback and ``worker/dispatch.py``'s pre-scope validation. Those
+      pins live beside the harnesses that already drive those paths
+      driver-free -- ``TestConsumerThreadsStoredSchemaVer`` in
+      tests/test_consumer_validation_error.py (the exception propagates
+      out of consume_one_job) and
+      ``test_dispatch_threads_the_rows_stored_schema_ver`` in
+      tests/test_dispatch_one_job.py (dispatch_one_job routes the
+      failure into the terminal write, so the wiring is pinned with a
+      delegate spy).
 
 This matters because the docs present the field as part of the
 diagnostic contract for a mid-flight payload schema change (a scenario
 this repo's own footgun index does not otherwise cover): an adopter who
 writes ``except PayloadValidationError as exc: if exc.payload_schema_ver
 == OLD_VERSION: ...`` to distinguish "row predates this schema" from
-"caller sent garbage" gets ``None`` in both cases today, on every real
-path.
+"caller sent garbage" must get a truthful value on every path.
 
 No vendor precedent search applies: this is not a missing capability
 relative to another queue library (River/Oban/Sidekiq have no
@@ -57,12 +66,9 @@ Pydantic-model payload-versioning concept at all -- see
 tests/test_register_stub_payload_type_fidelity.py's docstring for that
 same point argued in full). This is argued from internal consistency: a
 field documented as part of an exception's public contract
-(jobs-clients.md's error table) must be populated by at least one path
-that contract's callers can reach, or the docs overstate what the field
-is for. The desired behaviour pinned here is the minimal fix that makes
-the documented contract true: every raise site that has access to a
-job's stored (or about-to-be-stored) ``payload_schema_ver`` passes it
-through.
+(jobs-clients.md's error table) must be populated by every path that
+contract's callers can reach, or the docs overstate what the field is
+for.
 """
 
 from __future__ import annotations
@@ -181,9 +187,8 @@ def test_docs_implied_contract_is_usable_end_to_end() -> None:
     payload_schema_ver to tell 'this row predates the schema change'
     apart from 'this caller sent garbage' must be possible, because
     the docs present the field as existing for exactly that purpose.
-    Today it is None on every real exception regardless of cause, so
-    this assertion is red until at least one raise site is wired up
-    with a real, distinguishing value.
+    Both calls below go through the shared helper (the dispatch paths'
+    site), which populates the field on every failure.
     """
     old_row_style_failure = None
     garbage_caller_failure = None

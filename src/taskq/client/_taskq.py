@@ -408,7 +408,11 @@ class TaskQ:
         factory's other hooks (``init``, ``server_settings``,
         ``command_timeout``).
     schema:
-        TaskQ schema name. Defaults to ``"taskq"``.
+        TaskQ schema name. When omitted, resolved the way the worker and
+        CLI resolve it — ``TASKQ_SCHEMA_NAME`` from the process environment
+        or the ``.env`` cascade, with ``"taskq"`` as the final default — so
+        a client constructed with no opinion lands in the schema its worker
+        fleet is listening on. An explicit value always wins.
     min_pool_size:
         Minimum pool connections. Only used when ``dsn`` is provided.
     max_pool_size:
@@ -445,7 +449,7 @@ class TaskQ:
         pool: "asyncpg.Pool | None" = None,
         pool_factory: "PoolFactory | None" = None,
         pg_provider: "PgCredentialProvider | None" = None,
-        schema: str = "taskq",
+        schema: str | None = None,
         min_pool_size: int = 1,
         max_pool_size: int = 5,
         redis_url: str | None = None,
@@ -507,6 +511,18 @@ class TaskQ:
 
         self._dsn = dsn
         self._pool: "asyncpg.Pool | None" = pool  # noqa: UP037  # Why: asyncpg imported under TYPE_CHECKING; quotes required for runtime resolution.
+        # Schema resolution keeps one source of truth with the worker and
+        # CLI (the ``ui_serve`` idiom): an explicit argument wins, otherwise
+        # the shared configuration load decides — process environment, then
+        # the .env cascade, then the model default. Hardcoding the default
+        # here splits that truth: TASKQ_SCHEMA_NAME honored by the worker
+        # fleet but not by the client is a silent job-loss vector (the
+        # enqueue succeeds into a schema no worker reads; wait() reports
+        # only a bare timeout).
+        if schema is None:
+            from taskq.settings import TaskQSettings
+
+            schema = TaskQSettings.load().schema_name
         self._schema = schema
         self._min_pool_size = min_pool_size
         self._max_pool_size = max_pool_size
@@ -1319,7 +1335,7 @@ async def _stream_pg(
         if owns_conn:
             # Why bounded: suppress(Exception) catches errors but not hangs —
             # asyncpg's close() passes no timeout underneath, so a dead PG
-            # would wedge stream teardown (#37). The helper bounds the wait,
+            # would wedge stream teardown. The helper bounds the wait,
             # terminates on timeout, and never raises — subsuming the old
             # suppress.
             await close_conn_bounded(conn, "stream-pg", CLOSE_TIMEOUT_SECS)
@@ -1782,5 +1798,5 @@ async def _watch_reclaims_pg(
             await conn.remove_listener(channel, _on_notify)  # pyright: ignore[reportArgumentType]  # Why: same pattern as _stream_pg
         if owns_conn:
             # Why bounded: same dead-PG close()-hang class as _stream_pg
-            # above (#37) — suppress cannot stop a close that never returns.
+            # above — suppress cannot stop a close that never returns.
             await close_conn_bounded(conn, "watch-reclaims", CLOSE_TIMEOUT_SECS)

@@ -214,6 +214,73 @@ class TestLifecycle:
 
 
 # ---------------------------------------------------------------------------
+# TestSchemaResolution — the client and the fleet read one schema truth
+# ---------------------------------------------------------------------------
+
+
+class TestSchemaResolution:
+    """``TaskQ(schema=None)`` resolves the schema the way the worker and CLI
+    resolve it: explicit argument, then ``TASKQ_SCHEMA_NAME``, then the model
+    default. A client hardwired to ``"taskq"`` while the fleet listens on the
+    env-configured schema is a silent job-loss vector — the enqueue succeeds
+    into a schema no worker reads and ``wait()`` reports a bare timeout.
+    """
+
+    def test_schema_from_env_var_when_not_passed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """TASKQ_SCHEMA_NAME set, no constructor arg: the client lands in the
+        fleet's schema. DOTENV_READ_DOTFILES=false keeps the resolution
+        hermetic — a developer's local .env must not decide the outcome."""
+        monkeypatch.setenv("TASKQ_SCHEMA_NAME", "adopter_trial")
+        monkeypatch.setenv("DOTENV_READ_DOTFILES", "false")
+
+        tq = TaskQ(dsn="postgresql://u:p@localhost:5432/db")
+
+        assert tq._schema == "adopter_trial"
+
+    def test_explicit_schema_wins_over_env_var(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The constructor argument is authoritative — same precedence the
+        CLI's ``--schema`` option has over TASKQ_SCHEMA_NAME."""
+        monkeypatch.setenv("TASKQ_SCHEMA_NAME", "adopter_trial")
+
+        tq = TaskQ(dsn="postgresql://u:p@localhost:5432/db", schema="explicit_schema")
+
+        assert tq._schema == "explicit_schema"
+
+    def test_schema_defaults_to_taskq_when_unset(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """No arg and no env var: the documented default holds."""
+        monkeypatch.delenv("TASKQ_SCHEMA_NAME", raising=False)
+        monkeypatch.setenv("DOTENV_READ_DOTFILES", "false")
+
+        tq = TaskQ(dsn="postgresql://u:p@localhost:5432/db")
+
+        assert tq._schema == "taskq"
+
+    async def test_enqueue_lands_in_env_var_schema(
+        self, pg_dsn: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """End to end: a schema-less client enqueues into the env-configured
+        schema its workers migrated — the finding's reproduced divergence
+        (job in `taskq`, worker listening on the adopter's schema) pinned
+        shut at the row level."""
+        schema = f"ttc_env_{new_base62()}".lower()
+        await _migrate(pg_dsn, schema=schema)
+        monkeypatch.setenv("TASKQ_SCHEMA_NAME", schema)
+
+        async with TaskQ(dsn=pg_dsn) as tq:
+            handle = await tq.enqueue(_test_actor, _Payload(value=1))
+
+        conn = await asyncpg.connect(pg_dsn)
+        try:
+            count = await conn.fetchval(
+                f'SELECT COUNT(*) FROM "{schema}".jobs WHERE id = $1',  # noqa: S608 — schema is a per-test generated identifier (new_base62), not user input; the id is $1-bound
+                handle.job_id,
+            )
+        finally:
+            await conn.close()
+        assert count == 1
+
+
+# ---------------------------------------------------------------------------
 # TestCloseBounded — owned-pool close is bounded
 # ---------------------------------------------------------------------------
 

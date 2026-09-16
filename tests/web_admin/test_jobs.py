@@ -51,6 +51,101 @@ def test_job_detail_invalid_uuid_returns_422(
 # ── Job detail template ────────────────────────────────────────────────
 
 
+def _detail_job_data(**overrides: object) -> dict[str, object]:
+    """The minimal job mapping job_detail.html renders, with per-test overrides."""
+    data: dict[str, object] = {
+        "id": "00000000-0000-0000-0000-000000000010",
+        "actor": "sync_data",
+        "queue": "default",
+        "status": "running",
+        "priority": 0,
+        "attempt": 168,
+        "max_attempts": 3,
+        "retry_kind": "indefinite",
+        "scheduled_at": "2025-01-01T00:00:00+00:00",
+        "started_at": "2025-01-01T00:00:01+00:00",
+        "finished_at": None,
+        "error_class": None,
+        "error_message": None,
+        "error_traceback": None,
+        "trace_id": None,
+        "payload": "{}",
+        "metadata": "{}",
+    }
+    data.update(overrides)
+    return data
+
+
+def test_job_detail_marks_max_attempts_inert_for_indefinite_retry(
+    monkeypatch: pytest.MonkeyPatch, stub_pool: _StubPool
+) -> None:
+    """An indefinite-kind job ignores max_attempts entirely (retries.md §2):
+    the stored ceiling is inert, so the Attempt cell must not advertise it
+    as a live budget — a row can legitimately sit at attempt 168 over a
+    stored 3, and "168 / 3" reads as a lie about what is enforced."""
+    monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
+    bundle = create_router(stub_pool)  # pyright: ignore[reportArgumentType]  # Why: test duck-type pool.
+    template = bundle.templates.get_template("job_detail.html")
+
+    html = template.render(job=_detail_job_data(), attempts=[], events=[])
+
+    assert "168 / — (indefinite)" in html, (
+        "the inert ceiling must render as — (indefinite), keeping the real attempt count visible"
+    )
+    assert "168 / 3" not in html, (
+        "rendering the stored max_attempts as-is advertises a budget the job is not enforcing"
+    )
+
+
+def test_job_detail_renders_the_ceiling_for_bounded_kinds(
+    monkeypatch: pytest.MonkeyPatch, stub_pool: _StubPool
+) -> None:
+    """The control: a bounded retry_kind renders the real ceiling."""
+    monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
+    bundle = create_router(stub_pool)  # pyright: ignore[reportArgumentType]  # Why: test duck-type pool.
+    template = bundle.templates.get_template("job_detail.html")
+
+    html = template.render(
+        job=_detail_job_data(retry_kind="transient", attempt=2), attempts=[], events=[]
+    )
+
+    assert "2 / 3" in html
+    assert "— (indefinite)" not in html
+
+
+def test_jobs_list_marks_max_attempts_inert_for_indefinite_retry(
+    monkeypatch: pytest.MonkeyPatch, stub_pool: _StubPool
+) -> None:
+    """The jobs list's Attempt column carries the same marker (the row is
+    where an operator scanning a queue first meets the inert field)."""
+    monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
+    html = _render_job_table(
+        stub_pool,
+        jobs=[_render_job_table_row(retry_kind="indefinite", attempt=168)],
+    )
+    assert "168 / — (indefinite)" in html
+    assert "168/3" not in html
+
+    html = _render_job_table(
+        stub_pool,
+        jobs=[_render_job_table_row(retry_kind="transient", attempt=2)],
+    )
+    assert "2 / 3" in html
+    assert "— (indefinite)" not in html
+
+
+def test_jobs_list_queries_fetch_retry_kind() -> None:
+    """The marker needs retry_kind selected: a column the query never
+    fetches can never be rendered (the lease-column pin's shape)."""
+    from taskq.web.admin.jobs import _ARCHIVE_COLS, _LIVE_COLS
+
+    for name, cols in (("_LIVE_COLS", _LIVE_COLS), ("_ARCHIVE_COLS", _ARCHIVE_COLS)):
+        assert "retry_kind" in cols.lower(), (
+            f"{name} must select retry_kind so the Attempt cell can mark an "
+            "indefinite row's ceiling inert"
+        )
+
+
 def test_job_detail_template_extends_base(
     monkeypatch: pytest.MonkeyPatch, stub_pool: _StubPool
 ) -> None:
@@ -721,26 +816,7 @@ def _render_job_table(stub_pool: _StubPool, **context: Any) -> str:
     """
     bundle = create_router(stub_pool)  # pyright: ignore[reportArgumentType]  # Why: test duck-type pool.
     defaults: dict[str, Any] = {
-        "jobs": [
-            {
-                "id": "abc-123",
-                "actor": "send_email",
-                "queue": "default",
-                "status": "failed",
-                "created_at": "2025-01-01T12:00:00",
-                "scheduled_at": "2025-01-01T12:00:00",
-                "started_at": None,
-                "finished_at": None,
-                "duration_ms": None,
-                "attempt": 1,
-                "max_attempts": 3,
-                "priority": 5,
-                "identity_key": None,
-                "fairness_key": None,
-                "progress_state": None,
-                "error_message": None,
-            }
-        ],
+        "jobs": [_render_job_table_row()],
         "tab": "archived",
         "statuses": ["failed"],
         "all_statuses": ["failed"],
@@ -758,6 +834,31 @@ def _render_job_table(stub_pool: _StubPool, **context: Any) -> str:
     return bundle.templates.get_template("_partials/job_table.html").render(
         **{**defaults, **context}
     )
+
+
+def _render_job_table_row(**overrides: Any) -> dict[str, Any]:
+    """One jobs-list row as the page hands it to the table partial."""
+    row: dict[str, Any] = {
+        "id": "abc-123",
+        "actor": "send_email",
+        "queue": "default",
+        "status": "failed",
+        "created_at": "2025-01-01T12:00:00",
+        "scheduled_at": "2025-01-01T12:00:00",
+        "started_at": None,
+        "finished_at": None,
+        "duration_ms": None,
+        "attempt": 1,
+        "max_attempts": 3,
+        "retry_kind": "transient",
+        "priority": 5,
+        "identity_key": None,
+        "fairness_key": None,
+        "progress_state": None,
+        "error_message": None,
+    }
+    row.update(overrides)
+    return row
 
 
 def _page_links(html: str) -> list[str]:

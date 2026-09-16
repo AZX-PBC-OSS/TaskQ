@@ -6,21 +6,16 @@ inventory (item 10) documents as deliberately **not** leader-gated: "every
 worker samples instead, accepting N times the query cost" (see the loop's
 own docstring at the same location) so the detector still emits under the
 very failure — election loss, a stuck advisory lock — it exists to expose.
-That tradeoff is sound only if one worker's sample is cheap; the query is
-
-    SELECT actor, queue, count(*) AS depth,
-           EXTRACT(EPOCH FROM (clock_timestamp() - MIN(scheduled_at))) AS oldest_age
-    FROM jobs WHERE status = 'pending' GROUP BY actor, queue
-
-which has no LIMIT and no per-actor bound: every pending row must be
-visited to produce the aggregate, by construction. Unlike the dispatch CTE
-(tests/test_dispatch_backlog_depth_bound.py), which spends real design
-effort — the candidates LATERAL, the oversample window, the materialized
-``ranked`` fence — keeping its per-round row work independent of backlog
-depth, this sampler was written as a plain aggregate with none of that
-machinery, and nothing in configuration.md or maintenance-sweeps.md
-documents it as an O(depth) cost centre alongside the (leader-only, batch-
-bounded) sweeps that guide takes pains to explain.
+That tradeoff is sound only if one worker's sample is cheap, so the
+sampler is depth-bounded by construction: a recursive loose index scan
+enumerates the distinct pending (actor, queue) pairs (one bounded seek per
+pair, never one per row — the same geometry as the dispatch CTE's keys
+walks), and a per-pair probe reads at most ``_ACTOR_BACKLOG_SAMPLE_CAP``
+rows in the index's own dispatch-head order, so the tick's row work is
+Σ min(depth_pair, cap) + #pairs — flat as the backlog grows. The shipped
+series semantics under the cap (depth exact below the cap, oldest_age the
+head-of-line age) are documented on the template and in
+docs/guides/ops.md.
 
 Oracle: :func:`taskq.testing.pg.install_row_visit_counter` /
 :class:`~taskq.testing.pg.RowVisitCounter`, the same row-level-security
@@ -29,25 +24,17 @@ sequence-bump oracle ``test_dispatch_backlog_depth_bound.py`` and
 actually reads, not EXPLAIN text, so it is exact and cannot flake on plan
 shape or PG version.
 
-This is left RED deliberately. Measured on this branch (adopter-brief
-probe, 2026-09-15, local Postgres 18, `jit=off`): the query visits ~10x
-more rows at a 100k-row pending backlog than at 10k (linear in depth, as
-the assertion below predicts), and wall time went from ~1.6ms p50 to
-~13-15ms p50 for the identical query shape. At a 10-worker fleet sampling
-every ``TASKQ_QUEUE_DEPTH_INTERVAL`` (default 15s, *every* worker, not
-leader-gated), that is aggregate continuous scan cost that grows with the
-adopter's backlog with no cap and no documented mitigation -- the
-opposite of the dispatch path's bounded-cost contract this repository
-otherwise holds every hot-table query to.
-
-No production fix is proposed here (out of scope for this report); this
-pins the current unbounded shape so a future bound (an approximate/cached
-counter, a materialized rollup refreshed on a slower cadence, or gating
-the per-actor breakdown behind a coarser status-only count that a partial
-index can serve without a GROUP BY) has a red test turning green as its
-acceptance check. See docs/guides/ops.md and
-docs/guides/maintenance-sweeps.md for the sibling sweeps' documented
-batch/leader-gating discipline, absent here.
+History: this pin was written RED against the original shape — a plain
+``GROUP BY actor, queue`` over the whole pending set, which visited ~10x
+more rows at a 100k pending backlog than at 10k (measured 2026-09-15,
+local Postgres 18, `jit=off`: ~1.6ms p50 at 10k growing to ~13-15ms p50
+at 100k for the identical query shape) and paid that per worker per
+``TASKQ_QUEUE_DEPTH_INTERVAL``. The bounded rewrite (the pairs walk plus
+the capped per-pair probe) is the acceptance fix this test turned green
+for; the assertion below is the same bound the dispatch depth oracle
+holds the claim path to. The SQL under test is the production template
+itself, rendered, never a copy — a paraphrase would let the shipped
+query regress while the pin stayed green.
 """
 
 from __future__ import annotations
@@ -62,7 +49,10 @@ from taskq._ids import new_base62
 from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining it.
 )
-from taskq.testing.pg import RowVisitCounter, install_row_visit_counter, read_row_visits
+from taskq.testing.pg import RowVisitCounter, install_row_visit_counter
+from taskq.worker._leader_sweeps import (  # pyright: ignore[reportPrivateUsage]  # Why: pin the production sampler statement, not a copy — a paraphrase would let the shipped query regress while the pin stayed green.
+    _QUERY_ACTOR_BACKLOG_SQL_TEMPLATE,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -71,25 +61,19 @@ _DEEP_DEPTH = 100_000
 _ACTOR = "backlog_probe"
 _QUEUE = "backlog_q"
 
-# The query has no LIMIT: every pending row must be visited to produce the
-# aggregate, so a truly bounded implementation is not possible for *this*
-# query shape -- the assertion below documents that the ratio tracks depth
-# almost exactly (bounded machinery, where it exists elsewhere in this
-# repository, caps the ratio at a small constant regardless of depth; see
-# _DEPTH_RATIO_BOUND in test_dispatch_backlog_depth_bound.py, which is 3).
-# A ratio below this would mean some bound already exists and this test
-# should be tightened, not loosened.
-_MIN_EXPECTED_DEPTH_RATIO = 5.0
+# The bound: the same _DEPTH_RATIO_BOUND the dispatch depth oracle holds
+# the claim path to (tests/test_dispatch_backlog_depth_bound.py). A
+# bounded sampler's row work is driven by the pair count and the per-pair
+# cap, both identical at the two seeded depths, so the visits ratio stays
+# near 1 where the unbounded shape's tracked the depth ratio (10x).
+_MAX_VISITS_DEPTH_RATIO = 3.0
 
 
 def _actor_backlog_sql(schema: str) -> str:
-    return (
-        "SELECT actor, queue, count(*) AS depth, "
-        "EXTRACT(EPOCH FROM (clock_timestamp() - MIN(scheduled_at)))::float8 AS oldest_age "
-        f'FROM "{schema}".jobs '
-        "WHERE status = 'pending' "
-        "GROUP BY actor, queue"
-    )
+    # The production template, rendered — not a copy. The query this loop
+    # guards is the query the worker actually runs; a pinned paraphrase
+    # would let the shipped sampler regress without this test noticing.
+    return _QUERY_ACTOR_BACKLOG_SQL_TEMPLATE.format(schema=schema)
 
 
 @pytest.fixture(scope="module")
@@ -103,7 +87,7 @@ async def backlog_schema(pg_dsn: str) -> Any:
         await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
         await migrate_mod.apply_pending(conn, schema=schema)
         await conn.execute(
-            f'INSERT INTO "{schema}".actor_config (actor, queue) VALUES ($1, $2)',
+            f'INSERT INTO "{schema}".actor_config (actor, queue) VALUES ($1, $2)',  # noqa: S608  # Why: schema is this module's own generated identifier (validated against _IDENT_RE above); values are $-bound.
             _ACTOR,
             _QUEUE,
         )
@@ -117,7 +101,7 @@ async def backlog_schema(pg_dsn: str) -> Any:
 async def _seed_pending_backlog(conn: asyncpg.Connection, schema: str, depth: int) -> None:
     await conn.execute(f'TRUNCATE TABLE "{schema}".jobs CASCADE')
     await conn.execute(
-        f'INSERT INTO "{schema}".jobs '
+        f'INSERT INTO "{schema}".jobs '  # noqa: S608  # Why: schema is this module's own generated identifier (validated against _IDENT_RE in the fixture); values are $-bound.
         "(id, actor, queue, payload, status, priority, scheduled_at, "
         "max_attempts, retry_kind) "
         "SELECT gen_random_uuid(), $1, $2, '{\"v\": 1}'::jsonb, 'pending', "
@@ -130,9 +114,7 @@ async def _seed_pending_backlog(conn: asyncpg.Connection, schema: str, depth: in
     await conn.execute(f'VACUUM (ANALYZE) "{schema}".jobs')
 
 
-async def test_backlog_sampler_row_work_is_depth_bounded(
-    pg_dsn: str, backlog_schema: str
-) -> None:
+async def test_backlog_sampler_row_work_is_depth_bounded(pg_dsn: str, backlog_schema: str) -> None:
     """The actor-backlog sampler's row visits at a 100k pending depth must
     not scale linearly with the 10k depth's visits.
 
@@ -143,8 +125,8 @@ async def test_backlog_sampler_row_work_is_depth_bounded(
     workers" and "the backlog grows" into "the fleet's continuous
     Postgres scan load grows with them" -- exactly the failure mode
     dispatch's own bounded-cost contract (test_dispatch_backlog_depth_bound.py)
-    was built to prevent for the hot dispatch path. This asserts the
-    sampler is held to the same bar and is expected to FAIL until it is.
+     was built to prevent for the hot dispatch path. This asserts the
+     sampler is held to the same bar.
     """
     conn = await asyncpg.connect(pg_dsn)
     try:
@@ -168,13 +150,13 @@ async def test_backlog_sampler_row_work_is_depth_bounded(
         ratio = deep_visits / shallow_visits
         depth_ratio = _DEEP_DEPTH / _SHALLOW_DEPTH
 
-        # This is the bound a depth-independent sampler would need to
-        # satisfy -- the same discipline test_dispatch_backlog_depth_bound.py
-        # holds the dispatch CTE to (_DEPTH_RATIO_BOUND = 3, there). Left
-        # deliberately strict and RED: the query as shipped has no bound
-        # at all, so `ratio` lands close to `depth_ratio` (10x), not below
-        # a small constant.
-        assert ratio < 3.0, (
+        # The bound a depth-independent sampler must satisfy -- the same
+        # discipline test_dispatch_backlog_depth_bound.py holds the
+        # dispatch CTE to (_DEPTH_RATIO_BOUND = 3, there). The bounded
+        # shape (pairs walk + per-pair cap) reads the same rows at both
+        # seeded depths; a regression to reading the pending set lands the
+        # ratio back near depth_ratio (10x).
+        assert ratio < _MAX_VISITS_DEPTH_RATIO, (
             f"actor-backlog sampler visited {shallow_visits} rows at "
             f"{_SHALLOW_DEPTH} pending and {deep_visits} rows at "
             f"{_DEEP_DEPTH} pending (ratio {ratio:.1f}x for a "

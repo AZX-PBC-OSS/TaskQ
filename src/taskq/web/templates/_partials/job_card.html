@@ -31,6 +31,15 @@
     {% endif %}
 {% endmacro %}
 
+{% macro attempt_budget(job) %}
+    {# A job whose retry_kind is 'indefinite' ignores max_attempts entirely
+       (retries.md §2): the row still carries the configured ceiling, but
+       rendering it as a live budget would advertise a limit the job is not
+       enforcing — a live row can sit at attempt 168 over a stored 3. The
+       attempt count stays visible; the inert ceiling renders as a dash. #}
+    {{ job.attempt }} / {% if job.retry_kind == 'indefinite' %}— (indefinite){% else %}{{ job.max_attempts }}{% endif %}
+{% endmacro %}
+
 {% macro time_ago(ts) %}
     {% if ts is none or ts == 'None' or ts == '' %}—{% else %}
     {% set now_ts = now().timestamp() if now is defined else 0 %}

@@ -18,6 +18,7 @@ Covers:
 
 import asyncio
 from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Generator
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any
 from unittest.mock import MagicMock
@@ -599,6 +600,86 @@ async def test_payload_validation_failure_before_scope() -> None:
         )
 
         assert not teardown_ran
+        assert len(fake_backend.mark_failed_or_retry_calls) == 1
+        assert (
+            fake_backend.mark_failed_or_retry_calls[0]["error_info"].error_class  # pyright: ignore[reportAttributeAccessIssue]  # Why: mark_failed_or_retry_calls stores untyped objects from mock; error_class exists at runtime.
+            == "PayloadValidationError"
+        )
+
+
+async def test_dispatch_threads_the_rows_stored_schema_ver(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """dispatch_one_job's pre-scope validation threads the ROW's stored
+    ``payload_schema_ver`` into the ``PayloadValidationError`` — the
+    worker path's half of the schema-drift diagnostic.
+
+    The dispatch path routes the failure into the terminal write (the
+    exception itself does not propagate), so the wiring is pinned with a
+    delegate spy on ``taskq.worker.dispatch.validate_actor_payload``: the
+    real helper still runs (the terminal write below proves the failure
+    path is unchanged), and the spy records the version the call site
+    passed. The row carries 0 — older than the current schema — so a
+    threaded row version is distinguishable from the helper's
+    current-version default.
+    """
+    import taskq.worker.dispatch as dispatch_mod
+
+    real_validate = dispatch_mod.validate_actor_payload
+    seen_versions: list[str | None] = []
+
+    def spy_validate(
+        payload_type: type[BaseModel],
+        raw_payload: dict[str, object] | BaseModel,
+        actor: str | None = None,
+        *,
+        payload_schema_ver: str | None = None,
+    ) -> BaseModel:
+        seen_versions.append(payload_schema_ver)
+        return real_validate(
+            payload_type, raw_payload, actor, payload_schema_ver=payload_schema_ver
+        )
+
+    monkeypatch.setattr(dispatch_mod, "validate_actor_payload", spy_validate)
+
+    async def my_actor(payload: _Payload, ctx: JobContext[_Payload]) -> dict[str, object]:
+        return {}
+
+    async with _ScopeStack() as scopes:
+        fake_backend = FakeBackend()
+        fake_deps = _FakeWorkerDeps()
+        actor_ref = _make_actor_ref(my_actor)
+        pre_migration_row = replace(
+            make_job_row(payload={"not_a_valid_field": "oops"}),
+            payload_schema_ver=0,
+        )
+
+        await dispatch_one_job(
+            backend=as_backend(fake_backend),
+            deps=_as_deps(fake_deps),
+            job=pre_migration_row,
+            worker_id=_WORKER_ID,
+            registry=scopes.registry,
+            process_scope=scopes.process_scope,
+            thread_scope=scopes.thread_scope,
+            loop_scope=scopes.loop_scope,
+            actor_ref=actor_ref,  # type: ignore[arg-type]  # Why: ActorRef[Any, Any] is not ActorRef[BaseModel, BaseModel | None]; pyright cannot widen the generic parameters, but the runtime contract is sound
+            actor_config=StubActorConfig(retry=RetryPolicy()),
+            clock=FakeClock(_NOW),
+            active_jobs=fake_deps.active_jobs,
+            enqueuer=SubJobEnqueuer(
+                backend=as_backend(fake_backend), loop_scope_resolved=None, worker_pool=None
+            ),
+        )
+
+        assert seen_versions == ["0"], (
+            "dispatch_one_job validated the payload without threading the "
+            "row's stored payload_schema_ver — a pre-migration row is then "
+            "indistinguishable from caller garbage on the worker path"
+        )
+        # The failure path itself is unchanged: the real helper raised
+        # and the terminal write classified it as the documented
+        # non-retryable validation failure.
         assert len(fake_backend.mark_failed_or_retry_calls) == 1
         assert (
             fake_backend.mark_failed_or_retry_calls[0]["error_info"].error_class  # pyright: ignore[reportAttributeAccessIssue]  # Why: mark_failed_or_retry_calls stores untyped objects from mock; error_class exists at runtime.

@@ -236,3 +236,81 @@ both pin the NEW numbers.
   OLD vs 1.71-2.12 ms NEW across runs), row work and the fleet/cohort/scope
   oracles are unchanged in class, and the fleet-scope fixture now also
   covers the registry dimension.
+
+## A6 — claim-time reservation headroom (consumer-slot isolation gate)
+
+Before/after for the `reservation_holdings` / `reservation_headroom` CTEs
+folded into `per_actor_capacity` / `repend_capacity` (this change): the
+claim's capacity computation reads live `reservation_slots` occupancy, so a
+currently-full actor's rows are not claimed into shared consumer coroutines
+whose `acquire_for_actor` must deny them.
+
+- **Method**: the exact harness of
+  `tests/test_fleet_saturated_actor_consumer_slot_isolation.py` (one pod,
+  `max_concurrency=4`, real `consume_one_job`, a permanently exhausted
+  `ConcurrencyReservation(slots=1)` — one hog job holds the slot for the
+  whole run — plus 300 flood jobs and 150 healthy jobs on one queue),
+  driven twice in one process: **OLD** = `DISPATCH_STRICT_FIFO_SQL` at HEAD
+  (`87048c9`), **NEW** = this change, swapped through the
+  `SqlTemplates` seam so nothing else differs. Engine: `postgres:18-alpine`
+  container (PostgreSQL 18), macOS aarch64, Docker Desktop.
+- **Claim-path cost check**: the dispatch oracle suite
+  (`test_dispatch_backlog_depth_bound.py`,
+  `test_dispatch_actor_registry_scope_bound.py`,
+  `test_dispatch_fleet_scope_bound.py`,
+  `test_dispatch_cohort_scope_bound.py`,
+  `test_dispatch_window_expansion.py`) stays green — the gate adds bounded
+  `reservation_slots` probes (live-held slots × jobs-pkey, distinct held
+  buckets × slot count) and zero jobs-table row visits when no reservations
+  exist, which is the oracles' fixture shape.
+
+| run | baseline jobs/s | contended jobs/s (OLD → NEW) | healthy-throughput loss (OLD → NEW) | denied flood jobs (OLD → NEW) |
+|---|---|---|---|---|
+| 1 | 197.8 | 142.3 → 197.7 | **28.1% → −6.7%** | 150 → **1** |
+| 2 | 198.2 | 149.4 → 185.2 | **24.6% → 0.3%** | 149 → **1** |
+| 3 | 204.3 | 108.7 → 201.8 | **46.8% → −0.9%** | 148 → **1** |
+| 4 | 208.5 | 150.3 → 198.9 | **27.9% → 0.3%** | 149 → **1** |
+
+(The negative drops are measurement noise on a sub-second drain — the
+healthy drain with one coroutine parked on the hog measured no slower than
+the uncontended baseline.) OLD matches the finding's four-run range
+(25.6–45.4% loss, 150–202 denials per run). NEW leaves exactly the one
+bounded first-round denial the gate's design allows (the claim round in
+flight when the winning acquire commits); every later round reads the full
+bucket and claims none of the saturated actor's rows. The pin (≤ 15% loss)
+passes on every repetition; the dispatch-isolation sibling
+(`test_fleet_rate_limit_round_occupancy.py`) stays green, and the saturated
+actor drains the moment the slot frees (no starvation inversion — pinned by
+`tests/test_dispatch_reservation_headroom.py`).
+
+## A7 — backlog-detection sampler, depth-bounded
+
+Before/after for `_QUERY_ACTOR_BACKLOG_SQL_TEMPLATE`
+(`src/taskq/worker/_leader_sweeps.py`): the plain
+`GROUP BY actor, queue` aggregate over the whole pending set replaced by a
+recursive loose-index-scan pair enumeration plus a per-pair probe capped at
+`_ACTOR_BACKLOG_SAMPLE_CAP` (1000) rows in dispatch-head order.
+
+- **Method**: the depth-bound pin's own fixture and RLS row-visit oracle
+  (`tests/test_backlog_detection_sampler_depth_bound.py`), one
+  (actor, queue) pair, TRUNCATE + INSERT + VACUUM ANALYZE per depth;
+  wall time is p50 of 7 fetches after one warm run; buffers are
+  EXPLAIN (ANALYZE, BUFFERS) shared hit+read blocks summed over all plan
+  nodes. Engine: `postgres:18-alpine` container (PostgreSQL 18), macOS
+  aarch64, Docker Desktop.
+
+| pending depth | row visits (OLD → NEW) | p50 fetch ms (OLD → NEW) | buffers (OLD → NEW) |
+|---|---|---|---|
+| 10,000  | 9,999 → **1,001** | 1.65 → **0.40** | 608 → **80** |
+| 100,000 | 100,000 → **1,001** | 14.06 → **0.40** | 6,062 → **97** |
+
+OLD visits track depth exactly (10× rows for 10× depth — the red pin's
+measured failure); NEW is flat (the cap plus one pair-enumeration seek), a
+~35× latency cut at 100k pending *per worker per tick* — the sampler runs
+on every worker every `TASKQ_QUEUE_DEPTH_INTERVAL` (default 15 s) by
+deliberate design (never leader-gated, so the detector still emits under an
+election failure), which is why the per-read cost had to stop scaling with
+depth. Series semantics under the cap — depth exact below 1000 / reading
+the cap at or above it, oldest_age as head-of-line age — are documented on
+the template and in `docs/guides/ops.md`; the `TaskQQueueDepthHigh` alert
+(oldest-pending age) is unaffected.

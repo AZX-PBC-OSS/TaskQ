@@ -83,13 +83,21 @@ def _patch_db(
     *,
     actor_rows: list[ActorConfigRow],
     queue_rows: list[QueueRow],
+    stranded_rows: list[dict[str, Any]] | None = None,
 ) -> list[str]:
     """Fake the doctor's reads at the ``taskq.cli`` boundary.
 
     Returns the list every statement the command executes is recorded
     into, so the read-only property can be asserted rather than assumed.
+
+    ``stranded_rows`` feeds the pending/scheduled jobs scan (the one read
+    that reaches the raw connection rather than a patched helper): rows in
+    the per-actor shape ``_list_stranded_pending_jobs`` returns.  The scan
+    is identified by its ``.jobs`` table reference — it is the only
+    jobs-table statement the command issues.
     """
     executed: list[str] = []
+    stranded = [] if stranded_rows is None else stranded_rows
 
     class _FakeConn:
         async def execute(self, query: str, *args: Any) -> str:
@@ -98,6 +106,8 @@ def _patch_db(
 
         async def fetch(self, query: str, *args: Any) -> list[Any]:
             executed.append(query)
+            if ".jobs " in query:
+                return list(stranded)
             return []
 
         async def fetchval(self, query: str, *args: Any) -> Any:
@@ -398,22 +408,28 @@ def test_doctor_reports_pending_jobs_whose_actor_has_no_registry_or_config_row(
     ``taskq/worker/_leader_sweeps.py``) and report them the same way it
     reports a registered actor with no row today.
     """
-    executed = _patch_db(
+    _patch_db(
         monkeypatch,
         actor_rows=[
             _row("doctor_alpha", queue="default"),
             _row("doctor_beta", queue="batch"),
         ],
         queue_rows=[],
+        stranded_rows=[
+            {
+                "actor": "ghost_actor_not_registered",
+                "no_actor_config_cnt": 1,
+                "unserved_queue_cnt": 0,
+                "unserved_queues": [],
+            }
+        ],
     )
 
-    # No fake for a jobs-scanning query is wired up on purpose: doctor
-    # currently issues none. If a future implementation adds one, this
-    # test's `_patch_db` fake will return `[]`/`None` for it (see
-    # `_FakeConn.fetch`/`fetchrow`) unless extended — the assertion below
-    # is on the CLI's *printed report*, not on the query shape, so it
-    # stays valid across implementations that read jobs via fetch, a
-    # dedicated helper, or otherwise.
+    # The jobs scan is fed through `_patch_db`'s raw-fetch seam (the one
+    # read no patched helper covers); the assertion below is on the CLI's
+    # *printed report*, not on the query shape, so it stays valid across
+    # implementations that read jobs via fetch, a dedicated helper, or
+    # otherwise.
 
     result = _invoke()
 
@@ -425,19 +441,16 @@ def test_doctor_reports_pending_jobs_whose_actor_has_no_registry_or_config_row(
     )
     # The behaviour this test pins: doctor must name an orphaned pending
     # job's actor even though that actor is in neither the registry nor
-    # actor_config. Today `_doctor_findings` has no way to learn this name
-    # exists at all (it never queries `jobs`), so `doctor` reports "no
-    # findings" while a real, permanently-stuck job sits in the database.
+    # actor_config — the jobs-side scan is what makes the name knowable,
+    # where the registry walk (set(registry) - set(stored_by_actor)) cannot
+    # surface a name the current process no longer declares.
     assert "ghost_actor_not_registered" in output, (
         "doctor did not report a pending job for an actor absent from both "
         "the registry and actor_config — this is the exact 'never "
         "dispatches, no error anywhere' condition doctor's own docstring "
-        "says it exists to surface, but _doctor_findings only checks "
-        "registry actors missing a config row (set(registry) - "
-        "set(stored_by_actor)), never the jobs table itself. Confirmed "
-        "live: this job stays 'pending' forever, invisible to `doctor`, "
-        "surfaced only 60s later by the leader-only stranded-jobs sweep "
-        "log line. See taskq/worker/_leader_sweeps.py's "
-        "'stranded-jobs-no-actor-config' event and its no_actor_config "
-        "query shape for the same computation doctor should also do."
+        "says it exists to surface. The scan must cover pending/scheduled "
+        "jobs rows with no stored actor_config row, the same condition the "
+        "leader's stranded-jobs sweep computes (see _stranded_jobs_loop's "
+        "'stranded-jobs-no-actor-config' event in "
+        "taskq/worker/_leader_sweeps.py)."
     )

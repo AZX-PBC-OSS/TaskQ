@@ -295,6 +295,17 @@ class MaintenanceLeader:
         # role while it lost an election, so contention distinguishes a
         # transition from the steady state of following one live peer.
         self._observed_holder: tuple[UUID, datetime] | None = None
+        # The last election this pod WON, kept past every demotion for
+        # resign()'s fence.  ``stop_leading`` nulls ``deps.leader_term`` on
+        # every mid-run step-down, so without this copy a leader that
+        # demoted itself (the cron/monitor conn-death paths) and is then
+        # torn down cannot fence its resign: the row it left behind lapses
+        # only after a whole ``leader_lease``, stalling every successor by
+        # exactly the wait resign exists to remove.  The fence stays sound
+        # because the resign DELETE matches ``(worker_id, elected_at)``
+        # exactly — a successor's takeover rewrites both, so a stale fence
+        # deletes nothing.
+        self._resign_fence: LeaderTerm | None = None
         # Log-once latch for a refused courtesy advisory-lock probe: a
         # managed Postgres refusing ``pg_try_advisory_lock`` refuses it on
         # every election win for the life of the grants, so the WARN is
@@ -364,7 +375,7 @@ class MaintenanceLeader:
             if conn is not None and not conn.is_closed():
                 # Why bounded: a dead PG can block conn.close() indefinitely,
                 # which stalled the election/watchdog/cron paths that call
-                # this (#38). The helper never raises - a superset of the
+                # this. The helper never raises - a superset of the
                 # previous suppress(PostgresConnectionError, OSError) - and
                 # terminates the conn on timeout. Labels match the keepalive
                 # labels ("cron_conn" / "leader_monitor_conn").
@@ -399,7 +410,7 @@ class MaintenanceLeader:
         if self._deps.owns_leader_conn:
             if not conn.is_closed():
                 # Why bounded: same dead-PG stall risk on the watchdog/
-                # election drop path (#38). The helper never raises, so
+                # election drop path. The helper never raises, so
                 # leader_conn is always nulled below and the loop can
                 # rebuild - previously a close error propagated out of the
                 # drop path and skipped the nulling.
@@ -660,8 +671,14 @@ class MaintenanceLeader:
         write rides the leader-owned monitor conn when the primary is gone.
         Both conns are idle by then (the loops that used them have exited),
         and the monitor conn is never the orchestrator's to close.
+
+        The fence prefers the live term and falls back to the last election
+        this pod won: a mid-run demotion clears ``deps.leader_term`` long
+        before teardown, and without the fallback this pod's own row — never
+        taken over, or the DELETE would fence it out — would sit until the
+        lease lapses while a replacement pod waits on it.
         """
-        term = self._deps.leader_term
+        term = self._deps.leader_term or self._resign_fence
         if term is None:
             return
         conn = self._deps.leader_conn
@@ -849,6 +866,18 @@ class MaintenanceLeader:
 
     async def _assume_leadership(self, elected_at: datetime, attempt_started: float) -> bool:
         """Finish a won election, or stand back down if the conns will not open."""
+        term = LeaderTerm(
+            elected_at=elected_at,
+            trusted_until=attempt_started
+            + self._deps.settings.resolved_leader_lease
+            - _LEADER_TRUST_MARGIN_SECS,
+        )
+        # Captured the moment the row is won, BEFORE the conn opens that
+        # complete the assume: even a won-then-unassumable election leaves
+        # this pod's name on the row, and resign() at teardown hands exactly
+        # that row back.  Renewals never change ``elected_at``, so the fence
+        # stays valid for the life of the term.
+        self._resign_fence = term
         # Courtesy only, and only ever attempted by the winner: an
         # old-release pod understands the lock and not the lease, so the
         # lease holder takes it to keep such a pod from electing itself
@@ -882,14 +911,7 @@ class MaintenanceLeader:
                 error_type=type(exc).__name__,
             )
             return False
-        self._deps.lead(
-            LeaderTerm(
-                elected_at=elected_at,
-                trusted_until=attempt_started
-                + self._deps.settings.resolved_leader_lease
-                - _LEADER_TRUST_MARGIN_SECS,
-            )
-        )
+        self._deps.lead(term)
         # Whatever this pod was following is gone; the next peer it finds in
         # its way is a fresh transition, not a continuation.
         self._observed_holder = None

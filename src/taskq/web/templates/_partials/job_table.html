@@ -1,4 +1,4 @@
-{% from "_partials/job_card.html" import status_badge, duration_fmt, timestamp_cell %}
+{% from "_partials/job_card.html" import status_badge, duration_fmt, timestamp_cell, attempt_budget %}
 
 {# Every jobs-list link carries the same filter state; one definition so a
    filter added to the page cannot be dropped by five of the six links. #}
@@ -116,7 +116,7 @@
                     <td class="px-3 py-2 text-xs font-mono text-slate-500">
                         {% if job.duration_ms is not none %}{{ duration_fmt(job.duration_ms) }}{% else %}—{% endif %}
                     </td>
-                    <td class="px-3 py-2 text-xs text-slate-500">{{ job.attempt }}/{{ job.max_attempts }}</td>
+                    <td class="px-3 py-2 text-xs text-slate-500">{{ attempt_budget(job) }}</td>
                     <td class="px-3 py-2 max-w-[180px]">
                         <div class="flex flex-wrap gap-1">
                             {% for tag in (job.tags or [])[:3] %}

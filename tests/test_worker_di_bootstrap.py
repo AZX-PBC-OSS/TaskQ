@@ -684,14 +684,26 @@ async def test_bootstrap_ignores_redis_rate_limit_of_unserved_actor() -> None:
     assert result == 0
 
 
-async def test_bootstrap_clear_error_when_redis_extra_missing() -> None:
+async def test_bootstrap_clear_error_when_redis_extra_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """TASKQ_REDIS_URL set + served redis limits + [redis] extra missing
     raises an actionable bootstrap error naming the extra and the limits.
 
     Regression: this configuration previously surfaced as a bare
     ``MissingProvider`` at DI validate, with no hint that the fix is
     installing the extra.
+
+    The absent-extra state is driven through the REAL
+    ``_redis_extra_installed`` — poisoning ``sys.modules["redis"]`` is
+    byte-identical to the package never having been installed (the import
+    machinery raises ``ModuleNotFoundError`` on the parent, exactly the
+    state the probe exists to detect). Mocking the probe itself is how the
+    dotted-``find_spec`` crash shipped with zero coverage of the one line
+    that was wrong.
     """
+    import sys
+
     from taskq.ratelimit.registry import registry as rl_registry
     from taskq.ratelimit.token_bucket import TokenBucket
 
@@ -708,23 +720,69 @@ async def test_bootstrap_clear_error_when_redis_extra_missing() -> None:
     async def served_actor(payload: EmptyPayload) -> None:
         pass
 
-    with (
-        patch("taskq.worker._bootstrap._redis_extra_installed", lambda: False),
-        pytest.raises(RuntimeError, match=r"taskq\[redis\]"),
-    ):
+    monkeypatch.setitem(sys.modules, "redis", None)
+
+    with pytest.raises(RuntimeError, match=r"taskq\[redis\]"):
         await _run_main_with_mocked_deps(
             _settings(redis_url="redis://localhost:6379/0"),
             actor_registry={served_actor.name: served_actor},
         )
 
 
-async def test_bootstrap_redis_url_without_extra_and_no_redis_limits_boots() -> None:
+async def test_bootstrap_redis_url_without_extra_and_no_redis_limits_boots(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """TASKQ_REDIS_URL set with the extra missing but no served redis-backed
     limits is harmless: the worker boots (register_redis_pool silently skips
-    and nothing requires the provider)."""
-    with patch("taskq.worker._bootstrap._redis_extra_installed", lambda: False):
-        result = await _run_main_with_mocked_deps(_settings(redis_url="redis://localhost:6379/0"))
+    and nothing requires the provider).
+
+    The absent-extra state is real (``sys.modules`` poisoning), not a mock
+    of the probe under test — see the sibling test above.
+    """
+    import sys
+
+    monkeypatch.setitem(sys.modules, "redis", None)
+
+    result = await _run_main_with_mocked_deps(_settings(redis_url="redis://localhost:6379/0"))
     assert result == 0
+
+
+# ── the extra probe itself, against genuinely absent/present packages ──
+#
+# ``_redis_extra_installed`` answers one question — is the [redis] extra
+# importable HERE — and both answers are pinned against the real function:
+# a probe that always answered one way would leave half the bootstrap
+# guards above untestable.
+
+
+async def test_redis_extra_probe_false_when_redis_package_absent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No ``redis`` package at all → False, and never a raised
+    ModuleNotFoundError (the dotted-``find_spec`` defect this pins).
+
+    Only the parent is poisoned: that is the genuinely-absent state, and
+    the one under which ``find_spec("redis.asyncio")`` raises instead of
+    returning ``None`` (poisoning ``redis.asyncio`` itself would let
+    ``find_spec`` answer ``None`` without ever walking to the parent —
+    the probe's defect would survive the test).
+    """
+    import sys
+
+    from taskq.worker._bootstrap import _redis_extra_installed
+
+    monkeypatch.setitem(sys.modules, "redis", None)
+
+    assert _redis_extra_installed() is False
+
+
+async def test_redis_extra_probe_true_when_redis_installed() -> None:
+    """The dev suite installs the extra (sibling tests import redis.asyncio
+    unconditionally), so the probe must answer True — a probe hardwired to
+    False would silently disable every Redis-backed limiter."""
+    from taskq.worker._bootstrap import _redis_extra_installed
+
+    assert _redis_extra_installed() is True
 
 
 # ── _served_redis_rate_limits uses the injected registry, not the singleton ──
@@ -733,7 +791,7 @@ async def test_bootstrap_redis_url_without_extra_and_no_redis_limits_boots() -> 
 async def test_served_redis_rate_limits_uses_injected_registry() -> None:
     """_served_redis_rate_limits scans the injected registry, not the module singleton.
 
-    Regression (PR #39 / #42): ``_served_redis_rate_limits`` read the
+    Regression: ``_served_redis_rate_limits`` read the
     module-level ``rl_registry`` singleton instead of the resolved
     registry from ``_resolve_rl_registry``. With a custom
     ``RateLimitRegistry``:

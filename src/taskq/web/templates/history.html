@@ -1,6 +1,6 @@
 {% extends "_base.html" %}
 {% set active_page = "history" %}
-{% from "_partials/job_card.html" import job_row %}
+{% from "_partials/job_card.html" import attempt_budget %}
 
 {% block title %}History — TaskQ Admin{% endblock %}
 
@@ -81,7 +81,7 @@
             <td>{{ job.started_at or '—' }}</td>
             <td>{{ job.finished_at or '—' }}</td>
             <td>{% if job.duration_ms is not none %}{{ "%.1f"|format(job.duration_ms / 1000) }}s{% else %}—{% endif %}</td>
-            <td>{{ job.attempt }}/{{ job.max_attempts }}</td>
+            <td>{{ attempt_budget(job) }}</td>
             <td>{% if job.is_archived %}<span class="badge badge-grey">archived</span>{% else %}live{% endif %}</td>
         </tr>
     {% endfor %}

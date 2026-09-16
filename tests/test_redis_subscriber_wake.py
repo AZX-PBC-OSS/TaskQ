@@ -43,6 +43,7 @@ from taskq.retry import RetryPolicy
 from taskq.settings import WorkerSettings
 from taskq.testing.actor import StubActorConfig
 from taskq.testing.fixtures import ModulePgSchema
+from taskq.testing.pg import truncate_schema
 from taskq.worker._consumer import consume_one_job
 from taskq.worker.deps import WorkerDeps, open_worker_deps
 
@@ -89,12 +90,20 @@ async def _sub_wake_single_actor(payload: _Empty, ctx: JobContext[_Empty]) -> No
 
 
 async def _truncate_dynamic_tables(pg_dsn: str, schema: str) -> None:
-    """Truncate all dynamic tables to ensure clean per-test state."""
+    """Truncate all dynamic tables to ensure clean per-test state.
+
+    Delegates to the canonical :func:`taskq.testing.pg.truncate_schema`:
+    the dynamic set is not just ``jobs``/``workers`` — ``actor_config``
+    carries the dispatch-rotation stamp (``last_claimed_at``) that decides
+    which actor's queue is claimed first, so a two-table truncate leaks the
+    previous test's claims into this one's dispatch order (and the same
+    class covers ``queues``, ``cron_schedules``, rate-limit and
+    reservation state added beside them).  ``_seed_actor_configs`` then
+    re-seeds the rows this file's actors need with a clean rotation stamp.
+    """
     conn = await asyncpg.connect(pg_dsn)
     try:
-        # FK-safe truncation for tables that accumulate per-test data
-        for table in ("jobs", "workers"):
-            await conn.execute(f'TRUNCATE "{schema}"."{table}" CASCADE')
+        await truncate_schema(conn, schema)
     finally:
         await conn.close()
 

@@ -123,6 +123,38 @@ stamp rides the registry row rather than the jobs table so the
 rotation read adds no per-round probe: it is carried through the
 already-materialized ``ranked`` window to the cut.
 
+Reservation-headroom contract (consumer-slot isolation): dispatch has
+no in-process knowledge of an actor's declared reservations — that
+mapping lives in each worker's rate-limit registry — but it can read
+the only durable signal there is: which actors' claimed jobs currently
+hold live reservation slots (``reservation_slots.job_id`` →
+``jobs.actor``), and how many slots in those buckets remain acquirable
+right now. ``reservation_holdings`` / ``reservation_headroom`` derive
+that once per statement, and both capacity CTEs fold it in:
+``residual = LEAST(capacity residual, headroom)``. An actor whose held
+bucket is FULL is admitted nothing this round — without the gate its
+pending rows are claimed into the shared ``max_concurrency`` consumer
+pool, denied by the post-claim ``acquire_for_actor``, and snoozed,
+spending one consumer coroutine per row per cycle on work that cannot
+run (measured: 25-45% throughput loss for a co-located healthy actor;
+pinned by
+tests/test_fleet_saturated_actor_consumer_slot_isolation.py). The gate
+is deliberately a damper, not an authority: the post-claim acquire
+remains the decision of record (a race between the read and a peer's
+acquire degrades to one bounded denial, never a wrong admission), the
+first claim of a never-running actor always gets through (NULL
+headroom leaves the residual untouched — that is what lets capacity
+ever be taken), and a full bucket implies a holder already running
+whose completion or lease expiry re-opens the gate, so a saturated
+actor drains the moment capacity frees (no starvation inversion).
+Headroom bounds the round's candidate window (residual * oversample);
+final admission can overshoot a partially-free bucket by the
+oversample factor, the same best-effort doctrine running_per_actor
+documents for max_concurrent, and self-corrects on the next round when
+the over-claimed jobs fill the slots. Keyed and queue-cap buckets ride
+the same derivation for free — the gate keys off holder state, not
+declarations.
+
 Routing contract (the running-job-tail fix for
 :func:`taskq.actor_config_ops.move_actor_queue`): a pending row's
 dispatch routing queue is decided by its ORIGIN.  A row a producer
@@ -246,6 +278,73 @@ running_identities AS (
   FROM "{schema}".jobs
   WHERE status = 'running' AND identity_key IS NOT NULL
 ),
+-- Which (actor, bucket) pairs have a live hold right now, derived from
+-- holder state alone: reservation_slots.job_id points at the claimed
+-- jobs row, whose actor is the holder. The derivation needs no
+-- actor -> bucket declaration mapping (the DB has none — declarations
+-- live in the workers' rate-limit registries), so static, keyed, and
+-- queue-cap buckets all ride it. "Live" mirrors the acquire statement's
+-- acquirability predicate exactly (taskq.ratelimit.reservation): a held
+-- row whose lease has not yet expired — with the deliberate clock swap
+-- to statement_timestamp() (STABLE), the same two-clock doctrine the
+-- candidates laterals keep, so the liveness bound can ride
+-- reservation_slots_lease_expires_idx as an Index Cond and the whole
+-- statement keeps one snapshot. A lease that expires mid-statement
+-- reads as held — a conservative under-admission for one round,
+-- self-correcting on the next.
+--
+-- Best-effort under concurrent dispatchers, on the same doctrine as
+-- running_per_actor above: this snapshot is read ONCE, before `locked`
+-- takes its FOR UPDATE SKIP LOCKED row locks, and never rechecked; the
+-- post-claim acquire_for_actor is the admission authority, so a stale
+-- read degrades to one bounded denial round trip, never a wrong one.
+--
+-- Cost: the outer scan reads only live-held slot rows (the table is
+-- bounded by total reservation slots fleet-wide, never by jobs
+-- backlog), and each holder's actor is one primary-key probe — the
+-- correlated LATERAL with LIMIT 1 defeats the subquery pull-up that
+-- would flatten the lookup into a hash join over the whole jobs table
+-- (the same doctrine per_actor_capacity relies on). Zero held slots —
+-- the common case — costs one scan of an empty/small table and no jobs
+-- probes, so the depth oracles' row-visit counts are unchanged.
+reservation_holdings AS (
+  SELECT DISTINCT hj.actor, lh.bucket_name
+  FROM (
+    SELECT rs.bucket_name, rs.job_id
+    FROM "{schema}".reservation_slots rs
+    WHERE rs.job_id IS NOT NULL
+      AND (rs.lease_expires_at IS NULL OR rs.lease_expires_at >= statement_timestamp())
+  ) lh
+  CROSS JOIN LATERAL (
+    SELECT hj2.actor
+    FROM "{schema}".jobs hj2
+    WHERE hj2.id = lh.job_id
+    LIMIT 1
+  ) hj
+),
+-- Acquirable slots per held bucket, folded to the actor's binding
+-- constraint: an actor's jobs AND-compose their declared reservations,
+-- so the least-free held bucket caps how many more of the actor's rows
+-- can actually run. The free predicate is the acquire statement's own
+-- (job_id IS NULL OR lease expired — an expired lease is the design's
+-- abandonment signal and is acquirable on the spot), again on
+-- statement_timestamp(). Each probe is a primary-key-prefix range over
+-- one bucket's rows — bounded by the bucket's slot count, never by
+-- backlog depth. An actor holding nothing is absent here, and
+-- LEAST(residual, NULL) is the residual unchanged (LEAST ignores NULL
+-- arguments) — the first claim of a never-running actor is never
+-- gated.
+reservation_headroom AS (
+  SELECT h.actor, MIN(f.free_slots) AS headroom
+  FROM reservation_holdings h
+  CROSS JOIN LATERAL (
+    SELECT count(*) AS free_slots
+    FROM "{schema}".reservation_slots rs2
+    WHERE rs2.bucket_name = h.bucket_name
+      AND (rs2.job_id IS NULL OR rs2.lease_expires_at < statement_timestamp())
+  ) f
+  GROUP BY h.actor
+),
 -- Per-actor admission for the label-routed arm. The driver is pa_actors
 -- (the round's own label-routed population, enumerated from jobs by the
 -- keys walk), NOT a scan of actor_config: actor_config holds one row per
@@ -282,61 +381,81 @@ running_identities AS (
 -- pending row on any subscribed queue keeps that actor probed.
 per_actor_capacity AS (
   SELECT
-    pa.actor,
-    ac.max_concurrent,
-    CASE WHEN ac.max_concurrent IS NULL
-         THEN (SELECT limit_n FROM params)
-         ELSE GREATEST(ac.max_concurrent - COALESCE(r.in_flight, 0), 0)
-    END AS residual,
-    -- The cross-round fairness signal, carried from the registry row to
-    -- every ORDER BY that cuts a round's admitted set. NULL means "never
-    -- claimed": those actors sort first (NULLS FIRST at the cut), then
-    -- least-recently-claimed. Without it the cross-actor tiebreak among
-    -- rank-1 rows is priority/scheduled_at/id — a STABLE total order that
-    -- re-elects the same prefix of actors every round (each winner refills
-    -- its own rank-1 slot from its own backlog with the same relative
-    -- key), so every actor past the limit starves while the queue drains
-    -- briskly. The stamp itself is the stamp CTE at the foot of this
-    -- statement; its SKIP LOCKED driver is what lets the write ride the
-    -- claim: a plain UPDATE would wait on any peer transaction holding a
-    -- claimed actor's registry row (a concurrent dispatcher mid-round,
-    -- an operator's move_actor_queue flip), coupling this round's
-    -- latency — and, for a peer whose transaction is held open, its
-    -- liveness — to the peer's commit. Skipping a locked row degrades
-    -- the stamp bounded-ly (that actor re-competes with its older stamp
-    -- next round; self-correcting), never the claim's liveness.
-    ac.last_claimed_at AS actor_claimed_at
-  FROM pa_actors pa
-  CROSS JOIN params p
-  CROSS JOIN LATERAL (
-    SELECT ac.max_concurrent, ac.last_claimed_at
-    FROM "{schema}".actor_config ac
-    WHERE ac.actor = pa.actor
-    -- The LIMIT is not decorative: a bare pkey-equality subquery is
-    -- pulled up into a plain join, which the planner then serves as a
-    -- Seq Scan + hash over the whole (usually unanalyzed) registry.
-    -- LIMIT 1 defeats the pull-up, keeping this a nested-loop pkey
-    -- probe per live actor — the same doctrine the has_pending probe
-    -- below relies on. Exact because actor is the primary key.
-    LIMIT 1
-  ) ac
-  LEFT JOIN running_per_actor r ON r.actor = pa.actor
-  CROSS JOIN LATERAL (
-    SELECT 1 AS has_pending
-    FROM unnest(p.queues) AS pq(q)
+    base.actor,
+    base.max_concurrent,
+    -- The reservation-headroom fold: an actor holding a live slot in a
+    -- bucket with no acquirable slot left is admitted NOTHING this
+    -- round — its pending rows could only be claimed into consumer
+    -- coroutines whose acquire_for_actor must deny them, spending the
+    -- worker's shared max_concurrency slots on work that cannot run
+    -- (the consumer-slot churn this gate exists to remove). A
+    -- partially free held bucket admits at most its free count. An
+    -- actor with no live holdings has headroom NULL and LEAST ignores
+    -- NULL, so the base residual is untouched — the gate never blocks
+    -- a first claim, and a full bucket implies a holder already
+    -- running whose completion (or lease expiry) re-opens admission,
+    -- so saturated work drains the moment capacity frees.
+    LEAST(base.residual, rh.headroom) AS residual,
+    base.actor_claimed_at
+  FROM (
+    SELECT
+      pa.actor,
+      ac.max_concurrent,
+      CASE WHEN ac.max_concurrent IS NULL
+           THEN (SELECT limit_n FROM params)
+           ELSE GREATEST(ac.max_concurrent - COALESCE(r.in_flight, 0), 0)
+      END AS residual,
+      -- The cross-round fairness signal, carried from the registry row to
+      -- every ORDER BY that cuts a round's admitted set. NULL means "never
+      -- claimed": those actors sort first (NULLS FIRST at the cut), then
+      -- least-recently-claimed. Without it the cross-actor tiebreak among
+      -- rank-1 rows is priority/scheduled_at/id — a STABLE total order that
+      -- re-elects the same prefix of actors every round (each winner refills
+      -- its own rank-1 slot from its own backlog with the same relative
+      -- key), so every actor past the limit starves while the queue drains
+      -- briskly. The stamp itself is the stamp CTE at the foot of this
+      -- statement; its SKIP LOCKED driver is what lets the write ride the
+      -- claim: a plain UPDATE would wait on any peer transaction holding a
+      -- claimed actor's registry row (a concurrent dispatcher mid-round,
+      -- an operator's move_actor_queue flip), coupling this round's
+      -- latency — and, for a peer whose transaction is held open, its
+      -- liveness — to the peer's commit. Skipping a locked row degrades
+      -- the stamp bounded-ly (that actor re-competes with its older stamp
+      -- next round; self-correcting), never the claim's liveness.
+      ac.last_claimed_at AS actor_claimed_at
+    FROM pa_actors pa
+    CROSS JOIN params p
     CROSS JOIN LATERAL (
-      SELECT 1
-      FROM "{schema}".jobs j
-      WHERE j.actor = pa.actor
-        AND j.queue = pq.q
-        AND NOT j.assignment_routed
-        AND j.status = 'pending'
-      ORDER BY j.priority DESC, j.scheduled_at, j.id
+      SELECT ac.max_concurrent, ac.last_claimed_at
+      FROM "{schema}".actor_config ac
+      WHERE ac.actor = pa.actor
+      -- The LIMIT is not decorative: a bare pkey-equality subquery is
+      -- pulled up into a plain join, which the planner then serves as a
+      -- Seq Scan + hash over the whole (usually unanalyzed) registry.
+      -- LIMIT 1 defeats the pull-up, keeping this a nested-loop pkey
+      -- probe per live actor — the same doctrine the has_pending probe
+      -- below relies on. Exact because actor is the primary key.
       LIMIT 1
-    ) anyq
-    LIMIT 1
-  ) hp
-  WHERE hp.has_pending IS NOT NULL
+    ) ac
+    LEFT JOIN running_per_actor r ON r.actor = pa.actor
+    CROSS JOIN LATERAL (
+      SELECT 1 AS has_pending
+      FROM unnest(p.queues) AS pq(q)
+      CROSS JOIN LATERAL (
+        SELECT 1
+        FROM "{schema}".jobs j
+        WHERE j.actor = pa.actor
+          AND j.queue = pq.q
+          AND NOT j.assignment_routed
+          AND j.status = 'pending'
+        ORDER BY j.priority DESC, j.scheduled_at, j.id
+        LIMIT 1
+      ) anyq
+      LIMIT 1
+    ) hp
+    WHERE hp.has_pending IS NOT NULL
+  ) base
+  LEFT JOIN reservation_headroom rh ON rh.actor = base.actor
 ),
 -- Re-pended cohort enumeration: the same recursive loose index scan
 -- geometry as _RR_KEYS_CTE, over the re-pended population only
@@ -399,23 +518,37 @@ rr_tail_keys AS (
 -- array; the column form is the array membership test.
 repend_capacity AS (
   SELECT
-    ta.actor,
-    ac.max_concurrent,
-    CASE WHEN ac.max_concurrent IS NULL
-         THEN (SELECT limit_n FROM params)
-         ELSE GREATEST(ac.max_concurrent - COALESCE(r.in_flight, 0), 0)
-    END AS residual,
-    ac.last_claimed_at AS actor_claimed_at
-  FROM (SELECT DISTINCT actor FROM rr_tail_keys) ta
-  CROSS JOIN params p
-  CROSS JOIN LATERAL (
-    SELECT ac.max_concurrent, ac.queue, ac.last_claimed_at
-    FROM "{schema}".actor_config ac
-    WHERE ac.actor = ta.actor
-    LIMIT 1
-  ) ac
-  LEFT JOIN running_per_actor r ON r.actor = ta.actor
-  WHERE ac.queue = ANY(p.queues)
+    base.actor,
+    base.max_concurrent,
+    -- The same reservation-headroom fold as per_actor_capacity: a
+    -- re-pended row of a reservation-saturated actor (a denied job
+    -- coming back through the snooze/promote path routes here by its
+    -- assignment_routed marker) is no more runnable than a
+    -- producer-placed one — claiming it would churn a consumer slot
+    -- into another denial.
+    LEAST(base.residual, rh.headroom) AS residual,
+    base.actor_claimed_at
+  FROM (
+    SELECT
+      ta.actor,
+      ac.max_concurrent,
+      CASE WHEN ac.max_concurrent IS NULL
+           THEN (SELECT limit_n FROM params)
+           ELSE GREATEST(ac.max_concurrent - COALESCE(r.in_flight, 0), 0)
+      END AS residual,
+      ac.last_claimed_at AS actor_claimed_at
+    FROM (SELECT DISTINCT actor FROM rr_tail_keys) ta
+    CROSS JOIN params p
+    CROSS JOIN LATERAL (
+      SELECT ac.max_concurrent, ac.queue, ac.last_claimed_at
+      FROM "{schema}".actor_config ac
+      WHERE ac.actor = ta.actor
+      LIMIT 1
+    ) ac
+    LEFT JOIN running_per_actor r ON r.actor = ta.actor
+    WHERE ac.queue = ANY(p.queues)
+  ) base
+  LEFT JOIN reservation_headroom rh ON rh.actor = base.actor
 ),
 -- Two disjoint candidate sources, one per routing population:
 --   * the label-routed arm (per_actor_capacity x subscribed queues)

@@ -136,7 +136,29 @@ Each migration is recorded in `{schema}.schema_migrations` with a SHA-256 checks
     backup taken before the migration was applied. Always take a backup (or
     confirm a PITR window) before upgrading. See [Upgrading](upgrading.md).
 
-**Deployment order:** (1) apply migrations as a pre-deploy job or init container, (2) start workers — they call `sync_actor_config` at startup and fail with `ActorConfigDriftList` if a registered actor's **structural** config (`metadata`) differs from the stored row (a differing `queue` literal is the rolling-deploy window of `taskq actor-config move-queue`: it logs `actor-config-queue-override` and boots). Note this does **not** detect a stale *schema*: no schema-version precheck runs on the worker path, so a worker started against an unmigrated database fails later, at its first query, rather than at startup, (3) start the admin UI (optionally with `TASKQ_MIGRATE_ON_START=true`).
+Some migrations are split into a `pre` and a `post` phase. The `pre` phase adds the new
+structures while keeping every structure the *old* release still needs; the `post` phase
+removes those old structures. A bare `taskq migrate up` applies **both** phases — right for a
+fresh install or a stop-and-replace redeploy, but wrong anywhere a rollout can overlap: a
+`post` phase applied while old pods still serve breaks them mid-rollout (dropping the old
+single-column idempotency index, for example, turns every enqueue from a pre-upgrade worker
+into `InvalidColumnReferenceError`, SQLSTATE 42P10 — see the phase-obligation notes in
+`01.00.03_01_pre_idempotency_scope.sql`). On a rolling deploy the sequence is:
+
+1. Apply `taskq migrate up --phase pre` as the pre-deploy job or init container — safe
+   against old and new code, before or during the rollout.
+2. Roll the fleet; wait until every pod runs the new release.
+3. A human confirms the rollout completed, then applies `taskq migrate up --phase post`
+   once, by hand (or from a manually triggered one-off job). Never wire the `post` phase to
+   an init container, a pod lifecycle hook, or any step that fires unsequenced per pod —
+   those run mid-rollout, while old pods still need the structures `post` removes.
+
+A worker started against a schema with a pending `pre`-phase migration **refuses to boot**,
+naming the missing migrations; a pending `post`-phase migration never blocks boot — that
+middle state is the rollout window by design.
+
+**Deployment order:** (1) apply migrations as a pre-deploy job or init container — with
+`--phase pre` on anything that rolls, (2) start workers — they call `sync_actor_config` at startup and fail with `ActorConfigDriftList` if a registered actor's **structural** config (`metadata`) differs from the stored row (a differing `queue` literal is the rolling-deploy window of `taskq actor-config move-queue`: it logs `actor-config-queue-override` and boots). That drift check does **not** detect a stale *schema* — it compares config rows, never a schema version — but a stale schema is caught anyway: a worker whose schema has a pending `pre`-phase migration **refuses to boot**, naming the missing migrations (see above), (3) start the admin UI (optionally with `TASKQ_MIGRATE_ON_START=true`), (4) once the rollout is confirmed everywhere, apply `--phase post` as described above.
 
 For rolling deploys where actor config changes, deploy the first pod with `TASKQ_FORCE_UPDATE_ACTOR_CONFIG=true` to overwrite stored config, then deploy the rest without it. See [workers.md — ActorConfig sync](workers.md#actorconfig-sync).
 
@@ -220,9 +242,14 @@ spec:
     spec:
       terminationGracePeriodSeconds: 120
       initContainers:
+        # `--phase pre` is load-bearing: the init container runs on every new
+        # pod DURING the rolling update, while old pods still serve. A bare
+        # `migrate up` would also apply `post`-phase migrations, which remove
+        # structures the old release still needs — breaking the old pods'
+        # enqueue path mid-rollout. See "Migration strategy" above.
         - name: migrate
           image: myapp:latest
-          command: ["taskq", "migrate", "up"]
+          command: ["taskq", "migrate", "up", "--phase", "pre"]
           env:
             - name: TASKQ_PG_DSN
               valueFrom:
@@ -272,6 +299,18 @@ spec:
               cpu: "2000m"
               memory: "1Gi"
 ```
+
+Once the rollout has completed — every pod confirmed on the new release — close out the
+phase split with the `post` phase, exactly once, as a deliberate manual step (never an
+init container or automated post-deploy hook: those fire unsequenced, mid-rollout):
+
+```shell
+kubectl exec deploy/taskq-worker -- taskq migrate up --phase post
+```
+
+A pending `post` phase is a safe steady state meanwhile — workers boot and run normally
+against it — so there is no urgency that would justify automating the step away. See
+[Migration strategy](#migration-strategy) for what each phase guarantees.
 
 See [configuration.md](configuration.md#production-example-env) for the full set of `TASKQ_*` environment variables and cross-field validation constraints.
 

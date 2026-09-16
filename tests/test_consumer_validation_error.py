@@ -30,6 +30,7 @@ isinstance-based PayloadValidationError check.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -249,3 +250,53 @@ class TestConsumerPathUsesTheSanitizedConversion:
         assert _CANARY not in str(exc)
         assert "12345" not in str(exc)
         assert all(_CANARY not in str(err) for err in exc.validation_errors)
+
+
+# ── The consumer threads the ROW's stored payload_schema_ver ────────────
+
+
+class TestConsumerThreadsStoredSchemaVer:
+    """``consume_one_job``'s pre-acquire fallback holds the job row, so its
+    ``PayloadValidationError`` must carry the row's STORED
+    ``payload_schema_ver`` — not the version being validated against.
+
+    This is the dispatch-time schema-drift diagnostic: a row written
+    before a payload migration (stored version 0 here, older than the
+    current schema) whose payload no longer validates must report the
+    row's own version, so an adopter's error handler can tell "this row
+    predates the migration" apart from "this caller sent garbage". The
+    helper's default (the current version) would claim the row is
+    current — the exact indistinguishability the field exists to remove.
+    """
+
+    async def test_consumer_validation_error_carries_the_rows_stored_version(self) -> None:
+        job = replace(
+            make_job_row(
+                actor=_test_actor.name,
+                payload={"run_id": 12345, "batch_id": "b"},
+            ),
+            # A row written before the current payload schema existed.
+            payload_schema_ver=0,
+        )
+
+        async def never_runs(_job: object, _ctx: JobContext[BaseModel]) -> object:
+            raise AssertionError("actor body must not run on validation failure")
+
+        with pytest.raises(PayloadValidationError) as exc_info:
+            await consume_one_job(
+                as_backend(FakeBackend()),
+                job,
+                _WORKER_ID,
+                run_actor=never_runs,
+                actor_config=default_actor_config(),
+                payload_type=_test_actor.payload_type,
+                clock=FakeClock(_START),
+            )
+
+        assert exc_info.value.payload_schema_ver == "0", (
+            "the consumer's validation error must carry the row's stored "
+            "payload_schema_ver (0 — a pre-migration row), not the default "
+            "current version; an adopter branching on this field to tell a "
+            "pre-migration row apart from caller garbage needs the row's "
+            "own version on the worker path"
+        )

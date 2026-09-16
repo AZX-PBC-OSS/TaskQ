@@ -59,6 +59,7 @@ _QUEUE_HAS_ALIVE_WORKER_SQL = (
 
 _QUEUE_DETAIL_SQL_FIRST = (
     "SELECT id, queue, actor, status, scheduled_at, attempt, max_attempts, "
+    "retry_kind, "
     "created_at "
     'FROM "{schema}".jobs '
     "WHERE queue = $1 AND status = $2 "
@@ -67,6 +68,7 @@ _QUEUE_DETAIL_SQL_FIRST = (
 
 _QUEUE_DETAIL_SQL_CURSOR = (
     "SELECT id, queue, actor, status, scheduled_at, attempt, max_attempts, "
+    "retry_kind, "
     "created_at "
     'FROM "{schema}".jobs '
     "WHERE queue = $1 AND status = $2 "

@@ -64,6 +64,7 @@ from typing import TYPE_CHECKING, TypeVar
 import structlog
 from pydantic import BaseModel, ValidationError
 
+from taskq._validation import CURRENT_PAYLOAD_SCHEMA_VER
 from taskq.backend._sweeps import (  # pyright: ignore[reportPrivateUsage]  # Why: the eviction drain and the fleet sweep must agree exactly on which rows still hold consumed quota — one predicate, no second hand-maintained copy.
     _no_consumed_quota_sql,
 )
@@ -645,6 +646,10 @@ class RateLimitRegistry:
             raise PayloadValidationError(
                 f"Payload validation failed for {type(ref).__name__}(base_name={ref.base_name!r}): "
                 f"payload_type={ref.payload_type.__name__}, received={type(payload).__name__}. {exc.title}",
+                # No job row exists on this path — the version in scope is
+                # the one ``ref.payload_type`` is being validated against,
+                # i.e. the schema version the system writes today.
+                payload_schema_ver=str(CURRENT_PAYLOAD_SCHEMA_VER),
                 validation_errors=errs,
             ) from exc
 

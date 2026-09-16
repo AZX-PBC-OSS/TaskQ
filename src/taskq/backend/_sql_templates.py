@@ -1564,6 +1564,22 @@ WITH retried AS (
         error_message = NULL,
         error_traceback = NULL,
         scheduled_at = clock_timestamp(),
+        -- An already-elapsed schedule_to_close is a spent epoch's
+        -- artifact, the same class as finished_at/result: dispatch's own
+        -- claim predicate refuses any row whose deadline has passed
+        -- (_dispatch_sql.py admits only schedule_to_close IS NULL OR
+        -- schedule_to_close > now), so re-pending with the stale deadline
+        -- intact hands back a row no worker can ever claim — the
+        -- operator's Retry reports success and the next deadline-sweep
+        -- tick silently re-fails the job. Clear the deadline only when it
+        -- has already elapsed; a still-future one survives, preserving
+        -- the operator's original budget intent for an in-window retry.
+        -- (NULL <= clock_timestamp() is NULL, so an unset deadline falls
+        -- through to the ELSE and stays unset.)
+        schedule_to_close = CASE
+            WHEN schedule_to_close <= clock_timestamp() THEN NULL
+            ELSE schedule_to_close
+        END,
         finished_at = NULL,
         result = NULL,
         result_size_bytes = NULL,

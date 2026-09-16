@@ -206,6 +206,121 @@ All instruments are created from the `"taskq"` meter. Instruments marked
 **unconditional** are recorded even when `TASKQ_OTEL_ENABLED=false` because
 they represent safety-critical signals.
 
+### Serving the metrics: the Prometheus endpoint
+
+Install the `[prometheus]` extra and `taskq ui serve` mounts
+`GET /jobs/health/metrics`, serving the series below in Prometheus text
+format:
+
+```bash
+pip install "taskq-py[prometheus]"
+taskq ui serve   # scrape target: http://<host>:<port>/jobs/health/metrics
+```
+
+**No provider setup is required.** Mounting the route wires the data path,
+not just the route: at startup the process installs a
+`PrometheusMetricReader`-backed `MeterProvider` as the process-global OTel
+provider when nothing configured one, and logs
+`prometheus-metrics-provider-wired`. The wiring happens at startup because
+OTel drops measurements recorded before a provider exists — a provider
+installed at first scrape would serve an empty page forever. If you saw a
+200 response with valid Prometheus text but zero `taskq_*` series, that is
+the failure this wiring exists to remove; check the startup log lines below
+before anything else.
+
+**If you configure your own provider, TaskQ never replaces it.** Two shapes:
+
+- Your `MeterProvider` includes a `PrometheusMetricReader` (bound to the
+  default `prometheus_client` registry — the one the endpoint scrapes): the
+  router detects the bridge and changes nothing.
+- Your provider is OTLP-only (no `PrometheusMetricReader`): the route stays
+  mounted, the scrape serves zero `taskq_*` series, and startup logs a
+  `prometheus-metrics-reader-missing` WARNING. The shipped `rules.yaml`
+  alert set references those series and can never fire in this state — add
+  the reader yourself:
+
+  ```python
+  from opentelemetry import metrics
+  from opentelemetry.exporter.prometheus import PrometheusMetricReader
+  from opentelemetry.sdk.metrics import MeterProvider
+
+  # Before process start (before the worker or UI serves traffic):
+  reader = PrometheusMetricReader()  # default registry = the one the endpoint scrapes
+  metrics.set_meter_provider(MeterProvider(metric_readers=[reader]))
+  ```
+
+With `TASKQ_OTEL_ENABLED=false` no provider is installed and the mount logs
+`prometheus-metrics-otel-disabled`: an empty-of-`taskq_*` scrape is then a
+configuration statement, not a defect. One edge remains:
+`prometheus-metrics-provider-blocked` (WARNING) means a *non-SDK* global
+provider was set before the router was created, so OTel's set-once guard made
+the constructed bridge inert — set the provider once, at process start, with
+a `PrometheusMetricReader` attached.
+
+**Metrics are per-process.** A scrape of a process shows what *that process*
+recorded. The `taskq ui serve` process records only its own activity
+(admin-triggered enqueues and cancels), so leader-sampled gauges
+(`taskq.jobs.by_status`, `taskq.jobs.stranded`, `taskq.queue.depth`, the
+sweep gauges) and worker-path counters (dispatch duration, consumed
+messages) are **not in its scrape** — they live in the worker processes.
+Scrape the workers for them:
+
+- The worker's own health socket serves three hand-rendered process gauges —
+  `taskq_active_jobs`, `taskq_is_leader`, `taskq_shutdown_phase` — via
+  `taskq health metrics` (or `GET /metrics` on the optional TCP health
+  listener). Those three are independent of OTel and need no extra.
+- The full worker series require a Prometheus bridge **in the worker
+  process**. Today the `taskq worker` CLI does not mount one itself; run the
+  worker embedded and mount the router (it wires the provider at startup,
+  before `worker_main` records anything):
+
+  ```python
+  # your_app/worker_service.py — one process, worker + scrape endpoint
+  from fastapi import FastAPI
+  from taskq.contrib.prometheus import create_metrics_router
+
+  app = FastAPI()
+  app.include_router(create_metrics_router(None), prefix="/jobs/health")  # wires the provider
+
+  # then run worker_main(settings=..., actor_registry=...) in this process
+  # and serve `app` (uvicorn) alongside it.
+  ```
+
+  If you already serve your own scrape endpoint, call
+  `taskq.contrib.prometheus.ensure_prometheus_meter_provider()` once at
+  process start instead of mounting the router, and serve the default
+  registry as you do today. Either way, point Prometheus at every worker
+  pod: series are per-process, so a scrape of one pod says nothing about
+  another.
+
+### A saturated rate limit is not a promotion stall
+
+A growing `scheduled` count beside a flat `pending` count on
+`taskq.jobs.by_status` is the promotion-stall signature — but a saturated
+rate limit produces exactly that shape: denied jobs are rescheduled
+(`scheduled` with a future `scheduled_at`) without ever becoming `pending`.
+The two need different responses (unstick the promotion sweep vs. add
+capacity or wait out the limit), so do not alert on the shape alone.
+Discriminators:
+
+- **Denial counters move only under rate limiting.** Watch
+  `rate(taskq_ratelimit_denials_total[5m])` and
+  `rate(taskq_reservation_denials_total[5m])` — a saturated bucket drives
+  these; a promotion stall does not. The per-job record is the aggregated
+  `rate_limit_blocked_count` column on `jobs` (a denial writes no
+  `job_events` row; see the tip under Counters below).
+- **The stall alert keys on the sweep, not the backlog.** The shipped
+  `TaskQPromotionStalled` rule fires on
+  `taskq_maintenance_leader_sweep_last_success_seconds{sweep_name="scheduled_to_pending"}`
+  going stale — promotion not *running* — which a healthy worker deferring
+  rate-limited jobs never trips. Backlog shape rising while that sweep's
+  last-success timestamp keeps advancing is saturation, not a stall.
+
+Bucket names are deliberately not labels on the denial counters
+(caller-controlled cardinality); the fleet-wide rate tells you *that*
+admissions are denied, and `rate_limit_blocked_count` on the job row tells
+you *which* jobs absorbed them.
+
 ### Counters
 
 | Metric name | Unit | Attributes | Description | Conditional? |
@@ -282,7 +397,7 @@ they represent safety-critical signals.
 | `taskq.jobs.by_status` | `1` | `status` | Jobs per status, sampled by every worker. A growing `scheduled` count next to a flat `pending` count is the promotion-stall signature. |
 | `taskq.jobs.scheduled_count` | `1` | — | Count of `scheduled`-status jobs — the label-less twin of `taskq.jobs.by_status{status="scheduled"}`, sampled at the same tick. Exists so `TaskQScheduledBacklogGrowing` can compare a growth signal against `taskq.jobs.oldest_due_age_seconds` (also label-less) without a PromQL join modifier; a `status`-labeled series never matches a label-less one under vector `and`. |
 | `taskq.jobs.oldest_due_age_seconds` | `s` | — | Seconds since the oldest scheduled job became due for promotion. Grows monotonically while promotion is stalled. |
-| `taskq.jobs.actor_backlog` | `1` | `actor`, `queue` | Pending jobs per (actor, queue). No worker refuses to start because an actor's queue has no consumer — in a multi-worker fleet no supervisor can know what consumes a queue — so a misrouted actor piles up pending rows while every probe stays green. A queue-summed depth cannot tell that apart from a busy shared queue; this actor's own series rises without bound while its queue-mates stay flat. |
+| `taskq.jobs.actor_backlog` | `1` | `actor`, `queue` | Pending jobs per (actor, queue). No worker refuses to start because an actor's queue has no consumer — in a multi-worker fleet no supervisor can know what consumes a queue — so a misrouted actor piles up pending rows while every probe stays green. A queue-summed depth cannot tell that apart from a busy shared queue; this actor's own series rises while its queue-mates stay flat. Exact below the sampler's 1000-row per-pair cap and reading 1000 — a lower bound, never an under-count — at or above it (a series pinned at 1000 means "at least this deep"); the companion `oldest_pending_age_seconds` carries the part that grows without bound. |
 | `taskq.jobs.oldest_pending_age_seconds` | `s` | `actor`, `queue` | Seconds since the oldest PENDING job became eligible, per (actor, queue). Depth alone is ambiguous — a deep queue that drains is healthy throughput — but an actor nobody consumes has a pending job whose age grows with wall clock. Distinct from `oldest_due_age_seconds`, which measures promotion (scheduled → pending) and reads 0 for pending work no consumer takes. Sampled from the same grouped snapshot as `actor_backlog`, so depth and age can never describe two different moments. |
 | `taskq.jobs.running_lease_expired` | `1` | — | Running jobs whose lock lease is past expiry (the zombie-running shape). Healthy reads 0 — the reclaim sweep drains expired leases within a tick or two — so a sustained non-zero reading means reclaim is not draining. Sampled by every worker with `taskq.jobs.by_status`; the per-job truth (`locked_by_worker`, `lock_expires_at`) is on the admin `/jobs` lease column, not on a label. |
 | `taskq.jobs.stranded` | `1` | `actor` | Pending/scheduled jobs whose actor has no `actor_config` row and which can therefore never be dispatched, sampled by the leader. An empty reading means recovery. |
@@ -376,6 +491,12 @@ writing from scratch:
 
 - [`src/taskq/contrib/prometheus/rules.yaml`](https://github.com/AZX-PBC-OSS/TaskQ/blob/main/src/taskq/contrib/prometheus/rules.yaml) — 17 rules (queue depth, heartbeat misses, crashed-job rate, abandoned jobs, lock TTL, leader split-brain, dispatch latency, progress failures, disabled cron, scheduled-backlog growth, promotion stall, sweep timeouts, sweep degraded tier, maintenance-lock contention, rate-limit dependency outage, cron lock contention, expired-lease zombies)
 - `src/taskq/contrib/kubernetes/prometheus_rule.yaml` — the same rules as a PrometheusRule CRD for Kubernetes
+
+The rules fire on the series above, so they only work where those series are
+scraped: see [Serving the metrics: the Prometheus endpoint](#serving-the-metrics-the-prometheus-endpoint)
+for the (zero-config) wiring and its per-process caveat — rules that read
+leader-sampled gauges or worker-path counters must be evaluated against
+**worker** scrapes, not the `ui serve` process.
 
 The operational "which metric catches which failure mode" table is in
 [ops.md — Observability and alerting](ops.md#8-observability-and-alerting).

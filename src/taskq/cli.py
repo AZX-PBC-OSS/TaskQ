@@ -1,22 +1,28 @@
 """``taskq`` CLI entry point.
 
-The CLI is intentionally thin today — only the commands needed to bootstrap
-a database. Worker and client commands will be added as those subsystems
-land.
-
 Usage::
 
     taskq migrate status
     taskq migrate up [--phase pre|post] [--target VERSION] [--max-steps N]
+    taskq worker --actors myapp.actors:registry
+    taskq job show JOB_ID
+
+The console script puts the current working directory on ``sys.path``
+(see :func:`main`), so ``module:attr`` options resolve application modules
+from the directory the operator ran the command in.
 """
 
 import asyncio
 import contextlib
 import importlib
+import os
+import sys
 from collections.abc import AsyncGenerator, Mapping
+from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
 from typing import Annotated, Any, Final, cast
+from uuid import UUID
 
 import asyncpg
 import structlog
@@ -50,7 +56,11 @@ from taskq.auth import (
     make_pg_pool_factory,
     make_redis_client_factory,
 )
+from taskq.backend._protocol import parse_retry_kind
 from taskq.connections import ConnFactory, PoolFactory, RedisFactory, WorkerConnections
+from taskq.constants import (
+    _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex for defence-in-depth schema validation at this SQL interpolation site, the queue_ops convention.
+)
 from taskq.exceptions import ActorConfigDriftList, ActorDeregistrationError, ActorNotFoundError
 from taskq.settings import TaskQSettings, WorkerSettings
 from taskq.worker.dev import dev_watch_loop
@@ -140,6 +150,12 @@ queue_app = typer.Typer(
     help="Queue lifecycle operations.",
 )
 app.add_typer(queue_app, name="queue")
+
+job_app = typer.Typer(
+    no_args_is_help=True,
+    help="Inspect individual jobs.",
+)
+app.add_typer(job_app, name="job")
 
 
 def _import_ref(ref: str, *, example: str) -> Any:
@@ -624,7 +640,7 @@ async def _status(settings: TaskQSettings, *, conn_factory: ConnFactory | None =
         applied = await migrate_mod.list_applied(conn, settings.schema_name)
     finally:
         # Why bounded: a dead PG can block close() indefinitely, wedging even
-        # this one-shot command before process exit (#38 follow-up). The
+        # this one-shot command before process exit. The
         # helper terminates on timeout and never raises, so a close error can
         # no longer mask an in-flight exception from list_applied.
         await close_conn_bounded(conn, "migrate-status", CLOSE_TIMEOUT_SECS)
@@ -687,8 +703,8 @@ async def _up(
         raise typer.Exit(code=1) from None
     finally:
         if conn is not None:
-            # Why bounded: same dead-PG wedge risk as _status above (#38
-            # follow-up); terminate-on-timeout, never raises.
+            # Why bounded: same dead-PG wedge risk as _status above;
+            # terminate-on-timeout, never raises.
             await close_conn_bounded(conn, "migrate-up", CLOSE_TIMEOUT_SECS)
     if not applied:
         typer.echo("no pending migrations")
@@ -1298,14 +1314,93 @@ def _describe_actor_capacity(row: ActorConfigRow) -> str:
     return f"max_concurrent={concurrent}  max_pending={pending}"
 
 
+@dataclass(frozen=True, slots=True)
+class _StrandedActorJobs:
+    """One actor's stranded pending/scheduled rows, by strand shape.
+
+    Mirrors the two shapes the leader's stranded-jobs sweep computes
+    (``_stranded_jobs_loop`` in ``taskq/worker/_leader_sweeps.py``):
+    ``no_actor_config`` rows can never become dispatch candidates, and
+    ``unserved_queue`` rows route to a queue no live worker serves.
+    """
+
+    actor: str
+    no_actor_config: int
+    unserved_queue: int
+    unserved_queues: tuple[str, ...]
+
+
+async def _list_stranded_pending_jobs(
+    conn: asyncpg.Connection, *, schema: str
+) -> list[_StrandedActorJobs]:
+    """Pending/scheduled jobs grouped by the actor nothing alive consumes.
+
+    The same computation the leader's stranded-jobs sweep runs every
+    minute, issued here on demand: ``doctor`` is the surface an operator
+    reaches for mid-incident, and it cannot wait on a leader tick.  The
+    routing-queue discriminator (a re-pended row routes by its actor's
+    stored assignment, not its label) is dispatch's own contract, mirrored
+    from the sweep so both surfaces answer the same question the same way.
+    The result is per ACTOR — bounded by the distinct-actor count, never
+    by backlog depth.
+    """
+    if not _IDENT_RE.match(schema):
+        # Defence in depth: TaskQSettings validates schema_name at load;
+        # re-check at the SQL interpolation site (the queue_ops convention).
+        raise ValueError(f"invalid schema identifier: {schema!r}")
+    rows = await conn.fetch(
+        f"""\
+SELECT s.actor,
+       count(*) FILTER (WHERE s.no_actor_config)::int AS no_actor_config_cnt,
+       count(*) FILTER (WHERE s.unserved_queue)::int AS unserved_queue_cnt,
+       coalesce(
+         array_agg(DISTINCT s.routing_queue) FILTER (WHERE s.unserved_queue),
+         ARRAY[]::text[]
+       ) AS unserved_queues
+FROM (
+    SELECT r.actor,
+           r.routing_queue,
+           r.no_actor_config,
+           NOT r.no_actor_config
+             AND NOT EXISTS (
+               SELECT 1 FROM "{schema}".workers w
+               WHERE r.routing_queue = ANY(w.queues)
+             ) AS unserved_queue
+    FROM (
+        SELECT j.actor,
+               CASE WHEN j.assignment_routed THEN ac.queue ELSE j.queue END
+                 AS routing_queue,
+               NOT EXISTS (
+                 SELECT 1 FROM "{schema}".actor_config ac2 WHERE ac2.actor = j.actor
+               ) AS no_actor_config
+        FROM "{schema}".jobs j
+        LEFT JOIN "{schema}".actor_config ac ON ac.actor = j.actor
+        WHERE j.status IN ('pending', 'scheduled')
+    ) r
+) s
+WHERE s.no_actor_config OR s.unserved_queue
+GROUP BY s.actor"""  # noqa: S608  # Why: schema is identifier-validated above and double-quoted; no user values are interpolated.
+    )
+    return [
+        _StrandedActorJobs(
+            actor=str(r["actor"]),
+            no_actor_config=int(r["no_actor_config_cnt"]),
+            unserved_queue=int(r["unserved_queue_cnt"]),
+            unserved_queues=tuple(str(q) for q in r["unserved_queues"]),
+        )
+        for r in rows
+    ]
+
+
 def _doctor_findings(
     registry: Mapping[str, ActorRef[Any, Any]],
     rows: list[ActorConfigRow],
     queues: list[QueueRow],
+    stranded: list[_StrandedActorJobs],
 ) -> list[str]:
     """Every condition worth an operator's attention, as report lines.
 
-    All three families are conditions TaskQ has decided a worker keeps
+    Every family is a condition TaskQ has decided a worker keeps
     running through, which is why they surface here rather than at boot:
     each one produces no error anywhere, and its only symptom is work
     that quietly does not happen.
@@ -1321,6 +1416,34 @@ def _doctor_findings(
             "capacity gate reads only stored rows, so jobs accumulate pending "
             "with no error anywhere. A worker startup seeds the row."
         )
+
+    # The same gate seen from the jobs side: rows already pending/scheduled
+    # whose actor has no stored config row (a renamed or removed actor that
+    # old producers or old rows still reference) never dispatch either, and
+    # no registry walk can name them — the registry no longer knows the name.
+    # The unserved-queue arm is the fleet-liveness twin: the row's routing
+    # queue (its actor's stored assignment once re-pended) has no live
+    # worker subscribed, so every dispatch round annihilates the pair.
+    for entry in sorted(stranded, key=lambda e: e.actor):
+        if entry.no_actor_config:
+            registry_note = (
+                " and no entry in the loaded registry" if entry.actor not in registry else ""
+            )
+            findings.append(
+                f"{entry.actor}: {entry.no_actor_config} pending/scheduled job(s) whose "
+                f"actor has no stored actor_config row{registry_note} — NEVER DISPATCHES. "
+                "The dispatch capacity gate reads only stored rows, so these jobs wait "
+                "forever with no error anywhere. Re-register the actor and seed its row "
+                "(a worker startup does this), or purge the jobs if the actor was retired."
+            )
+        if entry.unserved_queue:
+            queue_names = ", ".join(repr(q) for q in entry.unserved_queues)
+            findings.append(
+                f"{entry.actor}: {entry.unserved_queue} pending/scheduled job(s) routed to "
+                f"queue(s) {queue_names} that no live worker serves — they wait while "
+                "nothing consumes them. Start a worker subscribed to the queue or move "
+                "the actor onto a served one."
+            )
 
     # A queues row whose queue no actor is assigned to is inert until an
     # actor is moved onto that name and silently inherits its cap.
@@ -1380,8 +1503,9 @@ def doctor(
     TaskQ refuses boot only on structural stored-config drift, so a whole
     family of misconfigurations produces no error at all: an actor with no
     stored row never dispatches, a leftover `queues` row caps an actor
-    nobody thinks is capped, and a stored `max_concurrent=0` drains an
-    actor that looks configured. Each one's only symptom is work that
+    nobody thinks is capped, a stored `max_concurrent=0` drains an
+    actor that looks configured, and a job already pending for an actor
+    nothing consumes waits forever. Each one's only symptom is work that
     does not happen. This is the one command that names them together.
 
     Read-only: it issues no writing statement, so it is safe to run
@@ -1405,6 +1529,7 @@ async def _doctor(
     try:
         rows = await list_actor_configs(conn, schema=settings.schema_name)
         queues = await list_queues(conn, schema=settings.schema_name)
+        stranded = await _list_stranded_pending_jobs(conn, schema=settings.schema_name)
     finally:
         await close_conn_bounded(conn, "doctor", CLOSE_TIMEOUT_SECS)
 
@@ -1414,7 +1539,7 @@ async def _doctor(
     if not rows:
         typer.echo("  (no stored actor_config rows)")
 
-    findings = _doctor_findings(registry, rows, queues)
+    findings = _doctor_findings(registry, rows, queues, stranded)
     typer.echo("")
     if not findings:
         typer.echo("no findings — every registered actor has a stored row and every")
@@ -1689,7 +1814,7 @@ def _ui_serve(
 
             # Why a pushed callback instead of stack.enter_async_context(pool):
             # Pool.__aexit__ closes UNBOUNDED — a dead PG would wedge UI
-            # shutdown (#38). The bounded helper terminates the pool on
+            # shutdown. The bounded helper terminates the pool on
             # timeout and never raises.
             stack.push_async_callback(_close_ui_pool)
 
@@ -1725,7 +1850,7 @@ def _ui_serve(
 
                 # Why not stack.enter_async_context(client): Redis.__aexit__
                 # calls aclose() UNBOUNDED (and shielded) — a hung broker
-                # would wedge UI shutdown (#38 follow-up). initialize()
+                # would wedge UI shutdown. initialize()
                 # preserves __aenter__'s eager-setup semantics; the pushed
                 # callback bounds the close instead (taskq._close
                 # pattern; redis has no terminate(), so it is
@@ -1975,8 +2100,24 @@ def ui_serve(
     )
 
 
+def _ensure_cwd_on_sys_path() -> None:
+    """Put the current working directory on ``sys.path`` if it is absent.
+
+    A console script starts with a ``sys.path`` that excludes the cwd, so
+    ``taskq worker --actors myapp.actors:registry`` could not resolve the
+    application's modules when run from its own project directory.
+    ``python -m taskq`` prepends the cwd itself; inserting it here gives
+    the console script the same import semantics (the ``python -m celery
+    -A myapp worker`` shape) before any ``module:attr`` resolution runs.
+    """
+    cwd = os.getcwd()
+    if cwd not in sys.path:
+        sys.path.insert(0, cwd)
+
+
 def main() -> None:
     """Console-script entry point."""
+    _ensure_cwd_on_sys_path()
     app()
 
 
@@ -2178,3 +2319,109 @@ async def _queues_set_max_concurrent(
     finally:
         await close_conn_bounded(conn, "queues-set-max-concurrent", CLOSE_TIMEOUT_SECS)
     _print_queue_row(row)
+
+
+# ── job ────────────────────────────────────────────────────────────────
+
+_JOB_SHOW_COLUMNS: Final = (
+    "id",
+    "actor",
+    "queue",
+    "status",
+    "priority",
+    "attempt",
+    "max_attempts",
+    "retry_kind",
+    "created_at",
+    "scheduled_at",
+    "started_at",
+    "finished_at",
+    "error_class",
+    "error_message",
+    "idempotency_key",
+)
+"""The operator-facing columns ``taskq job show`` prints.
+
+Explicit, not ``SELECT *``: the printed set is the contract, and leaving
+``payload``/``result``/``progress_state``/``error_traceback`` out keeps a
+terminal-friendly read from dragging arbitrarily large blobs onto the
+wire. Both ``jobs`` and ``jobs_archive`` carry every column listed.
+"""
+
+
+def _format_max_attempts(max_attempts: int, retry_kind: str) -> str:
+    """The ``max_attempts`` display for a job row.
+
+    Under ``retry_kind='indefinite'`` the stored ceiling is inert — the
+    retry path never consults it — so printing the number would claim a
+    budget the job does not carry. Render the inertness instead, the same
+    framing the retries guide gives the field on an indefinite job.
+    """
+    if parse_retry_kind(retry_kind) == "indefinite":
+        return "— (indefinite)"
+    return str(max_attempts)
+
+
+@job_app.command("show")
+def job_show(
+    job_id: Annotated[str, typer.Argument(help="Job id (UUID).")],
+) -> None:
+    """Show one job's stored row, from `jobs` or `jobs_archive`."""
+    settings = TaskQSettings.load()
+    asyncio.run(_job_show(settings, job_id))
+
+
+async def _job_show(settings: TaskQSettings, job_id: str) -> None:
+    try:
+        parsed = UUID(job_id)
+    except ValueError:
+        typer.echo(f"invalid job id (expected a UUID): {job_id!r}", err=True)
+        raise typer.Exit(code=1) from None
+    if not _IDENT_RE.match(settings.schema_name):
+        # Defence in depth: TaskQSettings validates schema_name at load;
+        # re-check at the SQL interpolation site (the queue_ops convention).
+        typer.echo(f"invalid schema name: {settings.schema_name!r}", err=True)
+        raise typer.Exit(code=1)
+    columns = ", ".join(_JOB_SHOW_COLUMNS)
+    conn = await asyncpg.connect(str(settings.pg_dsn))
+    archived = False
+    try:
+        row = await conn.fetchrow(
+            f'SELECT {columns} FROM "{settings.schema_name}".jobs WHERE id = $1',  # noqa: S608  # Why: schema is identifier-validated above; asyncpg cannot bind identifiers.
+            parsed,
+        )
+        if row is None:
+            row = await conn.fetchrow(
+                f'SELECT {columns} FROM "{settings.schema_name}".jobs_archive WHERE id = $1',  # noqa: S608  # Why: schema is identifier-validated above; asyncpg cannot bind identifiers.
+                parsed,
+            )
+            archived = row is not None
+    finally:
+        await close_conn_bounded(conn, "job-show", CLOSE_TIMEOUT_SECS)
+    if row is None:
+        typer.echo(
+            f"no job {parsed} in {settings.schema_name}.jobs or "
+            f"{settings.schema_name}.jobs_archive",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+
+    typer.echo(f"id: {row['id']}")
+    typer.echo(f"actor: {row['actor']}")
+    typer.echo(f"queue: {row['queue']}")
+    typer.echo(f"status: {row['status']}")
+    typer.echo(f"priority: {row['priority']}")
+    typer.echo(f"attempt: {row['attempt']}")
+    typer.echo(f"max_attempts: {_format_max_attempts(row['max_attempts'], row['retry_kind'])}")
+    typer.echo(f"retry_kind: {row['retry_kind']}")
+    typer.echo(f"created_at: {row['created_at']}")
+    typer.echo(f"scheduled_at: {row['scheduled_at']}")
+    typer.echo(f"started_at: {row['started_at']}")
+    typer.echo(f"finished_at: {row['finished_at']}")
+    if row["error_class"] is not None:
+        typer.echo(f"error_class: {row['error_class']}")
+        typer.echo(f"error_message: {row['error_message']}")
+    if row["idempotency_key"] is not None:
+        typer.echo(f"idempotency_key: {row['idempotency_key']}")
+    if archived:
+        typer.echo("archived: yes")

@@ -1,6 +1,6 @@
 {% extends "_base.html" %}
 {% set active_page = "job_detail" %}
-{% from "_partials/job_card.html" import status_badge, duration_fmt %}
+{% from "_partials/job_card.html" import status_badge, duration_fmt, attempt_budget %}
 
 {% block title %}Job {{ job.id }} — TaskQ Admin{% endblock %}
 
@@ -70,7 +70,7 @@
             </div>
             <div>
                 <dt class="text-xs text-slate-500 uppercase tracking-wider">Attempt</dt>
-                <dd>{{ job.attempt }} / {{ job.max_attempts }}</dd>
+                <dd>{{ attempt_budget(job) }}</dd>
             </div>
             <div>
                 <dt class="text-xs text-slate-500 uppercase tracking-wider">Scheduled</dt>

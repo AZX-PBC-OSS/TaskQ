@@ -1,68 +1,39 @@
 """Pins: the documented "mounted automatically" claim for the Prometheus
-metrics endpoint does not mean the ``taskq_*`` series are populated.
+metrics endpoint covers the DATA, not just the route.
 
-``docs/guides/admin-ui.md`` line ~395-396 says:
+``docs/guides/admin-ui.md`` §"Health routes" says:
 
     "The Prometheus metrics endpoint is mounted automatically when
     taskq[prometheus] is installed."
 
 An adopter reads that, installs ``taskq-py[prometheus]``, runs
-``taskq ui serve`` exactly as ``docs/guides/admin-ui.md`` §"Health routes"
-shows, points Prometheus at ``GET /jobs/health/metrics``, and imports the
-17-rule alert set that ``docs/guides/observability.md`` §"Ready-made alert
-rules" tells them to "import ... instead of writing from scratch". Every one
-of those alert expressions (see ``src/taskq/contrib/prometheus/rules.yaml``)
-references a ``taskq_*`` / ``messaging_*`` series.
+``taskq ui serve`` exactly as the guide shows, points Prometheus at
+``GET /jobs/health/metrics``, and imports the 17-rule alert set that
+``docs/guides/observability.md`` §"Ready-made alert rules" tells them to
+"import ... instead of writing from scratch". Every one of those alert
+expressions (see ``src/taskq/contrib/prometheus/rules.yaml``) references
+a ``taskq_*`` / ``messaging_*`` series.
 
-What actually happens: the endpoint returns 200 with valid Prometheus text
-the entire time -- but the series never appear, because populating them
-requires a step this module's own docstring names but that appears nowhere
-in ``docs/``:
+The failure mode these tests pin against regression: the endpoint
+answering 200 with valid Prometheus text while serving ZERO ``taskq_*``
+series — no error, no warning log, no doctor finding, only absent time
+series, so an operator believes they have alerting and has none.
 
-    src/taskq/contrib/prometheus/_metrics.py:4-5
-    "The operator must configure a MeterProvider with a
-    PrometheusMetricReader before process start -- this module does NOT
-    configure the provider."
+The contract now held:
 
-``taskq ui serve`` (src/taskq/cli.py:1831-1835) calls
-``create_metrics_router(None)`` with no ``registry=`` and performs no
-``PrometheusMetricReader`` / ``MeterProvider`` wiring of its own. A grep of
-docs/ for "PrometheusMetricReader" or "MeterProvider(" returns nothing --
-confirmed at authoring time via
-``grep -rn "PrometheusMetricReader\\|MeterProvider(" docs/``.
-
-The failure mode this pins is exactly the "observability surface fails
-silently" shape: an alert rule set an adopter is told to trust, that can
-never fire, with the /metrics endpoint reporting healthy (200, valid
-Prometheus exposition format) throughout. There is no error, no warning log,
-no doctor finding -- only an absent time series, which a
-`absent(taskq_jobs_by_status)` meta-alert (which TaskQ does not ship) would
-be needed to catch.
-
-Vendor precedent for auto-wired operational visibility with zero extra
-config: vendor/sidekiq's Web UI (vendor/sidekiq/web/views/dashboard.html.erb)
-and vendor/good_job's dashboard (vendor/good_job/app/controllers/
-good_job/metrics_controller.rb:1-34) both render live queue/job state to
-their own built-in UI with no external exporter or provider to configure --
-neither ships a Prometheus bridge that can be *mounted* without being
-*wired*. TaskQ's own admin UI pages (/admin/queues, /admin/jobs) share that
-same no-config-needed property; only this one documented "automatic" claim
-about the Prometheus bridge is false for the data (true only for the route).
-
-This test drives the real production code paths (the real ``taskq.obs``
-``record_*`` emitters used by the worker, and the real
-``create_metrics_router`` used by ``taskq ui serve``) under the SAME
-un-configured metrics environment those commands run in by default -- no
-``PrometheusMetricReader``, no ``OTEL_*`` env vars -- and asserts the
-resulting scrape is missing the series the shipped alert rules depend on.
-
-This is a documentation/contract defect, not a call to remove the manual
-wiring requirement (that is a legitimate operator-owned config surface in
-other observability stacks too). The fix is docs (show the
-``PrometheusMetricReader`` wiring next to "mounted automatically", the way
-this module's own docstring already does) and/or a startup log warning from
-``taskq ui serve`` when the router is mounted but no compatible reader is
-registered. Left RED until one of those exists.
+1. ``create_metrics_router`` — the exact call ``taskq ui serve`` makes
+   (src/taskq/cli.py) — wires a ``PrometheusMetricReader``-backed
+   ``MeterProvider`` itself at router creation when nothing is
+   configured, so the scrape of the documented endpoint contains the
+   series real ``taskq.obs`` ``record_*`` calls emit (the second test
+   below, run in a clean subprocess). The wiring never replaces an
+   operator-configured provider; when an operator's SDK provider has no
+   Prometheus bridge into the scraped registry, router creation logs a
+   WARNING naming the gap (the startup surface that says the alert rules
+   cannot fire). See
+   ``src/taskq/contrib/prometheus/_metrics.py::ensure_prometheus_meter_provider``.
+2. docs/ shows the wiring by name (the first test below), so an operator
+   who configures their own provider knows the reader is theirs to add.
 """
 
 from __future__ import annotations
@@ -87,7 +58,7 @@ def test_docs_never_show_the_prometheus_metric_reader_wiring_step() -> None:
     endpoint's "automatic" claim stopped being misleading.
     """
     result = subprocess.run(
-        ["grep", "-rl", "PrometheusMetricReader", "docs/"],
+        ["grep", "-rl", "PrometheusMetricReader", "docs/"],  # noqa: S607  # Why: grep resolved from PATH, as elsewhere in this suite; fixed literal argv, no shell.
         capture_output=True,
         text=True,
         cwd=".",
@@ -106,78 +77,69 @@ def test_docs_never_show_the_prometheus_metric_reader_wiring_step() -> None:
 
 
 def test_metrics_endpoint_should_serve_taskq_series_under_documented_setup() -> None:
-    """Pins the behaviour TaskQ's docs promise, not the behaviour it has.
+    """Pins the behaviour TaskQ's docs promise: under the documented
+    no-extra-steps setup, the mounted endpoint serves the ``taskq_*`` /
+    ``messaging_*`` series the shipped rules.yaml depends on.
 
     ``docs/guides/admin-ui.md`` ("Prometheus metrics endpoint is mounted
     automatically when taskq[prometheus] is installed") and
     ``docs/guides/observability.md``'s "Ready-made alert rules" section
     (which tells an operator to import ``rules.yaml`` "instead of writing
-    from scratch") together promise a working, no-extra-steps scrape target
-    once the ``[prometheus]`` extra is installed. Mount the router exactly
-    as `taskq ui serve` does (src/taskq/cli.py:1831-1835:
-    `create_metrics_router(None)`, no `registry=` override) in a subprocess
-    with NO OTel env vars set -- the default state after `pip install
-    taskq-py[prometheus]` and `taskq ui serve`, per docs/guides/admin-ui.md's
-    Docker Compose example, which sets only TASKQ_PG_DSN / TASKQ_REDIS_URL /
-    TASKQ_ADMIN_HOST / TASKQ_ADMIN_PORT and nothing OTel-related.
+    from scratch") together promise a working scrape target once the
+    ``[prometheus]`` extra is installed. This mounts the router exactly as
+    `taskq ui serve` does (src/taskq/cli.py: `create_metrics_router(None)`,
+    no `registry=` override) in a subprocess with NO OTel env vars set —
+    the default state after `pip install taskq-py[prometheus]` per
+    docs/guides/admin-ui.md's Docker Compose example, which sets only
+    TASKQ_PG_DSN / TASKQ_REDIS_URL / TASKQ_ADMIN_HOST / TASKQ_ADMIN_PORT
+    and nothing OTel-related.
 
-    Record real taskq.obs metrics the way the worker does at runtime, then
-    scrape the router's output and assert the taskq_*/messaging_* series the
-    shipped rules.yaml depends on ARE present -- the behaviour "mounted
-    automatically" should mean.
-
-    Currently RED: as of this writing, `create_metrics_router` and
-    `taskq ui serve` perform no `PrometheusMetricReader`/`MeterProvider`
-    wiring (confirmed live: `taskq worker` + `taskq ui serve` run with no
-    OTEL_* env vars produced a 200 `text/plain` scrape containing only
-    Python/process default-collector series, zero `taskq_*` series, while
-    the worker was actively completing and retrying jobs). The module's own
-    docstring (src/taskq/contrib/prometheus/_metrics.py:4-5) says wiring a
-    `MeterProvider` with a `PrometheusMetricReader` "before process start" is
-    the operator's job and that "this module does NOT configure the
-    provider" -- which is a reasonable library boundary, but it directly
-    contradicts "mounted automatically" as an adopter reads it, and no doc
-    shows the wiring step (see the companion test in this file).
-
-    Two acceptable fixes, either one turns this green: (a) `taskq ui serve`
-    auto-constructs a `PrometheusMetricReader`-backed `MeterProvider` when
-    `taskq[prometheus]` is importable and no MeterProvider has been
-    explicitly configured by the caller, matching "mounted automatically"
-    literally; or (b) this test seam is wrong and the correct fix is
-    doc-only (see the companion test) -- in that case this test should be
-    deleted in the same change that closes the docs gap, with a note in the
-    commit explaining the API is intentionally BYO-provider like the rest of
-    TaskQ's OTel surface (docs/guides/observability.md ​§1 already documents
-    OTLP export as fully BYO-collector).
+    The subprocess models the shipped serve path's real boot ORDER: router
+    creation happens at process start (``taskq ui serve`` builds its
+    routers inside the FastAPI lifespan, before uvicorn accepts a
+    connection), and worker activity is recorded afterwards. The order is
+    load-bearing, not incidental: OTel's proxy instruments DROP
+    measurements recorded before a provider exists (they rebind on
+    ``set_meter_provider`` without replaying), so a scrape can only ever
+    contain series recorded after startup — which is exactly why the
+    wiring lives in router creation and not at first scrape. A regression
+    that removes the auto-wiring turns this red: the scrape returns 200
+    with valid Prometheus text and none of the four series — the original
+    silent-failure shape.
     """
     # Run in a clean subprocess: the module-level instruments in
     # taskq.obs._otel bind to whichever MeterProvider is active at first
-    # import (get_meter() called at module load, per obs/_otel.py:171-194),
-    # so this must not share process state with anything a prior test in
-    # this suite (or _PromEnv's isolated MeterProvider) may have configured.
+    # import (get_meter() called at module load, per obs/_otel.py), and
+    # create_metrics_router's auto-wiring sets the process-GLOBAL provider
+    # behind OTel's set-once guard — neither may share process state with
+    # anything a prior test in this suite configured.
     script = """
-import sys
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-# No PrometheusMetricReader constructed. No OTEL_* env vars set. This is
-# exactly the state `taskq worker` / `taskq ui serve` boot into per the
-# documented quick-start (docs/guides/admin-ui.md Docker Compose example).
+# No PrometheusMetricReader constructed by hand. No OTEL_* env vars set.
+# This is exactly the state `taskq ui serve` boots into per the documented
+# quick-start (docs/guides/admin-ui.md Docker Compose example).
 from taskq.obs import _otel as obs
-
-# Record the way the real worker does on the dispatch/consume path.
-obs.record_published_message("compile_digest", "digests")
-obs.record_consumed_message("compile_digest", "digests", outcome="succeeded")
-obs.record_dispatch_duration("digests", 0.01)
-obs.record_heartbeat_miss("w1")
 
 from taskq.contrib.prometheus import create_metrics_router
 
-# Exactly src/taskq/cli.py:1835 -- create_metrics_router(None), no registry override.
+# Exactly the ui-serve call in src/taskq/cli.py — create_metrics_router(None),
+# no registry override. Router creation is PROCESS START on the shipped
+# serve path (the FastAPI lifespan), before any request is served or any
+# taskq activity records; the provider auto-wiring happens here.
 router = create_metrics_router(None)
 app = FastAPI()
 app.include_router(router, prefix="/jobs/health")
 client = TestClient(app)
+
+# Real worker activity, recorded the way the worker records it — after
+# startup, the only window a scrape can ever contain (pre-provider proxy
+# measurements are dropped by OTel, by design).
+obs.record_published_message("compile_digest", "digests")
+obs.record_consumed_message("compile_digest", "digests", outcome="succeeded")
+obs.record_dispatch_duration("digests", 0.01)
+obs.record_heartbeat_miss("w1")
 
 resp = client.get("/jobs/health/metrics")
 assert resp.status_code == 200, resp.status_code
@@ -196,7 +158,7 @@ missing = [
 print("MISSING:" + ",".join(missing))
 print("SCRAPE_LEN:" + str(len(text)))
 """
-    result = subprocess.run(
+    result = subprocess.run(  # noqa: S603  # Why: fixed argv, no shell — the current interpreter running this file's own literal script; no untrusted input.
         [sys.executable, "-c", script],
         capture_output=True,
         text=True,
@@ -214,9 +176,7 @@ print("SCRAPE_LEN:" + str(len(text)))
     # The contract this pins: a scrape taken under exactly the setup
     # docs/guides/admin-ui.md describes as producing an automatically
     # mounted, working metrics endpoint must contain the series real
-    # obs.record_* calls just emitted. Today it contains none of them --
-    # this assertion is expected to fail (RED) until one of the two fixes
-    # named in the docstring above ships.
+    # obs.record_* calls just emitted.
     assert not missing, (
         f"Expected the documented 'mounted automatically' Prometheus endpoint "
         f"to serve these series after real taskq.obs.record_* calls fired, "

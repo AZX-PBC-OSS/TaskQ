@@ -407,7 +407,15 @@ async def consume_one_job(
     # limiter's own denial, because an infrastructure outage is not a job
     # outcome either.
     if validated_payload is None:
-        validated_payload = validate_actor_payload(payload_type, job.payload, job.actor)
+        # The row's stored version rides the raise — not the helper's
+        # current-version default — so a row that predates a payload
+        # migration is distinguishable from a malformed caller payload.
+        validated_payload = validate_actor_payload(
+            payload_type,
+            job.payload,
+            job.actor,
+            payload_schema_ver=str(job.payload_schema_ver),
+        )
 
     acquired: list[AcquiredResource] = []
 

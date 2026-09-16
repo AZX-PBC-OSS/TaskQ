@@ -179,6 +179,48 @@ pid absent from it.
 """
 
 
+_termination_hooked: set[int] = set()
+"""Backend pids whose connection carries the termination listener that
+retires this module's per-pid gate state (:func:`_forget_commit_gate_session`).
+
+One hook per connection, marked here so a tick re-arms rather than stacks
+a second listener on the same connection.  The set is swept by the same
+hook it gates, so it stays proportional to LIVE cron sessions — without
+the hook, a tick that armed an emission and then lost its connection (a
+rollback the server will never answer) would leave the entry behind, and
+every confirmed ``LISTEN`` would outlive its session: under cron
+connection churn both maps grow without bound, and a pid the server
+recycles would inherit a dead session's "confirmed listening" proof.
+"""
+
+
+def _forget_commit_gate_session(pid: int) -> None:
+    """Drop every commit-gate entry keyed by *pid*.
+
+    Runs as the connection's termination listener: a dead session's armed
+    emission can never be answered (its ``NOTIFY`` rolled back with the
+    connection) and its confirmed ``LISTEN`` died with it, so neither may
+    stand as state for a later session that reuses the pid.
+    """
+    _armed_commit_emits.pop(pid, None)
+    _confirmed_listening.discard(pid)
+    _termination_hooked.discard(pid)
+
+
+def _commit_gate_termination_hook(pid: int) -> Callable[[object], None]:
+    """Build the termination listener retiring *pid*'s gate state.
+
+    The callback takes ``object`` rather than ``asyncpg.Connection``:
+    asyncpg invokes it with the connection (or the pool proxy standing in
+    for one), neither of which the hook needs — the pid is captured here.
+    """
+
+    def _drop(_conn: object) -> None:
+        _forget_commit_gate_session(pid)
+
+    return _drop
+
+
 def _dispatch_commit_gate(_conn: object, pid: int, _channel: str, payload: str) -> None:
     """Run and retire the emission armed for *pid* under the *payload* nonce.
 
@@ -232,6 +274,14 @@ async def _emit_on_commit(conn: asyncpg.Connection, emit: Callable[[], None]) ->
         if pid not in _confirmed_listening:
             await conn.remove_listener(_COMMIT_GATE_CHANNEL, _dispatch_commit_gate)  # pyright: ignore[reportArgumentType]  # Why: stubs over-narrow the callback type; asyncpg accepts a sync callback at runtime.
         await conn.add_listener(_COMMIT_GATE_CHANNEL, _dispatch_commit_gate)  # pyright: ignore[reportArgumentType]  # Why: stubs over-narrow the callback type; asyncpg accepts a sync callback at runtime.
+        if pid not in _termination_hooked:
+            # One hook per connection: retire this session's gate state when
+            # the connection dies, so the maps track live sessions only and a
+            # recycled pid never inherits a dead session's proof. Placed
+            # after add_listener: a connection that cannot LISTEN (a
+            # transaction-pooling proxy) takes the fallback below unchanged.
+            conn.add_termination_listener(_commit_gate_termination_hook(pid))
+            _termination_hooked.add(pid)
         # Replaces this session's previous entry: a tick whose transaction
         # rolled back left an emission no notification can ever answer.
         _armed_commit_emits[pid] = (nonce, emit)
@@ -625,18 +675,49 @@ non-partial unique index on ``(actor)`` raises the same ``Key
 :func:`_attribute_violation`."""
 
 
+def _attributable_violation(exc: Exception) -> UniqueViolationError | None:
+    """The ``UniqueViolationError`` *exc* carries, raw or converted.
+
+    The enqueue paths convert a server-side ``jobs_singleton_uniq``
+    violation into a typed refusal (:class:`SingletonCollisionError`)
+    raised ``from`` the driver's error — the caller-facing contract for
+    client enqueues.  For the tick's per-plan attribution that wrapper is
+    opaque: the constraint name and the ``Key (cols)=(vals)`` detail the
+    attribution parses live on the wrapped violation, and the wrapper's
+    own text (``BackpressureError: actor=…, pending=0, max_pending=None``)
+    names neither — a strike recorded from it loses the committed
+    outcome's identity.  Walking the explicit cause chain (``__cause__``
+    only — the conversion's documented intent, never ``__context__``,
+    which can name an unrelated exception merely being handled) lets
+    attribution and the strike text follow the violation that COMMITTED,
+    not the conversion.  Bounded: a pathological chain must not loop the
+    tick, and an unconverted violation answers at depth zero.
+    """
+    current: BaseException | None = exc
+    for _ in range(8):
+        if isinstance(current, UniqueViolationError):
+            return current
+        if current is None:
+            return None
+        current = current.__cause__
+    return None
+
+
 def _attribute_violation(
     pending: list[_FireSuccess],
     exc: Exception,
-) -> tuple[list[_FireSuccess], list[_FireSuccess]] | None:
+) -> tuple[UniqueViolationError, list[_FireSuccess], list[_FireSuccess]] | None:
     """Map a batched-INSERT unique violation to the plan(s) that caused it.
 
-    Returns ``(offenders, survivors)``, or ``None`` when the error cannot
-    be attributed SAFELY — any other exception type, a violation of a
-    constraint TaskQ does not own, an unparsable or truncated detail
-    line, or a value naming no pending plan.  The caller isolates per
-    plan on ``None`` rather than guessing: striking the wrong schedule is
-    the auto-disable trap this whole path exists to avoid.
+    Returns ``(violation, offenders, survivors)`` — the unwrapped
+    violation the strike text and span status are recorded from, the
+    plan(s) it convicts, and the plans cleared to retry — or ``None``
+    when the error cannot be attributed SAFELY — any other exception
+    type, a violation of a constraint TaskQ does not own, an unparsable
+    or truncated detail line, or a value naming no pending plan.  The
+    caller isolates per plan on ``None`` rather than guessing: striking
+    the wrong schedule is the auto-disable trap this whole path exists
+    to avoid.
 
     Every attribution is verified against the pending plans before it is
     trusted: an ``id`` value must be a job id some pending plan actually
@@ -647,7 +728,8 @@ def _attribute_violation(
     us which of OUR rows collided (PG truncates long detail values;
     indexes can be added by an operator) — unattributable, on purpose.
     """
-    if not isinstance(exc, UniqueViolationError):
+    violation = _attributable_violation(exc)
+    if violation is None:
         return None
     # Why: gate on the constraint NAME, not just the detail's column list.
     # Today only jobs_pkey (id) and jobs_singleton_uniq (actor, partial)
@@ -659,9 +741,9 @@ def _attribute_violation(
     # operator's index (not TaskQ's) rejected — a wrong strike toward
     # auto-disable.  A None/unknown constraint name falls back too: only
     # the two names TaskQ ships are attributable.
-    if exc.constraint_name not in _ATTRIBUTABLE_CONSTRAINTS:
+    if violation.constraint_name not in _ATTRIBUTABLE_CONSTRAINTS:
         return None
-    match = _DETAIL_KEY_RE.match(exc.detail or "")
+    match = _DETAIL_KEY_RE.match(violation.detail or "")
     if match is None:
         return None
     cols = match.group("cols")
@@ -686,7 +768,7 @@ def _attribute_violation(
     if not offenders:
         return None
     struck_ids = {plan.schedule_id for plan in offenders}
-    return offenders, [plan for plan in pending if plan.schedule_id not in struck_ids]
+    return violation, offenders, [plan for plan in pending if plan.schedule_id not in struck_ids]
 
 
 def _strike_plans(
@@ -803,8 +885,15 @@ async def _enqueue_planned_fires(
         except Exception as exc:
             attributed = _attribute_violation(pending, exc)
             if attributed is not None:
-                offenders, survivors = attributed
-                _strike_plans(offenders, exc, failures, telemetry, worker_id, settings)
+                # Strike with the unwrapped violation, not the raised
+                # wrapper: a converted refusal's own text (the typed
+                # SingletonCollisionError) names no constraint, so the
+                # recorded strike would not identify the committed
+                # outcome — the racer's row must carry
+                # jobs_singleton_uniq itself, exactly as an unconverted
+                # jobs_pkey collision does.
+                violation, offenders, survivors = attributed
+                _strike_plans(offenders, violation, failures, telemetry, worker_id, settings)
                 pending = survivors
             else:
                 for plan in pending:

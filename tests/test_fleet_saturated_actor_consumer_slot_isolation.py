@@ -5,24 +5,25 @@ one shared pool of ``TASKQ_MAX_CONCURRENCY`` consumer coroutines draining
 one ``local_queue`` (docs/guides/workers.md "Internal components" —
 "Consumer loops. ``max_concurrency`` concurrent coroutines drain
 ``local_queue``"; src/taskq/worker/run.py's ``producer_loop`` /
-``di_consumer_loop``). Dispatch itself has no notion of rate limits or
-reservations — the SQL layer in src/taskq/backend/_dispatch_sql.py claims a
-job (pending -> running) purely on actor/queue capacity and priority
-ordering. Whether the claimed job can actually acquire its declared
-``reservations``/``rate_limits`` is decided per-job, AFTER the claim, inside
-``consume_one_job`` (src/taskq/worker/_consumer.py:416-427): on denial
-(``ReservationUnavailable``) the job is rescheduled to ``scheduled``
-(docs/guides/rate-limiting.md:685-693).
-
-The consequence: an actor sharing a queue with a healthy actor, whose every
-job is denied by an exhausted reservation, still consumes one of the
-worker's ``max_concurrency`` consumer-coroutine slots for the (short but
-nonzero) duration of each failing acquire call, cycle after cycle, for as
-long as its backlog and the reservation's exhaustion both persist. That is
-capacity taken away from every other actor sharing the same worker
-process's consumer pool -- not a correctness bug (the healthy actor's jobs
-still eventually complete) but a throughput regression with no warning
-anywhere in the docs.
+``di_consumer_loop``). Admission has two layers: the claim (the SQL in
+src/taskq/backend/_dispatch_sql.py, pending -> running) and the per-job
+``acquire_for_actor`` AFTER the claim, inside ``consume_one_job``
+(src/taskq/worker/_consumer.py:416-427), which decides whether the claimed
+job can actually spend its declared ``reservations``/``rate_limits`` — on
+denial (``ReservationUnavailable``) the job is rescheduled to ``scheduled``
+(docs/guides/rate-limiting.md:685-693). The claim is reservation-aware: its
+capacity computation folds in live ``reservation_slots`` occupancy (the
+``reservation_holdings`` / ``reservation_headroom`` CTEs), so an actor
+whose held bucket is full is admitted nothing that round. This pin exists
+because the claim was NOT always aware: without the gate, an actor sharing
+a queue with a healthy actor whose every job is denied by an exhausted
+reservation still consumes one of the worker's ``max_concurrency``
+consumer-coroutine slots for the (short but nonzero) duration of each
+failing acquire call, cycle after cycle, for as long as its backlog and
+the reservation's exhaustion both persist. That is capacity taken away
+from every other actor sharing the same worker process's consumer pool --
+not a correctness bug (the healthy actor's jobs still eventually complete)
+but a throughput regression the pin measures directly.
 
 Vendor precedent: River gives every queue its OWN producer and its OWN
 ``MaxWorkers`` worker pool (vendor/river/client.go:662-672, the
@@ -42,35 +43,47 @@ contract an adopter will assume holds regardless of internal architecture:
 capacity denied to one actor must not measurably reduce a co-located
 healthy actor's completion throughput on the same worker.
 
-Measured on this branch (two independent runs, real Postgres, real
-``consume_one_job``, ``TASKQ``-shaped ``max_concurrency=4`` consumer pool,
-one actor holding a permanently-exhausted single-slot
+Measured on this branch before the fix (two independent runs, real
+Postgres, real ``consume_one_job``, ``TASKQ``-shaped ``max_concurrency=4``
+consumer pool, one actor holding a permanently-exhausted single-slot
 ``ConcurrencyReservation`` and flooding its queue with jobs that are denied
 every attempt): healthy-actor throughput dropped ~44-45% versus an
-unconteded baseline (234.3 jobs/s baseline vs 127.9 jobs/s contended, and
+uncontended baseline (234.3 jobs/s baseline vs 127.9 jobs/s contended, and
 220.7 vs 124.1 on a second run — see the scratch probe this test's
 harness reproduces, not committed to the repo per the sweep's own rules).
 This test pins a conservative bound (no more than a 15% throughput drop)
-well inside that measured regression, so it fails now and stays failing
-until dispatch either isolates saturated actors' consumer-slot churn from
-healthy siblings, or the shared-pool design is replaced with a
-River-style per-queue pool.
+well inside that measured regression.
+
+The fix that turned it green: the claim statement is reservation-aware
+(``reservation_holdings`` / ``reservation_headroom`` in
+src/taskq/backend/_dispatch_sql.py) — an actor whose held bucket has no
+acquirable slot is admitted nothing that round, so its rows stay pending
+instead of churning consumer coroutines into denied acquires. The
+measured shape after the fix (same harness, same machine): the drop
+collapses to noise (~0%), denials collapse from ~150 to the one bounded
+first-round race, and the saturated actor drains the moment capacity
+frees. The shared-pool design stays; the pin now guards the isolation
+contract on it.
 """
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import time
+from collections.abc import Awaitable, Callable
 from datetime import timedelta
 
+import asyncpg
 import pytest
 
 from taskq._ids import new_base62
+from taskq.backend._protocol import JobRow
 from taskq.backend.clock import SystemClock
 from taskq.ratelimit.registry import RateLimitRegistry
 from taskq.ratelimit.reservation import ConcurrencyReservation
 from taskq.worker._consumer import consume_one_job
-from tests._fleet import FleetPayload, fleet_actor_config, open_fleet
+from tests._fleet import Fleet, FleetPayload, fleet_actor_config, open_fleet
 
 pytestmark = pytest.mark.integration
 
@@ -102,7 +115,7 @@ async def _hog_forever(payload: FleetPayload, ctx: object) -> None:
 
 
 async def _drain_healthy_actor_throughput(
-    fleet,
+    fleet: Fleet,
     *,
     with_saturated_neighbour: bool,
     registry: RateLimitRegistry | None,
@@ -115,7 +128,7 @@ async def _drain_healthy_actor_throughput(
     ``_N_HEALTHY_JOBS``th completion.
     """
     pod = fleet.pod("pod-1")
-    local_queue: asyncio.Queue = asyncio.Queue(maxsize=_MAX_CONCURRENCY)
+    local_queue: asyncio.Queue[JobRow] = asyncio.Queue(maxsize=_MAX_CONCURRENCY)
     stop = asyncio.Event()
     healthy_completed_at: list[float] = []
 
@@ -140,16 +153,24 @@ async def _drain_healthy_actor_throughput(
             payload = FleetPayload.model_validate(job.payload)
             handler = _hog_forever if job.actor == _SATURATED_ACTOR else _noop
 
-            async def _run_actor(_row, ctx, _h=handler, _p=payload):
+            async def _run_actor(
+                _row: JobRow,
+                ctx: object,
+                _h: Callable[[FleetPayload, object], Awaitable[None]] = handler,
+                _p: FleetPayload = payload,
+            ) -> None:
                 return await _h(_p, ctx)
 
-            rl_kwargs: dict = {}
+            # Only the saturated actor's jobs declare the exhausted
+            # reservation — the production wiring passes no registry
+            # (and spends no acquire) for an actor without declarations.
+            rl_registry: RateLimitRegistry | None = None
+            rl_reservations: list[str] | None = None
+            rl_pool: asyncpg.Pool | None = None
             if registry is not None and job.actor == _SATURATED_ACTOR:
-                rl_kwargs = {
-                    "rate_limit_registry": registry,
-                    "reservations": [reservation_name],
-                    "worker_pool": pod.deps.worker_pool,
-                }
+                rl_registry = registry
+                rl_reservations = [reservation_name]
+                rl_pool = pod.deps.worker_pool
 
             await consume_one_job(
                 pod.backend,
@@ -161,7 +182,9 @@ async def _drain_healthy_actor_throughput(
                 payload_type=FleetPayload,
                 clock=SystemClock(),
                 active_jobs=pod.deps.active_jobs,
-                **rl_kwargs,
+                rate_limit_registry=rl_registry,
+                reservations=rl_reservations,
+                worker_pool=rl_pool,
             )
 
             if job.actor == _HEALTHY_ACTOR:
@@ -174,7 +197,12 @@ async def _drain_healthy_actor_throughput(
     t0 = time.monotonic()
     deadline = t0 + _RUN_CEILING_SECONDS
     while not stop.is_set() and time.monotonic() < deadline:
-        await asyncio.sleep(0.05)
+        # Wake on the completion signal itself (the 150th healthy job),
+        # never a fixed sleep — the deadline caps the wait, the event
+        # makes the measured `elapsed` end at the completion, not at the
+        # next poll tick.
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(stop.wait(), timeout=min(0.05, deadline - time.monotonic()))
     stop.set()
     elapsed = time.monotonic() - t0
     prod_task.cancel()

@@ -48,6 +48,8 @@ async def my_actor(payload: Payload) -> Result: ...
 
 Retries forever — `max_attempts` is ignored entirely. Use for jobs that must eventually succeed (e.g. eventually-consistent sync operations).
 
+The stored row still carries the actor's configured `max_attempts` value (default `3`), but for this kind the field is inert — a live job can reach `attempt` far beyond it. The admin UI renders the inert field as `— (indefinite)` so the row does not advertise a budget it is not enforcing.
+
 The only stopping condition is the `schedule_to_close` deadline, enforced in SQL at the retry
 write and by the leader's deadline sweep for queued jobs (see
 [`schedule_to_close` interaction](#6-schedule_to_close-interaction)):
@@ -549,6 +551,39 @@ Backoff schedule for this policy (jitter=0 for illustration):
 | Never retry | `RetryPolicy(kind="non_retryable")` |
 | Fixed 1-minute wait between retries | `RetryPolicy(backoff="fixed", base=timedelta(minutes=1))` |
 | Single attempt, no retries | `RetryPolicy(max_attempts=1)` |
+
+---
+
+## 12. Crash vs. shutdown — what happens to the attempt count
+
+An attempt is spent at *claim* time: dispatch increments `attempt` when a worker locks the row. What happens to that spent attempt when the worker goes away mid-execution depends on *how* it went away:
+
+| Event mid-execution | Attempt budget | Audit trail |
+|---|---|---|
+| **Crash** (SIGKILL, power loss, OOM kill) | **Spent** — the re-run climbs to the next attempt number | `job_attempts` row with `outcome='crashed'` and `error_class='WorkerCrashed'` (or `'HeartbeatLost'` when the worker is alive but cannot reach Postgres) |
+| **Graceful shutdown** (SIGTERM/SIGINT) | **Refunded** — the re-run reuses the same attempt number | No attempt row; one `interrupted` state-change event, and `interrupt_count` incremented on the job row |
+
+A crash is indistinguishable from the worker simply vanishing, so the fleet learns about it from the lease: once `lock_lease` (or the actor's `heartbeat_timeout`) expires without a heartbeat, the leader's reclaim sweep hands the row back through the job's own `RetryPolicy` — the same base/cap/backoff curve as an application-level failure, with jitter derived deterministically from the row's `(job_id, attempt)` so a fleet-wide reclaim does not re-synchronize every job to the same instant. Because the claim already spent the attempt, that hand-back consumes budget: with the default `max_attempts=3`, two crashes on a flaky node terminally fail a job whose actor body ran at most once. If node crashes should not eat your failure budget, size `max_attempts` for the crashes you expect, or use `kind="indefinite"` with a `time_budget`.
+
+A graceful shutdown is different by design: the worker announces it is leaving, in-flight actors observe the cancel event, and any job still running when the grace periods expire is *released* back to the fleet — the claim's attempt increment is refunded (floored at 0), exactly like a snooze. A routine deploy is never a reason to burn a job's retry budget.
+
+The operator controls for how quickly a crash is *detected* are the heartbeat knobs: `heartbeat_interval` (how often a worker proves it is alive), `lock_lease` (how long a claim survives without one — the startup-validated invariant `lock_lease >= 4 × heartbeat_interval` keeps a slow-but-live worker from being reclaimed), and the per-actor `heartbeat_timeout`. Tightening them reclaims crashed work sooner at the cost of reclaiming slow-but-alive workers. See [workers.md](workers.md) for the settings and [ops.md](ops.md) for the `crashed` and `abandoned` state definitions.
+
+---
+
+## 13. Porting a retry budget from River, Oban, or Sidekiq
+
+The defaults differ more than the configuration shapes suggest — compare the wall-clock curves, not just the attempt counts:
+
+| | Default `max_attempts` | Backoff curve | Jitter |
+|---|---|---|---|
+| River | **25** | `attempt^4` seconds | none |
+| Oban | **20** | exponential, worker-overridable via `backoff/1` | yes (`:inc` mode) |
+| TaskQ | **3** | `base × 2^(N-1)` with `base = 5s`, capped at `cap` (default 1 h) | ±20% multiplicative by default; the crash-reclaim path derives the same band deterministically from `(job_id, attempt)` |
+
+An adopter porting a River budget by matching `max_attempts=25` gets roughly 15 hours of retry coverage on TaskQ's default curve where River's 25 attempts span weeks — so decide the wall-clock window you actually want and set `base`/`cap` (or a `time_budget`) for it, rather than copying the attempt count. Budget for crashes too: as [§12](#12-crash-vs-shutdown-what-happens-to-the-attempt-count) covers, a crashed worker spends an attempt just as an actor failure does.
+
+Two more differences worth knowing up front. `kind="indefinite"` ignores `max_attempts` entirely — the row still carries the configured value, but it is inert (the admin UI renders it as `— (indefinite)`); the only stopping condition is the `schedule_to_close` deadline. And TaskQ has **no dead-letter queue**: a job whose budget is exhausted stays queryable in `jobs` (then `jobs_archive`) with its terminal `error_class`; routing to a real DLQ is your code, at the two designed hook points — `on_retry_exhausted` per actor and the worker's `ErrorReporter`. See [ops.md](ops.md).
 
 ---
 

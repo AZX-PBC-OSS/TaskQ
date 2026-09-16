@@ -42,7 +42,10 @@ returns to `pending` (or `scheduled` behind the remaining termination budget whe
 unwound) with the claim's `attempt` increment refunded — infrastructure events never spend a job's
 budget. The row's `interrupt_count` column counts how often this has happened, and each release
 writes one `job_events` transition with `reason = 'interrupted'`. An operator cancel in flight
-when the deploy lands still wins the row.
+when the deploy lands still wins the row. The mirror image — a crash (SIGKILL, OOM, a lost
+heartbeat) — *does* spend the attempt; see
+[retries.md §12](retries.md#12-crash-vs-shutdown-what-happens-to-the-attempt-count) for the
+crash-vs-shutdown accounting.
 
 **Archival lifecycle.** After a terminal job's per-status retention period elapses (default: 30–90 days depending on status), the maintenance leader's prune sweep moves it from `jobs` to `jobs_archive`. After the archive retention period elapses (default: 1 year), the archive expiry sweep hard-deletes the row. The admin UI job-detail page follows this chain automatically. See [Configuration](configuration.md) for retention settings.
 

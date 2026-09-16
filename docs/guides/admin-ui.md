@@ -263,7 +263,7 @@ Cancels a non-terminal job by writing a cancel request via `backend.write_cancel
 
 ### `POST /admin/jobs/{job_id}/retry`
 
-Puts a job that has come to rest back to `pending` via `backend.retry_job`, allowing it to be re-dispatched by a worker. Every resting state is a valid source — `failed`, `crashed`, `cancelled`, `abandoned` and `succeeded` — so the replay path after a bad deploy and the put-back path after a worker restart are both supported. Returns `403` if `admin_actions_enabled` is `false`, `404` if the job does not exist, `409` if the job is `running` (re-pending a live attempt could run it twice) or already queued as `pending`/`scheduled`. Redirects to the job detail page on success. The retry leaves `attempt` where it is and raises `max_attempts` just enough to fund one more run, clears error fields and any stored result, and sets `status='pending'`.
+Puts a job that has come to rest back to `pending` via `backend.retry_job`, allowing it to be re-dispatched by a worker. Every resting state is a valid source — `failed`, `crashed`, `cancelled`, `abandoned` and `succeeded` — so the replay path after a bad deploy and the put-back path after a worker restart are both supported. Returns `403` if `admin_actions_enabled` is `false`, `404` if the job does not exist, `409` if the job is `running` (re-pending a live attempt could run it twice) or already queued as `pending`/`scheduled`. Redirects to the job detail page on success. The retry leaves `attempt` where it is and raises `max_attempts` just enough to fund one more run, clears error fields and any stored result, and sets `status='pending'`. It also clears `schedule_to_close` **only when that deadline has already elapsed** — dispatch never claims a row whose deadline has passed, so keeping a stale deadline would leave the retried row undispatchable (swept back to `failed` on the next tick) even though the retry reported success. A still-future `schedule_to_close` is preserved unchanged: the original time budget still applies to the re-run.
 
 ### `GET /admin/jobs/count`
 
@@ -393,7 +393,11 @@ Serves static assets (CSS, JS, images) from the bundled static directory. Path t
 These endpoints use a lightweight PG pool ping for readiness (not the full
 `WorkerDeps` health report that the worker process serves on its Unix socket).
 The Prometheus metrics endpoint is mounted automatically when
-`taskq[prometheus]` is installed.
+`taskq[prometheus]` is installed. The route mounting is the automatic part;
+the `taskq_*` series it serves are populated by the shipped `taskq ui serve`
+and worker startup wiring, which configure the metrics reader for you — see
+[observability.md](observability.md) for the series inventory and alerting
+rules.
 
 #### Protecting health endpoints with a bearer token
 

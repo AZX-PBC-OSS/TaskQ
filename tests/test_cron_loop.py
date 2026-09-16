@@ -12,7 +12,7 @@ to the ambient trace context.
 Pure-Python, no PG required.
 """
 
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
@@ -1718,3 +1718,185 @@ async def test_failure_totals_round_trip_only_when_telemetry_enabled(
     assert len(totals_reads) == 1, (
         "with telemetry enabled the reconcile's source query runs exactly once per non-empty tick"
     )
+
+
+# ── commit-gate session state retires with its connection ────────────
+#
+# ``_armed_commit_emits`` and ``_confirmed_listening`` are keyed by backend
+# pid. A tick that arms an emission and then loses its connection leaves
+# the entry unanswered forever (the server rolled the NOTIFY back with the
+# session), and a confirmed LISTEN outlives its session — under cron
+# connection churn both maps would grow without bound, and a pid the
+# server recycles would inherit a dead session's "confirmed listening"
+# proof. The gate hooks the connection's termination signal to retire all
+# of it.
+
+
+class _GateSession:
+    """A connection that CAN carry the commit gate: records the channel
+    listener, captures the arming ``pg_notify``, and fires termination
+    listeners on death (asyncpg's ``Connection._cleanup`` behavior).
+
+    Implausible pids, like ``_GatelessCronConn``'s, so the process-global
+    gate maps never collide with a real session's entry.
+    """
+
+    def __init__(self, pid: int) -> None:
+        self.pid = pid
+        self.channel_listeners: dict[str, Callable[..., None]] = {}
+        self.remove_listener_calls: list[str] = []
+        self.notify_calls: list[tuple[str, str]] = []
+        self.termination_listeners: list[Callable[[object], None]] = []
+        self.dead = False
+
+    def get_server_pid(self) -> int:
+        return self.pid
+
+    async def remove_listener(self, channel: str, callback: object) -> None:
+        self.remove_listener_calls.append(channel)
+        self.channel_listeners.pop(channel, None)
+
+    async def add_listener(self, channel: str, callback: Callable[..., None]) -> None:
+        self.channel_listeners[channel] = callback
+
+    def add_termination_listener(self, callback: Callable[[object], None]) -> None:
+        self.termination_listeners.append(callback)
+
+    async def execute(self, sql: str, *args: object) -> str:
+        assert "pg_notify" in sql, f"unexpected execute on the gate seam: {sql}"
+        self.notify_calls.append((str(args[0]), str(args[1])))
+        return "SELECT 1"
+
+    def deliver_commit_notify(self) -> None:
+        """The server's answer when the arming tick's transaction COMMITs:
+        the session's own NOTIFY rides back, addressed to its own pid."""
+        channel, nonce = self.notify_calls[-1]
+        self.channel_listeners[channel](self, self.pid, channel, nonce)
+
+    def die(self) -> None:
+        """What asyncpg does from ``_cleanup`` on close/terminate/loss."""
+        self.dead = True
+        for callback in self.termination_listeners:
+            callback(self)
+
+
+@pytest.fixture
+def _commit_gate_maps() -> Iterator[None]:  # pyright: ignore[reportUnusedFunction] # Why: pytest fixture consumed implicitly by the test runner; pyright does not track fixture usage.
+    """Snapshot and restore the module-level commit-gate maps.
+
+    The maps are process-global (keyed by backend pid); these tests fill
+    them deliberately, so each hands the suite back the state it found.
+    """
+    armed = dict(cron_loop._armed_commit_emits)
+    confirmed = set(cron_loop._confirmed_listening)
+    hooked = set(cron_loop._termination_hooked)
+    try:
+        yield
+    finally:
+        cron_loop._armed_commit_emits.clear()
+        cron_loop._armed_commit_emits.update(armed)
+        cron_loop._confirmed_listening.clear()
+        cron_loop._confirmed_listening.update(confirmed)
+        cron_loop._termination_hooked.clear()
+        cron_loop._termination_hooked.update(hooked)
+
+
+async def test_commit_gate_retires_session_state_on_close(
+    _commit_gate_maps: None,
+) -> None:
+    """Full gated cycle: arm, COMMIT delivers the NOTIFY (the emission
+    runs), then the connection dies — every per-pid entry is retired."""
+    conn = _GateSession(pid=2**30 + 1)
+    emitted: list[bool] = []
+
+    await cron_loop._emit_on_commit(conn, lambda: emitted.append(True))
+    conn.deliver_commit_notify()
+    assert emitted == [True], "a committed tick's emission must run"
+    assert 2**30 + 1 in cron_loop._confirmed_listening
+
+    conn.die()
+
+    assert cron_loop._armed_commit_emits == {}
+    assert cron_loop._confirmed_listening == set()
+    assert cron_loop._termination_hooked == set()
+
+
+async def test_commit_gate_retires_unanswered_emission_on_close(
+    _commit_gate_maps: None,
+) -> None:
+    """The churn leak: a tick armed an emission, then its transaction
+    rolled back (no NOTIFY can ever answer) and the connection died. The
+    armed entry must not outlive the session — and the emission must
+    never run for a commit that did not happen."""
+    conn = _GateSession(pid=2**30 + 2)
+    emitted: list[bool] = []
+
+    await cron_loop._emit_on_commit(conn, lambda: emitted.append(True))
+    assert 2**30 + 2 in cron_loop._armed_commit_emits
+
+    conn.die()
+
+    assert emitted == [], "no commit, no emission — the gate's core contract"
+    assert cron_loop._armed_commit_emits == {}
+    assert cron_loop._confirmed_listening == set()
+
+
+async def test_commit_gate_state_stays_bounded_under_connection_churn(
+    _commit_gate_maps: None,
+) -> None:
+    """Fifty rotate-and-tick cycles (a leader losing and rebuilding its
+    cron connection) must leave the gate maps empty, not holding one entry
+    per dead session."""
+    for i in range(50):
+        conn = _GateSession(pid=2**30 + 100 + i)
+        emitted: list[bool] = []
+        await cron_loop._emit_on_commit(conn, lambda emitted=emitted: emitted.append(True))
+        conn.deliver_commit_notify()
+        assert emitted == [True]
+        conn.die()
+
+    assert cron_loop._armed_commit_emits == {}, (
+        "armed emissions for dead sessions never got an answer and never retired"
+    )
+    assert cron_loop._confirmed_listening == set(), (
+        "confirmed LISTEN entries outlived their sessions"
+    )
+    assert cron_loop._termination_hooked == set()
+
+
+async def test_commit_gate_relistens_for_a_recycled_pid(
+    _commit_gate_maps: None,
+) -> None:
+    """A pid the server hands to a fresh session must not inherit the dead
+    session's confirmed LISTEN: the arm must force the defensive
+    re-LISTEN (remove then add) on the new session, exactly as for a
+    never-seen pid."""
+    first = _GateSession(pid=2**30 + 200)
+    await cron_loop._emit_on_commit(first, lambda: None)
+    first.deliver_commit_notify()
+    assert 2**30 + 200 in cron_loop._confirmed_listening
+    first.die()
+
+    second = _GateSession(pid=2**30 + 200)
+    await cron_loop._emit_on_commit(second, lambda: None)
+
+    assert cron_loop._COMMIT_GATE_CHANNEL in second.remove_listener_calls, (
+        "a recycled pid inherited its dead predecessor's confirmed-listening "
+        "proof — the fresh session skipped the defensive re-LISTEN"
+    )
+
+
+async def test_commit_gate_hooks_termination_once_per_connection(
+    _commit_gate_maps: None,
+) -> None:
+    """Re-arming every tick must not stack termination listeners on a
+    long-lived connection — the bound is one hook per session."""
+    conn = _GateSession(pid=2**30 + 300)
+
+    await cron_loop._emit_on_commit(conn, lambda: None)
+    conn.deliver_commit_notify()
+    await cron_loop._emit_on_commit(conn, lambda: None)
+    conn.deliver_commit_notify()
+    await cron_loop._emit_on_commit(conn, lambda: None)
+
+    assert len(conn.termination_listeners) == 1

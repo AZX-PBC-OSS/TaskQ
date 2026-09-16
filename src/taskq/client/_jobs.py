@@ -27,7 +27,7 @@ import structlog
 from pydantic import BaseModel, TypeAdapter, ValidationError
 
 from taskq._close import CLOSE_TIMEOUT_SECS, close_redis_bounded
-from taskq._validation import validate_actor_payload
+from taskq._validation import CURRENT_PAYLOAD_SCHEMA_VER, validate_actor_payload
 from taskq.actor import ActorRef
 from taskq.backend._cursor import encode_job_cursor
 from taskq.backend._protocol import (
@@ -121,6 +121,10 @@ def _item_payload_error(idx: int, actor_name: str, exc: ValidationError) -> Payl
     return PayloadValidationError(
         f"Payload validation failed for item {idx} (actor={actor_name!r}): {exc}",
         actor=actor_name,
+        # Enqueue-time validation runs against the actor's currently
+        # declared payload_type, so the version in scope is the one being
+        # validated against (and about to be stamped on the row).
+        payload_schema_ver=str(CURRENT_PAYLOAD_SCHEMA_VER),
         validation_errors=errs,
         # The machine-readable copy of the message's index. ``idx`` is
         # already caller-global at both callers: the atomic arm's lazy

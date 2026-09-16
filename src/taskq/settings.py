@@ -1099,7 +1099,7 @@ class WorkerSettings(TaskQSettings):
         "PG-state-backed keyed rate_limit_buckets rows, marked by the "
         "keyed column — are deleted by the maintenance leader's "
         "sweep_idle_keyed_rows, one bounded committed batch per tick per "
-        "table. Closes the #139 residual: keyed rows orphan when the "
+        "table. Why a fleet sweep exists: keyed rows orphan when the "
         "worker that materialised them dies, because the in-process "
         "reclamation machinery (registry eviction + the pending-reclaim "
         "drain) dies with the process; the rows' own last_used_at stamp "
@@ -1248,9 +1248,12 @@ class WorkerSettings(TaskQSettings):
         default=9090,
         ge=1,
         le=65535,
-        description="TASKQ_METRICS_PORT. Bind port for the standalone "
-        "Prometheus metrics server (taskq health metrics --port). "
-        "The in-process FastAPI mount ignores this field.",
+        description="TASKQ_METRICS_PORT. Reserved; no shipped serve path "
+        "reads it today. The Prometheus surfaces that exist: `taskq ui "
+        "serve` mounts GET /jobs/health/metrics on its admin port "
+        "(TASKQ_ADMIN_PORT) — see observability.md — and the worker's "
+        "health socket serves three process gauges at /metrics. Neither "
+        "binds this port.",
     )
 
     # -- Health server ------------------------------------------
@@ -1586,30 +1589,81 @@ class WorkerSettings(TaskQSettings):
     prune_retention_period: timedelta = Field(
         default=DEFAULT_PRUNE_RETENTION,
         validator=_non_negative_timedelta,
-        description="TASKQ_PRUNE_RETENTION_PERIOD. Global fallback retention. "
-        "timedelta(0) means archive all terminal jobs immediately (valid). "
-        "Negative values raise ConstraintViolationError at settings load.",
+        description="TASKQ_PRUNE_RETENTION_PERIOD. Reserved as the global "
+        "fallback retention for terminal statuses without a per-status "
+        "knob. Currently INERT: the prune sweep reads the four per-status "
+        "fields below, and together they cover every terminal status "
+        "(succeeded, failed, cancelled, crashed, abandoned), so no status "
+        "ever falls back here — setting this value changes nothing today. "
+        "Size the per-status fields instead; see "
+        "TASKQ_PRUNE_RETENTION_SUCCEEDED. Negative values raise "
+        "ConstraintViolationError at settings load.",
     )
     prune_retention_succeeded: timedelta = Field(
         default=timedelta(days=30),
         validator=_non_negative_timedelta,
-        description="TASKQ_PRUNE_RETENTION_SUCCEEDED.",
+        description="TASKQ_PRUNE_RETENTION_SUCCEEDED. How long a succeeded "
+        "job stays in the hot jobs table before the daily prune sweep "
+        "moves it to jobs_archive (where archive_retention_period then "
+        "governs hard-deletion — 365 d by default, so history is not lost "
+        "at prune time). Sizing is a hot-table trade: succeeded rows are "
+        "usually the bulk of terminal volume, and every day of retention "
+        "keeps roughly a day's terminal throughput in the hot table the "
+        "admin /jobs list reads (at 100k jobs/day the default 30 d holds "
+        "~3M rows — see the storage-planning note in configuration.md). "
+        "Lower it for high-volume actors whose "
+        "successes nobody audits (the per-actor metadata retention_days "
+        "override shortens it further for one actor); raise it when "
+        "operators routinely inspect successful runs older than a month "
+        "without querying the archive. timedelta(0) archives succeeded "
+        "jobs at the next sweep — the prune family's zero-means-now "
+        "polarity, deliberately opposite to the sweep family's "
+        "zero-means-off (see the 0 convention in configuration.md). "
+        "Negative values raise ConstraintViolationError at settings load.",
     )
     prune_retention_failed: timedelta = Field(
         default=timedelta(days=90),
         validator=_non_negative_timedelta,
-        description="TASKQ_PRUNE_RETENTION_FAILED.",
+        description="TASKQ_PRUNE_RETENTION_FAILED. How long a failed job "
+        "stays in the hot jobs table before the daily prune sweep moves it "
+        "to jobs_archive. Failed rows are the first incident-audit trail — "
+        "they carry error_class, error_message and the attempt history — "
+        "so the default keeps them hot three times longer than succeeded "
+        "rows (90 d vs 30 d). Size to how far back your on-call reads "
+        "failures in the fast surfaces (admin /jobs) before the archive is "
+        "acceptable; lower it only if failure volume makes the hot table's "
+        "size the bigger incident risk. timedelta(0) archives failed jobs "
+        "at the next sweep (zero-means-now — see the 0 convention in "
+        "configuration.md). Negative values raise ConstraintViolationError "
+        "at settings load.",
     )
     prune_retention_cancelled: timedelta = Field(
         default=timedelta(days=30),
         validator=_non_negative_timedelta,
-        description="TASKQ_PRUNE_RETENTION_CANCELLED.",
+        description="TASKQ_PRUNE_RETENTION_CANCELLED. How long a cancelled "
+        "job stays in the hot jobs table before the daily prune sweep "
+        "moves it to jobs_archive. Cancelled rows are operator- or "
+        "deadline-initiated and rarely revisited after the fact, so the "
+        "default follows succeeded (30 d); raise it if cancellations are "
+        "part of your audit story, lower it toward 0 for bulk-cancel "
+        "workloads whose rows are pure churn. timedelta(0) archives "
+        "cancelled jobs at the next sweep (zero-means-now — see the 0 "
+        "convention in configuration.md). Negative values raise "
+        "ConstraintViolationError at settings load.",
     )
     prune_retention_abandoned: timedelta = Field(
         default=timedelta(days=90),
         validator=_non_negative_timedelta,
-        description="TASKQ_PRUNE_RETENTION_ABANDONED. Also used for crashed "
-        "jobs (no separate prune_retention_crashed field).",
+        description="TASKQ_PRUNE_RETENTION_ABANDONED. How long an abandoned "
+        "job stays in the hot jobs table before the daily prune sweep "
+        "moves it to jobs_archive. Also used for crashed jobs (no separate "
+        "prune_retention_crashed field): both statuses mean the job "
+        "outlived its execution budget or its worker, and both are the "
+        "rows you reach for when reconstructing a fleet-level incident, so "
+        "they share the longer 90 d default with failed. Same sizing trade "
+        "and zero-means-now polarity as the sibling fields — see "
+        "TASKQ_PRUNE_RETENTION_SUCCEEDED. Negative values raise "
+        "ConstraintViolationError at settings load.",
     )
 
     # -- Archive retention & expiry schedule ----------------------
@@ -1618,7 +1672,12 @@ class WorkerSettings(TaskQSettings):
         validator=_non_negative_timedelta,
         description="TASKQ_ARCHIVE_RETENTION_PERIOD. How long archived jobs are "
         "retained in jobs_archive before hard-deletion. Default 1 year. "
-        "timedelta(0) is valid. Negative values raise ConstraintViolationError.",
+        "timedelta(0) hard-deletes an archived row at the next "
+        "archive-expiry sweep — the row's expire_at is stamped "
+        "archive-time plus this period, so a zero period expires it on "
+        "arrival; the prune family's zero-means-now polarity, not the "
+        "deletion-sweep family's zero-means-off (see the 0 convention in "
+        "configuration.md). Negative values raise ConstraintViolationError.",
     )
     archive_expiry_schedule_utc: str = Field(
         default="04:00",

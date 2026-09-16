@@ -10,7 +10,7 @@ from datetime import timedelta
 from typing import TYPE_CHECKING, Final
 from uuid import UUID
 
-from taskq.backend._protocol import JobRow, QueueMode
+from taskq.backend._protocol import JobId, JobRow, QueueMode
 from taskq.constants import SMALLINT_MAX
 from taskq.testing._reads import _read_copy
 
@@ -53,6 +53,54 @@ async def _dispatch_batch(
             running_per_actor[row.actor] = running_per_actor.get(row.actor, 0) + 1
             if row.identity_key is not None:
                 running_identities.add((row.actor, row.identity_key))
+
+    # ── reservation_holdings / reservation_headroom mirror ────────────
+    # PG's claim folds live reservation-slot occupancy into per-actor
+    # admission (backend/_dispatch_sql.py's CTEs of the same names): an
+    # actor whose claimed jobs hold live slots in a bucket with no
+    # acquirable slot left can run no more of its pending rows — every
+    # job of an actor AND-composes the same declared reservations — so
+    # claiming them would only churn shared consumer slots into denied
+    # acquires. The twin derives the same headroom from the same
+    # holder-state signal (slot -> holding job -> actor; like the DB,
+    # the in-memory store has no actor -> bucket declaration mapping, so
+    # static, keyed, and queue-cap buckets all ride it), with the same
+    # acquirability predicate the twin acquire uses: free is
+    # job_id-None or an expired lease, held is its negation. An actor
+    # holding nothing is absent from the map, leaving its residual
+    # untouched — the gate never blocks a first claim (PG: LEAST ignores
+    # the NULL headroom), so capacity can always be taken and a
+    # saturated actor drains the moment a slot frees.
+    reservation_headroom: dict[str, int] = {}
+    slot_table = self._slot_table
+    if slot_table is not None:
+        # The lock is held only for a shallow dict copy (no await, no
+        # callback): the heartbeat path mutates the table from the same
+        # loop, and the copy keeps the read consistent. The slot store
+        # ships no read API; the twin reads the state it mirrors, the
+        # same reach this module already makes into the backend's own
+        # private stores (_jobs, _actor_configs_meta).
+        with slot_table._lock:
+            bucket_snapshot = {name: dict(bucket) for name, bucket in slot_table._buckets.items()}
+        free_by_bucket: dict[str, int] = {}
+        held_buckets_by_actor: dict[str, set[str]] = {}
+        for bucket_name, bucket in bucket_snapshot.items():
+            free = 0
+            for slot in bucket.values():
+                if slot.job_id is None or (
+                    slot.lease_expires_at is not None and slot.lease_expires_at < now
+                ):
+                    free += 1
+                    continue
+                # The PG join keys on jobs.id = reservation_slots.job_id;
+                # the store is keyed by JobId (a UUID NewType), the slot
+                # carries the same UUID value.
+                holder = self._jobs.get(JobId(slot.job_id))
+                if holder is not None:
+                    held_buckets_by_actor.setdefault(holder.actor, set()).add(bucket_name)
+            free_by_bucket[bucket_name] = free
+        for actor, bucket_names in held_buckets_by_actor.items():
+            reservation_headroom[actor] = min(free_by_bucket[name] for name in bucket_names)
 
     # Why: `row.queue in queues` with NO `not queues` escape — PG builds the
     # candidate set with ``CROSS JOIN LATERAL unnest((SELECT queues FROM
@@ -109,6 +157,15 @@ async def _dispatch_batch(
         for _actor, _cfg in self._actor_configs_meta.items():
             _cap = _cfg.max_concurrent
             _residual = limit if _cap is None else max(_cap - running_per_actor.get(_actor, 0), 0)
+            # The reservation-headroom fold (PG: LEAST(base.residual,
+            # rh.headroom) in per_actor_capacity / repend_capacity): a
+            # live-held bucket with fewer acquirable slots than the
+            # residual clamps admission to the acquirable count — zero
+            # when full — so a saturated actor's rows are not claimed
+            # into consumer slots that can only deny them.
+            _headroom = reservation_headroom.get(_actor)
+            if _headroom is not None and _headroom < _residual:
+                _residual = _headroom
             if _residual <= 0:
                 continue
             _bound = _residual * oversample

@@ -106,6 +106,12 @@ TASKQ_SCHEMA_NAME=taskq
 TASKQ_REDIS_URL=redis://localhost:6379/0
 ```
 
+`TASKQ_SCHEMA_NAME` is the one schema truth for every entry point: the worker, the CLI, and
+the `TaskQ` client all resolve it (the client consults it whenever `TaskQ(schema=...)` is
+omitted — an explicit `schema=` always wins). Keep it identical across every process that
+enqueues or consumes: an enqueuer on a different schema than its workers lands jobs that are
+never picked up, with no error raised.
+
 !!! warning "PgBouncer"
     Advisory locks and `LISTEN/NOTIFY` require a direct Postgres connection. Do not point
     `TASKQ_PG_DSN` at a PgBouncer endpoint in transaction-pooling mode. Use

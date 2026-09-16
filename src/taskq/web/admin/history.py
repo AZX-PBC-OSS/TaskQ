@@ -34,12 +34,15 @@ _OrjsonJSONResponse: "type[JSONResponse]" = orjson_response_class()
 # ── History list SQL ────────────────────────────────────────────────────
 
 # Shared column list — both tables have identical core columns.
+# retry_kind feeds the attempt_budget macro: an indefinite row's stored
+# max_attempts is inert, and a column the query never fetches can never be
+# rendered (the jobs-list pin's shape).
 _SELECT_COLS = (
     "id, actor, queue, status, finished_at, created_at, started_at, "
     "CASE WHEN started_at IS NOT NULL AND finished_at IS NOT NULL "
     "  THEN extract(epoch from finished_at - started_at) * 1000 "
     "  ELSE NULL END AS duration_ms, "
-    "attempt, max_attempts, "
+    "attempt, max_attempts, retry_kind, "
     "true AS is_archived, "
     "CASE WHEN status IN ('pending', 'scheduled', 'running') THEN 0 ELSE 1 END AS status_priority"
 )
@@ -48,7 +51,7 @@ _SELECT_COLS_LIVE = (
     "CASE WHEN started_at IS NOT NULL AND finished_at IS NOT NULL "
     "  THEN extract(epoch from finished_at - started_at) * 1000 "
     "  ELSE NULL END AS duration_ms, "
-    "attempt, max_attempts, "
+    "attempt, max_attempts, retry_kind, "
     "false AS is_archived, "
     "CASE WHEN status IN ('pending', 'scheduled', 'running') THEN 0 ELSE 1 END AS status_priority"
 )

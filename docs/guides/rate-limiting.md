@@ -237,6 +237,39 @@ result = await sync_slots([gpu_reservation], pool=pg_pool)
 print(result.inserted, result.deleted, result.skipped_held)
 ```
 
+!!! warning "A never-synced reservation denies exactly like a saturated one"
+    Acquiring a slot reads the `reservation_slots` rows. If no rows were ever
+    materialised for the name — the owned-instance pattern above
+    (a registry you construct and `.register()` on for non-job use) never
+    writes them; only a worker bootstrap (actor-declared instances, queue
+    caps) or an explicit `sync_slots`/`ensure_slots` call does — then **every
+    acquire is denied**, and the denial is indistinguishable from real
+    saturation at the point it bites: same `ReservationUnavailable`, same
+    `retry_after_seconds=5.0` (the default backoff — there is no held lease
+    to derive a hint from), same `reservation-unavailable` log line.
+
+    The distinguishing signal is the slot-row count:
+
+    ```sql
+    SELECT count(*) FROM "{schema}".reservation_slots
+    WHERE bucket_name = 'gpu_slots';
+    ```
+
+    `0` rows means **never materialised** — no acquire can ever succeed; fix
+    it by calling `sync_slots` (or passing the reservation through a worker's
+    actor declarations so bootstrap syncs it). `N` rows means the reservation
+    is live and a denial is ordinary contention — wait, or raise `slots` and
+    call `sync_slots` again. The programmatic twin of the row count is
+    `await reservation.slot_rows_exist(pool)` — the same read-only probe the
+    acquire path's own heal uses to tell "rows deleted out from under it"
+    apart from "rows present, all held".
+
+    Note what does **not** discriminate: the `/admin/reservations` page
+    renders a configured-but-never-synced reservation from its declared
+    config (all slots shown free), so the page alone cannot tell
+    "never materialised" from "materialised and idle" — the row count is the
+    ground truth.
+
 ### Example
 
 ```python
@@ -548,7 +581,10 @@ class RateLimitRegistry:
   handler, or one primitive referenced by name from many actors). In a
   multi-process deployment, construct a same-configured instance in EACH
   process — Python objects cannot cross process boundaries; the underlying
-  limiter state (Redis hashes, PG rows) is shared.
+  limiter state (Redis hashes, PG rows) is shared. A `ConcurrencyReservation`
+  acquired only this way has no worker bootstrap to materialise its slot
+  rows — call `sync_slots` yourself, or every acquire denies (see the warning
+  under [`sync_slots`](#concurrencyreservation)).
 
 - **Inject via DI (worker bootstrap).** Register the owned instance as a
   **value** provider at `Scope.LOOP` in your `di_registry`; the worker

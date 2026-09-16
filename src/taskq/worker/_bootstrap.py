@@ -12,12 +12,12 @@ LOOP-scope connection resolution and warns about the PgBouncer
 transaction-mode connection footgun.
 ``_emit_unconsumed_queue_startup_warnings`` warns — once, aggregated —
 when served actors declare queues outside the worker's consumed set,
-or distinctly when the worker consumes no queues at all (issue #90).
+or distinctly when the worker consumes no queues at all.
 """
 
 import asyncio
 import contextlib
-import importlib.util
+import importlib
 import math
 from collections.abc import Awaitable, Callable, Coroutine, Mapping
 from datetime import datetime, timedelta
@@ -101,8 +101,23 @@ _sibling_crashes = get_meter().create_counter(
 
 
 def _redis_extra_installed() -> bool:
-    """Whether the ``[redis]`` extra is importable in this environment."""
-    return importlib.util.find_spec("redis.asyncio") is not None
+    """Whether the ``[redis]`` extra is importable in this environment.
+
+    Probes by importing — the idiom vendored procrastinate's
+    ``import_or_wrapper`` (utils.py) uses for exactly this "is the optional
+    extra installed" check. The parent package is imported first because
+    both cheap alternatives lie: ``find_spec`` on a dotted name raises
+    ``ModuleNotFoundError`` when the parent is absent (the very state this
+    check exists to detect), and a ``redis.asyncio`` entry lingering in
+    ``sys.modules`` answers "present" even when ``redis`` itself is
+    unimportable.
+    """
+    try:
+        importlib.import_module("redis")
+        importlib.import_module("redis.asyncio")
+    except ImportError:
+        return False
+    return True
 
 
 def _redis_configured(settings: WorkerSettings, registry: ProviderRegistry) -> bool:
@@ -474,7 +489,7 @@ async def _maybe_open_slot_pool(
     shared one — and the slot connection shadows the LOOP-registered
     connection for each actor invocation, so an actor's own writes join
     its job's transaction and no two concurrent slots' actors ever
-    interleave operations on one connection (issue #116). Every other
+    interleave operations on one connection. Every other
     shape (no LOOP-scope connection, or the single-slot
     ``max_concurrency == 1`` worker) keeps today's behaviour and this
     function returns ``False`` without touching *deps*.
@@ -1337,7 +1352,7 @@ async def _main(
         # the lag watchdog never trips; the stale-tick detectors arm
         # only after bootstrap), so each factory await carries the same
         # reload_factory_timeout bound every WorkerConnections factory
-        # open got in the #162 wave: a black-holed "database pools, HTTP
+        # open carries: a black-holed "database pools, HTTP
         # clients" DI factory fails boot loudly within the bound instead
         # of wedging worker startup undetected.
         process_scope = ProcessScope(
@@ -1419,7 +1434,7 @@ async def _main(
             # correlation with the workers-table row; this block has the
             # correlation and still precedes the sync_actor_config
             # round-trip below, whose drift raise or pool-acquire stall
-            # would swallow a warning placed after it (issue #90).
+            # would swallow a warning placed after it.
             #
             # The stored assignments are read first because they, not the
             # decorator literals, decide where an actor's work routes.
@@ -1763,7 +1778,7 @@ async def _main(
                 shutdown_started_event=deps.producer_stop_event,
                 dump_after_fraction=settings.watchdog_dump_after_fraction,
             )
-            # Cron parity (issue #118): singleton / max_pending reach client
+            # Cron parity: singleton / max_pending reach client
             # enqueues via the ActorRef stamps in client/_args.py; the cron
             # tick builds its EnqueueArgs directly, so it needs the flags
             # here or its fires silently bypass both. Derived once, at the

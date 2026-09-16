@@ -12,10 +12,11 @@ preserved without test-file changes.
 
 import asyncio
 import traceback
+import warnings
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal
 from uuid import UUID
 
 import structlog
@@ -38,12 +39,18 @@ from taskq.retry import OnCancel, OnRetryExhausted, OnSuccess, RetryClassifierHo
 from taskq.testing._reads import _event_read_copy, _read_copy
 
 if TYPE_CHECKING:
+    # taskq.actor stays TYPE_CHECKING here: a runtime import would pull
+    # asyncpg into the driver-free testing boundary (pinned by
+    # test_testing_no_transitive_asyncpg). Runtime discrimination uses
+    # isinstance(str) instead — see register_stub.
+    from taskq.actor import ActorRef
     from taskq.testing.in_memory import InMemoryBackend
     from taskq.worker.leader import ArchiveExpiryResult, PruneResult
 
 __all__ = [
     "PassthroughPayload",
     "StubFn",
+    "StubPayloadTypeWarning",
     "wait_for_batch",
 ]
 
@@ -168,13 +175,36 @@ class PassthroughPayload(BaseModel):
     production consumer expects an actor-supplied :class:`pydantic.BaseModel`.
     This model bridges the gap — ``model_config = {"extra": "allow"}``
     means any field shape validates, and ``model_dump()`` round-trips
-    through the same JSON adapter as a real payload model. Tests that
-    care about typed payloads pass an explicit ``payload_type`` to
-    :meth:`InMemoryBackend.register_stub`; tests that don't get this
-    permissive default.
+    through the same JSON adapter as a real payload model. It is the
+    deliberate escape hatch: pass ``payload_type=PassthroughPayload`` to
+    :meth:`InMemoryBackend.register_stub` to opt into it. When
+    ``payload_type`` is omitted the runner first resolves the actor's
+    declared model from a passed :class:`~taskq.actor.ActorRef`, and only
+    falls back to this permissive default — with a
+    :class:`StubPayloadTypeWarning` — when the actor is a bare name the
+    runner cannot resolve.
     """
 
     model_config = {"extra": "allow"}
+
+
+class StubPayloadTypeWarning(UserWarning):
+    """``register_stub`` could not resolve the actor's declared payload model.
+
+    Emitted when a stub is registered by bare actor name with no
+    ``payload_type=``: the runner has no declared model to validate
+    against, so ``run_until_drained`` validates payloads with
+    :class:`PassthroughPayload` (``extra="allow"``) — a payload the
+    actor's real model would reject passes the in-memory test and fails
+    only in production, where the worker validates against the declared
+    model on every dispatch.
+
+    Remedies, most faithful first: pass the :class:`~taskq.actor.ActorRef`
+    itself (``register_stub(my_actor, ...)``) so the declared model is
+    resolved automatically; pass ``payload_type=MyPayload`` explicitly; or
+    pass ``payload_type=PassthroughPayload`` to keep the permissive
+    behaviour deliberately and silence this warning.
+    """
 
 
 @dataclass(frozen=True, slots=True)
@@ -269,7 +299,7 @@ def advance_clock_to(backend: "InMemoryBackend", when: datetime) -> None:
 
 def register_stub(
     backend: "InMemoryBackend",
-    actor_name: str,
+    actor_name: "str | ActorRef[Any, Any]",
     fn: StubFn,
     *,
     retry: RetryPolicy | None = None,
@@ -289,14 +319,26 @@ def register_stub(
     ``run_until_drained`` inspects the return value with
     ``isinstance(result, Awaitable)`` and awaits accordingly.
 
+    *actor_name* is the actor's registered name or its
+    :class:`~taskq.actor.ActorRef`. Passing the ref is the fidelity-safe
+    form: the runner then knows the actor's declared contract and
+    auto-resolves ``payload_type`` from it (below).
+
     The stub receives ``(payload, ctx)`` where *ctx* is a minimal object
     with ``job_id: JobId``, ``attempt: int``, ``payload: dict``, and
     ``cancel_event: asyncio.Event | None``.
 
     ``payload_type`` is the Pydantic model the consumer validates the
-    raw row payload against before invoking the stub. Tests that don't
-    care about payload validation may omit it; the runner falls back
-    to :class:`PassthroughPayload` (``extra="allow"``).
+    raw row payload against before invoking the stub — the same
+    validation a production worker runs on every dispatch. Resolution
+    order when omitted: the ActorRef's declared ``payload_type`` when the
+    actor was passed as a ref; otherwise :class:`PassthroughPayload`
+    (``extra="allow"``) with a :class:`StubPayloadTypeWarning`, because a
+    bare name leaves the runner unable to see the actor's real model and
+    the permissive default accepts payload shapes that model would
+    reject — a green in-memory test over code a worker would refuse.
+    Pass ``payload_type=PassthroughPayload`` explicitly to opt into the
+    permissive behaviour deliberately, without the warning.
 
     Actor config fields (retry, non_retryable_exceptions,
     retry_classifier, on_retry_exhausted, on_retry_exhausted_timeout,
@@ -310,8 +352,52 @@ def register_stub(
     ``5 * 2^(attempt-1)`` backoff formula exactly, preserving existing
     test behaviour.
     """
-    backend._actor_stubs[actor_name] = fn  # pyright: ignore[reportPrivateUsage]  # Why: test runner helper intentionally accesses private InMemoryBackend state; this module is co-located with the backend and owns this access pattern.
-    backend._actor_configs[actor_name] = _InMemoryActorConfig(  # pyright: ignore[reportPrivateUsage]  # Why: test runner helper intentionally accesses private InMemoryBackend state; this module is co-located with the backend and owns this access pattern.
+    # Why the Any-parameterized ref: ActorRef is invariant in its payload
+    # and result type parameters, so no narrower parameterization accepts
+    # every concrete ref — the same spell worker/run.py uses for its
+    # registry mapping. Only ``name``/``payload_type`` are read. The
+    # discriminant is isinstance(str) (not isinstance(ActorRef)) so this
+    # module never imports taskq.actor at runtime — that import would
+    # pull asyncpg into the driver-free testing boundary.
+    actor_ref: ActorRef[Any, Any] | None = None
+    if isinstance(actor_name, str):
+        name = actor_name
+    else:
+        actor_ref = actor_name
+        name = actor_ref.name
+
+    if payload_type is not None:
+        # Explicit always wins — including PassthroughPayload, which is
+        # then the deliberate, warning-free escape hatch.
+        resolved_payload_type = payload_type
+    elif actor_ref is not None:
+        resolved_payload_type = actor_ref.payload_type
+    else:
+        resolved_payload_type = PassthroughPayload
+        # stacklevel: warn → this function → the InMemoryBackend
+        # delegate method → the caller whose line should be reported.
+        warnings.warn(
+            StubPayloadTypeWarning(
+                f"register_stub({name!r}, ...) without payload_type= cannot "
+                "resolve the actor's declared payload model from a bare "
+                "name; falling back to PassthroughPayload, which accepts "
+                "payload shapes the actor's real model would reject (a "
+                "green in-memory test over code a production worker would "
+                "refuse). Pass the ActorRef — register_stub(my_actor, ...) "
+                "— or payload_type=MyPayload to validate against the "
+                "declared model, or payload_type=PassthroughPayload to opt "
+                "into the permissive default deliberately."
+            ),
+            stacklevel=3,
+        )
+        logger.warning(
+            "stub-payload-type-unresolved",
+            actor=name,
+            fallback="PassthroughPayload",
+        )
+
+    backend._actor_stubs[name] = fn  # pyright: ignore[reportPrivateUsage]  # Why: test runner helper intentionally accesses private InMemoryBackend state; this module is co-located with the backend and owns this access pattern.
+    backend._actor_configs[name] = _InMemoryActorConfig(  # pyright: ignore[reportPrivateUsage]  # Why: test runner helper intentionally accesses private InMemoryBackend state; this module is co-located with the backend and owns this access pattern.
         retry=retry if retry is not None else RetryPolicy(jitter=0.0),
         non_retryable_exceptions=non_retryable_exceptions,
         retry_classifier=retry_classifier,
@@ -322,14 +408,14 @@ def register_stub(
         on_cancel=on_cancel,
         on_cancel_timeout=on_cancel_timeout,
         result_ttl=result_ttl,
-        payload_type=payload_type if payload_type is not None else PassthroughPayload,
+        payload_type=resolved_payload_type,
     )
     # Ensure the stub-registered actor can dispatch —
     # the dispatch gate requires _actor_configs_meta entries
     # when any actor_config is registered.
-    if actor_name not in backend._actor_configs_meta:  # pyright: ignore[reportPrivateUsage]  # Why: test runner helper intentionally accesses private InMemoryBackend state; this module is co-located with the backend and owns this access pattern.
-        backend._actor_configs_meta[actor_name] = ActorConfig(  # pyright: ignore[reportPrivateUsage]  # Why: test runner helper intentionally accesses private InMemoryBackend state; this module is co-located with the backend and owns this access pattern.
-            actor=actor_name, max_concurrent=None, queue="default"
+    if name not in backend._actor_configs_meta:  # pyright: ignore[reportPrivateUsage]  # Why: test runner helper intentionally accesses private InMemoryBackend state; this module is co-located with the backend and owns this access pattern.
+        backend._actor_configs_meta[name] = ActorConfig(  # pyright: ignore[reportPrivateUsage]  # Why: test runner helper intentionally accesses private InMemoryBackend state; this module is co-located with the backend and owns this access pattern.
+            actor=name, max_concurrent=None, queue="default"
         )
 
 
@@ -622,6 +708,60 @@ def _earliest_scheduled_at(backend: "InMemoryBackend") -> datetime | None:
     return min(scheduled_times) if scheduled_times else None
 
 
+def _undrainable_jobs(backend: "InMemoryBackend") -> dict[str, list[JobRow]]:
+    """Non-terminal jobs whose actor has no registered dispatch capacity.
+
+    Dispatch candidates come FROM the ``_actor_configs_meta`` registry
+    (``_dispatch._dispatch_batch``: zero registered actors means zero
+    capacity rows means zero candidates), so an actor with no entry can
+    never be claimed — the strictly-worse silent twin of the
+    dispatched-but-stubless case ``run_until_drained`` already raises on.
+
+    A registered-but-denied job (a saturated rate limit or reservation)
+    is never returned here: its denial required a dispatch attempt, and a
+    dispatch attempt requires the registry entry — so this predicate
+    cannot false-positive on the denial-starvation guard's jobs.
+    """
+    stranded: dict[str, list[JobRow]] = {}
+    for row in backend._jobs.values():  # pyright: ignore[reportPrivateUsage]  # Why: test runner helper intentionally accesses private InMemoryBackend state; this module is co-located with the backend and owns this access pattern.
+        if row.status in TERMINAL_STATUSES:
+            continue
+        if row.actor not in backend._actor_configs_meta:  # pyright: ignore[reportPrivateUsage]  # Why: test runner helper intentionally accesses private InMemoryBackend state; this module is co-located with the backend and owns this access pattern.
+            stranded.setdefault(row.actor, []).append(row)
+    return stranded
+
+
+def _raise_for_undrainable_work(backend: "InMemoryBackend") -> None:
+    """Fail the drain loudly when remaining work can never be dispatched.
+
+    Called at every ``run_until_drained`` exit point: "nothing scheduled"
+    (or "every scheduled job starved", or "real clock, cannot advance")
+    reads as *drained* only when nothing left behind is undispatchable.
+    Otherwise a job whose actor was never registered sits ``pending``
+    forever while the drain reports success — and a caller in
+    ``handle.wait()`` polls it without a deadline, unable to tell "will
+    never run" apart from "ran to completion".
+    """
+    stranded = _undrainable_jobs(backend)
+    if not stranded:
+        return
+    detail = "; ".join(
+        f"{actor}: {len(rows)} job(s) ({', '.join(sorted({r.status for r in rows}))})"
+        for actor, rows in sorted(stranded.items())
+    )
+    # Same "no stub registered for actor" contract as the
+    # dispatched-but-stubless raise below, so both missing-registration
+    # failures match one pattern.
+    raise RuntimeError(
+        f"no stub registered for actor: {', '.join(sorted(stranded))} — "
+        f"run_until_drained cannot end drained with work nothing can "
+        f"dispatch ({detail}). Register the actor with register_stub() or "
+        f"register_actor_config() before draining; without a registry "
+        f"entry dispatch grants the actor zero capacity and these jobs "
+        f"can never run."
+    )
+
+
 def _every_scheduled_job_starved(backend: "InMemoryBackend", starved: "set[JobId]") -> bool:
     """True when every scheduled job was denied again at or after the
     reschedule point its own previous denial set.
@@ -661,7 +801,13 @@ async def run_until_drained(backend: "InMemoryBackend") -> None:
     5. Terminates when: no pending, no running, no scheduled-due jobs —
        or when every remaining scheduled job is starved (denied again at
        or after the reschedule point its own previous denial set; see the
-       ``starved`` bookkeeping below).
+       ``starved`` bookkeeping below). Termination is checked for
+       undispatchable work first: a non-terminal job whose actor has no
+       registered stub/config can never be claimed (dispatch candidates
+       come from the actor registry), so ending "drained" beside one
+       would report success over a job that will never run — the loop
+       raises ``RuntimeError`` instead, the same contract as a
+       dispatched job with no stub.
 
     Clock advancement: if the backend's clock is a ``FakeClock`` with
     ``move_to``, the loop advances to the earliest ``scheduled_at`` when
@@ -711,9 +857,12 @@ async def run_until_drained(backend: "InMemoryBackend") -> None:
             # Step 3: check termination / clock-advance conditions.
             next_at = _earliest_scheduled_at(backend)
             if next_at is None:
-                # No scheduled jobs at all — fully drained.
+                # No scheduled jobs at all — fully drained, unless what
+                # remains can never be dispatched (never-registered actor).
+                _raise_for_undrainable_work(backend)
                 return
             if _every_scheduled_job_starved(backend, starved):
+                _raise_for_undrainable_work(backend)
                 return
 
             # Advance clock if FakeClock, else return.
@@ -723,6 +872,7 @@ async def run_until_drained(backend: "InMemoryBackend") -> None:
                 continue
             else:
                 # Production code wouldn't call run_until_drained
+                _raise_for_undrainable_work(backend)
                 return
 
         # Step 4: delegate per-job execution to consume_one_job

@@ -1,68 +1,63 @@
-"""Pins a single stated convention for what a zero-shaped setting value means.
+"""Pins the shipped ``0``-sentinel convention: one rulebook, stated per family.
 
-TaskQSettings/WorkerSettings expose at least the following fields that
-accept a literal 0 (or ``timedelta(0)``) as a meaningful, documented value
-rather than a validation error:
+Several TaskQSettings/WorkerSettings fields accept a literal ``0`` (or
+``timedelta(0)``) as a sentinel — a special meaning, not the quantity
+zero — and the polarity deliberately differs per family:
 
-  * ``statement_cache_size`` (settings.py, "0 disables the statement cache")
-  * ``max_cached_statement_lifetime`` (settings.py, "0 caches statements
-    indefinitely" — read: 0 means *unbounded*, the opposite polarity of the
-    field immediately above it)
-  * ``max_pending_lock_timeout_ms`` / ``unique_for_lock_timeout_ms`` /
-    ``idempotency_lock_timeout_ms`` / ``token_bucket_lock_timeout_ms`` /
-    ``sliding_window_lock_timeout_ms`` ("0 or less waits indefinitely
-    server-side (the lock_timeout GUC convention)")
-  * ``event_retention_period`` / ``keyed_row_reclaim_period``
-    (``timedelta(0)`` "DISABLES the sweep")
-  * ``health_port`` (0 "binds an ephemeral port" — a third, unrelated
-    meaning: neither "disabled" nor "infinite")
+  * ``statement_cache_size``: ``0`` disables the statement cache.
+  * ``max_cached_statement_lifetime``: ``0`` caches statements
+    indefinitely — the opposite polarity of the field above it.
+  * The lock-wait budgets (``max_pending_lock_timeout_ms``,
+    ``unique_for_lock_timeout_ms``, ``idempotency_lock_timeout_ms``,
+    ``token_bucket_lock_timeout_ms``, ``sliding_window_lock_timeout_ms``):
+    ``0`` or less waits indefinitely server-side (the ``lock_timeout``
+    GUC convention).
+  * The time-based deletion sweeps (``event_retention_period``,
+    ``keyed_row_reclaim_period``): ``timedelta(0)`` disables the sweep.
+  * The prune/archive retention fields (``prune_retention_succeeded``,
+    ``prune_retention_failed``, ``prune_retention_cancelled``,
+    ``prune_retention_abandoned``, ``archive_retention_period``):
+    ``timedelta(0)`` archives/expires at the next sweep — deliberately
+    opposite to the deletion sweeps.
+  * ``health_port``: ``0`` binds an ephemeral port (the field's real
+    "off" is *unset*, not ``0``).
 
-Each field's own docstring states its own polarity correctly — this test
-is not about any single field being wrong. It pins the ABSENCE of a
-declared, machine-checkable convention that ties them together: nothing
-in dotenvmodel's ``Field(...)`` carries a "what does 0 mean here" tag
-(confirmed by introspecting ``dotenvmodel.Field``'s signature — it offers
-default/ge/le/validator/etc., no semantic/polarity metadata), so the only
-place the convention lives is prose scattered across ~148 field
-docstrings, several of which disagree with each other on the same literal
-value.
+The shipped contract is a DOCS convention: every family's polarity is
+stated once in the "The `0` convention" section at the top of
+``docs/guides/configuration.md``, every sentinel-``0`` field is named
+there on its family's row, and each field's own settings description
+states the same polarity.
 
-Vendor check for a stated convention (read via Read/grep, not memory):
+Why not a runtime unification: the alternative considered was River's
+shape — one reserved sentinel (``-1``) for "infinite", ``0`` never
+overloaded, enforced at settings load (vendor/river/client.go,
+``Config.validate()`` L550-632: "JobTimeout cannot be negative, except
+for -1 (infinite)", the same shape repeating for the retention and
+reindex timeouts; Oban instead refuses ``0`` outright for its pruner —
+vendor/oban/lib/oban/config.ex, ``validate/1``). A single sentinel is
+the cleaner shape, but adopting it now would REDEFINE what the literal
+``0`` does on fields TaskQ already ships: an operator running
+``TASKQ_MAX_PENDING_LOCK_TIMEOUT_MS=0`` today has deliberately asked for
+an unbounded wait, and re-reading ``0`` as "disabled" or "fail fast"
+would flip that deployment to immediate typed refusals on upgrade — a
+silent behavior change with no error raised. The convention doc is the
+safe fix: it turns the per-family polarity into a learn-once rule
+without moving any runtime behavior.
 
-  * River (vendor/river/client.go, ``Config.validate()`` L550-632): a
-    single, load-time-enforced convention for every timeout-shaped field —
-    "-1" always means infinite, any value "< -1" is rejected (e.g.
-    JobTimeout at L572-574: "JobTimeout cannot be negative, except for -1
-    (infinite)"; the same "< -1 rejected, -1 = infinite" shape repeats for
-    CancelledJobRetentionPeriod, CompletedJobRetentionPeriod,
-    DiscardedJobRetentionPeriod, ReindexerTimeout at L551-559, L584-586).
-    River deliberately does NOT overload 0 to mean "infinite" or
-    "disabled" — 0 stays "zero interval," and a distinct sentinel (-1)
-    carries the special meaning, so the two are never confused.
-  * Oban (vendor/oban/lib/oban/config.ex, ``validate/1`` L156-180): no
-    stated zero/negative convention for timeout-shaped values at all in
-    the schema validator; individual plugin options each document their
-    own (e.g. the moduledoc's ``Oban.Pruner max_age: 0`` example at
-    L153-154 is rejected outright — "expected max_age to be a positive
-    integer" — Oban refuses zero for that field rather than overloading
-    it).
-  * Sidekiq: no dedicated zero-value convention found for a timeout-shaped
-    setting in README/docs.
-
-River's shape is the one this test pins: a single reserved sentinel for
-"unbounded," distinct from 0, applied consistently. TaskQ instead reuses
-the literal 0 for at least three incompatible meanings (disabled /
-infinite / ephemeral-port) depending on which field you're looking at.
-
-This is a real defect per the brief's "Inconsistency" and "footgun with no
-guard" categories: the docs are internally correct per-field, but there is
-no single rule an adopter can learn once and apply everywhere, and
-nothing in the code enforces one. THIS TEST IS EXPECTED TO FAIL. Do not
-xfail it, adjust it to pass, or delete it — it pins the convention
-TaskQ should have, not the behaviour it has today.
+What the tests pin — and what they do not: the convention section
+exists and names every sentinel-``0`` field with its family's polarity;
+every named field's settings description states the same polarity; and
+the runtime semantics those descriptions claim hold through the real
+functions (``statement_cache_kwargs``, ``bounded_lock_budget_ms``, and
+settings load itself). They fail if the convention section loses a
+family, if a field's description loses its polarity sentence, or if a
+family's runtime polarity moves. They do not pin the single-sentinel
+runtime redesign — that proposal was rejected, above.
 """
 
+from dataclasses import dataclass
 from datetime import timedelta
+from pathlib import Path
 
 import pytest
 
@@ -71,6 +66,8 @@ from taskq.settings import WorkerSettings
 
 _DSN = "postgresql://taskq:taskq@localhost:5432/taskq"
 
+_CONFIGURATION_MD = Path(__file__).resolve().parent.parent / "docs" / "guides" / "configuration.md"
+
 
 def _load(**overrides: str) -> WorkerSettings:
     base: dict[str, str] = {"TASKQ_PG_DSN": _DSN}
@@ -78,108 +75,217 @@ def _load(**overrides: str) -> WorkerSettings:
     return WorkerSettings.load_from_dict(base)
 
 
-def test_zero_has_one_documented_meaning_across_timeout_shaped_settings() -> None:
-    """Every timeout/duration-shaped setting should agree on what a literal
-    0 means when TaskQ, not just each field's own prose, is asked.
+@dataclass(frozen=True)
+class _ZeroField:
+    """One sentinel-``0`` field and the polarity both doc surfaces must state.
 
-    Pinned convention (the one this test enforces, matching River's
-    single-sentinel shape cited above): 0 always means "disabled / no
-    limit applies," never "wait indefinitely" and never a third,
-    unrelated meaning like "bind an ephemeral port." An operator who
-    learns the rule from one field should be able to apply it to any
-    other zero-accepting field without reading that field's docstring.
-
-    Demonstrated failure: ``statement_cache_size=0`` disables the
-    statement cache (an *off* switch — confirmed below via
-    ``statement_cache_kwargs``), while the lock-timeout family's `0`
-    means the exact opposite: an *unbounded wait*, confirmed below via
-    ``taskq.connections.bounded_lock_budget_ms``, which passes a
-    budget of 0 through unclamped specifically because "0 ... is the
-    operant asking for an unbounded wait" (connections.py, docstring of
-    bounded_lock_budget_ms). Both are real runtime behaviours, not just
-    prose — this test calls the real functions.
+    ``convention_polarity`` is the phrase the field's family row in the
+    configuration.md convention table must carry; ``description_polarity``
+    is the sentence the field's own settings description must carry. The
+    two phrases belong to the SAME family — a surface rewritten to a
+    different family's polarity drops its pinned phrase and fails.
     """
-    # -- Family A: statement_cache_size. Pinned meaning: 0 = disabled. --
+
+    env_var: str
+    field_name: str
+    convention_polarity: str
+    description_polarity: str
+
+
+_LOCK_BUDGET_FIELDS: tuple[tuple[str, str], ...] = (
+    ("TASKQ_MAX_PENDING_LOCK_TIMEOUT_MS", "max_pending_lock_timeout_ms"),
+    ("TASKQ_UNIQUE_FOR_LOCK_TIMEOUT_MS", "unique_for_lock_timeout_ms"),
+    ("TASKQ_IDEMPOTENCY_LOCK_TIMEOUT_MS", "idempotency_lock_timeout_ms"),
+    ("TASKQ_TOKEN_BUCKET_LOCK_TIMEOUT_MS", "token_bucket_lock_timeout_ms"),
+    ("TASKQ_SLIDING_WINDOW_LOCK_TIMEOUT_MS", "sliding_window_lock_timeout_ms"),
+)
+
+_ZERO_FIELDS: tuple[_ZeroField, ...] = (
+    _ZeroField(
+        "TASKQ_STATEMENT_CACHE_SIZE",
+        "statement_cache_size",
+        "disabled",
+        "0 disables",
+    ),
+    _ZeroField(
+        "TASKQ_MAX_CACHED_STATEMENT_LIFETIME",
+        "max_cached_statement_lifetime",
+        "indefinitely",
+        "0 caches statements indefinitely",
+    ),
+    *(
+        _ZeroField(
+            env_var,
+            field_name,
+            "wait indefinitely",
+            "0 or less waits indefinitely",
+        )
+        for env_var, field_name in _LOCK_BUDGET_FIELDS
+    ),
+    _ZeroField(
+        "TASKQ_EVENT_RETENTION_PERIOD",
+        "event_retention_period",
+        "disabled",
+        "timedelta(0) DISABLES the sweep",
+    ),
+    _ZeroField(
+        "TASKQ_KEYED_ROW_RECLAIM_PERIOD",
+        "keyed_row_reclaim_period",
+        "disabled",
+        "timedelta(0) DISABLES the sweep",
+    ),
+    _ZeroField(
+        "TASKQ_PRUNE_RETENTION_SUCCEEDED",
+        "prune_retention_succeeded",
+        "immediately",
+        "timedelta(0) archives succeeded jobs at the next sweep",
+    ),
+    _ZeroField(
+        "TASKQ_PRUNE_RETENTION_FAILED",
+        "prune_retention_failed",
+        "immediately",
+        "timedelta(0) archives failed jobs at the next sweep",
+    ),
+    _ZeroField(
+        "TASKQ_PRUNE_RETENTION_CANCELLED",
+        "prune_retention_cancelled",
+        "immediately",
+        "timedelta(0) archives cancelled jobs at the next sweep",
+    ),
+    _ZeroField(
+        "TASKQ_PRUNE_RETENTION_ABANDONED",
+        "prune_retention_abandoned",
+        "immediately",
+        "zero-means-now",
+    ),
+    _ZeroField(
+        "TASKQ_ARCHIVE_RETENTION_PERIOD",
+        "archive_retention_period",
+        "immediately",
+        "timedelta(0) hard-deletes",
+    ),
+    _ZeroField(
+        "TASKQ_HEALTH_PORT",
+        "health_port",
+        "ephemeral",
+        "0 binds an ephemeral port",
+    ),
+)
+
+
+def _convention_section_lines() -> list[str]:
+    """The ``## The `0` convention`` section of configuration.md, as lines."""
+    text = _CONFIGURATION_MD.read_text()
+    marker = "## The `0` convention"
+    start = text.find(marker)
+    assert start != -1, (
+        "configuration.md lost its '## The `0` convention' section — the shipped "
+        "contract is that the per-family polarity of a sentinel 0 is stated once "
+        "there and cross-referenced from every field that follows it."
+    )
+    rest = text[start + len(marker) :]
+    end = rest.find("\n## ")
+    section = rest if end == -1 else rest[:end]
+    return section.splitlines()
+
+
+@pytest.mark.parametrize("zf", _ZERO_FIELDS, ids=lambda zf: zf.env_var)
+def test_convention_table_names_the_field_with_its_family_polarity(zf: _ZeroField) -> None:
+    """The convention section's row for *zf.env_var* states its family's polarity.
+
+    The row is the learn-once surface: an adopter reads the family rule
+    here instead of re-deriving it per field. Fails if the section drops
+    the field's row or the row stops stating the family polarity.
+    """
+    lines = _convention_section_lines()
+    row = next((line for line in lines if zf.env_var in line), None)
+    assert row is not None, (
+        f"{zf.env_var} is no longer named in the `0` convention table in "
+        "configuration.md — every sentinel-0 field is named there on its "
+        "family's row; restore the row or the field stops following a stated rule."
+    )
+    assert zf.convention_polarity in row, (
+        f"the `0` convention table row for {zf.env_var} no longer states its "
+        f"family polarity ({zf.convention_polarity!r}): {row!r}. The table is the "
+        "one place the per-family rule is stated; a row that names the field "
+        "without its polarity leaves the family rule unstated."
+    )
+
+
+def test_convention_section_warns_against_cross_family_generalisation() -> None:
+    """The convention section carries its load-bearing warning.
+
+    The trap the table exists for is cross-family generalisation (the two
+    statement-cache rows mean opposite things); a convention section
+    without the warning teaches the families but not the hazard.
+    """
+    section = "\n".join(_convention_section_lines())
+    assert "Never generalise" in section, (
+        "the `0` convention section lost its warning never to generalise 0 "
+        "from one family to another — the hazard statement is part of the "
+        "shipped contract, not decoration."
+    )
+
+
+@pytest.mark.parametrize("zf", _ZERO_FIELDS, ids=lambda zf: zf.env_var)
+def test_field_description_states_its_own_zero_polarity(zf: _ZeroField) -> None:
+    """*zf.field_name*'s settings description documents its own ``0`` polarity.
+
+    Verified against the runtime Field metadata (the description an
+    operator sees), and required to agree with the convention table: the
+    phrase pinned here is the same family's, so a description rewritten
+    to another family's polarity fails this test — the two surfaces may
+    not contradict each other.
+    """
+    fields = WorkerSettings.get_fields()
+    assert zf.field_name in fields, f"WorkerSettings lost the field {zf.field_name!r}"
+    description = fields[zf.field_name][1].description or ""
+    assert zf.description_polarity in description, (
+        f"{zf.field_name}'s description no longer documents its 0 polarity "
+        f"({zf.description_polarity!r}). The shipped convention is per-family "
+        "polarity stated in configuration.md AND restated on the field itself; "
+        f"the field's description now reads: {description!r}"
+    )
+
+
+def test_runtime_zero_semantics_match_the_documented_polarity() -> None:
+    """The documented polarities are what the code actually does with ``0``.
+
+    Each assertion calls the real function the description makes its
+    claim about, so the docs contract cannot drift from runtime behavior
+    in either direction (a runtime change under a frozen doc fails here;
+    a doc rewrite under frozen runtime fails the two pins above).
+    """
+    # Statement-cache family: 0 reaches asyncpg's create_pool as 0 —
+    # statement_cache_size=0 disables the cache there (asyncpg's own
+    # contract), so the pass-through IS the documented "disabled".
     settings_cache_zero = _load(TASKQ_STATEMENT_CACHE_SIZE="0")
     cache_kwargs = statement_cache_kwargs(settings_cache_zero)
-    assert cache_kwargs["statement_cache_size"] == 0  # the cache is off
+    assert cache_kwargs["statement_cache_size"] == 0
 
-    # -- Family B: the enqueue lock-timeout budgets. Actual meaning: 0 or
-    # less = wait indefinitely (server-side), the OPPOSITE of "disabled."
-    # A caller reading only "statement_cache_size: 0 disables the cache"
-    # and applying the same rule here would expect 0 to mean "no wait" —
-    # i.e. fail fast, budget exhausted immediately. It does not: 0 passes
-    # straight through unclamped, meaning "no ceiling at all."
+    # ...while the sibling field's 0 is the opposite polarity: asyncpg
+    # reads max_cached_statement_lifetime=0 as "no maximum lifetime",
+    # i.e. cached indefinitely — also delivered by pass-through.
+    settings_lifetime_zero = _load(TASKQ_MAX_CACHED_STATEMENT_LIFETIME="0")
+    assert statement_cache_kwargs(settings_lifetime_zero)["max_cached_statement_lifetime"] == 0
+
+    # Lock-wait family: a 0 budget passes through bounded_lock_budget_ms
+    # UNCLAMPED — no client-side bound is derived for it — because 0 is
+    # the operator asking for an unbounded server-side wait (the
+    # lock_timeout GUC convention; the advisory acquire's timeout_ms <= 0
+    # branch then runs one plain blocking acquire).
     unbounded_budget_ms = bounded_lock_budget_ms(budget_ms=0.0, command_timeout_secs=5.0)
+    assert unbounded_budget_ms == 0.0
 
-    # THE ASSERTION THIS TEST PINS: if TaskQ's zero convention were
-    # uniform ("0 = disabled/off" everywhere, matching statement_cache_size
-    # and matching River's single-sentinel shape), a lock-timeout budget of
-    # 0 would resolve to "no wait allowed" (an immediately-exhausted
-    # budget), not "wait forever." It does not hold today:
-    assert unbounded_budget_ms == 0.0, (
-        "sanity: bounded_lock_budget_ms(0, ...) really does pass 0 through unclamped"
-    )
-    # A convention-respecting reading of "0 = disabled" would mean this
-    # unclamped 0 budget behaves as "immediately exhausted" (fail fast),
-    # not as "wait indefinitely." The real, documented, code-confirmed
-    # behaviour is the latter (connections.py: "0 ... is the operator
-    # asking for an unbounded wait") — the opposite of Family A. Pin the
-    # convention that would make these agree:
-    assert unbounded_budget_ms != 0.0, (
-        "FAILS as expected: TaskQ's own docs (connections.py, "
-        "bounded_lock_budget_ms) state 0-or-less means 'unbounded wait' "
-        "for the lock-timeout family, which is the OPPOSITE polarity of "
-        "statement_cache_size's '0 disables the cache' (settings.py "
-        "L494) and of River's single reserved sentinel for 'infinite' "
-        "(vendor/river/client.go L572-574, '-1' only, never overloading "
-        "0). There is no single rule an adopter can learn once. This "
-        "assertion intentionally contradicts the sanity check above to "
-        "make that inconsistency visible as a failing test rather than "
-        "only as prose — see the module docstring for the full case and "
-        "the vendor citations. Fix: reserve a single sentinel (e.g. "
-        "None, or -1 for numeric fields) for 'unbounded/disabled' across "
-        "every timeout-shaped setting, and stop overloading the literal "
-        "0 with incompatible meanings."
-    )
-
-
-def test_retention_timedeltas_agree_with_lock_timeouts_on_zero() -> None:
-    """The retention-sweep family (timedelta fields) and the lock-timeout
-    family (float-ms fields) both accept a literal zero-equivalent value,
-    but with opposite real-world effect: one turns a background loop OFF,
-    the other turns a wait ON to unbounded. Both are pinned in this
-    file's docstrings (settings.py L1047-1058, L1080-1084 for the
-    retention family; L551-554, L571-574, L591-594, L900-902, L912-914
-    for the lock-timeout family) — this test loads both live and shows
-    they cannot share one adopter-learnable rule.
-    """
+    # Deletion-sweep and prune/archive families: 0 loads as a valid value
+    # (not a validation error) — the sweep loops and the archive CTE give
+    # it the documented meaning (gate on `> timedelta(0)` for the
+    # deletion sweeps; `finished_at < now - retention` for the prune
+    # family, i.e. "older than right now" at 0).
     settings = _load(
         TASKQ_EVENT_RETENTION_PERIOD="0",
         TASKQ_MAX_PENDING_LOCK_TIMEOUT_MS="0",
     )
-    # event_retention_period=0 -> sweep DISABLED (a background loop stops
-    # doing anything; nothing is retained-forever, nothing waits forever).
     assert settings.event_retention_period == timedelta(0)
-    # max_pending_lock_timeout_ms=0 -> the exact opposite: an admission
-    # path now WAITS INDEFINITELY rather than stopping.
     assert settings.max_pending_lock_timeout_ms == 0.0
-
-    # THE ASSERTION THIS TEST PINS: an adopter who has just learned
-    # "0 = the feature/loop this setting bounds stops happening" from the
-    # retention family (correct there) should be able to apply the same
-    # rule to the lock-timeout family and be right. They would not be:
-    # 0 there means "the wait this setting bounds now never stops."
-    # A single convention would require these to describe the same
-    # direction of effect; they describe opposite ones. Fails on purpose.
-    retention_means_stop = settings.event_retention_period == timedelta(0)
-    lock_timeout_means_stop = False  # it means "never stop waiting" — the opposite
-    assert retention_means_stop == lock_timeout_means_stop, (
-        "FAILS as expected: 'timedelta(0) DISABLES the sweep' (stops a "
-        "recurring action) and 'lock_timeout_ms<=0 waits indefinitely' "
-        "(a wait that never stops) are opposite-direction behaviours "
-        "both spelled with the same zero-shaped literal. No documented, "
-        "machine-checkable rule ties them together — see module "
-        "docstring and the River citation for the shape (a single "
-        "reserved sentinel, never 0) that avoids this."
-    )
+    assert _load(TASKQ_ARCHIVE_RETENTION_PERIOD="0").archive_retention_period == timedelta(0)

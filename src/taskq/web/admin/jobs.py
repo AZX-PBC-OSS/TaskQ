@@ -82,7 +82,10 @@ _LIVE_COLS = (
     "CASE WHEN started_at IS NOT NULL AND finished_at IS NOT NULL "
     "  THEN extract(epoch from finished_at - started_at) * 1000 "
     "  ELSE NULL END AS duration_ms, "
-    "attempt, max_attempts, priority, identity_key, fairness_key, "
+    # retry_kind travels with max_attempts so the Attempt cell can mark the
+    # ceiling inert on an indefinite-kind row instead of advertising a
+    # budget the job is not enforcing (retries.md §2).
+    "attempt, max_attempts, retry_kind, priority, identity_key, fairness_key, "
     # The lease columns: lock_expires_at for display, and lease_expired
     # computed server-side against the database clock — the lease is
     # written by that clock, so "is it past" is a stored predicate, not a
@@ -101,7 +104,9 @@ _ARCHIVE_COLS = (
     "CASE WHEN started_at IS NOT NULL AND finished_at IS NOT NULL "
     "  THEN extract(epoch from finished_at - started_at) * 1000 "
     "  ELSE NULL END AS duration_ms, "
-    "attempt, max_attempts, priority, identity_key, fairness_key, "
+    # retry_kind: same inert-ceiling marker as the live tab (jobs_archive
+    # carries the column too).
+    "attempt, max_attempts, retry_kind, priority, identity_key, fairness_key, "
     "archived_at, error_message, tags"
 )
 

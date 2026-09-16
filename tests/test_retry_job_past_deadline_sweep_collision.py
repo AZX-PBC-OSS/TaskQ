@@ -1,28 +1,35 @@
 # ruff: noqa: S608  # Why: schema is the fixture's validated identifier throughout; every value is $-bound.
 
-"""PIN: an admin retry of a job whose ``schedule_to_close`` deadline has
-already passed must leave the row resolvable by the deadline sweep, not
-wedge the whole sweep batch on a spent ``job_attempts`` key.
+"""PIN: an admin-retried job whose preserved ``schedule_to_close`` later
+elapses while it still waits to dispatch must leave the row resolvable by
+the deadline sweep, not wedge the whole sweep batch on a spent
+``job_attempts`` key.
 
 ``retry_job`` (``_sql_templates.py``) deliberately keeps ``attempt``
 monotonic on a normal re-dispatch cycle (never reset — see
 ``test_retry_job_attempt_epoch_pk.py``): a fresh dispatch climbs the
 counter past the spent value, so the next terminal write lands on a
 fresh ``(job_id, attempt)`` key. That contract depends on the row
-actually getting dispatched again. Dispatch excludes any row whose
-``schedule_to_close`` has already elapsed, so a job retried after its
-deadline has passed never climbs to a fresh attempt number — it sits
-``pending`` at its *spent* attempt, with ``schedule_to_close`` still in
-the past because ``retry_job`` never clears it. ``sweep_deadline_exceeded``
+actually getting dispatched again.
+
+``retry_job`` clears a ``schedule_to_close`` that has already elapsed at
+retry time (the retried row must be genuinely dispatchable — pinned by
+``test_retry_job_stale_deadline_operator_footgun.py``), but it preserves
+a still-future deadline: the operator's original budget intent survives
+an in-window retry. Dispatch excludes any row whose ``schedule_to_close``
+has elapsed, so if that preserved deadline passes while the re-pended row
+is still waiting, the row can never climb to a fresh attempt number — it
+sits ``pending`` at its *spent* attempt. ``sweep_deadline_exceeded``
 (``_sweeps.py``) then claims that row (``status IN ('pending','scheduled')
 AND schedule_to_close < now``) and inserts its batched ``job_attempts``
 row keyed at the job's current attempt — the same key the original failed
 run already wrote. The whole sweep batch's ``job_attempts`` INSERT is one
-statement over every swept row in that call, so this single collision
+statement over every swept row in that call, so without the
+``ON CONFLICT (job_id, attempt) DO NOTHING`` guard this single collision
 rolls back every row the sweep claimed in that call, not just the
 retried one.
 
-Operator impact: the deadline sweep raises
+Operator impact if the guard regresses: the deadline sweep raises
 ``asyncpg.exceptions.UniqueViolationError`` on ``job_attempts_pkey``
 every tick it encounters the wedged row. ``UniqueViolationError`` is not
 one of the leader loop's ``TRANSIENT_PG_ERRORS``
@@ -32,15 +39,12 @@ retry endpoint returns success and redirects as if the retry worked;
 the operator sees nothing wrong until the leader's unexpected-error
 telemetry fires.
 
-Fix direction: ``retry_job`` must clear ``schedule_to_close`` (or
-otherwise ensure the retried row is dispatchable/resolvable) the same
-way it already clears the row's other stale terminal-run fields
-(``finished_at``, ``result``, error fields) — an admin retry is a fresh
-run, and the prior run's deadline is stale for it. A retry must clear
-all stale terminal-run fields (deadline, completion timestamps, result
-data) alongside incrementing the attempt counter, preventing collisions
-between the spent attempt's old terminal write and the fresh attempt's
-own write.
+Distinct from the footgun pin: that file pins that a retry after the
+deadline has already passed produces a row dispatch can actually claim
+(the stale deadline is cleared). This file pins that a retry *inside*
+the deadline window — where the deadline is deliberately preserved —
+still cannot wedge the sweep when the window later closes before the
+re-run dispatches.
 """
 
 from datetime import UTC, datetime, timedelta
@@ -60,10 +64,11 @@ async def test_retry_past_deadline_does_not_wedge_the_deadline_sweep(
     module_pg_schema: ModulePgSchema,
     clean_jobs_app: JobsApp,
 ) -> None:
-    """A job retried after its own ``schedule_to_close`` has already
-    passed must not make ``sweep_deadline_exceeded`` raise a primary-key
-    collision, and the retried row must eventually be resolved to a
-    terminal state by the sweep rather than sitting wedged forever."""
+    """A job retried inside its deadline window whose preserved
+    ``schedule_to_close`` then elapses before the re-run dispatches must
+    not make ``sweep_deadline_exceeded`` raise a primary-key collision,
+    and the retried row must eventually be resolved to a terminal state
+    by the sweep rather than sitting wedged forever."""
     deps = clean_jobs_app.deps
     backend = clean_jobs_app.backend
     schema = module_pg_schema.schema_name
@@ -91,15 +96,10 @@ async def test_retry_past_deadline_does_not_wedge_the_deadline_sweep(
         )
         assert failed is not None and failed["status"] == "failed" and failed["attempt"] == 1
 
-        # The job's deadline elapses while it sits failed (an operator
-        # investigating the failure takes longer than schedule_to_close).
-        await conn.execute(
-            f"UPDATE \"{schema}\".jobs SET schedule_to_close = now() - interval '1 second' "
-            "WHERE id = $1",
-            job_id,
-        )
-
-    # The operator retries it through the escape hatch.
+    # The operator retries it through the escape hatch while the deadline
+    # is still in the window — retry_job preserves a still-future
+    # schedule_to_close (the operator's original budget intent); only an
+    # already-elapsed one is cleared.
     assert await backend.retry_job(job_id)
 
     async with deps.worker_pool.acquire() as conn:
@@ -108,6 +108,22 @@ async def test_retry_past_deadline_does_not_wedge_the_deadline_sweep(
             job_id,
         )
         assert repended is not None and repended["status"] == "pending"
+        assert repended["schedule_to_close"] is not None, (
+            "a retry inside the deadline window must preserve the "
+            "operator's original schedule_to_close — clearing a "
+            "still-future deadline would silently extend a budget the "
+            "operator set"
+        )
+
+        # The preserved deadline elapses while the re-pended row is still
+        # waiting to be dispatched (no worker has capacity yet). The row
+        # now sits pending at its spent attempt with an elapsed deadline —
+        # the collision shape this file pins.
+        await conn.execute(
+            f"UPDATE \"{schema}\".jobs SET schedule_to_close = now() - interval '1 second' "
+            "WHERE id = $1",
+            job_id,
+        )
 
         # The deadline sweep must be able to process this row (whatever
         # its final disposition) without the batch's job_attempts INSERT
@@ -120,11 +136,10 @@ async def test_retry_past_deadline_does_not_wedge_the_deadline_sweep(
             pytest.fail(
                 "sweep_deadline_exceeded raised on a retried past-deadline "
                 f"row instead of resolving it: {exc!r}. A retried job whose "
-                "schedule_to_close had already elapsed before the retry "
-                "keeps its spent attempt number and its stale deadline, so "
-                "the sweep's batched job_attempts INSERT revisits the "
-                "already-written (job_id, attempt) key and the whole "
-                "sweep batch rolls back."
+                "preserved schedule_to_close elapsed before the re-run "
+                "dispatched keeps its spent attempt number, so the sweep's "
+                "batched job_attempts INSERT revisits the already-written "
+                "(job_id, attempt) key and the whole sweep batch rolls back."
             )
 
         final = await conn.fetchrow(f'SELECT status FROM "{schema}".jobs WHERE id = $1', job_id)
@@ -164,8 +179,10 @@ async def test_retry_collision_does_not_wedge_sibling_rows_in_same_sweep_batch(
     async with deps.worker_pool.acquire() as conn:  # type: ignore[union-attr]  # Why: deps is object-typed in the JobsApp shim, as throughout the suite.
         await create_worker(conn, schema, worker_id)
 
-        # Row A: retried after its deadline passed -- collides on
-        # (job_id, attempt=1) the way the single-row pin above proves.
+        # Row A: failed at attempt 1, retried inside its deadline window
+        # (the preserved deadline), then stranded past that deadline before
+        # the re-run could dispatch -- collides on (job_id, attempt=1) the
+        # way the single-row pin above proves.
         collide_job_id = await create_running_job(
             conn,
             schema,
@@ -176,14 +193,7 @@ async def test_retry_collision_does_not_wedge_sibling_rows_in_same_sweep_batch(
             schedule_to_close=datetime.now(UTC) + timedelta(minutes=5),
             with_events=False,
         )
-        assert await backend.mark_failed_or_retry(
-            collide_job_id, worker_id, error, None, attempt=1
-        )
-        await conn.execute(
-            f"UPDATE \"{schema}\".jobs SET schedule_to_close = now() - interval '1 second' "
-            "WHERE id = $1",
-            collide_job_id,
-        )
+        assert await backend.mark_failed_or_retry(collide_job_id, worker_id, error, None, attempt=1)
 
         # Row B: an ordinary never-dispatched job whose deadline has simply
         # passed -- no retry, no prior attempt row, nothing to collide with.
@@ -199,13 +209,20 @@ async def test_retry_collision_does_not_wedge_sibling_rows_in_same_sweep_batch(
             with_events=False,
         )
         await conn.execute(
-            f'UPDATE "{schema}".jobs SET status = \'pending\' WHERE id = $1',
+            f"UPDATE \"{schema}\".jobs SET status = 'pending' WHERE id = $1",
             clean_job_id,
         )
 
+    # The operator retries row A while its deadline is still in the window
+    # (preserved), then the window closes before the re-run dispatches.
     assert await backend.retry_job(collide_job_id)
 
     async with deps.worker_pool.acquire() as conn:
+        await conn.execute(
+            f"UPDATE \"{schema}\".jobs SET schedule_to_close = now() - interval '1 second' "
+            "WHERE id = $1",
+            collide_job_id,
+        )
         # Both rows are eligible for the same sweep call: sweep_deadline_exceeded
         # snapshots in schedule_to_close order with no per-row isolation, so a
         # generous batch_size claims both in one transaction.

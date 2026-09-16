@@ -861,6 +861,40 @@ connection errors the limiter falls back to the PG implementation by default
 (`TASKQ_RATE_LIMIT_PG_FALLBACK_ENABLED`). Full reference:
 [rate-limiting.md](rate-limiting.md).
 
+### A saturated reservation does not tax its neighbours
+
+Dispatch is reservation-aware at claim time. The claim statement reads live slot occupancy in
+`reservation_slots` — which actors' running jobs currently hold live slots, and how many slots in
+those buckets remain acquirable — and folds it into per-actor admission: an actor whose held bucket
+is **full** is admitted nothing that round, and a partially free held bucket admits at most its
+free count (times the dispatch oversample). Without this gate, a saturated actor's pending jobs
+were claimed into the worker's shared `TASKQ_MAX_CONCURRENCY` consumer pool, denied by the
+post-claim acquire, and snoozed — every cycle, for as long as the backlog and the exhaustion both
+lasted, each denied job occupying a consumer slot while it was denied (measured: 25–45% throughput
+loss for a healthy actor sharing the worker; after the gate, none — see
+`perf-evidence-dispatch.md`).
+
+What you observe instead:
+
+- The saturated actor's rows stay `pending` (never claimed), so they appear in the per-actor
+  backlog series — `taskq.jobs.actor_backlog` / `taskq.jobs.oldest_pending_age_seconds` — as what
+  they are: work waiting on capacity. A saturated actor is *more* visible, not less.
+- When capacity frees (a holder finishes, or its lease expires — the same acquirability definition
+  the acquire path uses), the gate re-opens on the next dispatch round and the actor drains. The
+  gate is a damper, never a starvation mechanism: the first claim of a never-running actor is never
+  gated, so capacity can always be taken.
+- The post-claim acquire remains the admission authority. A claim-to-acquire race (a peer takes the
+  last slot in between) degrades to one bounded denial cycle per race, with the 429 semantics above
+  intact — no retry budget spent, no per-denial rows, `rate_limit_blocked_count` bumped.
+
+Because the gate derives pressure from holder state (`reservation_slots.job_id` → the holding
+job's actor) rather than from actor declarations, it covers static reservations, keyed
+reservations, and the per-queue concurrency cap (`queues.max_concurrent`) alike. Two boundaries to
+know: a bucket shared across *different* actors gates only the actors currently holding it — a
+co-declarant with nothing running is discovered by the ordinary post-claim denial path — and
+token-bucket / sliding-window *rate limits* are not read by the gate at all (their denials are
+discovered post-claim and snoozed at the limiter's retry hint, the behaviour described above).
+
 !!! warning "A drained fixed-quota bucket repolls every 5 s — forever"
     A `TokenBucket` with `refill_per_second=0` never refills and returns `retry_after=None`, so
     denials fall back to the 5 s default backoff. Without a `schedule_to_close`, such a job
@@ -948,6 +982,8 @@ Every job emits an `enqueue` PRODUCER span, a `process` CONSUMER span (linked, w
 |---|---|
 | `taskq.queue.depth` (by queue — counts `pending` **and** `scheduled`) | backlog growth, starved queues, fan-out storms |
 | `taskq.jobs.by_status` (by status — `pending` and `scheduled` reported separately) | which side of promotion the backlog sits on |
+| `taskq.jobs.actor_backlog` (by actor **and** queue — `pending` only; exact below the sampler's 1000-row per-pair cap, reading 1000 at/above it) | the unconsumed actor: one actor's series rises while its queue-mates stay flat — invisible in any queue-summed view |
+| `taskq.jobs.oldest_pending_age_seconds` (by actor and queue) | the same condition as a head-of-line age growing with wall clock — the series `TaskQQueueDepthHigh` fires on |
 | `taskq.jobs.oldest_due_age_seconds` | how long the oldest due `scheduled` job has waited for promotion |
 | `taskq_maintenance_leader_sweep_last_success_seconds` (by sweep) | per-sweep stalls — a sweep that stops completing |
 | `taskq_maintenance_leader_sweep_timeouts_total` (by sweep) | batches aborted by deadlines or server-side cancels |
@@ -974,6 +1010,38 @@ SELECT queue, status, count(*) FROM {schema}.jobs
 WHERE status IN ('pending','scheduled','running')
 GROUP BY queue, status ORDER BY count(*) DESC;
 ```
+
+### The per-actor backlog sampler: every worker, every interval, depth-bounded
+
+The two per-`(actor, queue)` series above are fed by the backlog-detection sampler, which runs on
+**every worker** every `TASKQ_QUEUE_DEPTH_INTERVAL` (default 15 s) — deliberately **not**
+leader-gated, unlike the maintenance sweeps: a detector hosted behind the leadership gate would
+emit nothing under exactly the failure it exists to expose (an election loss or a stuck lock mutes
+every leader-gated loop at once). Your scrape target deduplicates the identical per-worker series.
+
+Because N workers pay the read each interval, the read itself is bounded so its cost never grows
+with backlog depth: a loose index scan over `jobs_actor_dispatch_idx` enumerates the distinct
+pending (actor, queue) pairs (one index seek per pair, never one per row), and a per-pair probe
+reads at most **1000** rows in dispatch-head order (`priority DESC, scheduled_at`). One tick costs
+at most (#pairs holding pending work) × 1000 row visits — shaped by the deployment's actors and
+queues, never by how deep a backlog gets — and touches no terminal rows. Measured on a single
+100k-deep pair (local Postgres 18): ~14 ms and ~6000 shared buffers per tick before the bound,
+~0.4 ms and ~100 buffers after, flat against the 10k case
+(see `perf-evidence-dispatch.md`).
+
+What the cap does to the numbers you read:
+
+- `taskq.jobs.actor_backlog` is **exact below 1000 pending for a pair and reads 1000 at or above
+  it** — a lower bound, never an under-count. A pair pinned at the cap is "at least this deep";
+  dashboard over it with that meaning.
+- `taskq.jobs.oldest_pending_age_seconds` is the age of the oldest row within the pair's
+  dispatch-head sample: exactly the oldest pending row whenever the pair is below the cap (or
+  priorities are uniform), and in every case the head-of-line age an unconsumed actor grows without
+  bound — so the `TaskQQueueDepthHigh` alert's semantics are unchanged by the cap.
+- When you need the exact depth of a pair at/above the cap, query the table directly:
+  `SELECT count(*) FROM {schema}.jobs WHERE status='pending' AND actor='...' AND queue='...'` —
+  the right tool for a one-off investigation, which is exactly what a fleet-wide every-15-s sampler
+  cannot afford to be.
 
 ### Watch: large scheduled backlogs
 

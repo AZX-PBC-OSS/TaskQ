@@ -82,6 +82,17 @@ ON CONFLICT (bucket_name, slot_index) DO UPDATE SET
 # NULL when nothing was acquired — the Python side reads the hint off
 # that row instead of issuing a second statement.
 #
+# The acquirability predicate below — ``job_id IS NULL OR
+# lease_expires_at < clock_timestamp()`` — is THE definition of a free
+# slot, and it has a coupled reader: the dispatch claim's
+# reservation-headroom gate (taskq/backend/_dispatch_sql.py's
+# reservation_holdings / reservation_headroom CTEs) clamps an actor's
+# admission to the free count of the buckets its running jobs hold,
+# using this same predicate (on statement_timestamp(), the claim's
+# two-clock doctrine). If this definition ever changes, the gate's copy
+# must change with it or the claim's damper drifts from the acquire's
+# authority.
+#
 # The hint is computed server-side (``clock_timestamp()``, the same
 # clock the leases are stamped with and the free-slot predicate reads)
 # so app↔DB clock skew cannot stretch or shrink it. It is NULL when no

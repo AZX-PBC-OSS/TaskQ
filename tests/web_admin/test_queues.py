@@ -265,3 +265,74 @@ def test_queue_detail_template_no_pagination_link_when_last_page(
         allowed_statuses=["pending", "running", "scheduled"],
     )
     assert "Next page" not in html
+
+
+def _queue_detail_job_row(**overrides: Any) -> dict[str, Any]:
+    """One queue-detail row as the route hands it to the template."""
+    row: dict[str, Any] = {
+        "id": "abc-123",
+        "actor": "send_email",
+        "status": "pending",
+        "scheduled_at": "2025-01-01T00:00:00",
+        "attempt": 1,
+        "max_attempts": 3,
+        "retry_kind": "transient",
+    }
+    row.update(overrides)
+    return row
+
+
+def _render_queue_detail(stub_pool: _StubPool, jobs: list[dict[str, Any]]) -> str:
+    bundle = create_router(stub_pool)  # pyright: ignore[reportArgumentType]  # Why: test duck-type pool.
+    template = bundle.templates.get_template("queue_detail.html")
+    return template.render(
+        queue_name="default",
+        status="pending",
+        jobs=jobs,
+        has_next=False,
+        next_cursor_at=None,
+        next_cursor_id=None,
+        allowed_statuses=["pending", "running", "scheduled"],
+    )
+
+
+def test_queue_detail_marks_max_attempts_inert_for_indefinite_retry(
+    monkeypatch: pytest.MonkeyPatch, stub_pool: _StubPool
+) -> None:
+    """An indefinite-kind row ignores max_attempts entirely (retries.md §2):
+    the stored ceiling is inert, so the queue-detail Attempt cell renders
+    the shared ``attempt_budget`` marker — a live row can sit at attempt
+    168 over a stored 3, and "168/3" reads as a lie about what is enforced."""
+    monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
+    html = _render_queue_detail(
+        stub_pool,
+        [_queue_detail_job_row(attempt=168, retry_kind="indefinite")],
+    )
+    assert "168 / — (indefinite)" in html, (
+        "the inert ceiling must render as — (indefinite), keeping the real attempt count visible"
+    )
+    assert "168/3" not in html, (
+        "rendering the stored max_attempts as-is advertises a budget the job is not enforcing"
+    )
+
+    html = _render_queue_detail(
+        stub_pool,
+        [_queue_detail_job_row(attempt=2, retry_kind="transient")],
+    )
+    assert "2 / 3" in html
+    assert "— (indefinite)" not in html
+
+
+def test_queue_detail_queries_select_retry_kind() -> None:
+    """The marker needs retry_kind selected: a column the query never
+    fetches can never be rendered (the jobs-list pin's shape)."""
+    from taskq.web.admin.queues import _QUEUE_DETAIL_SQL_CURSOR, _QUEUE_DETAIL_SQL_FIRST
+
+    for name, sql in (
+        ("_QUEUE_DETAIL_SQL_FIRST", _QUEUE_DETAIL_SQL_FIRST),
+        ("_QUEUE_DETAIL_SQL_CURSOR", _QUEUE_DETAIL_SQL_CURSOR),
+    ):
+        assert "retry_kind" in sql.lower(), (
+            f"{name} must select retry_kind so the queue-detail Attempt cell "
+            "can mark an indefinite row's ceiling inert"
+        )

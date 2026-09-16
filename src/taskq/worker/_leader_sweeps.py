@@ -22,6 +22,7 @@ import structlog
 
 from taskq.backend._protocol import ConnLike
 from taskq.backend._sweeps import SweepBatchSizer
+from taskq.backend.statemachine import ACTIVE_STATUSES
 from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining
     schema_lock_name,
@@ -636,8 +637,9 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
                     # per-worker eviction+drain below only ever names rows
                     # its OWN process materialised, so keyed
                     # reservation_slots / rate_limit_buckets rows orphan
-                    # when the worker that created them dies (the #139
-                    # residual). The rows carry their own staleness — the
+                    # when the worker that created them dies (the
+                    # residual the keyed-row lifecycle exists to close).
+                    # The rows carry their own staleness — the
                     # keyed mark plus last_used_at, refreshed by the
                     # acquire/release/upsert statements that already touch
                     # them — and sweep_idle_keyed_rows deletes marked rows
@@ -1348,7 +1350,39 @@ async def _queue_depth_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
         await _sleep_interruptible(shutdown, ctx.deps.settings.queue_depth_interval)
 
 
-_QUERY_JOBS_BY_STATUS_SQL_TEMPLATE = 'SELECT status, count(*) FROM "{schema}".jobs GROUP BY status'
+#: Jobs-by-status sample for the backlog detectors: one row per LIVE status
+#: (``ACTIVE_STATUSES`` — pending/scheduled/running, the statemachine's
+#: single source of truth for the live set), counted EXACTLY, and no
+#: terminal statuses at all.
+#:
+#: Why exact for the live set: the series feeds
+#: ``TaskQScheduledBacklogGrowing``, whose stalled-plateau arm is
+#: ``changes(taskq_jobs_scheduled_count[5m]) == 0`` — a capped or sampled
+#: count reads a constant once the backlog crosses the cap, so a bounded
+#: estimate would fire the "stalled" alert continuously on a deep but
+#: healthy backlog and stop tracking growth exactly when growth matters.
+#: Exactness is the alert operand's requirement, so this is the one read
+#: in the tick whose cost tracks the live backlog; each branch is served
+#: index-only by its status's partial index (jobs_dispatch_idx /
+#: jobs_scheduled_wake_idx / jobs_running_lock_expires_idx), which never
+#: carries a terminal row.
+#:
+#: Why terminal statuses left the sample: the pre-bound shape was a
+#: full-table ``GROUP BY status``, so every unpruned terminal row — the
+#: one dimension that grows without bound between retention sweeps — was
+#: re-counted by every worker every ``queue_depth_interval`` (this loop
+#: is deliberately not leader-gated). And a terminal count from this
+#: series was never a history truth anyway: pruned rows vanish from it,
+#: so the tables and the admin surfaces carry that story. No alert
+#: operand reads a terminal status from this gauge. The reader-visible
+#: contract is "the live statuses, exact";
+#: tests/test_jobs_by_status_sampler_history_bound.py pins both halves
+#: (history-independent row work, exact live counts).
+_QUERY_JOBS_BY_STATUS_SQL_TEMPLATE = " UNION ALL ".join(
+    f"SELECT '{status}' AS status, count(*) AS count FROM \"{{schema}}\".jobs "  # noqa: S608  # Why: the only interpolations are {schema} (an identifier validated at WorkerSettings load and re-checked against _IDENT_RE in the loop before use) and the status literals from ACTIVE_STATUSES — the statemachine's fixed JobStatus vocabulary, never caller input.
+    f"WHERE status = '{status}' HAVING count(*) > 0"
+    for status in sorted(ACTIVE_STATUSES)
+)
 # statement_timestamp() (STABLE) — not clock_timestamp() (VOLATILE) — for
 # the due bound, the same two-clock split as every sibling sampler: a
 # volatile comparison cannot be a btree index condition, so the bound
@@ -1378,30 +1412,99 @@ _QUERY_RUNNING_LEASE_EXPIRED_SQL_TEMPLATE = (
     'SELECT count(*) FROM "{schema}".jobs '
     "WHERE status = 'running' AND lock_expires_at < statement_timestamp()"
 )
+#: Per-pair sample cap for the actor-backlog sampler (rows read per
+#: (actor, queue) pair per tick). The sampler runs on EVERY worker every
+#: ``queue_depth_interval`` — deliberately not leader-gated (see
+#: :func:`_backlog_detection_loop`) — so its cost must be independent of
+#: the adopter's pending depth: an exact GROUP BY count is O(depth) with
+#: no possible LIMIT (measured 10k→~1.6 ms/300 buffers, 100k→~13.5 ms/
+#: 2668 buffers per worker per tick), which is the unbounded cost centre
+#: tests/test_backlog_detection_sampler_depth_bound.py forbids. 1000 is
+#: far above the per-pair depth any alert threshold keys on (the bundled
+#: depth alert fires on oldest-pending AGE, which the head sample carries
+#: exactly), and bounds one tick at (#pairs with pending work) x 1000 row
+#: visits — deployment-shaped, never depth-shaped.
+_ACTOR_BACKLOG_SAMPLE_CAP: Final[int] = 1000
+
 # Depth and oldest-pending age per (actor, queue), from ONE grouped
 # aggregate so the two can never describe different moments: depth alone
 # is ambiguous (a deep queue that drains is healthy throughput) and age
-# alone cannot say how much is waiting. Both columns come from
-# jobs_actor_dispatch_idx — (actor, queue, priority DESC, scheduled_at,
-# id) partial on status='pending' — so the grouping is an index-only scan
-# of the pending population with no heap access, and never touches the
-# finished rows that dominate a mature table. scheduled_at, not
+# alone cannot say how much is waiting.
+#
+# The shape is bounded, not exact, by construction:
+#
+# * ``backlog_pairs`` enumerates the DISTINCT pending (actor, queue)
+#   pairs with a recursive loose index scan over jobs_actor_dispatch_idx
+#   — (actor, queue, priority DESC, scheduled_at, id) partial on
+#   status='pending' — one bounded seek per pair (the same geometry as
+#   the dispatch CTE's keys walks), so enumeration costs one visit per
+#   pair, never one per row, and no pair's depth is ever walked. Every
+#   pair appears, however small: an unconsumed actor whose backlog is
+#   still shallow stays attributable (criterion-43 visibility does not
+#   trade away small backlogs for the bound).
+# * ``sampled`` reads each pair's first _ACTOR_BACKLOG_SAMPLE_CAP
+#   pending rows in the index's own (priority DESC, scheduled_at, id)
+#   order — an ordered index probe that stops at the cap, with no sort
+#   and no heap access (scheduled_at rides the index). The probe order
+#   is dispatch-head order: the rows a consumer would take first.
+# * the outer GROUP BY aggregates the bounded sample, so one tick's row
+#   work is Σ min(depth_pair, cap) + #pairs — flat at fixed pair counts
+#   as the backlog grows (the depth-bound pin's oracle).
+#
+# Series semantics under the cap, which the gauge descriptions in
+# docs/guides/ops.md state for operators: ``depth`` is exact below the
+# cap and reads the cap at or above it (a lower bound, never an
+# under-count); ``oldest_age`` is the age of the oldest row in the
+# pair's dispatch-head sample — exactly the oldest pending row whenever
+# the pair is below the cap or priorities are uniform, and in every case
+# the head-of-line age an unconsumed actor grows without bound, which is
+# the condition TaskQQueueDepthHigh fires on. scheduled_at, not
 # created_at, is the waiting-since clock for a pending row: it is when
 # the job became eligible, and it is the column the index already
-# carries. PENDING, not scheduled: the unconsumed-actor condition is rows
-# no consumer takes, distinct from scheduled rows awaiting promotion.
+# carries. PENDING, not scheduled: the unconsumed-actor condition is
+# rows no consumer takes, distinct from scheduled rows awaiting
+# promotion.
 _QUERY_ACTOR_BACKLOG_SQL_TEMPLATE = (
+    "WITH RECURSIVE backlog_pairs AS ( "  # noqa: S608  # Why: the one non-placeholder interpolation is the module-level int cap baked in at import (the f-string LIMIT clause below); the only call-site interpolation is {schema}, an identifier validated at WorkerSettings load and re-checked against _IDENT_RE in the loop before use.
+    "( "
+    'SELECT j.actor, j.queue FROM "{schema}".jobs j '
+    "WHERE j.status = 'pending' "
+    "ORDER BY j.actor, j.queue "
+    "LIMIT 1 "
+    ") "
+    "UNION ALL "
+    "SELECT nxt.actor, nxt.queue "
+    "FROM backlog_pairs cur "
+    "CROSS JOIN LATERAL ( "
+    'SELECT j2.actor, j2.queue FROM "{schema}".jobs j2 '
+    "WHERE j2.status = 'pending' "
+    "AND (j2.actor, j2.queue) > (cur.actor, cur.queue) "
+    "ORDER BY j2.actor, j2.queue "
+    "LIMIT 1 "
+    ") nxt "
+    "), "
+    "sampled AS ( "
+    "SELECT p.actor, p.queue, s.scheduled_at "
+    "FROM backlog_pairs p "
+    "CROSS JOIN LATERAL ( "
+    'SELECT j3.scheduled_at FROM "{schema}".jobs j3 '
+    "WHERE j3.status = 'pending' "
+    "AND j3.actor = p.actor "
+    "AND j3.queue = p.queue "
+    "ORDER BY j3.priority DESC, j3.scheduled_at, j3.id "
+    f"LIMIT {_ACTOR_BACKLOG_SAMPLE_CAP} "
+    ") s "
+    ") "
     "SELECT actor, queue, count(*) AS depth, "
     "EXTRACT(EPOCH FROM (clock_timestamp() - MIN(scheduled_at)))::float8 AS oldest_age "
-    'FROM "{schema}".jobs '
-    "WHERE status = 'pending' "
+    "FROM sampled "
     "GROUP BY actor, queue"
 )
 
 
 async def _backlog_detection_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
     """Sample the backlog detectors (jobs-by-status, oldest due age,
-    running-lease-expired) every ``queue_depth_interval``.
+    running-lease-expired, per-actor backlog) every ``queue_depth_interval``.
 
     Why NOT leader-gated, unlike every sibling sampler here: a detector
     hosted behind the leadership gate emits nothing under the very failure
@@ -1409,6 +1512,20 @@ async def _backlog_detection_loop(ctx: SweepContext, shutdown: asyncio.Event) ->
     lock, or any election loss, mutes every leader-gated sampler at once.
     Every worker samples instead, accepting N times the query cost, and the
     per-target series are deduplicated by the scrape target.
+
+    The N-times cost is why every read in the tick must not grow with the
+    wrong dimension. The by-status read counts only the LIVE statuses,
+    exactly — the alert operands forbid a capped estimate, since a capped
+    count reads a constant past its cap and false-fires the stalled-plateau
+    arm of ``TaskQScheduledBacklogGrowing`` (see
+    ``_QUERY_JOBS_BY_STATUS_SQL_TEMPLATE``) — through per-status partial
+    indexes, so its cost tracks the live backlog and never touches the
+    terminal history that made the pre-bound full-table GROUP BY grow
+    without bound between retention sweeps. The per-actor read enumerates
+    distinct pending (actor, queue) pairs with a loose index scan and
+    probes each pair up to ``_ACTOR_BACKLOG_SAMPLE_CAP`` rows (see
+    ``_QUERY_ACTOR_BACKLOG_SQL_TEMPLATE``), so one tick's pair walk costs
+    at most #pairs x cap row visits, never O(pending depth) per worker.
     """
     schema = ctx.deps.settings.schema_name
     if not _IDENT_RE.match(schema):
@@ -1441,17 +1558,19 @@ async def _backlog_detection_loop(ctx: SweepContext, shutdown: asyncio.Event) ->
                 oldest_due: float | None = await conn.fetchval(oldest_due_sql)
                 expired_lease: int | None = await conn.fetchval(expired_lease_sql)
                 # This read is isolated from the fleet-wide ones above: a
-                # GROUP BY over the whole pending population is the
-                # widest-shaped statement in the tick and the first to hit
-                # the statement timeout under the incident it exists to
-                # expose, and its failure must not cost the tick the samples
-                # below — frozen scheduled-count / oldest-due-age operands
-                # make the backlog-growing comparison silently false while
-                # the loop stays alive. The empty fallback clears the
-                # per-actor caches below rather than freezing them at
-                # readings the worker can no longer see, and the failure
-                # rides the actor sampler's log path: the tick degrades
-                # visibly, never silently.
+                # grouped read over every pending (actor, queue) pair is
+                # the widest-shaped statement in the tick and the first
+                # to hit the statement timeout under the incident it
+                # exists to expose (the pairs walk and the per-pair caps
+                # bound its row visits — not its latency, when the engine
+                # itself is stalling), and its failure must not cost the
+                # tick the samples below — frozen scheduled-count /
+                # oldest-due-age operands make the backlog-growing
+                # comparison silently false while the loop stays alive.
+                # The empty fallback clears the per-actor caches below
+                # rather than freezing them at readings the worker can no
+                # longer see, and the failure rides the actor sampler's
+                # log path: the tick degrades visibly, never silently.
                 try:
                     actor_rows = await conn.fetch(actor_backlog_sql)
                 except Exception as exc:

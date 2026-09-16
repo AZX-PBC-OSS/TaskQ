@@ -26,6 +26,26 @@ When the resolved env is `test` (case-insensitive), `.env.local` and `.env.test.
 
 ---
 
+## The `0` convention
+
+Several fields use `0` as a **sentinel** — a special meaning, not the quantity zero — and the polarity differs **per family**. Learn the families once — every sentinel-`0` field in this reference follows one of them, and each family's own entry links back here:
+
+| Family | Fields | `0` means |
+|---|---|---|
+| Statement cache size | `TASKQ_STATEMENT_CACHE_SIZE` | cache **disabled** |
+| Statement cache lifetime | `TASKQ_MAX_CACHED_STATEMENT_LIFETIME` | cached **indefinitely** |
+| Lock-wait budgets | `TASKQ_MAX_PENDING_LOCK_TIMEOUT_MS`, `TASKQ_UNIQUE_FOR_LOCK_TIMEOUT_MS`, `TASKQ_IDEMPOTENCY_LOCK_TIMEOUT_MS`, `TASKQ_TOKEN_BUCKET_LOCK_TIMEOUT_MS`, `TASKQ_SLIDING_WINDOW_LOCK_TIMEOUT_MS` | **wait indefinitely** server-side (the `lock_timeout` GUC convention). A TaskQ-built pool still applies its per-query `command_timeout`, so an unbounded server wait is still bounded client-side — prefer a large finite value; see [Derived Values](#derived-values) |
+| Time-based deletion sweeps | `TASKQ_EVENT_RETENTION_PERIOD`, `TASKQ_KEYED_ROW_RECLAIM_PERIOD` | sweep **disabled** — for a deletion loop the safe misconfiguration is off |
+| Prune/archive retention | `TASKQ_PRUNE_RETENTION_SUCCEEDED`, `TASKQ_PRUNE_RETENTION_FAILED`, `TASKQ_PRUNE_RETENTION_CANCELLED`, `TASKQ_PRUNE_RETENTION_ABANDONED`, `TASKQ_ARCHIVE_RETENTION_PERIOD` | archive/expire **immediately** at the next sweep — the prune family's polarity is deliberately opposite to the deletion-sweep family's |
+| Health listener | `TASKQ_HEALTH_PORT` | bind an **ephemeral** port (tests only). Note this field's real "off" is *unset*, not `0` |
+
+The trap this table exists for: the first two rows sit two fields apart in
+`WorkerSettings` and mean opposite things, and the lock-budget family's "wait
+indefinitely" is the opposite of "fail fast". Never generalise `0` from one
+family to another — check the table.
+
+---
+
 ## `.env` File Setup
 
 Minimal `.env` for a real deployment:
@@ -56,8 +76,8 @@ Applies to all commands: `worker`, `migrate`, `ui serve`, `health`.
 |---|---|---|---|---|
 | `TASKQ_PG_DSN` | `PostgresDsn` | `postgresql://taskq:taskq@localhost:5432/taskq` | Direct (non-PgBouncer) DSN. LISTEN/NOTIFY and advisory locks require a session-mode connection. | all |
 | `TASKQ_SCHEMA_NAME` | `str` | `taskq` | Postgres schema for all TaskQ tables. Must match `^[A-Za-z_][A-Za-z0-9_]*$`. | all |
-| `TASKQ_STATEMENT_CACHE_SIZE` | `int` | `512` | Size of the per-connection prepared-statement LRU asyncpg keeps on every pool TaskQ builds. asyncpg's default of 100 thrashes on TaskQ's read paths (`list_jobs` alone renders 384+ filter-combination variants). `0` disables the cache. Applies only to pools TaskQ builds — bring-your-own pools must pass the same `create_pool` kwarg themselves. See [ops.md — Database performance knobs](ops.md#database-performance-knobs). | all |
-| `TASKQ_MAX_CACHED_STATEMENT_LIFETIME` | `int` (seconds) | `3600` | How long a prepared statement may stay in asyncpg's per-connection cache on every pool TaskQ builds. asyncpg's default of 300 s re-prepares statements on long-lived workers. `0` caches indefinitely. Same TaskQ-built-pools-only scope as `TASKQ_STATEMENT_CACHE_SIZE`. | all |
+| `TASKQ_STATEMENT_CACHE_SIZE` | `int` | `512` | Size of the per-connection prepared-statement LRU asyncpg keeps on every pool TaskQ builds. asyncpg's default of 100 thrashes on TaskQ's read paths (`list_jobs` alone renders 384+ filter-combination variants). `0` disables the cache (see [The `0` convention](#the-0-convention)). Applies only to pools TaskQ builds — bring-your-own pools must pass the same `create_pool` kwarg themselves. See [ops.md — Database performance knobs](ops.md#database-performance-knobs). | all |
+| `TASKQ_MAX_CACHED_STATEMENT_LIFETIME` | `int` (seconds) | `3600` | How long a prepared statement may stay in asyncpg's per-connection cache on every pool TaskQ builds. asyncpg's default of 300 s re-prepares statements on long-lived workers. `0` caches indefinitely — the *opposite* polarity of `TASKQ_STATEMENT_CACHE_SIZE` two rows up (see [The `0` convention](#the-0-convention)). Same TaskQ-built-pools-only scope as `TASKQ_STATEMENT_CACHE_SIZE`. | all |
 | `TASKQ_REDIS_URL` | `RedisDsn \| None` | `None` | Optional Redis URL. Required for real-time SSE progress fanout in the admin UI. | worker, ui serve |
 | `TASKQ_PG_CREDENTIAL_PROVIDER` | `str \| None` | `None` | `module:attr` reference to a `PgCredentialProvider`. Overridden by `--pg-credential-provider` on `taskq worker` / `migrate` / `ui serve`. See [Managed identities](managed-identities.md). | worker, migrate, ui serve |
 | `TASKQ_REDIS_CREDENTIAL_PROVIDER` | `str \| None` | `None` | `module:attr` reference to a `RedisCredentialProvider`. Requires `TASKQ_REDIS_URL`. Overridden by `--redis-credential-provider`. | worker, ui serve |
@@ -252,7 +272,7 @@ See [rate-limiting.md](rate-limiting.md) for the fallback behaviour.
 |---|---|---|---|---|
 | `TASKQ_HEALTH_ENABLED` | `bool` | `true` | Master switch for the worker health server (both transports). | — |
 | `TASKQ_HEALTH_SOCKET_PATH` | `str` | `/tmp/taskq_health.sock` | Unix socket path for the health server. | — |
-| `TASKQ_HEALTH_PORT` | `int \| None` | unset | TCP port for the HTTP health listener serving `/live` and `/ready`. Unset means **no TCP listener at all** — setting a port is the opt-in. Required on Azure Container Apps, whose probes support only `httpGet`/`tcpSocket` and cannot reach a Unix socket. If the port cannot be bound the worker **fails to start**. `0` binds an ephemeral port (tests only). | 0-65535 |
+| `TASKQ_HEALTH_PORT` | `int \| None` | unset | TCP port for the HTTP health listener serving `/live` and `/ready`. Unset means **no TCP listener at all** — setting a port is the opt-in. Required on Azure Container Apps, whose probes support only `httpGet`/`tcpSocket` and cannot reach a Unix socket. If the port cannot be bound the worker **fails to start**. `0` binds an ephemeral port (tests only) — this family's "off" is *unset*, not `0` (see [The `0` convention](#the-0-convention)). | 0-65535 |
 | `TASKQ_HEALTH_HOST` | `str` | `0.0.0.0` | Bind address for the TCP listener. Only used when `TASKQ_HEALTH_PORT` is set. Defaults to all interfaces because ACA and Kubernetes probe the replica over the pod network; narrow to `127.0.0.1` when only a local sidecar probes. | — |
 | `TASKQ_HEALTH_PG_PING_TIMEOUT` | `float` (seconds) | `0.2` | Timeout for the readiness PG ping — the role-pool ping, and the per-slot transaction pool's ping when that pool exists (overlapping probes share a single ping). | Min: 0.0 |
 | `TASKQ_HEALTH_REQUEST_TIMEOUT` | `float` (seconds) | `2.0` | Time a probe gets to send its whole request line and headers before the connection is dropped unanswered. Bounds a drip-feed client that would otherwise hold a connection open by staying just inside a per-line timeout. Keep at or below the shortest probe `timeoutSeconds` you configure. | > 0 |
@@ -319,7 +339,7 @@ A hot-reload rebuilds factory-backed resources; it never re-reads settings. `TAS
 | `TASKQ_WORKER_GROUP` | `str` | `default` | Consumer group name emitted as `messaging.consumer.group.name` on spans. | — |
 | `TASKQ_LOG_FORMAT` | `str` | `json` | Log renderer. `json` for production; `console` for human-readable dev output. Only these two values are valid. | Must be `json` or `console` |
 | `TASKQ_LOG_LEVEL` | `str` | `INFO` | Root logger level. | — |
-| `TASKQ_METRICS_PORT` | `int` | `9090` | Bind port for the standalone Prometheus metrics server. Used by the `prometheus` contrib exporter; the in-process FastAPI health `/metrics` endpoint ignores this field. | Range: 1–65535 |
+| `TASKQ_METRICS_PORT` | `int` | `9090` | Reserved — no shipped serve path reads it today. The Prometheus endpoint is `taskq ui serve`'s `/jobs/health/metrics` on the admin port (see [observability.md — Serving the metrics](observability.md#serving-the-metrics-the-prometheus-endpoint)); the worker's health socket serves three process gauges at `/metrics`. Neither binds this port. | Range: 1–65535 |
 
 See [observability.md](observability.md) for OTel configuration.
 
@@ -383,13 +403,13 @@ The **prune sweep** (Sweep 5) runs once daily and moves terminal jobs from `jobs
 
 #### Per-status retention
 
-These control how long a terminal job stays in the `jobs` table before being moved to `jobs_archive`. Shorter values keep the hot `jobs` table smaller; longer values make recent history available without querying the archive.
+These control how long a terminal job stays in the `jobs` table before being moved to `jobs_archive`. Shorter values keep the hot `jobs` table smaller; longer values make recent history available without querying the archive. For these fields `0` archives the status at the next daily sweep — the prune family's zero-means-now polarity, opposite to the deletion-sweep family's (see [The `0` convention](#the-0-convention)).
 
 | Env Var | Type | Default | Description |
 |---|---|---|---|
-| `TASKQ_PRUNE_RETENTION_PERIOD` | `timedelta` | `30d` | Global fallback retention when no per-status override applies. |
-| `TASKQ_PRUNE_RETENTION_SUCCEEDED` | `timedelta` | `30d` | Retention for `succeeded` jobs. |
-| `TASKQ_PRUNE_RETENTION_FAILED` | `timedelta` | `90d` | Retention for `failed` jobs. |
+| `TASKQ_PRUNE_RETENTION_PERIOD` | `timedelta` | `30d` | Reserved as the global fallback for a terminal status without a per-status knob. **Currently inert**: the four per-status fields below cover every terminal status, so the sweep never falls back here and setting this changes nothing today. Size the per-status fields instead. |
+| `TASKQ_PRUNE_RETENTION_SUCCEEDED` | `timedelta` | `30d` | Retention for `succeeded` jobs — usually the bulk of terminal volume; the first knob to lower when the hot table grows. |
+| `TASKQ_PRUNE_RETENTION_FAILED` | `timedelta` | `90d` | Retention for `failed` jobs — kept hot longer by default because they are the first incident-audit trail. |
 | `TASKQ_PRUNE_RETENTION_CANCELLED` | `timedelta` | `30d` | Retention for `cancelled` jobs. |
 | `TASKQ_PRUNE_RETENTION_ABANDONED` | `timedelta` | `90d` | Retention for `abandoned` and `crashed` jobs. |
 
@@ -399,7 +419,7 @@ Per-actor retention overrides can be set in `actor_config.metadata` as `retentio
 
 | Env Var | Type | Default | Description | Constraints |
 |---|---|---|---|---|
-| `TASKQ_ARCHIVE_RETENTION_PERIOD` | `timedelta` | `365d` | How long a row stays in `jobs_archive` before the expiry sweep hard-deletes it. | Must be positive |
+| `TASKQ_ARCHIVE_RETENTION_PERIOD` | `timedelta` | `365d` | How long a row stays in `jobs_archive` before the expiry sweep hard-deletes it. | Non-negative; `0` hard-deletes at the next expiry sweep (see [The `0` convention](#the-0-convention)) |
 | `TASKQ_ARCHIVE_EXPIRY_SCHEDULE_UTC` | `str` | `04:00` | Daily fire time for the archive expiry sweep in `HH:MM` UTC format. Ignored when `TASKQ_ARCHIVE_EXPIRY_CRON_EXPR` is set. | — |
 | `TASKQ_ARCHIVE_EXPIRY_CRON_EXPR` | `str \| None` | `None` | Full 5-field cron expression for the archive expiry sweep. Takes precedence over `TASKQ_ARCHIVE_EXPIRY_SCHEDULE_UTC`. | — |
 
@@ -550,7 +570,8 @@ Two corollaries:
   `..._factory`) keeps its own `command_timeout`; if you widen an admission
   budget there, size the pool's timeout above the budget yourself.
 - A budget of **0 or less** asks the server for an unbounded wait (the
-  `lock_timeout` GUC convention). A TaskQ-built pool still applies its
+  `lock_timeout` GUC convention — the lock-wait budget family's `0` polarity,
+  see [The `0` convention](#the-0-convention)). A TaskQ-built pool still applies its
   per-query bound to that statement — the black-hole guard every other
   statement relies on is not dropped for it — so if you truly need an
   unbounded admission wait, supply your own pool without a client-side bound.
@@ -571,6 +592,34 @@ TASKQ_PG_DSN_POOLED=postgresql://taskq:pass@pgbouncer:5432/taskq
 ```
 
 If neither `TASKQ_PG_DSN_DIRECT` nor `TASKQ_PG_DSN_POOLED` is set, both resolve to `TASKQ_PG_DSN`. In that case `TASKQ_PG_DSN` must point directly at Postgres (not PgBouncer), because the direct-connection pools require session mode.
+
+---
+
+## Starting configurations
+
+Every value below is a **starting point, not a recommendation**: the right
+numbers come from your actors' payload sizes, durations, and arrival rates.
+The derivation is [ops.md §4 — Sizing](ops.md#4-sizing-workers-and-postgres-connections);
+the connection columns here are computed with its fleet formula
+(`direct = M × (dispatcher_pool_size + heartbeat_pool_size + 2) + 2`,
+`pooled = M × int(max_concurrency × 1.5)`, steady state, no per-slot
+transaction pool) — recompute before you scale, and keep the rolling-deploy
+peak (roughly 2× steady, because orchestrators start new pods before
+draining old ones) inside Postgres `max_connections` together with your
+application's own pools.
+
+| Profile | Workers | `TASKQ_MAX_CONCURRENCY` | PG connections (steady) | Rolling-deploy peak | Watch |
+|---|---|---|---|---|---|
+| Small (dev, small managed SKU) | 2 | 4 | 34 (22 direct + 12 pooled) | ~68 | Fits a 100-connection Postgres beside a small app pool. On a ~50-connection SKU, drop to 1 worker or lower concurrency further — two default workers (44–48 connections) already exceed it; see the small-SKU note in ops.md §4. |
+| Medium | 5 | 8 (default) | 112 (52 direct + 60 pooled) | ~224 | Crosses TaskQ's 80-connection `pgbouncer_recommended` threshold (logged at worker startup) — route `TASKQ_PG_DSN_POOLED` through PgBouncer. |
+| Large | 10 | 16 | 342 (102 direct + 240 pooled) | ~684 | The worked example in ops.md §4. PgBouncer on the pooled DSN is mandatory in practice; the direct DSN must stay on session mode (LISTEN/NOTIFY, advisory locks). |
+
+Everything not listed stays at its shipped default — pool sizes,
+heartbeat, sweeps, and the retention family are deliberately non-silent
+defaults (terminal jobs prune to `jobs_archive` daily; nothing accumulates
+forever). Per-slot transactional actors (a LOOP-scope `asyncpg.Connection`
+registered in DI) add `max_concurrency + 1` direct connections per worker —
+budget that path with ops.md §4, not this table.
 
 ---
 

@@ -474,10 +474,15 @@ async def dispatch_one_job(
                 links=links,
             ) as consumer_span:
                 try:
+                    # The row's stored version rides the raise — not the
+                    # helper's current-version default — so a row that
+                    # predates a payload migration is distinguishable from
+                    # a malformed caller payload.
                     validated_payload = validate_actor_payload(
                         actor_ref.payload_type,
                         job.payload,
                         job.actor,
+                        payload_schema_ver=str(job.payload_schema_ver),
                     )
 
                     span_ctx = consumer_span.get_span_context()

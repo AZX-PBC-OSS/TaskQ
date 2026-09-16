@@ -22,7 +22,7 @@ from collections.abc import Iterable
 from contextlib import AbstractAsyncContextManager as AsyncContextManager
 from dataclasses import replace
 from datetime import datetime, timedelta
-from typing import TYPE_CHECKING, ClassVar, Literal
+from typing import TYPE_CHECKING, Any, ClassVar, Literal
 from uuid import UUID
 
 import structlog
@@ -47,7 +47,6 @@ from taskq.backend._protocol import (
     BatchRow,
     BulkCancelResult,
     CancelFlag,
-    CancelPhase,
     DenialReason,
     EnqueueArgs,
     ErrorInfo,
@@ -154,11 +153,16 @@ from taskq.testing._terminal import (
     _mark_snoozed,
     _mark_succeeded,
     _mark_succeeded_with_conn,
+    _retry_job,
     _write_attempt,
     _write_cancel_escalation,
 )
 
 if TYPE_CHECKING:
+    # TYPE_CHECKING-only: a runtime taskq.actor import would pull asyncpg
+    # into the driver-free testing boundary (pinned by
+    # test_testing_no_transitive_asyncpg).
+    from taskq.actor import ActorRef
     from taskq.worker.leader import ArchiveExpiryResult, PruneResult
 
 __all__ = [
@@ -310,7 +314,7 @@ class InMemoryBackend:
 
     def register_stub(
         self,
-        actor_name: str,
+        actor_name: "str | ActorRef[Any, Any]",
         fn: StubFn,
         *,
         retry: RetryPolicy | None = None,
@@ -805,74 +809,7 @@ class InMemoryBackend:
     # ── Admin operations ──────────────────────────────────────────────
 
     async def retry_job(self, job_id: JobId) -> bool:
-        row = self._jobs.get(job_id)
-        # An operator re-run is "run this again", so every state a job can
-        # come to rest in is a valid source, including 'succeeded' (the
-        # replay path after a bad deploy) and 'abandoned' (a deploy
-        # interrupted the job; it did not fail). 'running' is the one
-        # exclusion, and it is a correctness constraint rather than a
-        # policy choice: re-pending a row while an attempt is live races
-        # that attempt's terminal write and the job can execute twice
-        # concurrently. 'pending'/'scheduled' are excluded because the job
-        # is already queued — there is nothing to put back, and re-pending
-        # would discard its place in the dispatch order.
-        if row is None or row.status in ("running", "pending", "scheduled"):
-            return False
-        # Monotonic attempt with the ceiling raised just enough to open
-        # the budget gates, mirroring the PG statement's
-        # LEAST(GREATEST(max_attempts, attempt + 1), 32767): the attempt
-        # counter never resets across retries. A re-run climbs to fresh
-        # attempt numbers — the twin's dispatch claim stamps attempt + 1 —
-        # so no attempt-row writer can revisit a spent epoch's key. At the
-        # smallint bound the ceiling cannot rise further and the retry
-        # is refused — the row stays terminal — rather than re-pending
-        # a job the next claim could only overflow.
-        raised_ceiling = min(max(row.max_attempts, row.attempt + 1), 32767)
-        if raised_ceiling <= row.attempt:
-            return False
-        self._jobs[job_id] = replace(
-            row,
-            status="pending",
-            max_attempts=raised_ceiling,
-            # An operator hand-back routes by the actor's current
-            # assignment, not by the label the row was first placed
-            # under — including for a row terminalized before it was
-            # ever claimed.
-            assignment_routed=True,
-            cancel_phase=CancelPhase.NONE,
-            # The whole cancel trail goes with the spent epoch, mirroring
-            # the PG SET clause's cancel_requested_at = NULL: the TERMINAL
-            # writes deliberately keep the cancel columns as the audit
-            # trail of why the job ended, and a re-run must not inherit
-            # that trail — the next attempt's cancel protocol starts at
-            # phase 0 with no request stamp.
-            cancel_requested_at=None,
-            error_class=None,
-            error_message=None,
-            error_traceback=None,
-            scheduled_at=self._clock.now(),
-            finished_at=None,
-            result=None,
-            result_size_bytes=None,
-            result_expires_at=None,
-        )
-        # Batch-status reconciliation, the twin of the PG statement's
-        # reopened CTE (_sql_templates.py retry_job): a re-pended member
-        # makes a terminal batch row's claim a lie, and every batch-status
-        # writer guards on 'active', so the reopen happens here, in the
-        # same store mutation as the re-pend. metadata.batch_id marks
-        # membership only (the finalizer is never stamped), and the guard
-        # on the terminal statuses keeps it idempotent.
-        raw_bid = row.metadata.get("batch_id")
-        if raw_bid is not None:
-            batch_row = self._batches.get(UUID(str(raw_bid)))
-            if batch_row is not None and batch_row.status in ("complete", "aborted"):
-                self._batches[UUID(str(raw_bid))] = replace(
-                    batch_row, status="active", completed_at=None
-                )
-        for event in self._wake_subscribers:
-            event.set()
-        return True
+        return await _retry_job(self, job_id)
 
     # ── Scheduling / sweeps ────────────────────────────────────────────
     # No caller-supplied now: the injected Clock is the single arbiter

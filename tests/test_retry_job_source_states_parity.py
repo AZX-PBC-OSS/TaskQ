@@ -33,6 +33,7 @@ Pinned on both backends: an admin action that worked on one and refused on the
 other would be worse than one that refuses consistently.
 """
 
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
@@ -259,4 +260,105 @@ async def test_retry_job_still_re_runs_a_failed_job(backend_pair: Backend) -> No
     assert row.error_class is None, (
         "the previous run's error must be cleared when the job is re-pended, "
         "so the row does not carry a failure that no longer describes it"
+    )
+
+
+async def _force_schedule_to_close(backend: Backend, job_id: JobId, deadline: datetime) -> None:
+    """Stamp an absolute deadline directly (time control only — the same
+    shape ``create_running_job``'s ``schedule_to_close`` parameter seeds on
+    the PG side)."""
+    if isinstance(backend, InMemoryBackend):
+        row = backend._jobs[job_id]  # pyright: ignore[reportPrivateUsage]  # Why: the twin's store is the seam every in-memory state-forcing helper in this suite uses.
+        backend._jobs[job_id] = replace(row, schedule_to_close=deadline)  # pyright: ignore[reportPrivateUsage]  # Why: same
+        return
+    assert isinstance(backend, PostgresBackend)
+    schema: str = backend._schema_name  # pyright: ignore[reportPrivateUsage]  # Why: PG-path helper mirrors _worker_of above
+    pool = backend._worker_pool  # pyright: ignore[reportPrivateUsage]  # Why: same
+    async with pool.acquire() as conn:  # pyright: ignore[reportUnknownVariableType]  # Why: asyncpg stubs yield PoolConnectionProxy | Unknown
+        await conn.execute(
+            f'UPDATE "{schema}".jobs SET schedule_to_close = $2 WHERE id = $1',  # noqa: S608 # Why: schema is fixture-derived and _IDENT_RE-validated; every value is $N-bound
+            job_id,
+            deadline,
+        )
+
+
+def _backend_now(backend: Backend) -> datetime:
+    """The clock domain the backend's own predicates arbitrate in: the
+    twin's injected clock, or the database server clock (approximated by
+    this process's clock with a margin wide enough for the suite's known
+    app↔DB skew — see tests/conftest.py's startup divergence check)."""
+    if isinstance(backend, InMemoryBackend):
+        return backend._clock.now()  # pyright: ignore[reportPrivateUsage]  # Why: the twin's injected clock is the arbiter of every time predicate, mirroring PG's server clock.
+    return datetime.now(UTC)
+
+
+async def test_retry_job_clears_an_elapsed_deadline_and_the_row_dispatches(
+    backend_pair: Backend,
+) -> None:
+    """An operator retry after the deadline has passed hands back a row a
+    worker can actually claim — the elapsed deadline is a spent epoch's
+    artifact, cleared like the spent run's error fields.
+
+    The end-to-end PG pin is
+    tests/test_retry_job_stale_deadline_operator_footgun.py; this pins that
+    the in-memory twin applies the same conditional clear (an admin action
+    that revives a row on one backend and wedges it on the other would be
+    worse than either behaviour alone).
+    """
+    job_id = await _enqueue(backend_pair, max_attempts=1)
+    worker_id = await _worker_of(backend_pair)
+    attempt = await _claim(backend_pair, job_id, worker_id)
+    await backend_pair.mark_failed_or_retry(job_id, worker_id, _ERROR, None, attempt=attempt)
+
+    # The deadline elapses while the job sits failed — an operator
+    # investigating an incident routinely takes longer than a tight
+    # schedule_to_close window.
+    past = _backend_now(backend_pair) - timedelta(minutes=5)
+    await _force_schedule_to_close(backend_pair, job_id, past)
+
+    assert await backend_pair.retry_job(job_id) is True
+    row = await backend_pair.get(job_id)
+    assert row is not None
+    assert row.status == "pending"
+    assert row.schedule_to_close is None, (
+        "a retry after the deadline has already passed must clear it: "
+        "dispatch's own claim predicate refuses rows whose deadline has "
+        "elapsed, so re-pending with the stale deadline intact hands back "
+        "a row no worker can ever claim — and the next deadline-sweep tick "
+        f"silently re-fails it. observed schedule_to_close={row.schedule_to_close!r}"
+    )
+
+    # The re-pended row is genuinely claimable — not merely resolvable.
+    dispatched = await backend_pair.dispatch_batch(
+        worker_id=worker_id,
+        queues=["default"],
+        limit=10,
+        lock_lease=_LOCK_LEASE,
+    )
+    assert job_id in {r.id for r in dispatched}, (
+        "the retried row must reach a worker: a Retry that reports success "
+        "but can never dispatch is a failure that looks like a success"
+    )
+
+
+async def test_retry_job_preserves_a_future_deadline(backend_pair: Backend) -> None:
+    """A still-future ``schedule_to_close`` survives an in-window retry:
+    the operator's original budget intent is not silently extended by the
+    re-run."""
+    job_id = await _enqueue(backend_pair, max_attempts=1)
+    worker_id = await _worker_of(backend_pair)
+    attempt = await _claim(backend_pair, job_id, worker_id)
+    await backend_pair.mark_failed_or_retry(job_id, worker_id, _ERROR, None, attempt=attempt)
+
+    future = _backend_now(backend_pair) + timedelta(days=1)
+    await _force_schedule_to_close(backend_pair, job_id, future)
+
+    assert await backend_pair.retry_job(job_id) is True
+    row = await backend_pair.get(job_id)
+    assert row is not None
+    assert row.status in ("pending", "scheduled")
+    assert row.schedule_to_close == future, (
+        "an in-window retry must keep the deadline the operator set — "
+        f"clearing or extending it silently changes the job's budget. "
+        f"observed schedule_to_close={row.schedule_to_close!r}, expected {future!r}"
     )

@@ -1,7 +1,7 @@
 {% extends "_base.html" %}
 {% set active_page = "queue_detail" %}
 {% from "_partials/table.html" import styled_table, table_header, table_body, table_row %}
-{% from "_partials/job_card.html" import status_badge %}
+{% from "_partials/job_card.html" import status_badge, attempt_budget %}
 
 {% block title %}Queue {{ queue_name }} — TaskQ Admin{% endblock %}
 
@@ -37,7 +37,7 @@
             <td class="px-4 py-2.5 text-sm font-medium">{{ job.actor }}</td>
             <td class="px-4 py-2.5">{{ status_badge(job.status) }}</td>
             <td class="px-4 py-2.5 text-xs text-slate-500 whitespace-nowrap">{{ job.scheduled_at }}</td>
-            <td class="px-4 py-2.5 text-xs text-slate-500">{{ job.attempt }}/{{ job.max_attempts }}</td>
+            <td class="px-4 py-2.5 text-xs text-slate-500">{{ attempt_budget(job) }}</td>
         {% endcall %}
     {% endfor %}
     {% endcall %}
