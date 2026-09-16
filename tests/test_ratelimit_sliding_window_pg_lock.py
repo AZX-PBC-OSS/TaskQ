@@ -17,10 +17,10 @@ module pins three properties:
 3. The window stays EXACT under concurrency — the lock serialises the
    racers, and bounding the wait never loosens the limit.
 
-The acquire is TWO-TIER (``acquire_advisory_xact_lock_bounded``, the
-module-local mirror of the enqueue branch's ``taskq._advisory`` helper —
-same name and shape so the integration pass can dedupe the copy with an
-import swap): one ``pg_try_advisory_xact_lock`` statement when
+The acquire is TWO-TIER (``acquire_advisory_xact_lock_bounded``, imported
+from ``taskq._advisory`` — the one helper shared with the enqueue
+branch's bounded locks, so every bounded lock wait has the same
+mechanics): one ``pg_try_advisory_xact_lock`` statement when
 uncontended, a savepoint-scoped server-side bounded blocking acquire
 (``set_config('lock_timeout', ..., true)`` + ``pg_advisory_xact_lock`` +
 restore) when contended, and a client-side ``asyncio.wait_for`` backstop
@@ -250,25 +250,15 @@ class TestSlidingWindowLockBoundedWaitUnit:
         assert entries[0].get("lock_timeout_ms") == 250.0
 
     async def test_settings_lock_timeout_is_honored_by_default_call_shape(self) -> None:
-        """RED — issue #161: the sliding-window log acquire has no
-        ``WorkerSettings`` field for its lock-wait budget, so an operator
-        cannot tune it the way the enqueue path's
-        ``max_pending_lock_timeout_ms`` / ``unique_for_lock_timeout_ms`` are
-        tunable (settings.py:800-839, following the reload_factory_timeout
-        precedent). ``SlidingWindow.acquire`` calls ``_acquire_pg_log(self,
-        pg_pool, settings, request_id)`` with NO ``lock_timeout_ms`` kwarg
-        (see sliding_window.py's postgres/log dispatch arm) — so whatever
-        an operator sets on ``settings`` for this budget is never read; the
-        acquire always falls back to the module constant
-        ``DEFAULT_SLIDING_WINDOW_LOCK_TIMEOUT_MS`` (5000 ms).
-
-        This test drives the acquire through the SAME call shape production
-        uses (no explicit ``lock_timeout_ms`` override) with a settings
-        object carrying a short, operator-configured budget, and expects
-        the short budget to govern the server-side ``lock_timeout`` GUC and
-        the contended wait. It fails today because no such settings field
-        exists, and even a same-named field would still be ignored since
-        the call site never reads it.
+        """The settings object is the only budget wire under the
+        production call shape: ``SlidingWindow.acquire`` calls
+        ``_acquire_pg_log(self, pg_pool, settings, request_id)`` with NO
+        ``lock_timeout_ms`` kwarg, so the operator-configured budget on
+        ``WorkerSettings.sliding_window_lock_timeout_ms`` must govern the
+        server-side ``lock_timeout`` GUC and the denial's retry hint —
+        not the 5000 ms module default
+        (``DEFAULT_SLIDING_WINDOW_LOCK_TIMEOUT_MS``), which applies only
+        when no settings object is in hand.
         """
         sw = _sw("sw_lock_settings_budget")
         conn = _ContendedFakeConn(try_lock_result=False, blocking_times_out=True)
@@ -276,10 +266,9 @@ class TestSlidingWindowLockBoundedWaitUnit:
             {
                 "pg_dsn": "postgresql://u:p@h/d",
                 "schema_name": "taskq_fake",
-                # The knob issue #161 says should exist and be threaded
-                # through, mirroring max_pending_lock_timeout_ms /
-                # unique_for_lock_timeout_ms. It does not exist on
-                # WorkerSettings today, so this raises immediately.
+                # A short budget far from the 5000 ms module default, so a
+                # wiring that ignores the knob fails the assertions below
+                # instead of passing by coincidence.
                 "sliding_window_lock_timeout_ms": 150.0,
             },
         )
@@ -550,7 +539,7 @@ class TestSlidingWindowLockBoundedWait:
         transaction, so the helper is the level at which two acquires
         share one): the second acquire waits LONGER than the first
         acquire's whole budget and must still succeed."""
-        from taskq.ratelimit._sliding_window_pg import acquire_advisory_xact_lock_bounded
+        from taskq._advisory import acquire_advisory_xact_lock_bounded
 
         schema = module_pg_schema.schema_name
         key_a = f"taskq:{schema}:sw:guc_a_{new_base62()}"

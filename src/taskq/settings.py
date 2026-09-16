@@ -544,8 +544,10 @@ class TaskQSettings(DotEnvConfig):
         "enqueues. Widening past the default re-derives the per-query bound "
         "of every pool the TaskQ client builds itself, so the wider budget "
         "is delivered end to end; at or below the default the client path "
-        "delivers the budget clamped to 80% of that pool bound (4 s at the "
-        "defaults), the margin the server-side lock_timeout needs to fire "
+        "delivers the budget clamped to 80% of that pool bound — a share of "
+        "the 10 s shipped bound exceeds the 5 s default budget, so the "
+        "defaults are delivered in full, and the margin is what the "
+        "server-side lock_timeout needs to fire "
         "before the pool's own timer. 0 or less waits indefinitely "
         "server-side (the lock_timeout GUC convention shared with the "
         "sibling budgets) — a pool TaskQ builds still applies its per-query "
@@ -878,6 +880,47 @@ class WorkerSettings(TaskQSettings):
         "home queue is not subscribed. Default False (override-safe).",
     )
 
+    # -- Admission row-lock budgets ---------------------------------------
+    # Defaults are the values of the rate-limit package's
+    # DEFAULT_TOKEN_BUCKET_LOCK_TIMEOUT_MS /
+    # DEFAULT_SLIDING_WINDOW_LOCK_TIMEOUT_MS (5 s each) — written as
+    # literals, not imported, because of dependency direction, not driver
+    # binding (unlike the enqueue budgets above: both ratelimit modules
+    # keep their asyncpg import under TYPE_CHECKING). Those modules
+    # CONSUME this settings object — their PG acquire and refund paths
+    # read these fields off it — and importing anything under
+    # taskq.ratelimit runs the package's DI provider, which imports this
+    # module at runtime, so a runtime import here would close a
+    # settings → ratelimit → settings cycle. Drift between the literals
+    # and the constants is pinned by
+    # test_lock_budget_settings_default_to_the_shipped_constants
+    # (tests/test_ratelimit_pg_row_lock_bounded.py). A deployment that
+    # sets neither keeps the exact pre-knob ceilings.
+    token_bucket_lock_timeout_ms: float = Field(
+        default=5000.0,
+        description="TASKQ_TOKEN_BUCKET_LOCK_TIMEOUT_MS (milliseconds). Bounded "
+        "wait for the rate_limit_buckets row lock on the token-bucket "
+        "Postgres acquire and refund. With the Postgres rate-limit fallback "
+        "enabled a Redis outage funnels every admission through this lock, so "
+        "the bound is what stops one black-holed holder stalling a bucket's "
+        "admission. Exhaustion is an admission DENIAL, not a failure: the "
+        "acquire fails closed and the denial's retry hint is one more budget, "
+        "so shortening this tightens the re-check interval rather than "
+        "refusing work. 0 or less waits indefinitely (the lock_timeout GUC "
+        "convention shared with the sibling budgets).",
+    )
+    sliding_window_lock_timeout_ms: float = Field(
+        default=5000.0,
+        description="TASKQ_SLIDING_WINDOW_LOCK_TIMEOUT_MS (milliseconds). "
+        "Bounded wait for the sliding window's admission lock on Postgres — "
+        "the per-bucket advisory lock on the log style and the "
+        "rate_limit_buckets row lock on the GCRA style. Separate knob from "
+        "token_bucket_lock_timeout_ms because the two limiter shapes hold "
+        "their locks across different critical sections and a deployment may "
+        "run only one of them. Exhaustion fails closed as a denial whose "
+        "retry hint is one more budget. 0 or less waits indefinitely (the "
+        "lock_timeout GUC convention shared with the sibling budgets).",
+    )
     heartbeat_pool_size: int = Field(
         default=4,
         ge=1,
