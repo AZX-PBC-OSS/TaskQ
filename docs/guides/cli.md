@@ -434,6 +434,53 @@ in `|| true` and then ignored. Gate CI on drift with
 
 ---
 
+## `taskq job show`
+
+Shows one job's stored row, reading `{schema}.jobs` first and falling back to `{schema}.jobs_archive` — a pruned terminal job is shown from the archive, not reported missing.
+
+```shell
+taskq job show JOB_ID
+```
+
+**Arguments:**
+
+| Argument | Type | Description |
+|---|---|---|
+| `JOB_ID` | `UUID` | The job's id. A non-UUID value is rejected as a usage error before any database access. |
+
+Prints the operator-facing fields of the stored row — id, actor, queue, status, priority, attempt, max_attempts, retry_kind, the four timestamps, and (only when set) `error_class`/`error_message` and `idempotency_key`. `payload`, `result` and `error_traceback` are deliberately not printed, keeping a terminal read from dragging arbitrarily large blobs onto the wire. A row found in `jobs_archive` is marked `archived: yes`; see [jobs-clients.md](jobs-clients.md) for the archival lifecycle.
+
+Under `retry_kind="indefinite"` the stored `max_attempts` ceiling is inert — the retry path never consults it — so the command renders it as `— (indefinite)`, the same framing the admin UI uses; a bare number would advertise a budget the job is not enforcing. See [retries.md](retries.md#2-retry-kinds).
+
+**Example output:**
+
+```
+id: 018f1c7e-5a2b-7c3d-8e4f-9a0b1c2d3e4f
+actor: send_email
+queue: default
+status: succeeded
+priority: 0
+attempt: 168
+max_attempts: — (indefinite)
+retry_kind: indefinite
+created_at: 2026-01-01 00:00:00+00:00
+scheduled_at: 2026-01-01 00:00:00+00:00
+started_at: 2026-01-01 00:00:01+00:00
+finished_at: 2026-01-01 00:00:02+00:00
+archived: yes
+```
+
+**Exit codes:**
+
+| Code | Condition |
+|---|---|
+| `0` | Row found in `jobs` or `jobs_archive` |
+| `1` | Invalid job id (not a UUID), or no row with that id in either table |
+
+**No options.** Uses `TASKQ_PG_DSN` and `TASKQ_SCHEMA_NAME` from the environment.
+
+---
+
 ## `taskq health live`
 
 Probes the worker's liveness endpoint.

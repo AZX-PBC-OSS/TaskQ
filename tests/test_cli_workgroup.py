@@ -24,7 +24,7 @@ queues = ["default"]
 
 
 @pytest.fixture(autouse=True)
-def _resolvable_actors_module(tmp_path: Path) -> Iterator[None]:
+def _resolvable_actors_module(tmp_path: Path) -> Iterator[None]:  # pyright: ignore[reportUnusedFunction]  # Why: autouse fixture consumed implicitly by the test runner; pyright does not track fixture usage.
     """Make ``myapp.actors:registry`` genuinely importable for these tests.
 
     Config loading resolves the ``actors`` reference rather than taking it

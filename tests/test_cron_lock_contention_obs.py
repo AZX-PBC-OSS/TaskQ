@@ -169,4 +169,4 @@ def test_leader_path_was_already_observable() -> None:
         Path(__file__).resolve().parent.parent / "src" / "taskq" / "worker" / "leader.py"
     ).read_text()
     assert "record_election_attempt" in leader
-    assert "election-lock-attempt-failed" in leader
+    assert "election-attempt-failed" in leader

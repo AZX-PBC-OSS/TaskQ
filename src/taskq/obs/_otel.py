@@ -1901,7 +1901,10 @@ _jobs_by_status_cache: dict[str, int] = {}
 
 get_meter().create_observable_gauge(
     name="taskq.jobs.by_status",
-    description="Jobs per status, sampled by every worker.",
+    description=(
+        "Jobs per live status, counted exactly and sampled by every "
+        "worker; terminal statuses are not sampled."
+    ),
     unit="1",
     callbacks=[_observe_jobs_by_status],
 )

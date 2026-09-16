@@ -379,8 +379,8 @@ class TestTransactionRollbackOnMidFlightFailure:
                 timeout=5.0,
             )
             assert victim_pid is not None, (
-                "the terminal write was never observed lock-waiting in "
-                "pg_stat_activity — the mid-statement injection did not "
+                "the admin session never observed the terminal write "
+                "lock-waiting — the mid-statement injection did not "
                 "happen, so a pass would prove nothing"
             )
 

@@ -48,7 +48,7 @@ def validate_actor_payload(
             caller payload. Defaults to the version being validated against
             today (:data:`CURRENT_PAYLOAD_SCHEMA_VER`), which is also the
             only version any stored row carries until a second version is
-            introduced; the row-threading call sites land with that change.
+            introduced.
 
     Returns:
         The validated ``BaseModel`` instance.

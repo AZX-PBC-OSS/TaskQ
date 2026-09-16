@@ -13,14 +13,23 @@ Model (from ``backend/_sweeps.py`` ``_SWEEP_1_SQL``, ``heartbeat.py``
   exponential, jittered and doubly capped (``min(policy.cap,
   max_retry_backoff)``) — already pinned by ``test_retry_backoff.py``
   and ``test_retry_backoff_overflow.py``. Not re-pinned here.
-* The CRASH-reclaim ladder is NOT the exponential ladder: sweep 1 (and
-  the heartbeat isolate twin) re-pend with a FIXED
-  ``scheduled_at = clock_timestamp() + interval '5 seconds'`` — no
-  attempt scaling. The cycle period is therefore floored at
-  ``5 s + lock_lease + sweep_interval`` (≈ 95 s at default settings),
-  and the cycle COUNT is bounded by ``max_attempts`` because dispatch
-  stamps ``attempt = attempt + 1`` each round-trip and sweep 1's retry
-  arm requires ``attempt < max_attempts``. Damped — pinned below at
+* The CRASH-reclaim ladder IS the row's own stamped RetryPolicy curve:
+  sweep 1 (and the heartbeat isolate twin) re-pend with
+  ``scheduled_at = clock_timestamp() + _RECLAIM_DELAY_SQL`` — the row's
+  base, cap, backoff kind and jitter evaluated at its attempt, spread by
+  a deterministic md5-derived fraction of (job id, attempt) rather than
+  an RNG draw, so a replayed sweep re-stamps the same instant and every
+  path that computes a row's hand-back delay agrees on it (the SQL
+  fragment and ``taskq.retry._compute_reclaim_backoff`` are pinned
+  bit-for-bit by ``test_reclaim_backoff_policy_parity.py``). At the
+  shipped default policy (base 5 s, exponential, jitter 0.2) a
+  first-attempt reclaim lands in [4 s, 6 s): the cycle period stays
+  floored at ~base + lock_lease + sweep_interval (≈ 95 s at default
+  settings), a mass-reclaimed cohort spreads across the band instead of
+  becoming due at one synchronised instant, and the cycle COUNT is
+  bounded by ``max_attempts`` because dispatch stamps
+  ``attempt = attempt + 1`` each round-trip and sweep 1's retry arm
+  requires ``attempt < max_attempts``. Damped — pinned below at
   both tiers (in-memory and real PG).
 * The failure-retry arm — the one requeue shape that was unfloored — is
   floored at ``MIN_DEFERRAL_INTERVAL``: ``retry.py`` ``_retry_decision``
@@ -42,8 +51,8 @@ The denial-snooze ladder was audited and is NOT red:
 ``_handle_reservation_class_denied`` jitters the raw hint and
 ``mark_snoozed`` floors it at ``MIN_DEFERRAL_INTERVAL`` (1 s) on both
 tiers; each cycle additionally costs claim + acquire + snooze and is
-bounded by per-actor concurrency. Sweep 1's fixed 5 s is a damper, not
-a zero-backoff loop.
+bounded by per-actor concurrency. Sweep 1's policy-derived delay is a
+damper, not a zero-backoff loop.
 """
 
 from __future__ import annotations
@@ -57,16 +66,17 @@ import asyncpg
 import pytest
 
 from taskq._ids import new_base62, new_job_id, new_uuid
-from taskq.backend._protocol import EnqueueArgs, ErrorInfo, JobId
+from taskq.backend._protocol import EnqueueArgs, ErrorInfo, JobId, JobRow
 from taskq.backend._sql_templates import render as render_sql
 from taskq.backend.clock import SystemClock
 from taskq.backend.postgres import PostgresBackend
-from taskq.constants import MIN_DEFERRAL_INTERVAL
+from taskq.constants import DEFAULT_MAX_RETRY_BACKOFF, MIN_DEFERRAL_INTERVAL
 from taskq.migrate import apply_pending
 from taskq.retry import (
     JobRetryState,
     Retry,
     RetryPolicy,
+    _compute_reclaim_backoff,
     decide_after_failure,
 )
 from taskq.settings import WorkerSettings
@@ -76,7 +86,6 @@ from taskq.testing.in_memory import InMemoryBackend
 from taskq.testing.settings import make_integration_settings
 
 _START = datetime(2025, 1, 1, tzinfo=UTC)
-_FIVE_SECONDS = timedelta(seconds=5)
 _LEASE = timedelta(seconds=60)
 _GRACE = timedelta(seconds=30)
 _WORKER = new_uuid()
@@ -86,7 +95,8 @@ _ACTOR = "storm_actor"
 # Cycle cost model constants (asserted, not just documented): one
 # mass-reclaim cycle writes one job_attempts row + one job_events row +
 # one jobs UPDATE per job, and re-admits it to dispatch no sooner than
-# 5 s later; the cycle count is capped by max_attempts.
+# its derived reclaim delay (>= base * (1 - jitter) = 4 s at the shipped
+# default policy); the cycle count is capped by max_attempts.
 _STORM_N = 6
 _MAX_ATTEMPTS = 3
 
@@ -146,20 +156,63 @@ async def _seed_running_expired(
     return ids
 
 
-# ── GREEN pin: the reclaim cycle is period-floored (5 s) on both tiers ──
+def _assert_default_policy(row: JobRow) -> None:
+    """The storm model's cycle floor is stated at the shipped default
+    policy — a row stamped with anything else silently voids it."""
+    defaults = RetryPolicy()
+    assert (
+        row.retry_base,
+        row.retry_cap,
+        row.retry_backoff,
+        row.retry_jitter,
+    ) == (defaults.base, defaults.cap, defaults.backoff, defaults.jitter), (
+        f"the scenario is a default-policy fleet; got base={row.retry_base} "
+        f"cap={row.retry_cap} backoff={row.retry_backoff!r} jitter={row.retry_jitter}"
+    )
 
 
-async def test_mass_reclaim_requeue_is_floored_at_five_seconds_and_gates_redispatch() -> None:
-    """A mass-reclaimed fleet is NOT redispatchable for 5 s — the fixed
-    requeue damper — and the dispatch gate enforces it.
+def _reclaim_due_instant(row: JobRow, reclaim_time: datetime) -> datetime:
+    """The due instant sweep 1 must stamp on *row* reclaimed at
+    *reclaim_time*: the row's own stamped RetryPolicy curve at its
+    attempt, spread by the deterministic per-(job, attempt) jitter
+    fraction — evaluated through ``_compute_reclaim_backoff``, the same
+    boundary the in-memory sweep twin uses (and pinned bit-for-bit
+    against the SQL fragment by the reclaim-parity suite), so the
+    expectation is exact by construction rather than a tolerance around
+    a guessed constant."""
+    policy = RetryPolicy(
+        backoff=row.retry_backoff,
+        base=row.retry_base,
+        cap=row.retry_cap,
+        jitter=row.retry_jitter,
+    )
+    return reclaim_time + _compute_reclaim_backoff(
+        policy,
+        row.attempt,
+        job_id=row.id,
+        max_retry_backoff=DEFAULT_MAX_RETRY_BACKOFF,
+    )
+
+
+# ── GREEN pin: the reclaim cycle is period-floored on both tiers ───────
+
+
+async def test_mass_reclaim_requeue_is_damped_by_the_policy_curve_and_gates_redispatch() -> None:
+    """A mass-reclaimed fleet is not redispatchable until each row's own
+    derived reclaim delay has elapsed — and the dispatch gate enforces it.
 
     Contract: after sweep 1 reclaims expired-lock running jobs onto the
-    retry arm, every row carries ``scheduled_at == reclaim_time + 5 s``
-    (the fixed backoff — a period floor, not the exponential ladder) and
-    ``dispatch_batch`` claims none of them until that timestamp passes.
+    retry arm, every row carries ``scheduled_at == reclaim_time + the
+    row's derived reclaim delay`` — its stamped RetryPolicy curve at its
+    attempt, spread by the deterministic per-(job, attempt) jitter
+    fraction, never a flat constant and never a fresh draw (a flat
+    constant synchronises the cohort on one instant; an unfloored or
+    zero delay turns the cycle into a tight redispatch loop — the two
+    amplification shapes the damper exists to prevent). At the shipped
+    default policy (base 5 s, jitter 0.2) the delay lands in [4 s, 6 s).
     Without the gate, a 500-job fleet at max_concurrency 8 would re-enter
     dispatch on the very next poll and hammer PG claim-by-claim; with it,
-    the cycle period is floored at 5 s + lease + sweep interval.
+    the cycle period is floored at ~base + lease + sweep interval.
     """
     backend, clock = _make_backend()
     job_ids = await _seed_running_expired(backend, _STORM_N)
@@ -167,38 +220,57 @@ async def test_mass_reclaim_requeue_is_floored_at_five_seconds_and_gates_redispa
     reclaimed = await backend.reclaim_expired_locks(_GRACE, _GRACE)
 
     assert reclaimed == _STORM_N, "the whole seeded fleet must be reclaimed in one call"
+    expected_due: dict[JobId, datetime] = {}
     for job_id in job_ids:
         row = await backend.get(job_id)
         assert row is not None
         assert row.status == "pending", (
             f"job {job_id} must land on the retry arm as pending, got {row.status!r}"
         )
-        assert row.scheduled_at - _START == _FIVE_SECONDS, (
-            f"job {job_id} requeue backoff must be the fixed 5 s damper "
-            f"(got {row.scheduled_at - _START}); an unfloored or zero backoff "
-            "turns the mass-reclaim cycle into a tight redispatch loop"
+        _assert_default_policy(row)
+        expected_due[job_id] = _reclaim_due_instant(row, clock.now())
+        assert row.scheduled_at == expected_due[job_id], (
+            f"job {job_id} must be requeued by its own derived reclaim delay "
+            f"(expected {expected_due[job_id] - _START}, got "
+            f"{row.scheduled_at - _START})"
         )
 
-    # The dispatch gate: scheduled_at is 5 s in the future — nothing is
-    # claimable until it passes, on either side of the boundary.
+    # The dispatch gate: nothing is claimable before its own due
+    # instant, checked on both sides of the boundary — 1 ms before the
+    # cohort's earliest due instant, then at each due instant itself.
     claimed_now = await backend.dispatch_batch(_WORKER, [_QUEUE], _STORM_N, _LEASE)
     assert claimed_now == [], (
-        "dispatch must not claim a requeued job before its 5 s backoff elapses — "
-        "the scheduled_at <= now gate is the redispatch rate damper"
+        "dispatch must not claim a requeued job before its derived delay "
+        "elapses — the scheduled_at <= now gate is the redispatch rate damper"
     )
 
-    clock.advance(timedelta(seconds=4, milliseconds=999))
+    first_due = min(expected_due.values())
+    clock.advance(first_due - clock.now() - timedelta(milliseconds=1))
     claimed_early = await backend.dispatch_batch(_WORKER, [_QUEUE], _STORM_N, _LEASE)
-    assert claimed_early == [], "4.999 s in: still inside the damper window"
+    assert claimed_early == [], (
+        "1 ms before the earliest due instant the whole cohort is still damped"
+    )
 
-    clock.advance(timedelta(milliseconds=1))
-    claimed = await backend.dispatch_batch(_WORKER, [_QUEUE], _STORM_N, _LEASE)
-    assert len(claimed) == _STORM_N, "at exactly 5 s the whole fleet is redispatchable"
-    for row in claimed:
-        assert row.attempt == 2, (
-            f"dispatch must stamp attempt = attempt + 1 (got {row.attempt}); "
-            "without the increment the reclaim cycle would never exhaust attempts"
+    # Walk the clock through the cohort's due instants: at each, the gate
+    # admits exactly the rows whose derived delay has elapsed (set
+    # equality, so rows sharing an instant are admitted as one tranche),
+    # and every claim stamps the next attempt.
+    claimed_ids: set[JobId] = set()
+    for instant in sorted(set(expected_due.values())):
+        clock.advance(instant - clock.now())
+        for claimed in await backend.dispatch_batch(_WORKER, [_QUEUE], _STORM_N, _LEASE):
+            assert claimed.attempt == 2, (
+                f"dispatch must stamp attempt = attempt + 1 (got {claimed.attempt}); "
+                "without the increment the reclaim cycle would never exhaust attempts"
+            )
+            claimed_ids.add(claimed.id)
+        assert claimed_ids == {j for j, due in expected_due.items() if due <= instant}, (
+            "at each due instant the gate must admit exactly the rows whose "
+            "derived delay has elapsed — never a row still inside its damper"
         )
+    assert claimed_ids == set(job_ids), (
+        "past the cohort's last due instant the whole fleet is redispatchable"
+    )
 
 
 async def test_reclaim_cycle_count_is_bounded_by_attempt_exhaustion() -> None:
@@ -220,8 +292,10 @@ async def test_reclaim_cycle_count_is_bounded_by_attempt_exhaustion() -> None:
     row = await backend.get(job_id)
     assert row is not None and row.status == "pending"
 
-    # Redispatch (attempt 2 → 3 = max_attempts), crash again.
-    clock.advance(_FIVE_SECONDS)
+    # Redispatch once the row's own derived reclaim delay has elapsed
+    # (the due instant the sweep stamped — the gate admits the row at
+    # exactly that instant), crash again: attempt 2 → 3 = max_attempts.
+    clock.advance(row.scheduled_at - clock.now())
     (claimed,) = await backend.dispatch_batch(_WORKER, [_QUEUE], 1, _LEASE)
     assert claimed.attempt == _MAX_ATTEMPTS
     backend._jobs[job_id] = replace(
@@ -508,14 +582,21 @@ async def _seed_pg_running_jobs(
 @pytest.mark.integration
 async def test_pg_reclaim_damper_and_attempt_exhaustion(pg_dsn: str) -> None:
     """On real Postgres: sweep 1's retry arm stamps
-    ``scheduled_at = clock_timestamp() + 5 s``; ``dispatch_batch`` claims
-    nothing while that timestamp is in the future (the SQL gate
-    ``j2.scheduled_at <= statement_timestamp()``); once due, dispatch
-    claims with ``attempt + 1``; and the exhausted arm lands 'crashed'.
+    ``scheduled_at = clock_timestamp() + the row's derived reclaim
+    delay`` (its stamped RetryPolicy curve at its attempt, spread by the
+    deterministic per-row jitter fraction — never a flat constant, never
+    a fresh draw); ``dispatch_batch`` claims nothing while that timestamp
+    is in the future (the SQL gate ``j2.scheduled_at <=
+    statement_timestamp()``); once due, dispatch claims with
+    ``attempt + 1``; and the exhausted arm lands 'crashed'.
 
-    Deterministic — no wall-clock sleeps: the damper is asserted from
-    the row's own timestamps (future by ~5 s), and due-ness is produced
-    by rewinding ``scheduled_at`` rather than waiting.
+    Deterministic — no wall-clock sleeps: the expected delay is derived
+    from the row's own identity, the sweep's stamp is bracketed by
+    server-clock reads taken around it (the reclaim-parity suite's
+    measurement discipline — the sweep's own ``clock_timestamp()`` is
+    unobservable from outside, so the bracket is milliseconds wide while
+    the delay is seconds), and due-ness is produced by rewinding
+    ``scheduled_at`` rather than waiting.
     """
     schema = f"tst_{new_base62()}".lower()
     settings = make_integration_settings(pg_dsn, schema_name=schema)
@@ -553,20 +634,56 @@ async def test_pg_reclaim_damper_and_attempt_exhaustion(pg_dsn: str) -> None:
             cleanup_grace_period=timedelta(0),
         )
 
-        # Fill: one bounded reclaim batch re-pends the storm with the 5 s
-        # damper.
+        # Fill: one bounded reclaim batch re-pends the storm, each row by
+        # its own derived reclaim delay. Server-clock reads bracket the
+        # sweep, so each row's stamp must land at exactly its bracketed
+        # instant plus the derived delay — a flat constant or a fresh
+        # draw falls outside the bracket on virtually every run.
+        before = await admin.fetchval("SELECT clock_timestamp()")
+        assert isinstance(before, datetime)
         reclaimed = await backend.reclaim_expired_locks(timedelta(0), timedelta(0))
+        after = await admin.fetchval("SELECT clock_timestamp()")
+        assert isinstance(after, datetime)
         assert reclaimed == 4, "the seeded storm must be reclaimed in one bounded call"
+        policy_defaults = RetryPolicy()
         rows = await admin.fetch(
-            f"SELECT id, scheduled_at, clock_timestamp() AS now_ts "
-            f'FROM "{schema}".jobs WHERE id = ANY($1)',
+            f"SELECT id, scheduled_at, retry_base_seconds, retry_cap_seconds, "
+            f'retry_backoff, retry_jitter FROM "{schema}".jobs WHERE id = ANY($1)',
             [*storm_ids, victim],
         )
         for rec in rows:
-            gap = rec["scheduled_at"] - rec["now_ts"]
-            assert timedelta(seconds=4) < gap <= _FIVE_SECONDS, (
-                f"requeue damper must stamp scheduled_at = now + 5 s on PG "
-                f"(got now + {gap}); the fixed backoff is the cycle's period floor"
+            policy = RetryPolicy(
+                backoff=rec["retry_backoff"],
+                base=timedelta(seconds=rec["retry_base_seconds"]),
+                cap=timedelta(seconds=rec["retry_cap_seconds"]),
+                jitter=rec["retry_jitter"],
+            )
+            assert (
+                policy.base,
+                policy.cap,
+                policy.backoff,
+                policy.jitter,
+            ) == (
+                policy_defaults.base,
+                policy_defaults.cap,
+                policy_defaults.backoff,
+                policy_defaults.jitter,
+            ), (
+                "the seeded rows must carry the default policy columns — the "
+                "storm model's cycle floor is stated at the default policy"
+            )
+            expected = _compute_reclaim_backoff(
+                policy,
+                1,
+                job_id=rec["id"],
+                max_retry_backoff=DEFAULT_MAX_RETRY_BACKOFF,
+            )
+            assert before + expected <= rec["scheduled_at"] <= after + expected, (
+                f"the requeue damper must stamp scheduled_at = clock_timestamp() "
+                f"+ the row's derived reclaim delay ({expected} for this row) on "
+                f"PG; got scheduled_at={rec['scheduled_at']!r} with the sweep "
+                f"bracketed in [{before!r}, {after!r}] — the derived delay is the "
+                "cycle's period floor"
             )
 
         # Gate: nothing claimable while scheduled_at is in the future.
