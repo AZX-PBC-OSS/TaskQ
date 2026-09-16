@@ -2,16 +2,28 @@ groups:
   - name: taskq.rules
     rules:
       - alert: TaskQQueueDepthHigh
-        expr: taskq_queue_depth > 1000
+        expr: max by (actor, queue) (taskq_jobs_oldest_pending_age_seconds) > 900
         for: 5m
         labels:
           severity: warning
         annotations:
-          summary: "TaskQ queue {{ $labels.queue }} depth is {{ $value }}"
+          summary: >-
+            TaskQ actor {{ $labels.actor }} on queue {{ $labels.queue }} has
+            pending work {{ $value }}s old
           description: >-
-            Queue depth has been above threshold (1000) for 5 minutes.
-            Operators should override the threshold in their own rule
-            configuration.
+            An actor's oldest PENDING job has been waiting past the
+            threshold (15 minutes) for 5 minutes. Attributed per actor, not
+            per queue: no worker refuses to start because an actor's queue
+            has no consumer — in a multi-worker fleet no supervisor can
+            know what consumes a queue — so a misrouted actor produces no
+            refusal, no error and no failed job, and its rows simply pile
+            up pending while every probe stays green. A queue-summed depth
+            cannot tell that apart from a busy shared queue; this actor's
+            own age series rises without bound while its queue-mates stay
+            flat. Age rather than depth, because a deep queue that drains
+            is healthy throughput. Check that some worker's TASKQ_QUEUES
+            includes this actor's declared queue. Operators should override
+            the threshold in their own rule configuration.
 
       - alert: TaskQHeartbeatMisses
         expr: rate(taskq_heartbeat_misses_total[5m]) > 0
@@ -115,16 +127,33 @@ groups:
             affected schedule(s) and fix the payload_factory.
 
       - alert: TaskQScheduledBacklogGrowing
-        expr: deriv(taskq_jobs_by_status{status="scheduled"}[15m]) > 0 and taskq_jobs_oldest_due_age_seconds > 300
+        expr: taskq_jobs_oldest_due_age_seconds > 300 and taskq_jobs_scheduled_count > (taskq_jobs_scheduled_count offset 5m)
         for: 5m
         labels:
           severity: warning
         annotations:
           summary: "TaskQ scheduled backlog is growing while due jobs wait over 5m"
           description: >-
-            The scheduled backlog is growing (positive 15m derivative) AND
-            the oldest due job has been waiting more than 5 minutes —
-            promotion from scheduled to pending is stalled. Runbook:
+            The oldest due job has been waiting more than 5 minutes AND the
+            scheduled job COUNT is higher than it was 5 minutes ago —
+            promotion is not keeping up with arrivals, rather than merely
+            behind on one slow-to-clear job. The previous form compared the
+            oldest-due-age gauge against itself: that gauge tracks whichever
+            single job is currently oldest, and its age climbs monotonically
+            right up until THAT job is promoted regardless of how healthily
+            everything behind it is draining — a steadily draining backlog
+            whose oldest-due job simply hasn't had its turn yet satisfied
+            the old expression for the whole `for: 5m` window and the check
+            degenerated to a bare age>300 threshold. Count, not the single
+            oldest item's age: a scheduled count that is flat or falling
+            while jobs promote on schedule is healthy no matter how long the
+            current straggler has waited.
+            taskq_jobs_scheduled_count is the label-less twin of
+            taskq_jobs_by_status{status="scheduled"}, kept in step with it
+            by the same sampler tick, specifically so both `and` operands
+            here carry identical (empty) label sets — vector `and` with no
+            `on`/`ignoring` modifier only pairs series whose label sets
+            match exactly. Runbook:
             docs/guides/runbooks.md#taskqscheduledbackloggrowing.
 
       - alert: TaskQPromotionStalled
@@ -169,17 +198,26 @@ groups:
             docs/guides/runbooks.md#taskqsweepdegraded.
 
       - alert: TaskQLeaderLockContention
-        expr: rate(taskq_leader_lock_contention_total[10m]) > 0
+        expr: sum(rate(taskq_leader_lock_contention_total[10m])) > 0 and sum(taskq_maintenance_leader_is_leader) < 1
         for: 10m
         labels:
           severity: warning
         annotations:
-          summary: "TaskQ maintenance-lock acquisitions are being lost to another session"
+          summary: "TaskQ maintenance-lock contention is leaving the fleet with no leader"
           description: >-
-            Maintenance-lock acquisitions are being lost to another session;
-            sustained contention at the attempt rate means a worker never
-            wins the lock (the second-schema lock-loss signature). Runbook:
-            docs/guides/runbooks.md#taskqleaderlockcontention.
+            Maintenance-lock acquisitions are being lost AND no worker holds
+            leadership. The second condition is what makes this alertable: a
+            healthy multi-worker fleet has exactly one winner per election
+            round and every other worker records a loss, so a lost-acquire
+            rate above zero is the NORMAL steady state of any fleet larger
+            than one worker — alerting on it alone pages on health. Losses
+            while the leader count has fallen below one is the genuine
+            signature: a second schema sharing the lock, or a stuck holder,
+            so that no worker ever wins. Both operands are summed to
+            fleet-wide scalars so the vector join pairs — an `and` between
+            series carrying different label sets never matches, and
+            Prometheus reports that as an empty result rather than an error.
+            Runbook: docs/guides/runbooks.md#taskqleaderlockcontention.
 
       - alert: TaskQRateLimitDependencyOutage
         expr: rate(taskq_ratelimit_acquire_dependency_failures_total[5m]) > 0

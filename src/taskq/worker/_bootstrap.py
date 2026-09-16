@@ -32,6 +32,7 @@ from taskq._di.scopes import LoopScope, ProcessScope, ThreadScope, make_resolver
 from taskq._dsn import dsn_host as _dsn_host
 from taskq.actor import ActorRef
 from taskq.actor_config import ActorConfig
+from taskq.actor_config_ops import ActorConfigRow, list_actor_configs
 from taskq.auth import PgCredentialProvider, make_pg_pool_factory
 from taskq.backend._protocol import Backend, JobRow, ScheduleCreateArgs
 from taskq.backend.clock import Clock, SystemClock
@@ -75,6 +76,7 @@ from taskq.worker.health import HealthServer
 from taskq.worker.heartbeat import heartbeat_loop
 from taskq.worker.leader import MaintenanceLeader
 from taskq.worker.notify import notify_listener_loop
+from taskq.worker.queue_ops import list_queues
 from taskq.worker.shutdown import ShutdownPhase, install_signal_handlers
 from taskq.worker.startup import sync_actor_config
 
@@ -410,6 +412,8 @@ def _emit_unconsumed_queue_startup_warnings(
     settings: WorkerSettings,
     actor_registry: Mapping[str, ActorRef[Any, Any]],
     log: structlog.stdlib.BoundLogger,
+    *,
+    stored_rows: Mapping[str, ActorConfigRow] | None = None,
 ) -> None:
     """Emit at most one startup warning about served actors on queues this
     worker does not consume.
@@ -422,6 +426,16 @@ def _emit_unconsumed_queue_startup_warnings(
     format only (actor.py), so this bootstrap pass, where the worker
     holds both each served actor's declared queue and its own consumed
     queues, is the first place the mismatch is knowable.
+
+    The queue that routes a job is the STORED ``actor_config.queue``, not
+    the ``@actor(queue=...)`` literal: `taskq queue migrate` and the cron
+    leader both follow the stored assignment, and a worker's code carrying
+    a literal that disagrees with a freshly moved actor is the normal,
+    blessed state during a rolling deploy. When *stored_rows* names an
+    actor, its stored queue is what coverage is judged against; the
+    literal is the fallback only for an actor with no stored row yet
+    (this pass runs before ``sync_actor_config``, so a first-ever boot has
+    none to read).
 
     Aggregated, not per-actor: one event whose ``actors`` field maps each
     affected actor name to its declared queue (the shape documented in
@@ -455,7 +469,12 @@ def _emit_unconsumed_queue_startup_warnings(
         return
 
     consumed = set(settings.queues)
-    offending = [ref for ref in actor_registry.values() if ref.queue not in consumed]
+
+    def _routed_queue(ref: ActorRef[Any, Any]) -> str:
+        stored = stored_rows.get(ref.name) if stored_rows is not None else None
+        return stored.queue if stored is not None else ref.queue
+
+    offending = [ref for ref in actor_registry.values() if _routed_queue(ref) not in consumed]
     if not offending:
         return
     # Why: ONE aggregated event per boot, not one per actor — workgroup
@@ -465,13 +484,14 @@ def _emit_unconsumed_queue_startup_warnings(
     # healthy heterogeneous fleets this warning blesses, training
     # operators to filter it. The per-actor detail survives in the
     # structured fields so alerting on a specific actor still works:
-    # ``actors`` maps name → declared queue (docs/guides/workers.md's
+    # ``actors`` maps name → the queue that actually routes it (the
+    # stored assignment when one exists, docs/guides/workers.md's
     # documented shape — two parallel name/queue lists could not express
     # who is on which queue), sorted for byte-stable event content.
     log.warning(
         "actors-on-unconsumed-queues",
-        actors={ref.name: ref.queue for ref in sorted(offending, key=lambda r: r.name)},
-        queues=sorted({ref.queue for ref in offending}),
+        actors={ref.name: _routed_queue(ref) for ref in sorted(offending, key=lambda r: r.name)},
+        queues=sorted({_routed_queue(ref) for ref in offending}),
         worker_queues=list(settings.queues),
         note=(
             "this worker serves these actors but never dispatches their "
@@ -842,6 +862,7 @@ async def _main(
     returns 0 on clean shutdown.
     """
     from taskq.worker.run import (
+        _emit_resolved_capacity_startup_lines,
         consumer_loop_stub,
         deregister_worker,
         di_consumer_loop,
@@ -1153,7 +1174,37 @@ async def _main(
             # correlation and still precedes the sync_actor_config
             # round-trip below, whose drift raise or pool-acquire stall
             # would swallow a warning placed after it (issue #90).
-            _emit_unconsumed_queue_startup_warnings(settings, actor_registry, _startup_log)
+            #
+            # The stored assignment, not the code literal, is what
+            # actually routes a job — read here, still ahead of
+            # sync_actor_config, so a rolling deploy whose code carries
+            # a newer queue than the stored row (the normal in-flight
+            # state) does not read as unconsumed. A pre-sync read is
+            # correct here: an actor with no stored row yet cannot be
+            # judged against a stored assignment it doesn't have, and
+            # falls back to the literal inside the emitter.
+            try:
+                async with deps.dispatcher_pool.acquire(
+                    timeout=settings.dispatcher_command_timeout
+                ) as pre_sync_conn:
+                    pre_sync_stored_rows = {
+                        row.actor: row
+                        for row in await list_actor_configs(
+                            pre_sync_conn, schema=settings.schema_name
+                        )
+                    }
+            except Exception as exc:
+                _startup_log.warning(
+                    "unconsumed-queue-stored-read-failed",
+                    error=repr(exc),
+                )
+                pre_sync_stored_rows = {}
+            _emit_unconsumed_queue_startup_warnings(
+                settings,
+                actor_registry,
+                _startup_log,
+                stored_rows=pre_sync_stored_rows,
+            )
             actor_configs = [
                 ActorConfig(
                     actor=ref.name,
@@ -1176,6 +1227,34 @@ async def _main(
                     force=settings.force_update_actor_config,
                     schema=settings.schema_name,
                 )
+                # Read back after the sync, never before: only then is every
+                # registered actor guaranteed a stored row, and a pre-sync
+                # read would label a freshly deployed actor as
+                # never-dispatching on its very first boot.
+                try:
+                    stored_rows = {
+                        row.actor: row
+                        for row in await list_actor_configs(conn, schema=settings.schema_name)
+                    }
+                    queue_rows = {
+                        row.name: row
+                        for row in await list_queues(conn, schema=settings.schema_name)
+                    }
+                except Exception as exc:
+                    # Observability, not a gate: a worker able to do work
+                    # must start even when it cannot describe its own caps.
+                    _startup_log.warning(
+                        "resolved-capacity-read-failed",
+                        error=repr(exc),
+                    )
+                else:
+                    _emit_resolved_capacity_startup_lines(
+                        settings,
+                        actor_registry,
+                        stored_rows=stored_rows,
+                        queue_rows=queue_rows,
+                        log=_startup_log,
+                    )
 
             for res in own_reservations:
                 try:

@@ -78,6 +78,7 @@ from taskq.worker._leader_shared import (
     _QUERY_QUEUE_DEPTH_SQL_TEMPLATE,  # pyright: ignore[reportPrivateUsage]  # Why: same — the queue-depth gauge's exact statement.
 )
 from taskq.worker._leader_sweeps import (
+    _QUERY_ACTOR_BACKLOG_SQL_TEMPLATE,  # pyright: ignore[reportPrivateUsage]  # Why: same as above — pin the production statement, not a copy.
     _QUERY_OLDEST_DUE_AGE_SQL_TEMPLATE,  # pyright: ignore[reportPrivateUsage]  # Why: same as above — pin the production statement, not a copy.
     _QUERY_RUNNING_LEASE_EXPIRED_SQL_TEMPLATE,  # pyright: ignore[reportPrivateUsage]  # Why: same — the zombie-running gauge's exact statement.
 )
@@ -806,7 +807,11 @@ async def test_backlog_depth_gauge_is_attributable_to_actor_and_queue() -> None:
     start over an unconsumed queue, this gauge is the only place that
     misconfiguration becomes visible, so the emitted series must carry
     both dimensions."""
-    sql = _QUERY_QUEUE_DEPTH_SQL_TEMPLATE.format(schema="s")
+    # The per-(actor, queue) attribution ships as the actor_backlog /
+    # oldest-pending-age series fed by this sampler; the fleet-wide
+    # queue-depth gauge (_QUERY_QUEUE_DEPTH_SQL_TEMPLATE) stays
+    # queue-scoped by design.
+    sql = _QUERY_ACTOR_BACKLOG_SQL_TEMPLATE.format(schema="s")
     grouped = sql.lower().partition("group by")[2]
     assert "actor" in grouped and "queue" in grouped, (
         "the backlog-depth gauge must group by BOTH actor and queue so an "

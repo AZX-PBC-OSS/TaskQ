@@ -69,6 +69,22 @@ _CAPACITY_FIELDS = ("max_concurrent", "max_pending", "result_ttl")
 _STRUCTURAL_FIELDS = ("metadata",)
 
 
+def capacity_field_diverges(registered_value: object, stored_value: object) -> bool:
+    """Whether a capacity field's ``@actor(...)`` literal disagrees with its
+    stored ``actor_config`` value — the single predicate every capacity
+    -divergence surface in the codebase shares (`sync_actor_config`'s
+    ``actor-config-capacity-override`` event below, and the boot-time
+    ``actor-config-capacity-divergence`` line in ``worker/run.py``).
+
+    Plain inequality: unlike ``max_pending``/``result_ttl`` (which fall
+    back to the literal when the stored value is ``NULL``), the
+    comparison itself is symmetric — a literal of ``None`` (uncapped)
+    against a stored numeric cap is exactly as much a divergence as the
+    reverse, so no side gets an early-exit guard that the other lacks.
+    """
+    return registered_value != stored_value
+
+
 async def sync_actor_config(
     conn: ConnLike,
     actor_configs: Sequence[ActorConfig],
@@ -157,7 +173,7 @@ async def sync_actor_config(
             for field in _CAPACITY_FIELDS:
                 registered_value = getattr(cfg, field)
                 stored_value = capacity_values[field]
-                if registered_value != stored_value:
+                if capacity_field_diverges(registered_value, stored_value):
                     logger.info(
                         "actor-config-capacity-override",
                         actor=cfg.actor,

@@ -114,6 +114,7 @@ _NAME_MAP: list[tuple[str, str]] = [
     ("taskq.leader.lock_contention", "taskq_leader_lock_contention_total"),
     ("taskq.cron.lock_contention", "taskq_cron_lock_contention_total"),
     ("taskq.jobs.by_status", "taskq_jobs_by_status"),
+    ("taskq.jobs.scheduled_count", "taskq_jobs_scheduled_count"),
     ("taskq.jobs.oldest_due_age_seconds", "taskq_jobs_oldest_due_age_seconds"),  # ends in unit word
     ("taskq.jobs.running_lease_expired", "taskq_jobs_running_lease_expired"),
     ("taskq.enqueue.dedups", "taskq_enqueue_dedups_total"),
@@ -235,6 +236,9 @@ def _populate_all_instruments(meter: Any) -> None:
         "taskq.jobs.by_status",
         unit="1",
         callbacks=[lambda _: [Observation(3, {"status": "scheduled"})]],
+    )
+    meter.create_observable_gauge(
+        "taskq.jobs.scheduled_count", unit="1", callbacks=[lambda _: [Observation(3)]]
     )
     meter.create_observable_gauge(
         "taskq.jobs.oldest_due_age_seconds", unit="s", callbacks=[lambda _: [Observation(0.0)]]
@@ -454,7 +458,7 @@ def test_rules_yaml_histogram_bucket_names_match_bridge(env: _PromEnv) -> None:
             )
 
 
-# ── Issue #192: TaskQScheduledBacklogGrowing `and` joins mismatched labels ──
+# ── TaskQScheduledBacklogGrowing `and` joins mismatched labels ──
 
 
 def _extract_and_operand_metric_names(expr: str) -> list[str]:
@@ -476,33 +480,40 @@ def _extract_and_operand_metric_names(expr: str) -> list[str]:
 def test_scheduled_backlog_growing_and_operands_have_compatible_labels(
     env: _PromEnv,
 ) -> None:
-    """Issue #192 (red): TaskQScheduledBacklogGrowing's `and` can never fire
-    because its two operands carry different label sets.
+    """TaskQScheduledBacklogGrowing's `and` must join operands whose label
+    sets are identical, or PromQL vector `and` (with no `on`/`ignoring`
+    modifier) can never pair a result, regardless of how bad the real
+    backlog stall is — a `status`-labeled series never matches a
+    label-less one.
 
-    PromQL vector-to-vector `and` (with no `on`/`ignoring` modifier) only
-    pairs series whose label sets are IDENTICAL. `taskq_jobs_by_status` is
-    emitted with a `status` label (_observe_jobs_by_status in obs/_otel.py
-    yields Observation(count, {"status": status})), while
-    `taskq_jobs_oldest_due_age_seconds` is emitted with NO labels at all
-    (_observe_oldest_due_age yields a bare Observation(...) with no
-    attributes). The `and` in the alert expression therefore has no matching
-    pairs, ever, regardless of how bad the real backlog stall is.
+    The alert compares `taskq_jobs_oldest_due_age_seconds` (no labels;
+    `_observe_oldest_due_age` in obs/_otel.py yields a bare `Observation`)
+    against `taskq_jobs_scheduled_count` — the label-less twin of
+    `taskq_jobs_by_status{status="scheduled"}` that `update_scheduled_
+    count_cache` maintains in step with it specifically so this join has
+    matching operands, rather than joining the `status`-labeled series
+    directly.
 
     This test drives the real OTel->Prometheus bridge with the production
-    gauge shapes, scrapes actual exposition text, and asserts the label sets
-    on both sides of the `and` in the shipped rules.yaml expression are
-    compatible (equal). It currently fails, proving the alert is dead on
-    arrival.
+    gauge shapes, scrapes actual exposition text, and asserts the label
+    sets on both sides of the `and` in the shipped rules.yaml expression
+    are compatible (equal).
     """
     import re
 
-    # Populate the two gauges the way the real callbacks do: `by_status` is
-    # per-status labeled, `oldest_due_age_seconds` is emitted bare.
+    # Populate the gauges the way the real callbacks do: `by_status` is
+    # per-status labeled; `scheduled_count` and `oldest_due_age_seconds`
+    # are both emitted bare.
     meter = env.meter()
     meter.create_observable_gauge(
         "taskq.jobs.by_status",
         unit="1",
         callbacks=[lambda _: [Observation(7, {"status": "scheduled"})]],
+    )
+    meter.create_observable_gauge(
+        "taskq.jobs.scheduled_count",
+        unit="1",
+        callbacks=[lambda _: [Observation(7)]],
     )
     meter.create_observable_gauge(
         "taskq.jobs.oldest_due_age_seconds",

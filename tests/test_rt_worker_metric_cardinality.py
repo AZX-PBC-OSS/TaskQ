@@ -5,10 +5,12 @@ identity-like values must never be metric dimensions. The new sweep-health
 and backlog instruments carry single bounded-enum labels — ``sweep_name``
 over the closed set of leader-loop sweeps, ``lock`` over the schema-
 qualified lock names (a fixed purpose enum x the schema), ``status`` over
-the database's status enum — and the oldest-due gauge carries none. The
-pins here assert exactly that: the recorded dimensions are the documented
-enum key and nothing else, so a refactor that sneaks an identity value
-(worker_id, job_id, schedule_id) into any of these instruments fails here.
+the database's status enum — and the oldest-due and scheduled-count gauges
+carry none (the backlog-growing alert joins them on that shared empty
+label set). The pins here assert exactly that: the recorded dimensions are
+the documented enum key and nothing else, so a refactor that sneaks an
+identity value (worker_id, job_id, schedule_id) into any of these
+instruments fails here.
 """
 
 from __future__ import annotations
@@ -136,6 +138,22 @@ def test_oldest_due_age_gauge_is_label_free() -> None:
     assert len(observations) == 1
     assert dict(observations[0].attributes or {}) == {}
     assert observations[0].value == 12.5
+
+
+def test_scheduled_count_gauge_is_label_free() -> None:
+    """``taskq.jobs.scheduled_count`` carries NO dimensions either — the
+    backlog-growing alert joins it against the equally label-less
+    oldest-due-age gauge with an unqualified vector ``and``, which pairs
+    series only on identical label sets. Any label added here makes the
+    join silently unmatchable: the alert can never fire, and nothing
+    reports that."""
+    obs_mod.update_scheduled_count_cache(7)
+
+    observations = list(otel_mod._observe_scheduled_count(CallbackOptions()))  # pyright: ignore[reportPrivateUsage]  # Why: same callback-observation pattern as above.
+
+    assert len(observations) == 1
+    assert dict(observations[0].attributes or {}) == {}
+    assert observations[0].value == 7
 
 
 def test_sweep_batch_size_gauge_dimensions_are_the_sweep_name_enum_only() -> None:
@@ -354,7 +372,7 @@ def test_queues_within_the_cap_keep_their_real_names(
 # UUID from cron_schedules — as its dimension, the one identity-like label
 # that survived the worker_id campaign.  Schedule rows are runtime-creatable
 # (``create_schedule`` is public client API; every row mints a fresh UUID),
-# so nothing the library ships bounds that value set.  The relabel (#157)
+# so nothing the library ships bounds that value set.  The relabel
 # made the dimension ``actor`` — but the actor on THIS instrument is not
 # the registered set every other actor-labeled instrument enjoys: the
 # failure path emits the raw ``cron_schedules.actor`` string, and schedule

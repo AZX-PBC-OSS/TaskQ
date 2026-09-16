@@ -1,12 +1,12 @@
 """Adversarial pins for the unconditional backlog-detection loop.
 
-The loop's reason to exist (the #102/#105 lesson): a detector hosted
-behind the leadership gate emits nothing under exactly the failure it
-exists to expose. The pins here attack that property at the LOOP level —
-leadership held by nobody must still feed both gauges — plus the
-oldest-due age's real computation, the per-status split, and the
-deliberate difference from queue depth on demotion (the backlog caches
-are every-worker authority and must SURVIVE demotion).
+The loop's reason to exist: a detector hosted behind the leadership gate
+emits nothing under exactly the failure it exists to expose. The pins here
+attack that property at the LOOP level — leadership held by nobody must
+still feed both gauges — plus the oldest-due age's real computation, the
+per-status split, and the deliberate difference from queue depth on
+demotion (the backlog caches are every-worker authority and must SURVIVE
+demotion).
 """
 
 from __future__ import annotations
@@ -65,6 +65,22 @@ class _ConnStub:
 
     def is_closed(self) -> bool:
         return False
+
+
+class _ActorBacklogFailingConn(_ConnStub):
+    """Fleet reads answer; the per-actor backlog read raises.
+
+    That read — a GROUP BY over the whole pending population — is the
+    widest-shaped statement in the tick and the first to hit the
+    statement timeout under the incident load it exists to expose.
+    """
+
+    async def fetch(self, sql: str, *args: object) -> list[dict[str, object]]:
+        if "group by actor" in " ".join(sql.lower().split()):
+            raise asyncpg.exceptions.QueryCanceledError(
+                "canceling statement due to statement timeout"
+            )
+        return await super().fetch(sql, *args)
 
 
 class _PoolStub:
@@ -166,10 +182,11 @@ async def _drive_one_sample(
 
 
 async def test_backlog_gauges_fed_with_leadership_held_by_nobody() -> None:
-    """THE #102 loop-level pin: ``is_leader`` is NEVER set on the deps —
-    the exact condition of the second-schema lock loss — and the backlog
-    detectors must still report. A leader gate reintroduced here is the
-    detector hosted behind the failure it detects."""
+    """THE loop-level pin for hosting nothing behind the gate: ``is_leader``
+    is NEVER set on the deps — the exact condition of the second-schema
+    lock loss — and the backlog detectors must still report. A leader gate
+    reintroduced here is the detector hosted behind the failure it
+    detects."""
     conn = _ConnStub(
         fetch_rows=[{"status": "scheduled", "count": 12}, {"status": "pending", "count": 3}],
         fetchval_result=87.5,
@@ -210,6 +227,127 @@ async def test_backlog_none_due_reports_zero_age() -> None:
     )
 
 
+# ── (e) isolation: a failed per-actor read must not starve the fleet samples ──
+
+
+async def _drive_one_sample_observing_every_update(ctx: SweepContext) -> dict[str, object]:
+    """Run the loop until one tick has fired every gauge update it owes,
+    then stop it.
+
+    Same instrumentation seam as ``_drive_one_sample`` (the module's own
+    imported update names), but records all six updates a tick must make:
+    a raise escaping mid-tick shows up here as the updates that never
+    happened, not merely as a wrong value.
+    """
+    fed: dict[str, object] = {}
+    original_by_status = _leader_sweeps.update_jobs_by_status_cache
+    original_scheduled = _leader_sweeps.update_scheduled_count_cache
+    original_oldest = _leader_sweeps.update_oldest_due_age_cache
+    original_expired = _leader_sweeps.update_running_lease_expired_cache
+    original_actor_depth = _leader_sweeps.update_actor_backlog_cache
+    original_actor_age = _leader_sweeps.update_actor_oldest_pending_age_cache
+
+    def _spy_by_status(data: dict[str, int]) -> None:
+        fed["by_status"] = dict(data)
+
+    def _spy_scheduled(count: int) -> None:
+        fed["scheduled_count"] = count
+
+    def _spy_oldest(age: float) -> None:
+        fed["oldest_due_age"] = age
+
+    def _spy_expired(count: int) -> None:
+        fed["running_lease_expired"] = count
+
+    def _spy_actor_depth(data: dict[tuple[str, str], int]) -> None:
+        fed["actor_backlog"] = dict(data)
+
+    def _spy_actor_age(data: dict[tuple[str, str], float]) -> None:
+        fed["actor_oldest_pending_age"] = dict(data)
+
+    _leader_sweeps.update_jobs_by_status_cache = _spy_by_status  # type: ignore[assignment]  # Why: test-only instrumentation of the module's imported names, same seam as _drive_one_sample's spies.
+    _leader_sweeps.update_scheduled_count_cache = _spy_scheduled  # type: ignore[assignment]  # Why: see above.
+    _leader_sweeps.update_oldest_due_age_cache = _spy_oldest  # type: ignore[assignment]  # Why: see above.
+    _leader_sweeps.update_running_lease_expired_cache = _spy_expired  # type: ignore[assignment]  # Why: see above.
+    _leader_sweeps.update_actor_backlog_cache = _spy_actor_depth  # type: ignore[assignment]  # Why: see above.
+    _leader_sweeps.update_actor_oldest_pending_age_cache = _spy_actor_age  # type: ignore[assignment]  # Why: see above.
+    shutdown = asyncio.Event()
+    task = asyncio.create_task(_backlog_detection_loop(ctx, shutdown))
+    try:
+        for _ in range(400):
+            if len(fed) >= 6:
+                break
+            await asyncio.sleep(0.01)
+    finally:
+        _leader_sweeps.update_jobs_by_status_cache = original_by_status  # type: ignore[assignment]  # Why: restoring the spied module attribute.
+        _leader_sweeps.update_scheduled_count_cache = original_scheduled  # type: ignore[assignment]  # Why: see above.
+        _leader_sweeps.update_oldest_due_age_cache = original_oldest  # type: ignore[assignment]  # Why: see above.
+        _leader_sweeps.update_running_lease_expired_cache = original_expired  # type: ignore[assignment]  # Why: see above.
+        _leader_sweeps.update_actor_backlog_cache = original_actor_depth  # type: ignore[assignment]  # Why: see above.
+        _leader_sweeps.update_actor_oldest_pending_age_cache = original_actor_age  # type: ignore[assignment]  # Why: see above.
+        shutdown.set()
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+    return fed
+
+
+async def test_actor_backlog_fetch_failure_still_feeds_the_fleet_gauges() -> None:
+    """The per-actor read is isolated from the fleet-wide samples.
+
+    Its GROUP BY over the whole pending population is the widest-shaped
+    statement in the tick and the first to hit the statement timeout
+    under the incident load it exists to expose. If that raise escaped
+    before the fleet-wide updates, the scheduled-count and oldest-due
+    gauges would freeze at their last values, the backlog-growing
+    alert's `count > count offset` comparison would go false, and the
+    loop would stay alive reporting stale health — a failure that looks
+    like a success. The failure itself surfaces on the actor sampler's
+    own log path, and the per-actor caches are rebuilt from the empty
+    snapshot rather than frozen at readings the worker can no longer
+    see — the series go absent for the interval, never a stale claim.
+    """
+    import structlog.testing
+
+    conn = _ActorBacklogFailingConn(
+        fetch_rows=[{"status": "scheduled", "count": 12}, {"status": "pending", "count": 3}],
+        fetchval_result=87.5,
+    )
+    ctx = _ctx(dispatcher_pool=_PoolStub(conn), is_leader=False)
+
+    with structlog.testing.capture_logs() as captured:
+        fed = await _drive_one_sample_observing_every_update(ctx)
+
+    assert fed.get("by_status") == {"scheduled": 12, "pending": 3}, (
+        "a failed per-actor read must not cost the tick its jobs-by-status "
+        f"sample — the updates that fired: {sorted(fed)}"
+    )
+    assert fed.get("scheduled_count") == 12, (
+        "the scheduled-count operand of the backlog-growing alert must still "
+        "update — frozen, its `count > count offset` comparison goes false "
+        "while the loop stays alive"
+    )
+    assert fed.get("oldest_due_age") == 87.5, (
+        "the oldest-due-age operand must still update beside it"
+    )
+    assert fed.get("running_lease_expired") == 87, (
+        "the zombie-running sample must survive the per-actor read's failure"
+    )
+    assert fed.get("actor_backlog") == {} and fed.get("actor_oldest_pending_age") == {}, (
+        "on a failed read the per-actor caches are rebuilt from the empty "
+        "snapshot — the series go absent for the interval rather than freeze "
+        f"at readings the worker can no longer see; got {fed!r}"
+    )
+    assert any(e.get("event") == "actor-backlog-sampling-failed" for e in captured), (
+        "the failed read must surface on the actor sampler's own log path — "
+        "a degraded tick is reported, never silent"
+    )
+    assert not any(e.get("event") == "backlog-detection-sampling-failed" for e in captured), (
+        "the per-actor failure must be contained by its own isolation — the "
+        "fleet-wide detector's failure handler firing means the raise escaped"
+    )
+
+
 # ── (d) demotion: backlog authority SURVIVES, leader-scoped gauges clear ──
 
 
@@ -217,15 +355,20 @@ async def test_demotion_keeps_backlog_gauges_and_clears_leader_scoped() -> None:
     """The deliberate difference from queue depth: queue depth,
     reservation slots and stranded jobs are leader-only samplers, so
     demotion must clear them (no authority over numbers it stopped
-    sampling); the backlog gauges are every-worker samplers, so demotion
-    must NOT clear them — clearing would mute the detectors under the
-    exact leadership failure they exist to expose."""
+    sampling); the backlog gauges — jobs-by-status, the scheduled-count
+    twin, oldest due age, expired leases and the per-(actor, queue) pair —
+    are every-worker samplers, so demotion must NOT clear them — clearing
+    would mute the detectors under the exact leadership failure they
+    exist to expose."""
     import taskq.obs._otel as otel_mod
     from taskq.obs import (
+        update_actor_backlog_cache,
+        update_actor_oldest_pending_age_cache,
         update_oldest_due_age_cache,
         update_queue_depth_cache,
         update_reservation_slots_cache,
         update_running_lease_expired_cache,
+        update_scheduled_count_cache,
         update_stranded_jobs_cache,
     )
 
@@ -233,8 +376,11 @@ async def test_demotion_keeps_backlog_gauges_and_clears_leader_scoped() -> None:
     update_reservation_slots_cache({"gpu": 2})
     update_stranded_jobs_cache({"orphan": 7})
     otel_mod.update_jobs_by_status_cache({"scheduled": 9})  # pyright: ignore[reportPrivateUsage]  # Why: the cache-update seams are the loop's own inputs; the public re-export covers the backlog pair being asserted.
+    update_scheduled_count_cache(9)
     update_oldest_due_age_cache(42.0)
     update_running_lease_expired_cache(5)
+    update_actor_backlog_cache({("emails", "default"): 3})
+    update_actor_oldest_pending_age_cache({("emails", "default"): 12.5})
     try:
         deps = _deps(dispatcher_pool=_PoolStub(_ConnStub()), is_leader=True)
         leader = MaintenanceLeader(
@@ -253,10 +399,22 @@ async def test_demotion_keeps_backlog_gauges_and_clears_leader_scoped() -> None:
         assert otel_mod._jobs_by_status_cache == {"scheduled": 9}, (  # pyright: ignore[reportPrivateUsage]  # Why: same singleton-cache read the observable callback performs.
             "the backlog gauges are every-worker samplers — demotion must keep them alive"
         )
+        assert otel_mod._scheduled_count == 9, (  # pyright: ignore[reportPrivateUsage]  # Why: see above.
+            "the scheduled-count twin is fed by the same every-worker "
+            "sampler tick as jobs-by-status — demotion must keep it alive too"
+        )
         assert otel_mod._oldest_due_age_seconds == 42.0  # pyright: ignore[reportPrivateUsage]  # Why: see above.
         assert otel_mod._running_lease_expired_count == 5, (  # pyright: ignore[reportPrivateUsage]  # Why: see above — the zombie-running detector is an every-worker sampler with the rest of the backlog family.
             "the running-lease-expired gauge is an every-worker sampler — "
             "demotion must keep it alive like its backlog siblings"
+        )
+        assert otel_mod._actor_backlog_cache == {("emails", "default"): 3}, (  # pyright: ignore[reportPrivateUsage]  # Why: see above.
+            "the per-actor backlog depth is sampled by the same every-worker "
+            "loop — demotion must keep it alive"
+        )
+        assert otel_mod._actor_oldest_pending_age_cache == {("emails", "default"): 12.5}, (  # pyright: ignore[reportPrivateUsage]  # Why: see above.
+            "the per-actor oldest-pending age is sampled by the same "
+            "every-worker loop — demotion must keep it alive"
         )
     finally:
         # Restore the process-wide sampler caches this test populated.
@@ -264,8 +422,11 @@ async def test_demotion_keeps_backlog_gauges_and_clears_leader_scoped() -> None:
         update_reservation_slots_cache({})
         update_stranded_jobs_cache({})
         otel_mod.update_jobs_by_status_cache({})
+        update_scheduled_count_cache(0)
         update_oldest_due_age_cache(0.0)
         update_running_lease_expired_cache(0)
+        update_actor_backlog_cache({})
+        update_actor_oldest_pending_age_cache({})
 
 
 def _queue_depth_cache() -> dict[str, int]:
@@ -390,7 +551,7 @@ async def test_oldest_due_age_and_by_status_against_real_schema(
     assert by_status is not None, "the sampler never ran against the real schema"
     assert by_status == {"scheduled": 2, "pending": 1}, (
         "the by-status cache must carry every status present — a merged or "
-        f"partial split is the #102 invisibility in a new shape: {by_status}"
+        f"partial split is the promotion-stall invisibility in a new shape: {by_status}"
     )
     assert oldest_due is not None and 25.0 <= oldest_due <= 45.0, (
         f"the oldest due job was seeded 30 s in the past; got {oldest_due!r} — "

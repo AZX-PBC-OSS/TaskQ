@@ -90,6 +90,8 @@ from taskq.obs._otel import (
     safe_start_span,
     set_otel_enabled,
     set_slot_pool_occupancy_source,
+    update_actor_backlog_cache,
+    update_actor_oldest_pending_age_cache,
     update_disabled_schedules_count,
     update_heartbeat_consecutive_failures,
     update_jobs_by_status_cache,
@@ -98,6 +100,7 @@ from taskq.obs._otel import (
     update_queue_depth_cache,
     update_reservation_slots_cache,
     update_running_lease_expired_cache,
+    update_scheduled_count_cache,
     update_stranded_jobs_cache,
     update_sweep_batch_size_cache,
 )
@@ -182,6 +185,8 @@ __all__ = [
     "set_otel_enabled",
     "set_slot_pool_occupancy_source",
     "setup_logging",
+    "update_actor_backlog_cache",
+    "update_actor_oldest_pending_age_cache",
     "update_disabled_schedules_count",
     "update_heartbeat_consecutive_failures",
     "update_jobs_by_status_cache",
@@ -190,6 +195,7 @@ __all__ = [
     "update_queue_depth_cache",
     "update_reservation_slots_cache",
     "update_running_lease_expired_cache",
+    "update_scheduled_count_cache",
     "update_stranded_jobs_cache",
     "update_sweep_batch_size_cache",
 ]

@@ -46,6 +46,7 @@ from taskq._di.scopes import LoopScope, ProcessScope, ThreadScope
 from taskq._ids import new_uuid
 from taskq._shield import shield_with_retrieval
 from taskq.actor import ActorRef
+from taskq.actor_config_ops import ActorConfigRow
 from taskq.backend._protocol import Backend, JobRow
 from taskq.backend._records import jsonb_param
 from taskq.backend.clock import Clock
@@ -56,6 +57,8 @@ from taskq.constants import (
 from taskq.context import JobContext
 from taskq.exceptions import MissingProvider
 from taskq.obs import bind_job_context, get_logger
+from taskq.ratelimit.refs import KeyedReservationRef
+from taskq.ratelimit.reservation import ConcurrencyReservation
 from taskq.retry import OnRetryExhausted, OnSuccess, RetryClassifierHook, RetryPolicy
 from taskq.settings import WorkerSettings
 from taskq.worker._bootstrap import worker_main, worker_main_async
@@ -63,9 +66,12 @@ from taskq.worker._transient import TRANSIENT_PG_ERRORS
 from taskq.worker.cancel import make_cancel_controller
 from taskq.worker.deps import WorkerDeps
 from taskq.worker.dispatch import SlotPoolAcquireError, dispatch_one_job
+from taskq.worker.queue_ops import QueueRow
 from taskq.worker.shutdown import drain_local_queue_to_pending
+from taskq.worker.startup import capacity_field_diverges
 
 __all__ = [  # pyright: ignore[reportUnsupportedDunderAll]  # Why: _main is lazily re-exported via __getattr__
+    "_emit_resolved_capacity_startup_lines",
     "_main",
     "consumer_loop_stub",
     "deregister_worker",
@@ -810,3 +816,149 @@ async def deregister_worker(pool: asyncpg.Pool, settings: WorkerSettings, worker
             worker_id=worker_id,
             error=str(e),
         )
+
+
+#: Sentinel reported for an actor-level cap the operator deliberately left
+#: unset. A blank field reads as missing data; this reads as configuration.
+_UNCAPPED = "uncapped"
+
+
+def _emit_resolved_capacity_startup_lines(
+    settings: WorkerSettings,
+    actor_registry: Mapping[str, ActorRef[Any, Any]],
+    *,
+    stored_rows: Mapping[str, ActorConfigRow],
+    queue_rows: Mapping[str, QueueRow],
+    log: structlog.stdlib.BoundLogger,
+) -> None:
+    """Publish the concurrency each registered actor actually resolves to.
+
+    Four independent surfaces cap an actor and no configuration view shows
+    them together: the worker's own ``max_concurrency``, the stored
+    ``actor_config.max_concurrent``, the ``queues`` row's cap for the queue
+    the actor is assigned to, and the actor's declared reservations or
+    ``singleton=True``. Whichever is smallest binds, so raising any of the
+    other three changes nothing — the failure an operator reports as "I
+    bumped the cap and nothing happened". Each line carries both the
+    resolved number and the layer that produced it, so the answer is a grep
+    rather than a four-surface reconstruction.
+
+    A second line rides the same pass: the startup UPSERT leaves the
+    capacity columns alone once a row exists, so a changed ``@actor(...)``
+    literal is silently overridden by the stored value. That precedence is
+    deliberate — stored capacity is operator-owned — but it is exactly the
+    state in which a deployed change appears to be ignored.
+
+    Never raises and never refuses boot: every condition reported here is
+    diagnosable-but-workable, and a worker able to do work must start.
+    """
+    for name in sorted(actor_registry):
+        ref = actor_registry[name]
+        stored = stored_rows.get(name)
+        reservation_entries = list(ref.reservations or ())
+        # ``ref.reservations`` carries whatever the actor declared: a bare
+        # ``str`` name (resolved against the rate-limit registry elsewhere,
+        # so its slot count is not knowable from this ref alone), or a
+        # materialised ``ConcurrencyReservation`` / ``KeyedReservationRef``
+        # object, both of which carry ``.slots`` directly. The object forms
+        # are not JSON-serializable (``taskq._json.dumps`` has no fallback
+        # for them, nor for ``KeyedReservationRef``'s ``key_fn`` callable),
+        # and structlog's JSON renderer is not exception-wrapped — logging
+        # the raw object drops the entire line. Report each entry as its
+        # name plus its slot count when the count is knowable.
+        reservation_names: list[str] = []
+        reservation_slots: list[int] = []
+        for entry in reservation_entries:
+            if isinstance(entry, ConcurrencyReservation | KeyedReservationRef):
+                entry_name = (
+                    entry.name if isinstance(entry, ConcurrencyReservation) else entry.base_name
+                )
+                reservation_names.append(entry_name)
+                reservation_slots.append(entry.slots)
+            else:
+                reservation_names.append(entry)
+
+        if stored is None:
+            # The dispatch capacity gate joins actor_config, so an actor
+            # with no stored row dispatches nothing at all. Reporting the
+            # code literal here would name a number that never applies.
+            log.info(
+                "actor-resolved-capacity",
+                actor=name,
+                queue=ref.queue,
+                resolved=0,
+                binding="no-stored-row",
+                actor_cap=_UNCAPPED,
+                process_cap=settings.max_concurrency,
+                reservations=reservation_names,
+                drain_mode=False,
+                note=(
+                    "no actor_config row: the dispatch capacity gate joins "
+                    "actor_config, so this actor dispatches nothing until a "
+                    "row exists"
+                ),
+            )
+            continue
+
+        queue_cap = (
+            queue_rows.get(stored.queue) or QueueRow(stored.queue, "", None)
+        ).max_concurrent
+
+        # Layers in reported-precedence order, least first. Ties keep the
+        # earlier entry, which is why the numeric layers are ordered
+        # narrowest-scope first: an actor cap equal to the process cap is
+        # the one an operator can act on.
+        layers: list[tuple[int, str]] = [(settings.max_concurrency, "process")]
+        if stored.max_concurrent is not None:
+            layers.insert(0, (stored.max_concurrent, "actor"))
+        if queue_cap is not None:
+            layers.insert(0, (queue_cap, "queue"))
+        if ref.singleton:
+            layers.insert(0, (1, "singleton"))
+        if reservation_slots:
+            # A materialised reservation's slot count is authoritative and
+            # is what actually gates admission — reporting the process cap
+            # here would print a number that is simply wrong whenever the
+            # reservation is narrower (or wider) than it.
+            layers.insert(0, (min(reservation_slots), "reservation"))
+        elif reservation_names:
+            # Only bare-name entries are present — the concrete slot count
+            # lives in the rate-limit registry, not on this ref, so it
+            # cannot be reported as a specific number without risking a
+            # wrong one. Still named as the binding layer whenever no
+            # numeric layer is provably narrower.
+            layers.insert(0, (settings.max_concurrency, "reservation"))
+
+        resolved, binding = min(layers, key=lambda layer: layer[0])
+
+        log.info(
+            "actor-resolved-capacity",
+            actor=name,
+            queue=stored.queue,
+            resolved=resolved,
+            binding=binding,
+            actor_cap=_UNCAPPED if stored.max_concurrent is None else stored.max_concurrent,
+            queue_cap=_UNCAPPED if queue_cap is None else queue_cap,
+            process_cap=settings.max_concurrency,
+            reservations=reservation_names,
+            singleton=ref.singleton,
+            # Zero is the value most likely to be read as "unset", by an
+            # operator and by a falsy check alike; drain mode is stated so
+            # an actor that dispatches nothing on purpose does not look
+            # identical to a broken one.
+            drain_mode=binding == "actor" and resolved == 0,
+        )
+
+        if capacity_field_diverges(ref.max_concurrent, stored.max_concurrent):
+            log.warning(
+                "actor-config-capacity-divergence",
+                actor=name,
+                declared=ref.max_concurrent,
+                stored=_UNCAPPED if stored.max_concurrent is None else stored.max_concurrent,
+                note=(
+                    "the stored actor_config capacity wins: the startup upsert "
+                    "leaves the capacity columns alone once a row exists, so "
+                    "the declared value has no effect until the stored row is "
+                    "changed"
+                ),
+            )

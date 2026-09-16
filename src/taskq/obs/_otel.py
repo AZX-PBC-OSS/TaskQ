@@ -1653,12 +1653,12 @@ _lock_contention = get_meter().create_counter(
 
 # ── Backlog detection ─────────────────────────────────────────────────
 #
-# These gauges are the #102 detectors: a scheduled backlog that stops
-# moving is invisible in a merged pending+scheduled count and in absolute
-# depth thresholds. They are sampled UNCONDITIONALLY (every worker, not
-# leader-gated) on purpose: a detector hosted behind the leadership gate
-# emits nothing under exactly the failure (a second schema's lock) that
-# mutes every leader-gated sampler.
+# These gauges are the backlog-stall detectors: a scheduled backlog that
+# stops moving is invisible in a merged pending+scheduled count and in
+# absolute depth thresholds. They are sampled UNCONDITIONALLY (every
+# worker, not leader-gated) on purpose: a detector hosted behind the
+# leadership gate emits nothing under exactly the failure (a second
+# schema's lock) that mutes every leader-gated sampler.
 
 
 def update_jobs_by_status_cache(data: dict[str, int]) -> None:
@@ -1688,6 +1688,75 @@ get_meter().create_observable_gauge(
 )
 
 
+# ── Per-actor backlog attribution ─────────────────────────────────────
+#
+# No worker refuses to start because an actor's queue has no consumer: in
+# a multi-worker fleet no single supervisor can know what consumes a
+# queue. A misrouted actor therefore produces no refusal, no error and no
+# failed job — its rows pile up pending while every probe stays green, so
+# monitoring is the only place that condition can surface, and only at
+# actor granularity. A queue-summed depth cannot separate "one actor on
+# this queue is never consumed" from "this queue is busy", and the
+# fleet-wide oldest-DUE-age gauge measures promotion (scheduled →
+# pending), reading 0.0 for pending work nobody takes.
+#
+# Dimensions are exactly (actor, queue): both are bounded by the
+# deployment's own registration, and nothing identity-like — job, worker
+# or schedule id — may ride along, or the series that exists to be
+# alerted on becomes the series that cannot be stored.
+
+
+def update_actor_backlog_cache(data: dict[tuple[str, str], int]) -> None:
+    """Replace the per-(actor, queue) pending-depth cache with fresh data."""
+    global _actor_backlog_cache
+    _actor_backlog_cache = dict(data)
+
+
+def _observe_actor_backlog(options: CallbackOptions) -> Iterable[Observation]:
+    for (actor, queue), depth in _actor_backlog_cache.items():
+        yield Observation(depth, {"actor": actor, "queue": queue})
+
+
+_actor_backlog_cache: dict[tuple[str, str], int] = {}
+
+get_meter().create_observable_gauge(
+    name="taskq.jobs.actor_backlog",
+    description=(
+        "Pending jobs per (actor, queue). An actor whose jobs are never "
+        "consumed is the series that rises without bound while its "
+        "queue-mates stay flat."
+    ),
+    unit="1",
+    callbacks=[_observe_actor_backlog],
+)
+
+
+def update_actor_oldest_pending_age_cache(data: dict[tuple[str, str], float]) -> None:
+    """Replace the per-(actor, queue) oldest-pending-age cache with fresh data."""
+    global _actor_oldest_pending_age_cache
+    _actor_oldest_pending_age_cache = dict(data)
+
+
+def _observe_actor_oldest_pending_age(options: CallbackOptions) -> Iterable[Observation]:
+    for (actor, queue), age in _actor_oldest_pending_age_cache.items():
+        yield Observation(age, {"actor": actor, "queue": queue})
+
+
+_actor_oldest_pending_age_cache: dict[tuple[str, str], float] = {}
+
+get_meter().create_observable_gauge(
+    name="taskq.jobs.oldest_pending_age_seconds",
+    description=(
+        "Seconds since the oldest PENDING job became eligible, per (actor, "
+        "queue). Depth alone is ambiguous — a deep queue that drains is "
+        "healthy throughput — but an actor nobody consumes has a pending "
+        "job whose age grows with wall clock."
+    ),
+    unit="s",
+    callbacks=[_observe_actor_oldest_pending_age],
+)
+
+
 def update_oldest_due_age_cache(age_seconds: float) -> None:
     """Record the age of the oldest due-but-still-scheduled job.
 
@@ -1714,6 +1783,46 @@ get_meter().create_observable_gauge(
     ),
     unit="s",
     callbacks=[_observe_oldest_due_age],
+)
+
+
+def update_scheduled_count_cache(count: int) -> None:
+    """Record the current count of `scheduled`-status jobs.
+
+    Emitted label-less (unlike `taskq.jobs.by_status`, which carries a
+    `status` label for every status) specifically so it joins on identical
+    label sets with `taskq.jobs.oldest_due_age_seconds` — also label-less —
+    in `TaskQScheduledBacklogGrowing`. That alert needs both "the oldest
+    due job has waited a long time" AND "the scheduled count is actually
+    rising", not the age of a single straggling job (which climbs
+    monotonically toward its own promotion regardless of how healthily
+    everything behind it drains). A vector `and`/comparison between two
+    `taskq_*` series with mismatched label sets is a silent no-op join —
+    valid PromQL that can never produce a result — so this gauge exists
+    to keep the two operands directly comparable without a join modifier.
+    """
+    global _scheduled_count
+    _scheduled_count = count
+
+
+def _observe_scheduled_count(options: CallbackOptions) -> Iterable[Observation]:
+    yield Observation(_scheduled_count)
+
+
+_scheduled_count: int = 0
+
+get_meter().create_observable_gauge(
+    name="taskq.jobs.scheduled_count",
+    description=(
+        "Count of jobs currently in `scheduled` status, sampled by the "
+        "backlog detection leader. Label-less twin of "
+        '`taskq.jobs.by_status{status="scheduled"}`, kept in step with it '
+        "so TaskQScheduledBacklogGrowing can compare it against "
+        "`taskq.jobs.oldest_due_age_seconds` (also label-less) without a "
+        "PromQL join modifier."
+    ),
+    unit="1",
+    callbacks=[_observe_scheduled_count],
 )
 
 
