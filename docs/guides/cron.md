@@ -49,7 +49,7 @@ cron("* * * * * */30", "ticker")
 |---|---|---|---|
 | `expression` | `str` | required | Standard 5-field cron expression (`minute hour day month day_of_week`), validated via `croniter.is_valid()`. An optional 6th field is also supported, appended **after** the standard 5 as a seconds field (e.g. `"* * * * * */30"` fires every 30 seconds) — this is `croniter`'s non-standard extension, not a leading seconds field. For sub-minute intervals, place the step in the 6th field; `*/30` in the first (minute) field fires every second during minutes 0 and 30, not every 30 seconds. Calendar rules are croniter's: day-of-month and day-of-week combine with OR (a `0 0 1 * 1` schedule fires on the 1st of the month *and* on Mondays); `L` in the day-of-month field means the last day of the month; a day-of-month with no such day in a month (e.g. the 31st in April, the 29th of February in a non-leap year) is skipped, never clamped. |
 | `actor` | `str` | required | Name of the actor to enqueue. Must match a registered `ActorRef.name`. |
-| `payload_factory` | `str \| None` | `None` | Dotted path to a callable that returns the payload `dict` or `BaseModel`. Async factories are awaited with a 5s timeout. |
+| `payload_factory` | `str \| None` | `None` | Dotted path to a callable that returns the payload `dict` or `BaseModel`. Bounded by `TASKQ_CRON_PAYLOAD_FACTORY_TIMEOUT` (default 5s). |
 | `static_payload` | `dict[str, object] \| None` | `None` | Fixed payload dict included with every fire. Mutually exclusive with `payload_factory`. |
 | `name` | `str` | `""` | Schedule discriminator. When multiple schedules target the same actor (per-property scheduling), each must have a distinct `name`. Combined with `actor` to form the unique constraint `(actor, name)`. Defaults to `""` (empty string) which is treated as the single (legacy) schedule for that actor. See [Per-property schedules](#per-property-schedules). |
 | `identity_key` | `str \| None` | `None` | Opaque identity key passed through to `enqueue()` on every fire. Enables cron↔on-demand dedup: a cron fire and an ad-hoc `enqueue()` with the same `identity_key` are deduplicated by `unique_for` on the actor. See [Per-property schedules](#per-property-schedules). |
@@ -81,8 +81,20 @@ cron(
 ### Payload factory
 
 Pass `payload_factory="module.path.to_callable"` for dynamic payloads. The factory is
-resolved via `importlib.import_module` + `getattr` and cached. Async factories are awaited
-with a 5-second timeout:
+resolved via `importlib.import_module` + `getattr` and cached.
+
+A coroutine factory is called on the event loop and awaited there. Any other callable may
+block, so it runs on an executor reserved for payload factories — never the pool sync
+actor bodies run on, so a busy fleet of actors cannot stall a schedule tick and a factory
+that never returns cannot consume the worker's actor execution capacity. A sync factory
+must therefore be thread-safe and must not require the event loop.
+
+Both phases are bounded by `TASKQ_CRON_PAYLOAD_FACTORY_TIMEOUT` (default 5 seconds),
+clamped to stay inside what remains of the tick's own deadline so a hung factory takes a
+named per-schedule failure rather than cancelling the whole tick. Factory waits are
+funded from the tick's remaining budget, so a batch of simultaneously-due hung factories
+cannot overrun it: once the budget is spent, a factory-backed schedule fails immediately
+with a "tick budget exhausted" error (counting toward auto-disable) instead of waiting:
 
 ```python
 # myapp/payloads.py
@@ -333,19 +345,24 @@ the cron loop:
 3. Computes `next_fire_at` as usual and continues.
 
 After a configurable number of consecutive failures, the schedule is auto-disabled. The
-`taskq.cron.consecutive_failures` up-down counter tracks the failure balance per actor:
-schedules on one actor share one series, so the balance is the sum over that actor's
-schedules — including any residue from schedules that were disabled, re-enabled or deleted
-(which no later delta removes; the `cron_schedules.consecutive_failures` column and the
-logs are the authoritative per-schedule counts). Per-schedule attribution lives on the
-`cron fired`, `cron fire failed` and `cron schedule auto-disabled` log lines and the
-`taskq.cron_schedule_id` attribute of the `cron fire` span. The
-`taskq.cron.disabled_schedules` observable gauge tracks the count of disabled schedules —
-that gauge, not the balance, is the alert signal.
+`taskq.cron.consecutive_failures` up-down counter reports the outstanding failure count
+per actor: schedules on one actor share one series, and each tick reconciles the series
+against the database's own sum of `cron_schedules.consecutive_failures` per actor — read
+over the whole table, not just the tick's own batch, so an actor is corrected even when
+none of its schedules were due. Enables, disables and deletes performed by any process —
+a client, the CLI, the admin UI — therefore self-correct on the next tick with due work,
+and the value returns to zero once no schedule is failing. Per-schedule attribution lives
+on the `cron fired`, `cron fire failed` and `cron schedule auto-disabled` log lines and
+the `taskq.cron_schedule_id` attribute of the `cron fire` span. The
+`taskq.cron.disabled_schedules` observable gauge tracks the count of disabled schedules.
 
-Calling `handle.enable()` resets `consecutive_failures` to 0 and clears `last_fire_error`
-(the metric balance is not adjusted — a client process cannot emit a worker-counter
-delta).
+Failure telemetry is emitted only once the tick's transaction commits, so a strike the
+database rolled back leaves no log line, span or metric delta behind — and a connection's
+telemetry recovers on its very next tick regardless: the commit gate re-establishes itself
+per tick rather than assuming a prior tick's registration survived.
+
+Calling `handle.enable()` resets `consecutive_failures` to 0 and clears `last_fire_error`;
+the metric reconciles to match on the next tick with due work, not immediately.
 
 ---
 

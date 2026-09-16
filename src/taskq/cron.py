@@ -9,7 +9,9 @@ downstream modules (schedule CRUD, cron loop, admin ops).
 import asyncio
 import importlib
 import inspect
+import threading
 from collections.abc import Awaitable, Callable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any, Final, cast
@@ -63,6 +65,41 @@ def _resolve_factory(dotted_path: str) -> Callable[[], Any]:
     return factory
 
 
+_FACTORY_POOL_SIZE: Final = 4
+"""Worker cap on the payload-factory executor.
+
+The per-factory deadline bounds how long a tick WAITS, not how long a
+sync factory runs: a cut-off call stays parked on its thread until the
+factory itself returns, which a truly hung one never does.  Cron ticks
+forever, so a permanently hung schedule strands one thread per fire.
+A private, capped pool turns that unbounded leak into a bounded one and
+keeps it off the loop's default executor, where sync actor bodies run —
+sharing that pool would let one stuck schedule consume the worker's own
+execution capacity until unrelated actors have no thread left, and would
+let a busy fleet of sync actors starve an instantaneous factory past its
+deadline while the tick holds the cron advisory lock.
+"""
+
+_factory_executor: ThreadPoolExecutor | None = None
+_factory_executor_lock = threading.Lock()
+
+
+def _payload_factory_executor() -> ThreadPoolExecutor:
+    """The process-wide payload-factory executor, created on first use.
+
+    Lazy so a process that registers no factory-backed schedule — the
+    common case — never pays for the threads.
+    """
+    global _factory_executor
+    with _factory_executor_lock:
+        if _factory_executor is None:
+            _factory_executor = ThreadPoolExecutor(
+                max_workers=_FACTORY_POOL_SIZE,
+                thread_name_prefix="taskq-cron-factory",
+            )
+        return _factory_executor
+
+
 _FACTORY_TIMEOUT_S: Final = 5.0
 """The per-factory deadline ``resolve_payload`` enforces on both phases of
 a factory: the call itself (run off the event loop) and, for a factory that
@@ -77,11 +114,11 @@ async def _await_factory_bounded(
     """Await one phase of a payload factory under the factory deadline.
 
     *timeout_s* overrides :data:`_FACTORY_TIMEOUT_S` for this call — the
-    cron tick passes its ``cron_payload_factory_timeout`` setting so an
-    operator who tunes the whole-tick deadline below the factory default
-    cannot leave a per-factory budget that silently exceeds it (the
-    leader's whole-tick ``asyncio.timeout`` would then cancel mid-factory,
-    losing the named per-schedule failure this path exists to record).
+    cron tick passes its ``cron_payload_factory_timeout`` setting already
+    clamped to what is left of its whole-tick budget, so a per-factory
+    budget can never silently exceed it (the leader's whole-tick
+    ``asyncio.timeout`` would then cancel mid-factory, losing the named
+    per-schedule failure this path exists to record).
 
     A timeout raises ``TimeoutError`` naming the factory's dotted path: the
     schedule's error text is the only place an operator sees WHICH factory
@@ -111,21 +148,24 @@ async def resolve_payload(
     """Resolve payload from a factory dotted path or static metadata.
 
     If *payload_factory* is set, resolves the dotted path via
-    :func:`_resolve_factory` and calls it.  The call itself runs OFF the
-    event loop — :func:`asyncio.to_thread`, the standard-library mechanism
-    for a callable that may block and the same one sync actors run under —
-    bounded by the 5 s per-factory ``wait_for``, so a sync factory that
-    blocks is cut at the deadline instead of freezing every timer on the
-    loop (this bound and the caller's whole-tick deadline alike) while the
-    tick holds the cron advisory lock.  A factory that RETURNS a coroutine
-    keeps loop affinity: the coroutine is awaited back on the loop under
-    the same ``wait_for``.  ``BaseModel`` results are converted via
+    :func:`_resolve_factory` and calls it.  A coroutine FUNCTION is called
+    directly on the loop: the call only constructs a coroutine object and
+    cannot block, so routing it through a thread buys nothing.  Any other
+    callable may block, so the call runs on cron's own bounded executor
+    (:func:`_payload_factory_executor`) — never the loop's default pool,
+    which sync actor bodies also check out of — bounded by the per-factory
+    ``wait_for``, so a sync factory that blocks is cut at the deadline
+    instead of freezing every timer on the loop (this bound and the
+    caller's whole-tick deadline alike) while the tick holds the cron
+    advisory lock.  A factory that RETURNS a coroutine keeps loop
+    affinity: the coroutine is awaited back on the loop under the same
+    ``wait_for``.  ``BaseModel`` results are converted via
     ``.model_dump()``; ``dict`` results are returned as-is.  Raises
     ``TypeError`` for unexpected return types.
 
-    Thread-safety contract: a sync payload factory may run on a worker
+    Thread-safety contract: a sync payload factory runs on a worker
     thread — it must be thread-safe and must not require the event loop;
-    a coroutine-returning factory keeps loop affinity.
+    a coroutine factory keeps loop affinity.
 
     If no *payload_factory*, extracts ``static_payload`` from
     *raw_metadata*.  Returns ``{}`` if neither is set.
@@ -140,15 +180,23 @@ async def resolve_payload(
     """
     if payload_factory is not None:
         factory = _resolve_factory(payload_factory)
-        # The call runs off the loop: called inline, a sync factory that
-        # blocks freezes every timer on the loop — this deadline and the
-        # caller's whole-tick asyncio.timeout alike — so the tick holds
-        # the cron advisory lock for as long as the factory blocks.
-        # asyncio.to_thread is the standard-library off-loop mechanism,
-        # the same one sync actors run under.
-        result: object = await _await_factory_bounded(
-            payload_factory, asyncio.to_thread(factory), timeout_s=timeout_s
-        )
+        result: object
+        if inspect.iscoroutinefunction(factory):
+            # Calling a coroutine function builds a coroutine object and
+            # runs no user code, so the loop is never at risk and the
+            # call needs no thread at all.
+            result = factory()
+        else:
+            # Called inline, a sync factory that blocks freezes every
+            # timer on the loop — this deadline and the caller's
+            # whole-tick asyncio.timeout alike — so the tick would hold
+            # the cron advisory lock for as long as the factory blocks.
+            loop = asyncio.get_running_loop()
+            result = await _await_factory_bounded(
+                payload_factory,
+                loop.run_in_executor(_payload_factory_executor(), factory),
+                timeout_s=timeout_s,
+            )
         if inspect.iscoroutine(result):
             # A coroutine-returning factory keeps loop affinity: its body
             # runs here, on the loop, under the same deadline.

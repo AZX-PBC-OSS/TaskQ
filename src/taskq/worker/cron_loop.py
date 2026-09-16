@@ -9,7 +9,8 @@ statements inside the caller's transaction.
 """
 
 import re
-from collections.abc import Mapping
+import time
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import Final, Literal
@@ -22,8 +23,8 @@ from asyncpg.exceptions import UniqueViolationError
 from opentelemetry import trace
 from opentelemetry.trace import Span, SpanKind, StatusCode
 
-from taskq._ids import new_job_id
-from taskq._json import sanitize_nul_str
+from taskq._ids import new_job_id, new_uuid
+from taskq._json import loads, sanitize_nul_str
 from taskq.backend._protocol import Backend, DstStrategy, EnqueueArgs, IdentityKey, parse_retry_kind
 from taskq.backend._records import parse_rowcount
 from taskq.backend._sweeps import (
@@ -44,6 +45,8 @@ from taskq.cron import (
 )
 from taskq.obs import (
     get_logger,
+    otel_enabled,
+    reconcile_cron_failures,
     record_backpressure_error,
     record_cron_failure,
     record_cron_lock_contention,
@@ -87,6 +90,183 @@ class _ActorConfig:
     max_attempts: int
     retry_kind: str
     max_pending: int | None
+
+
+_TICK_WRITE_RESERVE_FRACTION: Final = 0.1
+"""Share of the whole-tick budget the factory deadline must leave unspent.
+
+The leader wraps the whole tick in one ``asyncio.timeout`` and the
+factory call sits inside it.  Armed with the same duration, the two
+deadlines race with no deterministic winner, and when the outer one
+wins it delivers ``CancelledError`` — a ``BaseException``, so the
+per-schedule ``except Exception`` cannot catch it — aborting the tick
+and rolling back every healthy peer planned beside the hung schedule.
+``next_fire_at`` never advances, the identical batch is selected again,
+and the hung schedule accrues no strike: a livelock with no telemetry.
+Holding the factory deadline strictly inside the tick's remaining budget
+makes the inner deadline the certain winner, so the hang becomes the
+named per-schedule failure the strike accounting is built on, and the
+reserve leaves room for the tick's own writes and its COMMIT.
+"""
+
+
+class _TickBudgetExhaustedError(TimeoutError):
+    """The tick's funded budget was spent before this schedule's payload
+    factory could be called, so the schedule is struck without waiting.
+
+    The planning loop awaits each schedule's factory in turn, so the
+    batch's AGGREGATE factory wait — not any single factory's — is what
+    races the leader's whole-tick ``asyncio.timeout``.  Any per-factory
+    floor under the clamp lets enough simultaneously-due hung factories
+    sum past that deadline: the outer cancellation then rolls back every
+    strike the tick recorded, and the identical batch is re-selected on
+    the next tick.  Failing the schedule the moment no funded wait
+    remains keeps the tick inside its deadline however many hung
+    factories share the batch, and the strike keeps the schedule on its
+    path to auto-disable.  A ``TimeoutError`` subclass because the
+    outcome is a deadline expiring — but the message names the budget,
+    not a hang: the factory never ran, so a "timed out" claim against it
+    would be a lie.
+    """
+
+
+_COMMIT_GATE_CHANNEL: Final = "taskq_cron_commit"
+"""Self-addressed channel the tick uses to learn that its own transaction
+committed.
+
+Postgres delivers a ``NOTIFY`` to its own session only if the emitting
+transaction commits, and never if it rolls back — the only commit signal
+available to a function that runs INSIDE the caller's transaction and
+returns before the ``COMMIT``.  The notification rides back on the same
+packet as the ``COMMIT`` response, so the tick's telemetry lands while
+the caller is still inside its transaction block.
+"""
+
+
+_armed_commit_emits: dict[int, tuple[str, Callable[[], None]]] = {}
+"""The emission waiting on each cron session's commit, keyed by that
+session's backend pid and tagged with the arming tick's nonce.
+
+One entry per live cron session — one in the shipped worker — because
+each tick replaces its own session's entry.  The pid keys the map rather
+than the connection object because a pooled connection is a proxy that
+cannot be weak-referenced, and a strong key would pin it past its
+checkout; the nonce distinguishes the current tick's notification from
+one a rolled-back tick left unanswered.
+"""
+
+_confirmed_listening: set[int] = set()
+"""Backend pids known to hold a server-side ``LISTEN`` registration that
+has actually survived a commit.
+
+``LISTEN`` is itself transactional in Postgres: issued inside a
+transaction that later rolls back, the server discards the registration
+along with everything else the transaction did.  asyncpg's client-side
+bookkeeping (``Connection._listeners``) does not know this happened -- it
+records the channel as listened-to unconditionally when ``add_listener``
+first issues the ``LISTEN``, and never revisits that record on rollback.
+A tick whose COMMIT fails (the exact case the commit gate exists to
+handle) therefore leaves asyncpg believing the session is still
+listening while Postgres has already forgotten it: every later tick's
+``add_listener`` on that channel becomes a silent no-op (the channel is
+already in ``self._listeners``), its ``NOTIFY`` is never delivered to a
+session the server does not consider a listener, ``_dispatch_commit_gate``
+never runs, and the connection reports no cron telemetry ever again --
+even for ticks that commit cleanly afterward.  A pid enters this set only
+from :func:`_dispatch_commit_gate`, proof a ``NOTIFY`` was actually
+received on it; :func:`_emit_on_commit` forces a fresh ``LISTEN`` for any
+pid absent from it.
+"""
+
+
+def _dispatch_commit_gate(_conn: object, pid: int, _channel: str, payload: str) -> None:
+    """Run and retire the emission armed for *pid* under the *payload* nonce.
+
+    A self-notify carries the sending session's own pid, so a
+    notification from any other session finds no entry.  A nonce that
+    does not match the armed one belongs to a tick whose emission was
+    already superseded, and is ignored.  Running at all is proof this
+    pid's ``LISTEN`` is genuinely live server-side, so it is recorded in
+    :data:`_confirmed_listening`.
+    """
+    _confirmed_listening.add(pid)
+    armed = _armed_commit_emits.get(pid)
+    if armed is None or armed[0] != payload:
+        return
+    del _armed_commit_emits[pid]
+    armed[1]()
+
+
+async def _emit_on_commit(conn: asyncpg.Connection, emit: Callable[[], None]) -> None:
+    """Arrange for *emit* to run only if the caller's transaction commits.
+
+    Every claim the tick's telemetry makes — a strike, an auto-disable, a
+    published message, a failure-count reset — describes a row the tick
+    wrote and the caller has yet to commit.  Emitting before that commit
+    lets a failed ``COMMIT`` leave operators reading an auto-disable for a
+    schedule the database still has enabled, and a failure count for a
+    strike the database says never happened.  Gating on the ``NOTIFY``
+    (see :data:`_COMMIT_GATE_CHANNEL`) makes the telemetry say exactly
+    what the database kept: a rollback delivers nothing, so nothing is
+    reported.
+
+    A pid not yet in :data:`_confirmed_listening` -- either this is its
+    first tick, or an earlier tick's ``LISTEN`` was silently undone by
+    that tick's own rollback (see the set's docstring) -- gets its
+    client-side registration dropped first, so ``add_listener`` re-issues
+    a real ``LISTEN`` inside THIS tick's transaction instead of trusting
+    stale bookkeeping.  A confirmed pid skips straight to the cheap path:
+    asyncpg already holds the callback, so ``add_listener`` costs no
+    round trip.
+
+    A connection that cannot carry a session-scoped ``LISTEN`` — a
+    transaction-pooling proxy in front of Postgres, say — gets the
+    emission inline instead.  Losing the gate costs the commit-time
+    precision; losing the telemetry would cost the whole failure trail,
+    and a tick that struck a schedule must always say so.
+    """
+    nonce = str(new_uuid())
+    pid: int | None = None
+    try:
+        pid = conn.get_server_pid()
+        if pid not in _confirmed_listening:
+            await conn.remove_listener(_COMMIT_GATE_CHANNEL, _dispatch_commit_gate)  # pyright: ignore[reportArgumentType]  # Why: stubs over-narrow the callback type; asyncpg accepts a sync callback at runtime.
+        await conn.add_listener(_COMMIT_GATE_CHANNEL, _dispatch_commit_gate)  # pyright: ignore[reportArgumentType]  # Why: stubs over-narrow the callback type; asyncpg accepts a sync callback at runtime.
+        # Replaces this session's previous entry: a tick whose transaction
+        # rolled back left an emission no notification can ever answer.
+        _armed_commit_emits[pid] = (nonce, emit)
+        await conn.execute("SELECT pg_notify($1, $2)", _COMMIT_GATE_CHANNEL, nonce)
+    except (AttributeError, asyncpg.PostgresError, asyncpg.InterfaceError) as exc:
+        if pid is not None:
+            _armed_commit_emits.pop(pid, None)
+            _confirmed_listening.discard(pid)
+        # The fallback trades the commit gate away: the emission below can
+        # describe a transaction still in flight. A degraded outcome must
+        # not be silent — the warning names why the gate is absent.
+        log.warning(
+            "cron-commit-gate-unavailable",
+            kind="cron_commit_gate_fallback",
+            error=safe_exception_message(exc) or type(exc).__name__,
+        )
+        emit()
+
+
+def _factory_deadline(settings: WorkerSettings, elapsed_s: float) -> float | None:
+    """The per-factory deadline for a factory called *elapsed_s* into the
+    tick: the configured budget, clamped to stay strictly inside what is
+    left of the leader's whole-tick deadline — or ``None`` when that
+    leftover is spent.
+
+    See :data:`_TICK_WRITE_RESERVE_FRACTION` for why the clamp is not
+    merely advice to the operator.  ``None`` — never a floor — is the
+    batch-safety half of the contract: per-factory waits sum across the
+    batch (see :class:`_TickBudgetExhaustedError`), so a tick that cannot
+    fund another wait must not grant one.
+    """
+    whole_tick = settings.dispatcher_command_timeout
+    remaining = whole_tick * (1.0 - _TICK_WRITE_RESERVE_FRACTION) - elapsed_s
+    budget = min(settings.cron_payload_factory_timeout, remaining)
+    return budget if budget > 0 else None
 
 
 def _resolve_max_pending(stored: int | None, literal: int | None) -> int | None:
@@ -143,15 +323,15 @@ class _FireFailure:
 class _BufferedFailureTelemetry:
     """Deferred failure telemetry for one failed-or-struck schedule.
 
-    Carries everything the end-of-tick emission needs to open the
+    Carries everything the post-commit emission needs to open the
     per-failure span (PRODUCER kind, the link captured at failure time,
     schedule/worker attributes), mark it ERROR, attach the
     ``cron.auto_disabled`` event, and emit the metric delta.  Nothing is
     exported at failure time: a strike persists only if the tick's
     failures UPDATE executes AND the caller's transaction commits, so
     exporting at strike time claims schedule failures (and auto-disables)
-    that a later transient error can still roll back — see the emission
-    section in :func:`tick_cron`.
+    the database can still roll back — see the emission section in
+    :func:`tick_cron`.
     """
 
     failure: _FireFailure
@@ -693,6 +873,7 @@ async def tick_cron(
         raise ValueError(f"invalid schema identifier: {schema!r}")
     _validate_positive("limit", limit)
 
+    tick_started = time.monotonic()
     lock_name = schema_lock_name("cron", schema)
     lock_acquired: bool = await conn.fetchval(
         "SELECT pg_try_advisory_xact_lock(hashtextextended($1, 0))",
@@ -790,19 +971,24 @@ async def tick_cron(
             },
             links=links,
             new_root=True,
-        ) as span:
+        ):
             try:
                 successes.append(
-                    await _plan_fire(row, server_now, settings, actor_configs, actor_policies)
+                    await _plan_fire(
+                        row,
+                        server_now,
+                        settings,
+                        actor_configs,
+                        actor_policies,
+                        tick_started=tick_started,
+                    )
                 )
             except Exception as exc:
-                # Why buffered, not marked on *span*: this failure joins the
-                # strike telemetry in the end-of-tick emission.  The span
-                # above records the planning ATTEMPT and closes UNSET; the
-                # failure claim (ERROR status, auto-disable event) is the
-                # emission span's to make, and only after the tick's SQL has
-                # all executed — a transient error from any later statement
-                # rolls this failure back with the rest of the tick.
+                # Why buffered, not marked on the span above: that span
+                # records the planning ATTEMPT and closes UNSET; the failure
+                # claim (ERROR status, auto-disable event) belongs to the
+                # emission span, which opens only once the transaction has
+                # committed — a rollback takes this failure with it.
                 failure = _compute_fire_failure(row, exc, settings)
                 failures.append(failure)
                 failure_telemetry.append(
@@ -908,113 +1094,156 @@ async def tick_cron(
                 f'SELECT COUNT(*) FROM "{schema}".cron_schedules WHERE enabled = false'
             )
 
-    # ── Telemetry emission — after every statement of the tick ────────
+    # The failure level every actor with a failing schedule now carries,
+    # read INSIDE this transaction so it includes the tick's own
+    # uncommitted strikes and resets, and read over the whole table rather
+    # than scoped to this batch's actors: a batch covers only DUE
+    # schedules, so an actor whose failing schedule was disabled or
+    # deleted between ticks never re-enters a batch, and a batch-scoped
+    # read would strand its reported level at its last value forever.
+    # One aggregate over the operator-sized cron_schedules table — and
+    # skipped when telemetry is off, the reconcile it feeds being its
+    # only consumer.
+    failure_totals: dict[str, int] = (
+        await _actor_failure_totals(conn, schema) if otel_enabled() else {}
+    )
+
+    # ── Telemetry emission — gated on the caller's COMMIT ─────────────
     #
-    # Why: the strikes and auto-disables above persist only if the failures
-    # UPDATE executed AND the caller's transaction commits.  A TRANSIENT
-    # error from any later statement re-raises and the leader retries the
-    # tick with nothing persisted — so failure spans, auto-disable events
-    # and metric deltas are buffered (see _BufferedFailureTelemetry) and
-    # exported only here, where every statement has already executed.
-    # Before the buffering, spans opened (and exported) at strike time
-    # claimed schedule failures and auto-disables a later transient error
-    # rolled back: the trace backend said schedule X auto-disabled while
-    # the DB row said enabled with count 0.
-    #
-    # Residual divergence, stated honestly: a failed COMMIT itself still
-    # diverges.  The buffers are emitted right before returning to the
-    # leader, which then commits — if that COMMIT fails (rare infra), the
-    # leader's retry re-runs the tick, re-striking and re-emitting, so the
-    # trace backend can again show a failure the DB does not keep.  Moving
-    # emission past the commit would require the leader to carry the
-    # buffers across the commit boundary, trading this window for a worse
-    # one (a worker death between commit and emit silently LOSES the
-    # telemetry for strikes that did persist).  Success-path telemetry
-    # (fired logs, published-message counters, failure-count resets) and
-    # suppression telemetry share the same residual for the same reason.
+    # Why: every claim below describes a row this tick wrote — a strike,
+    # an auto-disable, a published message, a failure-count reset — and
+    # those rows persist only if the caller's transaction commits. Emitted
+    # inline, a failed COMMIT would leave operators reading an
+    # auto-disable for a schedule the database still has enabled, and a
+    # failure count for a strike the database says never happened, with no
+    # way to reconstruct the trail from the row. So the whole emission is
+    # a closure armed on the transaction's commit (see _emit_on_commit);
+    # a rollback delivers nothing and the tick reports nothing.
 
-    for plan in successes:
-        if plan.prev_consecutive > 0:
-            # Why actor, not schedule_id: the metric's dimension is the
-            # registered actor set (bounded by the shipped code); the
-            # schedule id rides the log line below and the cron-fire span.
-            # The delta is this schedule's OWN prior count, so the actor's
-            # balance lands on the sum of its other schedules' counts.
-            record_cron_failure(plan.actor, -plan.prev_consecutive)
-        log.info(
-            "cron fired",
-            kind="cron_fire",
-            actor=plan.actor,
-            worker_id=str(worker_id),
-            schedule_id=str(plan.schedule_id),
-            next_fire_at=plan.next_fire_at.isoformat(),
-        )
-        record_published_message(plan.actor, plan.queue)
-
-    for entry in failure_telemetry:
-        # Span shape matches the pre-buffering strike-time export (PRODUCER
-        # kind, the link captured at failure time, the
-        # cron_schedule_name / worker_id / cron_schedule_id attributes) —
-        # only the emission TIME moved.
-        with safe_start_span(
-            "cron fire",
-            kind=SpanKind.PRODUCER,
-            attributes={
-                "cron_schedule_name": entry.failure.row["actor"],
-                "taskq.worker_id": str(entry.worker_id),
-                # Why: same per-schedule attribution as the planning-loop
-                # span above -- the metric lost this label on purpose.
-                "taskq.cron_schedule_id": str(entry.failure.schedule_id),
-            },
-            links=entry.links,
-            new_root=True,
-        ) as span:
-            _mark_failure_span(span, entry.failure, entry.exc)
-        failure = entry.failure
-        log.error(
-            "cron schedule auto-disabled" if failure.auto_disable else "cron fire failed",
-            kind="cron_fire",
-            actor=failure.row["actor"],
-            worker_id=str(entry.worker_id),
-            schedule_id=str(failure.schedule_id),
-            consecutive_failures=failure.consecutive,
-            error=failure.error_text,
-        )
-        # Why actor: the schedule id stays on this log line and the
-        # cron-fire span, not on the metric (see the cardinality note in
-        # obs/_otel.py).
-        record_cron_failure(failure.row["actor"], 1)
-
-    if disabled_count_after is not None:
-        update_disabled_schedules_count(disabled_count_after)
-
-    for entry in suppressed:
-        if entry.reason == "singleton_collision":
-            # Mirrors the enqueue path's own event shape (log only — the
-            # enqueue path does not count singleton collisions), with the
-            # cron attribution fields.
+    def _emit() -> None:
+        for plan in successes:
+            if plan.prev_consecutive > 0:
+                # Why actor, not schedule_id: the metric's dimension is the
+                # registered actor set (bounded by the shipped code); the
+                # schedule id rides the log line below and the cron-fire span.
+                # The delta is this schedule's OWN prior count, so the actor's
+                # balance lands on the sum of its other schedules' counts.
+                record_cron_failure(plan.actor, -plan.prev_consecutive)
             log.info(
-                "singleton-collision",
-                actor=entry.actor,
-                blocking_job_id=(
-                    str(entry.blocking_job_id) if entry.blocking_job_id is not None else None
-                ),
-                detection_path="cron_tick_preflight",
-                schedule_id=str(entry.schedule_id),
+                "cron fired",
+                kind="cron_fire",
+                actor=plan.actor,
                 worker_id=str(worker_id),
+                schedule_id=str(plan.schedule_id),
+                next_fire_at=plan.next_fire_at.isoformat(),
             )
-        else:
-            log.warning(
-                "max-pending-exceeded",
-                actor=entry.actor,
-                current_count=entry.current_count,
-                max_pending=entry.max_pending,
-                schedule_id=str(entry.schedule_id),
-                worker_id=str(worker_id),
-            )
-            record_backpressure_error(entry.actor, kind="max_pending")
+            record_published_message(plan.actor, plan.queue)
 
+        for entry in failure_telemetry:
+            # Span shape matches the strike-time export (PRODUCER kind, the
+            # link captured at failure time, the cron_schedule_name /
+            # worker_id / cron_schedule_id attributes) — only the emission
+            # TIME moved.
+            with safe_start_span(
+                "cron fire",
+                kind=SpanKind.PRODUCER,
+                attributes={
+                    "cron_schedule_name": entry.failure.row["actor"],
+                    "taskq.worker_id": str(entry.worker_id),
+                    # Why: same per-schedule attribution as the planning-loop
+                    # span above -- the metric lost this label on purpose.
+                    "taskq.cron_schedule_id": str(entry.failure.schedule_id),
+                },
+                links=entry.links,
+                new_root=True,
+            ) as span:
+                _mark_failure_span(span, entry.failure, entry.exc)
+            failure = entry.failure
+            log.error(
+                "cron schedule auto-disabled" if failure.auto_disable else "cron fire failed",
+                kind="cron_fire",
+                actor=failure.row["actor"],
+                worker_id=str(entry.worker_id),
+                schedule_id=str(failure.schedule_id),
+                consecutive_failures=failure.consecutive,
+                error=failure.error_text,
+            )
+            # Why actor: the schedule id stays on this log line and the
+            # cron-fire span, not on the metric (see the cardinality note in
+            # obs/_otel.py).
+            record_cron_failure(failure.row["actor"], 1)
+
+        # Last, so it settles the series on what the database holds
+        # whatever the per-event deltas above added: the deltas describe
+        # what THIS tick did, the reconciliation describes what every
+        # process has left behind.
+        reconcile_cron_failures(failure_totals)
+
+        if disabled_count_after is not None:
+            update_disabled_schedules_count(disabled_count_after)
+
+        for entry in suppressed:
+            if entry.reason == "singleton_collision":
+                # Mirrors the enqueue path's own event shape (log only — the
+                # enqueue path does not count singleton collisions), with the
+                # cron attribution fields.
+                log.info(
+                    "singleton-collision",
+                    actor=entry.actor,
+                    blocking_job_id=(
+                        str(entry.blocking_job_id) if entry.blocking_job_id is not None else None
+                    ),
+                    detection_path="cron_tick_preflight",
+                    schedule_id=str(entry.schedule_id),
+                    worker_id=str(worker_id),
+                )
+            else:
+                log.warning(
+                    "max-pending-exceeded",
+                    actor=entry.actor,
+                    current_count=entry.current_count,
+                    max_pending=entry.max_pending,
+                    schedule_id=str(entry.schedule_id),
+                    worker_id=str(worker_id),
+                )
+                record_backpressure_error(entry.actor, kind="max_pending")
+
+    await _emit_on_commit(conn, _emit)
     return len(successes)
+
+
+async def _actor_failure_totals(conn: asyncpg.Connection, schema: str) -> dict[str, int]:
+    """The database's own summed ``consecutive_failures`` per actor, for
+    every actor with at least one failing schedule.
+
+    Whole-table, not scoped to the tick's batch: the batch covers only
+    DUE schedules, so an actor whose failing schedule was disabled or
+    deleted with nothing left due never appears in a batch again, and a
+    batch-scoped read would leave its reported level stranded at its last
+    value.  ``cron_schedules`` is an operator-sized configuration table —
+    bounded by the schedules an operator creates, never by backlog depth —
+    so one aggregate over it is a constant-cost read on a path that runs
+    once a second.  The reconcile this feeds reads an actor's ABSENCE
+    here as a true zero (no failing schedule anywhere), which is what
+    lets a delete or a re-enable performed by any process self-correct.
+    """
+    # One row, one JSON column: the aggregate is per-actor but the result
+    # is a single value, so the tick spends one round trip and no
+    # row-decoding pass on a path that runs every second.
+    row: asyncpg.Record | None = await conn.fetchrow(
+        f"SELECT COALESCE(jsonb_object_agg(actor, total), '{{}}'::jsonb) AS totals FROM ("
+        f"SELECT actor, SUM(consecutive_failures) AS total "
+        f'FROM "{schema}".cron_schedules '
+        f"WHERE consecutive_failures > 0 "
+        f"GROUP BY actor"
+        f") per_actor"
+    )
+    if row is None:
+        return {}
+    aggregated = loads(str(row["totals"]))
+    if not isinstance(aggregated, dict):
+        return {}
+    return {str(actor): int(total) for actor, total in aggregated.items()}  # pyright: ignore[reportUnknownVariableType, reportUnknownArgumentType]  # Why: the JSON decoder is untyped; the aggregate's shape is fixed by the SELECT above.
 
 
 async def _skip_already_delivered_overlap_twins(
@@ -1125,6 +1354,8 @@ async def _plan_fire(
     settings: WorkerSettings,
     actor_configs: dict[str, _ActorConfig],
     actor_policies: Mapping[str, ActorFirePolicy] | None = None,
+    *,
+    tick_started: float,
 ) -> _FireSuccess:
     """Plan one due schedule's fire: resolve the fire time (miss handling),
     payload and enqueue args, and the next ``next_fire_at`` — all in memory,
@@ -1134,6 +1365,14 @@ async def _plan_fire(
     transaction (``clock_timestamp()``) — the single domain for the
     catch-up cutoff and the beyond-window recompute, matching the
     server-side due-check that selected this row.
+
+    *tick_started* is the tick's ``time.monotonic()`` origin; the payload
+    factory's deadline is clamped against what is left of the leader's
+    whole-tick budget from it (see :func:`_factory_deadline`).  When no
+    funded wait remains, a factory-backed schedule fails immediately with
+    :class:`_TickBudgetExhaustedError` — the factory is never called — so
+    a batch of hung factories cannot sum past the whole-tick deadline.
+    Static-payload schedules pay no factory wait and plan regardless.
 
     *actor_policies* stamps the planned args with the actor's singleton /
     ``max_pending`` flags exactly the way the client enqueue path stamps
@@ -1193,7 +1432,13 @@ async def _plan_fire(
         IdentityKey(str(identity_key_raw)) if identity_key_raw is not None else None
     )
 
-    payload = await resolve_payload(row, timeout_s=settings.cron_payload_factory_timeout)
+    payload_budget = _factory_deadline(settings, time.monotonic() - tick_started)
+    if row["payload_factory"] is not None and payload_budget is None:
+        raise _TickBudgetExhaustedError(
+            "cron tick budget exhausted before payload factory "
+            f"{row['payload_factory']!r} could run"
+        )
+    payload = await resolve_payload(row, timeout_s=payload_budget)
 
     enqueue_args = [
         EnqueueArgs(

@@ -255,3 +255,84 @@ class TestTruncateSchemaMetadata:
             assert before > 0
         finally:
             await conn.close()
+
+
+# ── truncate_schema restores the DDL, safely ───────────────────
+#
+# A test that installs a trigger changes the schema's DDL, which no
+# TRUNCATE undoes, so the reset drops any trigger the migrations did not
+# install.  The trigger and table names come from the catalog, and the
+# DROP interpolates them — the project's identifier rule (validate
+# against the canonical identifier regex before any interpolation)
+# applies to catalog-sourced names exactly as to user-sourced ones.
+
+
+class TestTruncateSchemaTriggerReset:
+    async def test_test_added_trigger_is_dropped(self, module_pg_schema: ModulePgSchema) -> None:
+        """A trigger a test installed is gone after the reset — the DDL
+        the next test meets is the migrated one."""
+        conn = await asyncpg.connect(module_pg_schema.pg_dsn)
+        s = module_pg_schema.schema_name
+        try:
+            await truncate_schema(conn, s)
+            await conn.execute(
+                f'CREATE OR REPLACE FUNCTION "{s}".trg_probe() '  # Why: schema is the test-fixture identifier.
+                "RETURNS trigger AS $$ BEGIN RETURN NULL; END; $$ LANGUAGE plpgsql"
+            )
+            await conn.execute(
+                f'CREATE TRIGGER trg_probe AFTER INSERT ON "{s}".jobs '  # Why: schema is the test-fixture identifier; trigger/function names are test-authored literals.
+                f'FOR EACH ROW EXECUTE FUNCTION "{s}".trg_probe()'
+            )
+
+            await truncate_schema(conn, s)
+
+            remaining = await conn.fetchval(
+                "SELECT count(*) FROM pg_trigger t "
+                "JOIN pg_class c ON c.oid = t.tgrelid "
+                "JOIN pg_namespace n ON n.oid = c.relnamespace "
+                "WHERE n.nspname = $1 AND t.tgname = 'trg_probe' AND NOT t.tgisinternal",
+                s,
+            )
+            assert remaining == 0, (
+                "a trigger the migrations did not install must not leak into the next test"
+            )
+        finally:
+            await conn.execute(
+                f'DROP TRIGGER IF EXISTS trg_probe ON "{s}".jobs'
+            )  # Why: schema is the test-fixture identifier; trigger name is a test-authored literal.
+            await conn.execute(
+                f'DROP FUNCTION IF EXISTS "{s}".trg_probe()'
+            )  # Why: schema is the test-fixture identifier; function name is a test-authored literal.
+            await conn.close()
+
+    async def test_trigger_name_failing_identifier_validation_raises(
+        self, module_pg_schema: ModulePgSchema
+    ) -> None:
+        """A catalog-sourced trigger name the identifier rule cannot
+        admit must fail the reset loudly rather than be interpolated raw
+        into the DROP — an unvalidated name breaks out of the quoting."""
+        conn = await asyncpg.connect(module_pg_schema.pg_dsn)
+        s = module_pg_schema.schema_name
+        try:
+            await truncate_schema(conn, s)
+            await conn.execute(
+                f'CREATE OR REPLACE FUNCTION "{s}".trg_probe_unsafe() '  # Why: schema is the test-fixture identifier.
+                "RETURNS trigger AS $$ BEGIN RETURN NULL; END; $$ LANGUAGE plpgsql"
+            )
+            # The quote in the name is the point: interpolated raw it
+            # terminates the quoted identifier in the DROP.
+            await conn.execute(
+                f'CREATE TRIGGER "trg""unsafe" AFTER INSERT ON "{s}".jobs '  # Why: schema is the test-fixture identifier; trigger/function names are test-authored literals.
+                f'FOR EACH ROW EXECUTE FUNCTION "{s}".trg_probe_unsafe()'
+            )
+
+            with pytest.raises(ValueError, match="trg"):
+                await truncate_schema(conn, s)
+        finally:
+            await conn.execute(
+                f'DROP TRIGGER IF EXISTS "trg""unsafe" ON "{s}".jobs'
+            )  # Why: schema is the test-fixture identifier; trigger name is a test-authored literal.
+            await conn.execute(
+                f'DROP FUNCTION IF EXISTS "{s}".trg_probe_unsafe()'
+            )  # Why: schema is the test-fixture identifier; function name is a test-authored literal.
+            await conn.close()
