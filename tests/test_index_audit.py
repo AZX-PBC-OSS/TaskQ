@@ -114,25 +114,33 @@ WITH matching AS MATERIALIZED (
     FROM "{schema}".jobs
     WHERE {conditions}
       AND status IN ('pending', 'scheduled')
+      AND id > ${cursor_ph}::uuid
     ORDER BY id
     LIMIT ${limit_ph}
+),
+batch_ids AS MATERIALIZED (
+    SELECT array_agg(id ORDER BY id) AS ids,
+           (array_agg(id ORDER BY id))[count(*)] AS last_id
+    FROM matching
 ),
 cancelled AS (
     UPDATE "{schema}".jobs AS j
     SET status = 'cancelled', finished_at = clock_timestamp()
-    FROM (
-        SELECT id, status AS prev_status
-        FROM matching
-    ) AS prev
-    WHERE j.id = prev.id
+    WHERE j.id = ANY ((SELECT ids FROM batch_ids)::uuid[])
       AND j.status IN ('pending', 'scheduled')
-    RETURNING j.id, prev.prev_status
+    RETURNING j.id
+),
+cancelled_prev AS (
+    SELECT c.id, m.status AS prev_status
+    FROM cancelled AS c
+    JOIN matching AS m ON m.id = c.id
 )
 SELECT
     (SELECT count(*)::int FROM matching) AS matched_count,
-    (SELECT count(*)::int FROM cancelled) AS cancelled_directly,
-    (SELECT array_agg(id ORDER BY id) FROM cancelled) AS cancelled_ids,
-    (SELECT array_agg(prev_status ORDER BY id) FROM cancelled) AS cancelled_prev_statuses
+    (SELECT last_id FROM batch_ids) AS last_id,
+    (SELECT count(*)::int FROM cancelled_prev) AS cancelled_directly,
+    (SELECT array_agg(id ORDER BY id) FROM cancelled_prev) AS cancelled_ids,
+    (SELECT array_agg(prev_status ORDER BY id) FROM cancelled_prev) AS cancelled_prev_statuses
 """
 
 
@@ -879,12 +887,13 @@ async def test_cancel_by_queue_cte_is_index_served(audit_schema: Any, pg_dsn: st
     schema, _ = audit_schema
     conn = await asyncpg.connect(pg_dsn)
     try:
-        sql = _CANCEL_PS_CTE_TEMPLATE.format(schema=schema, conditions="queue = $1", limit_ph=2)
-        plan = await _explain(conn, sql, "orders", 100)
-        assert "jobs_queue_active_idx" in plan, f"expected jobs_queue_active_idx:\n{plan}"
-        assert "Index Cond: (queue = $1" in plan or "Index Cond: (queue =" in plan, (
-            f"expected a queue Index Cond seek:\n{plan}"
+        sql = _CANCEL_PS_CTE_TEMPLATE.format(
+            schema=schema, conditions="queue = $1", cursor_ph=2, limit_ph=3
         )
+        plan = await _explain(conn, sql, "orders", UUID(int=0), 100)
+        # The engine folds bound params to literals in EXPLAIN text, so the
+        # Index Cond reads `queue = 'orders'::text`, not `queue = $1`.
+        _assert_index_cond(plan, "jobs_queue_active_idx", "queue =")
     finally:
         await conn.close()
 
@@ -906,9 +915,9 @@ async def test_cancel_and_deregister_by_actor_is_index_served(
     conn = await asyncpg.connect(pg_dsn)
     try:
         cancel_sql = _CANCEL_PS_CTE_TEMPLATE.format(
-            schema=schema, conditions="actor = $1", limit_ph=2
+            schema=schema, conditions="actor = $1", cursor_ph=2, limit_ph=3
         )
-        plan = await _explain(conn, cancel_sql, "sync.inventory", 100)
+        plan = await _explain(conn, cancel_sql, "sync.inventory", UUID(int=0), 100)
         assert "jobs_actor_active_id_idx" in plan or "jobs_actor_pending_idx" in plan, (
             f"cancel(actor) matching CTE must seek an actor-keyed index:\n{plan}"
         )
