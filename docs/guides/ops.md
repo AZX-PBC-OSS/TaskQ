@@ -211,7 +211,10 @@ taskq actor-config set my_actor --max-concurrent 10
 
 The exception: **`max_pending`** — a NULL stored value falls back to the code literal, so its
 declarations work on deploy. (`max_pending` rejects enqueues past the queued depth with
-`MaxPendingExceededError`, surfaced as `taskq.backpressure.errors`.)
+`MaxPendingExceededError`, surfaced as `taskq.backpressure.errors` with `kind="max_pending"` —
+filter on the `kind` label, because the same counter also carries identity-serialization
+refusals (`unique_for_lock_timeout`, `idempotency_lock_timeout`) that are lock contention, not
+capacity pressure.)
 
 Two viable ownership postures — pick one deliberately:
 
@@ -798,15 +801,17 @@ Two more states worth naming because they mean *infrastructure*, not your code:
 When an actor's rate limit or reservation denies admission, the actor body **never runs**: the
 job is rescheduled at `now + retry_after` (computed by the limiter store in the DB/Redis clock
 domain), the slot is freed, and **no retry budget is consumed**. A denial is admission control
-rather than an execution, so it writes no `job_attempts` and no `job_events` row: contention is
-carried by the aggregated `rate_limit_blocked_count` on the job row (`snooze_count` for an
-actor-requested deferral), while `metadata.awaiting` names the bucket being waited on. A denied
-job waits in Postgres — this is not busy-spinning in the worker.
+with HTTP-429 semantics — "come back later", indefinitely retryable — not an execution, so it
+writes no `job_attempts` and no `job_events` row: per-denial rows grow without bound under
+sustained contention, so contention is carried by the aggregated `rate_limit_blocked_count` on
+the job row (`snooze_count` for an actor-requested deferral), while `metadata.awaiting` names
+the bucket being waited on. A denied job waits in Postgres — this is not busy-spinning in the
+worker.
 
-A denial never terminally fails a job either. It carries HTTP-429 semantics — come back later —
-so the job reschedules until capacity frees; its only terminal exit is its own
-`schedule_to_close` deadline, reached through the ordinary deadline path. To find jobs starving
-for admission rather than progressing, sort by `rate_limit_blocked_count`.
+A denial never terminally fails a job either: the job reschedules until capacity frees, and its
+only terminal exit is its own `schedule_to_close` deadline, reached through the ordinary
+deadline path. To find jobs starving for admission rather than progressing, sort by
+`rate_limit_blocked_count`.
 
 ```python
 from taskq.ratelimit import SlidingWindow, TokenBucket, registry
@@ -952,7 +957,7 @@ Every job emits an `enqueue` PRODUCER span, a `process` CONSUMER span (linked, w
 | `messaging.process.duration` | actor latency, slow chunks |
 | `taskq.lock.expires_in_seconds` | heartbeat trouble before it becomes `crashed` jobs |
 | `taskq.deadline_exceeded_sweep.jobs_failed` | `schedule_to_close` too tight |
-| `taskq.backpressure.errors` | `max_pending` rejections — producer pressure |
+| `taskq.backpressure.errors` (filter `kind` to the capacity kinds) | `max_pending` rejections — producer pressure |
 | `taskq.cron.disabled_schedules` | a cron outage with one log line |
 | `taskq.maintenance_leader.is_leader` summed != 1 | leader split-brain / no leader |
 

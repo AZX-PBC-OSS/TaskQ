@@ -422,10 +422,12 @@ async def test_taskq_open_dsn_pool_carries_command_timeout(
     async with asyncio.timeout(_TEST_BUDGET_SECS):
         await tq.close()
 
-    assert captured_kwargs.get("command_timeout") == 5.0, (
+    assert captured_kwargs.get("command_timeout") == 10.0, (
         "the DSN pool TaskQ builds must carry the pool-level per-query "
-        "bound (client._taskq._CLIENT_POOL_COMMAND_TIMEOUT_SECS, mirroring "
-        "WorkerSettings.dispatcher_command_timeout's default), got "
+        "bound (client._taskq._CLIENT_POOL_COMMAND_TIMEOUT_SECS — set "
+        "deliberately above the 5 s enqueue-path lock budgets so the "
+        "server-side typed lock refusal wins the race against asyncpg's "
+        "client-side cancellation), got "
         f"kwargs: {sorted(captured_kwargs)}"
     )
 
@@ -456,13 +458,13 @@ def test_taskq_pg_provider_pool_factory_carries_command_timeout(
         schema="taskq",
     )
 
-    assert captured_kwargs.get("command_timeout") == 5.0, (
+    assert captured_kwargs.get("command_timeout") == 10.0, (
         "make_pg_pool_factory must receive the pool-level per-query bound "
         "(client._taskq._CLIENT_POOL_COMMAND_TIMEOUT_SECS) from the "
         "pg_provider sugar, got kwargs: "
         f"{sorted(captured_kwargs)}"
     )
-    assert taskq_mod._CLIENT_POOL_COMMAND_TIMEOUT_SECS == 5.0
+    assert taskq_mod._CLIENT_POOL_COMMAND_TIMEOUT_SECS == 10.0
 
 
 # ── Enqueue lock budgets vs the client pool's per-query bound ──────────
@@ -492,9 +494,10 @@ async def test_taskq_open_delivers_default_budgets_inside_the_pool_bound(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """At the shipped defaults the client path delivers each 5000 ms
-    budget at 80% of the pool's 5.0 s per-query bound — 4000 ms — so the
-    server-side lock_timeout fires before the client-side timer and the
-    refusal is the typed one, never a bare TimeoutError."""
+    budget in full inside the pool's 10.0 s per-query bound — the bound
+    is deliberately larger than every 5000 ms lock budget, so the
+    server-side lock_timeout fires well before the client-side timer and
+    the refusal is the typed one, never a bare TimeoutError."""
     import asyncpg as asyncpg_mod
 
     captured_kwargs: dict[str, Any] = {}
@@ -511,8 +514,8 @@ async def test_taskq_open_delivers_default_budgets_inside_the_pool_bound(
     async with asyncio.timeout(_TEST_BUDGET_SECS):
         await tq.close()
 
-    assert captured_kwargs.get("command_timeout") == 5.0
-    assert budgets == (4000.0, 4000.0, 4000.0)
+    assert captured_kwargs.get("command_timeout") == 10.0
+    assert budgets == (5000.0, 5000.0, 5000.0)
 
 
 async def test_taskq_open_operator_widened_budget_is_delivered_end_to_end(
@@ -520,8 +523,8 @@ async def test_taskq_open_operator_widened_budget_is_delivered_end_to_end(
 ) -> None:
     """An operator widening a budget past its default re-derives the
     pool's per-query bound to fit it at the same 80% share — the widened
-    budget is delivered in full (not silently clamped to 4 s), and the
-    untouched siblings now fit the larger bound unclamped too."""
+    budget is delivered in full (not silently clamped to fit the floor),
+    and the untouched siblings now fit the larger bound unclamped too."""
     import asyncpg as asyncpg_mod
 
     captured_kwargs: dict[str, Any] = {}

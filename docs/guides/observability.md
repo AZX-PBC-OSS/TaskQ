@@ -240,9 +240,10 @@ they represent safety-critical signals.
 
     The denial counters above are fleet-wide rates: they tell you the fleet is shedding
     admissions, not which job has been waiting. Because an admission denial writes no
-    `job_events` and no `job_attempts` row, the per-job record is the aggregated
-    `rate_limit_blocked_count` column on `jobs` (and `snooze_count` for actor-requested
-    deferrals). Query it when one job is mysteriously slow while the fleet looks healthy:
+    `job_events` and no `job_attempts` row — per-denial rows grow without bound under
+    sustained contention — the per-job record is the aggregated `rate_limit_blocked_count`
+    column on `jobs` (and `snooze_count` for actor-requested deferrals). Query it when one
+    job is mysteriously slow while the fleet looks healthy:
 
     ```sql
     SELECT id, actor, rate_limit_blocked_count, snooze_count, scheduled_at

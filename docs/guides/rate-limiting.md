@@ -685,12 +685,12 @@ At dispatch time the worker calls `registry.acquire_for_actor()`:
 1. Reservations are acquired first, in declaration order.
 2. Rate limits are acquired next, in declaration order.
 3. If any acquisition is denied, all previously acquired resources are released in reverse order (rollback) and `ReservationUnavailable` is raised.
-4. A rate-limited job is rescheduled (not failed and not retried): it goes to `scheduled` with a future `scheduled_at`, and is re-promoted to `pending` when that time arrives. There is no `snoozed` job status — query for `scheduled` rows, and read `rate_limit_blocked_count` on the job row to see how many denials the job has met.
+4. A rate-limited job is rescheduled (not failed and not retried): it goes to `scheduled` with a future `scheduled_at` (the denial's backoff), and is re-promoted to `pending` when that time arrives. There is no `snoozed` job status — query for `scheduled` rows, and read `rate_limit_blocked_count` on the job row to see how many denials the job has met.
 5. After the actor completes, reservation slots are released. Rate-limit tokens are consumed permanently (not refunded).
 
 If `RateLimitDecision.retry_after` is `None` (fixed quota with `refill_per_second=0`), the registry substitutes `DEFAULT_RESERVATION_BACKOFF = timedelta(seconds=5)` before raising `ReservationUnavailable`.
 
-**Queue depth under sustained rate limiting:** Jobs accumulate as `snoozed` under sustained rate-limit pressure. They do not consume retry budget. There is no built-in backpressure beyond `max_pending` on the actor — monitor queue depth via the admin UI or OTel metrics.
+**Queue depth under sustained rate limiting:** Jobs accumulate as `scheduled` under sustained rate-limit pressure. They do not consume retry budget. A denial writes no `job_events` and no `job_attempts` row — per-denial rows would grow without bound under sustained contention, so the aggregated `rate_limit_blocked_count` column on the job row is the contention record. Denial is admission control with HTTP-429 semantics — a denied job is rescheduled indefinitely until capacity frees or its `schedule_to_close` deadline expires and the ordinary deadline path fails it; a denial never terminalises a job by itself. There is no built-in backpressure beyond `max_pending` on the actor — monitor queue depth via the admin UI or OTel metrics, and `rate_limit_blocked_count` on the job row for the per-job contention a single job absorbed.
 
 Primitives referenced **by name** must be registered before the worker starts (actor-declared
 **instances** are registered by the worker at bootstrap instead — see

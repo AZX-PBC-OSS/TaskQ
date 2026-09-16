@@ -282,14 +282,15 @@ class RetryOverride(BaseModel):
     delay: timedelta | None = Field(
         default=None,
         description=(
-            "Delay before the next attempt, overriding the policy's computed "
-            "backoff for this occurrence only. A delay alone does not spare "
-            "the attempt budget: the retry still counts against max_attempts "
-            "unless kind is also set, or the actor raises "
-            "RetryAfter(consume_budget=False). Clamped by max_retry_backoff, "
-            "but NOT reconciled with schedule_to_close — a delay landing "
-            "past that deadline fails the job terminally through the "
-            "deadline path."
+            "When to retry, not whether the attempt is charged: a delay alone "
+            "still spends one attempt of the job's budget, so a classifier "
+            "returning only a delay against a sustained outage exhausts "
+            "max_attempts on schedule. Pair it with kind='indefinite' to keep "
+            "retrying, or raise RetryAfter(delay, consume_budget=False) from "
+            "the actor body for a known-duration wait that spends no budget. "
+            "Clamped by max_retry_backoff, but NOT reconciled with "
+            "schedule_to_close — a delay landing past that deadline fails "
+            "the job terminally through the deadline path."
         ),
     )
 

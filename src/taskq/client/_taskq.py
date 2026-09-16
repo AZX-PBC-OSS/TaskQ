@@ -115,17 +115,29 @@ silent process wedge; a hung token endpoint fails the open (or the
 reload, leaving the live pool serving) loudly instead. Module-level so
 tests shrink it as a seam (the ``CLOSE_TIMEOUT_SECS`` convention)."""
 
-_CLIENT_POOL_COMMAND_TIMEOUT_SECS: Final[float] = 5.0
+_CLIENT_POOL_COMMAND_TIMEOUT_SECS: Final[float] = 10.0
 """Per-query bound on every pool TaskQ itself builds for the client — the
 DSN pool at :meth:`TaskQ.open` and the ``pg_provider`` sugar's factory
-pools. Mirrors ``WorkerSettings.dispatcher_command_timeout``'s default
-(5.0), the bound every worker-side pool TaskQ builds already carries: a
-black-holed Postgres parks the client's first enqueue/get/cancel forever
-without it, and client processes arm no watchdogs to convert the hang
-into a crash. Caller-supplied ``pool_factory``/``pool`` instances stay
-caller-owned (their timeouts are their choice), the same doctrine the
-worker applies to caller-supplied pools. Module-level so tests shrink it
-as a seam.
+pools. A black-holed Postgres parks the client's first enqueue/get/cancel
+forever without it, and client processes arm no watchdogs to convert the
+hang into a crash. Caller-supplied ``pool_factory``/``pool`` instances
+stay caller-owned (their timeouts are their choice), the same doctrine
+the worker applies to caller-supplied pools. Module-level so tests
+shrink it as a seam.
+
+Deliberately larger than ``WorkerSettings.dispatcher_command_timeout``'s
+default (5.0) and every enqueue-path server-side lock timeout
+(``DEFAULT_MAX_PENDING_LOCK_TIMEOUT_MS``,
+``DEFAULT_UNIQUE_FOR_LOCK_TIMEOUT_MS``,
+``DEFAULT_IDEMPOTENCY_LOCK_TIMEOUT_MS`` — all 5000.0,
+``backend/_enqueue.py``): asyncpg's client-side ``command_timeout`` races
+the server-side ``SET LOCAL lock_timeout`` on the same connection, and an
+equal budget lets the client-side cancellation fire first, surfacing a
+bare ``TimeoutError`` where a caller should see the typed
+``MaxPendingLockTimeoutError`` / ``UniqueForLockTimeoutError`` /
+``IdempotencyKeyLockTimeoutError``. The margin guarantees the server-side
+55P03 always wins the race at every enqueue-path lock timeout's default,
+without changing any lock timeout's own default value.
 
 The value here is the FLOOR the bound takes at the shipped lock-budget
 defaults; :func:`_client_pool_command_timeout_secs` re-derives it upward
@@ -1129,14 +1141,16 @@ class TaskQ:
         a long outage drains at query speed (full batches are re-polled
         immediately, not one batch per *poll_timeout*).
 
-        The built-in ``TASKQ_EVENT_RETENTION_PERIOD`` sweep deletes these
-        rows by age independently of any consumer's cursor: the
-        ``lock_expired`` slice is exempt from the ordinary retention
-        window, but not from deletion outright — it is deleted once it
-        exceeds ``RECLAIM_OUTBOX_RETENTION_MULTIPLIER`` (100x) times the
-        retention setting.  A consumer that lags behind that bound
-        silently misses events; pruning by cursor position does not
-        protect against it.
+        Your own pruning is not the only deleter.  The built-in event
+        retention sweep deletes these rows by age alone, cursor position
+        irrelevant: the ``lock_expired`` slice is carved out of the
+        ordinary ``event_retention_period`` window but only up to
+        :data:`~taskq.constants.RECLAIM_OUTBOX_RETENTION_MULTIPLIER`
+        times it (100x), after which it is deleted like any other event.
+        A consumer lagging past that age loses events silently — no
+        error on either side — so a deployment with a short retention
+        period must size it against its slowest consumer's worst
+        outage, not only against event volume.
 
         Shutdown and backpressure
         -------------------------
