@@ -18,6 +18,7 @@ from taskq.backend._protocol import (
     JobRow,
     batch_cap_groups,
     first_duplicate_idempotency_pair,
+    first_singleton_collision_actor,
 )
 from taskq.backend._records import item_jsonb_param, item_tags_jsonb_param
 from taskq.exceptions import (
@@ -288,7 +289,7 @@ async def _enqueue_batch(
             }
             refused_names = {r.actor for r in refusals}
             admitted_args = [a for a in args_list if a.actor not in refused_names]
-    # PG-tier atomicity for job-id collisions (#166): the PG bulk tier is
+    # PG-tier atomicity for job-id collisions: the PG bulk tier is
     # one unnest INSERT in one transaction with no ON CONFLICT arbiter
     # for the primary key, so a duplicate id — against a stored row or
     # another item in this batch — aborts the ENTIRE call with nothing
@@ -314,7 +315,7 @@ async def _enqueue_batch(
     )
 
     rows: list[JobRow] = []
-    # The per-call dedup WARNING budget (#140), mirroring the PG bulk
+    # The per-call dedup WARNING budget, mirroring the PG bulk
     # tier's result-assembly scope: this loop is where the mirror logs
     # its batch dedup hits (inside _enqueue, via the shared helper), so a
     # budget scoped here IS the call's budget. Reset in the finally so no
@@ -398,7 +399,10 @@ def _check_batch_singletons(self: "InMemoryBackend", admitted_args: list[Enqueue
     The refusal carries the typed backpressure error the single-enqueue
     preflight raises, not the driver's constraint violation: a singleton
     collision is a retryable admission denial, and a caller must be able
-    to branch on it without reading a driver traceback.
+    to branch on it without reading a driver traceback. The colliding
+    actor comes from the shared ``first_singleton_collision_actor`` rule —
+    the same rule the PG bulk tier's post-abort attribution applies — so
+    the two backends cannot drift on which actor gets named.
 
     The live-row scan matches on ``is True``, the same predicate the
     single-enqueue preflight and Postgres' partial unique index
@@ -417,31 +421,27 @@ def _check_batch_singletons(self: "InMemoryBackend", admitted_args: list[Enqueue
             and row.metadata.get("singleton") is True
         ):
             live.setdefault(row.actor, row)
-    claimed: set[str] = set()
-    for args in admitted_args:
-        if args.metadata.get("singleton") is not True:
-            continue
-        blocking = live.get(args.actor)
-        if blocking is None and args.actor not in claimed:
-            claimed.add(args.actor)
-            continue
-        retry_after: timedelta | None = None
-        blocking_id: UUID | None = None
-        if blocking is not None:
-            blocking_id = blocking.id
-            if blocking.schedule_to_close is not None and blocking.schedule_to_close > now:
-                retry_after = blocking.schedule_to_close - now
-        logger.info(
-            "singleton-collision",
-            actor=args.actor,
-            blocking_job_id=str(blocking_id) if blocking_id is not None else None,
-            detection_path="preflight_check",
-        )
-        raise SingletonCollisionError(
-            actor=args.actor,
-            blocking_job_id=blocking_id,
-            retry_after=retry_after,
-        )
+    actor = first_singleton_collision_actor(admitted_args, live)
+    if actor is None:
+        return
+    blocking = live.get(actor)
+    retry_after: timedelta | None = None
+    blocking_id: UUID | None = None
+    if blocking is not None:
+        blocking_id = blocking.id
+        if blocking.schedule_to_close is not None and blocking.schedule_to_close > now:
+            retry_after = blocking.schedule_to_close - now
+    logger.info(
+        "singleton-collision",
+        actor=actor,
+        blocking_job_id=str(blocking_id) if blocking_id is not None else None,
+        detection_path="preflight_check",
+    )
+    raise SingletonCollisionError(
+        actor=actor,
+        blocking_job_id=blocking_id,
+        retry_after=retry_after,
+    )
 
 
 def _check_batch_jsonb(args_list: list[EnqueueArgs], *, index_base: int = 0) -> None:
@@ -506,10 +506,9 @@ async def _batch_cap_refusals(
             # _batch_cap_refusals, which does both before appending, and
             # through it with the single path): a partitioned bulk
             # refusal is a producer-pressure event per refused actor, not
-            # per item. The mirror refused silently until #166 — an
-            # operator's backpressure dashboards read this warning and
-            # this counter, so an app validated against InMemory shipped
-            # with blank dashboards in production.
+            # per item. A mirror that refused silently would ship an app
+            # with blank backpressure dashboards in production: an
+            # operator's dashboards read this warning and this counter.
             logger.warning(
                 "max-pending-exceeded",
                 actor=actor,

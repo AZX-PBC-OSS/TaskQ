@@ -611,6 +611,27 @@ async def test_make_dedicated_conn_factory_omits_new_params_when_not_provided() 
     assert "setup" not in call_kwargs
 
 
+async def test_make_dedicated_conn_factory_declares_setup_as_the_inheritable_init_hook() -> None:
+    """A dedicated connection's ``setup`` is its per-connection setup, so
+    the factory DECLARES it: a worker building a shadow connection
+    family (the per-slot pool, when this factory provides the LOOP-scope
+    registration) reads the hook back off the factory and replays it.
+    Without a ``setup`` the factory declares nothing — the worker then
+    warns rather than guessing."""
+    from taskq.connections import connection_init_hook
+
+    provider = _FakePgProvider(password="tok")
+
+    async def setup(conn: Any) -> None:
+        await conn.execute("SET search_path TO app")
+
+    with_hook = make_dedicated_conn_factory("postgresql://user@host:5432/db", provider, setup=setup)
+    without_hook = make_dedicated_conn_factory("postgresql://user@host:5432/db", provider)
+
+    assert connection_init_hook(with_hook) is setup
+    assert connection_init_hook(without_hook) is None
+
+
 # ---- Per-connection credential refresh ----
 #
 # The regression these cover: the factories used to resolve the credential

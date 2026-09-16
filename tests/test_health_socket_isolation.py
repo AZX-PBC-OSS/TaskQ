@@ -348,3 +348,126 @@ async def test_probe_on_a_shared_socket_path_still_answers_for_the_first_worker(
             await cleanup.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
         finally:
             await cleanup.close()
+
+
+@pytest.mark.integration
+async def test_second_worker_on_a_colliding_socket_path_still_boots_and_registers(
+    pg_dsn: str,
+) -> None:
+    """A worker whose health socket collides with a live peer's must still start.
+
+    ``HealthServer.start`` now refuses a colliding path loudly instead of
+    silently stealing it (``_bind_unix_socket`` raises ``OSError`` on
+    ``EADDRINUSE``) — that half of the fix is real and covered elsewhere in
+    this file. But that refusal propagates out of ``HealthServer.start``
+    completely unguarded: the call site in ``_bootstrap._main`` is
+
+        if deps.settings.health_enabled:
+            health_server = HealthServer()
+            await health_server.start(deps)          # no try/except
+            stack.push_async_callback(health_server.stop)
+
+    with nothing catching the ``OSError``. A worker whose only misfortune is
+    sharing a health-socket path with a still-live sibling therefore fails
+    its entire boot — it never opens its Postgres pool for work, never
+    registers in the fleet, never claims a job — over a problem confined to
+    one diagnostic side-channel.
+
+    This contradicts the project's own governing principle for worker boot
+    (a worker that can do work must never fail to start; refusal is
+    reserved for structural problems) and the issue's own scoped fix
+    direction: on a health-socket collision the worker should log a loud
+    warning and keep booting, not join the queue of things a boot refusal
+    silently doubles as.
+
+    The second worker here shares its healthy sibling's socket path on
+    purpose. It must still show up in the fleet.
+    """
+    schema = f"thsi_{new_base62()}".lower()
+    conn = await asyncpg.connect(pg_dsn)
+    try:
+        await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        await apply_pending(conn, schema=schema)
+    finally:
+        await conn.close()
+
+    shared_path = unique_health_sock_path("collide_boot")
+
+    def _worker_settings() -> WorkerSettings:
+        return WorkerSettings.load_from_dict(
+            {
+                "pg_dsn": pg_dsn,
+                "schema_name": schema,
+                "queues": "default",
+                "health_socket_path": shared_path,
+            }
+        )
+
+    worker_a = asyncio.create_task(_main(_worker_settings()))
+    worker_b: asyncio.Task[int] | None = None
+    try:
+
+        async def _worker_a_answering() -> bool:
+            if worker_a.done():
+                return False
+            try:
+                await _probe(shared_path, "/ready")
+            except (TimeoutError, OSError, ValueError):
+                return False
+            return True
+
+        await wait_for_condition(
+            _worker_a_answering,
+            description="the first worker's health socket answering",
+            timeout=30.0,
+        )
+
+        worker_b = asyncio.create_task(_main(_worker_settings()))
+
+        async def _second_worker_registered() -> bool:
+            probe = await asyncpg.connect(pg_dsn)
+            try:
+                count: int = await probe.fetchval(
+                    f'SELECT count(*) FROM "{schema}".workers'  # noqa: S608  # Why: schema is a test-minted identifier, never user input.
+                )
+            finally:
+                await probe.close()
+            return count >= 2
+
+        try:
+            await wait_for_condition(
+                _second_worker_registered,
+                description="the second worker registering itself in the fleet "
+                "despite its health socket colliding with the first worker's",
+                timeout=15.0,
+            )
+        except TimeoutError:
+            # It never registered. Find out why: did its boot task die?
+            assert worker_b.done(), (
+                "the second worker neither registered in the fleet nor is its "
+                "boot task still running — it is stuck, not merely slow"
+            )
+            exc = worker_b.exception()
+            assert exc is None, (
+                "the second worker's boot crashed instead of continuing without a "
+                f"working health listener, over a health-socket collision alone: {exc!r}. "
+                "A worker that can do work must never fail to start; a health-socket "
+                "collision is not a structural problem and must not abort boot."
+            )
+            raise
+
+        assert not worker_b.done(), (
+            "the second worker's boot task ended instead of running as a live worker"
+        )
+    finally:
+        for task in (worker_b, worker_a):
+            if task is None:
+                continue
+            task.cancel()
+            with contextlib.suppress(BaseException):
+                await task
+        cleanup = await asyncpg.connect(pg_dsn)
+        try:
+            await cleanup.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        finally:
+            await cleanup.close()

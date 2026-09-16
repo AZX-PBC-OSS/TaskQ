@@ -261,6 +261,20 @@ except JobFailed as exc:
 
 A cancel request against a job in any terminal status (`succeeded`, `failed`, `cancelled`, `crashed`, `abandoned`) has no effect and returns `cancellation_initiated=False`.
 
+### Why it stopped: the cancel-origin marker
+
+Every terminal cancel write stamps a distinguishing `error_class` on the job row — the same self-describing channel every terminal failure path uses (`DeadlineExceeded`, `WorkerCrashed`, ...). Three cancelled rows read side by side say which actor yielded, which had to be interrupted, and which never ran:
+
+| `error_class` | Terminal write | Meaning |
+|---|---|---|
+| `CancelledCooperatively` | `mark_cancelled` at `cancel_phase = 1` | The actor observed the request while it was still being asked and stopped cleanly. |
+| `CancelledForced` | `mark_cancelled` at `cancel_phase = 2` | The actor did not yield to the request; the worker escalated and `task.cancel()` interrupted it. |
+| `CancelAbandoned` | `mark_abandoned` | The actor did not exit within both grace windows; the worker took the row away (status `abandoned`). |
+| `CancelledBeforeStart` | `write_cancel_request` / `cancel_where` on a `pending`/`scheduled` row | The job never reached a worker — no attempt exists and no actor hook ran. The bulk path stamps the same marker as the single-job path, so a mass cancellation reads identically to the same jobs cancelled one at a time. |
+
+The marker also lands on the `job_attempts` row for the running-job paths (the attempt history a postmortem queries after retention reclaims the job row) and in the `state_change` event detail. A job cancelled while pending or scheduled additionally keeps its terminal `pending → cancelled` / `scheduled → cancelled` transition on the `job_events` timeline — no cancelled job has an empty timeline.
+
+
 ---
 
 ## 9. Cancellation and retries
@@ -292,9 +306,37 @@ For OTel configuration, exporter setup, and the full list of metrics and log eve
 
 ---
 
+## 11. The `on_cancel` hook
+
+Work cut short mid-flight usually holds something that has to be released — an external reservation, a remote session, a caller waiting on a callback. `@actor` accepts an optional `on_cancel` callback for that cleanup, alongside `on_success` and `on_retry_exhausted`:
+
+```python
+from taskq import actor
+from taskq.backend import JobRow
+
+
+@actor(on_cancel=my_cleanup)
+async def provision(payload: Payload, ctx: JobContext[Payload]) -> Result:
+    ...
+```
+
+The hook fires when a running job ends `cancelled` — the actor observed the cancellation (cooperatively or under escalation), and the consumer's terminal write moved the row. It receives the terminal `JobRow` and nothing else: a cancelled attempt produced no result.
+
+The contract is the same one the other lifecycle hooks carry:
+
+- **Best-effort** — a raising hook is logged and swallowed; it can never break or change the terminal write it runs beside.
+- **Timeout-bounded** — an async hook is abandoned after `on_cancel_timeout` seconds (default `3.0`, the same default the other hooks use); it can never stall the job going terminal.
+- **Ordered after the write** — the hook runs once the row is durably `cancelled`, so `job_row.status` reads `cancelled` inside it.
+
+**Boundary: the hook cannot fire for a job cancelled before it ran.** A job cancelled while still `pending` or `scheduled` never enters a worker, so no hook of any kind can run for it — there is no attempt to clean up after. Bookkeeping on that path stays with whoever issued the cancel. This matters because the cancel an operator issues most often — on a job sitting in the queue — is exactly the one the hook cannot see; cleanup that must happen for every cancellation belongs on the caller's side of the enqueue. Tell the paths apart on the row via the [cancel-origin marker](#why-it-stopped-the-cancel-origin-marker): `CancelledBeforeStart` means no worker was ever involved.
+
+A shutdown interruption is also not a cancel: when `ctx.cancel_origin is CancelOrigin.SHUTDOWN`, the attempt is released back to the fleet (`pending` again, budget refunded) rather than terminalised, so `on_cancel` does not fire. An operator cancel that races a deploy still wins the row — the job ends `cancelled` and the hook fires.
+
+---
+
 ## See also
 
-- [actors.md](actors.md) — `JobContext` fields, `@actor` decorator, actor lifecycle
+- [actors.md](actors.md) — `JobContext` fields, `@actor` decorator (including `on_cancel`), actor lifecycle
 - [jobs-clients.md](jobs-clients.md) — `JobsClient`, `JobHandle`, `enqueue()`, `wait()`
 - [workers.md](workers.md) — heartbeat loop, `WorkerSettings`, grace period configuration
 - [retries.md](retries.md) — retry policies, `RetryAfter`, `Snooze`

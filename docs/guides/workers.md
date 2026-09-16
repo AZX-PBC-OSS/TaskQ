@@ -285,12 +285,6 @@ transient oversubscription; size `oversample` at or above the number of dispatch
 that routinely poll the same actor+queue so the steady state never pays the expansion
 round trip.
 
-**`dispatch_scope_by_home_queue`:** When enabled (`TASKQ_DISPATCH_SCOPE_BY_HOME_QUEUE=true`),
-the `per_actor_capacity` CTE filters to actors whose home queue is in the worker's
-subscribed queue list. This lowers the per-cycle probe count (fewer LATERAL subqueries)
-but excludes jobs enqueued via `enqueue(queue=...)` overrides where the actor's home
-queue differs from the override queue. Default `false` (override-safe).
-
 ---
 
 ## Concurrency model
@@ -355,7 +349,12 @@ At `max_concurrency = 1` the actor runs on the registered connection itself, so 
 
 Reading before the build is what keeps the pool warm: the slot connections are opened during the build, so state applied afterwards would reach only connections re-established lazily on first acquire — putting connection establishment, and a managed-identity credential fetch, back into the dispatch path. It is also what makes the state survive a SIGHUP credential rotation, which rebuilds the pool from the same factory.
 
-**Type codecs are not carried across.** A codec registered on a live connection with `set_type_codec` is stored inside the driver's per-connection state, which exposes no way to read it back, so the worker cannot replay it onto the slot connections. A codec installed that way is present at `max_concurrency = 1` and absent above it, and the symptom is silent: the query still succeeds and returns the driver's default representation. Register codecs in a way that applies to every connection the application opens — a `connection_class` subclass, or an `init` hook on the pool or connection factory — rather than by calling `set_type_codec` on one resolved connection.
+**Type codecs and init hooks carry only through a hook-declaring registration.** A codec registered on a live connection with `set_type_codec` is stored inside the driver's per-connection state, which exposes no way to read it back — so what the worker can replay onto slot connections depends on how the LOOP-scope connection was registered:
+
+* **Registered through a factory that declares its init hook — carried.** Register the connection with `register_factory(asyncpg.Connection, Scope.LOOP, ...)`, where the factory is wrapped in `taskq.connections.with_connection_init(factory, init)` (for a hand-rolled or plain-DSN factory) or built by `taskq.auth.make_dedicated_conn_factory(..., setup=...)` (for a credential-provider deployment). The worker reads the declared hook off the registration and installs it as the slot pool's `init`, so every slot connection runs the same per-connection setup and decodes identically at every concurrency. The boot log records it as `slot_pool_inherits_registered_session` with `init_hook=true`.
+* **Registered as a raw, already-built connection — not carried, and warned.** `register_value(asyncpg.Connection, Scope.LOOP, conn)` hands the worker a finished connection whose codecs and hooks are sealed inside the driver; there is nothing to read back and nothing to replay. When the per-slot pool activates on such a registration the worker logs `slot_pool_registered_setup_not_inherited` at WARN, naming this boundary and the factory channel above. The slot connections still work — but a query relying on such a codec returns the driver's default representation (e.g. raw strings for `json`), not the application's decoded form, and only this warning says so. At `max_concurrency = 1` the actor runs on the registered connection itself, so the codec is present there and absent above it.
+
+Either way, the session-state read-back (`search_path`, `role`) applies independently of the codec channel.
 
 `dispatcher_pool_size` (default `4`) and `heartbeat_pool_size` (default `4`) are independent pools; both always use the direct DSN.
 

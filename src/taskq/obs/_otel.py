@@ -75,6 +75,7 @@ __all__ = [
     "record_error_reporter_failure",
     "record_expired_archive_jobs",
     "record_heartbeat_miss",
+    "record_leader_lease_expires_in_seconds",
     "record_lock_expires_in_seconds",
     "record_process_duration",
     "record_progress_flush_failure",
@@ -1713,6 +1714,72 @@ def clear_sweep_health_caches() -> None:
     global _sweep_success_cache, _sweep_batch_size_cache
     _sweep_success_cache = {}
     _sweep_batch_size_cache = {}
+
+
+_leader_lease_expires_in_seconds_cache: float | None = None
+
+
+def record_leader_lease_expires_in_seconds(worker_id: str, remaining_ttl: float) -> None:
+    """Stamp the leader lease's TTL as of this process's last elect/renew.
+
+    The leader-side mirror of :func:`record_lock_expires_in_seconds`
+    (heartbeat.py) — but a gauge, not a histogram, because the contract
+    that matters for the lease is FRESHNESS, not distribution: the series
+    is present only on the pod that holds the lease, its value is the
+    TTL the server just stamped (``leader_lease`` seconds out), and a
+    series that stops moving or vanishes is a leader that stopped
+    renewing — the split-brain/no-leader detector's per-pod evidence.
+    Called at election win and each successful renewal in
+    ``worker/leader.py``; cleared on demotion by
+    :func:`clear_leader_lease_expires_in_seconds` so a demoted pod never
+    keeps claiming a lease it no longer holds.
+    Respects ``_otel_enabled`` — no-op when False.
+
+    Rebind, never write in place: the cache is read on the OTel reader
+    thread while this runs on the event-loop thread (same discipline as
+    :func:`record_sweep_success`).
+    """
+    if not _otel_enabled:
+        return
+    del worker_id  # Why: not a dimension -- see the cardinality note above.
+    global _leader_lease_expires_in_seconds_cache
+    _leader_lease_expires_in_seconds_cache = remaining_ttl
+
+
+def _observe_leader_lease_expires_in_seconds(options: CallbackOptions) -> Iterable[Observation]:
+    # Label-free, like the other single-value process gauges
+    # (oldest_due_age, scheduled_count): one series per pod, and only
+    # while this pod holds the lease.
+    if _leader_lease_expires_in_seconds_cache is not None:
+        yield Observation(_leader_lease_expires_in_seconds_cache)
+
+
+_leader_lease_expires_in_seconds_gauge = get_meter().create_observable_gauge(
+    name="taskq.maintenance_leader.lease_expires_in_seconds",
+    description=(
+        "Seconds until the leader lease expires, as stamped by this "
+        "process's last successful election or renewal. Present only on "
+        "the pod holding the lease; a series that goes stale or vanishes "
+        "is a leader that stopped renewing."
+    ),
+    unit="s",
+    callbacks=[_observe_leader_lease_expires_in_seconds],
+)
+
+
+def clear_leader_lease_expires_in_seconds() -> None:
+    """Drop this process's lease-TTL stamp.
+
+    Called on leadership demotion with the other leader-only clears: the
+    stamp is this process's report of a lease IT holds, and a demoted
+    process exporting a frozen one claims authority it no longer has —
+    during a failover, which is exactly when the failover bound is being
+    read. Rebound to the empty state rather than zeroed: an empty gauge
+    yields no data point, so the series goes stale and the new leader's
+    is the only one answering.
+    """
+    global _leader_lease_expires_in_seconds_cache
+    _leader_lease_expires_in_seconds_cache = None
 
 
 def record_lock_contention(lock_name: str) -> None:

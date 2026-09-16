@@ -179,8 +179,13 @@ class TestDispatchStrictFifoSql:
         assert "j.status = 'pending'" in rendered
 
     def test_final_update_contains_attempt_plus_1(self) -> None:
+        # The increment is pinned through its saturating form: the claim
+        # still stamps attempt + 1 on every claimed row, and the LEAST
+        # clamp at the smallint ceiling is what keeps a row parked at
+        # 32767 (retry_kind='indefinite' climbs there) from turning the
+        # whole round into a smallint-out-of-range driver error.
         rendered = DISPATCH_STRICT_FIFO_SQL.format(schema="taskq")
-        assert "attempt = j.attempt + 1" in rendered
+        assert "attempt = LEAST(j.attempt + 1, 32767)" in rendered
 
     def test_final_update_contains_returning(self) -> None:
         rendered = DISPATCH_STRICT_FIFO_SQL.format(schema="taskq")

@@ -69,11 +69,12 @@ from .conftest import (
 
 if TYPE_CHECKING:
     import asyncpg
-    from containerspec import BuiltImage
     from testcontainers.core.container import DockerContainer
     from testcontainers.core.network import Network
 
     from taskq import TaskQ
+
+    from ._types import BuiltImage
 
 pytestmark = [pytest.mark.e2e, pytest.mark.timeout(900)]
 

@@ -2,9 +2,9 @@
 
 """Red-team attacks on the reclaim sweep's heartbeat arm.
 
-The settle commit landed the ENFORCEMENT direction for #117 (the earlier
-stack direction — refusal at the enqueue boundary, reclaim stays
-lease-based — was superseded): ``_SWEEP_1_SQL`` gained a second, disjoint
+The settled direction is ENFORCEMENT (the earlier stack direction —
+refusal at the enqueue boundary, reclaim stays lease-based — was
+superseded): ``_SWEEP_1_SQL`` gained a second, disjoint
 eligibility arm (``src/taskq/backend/_sweeps.py``, the ``heartbeat_arm``
 CTE) that reclaims a running job whose holder has been silent past the
 row's per-job ``heartbeat_timeout`` while its lock lease is still valid,
@@ -29,13 +29,14 @@ commit time (the reds are the deliverable — they stay red until fixed):
   negative timeout — direct-SQL-reachable, like the NULL-beat state the
   twin does guard) is reclaimed by the twin. Constitution line 99: the
   twin is observably equivalent at every seam.
-* RED ``test_ops_footgun_registry_names_the_inversion_trap`` — the
-  original #117 record's operational trap (a ``heartbeat_timeout`` at or
+* ``test_ops_footgun_registry_names_the_inversion_trap`` — the
+  lease-inversion trap (a ``heartbeat_timeout`` at or
   above the fleet's lock lease can never govern: the lease arm requires
-  the lease still valid, so the lease deadline always fires first) is
-  silently no-ops again. ``docs/guides/ops.md``'s footgun registry names
-  the sibling lower-bound trap but not this one, and nothing at enqueue,
-  dispatch, or sweep warns on the inversion.
+  the lease still valid, so the lease deadline always fires first)
+  silently no-ops the knob. ``docs/guides/ops.md``'s footgun registry
+  names the trap next to the sibling lower-bound row, and with nothing
+  at enqueue, dispatch, or sweep warning on the inversion, that row is
+  the only operator-facing notice -- the pin holds it in place.
 
 Every other test here is an attempt at refutation: if it stays green it
 is a pin of a contract the author's pins leave uncovered (NULL knob /
@@ -715,7 +716,7 @@ async def test_heartbeat_arm_drains_oldest_silence_first(
     assert final == 0, "the backlog must be fully drained"
 
 
-# ── PG: the operational trap the #117 record names ───────────────────
+# ── PG: the lease-inversion operational trap ───────────────────────────
 
 
 @pytest.mark.integration
@@ -723,7 +724,7 @@ async def test_heartbeat_timeout_above_the_lease_never_governs_the_reclaim(
     clean_pg_conn: asyncpg.Connection,
     module_pg_schema: ModulePgSchema,
 ) -> None:
-    """The #117 record's operational trap, pinned as it behaves today: a
+    """The lease-inversion trap, pinned as it behaves today: a
     ``heartbeat_timeout`` at or above the fleet's lock lease can NEVER
     govern, because the heartbeat arm requires the lease still valid
     while the lease deadline (last beat + lease) always precedes the
@@ -761,8 +762,8 @@ async def test_heartbeat_timeout_above_the_lease_never_governs_the_reclaim(
         f"with heartbeat_timeout (1h) >= the lease (30s), the heartbeat arm "
         f"can never fire — the lease deadline always precedes it. The "
         f"reclaim must honestly name the lease (detail={detail!r}); the "
-        "silent no-op of the caller's per-job budget is the #117 trap this "
-        "pin documents."
+        "silent no-op of the caller's per-job budget is the inversion trap "
+        "this pin documents."
     )
 
 
@@ -1088,10 +1089,11 @@ async def test_twin_mirrors_the_sqls_past_beat_conjunct() -> None:
 
 
 def test_ops_footgun_registry_names_the_inversion_trap() -> None:
-    """RED at commit time (expected, the deliverable): the original #117
-    record names the operational trap — a ``heartbeat_timeout`` LARGER
-    than the lock lease is meaningless, the lease reclaims first — and
-    under the enforcement direction that trap is live again: the knob
+    """The ops guide's footgun registry must name the lease-inversion trap.
+
+    A ``heartbeat_timeout`` LARGER than the lock lease is meaningless —
+    the lease reclaims first — and under the enforcement direction that
+    trap is live: the knob
     silently no-ops for the entire at-or-above-the-lease range (pinned
     behaving exactly so one section above), the enqueue boundary cannot
     see the fleet's lease (``build_enqueue_args`` is deliberately pure),
@@ -1105,7 +1107,7 @@ def test_ops_footgun_registry_names_the_inversion_trap() -> None:
     (tests/test_max_concurrent_docs_contract.py). The inversion row is
     one table line: name the knob, name the lease, say the knob never
     governs. A runtime warning at dispatch is the stronger fix (the
-    ``actors-on-unconsumed-queues`` boot-warning precedent); this red
+    ``actors-on-unconsumed-queues`` boot-warning precedent); this pin
     accepts either and demands at least the registry line.
     """
     text = _OPS_MD.read_text()
@@ -1153,7 +1155,7 @@ def test_ops_footgun_registry_names_the_inversion_trap() -> None:
         "heartbeat_timeout at or above the fleet's TASKQ_LOCK_LEASE never "
         "governs — the lease deadline always fires first, the per-job "
         "budget silently no-ops, and nothing at enqueue, dispatch, or sweep "
-        "says so. That is the #117 class verbatim: a safety knob that "
+        "says so. That is the inversion class: a safety knob that "
         "silently does nothing. Register the trap (one footgun-table row: "
         "name the knob, name TASKQ_LOCK_LEASE, say the knob never governs / "
         "the lease reclaims first), or warn at dispatch where both values "

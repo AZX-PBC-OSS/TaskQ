@@ -1917,6 +1917,76 @@ class TestSweepDeadlineExceeded:
         assert row["status"] == "failed"
         assert row["error_class"] == "DeadlineExceeded"
 
+    async def test_concurrent_sweeps_do_not_double_write_or_deadlock(
+        self, clean_jobs_app: JobsApp
+    ) -> None:
+        """Two sweep calls racing on overlapping overdue rows (e.g. two
+        leader ticks overlapping across a slow batch, or a leader handoff
+        mid-tick) must not deadlock, double-insert a ``job_attempts`` row,
+        or double-emit a state-change event for the same job. ``SKIP
+        LOCKED`` should hand each row to exactly one of the two calls; the
+        ``ON CONFLICT DO NOTHING`` fix must not paper over a genuine
+        double-write by silently absorbing it.
+        """
+        deps = clean_jobs_app.deps
+        schema = deps.settings.schema_name
+
+        job_ids: list[UUID] = []
+        async with deps.worker_pool.acquire() as conn:
+            for _ in range(20):
+                job_id = await create_pending_job(
+                    conn,
+                    schema,
+                    schedule_to_close=datetime.now(UTC) - timedelta(seconds=10),
+                    status="pending",
+                )
+                job_ids.append(job_id)
+
+        async def run_sweep() -> int:
+            async with deps.worker_pool.acquire() as conn:
+                return await PostgresBackend.sweep_deadline_exceeded(
+                    conn, schema=schema, batch_size=20
+                )
+
+        counts = await asyncio.gather(run_sweep(), run_sweep())
+
+        assert sum(counts) == 20, (
+            f"two concurrent sweeps over 20 disjoint-overdue jobs returned counts {counts} "
+            f"(sum {sum(counts)}); SKIP LOCKED should partition the batch across the two "
+            "calls with no row missed and none double-counted."
+        )
+
+        async with deps.worker_pool.acquire() as conn:
+            rows = await conn.fetch(
+                f'SELECT id, status FROM "{schema}".jobs WHERE id = ANY($1::uuid[])',
+                job_ids,
+            )
+            assert all(r["status"] == "failed" for r in rows), (
+                "every job must reach failed after the two concurrent sweeps: "
+                f"{[(r['id'], r['status']) for r in rows if r['status'] != 'failed']}"
+            )
+
+            attempt_counts = await conn.fetch(
+                f"""SELECT job_id, count(*) AS n FROM "{schema}".job_attempts
+                    WHERE job_id = ANY($1::uuid[]) GROUP BY job_id HAVING count(*) > 1""",
+                job_ids,
+            )
+            assert attempt_counts == [], (
+                "no job may end up with more than one job_attempts row from the two "
+                f"concurrent sweeps: {attempt_counts}"
+            )
+
+            event_counts = await conn.fetch(
+                f"""SELECT job_id, count(*) AS n FROM "{schema}".job_events
+                    WHERE job_id = ANY($1::uuid[]) AND kind = 'state_change'
+                    GROUP BY job_id HAVING count(*) > 1""",
+                job_ids,
+            )
+            assert event_counts == [], (
+                "no job may get more than one state-change event from the two "
+                f"concurrent sweeps: {event_counts}"
+            )
+
 
 # ── Sweep 4: sweep_leaked_reservation_slots ──────────────────────────
 

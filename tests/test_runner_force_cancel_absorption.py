@@ -256,3 +256,268 @@ async def test_drain_awaited_inline_still_runs_the_job_queued_behind_a_forced_on
         "worker keeps dispatching once it has cancelled only the offending "
         f"attempt task. Job B ended at status={row_b.status!r} instead."
     )
+
+
+async def test_second_force_cancel_episode_lands_between_jobs_and_is_absorbed_on_its_own_baseline() -> (
+    None
+):
+    """The absorb is per-dispatch, not one-shot: a second stubborn job
+    escalated after the drain resumed dispatching must be absorbed on the
+    cancel-count baseline of ITS OWN dispatch, with the drain still
+    continuing to the work queued behind.
+
+    This is the between-jobs cell of the force-cancel contract: the second
+    episode's cancel() is requested while the drain has moved on from the
+    first job — a fresh dispatch, a fresh inflight registration. If the
+    first episode's balancing uncancel() were skipped, the count entering
+    the second dispatch would already sit above its baseline, and the
+    drain would misread the second force-cancel as the caller's stop and
+    die on it — the absorb would work exactly once. Production's dispatch
+    loop survives cancelling one attempt task per escalation for as long
+    as it runs; the runner must too.
+    """
+    clock = FakeClock(_START)
+    backend = InMemoryBackend(
+        clock=clock,
+        cancellation_grace_period=_GRACE,
+        cleanup_grace_period=_GRACE,
+    )
+
+    stubborn_a_started = asyncio.Event()
+    stubborn_b_started = asyncio.Event()
+
+    async def stubborn_a(payload: object, ctx: object) -> None:
+        stubborn_a_started.set()
+        # Non-cooperative: never reads ctx.cancel_event.
+        await asyncio.sleep(3600.0)
+
+    async def stubborn_b(payload: object, ctx: object) -> None:
+        stubborn_b_started.set()
+        # Non-cooperative: never reads ctx.cancel_event.
+        await asyncio.sleep(3600.0)
+
+    def follower(payload: object, ctx: object) -> object:
+        return {"ok": True}
+
+    backend.register_stub("stubborn_a", stubborn_a)
+    backend.register_stub("stubborn_b", stubborn_b)
+    backend.register_stub("follower_after_two", follower)
+
+    job_a = new_job_id()
+    job_b = new_job_id()
+    job_c = new_job_id()
+    await backend.enqueue(
+        EnqueueArgs(
+            id=job_a,
+            actor="stubborn_a",
+            queue="default",
+            payload={},
+            max_attempts=3,
+            retry_kind="transient",
+            scheduled_at=_START,
+        )
+    )
+    await backend.enqueue(
+        EnqueueArgs(
+            id=job_b,
+            actor="stubborn_b",
+            queue="default",
+            payload={},
+            max_attempts=3,
+            retry_kind="transient",
+            scheduled_at=_START + timedelta(seconds=1),
+        )
+    )
+    await backend.enqueue(
+        EnqueueArgs(
+            id=job_c,
+            actor="follower_after_two",
+            queue="default",
+            payload={},
+            max_attempts=3,
+            retry_kind="transient",
+            scheduled_at=_START + timedelta(seconds=2),
+        )
+    )
+
+    current_task = asyncio.current_task()
+    assert current_task is not None
+    cancelling_before = current_task.cancelling()
+
+    async def escalate_each_once_running() -> None:
+        # One escalation episode per stubborn job, each driven only once
+        # that job is genuinely running — the second episode is requested
+        # after the drain resumed dispatching, i.e. between the two jobs'
+        # execution scopes.
+        await asyncio.wait_for(stubborn_a_started.wait(), timeout=2.0)
+        await asyncio.sleep(0)
+        await _force_cancel_stubborn_job(backend, clock, job_a)
+        await asyncio.wait_for(stubborn_b_started.wait(), timeout=2.0)
+        await asyncio.sleep(0)
+        await _force_cancel_stubborn_job(backend, clock, job_b)
+
+    escalator = asyncio.ensure_future(escalate_each_once_running())
+    drain_escaped: BaseException | None = None
+    try:
+        await backend.run_until_drained()
+    except asyncio.CancelledError as exc:
+        drain_escaped = exc
+    finally:
+        if not escalator.done():
+            escalator.cancel()
+        else:
+            escalator.result()
+
+    row_a = await backend.get(job_a)
+    row_b = await backend.get(job_b)
+    assert row_a is not None and row_b is not None
+    assert row_a.status == "abandoned" and row_b.status == "abandoned", (
+        "setup: both stubborn jobs must be abandoned after their own two "
+        f"graces; got {row_a.status!r} and {row_b.status!r}"
+    )
+
+    assert drain_escaped is None, (
+        "the second force-cancel episode must be absorbed exactly like the "
+        "first — each dispatch carries its own cancel-count baseline, so an "
+        f"episode landing between jobs is not misread as the caller's stop. "
+        f"CancelledError escaped: {drain_escaped!r}"
+    )
+
+    row_c = await backend.get(job_c)
+    assert row_c is not None
+    assert row_c.status == "succeeded", (
+        "the drain must keep serving the queue behind TWO force-cancelled "
+        f"jobs; the follower ended at status={row_c.status!r}"
+    )
+
+    assert current_task.cancelling() == cancelling_before, (
+        "each episode's self-inflicted cancel() must be balanced with its "
+        "own uncancel(); an unbalanced first episode poisons every later "
+        f"dispatch. cancelling() went from {cancelling_before} to "
+        f"{current_task.cancelling()}."
+    )
+
+    try:
+        await asyncio.sleep(0)
+    except asyncio.CancelledError:
+        raise AssertionError(
+            "A leftover elevated cancelling() count after two absorbed "
+            "episodes made an ordinary subsequent await raise "
+            "CancelledError with no new cancellation requested."
+        ) from None
+
+
+async def test_external_cancel_after_an_absorbed_force_cancel_still_stops_the_drain() -> None:
+    """The absorb is scoped to the force-cancelled dispatch: once it has
+    been balanced, the drain task is an ordinary task again, and a caller
+    cancelling the DRAIN itself while it serves the next job still wins —
+    the CancelledError propagates, the interrupted job is marked cancelled
+    by the shared consumer's shielded write, and the abandoned row behind
+    it is untouched.
+
+    Production cancels only the offending attempt task per escalation, but
+    a cancelled dispatch loop still stops the worker. A runner that kept
+    absorbing after the balance was restored would swallow the caller's
+    stop — the asyncio shutdown-hang antipattern — and a runner whose
+    uncancel() underflowed would raise with no cancellation pending. This
+    pin holds the line between the two.
+    """
+    clock = FakeClock(_START)
+    backend = InMemoryBackend(
+        clock=clock,
+        cancellation_grace_period=_GRACE,
+        cleanup_grace_period=_GRACE,
+    )
+
+    stubborn_started = asyncio.Event()
+    gated_started = asyncio.Event()
+    gated_release = asyncio.Event()  # never set: the job parks until cancelled
+
+    async def stubborn(payload: object, ctx: object) -> None:
+        stubborn_started.set()
+        # Non-cooperative: never reads ctx.cancel_event.
+        await asyncio.sleep(3600.0)
+
+    async def gated(payload: object, ctx: object) -> None:
+        gated_started.set()
+        await gated_release.wait()
+
+    backend.register_stub("stubborn_first", stubborn)
+    backend.register_stub("gated_second", gated)
+
+    job_a = new_job_id()
+    job_b = new_job_id()
+    await backend.enqueue(
+        EnqueueArgs(
+            id=job_a,
+            actor="stubborn_first",
+            queue="default",
+            payload={},
+            max_attempts=3,
+            retry_kind="transient",
+            scheduled_at=_START,
+        )
+    )
+    await backend.enqueue(
+        EnqueueArgs(
+            id=job_b,
+            actor="gated_second",
+            queue="default",
+            payload={},
+            max_attempts=3,
+            retry_kind="transient",
+            scheduled_at=_START + timedelta(seconds=1),
+        )
+    )
+
+    async def escalate_once_running() -> None:
+        await asyncio.wait_for(stubborn_started.wait(), timeout=2.0)
+        await asyncio.sleep(0)
+        await _force_cancel_stubborn_job(backend, clock, job_a)
+
+    escalator = asyncio.ensure_future(escalate_once_running())
+    drain_task = asyncio.create_task(backend.run_until_drained())
+    try:
+        # Deadline-based: the force-cancel of job A is only known to be
+        # absorbed once the drain has moved on and parked inside job B's
+        # gate — cancelling before then would race the first episode.
+        await asyncio.wait_for(gated_started.wait(), timeout=2.0)
+        drain_task.cancel()
+
+        propagated: BaseException | None = None
+        try:
+            await drain_task
+        except asyncio.CancelledError as exc:
+            propagated = exc
+
+        assert isinstance(propagated, asyncio.CancelledError), (
+            "a caller cancel of the drain task after an absorbed "
+            "force-cancel must still propagate — the absorb is scoped to "
+            "the force-cancelled dispatch, and the drain is an ordinary, "
+            f"killable task again once balanced; instead the drain "
+            f"returned or raised something else: {propagated!r}"
+        )
+    finally:
+        if not escalator.done():
+            escalator.cancel()
+        else:
+            escalator.result()
+        if not drain_task.done():
+            drain_task.cancel()
+
+    row_a = await backend.get(job_a)
+    assert row_a is not None
+    assert row_a.status == "abandoned", (
+        "the force-cancelled job's terminal state belongs to the escalation "
+        f"that wrote it; the later external cancel must not rewrite it. "
+        f"Got {row_a.status!r}"
+    )
+
+    row_b = await backend.get(job_b)
+    assert row_b is not None
+    assert row_b.status == "cancelled", (
+        "the job interrupted by the external drain cancel is marked "
+        "cancelled by the shared consumer's shielded write before the "
+        f"runner re-raises — the shutdown-cancellation contract; got "
+        f"{row_b.status!r}"
+    )

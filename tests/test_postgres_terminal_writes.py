@@ -22,7 +22,7 @@ from taskq.testing.assertions import (
 )
 from taskq.testing.fixtures import JobsApp
 from taskq.testing.in_memory import InMemoryBackend
-from taskq.testing.jobs import enqueue_and_dispatch_memory
+from taskq.testing.jobs import enqueue_and_dispatch_memory, enqueue_and_dispatch_pg
 from taskq.testing.pg import create_worker, setup_running_job
 
 if TYPE_CHECKING:
@@ -648,12 +648,16 @@ class TestEquivalence:
         mem_events = await memory_jobs.get_events(mem_job_id)
 
         # ── PG backend ───────────────────────────────────────────
+        # Real enqueue + dispatch, exactly like the memory side: a claim
+        # deliberately writes no job_events row (the events diet —
+        # backend/_dispatch.py), so a fixture-injected claim event would
+        # leave the PG stream one row ahead of anything the memory twin
+        # can produce and break the event-count equivalence below.
         deps = clean_jobs_app.deps
         backend = clean_jobs_app.backend
         schema = deps.settings.schema_name
 
-        async with deps.worker_pool.acquire() as conn:
-            pg_worker, pg_job_id = await setup_running_job(conn, schema, with_events=True)
+        pg_job_id, pg_worker = await enqueue_and_dispatch_pg(backend)
 
         pg_result = await backend.mark_succeeded(pg_job_id, pg_worker, {"ok": True}, attempt=1)
         assert pg_result is True
@@ -694,14 +698,13 @@ class TestEquivalence:
         mem_events = await memory_jobs.get_events(mem_job_id)
 
         # ── PG backend ───────────────────────────────────────────
+        # Real enqueue + dispatch — see test_mark_succeeded_equivalence
+        # for why a fixture-injected claim event cannot work here.
         deps = clean_jobs_app.deps
         backend = clean_jobs_app.backend
         schema = deps.settings.schema_name
 
-        async with deps.worker_pool.acquire() as conn:
-            pg_worker, pg_job_id = await setup_running_job(
-                conn, schema, max_attempts=1, with_events=True
-            )
+        pg_job_id, pg_worker = await enqueue_and_dispatch_pg(backend, max_attempts=1)
 
         pg_row = await backend.mark_failed_or_retry(
             pg_job_id, pg_worker, error_info, None, attempt=1

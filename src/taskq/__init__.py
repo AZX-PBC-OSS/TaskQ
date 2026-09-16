@@ -111,6 +111,7 @@ from taskq.progress import ProgressEvent
 from taskq.retry import (
     Fail,
     JobRetryState,
+    OnCancel,
     OnSuccess,
     Retry,
     RetryClassifier,
@@ -187,6 +188,7 @@ __all__ = [
     "MissingProvider",
     "NullErrorReporter",
     "OIDCSettings",
+    "OnCancel",
     "OnSuccess",
     "PartialBatchError",
     "PayloadValidationError",

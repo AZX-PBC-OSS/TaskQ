@@ -264,3 +264,78 @@ async def test_claimable_probe_row_work_is_depth_bounded(pg_dsn: str, depth_sche
         )
     finally:
         await conn.close()
+
+
+@pytest.mark.parametrize(("variant", "sql"), _VARIANTS, ids=[v for v, _ in _VARIANTS])
+async def test_dispatch_round_does_not_pay_jit_compilation_at_depth(
+    pg_dsn: str, depth_schema: str, variant: str, sql: str
+) -> None:
+    """A depth-bounded row/buffer plan can still be slow, because the CTE
+    chain's row-*count* bound (pinned above by
+    ``test_dispatch_row_work_is_depth_bounded``) says nothing about the
+    plan's row-*estimate*. The estimate is built before ``top_ids``' LIMIT
+    or ``sliding_locked``'s LIMIT cuts the actual scan, off the candidate
+    chain's uncapped index-range guess — at a 30k+ row backlog it pushes
+    the terminal ``ModifyTable`` node's ``Total Cost`` into the tens of
+    millions (measured ~15.8M at 200k due rows on strict-FIFO), which sits
+    far above Postgres's default ``jit_above_cost`` (100000). Postgres
+    JIT-compiles the plan on every dispatch round once that threshold is
+    crossed — and the plan's own ``JIT`` block in EXPLAIN's JSON output
+    reports that compile time directly, so this asserts on it rather than
+    on wall clock: deterministic for a fixed seed and immune to CI-host
+    timing noise, the same doctrine ``test_dispatch_row_work_is_depth_bounded``
+    uses for row counts.
+
+    Measured on the production statement (strict-FIFO, this module's
+    fixture): ``JIT.Timing.Total`` was 0ms at 1k due rows and ~1000-1150ms
+    at 30k/200k, all in ``Optimization``/``Emission`` — the plan's
+    inflated *estimated* cost triggering compilation whose actual payoff
+    (a bounded ~100-row scan) never justifies it. This is a second,
+    independent instance of the same root defect the depth-bound fix
+    above addresses (row-count estimates divorced from the LIMIT that
+    actually bounds execution) — it produces the identical "queue gets
+    slower the behinder you are" symptom via JIT compile time instead of
+    scan time, and nothing in the production dispatch path
+    (``taskq.backend._dispatch``, ``taskq.connections``, pool
+    ``server_settings``, worker bootstrap) sets ``jit = off`` or raises
+    ``jit_above_cost`` to prevent it — unlike
+    ``benchmarks/pg_dispatch_depth_spike.py``, which disables JIT by
+    default specifically because of this (see its own comment at the
+    ``SET jit = off`` call), which is why the design doc's flat
+    1.4-1.7ms measurement never surfaced this dimension.
+
+    EXPECTED TO FAIL until the estimate cascade is fixed (or the
+    production connection path disables JIT / raises jit_above_cost for
+    this statement) — this pins a live defect, not a regression guard.
+    """
+    rendered = sql.format(schema=depth_schema)
+    worker_id = new_uuid()
+    conn = await asyncpg.connect(pg_dsn)
+    try:
+        await _seed_due_backlog(conn, depth_schema, _DEEP_DEPTH)
+        rows = await conn.fetch(
+            f"EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) {rendered}",
+            [_QUEUE],
+            _LIMIT_N,
+            worker_id,
+            _LOCK_LEASE,
+            _OVERSAMPLE,
+        )
+        raw = rows[0]["QUERY PLAN"]
+        document: Any = json.loads(raw) if isinstance(raw, str) else raw
+        top: dict[str, Any] = document[0]
+        jit = top.get("JIT")
+        jit_total_ms = float(jit["Timing"]["Total"]) if jit and "Timing" in jit else 0.0
+        assert jit_total_ms == 0.0, (
+            f"{variant}: at a {_DEEP_DEPTH}-row due backlog the dispatch "
+            f"statement triggered JIT compilation ({jit_total_ms:.1f} ms, "
+            f"full JIT block: {jit}) despite the plan's actual row/buffer "
+            "work staying bounded — the plan's ESTIMATED cost is still "
+            "depth-proportional (divorced from the LIMIT that bounds "
+            "actual execution), which crosses jit_above_cost and pays "
+            "full JIT compile time on every round. This reproduces the "
+            "original 'gets slower the behinder you are' symptom via "
+            "compile time instead of scan time; see this test's docstring."
+        )
+    finally:
+        await conn.close()

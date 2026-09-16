@@ -19,8 +19,10 @@ from taskq.connections import (
     DEFAULT_STATEMENT_CACHE_SIZE,
     WorkerConnections,
     bounded_lock_budget_ms,
+    connection_init_hook,
     lock_budget_command_timeout_secs,
     statement_cache_kwargs,
+    with_connection_init,
 )
 from taskq.settings import TaskQSettings, WorkerSettings
 from taskq.testing.settings import make_integration_settings
@@ -274,3 +276,71 @@ def test_lock_budget_command_timeout_ignores_narrowed_and_unbounded_budgets() ->
     assert (
         lock_budget_command_timeout_secs([(1000.0, 5000.0), (0.0, 5000.0)], floor_secs=5.0) == 5.0
     )
+
+
+# ── Inheritable per-connection init hooks (with_connection_init) ──────
+#
+# The wrapper is the declaring channel for a hand-rolled connection
+# factory: the hook runs on every produced connection AND is exposed for
+# the worker's per-slot transaction pool to inherit (the
+# ``test_slot_pool.py`` integration pair pins the end-to-end contract).
+# These unit pins hold the wrapper's own mechanics.
+
+
+async def test_with_connection_init_applies_the_hook_to_every_produced_connection() -> None:
+    """The hook runs exactly once per produced connection, on the
+    connection itself — the ``setup=`` hook position, so the LOOP-scope
+    connection and the slot connections carry identical setup."""
+    applied: list[Any] = []
+
+    async def init(conn: Any) -> None:
+        applied.append(conn)
+
+    factory = with_connection_init(_fake_conn_factory, init)
+
+    first, second = await factory(), await factory()
+
+    assert applied == [first, second]
+
+
+async def test_with_connection_init_declares_the_hook_for_the_worker_to_read() -> None:
+    """The wrapped factory exposes the very callable it applies — the
+    worker installs THAT hook as the slot pool's ``init``, never a copy
+    or a wrapper, so what the registered connection got is what slot
+    connections get."""
+
+    async def init(conn: Any) -> None: ...
+
+    factory = with_connection_init(_fake_conn_factory, init)
+
+    assert connection_init_hook(factory) is init
+
+
+def test_unwrapped_factories_declare_no_init_hook() -> None:
+    """A bare factory (or anything else) exposes nothing — the read must
+    be a clean None, never a guess, so the worker warns instead of
+    inventing a hook."""
+    assert connection_init_hook(_fake_conn_factory) is None
+    assert connection_init_hook(object()) is None
+    assert connection_init_hook(None) is None
+
+
+async def test_with_connection_init_closes_the_connection_when_the_hook_fails() -> None:
+    """A failed hook means no usable connection: the produced connection
+    is closed (bounded, never raising over the hook's own error) before
+    the error propagates — asyncpg's own hook contract, so a boot-time
+    codec failure fails boot without leaking the connection."""
+    produced = MagicMock(spec=asyncpg.Connection)
+
+    async def factory() -> Any:
+        return produced
+
+    async def init(conn: Any) -> None:
+        raise ValueError("codec registration failed")
+
+    wrapped = with_connection_init(factory, init)
+
+    with pytest.raises(ValueError, match="codec registration failed"):
+        await wrapped()
+
+    assert produced.close.await_count == 1  # type: ignore[attr-defined]  # Why: MagicMock(spec=...) narrows close to an AsyncMock-shaped attribute at runtime.

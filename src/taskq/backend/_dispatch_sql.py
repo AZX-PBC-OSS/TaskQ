@@ -75,6 +75,25 @@ whose whole window is row-locked expands the window geometrically
 (bounded, in ``taskq.backend._dispatch``) instead of scanning deeper
 without a bound — see :data:`DISPATCH_CLAIMABLE_PROBE_SQL`.
 
+Fairness contract (cross-actor rotation): within a round, selection is
+``pending_rank`` first — every actor's head job before any actor's
+second — then priority. Across rounds, the remaining tie is broken by
+``actor_config.last_claimed_at ASC NULLS FIRST`` (never-claimed actors
+first, then least-recently-claimed), a durable per-actor stamp the
+claim statement's own ``stamp`` CTE writes for every admitted actor
+(its SKIP LOCKED driver keeps the claim wait-free — a peer mid-claim
+on the same actors costs the stamp, never the round). Without the
+stamp the tie falls to ``scheduled_at, id`` — a stable total order
+that re-elects the same prefix of actors every round once more actors
+hold due work than the round's limit admits, starving the rest
+silently (pinned by tests/test_dispatch_actor_cohort_rotation.py and
+tests/test_fleet_fairness_starvation.py). Priority still dominates the
+stamp, so the operator's priority bias keeps its meaning; the stamp
+removes only the accidental starvation among equal-priority peers. The
+stamp rides the registry row rather than the jobs table so the
+rotation read adds no per-round probe: it is carried through the
+already-materialized ``ranked`` window to the cut.
+
 Routing contract (the running-job-tail fix for
 :func:`taskq.actor_config_ops.move_actor_queue`): a pending row's
 dispatch routing queue is decided by its ORIGIN.  A row a producer
@@ -232,7 +251,25 @@ per_actor_capacity AS (
     CASE WHEN ac.max_concurrent IS NULL
          THEN (SELECT limit_n FROM params)
          ELSE GREATEST(ac.max_concurrent - COALESCE(r.in_flight, 0), 0)
-    END AS residual
+    END AS residual,
+    -- The cross-round fairness signal, carried from the registry row to
+    -- every ORDER BY that cuts a round's admitted set. NULL means "never
+    -- claimed": those actors sort first (NULLS FIRST at the cut), then
+    -- least-recently-claimed. Without it the cross-actor tiebreak among
+    -- rank-1 rows is priority/scheduled_at/id — a STABLE total order that
+    -- re-elects the same prefix of actors every round (each winner refills
+    -- its own rank-1 slot from its own backlog with the same relative
+    -- key), so every actor past the limit starves while the queue drains
+    -- briskly. The stamp itself is the stamp CTE at the foot of this
+    -- statement; its SKIP LOCKED driver is what lets the write ride the
+    -- claim: a plain UPDATE would wait on any peer transaction holding a
+    -- claimed actor's registry row (a concurrent dispatcher mid-round,
+    -- an operator's move_actor_queue flip), coupling this round's
+    -- latency — and, for a peer whose transaction is held open, its
+    -- liveness — to the peer's commit. Skipping a locked row degrades
+    -- the stamp bounded-ly (that actor re-competes with its older stamp
+    -- next round; self-correcting), never the claim's liveness.
+    ac.last_claimed_at AS actor_claimed_at
   FROM "{schema}".actor_config ac
   CROSS JOIN params p
   LEFT JOIN running_per_actor r ON r.actor = ac.actor
@@ -276,7 +313,8 @@ repend_capacity AS (
     CASE WHEN ac.max_concurrent IS NULL
          THEN (SELECT limit_n FROM params)
          ELSE GREATEST(ac.max_concurrent - COALESCE(r.in_flight, 0), 0)
-    END AS residual
+    END AS residual,
+    ac.last_claimed_at AS actor_claimed_at
   FROM "{schema}".actor_config ac
   CROSS JOIN params p
   LEFT JOIN running_per_actor r ON r.actor = ac.actor
@@ -329,7 +367,7 @@ rr_tail_keys AS (
 candidates AS (
   (SELECT j.id, j.actor, j.identity_key, j.fairness_key,
           __FAIRNESS_RANK_COLUMN__,
-          j.priority, j.scheduled_at, pac.residual
+          j.priority, j.scheduled_at, pac.residual, pac.actor_claimed_at
   FROM per_actor_capacity pac
   CROSS JOIN LATERAL unnest((SELECT queues FROM params)) AS sq(queue_name)
   CROSS JOIN LATERAL (
@@ -344,7 +382,8 @@ __REPENDED_LATERAL__
 identity_dedup AS (
   (
     SELECT DISTINCT ON (c.actor, c.identity_key)
-      c.id, c.actor, c.fairness_key, c.fairness_rank, c.priority, c.scheduled_at, c.residual
+      c.id, c.actor, c.fairness_key, c.fairness_rank, c.priority, c.scheduled_at, c.residual,
+      c.actor_claimed_at
     FROM candidates c
     LEFT JOIN running_identities ri ON ri.actor = c.actor AND ri.identity_key = c.identity_key
     WHERE ri.identity_key IS NULL
@@ -353,7 +392,8 @@ identity_dedup AS (
   )
   UNION ALL
   (
-    SELECT c.id, c.actor, c.fairness_key, c.fairness_rank, c.priority, c.scheduled_at, c.residual
+    SELECT c.id, c.actor, c.fairness_key, c.fairness_rank, c.priority, c.scheduled_at, c.residual,
+           c.actor_claimed_at
     FROM candidates c
     WHERE c.identity_key IS NULL
   )
@@ -419,9 +459,15 @@ capped_ranked AS (
 -- carries millions of rows.
 top_ids AS (
   SELECT id, actor, fairness_key, fairness_rank,
-         priority, scheduled_at, pending_rank, residual
+         priority, scheduled_at, pending_rank, residual, actor_claimed_at
   FROM capped_ranked
-  ORDER BY pending_rank, priority DESC, scheduled_at, id
+  -- The cross-actor cut rotates: after pending_rank and priority, the
+  -- least-recently-claimed actor wins (never-claimed first), so a cohort
+  -- beyond the round's limit is served on a later round instead of never.
+  -- The stamp column is read from the ranked (already materialized)
+  -- window, so the rotation key adds no per-round probe work.
+  ORDER BY pending_rank, priority DESC, actor_claimed_at ASC NULLS FIRST,
+           scheduled_at, id
   LIMIT $2::int
 ),
 -- Capped lock step: FOR UPDATE on a set already bounded by top_ids'
@@ -434,7 +480,7 @@ top_ids AS (
 -- for their lock; SKIP LOCKED leaves those to the holder.
 locked AS (
   SELECT j.id, j.actor, j.identity_key, j.fairness_key, t.fairness_rank,
-         j.priority, j.scheduled_at, t.pending_rank, t.residual
+         j.priority, j.scheduled_at, t.pending_rank, t.residual, t.actor_claimed_at
   FROM top_ids t
   CROSS JOIN LATERAL (
     SELECT j2.id, j2.actor, j2.identity_key, j2.fairness_key,
@@ -452,12 +498,17 @@ locked AS (
 -- rows.
 sliding_locked AS (
   SELECT j2.id, j2.actor, j2.identity_key, j2.fairness_key, r.fairness_rank,
-         j2.priority, j2.scheduled_at, r.pending_rank, r.residual
+         j2.priority, j2.scheduled_at, r.pending_rank, r.residual, r.actor_claimed_at
   FROM ranked r
   JOIN "{schema}".jobs j2 ON j2.id = r.id AND j2.status = 'pending'
   LEFT JOIN "{schema}".actor_config ac ON ac.actor = r.actor
   WHERE ac.max_concurrent IS NULL
-  ORDER BY r.pending_rank, r.priority DESC, r.scheduled_at, r.id
+  -- Same rotation cut as top_ids: the SKIP LOCKED slide walks the
+  -- materialized ranked stream in this order, so a peer holding the
+  -- window's leading rows yields the least-recently-claimed actors
+  -- behind them rather than re-deriving a static prefix.
+  ORDER BY r.pending_rank, r.priority DESC, r.actor_claimed_at ASC NULLS FIRST,
+           r.scheduled_at, r.id
   LIMIT $2::int
   FOR UPDATE OF j2 SKIP LOCKED
 ),
@@ -484,12 +535,42 @@ eligible_candidates AS (
      OR COALESCE(r.in_flight, 0) < ac.max_concurrent
 ),
 eligible AS (
-  SELECT ec.id
+  SELECT ec.id, ec.actor
   FROM eligible_candidates ec
   WHERE ec.max_concurrent IS NULL
      OR ec.actor_rank <= ec.max_concurrent - ec.in_flight
-  ORDER BY ec.pending_rank, ec.fairness_rank NULLS LAST, ec.priority DESC, ec.scheduled_at
+  -- The re-limit keeps the same rotation order the lock stages cut on,
+  -- so the post-lock admission never re-elects a different prefix.
+  ORDER BY ec.pending_rank, ec.fairness_rank NULLS LAST, ec.priority DESC,
+           ec.actor_claimed_at ASC NULLS FIRST, ec.scheduled_at
   LIMIT $2::int
+),
+-- The rotation stamp: every actor this round admitted is stamped with
+-- this statement's statement_timestamp() (one value for the whole round,
+-- so same-round winners tie on the stamp and fall through to
+-- scheduled_at/id — exactly the tie shape the in-memory twin's per-round
+-- tick produces, criterion 65 parity). The write is bounded by
+-- construction (at most limit_n distinct actors, each a primary-key
+-- probe) and CANNOT block: the driver's FOR UPDATE SKIP LOCKED takes
+-- only registry rows no peer holds, so the stamp never waits on a
+-- concurrent dispatcher or an operator's move flip mid-transaction — the
+-- price is a dropped stamp for actors a peer is stamping right now, a
+-- bounded, self-correcting rotation degradation rather than a coupled
+-- commit. No window function rides the locking arm (PG forbids the
+-- combination); the ORDER BY gives every dispatcher's driver the same
+-- visit order.
+stamp_rows AS (
+  SELECT ac2.actor
+  FROM "{schema}".actor_config ac2
+  WHERE ac2.actor = ANY(ARRAY(SELECT DISTINCT e.actor FROM eligible e))
+  ORDER BY ac2.actor
+  FOR UPDATE SKIP LOCKED
+),
+stamp AS (
+  UPDATE "{schema}".actor_config ac
+  SET last_claimed_at = statement_timestamp()
+  FROM stamp_rows s
+  WHERE ac.actor = s.actor
 )
 UPDATE "{schema}".jobs j
 SET status = 'running',
@@ -503,7 +584,22 @@ SET status = 'running',
     error_traceback = NULL,
     result = NULL,
     result_size_bytes = NULL,
-    attempt = j.attempt + 1
+    -- The increment saturates at the smallint column ceiling (32767 =
+    -- constants.MAX_ATTEMPTS_SMALLINT_CEILING, written as a literal here
+    -- the same way _sql_templates.py's retry_job raise arm does): a
+    -- pre-existing row parked at the ceiling (retry_kind='indefinite'
+    -- climbs there — nothing else bounds its counter) must not turn the
+    -- whole round's claim into a smallint-out-of-range driver error that
+    -- also aborts every healthy job selected beside it. The clamped row
+    -- still runs; its terminal write then lands through the existing
+    -- budget arms (a transient row at the ceiling is already past its
+    -- max_attempts and terminalises on failure; an indefinite one runs
+    -- until its deadline arm terminalises it) — never stranded pending.
+    -- The repeat attempt number this makes possible (32767 claimed twice)
+    -- is absorbed by the ON CONFLICT guard every job_attempts insert
+    -- carries, so the audit trail keeps the first record of the number
+    -- and no terminal path raises.
+    attempt = LEAST(j.attempt + 1, 32767)
 -- The UPDATE finds its rows through a one-shot id array, not a
 -- FROM-clause join against eligible: a join's strategy is the
 -- planner's choice, and at shallow depths the whole-backlog seq scan
@@ -709,7 +805,7 @@ _ROUND_ROBIN_CANDIDATES_LATERAL = """\
 _REPENDED_STRICT_FIFO_LATERAL = """\
     SELECT p.id, p.actor, p.identity_key, p.fairness_key,
            NULL::bigint AS fairness_rank,
-           p.priority, p.scheduled_at, rc.residual
+           p.priority, p.scheduled_at, rc.residual, rc.actor_claimed_at
     FROM repend_capacity rc
     CROSS JOIN rr_tail_keys tk
     CROSS JOIN LATERAL (
@@ -740,7 +836,7 @@ _REPENDED_STRICT_FIFO_LATERAL = """\
 # admitted each round, so neither series can starve the other.
 _REPENDED_ROUND_ROBIN_LATERAL = """\
     SELECT w.id, w.actor, w.identity_key, w.fairness_key,
-           w.fairness_rank, w.priority, w.scheduled_at, rc.residual
+           w.fairness_rank, w.priority, w.scheduled_at, rc.residual, rc.actor_claimed_at
     FROM repend_capacity rc
     CROSS JOIN LATERAL (
       SELECT c.id, c.actor, c.identity_key, c.fairness_key,

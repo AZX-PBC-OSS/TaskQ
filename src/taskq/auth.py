@@ -62,6 +62,7 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 from urllib.parse import parse_qs, quote, urlencode, urlparse, urlunparse
 
 from taskq.connections import (
+    _CONNECTION_INIT_HOOK_ATTR,  # pyright: ignore[reportPrivateUsage]  # Why: the attribute name is owned by taskq.connections; the declaring writers share the single constant so the worker-side reader can never drift from them.
     DEFAULT_MAX_CACHED_STATEMENT_LIFETIME,
     DEFAULT_STATEMENT_CACHE_SIZE,
     ConnFactory,
@@ -497,7 +498,13 @@ def make_dedicated_conn_factory(
     *setup* is forwarded to ``asyncpg.connect`` and runs once after the
     connection is established (e.g. registering type codecs, setting
     session GUCs). For a dedicated connection this is equivalent to
-    *init* on a pool - there is no acquire/reuse cycle.
+    *init* on a pool - there is no acquire/reuse cycle. The hook is also
+    declared on the returned factory (see
+    :func:`taskq.connections.with_connection_init`), so when this factory
+    provides the worker's LOOP-scope ``asyncpg.Connection`` registration
+    the per-slot transaction pool inherits it - the codec family that a
+    bare ``set_type_codec`` on one live connection silently loses above
+    ``max_concurrency = 1``.
 
     *server_settings* is forwarded to ``asyncpg.connect`` and applied as
     session-level GUCs at connect time (e.g.
@@ -530,6 +537,11 @@ def make_dedicated_conn_factory(
             kwargs["connection_class"] = connection_class
         return await asyncpg.connect(**kwargs)
 
+    if setup is not None:
+        # A dedicated connection's setup runs once per (re)open - the same
+        # lifecycle position as a pool's init - so it is declared as the
+        # inheritable init hook verbatim.
+        setattr(factory, _CONNECTION_INIT_HOOK_ATTR, setup)
     return factory
 
 

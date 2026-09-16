@@ -156,6 +156,33 @@ def test_scheduled_count_gauge_is_label_free() -> None:
     assert observations[0].value == 7
 
 
+def test_leader_lease_gauge_is_label_free(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``taskq.maintenance_leader.lease_expires_in_seconds`` carries NO
+    dimensions — one series per pod, present only while that pod holds
+    the lease. A ``worker_id`` label here is the exact identity-value
+    cardinality failure the constitution forbids (fresh UUID per
+    process), and any other label multiplies a single-pod signal for no
+    query. The empty-cache state yields NO observation — a demoted
+    leader must go absent, not export a stale or zeroed TTL."""
+    # A fresh cache per test so a stamp left by another test cannot widen
+    # the assertion (the sweep_success precedent above); the writer is
+    # gated on _otel_enabled, so pin that on too.
+    monkeypatch.setattr(otel_mod, "_leader_lease_expires_in_seconds_cache", None)  # pyright: ignore[reportPrivateUsage]  # Why: the pin is the cache's exported shape.
+    monkeypatch.setattr(otel_mod, "_otel_enabled", True)
+    otel_mod.record_leader_lease_expires_in_seconds("w1", 30.0)
+
+    observations = list(otel_mod._observe_leader_lease_expires_in_seconds(CallbackOptions()))  # pyright: ignore[reportPrivateUsage]  # Why: same callback-observation pattern as above.
+
+    assert len(observations) == 1
+    assert dict(observations[0].attributes or {}) == {}
+    assert observations[0].value == 30.0
+
+    otel_mod.clear_leader_lease_expires_in_seconds()
+    assert (
+        list(otel_mod._observe_leader_lease_expires_in_seconds(CallbackOptions())) == []  # pyright: ignore[reportPrivateUsage]
+    )
+
+
 def test_sweep_batch_size_gauge_dimensions_are_the_sweep_name_enum_only() -> None:
     """``taskq.maintenance_leader.sweep_batch_size``: dimension exactly
     {sweep_name}; the value is the batch size, and nothing about the

@@ -34,7 +34,7 @@ from taskq.backend.statemachine import TERMINAL_STATUSES
 from taskq.batch import BatchCompletionStatus, apply_batch_terminal_outcome, decide_batch_status
 from taskq.context import JobContext
 from taskq.exceptions import PayloadValidationError, Snooze
-from taskq.retry import OnRetryExhausted, OnSuccess, RetryClassifierHook, RetryPolicy
+from taskq.retry import OnCancel, OnRetryExhausted, OnSuccess, RetryClassifierHook, RetryPolicy
 from taskq.testing._reads import _event_read_copy, _read_copy
 
 if TYPE_CHECKING:
@@ -193,6 +193,8 @@ class _InMemoryActorConfig:
     on_retry_exhausted_timeout: float = 3.0
     on_success: OnSuccess | None = None
     on_success_timeout: float = 3.0
+    on_cancel: OnCancel | None = None
+    on_cancel_timeout: float = 3.0
     result_ttl: timedelta | None = None
     payload_type: type[BaseModel] = PassthroughPayload
 
@@ -277,6 +279,8 @@ def register_stub(
     on_retry_exhausted_timeout: float = 3.0,
     on_success: OnSuccess | None = None,
     on_success_timeout: float = 3.0,
+    on_cancel: OnCancel | None = None,
+    on_cancel_timeout: float = 3.0,
     result_ttl: timedelta | None = None,
     payload_type: type[BaseModel] | None = None,
 ) -> None:
@@ -296,11 +300,12 @@ def register_stub(
 
     Actor config fields (retry, non_retryable_exceptions,
     retry_classifier, on_retry_exhausted, on_retry_exhausted_timeout,
-    on_success, on_success_timeout, result_ttl) are stored alongside the
-    stub and used by ``run_until_drained`` when calling
-    ``decide_after_failure`` and the terminal writes. ``result_ttl`` is
-    the worker-side literal passed as the terminal write's
-    ``fallback_result_ttl`` (applied when no stored override exists).
+    on_success, on_success_timeout, on_cancel, on_cancel_timeout,
+    result_ttl) are stored alongside the stub and used by
+    ``run_until_drained`` when calling ``decide_after_failure`` and the
+    terminal writes. ``result_ttl`` is the worker-side literal passed as
+    the terminal write's ``fallback_result_ttl`` (applied when no stored
+    override exists).
     The default ``RetryPolicy(jitter=0.0)`` matches the historical inline
     ``5 * 2^(attempt-1)`` backoff formula exactly, preserving existing
     test behaviour.
@@ -314,6 +319,8 @@ def register_stub(
         on_retry_exhausted_timeout=on_retry_exhausted_timeout,
         on_success=on_success,
         on_success_timeout=on_success_timeout,
+        on_cancel=on_cancel,
+        on_cancel_timeout=on_cancel_timeout,
         result_ttl=result_ttl,
         payload_type=payload_type if payload_type is not None else PassthroughPayload,
     )
@@ -743,11 +750,17 @@ async def run_until_drained(backend: "InMemoryBackend") -> None:
         # both-graces arm cancels this task to terminate a
         # non-cooperative attempt (the mirror of production's
         # active.task.cancel()). Keyed by job id so only the abandon of
-        # the job actually executing can cancel the drain.
+        # the job actually executing can cancel the drain. The cancel
+        # count at registration is this dispatch's baseline: the
+        # CancelledError classification below reads every elevation
+        # relative to it, the way asyncio.timeout compares against the
+        # cancelling() count it captured at __aenter__.
         current_task = asyncio.current_task()
         registration: tuple[JobId, asyncio.Task[object]] | None = None
+        baseline_cancelling = 0
         if current_task is not None:
             registration = (job.id, current_task)
+            baseline_cancelling = current_task.cancelling()
             backend._inflight_attempt = registration  # pyright: ignore[reportPrivateUsage]  # Why: test runner helper intentionally accesses private InMemoryBackend state; this module is co-located with the backend and owns this access pattern.
         try:
             outcome = await consume_one_job(
@@ -783,34 +796,63 @@ async def run_until_drained(backend: "InMemoryBackend") -> None:
             # to the shared hook call below.
             outcome = "failed"
         except asyncio.CancelledError:
-            # Cooperative-cancel mirror: production's consume_one_job marks
-            # the row cancelled on the CancelledError path and re-raises;
-            # the worker's task boundary absorbs that raise and the worker
-            # keeps dispatching — for every actor-originated raise, whether
-            # the documented check_cancelled() style or the actor ending
-            # itself with its own asyncio.CancelledError (the two are
-            # indistinguishable inside consume_one_job, and production
-            # treats them identically: same shielded mark, same re-raise,
-            # same absorption at the boundary). The runner awaits the actor
-            # inline, so this per-dispatch catch is that boundary. The
-            # discriminator is the drain task's own cancellation state, not
-            # the job's cancel event: a pending cancel request on the
-            # current task (Task.cancelling() > 0) means the cancellation
-            # targets the drain itself — the caller's stop always wins and
-            # must propagate, exactly as a production worker stops when its
-            # dispatch task is cancelled, even if the interrupted job also
-            # had a cancel requested; no pending request means the raise
-            # was actor-originated — absorb it and keep draining. On the
-            # absorb arm production's CancelledError handler applies the
-            # batch hook with "cancelled" best-effort before the re-raise
-            # — the row is terminal, so the batch completes immediately
-            # (batch completes when any member reaches terminal status)
-            # — and the mirror does the same: the outcome is set here
-            # and the shared hook call below applies it.
-            task = asyncio.current_task()
-            if task is not None and task.cancelling() > 0:
+            # Three cancellation origins reach this boundary. Production
+            # separates them by construction — its dispatch loop and its
+            # per-attempt tasks are distinct — while the runner awaits
+            # every attempt inline in the drain task, so the origins must
+            # be told apart here by state, not by where the raise surfaced:
+            #
+            # 1. Actor-originated: the documented check_cancelled() style,
+            #    or the actor ending itself with its own
+            #    asyncio.CancelledError — the two are indistinguishable
+            #    inside consume_one_job, and production treats them
+            #    identically (same shielded mark, same re-raise, same
+            #    absorption at the worker's task boundary, worker keeps
+            #    dispatching). No cancel() was requested on the drain
+            #    task, so its cancel count is still at this dispatch's
+            #    baseline — absorb and keep draining.
+            # 2. Caller-originated: a cancel() requested on the drain task
+            #    itself. The count sits ABOVE the baseline and the row was
+            #    not abandoned by the escalation tick — the caller's stop
+            #    always wins and must propagate, exactly as a production
+            #    worker stops when its dispatch task is cancelled, even if
+            #    the interrupted job also had a cancel requested.
+            # 3. Escalation-originated (the phase-2 force-cancel):
+            #    tick_cancel_polling's both-graces arm marks the row
+            #    abandoned and only then cancels the inflight attempt —
+            #    which the runner registered as the drain task itself, so
+            #    the count is above baseline exactly like origin 2. The
+            #    abandoned row, written BEFORE the cancel is delivered,
+            #    is the record that this cancel is the runner's own. The
+            #    runner is both the requester and the consumer of this
+            #    cancellation, so asyncio's contract has two halves:
+            #    absorb the raise (production cancels only the offending
+            #    attempt task and its dispatch loop keeps claiming, so the
+            #    drain continues), and balance the tick's cancel() with
+            #    one uncancel() — the bookkeeping asyncio.timeout and
+            #    TaskGroup do for every cancel they inject, so an elevated
+            #    cancelling() count does not follow the caller's task past
+            #    the drain. If a caller cancel landed ON TOP of the
+            #    force-cancel, the count is still above baseline after the
+            #    balancing uncancel — the caller's stop wins and the raise
+            #    propagates. The outcome is "cancelled", matching
+            #    production's CancelledError escape hook; the row is
+            #    already terminal abandoned, so this arm issues no second
+            #    terminal write and the shared hook call below applies the
+            #    outcome (a batch completes on any terminal member).
+            row_after = backend._jobs.get(job.id)  # pyright: ignore[reportPrivateUsage]  # Why: test runner helper intentionally accesses private InMemoryBackend state; this module is co-located with the backend and owns this access pattern.
+            if (
+                current_task is not None
+                and row_after is not None
+                and row_after.status == "abandoned"
+                and current_task.cancelling() > baseline_cancelling
+                and current_task.uncancel() <= baseline_cancelling
+            ):
+                outcome = "cancelled"
+            elif current_task is not None and current_task.cancelling() > baseline_cancelling:
                 raise
-            outcome = "cancelled"
+            else:
+                outcome = "cancelled"
         finally:
             # Identity-guarded: a concurrent run_until_drained on the same
             # backend may have registered its own attempt over ours — only

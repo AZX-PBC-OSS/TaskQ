@@ -66,6 +66,7 @@ from taskq.backend._sweeps import (
 )
 from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining
+    CANCEL_ORIGIN_PENDING,
     DEFAULT_EVENT_WRITER_BATCH_SIZE,
     DEFAULT_EVENT_WRITER_STATEMENT_TIMEOUT_MS,
 )
@@ -300,7 +301,14 @@ async def _cancel_where(
     ),
     cancelled AS (
         UPDATE "{schema}".jobs AS j
-        SET status = 'cancelled', finished_at = clock_timestamp()
+        -- Same cancel-origin marker the single-job cancel_pending_scheduled
+        -- path stamps: the same outcome must read the same way whichever
+        -- path produced it, or a cancelled-jobs dashboard splits into two
+        -- populations that mean one thing and only one of them carries an
+        -- explanation. Row-only, like the single-job path — the event
+        -- detail shape stays {{from_state, to_state}}.
+        SET status = 'cancelled', finished_at = clock_timestamp(),
+            error_class = '{CANCEL_ORIGIN_PENDING}'
         WHERE j.id = ANY ((SELECT ids FROM batch_ids)::uuid[])
           AND j.status IN ('pending', 'scheduled')
         RETURNING j.id

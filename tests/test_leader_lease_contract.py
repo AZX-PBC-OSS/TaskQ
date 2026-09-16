@@ -488,3 +488,74 @@ async def test_a_holder_can_extend_its_own_row_repeatedly(
     row = await _leader_row(lease_conn, schema)
     assert row is not None and row["worker_id"] == holder
     assert row["elected_at"] == elected_at, "renewals extend the term, never replace it"
+
+
+async def test_an_old_release_pod_taking_over_the_row_does_not_open_a_stale_expiry_window(
+    module_pg_schema: ModulePgSchema, lease_conn: asyncpg.Connection
+) -> None:
+    """D9's rolling-upgrade split-brain hazard: an old-release pod's four-column
+    upsert leaves ``expires_at`` at its PREVIOUS holder's stamped value rather
+    than clearing it. If a new pod judged claimability on ``expires_at`` alone,
+    once that leftover instant passed a new pod would take over from an
+    old-release pod that is still alive and still pinging ``last_seen_at`` —
+    the exact split-brain window this design exists to close.
+
+    This mirrors what a real old pod does: its upsert (``INSERT ... (singleton,
+    worker_id, elected_at, last_seen_at) ... ON CONFLICT DO UPDATE SET`` naming
+    only those four columns, unconditionally once it holds the courtesy lock)
+    never mentions ``expires_at``, so the column is carried forward untouched
+    across the overwrite.
+    """
+    schema = module_pg_schema.schema_name
+    new_release_leader, old_release_leader, successor = new_uuid(), new_uuid(), new_uuid()
+    await _create_worker(lease_conn, schema, new_release_leader)
+    await _create_worker(lease_conn, schema, old_release_leader)
+    await _create_worker(lease_conn, schema, successor)
+
+    # A new-release pod wins the role and stamps a lease.
+    elected_at = await _elect(lease_conn, schema, new_release_leader)
+    assert elected_at is not None
+    stale_expiry = (await _leader_row(lease_conn, schema))["expires_at"]  # type: ignore[union-attr]
+
+    # The new-release leader is deposed by an old-release pod's unguarded,
+    # unconditional four-column upsert (the pre-lease shape: no WHERE clause,
+    # no expires_at in its SET list). This is the production old-release
+    # statement, reproduced verbatim rather than invoked, since the fix
+    # deleted that code path from this release.
+    await lease_conn.execute(
+        f'INSERT INTO "{schema}".maintenance_leader (singleton, worker_id, elected_at, last_seen_at) '
+        f"VALUES (true, $1, clock_timestamp(), clock_timestamp()) "
+        f"ON CONFLICT (singleton) DO UPDATE SET "
+        f"worker_id = EXCLUDED.worker_id, "
+        f"elected_at = EXCLUDED.elected_at, "
+        f"last_seen_at = EXCLUDED.last_seen_at",
+        old_release_leader,
+    )
+    row = await _leader_row(lease_conn, schema)
+    assert row is not None
+    assert row["worker_id"] == old_release_leader, "test setup: the old pod now holds the row"
+    assert row["expires_at"] == stale_expiry, (
+        "test setup: the old pod's upsert must carry the previous holder's "
+        "expires_at forward untouched -- that is the hazard being pinned"
+    )
+
+    # Let the leftover expires_at instant pass, while the old-release pod
+    # keeps pinging last_seen_at (it is alive; only its election protocol is
+    # stale). The old pod's own upsert did this to itself unconditionally
+    # once it won the courtesy lock, so backdating just fast-forwards past
+    # the borrowed expiry without touching the ping.
+    await lease_conn.execute(
+        f'UPDATE "{schema}".maintenance_leader SET '
+        f"expires_at = clock_timestamp() - interval '1 second' "
+        f'WHERE singleton = true',
+    )
+
+    took = await _elect(lease_conn, schema, successor)
+    assert took is None, (
+        "a new pod must not take over once the borrowed expires_at lapses while "
+        "the old-release holder's last_seen_at is still fresh -- doing so would "
+        "depose a LIVE leader the instant the stale expiry passed, which is "
+        "exactly the split-brain window D9 requires closed"
+    )
+    row = await _leader_row(lease_conn, schema)
+    assert row is not None and row["worker_id"] == old_release_leader

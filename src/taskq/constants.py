@@ -13,6 +13,10 @@ from uuid import UUID
 
 __all__ = [
     "BTREE_MAX_ITEM_BYTES",
+    "CANCEL_ORIGIN_ABANDONED",
+    "CANCEL_ORIGIN_COOPERATIVE",
+    "CANCEL_ORIGIN_FORCED",
+    "CANCEL_ORIGIN_PENDING",
     "DEFAULT_CHUNK_SIZE",
     "DEFAULT_EVENT_RETENTION_BATCH_SIZE",
     "DEFAULT_EVENT_RETENTION_PERIOD",
@@ -141,6 +145,51 @@ expiry instant never guarantees the slot is free anyway. Sub-second
 hints are additionally floored by ``MIN_DEFERRAL_INTERVAL`` downstream,
 so the margin's real work is on multi-second lease horizons where it is
 noise by design.
+"""
+
+CANCEL_ORIGIN_COOPERATIVE: Final[str] = "CancelledCooperatively"
+"""``error_class`` a phase-1 cancel's terminal write stamps.
+
+The actor was running, observed the cancel request while it was still
+being asked (``cancel_phase = 1``) and stopped — the worker's terminal
+write (``mark_cancelled``) is the one that moved the row.
+"""
+
+CANCEL_ORIGIN_FORCED: Final[str] = "CancelledForced"
+"""``error_class`` a phase-2 cancel's terminal write stamps.
+
+The actor did not yield to the request, the heartbeat loop escalated
+(``cancel_phase = 2``) and ``task.cancel()`` interrupted it — the actor
+had to be stopped, which is operationally distinct from a cooperative
+yield: this actor ignored a cancellation request and needs looking at.
+"""
+
+CANCEL_ORIGIN_ABANDONED: Final[str] = "CancelAbandoned"
+"""``error_class`` the abandon write (``mark_abandoned``) stamps.
+
+The actor did not yield within the cancellation graces, so the ladder
+took the row away from it. Operationally distinct from a cooperative
+cancel: this actor needs looking at.
+"""
+
+CANCEL_ORIGIN_PENDING: Final[str] = "CancelledBeforeStart"
+"""``error_class`` a cancel of a not-yet-running job stamps.
+
+The job never reached a worker, so no attempt exists to explain and no
+actor-level hook can have run for it. Covers the single-job request
+(``write_cancel_request``) and the bulk filter (``cancel_where``) alike —
+the same outcome must read the same way whichever path produced it.
+
+Why ``error_class`` rather than a new column or a ``job_status`` value:
+the three origins are one dimension of one terminal state, every terminal
+failure path already self-describes through this column
+(``DeadlineExceeded``, ``WorkerCrashed``, ``ActorDeregistered``), and the
+admin UI, ``taskq doctor`` and the archive all read it already. A status
+enum change would break every consumer of the eight-value union for a
+distinction that is not a different state. Vendor precedent records the
+cancel durably on the row the same way — River stamps
+``cancel_attempted_at`` (a row whose cancel timestamp is set is
+cancelled, never re-available), Oban stamps ``cancelled_at``.
 """
 
 MIN_DEFERRAL_INTERVAL: Final[timedelta] = timedelta(seconds=1)
@@ -441,6 +490,25 @@ into this bound before reconstructing a policy.
 """
 
 
+def _check_is_int(value: object, what: str) -> None:
+    """Refuse a non-integer before any range comparison runs.
+
+    The range guards below are reached from ``EnqueueArgs``, a plain
+    dataclass with no runtime type enforcement — unlike ``RetryPolicy``,
+    where pydantic coerces first. Without this, ``None`` raises a bare
+    ``TypeError`` from the ``<`` comparison naming neither the field nor
+    the expected type, and a float passes every range check and is stored
+    for the driver to reject later. Both are the untyped-refusal shape the
+    typed errors here exist to prevent.
+
+    ``bool`` is excluded deliberately: it is an ``int`` subclass, so
+    ``True`` would otherwise satisfy a ``>= 1`` bound and silently mean
+    one attempt.
+    """
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"{what} must be an int, got {type(value).__name__}")
+
+
 def check_priority_domain(value: int, *, what: str = "priority") -> None:
     """Refuse a ``priority`` outside the ``smallint`` column's domain.
 
@@ -451,6 +519,7 @@ def check_priority_domain(value: int, *, what: str = "priority") -> None:
     at the argument to fix rather than at a column in a driver
     traceback.
     """
+    _check_is_int(value, what)
     if value < SMALLINT_MIN or value > SMALLINT_MAX:
         raise ValueError(
             f"{what} must fit smallint range ({SMALLINT_MIN}..{SMALLINT_MAX}), got {value}"
@@ -465,6 +534,7 @@ def check_max_attempts_domain(value: int, *, what: str = "max_attempts") -> None
     stored. Above :data:`MAX_ENQUEUABLE_MAX_ATTEMPTS` the column has no
     headroom left to raise the ceiling on a reclaim.
     """
+    _check_is_int(value, what)
     if value < 1:
         raise ValueError(f"{what} must be >= 1, got {value}")
     if value > MAX_ENQUEUABLE_MAX_ATTEMPTS:

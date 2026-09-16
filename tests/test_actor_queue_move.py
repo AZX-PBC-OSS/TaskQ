@@ -831,6 +831,40 @@ def test_cli_move_queue_statement_timeout_uses_documented_exit_code(
     )
 
 
+def test_cli_move_queue_client_side_timeout_uses_documented_exit_code(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A CLIENT-side ``TimeoutError`` from a drain batch must also surface as
+    one of the command's documented exit codes, never as an unhandled
+    traceback.
+
+    The server-side ``QueryCanceledError`` sibling of this abort is caught
+    at the CLI boundary and translated to exit 2. ``TimeoutError`` is the
+    other half of the same "deadline family": the batch helper's own
+    sibling loops (``worker/_leader_shared.py``'s bounded sweep batches)
+    catch ``(asyncpg.QueryCanceledError, TimeoutError)`` together as one
+    abort class, because a client-side deadline (a dropped connection, an
+    event-loop-level cancellation) is exactly as reachable mid-drain as a
+    server-side statement cancellation. If the CLI only catches the
+    server-side half, an operator hitting the client-side half still gets
+    an unreadable raw traceback and exit code 1 on the exact same bounded,
+    re-runnable drain the server-side catch was added to make safe.
+    """
+    _patch_move(monkeypatch, exc=TimeoutError("client-side deadline exceeded"))
+
+    result = runner.invoke(app, ["actor-config", "move-queue", _ACTOR, _NEW_QUEUE])
+
+    assert result.exit_code in (0, 2, 3), (
+        f"move-queue must exit with one of its documented codes (0, 2, 3) on a "
+        f"client-side TimeoutError, not escape uncaught; got exit_code="
+        f"{result.exit_code!r} exception={result.exception!r}"
+    )
+    assert not isinstance(result.exception, TimeoutError), (
+        "TimeoutError from a drain-batch client-side deadline escaped the CLI "
+        "uncaught instead of being translated to a documented exit code"
+    )
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # CLI tier: `taskq queue migrate ACTOR --to QUEUE`
 # ═══════════════════════════════════════════════════════════════════════════════

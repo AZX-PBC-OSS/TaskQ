@@ -54,6 +54,7 @@ from taskq.obs import (  # pyright: ignore[reportPrivateUsage]  # Why: the sweep
     get_logger,
     get_meter,
     record_election_attempt,
+    record_leader_lease_expires_in_seconds,
     record_lock_contention,
     record_sweep_success,
     record_sweep_timeout,
@@ -332,6 +333,10 @@ class MaintenanceLeader:
         # after an ordinary failover, and its frozen sweep_last_success
         # series pages promotion-stalled while the new leader promotes fine.
         _otel.clear_sweep_health_caches()
+        # Same authority loss for the lease-TTL gauge: the stamp claims a
+        # lease this process no longer holds, and a frozen one masks the
+        # failover the gauge exists to make visible.
+        _otel.clear_leader_lease_expires_in_seconds()
 
     async def _close_leader_owned_conns(self, *, mid_run: bool = True) -> None:
         """Demote, then close the leader-owned dedicated conns, bounded.
@@ -838,6 +843,12 @@ class MaintenanceLeader:
         # its way is a fresh transition, not a continuation.
         self._observed_holder = None
         record_election_attempt(str(self._worker_id), won=True)
+        # The lease gauge's elect arm: the server just stamped
+        # expires_at = now + leader_lease, so the TTL as of this win is the
+        # full lease. Mirror-armed on every successful renewal below.
+        record_leader_lease_expires_in_seconds(
+            str(self._worker_id), self._deps.settings.resolved_leader_lease
+        )
         log.info(
             "leader-elected",
             kind="leader_elected",
@@ -886,6 +897,12 @@ class MaintenanceLeader:
             return False
         self._deps.leader_term = renewed
         guard.ok()
+        # The renewal re-stamped expires_at = now + leader_lease on the
+        # server; the gauge's renew arm keeps the series moving so a
+        # leader that stops renewing is visible as a stale/absent series.
+        record_leader_lease_expires_in_seconds(
+            str(self._worker_id), self._deps.settings.resolved_leader_lease
+        )
         log.debug(
             "leader-lease-renewed",
             kind="leader_lease_renewed",

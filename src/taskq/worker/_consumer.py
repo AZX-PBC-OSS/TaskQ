@@ -87,6 +87,7 @@ from taskq.ratelimit.sliding_window import SlidingWindow
 from taskq.ratelimit.token_bucket import TokenBucket
 from taskq.retry import (
     ActorConfigLike,
+    invoke_on_cancel,
     invoke_on_success,
 )
 from taskq.settings import WorkerSettings
@@ -791,6 +792,17 @@ async def consume_one_job(
             # would each report a move the row never made.
             if cancel_landed:
                 log_state_change(ctx.log, from_state="running", to_state="cancelled")
+                # Best-effort, bounded, and deliberately after the write:
+                # a hook that hangs or raises must not be able to leave the
+                # row 'running' behind a lease only the sweep clears. Fires
+                # only here — a job cancelled before it ever ran never
+                # enters a worker, so no hook can run for it.
+                await invoke_on_cancel(
+                    actor_config.on_cancel,
+                    job,
+                    actor_config.on_cancel_timeout,
+                    log=job_log,
+                )
                 if _effective_redis is not None and _effective_settings is not None:
                     await _publish_state_change_event(
                         _effective_redis,

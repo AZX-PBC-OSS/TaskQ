@@ -169,16 +169,24 @@ three times (which status to write, whether to reschedule, whether to
 stamp a finish), and three hand-maintained copies is how the
 ``indefinite`` kind came to match none of them."""
 
-# The exponent clamp mirrors taskq.retry.compute_backoff's
-# _MAX_BACKOFF_EXPONENT exactly (see that module's comment for the
-# derivation: 2.0 ** 1023 is the largest power of two a float holds, and
-# already dwarfs every practical cap, so clamping the exponent cannot
-# change the curve). Postgres' `^` on double precision does not raise on
-# overflow the way Python's int ** would — it saturates at the domain's
-# Infinity — but the clamp keeps the SQL expression a literal mirror of
-# the Python one rather than relying on that IEEE-754 behaviour to agree
-# across two implementations.
-_RECLAIM_BACKOFF_MAX_EXPONENT_SQL = "1023"
+# The exponent clamp mirrors taskq.retry's _MAX_BACKOFF_EXPONENT exactly
+# (that module's comment carries the full derivation).  In short: 67 is
+# the smallest bound that cannot change any timedelta-representable curve
+# — the smallest positive base is 1e-6 s (timedelta resolution) and the
+# largest representable cap is ~8.6e13 s (999999999 days), so every
+# representable (base, cap) pair saturates by exponent 66 at the latest
+# (1e-6 * 2**67 >= 1.4e14 >= 8.6e13), and the outer LEAST against the
+# effective cap decides identically with or without the clamp — AND that
+# cannot overflow: Postgres RAISES "value out of range: overflow"
+# (SQLSTATE 22003) when the float8 multiply ``base * power(2.0, e)``
+# exceeds ~1.8e308 — it does NOT saturate to Infinity the way Python's
+# float arithmetic does — so the historical clamp at power()'s own domain
+# ceiling (1023) still let the multiply raise for any base > ~2 once the
+# attempt passed ~1021: a non-transient data error escaping into the
+# leader sweep's failure path, on a corner the Python twin answered with
+# the cap.  base * 2**67 <= ~1.3e34 for any timedelta-representable base,
+# ~274 orders of magnitude below the float8 ceiling.
+_RECLAIM_BACKOFF_MAX_EXPONENT_SQL = "67"
 
 # The effective ceiling every clamp in the curve reads: the lesser of the
 # row's stamped cap and the operator's global ``max_retry_backoff`` — the
@@ -218,16 +226,53 @@ from the row's own stamped policy columns rather than a live
 ``RetryPolicy`` object — see the migration's comment for why the columns
 exist."""
 
+# Why a hash, not random(): one row's reclaim delay is computed by more
+# than one statement — the leader's sweep below and a partitioned worker's
+# isolate_self (worker/heartbeat.py's _ISOLATE_JOB_SQL_TEMPLATE embeds the
+# same {reclaim_delay} fragment) can each transition the same row within
+# one outage window — and by the in-memory twin a third time.  A
+# per-statement random() makes those paths disagree about the same row's
+# hand-back instant (the test_property_sweep_equivalence flake class: two
+# draws, one fixed comparison window) and makes a replayed sweep stamp a
+# different instant than the first pass.  Deriving the draw from the row's
+# own (id, attempt) makes every path stamp the SAME delay, so a reclaim
+# replay is idempotent per row — strictly more robust than a fresh draw.
+# The fleet spread random() bought is preserved: distinct ids hash to
+# distinct fractions, so a mass-expired cohort still arrives spread across
+# the jitter band instead of at one synchronised point.  (River and Oban
+# spread reclaims with a random draw per evaluation — vendor/river's
+# retrySeconds adds rand.Float64()*0.2-0.1, vendor/oban's Backoff.jitter
+# draws :rand.uniform() — which they can do because exactly one process
+# ever computes a given row's retry delay; the deviation here is the
+# dual-statement, dual-implementation parity requirement, not a different
+# spreading goal.)
+#
+# The formula is byte-identical to taskq.retry._reclaim_jitter_fraction:
+# md5 of '<job_id>:<attempt>' as ASCII text (j.id::text is the lowercase
+# dashed uuid form Python's str() produces, j.attempt::text the plain
+# decimal — both pure ASCII, so the database encoding cannot change the
+# hashed bytes), the first 8 hex digits read as a uint32 (the 'x'-prefixed
+# bit(32) cast keeps the value non-negative through ::bigint), divided by
+# 2**32 in float8.  Both sides run the same correctly-rounded IEEE-754
+# operations, so the fractions — and the delays built on them below —
+# agree bit for bit (pinned by tests/test_reclaim_backoff_policy_parity.py).
+_RECLAIM_JITTER_FRACTION_SQL = (
+    "(('x' || substr(md5(j.id::text || ':' || j.attempt::text), 1, 8))"
+    "::bit(32)::bigint::float8 / 4294967296.0::float8)"
+)
+"""The reclaim jitter fraction in [0, 1): deterministic per (job, attempt),
+identical in this database and in ``taskq.retry._reclaim_jitter_fraction``."""
+
 _RECLAIM_DELAY_SQL = (
     f"(LEAST({_RECLAIM_EFFECTIVE_CAP_SQL}, {_RECLAIM_RAW_BACKOFF_SQL} "
-    "* (1.0 + j.retry_jitter * (2.0 * random() - 1.0)))) * interval '1 second'"
+    f"* (1.0 + j.retry_jitter * (2.0 * {_RECLAIM_JITTER_FRACTION_SQL} - 1.0)))) * interval '1 second'"
 )
 """How far out a reclaimed job is rescheduled — the job's own
 ``RetryPolicy`` curve (base, cap, backoff kind, jitter), stamped on the
-row at enqueue time, evaluated exactly as
-:func:`taskq.retry.compute_backoff` would for this attempt, including its
-ceiling: the lesser of the row's stamped cap and the operator's
-``max_retry_backoff``, bound per statement through the
+row at enqueue time, evaluated exactly as the reclaim curve twin
+:func:`taskq.retry._compute_reclaim_backoff` would for this attempt,
+including its ceiling: the lesser of the row's stamped cap and the
+operator's ``max_retry_backoff``, bound per statement through the
 ``{max_backoff_seconds}`` placeholder.
 
 A fleet-wide event — a node drain, a zone loss, an OOM sweep across a
@@ -236,8 +281,10 @@ cohort back.  A flat delay would stamp every row with the same instant,
 so the entire backlog would become due together and land on the
 still-recovering fleet as one synchronised wave.  The multiplicative-
 symmetric jitter here is the same spreading mechanism the failure
-backoff applies, evaluated per row (``random()`` is VOLATILE), so the
-cohort arrives spread across a band instead of at a point."""
+backoff applies, evaluated per row from the row's own deterministic
+fraction (see ``_RECLAIM_JITTER_FRACTION_SQL``: same row, same delay on
+every path — sweep, isolate, replay, mirror), so the cohort arrives
+spread across a band instead of at a point."""
 
 
 _SWEEP_1_BODY = """\
@@ -253,7 +300,7 @@ _SWEEP_1_BODY = """\
 --   holder has been silent past it (last_heartbeat_at + heartbeat_timeout
 --   < now) while the lease is STILL valid. The lease is the per-worker
 --   global; heartbeat_timeout is the per-job promise, and the shorter of
---   the two deadlines governs (#117: the parameter was plumbed end to end
+--   the two deadlines governs (the parameter was plumbed end to end
 --   and read by nothing — a safety knob that silently no-ops). The
 --   heartbeat loop refreshes last_heartbeat_at for every running job it
 --   holds, so job-level heartbeat silence IS holder silence; a live
@@ -324,9 +371,9 @@ _SWEEP_1_BODY = """\
 -- RECLAIMED batch in the attempt INSERT, not per candidate row.
 --
 -- Bounded batch: each arm's snap carries its own LIMIT $3, so one call
--- transitions at most 2 x batch_size rows (a constant bound — the #120
--- doctrine's requirement is that no statement is unbounded, not that
--- every bound be the same number) and the transaction (and the FOR
+-- transitions at most 2 x batch_size rows (a constant bound — the bounded-
+-- writes doctrine's requirement is that no statement is unbounded, not
+-- that every bound be the same number) and the transaction (and the FOR
 -- UPDATE row locks it holds) spans a constant number of statements for
 -- a constant number of rows; the caller's loop drains the remainder one
 -- committed batch at a time, and the disjoint arms mean no row is
@@ -788,7 +835,13 @@ SELECT a.job_id, a.attempt,
        a.duration_ms, holder.id, '{{}}'::jsonb
 FROM unnest($1::uuid[], $2::smallint[], $3::timestamptz[], $4::uuid[], $5::int[], $6::text[])
     WITH ORDINALITY AS a(job_id, attempt, started_at, worker_id, duration_ms, error_message, ord)
-LEFT JOIN holder ON holder.id = a.worker_id"""
+LEFT JOIN holder ON holder.id = a.worker_id
+-- Same doctrine as sweep 2's deadline insert below: an attempt number
+-- can already have its row (a claim-clamped repeat at the smallint
+-- ceiling; a spent attempt left behind by a re-pend), and the truthful
+-- first record yields to nothing — the synthetic crash row must skip
+-- rather than roll back every sibling swept in the same statement.
+ON CONFLICT (job_id, attempt) DO NOTHING"""
 
 #: The per-arm attempt-row error messages, keyed by the sweep's own
 #: reclaim_reason literals ('lock_expired' / 'heartbeat_timeout' — the

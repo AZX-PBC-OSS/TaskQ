@@ -19,7 +19,7 @@ import asyncio
 import contextlib
 import importlib.util
 import math
-from collections.abc import Callable, Coroutine, Mapping
+from collections.abc import Awaitable, Callable, Coroutine, Mapping
 from datetime import datetime, timedelta
 from typing import Any, cast
 
@@ -41,6 +41,7 @@ from taskq.client._enqueuer import SubJobEnqueuer
 from taskq.connections import (
     PoolFactory,
     WorkerConnections,
+    connection_init_hook,
     statement_cache_kwargs,
 )
 from taskq.constants import (
@@ -243,6 +244,7 @@ def _slot_pool_factory(
     settings: WorkerSettings,
     pg_credential_provider: PgCredentialProvider | None,
     session_settings: Mapping[str, str] | None = None,
+    init: Callable[[asyncpg.Connection], Awaitable[None]] | None = None,
 ) -> PoolFactory:
     """Build the factory for the worker's per-slot transaction pool.
 
@@ -276,6 +278,17 @@ def _slot_pool_factory(
     and the factory is what a SIGHUP credential rebuild re-invokes, so a
     mutation applied to one pool instance is silently lost on the next
     rotation.
+
+    *init* is the per-connection hook the LOOP-scope connection's
+    registration declared (see
+    :func:`taskq.connections.with_connection_init`), forwarded verbatim
+    to ``asyncpg.create_pool`` / :func:`~taskq.auth.make_pg_pool_factory`
+    so it runs once per physical slot connection — the channel type
+    codecs reach slot connections through. It is build-time state for
+    the same two reasons as *session_settings*, with one more of its
+    own: a codec applied after the build reaches only lazily opened
+    connections, so warm and cold connections would decode the same
+    type DIFFERENTLY within one pool.
     """
     direct = str(settings.resolved_pg_dsn_direct)
     size = settings.max_concurrency + 1
@@ -291,7 +304,7 @@ def _slot_pool_factory(
     # to inherit builds exactly the pool it always built.
     inherited = dict(session_settings) if session_settings else None
     if pg_credential_provider is not None:
-        if inherited is None:
+        if inherited is None and init is None:
             return make_pg_pool_factory(
                 direct,
                 pg_credential_provider,
@@ -302,6 +315,9 @@ def _slot_pool_factory(
                 statement_cache_size=stmt_kwargs["statement_cache_size"],
                 max_cached_statement_lifetime=stmt_kwargs["max_cached_statement_lifetime"],
             )
+        # Explicit kwargs, never splatted (pyright traces the types
+        # through); make_pg_pool_factory treats a None hook as absent, so
+        # inheriting only one of the pair needs no third call site.
         return make_pg_pool_factory(
             direct,
             pg_credential_provider,
@@ -312,6 +328,7 @@ def _slot_pool_factory(
             statement_cache_size=stmt_kwargs["statement_cache_size"],
             max_cached_statement_lifetime=stmt_kwargs["max_cached_statement_lifetime"],
             server_settings=inherited,
+            init=init,
         )
 
     async def _dsn_slot_pool_factory() -> asyncpg.Pool:
@@ -324,6 +341,7 @@ def _slot_pool_factory(
             statement_cache_size=stmt_kwargs["statement_cache_size"],
             max_cached_statement_lifetime=stmt_kwargs["max_cached_statement_lifetime"],
             server_settings=inherited,
+            init=init,  # pyright: ignore[reportArgumentType]  # Why: asyncpg-stubs types init as CoroutineType-returning (_InitCallback); the codebase-wide hook contract (make_pg_pool_factory, with_connection_init) is Awaitable-returning, and asyncpg awaits the result either way at runtime.
         )
         assert pool is not None
         return pool
@@ -411,6 +429,30 @@ async def _registered_session_state(
     return state
 
 
+def _registered_connection_init_hook(
+    di_registry: ProviderRegistry | None,
+) -> Callable[[asyncpg.Connection], Awaitable[None]] | None:
+    """The init hook the LOOP-scope connection registration declares, if any.
+
+    Session state is read back off the live connection (see
+    :func:`_registered_session_state`), but a type codec or an init hook
+    cannot be: the driver seals per-connection state the moment
+    ``connect()`` returns. The only registrations whose per-connection
+    setup is recoverable are FACTORY registrations whose factory declares
+    its hook — :func:`taskq.connections.with_connection_init`, or
+    :func:`taskq.auth.make_dedicated_conn_factory` with a ``setup``. A
+    value registration (an already-built connection) and a factory that
+    declares nothing are equally opaque here; the caller warns on both
+    rather than letting a codec diverge silently at max_concurrency > 1.
+    """
+    if di_registry is None or not di_registry.has_provider(asyncpg.Connection):
+        return None
+    entry = di_registry.get(asyncpg.Connection)
+    if entry.kind != "factory":
+        return None
+    return connection_init_hook(entry.impl)
+
+
 async def _maybe_open_slot_pool(
     loop_scope: LoopScope,
     settings: WorkerSettings,
@@ -419,6 +461,7 @@ async def _maybe_open_slot_pool(
     factory: PoolFactory,
     pg_credential_provider: PgCredentialProvider | None,
     caller_supplied_pg_pools: bool,
+    di_registry: ProviderRegistry | None = None,
     log: structlog.stdlib.BoundLogger,
 ) -> bool:
     """Open the per-slot transaction pool when the per-slot path activates.
@@ -448,7 +491,19 @@ async def _maybe_open_slot_pool(
     warms at build time already resolves unqualified names and RLS
     policies the way the application configured them. Applying the state
     to a pool already built would leave the warm connections carrying
-    the server's defaults instead.
+    the server's defaults instead. Alongside the session state, an init
+    hook DECLARED on the registration's factory (see
+    :func:`_registered_connection_init_hook`) is threaded into the
+    rebuild, so a codec the application installs per-connection decodes
+    identically on every slot connection.
+
+    What cannot be carried is said, not dropped: when the registration
+    exposes no init hook (a raw ``register_value`` connection, or a
+    factory that declares none), per-connection setup applied to the
+    registered connection — ``set_type_codec`` registrations above all —
+    is absent on every slot connection with no error raised anywhere
+    else. One boot-time warning names that boundary and the supported
+    channel, so the divergence can never be silent.
 
     Also announces the mode (info), because the retired warning string
     is what runbooks searched for and the mode must stay confirmable
@@ -470,10 +525,16 @@ async def _maybe_open_slot_pool(
     # opened by the build, so session state applied afterwards would reach
     # only connections re-established lazily inside acquire(). The factory
     # is rebuilt with the state rather than mutated, so the pool a SIGHUP
-    # credential rotation rebuilds carries it too.
+    # credential rotation rebuilds carries it too. Same argument, one
+    # notch sharper, for the init hook: a codec applied after the build
+    # would leave warm and cold connections decoding the same type
+    # differently within one pool.
     session_state = await _registered_session_state(registered, settings, log)
-    if session_state:
-        factory = _slot_pool_factory(settings, pg_credential_provider, session_state)
+    inherited_init = _registered_connection_init_hook(di_registry)
+    if session_state or inherited_init is not None:
+        factory = _slot_pool_factory(
+            settings, pg_credential_provider, session_state, init=inherited_init
+        )
 
     try:
         pool = await asyncio.wait_for(factory(), timeout=settings.reload_factory_timeout)
@@ -487,19 +548,40 @@ async def _maybe_open_slot_pool(
             "credentials."
         ) from exc
 
-    if session_state:
+    if session_state or inherited_init is not None:
         log.info(
             "slot_pool_inherits_registered_session",
             kind="slot_pool_inherits_registered_session",
             server_settings=sorted(session_state),
+            init_hook=inherited_init is not None,
             note=(
                 "the per-slot transaction pool opens its connections with the "
-                "session state read off the registered connection, so an actor's "
-                "unqualified table references and its role resolve the same way "
-                "at every concurrency. Type codecs registered on the live "
-                "registered connection cannot be carried across: register them "
-                "through the connection's own class or an init hook so every "
-                "connection the application uses gets them."
+                "session state read off the registered connection (and, when "
+                "init_hook is true, the init hook the registration's factory "
+                "declared), so an actor's unqualified table references, its "
+                "role, and its per-connection type codecs resolve the same way "
+                "at every concurrency."
+            ),
+        )
+    if inherited_init is None:
+        log.warning(
+            "slot_pool_registered_setup_not_inherited",
+            kind="slot_pool_registered_setup_not_inherited",
+            note=(
+                "type codecs or init hooks applied directly to the "
+                "LOOP-registered connection (set_type_codec, or setup run "
+                "after connect) live in the driver's per-connection state, "
+                "which cannot be read back — the per-slot connections do NOT "
+                "have them, and a query relying on one still succeeds while "
+                "returning the driver's default representation, silently "
+                "diverging above max_concurrency 1. Register the connection "
+                "through a factory that declares its init hook — "
+                "taskq.connections.with_connection_init(...), or "
+                "taskq.auth.make_dedicated_conn_factory(..., setup=...) — and "
+                "the worker replays the hook on every slot connection. "
+                "Session state (search_path, role) is read back and inherited "
+                "either way; this warning covers per-connection codecs and "
+                "hooks only."
             ),
         )
 
@@ -511,6 +593,11 @@ async def _maybe_open_slot_pool(
 
     stack.push_async_callback(_close_slot_pool)
     deps.slot_pool = pool
+    # Why record the carried hook on deps: the pool's warm connections got
+    # inherited_init at connect time (the factory's init=), and dispatch must
+    # never re-apply it — exactly once per physical connection. asyncpg pools
+    # are __slots__-sealed, so the disposition lives on deps next to the pool.
+    deps.slot_pool_connection_init = inherited_init
     deps.slot_pool_factory = factory if pg_credential_provider is not None else None
     set_slot_pool_occupancy_source(pool)
     log.info(
@@ -1301,6 +1388,7 @@ async def _main(
             factory=_slot_pool_factory(settings, pg_credential_provider),
             pg_credential_provider=pg_credential_provider,
             caller_supplied_pg_pools=_caller_supplied_pg_pools(connections),
+            di_registry=registry,
             log=_startup_log,
         )
 

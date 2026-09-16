@@ -608,3 +608,70 @@ async def test_a_pinging_holder_without_a_lease_is_not_taken_over(
     finally:
         await conn.close()
         await ping_conn.close()
+
+
+# ── Red-team: a sustained empty-row gap must not look like a single blip ──
+
+
+async def test_sustained_empty_row_records_contention_every_cycle_not_once(
+    module_pg_schema: ModulePgSchema,
+    election_metrics: InMemoryMetricReader,
+) -> None:
+    """A row that stays genuinely absent across several lost cycles must
+    keep recording contention every cycle, not settle to a single event.
+
+    ``_record_lost_election``'s own docstring claims a lost election with
+    no row to observe at all "is a handover in flight, a transition too,
+    and is recorded once the same way" as a holder transition. But the
+    guard is ``observed is None or observed != self._observed_holder``:
+    when the row is absent, ``observed`` is ``None`` on EVERY call, so the
+    ``observed is None`` short-circuit fires unconditionally regardless of
+    what ``self._observed_holder`` was last cycle (also ``None``, once the
+    first absent-row event has run) — this is the opposite of "recorded
+    once": an absent row records EVERY cycle for as long as it stays
+    absent, indistinguishable from a probe that cannot read the row at
+    all (the runbook's other legitimate sustained-contention shape). That
+    happens to be safe for the "cannot read the row" case the runbook
+    describes, but it falsifies the docstring's "recorded once" claim for
+    an ordinary empty-row gap during a clean handover, and this test pins
+    the actual (repeats-every-cycle) behaviour so a future reader does not
+    trust the comment over the code.
+    """
+    from taskq.testing.otel import counter_data_points
+
+    pg_dsn = module_pg_schema.pg_dsn
+    schema = module_pg_schema.schema_name
+    lock_name = schema_lock_name("maintenance_leader", schema)
+
+    ledger = _FactoryLedger(pg_dsn)
+    worker_id = new_uuid()
+    await _register_worker(pg_dsn, schema, worker_id)
+    follower = _election_leader(pg_dsn, schema, ledger, worker_id)
+
+    def _contention_value() -> int:
+        points = [
+            dp
+            for dp in counter_data_points(election_metrics, _CONTENTION_METRIC)
+            if dp.attributes == {"lock": lock_name}
+        ]
+        return int(points[0].value) if points else 0
+
+    try:
+        # No leader row exists at all -- module fixture's autouse cleanup
+        # already guarantees the table is empty for this test.
+        follower._deps.leader_conn = await ledger.open()  # pyright: ignore[reportPrivateUsage]  # Why: driving _record_lost_election directly needs a live conn.
+
+        for _ in range(5):
+            await follower._record_lost_election()  # pyright: ignore[reportPrivateUsage]  # Why: the loop's own per-cycle call, driven directly so the row can be held empty across repeated calls without a second candidate racing to win it.
+
+        assert _contention_value() == 5, (
+            "an absent row recorded contention on every one of 5 calls "
+            f"(got {_contention_value()}), not once as the docstring on "
+            "_record_lost_election claims ('is recorded once the same "
+            "way') -- a sustained clean-handover gap where nobody has "
+            "re-elected yet looks identical to a probe that cannot read "
+            "the row at all, which inflates the same series the "
+            "transition-gating fix was written to keep quiet"
+        )
+    finally:
+        await ledger.close_all()

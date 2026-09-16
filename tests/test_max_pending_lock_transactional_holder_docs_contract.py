@@ -1,4 +1,4 @@
-"""Red-team #195: docs must disclose that a caller-owned transaction holds
+"""Docs must disclose that a caller-owned transaction holds
 the `max_pending` advisory lock for its WHOLE lifetime, not just "the
 duration of a contended enqueue".
 
@@ -22,29 +22,12 @@ even when nowhere near the cap
 (`tests/test_rt_locks_actor_tx_enqueue_serialization.py` pins that
 runtime mechanism directly against Postgres).
 
-`docs/guides/jobs-clients.md`'s operational note
-(around line 229) currently reads:
-
-    Operational note: the lock exists only for capped actors on the
-    single-enqueue path, is keyed
-    `taskq:max_pending:<schema>:<actor>` (hashed via
-    `hashtextextended`), and is transaction-scoped — it shows in
-    `pg_locks` only for the duration of a contended enqueue. Actors
-    without `max_pending` never touch it.
-
-That last clause ("only for the duration of a contended enqueue") is
-demonstrably wrong when the enqueue runs on a caller-supplied,
-already-open connection: the lock's true duration is the caller's
-transaction lifetime, which for a transactional actor sub-enqueueing via
-`ctx.jobs` is unbounded by default. The `MaxPendingLockTimeoutError`
-error-table row (around line 1442) attributes every such timeout to "too
-many concurrent producers" and never mentions a single long-running
-transactional holder as a cause.
-
-This is a RED test: it asserts the corrected disclosure is present in
-the docs. It fails today because no such disclosure exists yet — it
-will start passing only once the docs are corrected (issue #195's
-"document it" remedy), at which point it becomes a regression pin.
+The pins below hold `docs/guides/jobs-clients.md` to that mechanism: the
+operational note must qualify "only for the duration of a contended
+enqueue" with the caller-owned-transaction case, and the
+`MaxPendingLockTimeoutError` error-table row must name a single
+long-running transactional holder as a cause rather than attributing
+every such timeout to "too many concurrent producers".
 """
 
 from __future__ import annotations
@@ -91,7 +74,9 @@ def test_max_pending_lock_timeout_error_table_names_transactional_holder_cause()
     via ctx.jobs) is a distinct, currently-undocumented cause."""
     text = (_DOCS / "guides" / "jobs-clients.md").read_text()
     marker = "| `MaxPendingLockTimeoutError` |"
-    assert marker in text, "the MaxPendingLockTimeoutError error-table row has moved or been removed"
+    assert marker in text, (
+        "the MaxPendingLockTimeoutError error-table row has moved or been removed"
+    )
     row = text[text.index(marker) : text.index(marker) + 800]
 
     assert "too many concurrent producers, cap check never ran." not in row, (

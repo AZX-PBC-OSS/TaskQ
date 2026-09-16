@@ -303,6 +303,19 @@ class WorkerDeps:
     probe can never coalesce another worker's readiness request (two
     workers can share a process) and never outlive this deps object's
     event loop."""
+    slot_pool_connection_init: Callable[[asyncpg.Connection], Awaitable[None]] | None = None
+    """The per-connection init hook the CURRENT ``slot_pool``'s connections
+    already carry from connect time — the registration-declared hook
+    :func:`taskq.worker._bootstrap._maybe_open_slot_pool` threads into the
+    pool factory's ``init=``. Recorded here (not on the pool: asyncpg pools
+    are ``__slots__``-sealed) so the dispatch path never re-applies it —
+    the hook must run exactly once per physical connection. ``None`` means
+    the pool's connections are NOT guaranteed to carry the registration's
+    declared hook: either none was declared, or the pool was not opened by
+    bootstrap (an injected/foreign pool), which is the shape dispatch
+    repairs by applying the hook itself. Reload-safe: a credential reload
+    rebuilds the pool through the same init-carrying factory, so the
+    disposition survives the swap."""
     redis_client_factory: RedisFactory | None = None
     """Resolved factory that rebuilds ``redis_client`` on
     :func:`reload_credentials`. ``None`` when the client is caller-owned or

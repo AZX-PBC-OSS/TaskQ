@@ -920,3 +920,148 @@ def test_scrub_text_prefilter_disabled_redaction_still_skips_detail_regexes(
         assert redact_mod._scrub_text(text) == text
     finally:
         redact_mod.set_exception_redaction_enabled(True)
+
+
+def test_libpq_password_inside_an_exception_group_stacktrace_is_masked() -> None:
+    """The password-family masks run on the whole rendered stacktrace, same as
+    the DETAIL masks -- a libpq ``password=`` shape sitting in a sub-exception's
+    message inside an ``ExceptionGroup`` must not survive the ``| ``-prefixed
+    rendering ``traceback.format_exception`` gives group members, even though
+    (unlike the DETAIL regex) the credential regexes are not line-anchored and
+    so do not need a matching prefix carve-out."""
+    try:
+        try:
+            raise RuntimeError("conn failed: host=db user=app password=hunter2")
+        except RuntimeError as inner:
+            raise ExceptionGroup("group", [inner]) from None
+    except ExceptionGroup as group:
+        span = _RecordingSpan()
+        record_exception_safe(span, group)  # type: ignore[arg-type]  # Why: structural stand-in for opentelemetry Span.
+
+    _, attrs = span.events[0]
+    trace = attrs["exception.stacktrace"]
+    assert "hunter2" not in trace
+    assert "password=***" in trace
+    assert "ExceptionGroup" in trace
+
+
+def test_uri_query_param_password_inside_a_nested_exception_group_is_masked() -> None:
+    """Same as above, one nesting level deeper (doubled ``| `` prefix), for the
+    URI query-param spelling rather than the libpq keyword/value spelling."""
+    try:
+        try:
+            try:
+                raise RuntimeError("postgresql://db/jobs?PASSWORD=hunter2")
+            except RuntimeError as inner:
+                raise ExceptionGroup("inner-group", [inner]) from None
+        except ExceptionGroup as inner_group:
+            raise ExceptionGroup("outer-group", [inner_group]) from None
+    except ExceptionGroup as outer_group:
+        span = _RecordingSpan()
+        record_exception_safe(span, outer_group)  # type: ignore[arg-type]  # Why: structural stand-in for opentelemetry Span.
+
+    _, attrs = span.events[0]
+    trace = attrs["exception.stacktrace"]
+    assert "hunter2" not in trace
+    assert "password=***" in trace.lower()
+
+
+def test_libpq_password_survives_through_chained_cause_and_implicit_context() -> None:
+    """A DSN password can appear on either link of a chained exception -- the
+    explicit ``raise ... from cause`` form and the implicit ``__context__``
+    TaskQ gets for free from a bare ``except``/``raise`` inside it -- and both
+    render into the same traceback text that reaches the span."""
+    # Explicit __cause__.
+    try:
+        try:
+            raise RuntimeError("host=db user=app password=hunter2")
+        except RuntimeError as inner:
+            raise RuntimeError("outer failure") from inner
+    except RuntimeError as outer:
+        span = _RecordingSpan()
+        record_exception_safe(span, outer)  # type: ignore[arg-type]  # Why: structural stand-in for opentelemetry Span.
+    _, attrs = span.events[0]
+    assert "hunter2" not in attrs["exception.stacktrace"]
+
+    # Implicit __context__ (no `from`).
+    try:
+        try:
+            raise RuntimeError("postgresql://db/jobs?sslpassword=hunter2")
+        except RuntimeError:
+            raise RuntimeError("outer failure, unrelated")
+    except RuntimeError as outer2:
+        span2 = _RecordingSpan()
+        record_exception_safe(span2, outer2)  # type: ignore[arg-type]  # Why: structural stand-in for opentelemetry Span.
+    _, attrs2 = span2.events[0]
+    assert "hunter2" not in attrs2["exception.stacktrace"]
+
+
+def test_repr_flattened_libpq_password_is_masked() -> None:
+    """``repr(exc)`` is a majority log idiom (``error=repr(exc)``) and does not
+    escape a credential shape the way it escapes a real newline -- the
+    password-family regexes are not newline-anchored like the DETAIL pair, so
+    they must bite directly on the repr text with no companion escaped-form
+    pattern needed. Pinning that here rather than assuming it from the DETAIL
+    behaviour, since the two mask families reach the text through different
+    mechanisms."""
+    from taskq.obs._redact_exc import _scrub_text
+
+    exc = Exception("host=db user=app password=hunter2")
+    scrubbed = _scrub_text(repr(exc))
+    assert "hunter2" not in scrubbed
+    assert "password=***" in scrubbed
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "postgresql://db/jobs?password=hun.ter2$",
+        "postgresql://db/jobs?password=a(b)c+d*e[f]",
+        "host=db user=app password=hun.ter2$",
+        "host=db user=app password=a(b)c+d*e[f]",
+    ],
+    ids=[
+        "query-param-regex-metachars",
+        "query-param-more-metachars",
+        "libpq-regex-metachars",
+        "libpq-more-metachars",
+    ],
+)
+def test_password_containing_regex_metacharacters_is_fully_masked(raw: str) -> None:
+    """The masked VALUE is matched by a character class, never re-interpreted
+    as a regex fragment -- a password that happens to contain characters with
+    regex meaning (``.``, ``$``, ``(``, ``)``, ``+``, ``*``, ``[``, ``]``) is
+    ordinary data to ``re.sub`` and must be masked whole, not partially matched
+    or used to corrupt the substitution."""
+    safe = safe_exception_message(Exception(raw))
+    assert "***" in safe
+    for fragment in ("hun.ter2$", "a(b)c+d*e[f]"):
+        assert fragment not in safe
+
+
+def test_url_encoded_password_value_is_masked_as_written() -> None:
+    """A percent-encoded password in a query string is masked as the literal
+    encoded token it is -- the redactor must not need to URL-decode first to
+    find the boundary, and the encoded form itself is exactly as sensitive as
+    the decoded one (it round-trips through any URL decoder downstream)."""
+    safe = safe_exception_message(Exception("postgresql://db/jobs?password=hun%40secret%3D"))
+    assert "hun%40secret%3D" not in safe
+    assert "password=***" in safe
+
+
+def test_libpq_password_at_end_of_string_with_no_trailing_delimiter_is_masked() -> None:
+    """The unquoted libpq value class stops at whitespace or ``&`` -- when the
+    secret is simply the last thing in the string, with no trailing delimiter
+    at all, the value must still be consumed to the true end of the string
+    rather than left dangling because no delimiter was found to stop at."""
+    safe = safe_exception_message(Exception("host=db port=5432 user=app password=hunter2"))
+    assert safe == "host=db port=5432 user=app password=***"
+
+
+def test_sslpassword_libpq_form_at_end_of_string_is_masked() -> None:
+    """Same end-of-string boundary, for the ``sslpassword`` keyword rather than
+    ``password`` -- the issue's third named spelling, in the shape most likely
+    to appear (the TLS key passphrase is typically the last keyword in a
+    hand-built conninfo string)."""
+    safe = safe_exception_message(Exception("host=db user=app sslpassword=hunter2"))
+    assert safe == "host=db user=app sslpassword=***"

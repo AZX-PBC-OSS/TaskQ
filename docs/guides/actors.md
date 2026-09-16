@@ -67,7 +67,25 @@ async def process_order(payload: OrderPayload) -> OrderResult: ...
 | `on_retry_exhausted_timeout` | `float` | `3.0` | Seconds allowed for `on_retry_exhausted` to complete before it is abandoned. |
 | `on_success` | `OnSuccess \| None` | `None` | Callback invoked when the job succeeds, after the transaction commits. Receives `(job_row, result)`. Mirrors `on_retry_exhausted` with a timeout guard — see [Retries — `on_success` hook](retries.md#on_success-hook). |
 | `on_success_timeout` | `float` | `3.0` | Seconds allowed for `on_success` to complete before it is abandoned. |
+| `on_cancel` | `OnCancel \| None` | `None` | Callback invoked when a running job ends `cancelled`, beside the terminal write. Receives `(job_row)` — a cancelled attempt produced no result. Best-effort and timeout-bounded like the hooks above — see [Job Cancellation — `on_cancel` hook](cancellation.md#11-the-on_cancel-hook). |
+| `on_cancel_timeout` | `float` | `3.0` | Seconds allowed for `on_cancel` to complete before it is abandoned. |
 | `priority` | `int` | `0` | Default dispatch priority for jobs enqueued without an explicit `priority=`. Must fit `smallint` range (-32768..32767). |
+
+!!! warning "`on_cancel` cannot fire for a job cancelled before it ran"
+    The hook runs on the worker that was executing the attempt. A job cancelled
+    while still `pending` or `scheduled` never reached a worker, so no hook of
+    any kind runs for it and none can: there is no attempt to clean up after.
+    Releasing whatever such a job had reserved *before* it was enqueued stays
+    with whoever issued the cancel. This matters because the cancel an operator
+    issues most often — on a job sitting in the queue — is exactly the one the
+    hook cannot see, so cleanup that must happen for every cancellation belongs
+    on the caller's side of the enqueue, not in `on_cancel`.
+
+    Tell the two apart on the row: a cancel that reached a running actor stamps
+    `error_class = 'CancelledCooperatively'` (or `'CancelledForced'` once the
+    escalation ladder had to interrupt it), one that never started stamps
+    `'CancelledBeforeStart'`, and an actor that had to be taken away after the
+    cancellation graces stamps `'CancelAbandoned'`.
 
 !!! danger "`max_concurrent`, `max_pending` and `result_ttl` are seed-only — changing the literal does nothing on an existing deployment"
     These three are **operator-owned once a row exists**. The startup UPSERT omits

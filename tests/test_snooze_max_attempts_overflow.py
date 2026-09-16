@@ -123,6 +123,78 @@ def test_enqueue_args_rejects_negative_max_attempts() -> None:
         )
 
 
+def test_enqueue_args_rejects_non_integer_max_attempts() -> None:
+    """``EnqueueArgs(max_attempts=3.5, ...)`` must be rejected, not stored.
+
+    ``check_max_attempts_domain`` (constants.py) only compares ``<`` and
+    ``>`` against the bound; it never checks ``isinstance(value, int)``.
+    A ``bool`` or ``float`` value compares fine against the smallint
+    bound and sails through silently, so ``EnqueueArgs`` accepts a
+    fractional attempt count. ``RetryPolicy`` — the client-facing
+    construction path — already rejects the same value via pydantic's
+    strict int coercion (``RetryPolicy(max_attempts=3.5)`` raises
+    ``ValidationError``), so this is a parity gap between the two
+    layers issue #164 was meant to close: ``EnqueueArgs`` is supposed to
+    be the one common boundary every enqueue path funnels through, and
+    it is currently laxer than the policy layer that feeds it.
+
+    "3.5 attempts" is nonsensical domain-wise the same way a negative
+    count is; Postgres will coerce or reject it in a way the in-memory
+    twin (which stores whatever Python object it is handed) will not
+    replicate, breaking backend parity for any downstream equality or
+    arithmetic against ``max_attempts``.
+    """
+    with pytest.raises((ValueError, ValidationError, TypeError)) as exc_info:
+        EnqueueArgs(
+            id=new_job_id(),
+            actor="foo",
+            queue="default",
+            payload={},
+            max_attempts=3.5,  # type: ignore[arg-type]
+            retry_kind="fixed",
+            scheduled_at=None,
+        )
+
+    assert not isinstance(exc_info.value, TypeError), (
+        "EnqueueArgs accepted max_attempts=3.5 outright (no exception at all "
+        "if this assertion is reached, the pytest.raises above would already "
+        "have failed) — a fractional attempt count must be refused with a "
+        "typed ValueError identifying the bad field, not silently stored."
+    )
+
+
+def test_enqueue_args_rejects_none_max_attempts_with_typed_error() -> None:
+    """``EnqueueArgs(max_attempts=None, ...)`` must raise a typed refusal,
+    not an untyped ``TypeError`` from the comparison inside the guard.
+
+    ``check_max_attempts_domain`` does ``if value < 1`` with no type
+    check first; handed ``None`` this raises
+    ``TypeError: '<' not supported between instances of 'NoneType' and
+    'int'`` — an implementation-detail exception a caller has no reason
+    to catch, not the "max_attempts must be >= 1" ``ValueError`` every
+    other bad value gets. A bare ``TypeError`` escaping the enqueue
+    boundary instead of a typed domain refusal is exactly the class of
+    failure issue #164 was about: an untyped exception a caller cannot
+    usefully handle, escaping in place of a deliberate refusal.
+    """
+    with pytest.raises(ValueError) as exc_info:
+        EnqueueArgs(
+            id=new_job_id(),
+            actor="foo",
+            queue="default",
+            payload={},
+            max_attempts=None,  # type: ignore[arg-type]
+            retry_kind="fixed",
+            scheduled_at=None,
+        )
+
+    assert not isinstance(exc_info.value, TypeError), (
+        "EnqueueArgs(max_attempts=None) raised a bare TypeError from the "
+        "unguarded '<' comparison inside check_max_attempts_domain instead "
+        "of a typed ValueError naming max_attempts as the bad field."
+    )
+
+
 def test_retry_policy_rejects_max_attempts_that_cannot_absorb_one_snooze() -> None:
     """A job enqueued at exactly 32767 has no defensive headroom left.
 

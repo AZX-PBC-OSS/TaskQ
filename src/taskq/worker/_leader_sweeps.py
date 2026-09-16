@@ -1611,7 +1611,6 @@ async def _stranded_jobs_loop(ctx: SweepContext, shutdown: asyncio.Event) -> Non
            ) AS unserved_queues
     FROM (
         SELECT r.actor,
-        SELECT r.actor,
                r.routing_queue,
                r.no_actor_config,
                NOT r.no_actor_config

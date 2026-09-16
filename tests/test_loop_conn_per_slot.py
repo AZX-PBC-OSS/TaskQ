@@ -23,6 +23,7 @@ handling and Postgres savepoint semantics.
 """
 
 import asyncio
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -329,6 +330,12 @@ async def test_sibling_failure_does_not_discard_pending_sub_jobs(
                 self.active_jobs = ActiveJobRegistry()
                 self.worker_pool: asyncpg.Pool | None = None
                 self.slot_pool: asyncpg.Pool | None = None
+                # Mirrors WorkerDeps.slot_pool_connection_init: None = the
+                # pool's connections are not known to carry the
+                # registration's declared init hook.
+                self.slot_pool_connection_init: (
+                    Callable[[asyncpg.Connection], Awaitable[None]] | None
+                ) = None
                 self.settings = WorkerSettings.load_from_dict(
                     {"TASKQ_PG_DSN": "postgresql://taskq:taskq@127.0.0.1:1/taskq"}
                 )

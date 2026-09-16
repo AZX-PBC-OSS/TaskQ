@@ -1,7 +1,4 @@
-"""Evidence pins for two code-level observability defects surfaced while
-auditing the docs -- both real, both OUTSIDE the docs-only fix bound of
-the issue that prompted this audit, and recorded here as an explicit
-broken-window report rather than folded into that issue's fix.
+"""Evidence pins for two code-level observability defects.
 
 The running-lease-expired gauge must not alarm on rows the reclaim
 sweep is deliberately still waiting out. The reclaim sweep gives a
@@ -23,10 +20,10 @@ forever instead of a missing/zero sample -- indistinguishable from a
 healthy, quiet fleet.
 
 Both pins currently assert the DEFECT'S observed behavior (the gauge
-over-counts; the cache freezes) so they read RED-for-the-desired-state
-today; whichever future fix addresses the alert's cancel_phase
-carve-out and the sampler's failure-path cache reset should flip these
-assertions to the corrected behavior rather than delete them.
+over-counts; the cache freezes) so they read RED-for-the-desired-state;
+a fix addressing the alert's cancel_phase carve-out or the sampler's
+failure-path cache reset should flip these assertions to the corrected
+behavior rather than delete them.
 """
 
 from __future__ import annotations
@@ -203,7 +200,9 @@ async def test_gauge_freezes_at_last_good_value_when_sampling_fails(
 
         @asynccontextmanager
         async def acquire(
-            self, *, timeout: float | None = None  # noqa: ASYNC109  # Why: mirrors asyncpg.Pool.acquire's keyword-only timeout.
+            self,
+            *,
+            timeout: float | None = None,  # noqa: ASYNC109  # Why: mirrors asyncpg.Pool.acquire's keyword-only timeout.
         ) -> AsyncGenerator[object, None]:
             self.calls += 1
             if self.calls == 1:
@@ -248,7 +247,7 @@ async def test_gauge_freezes_at_last_good_value_when_sampling_fails(
         # Delete the job so a healthy re-sample (if one ran) would read 0,
         # then wait through several more tick intervals while the pool is
         # failing every subsequent acquire.
-        await clean_pg_conn.execute(f'DELETE FROM "{schema}".jobs')
+        await clean_pg_conn.execute(f'DELETE FROM "{schema}".jobs')  # noqa: S608  # Why: schema is the module fixture's validated identifier; no user input.
         await asyncio.sleep(settings.queue_depth_interval * 6)
     finally:
         _leader_sweeps.update_running_lease_expired_cache = original  # type: ignore[assignment]  # Why: restoring the spied module attribute.

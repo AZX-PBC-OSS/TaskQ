@@ -304,6 +304,84 @@ async def test_event_retention_preserves_the_reclaim_outbox_slice(
     )
 
 
+async def test_event_retention_deletes_reclaim_outbox_slice_past_the_multiplier_bound(
+    module_pg_schema: ModulePgSchema,
+    clean_pg_conn: asyncpg.Connection,
+) -> None:
+    """The ``lock_expired`` outbox slice is exempt from *ordinary* retention
+    but not from deletion outright: once an unconsumed outbox row is older
+    than ``RECLAIM_OUTBOX_RETENTION_MULTIPLIER`` (100x) times the retention
+    setting, the sweep deletes it — a lagging or absent ``watch_reclaims``
+    consumer does not get to retain the slice forever. This empirically
+    pins the exact boundary rather than trusting the constant: a row just
+    inside the 100x bound survives, a row just outside it is deleted by the
+    same sweep call."""
+    from taskq.constants import RECLAIM_OUTBOX_RETENTION_MULTIPLIER
+
+    schema = module_pg_schema.schema_name
+    sweep = _event_retention_sweep()
+
+    worker_id = new_uuid()
+    await create_worker(clean_pg_conn, schema, worker_id)
+    job_id = await create_running_job(
+        clean_pg_conn,
+        schema,
+        worker_id,
+        lock_expires_at=datetime.now(UTC) + timedelta(minutes=5),
+        with_events=False,
+    )
+
+    retention = timedelta(days=1)
+    bound = retention * RECLAIM_OUTBOX_RETENTION_MULTIPLIER
+
+    # One outbox row just inside the 100x bound (must survive), one just
+    # outside it (must be deleted).
+    survivor_age = datetime.now(UTC) - bound + timedelta(hours=1)
+    victim_age = datetime.now(UTC) - bound - timedelta(hours=1)
+
+    await _seed_events(
+        clean_pg_conn,
+        schema,
+        job_id,
+        occurred_at=survivor_age,
+        count=1,
+        kind="state_change",
+        detail='{"reason": "lock_expired"}',
+    )
+    await _seed_events(
+        clean_pg_conn,
+        schema,
+        job_id,
+        occurred_at=victim_age,
+        count=1,
+        kind="state_change",
+        detail='{"reason": "lock_expired"}',
+    )
+
+    while await sweep(
+        clean_pg_conn,
+        schema=schema,
+        retention=retention,
+        batch_size=100,
+    ):
+        pass
+
+    remaining_ages = await clean_pg_conn.fetch(
+        f'SELECT occurred_at FROM "{schema}".job_events WHERE job_id = $1 '
+        "AND kind = 'state_change' AND detail->>'reason' = 'lock_expired'",
+        job_id,
+    )
+    assert len(remaining_ages) == 1, (
+        f"expected exactly 1 outbox row to survive the 100x bound, found "
+        f"{len(remaining_ages)}. The sweep must delete an unconsumed "
+        "lock_expired row once it exceeds RECLAIM_OUTBOX_RETENTION_MULTIPLIER "
+        "x retention, and keep one that has not yet reached that age — "
+        "silently keeping (or deleting) both breaks the documented "
+        "bounded-exemption contract that settings.py, upgrading.md, and "
+        "watch_reclaims' docstring all now describe."
+    )
+
+
 # ── churn stays diagnosable after the event timeline is reclaimed ──────
 
 

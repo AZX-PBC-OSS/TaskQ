@@ -383,6 +383,132 @@ async def test_election_win_sets_is_leader(monkeypatch: Any) -> None:  # type: i
     assert counter_calls == [(1, {})]
 
 
+# ── Election loop must degrade, not crash, when the courtesy lock is refused ──
+
+
+async def test_election_loop_degrades_when_advisory_lock_privilege_is_refused(
+    monkeypatch: Any,  # type: ignore[reportUnknownParameterType]
+) -> None:
+    """A winning election whose courtesy ``pg_try_advisory_lock`` probe hits a
+    refused privilege (``InsufficientPrivilegeError``, as a managed Postgres
+    deployment that restricts advisory-lock functions would raise) must not
+    crash the election loop.
+
+    ``_try_election_lock`` only catches ``TRANSIENT_PG_ERRORS`` (see
+    ``leader.py``): a privilege error is not in that tuple, so it propagates
+    out of ``_try_election_lock``, through ``_assume_leadership`` (called at
+    line ~745, OUTSIDE the try/except that guards the election statement
+    itself), and out of ``_election_loop`` entirely unhandled. In production
+    that loop runs inside ``MaintenanceLeader.run()``'s ``TaskGroup``
+    alongside the watchdog, cron, sweep, prune, and every other leader-gated
+    loop — one task raising cancels every sibling and tears down the whole
+    maintenance plane, exactly the failure this project's own docstring
+    on ``_try_election_lock`` says a courtesy probe must never cause
+    ("a miss ... must never again gate the election it used to decide").
+
+    This is the same defect shape reported for the retired
+    ``pg_terminate_backend`` recovery path (a refused privilege escaping as
+    a raw driver error instead of degrading to follower) — it has resurfaced
+    at the new call site the row-lease redesign introduced.
+    """
+    class _PrivilegeRefusedConn(FakeConn):
+        async def fetchval(self, sql: str, *args: object) -> object:
+            if "pg_try_advisory_lock" in sql:
+                self.fetchval_calls.append((sql, args))
+                raise asyncpg.InsufficientPrivilegeError(
+                    "permission denied for function pg_try_advisory_lock"
+                )
+            return await super().fetchval(sql, *args)
+
+    refusing_conn = _PrivilegeRefusedConn(fetchval_result=True)
+    leader, deps, _backend, _, _, shutdown = await _make_leader(
+        leader_conn=refusing_conn,
+        monkeypatch=monkeypatch,
+    )
+
+    task = asyncio.create_task(leader._election_loop(shutdown))  # pyright: ignore[reportPrivateUsage]  # Why: the election loop IS the degradation path under test.
+
+    crashed: BaseException | None = None
+    try:
+        # A short bounded wait: a healthy loop wins the election (the lease
+        # statement returns a term) and keeps looping as a leader that never
+        # acquired the courtesy lock. A crashing loop instead raises out of
+        # the task almost immediately.
+        await asyncio.wait_for(asyncio.shield(task), timeout=1.0)
+    except TimeoutError:
+        pass
+    except BaseException as exc:  # noqa: BLE001  # Why: capturing the crash IS the assertion below, not letting pytest report it as an unhandled task exception.
+        crashed = exc
+    finally:
+        shutdown.set()
+        if not task.done():
+            with contextlib.suppress(asyncio.CancelledError):
+                await asyncio.wait_for(task, timeout=2.0)
+        elif task.cancelled():
+            pass
+        elif task.exception() is not None:
+            crashed = task.exception()
+
+    assert crashed is None, (
+        "the election loop must degrade to follower (log once, skip the "
+        "courtesy lock, keep competing by the lease) when the advisory-lock "
+        f"privilege is refused, not crash: raised {type(crashed).__name__ if crashed else None}"
+    )
+    assert deps.is_leader.is_set(), (
+        "the lease statement won the election; losing the courtesy lock "
+        "afterward must not cost the pod its leadership"
+    )
+
+
+# ── Leader lease gauge: stamped on elect/renew ───────────────────────
+
+
+async def test_lease_gauge_is_stamped_on_election_and_each_renewal(
+    monkeypatch: Any,  # type: ignore[reportUnknownParameterType]
+) -> None:
+    """``taskq.maintenance_leader.lease_expires_in_seconds`` is the
+    lease's freshness signal: stamped with the full TTL at election win
+    and re-stamped at every successful renewal, so a leader that stops
+    renewing is a series that stops moving. Both arms are pinned here —
+    a dropped call site leaves the gauge frozen on a live leader, which
+    is exactly the lie the gauge exists to refute."""
+    import taskq.obs._otel as otel_mod
+
+    monkeypatch.setattr(otel_mod, "_otel_enabled", True)
+    monkeypatch.setattr(otel_mod, "_leader_lease_expires_in_seconds_cache", None)
+
+    leader_conn = FakeConn(fetchval_result=True)
+    leader, deps, _backend, _, _, shutdown = await _make_leader(
+        leader_conn=leader_conn,
+        monkeypatch=monkeypatch,
+    )
+    lease = deps.settings.resolved_leader_lease
+
+    task = asyncio.create_task(leader._election_loop(shutdown))  # pyright: ignore[reportPrivateUsage]  # Why: the election loop IS the elect arm under test.
+    await wait_for_leader(deps)
+
+    # Elect arm.
+    assert otel_mod._leader_lease_expires_in_seconds_cache == lease  # pyright: ignore[reportPrivateUsage]  # Why: the pin is the gauge's cached value, not an SDK round trip.
+
+    # Renew arm: poison the stamp, then drive one renewal through the
+    # loop's own method (the trust-spent test's seam — deterministic, no
+    # polling) and the stamp must be restored.
+    otel_mod._leader_lease_expires_in_seconds_cache = -1.0  # pyright: ignore[reportPrivateUsage]
+    term = deps.leader_term
+    assert term is not None, "the election win must have installed a term"
+
+    from taskq.worker._transient import UnexpectedLoopErrorGuard
+
+    should_sleep = await leader._renew_term(  # pyright: ignore[reportPrivateUsage]  # Why: driving the renew arm directly IS the test.
+        term, "renew-sql", UnexpectedLoopErrorGuard("test")
+    )
+
+    assert should_sleep is True, "a healthy renewal keeps leading"
+    assert otel_mod._leader_lease_expires_in_seconds_cache == lease  # pyright: ignore[reportPrivateUsage]
+    shutdown.set()
+    await task
+
+
 # ── Election loss does not set is_leader ───────────────────────────
 
 

@@ -605,7 +605,6 @@ Check dispatch latency via OTel or the `/metrics` endpoint (`taskq health metric
 ### Fix
 
 - **Reduce oversampling:** `TASKQ_DISPATCH_OVERSAMPLE=1` if you do not use `identity_key` and run a single-producer deployment.
-- **Enable scoped dispatch:** `TASKQ_DISPATCH_SCOPE_BY_HOME_QUEUE=true` filters the `per_actor_capacity` CTE to actors whose home queue is in the worker's subscribed list. Lowers probe count but excludes `enqueue(queue=...)` override jobs.
 - **Tune pool sizes:** increase `TASKQ_DISPATCHER_POOL_SIZE` and `TASKQ_HEARTBEAT_POOL_SIZE` if `acquire()` timeouts appear. Keep `worker_pool_size` derived.
 - **Tune `max_concurrent`:** run `taskq actor-config set <actor> --max-concurrent N` to match external resource capacity. Takes effect on the next dispatch cycle, no restart.
 - **Switch to `round_robin`:** for multi-tenant queues where one tenant starves others:

@@ -61,7 +61,14 @@ from taskq.ratelimit.refs import KeyedRateLimitRef, KeyedReservationRef
 from taskq.ratelimit.reservation import ConcurrencyReservation
 from taskq.ratelimit.sliding_window import SlidingWindow
 from taskq.ratelimit.token_bucket import TokenBucket
-from taskq.retry import OnRetryExhausted, OnSuccess, RetryClassifierHook, RetryPolicy
+from taskq.retry import (
+    ActorConfigLike,
+    OnCancel,
+    OnRetryExhausted,
+    OnSuccess,
+    RetryClassifierHook,
+    RetryPolicy,
+)
 
 if TYPE_CHECKING:
     from taskq.context import JobContext
@@ -181,6 +188,8 @@ class ActorRef[P: BaseModel, R: BaseModel | None]:
         "metadata",
         "name",
         "non_retryable_exceptions",
+        "on_cancel",
+        "on_cancel_timeout",
         "on_retry_exhausted",
         "on_retry_exhausted_timeout",
         "on_success",
@@ -229,6 +238,8 @@ class ActorRef[P: BaseModel, R: BaseModel | None]:
         on_retry_exhausted_timeout: float = 3.0,
         on_success: OnSuccess | None = None,
         on_success_timeout: float = 3.0,
+        on_cancel: OnCancel | None = None,
+        on_cancel_timeout: float = 3.0,
         priority: int = 0,
     ) -> None:
         self.name = name
@@ -260,11 +271,25 @@ class ActorRef[P: BaseModel, R: BaseModel | None]:
         self.on_retry_exhausted_timeout = on_retry_exhausted_timeout
         self.on_success = on_success
         self.on_success_timeout = on_success_timeout
+        self.on_cancel = on_cancel
+        self.on_cancel_timeout = on_cancel_timeout
         self.priority = priority
         # Single storage slot. Call shape varies by handler — the
         # dispatcher (or :meth:`__call__`) routes based on
         # :attr:`wants_ctx`, :attr:`dependencies`, and :attr:`is_sync`.
         self._fn: Callable[..., object] = fn
+
+    @property
+    def config(self) -> ActorConfigLike:
+        """This ref, viewed as the per-actor config the consumer reads.
+
+        The registration record and the config are one object here, so
+        the property is a named view rather than a second store — it
+        exists so callers can say what they need (the retry policy and
+        the lifecycle hooks) instead of reaching for the whole ref, and
+        so the structural contract is asserted at one place.
+        """
+        return self
 
     @property
     def fn(self) -> Callable[..., object]:
@@ -364,6 +389,8 @@ def actor[P: BaseModel, R: BaseModel | None](  # pyright: ignore[reportInvalidTy
     on_retry_exhausted_timeout: float = 3.0,
     on_success: OnSuccess | None = None,
     on_success_timeout: float = 3.0,
+    on_cancel: OnCancel | None = None,
+    on_cancel_timeout: float = 3.0,
     priority: int = 0,
 ) -> Callable[[Callable[..., object]], ActorRef[P, R]]: ...  # pyright: ignore[reportInvalidTypeVarUse]  # Why: TypeVars P, R are intentional for variance-free generics; each appears once in the return type of this overload.
 def actor[P: BaseModel, R: BaseModel | None](  # pyright: ignore[reportInvalidTypeVarUse]  # Why: TypeVars P, R are intentional for variance-free generics; each appears in the return type of overloaded signatures.
@@ -389,6 +416,8 @@ def actor[P: BaseModel, R: BaseModel | None](  # pyright: ignore[reportInvalidTy
     on_retry_exhausted_timeout: float = 3.0,
     on_success: OnSuccess | None = None,
     on_success_timeout: float = 3.0,
+    on_cancel: OnCancel | None = None,
+    on_cancel_timeout: float = 3.0,
     priority: int = 0,
 ) -> ActorRef[P, R] | Callable[[ActorHandler[P, R]], ActorRef[P, R]]:
     """Register an async handler as a typed :class:`ActorRef`.
@@ -509,6 +538,8 @@ def actor[P: BaseModel, R: BaseModel | None](  # pyright: ignore[reportInvalidTy
             on_retry_exhausted_timeout=on_retry_exhausted_timeout,
             on_success=on_success,
             on_success_timeout=on_success_timeout,
+            on_cancel=on_cancel,
+            on_cancel_timeout=on_cancel_timeout,
             priority=priority,
         )
 
@@ -566,6 +597,8 @@ def _build_ref[P: BaseModel, R: BaseModel | None](  # pyright: ignore[reportInva
     on_retry_exhausted_timeout: float = 3.0,
     on_success: OnSuccess | None = None,
     on_success_timeout: float = 3.0,
+    on_cancel: OnCancel | None = None,
+    on_cancel_timeout: float = 3.0,
     priority: int = 0,
 ) -> ActorRef[P, R]:  # pyright: ignore[reportInvalidTypeVarUse]  # Why: TypeVars P, R are intentional for variance-free generics; each appears once in the return type of _build_ref.
     """Introspect ``fn``'s annotations and construct an :class:`ActorRef`.
@@ -761,5 +794,7 @@ def _build_ref[P: BaseModel, R: BaseModel | None](  # pyright: ignore[reportInva
         on_retry_exhausted_timeout=on_retry_exhausted_timeout,
         on_success=on_success,
         on_success_timeout=on_success_timeout,
+        on_cancel=on_cancel,
+        on_cancel_timeout=on_cancel_timeout,
         priority=priority,
     )

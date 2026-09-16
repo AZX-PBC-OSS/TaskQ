@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 from uuid import UUID
 
 from taskq.backend._protocol import BulkCancelResult, CancelPhase, JobFilter
+from taskq.constants import CANCEL_ORIGIN_PENDING
 
 if TYPE_CHECKING:
     from taskq.testing.in_memory import InMemoryBackend
@@ -48,6 +49,10 @@ async def _cancel_where(
                 row,
                 status="cancelled",
                 finished_at=now,
+                # Twin of the PG drain's cancelled CTE: the bulk path stamps
+                # the same before-start origin marker the single-job
+                # write_cancel_request path stamps, on the row only.
+                error_class=CANCEL_ORIGIN_PENDING,
             )
             self._append_state_change_event(
                 job_id=row.id,

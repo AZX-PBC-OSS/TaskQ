@@ -59,7 +59,7 @@ from taskq.exceptions import MissingProvider
 from taskq.obs import bind_job_context, get_logger
 from taskq.ratelimit.refs import KeyedReservationRef
 from taskq.ratelimit.reservation import ConcurrencyReservation
-from taskq.retry import OnRetryExhausted, OnSuccess, RetryClassifierHook, RetryPolicy
+from taskq.retry import OnCancel, OnRetryExhausted, OnSuccess, RetryClassifierHook, RetryPolicy
 from taskq.settings import WorkerSettings
 from taskq.worker._bootstrap import worker_main, worker_main_async
 from taskq.worker._transient import TRANSIENT_PG_ERRORS
@@ -170,6 +170,8 @@ class _DispatchActorConfig:
     on_retry_exhausted_timeout: float = 3.0
     on_success: OnSuccess | None = None
     on_success_timeout: float = 3.0
+    on_cancel: OnCancel | None = None
+    on_cancel_timeout: float = 3.0
 
 
 def make_heartbeat_kwargs(
@@ -702,6 +704,8 @@ async def di_consumer_loop(
             on_retry_exhausted_timeout=actor_ref.on_retry_exhausted_timeout,
             on_success=actor_ref.on_success,
             on_success_timeout=actor_ref.on_success_timeout,
+            on_cancel=actor_ref.on_cancel,
+            on_cancel_timeout=actor_ref.on_cancel_timeout,
         )
         try:
             outcome = await dispatch_one_job(

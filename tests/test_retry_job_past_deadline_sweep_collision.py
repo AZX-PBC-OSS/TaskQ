@@ -135,3 +135,93 @@ async def test_retry_past_deadline_does_not_wedge_the_deadline_sweep(
             "excludes rows whose deadline has already passed) — it must be "
             f"resolved to a terminal state by the sweep. observed: {final['status']!r}"
         )
+
+
+async def test_retry_collision_does_not_wedge_sibling_rows_in_same_sweep_batch(
+    module_pg_schema: ModulePgSchema,
+    clean_jobs_app: JobsApp,
+) -> None:
+    """A collided ``job_attempts`` key from one retried-past-deadline row must
+    not roll back the whole batched sweep transaction and strand every other
+    overdue row the same call claimed.
+
+    The sweep's driving UPDATE and its batched ``job_attempts``/``job_events``
+    INSERTs all run inside one transaction (``sweep_deadline_exceeded``,
+    ``_sweeps.py``). Before ``ON CONFLICT (job_id, attempt) DO NOTHING`` was
+    added to the batched attempt INSERT, a single colliding key inside that
+    one statement raised ``UniqueViolationError`` and rolled back every row
+    the sweep had snapshotted in that call -- not just the colliding one.
+    This pins that a collision on one row in a multi-row batch still lets
+    every sibling row in the same call reach 'failed'.
+    """
+    deps = clean_jobs_app.deps
+    backend = clean_jobs_app.backend
+    schema = module_pg_schema.schema_name
+    worker_id = new_uuid()
+
+    error = ErrorInfo(error_class="TransientError", error_message="boom", error_traceback=None)
+
+    async with deps.worker_pool.acquire() as conn:  # type: ignore[union-attr]  # Why: deps is object-typed in the JobsApp shim, as throughout the suite.
+        await create_worker(conn, schema, worker_id)
+
+        # Row A: retried after its deadline passed -- collides on
+        # (job_id, attempt=1) the way the single-row pin above proves.
+        collide_job_id = await create_running_job(
+            conn,
+            schema,
+            worker_id,
+            max_attempts=1,
+            attempt=1,
+            lock_expires_at=datetime.now(UTC) + timedelta(minutes=5),
+            schedule_to_close=datetime.now(UTC) + timedelta(minutes=5),
+            with_events=False,
+        )
+        assert await backend.mark_failed_or_retry(
+            collide_job_id, worker_id, error, None, attempt=1
+        )
+        await conn.execute(
+            f"UPDATE \"{schema}\".jobs SET schedule_to_close = now() - interval '1 second' "
+            "WHERE id = $1",
+            collide_job_id,
+        )
+
+        # Row B: an ordinary never-dispatched job whose deadline has simply
+        # passed -- no retry, no prior attempt row, nothing to collide with.
+        # It must still resolve to 'failed' in the same sweep call.
+        clean_job_id = await create_running_job(
+            conn,
+            schema,
+            worker_id,
+            max_attempts=3,
+            attempt=0,
+            lock_expires_at=datetime.now(UTC) + timedelta(minutes=5),
+            schedule_to_close=datetime.now(UTC) - timedelta(seconds=1),
+            with_events=False,
+        )
+        await conn.execute(
+            f'UPDATE "{schema}".jobs SET status = \'pending\' WHERE id = $1',
+            clean_job_id,
+        )
+
+    assert await backend.retry_job(collide_job_id)
+
+    async with deps.worker_pool.acquire() as conn:
+        # Both rows are eligible for the same sweep call: sweep_deadline_exceeded
+        # snapshots in schedule_to_close order with no per-row isolation, so a
+        # generous batch_size claims both in one transaction.
+        await sweep_deadline_exceeded(conn, schema=schema, batch_size=100)
+
+        rows = await conn.fetch(
+            f'SELECT id, status FROM "{schema}".jobs WHERE id = ANY($1::uuid[])',
+            [collide_job_id, clean_job_id],
+        )
+        statuses = {r["id"]: r["status"] for r in rows}
+
+        assert statuses[clean_job_id] == "failed", (
+            "a sibling row with no colliding attempt key must still be "
+            f"resolved by the same sweep call. observed: {statuses[clean_job_id]!r}"
+        )
+        assert statuses[collide_job_id] != "pending", (
+            "the colliding row itself must not be left permanently pending "
+            f"either. observed: {statuses[collide_job_id]!r}"
+        )

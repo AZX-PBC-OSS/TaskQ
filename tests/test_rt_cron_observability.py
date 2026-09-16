@@ -1280,6 +1280,116 @@ class TestReconciliationLeavesUntouchedActorsAlone:
         )
 
 
+class TestReconciliationRequiresADueSchedule:
+    """``tick_cron`` returns early, before ``_actor_failure_totals`` is ever
+    read, when no schedule anywhere is due (see the ``if not rows: return 0``
+    guard ahead of the reconcile call). A failing schedule that is deleted
+    while every remaining schedule (for every actor, fleet-wide) sits in the
+    future never triggers a reconciling tick, so the deleted schedule's
+    contribution to its actor's series has no opportunity to self-correct
+    until some schedule, anywhere, becomes due again.
+    """
+
+    async def _cron_failure_points(
+        self, reader: InMemoryMetricReader
+    ) -> list[tuple[dict[str, object], int]]:
+        data = reader.get_metrics_data()
+        assert data is not None
+        return [
+            (dict(p.attributes or {}), int(p.value))
+            for rm in data.resource_metrics
+            for sm in rm.scope_metrics
+            for m in sm.metrics
+            if m.name == "taskq.cron.consecutive_failures"
+            for p in m.data.data_points
+            if isinstance(p, NumberDataPoint)
+        ]
+
+    async def test_gauge_stays_stranded_while_no_schedule_is_due_anywhere(
+        self,
+        clean_pg_conn: asyncpg.Connection,
+        module_pg_schema: ModulePgSchema,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A failing schedule is deleted by another process, and nothing
+        else in the table is due. The tick that follows returns 0 having
+        never read the database's actor totals, so the series should still
+        hold its pre-delete value at that point -- it is not yet residue,
+        but it demonstrates the self-correction is gated on tick activity,
+        not wall-clock time. A LATER tick, once something becomes due
+        again, must still bring the series back to zero.
+        """
+        schema = module_pg_schema.schema_name
+        settings = cron_settings(schema)
+        await seed_actor_config(clean_pg_conn, schema, _ACTOR, queue=_QUEUE)
+        due = hour_floor(datetime.now(UTC))
+        failing_id = await seed_schedule(
+            clean_pg_conn,
+            schema,
+            actor=_ACTOR,
+            name="failing-then-gone-while-fleet-is-quiet",
+            cron_expr=_HOURLY,
+            next_fire_at=due,
+            payload_factory=_BAD_FACTORY,
+        )
+
+        reader = InMemoryMetricReader()
+        meter = MeterProvider(metric_readers=[reader]).get_meter(
+            "taskq-cron-reconcile-requires-due"
+        )
+        monkeypatch.setattr(otel_mod, "_otel_enabled", True)
+        monkeypatch.setattr(
+            otel_mod,
+            "_cron_consecutive_failures",
+            meter.create_up_down_counter("taskq.cron.consecutive_failures", unit="1"),
+        )
+
+        async def _tick() -> int:
+            async with clean_pg_conn.transaction():
+                return await tick_cron(
+                    clean_pg_conn, settings, make_backend(settings), schema, new_uuid()
+                )
+
+        assert await _tick() == 0
+        assert await self._cron_failure_points(reader) == [({"actor": _ACTOR}, 1)]
+
+        # Another process deletes the only failing schedule. Nothing else
+        # in the whole table is due -- the fleet is quiet.
+        await clean_pg_conn.execute(
+            f'DELETE FROM "{schema}".cron_schedules WHERE id = $1',  # noqa: S608  # Why: schema is a test-fixture identifier; id is $-bound.
+            failing_id,
+        )
+        still_due = await clean_pg_conn.fetchval(
+            f'SELECT COUNT(*) FROM "{schema}".cron_schedules '  # noqa: S608  # Why: schema is a test-fixture identifier.
+            "WHERE enabled = true AND next_fire_at <= statement_timestamp()"
+        )
+        assert int(still_due) == 0, "test premise: nothing in the table is due"
+
+        # A tick while the fleet is quiet must return 0 having done no
+        # reconciling work -- it never reaches the totals read.
+        assert await _tick() == 0
+
+        # Seed a fresh, healthy, due schedule so the NEXT tick has
+        # something to examine and reconciliation actually runs.
+        await seed_schedule(
+            clean_pg_conn,
+            schema,
+            actor=_ACTOR,
+            name="wakes-the-fleet-back-up",
+            cron_expr=_HOURLY,
+            next_fire_at=due,
+        )
+        assert await _tick() == 1, "the new healthy schedule fires on this tick"
+
+        points = await self._cron_failure_points(reader)
+        assert points == [({"actor": _ACTOR}, 0)], (
+            "once a tick actually examines the table again the deleted "
+            f"schedule's contribution must be gone; saw {points}. If this "
+            "assertion fails, self-correction is not merely delayed until "
+            "the next active tick -- it is broken outright"
+        )
+
+
 # ── Helpers ────────────────────────────────────────────────────────────
 
 _ONE_MINUTE = timedelta(minutes=1)

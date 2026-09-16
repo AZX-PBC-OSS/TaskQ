@@ -124,11 +124,10 @@ async def _mid_batch_singleton_collision_poison(side: DiffSide) -> None:
 
     PG's single unnest INSERT hits the jobs_singleton_uniq partial unique
     index and aborts the WHOLE statement — neither item is stored. The
-    in-memory mirror's per-item loop (src/taskq/testing/_enqueue.py) has no
-    equivalent preflight for the singleton constraint (unlike the pkey-
-    collision preflight added for #166), so it stores item 0 and only THEN
-    discovers the collision on item 1 inside ``_enqueue``, leaving item 0
-    admitted where PG admits nothing (issue #166, singleton case).
+    in-memory mirror's batch-level singleton preflight
+    (``_check_batch_singletons`` in src/taskq/testing/_enqueue.py) refuses
+    the whole call before storing its first row, so both backends leave
+    the identical empty stored-row state.
     """
     item1 = _singleton_args(side, "item1", "test_actor")
     item2 = _singleton_args(side, "item2", "test_actor")
@@ -153,11 +152,6 @@ async def test_diff_enqueue_batch_mid_batch_singleton_collision_aborts_whole_cal
     transaction (jobs_singleton_uniq aborts it, nothing admitted); the
     mirror must leave the identical stored-row state — never the good
     prefix.
-
-    This currently FAILS: the mirror's per-item loop has no batch-level
-    singleton preflight (only job-id collisions got one, for #166), so it
-    stores item1 before discovering item2's collision, leaving 1 job
-    admitted where PG admits 0 — see src/taskq/testing/_enqueue.py:322-342.
     """
     mem, pg = await run_differential(_mid_batch_singleton_collision_poison, pg_dsn=pg_dsn)
     assert_mirror(
@@ -167,7 +161,13 @@ async def test_diff_enqueue_batch_mid_batch_singleton_collision_aborts_whole_cal
         mem,
         pg,
     )
-    assert pg["records"]["batch"] == "UniqueViolationError"
+    # Why the typed error: a singleton collision is a retryable admission
+    # refusal, so the PG bulk tier converts the jobs_singleton_uniq
+    # violation to the same typed SingletonCollisionError the
+    # single-enqueue path raises — a caller must branch on it without
+    # string-matching a raw driver error (the mirror's batch preflight
+    # already refuses with the same typed error).
+    assert pg["records"]["batch"] == "SingletonCollisionError"
     assert pg["records"]["stored_from_batch"] == []
     assert pg["status_counts"] == {}
 

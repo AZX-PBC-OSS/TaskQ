@@ -28,12 +28,30 @@ owners for the wait bound:
 
 import asyncio
 
+import asyncpg
+
 from taskq.backend._protocol import ConnLike
 
 __all__ = [
+    "DEADLINE_ERRORS",
     "DEFAULT_ADVISORY_LOCK_CLIENT_BACKSTOP_SLACK_S",
     "acquire_advisory_xact_lock_bounded",
 ]
+
+#: The two ways a bounded statement runs out of its deadline, named once
+#: so a caller cannot catch one half and let the other escape untyped.
+#: ``QueryCanceledError`` is the server cancelling at its own
+#: ``statement_timeout``; ``TimeoutError`` is the client-side deadline — a
+#: dropped connection or a cancelled await — firing first. Which one wins
+#: is a race the caller does not control, and both mean the same thing to
+#: it: this statement did not land, whatever committed before it is real
+#: progress, and the action is to run again. Catching only the server half
+#: is why a client-side deadline used to escape the move-queue CLI as a
+#: raw ``TimeoutError`` instead of its documented exit code.
+DEADLINE_ERRORS: tuple[type[BaseException], ...] = (
+    asyncpg.QueryCanceledError,
+    TimeoutError,
+)
 
 #: Fast-path statement: returns bool (acquired or not) without queueing,
 #: so an uncontended racer pays exactly one round trip. hashtextextended

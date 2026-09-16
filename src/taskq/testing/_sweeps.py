@@ -33,7 +33,13 @@ from taskq.backend._sweeps import (  # pyright: ignore[reportPrivateUsage]  # Wh
 )
 from taskq.constants import DEFAULT_EVENT_WRITER_BATCH_SIZE
 from taskq.obs import record_deadline_exceeded_swept
-from taskq.retry import RetryPolicy, compute_backoff
+from taskq.retry import (  # pyright: ignore[reportPrivateUsage]  # Why: the twin must compute the identical reclaim delay the SQL fragment computes — one curve twin, one hash fraction, no drift surface.
+    RetryPolicy,
+    _compute_reclaim_backoff,
+)
+from taskq.testing._terminal import (  # pyright: ignore[reportPrivateUsage]  # Why: the sweep twin's attempt write must carry the identical keep-first guard the PG batched INSERT carries — one guarded write, no drift surface.
+    _write_attempt,
+)
 
 if TYPE_CHECKING:
     from taskq.testing.in_memory import InMemoryBackend
@@ -271,7 +277,18 @@ async def _reclaim_expired_locks(
             worker_id=row.locked_by_worker,
             metadata={},
         )
-        self._attempts.setdefault(job_id, []).append(attempt_row)
+        # Through the shared keep-first write (the twin of the batched
+        # INSERT's ON CONFLICT (job_id, attempt) DO NOTHING — see
+        # _SWEEP_1_ATTEMPTS_BATCH_SQL): an attempt number can already have
+        # its row when the reclaim fires — a claim-clamped repeat at the
+        # smallint ceiling, a spent attempt left behind by a re-pend — and
+        # the existing record is the truthful one, so the synthetic crash
+        # row yields to it rather than accumulating a duplicate PG refused
+        # to store. The same guard the deadline twin states inline above
+        # and _terminal._write_attempt carries for the terminal paths —
+        # one doctrine, one guarded write. Pinned by
+        # tests/test_rt_sweeps_parity.py::test_sweep1_double_reclaim_keeps_one_attempt_row_on_both_backends.
+        await _write_attempt(self, attempt_row)
 
         # The same budget question the SQL asks (see
         # _sweeps._RECLAIM_HAS_BUDGET_SQL): 'indefinite' has no attempt
@@ -282,34 +299,44 @@ async def _reclaim_expired_locks(
             row.attempt < row.max_attempts and row.retry_kind != "non_retryable"
         ):
             # The row's own stamped RetryPolicy curve, mirroring
-            # _RECLAIM_RAW_BACKOFF_SQL / _RECLAIM_DELAY_SQL exactly:
-            # compute_backoff is the single implementation every other
-            # retry path (failure, Retry-After, snooze) shares, so this
-            # is the SAME curve a live actor's failure backoff would
-            # produce for this attempt — jittered per row, mirroring the
-            # SQL's per-row random(): a fleet-wide event hands a whole
-            # cohort back at once, and one instant for all of them would
-            # land on the recovering fleet as a synchronised wave. The
-            # ceiling is the operator's max_retry_backoff, the value the
-            # PG statement binds as its {max_backoff_seconds} parameter —
-            # min(row cap, ceiling) on both sides.
+            # _RECLAIM_RAW_BACKOFF_SQL / _RECLAIM_DELAY_SQL exactly through
+            # the shared twin _compute_reclaim_backoff: same three-way raw
+            # branch, same min(row cap, max_retry_backoff) effective
+            # ceiling (the value the PG statement binds as its
+            # {max_backoff_seconds} parameter), and the SAME jitter
+            # fraction the SQL derives — a deterministic md5 of the row's
+            # own '<id>:<attempt>', never an RNG draw. A reclaim delay is
+            # computed by more than one path for the same row (the leader's
+            # sweep, a partitioned worker's isolate_self, a replayed sweep,
+            # this mirror), and every one must stamp the same instant —
+            # replay idempotence the old per-statement random() could not
+            # provide. A fleet-wide event still spreads: a whole cohort
+            # handed back at once lands across the jitter band because
+            # distinct ids hash to distinct fractions, rather than at one
+            # synchronised instant.
             row_policy = RetryPolicy(
                 backoff=row.retry_backoff,
                 base=row.retry_base,
                 cap=row.retry_cap,
                 jitter=row.retry_jitter,
             )
-            # compute_backoff requires attempt >= 1 (its own domain is
-            # 1-indexed); a running row with attempt=0 is reachable only by
-            # direct construction (dispatch always stamps attempt >= 1 —
-            # see _dispatch_sql.py's `attempt = j.attempt + 1`), the same
-            # "direct-SQL-reachable, not production-reachable" class the
-            # heartbeat arm's NULL last_heartbeat_at guard documents. The
-            # SQL side floors the exponent at GREATEST(attempt - 1, 0)
-            # rather than raising, so attempt=0 mirrors attempt=1's curve
-            # here too instead of crashing the sweep.
-            new_scheduled = now + compute_backoff(
-                row_policy, max(row.attempt, 1), max_retry_backoff=self._max_retry_backoff
+            # The raw stamped attempt goes in UNCLAMPED: the twin floors
+            # the exponential arm's exponent itself (mirroring the SQL's
+            # GREATEST(j.attempt - 1, 0)) and hashes the raw attempt exactly
+            # as j.attempt::text does — clamping here (the old
+            # max(row.attempt, 1) for compute_backoff's attempt >= 1 guard)
+            # would hash a different attempt than the SQL for a
+            # direct-construction attempt=0 row (dispatch always stamps
+            # attempt >= 1 — see _dispatch_sql.py's `attempt = j.attempt +
+            # 1` — so the distinction is direct-SQL-reachable only, the
+            # same class the heartbeat arm's NULL last_heartbeat_at guard
+            # documents), and for the linear arm it would also miscompute
+            # the raw value (SQL multiplies by j.attempt itself).
+            new_scheduled = now + _compute_reclaim_backoff(
+                row_policy,
+                row.attempt,
+                job_id=row.id,
+                max_retry_backoff=self._max_retry_backoff,
             )
             self._jobs[job_id] = replace(
                 row,
@@ -347,6 +374,10 @@ async def _reclaim_expired_locks(
             # branch by _SWEEP_1_SQL's single SET clause list; the
             # twin must match or a terminal row keeps pointing at a
             # dead holder for every locked_by_worker-scoped reader.
+            # assignment_routed is set on every arm for the same reason
+            # (the SQL sets it unconditionally): on a terminal row the
+            # flag is inert — the row is never dispatchable again — but
+            # the stored value must match the contract source.
             self._jobs[job_id] = replace(
                 row,
                 status=new_status,
@@ -355,6 +386,7 @@ async def _reclaim_expired_locks(
                 lock_expires_at=None,
                 cancel_phase=CancelPhase.NONE,
                 cancel_requested_at=None,
+                assignment_routed=True,
             )
             self._append_state_change_event(
                 job_id,

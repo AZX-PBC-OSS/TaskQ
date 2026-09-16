@@ -1,25 +1,22 @@
-"""Docs that PR #170 changed must describe the shipped behavior.
+"""Docs for three observability surfaces must describe the shipped behavior.
 
-Three surfaces drifted from the code after PR #170 landed:
-
-- `upgrading.md` claims `taskq.cron.consecutive_failures` keeps a
+- `upgrading.md` must not claim `taskq.cron.consecutive_failures` keeps a
   `schedule_id` dimension. The instrument is labeled by `actor` (see
   `_otel.py`'s own module docstring and the instrument's own
   `description=`) -- a dashboard grouped by `schedule_id` loses its
   series entirely, because that label was never emitted.
-- `ops.md` and `deployment.md` describe `taskq.backpressure.errors` as a
-  pure producer/capacity-pressure signal with no `kind` filter called
-  out. The counter also increments for `unique_for_lock_timeout` and
-  `idempotency_lock_timeout` -- identity-serialization refusals that
-  are not capacity signals (an operator alerting on raw counter growth
-  gets paged by contention that has nothing to do with `max_pending` or
-  rate limits).
-- `jobs-clients.md` says the `unique_for` lock timeout bumps no
+- `ops.md` and `deployment.md` must not describe
+  `taskq.backpressure.errors` as a pure producer/capacity-pressure signal
+  with no `kind` filter called out. The counter also increments for
+  `unique_for_lock_timeout` and `idempotency_lock_timeout` --
+  identity-serialization refusals that are not capacity signals (an
+  operator alerting on raw counter growth gets paged by contention that
+  has nothing to do with `max_pending` or rate limits).
+- `jobs-clients.md` must not say the `unique_for` lock timeout bumps no
   `taskq.backpressure.errors` counter. It does, with
   `kind="unique_for_lock_timeout"`.
 
-These pins hold the docs to the code that actually ships, scoped to the
-surfaces PR #170 touched.
+These pins hold the docs to the code that actually ships.
 """
 
 from __future__ import annotations
@@ -72,9 +69,10 @@ def test_deployment_guide_backpressure_errors_mention_names_the_kind_dimension()
 def test_jobs_clients_guide_unique_for_lock_timeout_admits_it_bumps_the_counter() -> None:
     text = (_DOCS / "guides" / "jobs-clients.md").read_text()
     section = text[text.index("bounded") : text.index("bounded") + 2000]
-    assert "bumps no" not in section or "backpressure.errors" not in section.split("bumps no", 1)[
-        1
-    ][:80], (
+    assert (
+        "bumps no" not in section
+        or "backpressure.errors" not in section.split("bumps no", 1)[1][:80]
+    ), (
         "the unique_for lock-timeout paragraph must not claim it bumps no "
         "taskq.backpressure.errors counter -- record_backpressure_error is called "
         "with kind='unique_for_lock_timeout' on that path"

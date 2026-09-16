@@ -26,7 +26,7 @@ from taskq.backend._protocol import (
     ScheduleUpdateArgs,
     SnoozeOutcome,
 )
-from taskq.retry import OnRetryExhausted, OnSuccess, RetryClassifierHook, RetryPolicy
+from taskq.retry import OnCancel, OnRetryExhausted, OnSuccess, RetryClassifierHook, RetryPolicy
 
 __all__ = [
     "EmptyPayload",
@@ -46,6 +46,8 @@ class StubActorConfig:
     on_retry_exhausted_timeout: float = 3.0
     on_success: OnSuccess | None = None
     on_success_timeout: float = 3.0
+    on_cancel: OnCancel | None = None
+    on_cancel_timeout: float = 3.0
 
 
 def default_actor_config() -> StubActorConfig:

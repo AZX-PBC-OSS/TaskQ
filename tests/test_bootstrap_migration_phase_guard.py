@@ -1,36 +1,32 @@
-"""Red-team regression test for issue #197.
+"""Boot-guard regression pins for the phased-rollout currency rule.
 
 ``_refuse_boot_on_pending_migrations`` (``src/taskq/worker/_bootstrap.py``)
-computes its "pending" set with no phase filter at all:
-
-    pending = [m.key for m in discover() if m.key not in applied]
-
-Every discovered migration is keyed ``f"{version}:{phase}"``
-(``taskq.migrate.Migration.key``), so a ``post``-phase migration that has
-not yet been applied counts exactly the same as a ``pre``-phase one for
-"the schema is behind, refuse boot".
-
-That collides with the documented phased-migration rollout procedure that
+treats only ``pre``-phase migrations as a currency verdict. Every
+discovered migration is keyed ``f"{version}:{phase}"``
+(``taskq.migrate.Migration.key``), and the documented phased-rollout
+procedure that
 ``01.00.09_01_post_drop_actor_fairness_dispatch_index.sql``'s own header
-instructs operators to follow: apply the ``pre`` migration, roll the new
-worker release out across the fleet, and only once every worker is
-confirmed on the new release, apply the ``post`` migration. While that
-rollout is in its legitimate, instructed middle state -- pre applied,
-post intentionally not yet applied -- new-release workers starting up
-hit this guard and refuse to boot, even though the schema is exactly
-where the documented procedure says it should be.
+instructs operators to follow leaves the fleet in a deliberate middle
+state: apply the ``pre`` migration, roll the new worker release out
+across the fleet, and only once every worker is confirmed on the new
+release, apply the ``post`` migration. Counting a pending ``post``-phase
+migration as "schema behind code" would refuse boot for exactly the state
+the procedure requires, deadlocking every rolling deploy; counting a
+pending ``pre``-phase one as bootable would let a worker start against a
+schema missing structures the code already reads.
 
-``taskq.migrate.apply_pending`` already models this distinction (a
-``phase`` filter, and a refusal to apply ``post`` before its ``pre``
-counterpart -- see ``migrate.py``'s pre/post ordering guard around line
-598); the boot-time currency guard does not reuse or mirror it.
+``taskq.migrate.apply_pending`` models the same distinction (a ``phase``
+filter, and a refusal to apply ``post`` before its ``pre`` counterpart --
+see ``migrate.py``'s pre/post ordering guard).
 
-This test applies pending migrations restricted to ``phase="pre"`` --
+The first test applies pending migrations restricted to ``phase="pre"`` --
 precisely the state the ``01.00.09_01`` header instructs operators to
-leave the fleet in during the rollout window -- and then calls the boot
-guard directly. Per the documented/intended workflow this must NOT
-raise. Today it does, which is the bug.
+leave the fleet in during the rollout window -- and asserts boot succeeds.
+The second leaves a ``pre``-phase migration pending and asserts the guard
+still refuses boot.
 """
+
+import re
 
 import asyncpg
 import pytest
@@ -66,19 +62,14 @@ async def test_post_phase_migration_pending_matches_documented_rollout_state(
 async def test_worker_boots_during_documented_pre_applied_post_pending_window(
     pg_dsn: str,
 ) -> None:
-    """Red: boot guard refuses to start while only the pre-phase migration
-    has been applied, even though that is exactly the state the
-    01.00.09_01 post-migration header instructs operators to leave the
-    fleet in during a phased rollout.
+    """Boot succeeds while only the pre-phase migration has been applied --
+    exactly the state the 01.00.09_01 post-migration header instructs
+    operators to leave the fleet in during a phased rollout.
 
-    Expected (per the documented pre/roll/post procedure): boot succeeds
-    -- a worker on the new release, running against a schema with the
-    pre-phase migration applied and the post-phase migration
-    intentionally not yet applied, is not a deployment mistake.
-
-    Actual: `_refuse_boot_on_pending_migrations` raises RuntimeError,
-    because it treats every undischarged migration key -- pre or post --
-    as "schema behind code".
+    Per the documented pre/roll/post procedure, a worker on the new
+    release running against a schema with the pre-phase migration applied
+    and the post-phase migration intentionally not yet applied is not a
+    deployment mistake, so the guard must not raise.
     """
     schema = _SCHEMA_LABEL
 
@@ -120,8 +111,7 @@ async def test_worker_boots_during_documented_pre_applied_post_pending_window(
         except RuntimeError as exc:
             pytest.fail(
                 "worker boot refused during the documented pre-applied/"
-                "post-pending rollout window (issue #197): "
-                f"{exc}"
+                f"post-pending rollout window: {exc}"
             )
     finally:
         await pool.close()
@@ -170,7 +160,7 @@ async def test_worker_refuses_boot_while_a_pre_phase_migration_is_still_pending(
             notify_conn=None,
             leader_conn=None,
         )
-        with pytest.raises(RuntimeError, match="01.00.09_01:pre"):
+        with pytest.raises(RuntimeError, match=re.escape("01.00.09_01:pre")):
             await _refuse_boot_on_pending_migrations(deps, settings)
     finally:
         await pool.close()

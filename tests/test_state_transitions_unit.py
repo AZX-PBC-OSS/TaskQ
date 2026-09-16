@@ -30,6 +30,7 @@ async def _enqueue_and_dispatch(
     retry_kind: RetryKind = "transient",
     schedule_to_close: datetime | None = None,
     scheduled_at: datetime = _START,
+    retry_jitter: float | None = None,
 ) -> tuple[JobId, UUID]:
     # Register the actor so dispatch_batch finds it (mirrors PG's
     # actor_config requirement — candidates come FROM the registry).
@@ -41,6 +42,7 @@ async def _enqueue_and_dispatch(
         retry_kind=retry_kind,
         schedule_to_close=schedule_to_close,
         scheduled_at=scheduled_at,
+        retry_jitter=retry_jitter,
     )
     await backend.enqueue(args)
     worker_id = backend._worker_id  # type: ignore[reportPrivateUsage] # Why: test-only private access for dispatch_batch
@@ -786,8 +788,13 @@ async def test_running_to_pending_bypass_reclaim(
     memory_jobs: InMemoryBackend,
 ) -> None:
     """running → pending [BYPASS] via reclaim_expired_locks (retries remain, scheduled_at = now + 5s, lock fields cleared)."""
+    # retry_jitter=0.0 doubles the fleet randomness at the boundary: the
+    # sweep stamps the row's own retry-curve backoff (mirroring
+    # _RECLAIM_RAW_BACKOFF_SQL's per-row random()), so a jittered row
+    # reschedules to ANY instant in the envelope and the exact-timestamp
+    # assertion below could never be deterministic against one.
     job_id, _worker_id = await _enqueue_and_dispatch(
-        memory_jobs, max_attempts=3, retry_kind="transient"
+        memory_jobs, max_attempts=3, retry_kind="transient", retry_jitter=0.0
     )
 
     row = await memory_jobs.get(job_id)

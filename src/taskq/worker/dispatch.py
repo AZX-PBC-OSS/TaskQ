@@ -17,7 +17,7 @@ import time
 from collections.abc import Mapping, Sequence
 from contextlib import AsyncExitStack
 from datetime import timedelta
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Final, cast
 from uuid import UUID
 
 import asyncpg
@@ -49,6 +49,9 @@ from taskq.ratelimit.refs import KeyedReservationRef
 from taskq.ratelimit.registry import RateLimitRegistry, queue_concurrency_reservation_name
 from taskq.ratelimit.reservation import ConcurrencyReservation
 from taskq.retry import ActorConfigLike
+from taskq.worker._bootstrap import (  # pyright: ignore[reportPrivateUsage]  # Why: _registered_connection_init_hook is the single reader of the registry half of the with_connection_init channel; bootstrap uses it at pool build and dispatch needs the same probe for pools bootstrap did not build. No cycle: _bootstrap does not import dispatch.
+    _registered_connection_init_hook,
+)
 from taskq.worker._consumer import consume_one_job
 from taskq.worker._handlers import (
     _TERMINAL_WRITE_INFRA_EXCEPTIONS,  # pyright: ignore[reportPrivateUsage]  # Why: dispatch_one_job's direct-call path for _handle_generic_exception needs the same infra guard as _run_terminal_path to prevent false terminal Redis publishes and exception mislabeling.
@@ -72,18 +75,31 @@ logger: structlog.stdlib.BoundLogger = get_logger(__name__)
 
 
 class SlotPoolAcquireError(Exception):
-    """A consumer slot could not acquire its transaction connection.
+    """A consumer slot could not obtain a usable transaction connection.
 
     Infrastructure, not a job outcome: the job is already claimed and
     recovers by lock-lease expiry, so the consumer loop must not count
-    this as a job failure. The bounded acquire that raised is recorded
-    and logged at the raise site; this type exists so the loop can route
-    it around the failure accounting. The underlying cause stays chained
-    (``__cause__``).
+    this as a job failure. The bounded acquire (or slot-connection init
+    hook) that raised is recorded and logged at the raise site; this type
+    exists so the loop can route it around the failure accounting. The
+    underlying cause stays chained (``__cause__``).
     """
 
-    def __init__(self, *, acquire_timeout: float) -> None:
-        super().__init__(f"could not acquire a slot-pool connection within {acquire_timeout}s")
+    def __init__(self, *, acquire_timeout: float, detail: str | None = None) -> None:
+        super().__init__(
+            detail
+            if detail is not None
+            else f"could not acquire a slot-pool connection within {acquire_timeout}s"
+        )
+
+
+#: Marker set on a slot connection once the registration's declared init
+#: hook has been applied to it by the dispatch repair path — the
+#: exactly-once-per-physical-connection record for pools bootstrap did not
+#: build (asyncpg connections are ``__slots__``-sealed with no read-back of
+#: applied setup, so the marker is the only place the applied state can
+#: live on an injected pool's connection).
+_SLOT_CONN_INIT_APPLIED_ATTR: Final[str] = "taskq_slot_conn_init_applied"
 
 
 def _to_consumed_outcome(attempt_outcome: str) -> ConsumedOutcome:
@@ -131,6 +147,75 @@ def _effective_reservations(
         if rl_registry.has_reservation(queue_cap_name):
             return [queue_cap_name, *reservations]
     return reservations
+
+
+async def _ensure_registered_init_on_slot_conn(
+    conn: ConnLike,
+    *,
+    deps: WorkerDeps,
+    registry: ProviderRegistry,
+    acquire_timeout: float,
+    job_id: UUID,
+) -> None:
+    """Carry the registration's declared init hook onto a slot connection the
+    pool never applied it to — exactly once per physical connection.
+
+    Bootstrap threads the hook declared on the LOOP-scope connection's
+    factory registration (:func:`taskq.connections.with_connection_init`,
+    or :func:`taskq.auth.make_dedicated_conn_factory`'s ``setup``) into the
+    slot pool's ``init=``, so a bootstrap-built pool's connections carry it
+    from connect time; ``deps.slot_pool_connection_init`` records that, and
+    this function then returns on a single attribute read — the hook is
+    never applied twice to one physical connection. A pool bootstrap did
+    not open (an injected/foreign pool) leaves that record ``None`` while
+    handing out bare connections: the actor's DI would resolve a connection
+    missing the registered setup — codecs, session configuration — and
+    silently diverge from what the application configured. For that shape
+    the hook is applied here, once per physical connection, marked on the
+    connection itself.
+
+    Hot path: with no hook declared, or a pool that already carries it,
+    this costs the attribute read plus the registry probe (dict lookups) —
+    no await, no allocation, no wrapper around the connection.
+
+    A hook failure is connect-time infrastructure, never a job outcome: the
+    connection is terminated (never released back to serve a sibling slot
+    half-configured — the same rule ``with_connection_init`` applies to the
+    LOOP connection), the failure is logged, and the job recovers by
+    lock-lease expiry via :class:`SlotPoolAcquireError`.
+    """
+    if deps.slot_pool_connection_init is not None:
+        return
+    hook = _registered_connection_init_hook(registry)
+    if hook is None or getattr(conn, _SLOT_CONN_INIT_APPLIED_ATTR, False) is True:
+        return
+    # Why the cast: ConnLike is the object-typed runtime alias for
+    # Connection | PoolConnectionProxy, and the hook's contract is the one
+    # asyncpg's own init= receives — the proxy forwards it to the physical
+    # connection. The marker setattr on the repair path targets injected
+    # pools' connections (bootstrap-built pools never reach it); asyncpg's
+    # __slots__-sealed Connection could not carry the marker, which is fine:
+    # that shape always takes the deps-recorded early return above.
+    target = cast(asyncpg.Connection, conn)
+    try:
+        await asyncio.wait_for(hook(target), timeout=acquire_timeout)
+    except Exception as exc:
+        target.terminate()
+        logger.error(
+            "slot-conn-init-hook-failed",
+            kind="slot_conn_init_hook_failed",
+            job_id=str(job_id),
+            error_class=type(exc).__name__,
+            error_message=str(exc),
+        )
+        raise SlotPoolAcquireError(
+            acquire_timeout=acquire_timeout,
+            detail=(
+                "the registered connection's declared init hook failed on a "
+                f"slot-pool connection ({type(exc).__name__}: {exc})"
+            ),
+        ) from exc
+    setattr(conn, _SLOT_CONN_INIT_APPLIED_ATTR, True)
 
 
 async def dispatch_one_job(
@@ -340,6 +425,19 @@ async def dispatch_one_job(
                     )
 
             conn_stack.push_async_callback(_release_slot_conn)
+            # The acquired connection must carry the registered connection's
+            # declared setup before the actor's DI can receive it. A
+            # bootstrap-built pool applied it at connect time (recorded on
+            # deps); an injected/foreign pool did not — repair that here,
+            # once per physical connection. Armed release first: a failed
+            # hook terminates the connection and the unwind must own it.
+            await _ensure_registered_init_on_slot_conn(
+                acquired,
+                deps=deps,
+                registry=registry,
+                acquire_timeout=acquire_timeout,
+                job_id=job.id,
+            )
             # Per-job binding: this enqueuer's writes join the slot's
             # transaction and its buffers are this job's alone, so a
             # sibling slot's flush/discard/drain can never reach them.

@@ -23,6 +23,7 @@ import structlog
 import typer
 
 from taskq import migrate as migrate_mod
+from taskq._advisory import DEADLINE_ERRORS
 from taskq._close import (
     CLOSE_TIMEOUT_SECS,
     close_conn_bounded,
@@ -1005,8 +1006,13 @@ async def _actor_config_move_queue(
     except ValueError as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=2) from None
-    except asyncpg.exceptions.QueryCanceledError:
-        # A drain batch hit its own statement_timeout. The batches that
+    except DEADLINE_ERRORS:
+        # A drain batch ran out of its deadline — server-side
+        # (statement_timeout) or client-side (dropped connection, cancelled
+        # await). Both are the same fact to an operator: this batch did not
+        # land. Catching the named family rather than spelling the pair here
+        # is what keeps the client half from escaping as an untyped error.
+        # The batches that
         # committed before it are real progress and the drain's queue
         # predicate skips rows already moved, so the only action is to run
         # the command again — which is a refusal to report, not a crash.

@@ -871,15 +871,6 @@ class WorkerSettings(TaskQSettings):
         "transient oversubscription — the setting governs the steady state "
         "so the common case never pays the expansion round trip.",
     )
-    dispatch_scope_by_home_queue: bool = Field(
-        default=False,
-        description="TASKQ_DISPATCH_SCOPE_BY_HOME_QUEUE. When True, restrict "
-        "per_actor_capacity to actors whose home queue (actor_config.queue) "
-        "the worker subscribes to. Lowers per-cycle probe count at the cost "
-        "of not dispatching enqueue(queue=...) override jobs whose actor's "
-        "home queue is not subscribed. Default False (override-safe).",
-    )
-
     # -- Admission row-lock budgets ---------------------------------------
     # Defaults are the values of the rate-limit package's
     # DEFAULT_TOKEN_BUCKET_LOCK_TIMEOUT_MS /

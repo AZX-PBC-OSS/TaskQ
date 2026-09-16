@@ -16,6 +16,7 @@ from hypothesis import example, given, settings
 from hypothesis import strategies as st
 
 from taskq._ids import new_base62, new_uuid
+from taskq.retry import RetryPolicy, _compute_reclaim_backoff
 from taskq.settings import WorkerSettings
 from taskq.worker.deps import WorkerDeps
 
@@ -162,15 +163,38 @@ async def test_property_single_leader_invariant(
         _settle(pods, lock_simulator)
 
 
-def _scheduled_at_match(row_a: object, row_b: object) -> bool:
-    """Compare scheduled_at with tolerance for pending-status rows.
+def _scheduled_at_match(row_a: object, row_b: object, expected_delta: timedelta) -> bool:
+    """Compare scheduled_at for pending rows, adjusted for each row's own
+    derived delay.
 
     When a job transitions to 'pending', both isolate_self and
-    sweep_expired_locks compute ``clock_timestamp() + 5s`` in two separate
-    statements, so the comparison window is the cross-statement window (see
-    _CROSS_STATEMENT_WINDOW). For crashed rows, ``scheduled_at`` is
-    unchanged, so an exact match is expected.
+    sweep_expired_locks stamp ``clock_timestamp()`` plus the row's own
+    retry-policy delay -- the shared ``_RECLAIM_DELAY_SQL`` fragment
+    (base/cap/backoff-kind/jitter from the row's stamped policy columns,
+    capped at the lesser of the row's cap and ``max_retry_backoff``) --
+    in two separate statements. The delay's jitter term is a deterministic
+    per-(job, attempt) hash fraction (``_RECLAIM_JITTER_FRACTION_SQL``), so
+    each row's delay is fixed -- but the two rows under comparison carry
+    DIFFERENT ids, so their derived delays legitimately differ by the
+    id-hash difference (that difference IS the fleet spread, and it can
+    exceed the window at deep attempts). The comparison therefore subtracts
+    the expected per-row delay delta -- computed through the Python twin
+    ``taskq.retry._compute_reclaim_backoff``, pinned bit-for-bit against
+    the SQL fragment in test_reclaim_backoff_policy_parity.py -- and the
+    window absorbs only the drift between the two statements'
+    ``clock_timestamp()`` reads (see _CROSS_STATEMENT_WINDOW). For crashed
+    rows, ``scheduled_at`` is unchanged, so an exact match is expected.
     """
+    sa: datetime | None = row_a["scheduled_at"]  # type: ignore[index] # Why: asyncpg.Record supports dict-style access but pyright doesn't see it.
+    sb: datetime | None = row_b["scheduled_at"]  # type: ignore[index] # Why: same — asyncpg.Record dict-like access.
+    status: str = row_a["status"]  # type: ignore[index] # Why: same.
+    if status == "pending":
+        return (
+            sa is not None
+            and sb is not None
+            and abs((sa - sb) - expected_delta) < _CROSS_STATEMENT_WINDOW
+        )
+    return bool(sa == sb)
     sa: datetime | None = row_a["scheduled_at"]  # type: ignore[index] # Why: asyncpg.Record supports dict-style access but pyright doesn't see it.
     sb: datetime | None = row_b["scheduled_at"]  # type: ignore[index] # Why: same — asyncpg.Record dict-like access.
     status: str = row_a["status"]  # type: ignore[index] # Why: same.
@@ -261,6 +285,7 @@ def _build_select_sql(schema: str) -> str:
 @example(params=_pinned(1, 3, "transient", 1, -30))
 @example(params=_pinned(1, 3, "transient", 1, -200))
 @example(params=_pinned(2, 3, "transient", 2, -30))
+@example(params=_pinned(7, 9, "transient", 0, -276))
 async def test_property_sweep_equivalence(
     pg_dsn: str,
     params: tuple[int, int, str, int, int],
@@ -366,6 +391,26 @@ async def test_property_sweep_equivalence(
             assert row_a is not None
             assert row_b is not None
 
+            # Each row's re-pend delay is derived from its own (id,
+            # attempt) — RetryPolicy()'s field defaults, which the
+            # migration's retry-curve column defaults reproduce verbatim —
+            # so the two rows' stamped instants differ by exactly the
+            # delta of their derived delays, plus cross-statement clock
+            # drift. The comparison subtracts the derived delta (the twin
+            # is pinned bit-for-bit against the SQL fragment), leaving the
+            # window to absorb only the drift.
+            expected_delta = _compute_reclaim_backoff(
+                RetryPolicy(),
+                attempt,
+                job_id=job_id_a,
+                max_retry_backoff=deps.settings.max_retry_backoff,
+            ) - _compute_reclaim_backoff(
+                RetryPolicy(),
+                attempt,
+                job_id=job_id_b,
+                max_retry_backoff=deps.settings.max_retry_backoff,
+            )
+
             # Conservative classification (see docstring): "equivalence"
             # requires deep even at the pre-sweep clock minus the skew
             # margin; "divergence" requires not-deep even at the post-sweep
@@ -386,7 +431,7 @@ async def test_property_sweep_equivalence(
                 assert row_a["status"] == row_b["status"]
                 assert row_a["locked_by_worker"] == row_b["locked_by_worker"]
                 assert row_a["lock_expires_at"] == row_b["lock_expires_at"]
-                assert _scheduled_at_match(row_a, row_b)
+                assert _scheduled_at_match(row_a, row_b, expected_delta)
                 if row_a["finished_at"] is not None:
                     assert row_b["finished_at"] is not None
                     assert (
@@ -408,6 +453,6 @@ async def test_property_sweep_equivalence(
                     assert row_a["status"] == row_b["status"]
                     assert row_a["locked_by_worker"] == row_b["locked_by_worker"]
                     assert row_a["lock_expires_at"] == row_b["lock_expires_at"]
-                    assert _scheduled_at_match(row_a, row_b)
+                    assert _scheduled_at_match(row_a, row_b, expected_delta)
     finally:
         await stack.aclose()

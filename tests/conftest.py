@@ -197,6 +197,59 @@ def _reset_oidc_saml_cached() -> Iterator[None]:  # pyright: ignore[reportUnused
     SAMLSettings.reset_cached()
 
 
+@pytest.fixture(autouse=True)
+def _reset_web_admin_caches(request: pytest.FixtureRequest) -> Iterator[None]:  # pyright: ignore[reportUnusedFunction]  # Why: autouse fixture consumed implicitly by the test runner.
+    """Reset the admin package's module-global TTL caches around every test.
+
+    ``taskq.web.admin._factory`` keeps two process-wide caches keyed off the
+    monotonic clock with no built-in per-test seam: the Redis health probe
+    (``_redis_health_cache``, 5 s TTL) and the app-to-database clock offset
+    (``_db_clock_offset``, 30 s TTL); ``taskq.web.admin.ops`` adds the run-now
+    cooldown (``_last_schedule_run``, 10 s). A test that drives the degraded
+    path (a failing ``ping``) leaves ``ok=False`` cached for up to five
+    seconds; under xdist the next badge test scheduled on the same worker
+    inside that window reads the poisoned entry and renders
+    "polling-degraded" for a healthy client (the
+    ``test_real_time_badge_with_redis`` flake). Production caching behavior is
+    unchanged — this restores construction state between tests, the reset
+    ``tests/web_admin/test_realtime_badge.py`` applies file-locally, promoted
+    here so every admin test (including ``tests/test_web_admin.py``, which
+    lives outside that package's conftest) is covered. The singletons are
+    mutated in place, never rebound: importers hold direct references.
+    """
+    # Why: e2e runs the admin UI in containers — the in-process caches are irrelevant.
+    if "e2e" in request.node.keywords:
+        yield
+        return
+    try:
+        from taskq.web.admin import _factory as admin_factory
+        from taskq.web.admin import ops as admin_ops
+    except ImportError:
+        # The fastapi extra is not installed — nothing to reset.
+        yield
+        return
+
+    def _reset() -> None:
+        cache = admin_factory._redis_health_cache  # pyright: ignore[reportPrivateUsage]  # Why: test isolation seam for module-global TTL caches with no other reset surface.
+        cache.ok = False
+        cache.expires_at = 0.0
+        offset = admin_factory._db_clock_offset  # pyright: ignore[reportPrivateUsage]  # Why: same seam as above.
+        offset.seconds = 0.0
+        offset.expires_at = 0.0
+        # The run-now cooldown (10 s, keyed on the loop clock) is the same
+        # shape: module-global, TTL'd, no reset. Fresh schedule UUIDs per test
+        # already keep it from colliding across tests; clearing it here keeps
+        # the whole class uniformly closed rather than leaning on key-space
+        # luck.
+        admin_ops._last_schedule_run.clear()  # pyright: ignore[reportPrivateUsage]  # Why: same seam as above.
+
+    _reset()
+    try:
+        yield
+    finally:
+        _reset()
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _no_developer_dotfiles(  # pyright: ignore[reportUnusedFunction]  # Why: autouse fixture consumed implicitly by the test runner; pyright does not track fixture usage.
     tmp_path_factory: pytest.TempPathFactory,

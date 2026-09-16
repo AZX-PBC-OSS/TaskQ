@@ -17,7 +17,7 @@ Covers:
 """
 
 import asyncio
-from collections.abc import AsyncIterator, Coroutine, Generator
+from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Generator
 from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any
 from unittest.mock import MagicMock
@@ -35,11 +35,13 @@ from taskq._di.scopes import (
     LoopScope,
     ProcessScope,
     ThreadScope,
+    build_actor_scope,
 )
 from taskq._ids import new_uuid
 from taskq.actor import ActorRef
 from taskq.backend._protocol import JobRow
 from taskq.client._enqueuer import SubJobEnqueuer
+from taskq.connections import with_connection_init
 from taskq.context import JobContext
 from taskq.exceptions import Snooze
 from taskq.retry import RetryPolicy
@@ -50,7 +52,6 @@ from taskq.testing.jobs import make_job_row
 from taskq.worker.cancel import ActiveJobRegistry
 from taskq.worker.dispatch import (
     SlotPoolAcquireError,
-    build_actor_scope,
     dispatch_one_job,
 )
 
@@ -82,6 +83,12 @@ class _FakeWorkerDeps:
         self.active_jobs = ActiveJobRegistry()
         self.worker_pool: asyncpg.Pool | None = None
         self.slot_pool: asyncpg.Pool | None = None
+        # Mirrors WorkerDeps.slot_pool_connection_init: None = this pool's
+        # connections are not known to carry the registration's hook (the
+        # injected-pool shape every slot-pool test in this file drives).
+        self.slot_pool_connection_init: Callable[[asyncpg.Connection], Awaitable[None]] | None = (
+            None
+        )
         # Why load_from_dict, not WorkerSettings(): the bare constructor
         # skips post_load, leaving every field None — including the ones
         # the consumer reads on the success path (result_max_bytes).
@@ -2049,14 +2056,15 @@ class _RegisteredConn(asyncpg.Connection):
     """Stand-in for a user's own fully-configured registered connection.
 
     Subclassing ``asyncpg.Connection`` mirrors a custom ``connection_class``;
-    the sentinel attribute stands in for whatever per-connection setup the
-    registration performed -- ``set_type_codec``, an ``init``/``setup``
-    callback, ``server_settings`` such as ``search_path``, a ``SET ROLE``.
-    All of that is observable only on this object, exactly as a real codec
-    registration or session GUC would be.
+    the ``has_user_setup`` sentinel stands in for whatever per-connection
+    setup the registration declared -- a ``set_type_codec`` registration, an
+    ``init``/``setup`` callback, session configuration. It is applied by the
+    declared hook (``_registered_conn_setup`` below): ``with_connection_init``
+    applies it to the registered connection itself, and a correct per-slot
+    path replays it onto slot connections.
     """
 
-    def __new__(cls, *a: object, **kw: object) -> "_RegisteredConn":
+    def __new__(cls) -> "_RegisteredConn":
         # asyncpg.Connection.__init__ requires live protocol machinery that
         # a unit test has no way to supply; __new__ alone yields an instance
         # of the right type without running it.
@@ -2064,10 +2072,23 @@ class _RegisteredConn(asyncpg.Connection):
 
     def __init__(self) -> None:
         # Deliberately does not call super().__init__() -- see __new__.
-        self.has_user_setup = True
         # asyncpg.Connection.__del__ reads _aborted; set it so a GC'd
         # instance built this way does not raise from the finalizer.
         self._aborted = True
+
+
+async def _registered_conn_setup(conn: asyncpg.Connection) -> None:
+    """The registration's declared per-connection setup hook.
+
+    Setting the attribute is the unit-test-observable stand-in for a codec
+    registration or a session GUC, neither of which a live-free unit test
+    can observe.
+    """
+    setattr(conn, "has_user_setup", True)  # noqa: B010  # Why: pyright strict rejects the attribute assignment on asyncpg.Connection (unknown attribute); setattr is the typed-boundary-safe form for the sentinel.
+
+
+async def _registered_conn_factory() -> asyncpg.Connection:
+    return _RegisteredConn()
 
 
 class _BareSetupPool:
@@ -2091,25 +2112,31 @@ class _BareSetupPool:
 
 
 async def test_slot_connection_carries_registered_connection_setup() -> None:
-    """When a LOOP-scope ``asyncpg.Connection`` is registered and the per-slot
-    transaction pool is active, the connection the actor's DI resolves must
-    still carry the setup performed on the registered connection.
+    """When a LOOP-scope ``asyncpg.Connection`` registration declares its
+    per-connection setup and the per-slot transaction pool is active, the
+    connection the actor's DI resolves must still carry that setup.
 
     The per-slot pool exists so concurrent slots never interleave operations
-    on one connection, but the connections it hands out are built from the
-    direct DSN alone. Any type codec, ``init``/``setup`` callback, custom
-    ``connection_class``, ``server_settings`` entry, or login role the
-    registration established is absent from them, so an actor silently reads
-    and writes through a connection that decodes values differently, resolves
-    a different ``search_path``, or runs as a different role than the one the
-    application configured. That is data corruption with no error raised, and
-    it appears at any ``max_concurrency`` above one.
+    on one connection. A pool the worker bootstrap opens inherits the
+    registration's declared init hook at connect time (the pool factory's
+    ``init=``), but the dispatch path also accepts pools bootstrap did not
+    open — injected straight onto the deps, as below. Connections such a
+    pool hands out are bare: any type codec, ``init``/``setup`` callback,
+    custom ``connection_class``, or session configuration the registration
+    declared is absent from them, so an actor silently reads and writes
+    through a connection that decodes values differently than the one the
+    application configured. That is data corruption with no error raised,
+    and it appears at any ``max_concurrency`` above one.
 
-    Per-slot isolation and registered-connection setup are not in tension: a
-    correct slot pool derives its connection setup from the registration
-    rather than discarding it.
+    Per-slot isolation and registered-connection setup are not in tension:
+    dispatch replays the registration's declared hook onto the slot
+    connection — exactly once per physical connection — rather than
+    discarding it. (A raw ``register_value`` connection cannot declare a
+    replayable hook — the driver seals per-connection state — so the
+    registration here declares it through ``with_connection_init``; the raw
+    channel's loudly-warned non-inheritance boundary is pinned in
+    tests/test_slot_pool.py.)
     """
-    registered_conn = _RegisteredConn()
     observed_conn: object | None = None
 
     async def my_actor(
@@ -2122,7 +2149,11 @@ async def test_slot_connection_carries_registered_connection_setup() -> None:
         return {}
 
     registry = ProviderRegistry()
-    registry.register_value(asyncpg.Connection, Scope.LOOP, registered_conn)
+    registry.register_factory(
+        asyncpg.Connection,
+        Scope.LOOP,
+        with_connection_init(_registered_conn_factory, _registered_conn_setup),
+    )
 
     async with _ScopeStack(registry) as scopes:
         fake_backend = FakeBackend()

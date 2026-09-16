@@ -13,6 +13,7 @@ property test — compute_next_fire_after always returns a datetime
 import asyncio
 import contextlib
 import threading
+import time
 from collections.abc import Iterator
 from dataclasses import FrozenInstanceError
 from datetime import UTC, datetime
@@ -1089,6 +1090,52 @@ async def testresolve_payload_hung_factories_never_strand_actor_pool_threads() -
             "bodies run on. Each hung fire permanently removes one thread from "
             "actor execution capacity, so a single stuck schedule degrades "
             "unrelated work until the pool is exhausted"
+        )
+    finally:
+        _HUNG_FACTORY_RELEASE.set()
+
+
+@pytest.mark.asyncio
+async def testresolve_payload_healthy_factory_stalls_once_the_cron_pool_saturates() -> None:
+    """The cron-dedicated factory pool is itself finite (_FACTORY_POOL_SIZE),
+    and a stranded thread never comes back — so once that many schedules
+    have a hung sync factory, a healthy schedule's factory call queues
+    behind them on cron's own pool and can miss its deadline for a reason
+    that has nothing to do with its own behavior. The dedicated pool
+    isolates cron from unrelated actor-pool contention (the fix for the
+    thread-pool sibling issue) but does not bound cron's OWN contention
+    against itself: the same "queued behind unrelated blocked work" shape
+    the actor-pool fix eliminated re-appears one level in, once enough
+    hung schedules accumulate parked threads.
+    """
+    _HUNG_FACTORY_RELEASE.clear()
+    _HUNG_PARKED_THREADS.clear()
+    dotted = f"{_hung_sync_factory.__module__}.{_hung_sync_factory.__qualname__}"
+    try:
+        # Saturate the dedicated cron factory pool with _FACTORY_POOL_SIZE
+        # hung calls -- each one permanently strands its worker thread.
+        pool_size = 4  # taskq.cron._FACTORY_POOL_SIZE
+        for _ in range(pool_size):
+            with pytest.raises(TimeoutError):
+                await resolve_payload(dotted, {}, timeout_s=0.05)
+        assert len(_HUNG_PARKED_THREADS) == pool_size
+
+        # Now a completely healthy, instantaneous factory tries to run.
+        # If the dedicated pool is saturated by the stranded threads above,
+        # this call queues behind them and can miss even a generous budget.
+        start = time.monotonic()
+        with pytest.raises(TimeoutError):
+            await resolve_payload(
+                f"{_trivial_sync_factory.__module__}.{_trivial_sync_factory.__qualname__}",
+                {},
+                timeout_s=0.5,
+            )
+        elapsed = time.monotonic() - start
+        assert elapsed >= 0.4, (
+            f"expected the healthy factory to be starved by the saturated "
+            f"cron pool (elapsed={elapsed:.3f}s) -- if it resolved quickly "
+            f"the pool must have had a free worker, meaning this hypothesis "
+            f"does not reproduce"
         )
     finally:
         _HUNG_FACTORY_RELEASE.set()

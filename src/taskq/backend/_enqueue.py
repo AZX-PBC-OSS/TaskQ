@@ -7,7 +7,7 @@
 wrappers that delegate.
 """
 
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -16,7 +16,11 @@ from typing import TYPE_CHECKING, Any, Final
 from uuid import UUID
 
 import structlog
-from asyncpg.exceptions import LockNotAvailableError, UniqueViolationError
+from asyncpg.exceptions import (
+    InternalClientError,
+    LockNotAvailableError,
+    UniqueViolationError,
+)
 
 from taskq._advisory import (
     _LOCK_TIMEOUT_READ_SQL,  # pyright: ignore[reportPrivateUsage]  # Why: the one implementation of the lock_timeout GUC statements, shared with the advisory/sweep machinery — a local copy would drift from the discipline it mirrors.
@@ -29,6 +33,7 @@ from taskq.backend._protocol import (
     JobRow,
     batch_cap_groups,
     first_duplicate_idempotency_pair,
+    first_singleton_collision_actor,
 )
 from taskq.backend._records import (
     _job_row_from_record,
@@ -150,6 +155,22 @@ _COMPOSITE_IDEMPOTENCY_DETAIL_TEMPLATE = (
     "Key (idempotency_scope, idempotency_key)=({scope}, {key}) already exists."
 )
 
+# The singleton index's detail line is single-column ("Key (actor)=(...)
+# already exists."), so it has no positional ambiguity — but values still
+# render raw and unquoted, and a localized or truncated message renders
+# nothing matchable at all. Like the composite template above, this is
+# only the residual fallback of _attribute_singleton_collision, never the
+# source of truth.
+_SINGLETON_DETAIL_TEMPLATE = "Key (actor)=({actor}) already exists."
+
+#: The actor named when a jobs_singleton_uniq violation cannot be
+#: attributed to any batch item even after the post-abort lookup and the
+#: detail match (the blocking row committed and left the live status set
+#: in the gap between the abort and the lookup, and the server's detail
+#: text was unusable). The typed refusal still raises — an operator gets
+#: the collision class without a made-up actor name (never a wrong actor).
+_UNATTRIBUTED_SINGLETON_ACTOR: Final[str] = "<unattributed>"
+
 
 @asynccontextmanager
 async def _optional_savepoint(conn: ConnLike, *, enabled: bool) -> AsyncGenerator[None, None]:
@@ -176,12 +197,56 @@ async def _optional_savepoint(conn: ConnLike, *, enabled: bool) -> AsyncGenerato
         yield
 
 
+async def _with_fresh_connection_retry[T](
+    op: Callable[[], Awaitable[T]],
+    *,
+    operation: str,
+) -> T:
+    """Run *op*, retrying once when the pool hands out a just-killed connection.
+
+    A pooled connection whose backend Postgres has terminated (restart,
+    failover, ``pg_terminate_backend``) learns of its death in two
+    event-loop steps: the server's FATAL ErrorResponse arrives first and —
+    with no in-flight query to attribute it to — parks asyncpg's protocol
+    in its error-consume state; only a later ``connection_lost`` callback
+    marks the connection closed. In the gap, ``Pool.acquire``'s
+    ``is_closed()`` guard still passes, so the pool can hand a caller a
+    connection whose first statement fails locally with
+    ``asyncpg.InternalClientError`` ("cannot switch to state 15; another
+    operation (2) is in progress") — a driver-internal state error that
+    matches no except clause written against the database's own error
+    types, for a condition that is physically a dropped connection. The
+    poisoned state is not visible through asyncpg's public API before the
+    first statement (the protocol's state is not exposed), so the
+    boundary treats that first-statement failure as what it is — a
+    transient connection loss — and retries once.
+
+    The retry always lands on a genuinely fresh connection: releasing the
+    poisoned one cannot complete (the pool's release-time reset query
+    fails on it the same way), so the release path terminates it and the
+    next acquire reconnects. The failure always precedes any write — the
+    poisoned protocol rejects the transaction's BEGIN itself — so one
+    retry cannot duplicate an enqueue. An ``InternalClientError`` from the
+    retry is a real driver state bug, not this race, and propagates.
+    """
+    try:
+        return await op()
+    except InternalClientError as exc:
+        logger.warning(
+            "pool-conn-dead-on-acquire",
+            kind="pool_conn_dead_on_acquire",
+            operation=operation,
+            error=repr(exc),
+        )
+        return await op()
+
+
 _DEDUP_WARN_PER_HIT_LIMIT: Final[int] = 3
 """Per-call ceiling on per-hit terminal-target dedup WARNINGs before the
 aggregate summary takes over (``_DedupWarnBudget``). The bound the
 batch-scale contract demands is small: a re-submitted 1000-item batch
-against 500 terminal targets must not emit 500 WARNINGs from one call
-(#140). Three per-hit lines plus the one summary line stays at four —
+    against 500 terminal targets must not emit 500 WARNINGs from one call.
+    Three per-hit lines plus the one summary line stays at four —
 under the pinned bound of five with headroom, and still three full
 per-hit samples (actor, key, status) for an operator triaging which
 identities are pinned to dead jobs."""
@@ -249,8 +314,8 @@ def _log_enqueue_dedup(row: JobRow, *, dedup_reason: str) -> None:
     scale, regardless of the log arm the hit took — and the batch-scale
     WARNING budget below cannot mute the rate signal with the lines.
 
-    At batch scale the terminal-target WARNING arm is bounded per call
-    (#140): when the current call carries a ``_DedupWarnBudget`` (the
+    At batch scale the terminal-target WARNING arm is bounded per call:
+    when the current call carries a ``_DedupWarnBudget`` (the
     batch tiers set one), the first ``_DEDUP_WARN_PER_HIT_LIMIT``
     terminal hits warn per-hit exactly as before and the rest are
     counted for the call's ONE summary WARNING
@@ -382,6 +447,64 @@ async def _attribute_copy_duplicate(
     if pair is not None:
         return pair
     return _attribute_duplicate_pair(detail, set(keyed))
+
+
+async def _attribute_singleton_collision(
+    conn: ConnLike,
+    sql: SqlTemplates,
+    admitted_args: list[EnqueueArgs],
+    detail: str | None,
+) -> str:
+    """Resolve the actor a ``jobs_singleton_uniq`` violation aborted on —
+    exactly, and independent of the driver's error text.
+
+    Same shape as :func:`_attribute_copy_duplicate`: runs on the conflict
+    branch only, after the savepoint wrapping the statement has rolled it
+    back, so the caller's transaction scope answers queries again. The
+    violating actor is always among the batch's singleton items (the
+    partial index is keyed on ``(actor)`` and covers no other row), and a
+    unique-violation report means the conflicting transaction committed,
+    so a fresh SELECT under READ COMMITTED sees every committed holder —
+    the batch's own contents plus that lookup name the actor exactly for
+    every in-batch repeat and every raced-against-storage collision, via
+    :func:`first_singleton_collision_actor`, the same pure rule the
+    in-memory mirror's batch preflight applies over its own store.
+
+    The residual cascade, in order, when the lookup comes back empty (the
+    blocking row committed and left the live status set in the gap between
+    the abort and the SELECT):
+
+    1. A batch carrying exactly ONE singleton actor cannot have violated
+       on any other actor — the index key makes that certain.
+    2. The server's detail rendering is matched against the batch's own
+       candidates (single-column key: no positional ambiguity), the same
+       last-word technique ``_attribute_duplicate_pair`` applies.
+    3. Both unusable (a localized or truncated message): degrade to the
+       ``<unattributed>`` sentinel — typed and honest, never a guessed
+       actor name.
+    """
+    singleton_actors = list(
+        dict.fromkeys(
+            args.actor for args in admitted_args if args.metadata.get("singleton") is True
+        )
+    )
+    stored: set[str] = set()
+    if singleton_actors:
+        recs = await conn.fetch(sql.enqueue_batch_fetch_singleton_blockers, singleton_actors)
+        stored = {str(rec["actor"]) for rec in recs}
+    actor = first_singleton_collision_actor(admitted_args, stored)
+    if actor is not None:
+        return actor
+    if len(singleton_actors) == 1:
+        return singleton_actors[0]
+    matches = [
+        candidate
+        for candidate in singleton_actors
+        if _SINGLETON_DETAIL_TEMPLATE.format(actor=candidate) == detail
+    ]
+    if len(matches) == 1:
+        return matches[0]
+    return _UNATTRIBUTED_SINGLETON_ACTOR
 
 
 async def _batch_cap_refusals(
@@ -1067,48 +1190,51 @@ async def _enqueue(
     unique_for_lock_timeout_ms: float = DEFAULT_UNIQUE_FOR_LOCK_TIMEOUT_MS,
     idempotency_lock_timeout_ms: float = DEFAULT_IDEMPOTENCY_LOCK_TIMEOUT_MS,
 ) -> JobRow:
-    try:
-        async with pool.acquire() as conn:
-            async with conn.transaction():
-                return await _enqueue_on_conn(
-                    conn,
-                    sql,
-                    schema,
-                    clock,
-                    args,
-                    max_pending_lock_timeout_ms=max_pending_lock_timeout_ms,
-                    unique_for_lock_timeout_ms=unique_for_lock_timeout_ms,
-                    idempotency_lock_timeout_ms=idempotency_lock_timeout_ms,
-                )
-    except _LegacyIdempotencyKeyConflictError as exc:
-        public = exc.to_public()
+    async def _attempt() -> JobRow:
+        try:
+            async with pool.acquire() as conn:
+                async with conn.transaction():
+                    return await _enqueue_on_conn(
+                        conn,
+                        sql,
+                        schema,
+                        clock,
+                        args,
+                        max_pending_lock_timeout_ms=max_pending_lock_timeout_ms,
+                        unique_for_lock_timeout_ms=unique_for_lock_timeout_ms,
+                        idempotency_lock_timeout_ms=idempotency_lock_timeout_ms,
+                    )
+        except _LegacyIdempotencyKeyConflictError as exc:
+            public = exc.to_public()
 
-    # One retry on a fresh transaction. If the violation was a same-pair
-    # race, the conflicting row is now committed (a unique-violation report
-    # means the other transaction committed) and the composite arbiter
-    # dedupes cleanly below. If it was genuine cross-scope reuse, the
-    # legacy index violates again and the public typed error is raised.
-    try:
-        async with pool.acquire() as conn:
-            async with conn.transaction():
-                return await _enqueue_on_conn(
-                    conn,
-                    sql,
-                    schema,
-                    clock,
-                    args,
-                    max_pending_lock_timeout_ms=max_pending_lock_timeout_ms,
-                    unique_for_lock_timeout_ms=unique_for_lock_timeout_ms,
-                    idempotency_lock_timeout_ms=idempotency_lock_timeout_ms,
-                )
-    except _LegacyIdempotencyKeyConflictError as exc:
-        logger.warning(
-            "scoped-idempotency-migration-pending",
-            actor=public.actor,
-            idempotency_key=public.idempotency_key,
-            idempotency_scope=public.idempotency_scope,
-        )
-        raise public from exc.original or exc
+        # One retry on a fresh transaction. If the violation was a same-pair
+        # race, the conflicting row is now committed (a unique-violation report
+        # means the other transaction committed) and the composite arbiter
+        # dedupes cleanly below. If it was genuine cross-scope reuse, the
+        # legacy index violates again and the public typed error is raised.
+        try:
+            async with pool.acquire() as conn:
+                async with conn.transaction():
+                    return await _enqueue_on_conn(
+                        conn,
+                        sql,
+                        schema,
+                        clock,
+                        args,
+                        max_pending_lock_timeout_ms=max_pending_lock_timeout_ms,
+                        unique_for_lock_timeout_ms=unique_for_lock_timeout_ms,
+                        idempotency_lock_timeout_ms=idempotency_lock_timeout_ms,
+                    )
+        except _LegacyIdempotencyKeyConflictError as exc:
+            logger.warning(
+                "scoped-idempotency-migration-pending",
+                actor=public.actor,
+                idempotency_key=public.idempotency_key,
+                idempotency_scope=public.idempotency_scope,
+            )
+            raise public from exc.original or exc
+
+    return await _with_fresh_connection_retry(_attempt, operation="enqueue")
 
 
 def _membership_batch_ids(args_list: list[EnqueueArgs]) -> list[UUID]:
@@ -1389,10 +1515,25 @@ async def _enqueue_batch(
             insert_cols = [[col[i] for i in keep] for col in insert_cols]
 
         try:
-            returning_recs = await conn.fetch(
-                sql.enqueue_batch,
-                *insert_cols,
-            )
+            # Why a savepoint around the INSERT when the batch carries
+            # singleton items: a jobs_singleton_uniq violation is a
+            # STATEMENT error that poisons the surrounding transaction,
+            # and the typed conversion below attributes the colliding
+            # actor with a post-abort SELECT that must run inside the
+            # caller's scope — the savepoint's rollback restores that
+            # scope before the lookup (the same discipline the
+            # single-enqueue path's savepoint-isolated singleton arm and
+            # the COPY path's keyed-batch wrapper follow). The happy path
+            # pays one SAVEPOINT/RELEASE pair per singleton-carrying
+            # batch; batches without singleton items cannot violate the
+            # partial index (its predicate is metadata @>
+            # '{"singleton": true}') and skip the wrapper entirely.
+            singleton_batch = any(args.metadata.get("singleton") is True for args in admitted_args)
+            async with _optional_savepoint(conn, enabled=singleton_batch):
+                returning_recs = await conn.fetch(
+                    sql.enqueue_batch,
+                    *insert_cols,
+                )
         except UniqueViolationError as exc:
             if exc.constraint_name == _LEGACY_IDEMPOTENCY_KEY_CONSTRAINT_NAME:
                 # Rolling-deploy overlap window (see
@@ -1411,6 +1552,30 @@ async def _enqueue_batch(
                     batch_size=len(admitted_args),
                 )
                 raise _LegacyIdempotencyKeyConflictError(detail=str(exc), original=exc) from exc
+            if exc.constraint_name == _SINGLETON_CONSTRAINT_NAME:
+                # Same typed refusal the single-enqueue path's Layer-2
+                # catch raises (blocking_job_id/retry_after stay None:
+                # this is a violation catch, not a preflight — no
+                # blocking row was fetched on the way in). The actor is
+                # resolved exactly from the batch's own contents plus the
+                # post-abort lookup, never parsed from the driver's
+                # detail text. The savepoint above has already rolled the
+                # INSERT back, so the whole-call atomicity is unchanged:
+                # nothing from the batch is admitted, and a caller-owned
+                # transaction survives the refusal usable.
+                actor = await _attribute_singleton_collision(conn, sql, admitted_args, exc.detail)
+                logger.info(
+                    "singleton-collision",
+                    actor=actor,
+                    blocking_job_id=None,
+                    detection_path="unique_violation_catch",
+                    batch_size=len(admitted_args),
+                )
+                raise SingletonCollisionError(
+                    actor=actor,
+                    blocking_job_id=None,
+                    retry_after=None,
+                ) from exc
             raise
 
         inserted_ids: set[UUID] = {rec["id"] for rec in returning_recs}
@@ -1453,7 +1618,7 @@ async def _enqueue_batch(
                 pair = (rec["idempotency_scope"], str(rec["idempotency_key"]))
                 existing_by_idem[pair] = rec
 
-        # The per-call dedup WARNING budget (#140): the loop below is the
+        # The per-call dedup WARNING budget: the loop below is the
         # only site this closure logs dedup hits, and exactly one of the
         # caller arms' assemblies runs to completion per call (a legacy
         # retry re-raises at the INSERT before reaching here), so a budget
@@ -1553,21 +1718,28 @@ async def _enqueue_batch(
             async with conn.transaction():
                 return await _insert_on_conn(conn)
 
-    try:
-        rows, refusals, refused_indices = await _attempt_pool()
-    except _LegacyIdempotencyKeyConflictError as exc:
-        public = exc.to_public()
-        # One retry on a fresh transaction (see _enqueue for the rationale).
-        # The first attempt's statement failure aborted its transaction, so
-        # nothing from it persisted and the whole batch re-executes cleanly;
-        # same-pair-raced items now dedupe via the composite arbiter and the
-        # follow-up fetch, while genuine cross-scope reuse violates the legacy
-        # index again and surfaces as the public typed error.
+    async def _attempt_pool_with_legacy_retry() -> tuple[
+        list[JobRow], list[MaxPendingExceededError], dict[str, list[int]]
+    ]:
         try:
-            rows, refusals, refused_indices = await _attempt_pool()
+            return await _attempt_pool()
         except _LegacyIdempotencyKeyConflictError as exc:
-            logger.warning("scoped-idempotency-migration-pending-batch")
-            raise public from exc.original or exc
+            public = exc.to_public()
+            # One retry on a fresh transaction (see _enqueue for the rationale).
+            # The first attempt's statement failure aborted its transaction, so
+            # nothing from it persisted and the whole batch re-executes cleanly;
+            # same-pair-raced items now dedupe via the composite arbiter and the
+            # follow-up fetch, while genuine cross-scope reuse violates the legacy
+            # index again and surfaces as the public typed error.
+            try:
+                return await _attempt_pool()
+            except _LegacyIdempotencyKeyConflictError as exc:
+                logger.warning("scoped-idempotency-migration-pending-batch")
+                raise public from exc.original or exc
+
+    rows, refusals, refused_indices = await _with_fresh_connection_retry(
+        _attempt_pool_with_legacy_retry, operation="enqueue_batch"
+    )
     # The pool transaction has committed: raise the partition refusal
     # only after the admitted items are durable. A blind whole-batch
     # retry from here would duplicate them — the typed error carries the
@@ -1733,19 +1905,23 @@ async def _enqueue_batch_fast(
 
         try:
             # Why a savepoint around the COPY when the batch carries
-            # idempotency keys: a unique violation is a STATEMENT error
-            # that poisons the surrounding transaction, and the exact
-            # attribution below resolves the conflicting row with a
-            # targeted SELECT that must run inside the caller's scope —
-            # the savepoint's rollback restores that scope before the
-            # lookup (the same discipline the single-enqueue path's
-            # savepoint-isolated arms follow). The happy path pays one
-            # SAVEPOINT/RELEASE pair per batch, never per row; batches
-            # without idempotency keys cannot violate the partial
-            # composite index (its predicate is idempotency_key IS NOT
-            # NULL) and skip the wrapper entirely.
+            # idempotency keys or singleton items: a unique violation is
+            # a STATEMENT error that poisons the surrounding transaction,
+            # and the exact attribution below resolves the conflicting
+            # row with a targeted SELECT that must run inside the
+            # caller's scope — the savepoint's rollback restores that
+            # scope before the lookup (the same discipline the
+            # single-enqueue path's savepoint-isolated arms follow). The
+            # happy path pays one SAVEPOINT/RELEASE pair per batch, never
+            # per row; batches without idempotency keys cannot violate
+            # the partial composite index (its predicate is
+            # idempotency_key IS NOT NULL), batches without singleton
+            # items cannot violate jobs_singleton_uniq (its predicate is
+            # metadata @> '{"singleton": true}'), and a batch with
+            # neither skips the wrapper entirely.
             keyed_batch = any(args.idempotency_key is not None for args in admitted_args)
-            async with _optional_savepoint(conn, enabled=keyed_batch):
+            singleton_batch = any(args.metadata.get("singleton") is True for args in admitted_args)
+            async with _optional_savepoint(conn, enabled=keyed_batch or singleton_batch):
                 result = await conn.copy_records_to_table(
                     "jobs",
                     records=copy_records,
@@ -1813,6 +1989,28 @@ async def _enqueue_batch_fast(
                     idempotency_scope=dup_scope,
                     detail=exc.detail,
                 ) from exc
+            if exc.constraint_name == _SINGLETON_CONSTRAINT_NAME:
+                # Same typed refusal the single-enqueue path's Layer-2
+                # catch raises (blocking_job_id/retry_after stay None:
+                # a violation catch, not a preflight), classified like the
+                # composite-key branch above so no caller has to
+                # string-match a raw driver error. COPY has no ON
+                # CONFLICT arbiter, so the all-or-nothing abort is
+                # unchanged — the savepoint above rolled the COPY back
+                # before this conversion raised.
+                actor = await _attribute_singleton_collision(conn, sql, admitted_args, exc.detail)
+                logger.info(
+                    "singleton-collision",
+                    actor=actor,
+                    blocking_job_id=None,
+                    detection_path="unique_violation_catch",
+                    batch_size=len(admitted_args),
+                )
+                raise SingletonCollisionError(
+                    actor=actor,
+                    blocking_job_id=None,
+                    retry_after=None,
+                ) from exc
             raise
         count = int(result.split()[-1])
         await conn.execute(
@@ -1867,9 +2065,14 @@ async def _enqueue_batch_fast(
             _raise_refusals(refusals, refused_indices, count)
         return count
 
-    async with pool.acquire() as conn:
-        async with conn.transaction():
-            count, refusals, refused_indices = await _copy_on_conn(conn)
+    async def _attempt_pool() -> tuple[int, list[MaxPendingExceededError], dict[str, list[int]]]:
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                return await _copy_on_conn(conn)
+
+    count, refusals, refused_indices = await _with_fresh_connection_retry(
+        _attempt_pool, operation="enqueue_batch_fast"
+    )
     # Pool transaction committed: the partition refusal raises only after
     # the admitted rows are durable.
     if refusals:

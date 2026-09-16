@@ -18,6 +18,7 @@ from uuid import UUID
 import asyncpg
 import structlog
 
+from taskq._advisory import DEADLINE_ERRORS
 from taskq.backend._protocol import Backend, ConnLike
 from taskq.backend._sql_templates import COPY_FROM_COLUMNS
 from taskq.backend._sweeps import (
@@ -435,7 +436,7 @@ async def _run_prune_batch(
         prev_timeout = await _apply_batch_statement_timeout(conn, statement_timeout_ms)
         try:
             rows = await conn.fetch(sql, *args)
-        except (asyncpg.QueryCanceledError, TimeoutError):
+        except DEADLINE_ERRORS:
             if sizer is not None:
                 sizer.on_timeout()
             raise

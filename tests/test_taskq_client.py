@@ -214,7 +214,7 @@ class TestLifecycle:
 
 
 # ---------------------------------------------------------------------------
-# TestCloseBounded — owned-pool close is bounded (#37 review)
+# TestCloseBounded — owned-pool close is bounded
 # ---------------------------------------------------------------------------
 
 
@@ -385,28 +385,28 @@ class TestEnqueue:
     async def test_enqueue_idempotency_key_contention_raises_typed_error_not_bare_timeout(
         self, pg_dsn: str
     ) -> None:
-        """RED (issue #190): a real ``TaskQ(dsn=...)`` client's enqueue with a
-        contended idempotency key must raise the typed
+        """A real ``TaskQ(dsn=...)`` client's enqueue with a contended
+        idempotency key must raise the typed
         ``IdempotencyKeyLockTimeoutError``, not a bare ``builtins.TimeoutError``.
 
-        The client pool ``TaskQ.open()`` builds sets
-        ``command_timeout=_CLIENT_POOL_COMMAND_TIMEOUT_SECS`` (5.0,
-        ``client/_taskq.py``), which equals the idempotency arm's own
-        ``DEFAULT_IDEMPOTENCY_LOCK_TIMEOUT_MS`` (5000.0,
-        ``backend/_enqueue.py``) and starts its network timer before the
-        savepoint's ``SET LOCAL lock_timeout`` even executes. On a REAL pool
-        connection (unlike the fake-conn unit pins in
+        The client pool ``TaskQ.open()`` builds arms a per-query
+        ``command_timeout`` (``_CLIENT_POOL_COMMAND_TIMEOUT_SECS``, 10.0,
+        ``client/_taskq.py``), and the idempotency arm's lock budget
+        (``DEFAULT_IDEMPOTENCY_LOCK_TIMEOUT_MS``, 5000.0,
+        ``backend/_enqueue.py``) is delivered clamped to a fixed share of
+        that bound (``taskq.connections.bounded_lock_budget_ms``), so the
+        savepoint's ``SET LOCAL lock_timeout`` fires first and the
+        ``except LockNotAvailableError`` handler surfaces the typed error
+        with its ``idempotency-lock-timeout`` warning log and
+        ``idempotency_lock_timeout`` backpressure counter bump. On a REAL
+        pool connection (unlike the fake-conn unit pins in
         ``test_lock_timeout_refusal_counters.py``, and unlike
         ``tests/test_rt_locks_actor_tx_enqueue_serialization.py``'s second
-        connection, which deliberately opens with
-        ``command_timeout=30.0`` to sidestep this exact race), asyncpg's
-        client-side command_timeout preempts the server-side 55P03
-        lock_timeout race every time, so the
-        ``except LockNotAvailableError`` handler at ``backend/_enqueue.py``
-        is unreachable and the caller only ever sees
-        ``asyncio.CancelledError``-derived ``builtins.TimeoutError`` with no
-        ``idempotency-lock-timeout`` warning log and no
-        ``idempotency_lock_timeout`` backpressure counter bump.
+        connection, which deliberately opens with ``command_timeout=30.0``
+        to sidestep the race the other way), an unclamped budget would be
+        preempted by asyncpg's client-side timer, and the caller would
+        only ever see an ``asyncio.CancelledError``-derived
+        ``builtins.TimeoutError``.
         """
         await _migrate(pg_dsn)
         key = f"tq-client-contended-{new_base62()}".lower()
@@ -438,14 +438,69 @@ class TestEnqueue:
                 async with TaskQ(dsn=pg_dsn, schema=_SCHEMA_LABEL) as tq:
                     with pytest.raises(IdempotencyKeyLockTimeoutError) as excinfo:
                         await asyncio.wait_for(
-                            tq.enqueue(
-                                _test_actor, _Payload(value=1), idempotency_key=key
-                            ),
+                            tq.enqueue(_test_actor, _Payload(value=1), idempotency_key=key),
                             timeout=20.0,
                         )
                 assert "idempotency_key" in repr(excinfo.value), (
                     "Contract: the client-visible enqueue must surface the typed "
                     f"IdempotencyKeyLockTimeoutError; got {excinfo.value!r}"
+                )
+            finally:
+                await tr.rollback()
+        finally:
+            await holder_conn.close()
+
+    async def test_enqueue_idempotency_key_contention_raises_typed_error_when_operator_widens_lock_timeout_above_default(
+        self, pg_dsn: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An operator who raises ``TASKQ_IDEMPOTENCY_LOCK_TIMEOUT_MS`` above
+        its shipped default must still see the typed
+        ``IdempotencyKeyLockTimeoutError`` on contention, not a bare
+        ``builtins.TimeoutError``.
+
+        This pins the ordering claim in
+        :func:`taskq.connections.lock_budget_command_timeout_secs`: a
+        widened lock budget must re-derive the client pool's own
+        ``command_timeout`` upward so the server-side ``lock_timeout``
+        still fires first. If an operator could widen the lock-wait budget
+        past the client's (fixed) network timeout, the exact same bare
+        ``TimeoutError`` regression this issue reports would resurface —
+        just at a different, operator-chosen threshold instead of the
+        shipped default.
+        """
+        await _migrate(pg_dsn)
+        key = f"tq-client-contended-wide-{new_base62()}".lower()
+
+        # Operator widens the idempotency lock-wait budget well past its
+        # 5000ms shipped default and past the client pool's shipped
+        # command_timeout floor (10.0s) — the exact scenario the ordering
+        # guarantee exists to cover.
+        monkeypatch.setenv("TASKQ_IDEMPOTENCY_LOCK_TIMEOUT_MS", "15000")
+
+        holder_conn = await asyncpg.connect(pg_dsn)
+        try:
+            tr = holder_conn.transaction()
+            await tr.start()
+            try:
+                sql = render_sql(_SCHEMA_LABEL)
+                await _enqueue_on_conn(
+                    holder_conn,
+                    sql,
+                    _SCHEMA_LABEL,
+                    SystemClock(),
+                    make_enqueue_args(idempotency_key=key),
+                )
+
+                async with TaskQ(dsn=pg_dsn, schema=_SCHEMA_LABEL) as tq:
+                    with pytest.raises(IdempotencyKeyLockTimeoutError) as excinfo:
+                        await asyncio.wait_for(
+                            tq.enqueue(_test_actor, _Payload(value=1), idempotency_key=key),
+                            timeout=30.0,
+                        )
+                assert "idempotency_key" in repr(excinfo.value), (
+                    "Contract: widening the operator lock-wait budget above its "
+                    "default must not reintroduce a bare TimeoutError; got "
+                    f"{excinfo.value!r}"
                 )
             finally:
                 await tr.rollback()

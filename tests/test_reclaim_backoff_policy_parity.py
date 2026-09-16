@@ -46,14 +46,23 @@ from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
+import asyncpg
 import pytest
 
-from taskq._ids import new_job_id, new_uuid
+from taskq._ids import new_base62, new_job_id, new_uuid
 from taskq.backend import Backend, EnqueueArgs
 from taskq.backend._protocol import JobId
+from taskq.backend._sweeps import _RECLAIM_DELAY_SQL, _RECLAIM_JITTER_FRACTION_SQL
 from taskq.backend.postgres import PostgresBackend
 from taskq.constants import DEFAULT_MAX_RETRY_BACKOFF
-from taskq.retry import RetryPolicy, compute_backoff
+from taskq.retry import (
+    RetryPolicy,
+    _compute_reclaim_backoff,
+    _reclaim_jitter_fraction,
+    compute_backoff,
+)
+from taskq.testing.clock import FakeClock
+from taskq.testing.fixtures import _open_pg_backend
 from taskq.testing.in_memory import InMemoryBackend
 
 pytestmark = pytest.mark.integration
@@ -115,9 +124,13 @@ async def _worker_of(backend: Backend) -> UUID:
 
 
 async def _enqueue(
-    backend: Backend, *, max_attempts: int = 5, policy: RetryPolicy = _PROTECTIVE_POLICY
+    backend: Backend,
+    *,
+    job_id: JobId | None = None,
+    max_attempts: int = 5,
+    policy: RetryPolicy = _PROTECTIVE_POLICY,
 ) -> JobId:
-    job_id = new_job_id()
+    job_id = job_id if job_id is not None else new_job_id()
     await backend.enqueue(
         EnqueueArgs(
             id=job_id,
@@ -386,3 +399,262 @@ async def test_reclaim_delay_honours_a_non_default_backoff_ceiling(
         "path kept the 24 h default (or the policy cap) instead of the "
         "configured ceiling, so the knob does not reach the sweep"
     )
+
+
+# ── Deterministic jitter: the fraction and its cross-backend parity ────────
+#
+# The reclaim delay's jitter fraction is DERIVED from the row, never drawn:
+# ``md5(j.id::text || ':' || j.attempt::text)`` — first 8 hex digits as a
+# uint32 over 2**32 — computed byte-identically by ``_RECLAIM_DELAY_SQL`` in
+# the database and by ``taskq.retry._compute_reclaim_backoff`` in Python.
+# One row's reclaim delay is computed by more than one statement (the
+# leader's sweep and a partitioned worker's isolate_self can each transition
+# the same row within one outage window) and replayed by later sweeps; a
+# per-statement ``random()`` makes those paths disagree about one row's
+# hand-back instant, while the derived fraction makes every path stamp the
+# same delay — replay-idempotent per row — and keeps the fleet spread
+# (distinct ids hash to distinct fractions).  These pins assert that parity
+# exactly: no buckets, no bands.
+
+#: Fixed (job id, attempt) inputs for the formula pin — the pin draws
+#: nothing, so its inputs are fixed.  attempt=0 pins the
+#: direct-construction corner (the SQL floors the exponent with
+#: GREATEST(attempt - 1, 0) and hashes the raw attempt); attempt=1000
+#: exercises the deep-exponent arm.  attempt=1024 pins the float8-overflow
+#: corner: with the exponent clamped only at power()'s domain ceiling,
+#: ``base * power(2.0, attempt - 1)`` overflowed float8 for base > ~2 and
+#: RAISED SQLSTATE 22003 where the Python twin saturated to the cap — the
+#: clamp must keep the multiply itself in range (the curve has long
+#: saturated against the cap there).  attempt=32767 is the smallint
+#: ceiling, the deepest attempt the column can stamp.
+_FORMULA_ROWS: tuple[tuple[UUID, int], ...] = (
+    (UUID("01906e5a-0000-7000-8000-000000000001"), 0),
+    (UUID("01906e5a-0000-7000-8000-000000000002"), 1),
+    (UUID("01906e5a-0000-7000-8000-000000000003"), 2),
+    (UUID("01906e5a-0000-7000-8000-000000000004"), 7),
+    (UUID("01906e5a-0000-7000-8000-000000000005"), 1000),
+    (UUID("01906e5a-0000-7000-8000-000000000006"), 1024),
+    (UUID("01906e5a-0000-7000-8000-000000000007"), 32767),
+)
+
+#: The curve shapes the reclaim formula branches on: all three backoff
+#: kinds, zero / mid / full jitter, and a policy whose cap sits above the
+#: operator ceiling (exercising LEAST(retry_cap_seconds, max_retry_backoff)).
+#: The trailing zero policy pins the degenerate-cap contract: cap = 0 (with
+#: base = 0, the only shape RetryPolicy's cap >= base admits) means a zero
+#: delay on both evaluators — preserved deliberately across the
+#: overflow-clamp change, which introduced no division that a zero cap
+#: could fault.
+_FORMULA_POLICIES: tuple[RetryPolicy, ...] = (
+    RetryPolicy(
+        backoff="exponential", base=timedelta(seconds=5), cap=timedelta(hours=1), jitter=0.2
+    ),
+    RetryPolicy(backoff="linear", base=timedelta(seconds=3), cap=timedelta(minutes=10), jitter=0.5),
+    RetryPolicy(backoff="fixed", base=timedelta(seconds=30), cap=timedelta(hours=2), jitter=1.0),
+    RetryPolicy(
+        backoff="exponential", base=timedelta(seconds=5), cap=timedelta(hours=1), jitter=0.0
+    ),
+    RetryPolicy(backoff="fixed", base=timedelta(days=3), cap=timedelta(days=7), jitter=0.2),
+    RetryPolicy(backoff="exponential", base=timedelta(0), cap=timedelta(0), jitter=0.2),
+)
+
+# The shipped fragments, evaluated against a one-row VALUES table aliased
+# like the sweep's update target so the ``j.``-scoped references resolve
+# with the real column types (attempt is smallint on ``jobs``).
+_FRACTION_PROBE_SQL = (
+    f"SELECT ({_RECLAIM_JITTER_FRACTION_SQL}) AS fraction "  # noqa: S608  # Why: the interpolated text is the shipped module constant under test, never user input; every runtime value is $N-bound.
+    "FROM (VALUES ($1::uuid, $2::smallint)) AS j(id, attempt)"
+)
+_DELAY_PROBE_SQL = (
+    f"SELECT ({_RECLAIM_DELAY_SQL.replace('{max_backoff_seconds}', '$7')}) AS delay "  # noqa: S608  # Why: same — the interpolated text is the shipped fragment under test; every runtime value is $N-bound.
+    "FROM (VALUES ($1::uuid, $2::smallint, $3::float8, $4::float8, $5::text, $6::float8)) "
+    "AS j(id, attempt, retry_base_seconds, retry_cap_seconds, retry_backoff, retry_jitter)"
+)
+
+
+@pytest.mark.integration
+async def test_reclaim_delay_formula_matches_the_sql_fragment_bit_for_bit(
+    pg_dsn: str,
+) -> None:
+    """A given (job id, attempt, policy) yields the identical reclaim delay
+    in SQL and Python — bit for bit.
+
+    The SQL fragment and the Python twin run the same correctly-rounded
+    IEEE-754 operations in the same order over the same hash-derived
+    fraction, so exact equality — not a band — is the assertable contract.
+    A per-statement ``random()`` (the old shape) makes virtually every row
+    here mismatch, and a formula drift on either side (a different hash
+    slice, a reordered operand, a numeric-typed intermediate) fails this
+    pin just as loudly.
+    """
+    conn = await asyncpg.connect(pg_dsn)
+    try:
+        for job_id, attempt in _FORMULA_ROWS:
+            sql_fraction = await conn.fetchval(_FRACTION_PROBE_SQL, job_id, attempt)
+            py_fraction = _reclaim_jitter_fraction(job_id, attempt)
+            assert sql_fraction == py_fraction, (
+                f"jitter fraction diverged for ({job_id}, {attempt}): "
+                f"SQL {sql_fraction!r} vs Python {py_fraction!r} — the two sides "
+                "must derive the identical fraction from md5('<id>:<attempt>') "
+                "(first 8 hex digits as uint32, over 2**32, in float8)"
+            )
+            for policy in _FORMULA_POLICIES:
+                sql_delay = await conn.fetchval(
+                    _DELAY_PROBE_SQL,
+                    job_id,
+                    attempt,
+                    policy.base.total_seconds(),
+                    policy.cap.total_seconds(),
+                    policy.backoff,
+                    policy.jitter,
+                    DEFAULT_MAX_RETRY_BACKOFF.total_seconds(),
+                )
+                py_delay = _compute_reclaim_backoff(
+                    policy,
+                    attempt,
+                    job_id=job_id,
+                    max_retry_backoff=DEFAULT_MAX_RETRY_BACKOFF,
+                )
+                assert sql_delay == py_delay, (
+                    f"reclaim delay diverged for ({job_id}, attempt={attempt}, "
+                    f"backoff={policy.backoff!r}, base={policy.base}, "
+                    f"cap={policy.cap}, jitter={policy.jitter}): "
+                    f"SQL {sql_delay!r} vs Python {py_delay!r} — the sweep, the "
+                    "isolate, and the in-memory mirror must all stamp the same "
+                    "delay for the same row"
+                )
+    finally:
+        await conn.close()
+
+
+#: The fixed row identity the cross-backend sweep pin reclaims on both
+#: backends — fixed so the pin draws nothing.
+_SWEEP_PARITY_JOB_ID = JobId(UUID("01906e5a-0000-7000-8000-00000000b001"))
+
+
+@pytest.mark.integration
+async def test_reclaim_delay_exponential_arm_saturates_at_cap_past_the_overflow_corner(
+    pg_dsn: str,
+) -> None:
+    """attempt >= 1024 must saturate at the cap, never raise out of the driver.
+
+    Postgres RAISES ``value out of range: overflow`` (SQLSTATE 22003,
+    surfaced by asyncpg as ``NumericValueOutOfRangeError``) when a float8
+    multiply exceeds ~1.8e308 — it does not saturate to Infinity the way
+    Python's float arithmetic does.  With the exponent clamped only at
+    ``power()``'s own domain ceiling, ``base * power(2.0, attempt - 1)``
+    overflowed for any base > ~2 once the attempt passed ~1021: a
+    non-transient data error escaping into the leader sweep's failure
+    path (tearing down the reclaim loop on a deliberately non-retryable
+    class), on a corner the Python twin answered with the cap.  The
+    shared fragment bounds the exponent so the multiply stays inside
+    float8 for every timedelta-representable base while the LEAST
+    against the effective cap still decides the value — so a jitter=0
+    policy at a saturated attempt stamps EXACTLY the cap, bit-identical
+    to the twin.
+    """
+    policy = RetryPolicy(
+        backoff="exponential", base=timedelta(seconds=5), cap=timedelta(hours=1), jitter=0.0
+    )
+    job_id = UUID("01906e5a-0000-7000-8000-00000000c001")
+    conn = await asyncpg.connect(pg_dsn)
+    try:
+        # 1024 is past the old raise point; 32767 is the smallint ceiling,
+        # the deepest attempt the column can stamp.
+        for attempt in (1024, 32767):
+            sql_delay = await conn.fetchval(
+                _DELAY_PROBE_SQL,
+                job_id,
+                attempt,
+                policy.base.total_seconds(),
+                policy.cap.total_seconds(),
+                policy.backoff,
+                policy.jitter,
+                DEFAULT_MAX_RETRY_BACKOFF.total_seconds(),
+            )
+            py_delay = _compute_reclaim_backoff(
+                policy,
+                attempt,
+                job_id=job_id,
+                max_retry_backoff=DEFAULT_MAX_RETRY_BACKOFF,
+            )
+            assert sql_delay == policy.cap, (
+                f"attempt={attempt}: the saturated exponential arm must stamp exactly "
+                f"the cap, got {sql_delay!r} — the curve reaches the cap long before "
+                "the exponent clamp, and the multiply must not raise"
+            )
+            assert py_delay == policy.cap, (
+                f"attempt={attempt}: the Python twin must stamp exactly the cap, got {py_delay!r}"
+            )
+            assert sql_delay == py_delay, (
+                f"attempt={attempt}: SQL {sql_delay!r} vs Python {py_delay!r} — the "
+                "overflow corner must not become a parity break"
+            )
+    finally:
+        await conn.close()
+
+
+@pytest.mark.integration
+async def test_reclaim_sweep_stamps_the_identical_delay_on_both_backends(
+    pg_dsn: str,
+) -> None:
+    """End to end: one fixed (job id, attempt) row, reclaimed through the real
+    sweep on each backend, is rescheduled by the same delay.
+
+    The mirror's FakeClock is frozen, so its measurement is exact. PG's
+    stamp is bracketed between server-clock reads taken around the sweep —
+    the sweep's own ``clock_timestamp()`` is unobservable from outside — and
+    the bracket is milliseconds wide while the policy's jitter band here is
+    [240 s, 360 s), so a freshly-drawn jitter (the old per-statement
+    ``random()``) falls outside it on virtually every run. Both measurements
+    are compared against the Python twin's value, which the formula pin
+    above ties to the SQL fragment bit for bit.
+    """
+    policy = _PROTECTIVE_POLICY
+    expected = _compute_reclaim_backoff(
+        policy,
+        1,
+        job_id=_SWEEP_PARITY_JOB_ID,
+        max_retry_backoff=DEFAULT_MAX_RETRY_BACKOFF,
+    )
+    # Both backends apply the same effective ceiling here: the mirror's
+    # constructor default and the PG settings default are both
+    # DEFAULT_MAX_RETRY_BACKOFF (24 h), and the policy's own cap (1 h)
+    # binds first — so the expected value reads the row's curve, not the
+    # ceiling.
+    memory = InMemoryBackend(
+        clock=FakeClock(_START),
+        cancellation_grace_period=_GRACE,
+        cleanup_grace_period=_GRACE,
+    )
+    memory.register_actor_config(actor="actor_a")
+    stack, _deps, pg = await _open_pg_backend(pg_dsn, schema_name=f"trbp_{new_base62()}".lower())
+    try:
+        for backend in (memory, pg):
+            worker_id = await _worker_of(backend)
+            await _enqueue(backend, job_id=_SWEEP_PARITY_JOB_ID, policy=policy)
+            attempt = await _claim(backend, _SWEEP_PARITY_JOB_ID, worker_id)
+            assert attempt == 1, "the pin's delay is keyed on the row's first attempt"
+            await _expire_lease(backend, _SWEEP_PARITY_JOB_ID)
+            before = await _now_of(backend)
+            assert await backend.reclaim_expired_locks(_GRACE, _GRACE) == 1, (
+                "the scenario requires the expired-lease job to have been reclaimed"
+            )
+            after = await _now_of(backend)
+            row = await backend.get(_SWEEP_PARITY_JOB_ID)
+            assert row is not None and row.status == "pending"
+            assert before + expected <= row.scheduled_at <= after + expected, (
+                f"{type(backend).__name__} stamped scheduled_at={row.scheduled_at!r}, "
+                f"outside [before + expected, after + expected] with "
+                f"before={before!r}, after={after!r}, expected delay={expected!r} "
+                f"for (job_id, attempt)=({_SWEEP_PARITY_JOB_ID}, 1) — every "
+                "reclaim path must stamp the row's derived delay, not a fresh draw"
+            )
+        mem_row = await memory.get(_SWEEP_PARITY_JOB_ID)
+        assert mem_row is not None
+        assert mem_row.scheduled_at - _START == expected, (
+            f"the mirror's frozen clock makes the measurement exact: "
+            f"got {mem_row.scheduled_at - _START!r}, expected {expected!r}"
+        )
+    finally:
+        await stack.aclose()

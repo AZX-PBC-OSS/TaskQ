@@ -26,6 +26,7 @@ from uuid import UUID
 import asyncpg
 import structlog
 
+from taskq._advisory import DEADLINE_ERRORS
 from taskq._json import dumps_str
 from taskq.backend._batch_sql import (
     BatchSql,
@@ -997,7 +998,7 @@ class PostgresBackend:
         timeout_ms = int(self._deps.settings.event_writer_statement_timeout_ms)
         try:
             count = await run(size, timeout_ms)
-        except (asyncpg.QueryCanceledError, TimeoutError):
+        except DEADLINE_ERRORS:
             sizer.on_timeout()
             raise
         sizer.on_success()

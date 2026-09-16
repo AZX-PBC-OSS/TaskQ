@@ -44,6 +44,7 @@ from datetime import timedelta
 import asyncpg
 import pytest
 import structlog.testing
+from dotenvmodel import MultipleValidationErrors, ValidationError
 
 from taskq._ids import new_base62
 from taskq.ratelimit import SlidingWindow, TokenBucket
@@ -926,4 +927,105 @@ class TestRowLockBudgetsAreOperatorSettings:
             f"{_OPERATOR_TOKEN_BUCKET_BUDGET_MS:g} ms budget -- the refund arm "
             "still reads the frozen module default even once the acquire arm "
             "is plumbed."
+        )
+
+
+class TestAdmissionLockBudgetDoesNotWidenTheDispatcherPoolTimeout:
+    """A widened admission lock budget must not be silently truncated by
+    the dispatcher pool's own client-side ``command_timeout``.
+
+    ``dispatcher_pool`` is the pool the admission-path acquires actually
+    run on in production (``taskq.worker.deps._dispatcher_dsn_factory``
+    builds it with ``command_timeout=settings.dispatcher_command_timeout``,
+    and ``_leader_sweeps.py`` / rate-limit registry checks run their PG
+    acquires against exactly this pool). ``acquire_advisory_xact_lock_bounded``
+    and the row-lock acquires above wrap the contended tier in
+    ``asyncio.wait_for(..., timeout=lock_timeout_ms / 1000 + slack)`` --
+    but that ``wait_for`` is layered OUTSIDE asyncpg's own per-statement
+    ``command_timeout`` enforcement, which fires independently on the
+    connection itself.
+
+    ``dispatcher_command_timeout`` defaults to 5.0s -- the same 5000ms as
+    the admission lock budgets' own default, so at the shipped defaults
+    the two never race. But an operator who widens
+    ``token_bucket_lock_timeout_ms`` / ``sliding_window_lock_timeout_ms``
+    past 5s (the field's own docstring invites exactly this: "lengthen it
+    if 5s is too aggressive for a given deployment's Postgres latency
+    profile") gets no corresponding widening of
+    ``dispatcher_command_timeout``. The connection's client-side
+    ``command_timeout`` then fires at 5s, before the operator's wider
+    server-side ``lock_timeout`` budget ever elapses -- silently
+    truncating the widened wait back to the old ceiling. This mirrors
+    the enqueue path's ``bounded_lock_budget_ms`` /
+    ``lock_budget_command_timeout_secs`` machinery in
+    ``taskq.connections`` (re-deriving the CLIENT pool's bound upward
+    when ``max_pending_lock_timeout_ms`` etc. is widened past its
+    default) -- but that machinery is wired ONLY for the three enqueue
+    fields in ``taskq.client._taskq._ENQUEUE_LOCK_BUDGET_FIELDS``. No
+    analogous reconciliation exists for ``dispatcher_command_timeout``
+    against the two admission-path budgets this module owns.
+    """
+
+    def test_no_settings_validator_relates_dispatcher_command_timeout_to_admission_lock_budgets(
+        self,
+    ) -> None:
+        """WorkerSettings rejects a configuration where a widened
+        admission lock budget would race the dispatcher pool's own
+        command timeout.
+
+        This is the settings-level version of the enqueue path's
+        pool-bound re-derivation: if the fields cannot be reconciled by
+        construction (the way the enqueue budgets are, via the client
+        pool factory), the settings validator is the last line of
+        defense against silently shipping a lock_timeout GUC value the
+        connection's own command_timeout can never let fire. Today
+        neither exists for the admission-path budgets, so a widened
+        budget is accepted and then silently truncated at run time --
+        the exact failure this test proves is still possible.
+        """
+        widened_token_bucket_budget_ms = 8000.0  # > the 5.0s dispatcher_command_timeout default
+        load_kwargs: dict[str, object] = {
+            "pg_dsn": "postgresql://u:p@h/d",
+            "schema_name": "taskq_fake",
+            "token_bucket_lock_timeout_ms": f"{widened_token_bucket_budget_ms:g}",
+            # dispatcher_command_timeout left at its 5.0s default.
+        }
+        try:
+            settings = WorkerSettings.load_from_dict(load_kwargs)
+        except (ValidationError, MultipleValidationErrors) as exc:
+            pytest.fail(
+                "expected this assertion to fail: WorkerSettings.load_from_dict "
+                f"unexpectedly REJECTED the widened budget ({exc!r}) -- if a cross-"
+                "field invariant now exists relating dispatcher_command_timeout to "
+                "the admission lock budgets, this test's premise (that no such "
+                "reconciliation exists) is stale and should be replaced with a "
+                "positive assertion on that invariant's error message instead."
+            )
+            return
+        assert settings.dispatcher_command_timeout * 1000.0 < settings.token_bucket_lock_timeout_ms, (
+            "sanity check: the widened budget must actually exceed the pool's "
+            "command_timeout for this scenario to be meaningful"
+        )
+        pytest.fail(
+            "WorkerSettings.load_from_dict silently ACCEPTED "
+            f"token_bucket_lock_timeout_ms={widened_token_bucket_budget_ms:g} with "
+            f"dispatcher_command_timeout={settings.dispatcher_command_timeout:g}s left "
+            "at its default -- but the dispatcher pool this budget's acquires "
+            "actually run on in production (taskq.worker.deps._dispatcher_dsn_factory) "
+            "is built with command_timeout=dispatcher_command_timeout=5.0s by "
+            "default, which is BELOW the operator's widened 8000ms lock_timeout "
+            "budget. asyncpg enforces command_timeout as its own per-statement "
+            "client-side timer, independent of and unaware of the lock_timeout_ms "
+            "passed to acquire_advisory_xact_lock_bounded's asyncio.wait_for -- so "
+            "the pool's 5s command_timeout fires and truncates the wait before the "
+            "operator's wider budget ever has a chance to grant the lock, silently "
+            "defeating the very setting this fix introduced. The enqueue path "
+            "solved the identical race with taskq.connections.bounded_lock_budget_ms "
+            "/ lock_budget_command_timeout_secs, re-deriving the CLIENT pool's "
+            "command_timeout upward from a widened enqueue budget -- but that "
+            "machinery only covers max_pending_lock_timeout_ms / "
+            "unique_for_lock_timeout_ms / idempotency_lock_timeout_ms "
+            "(taskq.client._taskq._ENQUEUE_LOCK_BUDGET_FIELDS), never "
+            "token_bucket_lock_timeout_ms / sliding_window_lock_timeout_ms against "
+            "dispatcher_command_timeout."
         )

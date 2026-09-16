@@ -20,7 +20,7 @@ from taskq.testing.assertions import (
 )
 from taskq.testing.fixtures import JobsApp
 from taskq.testing.in_memory import InMemoryBackend
-from taskq.testing.jobs import enqueue_and_dispatch_memory
+from taskq.testing.jobs import enqueue_and_dispatch_memory, enqueue_and_dispatch_pg
 from taskq.testing.pg import (
     create_pending_job,
     create_running_job,
@@ -420,12 +420,16 @@ class TestEquivalence:
         mem_events = await memory_jobs.get_events(mem_job_id)
 
         # ── PG backend ───────────────────────────────────────────
+        # The job reaches 'running' through the REAL enqueue + dispatch
+        # path, exactly like the memory side: a claim deliberately writes
+        # no job_events row (the events diet — backend/_dispatch.py), so
+        # a fixture-injected one would count an event production never
+        # writes and break the cross-backend event comparison below.
         deps = clean_jobs_app.deps
         backend = clean_jobs_app.backend
         schema = deps.settings.schema_name
 
-        async with deps.worker_pool.acquire() as conn:
-            _, pg_job_id = await setup_running_job(conn, schema, with_events=True)
+        pg_job_id, _pg_worker = await enqueue_and_dispatch_pg(backend)
 
         pg_result = await backend.write_cancel_request(pg_job_id, "test")
         assert pg_result is True
@@ -450,7 +454,7 @@ class TestEquivalence:
         assert mem_updated.cancel_requested_at is not None
         assert pg_row["cancel_requested_at"] is not None
         assert len(mem_attempts) == len(pg_attempts) == 0
-        assert len(mem_events) == len(pg_events) == 2
+        assert len(mem_events) == len(pg_events) == 1
 
     async def test_cancel_escalation_equivalence(
         self, clean_jobs_app: JobsApp, memory_jobs: InMemoryBackend
@@ -465,12 +469,14 @@ class TestEquivalence:
         mem_events = await memory_jobs.get_events(mem_job_id)
 
         # ── PG backend ───────────────────────────────────────────
+        # Real enqueue + dispatch for the same reason as
+        # test_cancel_running_equivalence: a claim writes no event row,
+        # so the comparable stream starts at the cancel_request.
         deps = clean_jobs_app.deps
         backend = clean_jobs_app.backend
         schema = deps.settings.schema_name
 
-        async with deps.worker_pool.acquire() as conn:
-            pg_worker, pg_job_id = await setup_running_job(conn, schema, with_events=True)
+        pg_job_id, pg_worker = await enqueue_and_dispatch_pg(backend)
 
         await backend.write_cancel_request(pg_job_id, None)
         pg_esc = await backend.write_cancel_escalation(pg_job_id, pg_worker, 2)  # type: ignore[arg-type] # Why: Literal[2] not narrowed
@@ -489,7 +495,7 @@ class TestEquivalence:
         assert pg_row is not None
         assert mem_updated.cancel_phase == pg_row["cancel_phase"]
         assert mem_updated.status == pg_row["status"]
-        assert len(mem_events) == len(pg_events) == 3
+        assert len(mem_events) == len(pg_events) == 2
 
 
 # ── poll_cancel_flags ─────────────────────────────────────────

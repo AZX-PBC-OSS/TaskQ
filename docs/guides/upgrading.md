@@ -1031,6 +1031,26 @@ as the typed `MaxPendingLockTimeoutError` / `UniqueForLockTimeoutError` /
 you supply yourself (`pool=` / `pool_factory=`) stay caller-owned: their
 timeouts are your choice.
 
+### The queue-depth alert fires on oldest-pending age, not raw depth
+
+> **Unreleased.** Operator-visible: the bundled `TaskQQueueDepthHigh`
+> alert's expression changed; any override of it must be re-expressed.
+
+The bundled Prometheus rule `TaskQQueueDepthHigh`
+(`src/taskq/contrib/prometheus/rules.yaml`) previously fired on raw depth —
+`taskq_queue_depth > 1000`; it now fires on the oldest pending job's age —
+`max by (actor, queue) (taskq_jobs_oldest_pending_age_seconds) > 900`,
+sustained for 5 minutes. Depth alone is ambiguous — a deep queue that
+drains is healthy throughput — and a queue-summed number cannot tell a
+busy shared queue apart from an actor nobody consumes: a misrouted actor
+produces no refusal and no failed job, its rows simply pile up pending
+while every probe stays green, and its age series rises without bound
+while its queue-mates stay flat. The per-`(actor, queue)` attribution
+names exactly whose `TASKQ_QUEUES` coverage to check. `taskq_queue_depth`
+is still emitted, so dashboards and any rules you wrote against it keep
+working — but if you overrode the bundled alert's threshold, re-express
+the override in seconds of oldest-pending age.
+
 ---
 
 ## Bounded inputs

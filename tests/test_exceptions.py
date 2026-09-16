@@ -340,7 +340,7 @@ def test_max_pending_with_zero_current_count() -> None:
 def test_max_pending_exceeded_error_has_snooze_hint() -> None:
     """MaxPendingExceededError should expose a `hint` pointing readers at Snooze.
 
-    Issue #146: raised inside an actor body, this error reaches the generic
+    Raised inside an actor body, this error reaches the generic
     retry classifier and burns attempts on the actor's static policy, when
     the correct response is `raise Snooze(delay)` (backpressure, not a
     failure). The library already has this convention -- ActorConfigDriftError
@@ -352,7 +352,7 @@ def test_max_pending_exceeded_error_has_snooze_hint() -> None:
     assert hasattr(exc, "hint"), (
         "MaxPendingExceededError has no `hint` attribute; readers who catch it "
         "inside an actor body get no pointer toward `raise Snooze(delay)` "
-        "instead of letting it reach the retry classifier (issue #146)"
+        "instead of letting it reach the retry classifier"
     )
     assert "snooze" in exc.hint.lower()
 

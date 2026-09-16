@@ -41,7 +41,7 @@ import asyncpg
 import pytest
 
 from taskq._ids import new_base62
-from taskq.backend._protocol import JobId
+from taskq.backend._protocol import JobFilter, JobId
 from taskq.context import JobContext
 from taskq.testing.assertions import wait_for_condition
 from tests._fleet import Fleet, FleetPayload, fleet_actor_config, open_fleet
@@ -352,3 +352,55 @@ async def test_an_interruption_does_not_duplicate_a_completed_job(
             f"the actor ran {runs} times for one job across a database "
             f"interruption; work that completed must not be executed again"
         )
+
+
+async def test_bulk_cancel_recovers_typed_after_the_database_drops_its_connections(
+    pg_dsn: str,
+) -> None:
+    """``cancel_where`` must not hand the caller a raw driver error either.
+
+    ``_enqueue.py``'s pool-acquire callers are wrapped in
+    ``_with_fresh_connection_retry`` (a poisoned connection's first
+    statement fails locally with ``asyncpg.InternalClientError`` right
+    after a server-side interruption, before ``connection_lost`` has run
+    and marked it closed) so the caller sees one clean retry instead of an
+    error outside asyncpg's own hierarchy. ``_cancel_bulk.py``'s
+    ``_drain_cancel_batches`` acquires from the very same pool with the
+    very same ``async with pool.acquire() as conn: async with
+    conn.transaction(): ...`` shape, but its retry loop only catches
+    ``asyncpg.DeadlockDetectedError`` -- nothing there recognises
+    ``InternalClientError``. If a bulk cancel is the first call to reach
+    the pool after an interruption, this pins whether the same untyped
+    escape the enqueue path was fixed for still reaches this caller.
+    """
+    schema = f"fleet_pgfail_cancel_{new_base62()}".lower()
+    async with open_fleet(
+        pg_dsn,
+        schema=schema,
+        pods=("pod-1",),
+        actors=((_ACTOR, _QUEUE),),
+    ) as fleet:
+        dsn = str(fleet.settings.pg_dsn)
+        pod = fleet.pod("pod-1")
+
+        job_ids = await fleet.enqueue(1, actor=_ACTOR, queue=_QUEUE)
+        assert len(job_ids) == 1
+
+        terminated = await _interrupt_database(dsn)
+        assert terminated > 0, (
+            "the scenario requires the database to have actually dropped the "
+            "pod's connections; no sessions were terminated"
+        )
+
+        try:
+            await pod.backend.cancel_where(JobFilter(active=True), reason="fleet interruption drill")
+        except asyncpg.InternalClientError as exc:
+            raise AssertionError(
+                "cancel_where after the database dropped its connections raised "
+                f"an internal driver state error ({exc}), not a database error. "
+                "A caller cannot distinguish this from a bug in its own code, it "
+                "matches no handler written against asyncpg's error types, and "
+                "the pooled connection that produced it was handed out while "
+                "still mid-operation -- the same race _with_fresh_connection_retry "
+                "closes for the enqueue path, unguarded here"
+            ) from exc

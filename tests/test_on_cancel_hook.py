@@ -78,6 +78,10 @@ def test_actor_decorator_accepts_on_cancel_hook() -> None:
             "on_cancel is not a supported @actor parameter, so an actor has no "
             f"way to declare cleanup for the cooperative-cancel path: {exc!r}"
         )
+    else:
+        # Decoration not raising is the pin; the bound actor object is the
+        # proof the decorator accepted and returned it.
+        assert _handler is not None
 
 
 async def test_invoke_on_cancel_calls_hook_with_terminal_job_row() -> None:
@@ -458,6 +462,73 @@ async def test_a_raising_on_cancel_hook_does_not_break_the_terminal_write() -> N
 
     assert backend.mark_cancelled_calls, (
         "a raising on_cancel hook prevented the terminal cancel write; the "
+        "hook must be best-effort and never block the row going terminal"
+    )
+
+
+async def test_a_hanging_on_cancel_hook_is_bounded_by_its_timeout_end_to_end() -> None:
+    """A slow ``on_cancel`` cannot stall ``consume_one_job`` past its own timeout.
+
+    ``test_invoke_on_cancel_is_best_effort_and_timeout_bounded`` pins the
+    timeout bound at the ``invoke_on_cancel`` unit level directly; this
+    pins the same property through the real end-to-end path a worker
+    actually takes (``consume_one_job``), the same way
+    ``test_a_raising_on_cancel_hook_does_not_break_the_terminal_write``
+    pins the raising case end-to-end rather than only at the unit level.
+    A hook that never returns must still let the shielded terminal write
+    land and ``consume_one_job`` return within ``on_cancel_timeout`` plus
+    a small margin — never hang forever waiting on cleanup.
+    """
+    import asyncio
+    import time
+
+    import taskq.obs as obs_mod
+    from taskq.context import JobContext
+    from taskq.testing.actor import EmptyPayload, FakeBackend, StubActorConfig, as_backend
+    from taskq.testing.clock import FakeClock
+    from taskq.testing.jobs import make_job_row
+    from taskq.worker._consumer import consume_one_job
+
+    async def hanging_hook(job_row: object) -> None:
+        # Never resolves on its own; invoke_on_cancel's asyncio.wait_for
+        # must be the thing that cuts this off, not cooperative return.
+        await asyncio.sleep(3600)
+
+    async def cancelling_actor(_job: object, _ctx: JobContext[BaseModel]) -> object:
+        raise asyncio.CancelledError
+
+    backend = FakeBackend()
+    cfg = StubActorConfig(
+        retry=RetryPolicy(kind="transient", max_attempts=3, jitter=0.0),
+        on_cancel=hanging_hook,  # type: ignore[call-arg]
+        on_cancel_timeout=0.05,  # type: ignore[call-arg]
+    )
+    job = make_job_row()
+    obs_mod.set_otel_enabled(False)
+
+    start = time.monotonic()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(
+            consume_one_job(
+                as_backend(backend),
+                job,
+                _WORKER_ID,
+                run_actor=cancelling_actor,
+                actor_config=cfg,
+                payload_type=EmptyPayload,
+                clock=FakeClock(_NOW),
+            ),
+            timeout=5.0,
+        )
+    elapsed = time.monotonic() - start
+
+    assert elapsed < 5.0, (
+        "consume_one_job did not return within the outer 5s guard; a "
+        "hanging on_cancel hook stalled the terminal write past its "
+        "configured on_cancel_timeout"
+    )
+    assert backend.mark_cancelled_calls, (
+        "a hanging on_cancel hook prevented the terminal cancel write; the "
         "hook must be best-effort and never block the row going terminal"
     )
 

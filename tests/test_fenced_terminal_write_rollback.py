@@ -250,6 +250,111 @@ async def test_fenced_transactional_success_rolls_back_actor_side_effects(
     )
 
 
+async def test_fenced_transactional_success_rolls_back_actor_side_effects_same_worker(
+    clean_jobs_app: JobsApp,
+) -> None:
+    """A same-worker re-claim must roll back exactly like a cross-worker one.
+
+    The worker fence alone (``locked_by_worker = $worker_id``) cannot tell
+    attempt N's suspended handler from attempt N+1's live one when the SAME
+    worker process re-claims the job after a lease-expiry sweep — both
+    present the identical worker id. Only the attempt conjunct
+    (``attempt = $k``) rejects the stale write. This is the shape most
+    easily missed because nothing about it looks like a hand-off: one
+    process, one worker id, one job, one transaction pool — so it is worth
+    pinning independently of the cross-worker case, on the real
+    transactional path with a real sub-job INSERT sharing the connection.
+    """
+    deps = clean_jobs_app.deps
+    backend = clean_jobs_app.backend
+    schema = deps.settings.schema_name
+    worker_id = new_uuid()
+
+    parent = await _enqueue_parent(backend)
+
+    async with deps.worker_pool.acquire() as conn:
+        await create_worker(conn, schema, worker_id)
+        await _dispatch(conn, schema, worker_id, parent.id)
+
+    dispatched = await backend.get(parent.id)
+    assert dispatched is not None
+
+    success_hook_calls: list[UUID] = []
+
+    async def _on_success(job: JobRow, result: object) -> None:
+        success_hook_calls.append(job.id)
+
+    async with deps.worker_pool.acquire() as transaction_conn:
+        enqueuer = SubJobEnqueuer(
+            loop_scope_resolved={asyncpg.Connection: transaction_conn},
+            worker_pool=deps.worker_pool,
+            backend=backend,
+        )
+
+        job_row = _dc_replace(
+            make_job_row(actor="fenced_parent_actor", payload={"name": "parent"}),
+            id=parent.id,
+            attempt=dispatched.attempt,
+            locked_by_worker=worker_id,
+        )
+
+        async def run_actor(_job: JobRow, _ctx: JobContext[BaseModel]) -> object:
+            await enqueuer.enqueue(_CHILD, _Payload())
+            # The reclaim happens on a separate connection, but re-claims
+            # back to the SAME worker id — a lease-expiry sweep followed
+            # by that same worker's next poll winning the re-dispatch,
+            # not a hand-off to a different process.
+            async with deps.worker_pool.acquire() as sweep_conn:
+                await _reclaim_to_newer_attempt(sweep_conn, schema, parent.id, worker_id)
+            return {"ok": True}
+
+        clock: Clock = SystemClock()
+        outcome: object = None
+        with suppress(asyncio.CancelledError):
+            outcome = await consume_one_job(
+                backend,
+                job_row,
+                worker_id,
+                run_actor=run_actor,
+                actor_config=StubActorConfig(
+                    retry=RetryPolicy(kind="transient", max_attempts=3, jitter=0.0),
+                    on_success=_on_success,
+                ),
+                payload_type=_Payload,
+                clock=clock,
+                enqueuer=enqueuer,
+                transaction_conn=transaction_conn,
+            )
+
+    async with deps.worker_pool.acquire() as check_conn:
+        children = await _count_children(check_conn, schema)
+        row = await _job_row(check_conn, schema, parent.id)
+
+    assert row is not None
+    assert row["locked_by_worker"] == worker_id, (
+        "fixture broken: the same-worker reclaim did not bump the attempt under this worker"
+    )
+    assert row["status"] == "running", (
+        "the fenced write terminalised a job that had been reclaimed and "
+        "re-dispatched at a newer attempt under the SAME worker id — the "
+        "live attempt lost its row"
+    )
+    assert children == 0, (
+        "the reclaimed attempt's sub-job INSERT committed even though its "
+        "terminal write matched no row on a same-worker re-claim: the "
+        "actor's unit of work was committed half, and the live attempt "
+        "will enqueue the child again"
+    )
+    assert success_hook_calls == [], (
+        "the success hook fired for a same-worker stale attempt whose "
+        "terminal write landed on no row"
+    )
+    assert outcome != "succeeded", (
+        f"the attempt reported {outcome!r} for a same-worker stale attempt "
+        "although its terminal write was fenced and applied to no row"
+    )
+
+
 async def test_fenced_autonomous_success_does_not_report_success(
     clean_jobs_app: JobsApp,
 ) -> None:

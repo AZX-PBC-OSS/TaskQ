@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Final
 from uuid import UUID
 
 from taskq.backend._protocol import JobRow, QueueMode
+from taskq.constants import SMALLINT_MAX
 from taskq.testing._reads import _read_copy
 
 if TYPE_CHECKING:
@@ -213,7 +214,9 @@ async def _dispatch_batch(
         # round_robin: fairness_rank, priority DESC, scheduled_at, id). The
         # final selection order is PG's eligible ORDER BY: pending_rank, then
         # fairness_rank (round_robin only; strict-FIFO rows carry none), then
-        # priority DESC, scheduled_at, id — NEVER alphabetical actor order,
+        # priority DESC, then the claim-recency stamp (never-claimed first,
+        # then least-recently-claimed — the cross-round actor rotation), then
+        # scheduled_at, id — NEVER alphabetical actor order,
         # which the old per-rank interleave substituted whenever a round's
         # limit cut inside a rank shared by jobs of different actors.
         _ranked_by_actor: dict[str, list[JobRow]] = _dd(list)
@@ -235,6 +238,15 @@ async def _dispatch_batch(
                 _pending_rank[r.id],
                 _fairness_rank[r.id] if _use_round_robin else 0,
                 -r.priority,
+                # PG's cross-round rotation cut: actor_claimed_at ASC
+                # NULLS FIRST (backend/_dispatch_sql.py, top_ids /
+                # sliding_locked / eligible). Never-claimed actors sort
+                # first, then least-recently-claimed; without it the
+                # scheduled_at/id tiebreak below is a stable total order
+                # that re-elects the same prefix of actors every round
+                # once more actors hold due work than the limit admits.
+                r.actor in self._actor_claim_ticks,
+                self._actor_claim_ticks.get(r.actor, 0),
                 r.scheduled_at,
                 r.id,
             ),
@@ -285,7 +297,12 @@ async def _dispatch_batch(
                 error_traceback=None,
                 result=None,
                 result_size_bytes=None,
-                attempt=row.attempt + 1,
+                # Mirrors the claim's LEAST(attempt + 1, 32767) saturation
+                # (backend/_dispatch_sql.py): a row parked at the smallint
+                # ceiling is claimed, not crashed, and the repeat attempt
+                # number is absorbed by _write_attempt's keep-the-first-
+                # record guard, exactly PG's ON CONFLICT doctrine.
+                attempt=min(row.attempt + 1, SMALLINT_MAX),
             )
             self._jobs[row.id] = updated
             # Mirrors PG's claim (backend/_dispatch.py): no job_events row —
@@ -297,6 +314,17 @@ async def _dispatch_batch(
             dispatched.append(_read_copy(updated))
 
         if dispatched or expansions >= _DISPATCH_MAX_WINDOW_EXPANSIONS:
+            if dispatched:
+                # Mirror of the claim's stamp CTE (backend/_dispatch_sql.py):
+                # PG stamps every admitted actor with the statement's
+                # statement_timestamp(); the twin stamps with one tick per
+                # claiming round, shared by every actor the round admitted
+                # (the tie shape PG's single timestamp produces), so the
+                # next round's cross-actor cut rotates to the
+                # least-recently-claimed.
+                self._claim_tick += 1
+                for _claimed_actor in dispatched_per_actor:
+                    self._actor_claim_ticks[_claimed_actor] = self._claim_tick
             return dispatched
         expansions += 1
         oversample = _DISPATCH_OVERSAMPLE * (2**expansions)

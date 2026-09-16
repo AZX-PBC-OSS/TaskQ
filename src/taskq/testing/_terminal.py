@@ -36,7 +36,12 @@ from taskq.backend._protocol import (
     validate_denial_reason,
     validate_snooze_outcome,
 )
-from taskq.constants import MIN_DEFERRAL_INTERVAL
+from taskq.constants import (
+    CANCEL_ORIGIN_ABANDONED,
+    CANCEL_ORIGIN_COOPERATIVE,
+    CANCEL_ORIGIN_FORCED,
+    MIN_DEFERRAL_INTERVAL,
+)
 from taskq.exceptions import (
     ResultTooLarge,
     UnencodableValue,
@@ -478,12 +483,22 @@ async def _mark_cancelled(
 
     now = self._clock.now()
     merged_progress = _merge_progress(row.progress_state, progress_state)
+    # Twin of the PG template's CASE: an actor stopped while still only
+    # asked (phase 1) stopped cooperatively; one interrupted at phase 2
+    # was forced. One local feeds the row, the attempt and the event so
+    # the three writes can never disagree (upd.error_class in the SQL).
+    origin = (
+        CANCEL_ORIGIN_FORCED
+        if row.cancel_phase == CancelPhase.FORCED
+        else CANCEL_ORIGIN_COOPERATIVE
+    )
     self._jobs[job_id] = replace(
         row,
         status="cancelled",
         finished_at=now,
         locked_by_worker=None,
         lock_expires_at=None,
+        error_class=origin,
         progress_seq=progress_seq,
         progress_state=merged_progress,
     )
@@ -493,7 +508,7 @@ async def _mark_cancelled(
         started_at=row.started_at,
         now=now,
         outcome="cancelled",
-        error_class=None,
+        error_class=origin,
         error_message=None,
         error_traceback=None,
         worker_id=worker_id,
@@ -503,6 +518,7 @@ async def _mark_cancelled(
         from_state="running",
         to_state="cancelled",
         now=now,
+        error_class=origin,
         worker_id=worker_id,
     )
     logger.debug(
@@ -581,6 +597,10 @@ async def _mark_abandoned(
         row,
         status="abandoned",
         finished_at=now,
+        # Twin of the PG template: the abandon stamps its own origin, so
+        # the row reads "taken away after the graces", distinct from a
+        # cooperative cancel — see _sql_templates.mark_abandoned.
+        error_class=CANCEL_ORIGIN_ABANDONED,
         progress_seq=progress_seq,
         progress_state=merged_progress,
     )
@@ -590,7 +610,7 @@ async def _mark_abandoned(
         started_at=row.started_at,
         now=now,
         outcome="cancelled",
-        error_class=None,
+        error_class=CANCEL_ORIGIN_ABANDONED,
         error_message=None,
         error_traceback=None,
         worker_id=row.locked_by_worker,
@@ -600,6 +620,7 @@ async def _mark_abandoned(
         from_state="running",
         to_state="abandoned",
         now=now,
+        error_class=CANCEL_ORIGIN_ABANDONED,
         worker_id=row.locked_by_worker,
     )
     logger.debug(
@@ -1115,6 +1136,11 @@ async def _write_attempt(self: "InMemoryBackend", attempt: AttemptRow) -> None:
     # binds) and reads it back through loads, so a caller-held AttemptRow
     # can never reach storage by reference and the stored metadata holds
     # PG's jsonb read-back values.
-    self._attempts.setdefault(attempt.job_id, []).append(
-        replace(attempt, metadata=loads(dumps_jsonb_str(attempt.metadata)))
-    )
+    rows = self._attempts.setdefault(attempt.job_id, [])
+    # Mirrors the ON CONFLICT (job_id, attempt) DO NOTHING guard every PG
+    # job_attempts insert carries: the claim's ceiling clamp can repeat an
+    # attempt number, and PG keeps the first record of it — the twin must
+    # not accumulate a duplicate PG refused to store.
+    if any(row.attempt == attempt.attempt for row in rows):
+        return
+    rows.append(replace(attempt, metadata=loads(dumps_jsonb_str(attempt.metadata))))

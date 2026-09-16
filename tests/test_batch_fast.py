@@ -17,7 +17,11 @@ from taskq import actor
 from taskq._ids import new_uuid
 from taskq.batch import EnqueueItem
 from taskq.client._jobs import JobsClient
-from taskq.exceptions import DuplicateIdempotencyKeyError, PayloadValidationError
+from taskq.exceptions import (
+    DuplicateIdempotencyKeyError,
+    PayloadValidationError,
+    SingletonCollisionError,
+)
 from taskq.testing.clock import FakeClock
 from taskq.testing.in_memory import InMemoryBackend
 
@@ -42,6 +46,11 @@ async def _test_actor(_payload: _Payload) -> None:
     unique_states=("pending", "scheduled", "running"),
 )
 async def _unique_for_actor(_payload: _Payload) -> None:  # pyright: ignore[reportUnusedFunction] # Why: actor decorator registers the function; it is accessed via the registry at test time.
+    pass
+
+
+@actor(name="batch_fast_bystander_actor")
+async def _bystander_actor(_payload: _Payload) -> None:  # pyright: ignore[reportUnusedFunction] # Why: actor decorator registers the function; it is accessed via the registry at test time.
     pass
 
 
@@ -478,6 +487,39 @@ class TestTUBatchTierUniqueForParity:
         )
         assert second.was_existing is True
         assert len(backend._jobs) == 1  # type: ignore[reportPrivateUsage]  # Why: admission check against the mirror's store
+
+
+class TestTU12SingletonCollisionTypedError:
+    """The fast tier refuses a singleton collision with the TYPED error.
+
+    The PG COPY path converts a ``jobs_singleton_uniq`` violation into the
+    typed ``SingletonCollisionError`` — the same refusal class the
+    single-enqueue path raises. The mirror's fast tier must raise the same
+    typed error and store nothing: a suite validated against
+    ``InMemoryBackend`` must see the refusal shape production produces.
+    """
+
+    async def test_intra_batch_singleton_duplicate_raises_typed_error(self) -> None:
+        backend = _make_backend()
+        client = _make_client(backend)
+        items = [
+            EnqueueItem(
+                actor_ref=_test_actor,
+                payload=_Payload(value=1),
+                metadata={"singleton": True},
+            ),
+            EnqueueItem(
+                actor_ref=_test_actor,
+                payload=_Payload(value=2),
+                metadata={"singleton": True},
+            ),
+        ]
+
+        with pytest.raises(SingletonCollisionError) as exc_info:
+            await client.enqueue_batch_fast(items)
+
+        assert exc_info.value.actor == "batch_fast_test_actor"
+        assert len(backend._jobs) == 0  # type: ignore[reportPrivateUsage]  # Why: test-only admission check
 
 
 # ── Integration tests ─────────────────────────────────────────────────────
@@ -1349,6 +1391,78 @@ class TestInBatchDuplicateAttributionIsExact:
         finally:
             await conn.close()
 
+    async def test_large_batch_duplicate_attributed_exactly_pg_and_memory_agree(
+        self, pg_dsn: str
+    ) -> None:
+        """A 10K-item batch with a single in-batch duplicate pair buried near
+        the end must be attributed exactly on PG, and the in-memory twin must
+        name the identical pair for the identical batch.
+
+        This pins two things the small (2-3 item) attribution tests do not
+        reach: that the pre-scan's O(n) pass over ``args_list`` still finds
+        the correct pair at scale (not just in a 3-item toy list), and that
+        PG and the in-memory backend agree on the SAME pair for the SAME
+        large batch -- the backend-parity obligation the spec calls out,
+        exercised at a size close to what an operator would actually submit.
+        """
+        import asyncpg
+
+        from taskq import TaskQ
+        from taskq.migrate import apply_pending
+
+        schema = "taskq_test_batch_fast_inbatch_large"
+        conn = await asyncpg.connect(pg_dsn)
+        try:
+            await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+            await apply_pending(conn, schema=schema)
+        finally:
+            await conn.close()
+
+        n = 10_000
+        dup_key = f"large-batch-dup-{new_uuid()}"
+        dup_scope = "large-batch-scope"
+
+        def _build_items() -> list[EnqueueItem]:
+            items = [_make_item(i) for i in range(n)]
+            # First occurrence near the start, well clear of any chunk-sized
+            # boundary a future chunked COPY caller might introduce.
+            items[3] = EnqueueItem(
+                actor_ref=_test_actor,
+                payload=_Payload(value=3),
+                idempotency_key=dup_key,
+                idempotency_scope=dup_scope,
+            )
+            # Second occurrence deep in the tail, one item from the end.
+            items[n - 2] = EnqueueItem(
+                actor_ref=_test_actor,
+                payload=_Payload(value=n - 2),
+                idempotency_key=dup_key,
+                idempotency_scope=dup_scope,
+            )
+            return items
+
+        async with TaskQ(dsn=pg_dsn, schema=schema) as tq:
+            with pytest.raises(DuplicateIdempotencyKeyError) as pg_exc:
+                await tq.enqueue_batch_fast(_build_items())
+
+        assert pg_exc.value.idempotency_scope == dup_scope
+        assert pg_exc.value.idempotency_key == dup_key
+
+        conn = await asyncpg.connect(pg_dsn)
+        try:
+            count = await conn.fetchval(f'SELECT count(*) FROM "{schema}".jobs')  # noqa: S608
+            assert count == 0, "the refusal is all-or-nothing; no row may survive it"
+        finally:
+            await conn.close()
+
+        backend = _make_backend()
+        client = _make_client(backend)
+        with pytest.raises(DuplicateIdempotencyKeyError) as mem_exc:
+            await client.enqueue_batch_fast(_build_items())
+
+        assert mem_exc.value.idempotency_scope == pg_exc.value.idempotency_scope
+        assert mem_exc.value.idempotency_key == pg_exc.value.idempotency_key
+
 
 @pytest.mark.integration
 class TestTIPastScheduledAtNormalized:
@@ -1401,5 +1515,116 @@ class TestTIPastScheduledAtNormalized:
             # INSERT arms' semantics.
             assert rec["status"] == "pending"
             assert rec["scheduled_at"] == past
+        finally:
+            await conn.close()
+
+
+@pytest.mark.integration
+class TestTISingletonCollisionTypedError:
+    """The COPY tier converts a ``jobs_singleton_uniq`` violation into the
+    typed ``SingletonCollisionError`` — the same refusal class the
+    single-enqueue path raises — never a raw driver ``UniqueViolationError``.
+
+    COPY has no ON CONFLICT arbiter, so the violation aborts the whole
+    statement: the refusal is all-or-nothing, and no row from the batch —
+    including an unrelated actor's item — may survive it.
+    """
+
+    async def test_in_batch_singleton_duplicate_raises_typed_error(self, pg_dsn: str) -> None:
+        import asyncpg
+
+        from taskq import TaskQ
+        from taskq.migrate import apply_pending
+
+        schema = "taskq_test_batch_fast_singleton_dup"
+        conn = await asyncpg.connect(pg_dsn)
+        try:
+            await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+            await apply_pending(conn, schema=schema)
+        finally:
+            await conn.close()
+
+        items = [
+            EnqueueItem(
+                actor_ref=_test_actor,
+                payload=_Payload(value=1),
+                metadata={"singleton": True},
+            ),
+            EnqueueItem(
+                actor_ref=_test_actor,
+                payload=_Payload(value=2),
+                metadata={"singleton": True},
+            ),
+        ]
+
+        async with TaskQ(dsn=pg_dsn, schema=schema) as tq:
+            with pytest.raises(SingletonCollisionError) as exc_info:
+                await tq.enqueue_batch_fast(items)
+        assert not isinstance(exc_info.value, asyncpg.UniqueViolationError)
+        # The in-batch repeat is knowable from the batch's own contents;
+        # the attribution names the colliding actor exactly.
+        assert exc_info.value.actor == "batch_fast_test_actor"
+
+        conn = await asyncpg.connect(pg_dsn)
+        try:
+            count = await conn.fetchval(f'SELECT count(*) FROM "{schema}".jobs')  # noqa: S608
+            assert count == 0, "the refusal is all-or-nothing; no row may survive it"
+        finally:
+            await conn.close()
+
+    async def test_stored_singleton_collision_aborts_whole_copy(self, pg_dsn: str) -> None:
+        """The collision can equally be against a job committed by an
+        earlier call: a batch carrying one singleton item for an actor that
+        already holds a live singleton job raises the typed refusal and
+        admits none of its other, unrelated items either."""
+        import asyncpg
+
+        from taskq import TaskQ
+        from taskq.migrate import apply_pending
+
+        schema = "taskq_test_batch_fast_singleton_stored"
+        conn = await asyncpg.connect(pg_dsn)
+        try:
+            await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+            await apply_pending(conn, schema=schema)
+        finally:
+            await conn.close()
+
+        async with TaskQ(dsn=pg_dsn, schema=schema) as tq:
+            await tq.enqueue_batch_fast(
+                [
+                    EnqueueItem(
+                        actor_ref=_test_actor,
+                        payload=_Payload(value=1),
+                        metadata={"singleton": True},
+                    )
+                ]
+            )
+            with pytest.raises(SingletonCollisionError) as exc_info:
+                await tq.enqueue_batch_fast(
+                    [
+                        EnqueueItem(
+                            actor_ref=_bystander_actor,
+                            payload=_Payload(value=2),
+                        ),
+                        EnqueueItem(
+                            actor_ref=_test_actor,
+                            payload=_Payload(value=3),
+                            metadata={"singleton": True},
+                        ),
+                    ]
+                )
+        assert not isinstance(exc_info.value, asyncpg.UniqueViolationError)
+        # The post-abort lookup of the stored live singleton rows names
+        # the colliding actor exactly (no in-batch repeat exists here).
+        assert exc_info.value.actor == "batch_fast_test_actor"
+
+        conn = await asyncpg.connect(pg_dsn)
+        try:
+            rows = await conn.fetch(f'SELECT actor FROM "{schema}".jobs')  # noqa: S608
+            assert [r["actor"] for r in rows] == ["batch_fast_test_actor"], (
+                "the aborted COPY admitted the unrelated actor's item; "
+                "the single-statement COPY aborts with nothing written"
+            )
         finally:
             await conn.close()

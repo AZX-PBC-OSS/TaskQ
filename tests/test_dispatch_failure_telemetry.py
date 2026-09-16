@@ -228,3 +228,52 @@ async def test_claimable_probe_failure_still_emits_telemetry(
         "failure counter -- indistinguishable from an idle queue"
     )
     assert counter_value(reader, failure_metric_names[0]) >= 1
+
+
+# ── red-team: does the failure counter name the failure class? ──────────
+
+
+async def test_dispatch_failure_counter_names_the_failure_class(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The dispatch failure counter must carry an ``error_type`` label, the
+    idiom already established elsewhere in this module (for example
+    ``record_reservation_reclaim_drain_failure``), so a transient error
+    (connection reset, lock timeout -- a producer that will recover on its
+    own) is distinguishable from a permanent one (auth failure, schema
+    drift -- a producer that never will) purely from the metric stream.
+    Today ``record_dispatch_failure`` takes only ``queue``: a connection
+    reset and a permanent misconfiguration are recorded identically, so an
+    alert built on this counter cannot tell a self-healing blip from an
+    outage that needs a human. This test is expected to fail until
+    ``error_type`` is added to the counter's label set."""
+    setup_tracer(monkeypatch)
+    reader = setup_meter(monkeypatch)
+
+    conn = _FailingConn()
+    rendered = DISPATCH_STRICT_FIFO_SQL.format(schema="taskq")
+    worker_id = UUID("00000000-0000-0000-0000-000000000001")
+
+    with pytest.raises(ConnectionResetError):
+        await dispatch_batch(
+            conn,  # type: ignore[arg-type] # Why: duck-typed fake
+            sql=rendered,
+            queues=["default"],
+            limit_n=5,
+            worker_id=worker_id,
+            lock_lease=timedelta(seconds=30),
+        )
+
+    metrics = collect_metrics(reader)
+    failure_metrics = [m for m in metrics if "dispatch" in m.name and "fail" in m.name]
+    assert failure_metrics, "expected a dispatch failure metric"
+
+    for metric in failure_metrics:
+        for data_point in metric.data.data_points:
+            attrs = dict(data_point.attributes)
+            assert "error_type" in attrs, (
+                f"dispatch failure counter has no error_type label (attrs={attrs}); "
+                "a lock-timeout retry storm and a permanent auth failure are "
+                "indistinguishable in the metric stream, defeating the alerting "
+                "use case this counter exists to serve"
+            )

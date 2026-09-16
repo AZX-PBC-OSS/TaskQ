@@ -301,6 +301,10 @@ _SERIES_LABELS: dict[str, frozenset[str]] = {
     "taskq_maintenance_leader_sweep_last_success_seconds": frozenset({"sweep_name"}),
     "taskq_maintenance_leader_sweep_batch_size": frozenset({"sweep_name"}),
     "taskq_maintenance_leader_sweep_batch_size_configured": frozenset({"sweep_name"}),
+    # Label-free leader-lease gauge: one series per pod, present only
+    # while that pod holds the lease — pinned label-free so a join
+    # against it can never silently go empty.
+    "taskq_maintenance_leader_lease_expires_in_seconds": frozenset(),
 }
 
 #: Matches `<series_name>{<label filters>}` or a bare `<series_name>`.

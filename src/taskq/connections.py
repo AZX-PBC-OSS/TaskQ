@@ -34,7 +34,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final, cast
 
 if TYPE_CHECKING:
     import asyncpg
@@ -50,8 +50,10 @@ __all__ = [
     "RedisFactory",
     "WorkerConnections",
     "bounded_lock_budget_ms",
+    "connection_init_hook",
     "lock_budget_command_timeout_secs",
     "statement_cache_kwargs",
+    "with_connection_init",
 ]
 
 # ── asyncpg statement-cache defaults ────────────────────────────────────
@@ -190,6 +192,109 @@ def lock_budget_command_timeout_secs(
 type PoolFactory = Callable[[], Awaitable[asyncpg.Pool]]
 type ConnFactory = Callable[[], Awaitable[asyncpg.Connection]]
 type RedisFactory = Callable[[], Awaitable[redis_async.Redis]]  # type: ignore[type-arg]  # Why: redis-py stubs expose Redis as an unparameterised generic; matches WorkerDeps.redis_client typing.
+
+
+# ── Inheritable per-connection init hooks ────────────────────────────
+#
+# A connection built by a bare factory is opaque: anything applied to it
+# after connect — a ``set_type_codec`` registration, a prepared-statement
+# warmup — lives in the driver's per-connection state, which exposes no
+# read-back, so a SECOND connection the worker builds for the same role
+# cannot replay it. The per-slot transaction pool is exactly such a
+# second connection family: it shadows the LOOP-registered
+# ``asyncpg.Connection`` once ``max_concurrency > 1``
+# (``taskq.worker._bootstrap._maybe_open_slot_pool``). A registration
+# whose hook is DECLARED on the factory, though, is replayable: the
+# worker reads the hook off the registration and installs it as the
+# slot pool's ``init``, so the codec the application registered decodes
+# identically at every concurrency. ``with_connection_init`` is the
+# declaring wrapper for a hand-rolled factory;
+# :func:`taskq.auth.make_dedicated_conn_factory` declares its ``setup``
+# hook the same way.
+
+#: Attribute a factory sets to declare the per-connection init hook it
+#: applies. Private on purpose: the name is an implementation detail
+#: shared by the writers (``with_connection_init``,
+#: ``make_dedicated_conn_factory``) and the single reader below — apps
+#: declare hooks through those, never by setting the attribute directly.
+_CONNECTION_INIT_HOOK_ATTR: Final[str] = "taskq_connection_init_hook"
+
+
+def with_connection_init(
+    factory: ConnFactory,
+    init: Callable[[asyncpg.Connection], Awaitable[None]],
+) -> ConnFactory:
+    """Wrap a connection factory so *init* runs on every connection it
+    opens — and so the worker's per-slot pool can inherit the same hook.
+
+    *init* is applied to each produced connection exactly once, right
+    after the factory returns it — the ``setup=`` hook position in
+    ``asyncpg.connect``. This is the channel through which per-connection
+    setup (registering type codecs, preparing statements) reaches the
+    connections an actor actually runs on: when the wrapped factory
+    provides the LOOP-scope ``asyncpg.Connection`` registration and the
+    worker activates its per-slot transaction pool, the worker reads the
+    declared hook off the registration and passes it as the slot pool's
+    ``init``, so every slot connection gets the same setup. Applied
+    directly to one live connection instead, the same setup is invisible
+    to the slot pool (the driver exposes no read-back) and silently
+    absent above ``max_concurrency = 1``.
+
+    Declare the hook here, not inside *factory* as well: the wrapper
+    applies it, so a factory that also applies it would run it twice on
+    the LOOP-scope connection. If *init* raises, the produced connection
+    is closed (bounded) before the error propagates — a failed hook
+    means no usable connection, matching asyncpg's own hook contract.
+    """
+
+    # Why no return annotation: DI registers factories like this one and
+    # resolves type hints at registration time (``_collect_dep_edges``),
+    # and this module keeps asyncpg under TYPE_CHECKING — a runtime-
+    # evaluated ``-> asyncpg.Connection`` would raise NameError there.
+    # The declared ``ConnFactory`` return type of this wrapper keeps the
+    # boundary typed; pyright infers the body.
+    async def _wrapped():
+        conn = await factory()
+        try:
+            await init(conn)
+        except BaseException:
+            # Why deferred: this module is import-light by design (no
+            # taskq runtime imports above), and the failure path is cold.
+            # Why bounded: a hook failure during DI bootstrap must not
+            # leak the connection, and a dead PG must not turn that
+            # cleanup into a wedge. The helper never raises, so the
+            # hook's own error is always the one that propagates.
+            from taskq._close import CLOSE_TIMEOUT_SECS, close_conn_bounded
+
+            await close_conn_bounded(conn, "with-connection-init", CLOSE_TIMEOUT_SECS)
+            raise
+        return conn
+
+    setattr(_wrapped, _CONNECTION_INIT_HOOK_ATTR, init)
+    return _wrapped
+
+
+def connection_init_hook(
+    factory: object,
+) -> Callable[[asyncpg.Connection], Awaitable[None]] | None:
+    """The init hook *factory* declares, if it declares one.
+
+    The read half of the inheritance channel — public so an application
+    that hand-rolls its factories can verify its declaration is visible
+    the way the worker sees it. Returns the hook exactly as declared (so
+    the slot pool installs the very callable the LOOP-scope connection
+    got), or ``None`` when the factory carries no declaration — a bare
+    closure, a raw ``asyncpg.connect`` partial — in which case nothing
+    about its per-connection setup is recoverable.
+    """
+    hook = getattr(factory, _CONNECTION_INIT_HOOK_ATTR, None)
+    if not callable(hook):
+        return None
+    # Why the string form: asyncpg is TYPE_CHECKING-only in this module,
+    # and cast() evaluates its type argument at runtime. The attribute is
+    # write-only from the two typed declaring sites above; getattr erases
+    # that, so the cast restores the declared contract.
+    return cast("Callable[[asyncpg.Connection], Awaitable[None]]", hook)
 
 
 @dataclass(slots=True)

@@ -24,6 +24,10 @@ from taskq.backend._sql import (
 )
 from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining
+    CANCEL_ORIGIN_ABANDONED,
+    CANCEL_ORIGIN_COOPERATIVE,
+    CANCEL_ORIGIN_FORCED,
+    CANCEL_ORIGIN_PENDING,
     MIN_DEFERRAL_INTERVAL,
 )
 
@@ -167,6 +171,7 @@ class SqlTemplates:
     enqueue_notify: str
     enqueue_batch: str
     enqueue_batch_fetch_existing: str
+    enqueue_batch_fetch_singleton_blockers: str
     enqueue_batch_fetch_by_ids: str
     enqueue_batch_fast_fixup: str
 
@@ -299,6 +304,11 @@ WITH upd AS (
            trunc(EXTRACT(EPOCH FROM (upd.finished_at - upd.started_at)) * 1000)::int,
            (SELECT id FROM holder), '{{}}'::jsonb
     FROM upd
+    -- A claim-clamped attempt number repeats at the smallint ceiling
+    -- (dispatch saturates its increment there): keep the first record of
+    -- the number, never roll the terminal transition back on a PK
+    -- collision (the deadline sweep's insert carries the same doctrine).
+    ON CONFLICT (job_id, attempt) DO NOTHING
 ), evt AS (
     INSERT INTO "{s}".job_events
     (job_id, occurred_at, kind, detail)
@@ -333,6 +343,11 @@ WITH upd AS (
            trunc(EXTRACT(EPOCH FROM (upd.finished_at - upd.started_at)) * 1000)::int,
            (SELECT id FROM holder), '{{}}'::jsonb
     FROM upd
+    -- A claim-clamped attempt number repeats at the smallint ceiling
+    -- (dispatch saturates its increment there): keep the first record of
+    -- the number, never roll the terminal transition back on a PK
+    -- collision (the deadline sweep's insert carries the same doctrine).
+    ON CONFLICT (job_id, attempt) DO NOTHING
 ), evt AS (
     INSERT INTO "{s}".job_events
     (job_id, occurred_at, kind, detail)
@@ -455,6 +470,10 @@ retried_att AS (
            trunc(EXTRACT(EPOCH FROM (r.now_ts - r.started_at)) * 1000)::int,
            (SELECT id FROM holder), '{{}}'::jsonb
     FROM retried r
+    -- A claim-clamped attempt number repeats at the smallint ceiling:
+    -- keep the first record, never roll the transition back (see the
+    -- mark_succeeded insert's comment).
+    ON CONFLICT (job_id, attempt) DO NOTHING
 ),
 retried_evt AS (
     INSERT INTO "{s}".job_events
@@ -475,6 +494,10 @@ deadline_att AS (
            trunc(EXTRACT(EPOCH FROM (d.finished_at - d.started_at)) * 1000)::int,
            (SELECT id FROM holder), '{{}}'::jsonb
     FROM deadline_failed d
+    -- A claim-clamped attempt number repeats at the smallint ceiling:
+    -- keep the first record, never roll the transition back (see the
+    -- mark_succeeded insert's comment).
+    ON CONFLICT (job_id, attempt) DO NOTHING
 ),
 deadline_evt AS (
     INSERT INTO "{s}".job_events
@@ -486,6 +509,19 @@ deadline_evt AS (
     FROM deadline_failed d
 )
 SELECT * FROM retried UNION ALL SELECT * FROM deadline_failed""",
+        # Every terminal cancel path records its origin the way every
+        # terminal failure path records its reason: error_class on the
+        # row, on the attempt, and in the state_change detail. Three
+        # cancelled rows read side by side then say which actor yielded,
+        # which had to be taken away and which never ran — a distinction
+        # worker logs carry today and lose the moment they roll off.
+        # mark_cancelled splits its marker on the phase the row was at:
+        # an actor that stopped while still only ASKED (phase 1) stopped
+        # cooperatively; one that had to be interrupted at phase 2 was
+        # forced. mark_abandoned and cancel_pending_scheduled stamp their
+        # own origins. The SET clause owns the choice; the attempt row
+        # and event detail read it back off upd so the three writes can
+        # never disagree.
         mark_cancelled=f"""\
 WITH upd AS (
     UPDATE "{s}".jobs
@@ -493,6 +529,8 @@ WITH upd AS (
         finished_at = clock_timestamp(),
         locked_by_worker = NULL,
         lock_expires_at = NULL,
+        error_class = CASE WHEN cancel_phase = 2 THEN '{CANCEL_ORIGIN_FORCED}'
+                           ELSE '{CANCEL_ORIGIN_COOPERATIVE}' END,
         progress_seq = $3,
         progress_state = CASE WHEN $4::jsonb IS NOT NULL THEN COALESCE(progress_state, '{{}}'::jsonb) || $4::jsonb ELSE progress_state END
     WHERE id = $1 AND status = 'running' AND locked_by_worker = $2 AND attempt = $5
@@ -504,15 +542,21 @@ WITH upd AS (
     (job_id, attempt, started_at, finished_at, outcome,
      error_class, error_message, error_traceback, duration_ms, worker_id, metadata)
     SELECT upd.id, upd.attempt, upd.started_at, clock_timestamp(), 'cancelled',
-           NULL, NULL, NULL,
+           upd.error_class, NULL, NULL,
            trunc(EXTRACT(EPOCH FROM (upd.finished_at - upd.started_at)) * 1000)::int,
            (SELECT id FROM holder), '{{}}'::jsonb
     FROM upd
+    -- A claim-clamped attempt number repeats at the smallint ceiling
+    -- (dispatch saturates its increment there): keep the first record of
+    -- the number, never roll the terminal transition back on a PK
+    -- collision (the deadline sweep's insert carries the same doctrine).
+    ON CONFLICT (job_id, attempt) DO NOTHING
 ), evt AS (
     INSERT INTO "{s}".job_events
     (job_id, occurred_at, kind, detail)
     SELECT upd.id, clock_timestamp(), 'state_change',
            jsonb_build_object('from_state', 'running', 'to_state', 'cancelled',
+                              'error_class', upd.error_class,
                               'worker_id', $2::text)
     FROM upd
 )
@@ -522,6 +566,7 @@ WITH upd AS (
     UPDATE "{s}".jobs
     SET status = 'abandoned',
         finished_at = clock_timestamp(),
+        error_class = '{CANCEL_ORIGIN_ABANDONED}',
         progress_seq = $2,
         progress_state = CASE WHEN $3::jsonb IS NOT NULL THEN COALESCE(progress_state, '{{}}'::jsonb) || $3::jsonb ELSE progress_state END
     -- The NULL-lease arm is defense-in-depth for the no-exit cell
@@ -554,15 +599,21 @@ WITH upd AS (
     (job_id, attempt, started_at, finished_at, outcome,
      error_class, error_message, error_traceback, duration_ms, worker_id, metadata)
     SELECT upd.id, upd.attempt, upd.started_at, clock_timestamp(), 'cancelled',
-           NULL, NULL, NULL,
+           '{CANCEL_ORIGIN_ABANDONED}', NULL, NULL,
            trunc(EXTRACT(EPOCH FROM (upd.finished_at - upd.started_at)) * 1000)::int,
            (SELECT id FROM holder), '{{}}'::jsonb
     FROM upd
+    -- A claim-clamped attempt number repeats at the smallint ceiling
+    -- (dispatch saturates its increment there): keep the first record of
+    -- the number, never roll the terminal transition back on a PK
+    -- collision (the deadline sweep's insert carries the same doctrine).
+    ON CONFLICT (job_id, attempt) DO NOTHING
 ), evt AS (
     INSERT INTO "{s}".job_events
     (job_id, occurred_at, kind, detail)
     SELECT upd.id, clock_timestamp(), 'state_change',
            jsonb_strip_nulls(jsonb_build_object('from_state', 'running', 'to_state', 'abandoned',
+                                                'error_class', '{CANCEL_ORIGIN_ABANDONED}',
                                                 'worker_id', upd.locked_by_worker::text))
     FROM upd
 )
@@ -748,6 +799,10 @@ deadline_att AS (
            trunc(EXTRACT(EPOCH FROM (d.finished_at - d.started_at)) * 1000)::int,
            (SELECT id FROM holder), '{{}}'::jsonb
     FROM deadline_failed d
+    -- A claim-clamped attempt number repeats at the smallint ceiling:
+    -- keep the first record, never roll the transition back (see the
+    -- mark_succeeded insert's comment).
+    ON CONFLICT (job_id, attempt) DO NOTHING
 ),
 deadline_evt AS (
     INSERT INTO "{s}".job_events
@@ -856,6 +911,10 @@ snoozed_att AS (
            trunc(EXTRACT(EPOCH FROM (sn.now_ts - sn.started_at)) * 1000)::int,
            (SELECT id FROM holder), '{{}}'::jsonb
     FROM snoozed sn
+    -- A claim-clamped attempt number repeats at the smallint ceiling:
+    -- keep the first record, never roll the transition back (see the
+    -- mark_succeeded insert's comment).
+    ON CONFLICT (job_id, attempt) DO NOTHING
 ),
 snoozed_evt AS (
     INSERT INTO "{s}".job_events
@@ -874,6 +933,10 @@ max_attempts_att AS (
            trunc(EXTRACT(EPOCH FROM (m.finished_at - m.started_at)) * 1000)::int,
            (SELECT id FROM holder), '{{}}'::jsonb
     FROM max_attempts_failed m
+    -- A claim-clamped attempt number repeats at the smallint ceiling:
+    -- keep the first record, never roll the transition back (see the
+    -- mark_succeeded insert's comment).
+    ON CONFLICT (job_id, attempt) DO NOTHING
 ),
 max_attempts_evt AS (
     INSERT INTO "{s}".job_events
@@ -893,6 +956,10 @@ deadline_att AS (
            trunc(EXTRACT(EPOCH FROM (d.finished_at - d.started_at)) * 1000)::int,
            (SELECT id FROM holder), '{{}}'::jsonb
     FROM deadline_failed d
+    -- A claim-clamped attempt number repeats at the smallint ceiling:
+    -- keep the first record, never roll the transition back (see the
+    -- mark_succeeded insert's comment).
+    ON CONFLICT (job_id, attempt) DO NOTHING
 ),
 deadline_evt AS (
     INSERT INTO "{s}".job_events
@@ -988,6 +1055,10 @@ deadline_att AS (
            trunc(EXTRACT(EPOCH FROM (d.finished_at - d.started_at)) * 1000)::int,
            (SELECT id FROM holder), '{{}}'::jsonb
     FROM deadline_failed d
+    -- A claim-clamped attempt number repeats at the smallint ceiling:
+    -- keep the first record, never roll the transition back (see the
+    -- mark_succeeded insert's comment).
+    ON CONFLICT (job_id, attempt) DO NOTHING
 ),
 deadline_evt AS (
     INSERT INTO "{s}".job_events
@@ -1143,6 +1214,10 @@ deadline_att AS (
            trunc(EXTRACT(EPOCH FROM (d.finished_at - d.started_at)) * 1000)::int,
            (SELECT id FROM holder), '{{}}'::jsonb
     FROM deadline_failed d
+    -- A claim-clamped attempt number repeats at the smallint ceiling:
+    -- keep the first record, never roll the transition back (see the
+    -- mark_succeeded insert's comment).
+    ON CONFLICT (job_id, attempt) DO NOTHING
 ),
 deadline_evt AS (
     INSERT INTO "{s}".job_events
@@ -1167,7 +1242,11 @@ INSERT INTO "{s}".job_attempts
 (job_id, attempt, started_at, finished_at, outcome,
  error_class, error_message, error_traceback, duration_ms, worker_id, metadata)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9,
-        (SELECT id FROM holder), $11::jsonb)""",
+        (SELECT id FROM holder), $11::jsonb)
+-- A claim-clamped attempt number repeats at the smallint ceiling: keep
+-- the first record, never raise a PK collision (see the mark_succeeded
+-- insert's comment).
+ON CONFLICT (job_id, attempt) DO NOTHING""",
         insert_event=INSERT_EVENT_SQL.format(schema=s),
         # ── Owner check ────────────────────────────────────────────
         select_owner=f"""\
@@ -1178,7 +1257,12 @@ WITH prev AS (
     SELECT status AS prev_status FROM "{s}".jobs WHERE id = $1 FOR UPDATE
 )
 UPDATE "{s}".jobs
-SET status = 'cancelled', finished_at = clock_timestamp()
+-- The cancel-origin marker goes on the ROW only: the pending→cancelled
+-- state_change event detail keeps its {{from_state, to_state}} shape —
+-- a from_state of pending/scheduled already says the job never ran, and
+-- the differential suite pins that detail exactly.
+SET status = 'cancelled', finished_at = clock_timestamp(),
+    error_class = '{CANCEL_ORIGIN_PENDING}'
 FROM prev
 WHERE "{s}".jobs.id = $1 AND "{s}".jobs.status IN ('pending', 'scheduled')
 RETURNING prev.prev_status""",
@@ -1301,6 +1385,14 @@ RETURNING id, actor, queue, identity_key, status, idempotency_key, idempotency_s
 SELECT j.* FROM "{s}".jobs j
 JOIN unnest($1::text[], $2::text[]) AS pairs(scope, key)
   ON j.idempotency_scope = pairs.scope AND j.idempotency_key = pairs.key""",
+        # The singleton_preflight predicate over an ANY-array: the post-abort
+        # lookup the batch tiers' jobs_singleton_uniq conversion uses to name
+        # the colliding actor (see _attribute_singleton_collision).
+        enqueue_batch_fetch_singleton_blockers=f"""\
+SELECT actor FROM "{s}".jobs
+WHERE actor = ANY($1::text[])
+  AND status IN ('pending', 'scheduled', 'running')
+  AND metadata @> '{{"singleton": true}}'::jsonb""",
         enqueue_batch_fetch_by_ids=f"""\
 SELECT * FROM "{s}".jobs WHERE id = ANY($1::uuid[])""",
         # Post-COPY corrective UPDATE for enqueue_batch_fast.  COPY cannot

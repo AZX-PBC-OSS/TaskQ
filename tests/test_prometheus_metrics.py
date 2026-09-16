@@ -2,7 +2,7 @@
 
 Covers all unit tests:
   rules.yaml parses correctly
-  all 24 Prometheus metric names present in scrape output
+  all mapped Prometheus metric names present in scrape output
   metric name mapping correctness (OTel → Prometheus)
   outcome label present, not status
   create_metrics_router adds GET /metrics route
@@ -10,8 +10,8 @@ Covers all unit tests:
   cardinality bounded response time (< 50ms for 100 actors)
   missing [prometheus] extra raises ImportError at import time
   ImportError at import time without extra (alias of)
-  rules.yaml contains exactly 14 alerts
-  every instrument from the 24-row map appears in scrape output
+  rules.yaml contains exactly the expected alert set
+  every instrument from the _NAME_MAP rows appears in scrape output
   plain rules.yaml and kubernetes PrometheusRule carry identical alerts
 """
 
@@ -110,6 +110,11 @@ _NAME_MAP: list[tuple[str, str]] = [
     (
         "taskq.maintenance_leader.sweep_batch_size_configured",
         "taskq_maintenance_leader_sweep_batch_size_configured",
+    ),
+    # Name already ends in the unit word "seconds" — the no-double-suffix rule.
+    (
+        "taskq.maintenance_leader.lease_expires_in_seconds",
+        "taskq_maintenance_leader_lease_expires_in_seconds",
     ),
     ("taskq.leader.lock_contention", "taskq_leader_lock_contention_total"),
     ("taskq.cron.lock_contention", "taskq_cron_lock_contention_total"),
@@ -229,6 +234,11 @@ def _populate_all_instruments(meter: Any) -> None:
         "taskq.maintenance_leader.sweep_batch_size_configured",
         unit="1",
         callbacks=[lambda _: [Observation(100, {"sweep_name": "scheduled_to_pending"})]],
+    )
+    meter.create_observable_gauge(
+        "taskq.maintenance_leader.lease_expires_in_seconds",
+        unit="s",
+        callbacks=[lambda _: [Observation(30.0)]],
     )
     meter.create_counter("taskq.leader.lock_contention", unit="1").add(1, {"lock": "maintenance"})
     meter.create_counter("taskq.cron.lock_contention", unit="1").add(1)
@@ -545,6 +555,101 @@ def test_scheduled_backlog_growing_and_operands_have_compatible_labels(
         f"and {right_name!r} (labels={right_labels}) with an unqualified `and`; "
         "PromQL vector `and` requires identical label sets to pair series, so "
         "with these mismatched label sets the alert can never fire."
+    )
+
+
+def _eval_scheduled_backlog_growing_expr(
+    oldest_due_age_seconds: list[float],
+    scheduled_count: list[float],
+    *,
+    step_seconds: int = 60,
+    offset_seconds: int = 300,
+    age_threshold_seconds: float = 300.0,
+) -> list[bool]:
+    """Evaluate `TaskQScheduledBacklogGrowing`'s exact shipped expression --
+    ``taskq_jobs_oldest_due_age_seconds > 300 and taskq_jobs_scheduled_count
+    > (taskq_jobs_scheduled_count offset 5m)`` -- over two same-length,
+    evenly-spaced synthetic series, mirroring PromQL `and`/`offset`
+    range-query semantics without requiring promtool or a live Prometheus.
+
+    Returns, for each timestamp, whether the (pre-`for:`) instant condition
+    holds. This does not model the rule's `for: 5m` hold requirement --
+    callers reason about the raw instant series.
+    """
+    n = len(oldest_due_age_seconds)
+    assert len(scheduled_count) == n
+    offset_steps = offset_seconds // step_seconds
+    results = []
+    for i in range(n):
+        age_ok = oldest_due_age_seconds[i] > age_threshold_seconds
+        j = i - offset_steps
+        # PromQL offset: no sample at/ before series start -> operand
+        # missing -> `and` produces no result for this timestamp (false).
+        count_ok = j >= 0 and scheduled_count[i] > scheduled_count[j]
+        results.append(age_ok and count_ok)
+    return results
+
+
+def test_scheduled_backlog_growing_silent_on_healthy_draining_straggler() -> None:
+    """A steadily DRAINING backlog whose single oldest-due job just hasn't
+    had its turn yet must not trip the alert, even once that job's age
+    clears the 300s threshold and keeps climbing.
+
+    This is the exact false-positive shape the fix's own description calls
+    out for the *old* self-join expression. It must not regress.
+    """
+    # Age climbs past 300s and keeps climbing (one straggler, still not
+    # promoted); count falls monotonically the whole time (everything
+    # behind the straggler is draining normally).
+    age = [0, 60, 120, 180, 240, 300, 360, 420, 480, 540, 600, 600, 600, 600, 600, 600, 600]
+    count = [50, 48, 46, 44, 42, 40, 38, 36, 34, 32, 30, 28, 26, 24, 22, 20, 18]
+    results = _eval_scheduled_backlog_growing_expr(age, count)
+    assert not any(results), (
+        "TaskQScheduledBacklogGrowing's instant condition fired on a healthy "
+        f"draining backlog (per-step results={results}); a falling scheduled "
+        "count must never satisfy the growth predicate regardless of how old "
+        "the current straggler is."
+    )
+
+
+def test_scheduled_backlog_growing_fires_on_genuine_growth() -> None:
+    """A genuinely growing backlog -- count rising while the oldest due job
+    also ages past the threshold -- must satisfy the instant condition."""
+    age = [0, 60, 120, 180, 240, 300, 360, 420, 480, 540, 600, 600, 600, 600, 600, 600, 600]
+    count = [10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30, 32, 34, 36, 38, 40, 42]
+    results = _eval_scheduled_backlog_growing_expr(age, count)
+    assert any(results), (
+        "TaskQScheduledBacklogGrowing's instant condition never fired on a "
+        f"genuinely growing backlog (per-step results={results})."
+    )
+
+
+def test_scheduled_backlog_growing_silent_on_stalled_plateau() -> None:
+    """RED: a promotion stall where the scheduled count plateaus (nothing
+    drains, nothing new arrives net) rather than rising is a genuine
+    promotion-stall shape -- the oldest-due job's age climbs past the
+    threshold and keeps climbing forever -- but the shipped expression
+    requires ``scheduled_count > scheduled_count offset 5m`` (strictly
+    GREATER than 5 minutes ago), which a flat plateau never satisfies.
+
+    The fix's own rationale is "a scheduled count that is flat or falling
+    ... is healthy no matter how long the current straggler has waited"
+    (rules.yaml description for this alert) -- but a flat count is exactly
+    what you see when promotion has stopped completely and arrivals have
+    also stopped (or are throttled/backpressured), which is a real stall,
+    not a healthy steady state. This test pins that the alert is silent in
+    that case today; it is expected to fail (go red) until the expression
+    (or an operator runbook / companion alert) accounts for a stalled
+    plateau, not just a falling-or-rising count.
+    """
+    age = [0, 60, 120, 180, 240, 300, 360, 420, 480, 540, 600, 600, 600, 600, 600, 600, 600]
+    count = [30] * len(age)
+    results = _eval_scheduled_backlog_growing_expr(age, count)
+    assert any(results), (
+        "TaskQScheduledBacklogGrowing never fires on a stalled plateau "
+        f"(count flat, age climbing past threshold; per-step results={results}) "
+        "-- promotion has stopped completely but the alert stays silent because "
+        "a flat count never satisfies 'count > count 5m ago'."
     )
 
 

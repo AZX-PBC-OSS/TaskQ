@@ -755,6 +755,37 @@ def first_duplicate_idempotency_pair(
     return None
 
 
+def first_singleton_collision_actor(
+    args_list: Iterable[EnqueueArgs],
+    stored_actors: Container[str],
+) -> str | None:
+    """The singleton actor a batch write aborts on, derived from the batch
+    itself — never from driver text.
+
+    ``jobs_singleton_uniq`` is keyed on ``(actor)`` over live
+    singleton-flagged rows, and a bulk insert writes items in batch order,
+    so the violating actor is the first singleton item whose actor repeats
+    an earlier singleton item or appears among *stored_actors* (the live
+    singleton rows already committed). Same rule, same reasoning as
+    :func:`first_duplicate_idempotency_pair`: the batch's own contents
+    carry the answer losslessly, where the server's detail text renders
+    values raw and unquoted. The ``is True`` predicate matches the partial
+    index's ``metadata @> '{"singleton": true}'`` exactly — a
+    truthy-but-not-true value never armed the index on either backend.
+    Pure function over the args; lives here (not in the PG bulk path) so
+    the in-memory mirror — which must not import driver-bound modules —
+    attributes the identical actor.
+    """
+    seen: set[str] = set()
+    for args in args_list:
+        if args.metadata.get("singleton") is not True:
+            continue
+        if args.actor in seen or args.actor in stored_actors:
+            return args.actor
+        seen.add(args.actor)
+    return None
+
+
 @dataclass(frozen=True, slots=True)
 class JobRow:
     """Read-model of a ``taskq.jobs`` row.  Every column the dispatch loop,
@@ -766,8 +797,6 @@ class JobRow:
     id: JobId
     actor: str
     queue: str
-    identity_key: IdentityKey | None
-    fairness_key: str | None
     payload: dict[str, object]
     payload_schema_ver: int
     status: JobStatus
@@ -775,32 +804,40 @@ class JobRow:
     attempt: int
     max_attempts: int
     retry_kind: RetryKind
-    schedule_to_close: datetime | None
-    start_to_close: timedelta | None
-    heartbeat_timeout: timedelta | None
     created_at: datetime
     scheduled_at: datetime
-    started_at: datetime | None
-    finished_at: datetime | None
-    last_heartbeat_at: datetime | None
-    locked_by_worker: UUID | None
-    lock_expires_at: datetime | None
-    cancel_requested_at: datetime | None
-    cancel_phase: CancelPhase
-    error_class: str | None
-    error_message: str | None
-    error_traceback: str | None
-    progress_state: dict[str, object]
-    progress_seq: int
-    result: dict[str, object] | None
-    result_size_bytes: int | None
-    result_expires_at: datetime | None
-    idempotency_key: IdempotencyKey | None
-    idempotency_scope: str
-    trace_id: str | None
-    span_id: str | None
-    metadata: dict[str, object]
-    tags: tuple[str, ...]
+    # Every field below reads a column that is nullable, defaulted, or
+    # empty-valued in the schema, so its default here is the value the
+    # row actually carries when nothing has set it. Keeping them
+    # defaulted lets a caller name the columns its case is about (a
+    # terminal row for a hook, a claimed row for a fence) without
+    # restating three dozen NULLs that carry no meaning.
+    identity_key: IdentityKey | None = None
+    fairness_key: str | None = None
+    schedule_to_close: datetime | None = None
+    start_to_close: timedelta | None = None
+    heartbeat_timeout: timedelta | None = None
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    last_heartbeat_at: datetime | None = None
+    locked_by_worker: UUID | None = None
+    lock_expires_at: datetime | None = None
+    cancel_requested_at: datetime | None = None
+    cancel_phase: CancelPhase = CancelPhase.NONE
+    error_class: str | None = None
+    error_message: str | None = None
+    error_traceback: str | None = None
+    progress_state: dict[str, object] = field(default_factory=dict[str, object])
+    progress_seq: int = 0
+    result: dict[str, object] | None = None
+    result_size_bytes: int | None = None
+    result_expires_at: datetime | None = None
+    idempotency_key: IdempotencyKey | None = None
+    idempotency_scope: str = ""
+    trace_id: str | None = None
+    span_id: str | None = None
+    metadata: dict[str, object] = field(default_factory=dict[str, object])
+    tags: tuple[str, ...] = ()
     snooze_count: int = 0
     """Coalesced count of non-consuming deferrals (``Snooze`` and
     ``RetryAfter(consume_budget=False)``) since enqueue — the job-row

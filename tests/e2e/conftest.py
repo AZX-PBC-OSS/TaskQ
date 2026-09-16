@@ -49,11 +49,12 @@ from ._image_hygiene import (
 
 if TYPE_CHECKING:
     import asyncpg
-    from containerspec import BuiltImage
     from testcontainers.core.container import DockerContainer
     from testcontainers.core.network import Network
 
     from taskq import TaskQ
+
+    from ._types import BuiltImage
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 

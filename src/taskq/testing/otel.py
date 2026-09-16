@@ -5,6 +5,7 @@ need to set up providers, exporters, or patching themselves.
 """
 
 import logging
+import sys
 from collections.abc import Generator, Sequence
 from typing import Any
 
@@ -19,6 +20,7 @@ from opentelemetry.sdk.metrics.export import (
 )
 from opentelemetry.sdk.trace import ReadableSpan, TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor, SpanExporter, SpanExportResult
+from structlog._config import BoundLoggerLazyProxy
 
 import taskq.obs as obs_mod
 import taskq.obs._otel as otel_mod
@@ -30,6 +32,7 @@ __all__ = [
     "_otel_enabled_guard",
     "_save_logging_configured",
     "_save_otel_enabled",
+    "_unpin_cached_loggers",
     "collect_metrics",
     "counter_data_points",
     "counter_value",
@@ -194,8 +197,86 @@ def restore_logging_configured(saved: bool) -> None:
     structlog_mod._logging_configured = saved  # type: ignore[reportPrivateUsage]  # Why: testing utility restores private module flag from snapshot.
 
 
+# ── structlog lazy-proxy pin sweep ─────────────────────────────────────────
+#
+# ``setup_logging`` configures structlog with ``cache_logger_on_first_use=True``.
+# A module-level ``structlog.get_logger(...)`` proxy whose ``bind`` first runs
+# while that flag is in force gets an INSTANCE-LEVEL ``bind`` closure wrapping
+# the assembled logger — the production processor chain frozen onto the proxy
+# (``structlog._config.BoundLoggerLazyProxy.bind``). ``structlog.reset_defaults()``
+# replaces the configuration but cannot reach those closures: the pinned proxy
+# keeps rendering through the frozen chain forever, so a later test's
+# ``structlog.testing.capture_logs`` — which swaps only the CURRENT config's
+# processor list — captures none of its events. The victim test then fails on
+# an EMPTY capture with no hint why, and only when a polluter test happened to
+# run earlier in the same process (the event still reaches stdlib handlers,
+# which is what makes the failure order-dependent rather than total).
+#
+# Resetting defaults at both ends of the guard therefore cannot isolate this
+# suite on its own; the pin must be deleted from the proxy instance. Deleting
+# the instance attribute restores the class's lazy ``bind``, so the proxy
+# rebinds against whatever configuration the next caller runs under. This is
+# the revert ``tests/test_obs_structlog_integration.py`` documents for its
+# file-local fixture, promoted here so every test file gets it.
+
+_known_lazy_proxies: list[BoundLoggerLazyProxy] = []
+_proxy_scan_module_count: int = -1
+
+
+def _refresh_lazy_proxy_registry() -> None:
+    """Rebuild the registry of module-level lazy proxies when ``sys.modules`` changed.
+
+    Module-level proxies are created by a module's own import-time statements,
+    so a full rescan is only needed when the set of imported modules changes —
+    which, after collection, is the occasional lazy import rather than every
+    test. The count comparison is what keeps the per-test sweep at O(#proxies)
+    instead of O(#module-attributes).
+    """
+    global _proxy_scan_module_count
+    count = len(sys.modules)
+    if count == _proxy_scan_module_count:
+        return
+    _proxy_scan_module_count = count
+    _known_lazy_proxies.clear()
+    for module in list(sys.modules.values()):
+        if module is None:  # pyright: ignore[reportUnnecessaryComparison]  # Why: sys.modules can hold None entries (blocked/stale imports) at runtime; the stubs model it as ModuleType only.
+            continue
+        try:
+            namespace = vars(module)
+        except TypeError:
+            continue  # a non-module object a test stuffed into sys.modules
+        for value in namespace.values():
+            if isinstance(value, BoundLoggerLazyProxy):
+                _known_lazy_proxies.append(value)
+
+
+def _unpin_cached_loggers() -> None:
+    """Delete instance-pinned ``bind`` closures from every module-level lazy proxy.
+
+    A proxy pinned under ``cache_logger_on_first_use=True`` renders through its
+    frozen processor chain regardless of later configuration, bypassing any
+    ``capture_logs`` window. Removing the instance attribute restores lazy
+    class-level dispatch so the next use rebinds against the current config.
+    Proxies not (or no longer) pinned are untouched; rebinding rather than
+    deleting would freeze a stale chain onto them instead.
+    """
+    _refresh_lazy_proxy_registry()
+    for proxy in _known_lazy_proxies:
+        if "bind" in vars(proxy):
+            del proxy.bind
+
+
 @pytest.fixture(autouse=True)
 def _logging_configured_guard() -> Generator[None, None, None]:  # pyright: ignore[reportUnusedFunction]  # Why: pytest autouse fixture; referenced by pytest runner via reflection.
+    """Reset structlog/logging global state around every test.
+
+    The sweep runs at BOTH ends: teardown so a test that configured logging
+    cannot leak frozen proxies forward, and setup as a backstop so a pin
+    created outside this fixture's reach (a pytest plugin, a test that
+    restores the configuration itself but cannot reach the proxies) can never
+    poison the next test either.
+    """
+    _unpin_cached_loggers()
     structlog.reset_defaults()
     structlog_mod._logging_configured = False  # type: ignore[reportPrivateUsage]  # Why: test fixture resets private module flag for isolation, following _otel_enabled_guard precedent.
     for handler in list(logging.root.handlers):
@@ -207,6 +288,7 @@ def _logging_configured_guard() -> Generator[None, None, None]:  # pyright: igno
     try:
         yield
     finally:
+        _unpin_cached_loggers()
         structlog.reset_defaults()
         structlog_mod._logging_configured = False  # type: ignore[reportPrivateUsage]  # Why: test fixture resets private module flag for isolation, following _otel_enabled_guard precedent.
         for handler in list(logging.root.handlers):

@@ -48,11 +48,11 @@ from .conftest import E2EWorker, _container_logs, _stop_container
 
 if TYPE_CHECKING:
     import asyncpg
-    from containerspec import BuiltImage
     from testcontainers.core.network import Network
 
     from taskq import TaskQ
 
+    from ._types import BuiltImage
     from .conftest import E2ESchema
 
 pytestmark = [pytest.mark.e2e, pytest.mark.timeout(900)]

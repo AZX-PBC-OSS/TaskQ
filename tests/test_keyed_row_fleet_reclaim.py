@@ -1177,3 +1177,91 @@ async def test_eviction_drain_preserves_consumed_pg_fixed_quota(pg_dsn: str) -> 
     finally:
         await pool.close()
         await _drop_schema(pg_dsn)
+
+
+async def test_concurrent_acquire_on_a_reclaim_candidate_never_partially_deletes_it(
+    pg_dsn: str,
+) -> None:
+    """A racing acquire that lands on a bucket the sweep has already
+    windowed as a candidate must leave the bucket intact, never partially
+    deleted.
+
+    The sweep's ``stale`` CTE names candidate buckets from a point-in-time
+    snapshot; the whole-bucket verdict is re-decided afterward over
+    ``locked``'s FOR-UPDATE-fetched latest row versions. If a concurrent
+    acquire stamps one row of a windowed bucket between the window read and
+    the lock, that row's fresh ``last_used_at`` must survive to the
+    ``reclaimable`` HAVING clause and veto the WHOLE bucket -- not just
+    spare the one row the acquire touched while the bucket's other, still-
+    stale rows get deleted out from under it. A partial delete here would
+    silently shrink the bucket's configured slot count forever (the
+    acquire-path heal only fires at zero rows).
+
+    This exercises the FOR UPDATE + re-verify design directly: acquire a
+    slot on an orphan bucket that already sits in the sweep's candidate
+    window (aged past the horizon, 2 slots, both free) before the sweep's
+    DELETE runs, then let the sweep proceed. Expect the bucket to keep all
+    of its rows -- the freshly-acquired one AND its still-stale sibling --
+    because the whole-bucket veto must fire on the re-checked state.
+    """
+    await _fresh_schema(pg_dsn)
+    pool = await asyncpg.create_pool(dsn=pg_dsn, min_size=1, max_size=6)
+    try:
+        bucket = "race-res:contended-orphan"
+        res = ConcurrencyReservation(
+            name=bucket,
+            slots=2,
+            lease=timedelta(seconds=30),
+            schema=_schema(),
+            keyed=True,
+        )
+        await res.ensure_slots(pool)
+        await _age_slots(pool, bucket, _HORIZON * 3)
+        assert await _slot_rows(pool, bucket) == 2
+        assert await _fresh_slot_count(pool, bucket) == 0, (
+            "fixture broken: both rows must start stale so the bucket is a "
+            "genuine sweep candidate before the race"
+        )
+
+        # Simulate a live acquire landing on this bucket after the sweep
+        # would have windowed it as a candidate but before its DELETE
+        # commits, by acquiring a slot right before driving the sweep --
+        # the acquire's own transaction commits and stamps one row fresh,
+        # which the sweep's FOR UPDATE / re-verify must observe.
+        lease = await res.acquire(new_uuid(), new_uuid(), pool=pool)
+        assert await _fresh_slot_count(pool, bucket) == 1, (
+            "fixture broken: the acquire must stamp exactly one row fresh, "
+            "leaving the other stale -- the race precondition"
+        )
+
+        deleted = await _sweep(pg_dsn, batch_size=3)
+
+        assert await _slot_rows(pool, bucket) == 2, (
+            f"bucket {bucket!r} lost row(s) to a sweep that raced a concurrent "
+            "acquire: the whole-bucket veto must fire on ANY fresh row, "
+            "including one stamped by a writer that landed after the "
+            "candidate window was read, and must never leave the bucket "
+            "partially deleted"
+        )
+        # The held slot must still be held -- the sweep must not have torn
+        # down the very row the concurrent acquirer is using.
+        async with pool.acquire() as conn:
+            held = await conn.fetchval(
+                f'SELECT job_id FROM "{_schema()}".reservation_slots '
+                "WHERE bucket_name = $1 AND slot_index = $2",
+                bucket,
+                int(lease),
+            )
+        assert held is not None, (
+            "the sweep deleted the row backing a live, concurrently-held lease"
+        )
+        assert deleted == 0, (
+            f"the sweep reported {deleted} deletion(s) although the only "
+            "candidate bucket in scope was contended by a concurrent acquire "
+            "and must have been vetoed whole"
+        )
+
+        await res.release(lease, new_uuid(), pool=pool)
+    finally:
+        await pool.close()
+        await _drop_schema(pg_dsn)

@@ -7,26 +7,21 @@
 (100x the configured ``event_retention_period``; see
 ``src/taskq/constants.py``). That is a deliberate, documented-in-source
 design (see the ``expired_outbox`` CTE comment and the
-``RECLAIM_OUTBOX_RETENTION_MULTIPLIER`` docstring in constants.py), but the
-operator-facing text in three places overstates the guarantee to "exempt at
-any setting" with no mention of the 100x age cap:
+``RECLAIM_OUTBOX_RETENTION_MULTIPLIER`` docstring in constants.py), so the
+operator-facing text in three places must pair any exemption wording with
+the 100x age cap:
 
 - ``settings.py``'s ``event_retention_period`` field description
 - ``docs/guides/upgrading.md``'s "job_events rows past the retention
   period are deleted" section
 - ``client/_taskq.py``'s ``watch_reclaims`` docstring, which tells
-  operators to prune by their slowest consumer's cursor without ever
-  mentioning that the built-in sweep ALSO prunes by age alone (100x
-  retention) -- exactly the operational trap in issue #198: a
-  short-retention deployment with a consumer lagging past 100x retention
-  silently loses reclaim events with no error.
+  operators to prune by their slowest consumer's cursor and must also
+  warn that the built-in sweep prunes by age alone (100x retention) --
+  the operational trap: a short-retention deployment with a consumer
+  lagging past 100x retention silently loses reclaim events with no
+  error.
 
-These are "red" tests: they currently FAIL because the unqualified
-"exempt ... at any setting" wording is still present verbatim, and/or the
-100x age-cap is not mentioned anywhere an operator reading these surfaces
-would see it. They should start passing only once the docs are corrected
-to describe the actual (bounded) exemption -- at which point they become a
-regression pin.
+These pins hold those surfaces to the bounded exemption.
 """
 
 from __future__ import annotations
@@ -59,9 +54,7 @@ def test_settings_py_does_not_overstate_outbox_exemption() -> None:
 
 def test_upgrading_guide_does_not_overstate_outbox_exemption() -> None:
     text = (_DOCS / "guides" / "upgrading.md").read_text()
-    section = text.split("### `job_events` rows past the retention period are deleted", 1)[1][
-        :2000
-    ]
+    section = text.split("### `job_events` rows past the retention period are deleted", 1)[1][:2000]
     normalized = " ".join(section.split())
     assert "is exempt at any setting" not in normalized, (
         "upgrading.md still claims the lock_expired outbox slice is "
@@ -78,9 +71,9 @@ def test_upgrading_guide_does_not_overstate_outbox_exemption() -> None:
 
 def test_watch_reclaims_docstring_mentions_the_age_based_sweep() -> None:
     """The docstring tells operators to prune by their slowest consumer's
-    cursor, but never warns that the built-in sweep also deletes
-    lock_expired rows by age alone (100x retention) regardless of cursor
-    position -- the exact trap in issue #198.
+    cursor; it must also warn that the built-in sweep deletes lock_expired
+    rows by age alone (100x retention) regardless of cursor position --
+    the short-retention trap the module docstring names.
 
     Note: the docstring DOES contain unrelated uses of the words "sweep"
     (referring to transaction-commit sweep timing, for the
