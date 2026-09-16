@@ -180,6 +180,66 @@ def lock_budget_command_timeout_secs(
     return bound
 
 
+async def _with_fresh_connection_retry[T](  # pyright: ignore[reportUnusedFunction]  # Why: the shared dead-on-acquire guard — its callers are the enqueue and bulk-cancel modules; private usage is declared at each import site.
+    op: Callable[[], Awaitable[T]],
+    *,
+    operation: str,
+) -> T:
+    """Run *op*, retrying once when the pool hands out a just-killed connection.
+
+    Shared home for every "acquire from the pool, use immediately" caller —
+    the enqueue paths and the bulk-cancel drain — so the recovery discipline
+    exists once instead of per call site. Each adopting site still owes its
+    own one-line retry-safety argument at the call: this wrapper guarantees
+    only that the retried *op* runs on a genuinely fresh connection, not that
+    re-running *op* is safe for every possible body.
+
+    A pooled connection whose backend Postgres has terminated (restart,
+    failover, ``pg_terminate_backend``) learns of its death in two
+    event-loop steps: the server's FATAL ErrorResponse arrives first and —
+    with no in-flight query to attribute it to — parks asyncpg's protocol
+    in its error-consume state; only a later ``connection_lost`` callback
+    marks the connection closed. In the gap, ``Pool.acquire``'s
+    ``is_closed()`` guard still passes, so the pool can hand a caller a
+    connection whose first statement fails locally with
+    ``asyncpg.InternalClientError`` ("cannot switch to state 15; another
+    operation (2) is in progress") — a driver-internal state error that
+    matches no except clause written against the database's own error
+    types, for a condition that is physically a dropped connection. The
+    poisoned state is not visible through asyncpg's public API before the
+    first statement (the protocol's state is not exposed), so the
+    boundary treats that first-statement failure as what it is — a
+    transient connection loss — and retries once.
+
+    The retry always lands on a genuinely fresh connection: releasing the
+    poisoned one cannot complete (the pool's release-time reset query
+    fails on it the same way), so the release path terminates it and the
+    next acquire reconnects. At every current call site the failure
+    precedes any write — the poisoned protocol rejects the transaction's
+    BEGIN itself — so one retry cannot duplicate a write. An
+    ``InternalClientError`` from the retry is a real driver state bug,
+    not this race, and propagates.
+    """
+    # Why deferred: this module is import-light by design (no asyncpg or
+    # taskq runtime imports at module scope), and both names serve only
+    # this cold path — the same discipline ``with_connection_init``
+    # follows for its close helper.
+    from asyncpg.exceptions import InternalClientError
+
+    try:
+        return await op()
+    except InternalClientError as exc:
+        from taskq.obs import get_logger
+
+        get_logger(__name__).warning(
+            "pool-conn-dead-on-acquire",
+            kind="pool_conn_dead_on_acquire",
+            operation=operation,
+            error=repr(exc),
+        )
+        return await op()
+
+
 # ── Factory type aliases (PEP 695) ─────────────────────────────────────
 #
 # Zero-arg async factories — closures that capture whatever they need

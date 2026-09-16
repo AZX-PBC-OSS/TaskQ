@@ -789,6 +789,22 @@ TASKQ_PG_DSN_POOLED=postgresql://user:pass@pgbouncer:5432/mydb
 
 When neither is set, both fall back to `TASKQ_PG_DSN`. When both DSNs are the same (no PgBouncer), the worker operates identically.
 
+!!! note "The dispatcher pool carries `jit = off` — leave it there"
+    Every pool TaskQ builds for the dispatcher role is opened with
+    `server_settings={"jit": "off"}`. Everything that pool runs — the dispatch
+    claim statement, the leader sweeps, the admission lock acquires — is a
+    short bounded OLTP round trip that LLVM compilation cannot help, and the
+    dispatch statement's estimated cost at deep backlogs crosses Postgres's
+    `jit_above_cost`, which would make Postgres compile the plan (~1 s of
+    Optimization+Emission measured at a 30k-row due backlog, where the bounded
+    scan itself takes ~2 ms) on top of the work itself. This is an operational
+    guard: the statement's own estimate is fixed at the source, and the guard
+    keeps any *future* estimate surprise from ever paying compile time on a
+    hot dispatch loop. If you supply your own dispatcher pool
+    (`WorkerConnections.dispatcher_pool_factory`), do not enable JIT on it for
+    "more speed" — if a dispatch-path statement ever genuinely benefits from
+    compilation, that is a measured statement-level change, not a pool knob.
+
 If a LOOP-scope `asyncpg.Connection` provider is registered but the two DSNs differ, the worker emits a `loop_scope_conn_dsn_mismatch` warning at startup. PgBouncer in transaction mode breaks session semantics required by LOOP-scope connection providers. Either set both DSNs to the same direct endpoint for workers that use LOOP-scope connections, or omit the LOOP-scope connection provider and use the autonomous commit path.
 
 ---

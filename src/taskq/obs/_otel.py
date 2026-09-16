@@ -39,6 +39,7 @@ Metric dimensions are limited to values that are bounded by construction:
 import contextlib
 import functools
 import importlib.metadata
+import sys
 import time
 from collections.abc import Callable, Generator, Iterable, Mapping, Sequence
 from typing import Literal, Protocol
@@ -330,19 +331,42 @@ def record_backpressure_error(actor: str, *, kind: str = "max_pending") -> None:
         _log.warning("otel-metric-record-failed", instrument_name="taskq.backpressure.errors")
 
 
+def _resolve_error_type(error_type: str | None) -> str:
+    """Resolve the ``error_type`` label value for a failure counter.
+
+    The established failure-counter idiom (``record_progress_publish_failure``,
+    ``record_reservation_reclaim_drain_failure``) takes the exception class
+    name explicitly. The recorders swept onto that idiom are called from
+    ``except`` blocks whose call sites predate the label, so an omitted
+    *error_type* derives from the exception currently being handled
+    (``sys.exception()``) — every production call site records from an
+    ``except`` block, so the derived value is the caught exception's class.
+    With no explicit value and no active exception the label falls back to
+    the fixed ``"unknown"`` value: the value set stays a closed class set —
+    the exception types these paths can raise, plus that one constant —
+    never caller-supplied text, so the label cannot mint unbounded series
+    the way an identity value would.
+    """
+    if error_type is not None:
+        return error_type
+    active = sys.exception()
+    return type(active).__name__ if active is not None else "unknown"
+
+
 _capacity_refresh_failures = get_meter().create_counter(
     "taskq.backpressure.capacity_refresh_failures",
     description=(
         "Failed refreshes of the enqueue-side actor_config capacity cache. "
         "Attributes: degraded ('stale_snapshot' when a previous snapshot is "
         "still being served, 'no_snapshot' when the cache never loaded and "
-        "every enqueue is falling back to the @actor literal)."
+        "every enqueue is falling back to the @actor literal), error_type "
+        "(exception class name — a closed set; see _resolve_error_type)."
     ),
     unit="1",
 )
 
 
-def record_capacity_refresh_failure(*, has_snapshot: bool) -> None:
+def record_capacity_refresh_failure(*, has_snapshot: bool, error_type: str | None = None) -> None:
     """Count a failed capacity-cache refresh.
 
     The cache fails OPEN by design -- it keeps the last snapshot, or falls back
@@ -357,12 +381,20 @@ def record_capacity_refresh_failure(*, has_snapshot: bool) -> None:
     ``max_pending`` -- for a full TTL at a time, indefinitely while the backend
     stays sick.
 
+    ``error_type`` is the exception class name; omitted, it derives from the
+    exception being handled (``_resolve_error_type``) — the call site records
+    from the refresh read's ``except`` block.
+
     Unconditional (not gated by ``_otel_enabled``) for the same reason as
     ``record_backpressure_error``: this is a safety-critical signal.
     """
     try:
         _capacity_refresh_failures.add(
-            1, {"degraded": "stale_snapshot" if has_snapshot else "no_snapshot"}
+            1,
+            {
+                "degraded": "stale_snapshot" if has_snapshot else "no_snapshot",
+                "error_type": _resolve_error_type(error_type),
+            },
         )
     except Exception:
         _log.warning(
@@ -500,25 +532,34 @@ _dispatch_failures = get_meter().create_counter(
     "taskq.dispatch.failures",
     description=(
         "Count of dispatch rounds that raised before returning a claim set, "
-        "labeled by queue (capped -- see _bounded_queue). A producer that "
-        "fails every round emits successful-looking silence on every other "
-        "dispatch signal; this counter is what separates a failing producer "
-        "from an idle queue without reading logs."
+        "labeled by queue (capped -- see _bounded_queue) and error_type "
+        "(exception class name — a closed set; see _resolve_error_type). A "
+        "producer that fails every round emits successful-looking silence on "
+        "every other dispatch signal; this counter is what separates a "
+        "failing producer from an idle queue without reading logs, and "
+        "error_type separates a self-healing class (a lock timeout, a "
+        "connection reset) from a permanent one (an auth failure, schema "
+        "drift)."
     ),
     unit="1",
 )
 
 
-def record_dispatch_failure(queue: str) -> None:
+def record_dispatch_failure(queue: str, error_type: str | None = None) -> None:
     """Bump the dispatch-failure counter.
 
     Called from the dispatch round's exception path, outside the span body
-    for sampling independence.  Respects ``_otel_enabled`` — no-op when
-    False.
+    for sampling independence.  ``error_type`` is the exception class name;
+    omitted, it derives from the exception being handled
+    (``_resolve_error_type``) — every call site records from an ``except``
+    block, so the derived value is the caught exception's class.
+    Respects ``_otel_enabled`` — no-op when False.
     """
     if not _otel_enabled:
         return
-    _dispatch_failures.add(1, {"queue": _bounded_queue(queue)})
+    _dispatch_failures.add(
+        1, {"queue": _bounded_queue(queue), "error_type": _resolve_error_type(error_type)}
+    )
 
 
 _consumed_messages = get_meter().create_counter(
@@ -661,27 +702,30 @@ _slot_pool_acquire_failures = get_meter().create_counter(
         "Bounded acquires from the per-slot transaction pool that failed "
         "(timeout or connection error). An acquire failure is "
         "infrastructure, not a job outcome: the claimed job recovers by "
-        "lock-lease expiry. No dimensions -- the pool name is in the "
-        "instrument name and the per-occurrence job id stays in the log "
-        "event."
+        "lock-lease expiry. One dimension: error_type (exception class "
+        "name — a closed set; see _resolve_error_type). The pool name is "
+        "in the instrument name and the per-occurrence job id stays in "
+        "the log event."
     ),
     unit="1",
 )
 
 
-def record_slot_pool_acquire_failure() -> None:
+def record_slot_pool_acquire_failure(error_type: str | None = None) -> None:
     """Bump the worker.slot_pool.acquire_failures counter.
 
     Called from the exception branch of the bounded per-job acquire in
     ``taskq.worker.dispatch`` — never the success path, matching
     ``record_sweep_timeout``'s contract. A rate here is what separates
     one transient timeout from every transactional job on a worker
-    failing to acquire.
+    failing to acquire, and ``error_type`` is the exception class name —
+    omitted, it derives from the exception being handled
+    (``_resolve_error_type``).
     Respects ``_otel_enabled`` — no-op when False.
     """
     if not _otel_enabled:
         return
-    _slot_pool_acquire_failures.add(1)
+    _slot_pool_acquire_failures.add(1, {"error_type": _resolve_error_type(error_type)})
 
 
 class _PoolOccupancySource(Protocol):
@@ -906,7 +950,7 @@ def record_progress_flush_failure(stage: str, error_type: str) -> None:
     ).add(1, {"stage": stage, "error_type": error_type})
 
 
-def record_sub_enqueue_failure(actor: str, count: int) -> None:
+def record_sub_enqueue_failure(actor: str, count: int, error_type: str | None = None) -> None:
     """Bump the sub_enqueue.failures counter by *count* failed child enqueues.
 
     Called at the post-commit flush catch site: the parent job has already
@@ -914,7 +958,8 @@ def record_sub_enqueue_failure(actor: str, count: int) -> None:
     caller believes exists but does not. ``actor`` is the parent's actor
     (bounded by the registered actor set). ``count`` is the number of
     child enqueues that failed, so one incident with N lost children
-    records N, not 1.
+    records N, not 1. ``error_type`` is the exception class name; omitted,
+    it derives from the exception being handled (``_resolve_error_type``).
     Respects ``_otel_enabled`` — no-op when False.
     """
     if not _otel_enabled:
@@ -924,27 +969,44 @@ def record_sub_enqueue_failure(actor: str, count: int) -> None:
         description=(
             "Sub-enqueue flush failures after the parent job committed; "
             "each counted unit is one child job that was reported as "
-            "enqueued but was not. Attributes: actor (parent job's actor)."
+            "enqueued but was not. Attributes: actor (parent job's actor), "
+            "error_type (exception class name — a closed set; see "
+            "_resolve_error_type)."
         ),
-    ).add(count, {"actor": actor})
+    ).add(count, {"actor": actor, "error_type": _resolve_error_type(error_type)})
 
 
 _ratelimit_refund_failures = get_meter().create_counter(
     "taskq.ratelimit.refund_failures",
-    description="Rate-limit refund/rollback failures, labeled by bucket and backend.",
+    description=(
+        "Rate-limit refund/rollback failures, labeled by bucket, backend, "
+        "and error_type (exception class name — a closed set; see "
+        "_resolve_error_type)."
+    ),
     unit="1",
 )
 
 
-def record_ratelimit_refund_failure(bucket: str, backend: str) -> None:
+def record_ratelimit_refund_failure(
+    bucket: str, backend: str, error_type: str | None = None
+) -> None:
     """Bump the ratelimit.refund_failures counter.
 
-    Called at the rate-limit refund failure catch site.
+    Called at the rate-limit refund failure catch site. ``error_type`` is
+    the exception class name; omitted, it derives from the exception being
+    handled (``_resolve_error_type``).
     Respects ``_otel_enabled`` — no-op when False.
     """
     if not _otel_enabled:
         return
-    _ratelimit_refund_failures.add(1, {"bucket": bucket, "backend": backend})
+    _ratelimit_refund_failures.add(
+        1,
+        {
+            "bucket": bucket,
+            "backend": backend,
+            "error_type": _resolve_error_type(error_type),
+        },
+    )
 
 
 _lazy_counters: dict[str, tuple[Meter, Counter]] = {}

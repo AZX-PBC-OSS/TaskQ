@@ -591,28 +591,29 @@ async def run_depth(
 
     await truncate_jobs(conn, schema)
 
+    variant_stats: dict[str, dict[str, object]] = {}
     result: dict[str, object] = {
         "depth": depth,
         "rounds": rounds,
         "correct": dict(correct),
         "order_only_differs": order_only,
         "round0_ids": {k: [str(i) for i in v] for k, v in round0.items()},
-        "variants": {},
+        "variants": variant_stats,
     }
     for name, samples in timing.items():
         if not samples:
             continue
         ms = [s * 1000 for s in samples]
-        result["variants"][name] = {
+        variant_stats[name] = {
             "p50_ms": round(statistics.median(ms), 3),
             "p95_ms": round(pct(ms, 95), 3),
             "max_ms": round(max(ms), 3),
             "mean_ms": round(statistics.fmean(ms), 3),
         }
         if name in explains:
-            result["variants"][name]["explain_exec_ms"] = explains[name]["exec_ms"]  # type: ignore[index]
-            result["variants"][name]["explain_buffers"] = explains[name]["buffers"]  # type: ignore[index]
-            result["variants"][name]["plan"] = explains[name]["plan"]  # type: ignore[index]
+            variant_stats[name]["explain_exec_ms"] = explains[name]["exec_ms"]
+            variant_stats[name]["explain_buffers"] = explains[name]["buffers"]
+            variant_stats[name]["plan"] = explains[name]["plan"]
     return result
 
 
@@ -623,7 +624,7 @@ def print_results(results: list[dict[str, object]]) -> None:
     )
     for res in results:
         depth = res["depth"]
-        variants: dict[str, dict] = res["variants"]  # type: ignore[assignment]
+        variants: dict[str, dict[str, float | str]] = res["variants"]  # type: ignore[assignment]
         correct: dict[str, bool] = res["correct"]  # type: ignore[assignment]
         order_only: dict[str, bool] = res["order_only_differs"]  # type: ignore[assignment]
         for name, v in variants.items():
@@ -673,12 +674,19 @@ async def _go(args: argparse.Namespace) -> list[dict[str, object]]:
     worker_id = new_uuid()
     await setup_schema(args.dsn, args.schema)
     conn = await asyncpg.connect(args.dsn)
-    if not args.jit:
-        # JIT compilation is per-execution and cost-threshold-triggered; the
-        # dispatch CTE's plan cost is far above jit_above_cost, so un-toggled
-        # runs measure LLVM emit (~33 ms for v0's CTE, ~400 ms for the
-        # MATERIALIZED variants) instead of scan shape. Default off; --jit
-        # reproduces the un-toggled behavior.
+    if args.jit_off:
+        # Opt-out, not the default: this benchmark once disabled JIT by
+        # default "because the plan cost is far above jit_above_cost", which
+        # is exactly why the JIT-compile-per-round defect stayed invisible
+        # here while production connections (which carried no guard) paid
+        # ~1s of Optimization+Emission per dispatch round at depth. The
+        # default now measures the statement's own planner behavior —
+        # JIT included — so an estimate-cascade regression shows up in
+        # these numbers the way tests/test_dispatch_backlog_depth_bound.py's
+        # JIT oracle pins it. Production dispatcher-pool connections carry
+        # jit = off via server_settings (worker/deps.py) as an operational
+        # guard; --jit-off reproduces that guarded shape to isolate scan
+        # time from compile time.
         await conn.execute("SET jit = off")
     results: list[dict[str, object]] = []
     try:
@@ -719,10 +727,14 @@ def main() -> int:
         help="interleaved rolled-back rounds per variant per depth (odd → median)",
     )
     ap.add_argument(
-        "--jit",
+        "--jit-off",
         action="store_true",
-        help="leave server JIT enabled (default: SET jit = off — JIT emit "
-        "dominates these plans' per-execution time and masks scan shape)",
+        help="SET jit = off on the bench connection — the shape the guarded "
+        "production dispatcher pool runs (worker/deps.py server_settings). "
+        "Default leaves the server default (jit on): the bench measures the "
+        "statement's own estimate health, and a default jit=off here is what "
+        "hid the JIT-compile-per-round defect at depth from the design "
+        "doc's flat measurements",
     )
     ap.add_argument(
         "--variants",

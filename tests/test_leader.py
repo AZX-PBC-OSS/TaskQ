@@ -411,6 +411,7 @@ async def test_election_loop_degrades_when_advisory_lock_privilege_is_refused(
     a raw driver error instead of degrading to follower) — it has resurfaced
     at the new call site the row-lease redesign introduced.
     """
+
     class _PrivilegeRefusedConn(FakeConn):
         async def fetchval(self, sql: str, *args: object) -> object:
             if "pg_try_advisory_lock" in sql:
@@ -437,7 +438,7 @@ async def test_election_loop_degrades_when_advisory_lock_privilege_is_refused(
         await asyncio.wait_for(asyncio.shield(task), timeout=1.0)
     except TimeoutError:
         pass
-    except BaseException as exc:  # noqa: BLE001  # Why: capturing the crash IS the assertion below, not letting pytest report it as an unhandled task exception.
+    except BaseException as exc:  # Why: capturing the crash IS the assertion below, not letting pytest report it as an unhandled task exception.
         crashed = exc
     finally:
         shutdown.set()
@@ -458,6 +459,95 @@ async def test_election_loop_degrades_when_advisory_lock_privilege_is_refused(
         "the lease statement won the election; losing the courtesy lock "
         "afterward must not cost the pod its leadership"
     )
+
+
+async def test_election_loop_degrades_when_advisory_lock_probe_fails_transiently(
+    monkeypatch: Any,  # type: ignore[reportUnknownParameterType]
+) -> None:
+    """The transient sibling of the privilege-refusal pin: a probe that
+    raises a TRANSIENT_PG_ERRORS member (the conn dying under the probe)
+    must also degrade to a lock miss — the lease row already granted the
+    role, and a courtesy probe riding a dying conn must not cost it."""
+
+    class _TransientFailingConn(FakeConn):
+        async def fetchval(self, sql: str, *args: object) -> object:
+            if "pg_try_advisory_lock" in sql:
+                self.fetchval_calls.append((sql, args))
+                raise asyncpg.PostgresConnectionError("conn dropped mid-probe")
+            return await super().fetchval(sql, *args)
+
+    failing_conn = _TransientFailingConn(fetchval_result=True)
+    leader, deps, _backend, _, _, shutdown = await _make_leader(
+        leader_conn=failing_conn,
+        monkeypatch=monkeypatch,
+    )
+
+    task = asyncio.create_task(leader._election_loop(shutdown))  # pyright: ignore[reportPrivateUsage]  # Why: the election loop IS the degradation path under test.
+    try:
+        await wait_for_leader(deps)
+    finally:
+        shutdown.set()
+        await task
+
+    assert deps.is_leader.is_set(), (
+        "the lease statement won the election; a transient courtesy-probe "
+        "failure must not cost the pod its leadership"
+    )
+
+
+async def test_advisory_lock_refusal_logs_once_per_refusal_streak(
+    monkeypatch: Any,  # type: ignore[reportUnknownParameterType]
+) -> None:
+    """A refused deployment refuses every probe for as long as the grants
+    stand: the WARN naming the refused function must fire on the first
+    refusal of a streak, not on every one — a fleet re-electing on every
+    lease lapse must not WARN-spam — and must re-arm once a probe succeeds
+    again (the grant appearing is a new operational fact)."""
+
+    class _RefusingConn(FakeConn):
+        def __init__(self, **kwargs: object) -> None:
+            super().__init__(**kwargs)  # type: ignore[arg-type]  # Why: FakeConn kwargs are keyword-only; forwarding keeps this double a drop-in.
+            self.refuse = True
+
+        async def fetchval(self, sql: str, *args: object) -> object:
+            if "pg_try_advisory_lock" in sql and self.refuse:
+                self.fetchval_calls.append((sql, args))
+                raise asyncpg.InsufficientPrivilegeError(
+                    "permission denied for function pg_try_advisory_lock"
+                )
+            return await super().fetchval(sql, *args)
+
+    refusing_conn = _RefusingConn(fetchval_result=True)
+    leader, _deps, _backend, _, _, _shutdown = await _make_leader(
+        leader_conn=refusing_conn,
+        monkeypatch=monkeypatch,
+    )
+
+    with structlog.testing.capture_logs() as captured:
+        assert await leader._try_election_lock() is False  # pyright: ignore[reportPrivateUsage]  # Why: the courtesy probe IS the unit under test.
+        assert await leader._try_election_lock() is False  # pyright: ignore[reportPrivateUsage]
+
+    refusals = [e for e in captured if e["event"] == "leader-advisory-lock-refused"]
+    assert len(refusals) == 1, (
+        f"two consecutive refusals produced {len(refusals)} WARN events — the "
+        "refusal is permanent until the grants change, so one WARN per streak "
+        "is the whole signal"
+    )
+    assert refusals[0]["log_level"] == "warning"
+    assert refusals[0]["function"] == "pg_try_advisory_lock"
+
+    # Grant restored: the probe answers again, which re-arms the latch...
+    refusing_conn.refuse = False
+    assert await leader._try_election_lock() is True  # pyright: ignore[reportPrivateUsage]  # Why: same as above.
+
+    # ...so a LATER refusal is news and logs again.
+    refusing_conn.refuse = True
+    with structlog.testing.capture_logs() as captured_after_rearm:
+        assert await leader._try_election_lock() is False  # pyright: ignore[reportPrivateUsage]  # Why: same as above.
+    refusals_after = [
+        e for e in captured_after_rearm if e["event"] == "leader-advisory-lock-refused"
+    ]
+    assert len(refusals_after) == 1
 
 
 # ── Leader lease gauge: stamped on elect/renew ───────────────────────

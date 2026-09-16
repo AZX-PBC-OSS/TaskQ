@@ -1,35 +1,24 @@
 """Round-robin dispatch row work is independent of cohort count outside
 the round's own (actor, queue) pairs.
 
-Issue #185: the ``rr_keys`` recursive CTE
-(``src/taskq/backend/_dispatch_sql.py``, ``_RR_KEYS_CTE``) walks every
-distinct pending ``(actor, queue, fairness_key)`` cohort in the WHOLE
-jobs table. Its only filter is ``status = 'pending'`` — no restriction to
-the round's own (actor, queue) pairs, and no due-time bound
-(``scheduled_at <= statement_timestamp()``). The per-(actor, queue) and
-due-time filtering happens only in the candidates lateral's inner probe
-(``_ROUND_ROBIN_CANDIDATES_LATERAL``), which runs downstream of rr_keys
-after rr_keys has already materialized one row per distinct cohort
-table-wide.
-
-The module's own comments document this as intentional (lines ~494-499:
-"rr_keys is the global cohort enumeration ... this filter narrows it to
-the lateral's own (actor, queue) pair over the materialized recursion
-output"), so a small round-robin dispatch on one queue pays one
-recursion step per cohort that exists ANYWHERE in the table — including
-queues this worker never polls, and future-scheduled (not-yet-due) rows.
+The ``rr_keys`` recursive CTE (``src/taskq/backend/_dispatch_sql.py``)
+walks pending ``(actor, queue, fairness_key)`` cohorts to enumerate the
+round-robin fairness keys; scoped by ``queue = ANY($1)`` to the round's
+own queues, so its per-round work tracks only what the round polls. The
+per-(actor, queue) and due-time filtering happens in the candidates
+lateral's inner probe (``_ROUND_ROBIN_CANDIDATES_LATERAL``), downstream
+of the enumeration.
 
 Oracle: same doctrine as tests/test_dispatch_backlog_depth_bound.py —
 EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) of the production
 DISPATCH_ROUND_ROBIN_SQL constant, executed once per seeded count of
 UNRELATED cohorts (0 vs 2,000, each on a different queue that the
 dispatched round never polls). The round's own backlog is held fixed at
-one small cohort throughout. A round-robin dispatch whose cost were
-correctly scoped to the round's own (actor, queue) pairs would show flat
-row work (and buffer counts) across both seeds; rr_keys's global,
-unscoped enumeration instead grows the widest plan node's row work
-(and buffers) with the unrelated cohort count. This test currently FAILS
-against dispatch_sql on HEAD, proving the defect described in issue #185.
+one small cohort throughout. A round-robin dispatch whose cost is
+correctly scoped to the round's own (actor, queue) pairs shows flat row
+work (and buffer counts) across both seeds; a global, unscoped
+enumeration instead grows the widest plan node's row work (and buffers)
+with the unrelated cohort count.
 """
 
 # ruff: noqa: S608  # Why: every f-string SQL below interpolates only this module's own throwaway schema identifier (built from new_base62, validated by the migration runner's _IDENT_RE) or renders a module SQL constant; all values are $n-bound.
@@ -46,7 +35,11 @@ import pytest
 
 from taskq import migrate as migrate_mod
 from taskq._ids import new_base62, new_uuid
-from taskq.backend._dispatch_sql import DISPATCH_ROUND_ROBIN_SQL
+from taskq.backend._dispatch_sql import (
+    DISPATCH_CLAIMABLE_PROBE_SQL,
+    DISPATCH_ROUND_ROBIN_SQL,
+)
+from taskq.backend._dispatch_sql import dispatch_batch as dispatch_batch_sql
 from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining it.
 )
@@ -194,10 +187,8 @@ async def test_round_robin_dispatch_row_work_is_cohort_scoped(
     Widest-node row work must stay flat as unrelated cohort count grows
     from 0 to 2,000 -- those rows belong to queues this round never
     polls and are not yet due, so a correctly scoped round-robin
-    dispatch never touches them. ``rr_keys``'s global, unfiltered
-    recursive enumeration (issue #185) instead walks one step per
-    unrelated cohort every round, so this assertion is expected to FAIL
-    on current HEAD.
+    dispatch never touches them. An unscoped ``rr_keys`` enumeration
+    instead walks one step per unrelated cohort every round.
     """
     rendered = DISPATCH_ROUND_ROBIN_SQL.format(schema=cohort_schema)
     worker_id = new_uuid()
@@ -230,10 +221,186 @@ async def test_round_robin_dispatch_row_work_is_cohort_scoped(
             f"{many_widest:.0f} with {_UNRELATED_COHORT_COUNTS[-1]} "
             f"(ratio bound {_COHORT_RATIO_BOUND}x). buffers: "
             f"{buffers_by_count[0]} -> {buffers_by_count[_UNRELATED_COHORT_COUNTS[-1]]}. "
-            "This is issue #185: rr_keys's recursive cohort enumeration "
-            "(src/taskq/backend/_dispatch_sql.py, _RR_KEYS_CTE) has no "
-            "(actor, queue) or due-time filter, so it walks every pending "
+            "The round-robin cohort enumeration (src/taskq/backend/"
+            "_dispatch_sql.py, _RR_KEYS_CTE) must stay scoped to the "
+            "round's own queues — an unfiltered walk visits every pending "
             "cohort table-wide, not just the round's own."
+        )
+    finally:
+        await conn.close()
+
+
+# ── The assignment-marker accounting contract ──────────────────────────
+#
+# A re-pended row whose ``started_at`` is still NULL is a real shape: an
+# operator retry of a job that was terminalized BEFORE it was ever claimed
+# (a deliberate hand-back that was never started). The routing marker is
+# ``assignment_routed``; ``started_at IS NULL`` answers only "was
+# claimed", so a probe or enumeration keyed on the proxy mis-files this
+# row under its stale queue label: the label-routed arm then enumerates
+# the stale label as a cohort key, and the claimable-rows probe reports
+# the stale label as routable while going blind to the row's true routing
+# (its actor's CURRENT assignment).
+
+_MARKER_ACTOR = "marker_actor"
+_MARKER_ASSIGNED_QUEUE = "marker_assigned_q"
+_MARKER_STALE_QUEUE = "marker_stale_q"
+
+
+async def _seed_divergent_repend_row(
+    conn: asyncpg.Connection, schema: str, *, with_label_routed_row: bool = False
+) -> UUID:
+    """One pending, due, assignment_routed row with ``started_at`` NULL,
+    carrying a stale queue label its actor is no longer assigned to.
+
+    Returns the row's id. The shape cannot arise from a naive enqueue
+    (producer-placed rows are always ``assignment_routed = false``), so
+    the seed writes the marker directly — exactly the divergent row an
+    operator ``retry_job`` on a never-claimed terminal job produces.
+
+    *with_label_routed_row* adds one ordinary producer-placed due row on
+    the actor's assigned queue, so the actor is visible to the
+    label-routed capacity path and the cohort walk's content is actually
+    consumed by the round (an actor with ONLY the divergent row never
+    reaches the label-routed enumeration's consumers under either
+    predicate regime, which hides the accounting drift from the plan).
+    """
+    await conn.execute(f'TRUNCATE TABLE "{schema}".jobs CASCADE')
+    await conn.execute(
+        f'INSERT INTO "{schema}".actor_config (actor, queue) VALUES ($1, $2) '
+        "ON CONFLICT (actor) DO UPDATE SET queue = EXCLUDED.queue",
+        _MARKER_ACTOR,
+        _MARKER_ASSIGNED_QUEUE,
+    )
+    row_id = new_uuid()
+    await conn.execute(
+        f'INSERT INTO "{schema}".jobs '
+        "(id, actor, queue, payload, status, priority, scheduled_at, "
+        "max_attempts, retry_kind, fairness_key, assignment_routed) "
+        "VALUES ($1, $2, $3, '{\"v\": 1}'::jsonb, 'pending', 0::smallint, "
+        "clock_timestamp() - interval '1 minute', 3, 'transient', "
+        "'divergent_cohort', true)",
+        row_id,
+        _MARKER_ACTOR,
+        _MARKER_STALE_QUEUE,
+    )
+    if with_label_routed_row:
+        await conn.execute(
+            f'INSERT INTO "{schema}".jobs '
+            "(id, actor, queue, payload, status, priority, scheduled_at, "
+            "max_attempts, retry_kind, fairness_key) "
+            "VALUES ($1, $2, $3, '{\"v\": 1}'::jsonb, 'pending', 0::smallint, "
+            "clock_timestamp() - interval '1 minute', 3, 'transient', "
+            "'legit_cohort')",
+            new_uuid(),
+            _MARKER_ACTOR,
+            _MARKER_ASSIGNED_QUEUE,
+        )
+    return row_id
+
+
+async def test_claimable_probe_routes_divergent_repend_by_assignment_marker(
+    pg_dsn: str, cohort_schema: str
+) -> None:
+    """The empty-round probe must see the divergent row on the actor's
+    ASSIGNED queue and must not see it on its stale label queue.
+
+    The probe gates window expansion on an empty dispatch round, so a
+    probe blind to the true routing (answering false on the assigned
+    queue) leaves a locked-out window unexpanded while claimable rows
+    wait, and a probe answering true on the stale label burns bounded
+    expansions on a queue whose consumers can never admit the row.
+    """
+    probe = DISPATCH_CLAIMABLE_PROBE_SQL.format(schema=cohort_schema)
+    conn = await asyncpg.connect(pg_dsn)
+    try:
+        await _seed_divergent_repend_row(conn, cohort_schema)
+        assigned_rows = await conn.fetch(probe, [_MARKER_ASSIGNED_QUEUE])
+        assert assigned_rows, (
+            "the probe is blind to a claimable re-pended row on the actor's "
+            "assigned queue: the assignment-routed arm must match the marker "
+            "(assignment_routed), not started_at IS NOT NULL — this row was "
+            "never claimed, so its started_at is still NULL"
+        )
+        stale_rows = await conn.fetch(probe, [_MARKER_STALE_QUEUE])
+        assert not stale_rows, (
+            "the probe reports the row's STALE queue label as routable: the "
+            "label-routed arm must match producer-placed rows by the marker "
+            "(NOT assignment_routed), not started_at IS NULL"
+        )
+    finally:
+        await conn.close()
+
+
+async def test_label_routed_enumeration_skips_divergent_repend_row(
+    pg_dsn: str, cohort_schema: str
+) -> None:
+    """The round-robin label-routed cohort walk must not enumerate the
+    stale label as a cohort key, and the round admits both rows by their
+    true routing.
+
+    rr_keys is the label-routed cohort enumeration; with the actor
+    holding one ordinary row on its assigned queue plus the divergent
+    re-pend carrying the stale label, the walk's materialized content is
+    exactly one (actor, queue, cohort) key under the marker predicate —
+    and two under the started_at proxy (the stale label joins the walk).
+    The assertion reads the rr_keys CTE Scan actuals: the widest scan of
+    the materialized enumeration is its unfiltered full read, exact for
+    a fixed seed under this module's EXPLAIN ANALYZE doctrine.
+    """
+    rendered = DISPATCH_ROUND_ROBIN_SQL.format(schema=cohort_schema)
+    conn = await asyncpg.connect(pg_dsn)
+    try:
+        row_id = await _seed_divergent_repend_row(conn, cohort_schema, with_label_routed_row=True)
+        rows = await conn.fetch(
+            f"EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) {rendered}",
+            [_MARKER_ASSIGNED_QUEUE, _MARKER_STALE_QUEUE],
+            _LIMIT_N,
+            new_uuid(),
+            _LOCK_LEASE,
+            _OVERSAMPLE,
+        )
+        raw = rows[0]["QUERY PLAN"]
+        document: Any = json.loads(raw) if isinstance(raw, str) else raw
+        top: dict[str, Any] = document[0]
+
+        rr_keys_scan_rows: list[float] = []
+        stack: list[dict[str, Any]] = [top["Plan"]]
+        while stack:
+            node = stack.pop()
+            if node.get("Node Type") == "CTE Scan" and node.get("CTE Name") == "rr_keys":
+                rr_keys_scan_rows.append(
+                    float(node.get("Actual Rows", 0) or 0) * int(node.get("Actual Loops", 1) or 1)
+                )
+            stack.extend(node.get("Plans") or [])
+        assert rr_keys_scan_rows, "expected a CTE Scan over rr_keys in the plan"
+        assert max(rr_keys_scan_rows) == 1.0, (
+            "the label-routed cohort walk must enumerate exactly the one "
+            "legitimate (actor, assigned-queue, cohort) key — a second key "
+            "means the divergent re-pend's STALE label entered the walk, "
+            "which is the started_at-proxy accounting drift: rr_keys must "
+            "select producer-placed rows by the marker (NOT "
+            f"assignment_routed). rr_keys scan row work: {rr_keys_scan_rows}"
+        )
+
+        # End to end: a fresh round over the same two queues admits both
+        # rows — the ordinary row by its label, the divergent re-pend by
+        # its actor's current assignment.
+        row_id = await _seed_divergent_repend_row(conn, cohort_schema, with_label_routed_row=True)
+        claimed = await dispatch_batch_sql(
+            conn,
+            sql=rendered,
+            queues=[_MARKER_ASSIGNED_QUEUE, _MARKER_STALE_QUEUE],
+            limit_n=_LIMIT_N,
+            worker_id=new_uuid(),
+            lock_lease=_LOCK_LEASE,
+            oversample=_OVERSAMPLE,
+        )
+        claimed_ids = {rec["id"] for rec in claimed}
+        assert len(claimed) == 2 and row_id in claimed_ids, (
+            "the round must admit both rows by their true routing — the "
+            "producer-placed row by its label, the divergent re-pend by "
+            f"its actor's assignment; claimed ids: {claimed_ids}"
         )
     finally:
         await conn.close()

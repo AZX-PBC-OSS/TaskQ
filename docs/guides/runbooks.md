@@ -21,15 +21,15 @@ instead of subtracting in your own clock domain.
 
 ## TaskQScheduledBacklogGrowing
 
-**What fired.** `taskq_jobs_oldest_due_age_seconds > 300 and taskq_jobs_scheduled_count > (taskq_jobs_scheduled_count offset 5m)` for 5 minutes: the oldest due job has been waiting more than 5 minutes AND the `scheduled` job count is HIGHER than it was 5 minutes ago. Together these mean promotion from `scheduled` to `pending` is not keeping up with arrivals — not merely behind on one slow-to-clear job.
+**What fired.** `taskq_jobs_oldest_due_age_seconds > 300 and (taskq_jobs_scheduled_count > (taskq_jobs_scheduled_count offset 5m) or changes(taskq_jobs_scheduled_count[5m]) == 0)` for 5 minutes: the oldest due job has been waiting more than 5 minutes AND the `scheduled` job count is demonstrably not draining — either it is HIGHER than it was 5 minutes ago (promotion from `scheduled` to `pending` is not keeping up with arrivals) or it has not moved at all across those 5 minutes (promotion has stopped and no arrivals are landing net — the stalled plateau). Either way, due work is waiting while the scheduled backlog fails to shrink — not merely one slow-to-clear job.
 
-An earlier form of this alert joined the oldest-due-age gauge against its own value 5 minutes back. That self-join is satisfied by a perfectly healthy, steadily draining backlog for the entire time its current straggler waits its turn — the age of "whichever job is currently oldest" climbs monotonically right up until that one job is promoted, regardless of how healthily everything behind it drains — so the join degenerated to a bare `age > 300` threshold and paged on healthy operation. Count, not the single oldest item's age, is what distinguishes "stalled" from "one slow straggler": a `scheduled` count that is flat or falling while jobs promote on schedule is healthy no matter how long the current straggler has waited.
+An earlier form of this alert joined the oldest-due-age gauge against its own value 5 minutes back. That self-join is satisfied by a perfectly healthy, steadily draining backlog for the entire time its current straggler waits its turn — the age of "whichever job is currently oldest" climbs monotonically right up until that one job is promoted, regardless of how healthily everything behind it drains — so the join degenerated to a bare `age > 300` threshold and paged on healthy operation. Count, not the single oldest item's age, is what distinguishes "stalled" from "one slow straggler": a `scheduled` count that is moving — falling as jobs promote, rising as arrivals land — is healthy flow no matter how long the current straggler has waited. What is never healthy is a due job aging past the threshold while the count never moves at all, and a strict growth comparison cannot see it: a flat count is never `>` itself 5 minutes back, so a promoter that has stopped completely while arrivals are absent (or throttled, or backpressured) would stay silent forever on the growth arm alone. That is the stalled plateau the `changes(...) == 0` arm catches.
 
-`taskq_jobs_scheduled_count` is a label-less twin of `taskq_jobs_by_status{status="scheduled"}`, sampled by the same leader tick — it exists so the two `and` operands carry identical (empty) label sets. Prometheus pairs the two sides of a vector `and` (or comparison) only when their label sets are identical, with no `on`/`ignoring` modifier here to reconcile a mismatch, and it reports a non-matching join as an empty result rather than an error — so a version of this alert that joined the per-`status` depth gauge directly against the label-less age gauge could never fire, however bad the stall.
+`taskq_jobs_scheduled_count` is a label-less twin of `taskq_jobs_by_status{status="scheduled"}`, sampled by the same leader tick — it exists so every operand of the alert carries an identical (empty) label set. Prometheus pairs the two sides of a vector `and`/`or` (or comparison) only when their label sets are identical, with no `on`/`ignoring` modifier here to reconcile a mismatch, and it reports a non-matching join as an empty result rather than an error — so a version of this alert that joined the per-`status` depth gauge directly against the label-less age gauge could never fire, however bad the stall.
 
 **How to confirm.**
 
-- Metrics: `taskq_jobs_oldest_due_age_seconds` climbing; `taskq_jobs_scheduled_count` (equivalently `taskq_jobs_by_status{status="scheduled"}`) rising while `{status="pending"}` is flat.
+- Metrics: `taskq_jobs_oldest_due_age_seconds` climbing; `taskq_jobs_scheduled_count` (equivalently `taskq_jobs_by_status{status="scheduled"}`) either rising while `{status="pending"}` is flat (outpaced by arrivals) or not moving at all (the stalled plateau).
 - SQL — jobs that are due for promotion right now:
 
   ```sql
@@ -51,8 +51,12 @@ the triage below before touching replica counts.
   `taskq_maintenance_leader_sweep_last_success_seconds{sweep_name="scheduled_to_pending"}`
   fresh (moving every second). Dispatch capacity is the bottleneck; scale out.
 - *Stalled* → **fix the sweep/database, do NOT scale out**:
-  `taskq_jobs_oldest_due_age_seconds` climbing while the sweep's
-  `last_success` stamp is stale. No amount of extra workers promotes a
+  `taskq_jobs_oldest_due_age_seconds` climbing while the scheduled count
+  rises or never moves. The usual signature is the sweep's `last_success`
+  stamp gone stale — promotion is not running at all. A FRESH stamp with a
+  frozen count is the subtler shape: the sweep completes but promotes
+  nothing, so check `TaskQSweepTimeouts` and `TaskQSweepDegraded` and
+  confirm with the due-jobs SQL above. No amount of extra workers promotes a
   scheduled job — only the leader's sweep does. Scaling a stalled engine adds
   database load without adding progress. See
   [TaskQPromotionStalled](#taskqpromotionstalled) and continue there.

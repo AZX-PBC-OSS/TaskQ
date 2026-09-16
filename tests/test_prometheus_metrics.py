@@ -206,7 +206,7 @@ def _populate_all_instruments(meter: Any) -> None:
     )
     meter.create_counter("taskq.progress.publish_failures", unit="1").add(1)
     meter.create_counter("taskq.ratelimit.refund_failures", unit="1").add(
-        1, {"bucket": "b", "backend": "redis"}
+        1, {"bucket": "b", "backend": "redis", "error_type": "ConnectionError"}
     )
     meter.create_counter("taskq.leader.election_attempts", unit="1").add(1, {"worker_id": "w1"})
     meter.create_counter("taskq.leader.election_failures", unit="1").add(1, {"worker_id": "w1"})
@@ -567,10 +567,12 @@ def _eval_scheduled_backlog_growing_expr(
     age_threshold_seconds: float = 300.0,
 ) -> list[bool]:
     """Evaluate `TaskQScheduledBacklogGrowing`'s exact shipped expression --
-    ``taskq_jobs_oldest_due_age_seconds > 300 and taskq_jobs_scheduled_count
-    > (taskq_jobs_scheduled_count offset 5m)`` -- over two same-length,
-    evenly-spaced synthetic series, mirroring PromQL `and`/`offset`
-    range-query semantics without requiring promtool or a live Prometheus.
+    ``taskq_jobs_oldest_due_age_seconds > 300 and
+    (taskq_jobs_scheduled_count > (taskq_jobs_scheduled_count offset 5m)
+    or changes(taskq_jobs_scheduled_count[5m]) == 0)`` -- over two
+    same-length, evenly-spaced synthetic series, mirroring PromQL
+    `and`/`or`/`offset`/range-selector semantics without requiring
+    promtool or a live Prometheus.
 
     Returns, for each timestamp, whether the (pre-`for:`) instant condition
     holds. This does not model the rule's `for: 5m` hold requirement --
@@ -584,9 +586,14 @@ def _eval_scheduled_backlog_growing_expr(
         age_ok = oldest_due_age_seconds[i] > age_threshold_seconds
         j = i - offset_steps
         # PromQL offset: no sample at/ before series start -> operand
-        # missing -> `and` produces no result for this timestamp (false).
-        count_ok = j >= 0 and scheduled_count[i] > scheduled_count[j]
-        results.append(age_ok and count_ok)
+        # missing -> that arm produces no result for this timestamp.
+        growing = j >= 0 and scheduled_count[i] > scheduled_count[j]
+        # changes(count[5m]) == 0: every sample in the (t-5m, t] window
+        # carries the same value -- the count never moved. The window is
+        # clamped at series start, where fewer samples say the same thing.
+        window = scheduled_count[max(0, j + 1) : i + 1]
+        stalled = len(set(window)) == 1
+        results.append(age_ok and (growing or stalled))
     return results
 
 
@@ -625,23 +632,17 @@ def test_scheduled_backlog_growing_fires_on_genuine_growth() -> None:
 
 
 def test_scheduled_backlog_growing_silent_on_stalled_plateau() -> None:
-    """RED: a promotion stall where the scheduled count plateaus (nothing
+    """A promotion stall where the scheduled count plateaus (nothing
     drains, nothing new arrives net) rather than rising is a genuine
     promotion-stall shape -- the oldest-due job's age climbs past the
-    threshold and keeps climbing forever -- but the shipped expression
-    requires ``scheduled_count > scheduled_count offset 5m`` (strictly
-    GREATER than 5 minutes ago), which a flat plateau never satisfies.
-
-    The fix's own rationale is "a scheduled count that is flat or falling
-    ... is healthy no matter how long the current straggler has waited"
-    (rules.yaml description for this alert) -- but a flat count is exactly
-    what you see when promotion has stopped completely and arrivals have
-    also stopped (or are throttled/backpressured), which is a real stall,
-    not a healthy steady state. This test pins that the alert is silent in
-    that case today; it is expected to fail (go red) until the expression
-    (or an operator runbook / companion alert) accounts for a stalled
-    plateau, not just a falling-or-rising count.
-    """
+    threshold and keeps climbing forever. The growth arm
+    (``count > count offset 5m``, strictly GREATER than 5 minutes ago) is
+    never satisfied by a flat plateau, so the stall arm must catch it:
+    ``changes(count[5m]) == 0`` holds whenever the count has not moved at
+    all across the window, which with a due job aging past the threshold
+    means promotion has stopped and arrivals are absent or throttled -- a
+    real stall, not a healthy steady state. This pins that the alert fires
+    in that case."""
     age = [0, 60, 120, 180, 240, 300, 360, 420, 480, 540, 600, 600, 600, 600, 600, 600, 600]
     count = [30] * len(age)
     results = _eval_scheduled_backlog_growing_expr(age, count)

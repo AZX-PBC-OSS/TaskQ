@@ -1498,7 +1498,11 @@ onto the fixed `_other_` value) instead of the per-schedule UUID.
 Dashboards grouping by `schedule_id` lose their series on upgrade.
 Per-schedule attribution lives on the `cron fired` / `cron fire failed`
 log lines and the `cron fire` span's `taskq.cron_schedule_id` attribute.
-The per-actor balance can carry permanent residue from disabled,
-re-enabled or deleted schedules — `cron_schedules.consecutive_failures`
-and the logs are authoritative; alert on
-`taskq.cron.disabled_schedules > 0` rather than on this balance.
+The per-actor balance is reconciled against the database every tick —
+each tick re-derives the per-actor sum over the whole
+`cron_schedules.consecutive_failures` table — so disable, re-enable and
+delete actions taken in any process self-correct on the next tick with
+due work rather than stranding residue, and the value returns to zero
+once no schedule is failing. `cron_schedules.consecutive_failures` and
+the logs remain the authoritative per-schedule record; alert on
+`taskq.cron.disabled_schedules > 0` for the auto-disabled condition.

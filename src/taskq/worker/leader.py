@@ -90,7 +90,11 @@ from taskq.worker._leader_sweeps import (
     _stranded_jobs_loop,
     _sweep_loop,
 )
-from taskq.worker._transient import TRANSIENT_PG_ERRORS, UnexpectedLoopErrorGuard
+from taskq.worker._transient import (
+    PERMANENT_PG_REFUSALS,
+    TRANSIENT_PG_ERRORS,
+    UnexpectedLoopErrorGuard,
+)
 from taskq.worker.cron_loop import ActorFirePolicy, tick_cron
 from taskq.worker.deps import (
     LeaderTerm,
@@ -291,6 +295,12 @@ class MaintenanceLeader:
         # role while it lost an election, so contention distinguishes a
         # transition from the steady state of following one live peer.
         self._observed_holder: tuple[UUID, datetime] | None = None
+        # Log-once latch for a refused courtesy advisory-lock probe: a
+        # managed Postgres refusing ``pg_try_advisory_lock`` refuses it on
+        # every election win for the life of the grants, so the WARN is
+        # emitted on the first refusal and re-armed only when a probe
+        # succeeds again (the grant appearing IS a new operational fact).
+        self._advisory_lock_refused = False
 
     def _demote(self) -> None:
         """Stop being the leader, synchronously and before anything can await.
@@ -523,11 +533,11 @@ class MaintenanceLeader:
         The lease row is what confers the role; this lock is taken by the
         winner only so a pod from a release that knows only the lock cannot
         lead beside a lease holder during a roll. It is never required and
-        never waited on: a miss — or a transient failure asking — is logged
-        and leadership proceeds, because a lock that outlives the row behind
-        it (a candidate dead between the lock attempt and the election
-        write, a departed leader's lingering session) must never again gate
-        the election it used to decide.
+        never waited on: a miss — or a transient failure asking, or a
+        refused privilege — is logged and leadership proceeds, because a
+        lock that outlives the row behind it (a candidate dead between the
+        lock attempt and the election write, a departed leader's lingering
+        session) must never again gate the election it used to decide.
         """
         conn = self._deps.leader_conn
         if conn is None or conn.is_closed():
@@ -543,6 +553,27 @@ class MaintenanceLeader:
             # down. A courtesy probe must not cost a lease the row already
             # granted.
             return False
+        except PERMANENT_PG_REFUSALS as exc:
+            # A managed Postgres restricting advisory-lock functions to
+            # admin/superuser roles refuses this probe on every win, for as
+            # long as the grants stand — permanent, not transient (see
+            # PERMANENT_PG_REFUSALS). Degrade to a lock miss exactly as a
+            # False return would: the lease row is the authority, and a
+            # courtesy probe must never cost the leadership the row already
+            # granted. Logged once per refusal streak so a refused
+            # deployment does not WARN-spam on every re-election.
+            if not self._advisory_lock_refused:
+                self._advisory_lock_refused = True
+                log.warning(
+                    "leader-advisory-lock-refused",
+                    kind="leader_advisory_lock_refused",
+                    worker_id=str(self._worker_id),
+                    function="pg_try_advisory_lock",
+                    error=repr(exc),
+                    error_type=type(exc).__name__,
+                )
+            return False
+        self._advisory_lock_refused = False
         return got is True
 
     async def _step_down(self, reason: str, *, error: str | None = None) -> None:
@@ -714,35 +745,35 @@ class MaintenanceLeader:
                 shutdown.set()
                 return
             except TRANSIENT_PG_ERRORS as exc:
-                await self._drop_leader_conn(reason="election_attempt_failed")
-                await self._close_leader_owned_conns()
-                record_election_attempt(str(self._worker_id), won=False)
-                log.warning(
-                    "election-attempt-failed",
-                    kind="election_attempt_failed",
-                    worker_id=str(self._worker_id),
-                    error=repr(exc),
-                )
+                await self._election_attempt_failed(exc)
                 await asyncio.sleep(self._deps.settings.heartbeat_interval)
                 continue
             except Exception as exc:
                 # Backstop (see _transient.py): tolerated + logged a few
                 # times, then deliberately fatal; cleanup mirrors the
                 # transient path since conn state is unknown.
-                await self._drop_leader_conn(reason="election_attempt_failed")
-                await self._close_leader_owned_conns()
-                record_election_attempt(str(self._worker_id), won=False)
-                log.warning(
-                    "election-attempt-failed",
-                    kind="election_attempt_failed",
-                    worker_id=str(self._worker_id),
-                    error=repr(exc),
-                )
+                await self._election_attempt_failed(exc)
                 guard.unexpected(exc)
                 await asyncio.sleep(self._deps.settings.heartbeat_interval)
                 continue
             if isinstance(elected_at, datetime):
-                if not await self._assume_leadership(elected_at, attempt_started):
+                # The assume path (courtesy lock probe, dedicated-conn
+                # opens) runs inside the same error boundary as the
+                # election statement: nothing it raises may escape into
+                # the TaskGroup — one election cycle's failure is a retry
+                # next tick, never a cancelled maintenance plane.
+                try:
+                    assumed = await self._assume_leadership(elected_at, attempt_started)
+                except TRANSIENT_PG_ERRORS as exc:
+                    await self._election_attempt_failed(exc)
+                    await asyncio.sleep(self._deps.settings.heartbeat_interval)
+                    continue
+                except Exception as exc:
+                    await self._election_attempt_failed(exc)
+                    guard.unexpected(exc)
+                    await asyncio.sleep(self._deps.settings.heartbeat_interval)
+                    continue
+                if not assumed:
                     await asyncio.sleep(self._deps.settings.heartbeat_interval)
                     continue
             else:
@@ -754,6 +785,26 @@ class MaintenanceLeader:
             # deliberately without resetting.)
             guard.ok()
             await asyncio.sleep(self._deps.settings.heartbeat_interval)
+
+    async def _election_attempt_failed(self, exc: BaseException) -> None:
+        """Shared cleanup for one failed election cycle.
+
+        Applies to the election statement and the assume-leadership path
+        alike: the leader conn's state is unknown after either failure, so
+        it (and every leader-owned conn) is dropped and the lost attempt
+        recorded. The caller decides what the error class buys the loop —
+        a transient failure just retries next tick; an unexpected one is
+        budgeted by the :class:`UnexpectedLoopErrorGuard` first.
+        """
+        await self._drop_leader_conn(reason="election_attempt_failed")
+        await self._close_leader_owned_conns()
+        record_election_attempt(str(self._worker_id), won=False)
+        log.warning(
+            "election-attempt-failed",
+            kind="election_attempt_failed",
+            worker_id=str(self._worker_id),
+            error=repr(exc),
+        )
 
     async def _record_lost_election(self) -> None:
         """Account for a lost election, recording contention only when it is real.

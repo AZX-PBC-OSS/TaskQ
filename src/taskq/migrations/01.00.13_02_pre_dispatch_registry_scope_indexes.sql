@@ -1,0 +1,57 @@
+-- Registry-scope walk index for the dispatch round: the (queue, actor)
+-- loose-scan index on jobs. Forward-only; there is no down migration.
+-- To revert, restore from backup. The literal "{schema}" token is
+-- substituted at apply time by the migration runner.
+--
+-- ── Why this index exists ───────────────────────────────────────────
+-- A dispatch round must be scoped to the (actor, queue) pairs it polls;
+-- cost that grows with the fleet-wide REGISTERED-actor count couples
+-- every queue's dispatch latency to a dimension an operator cannot see
+-- in their own queue's metrics (the registry-scope oracle,
+-- tests/test_dispatch_actor_registry_scope_bound.py, pins this).
+-- actor_config carries one row per registered actor, sits far below
+-- autovacuum's insert threshold, and is therefore usually never
+-- analyzed — so before the registry-scope fix the planner had no option
+-- but a full Seq Scan of the registry, repeated across the claim
+-- statement's capacity CTEs, and the estimate (~440 rows even for a
+-- one-actor fleet) cascaded through the candidate chain's nested loops.
+-- The claim statement now drives its capacity CTEs from the round's own
+-- pending-rows population, enumerated from jobs, and reads actor_config
+-- back by primary key only for those actors.
+--
+-- jobs_queue_actor_dispatch_idx serves pa_keys, the strict-FIFO
+-- variant's label-routed (queue, actor) enumeration in
+-- backend/_dispatch_sql.py: a recursive loose index scan whose
+-- ``queue = ANY($1)`` predicate is a ScalarArrayOp on this index's
+-- LEADING column (one index range per round queue, zero entries visited
+-- for unpolled queues) and whose per-step ``(queue, actor) > cur``
+-- row-compare is an Index Cond within those ranges — one bounded seek
+-- per distinct (queue, actor) pair the round polls, the skip-scan
+-- emulation this Postgres generation has no native operator for. The
+-- actor-leading dispatch indexes cannot serve that walk: with actor
+-- first, the queue predicate degrades to a per-entry filter and the
+-- walk reads every fleet actor's index entries between matches. The
+-- partial predicate (status = 'pending' AND NOT assignment_routed) is
+-- exactly the walk's own population, so re-pended rows (which route by
+-- assignment, never by label) cost the walk nothing; the COALESCE-free
+-- two-column key keeps the index narrow on the write hot path.
+--
+-- ROLLING DEPLOY: pre-phase is safe for both code generations. The
+-- index is purely additive — the previous release's dispatch CTE never
+-- references it (its per_actor_capacity scans actor_config and probes
+-- jobs_actor_dispatch_idx), and this release's statement runs without
+-- it too (the walk degrades to the older indexes' filtered scans; only
+-- the cost bound is lost, never correctness) — which is why it ships in
+-- the pre phase, before the code rollout.
+--
+-- OPS NOTE (locks), same caveat as every sibling index migration: the
+-- CREATE INDEX takes a write-blocking lock on jobs for the duration of
+-- the build, and build time is proportional to the current pending-row
+-- count. Operators with a large jobs backlog should run the equivalent
+-- `CREATE INDEX CONCURRENTLY IF NOT EXISTS jobs_queue_actor_dispatch_idx
+-- ON "{schema}".jobs (queue, actor) WHERE status = 'pending' AND NOT
+-- assignment_routed` manually outside the migration runner during a
+-- maintenance window, then let this migration no-op via IF NOT EXISTS.
+CREATE INDEX IF NOT EXISTS jobs_queue_actor_dispatch_idx
+    ON "{schema}".jobs (queue, actor)
+    WHERE status = 'pending' AND NOT assignment_routed;

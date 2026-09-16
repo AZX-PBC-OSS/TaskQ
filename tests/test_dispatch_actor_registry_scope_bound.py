@@ -1,22 +1,19 @@
 """A dispatch round's cost must not grow with the number of REGISTERED
 actors that are unrelated to the round's own polled (actor, queue) pairs.
 
-tests/test_dispatch_fleet_scope_bound.py grows the rest of the fleet's
-*pending job backlog* (cohort count and row depth) while holding
-``actor_config`` fixed at exactly two rows (the two polled actors) for
-every fleet size in ``_FLEET_SIZES`` -- its unpolled "fleet actors" are
-referenced only in ``jobs.actor``, never inserted into ``actor_config``.
-That fixture therefore cannot see cost that scales with the number of
-ROWS IN actor_config itself, as opposed to cost that scales with pending
-jobs. This module isolates that axis: pending jobs are held fixed (the
+This module isolates the registry axis: pending jobs are held fixed (the
 round's own small backlog only, zero unrelated jobs), and only
 ``actor_config`` row count grows, with actors that have no pending work
-at all.
+at all. (The sibling fleet oracle,
+tests/test_dispatch_fleet_scope_bound.py, originally held actor_config
+at exactly two rows while growing only jobs — structurally blind to
+this axis; its fixture now registers its fleet actors too, so both
+oracles see the dimension.)
 
 Several CTEs in the round-robin/strict-fifo SQL family
 (``src/taskq/backend/_dispatch_sql.py``) read ``actor_config`` directly:
 ``per_actor_capacity``, ``repend_capacity``, the ``capped_ranked`` filter
-join, and the ``eligible_candidates``/``locked`` stage's LEFT JOINs back
+join, and the ``eligible_candidates``/``locked`` stage's joins back
 to ``actor_config`` for ``max_concurrent``/cap bookkeeping. If any of
 these executes as a Seq Scan of the whole table rather than an indexed,
 bounded probe keyed to the round's own actors, the round's cost grows

@@ -1021,36 +1021,52 @@ async def test_stale_attempt_on_the_same_worker_is_not_reported_as_succeeded() -
 
 
 def test_no_consumer_terminal_write_discards_its_fenced_outcome() -> None:
-    """Every fenced terminal write in the consumer consumes its result.
+    """Every fenced terminal write in the worker package consumes its result.
 
     The fencing guarantee is only as strong as its weakest call site: one
     ``await backend.mark_succeeded(...)`` written as a bare statement
-    silently throws away the boolean that says whether the row actually
+    silently throws away the outcome that says whether the row actually
     moved, and restores the at-least-twice execution the fence exists to
     prevent. Behavioural tests can only cover the paths someone thought
-    to write; this one closes the class by reading the source.
+    to write; this one closes the class by reading the source of every
+    module that calls a fenced terminal write — the consumer, the runner
+    loops, the handlers, and the shutdown orchestrator.
 
     A call is considered to consume its outcome when the await is bound
-    (assigned to a name, or tested in a condition) rather than issued as
-    a standalone expression statement. ``shield_with_retrieval`` wrapping
-    is not by itself consumption — it protects the write from external
-    cancellation and returns the same boolean, which the caller must
-    still read.
+    (assigned to a name, returned, or tested in a condition) rather than
+    issued as a standalone expression statement. ``shield_with_retrieval``
+    wrapping is not by itself consumption — it protects the write from
+    external cancellation and returns the same outcome, which the caller
+    must still read.
+
+    ``mark_failed_or_retry`` is deliberately absent from the scanned set:
+    its fence signal is the ``WorkerOwnershipMismatch`` exception, which a
+    bare statement cannot silence, and every call goes through
+    ``retry.safe_mark_failed_or_retry``, which consumes both channels.
     """
     import ast
+    import importlib
     import inspect
-
-    import taskq.worker._consumer as consumer_module
 
     fenced_writes = {
         "mark_succeeded",
         "mark_succeeded_with_conn",
         "mark_cancelled",
         "mark_cancelled_with_conn",
+        "mark_snoozed",
+        "mark_retry_after",
+        "mark_abandoned",
+        "mark_interrupted",
     }
-
-    source = inspect.getsource(consumer_module)
-    tree = ast.parse(source)
+    # Every module with a production ``backend.mark_*`` call site.
+    scanned_modules = [
+        "taskq.worker._consumer",
+        "taskq.worker.run",
+        "taskq.worker._handlers",
+        "taskq.worker.shutdown",
+        "taskq.worker.cancel",
+        "taskq.retry",
+    ]
 
     def called_name(node: ast.AST) -> str | None:
         """The attribute name of a backend method call inside *node*."""
@@ -1063,17 +1079,20 @@ def test_no_consumer_terminal_write_discards_its_fenced_outcome() -> None:
                 return inner.func.attr
         return None
 
-    discarding: list[tuple[str, int]] = []
-    for node in ast.walk(tree):
-        # A bare expression statement: the value is computed and dropped.
-        if isinstance(node, ast.Expr):
-            name = called_name(node)
-            if name is not None:
-                discarding.append((name, node.lineno))
+    discarding: list[tuple[str, str, int]] = []
+    for module_name in scanned_modules:
+        module = importlib.import_module(module_name)
+        tree = ast.parse(inspect.getsource(module))
+        for node in ast.walk(tree):
+            # A bare expression statement: the value is computed and dropped.
+            if isinstance(node, ast.Expr):
+                name = called_name(node)
+                if name is not None:
+                    discarding.append((module_name, name, node.lineno))
 
     assert discarding == [], (
-        "these fenced terminal writes in taskq.worker._consumer discard the "
-        "boolean that says whether the row actually moved, so a write that "
-        "matched no row is indistinguishable from one that landed: "
-        + ", ".join(f"{name} at line {lineno}" for name, lineno in discarding)
+        "these fenced terminal writes discard the outcome that says whether "
+        "the row actually moved, so a write that matched no row is "
+        "indistinguishable from one that landed: "
+        + ", ".join(f"{module}:{name} at line {lineno}" for module, name, lineno in discarding)
     )

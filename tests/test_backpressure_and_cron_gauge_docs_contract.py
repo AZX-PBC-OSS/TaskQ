@@ -5,6 +5,12 @@
   `_otel.py`'s own module docstring and the instrument's own
   `description=`) -- a dashboard grouped by `schedule_id` loses its
   series entirely, because that label was never emitted.
+- `observability.md` and `upgrading.md` must not claim the same
+  instrument's per-actor balance carries permanent residue from
+  disabled, re-enabled or deleted schedules. Each tick reconciles the
+  series against the database's own per-actor sum over the whole
+  `cron_schedules` table, so out-of-process changes self-correct on the
+  next tick with due work -- the instrument's own `description=` says so.
 - `ops.md` and `deployment.md` must not describe
   `taskq.backpressure.errors` as a pure producer/capacity-pressure signal
   with no `kind` filter called out. The counter also increments for
@@ -43,6 +49,54 @@ def test_otel_instrument_confirms_actor_not_schedule_id_label() -> None:
     section = otel_src.split('"taskq.cron.consecutive_failures"', 1)[1][:800]
     assert "actor label is capped" in section
     assert "schedule_id" not in section
+
+
+def test_observability_guide_cron_failures_row_matches_the_shipped_reconcile() -> None:
+    """The observability guide's ``taskq.cron.consecutive_failures`` row
+    must describe the shipped reconcile -- each tick re-derives the
+    per-actor sum from the database, so out-of-process enable/disable/
+    delete actions self-correct -- not the pre-reconcile behavior, where
+    such actions stranded their counts as permanent residue. An operator
+    told the balance can sit permanently non-zero would distrust a metric
+    the code has made trustworthy."""
+    text = (_DOCS / "guides" / "observability.md").read_text()
+    section = text[text.index("`taskq.cron.consecutive_failures`") :][:1600]
+    assert "permanent residue" not in section and "permanently non-zero" not in section, (
+        "observability.md still describes the pre-reconcile residue behavior; "
+        "each tick reconciles the series against the database's per-actor sum, "
+        "so out-of-process changes self-correct on the next tick with due work"
+    )
+    assert "self-correct" in section, (
+        "observability.md must state the reconcile behavior: the series "
+        "self-corrects on the next tick with due work"
+    )
+
+
+def test_upgrading_guide_cron_failures_note_matches_the_shipped_reconcile() -> None:
+    """Same contract on the upgrade note: the relabel paragraph must not
+    warn operators about permanent residue the shipped reconcile has
+    removed."""
+    text = (_DOCS / "guides" / "upgrading.md").read_text()
+    section = text[text.index("`taskq.cron.consecutive_failures` is relabeled") :][:1600]
+    assert "permanent residue" not in section, (
+        "upgrading.md still describes the pre-reconcile residue behavior; "
+        "each tick reconciles the series against the database's per-actor sum, "
+        "so out-of-process changes self-correct on the next tick with due work"
+    )
+    assert "self-correct" in section, (
+        "upgrading.md must state the reconcile behavior: the series "
+        "self-corrects on the next tick with due work"
+    )
+
+
+def test_otel_instrument_confirms_tick_reconcile_self_corrects() -> None:
+    """Guards the premise the two residue pins above rely on: the
+    instrument's own description states the per-tick reconcile against the
+    database and the self-correcting behavior, so this fails loudly if the
+    mechanism is ever removed without the docs following."""
+    otel_src = (_SRC / "obs" / "_otel.py").read_text()
+    section = otel_src.split('"taskq.cron.consecutive_failures"', 1)[1][:800]
+    assert "self-correct" in section
 
 
 def test_ops_guide_backpressure_errors_entry_names_the_non_capacity_kinds() -> None:

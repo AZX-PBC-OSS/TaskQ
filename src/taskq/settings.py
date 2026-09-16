@@ -66,7 +66,7 @@ class OIDCSettings(DotEnvConfig):
         "(e.g. https://login.microsoftonline.com/{tenant}/v2.0).",
     )
     client_id: str = Field(default="", description="OAuth2 client ID registered at the IdP.")
-    # Why SecretStr (dotenvmodel's native mechanism, issue #111): a settings
+    # Why SecretStr (dotenvmodel's native mechanism): a settings
     # repr reaches logs, debuggers and crash tracebacks; SecretStr masks
     # itself there and in every error path, loads straight from the env var
     # (a raw str is coerced on load and on a str default), and unwraps only
@@ -851,7 +851,17 @@ class WorkerSettings(TaskQSettings):
         "timeout-capped iteration can never false-trip the stale-loop "
         "detector on a healthy worker. The producer loop is not checked "
         "(its multi-statement dispatch_batch is not wrapped in a single "
-        "asyncio.timeout).",
+        "asyncio.timeout). For the dispatcher POOL this configured value is "
+        "the FLOOR, not the applied bound: the admission-path rate-limit "
+        "acquires run on that pool, so TaskQ re-derives the pool's "
+        "command_timeout upward from a widened token_bucket_lock_timeout_ms "
+        "or sliding_window_lock_timeout_ms (max(configured, widest budget / "
+        "0.8), connections.lock_budget_command_timeout_secs) the same way "
+        "the client pool follows the enqueue lock budgets — a widened "
+        "admission budget is honored end to end instead of being silently "
+        "truncated by the pool's own client-side timer. The leader/notify "
+        "dedicated connections keep the configured value: no admission "
+        "acquire runs on them.",
     )
     dispatch_oversample: int = Field(
         default=2,
@@ -897,8 +907,17 @@ class WorkerSettings(TaskQSettings):
         "admission. Exhaustion is an admission DENIAL, not a failure: the "
         "acquire fails closed and the denial's retry hint is one more budget, "
         "so shortening this tightens the re-check interval rather than "
-        "refusing work. 0 or less waits indefinitely (the lock_timeout GUC "
-        "convention shared with the sibling budgets).",
+        "refusing work. These acquires run on the dispatcher pool, whose "
+        "client-side command_timeout would otherwise truncate a budget wider "
+        "than its 5.0s floor before the server-side lock_timeout could fire: "
+        "widening this past the default re-derives the TaskQ-built dispatcher "
+        "pool's per-query bound upward (budget / 0.8), so the wider budget is "
+        "delivered end to end — the same reconciliation the client pool "
+        "applies to the enqueue lock budgets. A caller-supplied dispatcher "
+        "pool keeps its own timeouts; size it above the budgets you set. 0 or "
+        "less waits indefinitely server-side (the lock_timeout GUC convention "
+        "shared with the sibling budgets) — a TaskQ-built pool still applies "
+        "its per-query bound, so set a large finite value there instead.",
     )
     sliding_window_lock_timeout_ms: float = Field(
         default=5000.0,
@@ -909,8 +928,18 @@ class WorkerSettings(TaskQSettings):
         "token_bucket_lock_timeout_ms because the two limiter shapes hold "
         "their locks across different critical sections and a deployment may "
         "run only one of them. Exhaustion fails closed as a denial whose "
-        "retry hint is one more budget. 0 or less waits indefinitely (the "
-        "lock_timeout GUC convention shared with the sibling budgets).",
+        "retry hint is one more budget. These acquires run on the dispatcher "
+        "pool, whose client-side command_timeout would otherwise truncate a "
+        "budget wider than its 5.0s floor before the server-side lock_timeout "
+        "could fire: widening this past the default re-derives the "
+        "TaskQ-built dispatcher pool's per-query bound upward (budget / 0.8), "
+        "so the wider budget is delivered end to end — the same "
+        "reconciliation the client pool applies to the enqueue lock budgets. "
+        "A caller-supplied dispatcher pool keeps its own timeouts; size it "
+        "above the budgets you set. 0 or less waits indefinitely server-side "
+        "(the lock_timeout GUC convention shared with the sibling budgets) — "
+        "a TaskQ-built pool still applies its per-query bound, so set a large "
+        "finite value there instead.",
     )
     heartbeat_pool_size: int = Field(
         default=4,

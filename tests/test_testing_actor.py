@@ -174,6 +174,95 @@ async def test_fake_backend_mark_cancelled_records_call_and_returns_true() -> No
     ]
 
 
+# ── the double models the terminal-write fence ─────────────────────
+#
+# Real Postgres and the in-memory twin fence every terminal write on
+# ``(status='running', locked_by_worker, attempt)``: once a write has moved
+# the row out of ``running``, every later terminal write for that job
+# matches nothing and reports ``False``. The double must model the same
+# fence, or a test asserting on a cancel/success race can pass vacuously
+# against a backend that lets both writes land.
+
+
+async def test_fake_backend_cancel_after_succeeded_is_fenced_out() -> None:
+    """A mark_cancelled arriving after the row succeeded reports False.
+
+    The race shape: the success write landed, then a stale handler's
+    cancel write arrives for the same job. The real backend's fencing
+    UPDATE matches no row (the job is no longer 'running') and returns
+    False; the double must say the same, or a consumer test asserting the
+    stale path's behaviour cannot tell the writes apart.
+    """
+    backend = FakeBackend()
+    job_id = new_job_id()
+    worker_id = new_uuid()
+
+    assert await backend.mark_succeeded(job_id, worker_id, {"ok": True}) is True
+    assert await backend.mark_cancelled(job_id, worker_id) is False
+
+
+async def test_fake_backend_succeed_after_cancelled_is_fenced_out() -> None:
+    """The mirror race: a success write after the cancel landed is stale."""
+    backend = FakeBackend()
+    job_id = new_job_id()
+    worker_id = new_uuid()
+
+    assert await backend.mark_cancelled(job_id, worker_id) is True
+    assert await backend.mark_succeeded(job_id, worker_id, {"ok": True}) is False
+
+
+async def test_fake_backend_second_terminal_write_same_worker_is_fenced_out() -> None:
+    """Same worker, same attempt, second write: the row is already terminal.
+
+    Even the write that landed cannot be repeated — the real fence's
+    ``status='running'`` conjunct rejects it, so the double's does too.
+    """
+    backend = FakeBackend()
+    job_id = new_job_id()
+    worker_id = new_uuid()
+
+    assert await backend.mark_succeeded(job_id, worker_id, {"ok": True}) is True
+    assert await backend.mark_succeeded(job_id, worker_id, {"ok": True}) is False
+
+
+async def test_fake_backend_fenced_out_write_still_records_the_call() -> None:
+    """Fencing changes the return, not the recording — assertions on the
+    call log keep working for the stale write exactly as for the landed
+    one."""
+    backend = FakeBackend()
+    job_id = new_job_id()
+    worker_id = new_uuid()
+
+    await backend.mark_succeeded(job_id, worker_id, {"ok": True})
+    fenced = await backend.mark_cancelled(job_id, worker_id)
+
+    assert fenced is False
+    assert len(backend.mark_succeeded_calls) == 1
+    assert len(backend.mark_cancelled_calls) == 1
+
+
+async def test_fake_backend_terminal_fence_is_per_job() -> None:
+    """One job's terminal write must not fence another job's."""
+    backend = FakeBackend()
+    worker_id = new_uuid()
+    job_a = new_job_id()
+    job_b = new_job_id()
+
+    assert await backend.mark_succeeded(job_a, worker_id, None) is True
+    assert await backend.mark_cancelled(job_b, worker_id) is True
+
+
+async def test_fake_backend_mark_succeeded_with_conn_shares_the_fence() -> None:
+    """The transactional variant delegates to mark_succeeded, so it lands
+    and fences through the same per-job record."""
+    backend = FakeBackend()
+    job_id = new_job_id()
+    worker_id = new_uuid()
+
+    assert await backend.mark_succeeded_with_conn(object(), job_id, worker_id, None) is True
+    assert await backend.mark_succeeded(job_id, worker_id, None) is False
+
+
 async def test_fake_backend_mark_snoozed_uses_configured_return_value() -> None:
     backend = FakeBackend(mark_snoozed_return="failed")
     job_id = new_job_id()

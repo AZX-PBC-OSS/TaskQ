@@ -15,7 +15,7 @@ from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import AsyncExitStack, asynccontextmanager, suppress
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final
 from uuid import UUID
 
 import asyncpg
@@ -34,6 +34,7 @@ from taskq.connections import (
     PoolFactory,
     RedisFactory,
     WorkerConnections,
+    lock_budget_command_timeout_secs,
     statement_cache_kwargs,
 )
 from taskq.constants import wake_channel
@@ -90,6 +91,47 @@ _drain_tasks: set[asyncio.Task[None]] = set()
 _TCP_KEEPIDLE = 30
 _TCP_KEEPINTVL = 5
 _TCP_KEEPCNT = 3
+
+_DISPATCHER_SERVER_SETTINGS: Final[dict[str, str]] = {"jit": "off"}
+"""Per-connection GUCs every TaskQ-built dispatcher pool connection carries.
+
+``jit = off`` because every statement this pool runs — the dispatch claim
+CTEs, the leader sweeps, the bounded admission lock acquires — is a short
+bounded OLTP round trip that JIT compilation cannot help: below
+``jit_above_cost`` the setting is inert, and at or above it compilation is
+pure cost paid per plan. The dispatch statement's own estimate cascade is
+fixed at the source (taskq.backend._dispatch_sql), so this is a guard
+against FUTURE estimate surprises, not the fix — a regression there now
+degrades a round to its uncompiled speed, never to a second spent
+compiling. Do not "helpfully" re-enable JIT here; if a dispatcher-pool
+statement ever does benefit from compilation, that belongs in a measured
+change to the statement itself. Caller-supplied pools keep their own
+settings (the caller-owned doctrine); the worker/heartbeat pools run only
+single-row primary-key-class statements whose plans never approach the
+threshold, so they carry no entry.
+"""
+
+_ADMISSION_LOCK_BUDGET_FIELDS: Final[tuple[str, ...]] = (
+    "token_bucket_lock_timeout_ms",
+    "sliding_window_lock_timeout_ms",
+)
+"""The ``WorkerSettings`` field names of the two admission-path lock budgets
+— listed once so the dispatcher pool's bound derivation cannot drift onto a
+different spelling (the same listing doctrine as
+``taskq.client._taskq._ENQUEUE_LOCK_BUDGET_FIELDS``)."""
+
+
+def _admission_lock_budget_pairs(settings: WorkerSettings) -> list[tuple[float, float]]:
+    """``(configured, shipped default)`` per admission lock budget — the
+    input :func:`taskq.connections.lock_budget_command_timeout_secs`
+    derives the dispatcher pool's per-query bound from. The defaults are
+    read off the model's field metadata, never restated."""
+    pairs: list[tuple[float, float]] = []
+    fields = type(settings).get_fields()
+    for field_name in _ADMISSION_LOCK_BUDGET_FIELDS:
+        _field_type, field_info = fields[field_name]
+        pairs.append((float(getattr(settings, field_name)), float(field_info.default)))
+    return pairs
 
 
 def _apply_keepalive(sock: socket.socket) -> None:
@@ -511,6 +553,27 @@ async def open_worker_deps(
         dispatcher_dsn_factory: PoolFactory | None = None
         heartbeat_dsn_factory: PoolFactory | None = None
         worker_dsn_factory: PoolFactory | None = None
+        # The dispatcher pool's per-query bound is DERIVED, not read
+        # directly: the admission-path rate-limit acquires run on this pool
+        # (worker/_leader_sweeps.py) with server-side lock_timeout budgets
+        # from settings (token_bucket_lock_timeout_ms /
+        # sliding_window_lock_timeout_ms), and asyncpg enforces
+        # command_timeout as its own client-side per-statement timer — an
+        # admission budget widened past the floor would be silently
+        # truncated by the pool's own timer before the server-side refusal
+        # could ever fire. lock_budget_command_timeout_secs re-derives the
+        # bound as max(floor, widest_widened_budget / share), the same
+        # reconciliation the client pool applies to the enqueue budgets
+        # (client/_taskq.py): at the shipped defaults (5000 ms budgets,
+        # 5.0 s floor) the bound is exactly the configured value, so a
+        # deployment that sets nothing keeps byte-identical behavior. The
+        # leader/notify dedicated connections keep the CONFIGURED value:
+        # no admission acquire runs on them, and the leader-loop staleness
+        # invariant is defined against the configured timeout.
+        dispatcher_pool_command_timeout = lock_budget_command_timeout_secs(
+            _admission_lock_budget_pairs(settings),
+            floor_secs=settings.dispatcher_command_timeout,
+        )
         if direct_dsn is not None:
             _direct = direct_dsn
             _lifetime = settings.pool_max_inactive_lifetime
@@ -521,7 +584,8 @@ async def open_worker_deps(
                     min_size=1,
                     max_size=settings.dispatcher_pool_size,
                     max_inactive_connection_lifetime=_lifetime,
-                    command_timeout=settings.dispatcher_command_timeout,
+                    command_timeout=dispatcher_pool_command_timeout,
+                    server_settings=_DISPATCHER_SERVER_SETTINGS,
                     statement_cache_size=_stmt_kwargs["statement_cache_size"],
                     max_cached_statement_lifetime=_stmt_kwargs["max_cached_statement_lifetime"],
                 )

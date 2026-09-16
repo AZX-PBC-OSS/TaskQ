@@ -13,11 +13,14 @@ from unittest.mock import MagicMock
 
 import asyncpg
 import pytest
+import structlog.testing
+from asyncpg.exceptions import InternalClientError
 
 from taskq.connections import (
     DEFAULT_MAX_CACHED_STATEMENT_LIFETIME,
     DEFAULT_STATEMENT_CACHE_SIZE,
     WorkerConnections,
+    _with_fresh_connection_retry,  # pyright: ignore[reportPrivateUsage]  # Why: the shared dead-on-acquire guard is the unit under test — pinning it directly keeps this contract off the intermittent full-stack race test.
     bounded_lock_budget_ms,
     connection_init_hook,
     lock_budget_command_timeout_secs,
@@ -344,3 +347,90 @@ async def test_with_connection_init_closes_the_connection_when_the_hook_fails() 
         await wrapped()
 
     assert produced.close.await_count == 1  # type: ignore[attr-defined]  # Why: MagicMock(spec=...) narrows close to an AsyncMock-shaped attribute at runtime.
+
+
+# ── Dead-on-acquire retry (_with_fresh_connection_retry) ──────────────
+#
+# The shared guard behind every "acquire from the pool, use immediately"
+# call site (the enqueue paths and the bulk-cancel drain). The full-stack
+# race it exists for — a server FATAL parking asyncpg's protocol before
+# ``connection_lost`` lands — is pinned against a real interrupted
+# Postgres in tests/test_fleet_pg_transient_failure.py, which is
+# intermittent by nature; these unit pins hold the wrapper's own contract
+# so the coverage does not rest on that race reproducing.
+
+
+async def test_fresh_connection_retry_retries_once_on_a_poisoned_handout() -> None:
+    """A first-statement ``InternalClientError`` (the dead-on-acquire
+    signature) costs the caller one transparent retry: the operation body
+    runs again on the fresh connection and its result is returned."""
+    calls = 0
+
+    async def op() -> str:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise InternalClientError(
+                "cannot switch to state 15; another operation (2) is in progress"
+            )
+        return "done"
+
+    result = await _with_fresh_connection_retry(op, operation="unit-probe")
+
+    assert result == "done"
+    assert calls == 2
+
+
+async def test_fresh_connection_retry_retries_only_once() -> None:
+    """A second ``InternalClientError`` is a real driver state bug, not
+    this race: it propagates rather than looping on a connection the pool
+    keeps poisoning."""
+    calls = 0
+
+    async def op() -> None:
+        nonlocal calls
+        calls += 1
+        raise InternalClientError("still poisoned")
+
+    with pytest.raises(InternalClientError, match="still poisoned"):
+        await _with_fresh_connection_retry(op, operation="unit-probe")
+
+    assert calls == 2
+
+
+async def test_fresh_connection_retry_passes_other_errors_through_untried() -> None:
+    """The catch is deliberately narrow: the database's own error types
+    are the call site's to classify (the drain retries deadlocks itself),
+    so the wrapper neither retries nor rewrites them."""
+    calls = 0
+
+    async def op() -> None:
+        nonlocal calls
+        calls += 1
+        raise asyncpg.DeadlockDetectedError("real deadlock")
+
+    with pytest.raises(asyncpg.DeadlockDetectedError, match="real deadlock"):
+        await _with_fresh_connection_retry(op, operation="unit-probe")
+
+    assert calls == 1
+
+
+async def test_fresh_connection_retry_logs_the_retry_with_the_operation_name() -> None:
+    """The retry is observable: exactly one WARNING naming the operation,
+    so an operator counting these can tell which call site is paying for
+    a failover."""
+    calls = 0
+
+    async def op() -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise InternalClientError("poisoned")
+
+    with structlog.testing.capture_logs() as logs:
+        await _with_fresh_connection_retry(op, operation="unit-probe")
+
+    warnings = [e for e in logs if e.get("event") == "pool-conn-dead-on-acquire"]
+    assert len(warnings) == 1
+    assert warnings[0]["kind"] == "pool_conn_dead_on_acquire"
+    assert warnings[0]["operation"] == "unit-probe"

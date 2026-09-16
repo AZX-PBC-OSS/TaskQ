@@ -369,7 +369,8 @@ async def _reclaim_expired_locks(
         else:
             # Exhausted: an in-flight cancel request makes 'cancelled'
             # the honest terminal label (mirrors _SWEEP_1_SQL's CASE).
-            new_status = "cancelled" if row.cancel_phase != CancelPhase.NONE else "crashed"
+            crashed = row.cancel_phase == CancelPhase.NONE
+            new_status = "crashed" if crashed else "cancelled"
             # locked_by_worker/lock_expires_at are cleared on EVERY
             # branch by _SWEEP_1_SQL's single SET clause list; the
             # twin must match or a terminal row keeps pointing at a
@@ -387,6 +388,16 @@ async def _reclaim_expired_locks(
                 cancel_phase=CancelPhase.NONE,
                 cancel_requested_at=None,
                 assignment_routed=True,
+                # Twin of _SWEEP_1_SQL's crashed-arm SET: a crashed row
+                # self-describes (WorkerCrashed plus the deadline that
+                # fired, drawn from the same _ATTEMPT_MESSAGES map the
+                # attempt row uses — one map, no drift). The
+                # cancel-honoured arm stamps nothing: no cancel-origin
+                # marker describes a worker that died mid-protocol, so
+                # the attempt row and the event's cause carry the
+                # explanation there.
+                error_class="WorkerCrashed" if crashed else row.error_class,
+                error_message=_ATTEMPT_MESSAGES[cause] if crashed else row.error_message,
             )
             self._append_state_change_event(
                 job_id,

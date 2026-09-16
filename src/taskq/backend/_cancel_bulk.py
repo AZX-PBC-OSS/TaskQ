@@ -49,6 +49,7 @@ in ``postgres.py``.
 import asyncio
 import random
 from collections.abc import Awaitable, Callable
+from functools import partial
 from typing import NamedTuple
 from uuid import UUID
 
@@ -63,6 +64,9 @@ from taskq.backend._sweeps import (
     _apply_batch_statement_timeout,  # pyright: ignore[reportPrivateUsage]  # Why: the batch statement_timeout capture/restore is shared verbatim by every event-writer batch path; re-defining it here would let the two disciplines drift.
     _restore_statement_timeout,  # pyright: ignore[reportPrivateUsage]  # Why: same shared-discipline rationale as _apply_batch_statement_timeout.
     _validate_positive,  # pyright: ignore[reportPrivateUsage]  # Why: the canonical pre-SQL bound validation, shared with the sweeps and deregistration.
+)
+from taskq.connections import (
+    _with_fresh_connection_retry,  # pyright: ignore[reportPrivateUsage]  # Why: the one implementation of the dead-on-acquire retry, shared with the enqueue paths — a local copy would drift from the discipline it documents.
 )
 from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining
@@ -170,37 +174,57 @@ async def _drain_cancel_batches(
     committed batch cancelled (EPQ predicates) but does re-match this
     batch's rolled-back rows — progress is never lost and nothing is
     counted twice.
+
+    Each batch attempt runs under ``_with_fresh_connection_retry`` so the
+    pool handing out a connection the server has already killed (its
+    first statement fails locally with ``asyncpg.InternalClientError``
+    before ``connection_lost`` lands) costs one transparent retry on a
+    genuinely fresh connection instead of escaping ``cancel_where`` as a
+    raw driver state error.
     """
+
+    async def _one_batch(batch_cursor: UUID) -> asyncpg.Record | None:
+        """One committed batch of the drain on a pooled connection.
+
+        Defined once, taking the keyset cursor explicitly: binding it
+        per-iteration inside the ``while`` body would capture a variable
+        the loop reassigns.
+        """
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                prev_timeout = await _apply_batch_statement_timeout(conn, statement_timeout_ms)
+                prev_plan_mode = await _apply_batch_plan_mode(conn)
+                batch_row = await conn.fetchrow(statement, *params, batch_cursor, batch_size)
+                if batch_row is not None:
+                    await handle_batch(conn, batch_row)
+                # Success path only: restore the caller's settings
+                # inside the still-open transaction; on error the
+                # rollback has already discarded the SET LOCALs.
+                await _restore_plan_mode(conn, prev_plan_mode)
+                await _restore_statement_timeout(conn, prev_timeout)
+                return batch_row
+
     # The keyset cursor: the greatest id this drain has WINDOWED so far.
     # Starts below every UUID so the first pass is unbounded on the low
     # side, then advances past each batch so the next pass resumes where
     # this one stopped instead of re-walking what it already handled.
     cursor = _UUID_MIN
     while True:
-        matched_count = 0
-        row = None
+        row: asyncpg.Record | None = None
         for attempt in range(3):
             try:
-                async with pool.acquire() as conn:
-                    async with conn.transaction():
-                        prev_timeout = await _apply_batch_statement_timeout(
-                            conn, statement_timeout_ms
-                        )
-                        prev_plan_mode = await _apply_batch_plan_mode(conn)
-                        row = await conn.fetchrow(statement, *params, cursor, batch_size)
-                        if row is not None:
-                            matched_count = int(row["matched_count"])
-                            await handle_batch(conn, row)
-                        # Success path only: restore the caller's settings
-                        # inside the still-open transaction; on error the
-                        # rollback has already discarded the SET LOCALs.
-                        await _restore_plan_mode(conn, prev_plan_mode)
-                        await _restore_statement_timeout(conn, prev_timeout)
+                # Retry-safety, same as the enqueue sites': the poisoned
+                # protocol rejects the batch transaction's BEGIN itself,
+                # so the failure precedes this batch's first write.
+                row = await _with_fresh_connection_retry(
+                    partial(_one_batch, cursor), operation="cancel_where"
+                )
                 break
             except asyncpg.DeadlockDetectedError:
                 if attempt == 2:
                     raise
                 await asyncio.sleep(0.1 * (2**attempt) + random.random() * 0.05)
+        matched_count = int(row["matched_count"]) if row is not None else 0
         if matched_count < batch_size:
             return
         # Advance past everything this batch WINDOWED, not merely what it

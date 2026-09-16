@@ -1703,8 +1703,30 @@ async def _main(
 
             if deps.settings.health_enabled:
                 health_server = HealthServer()
-                await health_server.start(deps)
-                stack.push_async_callback(health_server.stop)
+                try:
+                    await health_server.start(deps)
+                except OSError as exc:
+                    # The health listener is an accessory: a unix socket
+                    # path (or TCP probe port) colliding with a live peer
+                    # is an operator-visible misconfiguration, never a
+                    # reason to refuse work — a worker that can do work
+                    # must not fail to start over one diagnostic
+                    # side-channel. HealthServer.start's loud refusal is
+                    # what stops a newcomer silently stealing the peer's
+                    # socket; the boot converts it into a WARN and carries
+                    # on registering and claiming. No stop callback is
+                    # pushed: start() raised before this server owned
+                    # anything (its own failure paths already cleaned up),
+                    # so there is nothing of ours to stop.
+                    _startup_log.warning(
+                        "health-server-unavailable",
+                        socket_path=deps.settings.health_socket_path,
+                        health_port=deps.settings.health_port,
+                        errno=exc.errno,
+                        error=str(exc),
+                    )
+                else:
+                    stack.push_async_callback(health_server.stop)
 
             cancel_wake_event: asyncio.Event | None = None
             _subscribe_cancel = getattr(backend, "subscribe_cancel_wake", None)

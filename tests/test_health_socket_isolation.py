@@ -15,6 +15,7 @@ import asyncio
 import contextlib
 import json
 import os
+import socket
 from types import SimpleNamespace
 from typing import cast
 
@@ -335,6 +336,145 @@ async def test_probe_on_a_shared_socket_path_still_answers_for_the_first_worker(
             "no longer observable at the address its orchestrator probes — a probe "
             "failure will restart, or a probe success will keep routing to, a worker "
             "nobody is actually checking"
+        )
+    finally:
+        for task in (worker_b, worker_a):
+            if task is None:
+                continue
+            task.cancel()
+            with contextlib.suppress(BaseException):
+                await task
+        cleanup = await asyncpg.connect(pg_dsn)
+        try:
+            await cleanup.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        finally:
+            await cleanup.close()
+
+
+@pytest.mark.integration
+async def test_second_worker_on_a_colliding_health_port_still_boots_and_registers(
+    pg_dsn: str,
+) -> None:
+    """TCP sibling of the unix-socket collision pin: the optional TCP
+    listener binds through the same unguarded boot call site, so a port
+    collision must degrade the same way — WARN and keep booting, never
+    abort the worker.
+
+    Both workers here are configured with the SAME ``health_port`` (and
+    deliberately distinct unix socket paths, so only the TCP listener
+    collides). The first worker binds the port; the second's
+    ``asyncio.start_server`` raises ``OSError(EADDRINUSE)`` out of
+    ``HealthServer.start`` — the exact shape that, unguarded, aborts boot.
+    The second worker must still register in the fleet and keep running:
+    the health listener is an accessory, and a worker that can do work
+    must never fail to start over it.
+    """
+    schema = f"thsi_{new_base62()}".lower()
+    conn = await asyncpg.connect(pg_dsn)
+    try:
+        await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        await apply_pending(conn, schema=schema)
+    finally:
+        await conn.close()
+
+    # Claim a free loopback port for the collision: worker A binds it, so
+    # worker B's bind of the same port fails loudly. The claim-and-close
+    # window is milliseconds on a local test host, and a lost race fails
+    # the "first worker answering" wait loudly below rather than passing
+    # vacuously.
+    claim = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    claim.bind(("127.0.0.1", 0))
+    shared_port = int(claim.getsockname()[1])
+    claim.close()
+
+    def _worker_settings() -> WorkerSettings:
+        return WorkerSettings.load_from_dict(
+            {
+                "pg_dsn": pg_dsn,
+                "schema_name": schema,
+                "queues": "default",
+                # Distinct unix paths: only the TCP listener collides.
+                "health_socket_path": unique_health_sock_path("collide_port"),
+                "health_host": "127.0.0.1",
+                "health_port": str(shared_port),
+            }
+        )
+
+    async def _tcp_answering() -> bool:
+        try:
+            async with asyncio.timeout(_PROBE_DEADLINE):
+                reader, writer = await asyncio.open_connection("127.0.0.1", shared_port)
+                try:
+                    writer.write(b"GET /ready HTTP/1.0\r\n\r\n")
+                    await writer.drain()
+                    await reader.read()
+                finally:
+                    writer.close()
+                    with contextlib.suppress(OSError, TimeoutError):
+                        await writer.wait_closed()
+        except (TimeoutError, OSError, ValueError):
+            return False
+        return True
+
+    worker_a = asyncio.create_task(_main(_worker_settings()))
+    worker_b: asyncio.Task[int] | None = None
+    try:
+
+        async def _worker_a_answering() -> bool:
+            if worker_a.done():
+                return False
+            return await _tcp_answering()
+
+        await wait_for_condition(
+            _worker_a_answering,
+            description="the first worker's TCP health listener answering",
+            timeout=30.0,
+        )
+
+        worker_b = asyncio.create_task(_main(_worker_settings()))
+
+        async def _second_worker_registered() -> bool:
+            probe = await asyncpg.connect(pg_dsn)
+            try:
+                count: int = await probe.fetchval(
+                    f'SELECT count(*) FROM "{schema}".workers'  # noqa: S608  # Why: schema is a test-minted identifier, never user input.
+                )
+            finally:
+                await probe.close()
+            return count >= 2
+
+        try:
+            await wait_for_condition(
+                _second_worker_registered,
+                description="the second worker registering itself in the fleet "
+                "despite its health port colliding with the first worker's",
+                timeout=15.0,
+            )
+        except TimeoutError:
+            # It never registered. Find out why: did its boot task die?
+            assert worker_b.done(), (
+                "the second worker neither registered in the fleet nor is its "
+                "boot task still running — it is stuck, not merely slow"
+            )
+            exc = worker_b.exception()
+            assert exc is None, (
+                "the second worker's boot crashed instead of continuing without a "
+                f"working health listener, over a health-port collision alone: {exc!r}. "
+                "A worker that can do work must never fail to start; a health-port "
+                "collision is not a structural problem and must not abort boot."
+            )
+            raise
+
+        assert not worker_b.done(), (
+            "the second worker's boot task ended instead of running as a live worker"
+        )
+        assert not worker_a.done(), (
+            "the first worker must still be running — a port collision on the "
+            "newcomer's side must not disturb the worker already bound there"
+        )
+        assert await _tcp_answering(), (
+            "the first worker's TCP health listener stopped answering after the "
+            "second worker booted on the same port"
         )
     finally:
         for task in (worker_b, worker_a):

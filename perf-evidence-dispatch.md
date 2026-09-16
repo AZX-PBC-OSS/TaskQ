@@ -141,3 +141,98 @@ claim statement's own idle-actor prefilter.
 - The expansion loop adds work only on empty rounds: one probe (3 buffers)
   when idle, and bounded geometric re-claims (≤ 1 + 3 executions) only
   while pending routable rows remain.
+
+---
+
+# Estimate-cascade / registry-scope restructure — before/after measurement
+
+Second wave on the same statement family: the JIT-compile-per-round defect
+(the estimate cascade the "JIT note" above flagged as a follow-up) and the
+registered-actor-count scaling, fixed together at the source — every
+actor_config read in the statement is now a primary-key probe or an
+id-array bitmap driven by the round's own pending-rows population, and the
+candidate probes' scan bounds are foldable parameter expressions with the
+exact `residual * oversample` admission window re-imposed as a rank cut over
+the bounded probe output. Plus the operational guard: TaskQ-built dispatcher
+pools now carry `server_settings={"jit": "off"}` (worker/deps.py).
+
+## Method
+
+- **OLD**: `src/taskq/backend/_dispatch_sql.py` at `77ccbb2` (pre-fix).
+- **NEW**: the working-tree `_dispatch_sql.py` (this change), with migration
+  `01.00.13_02` applied (the `jobs_queue_actor_dispatch_idx` walk index).
+- Same engine, host, EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) protocol,
+  re-seed discipline, and median-of-3 recording as the page above.
+  **JIT is left ON** for every measurement — that is the point of the
+  exercise (the shapes below are what production connections saw before the
+  fix; nothing in the harness touches the `jit` GUC).
+
+## M1 shape — depth axis (limit 50, oversample 2, one actor/queue/cohort)
+
+strict_fifo:
+
+| depth | total cost (OLD → NEW) | JIT ms (OLD → NEW) | exec ms (OLD → NEW) |
+|---|---|---|---|
+| 1,000   | 62,132 → 4,040 | 0 → 0 | 1.77 / 1.86 → 1.77 |
+| 30,000  | 2,016,196 → 4,118 | **1,006 / 986 → 0** | **988-1,008 → 2.03** |
+| 200,000 | 15,855,276 → 4,131 | **975 / 998 → 0** | **977-1,001 → 2.20** |
+
+round_robin:
+
+| depth | total cost (OLD → NEW) | JIT ms (OLD → NEW) | exec ms (OLD → NEW) |
+|---|---|---|---|
+| 1,000   | 13,510 → 4,154 | 0 → 0 | 1.87 / 1.97 → 1.95 |
+| 30,000  | 48,428 → 9,921 | 0 → 0 (shape luck, see below) | 1.96-2.01 → 2.37 |
+| 200,000 | 296,140 → 9,713 | **80 / 82 → 0** | **82.7-84.4 → 2.24** |
+
+OLD crossed the default `jit_above_cost` (100,000) on *estimated* cost alone
+while actual row work stayed bounded at 100 rows: strict from 30k (~2.0M at
+the terminal ModifyTable), round-robin at 200k (296k) — the round-robin 30k
+escape was shape luck, not a bound, exactly as the depth oracle's
+parametrization warned. NEW holds the estimate at ≤ ~10k — a ≥10× margin
+under the threshold — at every depth, for both variants, and the JIT block
+is simply absent. Under `plan_cache_mode = force_generic_plan` (bounds
+opaque) NEW stays at 4.1k / 9.7k with 0 ms JIT and ~2.5 ms exec at 30k/200k
+— and because the generic plan's cost never beats the custom plan's, the
+planner's own five-execution heuristic never switches a hot dispatcher to
+generic, so the per-execution JIT trap the un-fixed cascade set cannot
+re-arm itself.
+
+Row work is unchanged at the bounded 100 rows at every depth on both sides
+(the standing depth contract); buffers move only by a small constant per
+round (strict 200k: 1,636 → 1,804; 1k: 1,339 → 1,242 — the keys walks plus
+the bounded rank windows, depth-independent on both sides of the change).
+
+## M2 shape — registry axis (round's own backlog fixed; actor_config grows 0 → 500 → 2,000 unrelated idle actors)
+
+| variant | registry | buffers (OLD → NEW) | exec ms (OLD → NEW) | widest node rows (OLD → NEW) |
+|---|---|---|---|---|
+| strict_fifo | 0     | 871 → 926 | 1.47 → 1.81 | 70 → 70 |
+| strict_fifo | 500   | 2,901 → 1,035 | 2.70 → 1.79 | 1,004 → 70 |
+| strict_fifo | 2,000 | 8,985 → 1,035 | 5.69 → 1.91 | 4,004 → 70 |
+| round_robin | 0     | 982 → 1,029 | 1.66 → 1.94 | 70 → 70 |
+| round_robin | 500   | 3,017 → 1,138 | 3.35 → 2.21 | 1,004 → 70 |
+| round_robin | 2,000 | 9,122 → 1,138 | 6.41 → 1.87 | 4,004 → 70 |
+
+OLD ran five unindexed `Seq Scan on actor_config` nodes per round (registry
+row work 10 → 2,011-2,512 → 8,011-10,012 as the registry grew); NEW's
+actor_config row work is flat at 56 (primary-key probes for the round's own
+actors only) and the widest node no longer moves with the registry at all.
+The registry-scope oracle's fixture and the fleet-scope oracle's fixture
+(now growing actor_config with fleet size, so it can see this dimension)
+both pin the NEW numbers.
+
+## Verdict
+
+- The dispatch round no longer pays JIT compilation at any depth: the
+  estimate cascade is fixed structurally (folded bounds, honest driver
+  cardinalities), not suppressed — the depth oracle's JIT assertion passes
+  with JIT *enabled* on a plain connection. The `jit = off` server_settings
+  entry on TaskQ-built dispatcher pools is a guard against future estimate
+  surprises, not the mechanism of this fix.
+- Dispatch cost is now independent of the registered-actor count: the round
+  reads actor_config by primary key for its own actors only.
+- No regression on the shallow shapes: 1k execution is flat (1.77-1.97 ms
+  OLD vs 1.71-2.12 ms NEW across runs), row work and the fleet/cohort/scope
+  oracles are unchanged in class, and the fleet-scope fixture now also
+  covers the registry dimension.

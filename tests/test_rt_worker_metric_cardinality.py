@@ -245,6 +245,55 @@ def test_sweep_success_gauge_dimensions_are_the_sweep_name_enum_only(
     assert all(0 < now - float(o.value) < 60 for o in observations)
 
 
+# ── The dispatch failure counter's label contract ────────────────────────
+#
+# ``taskq.dispatch.failures`` names the failure class on ``error_type``
+# beside the capped ``queue`` label: a lock-timeout retry storm and a
+# permanent auth failure are the same series without it. ``error_type``
+# is a closed class set — the exception types the dispatch path can
+# raise, resolved by ``_resolve_error_type``, plus the fixed ``unknown``
+# fallback — never caller-supplied text, so it cannot mint unbounded
+# series the way an identity value would.
+
+
+@pytest.fixture
+def dispatch_failure_reader(monkeypatch: pytest.MonkeyPatch) -> InMemoryMetricReader:
+    """Fresh SDK instrument for the dispatch failure counter, enabled."""
+    reader = InMemoryMetricReader()
+    meter = MeterProvider(metric_readers=[reader]).get_meter("taskq-dispatch-failure-cardinality")
+    monkeypatch.setattr(otel_mod, "_otel_enabled", True)
+    # The admitted-queue set is process-global admission state; a fresh set
+    # per test keeps one test's queues from widening another's assertion.
+    monkeypatch.setattr(otel_mod, "_queue_label_values", set())
+    monkeypatch.setattr(
+        otel_mod,
+        "_dispatch_failures",
+        meter.create_counter("taskq.dispatch.failures", unit="1"),
+    )
+    return reader
+
+
+def test_dispatch_failure_dimensions_are_queue_and_error_type_only(
+    dispatch_failure_reader: InMemoryMetricReader,
+) -> None:
+    """One series per (queue, error_type): the failure class is a
+    dimension — recorded both from an ``except`` block (the production
+    call shape, class derived from the handled exception) and explicitly —
+    and no identity value (worker_id, job_id) ever rides along."""
+    try:
+        raise ConnectionResetError("simulated reset mid dispatch query")
+    except ConnectionResetError:
+        obs_mod.record_dispatch_failure("default")
+    obs_mod.record_dispatch_failure("default", error_type="TimeoutError")
+
+    points = _counter_points(dispatch_failure_reader, "taskq.dispatch.failures")
+    assert {frozenset(attrs) for attrs, _ in points} == {frozenset({"queue", "error_type"})}
+    assert {attrs["error_type"] for attrs, _ in points} == {
+        "ConnectionResetError",
+        "TimeoutError",
+    }
+
+
 # ── The ``queue`` label cap on the job-side instruments ────────────────
 #
 # ``queue`` is the one caller-supplied label on the job-side instruments

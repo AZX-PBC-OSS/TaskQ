@@ -7,7 +7,7 @@
 wrappers that delegate.
 """
 
-from collections.abc import AsyncGenerator, Awaitable, Callable
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -17,7 +17,6 @@ from uuid import UUID
 
 import structlog
 from asyncpg.exceptions import (
-    InternalClientError,
     LockNotAvailableError,
     UniqueViolationError,
 )
@@ -44,6 +43,9 @@ from taskq.backend._records import (
 from taskq.backend._sql_templates import SqlTemplates
 from taskq.backend.clock import Clock
 from taskq.backend.statemachine import TERMINAL_STATUSES
+from taskq.connections import (
+    _with_fresh_connection_retry,  # pyright: ignore[reportPrivateUsage]  # Why: the one implementation of the dead-on-acquire retry, shared with the bulk-cancel drain — a local copy would drift from the discipline it documents.
+)
 from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: the canonical identifier regex, shared with every schema-qualified SQL site — a local copy would drift.
     wake_channel,
@@ -195,50 +197,6 @@ async def _optional_savepoint(conn: ConnLike, *, enabled: bool) -> AsyncGenerato
             yield
     else:
         yield
-
-
-async def _with_fresh_connection_retry[T](
-    op: Callable[[], Awaitable[T]],
-    *,
-    operation: str,
-) -> T:
-    """Run *op*, retrying once when the pool hands out a just-killed connection.
-
-    A pooled connection whose backend Postgres has terminated (restart,
-    failover, ``pg_terminate_backend``) learns of its death in two
-    event-loop steps: the server's FATAL ErrorResponse arrives first and —
-    with no in-flight query to attribute it to — parks asyncpg's protocol
-    in its error-consume state; only a later ``connection_lost`` callback
-    marks the connection closed. In the gap, ``Pool.acquire``'s
-    ``is_closed()`` guard still passes, so the pool can hand a caller a
-    connection whose first statement fails locally with
-    ``asyncpg.InternalClientError`` ("cannot switch to state 15; another
-    operation (2) is in progress") — a driver-internal state error that
-    matches no except clause written against the database's own error
-    types, for a condition that is physically a dropped connection. The
-    poisoned state is not visible through asyncpg's public API before the
-    first statement (the protocol's state is not exposed), so the
-    boundary treats that first-statement failure as what it is — a
-    transient connection loss — and retries once.
-
-    The retry always lands on a genuinely fresh connection: releasing the
-    poisoned one cannot complete (the pool's release-time reset query
-    fails on it the same way), so the release path terminates it and the
-    next acquire reconnects. The failure always precedes any write — the
-    poisoned protocol rejects the transaction's BEGIN itself — so one
-    retry cannot duplicate an enqueue. An ``InternalClientError`` from the
-    retry is a real driver state bug, not this race, and propagates.
-    """
-    try:
-        return await op()
-    except InternalClientError as exc:
-        logger.warning(
-            "pool-conn-dead-on-acquire",
-            kind="pool_conn_dead_on_acquire",
-            operation=operation,
-            error=repr(exc),
-        )
-        return await op()
 
 
 _DEDUP_WARN_PER_HIT_LIMIT: Final[int] = 3

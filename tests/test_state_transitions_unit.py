@@ -745,7 +745,7 @@ async def test_running_to_abandoned(
 async def test_running_to_crashed_reclaim(
     memory_jobs: InMemoryBackend,
 ) -> None:
-    """running → crashed via reclaim_expired_locks (retries exhausted); job row error_class=None, AttemptRow error_class='WorkerCrashed'."""
+    """running → crashed via reclaim_expired_locks (retries exhausted); job row self-describes (error_class='WorkerCrashed' + the deadline message), AttemptRow error_class='WorkerCrashed'."""
     job_id, _worker_id = await _enqueue_and_dispatch(
         memory_jobs, max_attempts=1, retry_kind="transient"
     )
@@ -763,9 +763,13 @@ async def test_running_to_crashed_reclaim(
     row = await memory_jobs.get(job_id)
     assert row is not None
     assert row.status == "crashed"
-    assert (
-        row.error_class is None
-    )  # PG sweep does not set error_class on jobs row; only AttemptRow carries it
+    # The crashed terminal arm stamps the row's error fields — the same
+    # self-describing channel every other terminal failure path uses — so
+    # an operator reads the cause off the row without joining
+    # job_attempts. Row and attempt draw from the one _ATTEMPT_MESSAGES
+    # map; this is the lease arm's text.
+    assert row.error_class == "WorkerCrashed"
+    assert row.error_message == "lock expired before worker reported terminal state"
     assert row.finished_at is not None
 
     attempts = await memory_jobs.get_attempts(job_id)

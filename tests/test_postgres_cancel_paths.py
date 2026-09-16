@@ -13,6 +13,10 @@ import pytest
 
 from taskq._ids import new_job_id, new_uuid
 from taskq.backend._protocol import EnqueueArgs
+from taskq.constants import (
+    CANCEL_ORIGIN_COOPERATIVE,
+    CANCEL_ORIGIN_FORCED,
+)
 from taskq.testing.assertions import (
     assert_has_event,
     assert_job_status,
@@ -747,3 +751,63 @@ class TestCancelOriginAuditability:
 
         assert events, "a cancelled job ended with an empty event timeline"
         assert_has_event(events, "state_change", to_state="cancelled")
+
+    async def test_phase_1_cancel_stamps_the_cooperative_marker(
+        self, clean_jobs_app: JobsApp
+    ) -> None:
+        """A running job cancelled while still only ASKED (cancel_phase=1)
+        reads exactly ``CancelledCooperatively`` on the row and the attempt
+        — the constant itself, not merely a non-NULL distinct value: the
+        distinctness pin above would also pass if the phase arms were
+        swapped."""
+        deps = clean_jobs_app.deps
+        backend = clean_jobs_app.backend
+        schema = deps.settings.schema_name
+
+        async with deps.worker_pool.acquire() as conn:
+            worker_id, job_id = await setup_running_job(conn, schema)
+
+        assert await backend.write_cancel_request(job_id, "operator stop") is True
+        assert await backend.mark_cancelled(job_id, worker_id, attempt=1) is True
+
+        async with deps.worker_pool.acquire() as conn:
+            row = await conn.fetchrow(
+                f'SELECT status, error_class FROM "{schema}".jobs WHERE id = $1', job_id
+            )
+            attempt = await conn.fetchrow(
+                f'SELECT error_class FROM "{schema}".job_attempts WHERE job_id = $1', job_id
+            )
+        assert row is not None
+        assert row["status"] == "cancelled"
+        assert row["error_class"] == CANCEL_ORIGIN_COOPERATIVE
+        assert attempt is not None
+        assert attempt["error_class"] == CANCEL_ORIGIN_COOPERATIVE
+
+    async def test_phase_2_cancel_stamps_the_forced_marker(self, clean_jobs_app: JobsApp) -> None:
+        """A running job cancelled after escalation (cancel_phase=2) reads
+        exactly ``CancelledForced`` on the row and the attempt — the marker
+        says the actor had to be interrupted, the operational signal to go
+        look at that actor."""
+        deps = clean_jobs_app.deps
+        backend = clean_jobs_app.backend
+        schema = deps.settings.schema_name
+
+        async with deps.worker_pool.acquire() as conn:
+            worker_id, job_id = await setup_running_job(conn, schema)
+
+        assert await backend.write_cancel_request(job_id, "operator stop") is True
+        assert await backend.write_cancel_escalation(job_id, worker_id, 2) is True  # type: ignore[arg-type] # Why: Literal[2] not narrowed from int literal
+        assert await backend.mark_cancelled(job_id, worker_id, attempt=1) is True
+
+        async with deps.worker_pool.acquire() as conn:
+            row = await conn.fetchrow(
+                f'SELECT status, error_class FROM "{schema}".jobs WHERE id = $1', job_id
+            )
+            attempt = await conn.fetchrow(
+                f'SELECT error_class FROM "{schema}".job_attempts WHERE job_id = $1', job_id
+            )
+        assert row is not None
+        assert row["status"] == "cancelled"
+        assert row["error_class"] == CANCEL_ORIGIN_FORCED
+        assert attempt is not None
+        assert attempt["error_class"] == CANCEL_ORIGIN_FORCED

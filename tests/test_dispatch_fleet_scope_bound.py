@@ -8,7 +8,11 @@ single-cohort seed the depth oracle uses.
 Fleet scope: a worker polls a small subset of the fleet's queues. The
 cost of one dispatch round for those queues must not grow with what
 other queues and other actors have pending, nor with how deep the
-fleet's overall backlog is. Operationally this is the difference
+fleet's overall backlog is, nor with how many actors the rest of the
+fleet has REGISTERED — the seed below grows actor_config alongside the
+jobs backlog, so a plan node that scans the registry instead of probing
+it per relevant actor is caught here the same way a node that walks
+every pending cohort fleet-wide is. Operationally this is the difference
 between a queue that keeps dispatching at its own steady latency and
 one whose rounds slow down every time an unrelated team's backlog
 grows -- a coupling no operator can diagnose from their own queue's
@@ -161,10 +165,32 @@ async def _seed_fleet(conn: asyncpg.Connection, schema: str, fleet_size: int) ->
     own (actor, queue) pairs. Growing both the cohort count and the row
     count together mirrors how a real fleet grows: more teams' actors,
     each with more backlog.
+
+    actor_config grows with fleet_size too: the fleet actors are
+    REGISTERED (one registry row each), so a dispatch CTE that scans
+    actor_config instead of probing it per relevant actor shows up here
+    as cost growth along the registry dimension — not only along the
+    pending-jobs dimension. (The round-robin/strict claim statement
+    family read actor_config with full scans per round before the
+    registry-scope fix; a fixture holding actor_config at two rows was
+    blind to it.)
     """
     await conn.execute(f'TRUNCATE TABLE "{schema}".jobs CASCADE')
+    await conn.execute(f'TRUNCATE TABLE "{schema}".actor_config CASCADE')
+    for actor, queue in zip(_POLLED_ACTORS, _POLLED_QUEUES, strict=True):
+        await conn.execute(
+            f'INSERT INTO "{schema}".actor_config (actor, queue) VALUES ($1, $2)',
+            actor,
+            queue,
+        )
     await _seed_own_slice(conn, schema)
     if fleet_size:
+        await conn.execute(
+            f'INSERT INTO "{schema}".actor_config (actor, queue) '
+            "SELECT 'fleet_actor_' || c::text, 'fleet_q_' || c::text "
+            "FROM generate_series(1, $1::int) AS c",
+            fleet_size,
+        )
         await conn.execute(
             f'INSERT INTO "{schema}".jobs '
             "(id, actor, queue, payload, status, priority, scheduled_at, "
@@ -178,7 +204,7 @@ async def _seed_fleet(conn: asyncpg.Connection, schema: str, fleet_size: int) ->
             fleet_size,
             _FLEET_ROWS_PER_COHORT,
         )
-    await conn.execute(f'VACUUM (ANALYZE) "{schema}".jobs')
+    await conn.execute(f'VACUUM (ANALYZE) "{schema}".jobs, "{schema}".actor_config')
 
 
 def _plan_node_row_counts(plan: dict[str, Any]) -> list[tuple[float, str]]:

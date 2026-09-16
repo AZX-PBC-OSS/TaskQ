@@ -84,6 +84,27 @@ TRANSIENT_PG_ERRORS: tuple[type[BaseException], ...] = (
     OSError,
 )
 
+#: Errors that mean "PG refused this call and will keep refusing it":
+#: the server's answer is a property of the role's grants, not of the
+#: moment. Deliberately disjoint from :data:`TRANSIENT_PG_ERRORS` — a
+#: refusal retried next tick re-fails identically forever, so classifying
+#: it as transient would livelock the retrying loop while logging like a
+#: blip. A site catching from this tuple must DEGRADE instead: skip the
+#: refused operation, log once at WARN naming what was refused, and keep
+#: working without it. Anything from this tuple that escapes a site's own
+#: handling still lands in the loop's :class:`UnexpectedLoopErrorGuard`,
+#: where a permanent fault is deliberately fatal after the budget — never
+#: a silent infinite retry.
+#:
+#: - ``InsufficientPrivilegeError``: 42501 — a managed Postgres
+#:   restricting a function to admin/superuser roles (the same posture
+#:   class that restricts ``pg_terminate_backend``; here it is the
+#:   election loop's courtesy ``pg_try_advisory_lock`` probe). The grant
+#:   does not appear on its own: either the operator grants it or the
+#:   deployment refuses forever, and the courtesy must never gate the
+#:   work it accompanies in the meantime.
+PERMANENT_PG_REFUSALS: tuple[type[BaseException], ...] = (asyncpg.InsufficientPrivilegeError,)
+
 #: Default consecutive-unexpected-failure budget; module-level so tests
 #: can shrink it without threading a knob through every loop.
 DEFAULT_MAX_CONSECUTIVE_UNEXPECTED = 5

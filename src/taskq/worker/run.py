@@ -423,6 +423,37 @@ async def producer_loop_stub(
     _producer_log.info("producer-loop-exit", reason=reason)
 
 
+async def _stub_terminal_write(
+    backend: Backend,
+    job: JobRow,
+    worker_id: UUID,
+    *,
+    cancelled: bool,
+) -> None:
+    """The stub loop's shielded terminal write, with its fenced outcome read.
+
+    The stub is a test/dev sentinel with no hooks or publishers, so a
+    fenced-out write has nothing further to unwind — but the outcome is
+    still bound and logged, never dropped: a bare ``await`` discards the
+    boolean that says whether the row actually moved, the discard shape
+    the terminal-write class-closure guard forbids in every worker module.
+    """
+    if cancelled:
+        landed = await shield_with_retrieval(
+            backend.mark_cancelled(job.id, worker_id, attempt=job.attempt)
+        )
+    else:
+        landed = await shield_with_retrieval(
+            backend.mark_succeeded(job.id, worker_id, None, attempt=job.attempt)
+        )
+    if not landed:
+        _consumer_log.debug(
+            "consumer-stub-terminal-write-noop",
+            job_id=str(job.id),
+            cancelled=cancelled,
+        )
+
+
 async def consumer_loop_stub(
     deps: WorkerDeps,
     local_queue: asyncio.Queue[JobRow],
@@ -532,21 +563,14 @@ async def consumer_loop_stub(
                     # cancel landing while this write is detached must not
                     # strand its outcome unretrieved (see taskq._shield).
                     with contextlib.suppress(asyncio.CancelledError):
-                        await shield_with_retrieval(
-                            backend.mark_cancelled(job.id, worker_id, attempt=job.attempt)
-                        )
+                        await _stub_terminal_write(backend, job, worker_id, cancelled=True)
                     raise
                 except TimeoutError:
                     pass
 
-                if ctx.cancellation_requested:
-                    await shield_with_retrieval(
-                        backend.mark_cancelled(job.id, worker_id, attempt=job.attempt)
-                    )
-                else:
-                    await shield_with_retrieval(
-                        backend.mark_succeeded(job.id, worker_id, None, attempt=job.attempt)
-                    )
+                await _stub_terminal_write(
+                    backend, job, worker_id, cancelled=ctx.cancellation_requested
+                )
                 # fallback_result_ttl is not forwarded here: the stub path has
                 # no actor registry and therefore no @actor(result_ttl=...)
                 # literal to supply. If the stored actor_config.result_ttl is
@@ -559,9 +583,7 @@ async def consumer_loop_stub(
 
             except asyncio.CancelledError:
                 with contextlib.suppress(asyncio.CancelledError):
-                    await shield_with_retrieval(
-                        backend.mark_cancelled(job.id, worker_id, attempt=job.attempt)
-                    )
+                    await _stub_terminal_write(backend, job, worker_id, cancelled=True)
                 raise
 
             except Exception:
@@ -680,7 +702,7 @@ async def di_consumer_loop(
             # is the closest bounded outcome — a delay, a release, and a
             # released_reason marker in one transition.
             try:
-                await backend.mark_snoozed(
+                release_outcome = await backend.mark_snoozed(
                     job.id,
                     worker_id,
                     timedelta(seconds=10),
@@ -693,6 +715,28 @@ async def di_consumer_loop(
                     job_id=str(job.id),
                     actor=job.actor,
                 )
+            else:
+                # The snooze tri-state is the write's fence and must be
+                # read, not dropped: "scheduled" released the row,
+                # "failed" terminalised it on the deadline arm, and
+                # "noop" means the row stopped being this worker's to
+                # move between claim and release (a reclaim re-pended
+                # it, or a racing cancel terminalised it) — the new
+                # owner holds it, so there is nothing to release, but
+                # a discarded outcome would make the fenced-out write
+                # indistinguishable from a landed one.
+                if release_outcome == "noop":
+                    _consumer_log.debug(
+                        "dispatch-actor-not-found-release-noop",
+                        job_id=str(job.id),
+                        actor=job.actor,
+                    )
+                elif release_outcome == "failed":
+                    _consumer_log.info(
+                        "dispatch-actor-not-found-release-deadline-exceeded",
+                        job_id=str(job.id),
+                        actor=job.actor,
+                    )
             continue
 
         actor_ref = actor_registry[job.actor]

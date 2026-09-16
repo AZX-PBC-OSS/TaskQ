@@ -347,3 +347,97 @@ def test_doctor_does_not_gate_boot(monkeypatch: pytest.MonkeyPatch) -> None:
     assert not any("doctor" in name for name in called), (
         "worker bootstrap must not invoke doctor — a diagnostic must never gate boot"
     )
+
+
+def test_doctor_reports_pending_jobs_whose_actor_has_no_registry_or_config_row(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`doctor`'s own stated purpose is to surface "an actor with no stored
+    ``actor_config`` row [that] never dispatches" (module docstring, and
+    the previous test's assertion string). But `_doctor_findings` only
+    computes ``set(registry) - set(stored_by_actor)`` — actors the CURRENT
+    process still declares. It never reads the ``jobs`` table, so a job
+    already sitting ``pending``/``scheduled`` for an actor name that is in
+    NEITHER the registry NOR ``actor_config`` — the shape left behind when
+    an actor is renamed or removed from the codebase but old producers or
+    old rows still reference the retired name — is invisible to `doctor`
+    even though it can never dispatch for exactly the reason `doctor`
+    exists to name.
+
+    Confirmed live against a real worker+Postgres: a job was inserted with
+    ``actor='ghost_actor_not_registered'`` (no registry entry, no
+    actor_config row). `taskq doctor --actors myapp.actors:registry`
+    printed "no findings — every registered actor has a stored row and
+    every queue row backs a live assignment." The only place this
+    surfaced was a leader-only sweep log line
+    (``stranded-jobs-no-actor-config``, ``taskq/worker/_leader_sweeps.py``)
+    that does not fire for 60 seconds and only when a worker happens to be
+    elected leader — not something `doctor`, a read-only, on-demand,
+    run-anytime command, should depend on.
+
+    Vendor precedent (Oban, an Elixir Postgres-backed queue): resolving an
+    unknown worker module is NOT silent — ``Oban.Worker.from_string/1``
+    (vendor/oban/lib/oban/worker.ex:571-585) returns
+    ``{:error, %RuntimeError{message: "unknown worker: " <> name}}`` at
+    dispatch, so the job is claimed and fails loudly with a named error
+    rather than sitting unclaimed forever with nothing to say why. TaskQ's
+    dispatch SQL instead joins ``actor_config``, so a job like this is
+    never even a dispatch candidate — no attempt, no error, nothing. If
+    TaskQ keeps the "never a candidate" dispatch design (its documented,
+    deliberate tradeoff — troubleshooting.md, "Stranded jobs: ... The
+    detector only warns — it does not delete or reassign."), the burden
+    shifts entirely onto `doctor` and the stranded-jobs sweep to be the
+    loud surface instead of the dispatch error Oban gets for free — and
+    `doctor` is the one of those two an operator can run on demand,
+    read-only, mid-incident, without waiting up to 60s for a leader tick.
+
+    This test pins the behaviour `doctor` should have: scan pending/
+    scheduled ``jobs`` rows for actor names with no stored ``actor_config``
+    row (the same condition the stranded-jobs sweep already computes,
+    see ``_stranded_jobs_loop``'s ``no_actor_config`` shape in
+    ``taskq/worker/_leader_sweeps.py``) and report them the same way it
+    reports a registered actor with no row today.
+    """
+    executed = _patch_db(
+        monkeypatch,
+        actor_rows=[
+            _row("doctor_alpha", queue="default"),
+            _row("doctor_beta", queue="batch"),
+        ],
+        queue_rows=[],
+    )
+
+    # No fake for a jobs-scanning query is wired up on purpose: doctor
+    # currently issues none. If a future implementation adds one, this
+    # test's `_patch_db` fake will return `[]`/`None` for it (see
+    # `_FakeConn.fetch`/`fetchrow`) unless extended — the assertion below
+    # is on the CLI's *printed report*, not on the query shape, so it
+    # stays valid across implementations that read jobs via fetch, a
+    # dedicated helper, or otherwise.
+
+    result = _invoke()
+
+    output = result.output.lower()
+    assert "ghost_actor_not_registered" not in output or "no findings" not in output, (
+        "if doctor is ever fed the stranded actor name it must not still "
+        "print 'no findings' — that combination means the report and the "
+        "reality it should describe have diverged"
+    )
+    # The behaviour this test pins: doctor must name an orphaned pending
+    # job's actor even though that actor is in neither the registry nor
+    # actor_config. Today `_doctor_findings` has no way to learn this name
+    # exists at all (it never queries `jobs`), so `doctor` reports "no
+    # findings" while a real, permanently-stuck job sits in the database.
+    assert "ghost_actor_not_registered" in output, (
+        "doctor did not report a pending job for an actor absent from both "
+        "the registry and actor_config — this is the exact 'never "
+        "dispatches, no error anywhere' condition doctor's own docstring "
+        "says it exists to surface, but _doctor_findings only checks "
+        "registry actors missing a config row (set(registry) - "
+        "set(stored_by_actor)), never the jobs table itself. Confirmed "
+        "live: this job stays 'pending' forever, invisible to `doctor`, "
+        "surfaced only 60s later by the leader-only stranded-jobs sweep "
+        "log line. See taskq/worker/_leader_sweeps.py's "
+        "'stranded-jobs-no-actor-config' event and its no_actor_config "
+        "query shape for the same computation doctor should also do."
+    )

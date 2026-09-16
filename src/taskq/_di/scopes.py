@@ -197,17 +197,48 @@ class ScopeContainer:
         if self._sync_gen_executor is None:
             self._sync_gen_executor = ThreadPoolExecutor(max_workers=1)
             logger.info("sync-generator-executor-created", scope=self._scope.name)
+        # Capture the executor for the teardown closure: aclose() nulls the
+        # attribute after the teardown pass, and the callback must keep
+        # working on the executor this provider's enter ran on regardless.
+        executor = self._sync_gen_executor
 
         kwargs = await self._resolver(entry.impl)
         factory = cast(Callable[..., Generator[Any, None, None]], entry.impl)
         cm = contextlib.contextmanager(factory)(**kwargs)
 
         loop = asyncio.get_running_loop()
-        enter_future = loop.run_in_executor(self._sync_gen_executor, cm.__enter__)
+        enter_future = loop.run_in_executor(executor, cm.__enter__)
         value = await self._await_factory(enter_future, type_=entry.type_)
 
-        def _teardown() -> Any:
-            return loop.run_in_executor(self._sync_gen_executor, cm.__exit__, None, None, None)
+        async def _teardown() -> None:
+            exit_future = loop.run_in_executor(executor, cm.__exit__, None, None, None)
+            if self._factory_timeout is None:
+                # Same policy as _await_factory: the caller (the per-job
+                # TRANSIENT scope's consumer) owns the bound.
+                await exit_future
+                return
+            bound = asyncio.timeout(self._factory_timeout)
+            try:
+                async with bound:
+                    await exit_future
+            except TimeoutError:
+                if not bound.expired():
+                    # The generator's own __exit__ raised TimeoutError —
+                    # surface it as the teardown failure it is, not as the
+                    # bound firing.
+                    raise
+                # The __exit__ is parked in unkillable user code on the
+                # executor's thread. Log-and-continue like every teardown
+                # failure: the residue is that one thread until the code
+                # returns, and what scope teardown must never do is park
+                # every teardown after it on the wait.
+                logger.error(
+                    "sync-generator-teardown-timeout",
+                    kind="sync_generator_teardown_timeout",
+                    scope=self._scope.name,
+                    provider_type=entry.type_.__qualname__,
+                    timeout=self._factory_timeout,
+                )
 
         self._teardowns.append(_teardown)
         return value
@@ -248,11 +279,32 @@ class ScopeContainer:
         # Why: shut down the pinned SYNC_GENERATOR executor AFTER all
         # per-provider teardown callbacks have run. shutdown(wait=True) is
         # blocking; running it inline would block the loop .
+        #
+        # The wait itself is bounded by ``factory_timeout`` when the
+        # container has one: a sync-gen ``__enter__``/``__exit__`` parked
+        # in unkillable user code would otherwise park scope teardown for
+        # as long as the user code hangs. The bound trips loudly and lets
+        # the close complete — the shutdown already initiated finishes in
+        # the background whenever the user code returns, and the residue
+        # is that one thread per hung container until then (a leak the
+        # stdlib makes unrecoverable by construction; what teardown owns
+        # is never parking the REST of the close on it).
         if self._sync_gen_executor is not None:
             executor = self._sync_gen_executor
             self._sync_gen_executor = None
             try:
-                await asyncio.to_thread(executor.shutdown, True)
+                if self._factory_timeout is None:
+                    await asyncio.to_thread(executor.shutdown, True)
+                else:
+                    async with asyncio.timeout(self._factory_timeout):
+                        await asyncio.to_thread(executor.shutdown, True)
+            except TimeoutError:
+                logger.error(
+                    "sync-generator-executor-shutdown-timeout",
+                    kind="sync_generator_executor_shutdown_timeout",
+                    scope=self._scope.name,
+                    timeout=self._factory_timeout,
+                )
             except BaseException as exc:
                 # Why: parallels the per-callback BaseException pattern above.
                 logger.error(

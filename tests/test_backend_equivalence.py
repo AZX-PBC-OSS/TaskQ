@@ -375,7 +375,7 @@ async def test_mass_enqueue_sort_order(backend_pair: Backend) -> None:
             )
 
 
-# ── batch cap partition parity (#149) ───────────────────────────
+# ── batch cap partition parity ──────────────────────────────────
 
 
 async def test_enqueue_batch_partitions_cap_admission_per_actor(backend_pair: Backend) -> None:
@@ -429,7 +429,7 @@ async def test_enqueue_batch_partitions_cap_admission_per_actor(backend_pair: Ba
 async def test_enqueue_batch_fast_partitions_cap_admission_per_actor(
     backend_pair: Backend,
 ) -> None:
-    """COPY-tier parity with the batch tier's #149 partition: a
+    """COPY-tier parity with the batch tier's partition: a
     mixed-actor ``enqueue_batch_fast`` refuses the over-cap actor's items
     and writes everyone else's — the same refusal shape (per-actor
     indices, admitted count, stored counts) on BOTH backends. Previously
@@ -1582,8 +1582,9 @@ async def test_reclaim_expired_locks_sets_worker_crashed_error_class(
     backend_pair: Backend,
 ) -> None:
     """after reclaim_expired_locks, jobs that can no longer retry
-    have error_class == None on the jobs row and 'WorkerCrashed' on the
-    AttemptRow (fix #4 — PG Sweep 1 SQL does not set error_class on jobs).
+    carry 'WorkerCrashed' and the fired deadline's message on the jobs
+    row AND the AttemptRow — the row self-describes on both backends,
+    so an operator never joins job_attempts to learn why a job crashed.
     """
     # Enqueue a job that has exhausted its retry budget (max_attempts=1)
     job_id, _wid = await _enqueue_dispatch_any(backend_pair, max_attempts=1)
@@ -1602,9 +1603,8 @@ async def test_reclaim_expired_locks_sets_worker_crashed_error_class(
     row_after = await backend_pair.get(job_id)
     assert row_after is not None
     assert row_after.status == "crashed"
-    assert row_after.error_class is None, (
-        f"expected None (error_class lives on AttemptRow), got {row_after.error_class!r}"
-    )
+    assert row_after.error_class == "WorkerCrashed"
+    assert row_after.error_message == "lock expired before worker reported terminal state"
 
     attempts = await backend_pair.get_attempts(job_id)
     assert len(attempts) == 1

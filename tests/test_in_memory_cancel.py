@@ -21,6 +21,7 @@ from dataclasses import replace as _dc_replace
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
+import taskq.constants as _constants
 from taskq._ids import new_job_id
 from taskq.backend._protocol import EnqueueArgs, JobId
 from taskq.testing.clock import FakeClock
@@ -446,3 +447,44 @@ class TestCancelOriginAuditability:
             "a job cancelled while scheduled left no terminal-cancel entry on "
             f"its event timeline; kinds were {[e.kind for e in events]}"
         )
+
+    async def test_phase_1_cancel_stamps_the_cooperative_marker(self) -> None:
+        """A running job cancelled while still only ASKED (cancel_phase=1)
+        reads exactly ``CancelledCooperatively`` on the row — the constant,
+        not merely a non-NULL distinct value: the existing distinctness pin
+        would also pass if the phase arms were swapped."""
+        backend = _make_backend()
+        job_id, worker_id = await _make_running_job(backend)
+
+        assert await backend.write_cancel_request(job_id, "operator stop") is True
+        assert await backend.mark_cancelled(job_id, worker_id, attempt=1) is True
+
+        row = await backend.get(job_id)
+        assert row is not None
+        assert row.status == "cancelled"
+        assert row.error_class == _constants.CANCEL_ORIGIN_COOPERATIVE
+
+        attempts = await backend.get_attempts(job_id)
+        assert len(attempts) == 1
+        assert attempts[0].error_class == _constants.CANCEL_ORIGIN_COOPERATIVE
+
+    async def test_phase_2_cancel_stamps_the_forced_marker(self) -> None:
+        """A running job cancelled after escalation (cancel_phase=2) reads
+        exactly ``CancelledForced`` on the row and the attempt — the
+        marker says the actor had to be interrupted, which is the
+        operational signal to go look at that actor."""
+        backend = _make_backend()
+        job_id, worker_id = await _make_running_job(backend)
+
+        assert await backend.write_cancel_request(job_id, "operator stop") is True
+        assert await backend.write_cancel_escalation(job_id, worker_id, 2) is True
+        assert await backend.mark_cancelled(job_id, worker_id, attempt=1) is True
+
+        row = await backend.get(job_id)
+        assert row is not None
+        assert row.status == "cancelled"
+        assert row.error_class == _constants.CANCEL_ORIGIN_FORCED
+
+        attempts = await backend.get_attempts(job_id)
+        assert len(attempts) == 1
+        assert attempts[0].error_class == _constants.CANCEL_ORIGIN_FORCED

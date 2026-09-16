@@ -287,6 +287,20 @@ every path — sweep, isolate, replay, mirror), so the cohort arrives
 spread across a band instead of at a point."""
 
 
+#: The per-arm attempt-row error messages, keyed by the sweep's own
+#: reclaim_reason literals ('lock_expired' / 'heartbeat_timeout' — the
+#: same values the arms' reason columns and the events' cause key carry).
+#: One map, imported by the PG caller (which feeds it to the batched
+#: INSERT as the $6 text array), the in-memory twin (which builds its
+#: AttemptRow from it), and _SWEEP_1_SQL's own crashed-arm row SET (via
+#: the {lock_expired_message} / {heartbeat_timeout_message} fragments), so
+#: the row, the attempt, and the twin's copies cannot drift.
+_ATTEMPT_MESSAGES: dict[str, str] = {
+    "lock_expired": "lock expired before worker reported terminal state",
+    "heartbeat_timeout": "heartbeat timeout passed before worker reported terminal state",
+}
+
+
 _SWEEP_1_BODY = """\
 -- Leader-only reclaim sweep (per architecture §Leader Election).  FOR
 -- UPDATE SKIP LOCKED is kept so the SQL is safe if the sweep is ever run
@@ -493,6 +507,33 @@ SET status = CASE
         WHEN NOT ({has_budget})
             THEN clock_timestamp()
         ELSE j.finished_at
+    END,
+    -- The crashed arm self-describes on the row: every other terminal
+    -- failure path stamps error_class (DeadlineExceeded on the deadline
+    -- sweep, the cancel-origin markers on the cancel paths), so a
+    -- crashed row carrying NULL forced an operator to join job_attempts
+    -- to learn why. The message names the deadline THAT fired, read off
+    -- snap.reason — never the sibling arm's, the same honesty standard
+    -- the attempt rows carry; row and attempt draw from the one
+    -- _ATTEMPT_MESSAGES map so the two audit surfaces cannot drift.
+    -- The retry and cancelled arms keep their error fields untouched:
+    -- a re-pended row has no failure to describe yet, and a
+    -- cancel-honouring row's record is the in-flight request — no
+    -- cancel-origin marker describes a worker that died mid-protocol,
+    -- so the arm stamps nothing and the attempt row's WorkerCrashed
+    -- plus the event's cause carry the explanation.
+    error_class = CASE
+        WHEN NOT ({has_budget}) AND j.cancel_phase = 0
+            THEN 'WorkerCrashed'
+        ELSE j.error_class
+    END,
+    error_message = CASE
+        WHEN NOT ({has_budget}) AND j.cancel_phase = 0
+            THEN CASE snap.reason
+                     WHEN 'lock_expired' THEN '{lock_expired_message}'
+                     ELSE '{heartbeat_timeout_message}'
+                 END
+        ELSE j.error_message
     END
 FROM snap
 WHERE j.id = snap.id
@@ -510,6 +551,8 @@ _SWEEP_1_SQL = (
     _SWEEP_1_BODY.replace("{has_budget}", _RECLAIM_HAS_BUDGET_SQL)
     .replace("{reclaim_delay}", _RECLAIM_DELAY_SQL)
     .replace("{max_backoff_seconds}", "$4")
+    .replace("{lock_expired_message}", _ATTEMPT_MESSAGES["lock_expired"])
+    .replace("{heartbeat_timeout_message}", _ATTEMPT_MESSAGES["heartbeat_timeout"])
 )
 
 _SWEEP_2_SQL = """\
@@ -842,17 +885,6 @@ LEFT JOIN holder ON holder.id = a.worker_id
 -- first record yields to nothing — the synthetic crash row must skip
 -- rather than roll back every sibling swept in the same statement.
 ON CONFLICT (job_id, attempt) DO NOTHING"""
-
-#: The per-arm attempt-row error messages, keyed by the sweep's own
-#: reclaim_reason literals ('lock_expired' / 'heartbeat_timeout' — the
-#: same values the arms' reason columns and the events' cause key carry).
-#: One map, imported by both the PG caller (which feeds it to the batched
-#: INSERT as the $6 text array) and the in-memory twin (which builds its
-#: AttemptRow from it), so the two audit surfaces cannot drift.
-_ATTEMPT_MESSAGES: dict[str, str] = {
-    "lock_expired": "lock expired before worker reported terminal state",
-    "heartbeat_timeout": "heartbeat timeout passed before worker reported terminal state",
-}
 
 _SWEEP_2_ATTEMPTS_BATCH_SQL = """\
 INSERT INTO "{schema}".job_attempts

@@ -17,6 +17,7 @@ crashed attempt against a job that never ran.
 """
 
 import asyncio
+import logging
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -24,6 +25,7 @@ import pytest
 from taskq._ids import new_uuid
 from taskq.backend._protocol import EnqueueArgs, JobId, JobRow
 from taskq.backend.postgres import PostgresBackend
+from taskq.obs import setup_logging
 from taskq.testing.fixtures import JobsApp
 from taskq.testing.pg import create_worker
 from taskq.worker.deps import WorkerDeps
@@ -33,6 +35,42 @@ from taskq.worker.shutdown import ShutdownPhase, orchestrate_shutdown
 pytestmark = pytest.mark.integration
 
 _BACKLOG = 20
+
+
+def _assert_a_claim_round_actually_happened(
+    local_queue: asyncio.Queue[JobRow], caplog: pytest.LogCaptureFixture
+) -> None:
+    """The precondition every hand-back assertion below depends on: the
+    producer's dispatch path worked, and a claim round committed rows into
+    this worker's hands.
+
+    ``producer_loop`` catches a dispatch error per round, logs
+    ``dispatch-batch-error``, and retries on the next tick — deliberate
+    resilience to transient faults, and never silent in the fleet: the
+    dispatch internals bump the ``taskq.dispatch.failures`` counter and set
+    an ERROR span status before the raise (``backend/_dispatch_sql.py``,
+    ``backend/_dispatch.py``). But that swallow makes a shutdown test
+    vacuous unless the premise is checked: with dispatch erroring every
+    round, no row is ever claimed, the exit hand-back has nothing to do,
+    ``stranded == []`` is trivially true, and the test passes over a
+    producer that did nothing. So assert the observable premise: no
+    dispatch error was logged, and claimed rows actually reached the local
+    queue.
+    """
+    dispatch_errors = [
+        record for record in caplog.records if "dispatch-batch-error" in record.getMessage()
+    ]
+    assert not dispatch_errors, (
+        "the producer's dispatch round errored, so the shutdown assertions "
+        "below are vacuous — nothing was ever claimed, so nothing could be "
+        f"left locked: {[r.getMessage() for r in dispatch_errors]}"
+    )
+    assert local_queue.qsize() > 0, (
+        "the producer never claimed a row — with a backlog deeper than one "
+        "claim round, a working dispatch fills the local queue; an empty "
+        "queue means the scenario this test pins (SIGTERM with a claim in "
+        "hand) never happened"
+    )
 
 
 async def _seed_backlog(backend: PostgresBackend) -> None:
@@ -60,7 +98,7 @@ async def _rows_locked_by(deps: WorkerDeps, schema: str, worker_id: object) -> l
 
 
 async def test_sigterm_during_a_claim_round_leaves_no_job_locked_to_the_dead_pod(
-    clean_jobs_app: JobsApp,
+    clean_jobs_app: JobsApp, caplog: pytest.LogCaptureFixture
 ) -> None:
     """A shutdown that begins mid-claim must still release everything it holds.
 
@@ -91,6 +129,11 @@ async def test_sigterm_during_a_claim_round_leaves_no_job_locked_to_the_dead_pod
     deps.shutdown_phase = ShutdownPhase.NONE
     deps.shutdown_started_at = None
 
+    # Read the producer's failure signal where an operator reads it.
+    # setup_logging is the production configurator and is idempotent, so
+    # this pins the routing rather than depending on an earlier test having
+    # configured it (the tests/test_dispatch_pg.py precedent).
+    setup_logging(level="INFO", log_format="json")
     producer = asyncio.create_task(
         producer_loop(
             deps,
@@ -106,15 +149,18 @@ async def test_sigterm_during_a_claim_round_leaves_no_job_locked_to_the_dead_pod
     # in flight — the state a pod is in when a deploy rolls it under load.
     await asyncio.sleep(0)
 
-    exit_code = await orchestrate_shutdown(
-        deps, deps.settings, worker_id, shutdown_event, None, backend=backend
-    )
-    await producer
+    with caplog.at_level(logging.ERROR):
+        exit_code = await orchestrate_shutdown(
+            deps, deps.settings, worker_id, shutdown_event, None, backend=backend
+        )
+        await producer
 
     assert exit_code == 0, (
         f"the orchestration must report a clean shutdown; got exit code {exit_code}"
     )
     assert shutdown_event.is_set(), "every phase must have completed before this assertion"
+
+    _assert_a_claim_round_actually_happened(local_queue, caplog)
 
     stranded = await _rows_locked_by(deps, schema, worker_id)
     assert stranded == [], (
@@ -128,7 +174,7 @@ async def test_sigterm_during_a_claim_round_leaves_no_job_locked_to_the_dead_pod
 
 
 async def test_work_claimed_during_shutdown_returns_to_the_fleet(
-    clean_jobs_app: JobsApp,
+    clean_jobs_app: JobsApp, caplog: pytest.LogCaptureFixture
 ) -> None:
     """Whatever the draining pod claimed must be runnable by a surviving pod.
 
@@ -156,6 +202,7 @@ async def test_work_claimed_during_shutdown_returns_to_the_fleet(
     deps.shutdown_phase = ShutdownPhase.NONE
     deps.shutdown_started_at = None
 
+    setup_logging(level="INFO", log_format="json")
     producer = asyncio.create_task(
         producer_loop(
             deps,
@@ -167,8 +214,18 @@ async def test_work_claimed_during_shutdown_returns_to_the_fleet(
         )
     )
     await asyncio.sleep(0)
-    await orchestrate_shutdown(deps, deps.settings, draining, shutdown_event, None, backend=backend)
-    await producer
+    with caplog.at_level(logging.ERROR):
+        await orchestrate_shutdown(
+            deps, deps.settings, draining, shutdown_event, None, backend=backend
+        )
+        await producer
+
+    # The premise, asserted before the fleet-side claim below: the departing
+    # pod must actually have held work. A producer whose dispatch errored
+    # every round hands the assertion an empty backlog to "recover" — the
+    # surviving worker then claims all of it trivially, and the test would
+    # pass having exercised nothing.
+    _assert_a_claim_round_actually_happened(local_queue, caplog)
 
     claimed: set[JobId] = set()
     while True:

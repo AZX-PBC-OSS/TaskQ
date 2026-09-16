@@ -535,6 +535,57 @@ async def test_bootstrap_fails_fast_on_redis_rate_limit_without_redis_url() -> N
         )
 
 
+async def test_worker_boots_without_redis_extra_installed_and_no_redis_url(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A worker with no [redis] extra and no TASKQ_REDIS_URL must boot cleanly.
+
+    This is the documented core-only install path: docs/getting-started/
+    quick-start.md and docs/index.md both say ``pip install taskq-py`` (no
+    extras) is sufficient to run a worker, and docs/getting-started/
+    installation.md's feature-degradation table says progress/rate-limiting
+    "degrade gracefully" without [redis] — it does not say the worker fails
+    to start.
+
+    Root cause: ``_redis_extra_installed()`` (src/taskq/worker/_bootstrap.py)
+    calls ``importlib.util.find_spec("redis.asyncio")`` to probe for the
+    extra. When the *parent* package ``redis`` is not installed at all (the
+    real core-only state — not merely ``redis.asyncio`` missing under an
+    installed ``redis``), ``find_spec`` on a dotted submodule name raises
+    ``ModuleNotFoundError`` instead of returning ``None`` — this is
+    documented stdlib behavior for ``importlib.util.find_spec``, not a
+    platform quirk. The bug is a bare ``find_spec`` call where the standard
+    idiom is ``try: importlib.import_module(name) except ImportError``, as
+    used for exactly this "is the optional extra installed" check in
+    vendor/procrastinate/procrastinate/utils.py's ``import_or_wrapper``
+    (``except ImportError`` around ``importlib.import_module``, wrapping
+    unavailability instead of letting it propagate). The result: every
+    worker boot without the optional [redis] extra crashes with an
+    unhandled ``ModuleNotFoundError: No module named 'redis'`` before
+    reaching the intended graceful-degradation branch in
+    ``_redis_configured`` (which the surrounding code comments describe as
+    "fail fast at bootstrap, naming the offending limiter(s)" — i.e. the
+    author's intent was a clean, actor-naming RuntimeError, not a raw
+    ModuleNotFoundError with no actors declared at all).
+
+    Test seam: ``sys.modules["redis"] = None`` forces the next import of
+    ``redis`` (and any submodule) to raise ModuleNotFoundError, faithfully
+    reproducing "redis is not installed" without needing a separate venv.
+    This is the same poisoning idiom already used in
+    tests/test_cli_ui.py::test_ui_serve_lifespan_redis_import_error_wrapped_with_install_hint,
+    except here the *parent* module is poisoned (matching a truly absent
+    package) rather than only ``redis.asyncio``.
+    """
+    import sys
+
+    monkeypatch.setitem(sys.modules, "redis", None)
+
+    # No actors, no rate limits, no TASKQ_REDIS_URL: this is the exact
+    # docs/getting-started/quick-start.md happy path with zero extras.
+    result = await _run_main_with_mocked_deps(_settings())
+    assert result == 0
+
+
 async def test_bootstrap_allows_redis_rate_limit_with_user_redis_provider() -> None:
     """A user-supplied redis.asyncio.Redis DI provider satisfies the guard.
 

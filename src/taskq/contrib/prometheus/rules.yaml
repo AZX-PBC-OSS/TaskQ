@@ -127,32 +127,42 @@ groups:
             affected schedule(s) and fix the payload_factory.
 
       - alert: TaskQScheduledBacklogGrowing
-        expr: taskq_jobs_oldest_due_age_seconds > 300 and taskq_jobs_scheduled_count > (taskq_jobs_scheduled_count offset 5m)
+        expr: taskq_jobs_oldest_due_age_seconds > 300 and (taskq_jobs_scheduled_count > (taskq_jobs_scheduled_count offset 5m) or changes(taskq_jobs_scheduled_count[5m]) == 0)
         for: 5m
         labels:
           severity: warning
         annotations:
-          summary: "TaskQ scheduled backlog is growing while due jobs wait over 5m"
+          summary: "TaskQ scheduled backlog is growing or has stalled while due jobs wait over 5m"
           description: >-
             The oldest due job has been waiting more than 5 minutes AND the
-            scheduled job COUNT is higher than it was 5 minutes ago —
-            promotion is not keeping up with arrivals, rather than merely
-            behind on one slow-to-clear job. The previous form compared the
-            oldest-due-age gauge against itself: that gauge tracks whichever
-            single job is currently oldest, and its age climbs monotonically
-            right up until THAT job is promoted regardless of how healthily
+            scheduled job COUNT is demonstrably not draining — either it is
+            higher than it was 5 minutes ago (promotion is not keeping up
+            with arrivals) or it has not moved at all across those 5
+            minutes. The second arm is the stalled plateau a strict growth
+            comparison cannot see: a flat count never satisfies `count >
+            count offset 5m`, so a promoter that has stopped completely
+            while arrivals are absent or throttled would stay silent
+            forever on the growth arm alone; changes(...) == 0 holds only
+            when the count never moved across the whole window, which with
+            a due job aging past the threshold means promotion is not
+            happening. The previous form compared the oldest-due-age gauge
+            against itself: that gauge tracks whichever single job is
+            currently oldest, and its age climbs monotonically right up
+            until THAT job is promoted regardless of how healthily
             everything behind it is draining — a steadily draining backlog
             whose oldest-due job simply hasn't had its turn yet satisfied
             the old expression for the whole `for: 5m` window and the check
             degenerated to a bare age>300 threshold. Count, not the single
-            oldest item's age: a scheduled count that is flat or falling
-            while jobs promote on schedule is healthy no matter how long the
-            current straggler has waited.
+            oldest item's age: a scheduled count that is MOVING — falling
+            as jobs promote or rising as arrivals land — is healthy flow no
+            matter how long the current straggler has waited; what is never
+            healthy is a due job aging past the threshold while the count
+            never moves at all.
             taskq_jobs_scheduled_count is the label-less twin of
             taskq_jobs_by_status{status="scheduled"}, kept in step with it
-            by the same sampler tick, specifically so both `and` operands
-            here carry identical (empty) label sets — vector `and` with no
-            `on`/`ignoring` modifier only pairs series whose label sets
+            by the same sampler tick, specifically so every operand here
+            carries an identical (empty) label set — vector `and`/`or` with
+            no `on`/`ignoring` modifier only pairs series whose label sets
             match exactly. Runbook:
             docs/guides/runbooks.md#taskqscheduledbackloggrowing.
 

@@ -621,6 +621,66 @@ async def test_aclose_idempotent_executor() -> None:
     assert loop_scope._sync_gen_executor is None
 
 
+# ── A hung sync-gen __exit__ must not park scope teardown ────────────
+
+
+async def test_sync_gen_hung_exit_bounds_scope_teardown() -> None:
+    """A sync generator whose ``__exit__`` never returns parks the pinned
+    executor's only thread in unkillable user code. Scope teardown must
+    bound its WAIT on that thread (``factory_timeout``), log the trip
+    loudly, and complete — the residue is one thread per hung container
+    until the code returns, never a wedged close. Both bounded waits are
+    exercised: the teardown callback's and the executor shutdown's."""
+    import time
+
+    import structlog.testing
+
+    exit_entered = threading.Event()
+    release = threading.Event()
+
+    def make_resource() -> Iterator[_MockResource]:
+        yield _MockResource()
+        exit_entered.set()
+        # Bounded so the parked thread cannot outlive the test run; never
+        # set from inside the teardown path under test.
+        release.wait(30.0)
+
+    entry = ProviderEntry(
+        type_=_MockResource,
+        scope=Scope.LOOP,
+        kind="factory",
+        impl=make_resource,
+        factory_shape=FactoryShape.SYNC_GENERATOR,
+    )
+    registry = ProviderRegistry()
+    registry._providers[_MockResource] = entry
+
+    loop_scope = LoopScope(resolver=_stub_resolver, factory_timeout=0.2)
+    try:
+        await loop_scope.bootstrap(registry, ProcessScope(resolver=_stub_resolver))
+        assert loop_scope._sync_gen_executor is not None
+
+        started = time.monotonic()
+        with structlog.testing.capture_logs() as captured:
+            await asyncio.wait_for(loop_scope.shutdown(), timeout=10.0)
+        elapsed = time.monotonic() - started
+    finally:
+        release.set()
+
+    assert exit_entered.is_set(), (
+        "vacuous run: the hung __exit__ was never reached, so nothing here "
+        "proves teardown survives it"
+    )
+    assert elapsed < 5.0, (
+        f"scope teardown took {elapsed:.1f}s against a hung __exit__ — the "
+        "waits on the parked thread are unbounded"
+    )
+    assert loop_scope._sync_gen_executor is None
+    events = [e["event"] for e in captured]
+    assert "sync-generator-teardown-timeout" in events
+    assert "sync-generator-executor-shutdown-timeout" in events
+
+
 # ── LoopScope.resolved_cache() ────────────────────────────────────
 
 

@@ -102,10 +102,9 @@ async def test_dispatch_query_failure_emits_failure_counter(
 
 class _RaisingResolveConn:
     """Fails the queue-mode resolve statement -- the raise site that never
-    even reaches ``dispatch_batch``'s own span/telemetry, reproducing the
-    class of failure the issue calls out as unreachable for the duration
-    histogram today (a lock timeout or connection reset while resolving
-    ``queues.mode`` before the dispatch CTE is ever issued)."""
+    even reaches ``dispatch_batch``'s own span/telemetry: a lock timeout
+    or connection reset while resolving ``queues.mode`` before the
+    dispatch CTE is ever issued."""
 
     async def fetch(self, sql: str, *args: object) -> list[dict[str, str]]:
         if ".queues WHERE" in sql:
@@ -144,10 +143,10 @@ async def test_queue_mode_resolution_failure_still_emits_telemetry(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A round whose queue-mode resolution raises before the dispatch CTE
-    is ever issued -- the second raise site the issue documents -- still
-    leaves some dispatch-loop telemetry behind. Today this failure never
-    reaches ``dispatch_batch``'s span or histogram at all, so the whole
-    metric stream is empty for this entire class of failure."""
+    is ever issued still leaves some dispatch-loop telemetry behind. This
+    failure never reaches ``dispatch_batch``'s span or histogram at all,
+    so without the round-level record the whole metric stream is empty
+    for this entire class of failure."""
     setup_tracer(monkeypatch)
     reader = setup_meter(monkeypatch)
 
@@ -242,11 +241,11 @@ async def test_dispatch_failure_counter_names_the_failure_class(
     (connection reset, lock timeout -- a producer that will recover on its
     own) is distinguishable from a permanent one (auth failure, schema
     drift -- a producer that never will) purely from the metric stream.
-    Today ``record_dispatch_failure`` takes only ``queue``: a connection
-    reset and a permanent misconfiguration are recorded identically, so an
-    alert built on this counter cannot tell a self-healing blip from an
-    outage that needs a human. This test is expected to fail until
-    ``error_type`` is added to the counter's label set."""
+    Today ``record_dispatch_failure`` derives the class from the caught
+    exception when the call site names none. Without the label a
+    connection reset and a permanent misconfiguration were recorded
+    identically, so an alert built on this counter could not tell a
+    self-healing blip from an outage that needs a human."""
     setup_tracer(monkeypatch)
     reader = setup_meter(monkeypatch)
 
@@ -270,10 +269,15 @@ async def test_dispatch_failure_counter_names_the_failure_class(
 
     for metric in failure_metrics:
         for data_point in metric.data.data_points:
-            attrs = dict(data_point.attributes)
+            attrs = dict(data_point.attributes or {})
             assert "error_type" in attrs, (
                 f"dispatch failure counter has no error_type label (attrs={attrs}); "
                 "a lock-timeout retry storm and a permanent auth failure are "
                 "indistinguishable in the metric stream, defeating the alerting "
                 "use case this counter exists to serve"
+            )
+            assert attrs["error_type"] == "ConnectionResetError", (
+                f"error_type must name the failure class, got {attrs!r} — a "
+                "constant or empty value would leave a transient reset "
+                "indistinguishable from a permanent auth failure"
             )

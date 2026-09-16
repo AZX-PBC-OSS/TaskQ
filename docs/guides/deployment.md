@@ -293,11 +293,18 @@ me*. `/ready` additionally pings Postgres, checks for stale worker loops, fails 
 and runs any checks you registered (see below) — a failing readiness probe means *stop sending me
 work*, not *restart me*.
 
-!!! danger "A configured probe port that cannot bind fails startup"
-    If `TASKQ_HEALTH_PORT` is set and the port cannot be bound, the worker **refuses to start**
-    rather than running with its probes silently dead. That is deliberate: a worker that came up
-    with a dead listener would fail every probe, or — worse, under a `tcpSocket` probe against a
-    port some other process holds — pass every probe while nothing checked it.
+!!! warning "A listener that cannot bind does not stop the boot — the WARN does"
+    If the Unix socket path or `TASKQ_HEALTH_PORT` cannot be bound — almost always a path or
+    port a still-live peer (or a previous, still-draining replica) owns — the worker logs
+    `health-server-unavailable` at WARN with the socket path or port and the errno, and
+    **keeps booting without that listener**: it still registers, heartbeats, and claims work,
+    because a worker that can do work must never refuse to start over a diagnostic
+    side-channel. The failure is never silent: the WARN is the named, alertable record. What
+    the configured address then answers depends on who holds it — a live peer's listener
+    answers for the *peer* (its leadership, its shutdown phase, not this worker's), and an
+    address nobody holds refuses connections — so treat the WARN as an action item: give each
+    replica a unique socket path/port (or a per-replica directory), because until you do this
+    replica's health is not observable at the address you configured.
 
 #### Azure Container Apps
 

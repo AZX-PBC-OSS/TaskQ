@@ -359,19 +359,19 @@ async def test_bulk_cancel_recovers_typed_after_the_database_drops_its_connectio
 ) -> None:
     """``cancel_where`` must not hand the caller a raw driver error either.
 
-    ``_enqueue.py``'s pool-acquire callers are wrapped in
-    ``_with_fresh_connection_retry`` (a poisoned connection's first
-    statement fails locally with ``asyncpg.InternalClientError`` right
-    after a server-side interruption, before ``connection_lost`` has run
-    and marked it closed) so the caller sees one clean retry instead of an
-    error outside asyncpg's own hierarchy. ``_cancel_bulk.py``'s
+    ``_with_fresh_connection_retry`` — shared from ``taskq.connections``
+    by every acquire-then-use call site — absorbs the dead-on-acquire
+    race: a poisoned connection's first statement fails locally with
+    ``asyncpg.InternalClientError`` right after a server-side
+    interruption, before ``connection_lost`` has run and marked it
+    closed, so an unguarded caller sees an error outside asyncpg's own
+    hierarchy instead of one clean retry. ``_cancel_bulk.py``'s
     ``_drain_cancel_batches`` acquires from the very same pool with the
     very same ``async with pool.acquire() as conn: async with
-    conn.transaction(): ...`` shape, but its retry loop only catches
-    ``asyncpg.DeadlockDetectedError`` -- nothing there recognises
-    ``InternalClientError``. If a bulk cancel is the first call to reach
-    the pool after an interruption, this pins whether the same untyped
-    escape the enqueue path was fixed for still reaches this caller.
+    conn.transaction(): ...`` shape as the enqueue paths. If a bulk
+    cancel is the first call to reach the pool after an interruption,
+    this pins that the recovery the enqueue path has reaches this caller
+    too.
     """
     schema = f"fleet_pgfail_cancel_{new_base62()}".lower()
     async with open_fleet(
@@ -393,7 +393,9 @@ async def test_bulk_cancel_recovers_typed_after_the_database_drops_its_connectio
         )
 
         try:
-            await pod.backend.cancel_where(JobFilter(active=True), reason="fleet interruption drill")
+            await pod.backend.cancel_where(
+                JobFilter(active=True), reason="fleet interruption drill"
+            )
         except asyncpg.InternalClientError as exc:
             raise AssertionError(
                 "cancel_where after the database dropped its connections raised "
@@ -401,6 +403,7 @@ async def test_bulk_cancel_recovers_typed_after_the_database_drops_its_connectio
                 "A caller cannot distinguish this from a bug in its own code, it "
                 "matches no handler written against asyncpg's error types, and "
                 "the pooled connection that produced it was handed out while "
-                "still mid-operation -- the same race _with_fresh_connection_retry "
-                "closes for the enqueue path, unguarded here"
+                "still mid-operation -- the dead-on-acquire race "
+                "_with_fresh_connection_retry exists to absorb, not recovered "
+                "on this path"
             ) from exc

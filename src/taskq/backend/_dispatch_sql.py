@@ -31,15 +31,39 @@ cascade is what made those whole-backlog hash joins look affordable.
 
 The geometry below pins each stage to the round's own constants:
 
-* ``per_actor_capacity`` probes per (actor, round queue) through a
-  correlated LATERAL — the idle-actor prefilter as a bounded index
-  probe, structurally (correlation denies the hash-join path).
-* ``candidates`` reads at most ``residual * oversample`` rows per
-  (actor, queue) probe — the strict-FIFO lateral directly; the
-  round-robin variant per fairness cohort, via the ``rr_keys`` loose
-  index scan (a WITH RECURSIVE row-compare walk over the cohort index,
-  the classic emulation of a skip scan, which this Postgres generation
-  does not offer).
+* ``per_actor_capacity`` / ``repend_capacity`` never scan the registry:
+  the label-routed actor set is enumerated from jobs by the variant's
+  keys walk (``pa_keys`` / ``rr_keys`` — recursive loose index scans,
+  one bounded seek per distinct key on the round's queues) and read
+  back through actor_config by primary key, while ``repend_capacity``
+  filters on the assignment-queue index. A Seq Scan of actor_config is
+  a per-round cost proportional to the fleet-wide REGISTERED-actor
+  count (pinned by
+  tests/test_dispatch_actor_registry_scope_bound.py) and, because the
+  table is usually never analyzed, a garbage estimate that cascades
+  through the candidate chain's nested loops.
+* ``candidates`` reads at most ``residual * oversample`` admitted rows
+  per (actor, queue) probe — but the SCAN bound each probe's innermost
+  LIMIT carries is the pure parameter expression ``$2 * $5`` (limit_n x
+  oversample), and the exact ``residual * oversample`` admission window
+  is re-imposed one level up, over the bounded probe output, by a
+  rank-window cut (``probe_rank`` / ``cohort_rank``). The split exists
+  for the planner, not the executor: a LIMIT the planner cannot fold to
+  a constant is estimated as a fixed fraction of the scanned index
+  range, so an unfoldable ``residual * oversample`` bound keeps the
+  plan's ESTIMATED cost depth-proportional even though execution stops
+  at the bound — and past the default ``jit_above_cost`` (100000) that
+  estimate makes Postgres JIT-compile the whole statement on every
+  dispatch round (~1 s of Optimization+Emission measured at a 30k due
+  backlog, where the scan itself is ~1.5 ms; pinned by
+  tests/test_dispatch_backlog_depth_bound.py's JIT oracle). The folded
+  ``$2 * $5`` bound makes the estimate track the LIMIT that actually
+  bounds execution; for an uncapped actor residual IS limit_n so the
+  two bounds coincide exactly, and a capped actor with residual above
+  limit_n is bound by the round's own limit first (its tail drains on
+  later rounds, the depth contract's standing rule). The rank cut sits
+  BEFORE identity_dedup deliberately: the shipped window counted
+  identity-duplicate rows, so a post-dedup cut would silently widen it.
 * ``top_ids`` finalizes the LIMIT-ed id set BEFORE the statement
   touches the heap a second time, and ``locked`` then drives ``jobs``
   by primary key through a correlated LATERAL — a materialized CTE is an
@@ -47,6 +71,11 @@ The geometry below pins each stage to the round's own constants:
   the LIMITing subquery. A bounded, locked CTE whose UPDATE joins by
   id ensures the dispatch never re-optimizes across the candidacy cut
   and respects the admission decision made by top_ids.
+* every actor_config readback outside the two capacity CTEs
+  (``capped_ranked``, ``sliding_locked``, ``eligible_candidates``, and
+  the ``stamp`` UPDATE) is a correlated primary-key LATERAL or a
+  one-shot ``ANY(ARRAY(SELECT ...))`` InitPlan — never a plain join the
+  planner can serve as a Seq Scan + hash over the whole registry.
 * the terminal UPDATE re-finds its rows through
   ``j.id = ANY(ARRAY(SELECT id FROM eligible))`` — the id array
   materializes once as an InitPlan and the ScalarArrayOp is served
@@ -159,10 +188,11 @@ logger: structlog.stdlib.BoundLogger = get_logger(__name__)
 # (and tests) can ``.format(schema=...)`` at render time; the ``__*__``
 # tokens are substituted by _render_dispatch_sql.
 _DISPATCH_SQL_TEMPLATE = """\
--- WITH RECURSIVE: the round-robin variant's rr_keys cohort enumeration
--- is a recursive loose index scan; the strict-FIFO variant defines no
--- recursive arm, and a RECURSIVE keyword over a list with none is a
--- no-op permission, so one template serves both variants.
+-- WITH RECURSIVE: both variants' label-routed keys enumerations are
+-- recursive loose index scans (pa_keys for strict-FIFO, rr_keys for
+-- round-robin), and a RECURSIVE keyword over a list is a no-op
+-- permission for the non-recursive arms, so one template serves both
+-- variants.
 WITH RECURSIVE params AS (
   SELECT
     $1::text[]   AS queues,
@@ -171,7 +201,19 @@ WITH RECURSIVE params AS (
     $4::interval AS lock_lease,
     $5::int      AS oversample
 ),
-__RR_KEYS_CTE__
+__KEYS_CTE__
+-- The round's label-routed actor set: DISTINCT actors holding at least
+-- one pending, producer-placed (NOT assignment_routed) row on one of the
+-- round's queues. Read off the keys enumeration (one bounded index seek
+-- per distinct key, never a scan) so per_actor_capacity is driven by the
+-- round's own population rather than by a scan of actor_config: the
+-- registry is one row per REGISTERED actor fleet-wide, and a round's
+-- cost must not grow with how many unrelated actors happen to be
+-- registered (the registry-scope oracle,
+-- tests/test_dispatch_actor_registry_scope_bound.py, pins this).
+pa_actors AS (
+  SELECT DISTINCT actor FROM __KEYS_SOURCE__
+),
 -- Best-effort under concurrent dispatchers, for the same reason as
 -- `running_identities` below: this count is read ONCE, before `locked`
 -- takes its FOR UPDATE SKIP LOCKED row locks, and is never recomputed.
@@ -204,50 +246,44 @@ running_identities AS (
   FROM "{schema}".jobs
   WHERE status = 'running' AND identity_key IS NOT NULL
 ),
--- Idle-actor prefilter: without it, candidates CROSS JOINs every
--- actor_config row with every subscribed queue and runs the lateral
--- index seek once per (actor, queue) pair even when the actor has no
--- pending rows at all -- at hundreds of registered actors that fan-out
--- dominates every idle dispatch tick.
+-- Per-actor admission for the label-routed arm. The driver is pa_actors
+-- (the round's own label-routed population, enumerated from jobs by the
+-- keys walk), NOT a scan of actor_config: actor_config holds one row per
+-- registered actor FLEET-WIDE, sits far below autovacuum's insert
+-- threshold, and is therefore usually never analyzed, so a scan of it is
+-- both a registry-proportional cost per round and a garbage estimate
+-- (~440 rows even for a one-actor fleet) that cascades through the
+-- candidate chain's nested loops. Driving from pa_actors makes the
+-- registry read one primary-key probe per live actor — bounded by the
+-- round's own population, independent of the registered-actor count.
+-- The LATERAL correlation on pa.actor denies the planner the hash-join
+-- path it would otherwise take over the unanalyzed table.
 --
--- The probe is a correlated per-queue LATERAL, not the EXISTS this
--- CTE historically used. An EXISTS is a semi-join, and the planner is
--- free to execute it as a hash semi-join over a Seq Scan of the entire
--- pending backlog -- which it does whenever actor_config's row
--- estimate makes one pass over jobs look cheaper than per-actor
--- probes. actor_config genuinely carries that estimate in production:
--- it holds one row per registered actor, sits far below autovacuum's
--- insert threshold, and is therefore usually never analyzed, leaving
--- the planner on the default guess (~440 rows) even for a one-actor
--- fleet. The LATERAL shape removes the planner's option instead of
--- arguing with its costs: the correlation on ac.actor denies the
--- unparameterized (hashable) inner path, and the per-queue equality
--- from unnest plus the ORDER BY over jobs_actor_dispatch_idx's
--- (actor, queue, priority DESC, ...) key pins the probe to an
--- index-ordered first-entry read, bounded by the number of round
--- queues per actor, never by backlog depth. A queue = ANY(...) array
--- predicate cannot serve that ORDER BY (an ScalarArrayOp breaks the
--- index's single ordered stream), which is why the fan-out is over
--- unnest(queues) with one plain-equality probe per queue.
+-- The has_pending probe is retained as a defense-in-depth re-check of
+-- exactly the population pa_actors already enumerated (pending,
+-- NOT assignment_routed, on one of the round's queues): it is a
+-- correlated per-queue LATERAL, not an EXISTS. An EXISTS is a semi-join,
+-- and the planner is free to execute it as a hash semi-join over a Seq
+-- Scan of the entire pending backlog whenever actor_config's row
+-- estimate makes one pass over jobs look cheaper than per-actor probes.
+-- The LATERAL shape removes the planner's option instead of arguing
+-- with its costs: the correlation denies the unparameterized (hashable)
+-- inner path, and the per-queue equality from unnest plus the ORDER BY
+-- over jobs_actor_dispatch_idx's (actor, queue, priority DESC, ...)
+-- key pins the probe to an index-ordered first-entry read, bounded by
+-- the number of round queues per actor, never by backlog depth. A
+-- queue = ANY(...) array predicate cannot serve that ORDER BY (an
+-- ScalarArrayOp breaks the index's single ordered stream), which is why
+-- the fan-out is over unnest(queues) with one plain-equality probe per
+-- queue.
 --
--- The predicate covers exactly the queues in the round's params, NOT
--- the actor's home queue: an enqueue(queue = ...) override that lands
--- a pending row on any subscribed queue keeps that actor probed.
--- Filtering here is selection-neutral -- an actor with no pending rows
--- on the round's queues already contributed zero candidate rows,
--- because the lateral's j2.queue = sq.queue_name equality annihilated
--- every one of its pairs -- so ordering, fairness, and the
--- locked/eligible stages are untouched.
---
--- The probe is scoped to producer-placed rows (NOT assignment_routed):
--- this CTE feeds only the label-routed candidates arm, and a re-pended
--- row (assignment_routed) is that arm's non-candidate -- its routing
--- queue is the actor's assignment, probed by repend_capacity below.
--- An actor whose only dispatchable rows are re-pends is therefore NOT
--- probed here; it enters the round through repend_capacity instead.
+-- The probe is scoped to the queues in the round's params, NOT the
+-- actor's home queue: an enqueue(queue = ...) override that lands a
+-- pending row on any subscribed queue keeps that actor probed.
 per_actor_capacity AS (
   SELECT
-    ac.actor,
+    pa.actor,
+    ac.max_concurrent,
     CASE WHEN ac.max_concurrent IS NULL
          THEN (SELECT limit_n FROM params)
          ELSE GREATEST(ac.max_concurrent - COALESCE(r.in_flight, 0), 0)
@@ -270,16 +306,28 @@ per_actor_capacity AS (
     -- the stamp bounded-ly (that actor re-competes with its older stamp
     -- next round; self-correcting), never the claim's liveness.
     ac.last_claimed_at AS actor_claimed_at
-  FROM "{schema}".actor_config ac
+  FROM pa_actors pa
   CROSS JOIN params p
-  LEFT JOIN running_per_actor r ON r.actor = ac.actor
+  CROSS JOIN LATERAL (
+    SELECT ac.max_concurrent, ac.last_claimed_at
+    FROM "{schema}".actor_config ac
+    WHERE ac.actor = pa.actor
+    -- The LIMIT is not decorative: a bare pkey-equality subquery is
+    -- pulled up into a plain join, which the planner then serves as a
+    -- Seq Scan + hash over the whole (usually unanalyzed) registry.
+    -- LIMIT 1 defeats the pull-up, keeping this a nested-loop pkey
+    -- probe per live actor — the same doctrine the has_pending probe
+    -- below relies on. Exact because actor is the primary key.
+    LIMIT 1
+  ) ac
+  LEFT JOIN running_per_actor r ON r.actor = pa.actor
   CROSS JOIN LATERAL (
     SELECT 1 AS has_pending
     FROM unnest(p.queues) AS pq(q)
     CROSS JOIN LATERAL (
       SELECT 1
       FROM "{schema}".jobs j
-      WHERE j.actor = ac.actor
+      WHERE j.actor = pa.actor
         AND j.queue = pq.q
         AND NOT j.assignment_routed
         AND j.status = 'pending'
@@ -289,36 +337,6 @@ per_actor_capacity AS (
     LIMIT 1
   ) hp
   WHERE hp.has_pending IS NOT NULL
-),
--- The assignment-routed half of the routing contract: the actors whose
--- CURRENT stored assignment is among this round's subscribed queues,
--- with the same residual arithmetic as per_actor_capacity. The
--- assignment IS the routing here: every re-pended row of such an actor
--- (any queue label, assignment_routed, pending) is a candidate
--- for this round no matter which label it carries -- the
--- move_actor_queue tail contract. Actors whose assignment is not
--- subscribed contribute nothing here, exactly as a label-routed actor
--- with no rows on a subscribed queue contributes nothing above.
--- ac.queue = ANY(p.queues) reads the CROSS JOINed params column (a
--- plain text[] value), NOT a subquery -- = ANY(subquery) iterates the
--- subquery's ROWS, and a one-row array-valued subquery would compare
--- the label against the whole array; the column form is the array
--- membership test. It is a filter over actor_config rows (bounded by
--- the registered-actor count), not an ordering-critical probe, so the
--- array predicate form is correct here where it would be wrong in a
--- probe lateral.
-repend_capacity AS (
-  SELECT
-    ac.actor,
-    CASE WHEN ac.max_concurrent IS NULL
-         THEN (SELECT limit_n FROM params)
-         ELSE GREATEST(ac.max_concurrent - COALESCE(r.in_flight, 0), 0)
-    END AS residual,
-    ac.last_claimed_at AS actor_claimed_at
-  FROM "{schema}".actor_config ac
-  CROSS JOIN params p
-  LEFT JOIN running_per_actor r ON r.actor = ac.actor
-  WHERE ac.queue = ANY(p.queues)
 ),
 -- Re-pended cohort enumeration: the same recursive loose index scan
 -- geometry as _RR_KEYS_CTE, over the re-pended population only
@@ -353,6 +371,52 @@ rr_tail_keys AS (
     LIMIT 1
   ) nxt
 ),
+-- The assignment-routed half of the routing contract: the actors whose
+-- CURRENT stored assignment is among this round's subscribed queues,
+-- with the same residual arithmetic as per_actor_capacity. The
+-- assignment IS the routing here: every re-pended row of such an actor
+-- (any queue label, assignment_routed, pending) is a candidate
+-- for this round no matter which label it carries -- the
+-- move_actor_queue tail contract.
+--
+-- The driver is the DISTINCT actor set of rr_tail_keys (the re-pended
+-- cohort enumeration), NOT a scan of actor_config filtered by
+-- assignment: an actor with zero re-pended rows contributes zero
+-- candidates downstream (the repended lateral's rr_tail_keys join
+-- annihilates its probes), so restricting the driver to actors that
+-- actually hold re-pended rows is selection-identical, and the registry
+-- read collapses to one primary-key probe per such actor — bounded by
+-- the re-pended population, independent of the fleet-wide
+-- registered-actor count, and immune to the planner's honest
+-- small-registry Seq Scan preference that a plain
+-- ac.queue = ANY(queues) filter leaves open. The LIMIT 1 keeps the
+-- probe correlated (a bare pkey-equality subquery is pulled up into a
+-- plain join and the Seq Scan returns — same doctrine as
+-- per_actor_capacity). ac.queue = ANY(p.queues) reads the CROSS JOINed
+-- params column (a plain text[] value), NOT a subquery -- =
+-- ANY(subquery) iterates the subquery's ROWS, and a one-row
+-- array-valued subquery would compare the label against the whole
+-- array; the column form is the array membership test.
+repend_capacity AS (
+  SELECT
+    ta.actor,
+    ac.max_concurrent,
+    CASE WHEN ac.max_concurrent IS NULL
+         THEN (SELECT limit_n FROM params)
+         ELSE GREATEST(ac.max_concurrent - COALESCE(r.in_flight, 0), 0)
+    END AS residual,
+    ac.last_claimed_at AS actor_claimed_at
+  FROM (SELECT DISTINCT actor FROM rr_tail_keys) ta
+  CROSS JOIN params p
+  CROSS JOIN LATERAL (
+    SELECT ac.max_concurrent, ac.queue, ac.last_claimed_at
+    FROM "{schema}".actor_config ac
+    WHERE ac.actor = ta.actor
+    LIMIT 1
+  ) ac
+  LEFT JOIN running_per_actor r ON r.actor = ta.actor
+  WHERE ac.queue = ANY(p.queues)
+),
 -- Two disjoint candidate sources, one per routing population:
 --   * the label-routed arm (per_actor_capacity x subscribed queues)
 --     matches never-claimed rows by their own queue label -- producer
@@ -367,9 +431,16 @@ rr_tail_keys AS (
 candidates AS (
   (SELECT j.id, j.actor, j.identity_key, j.fairness_key,
           __FAIRNESS_RANK_COLUMN__,
-          j.priority, j.scheduled_at, pac.residual, pac.actor_claimed_at
+          j.priority, j.scheduled_at, pac.residual, pac.actor_claimed_at,
+          pac.max_concurrent
   FROM per_actor_capacity pac
-  CROSS JOIN LATERAL unnest((SELECT queues FROM params)) AS sq(queue_name)
+  -- unnest of the $1 parameter directly, not of a (SELECT queues FROM
+  -- params) subquery: in a custom plan the bound parameter folds to a
+  -- constant array and the planner estimates the unnest at the array's
+  -- true length, where the subquery form keeps the opaque default
+  -- guess and every downstream nested loop is costed at ten phantom
+  -- fan-out rows per actor.
+  CROSS JOIN LATERAL unnest($1::text[]) AS sq(queue_name)
   CROSS JOIN LATERAL (
 __CANDIDATES_LATERAL__
   ) j
@@ -383,7 +454,7 @@ identity_dedup AS (
   (
     SELECT DISTINCT ON (c.actor, c.identity_key)
       c.id, c.actor, c.fairness_key, c.fairness_rank, c.priority, c.scheduled_at, c.residual,
-      c.actor_claimed_at
+      c.actor_claimed_at, c.max_concurrent
     FROM candidates c
     LEFT JOIN running_identities ri ON ri.actor = c.actor AND ri.identity_key = c.identity_key
     WHERE ri.identity_key IS NULL
@@ -393,7 +464,7 @@ identity_dedup AS (
   UNION ALL
   (
     SELECT c.id, c.actor, c.fairness_key, c.fairness_rank, c.priority, c.scheduled_at, c.residual,
-           c.actor_claimed_at
+           c.actor_claimed_at, c.max_concurrent
     FROM candidates c
     WHERE c.identity_key IS NULL
   )
@@ -445,11 +516,18 @@ ranked AS MATERIALIZED (
 -- to the capacity actually remaining (actor_rank <= max_concurrent -
 -- in_flight), so neither failure direction is reachable: the cap is
 -- never exceeded, and the window never outruns the round's bound.
+--
+-- The cap membership test reads the max_concurrent the capacity CTEs
+-- already carried out of actor_config this same statement (one snapshot,
+-- so the carried value IS the registry's), instead of re-probing the
+-- registry per ranked row: ranked is bounded, but a join here is what
+-- the planner used to serve as a Seq Scan + hash over the whole
+-- registry per round (the registry-proportional work the registry-scope
+-- oracle, tests/test_dispatch_actor_registry_scope_bound.py, forbids).
 capped_ranked AS (
   SELECT r.*
   FROM ranked r
-  JOIN "{schema}".actor_config ac ON ac.actor = r.actor
-  WHERE ac.max_concurrent IS NOT NULL
+  WHERE r.max_concurrent IS NOT NULL
 ),
 -- The windowed cut, capped actors only. LIMIT is a direct $n
 -- expression, never a (SELECT ... FROM params) subquery: a parameter
@@ -493,16 +571,29 @@ locked AS (
 ),
 -- Uncapped lock step: the ORDER BY, the LIMIT and the row lock all sit
 -- at ONE query level, which is what puts LockRows under Limit and lets
--- the skip slide. Ranked is already materialized, so this reads the
+-- the skip slide. The jobs side is re-found through a one-shot id
+-- array (the terminal UPDATE's own doctrine: ARRAY(SELECT ...) over the
+-- already-materialized, already cap-filtered ranked window evaluates
+-- once as an InitPlan, and j2.id = ANY(<that array>) is then a Bitmap
+-- Index Scan on the primary key at depth or a scan-level filter in the
+-- shallows — never a hash build over the whole pending backlog, which
+-- an honest-cost planner picks for a plain ranked⋈jobs join exactly
+-- where the table is small enough to hide the depth coupling). The
+-- ranked re-join for the ordering columns hashes only the bounded
+-- materialized window. Ranked is materialized, so this reads the
 -- finalized candidate ranks in order and stops at limit_n acquired
 -- rows.
 sliding_locked AS (
   SELECT j2.id, j2.actor, j2.identity_key, j2.fairness_key, r.fairness_rank,
          j2.priority, j2.scheduled_at, r.pending_rank, r.residual, r.actor_claimed_at
-  FROM ranked r
-  JOIN "{schema}".jobs j2 ON j2.id = r.id AND j2.status = 'pending'
-  LEFT JOIN "{schema}".actor_config ac ON ac.actor = r.actor
-  WHERE ac.max_concurrent IS NULL
+  FROM "{schema}".jobs j2
+  JOIN ranked r ON r.id = j2.id
+  WHERE j2.id = ANY(ARRAY(
+    SELECT r2.id
+    FROM ranked r2
+    WHERE r2.max_concurrent IS NULL
+  ))
+    AND j2.status = 'pending'
   -- Same rotation cut as top_ids: the SKIP LOCKED slide walks the
   -- materialized ranked stream in this order, so a peer holding the
   -- window's leading rows yields the least-recently-claimed actors
@@ -529,7 +620,18 @@ eligible_candidates AS (
          AND COALESCE(r.in_flight, 0) >= ac.max_concurrent
          THEN FALSE ELSE TRUE END AS boolean_gate
   FROM claimed l
-  LEFT JOIN "{schema}".actor_config ac ON ac.actor = l.actor
+  -- Same correlated pkey LATERAL as capped_ranked: one probe per
+  -- claimed row (at most limit_n + the capped window), never a hash
+  -- over the whole registry; the LIMIT 1 defeats the subquery pull-up
+  -- that would flatten this into a plain join. Inner-safe: every
+  -- claimed actor holds an actor_config row (per_actor_capacity /
+  -- repend_capacity require it).
+  CROSS JOIN LATERAL (
+    SELECT ac.max_concurrent
+    FROM "{schema}".actor_config ac
+    WHERE ac.actor = l.actor
+    LIMIT 1
+  ) ac
   LEFT JOIN running_per_actor r ON r.actor = l.actor
   WHERE ac.max_concurrent IS NULL
      OR COALESCE(r.in_flight, 0) < ac.max_concurrent
@@ -566,11 +668,19 @@ stamp_rows AS (
   ORDER BY ac2.actor
   FOR UPDATE SKIP LOCKED
 ),
+-- The stamp's UPDATE re-finds its rows through the same one-shot id
+-- array doctrine as the terminal UPDATE below: ARRAY(SELECT ...) over
+-- the bounded stamp_rows materializes once as an InitPlan and
+-- ac.actor = ANY(<that array>) is served as a Bitmap Index Scan on the
+-- actor_config primary key, so the write touches at most limit_n
+-- registry rows. A FROM-clause join against stamp_rows would leave the
+-- strategy to the planner, which honestly prefers a Seq Scan + hash of
+-- the whole registry whenever actor_config is unanalyzed (the usual
+-- production state) — registry-proportional work per round.
 stamp AS (
   UPDATE "{schema}".actor_config ac
   SET last_claimed_at = statement_timestamp()
-  FROM stamp_rows s
-  WHERE ac.actor = s.actor
+  WHERE ac.actor = ANY(ARRAY(SELECT s.actor FROM stamp_rows s))
 )
 UPDATE "{schema}".jobs j
 SET status = 'running',
@@ -640,11 +750,12 @@ RETURNING j.*;
 # enumeration step per pending cohort anywhere in the fleet, so a
 # round's cost grows with other teams' cohort counts and every queue's
 # dispatch latency couples to fleet-wide backlog. The predicate also
-# narrows to never-claimed rows, because this enumeration feeds only
-# the label-routed arm; re-pended cohorts are walked by rr_tail_keys.
-# The candidates lateral below still joins the result down to each
-# probe's own (actor, queue) pair -- in-memory filtering over the
-# materialized output, now bounded by the round's own cohort count.
+# narrows to producer-placed rows (NOT assignment_routed), because this
+# enumeration feeds only the label-routed arm; re-pended cohorts are
+# walked by rr_tail_keys. The candidates lateral below still joins the
+# result down to each probe's own (actor, queue) pair -- in-memory
+# filtering over the materialized output, now bounded by the round's
+# own cohort count.
 #
 # COALESCE(fairness_key, '__null__') is the partition identity the
 # whole round-robin path shares (window PARTITION BY, probe equality,
@@ -660,7 +771,7 @@ rr_keys AS (
            COALESCE(j3.fairness_key, '__null__') AS fkey
     FROM "{schema}".jobs j3
     WHERE j3.status = 'pending'
-      AND j3.started_at IS NULL
+      AND NOT j3.assignment_routed
       AND j3.queue = ANY($1::text[])
     ORDER BY j3.actor, j3.queue, COALESCE(j3.fairness_key, '__null__')
     LIMIT 1
@@ -673,11 +784,57 @@ rr_keys AS (
            COALESCE(j4.fairness_key, '__null__') AS fkey
     FROM "{schema}".jobs j4
     WHERE j4.status = 'pending'
-      AND j4.started_at IS NULL
+      AND NOT j4.assignment_routed
       AND j4.queue = ANY($1::text[])
       AND (j4.actor, j4.queue, COALESCE(j4.fairness_key, '__null__'))
           > (cur.actor, cur.queue, cur.fkey)
     ORDER BY j4.actor, j4.queue, COALESCE(j4.fairness_key, '__null__')
+    LIMIT 1
+  ) nxt
+),
+"""
+
+# Strict-FIFO label-routed (queue, actor) enumeration: the same
+# recursive loose index scan geometry as rr_keys, at (queue, actor)
+# grain instead of (actor, queue, cohort) grain, riding
+# jobs_queue_actor_dispatch_idx. The queue-leading key order is what
+# makes the walk fleet-clean here: queue = ANY($1) is a ScalarArrayOp
+# on the index's LEADING column, so Postgres drives one index range per
+# round queue, and each step's (queue, actor) > (cur.queue, cur.actor)
+# row-compare is an Index Cond within those ranges — one bounded seek
+# per distinct (queue, actor) pair on the ROUND's queues, with zero
+# entries visited for queues the round does not poll. (The
+# actor-leading indexes cannot do this: with actor first, the queue
+# predicate degrades to a per-entry filter and the walk reads every
+# fleet actor's index entries between matches.)
+#
+# The index is partial on (status = 'pending' AND NOT
+# assignment_routed) — exactly this walk's population (the label-routed
+# set per_actor_capacity drives from), so a queue holding only
+# re-pended rows costs the walk nothing; re-pended actors enter the
+# round through repend_capacity instead.
+_PA_KEYS_CTE = """\
+pa_keys AS (
+  (
+    SELECT j3.queue, j3.actor
+    FROM "{schema}".jobs j3
+    WHERE j3.status = 'pending'
+      AND NOT j3.assignment_routed
+      AND j3.queue = ANY($1::text[])
+    ORDER BY j3.queue, j3.actor
+    LIMIT 1
+  )
+  UNION ALL
+  SELECT nxt.queue, nxt.actor
+  FROM pa_keys cur
+  CROSS JOIN LATERAL (
+    SELECT j4.queue, j4.actor
+    FROM "{schema}".jobs j4
+    WHERE j4.status = 'pending'
+      AND NOT j4.assignment_routed
+      AND j4.queue = ANY($1::text[])
+      AND (j4.queue, j4.actor) > (cur.queue, cur.actor)
+    ORDER BY j4.queue, j4.actor
     LIMIT 1
   ) nxt
 ),
@@ -700,26 +857,58 @@ rr_keys AS (
 # clock_timestamp(): they must stay co-monotonic with the rows this
 # statement writes.
 _STRICT_FIFO_CANDIDATES_LATERAL = """\
-    SELECT j2.id, j2.actor, j2.identity_key, j2.fairness_key,
-           j2.priority, j2.scheduled_at
-    FROM "{schema}".jobs j2
-    WHERE j2.actor = pac.actor
-      AND j2.queue = sq.queue_name
-      -- Producer-placed rows only: a re-pended row on this label is the
-      -- assignment-routed arm's candidate (see the routing contract in
-      -- the module docstring), never this arm's.
-      AND NOT j2.assignment_routed
-      AND j2.status = 'pending'
-      AND j2.scheduled_at <= statement_timestamp()
-      AND (j2.schedule_to_close IS NULL OR j2.schedule_to_close > statement_timestamp())
-    ORDER BY j2.priority DESC, j2.scheduled_at, j2.id
-    -- Direct $5 parameter, not (SELECT oversample FROM params): the
-    -- parameter folds to its value in custom-plan estimates; the
-    -- subquery form never folds (see top_ids). Execution enforces the
-    -- bound either way -- a Limit node stops at its bound regardless
-    -- of the plan's estimates -- so this bound is what keeps the
-    -- candidate scan itself depth-independent even in plans whose
-    -- estimates never saw the value.
+    SELECT w.id, w.actor, w.identity_key, w.fairness_key,
+           w.priority, w.scheduled_at
+    FROM (
+      SELECT p.id, p.actor, p.identity_key, p.fairness_key,
+             p.priority, p.scheduled_at,
+             ROW_NUMBER() OVER (
+               ORDER BY p.priority DESC, p.scheduled_at, p.id
+             ) AS probe_rank
+      FROM (
+        SELECT j2.id, j2.actor, j2.identity_key, j2.fairness_key,
+               j2.priority, j2.scheduled_at
+        FROM "{schema}".jobs j2
+        WHERE j2.actor = pac.actor
+          AND j2.queue = sq.queue_name
+          -- Producer-placed rows only: a re-pended row on this label is
+          -- the assignment-routed arm's candidate (see the routing
+          -- contract in the module docstring), never this arm's.
+          AND NOT j2.assignment_routed
+          AND j2.status = 'pending'
+          AND j2.scheduled_at <= statement_timestamp()
+          AND (j2.schedule_to_close IS NULL OR j2.schedule_to_close > statement_timestamp())
+        ORDER BY j2.priority DESC, j2.scheduled_at, j2.id
+        -- The scan bound is a pure parameter expression, NEVER
+        -- pac.residual * $5: a LIMIT the planner cannot fold to a
+        -- constant is estimated as a fixed fraction of the scanned
+        -- index range, which keeps the plan's ESTIMATED cost
+        -- depth-proportional even though execution stops at the bound
+        -- — and past jit_above_cost that estimate makes Postgres
+        -- JIT-compile the plan on every dispatch round. $2 * $5 folds
+        -- to its value in custom plans (the same doctrine as top_ids),
+        -- so the estimate tracks the bound that actually limits
+        -- execution. The window below CANNOT replace this LIMIT: a
+        -- window function is logically evaluated before LIMIT, so a
+        -- window on the un-bounded probe would read the whole index
+        -- range per (actor, queue) — the depth-proportional read the
+        -- round-robin variant's own history documents.
+        LIMIT $2::int * $5::int
+      ) p
+    ) w
+    -- The exact per-(actor, queue) admission window, cut AFTER the
+    -- folded scan bound: probe_rank is the row's position in the same
+    -- (priority DESC, scheduled_at, id) order the probe reads, so the
+    -- top pac.residual * $5 by probe_rank is row-for-row the set the
+    -- shipped single-LIMIT probe read whenever residual <= limit_n
+    -- (for an uncapped actor residual IS limit_n, so the two bounds
+    -- coincide exactly; for a capped actor deeper than limit_n the
+    -- round's own limit binds first and the tail drains on later
+    -- rounds — the depth contract's standing rule). Cutting here,
+    -- BEFORE identity_dedup, matters: the shipped bound counted
+    -- identity-duplicate rows against the window, so a post-dedup cut
+    -- would silently widen it.
+    ORDER BY w.probe_rank
     LIMIT pac.residual * $5::int"""
 
 _ROUND_ROBIN_CANDIDATES_LATERAL = """\
@@ -733,12 +922,11 @@ _ROUND_ROBIN_CANDIDATES_LATERAL = """\
       -- short-circuit, so the WindowAgg (and the scan feeding it) paid
       -- full backlog depth per round even though only the top
       -- residual * oversample rows per cohort could ever survive.
-      -- Probing each cohort with ORDER BY + LIMIT residual * oversample
-      -- yields the SAME surviving rows with the SAME ranks (rank i
-      -- within a cohort is the i-th row of that cohort's priority
-      -- order), so selection is bit-identical to the shipped shape
-      -- while the window's input is at most
-      -- cohorts * residual * oversample rows for the pair.
+      -- Probing each cohort with ORDER BY + LIMIT yields the SAME
+      -- surviving rows with the SAME ranks (rank i within a cohort is
+      -- the i-th row of that cohort's priority order), so selection is
+      -- bit-identical to the shipped shape while the window's input is
+      -- at most cohorts * limit_n * oversample rows for the pair.
       --
       -- The probes ride jobs_round_robin_probe_idx
       -- (actor, queue, COALESCE(fairness_key, '__null__'),
@@ -751,30 +939,60 @@ _ROUND_ROBIN_CANDIDATES_LATERAL = """\
       -- `fairness_key IS NULL` qual does not combine with the keyed
       -- cohorts' equality probe, and `IS NOT DISTINCT FROM` is never
       -- an Index Cond on this index (measured: a seq scan).
+      --
+      -- Two bounds per probe, in different units on purpose. The SCAN
+      -- bound ($2 * $5) is a pure parameter expression: a LIMIT the
+      -- planner cannot fold to a constant is estimated as a fixed
+      -- fraction of the scanned index range, keeping the plan's
+      -- ESTIMATED cost depth-proportional past jit_above_cost — which
+      -- makes Postgres JIT-compile the plan on every dispatch round
+      -- even though execution stops at the bound. The ADMISSION bound
+      -- (cohort_rank <= residual * oversample, applied as the outer
+      -- LIMIT after the cohort_rank window — windows are logically
+      -- evaluated before LIMIT, so the cut cannot share the probe's
+      -- own query level) is the shipped per-cohort window exactly:
+      -- residual <= limit_n makes the two coincide, and a capped actor
+      -- with residual above limit_n is bound by the round's own limit
+      -- first, its tail draining on later rounds per the depth
+      -- contract.
       SELECT c.id, c.actor, c.identity_key, c.fairness_key,
              c.priority, c.scheduled_at,
              ROW_NUMBER() OVER (
                PARTITION BY COALESCE(c.fairness_key, '__null__')
                ORDER BY c.priority DESC, c.scheduled_at, c.id
              ) AS fairness_rank
-       FROM rr_keys k
-       CROSS JOIN LATERAL (
-         SELECT j2.id, j2.actor, j2.identity_key, j2.fairness_key,
-                j2.priority, j2.scheduled_at
-         FROM "{schema}".jobs j2
-         WHERE j2.actor = pac.actor
-           AND j2.queue = sq.queue_name
-           -- Producer-placed rows only: a re-pended row on this label is
-           -- the assignment-routed arm's candidate (see the routing
-           -- contract in the module docstring), never this arm's.
-           AND NOT j2.assignment_routed
-           AND j2.status = 'pending'
-           AND COALESCE(j2.fairness_key, '__null__') = k.fkey
-           AND j2.scheduled_at <= statement_timestamp()
-           AND (j2.schedule_to_close IS NULL OR j2.schedule_to_close > statement_timestamp())
-         ORDER BY j2.priority DESC, j2.scheduled_at, j2.id
-         LIMIT pac.residual * $5::int
-       ) c
+        FROM rr_keys k
+        CROSS JOIN LATERAL (
+          SELECT ck.id, ck.actor, ck.identity_key, ck.fairness_key,
+                 ck.priority, ck.scheduled_at
+          FROM (
+            SELECT p.id, p.actor, p.identity_key, p.fairness_key,
+                   p.priority, p.scheduled_at,
+                   ROW_NUMBER() OVER (
+                     ORDER BY p.priority DESC, p.scheduled_at, p.id
+                   ) AS cohort_rank
+            FROM (
+              SELECT j2.id, j2.actor, j2.identity_key, j2.fairness_key,
+                     j2.priority, j2.scheduled_at
+              FROM "{schema}".jobs j2
+              WHERE j2.actor = pac.actor
+                AND j2.queue = sq.queue_name
+                -- Producer-placed rows only: a re-pended row on this
+                -- label is the assignment-routed arm's candidate (see
+                -- the routing contract in the module docstring), never
+                -- this arm's.
+                AND NOT j2.assignment_routed
+                AND j2.status = 'pending'
+                AND COALESCE(j2.fairness_key, '__null__') = k.fkey
+                AND j2.scheduled_at <= statement_timestamp()
+                AND (j2.schedule_to_close IS NULL OR j2.schedule_to_close > statement_timestamp())
+              ORDER BY j2.priority DESC, j2.scheduled_at, j2.id
+              LIMIT $2::int * $5::int
+            ) p
+          ) ck
+          ORDER BY ck.cohort_rank
+          LIMIT pac.residual * $5::int
+        ) c
       -- The pair restriction sits OUTSIDE the probe: rr_keys is the
       -- global cohort enumeration (the recursive term cannot be
       -- correlated), and this filter narrows it to the lateral's own
@@ -802,23 +1020,47 @@ _ROUND_ROBIN_CANDIDATES_LATERAL = """\
 # cohort-keyed: a single ORDER BY priority probe over it would need a
 # sort over every due re-pended row of the actor -- depth-proportional
 # work the depth contract forbids.
+#
+# The two-bound split is the label-routed arm's doctrine: the SCAN bound
+# ($2 * $5) is a foldable parameter expression so the plan's ESTIMATED
+# cost stops tracking the backlog depth (an unfoldable LIMIT is
+# estimated as a fixed fraction of the scanned range, which is what
+# pushed this statement past jit_above_cost at depth), and the outer
+# cohort_rank cut re-imposes the exact per-cohort admission window
+# (residual * oversample) over the bounded probe output — the window
+# cannot share the probe's own level because a window is logically
+# evaluated before LIMIT.
 _REPENDED_STRICT_FIFO_LATERAL = """\
     SELECT p.id, p.actor, p.identity_key, p.fairness_key,
            NULL::bigint AS fairness_rank,
-           p.priority, p.scheduled_at, rc.residual, rc.actor_claimed_at
+           p.priority, p.scheduled_at, rc.residual, rc.actor_claimed_at,
+           rc.max_concurrent
     FROM repend_capacity rc
     CROSS JOIN rr_tail_keys tk
     CROSS JOIN LATERAL (
-      SELECT j2.id, j2.actor, j2.identity_key, j2.fairness_key,
-             j2.priority, j2.scheduled_at
-      FROM "{schema}".jobs j2
-      WHERE j2.actor = rc.actor
-        AND j2.assignment_routed
-        AND j2.status = 'pending'
-        AND COALESCE(j2.fairness_key, '__null__') = tk.fkey
-        AND j2.scheduled_at <= statement_timestamp()
-        AND (j2.schedule_to_close IS NULL OR j2.schedule_to_close > statement_timestamp())
-      ORDER BY j2.priority DESC, j2.scheduled_at, j2.id
+      SELECT ck.id, ck.actor, ck.identity_key, ck.fairness_key,
+             ck.priority, ck.scheduled_at
+      FROM (
+        SELECT pr.id, pr.actor, pr.identity_key, pr.fairness_key,
+               pr.priority, pr.scheduled_at,
+               ROW_NUMBER() OVER (
+                 ORDER BY pr.priority DESC, pr.scheduled_at, pr.id
+               ) AS cohort_rank
+        FROM (
+          SELECT j2.id, j2.actor, j2.identity_key, j2.fairness_key,
+                 j2.priority, j2.scheduled_at
+          FROM "{schema}".jobs j2
+          WHERE j2.actor = rc.actor
+            AND j2.assignment_routed
+            AND j2.status = 'pending'
+            AND COALESCE(j2.fairness_key, '__null__') = tk.fkey
+            AND j2.scheduled_at <= statement_timestamp()
+            AND (j2.schedule_to_close IS NULL OR j2.schedule_to_close > statement_timestamp())
+          ORDER BY j2.priority DESC, j2.scheduled_at, j2.id
+          LIMIT $2::int * $5::int
+        ) pr
+      ) ck
+      ORDER BY ck.cohort_rank
       LIMIT rc.residual * $5::int
     ) p
     WHERE tk.actor = rc.actor
@@ -833,10 +1075,15 @@ _REPENDED_STRICT_FIFO_LATERAL = """\
 # two rank series (the label-routed arm ranks its own probe's rows, this
 # arm ranks its own); ties interleave by priority in the downstream
 # eligible order, and every cohort's rows from both populations are
-# admitted each round, so neither series can starve the other.
+# admitted each round, so neither series can starve the other. The
+# two-bound split (foldable $2 * $5 scan bound, then the exact
+# residual * oversample cohort cut over the cohort_rank window) is the
+# label-routed arm's doctrine — see its comment for why the scan bound
+# must fold.
 _REPENDED_ROUND_ROBIN_LATERAL = """\
     SELECT w.id, w.actor, w.identity_key, w.fairness_key,
-           w.fairness_rank, w.priority, w.scheduled_at, rc.residual, rc.actor_claimed_at
+           w.fairness_rank, w.priority, w.scheduled_at, rc.residual, rc.actor_claimed_at,
+           rc.max_concurrent
     FROM repend_capacity rc
     CROSS JOIN LATERAL (
       SELECT c.id, c.actor, c.identity_key, c.fairness_key,
@@ -847,16 +1094,29 @@ _REPENDED_ROUND_ROBIN_LATERAL = """\
              ) AS fairness_rank
       FROM rr_tail_keys tk
       CROSS JOIN LATERAL (
-        SELECT j2.id, j2.actor, j2.identity_key, j2.fairness_key,
-               j2.priority, j2.scheduled_at
-        FROM "{schema}".jobs j2
-        WHERE j2.actor = rc.actor
-          AND j2.assignment_routed
-          AND j2.status = 'pending'
-          AND COALESCE(j2.fairness_key, '__null__') = tk.fkey
-          AND j2.scheduled_at <= statement_timestamp()
-          AND (j2.schedule_to_close IS NULL OR j2.schedule_to_close > statement_timestamp())
-        ORDER BY j2.priority DESC, j2.scheduled_at, j2.id
+        SELECT ck.id, ck.actor, ck.identity_key, ck.fairness_key,
+               ck.priority, ck.scheduled_at
+        FROM (
+          SELECT pr.id, pr.actor, pr.identity_key, pr.fairness_key,
+                 pr.priority, pr.scheduled_at,
+                 ROW_NUMBER() OVER (
+                   ORDER BY pr.priority DESC, pr.scheduled_at, pr.id
+                 ) AS cohort_rank
+          FROM (
+            SELECT j2.id, j2.actor, j2.identity_key, j2.fairness_key,
+                   j2.priority, j2.scheduled_at
+            FROM "{schema}".jobs j2
+            WHERE j2.actor = rc.actor
+              AND j2.assignment_routed
+              AND j2.status = 'pending'
+              AND COALESCE(j2.fairness_key, '__null__') = tk.fkey
+              AND j2.scheduled_at <= statement_timestamp()
+              AND (j2.schedule_to_close IS NULL OR j2.schedule_to_close > statement_timestamp())
+            ORDER BY j2.priority DESC, j2.scheduled_at, j2.id
+            LIMIT $2::int * $5::int
+          ) pr
+        ) ck
+        ORDER BY ck.cohort_rank
         LIMIT rc.residual * $5::int
       ) c
       -- The actor restriction sits OUTSIDE the probe, same doctrine as
@@ -872,7 +1132,8 @@ def _render_dispatch_sql(
     template: str,
     *,
     fairness_rank_column: str,
-    rr_keys_cte: str,
+    keys_cte: str,
+    keys_source: str,
     candidates_lateral: str,
     repended_lateral: str,
     ranked_order_by: str,
@@ -881,18 +1142,20 @@ def _render_dispatch_sql(
     """Substitute the per-variant fragments into the shared dispatch template.
 
     ``{schema}`` placeholders are preserved so the returned constant can be
-    rendered with ``.format(schema=...)`` at the call site.  ``rr_keys_cte``
-    is empty for the strict-FIFO variant (no label-cohort enumeration arm);
-    the template's ``WITH RECURSIVE`` keyword tolerates a list with no
-    recursive CTE, so one template serves both variants.  ``rr_tail_keys``
-    (the re-pended cohort enumeration) is shared verbatim by both variants
-    in the template itself; only the two candidates arms differ per
-    variant, through ``candidates_lateral`` (label-routed) and
-    ``repended_lateral`` (assignment-routed).
+    rendered with ``.format(schema=...)`` at the call site.  ``keys_cte`` is
+    the variant's label-routed keys enumeration (``pa_keys`` for
+    strict-FIFO, ``rr_keys`` for round-robin — the round-robin candidates
+    lateral joins that enumeration by name) and ``keys_source`` the CTE name
+    ``pa_actors`` reads its DISTINCT actor set from.  ``rr_tail_keys`` (the
+    re-pended cohort enumeration) is shared verbatim by both variants in the
+    template itself; only the two candidates arms differ per variant,
+    through ``candidates_lateral`` (label-routed) and ``repended_lateral``
+    (assignment-routed).
     """
     return (
         template.replace("__FAIRNESS_RANK_COLUMN__", fairness_rank_column)
-        .replace("__RR_KEYS_CTE__", rr_keys_cte)
+        .replace("__KEYS_CTE__", keys_cte)
+        .replace("__KEYS_SOURCE__", keys_source)
         .replace("__CANDIDATES_LATERAL__", candidates_lateral)
         .replace("__REPENDED_LATERAL__", repended_lateral)
         .replace("__RANKED_ORDER_BY__", ranked_order_by)
@@ -903,7 +1166,8 @@ def _render_dispatch_sql(
 DISPATCH_STRICT_FIFO_SQL: str = _render_dispatch_sql(
     _DISPATCH_SQL_TEMPLATE,
     fairness_rank_column="NULL::bigint AS fairness_rank",
-    rr_keys_cte="",
+    keys_cte=_PA_KEYS_CTE,
+    keys_source="pa_keys",
     candidates_lateral=_STRICT_FIFO_CANDIDATES_LATERAL,
     repended_lateral=_REPENDED_STRICT_FIFO_LATERAL,
     ranked_order_by="id.priority DESC, id.scheduled_at, id.id",
@@ -913,7 +1177,8 @@ DISPATCH_STRICT_FIFO_SQL: str = _render_dispatch_sql(
 DISPATCH_ROUND_ROBIN_SQL: str = _render_dispatch_sql(
     _DISPATCH_SQL_TEMPLATE,
     fairness_rank_column="j.fairness_rank",
-    rr_keys_cte=_RR_KEYS_CTE,
+    keys_cte=_RR_KEYS_CTE,
+    keys_source="rr_keys",
     candidates_lateral=_ROUND_ROBIN_CANDIDATES_LATERAL,
     repended_lateral=_REPENDED_ROUND_ROBIN_LATERAL,
     ranked_order_by="id.fairness_rank, id.priority DESC, id.scheduled_at, id.id",
@@ -950,14 +1215,15 @@ DISPATCH_ROUND_ROBIN_SQL: str = _render_dispatch_sql(
 # before returning empty — bounded wasted work on a transient state,
 # never an unbounded scan.
 #
-# Depth contract: actor_config is scanned once (one row per registered
-# actor, the same bound class per_actor_capacity pays per round) and
-# every inner probe is a LIMIT-1 index read that stops at the first
-# matching entry — per (actor, queue) the same first-entry probe
-# per_actor_capacity itself issues — so the probe's work is bounded by
-# registered actors x round queues, never by backlog depth. The
-# inner probes carry no ORDER BY: any single matching row answers the
-# question, so the cheapest first match is the correct one.
+# Depth contract: actor_config is read in one pass per EMPTY round
+# (bounded by the registered-actor count, and only ever paid by a round
+# that already admitted nothing — the claim statement proper no longer
+# scans the registry at all; see per_actor_capacity) and every inner
+# probe is a LIMIT-1 index read that stops at the first matching entry,
+# so the probe's work is bounded by registered actors x round queues,
+# never by backlog depth. The inner probes carry no ORDER BY: any
+# single matching row answers the question, so the cheapest first match
+# is the correct one.
 DISPATCH_CLAIMABLE_PROBE_SQL: str = """\
 SELECT 1
 FROM "{schema}".actor_config ac
@@ -969,7 +1235,12 @@ WHERE EXISTS (
         FROM "{schema}".jobs j
         WHERE j.actor = ac.actor
           AND j.queue = pq.q
-          AND j.started_at IS NULL
+          -- Producer-placed rows only, by the marker — never the
+          -- started_at proxy: an operator-retried row that failed
+          -- before its first claim is assignment_routed with
+          -- started_at still NULL, and the proxy would enumerate its
+          -- stale queue label as routable here.
+          AND NOT j.assignment_routed
           AND j.status = 'pending'
         LIMIT 1
     ) hit
@@ -980,7 +1251,11 @@ OR (
         SELECT 1
         FROM "{schema}".jobs j
         WHERE j.actor = ac.actor
-          AND j.started_at IS NOT NULL
+          -- The assignment-routed half: the marker, not
+          -- started_at IS NOT NULL — same divergent-row shape as
+          -- above, and this arm rides jobs_assignment_routed_probe_idx
+          -- whose partial predicate is the marker itself.
+          AND j.assignment_routed
           AND j.status = 'pending'
         LIMIT 1
     )

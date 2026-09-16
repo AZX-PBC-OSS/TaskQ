@@ -99,7 +99,7 @@ Extends `TaskQSettings`. All fields below apply to the worker process only.
 | Env Var | Type | Default | Description | Constraints |
 |---|---|---|---|---|
 | `TASKQ_DISPATCHER_POOL_SIZE` | `int` | `4` | Max connections for the dispatcher pool. | Min: 1 |
-| `TASKQ_DISPATCHER_COMMAND_TIMEOUT` | `float` (seconds) | `5.0` | Per-query timeout for the dispatcher pool and the TaskQ-built leader connections (election, cron, monitor), and the single deadline wrapped around each period-1 leader-loop iteration (`scheduled_wake`, cron): a stalled PG errors the iteration instead of hanging the loop past its staleness budget. When the watchdog is enabled, load fails unless `timeout + 1.0 < max(1.0 × TASKQ_WATCHDOG_TICK_GRACE_FACTOR, TASKQ_WATCHDOG_STALE_FLOOR)` for the period-1 leader loops (the producer loop is not checked), so a timeout-capped iteration can never false-trip the stale-loop detector. **At defaults this caps the value just under `9.0`** — a larger value fails at settings load and the worker will not start. Raising it requires raising `TASKQ_WATCHDOG_STALE_FLOOR` too; see [Validation Constraints](#validation-constraints). (Default was 10.0 before 1.x: equal to the floor, which produced exactly that false trip.) | Min: 1.0; must be < 9.0 at default watchdog settings; cross-field, see above |
+| `TASKQ_DISPATCHER_COMMAND_TIMEOUT` | `float` (seconds) | `5.0` | Per-query timeout for the dispatcher pool and the TaskQ-built leader connections (election, cron, monitor), and the single deadline wrapped around each period-1 leader-loop iteration (`scheduled_wake`, cron): a stalled PG errors the iteration instead of hanging the loop past its staleness budget. When the watchdog is enabled, load fails unless `timeout + 1.0 < max(1.0 × TASKQ_WATCHDOG_TICK_GRACE_FACTOR, TASKQ_WATCHDOG_STALE_FLOOR)` for the period-1 leader loops (the producer loop is not checked), so a timeout-capped iteration can never false-trip the stale-loop detector. **At defaults this caps the value just under `9.0`** — a larger value fails at settings load and the worker will not start. Raising it requires raising `TASKQ_WATCHDOG_STALE_FLOOR` too; see [Validation Constraints](#validation-constraints). (Default was 10.0 before 1.x: equal to the floor, which produced exactly that false trip.) For the dispatcher **pool** this configured value is the floor of the applied bound, not the bound itself — it is re-derived upward from a widened admission lock budget; see [Derived Values](#derived-values). | Min: 1.0; must be < 9.0 at default watchdog settings; cross-field, see above |
 | `TASKQ_DISPATCH_OVERSAMPLE` | `int` | `2` | Multiplier for per-actor candidate gathering in the dispatch SQL. Each LATERAL reads `residual × oversample` candidates. Higher values absorb more identity-key collisions and multi-producer contention. Default 2 (tolerates 50% dupe identities). Set 1 when no `identity_key` is used and single-producer. Range: 1–1000. | Min: 1; Max: 1000 |
 | `TASKQ_HEARTBEAT_POOL_SIZE` | `int` | `4` | Max connections for the heartbeat pool. | Min: 1 |
 | `TASKQ_HEARTBEAT_COMMAND_TIMEOUT` | `float` (seconds) | `2.0` | Per-query timeout for the heartbeat pool — deliberately tighter than `TASKQ_DISPATCHER_COMMAND_TIMEOUT`, since a beat slower than the tick cannot keep a lock lease alive. Raise it on a loaded or cross-region Postgres: `TASKQ_MAX_HEARTBEAT_FAILURES` consecutive timeouts self-terminate the worker. | > 0 |
@@ -519,6 +519,42 @@ TASKQ_PG_DSN_POOLED  →  falls back to TASKQ_PG_DSN when unset
 ```
 
 Used exclusively by `worker_pool`. May safely route through PgBouncer in transaction mode because the worker pool does not use session-level features.
+
+### `dispatcher_pool` command timeout
+
+```
+pool command_timeout = max(TASKQ_DISPATCHER_COMMAND_TIMEOUT,
+                           widest widened admission lock budget / 0.8)
+```
+
+The admission-path rate-limit acquires (token bucket / sliding window Postgres
+locks — see [rate-limiting.md](rate-limiting.md)) run on the dispatcher pool
+with **server-side** `lock_timeout` budgets from
+`TASKQ_TOKEN_BUCKET_LOCK_TIMEOUT_MS` / `TASKQ_SLIDING_WINDOW_LOCK_TIMEOUT_MS`.
+asyncpg enforces the pool's `command_timeout` as its own client-side
+per-statement timer, independent of those budgets — so a budget widened past
+the 5.0 s default would be silently truncated by the pool's own 5 s timer
+before the server-side refusal (the typed denial with its retry hint) could
+ever fire. To prevent that, every TaskQ-built dispatcher pool re-derives its
+per-query bound exactly the way the client pool re-derives its own from the
+enqueue lock budgets: the configured value is the floor, and each admission
+budget configured **above** its 5000 ms shipped default raises the bound to
+`budget / 0.8` seconds, so the server-side `lock_timeout` refusal always
+fires before the pool's client-side timer. At the shipped defaults the
+applied bound is exactly `TASKQ_DISPATCHER_COMMAND_TIMEOUT` — no behavior
+change unless you widen a budget, which is the case that needs it.
+
+Two corollaries:
+
+- A **caller-supplied** dispatcher pool (`WorkerConnections.dispatcher_pool` /
+  `..._factory`) keeps its own `command_timeout`; if you widen an admission
+  budget there, size the pool's timeout above the budget yourself.
+- A budget of **0 or less** asks the server for an unbounded wait (the
+  `lock_timeout` GUC convention). A TaskQ-built pool still applies its
+  per-query bound to that statement — the black-hole guard every other
+  statement relies on is not dropped for it — so if you truly need an
+  unbounded admission wait, supply your own pool without a client-side bound.
+  Prefer a large finite value.
 
 ---
 
