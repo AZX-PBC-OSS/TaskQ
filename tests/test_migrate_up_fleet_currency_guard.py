@@ -1,108 +1,93 @@
-"""Red test: `migrate up` has no fleet-currency guard, and the shipped
-Kubernetes manifest's migration step is therefore unsafe mid-rollout.
+"""Pin: the rolling-deploy overlap window closes by operator decision, not by a
+runner-level guard — and the shipped adoption path keeps old pods working until
+it closes.
 
-# ruff: noqa: S608  # Why: every f-string SQL below interpolates only this module's validated fixture schema; all values are $n-bound.
+## Why this pin was rewritten (the argument)
 
-## The contract this pins
+An earlier draft of this file demanded a fleet-currency guard in `migrate up`:
+refuse to apply a post-phase migration while any pod might still be running the
+previous release. Verified against the shipped system, that demand is
+unsatisfiable:
 
-`docs/guides/deployment.md`'s "Kubernetes Deployment" section — the
-flagship, copy-pasted-by-every-adopter manifest — runs the migration step
-as an initContainer with the bare command:
+* The only fleet-level oracle the runner could consult is the `workers` table,
+  and it carries liveness only — hostname, pid, queues, heartbeat timestamps.
+  It has no release or schema-version column, so the runner cannot tell an old
+  pod from a new one. Any liveness-based refusal would stay armed while the
+  fully-upgraded fleet heartbeats, which is exactly the state the shipped
+  close-out runs in: the operator confirms the rollout completed, then applies
+  `taskq migrate up --phase post` once, by hand. A liveness guard would turn
+  that documented step into an impossibility.
+* Refusing a bare `migrate up` outright would break fresh installs and the
+  pinned single-run contract that applies `pre` then `post` together.
+* The draft's own staged scenario attached no worker row at all, so even a
+  faithful liveness guard would not have refused in it.
 
-    command: ["taskq", "migrate", "up"]
+The shipped architecture instead assigns the overlap-window decision to the
+only party who can make it: the operator, who can know that every replica now
+runs the new release. That assignment is itself pinned green in
+`tests/test_idempotency_scope_migrations.py` ("Who is allowed to close the
+overlap window": the automatic migrate-on-start path must not apply the post
+phase; the phase-ordering guard refuses a post before its same-version pre; a
+plain `migrate up` applies pre then post in one run), and the adoption path is
+pinned at the docs layer by `tests/test_deployment_manifest_docs_contract.py`
+(the Kubernetes manifest's initContainer runs `migrate up --phase pre`, never
+a bare `migrate up`, and the `--phase post` close-out is documented as a
+human-gated step). Nothing in the runner can strengthen this further: a guard
+needs a signal that distinguishes releases, and none exists.
 
-No `--phase pre`. Per `src/taskq/cli.py`'s `migrate_up` / `_up`, a bare
-`migrate up` applies EVERY pending migration, `pre` and `post` together,
-in one call (pinned already by
-`tests/test_idempotency_scope_migrations.py::TestPhaseOrderingGuard::
-test_plain_up_applies_pre_before_post_in_one_run`).
+## What this file pins (a regression in any of these fails)
 
-A Kubernetes rolling update runs every new pod's initContainers —
-including this one — as each new pod comes up, WHILE old pods are still
-live and still serving traffic (that is what "rolling" means; it is also
-explicit fleet doctrine in docs/guides/ops.md's connection-budget section:
-"orchestrators ... bring the new pods up before draining the old ones").
-So the very first new-code pod's initContainer, followed literally, is
-the operator's *only* migration step — and it applies any outstanding
-`post`-phase migration immediately, while every old pod is still running.
-
-`src/taskq/migrations/01.00.03_01_post_idempotency_scope_drop_old_index.sql`
-documents, in its own header, exactly what this does: dropping the old
-single-column unique index "while any pre-that-release worker is still
-running turns EVERY enqueue from that worker into a hard failure ...
-SQLSTATE 42P10". The file's ONLY protection against being applied early
-is the same-VERSION pre-before-post ordering guard in
-`taskq.migrate.apply_pending` (ValueError: "cannot be applied before its
-pre-phase counterpart") — which says nothing about whether any pod in the
-fleet is still running the code that needs the dropped structure. A
-schema that already has last release's `pre` applied (the ordinary,
-expected steady state between deploys) satisfies that guard trivially:
-`--phase post`'s own precondition is already met, so `migrate up` walks
-straight through it.
-
-This test drives the exact documented command against the exact
-documented topology (old-release connection still open, enqueuing with
-the old `ON CONFLICT` shape) and shows the break the migration file's
-header predicts. It does NOT modify `apply_pending`, the CLI, or the
-manifest — it pins the current (undesired) behaviour as failing, per the
-brief's "leave it red" instruction.
-
-## Desired behaviour (what should exist, and doesn't)
-
-Oban ships exactly this hazard class as a *named, callable* safety check:
-`vendor/oban/lib/oban/migration.ex`, `Oban.Migration.verify_migrated!/1`
-(lines 209-254) raises a clear `RuntimeError` distinguishing "no
-migrations run" from "migrations outdated" by comparing the *code's*
-compiled-in current version against what the database records — a
-currency check callable from application code, independent of whichever
-migration tool actually applied the schema. Procrastinate's
-`vendor/procrastinate/docs/howto/production/migrations.md` ("The safer
-way, without service interruption") describes the same `pre`/`post` /
-blue-green naming TaskQ uses, but is explicit that operators must
-manually stop at every version with migrations and apply `post` only
-after that version's code is confirmed live everywhere — i.e. Procrastinate
-does not attempt to automate the ordering guarantee either; it documents
-it as an entirely manual discipline and provides no tool-level guard past
-naming the files correctly.
-
-TaskQ already does better than Procrastinate by refusing post-before-its-
-own-pre programmatically. The gap this test pins is one rung up: nothing
-refuses (or even warns on) a `post`-phase apply while the ledger has no
-signal that every pod is upgraded — because no such signal exists. A
-`taskq migrate up --phase post` (or a bare `migrate up`) has no way to
-know "is anyone still running the old code?" TaskQ's own worker registers
-itself in the `workers` table with a heartbeat (see
-`docs/guides/workers.md`), which is the natural fleet-currency oracle;
-nothing reads it here.
-
-## Test-seam note
-
-`Fleet`/`open_fleet` in `tests/_fleet.py` model full pod lifecycles but
-have no notion of "pod running an older code release" (every pod in the
-harness runs today's code against whatever migration state exists) — the
-"old release still connected" side of the rolling-deploy window has to be
-simulated by hand-executing the pre-scoped-idempotency `ON CONFLICT` SQL
-shape directly, exactly as `tests/test_idempotency_scope_migrations.py`
-already does for the same migration. This is not a workaround for an
-otherwise-reachable behaviour; it is the only way to exercise "code that
-predates this migration" at all, since the current source tree cannot run
-old code.
+1. **The docs cannot reach the broken state.** The deployment manifest's
+   migrate step carries `--phase pre` and the post close-out is human-gated —
+   asserted by delegating to the docs-contract source of truth rather than
+   restating it, so the two cannot drift apart.
+2. **The runner documents and enforces the operator-decision boundary.**
+   `migrate up` accepts `--phase post` and forwards it to `apply_pending` as
+   the explicit operator action; the migration runner's own documentation
+   (the `apply_pending_locked` docstring, which governs the locked startup
+   paths) states that lifecycle events decide nothing ("not on an operator's
+   decision") and that the post phase "stays behind the operator's explicit
+   ``taskq migrate up --phase post``". The enforcement halves — post-before-
+   pre refusal, locked startup path defaulting to pre-only — are pinned green
+   in `tests/test_idempotency_scope_migrations.py` and referenced here, not
+   duplicated.
+3. **The old-pod hazard stays nameable.** On the pre-phase-only mid-rollout
+   steady state, previous-release enqueue SQL keeps working (the overlap
+   window is real and safe). The shipped CLI behaviour is pinned truthfully:
+   a bare `migrate up` applies the post phase in that same run, after which
+   previous-release enqueue SQL fails with SQLSTATE 42P10, exactly as the
+   post migration file's own header predicts. That consequence is the
+   operator's knowledge — the reason property 1 exists — not a behaviour the
+   runner is expected to refuse: the runner has no signal that could
+   distinguish an old pod from a new one.
 """
 
 # ruff: noqa: S608  # Why: every f-string SQL below interpolates only this module's validated fixture schema; all values are $n-bound.
 
 from __future__ import annotations
 
+import inspect
 from datetime import UTC, datetime
+from unittest.mock import AsyncMock
 
 import asyncpg
 import pytest
+from typer.testing import CliRunner
 
 from taskq import migrate as migrate_mod
 from taskq._ids import new_uuid
+from taskq.cli import app
 from taskq.settings import TaskQSettings
+from tests.test_deployment_manifest_docs_contract import (
+    test_manifest_init_container_applies_only_the_pre_phase as _docs_manifest_pre_pin,
+)
+from tests.test_deployment_manifest_docs_contract import (
+    test_post_phase_is_documented_as_a_human_gated_step as _docs_human_gated_post_pin,
+)
 
 pytestmark = pytest.mark.integration
+
+_runner = CliRunner()
 
 
 async def _old_release_enqueue(conn: asyncpg.Connection, schema: str, key: str) -> None:
@@ -134,102 +119,169 @@ async def _old_release_enqueue(conn: asyncpg.Connection, schema: str, key: str) 
     )
 
 
-class TestMigrateUpHasNoFleetCurrencyGuard:
-    async def test_deployment_doc_migrate_command_breaks_old_pods_mid_rollout(
+class TestOverlapWindowClosesOnlyByOperatorDecision:
+    """The mid-rollout contract, end to end.
+
+    The Kubernetes manifest's initContainer applies `--phase pre` only (docs
+    contract); old pods keep enqueueing throughout the rollout; the post
+    phase that breaks them is applied solely by the operator's explicit,
+    human-gated close-out; and a bare `migrate up` — the command an adopter
+    would have to write to reach the broken state — applies the post phase
+    with no refusal, which is why the manifest pin above is load-bearing.
+    """
+
+    def test_docs_contract_manifest_applies_only_the_pre_phase(self) -> None:
+        """Delegate to the docs-contract source of truth.
+
+        Importing and invoking the docs pins (aliased to non-`test_` names so
+        pytest does not collect them twice) keeps a single definition of the
+        manifest contract: if the shipped Kubernetes manifest regresses to a
+        bare `migrate up`, or the post close-out stops being human-gated,
+        THIS test fails through the same assertions that own the contract.
+        """
+        _docs_manifest_pre_pin()
+        _docs_human_gated_post_pin()
+
+    def test_migrate_up_accepts_phase_post_as_the_explicit_operator_action(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`migrate up --phase post` is a first-class, forwarded operator action.
+
+        The close-out step of the documented deploy sequence has to exist on
+        the CLI surface and reach the runner as `phase="post"` — the operator
+        is the mechanism that closes the overlap window, so the flag that
+        expresses the decision must not silently disappear or stop being
+        forwarded. (The forwarding of `--phase pre` is pinned in
+        tests/test_cli_migrate.py; this pins the operator's close-out value.)
+        """
+        conn = AsyncMock()
+        monkeypatch.setattr(asyncpg, "connect", AsyncMock(return_value=conn))
+        apply_mock = AsyncMock(return_value=[])
+        monkeypatch.setattr(migrate_mod, "apply_pending", apply_mock)
+
+        result = _runner.invoke(app, ["migrate", "up", "--phase", "post"])
+
+        assert result.exit_code == 0, f"stderr: {result.stderr}"
+        apply_mock.assert_awaited_once()
+        assert apply_mock.await_args is not None
+        assert apply_mock.await_args.kwargs["phase"] == "post"
+
+    def test_runner_documents_closing_the_overlap_window_as_an_operator_decision(
+        self,
+    ) -> None:
+        """The runner's own documentation must state the decision boundary.
+
+        `apply_pending_locked` is the entry point behind every automatic
+        migration path (migrate-on-start, `ui serve --migrate`); its
+        docstring is where the runner explains WHY it never applies the post
+        phase on its own: lifecycle events are not operator decisions, and
+        the post phase stays behind the operator's explicit
+        `taskq migrate up --phase post`. If that statement is lost from the
+        runner, the next contributor has no documented reason to preserve
+        the boundary.
+        """
+        doc = inspect.getdoc(migrate_mod.apply_pending_locked) or ""
+        assert "not on an operator's decision" in doc, (
+            "the runner must document that lifecycle events (restart, "
+            "rollout, autoscale) are not operator decisions and must not "
+            "apply the post phase on their own"
+        )
+        assert "taskq migrate up --phase post" in doc, (
+            "the runner must document the operator's explicit close-out "
+            "command as the sanctioned way to apply the post phase"
+        )
+
+    async def test_old_pods_keep_enqueueing_until_the_operator_closes_the_window(
         self, pg_conn: asyncpg.Connection, settings: TaskQSettings
     ) -> None:
-        """Reproduce docs/guides/deployment.md's Kubernetes manifest literally.
+        """Drive the deploy sequence and pin each step's truthful outcome.
 
-        Sequence, matching the doc's own stated deploy order plus one
-        detail the doc never states because nothing forces it: a rolling
-        update runs the new pod's initContainer while old pods are still
-        live.
+          1. Mid-rollout steady state: 01.00.03_01:pre applied, post not —
+             the schema state the manifest's `--phase pre` initContainer
+             produces on every pod. A previous-release pod is connected and
+             enqueuing with the old `ON CONFLICT` shape; the enqueue must
+             succeed, which is the entire payoff of the phase split.
+          2. Shipped CLI behaviour, pinned truthfully: a bare `migrate up`
+             applies every pending migration, post included, in one run —
+             the exact `apply_pending` call the CLI's `_up` issues with no
+             `--phase` (the CLI forwarding itself is pinned in
+             tests/test_cli_migrate.py, and the fresh-schema pre-before-post
+             ordering in tests/test_idempotency_scope_migrations.py).
+             Nothing refuses: the runner has no signal that could
+             distinguish an old pod from a new one.
+          3. The consequence the operator must know: once the post phase
+             has run, the same old-shape enqueue fails with SQLSTATE 42P10
+             (the arbiter index is resolved at plan time), exactly as the
+             post migration file's own header predicts.
 
-          1. Prior release's steady state: 01.00.03_01:pre already applied
-             (an ordinary "already migrated one version" schema — not a
-             fresh DB). An old-release pod is connected and enqueuing.
-          2. Operator follows deployment.md exactly: the new pod's
-             initContainer runs `taskq migrate up` (no --phase flag, per
-             the manifest's `command: ["taskq", "migrate", "up"]`).
-          3. The still-connected old-release pod enqueues again, using the
-             unmodified pre-existing `ON CONFLICT` shape from step 1.
-
-        Desired: the old pod's enqueue keeps working, because nothing
-        should apply a breaking post-phase migration while unupgraded pods
-        are attached. Actual: `migrate up` has no way to know the old pod
-        exists, applies 01.00.03_01:post immediately, and the old pod's
-        very next enqueue raises `asyncpg.exceptions.InvalidColumnReferenceError`
-        (SQLSTATE 42P10 — "there is no unique or exclusion constraint
-        matching the ON CONFLICT specification"), exactly as predicted by
-        that migration file's own header.
+        Step 3 is why step 1's docs pin is load-bearing: the manifest must
+        never run the bare command mid-rollout, and closing the window is
+        the operator's deliberate, human-gated act — not something the
+        runner can time, because the `workers` table cannot tell a
+        heartbeating old pod from a heartbeating new one.
         """
         schema = settings.schema_name
 
-        # Step 1: ordinary prior-release steady state.
+        # Step 1: mid-rollout steady state after the manifest's `--phase pre`.
         await migrate_mod.apply_pending(pg_conn, schema=schema, target="01.00.03_01")
         applied = await migrate_mod.list_applied(pg_conn, schema)
         assert "01.00.03_01:pre" in applied
         assert "01.00.03_01:post" not in applied
 
-        # The old-release pod's connection is already open and already
-        # enqueuing successfully against this schema -- this call must
-        # succeed, proving the "old pod" is genuinely live and working
-        # before the new pod's migration step runs.
+        # The previous-release pod's connection is open and enqueuing
+        # successfully against this schema — the overlap window is open and
+        # safe, which must hold for the entire rollout.
         await _old_release_enqueue(pg_conn, schema, key="steady-state-key")
 
-        # Step 2: literally what docs/guides/deployment.md's Kubernetes
-        # manifest instructs: `taskq migrate up`, no --phase.
-        await migrate_mod.apply_pending(pg_conn, schema=schema)
-        applied = await migrate_mod.list_applied(pg_conn, schema)
-        assert "01.00.03_01:post" in applied, (
-            "sanity check: the doc-literal command really does apply the "
-            "post-phase migration in one shot"
+        # Step 2: a bare `migrate up` (the CLI's phase=None path) applies the
+        # post phase in the same run. Pinned as current behaviour: the runner
+        # has no release-aware fleet signal to refuse on.
+        applied_now = await migrate_mod.apply_pending(pg_conn, schema=schema)
+        assert "01.00.03_01:post" in {m.key for m in applied_now}, (
+            "bare `migrate up` must keep applying every pending phase in one "
+            "run — if this now refuses, the single-run contract and this pin "
+            "need a deliberate redesign together"
         )
 
-        # Step 3: the SAME old-release pod, still connected, enqueues
-        # again with the same SQL shape that worked one step ago.
-        #
-        # DESIRED: this succeeds -- a rolling deploy must never break a
-        # pod that has not been replaced yet. `migrate up`, run exactly as
-        # the shipped manifest instructs, should either refuse to apply a
-        # fleet-currency-sensitive post-phase migration with no fleet
-        # signal to check against, or the deployment doc's own migrate
-        # step should never be able to reach this state. Neither exists
-        # today, so this is left failing.
-        await _old_release_enqueue(pg_conn, schema, key="post-migration-key")
+        # Step 3: the same previous-release pod, still connected, enqueues
+        # again with the same SQL shape that worked one step ago. The old
+        # arbiter index is gone, so the statement fails at plan time — the
+        # hazard the operator's human-gated close-out exists to sequence.
+        with pytest.raises(asyncpg.InvalidColumnReferenceError) as exc_info:
+            await _old_release_enqueue(pg_conn, schema, key="post-migration-key")
+        assert exc_info.value.sqlstate == "42P10"
 
 
-class TestApplyPendingPostHasNoFleetSignalToCheck:
-    async def test_post_phase_apply_has_no_worker_liveness_check_available(
+class TestPostPhaseApplyHasNoReleaseAwareFleetSignal:
+    """There is no signal the runner could consult, by design of the schema.
+
+    The `workers` table (populated at pod startup, heartbeated, swept by the
+    leader per docs/guides/workers.md) carries liveness only: no release or
+    schema-version column. A live row is therefore ambiguous — it is what a
+    fully-upgraded fleet looks like during the documented close-out AND what
+    a half-rolled-out fleet looks like mid-rollout. The runner cannot
+    distinguish them, which is precisely why applying the post phase is the
+    operator's decision (see the module docstring and
+    tests/test_idempotency_scope_migrations.py's "Who is allowed to close
+    the overlap window").
+    """
+
+    async def test_explicit_post_apply_proceeds_despite_live_worker_heartbeats(
         self, pg_conn: asyncpg.Connection, settings: TaskQSettings
     ) -> None:
-        """There is no oracle `apply_pending` could consult even if it wanted to.
+        """The operator's explicit close-out works against a heartbeating fleet.
 
-        TaskQ's own `workers` table (populated by `create_worker` at pod
-        startup, read by the leader's stale-worker sweep per
-        docs/guides/workers.md) is the natural fleet-currency signal: a row
-        with a live heartbeat is proof a pod is still attached. This test
-        shows that signal is not surfaced anywhere in the migration path:
-        `apply_pending`'s public parameters (`phase`, `target`,
-        `max_steps`) contain nothing that could express "refuse if any
-        worker row predates version X", and no such check runs internally
-        -- a post-phase apply proceeds with a live `workers` row present
-        for the version that is about to break, silently.
-
-        Compare `Oban.Migration.verify_migrated!/1`
-        (vendor/oban/lib/oban/migration.ex:209-254), which at least
-        exposes a version-currency check as a public, independently
-        callable function -- so an operator (or a startup hook) CAN gate
-        on it, even though Oban does not wire it into the migration apply
-        path automatically either. TaskQ has no equivalent function to
-        call, callable or otherwise.
+        Sequence mirroring the documented deploy: the manifest's `--phase
+        pre` runs, pods (old and new alike) heartbeat, and the operator's
+        explicit `--phase post` then applies WITHOUT being refused. A guard
+        keyed on live heartbeats would break exactly this — the shipped
+        close-out runs while the upgraded fleet is heartbeating — which is
+        the core reason the demand for a liveness-based refusal was dropped.
         """
         schema = settings.schema_name
-        await migrate_mod.apply_pending(pg_conn, schema=schema, target="01.00.03_01")
+        await migrate_mod.apply_pending(pg_conn, schema=schema, phase="pre")
 
-        # Simulate a live old-release pod: insert a `workers` row exactly
-        # as `create_worker` would, with a fresh heartbeat, so a
-        # currency-aware guard would have something to find.
+        # A live pod, attached and heartbeating: indistinguishable by release.
         worker_id = new_uuid()
         await pg_conn.execute(
             f"""
@@ -238,28 +290,25 @@ class TestApplyPendingPostHasNoFleetSignalToCheck:
             VALUES ($1, $2, $3, $4, now(), now())
             """,
             worker_id,
-            "old-release-pod",
+            "attached-pod",
             12345,
             ["default"],
         )
 
-        # DESIRED: `apply_pending` (or some sibling entry point) exposes a
-        # way to ask "is it safe to apply post-phase migrations right
-        # now?" that would say no here, because a worker row with a fresh
-        # heartbeat is present and its release is unknown/unconfirmed.
-        # ACTUAL: no such function exists on the public `taskq.migrate`
-        # surface -- `apply_pending` proceeds unconditionally. This
-        # assertion documents the missing capability by asserting the
-        # function is absent; it must be removed (not adjusted) once one
-        # is added.
+        # Tripwire: if a release-aware fleet-currency guard ever ships on
+        # taskq.migrate, this pin's premise changes — wire it into the CLI's
+        # documented paths and REWRITE this assertion (do not just delete
+        # it): with a real release signal, a guard could finally distinguish
+        # the mid-rollout state from the close-out state.
         assert not hasattr(migrate_mod, "assert_safe_to_apply_post_phase"), (
-            "a fleet-currency guard now exists on taskq.migrate -- wire it "
-            "into the CLI's `migrate up` / `migrate up --phase post` path "
-            "and delete this placeholder assertion, it is no longer the gap"
+            "a release-aware fleet-currency guard now exists on taskq.migrate "
+            "-- decide how it distinguishes the operator's close-out from a "
+            "mid-rollout apply, wire it into the CLI paths, and rewrite this "
+            "pin around the new signal"
         )
 
-        # And, unconditionally, the post phase does go ahead despite the
-        # live worker row -- pinning today's actual (undesired) behaviour.
-        await migrate_mod.apply_pending(pg_conn, schema=schema)
-        applied = await migrate_mod.list_applied(pg_conn, schema)
-        assert "01.00.03_01:post" in applied
+        # The operator's explicit close-out proceeds despite the live worker
+        # row — by design: the runner defers the fleet-wide decision to the
+        # party typing the command.
+        applied_now = await migrate_mod.apply_pending(pg_conn, schema=schema, phase="post")
+        assert "01.00.03_01:post" in {m.key for m in applied_now}

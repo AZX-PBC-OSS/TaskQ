@@ -30,6 +30,7 @@ __all__ = [
     "ListSpanExporter",
     "_logging_configured_guard",
     "_otel_enabled_guard",
+    "_otel_gauge_cache_guard",
     "_save_logging_configured",
     "_save_otel_enabled",
     "_unpin_cached_loggers",
@@ -37,6 +38,7 @@ __all__ = [
     "counter_data_points",
     "counter_value",
     "histogram_points",
+    "reset_otel_gauge_caches",
     "restore_logging_configured",
     "restore_otel_enabled",
     "setup_meter",
@@ -185,6 +187,96 @@ def _otel_enabled_guard() -> Generator[None, None, None]:  # pyright: ignore[rep
         yield
     finally:
         otel_mod._otel_enabled = original  # type: ignore[reportPrivateUsage]  # Why: testing utility restores private module flag on teardown.
+
+
+# ── Process-global gauge-cache isolation ─────────────────────────────────
+#
+# Every observable gauge in obs/_otel.py is fed by a process-global the
+# event-loop thread writes and the gauge callbacks read.  Those globals
+# are module state, not test state: a test that drives the production
+# writers leaves its values behind for every later test in the same
+# process, and under pytest-xdist "later in the same process" is whatever
+# the load balancer schedules next on that worker.  The prune family is
+# the proven polluter: it stamps the batch-size gauges on EVERY batch,
+# empty ones included, so one prune-driving test leaves "prune" /
+# "archive_expiry" in ``_sweep_batch_size_cache`` forever — and the
+# sweep-batch-size cardinality test, which MERGES its eight production
+# names into that cache and asserts strict key-set equality, failed once
+# in a full xdist suite exactly that way (reproduced deterministically;
+# see tests/test_rt_otel_gauge_cache_test_isolation.py).  The reset below
+# restores construction state around every test, the same doctrine the
+# suite's other process-global resets follow (_reset_web_admin_caches,
+# _otel_enabled_guard, _logging_configured_guard): both ends, so a test
+# can neither inherit residue nor leave it.
+
+
+def reset_otel_gauge_caches() -> None:
+    """Reset every process-global in :mod:`taskq.obs._otel` that a gauge
+    observer — or a test asserting on one — can read, to construction
+    state.
+
+    Rebind, never mutate in place: the gauge caches follow a copy-on-write
+    rebind discipline in production precisely because the OTel reader
+    thread iterates them, and an in-place ``dict.clear()`` landing while
+    any reader's iterator is open is the ``dictionary changed size during
+    iteration`` hazard that discipline exists to prevent.  Rebinding is
+    also coherent for importers: every reader of these globals reads
+    through the module namespace at call time (``worker/health.py`` reads
+    ``_otel._sweep_success_cache`` / ``_otel._sweep_batch_size_cache``
+    that way, the ``_observe_*`` callbacks read the module globals, and
+    the tests read ``otel_mod.<attr>``), so no holder of a stale object
+    exists to desynchronize.
+
+    Covers the gauge-fed caches (queue depth, stranded jobs, reservation
+    slots, keyed-reclaim pending, sweep success/batch-size stamps, the
+    leader lease TTL, jobs-by-status, actor backlog and oldest-pending
+    age, oldest-due age, scheduled count, running-lease-expired count,
+    heartbeat consecutive failures, disabled schedules, the slot-pool
+    occupancy source) plus the two label-admission sets and the cron
+    failure-level ledger — emitter-side process globals the cardinality
+    tests were already forced to pin per test because a prior test's
+    admissions widen a later test's boundary.  Deliberately NOT reset:
+    ``_lazy_counters`` / ``_lazy_histograms`` (memoized per meter
+    identity; a stale entry self-replaces on the first call after a meter
+    swap, and clearing would undo the memoization under test),
+    ``_library_tracer`` / ``_library_meter`` (resolve-once resolvers that
+    are safe across provider transitions; tests patch the accessor
+    functions, not these values), and ``_otel_enabled`` (restored by
+    ``_otel_enabled_guard``).
+    """
+    otel_mod._queue_depth_cache = {}  # pyright: ignore[reportPrivateUsage]  # Why: test isolation seam — the suite's established pattern for module-global caches with no other reset surface.
+    otel_mod._stranded_jobs_cache = {}  # pyright: ignore[reportPrivateUsage]  # Why: same seam as above.
+    otel_mod._reservation_slots_cache = {}  # pyright: ignore[reportPrivateUsage]  # Why: same seam as above.
+    otel_mod._keyed_reclaim_pending = 0  # pyright: ignore[reportPrivateUsage]  # Why: same seam as above.
+    otel_mod._sweep_success_cache = {}  # pyright: ignore[reportPrivateUsage]  # Why: same seam as above.
+    otel_mod._sweep_batch_size_cache = {}  # pyright: ignore[reportPrivateUsage]  # Why: same seam as above.
+    otel_mod._sweep_batch_size_configured_cache = {}  # pyright: ignore[reportPrivateUsage]  # Why: same seam as above.
+    otel_mod._leader_lease_expires_in_seconds_cache = None  # pyright: ignore[reportPrivateUsage]  # Why: same seam as above.
+    otel_mod._jobs_by_status_cache = {}  # pyright: ignore[reportPrivateUsage]  # Why: same seam as above.
+    otel_mod._actor_backlog_cache = {}  # pyright: ignore[reportPrivateUsage]  # Why: same seam as above.
+    otel_mod._actor_oldest_pending_age_cache = {}  # pyright: ignore[reportPrivateUsage]  # Why: same seam as above.
+    otel_mod._oldest_due_age_seconds = 0.0  # pyright: ignore[reportPrivateUsage]  # Why: same seam as above.
+    otel_mod._scheduled_count = 0  # pyright: ignore[reportPrivateUsage]  # Why: same seam as above.
+    otel_mod._running_lease_expired_count = 0  # pyright: ignore[reportPrivateUsage]  # Why: same seam as above.
+    otel_mod._heartbeat_consecutive_failures_count = 0  # pyright: ignore[reportPrivateUsage]  # Why: same seam as above.
+    otel_mod._disabled_schedules_count = 0  # pyright: ignore[reportPrivateUsage]  # Why: same seam as above.
+    otel_mod._slot_pool_occupancy_source = None  # pyright: ignore[reportPrivateUsage]  # Why: same seam as above.
+    otel_mod._queue_label_values.clear()  # pyright: ignore[reportPrivateUsage]  # Why: same seam as above — the set is iterated only on the emitter thread, so in-place clear is the copy-on-write exemption's exact case.
+    otel_mod._cron_actor_label_values.clear()  # pyright: ignore[reportPrivateUsage]  # Why: same seam and same exemption as above.
+    otel_mod._cron_failure_levels.clear()  # pyright: ignore[reportPrivateUsage]  # Why: same seam as above.
+
+
+@pytest.fixture(autouse=True)
+def _otel_gauge_cache_guard() -> Generator[None, None, None]:  # pyright: ignore[reportUnusedFunction]  # Why: pytest autouse fixture; referenced by pytest runner via reflection.
+    """Reset the :mod:`taskq.obs._otel` process-global gauge caches around
+    every test — before, so no test inherits a prior test's residue, and
+    after, so none is left behind (see :func:`reset_otel_gauge_caches`'s
+    section comment for the xdist flake this closes)."""
+    reset_otel_gauge_caches()
+    try:
+        yield
+    finally:
+        reset_otel_gauge_caches()
 
 
 def _save_logging_configured() -> bool:

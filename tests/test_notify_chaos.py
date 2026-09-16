@@ -33,7 +33,6 @@ from taskq.settings import WorkerSettings
 from taskq.testing._shared_containers import creator_labels, skip_test_without_docker
 from taskq.testing.fixtures import _create_worker
 from taskq.testing.settings import make_integration_settings
-from taskq.worker.notify import _active_listeners as _active_notify_listeners
 from taskq.worker.notify import (
     _connected_lookup,
     _make_callback,
@@ -53,18 +52,13 @@ class _Op(Enum):
     NOTIFY = auto()
 
 
-# ── Module-state cleanup fixture ───────────────────────────────────────
-
-
-@pytest.fixture(autouse=True)
-def _restore_notify_module_globals() -> Iterator[None]:  # pyright: ignore[reportUnusedFunction] # Why: pytest autouse fixtures are consumed by the framework; pyright does not track fixture usage
-    _active_notify_listeners.clear()
-    _connected_lookup.clear()
-    try:
-        yield
-    finally:
-        _active_notify_listeners.clear()
-        _connected_lookup.clear()
+# ── Module-state cleanup ───────────────────────────────────────────────
+#
+# The module-global listener bookkeeping (_active_listeners /
+# _connected_lookup) is reset around every test by the conftest-level
+# _reset_notify_module_globals autouse fixture — this file's former
+# file-local copy of that reset was promoted there (with the four other
+# identical copies across the notify suites) so every test gets it.
 
 
 # ── Helpers ────────────────────────────────────────────────────────────

@@ -31,7 +31,6 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import uuid
-from collections.abc import Iterator
 from datetime import timedelta
 from typing import Any
 from unittest.mock import AsyncMock, Mock
@@ -44,7 +43,6 @@ from taskq.backend.postgres import PostgresBackend
 from taskq.testing.assertions import wait_for_condition
 from taskq.worker.notify import (
     _active_listeners,
-    _connected_lookup,
     _health_check_loop,
     notify_listener_loop,
 )
@@ -129,16 +127,11 @@ def _make_channels(backend: PostgresBackend) -> list[tuple[str, Any]]:
     ]
 
 
-@pytest.fixture(autouse=True)
-def _restore_notify_module_globals() -> Iterator[None]:  # pyright: ignore[reportUnusedFunction] # Why: pytest autouse fixtures are consumed by the framework; pyright does not track fixture usage
-    """Ensure module-level mutable state is clean between test files."""
-    _active_listeners.clear()
-    _connected_lookup.clear()
-    try:
-        yield
-    finally:
-        _active_listeners.clear()
-        _connected_lookup.clear()
+# The module-global listener bookkeeping (_active_listeners /
+# _connected_lookup) is reset around every test by the conftest-level
+# _reset_notify_module_globals autouse fixture — this file's former
+# file-local copy of that reset was promoted there (with the four other
+# identical copies across the notify suites) so every test gets it.
 
 
 # ── The health-check probe must be bounded ─────────────────────────────

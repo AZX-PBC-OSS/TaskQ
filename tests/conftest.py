@@ -26,6 +26,7 @@ The fixtures are imported from :mod:`taskq.testing.fixtures`
 and re-registered here so they are available to all test modules.
 """
 
+import asyncio
 import contextlib
 import glob
 import os
@@ -89,7 +90,11 @@ from taskq.testing.jobs import (
     make_enqueue_args,
     make_job_row,
 )
-from taskq.testing.otel import _logging_configured_guard, _otel_enabled_guard
+from taskq.testing.otel import (
+    _logging_configured_guard,
+    _otel_enabled_guard,
+    _otel_gauge_cache_guard,
+)
 from taskq.testing.pg import (
     DEFAULT_ACTORS,
     create_pending_job,
@@ -248,6 +253,113 @@ def _reset_web_admin_caches(request: pytest.FixtureRequest) -> Iterator[None]:  
         yield
     finally:
         _reset()
+
+
+@pytest.fixture(autouse=True)
+def _reset_notify_module_globals() -> Iterator[None]:  # pyright: ignore[reportUnusedFunction]  # Why: autouse fixture consumed implicitly by the test runner; pyright does not track fixture usage.
+    """Reset the notify module's process-global listener bookkeeping around
+    every test.
+
+    ``taskq.worker.notify`` keeps two module-level registries — the active
+    listener set and the per-backend connected lookup — that production
+    code writes whenever a real notify listener runs, and that five test
+    files read directly.  Each of those files carried an identical
+    file-local copy of this reset; the copies are promoted here as ONE
+    shared fixture (the same promotion ``_reset_web_admin_caches`` made
+    from tests/web_admin) so the globals are isolated for every test —
+    including any future file that drives the real listener machinery
+    without knowing about the bookkeeping.
+
+    Cleared IN PLACE, never rebound: the test files import the two
+    objects by value (``from taskq.worker.notify import _active_listeners``),
+    so they hold direct references — a rebind would leave their held
+    objects stale while the module moved on.
+    """
+    from taskq.worker.notify import _active_listeners, _connected_lookup
+
+    _active_listeners.clear()  # pyright: ignore[reportPrivateUsage]  # Why: test isolation seam for module-global registries with no other reset surface.
+    _connected_lookup.clear()  # pyright: ignore[reportPrivateUsage]  # Why: same seam as above.
+    try:
+        yield
+    finally:
+        _active_listeners.clear()  # pyright: ignore[reportPrivateUsage]  # Why: same seam as above.
+        _connected_lookup.clear()  # pyright: ignore[reportPrivateUsage]  # Why: same seam as above.
+
+
+def _leaked_pending_task_report(
+    before: set[asyncio.Task[object]], after: set[asyncio.Task[object]]
+) -> str | None:
+    """The loud failure text for tasks a test left pending on its event
+    loop, or ``None`` when nothing leaked.
+
+    Module-level (not fixture-local) so the suite-hygiene pin can exercise
+    the classification directly — the report is the guard's whole
+    contract: a leak must be named, never silently tolerated.
+    """
+    leaked = sorted(
+        (t for t in after - before if not t.done()),
+        key=lambda t: t.get_name(),
+    )
+    if not leaked:
+        return None
+    lines = [
+        f"  - task {t.get_name()!r} still pending; coroutine: {t.get_coro()!r}" for t in leaked
+    ]
+    return "\n".join(lines)
+
+
+@pytest.fixture(autouse=True)
+async def _fail_on_leaked_asyncio_tasks(request: pytest.FixtureRequest) -> AsyncIterator[None]:  # pyright: ignore[reportUnusedFunction]  # Why: autouse fixture consumed implicitly by the test runner; pyright does not track fixture usage.
+    """Fail loudly when a test leaves an asyncio task still pending.
+
+    The suite's event loops are MODULE-scoped (``asyncio_default_test_loop_scope
+    = "module"``), so a loop task a test leaves uncancelled — or cancels
+    without awaiting — stays alive on the module's loop and advances at
+    every later test's await points, exactly the window in which it can
+    write process-global state (the obs gauge caches, registries, caches)
+    into a test that never asked for it.  The leak is a defect at the
+    test that created the task, so the failure lands there, naming the
+    task: cancel-and-await on every path is the suite's own loop-teardown
+    doctrine (``_stop_loop`` in test_leader_sweeps_coverage.py, the
+    leader_task finally blocks in test_otel_integration.py).
+
+    Baseline-snapshot diff, not an absolute check: tasks that were already
+    pending when the test started (a module-scoped fixture's long-lived
+    worker) are this test's inheritance, not its leak, and stay exempt;
+    only tasks THIS test minted and left unfinished fail.  Sync tests and
+    loop-less contexts are a vacuous pass (no loop to leak onto in this
+    thread); the fixture runs on the module loop for async items, which
+    is where every loop task in the suite lives.
+    """
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        # No running loop in this thread (a sync test, or a fixture
+        # evaluated outside asyncio): nothing this test could have
+        # scheduled on a loop is alive to leak.
+        yield
+        return
+    before = asyncio.all_tasks(loop)
+    try:
+        yield
+    finally:
+        after = asyncio.all_tasks(loop)
+        # This fixture is itself an async generator, so the task currently
+        # executing this finally block is pytest-asyncio's per-fixture
+        # ``async_finalizer`` driver (created at teardown, after the
+        # baseline snapshot — plugin.py's ``_wrap_asyncgen_fixture``).
+        # It is the guard's own machinery, never a leak.
+        current = asyncio.current_task()
+        if current is not None:
+            after.discard(current)
+        report = _leaked_pending_task_report(before, after)
+        if report is not None:
+            pytest.fail(
+                "test left asyncio task(s) still pending on the module event loop — "
+                "a live loop keeps writing shared state into later tests. "
+                "Cancel and await every task the test created:\n" + report,
+                pytrace=False,
+            )
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -455,6 +567,7 @@ __all__ = [
     "_FakePool",
     "_logging_configured_guard",
     "_otel_enabled_guard",
+    "_otel_gauge_cache_guard",
     "actor_runner",
     "as_backend",
     "assert_attempt",
