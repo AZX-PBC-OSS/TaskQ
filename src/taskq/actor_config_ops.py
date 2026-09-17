@@ -356,8 +356,8 @@ ON CONFLICT (name) DO NOTHING
 # affected count, so an EPQ drop cannot end it early with matching rows
 # beyond the window. No job_events row is written: a queue re-label is a
 # routing change, not a state change — the row stays pending/scheduled and
-# the schema's event kinds (state_change | cancel_request | heartbeat_miss
-# | progress) have no member for it.
+# the event kinds that are written (state_change | cancel_request |
+# progress) have no member for it.
 _MOVE_BACKLOG_BATCH_SQL = """
 WITH matching AS MATERIALIZED (
     SELECT id
