@@ -623,37 +623,61 @@ async def test_actor_backlog_read_failure_counts_and_clears_only_its_own_gauges(
     assert calls["running_lease_expired"] and calls["running_lease_expired"][-1] == 87
 
 
-async def test_actor_backlog_malformed_row_counts_on_the_metric_plane(
+@pytest.mark.parametrize(
+    ("actor_rows", "shape_id"),
+    [
+        # Both keys missing: the first comprehension (depth) raises.
+        ([{"actor": "emails", "queue": "default"}], "both-keys-missing"),
+        # The half-valid row: depth reads fine, oldest_age is malformed.
+        # As call arguments the comprehensions ran update #1 (a fresh depth
+        # cache) and then raised in comprehension #2, landing the fresh
+        # depth beside a FROZEN age cache — the alert's operand — a mixed
+        # state the fix-round attack flagged; built as locals first, the
+        # failure is atomic (neither cache is written).
+        (
+            [{"actor": "emails", "queue": "default", "depth": 7}],
+            "half-valid-row",
+        ),
+    ],
+)
+async def test_actor_backlog_malformed_row_counts_atomically_on_the_metric_plane(
     sweep_metric_reader: InMemoryMetricReader,
     monkeypatch: pytest.MonkeyPatch,
+    actor_rows: list[dict[str, object]],
+    shape_id: str,
 ) -> None:
     """The read's OTHER failure arm: rows came back, but their shape is not
     what the cache rebuild reads (a KeyError inside the rebuild).
 
-    The rebuild never runs, so the per-actor caches keep their last values
-    rather than clearing — and that arm must reach the metric plane too,
-    because a gauge frozen at a stale reading is no more alertable than an
-    absent one: the operator still needs something that names the loss
-    while TaskQQueueDepthHigh's operand sits at whatever it last read.
+    The rebuild never runs -- BOTH caches stay at their last values
+    together, never a fresh one beside a frozen one (the frozen half would
+    be exactly the TaskQQueueDepthHigh operand) -- and that arm must reach
+    the metric plane too, because a gauge frozen at a stale reading is no
+    more alertable than an absent one: the operator still needs something
+    that names the loss while the alert's operand sits at whatever it last
+    read. Red for the half-valid shape pre-fix (the depth update ran
+    before the raise).
     """
-    conn = _BacklogTickConn(
-        actor_rows=[{"actor": "emails", "queue": "default"}],  # no "depth"/"oldest_age"
-    )
+    conn = _BacklogTickConn(actor_rows=actor_rows)
     calls = _spy_backlog_cache_updates(monkeypatch)
     await _drive_backlog_tick_until_actor_read_settles(conn)
 
     assert conn.actor_backlog_calls >= 2, "setup: the per-actor read must have returned twice"
     assert _timeout_value(sweep_metric_reader, "actor_backlog") >= 1, (
-        "a malformed per-actor row failed the rebuild every tick and no "
-        "metric named it — the per-actor gauges froze at their last values "
-        "with nothing an alert rule can read"
+        f"a malformed per-actor row ({shape_id}) failed the rebuild every tick "
+        "and no metric named it — the per-actor gauges froze at their last "
+        "values with nothing an alert rule can read"
     )
     assert _timeout_value(sweep_metric_reader, "backlog_detection") == 0
-    # The frozen-cache shape itself: the rebuild raised before either
-    # update ran, so no per-actor update ever fires while the fleet samples
-    # of the same ticks keep landing.
+    # The atomic-failure shape itself: the rebuild raised before EITHER
+    # update ran, so no per-actor update fires while the fleet samples of
+    # the same ticks keep landing — a mixed fresh-depth/frozen-age state
+    # can never occur.
     assert calls["actor_backlog"] == [], (
-        f"the rebuild must not have run on malformed rows; got {calls['actor_backlog']!r}"
+        f"{shape_id}: the depth cache must not be written when the age "
+        f"snapshot cannot be built; got {calls['actor_backlog']!r}"
     )
-    assert calls["actor_oldest_pending_age"] == []
+    assert calls["actor_oldest_pending_age"] == [], (
+        f"{shape_id}: got {calls['actor_oldest_pending_age']!r}"
+    )
     assert calls["by_status"] and calls["by_status"][-1] == {"scheduled": 12, "pending": 3}
