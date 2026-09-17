@@ -80,6 +80,10 @@ def _patch_instruments(monkeypatch: pytest.MonkeyPatch, meter: Meter) -> None:
             lambda: m.create_up_down_counter("taskq.cron.consecutive_failures"),
         ),
         (
+            "_cron_budget_deferrals",
+            lambda: m.create_counter("taskq.cron.budget_deferrals"),
+        ),
+        (
             "_disabled_schedules_gauge",
             lambda: m.create_observable_gauge(
                 "taskq.cron.disabled_schedules", callbacks=[otel_mod._observe_disabled_schedules]
@@ -541,6 +545,36 @@ def test_disabled_schedules_gauge_reads_from_state(otel_reader: InMemoryMetricRe
     metrics = collect_metrics(otel_reader)
     names = {m.name for m in metrics}
     assert "taskq.cron.disabled_schedules" in names
+
+
+# ── instrument: taskq.cron.budget_deferrals ───────────────────────────────
+
+
+def test_record_cron_budget_deferral_counts_per_actor(otel_reader: InMemoryMetricReader) -> None:
+    """The monopolizer-starvation signal: one count per deferred fire,
+    dimensioned by the STARVING schedule's actor (per-schedule
+    attribution stays on the cron-fire-budget-deferred log line — the
+    same label contract as consecutive_failures)."""
+    obs_mod.record_cron_budget_deferral("actor-a")
+    obs_mod.record_cron_budget_deferral("actor-a")
+    obs_mod.record_cron_budget_deferral("actor-b")
+
+    dps = counter_data_points(otel_reader, "taskq.cron.budget_deferrals")
+    by_actor = {dp.attributes["actor"]: dp.value for dp in dps if dp.attributes}
+    assert by_actor == {"actor-a": 2, "actor-b": 1}
+
+
+def test_record_cron_budget_deferral_disabled(otel_reader: InMemoryMetricReader) -> None:
+    """The disabled contract is a no-op, not a best-effort record — same
+    rigor as consecutive_failures: the reader-backed assertion is the
+    pin, so a regression that records while disabled cannot pass
+    vacuously.  The unconditional trail for this signal is the
+    cron-fire-budget-deferred log line, not the counter."""
+    otel_mod.set_otel_enabled(False)
+    obs_mod.record_cron_budget_deferral("actor-1")
+    otel_mod.set_otel_enabled(True)
+
+    assert counter_data_points(otel_reader, "taskq.cron.budget_deferrals") == []
 
 
 # ── instrument: taskq.jobs.running_lease_expired ──────────────────────────

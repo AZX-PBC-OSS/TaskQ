@@ -47,7 +47,7 @@ import contextlib
 import threading
 import time
 from collections.abc import Generator
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Any
 from uuid import UUID
 
@@ -149,6 +149,31 @@ def sync_hang_factory() -> dict[str, object]:
     assert isinstance(release, threading.Event)
     entered.set()
     release.wait(_SYNC_BLOCK_S)
+    return {}
+
+
+async def slow_monopolizer_factory() -> dict[str, object]:
+    """Payload factory: consumes most of the smallest funded budget
+    (0.70s of the 0.9s a 1.0s whole-tick deadline funds) and SUCCEEDS.
+
+    Dotted path: ``tests.test_rt_cron_hang_livelock.slow_monopolizer_factory``.
+    The #260 attack shape: a slow-but-successful monopolizer never
+    strikes, never auto-disables and never frees the budget, so the
+    micro-grant it leaves is the only thing its peers could ever be
+    called under — exactly what the minimum fundable grant refuses.
+    """
+    await asyncio.sleep(0.70)
+    return {}
+
+
+async def marched_peer_factory() -> dict[str, object]:
+    """Payload factory needing 0.30s: fits any fundable grant at the
+    smallest budget (0.225s minimum, 0.9s funded), never the ~0.2s
+    micro-grant the monopolizer above leaves.
+
+    Dotted path: ``tests.test_rt_cron_hang_livelock.marched_peer_factory``.
+    """
+    await asyncio.sleep(0.30)
     return {}
 
 
@@ -816,6 +841,146 @@ class TestHungFactoryBatchCannotLivelockTheTick:
         assert healthy_row["next_fire_at"] > due, (
             "the healthy peer's advance was rolled back with the aborted tick — "
             "a hung batch must not take down schedules that carry no factory"
+        )
+
+
+class TestSlowSuccessfulMonopolizer:
+    """The #260 attack: a monopolizer that SUCCEEDS within its grant every
+    tick never strikes, never auto-disables and never frees the budget —
+    so whatever it leaves for the peers behind it is all they will ever
+    be called under.  Before the minimum fundable grant that leftover was
+    a micro-grant: the peer's factory ran under ~0.08s, was cut by
+    ``wait_for`` into a plain ``TimeoutError``, and struck — three ticks
+    to auto-disable with nothing to stop the march (the monopolizer
+    itself never drains).  These tests pin the floor's contract against
+    real Postgres and the real due-read: the peer is deferred (never
+    struck, never disabled), the REAL due-read re-selects it on the very
+    next tick, and it fires the first tick the budget frees."""
+
+    async def test_a_deferred_peer_is_reselected_by_the_real_due_read_and_fires_when_the_budget_frees(
+        self,
+        clean_pg_conn: asyncpg.Connection,
+        module_pg_schema: ModulePgSchema,
+    ) -> None:
+        """An every-minute monopolizer crawling its catch-up backlog
+        (seeded two minute-boundary slots in the past — it is due, at the
+        FRONT of the order, on several successive ticks) beside an
+        every-minute peer owing one slot.  While the monopolizer is due
+        the peer defers every tick — its next_fire_at strictly advances
+        (the real due-read re-selects it each tick; no test at any tier
+        pinned that before), its consecutive_failures stays 0 and its
+        last_fire_error stays NULL.  The first monopolizer-free tick, the
+        peer's factory is funded a full grant and it fires."""
+        schema = module_pg_schema.schema_name
+        # 1.0s whole tick → 0.9s funded, 0.225s minimum fundable grant:
+        # the monopolizer's 0.70s wait leaves ~0.2s — below the floor.
+        settings = cron_settings(
+            schema,
+            TASKQ_DISPATCHER_COMMAND_TIMEOUT="1.0",
+            TASKQ_CRON_PAYLOAD_FACTORY_TIMEOUT="1.0",
+        )
+        mono_actor = "rt_march_mono"
+        peer_actor = "rt_march_peer"
+        await seed_actor_config(clean_pg_conn, schema, mono_actor)
+        await seed_actor_config(clean_pg_conn, schema, peer_actor)
+
+        # Two missed minute-boundary slots: the monopolizer crawls them
+        # one per tick (sequential catch-up), staying due and older than
+        # the peer's owed slot for at least two successive ticks.
+        mono_owed = await clean_pg_conn.fetchval(
+            "SELECT date_trunc('minute', clock_timestamp()) - interval '2 minutes'"
+        )
+        assert isinstance(mono_owed, datetime)
+        await seed_schedule(
+            clean_pg_conn,
+            schema,
+            actor=mono_actor,
+            name="slow-monopolizer",
+            cron_expr="* * * * *",
+            next_fire_at=mono_owed,
+            payload_factory="tests.test_rt_cron_hang_livelock.slow_monopolizer_factory",
+        )
+        peer_owed = await clean_pg_conn.fetchval("SELECT clock_timestamp() - interval '10 seconds'")
+        assert isinstance(peer_owed, datetime)
+        peer_id = await seed_schedule(
+            clean_pg_conn,
+            schema,
+            actor=peer_actor,
+            name="marched-peer",
+            cron_expr="* * * * *",
+            next_fire_at=peer_owed,
+            payload_factory="tests.test_rt_cron_hang_livelock.marched_peer_factory",
+        )
+
+        backend = make_backend(settings)
+        worker_id = new_uuid()
+        started = time.monotonic()
+        peer_advances: list[datetime] = []
+        peer_fired = False
+
+        for _tick in range(12):
+            try:
+                async with asyncio.timeout(settings.dispatcher_command_timeout):
+                    async with clean_pg_conn.transaction():
+                        await tick_cron(clean_pg_conn, settings, backend, schema, worker_id)
+            except (TimeoutError, asyncio.CancelledError):
+                # A loaded runner can stretch one tick past the leader's
+                # own deadline; the real leader retries next cadence and
+                # so does this loop. The invariants below are asserted
+                # per OBSERVED row state, not per tick outcome.
+                pass
+            await asyncio.sleep(1.0)  # the leader loop's cadence
+
+            peer = await schedule_row(clean_pg_conn, schema, peer_id)
+            assert peer["consecutive_failures"] == 0, (
+                "the march reproduced: the peer took a strike behind a "
+                "slow-SUCCESSFUL monopolizer — a factory that never drains, "
+                "so nothing would have stopped the three-strike auto-disable"
+            )
+            assert peer["last_fire_error"] is None, (
+                "a deferral must write no error text: the peer's factory "
+                f"never ran; got {peer['last_fire_error']!r}"
+            )
+            if peer["last_fired_at"] is not None:
+                peer_fired = True
+                break
+            # Not fired yet: this row state is a deferral the real
+            # due-read must re-select on the next tick — the advance is
+            # the proof it was planned (a struck row would sit unmoved at
+            # its owed slot).
+            assert peer["next_fire_at"] > peer_owed, (
+                "the peer's next_fire_at is still its owed slot — the tick "
+                "neither fired, deferred nor struck it, which no branch "
+                "should leave possible"
+            )
+            if not peer_advances or peer["next_fire_at"] > peer_advances[-1]:
+                peer_advances.append(peer["next_fire_at"])
+
+        elapsed = time.monotonic() - started
+        assert peer_fired, (
+            "the peer never fired across the crawl — the deferral did not "
+            "end with a fire once the monopolizer's catch-up backlog "
+            f"drained ({elapsed:.1f}s); last observed next_fire_at "
+            f"{peer_advances[-1] if peer_advances else None!r}"
+        )
+        assert len(peer_advances) >= 2, (
+            f"observed {len(peer_advances)} distinct deferral advances "
+            "before the fire — need at least two successive re-selections "
+            "by the real due-read to prove a deferred row comes back the "
+            "very next tick (a hand-fed fake cannot prove this)"
+        )
+
+        peer_jobs = await clean_pg_conn.fetchval(
+            f'SELECT COUNT(*) FROM "{schema}".jobs WHERE actor = $1',  # noqa: S608  # Why: schema is a test-fixture identifier; actor is $-bound.
+            peer_actor,
+        )
+        assert peer_jobs == 1, (
+            f"the peer's fire must land exactly one job (found {peer_jobs}) "
+            "— the deferred slot was delayed, never lost"
+        )
+        assert elapsed < 40.0, (
+            f"the crawl-plus-fire took {elapsed:.1f}s — the deferral loop "
+            "must stay bounded by the monopolizer's own catch-up backlog"
         )
 
 
