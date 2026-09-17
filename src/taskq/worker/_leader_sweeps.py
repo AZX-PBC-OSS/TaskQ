@@ -36,6 +36,7 @@ from taskq.obs import (
     update_actor_backlog_cache,
     update_actor_oldest_pending_age_cache,
     update_jobs_by_status_cache,
+    update_jobs_running_cache,
     update_oldest_due_age_cache,
     update_queue_depth_cache,
     update_queue_live_workers_cache,
@@ -1441,6 +1442,16 @@ _QUERY_RUNNING_LEASE_EXPIRED_SQL_TEMPLATE = (
     'SELECT count(*) FROM "{schema}".jobs '
     "WHERE status = 'running' AND lock_expires_at < statement_timestamp()"
 )
+# Running jobs per actor. The running population is bounded by the fleet's
+# total concurrency, never by history, so an exact grouped count is cheap;
+# jobs_running_lock_expires_idx (partial on status='running') serves it.
+# Per actor, not (actor, queue): a running row's queue label is not what
+# dispatched it (re-pended rows route by the actor's assignment), and the
+# capacity question is which actors hold the slots.
+_QUERY_RUNNING_BY_ACTOR_SQL_TEMPLATE = (
+    'SELECT actor, count(*) AS running FROM "{schema}".jobs '
+    "WHERE status = 'running' GROUP BY actor"
+)
 #: Per-pair sample cap for the actor-backlog sampler (rows read per
 #: (actor, queue) pair per tick). The sampler runs on EVERY worker every
 #: ``queue_depth_interval`` — deliberately not leader-gated (see
@@ -1572,6 +1583,7 @@ async def _backlog_detection_loop(ctx: SweepContext, shutdown: asyncio.Event) ->
     oldest_due_sql = _QUERY_OLDEST_DUE_AGE_SQL_TEMPLATE.format(schema=schema)
     expired_lease_sql = _QUERY_RUNNING_LEASE_EXPIRED_SQL_TEMPLATE.format(schema=schema)
     actor_backlog_sql = _QUERY_ACTOR_BACKLOG_SQL_TEMPLATE.format(schema=schema)
+    running_by_actor_sql = _QUERY_RUNNING_BY_ACTOR_SQL_TEMPLATE.format(schema=schema)
     while not shutdown.is_set():
         ctx.deps.liveness.tick(
             "leader.backlog_detection", period=ctx.deps.settings.queue_depth_interval
@@ -1586,6 +1598,24 @@ async def _backlog_detection_loop(ctx: SweepContext, shutdown: asyncio.Event) ->
                 status_rows = await conn.fetch(by_status_sql)
                 oldest_due: float | None = await conn.fetchval(oldest_due_sql)
                 expired_lease: int | None = await conn.fetchval(expired_lease_sql)
+                # Isolated like the per-actor backlog read below, and for the
+                # same reason: a grouped per-actor read that fails must not
+                # cost the tick its fleet-wide samples. The empty fallback
+                # clears the running series rather than freezing it; the
+                # rows are shaped here so a malformed row is contained too.
+                try:
+                    running_by_actor = {
+                        str(row["actor"]): int(row["running"])
+                        for row in await conn.fetch(running_by_actor_sql)
+                    }
+                except Exception as exc:
+                    log.warning(
+                        "running-by-actor-sampling-failed",
+                        kind="running_by_actor_sampling_failed",
+                        worker_id=str(ctx.worker_id),
+                        error=repr(exc),
+                    )
+                    running_by_actor = {}
                 # This read is isolated from the fleet-wide ones above: a
                 # grouped read over every pending (actor, queue) pair is
                 # the widest-shaped statement in the tick and the first
@@ -1625,6 +1655,9 @@ async def _backlog_detection_loop(ctx: SweepContext, shutdown: asyncio.Event) ->
             update_running_lease_expired_cache(
                 int(expired_lease) if expired_lease is not None else 0
             )
+            # Rebuilt whole from the snapshot: an actor that finished its
+            # last running job vanishes from the series instead of freezing.
+            update_jobs_running_cache(running_by_actor)
             # Per-actor attribution is isolated end to end from the
             # fleet-wide detectors above, which are already written by this
             # point: a failed fetch substituted the empty snapshot (logged on

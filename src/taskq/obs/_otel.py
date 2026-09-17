@@ -107,6 +107,7 @@ __all__ = [
     "set_otel_enabled",
     "update_disabled_schedules_count",
     "update_heartbeat_consecutive_failures",
+    "update_jobs_running_cache",
     "update_keyed_reclaim_pending",
     "update_queue_depth_cache",
     "update_queue_live_workers_cache",
@@ -874,6 +875,82 @@ _slot_pool_occupancy_gauge = get_meter().create_observable_gauge(
     ),
     unit="1",
     callbacks=[_observe_slot_pool_occupancy],
+)
+
+
+# ── Worker capacity ──────────────────────────────────────────────────
+#
+# The health socket renders taskq_active_jobs by hand, which no scrape
+# reaches; these are the OTel twins a real exporter carries. No labels:
+# one series per process is the shape (the pod is the identity, on the
+# scrape target's own labels), and utilisation is the per-process ratio
+# active_jobs / max_concurrency.
+
+
+class _ActiveJobsSource(Protocol):
+    """Structural slice of ``ActiveJobRegistry`` the active-jobs gauge reads.
+
+    Keeps this observability leaf free of a worker import; bootstrap
+    passes the real registry, which satisfies this shape structurally.
+    ``count`` is a dict length — safe to read from the SDK reader thread.
+    """
+
+    def count(self) -> int: ...
+
+
+_worker_capacity_source: tuple[_ActiveJobsSource, int] | None = None
+"""(active-jobs registry, max_concurrency) — set once by worker bootstrap."""
+
+
+def set_worker_capacity_source(active_jobs: _ActiveJobsSource | None, max_concurrency: int) -> None:
+    """Point the worker capacity gauges at *active_jobs* and *max_concurrency*.
+
+    Called once at worker bootstrap, after the deps that own the
+    registry exist. ``None`` clears the source — both gauges report
+    nothing, matching a process that hosts no worker.
+    """
+    global _worker_capacity_source
+    _worker_capacity_source = (active_jobs, max_concurrency) if active_jobs is not None else None
+
+
+def _observe_worker_active_jobs(options: CallbackOptions) -> Iterable[Observation]:
+    source = _worker_capacity_source
+    if source is None:
+        return
+    try:
+        # Why defensive: a collection read must never raise into the
+        # SDK's export path, whatever the registry is mid-way through.
+        count = source[0].count()
+    except Exception:
+        return
+    yield Observation(count)
+
+
+def _observe_worker_max_concurrency(options: CallbackOptions) -> Iterable[Observation]:
+    source = _worker_capacity_source
+    if source is None:
+        return
+    yield Observation(source[1])
+
+
+get_meter().create_observable_gauge(
+    name="taskq.worker.active_jobs",
+    description=(
+        "Jobs in flight on this worker process. No dimensions: one series "
+        "per process. Divide by taskq.worker.max_concurrency for utilisation."
+    ),
+    unit="1",
+    callbacks=[_observe_worker_active_jobs],
+)
+
+get_meter().create_observable_gauge(
+    name="taskq.worker.max_concurrency",
+    description=(
+        "This worker process's configured max_concurrency — the ceiling "
+        "taskq.worker.active_jobs saturates against. No dimensions."
+    ),
+    unit="1",
+    callbacks=[_observe_worker_max_concurrency],
 )
 
 
@@ -2093,6 +2170,41 @@ get_meter().create_observable_gauge(
     ),
     unit="1",
     callbacks=[_observe_actor_backlog],
+)
+
+
+def update_jobs_running_cache(data: Mapping[str, int]) -> None:
+    """Replace the per-actor running-count cache with fresh data.
+
+    Fed by the backlog sampler from one grouped read over the running
+    population. Per actor, not per (actor, queue): the running row's
+    queue label is not what dispatched it (re-pended rows route by the
+    actor's assignment), and the capacity question is per actor —
+    which actors hold the fleet's slots while pending work waits. An
+    actor with no running jobs vanishes from the series rather than
+    freezing at its last count.
+    """
+    global _jobs_running_cache
+    _jobs_running_cache = dict(data)
+
+
+def _observe_jobs_running(options: CallbackOptions) -> Iterable[Observation]:
+    for actor, count in _jobs_running_cache.items():
+        yield Observation(count, {"actor": actor})
+
+
+_jobs_running_cache: dict[str, int] = {}
+
+get_meter().create_observable_gauge(
+    name="taskq.jobs.running",
+    description=(
+        "Running jobs per actor, sampled by every worker with taskq.jobs.by_status. "
+        "Beside taskq.worker.active_jobs (per process) and "
+        "taskq.jobs.oldest_pending_age_seconds, says which actors hold the "
+        "fleet's slots while pending work waits."
+    ),
+    unit="1",
+    callbacks=[_observe_jobs_running],
 )
 
 

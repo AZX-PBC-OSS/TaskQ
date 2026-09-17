@@ -444,6 +444,9 @@ you *which* jobs absorbed them.
 | `taskq.maintenance_leader.is_leader` | `1` | `worker_id` | `1` on the elected leader pod, `0` on all others. |
 | `taskq.cron.disabled_schedules` | `1` | — | Count of currently disabled cron schedules. |
 | `taskq.heartbeat.consecutive_failures` | — | — | Consecutive heartbeat tick failures for this worker (sample-on-scrape). |
+| `taskq.worker.active_jobs` | `1` | — | Jobs in flight on this worker process — the OTel twin of the health socket's hand-rendered `taskq_active_jobs`, which no scrape reaches. One series per process; divide by `taskq.worker.max_concurrency` for utilisation. |
+| `taskq.worker.max_concurrency` | `1` | — | This process's configured `TASKQ_MAX_CONCURRENCY`, the ceiling `active_jobs` saturates against. One series per process. |
+| `taskq.jobs.running` | `1` | `actor` | Running jobs per actor, fleet-wide, sampled by every worker beside `taskq.jobs.by_status` from one grouped read over the running population. Which actors hold the slots while pending work waits; an actor with nothing running is absent, not 0. |
 | `taskq.worker.slot_pool.connections_in_use` | `1` | — | Connections of the per-slot transaction pool currently held by dispatching jobs (reported only when the worker runs one). A pool pinned at its maximum with zero acquire failures is saturation — visible below the acquire-failure cliff. |
 | `taskq.maintenance_leader.sweep_last_success_seconds` | `s` | `sweep_name` | Unix timestamp of each sweep's last successful call. `time() - this value` is sweep staleness; a value that never moves while the process runs is a stalled sweep. |
 | `taskq.maintenance_leader.sweep_batch_size` | `1` | `sweep_name` | Rows per committed batch each sweep is currently using. A value below `event_writer_batch_size` is the reduced (degraded) tier. |

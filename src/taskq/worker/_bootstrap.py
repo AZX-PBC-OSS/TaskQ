@@ -58,6 +58,7 @@ from taskq.obs import (
     set_exception_redaction_enabled,
     set_otel_enabled,
     set_slot_pool_occupancy_source,
+    set_worker_capacity_source,
     setup_logging,
 )
 from taskq.progress._flush import progress_flush_loop
@@ -1219,6 +1220,10 @@ async def _main(
     _emit_startup_warnings(settings)
 
     async with open_worker_deps(settings, connections=connections) as deps:
+        # The capacity gauges read the registry the consumers fill; pointed
+        # here, before the TaskGroup opens, so the first scrape after boot
+        # already reports 0 of max_concurrency rather than nothing.
+        set_worker_capacity_source(deps.active_jobs, settings.max_concurrency)
         # ── until_idle override resolution ──────────────────────────────
         settle: float = settings.idle_settle_window
         poll: float = settings.idle_poll_interval

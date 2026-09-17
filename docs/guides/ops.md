@@ -191,6 +191,24 @@ misconfiguration:
     actor can run longer than its bucket's `lease`, two of them will hold one slot. Size the lease
     above your p-max runtime, not your p99.
 
+### When to add workers: saturation, not depth
+
+Depth alone does not say whether the fleet is short of slots or the slots are idle. The
+capacity gauges answer it per process and per actor:
+
+| Signal | PromQL | Reads |
+|---|---|---|
+| Utilisation ≥ 0.9 for 10 m **and** `oldest_pending_age` rising | `taskq_worker_active_jobs / taskq_worker_max_concurrency > 0.9` beside `max by (actor) (taskq_jobs_oldest_pending_age_seconds)` climbing | every slot is busy and pending work is ageing: **add workers** (or raise `TASKQ_MAX_CONCURRENCY` where the actors are I/O-bound). |
+| Utilisation high, `oldest_pending_age` flat | as above, age not climbing | the fleet is busy but keeping up — no action. |
+| Utilisation low, `oldest_pending_age` rising | `... < 0.5` with the age climbing | slots are free and work still waits: not a capacity problem — an admission cap (`max_concurrent`, a reservation or rate limit: `taskq_reservation_denials_total`), an unserved queue (`TaskQQueueUnserved`), or a promotion stall (`TaskQPromotionStalled`). Adding workers changes nothing. |
+| One actor holding the slots | `sum by (actor) (taskq_jobs_running)` dominated by one actor while others' `oldest_pending_age` climbs | that actor's `max_concurrent` (or a queue cap) is the lever, not the replica count. |
+| Running age past the actor's p99 with `timeouts` flat | `max by (actor) (taskq_jobs_oldest_running_age_seconds)` beyond `histogram_quantile(0.99, rate(messaging_process_duration_seconds_bucket[1h]))` while `taskq_jobs_timeouts_total{kind="start_to_close"}` does not move | an actor with no `start_to_close`: the attempt has outlived what the actor normally takes and nothing will end it — declare the budget (see [§2](#2-timeouts-start_to_close-and-schedule_to_close)). |
+
+`taskq_worker_active_jobs` / `taskq_worker_max_concurrency` are one series per worker process
+(the health socket's `taskq_active_jobs` is the same number, but only a real scrape sees these
+two); `taskq_jobs_running{actor}` is the fleet-wide running count per actor, sampled by every
+worker beside `taskq_jobs_by_status`.
+
 ### Capacity ownership: the seed-only trap
 
 The `@actor(max_concurrent=...)` literal only *seeds* the `actor_config` row on first
@@ -996,6 +1014,7 @@ Every job emits an `enqueue` PRODUCER span, a `process` CONSUMER span (linked, w
 | `taskq.queue.live_workers` (by queue, same tick as depth) | a queue with work and no live worker — `TaskQQueueUnserved` joins it against `taskq.queue.depth` |
 | `taskq.jobs.stranded` (by actor and `reason`) | jobs that can never dispatch: `no_actor_config` (no `actor_config` row) or `unserved_queue` (no live worker on the routing queue) |
 | `taskq.dispatch.duration` | dispatch contention (PgBouncer/pool trouble) |
+| `taskq.worker.active_jobs` / `taskq.worker.max_concurrency` (one series per process) and `taskq.jobs.running` (by actor) | slot saturation — utilisation ≥ 0.9 with `oldest_pending_age` rising is "add workers"; which actor holds the slots (see [§3 — When to add workers](#when-to-add-workers-saturation-not-depth)) |
 | `taskq.worker.slot_pool.acquire_failures` / `taskq.worker.slot_pool.connections_in_use` | per-slot pool exhaustion and saturation — an acquire failure is infrastructure (the job is left for lock-lease reclaim, not failed); the gauge pinned at the pool maximum with zero acquire failures is saturation, visible below the acquire-failure cliff |
 | `messaging.process.duration` | actor latency, slow chunks |
 | `taskq.jobs.attempt_failures` (by actor, `error_type`, `retryable`) | a dependency failing under retry cover (`retryable="true"` rising while the terminal-failed share stays flat) — the series `TaskQRetryRateHigh` fires on |

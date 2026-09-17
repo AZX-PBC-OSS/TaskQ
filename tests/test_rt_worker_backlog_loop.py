@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Mapping
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from typing import cast
@@ -24,6 +24,7 @@ import pytest
 
 from taskq._ids import new_uuid
 from taskq.backend._protocol import Backend
+from taskq.obs import StrandedReason
 from taskq.settings import WorkerSettings
 from taskq.testing.clock import FakeClock
 from taskq.testing.fixtures import ModulePgSchema
@@ -76,7 +77,7 @@ class _ActorBacklogFailingConn(_ConnStub):
     """
 
     async def fetch(self, sql: str, *args: object) -> list[dict[str, object]]:
-        if "group by actor" in " ".join(sql.lower().split()):
+        if "group by actor, queue" in " ".join(sql.lower().split()):
             raise asyncpg.exceptions.QueryCanceledError(
                 "canceling statement due to statement timeout"
             )
@@ -441,7 +442,7 @@ def _reservation_cache() -> dict[str, int]:
     return dict(otel_mod._reservation_slots_cache)  # pyright: ignore[reportPrivateUsage]  # Why: see above.
 
 
-def _stranded_cache() -> dict[str, int]:
+def _stranded_cache() -> dict[tuple[str, StrandedReason], int]:
     import taskq.obs._otel as otel_mod
 
     return dict(otel_mod._stranded_jobs_cache)  # pyright: ignore[reportPrivateUsage]  # Why: see above.
@@ -476,21 +477,51 @@ async def _seed_running_job(
     *,
     locked_by_worker: UUID | None,
     lock_expires_at: datetime | None,
+    actor: str = "test_actor",
+    started_at: datetime | None = None,
 ) -> UUID:
-    """Seed one running row with the lock columns the zombie predicate reads."""
+    """Seed one running row with the lock columns the zombie predicate reads
+    (and the actor / started_at the running-age sampler groups on)."""
     job_id = new_uuid()
     await conn.execute(
         f'INSERT INTO "{schema}".jobs (id, actor, queue, payload, max_attempts, '  # noqa: S608  # Why: schema is the module fixture's validated identifier; no user input.
         "retry_kind, status, priority, scheduled_at, locked_by_worker, "
-        "lock_expires_at) "
-        "VALUES ($1, 'test_actor', 'default', '{}'::jsonb, 1, 'non_retryable', "
-        "'running', 0, $2, $3, $4)",
+        "lock_expires_at, started_at) "
+        "VALUES ($1, $5, 'default', '{}'::jsonb, 1, 'non_retryable', "
+        "'running', 0, $2, $3, $4, $6)",
         job_id,
         datetime.now(UTC),
         locked_by_worker,
         lock_expires_at,
+        actor,
+        started_at,
     )
     return job_id
+
+
+async def _drive_one_running_sample(ctx: SweepContext) -> dict[str, int] | None:
+    """Run the loop until the per-actor running gauge is fed once."""
+    observed: list[dict[str, int]] = []
+    original = _leader_sweeps.update_jobs_running_cache
+
+    def _spy(data: Mapping[str, int]) -> None:
+        observed.append(dict(data))
+
+    _leader_sweeps.update_jobs_running_cache = _spy  # type: ignore[assignment]  # Why: test-only instrumentation of the module's imported name, the file's established seam.
+    shutdown = asyncio.Event()
+    task = asyncio.create_task(_backlog_detection_loop(ctx, shutdown))
+    try:
+        for _ in range(400):
+            if observed:
+                break
+            await asyncio.sleep(0.01)
+    finally:
+        _leader_sweeps.update_jobs_running_cache = original  # type: ignore[assignment]  # Why: restoring the spied module attribute.
+        shutdown.set()
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+    return observed[0] if observed else None
 
 
 def _pg_ctx(
@@ -630,3 +661,38 @@ async def test_running_lease_expired_counts_only_expired_running_jobs(
         f"{expired_lease!r} — the zombie-running predicate is "
         "status='running' AND lock_expires_at < now, nothing broader"
     )
+
+
+async def test_running_jobs_are_counted_per_actor(
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_schema: ModulePgSchema,
+) -> None:
+    """taskq.jobs.running is an exact per-actor count of the running
+    population — the capacity view beside the per-process active_jobs
+    gauge: which actors hold the fleet's slots while pending work waits.
+    Pending rows are not in it, and an actor with nothing running is
+    absent rather than reported as 0."""
+    schema = module_pg_schema.schema_name
+    now = datetime.now(UTC)
+    worker = new_uuid()
+    for _ in range(2):
+        await _seed_running_job(
+            clean_pg_conn,
+            schema,
+            locked_by_worker=worker,
+            lock_expires_at=now + timedelta(seconds=60),
+            actor="resize_image",
+        )
+    await _seed_running_job(
+        clean_pg_conn,
+        schema,
+        locked_by_worker=worker,
+        lock_expires_at=now + timedelta(seconds=60),
+        actor="send_email",
+    )
+    await _seed_job(clean_pg_conn, schema, status="pending", scheduled_at=now)
+
+    ctx = _pg_ctx(clean_pg_conn, schema=schema, is_leader=False)
+    running = await _drive_one_running_sample(ctx)
+
+    assert running == {"resize_image": 2, "send_email": 1}
