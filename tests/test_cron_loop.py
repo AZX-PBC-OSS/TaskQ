@@ -1626,6 +1626,58 @@ class TestFactoryDeadlineMath:
         )
         assert cron_loop._factory_deadline(settings, 100.0) is None
 
+    def test_a_leftover_below_the_minimum_fundable_grant_funds_no_wait(self) -> None:
+        """A micro-grant is a lottery ticket, not a budget: factories faster
+        than it fire, factories slower than it take a manufactured
+        ``TimeoutError`` strike.  At the defaults the threshold is a
+        quarter of the 4.5s funded budget (1.125s)."""
+        settings = _cron_settings(
+            DISPATCHER_COMMAND_TIMEOUT="5.0", CRON_PAYLOAD_FACTORY_TIMEOUT="5.0"
+        )
+        # 0.5s left of the funded budget: below the 1.125s threshold.
+        assert cron_loop._factory_deadline(settings, 4.0) is None, (
+            "a leftover too small to honour the declared factory scale must "
+            "fund no call — granting it strikes, via a plain TimeoutError, "
+            "any factory slower than itself: evidence manufactured against "
+            "a schedule whose only defect was planning behind a monopolizer"
+        )
+        # Exactly at the threshold: fundable (>=, not >).
+        assert cron_loop._factory_deadline(settings, 3.375) == 1.125
+        # Above it: the leftover is the grant, as before.
+        assert cron_loop._factory_deadline(settings, 3.0) == 1.5
+
+    def test_a_tight_factory_budget_needs_only_its_full_declared_grant(self) -> None:
+        """The threshold is capped by the configured timeout: a fleet whose
+        factories are declared fast (timeout well under a quarter of the
+        funded budget) must not be starved of every grant — its rule is
+        "call a factory only with its FULL declared budget", never a
+        partial one."""
+        settings = _cron_settings(
+            DISPATCHER_COMMAND_TIMEOUT="5.0", CRON_PAYLOAD_FACTORY_TIMEOUT="0.5"
+        )
+        # 0.4s left: a partial grant below the declared 0.5s budget —
+        # refused (a 0.45s factory would strike on it).
+        assert cron_loop._factory_deadline(settings, 4.1) is None
+        # 0.5s left: the full declared budget fits — granted.
+        assert cron_loop._factory_deadline(settings, 4.0) == 0.5
+        # Room to spare: the configured budget is the grant, floor or no
+        # floor.
+        assert cron_loop._factory_deadline(settings, 0.0) == 0.5
+
+    def test_a_tiny_tick_still_funds_its_first_factory(self) -> None:
+        """At the smallest whole-tick deadline the funded budget is 0.9s and
+        the threshold 0.225s (capped by a 1.0s configured timeout): a fresh
+        tick always funds its first factory, and the monopolizer-scale
+        leftover the #260 attack reproduced (0.077s) funds nothing."""
+        settings = _cron_settings(
+            DISPATCHER_COMMAND_TIMEOUT="1.0", CRON_PAYLOAD_FACTORY_TIMEOUT="1.0"
+        )
+        assert cron_loop._factory_deadline(settings, 0.0) == pytest.approx(0.9)
+        # 0.077s left — the attack's micro-grant: refused.
+        assert cron_loop._factory_deadline(settings, 0.823) is None
+        # 0.3s left: above the 0.225s threshold — granted.
+        assert cron_loop._factory_deadline(settings, 0.6) == pytest.approx(0.3)
+
 
 # ── tick-budget exhaustion defers the schedule instead of striking it ──
 #
@@ -1861,6 +1913,221 @@ async def test_one_hung_factory_strikes_itself_and_defers_its_healthy_factory_pe
     assert _success_updates(conn) == []
 
 
+async def test_a_slow_successful_monopolizer_defers_its_peer_instead_of_striking_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The #260 attack shape against the REAL resolver at the smallest
+    real budget: a monopolizing factory that consumes most of the funded
+    budget and SUCCEEDS (0.70s of 0.9s) leaves only a micro-grant for the
+    healthy factory-backed peer behind it.  The peer must be DEFERRED —
+    its factory never called — not struck with a manufactured timeout: a
+    slow-SUCCESSFUL monopolizer never strikes, never auto-disables and
+    never frees the budget, so a strike here marched the peer to
+    auto-disable in three ticks with nothing to stop the march."""
+    monopolizer_id = new_uuid()
+    peer_id = new_uuid()
+    settings = _cron_settings(
+        DISPATCHER_COMMAND_TIMEOUT="1.0", CRON_PAYLOAD_FACTORY_TIMEOUT="1.0"
+    )  # funded 0.9s, minimum fundable grant 0.225s
+    conn = _FakeCronConn(
+        schedule_rows=[
+            _make_schedule_row(
+                actor="slow_monopolizer_actor",
+                cron_expr="0 * * * *",
+                payload_factory="tests.test_cron_loop._slow_monopolizer_unit_factory",
+                next_fire_at=datetime(2025, 1, 1, 10, 0, 0, tzinfo=UTC),
+                schedule_id=monopolizer_id,
+            ),
+            _make_schedule_row(
+                actor="marched_peer_actor",
+                cron_expr="0 * * * *",
+                payload_factory="tests.test_cron_loop._marched_peer_unit_factory",
+                next_fire_at=datetime(2025, 1, 1, 10, 0, 30, tzinfo=UTC),
+                schedule_id=peer_id,
+            ),
+        ],
+        actor_config_rows=[
+            _make_actor_config_row(actor="slow_monopolizer_actor"),
+            _make_actor_config_row(actor="marched_peer_actor"),
+        ],
+    )
+    backend = InMemoryBackend(clock=FakeClock(_NOW))
+    _MARCHED_PEER_FACTORY_CALLS.clear()
+    deferral_actors: list[str] = []
+    monkeypatch.setattr(cron_loop, "record_cron_budget_deferral", deferral_actors.append)
+
+    fired = await _tick(conn, settings, backend)
+
+    assert fired == 1, "the monopolizer SUCCEEDS — it fires; that is what makes it never drain"
+    success_updates = _success_updates(conn)
+    assert len(success_updates) == 1
+    assert success_updates[0][1][0] == [monopolizer_id], (
+        "the monopolizer's fire is the tick's one success"
+    )
+
+    assert _failure_updates(conn) == [], (
+        "a micro-grant is a lottery ticket, not a budget: granted the "
+        "~0.2s leftover, the peer's 0.30s factory was cut by wait_for into "
+        "a plain TimeoutError — a STRIKE with a manufactured 'timed out "
+        "after 0.2s' reason, evidence against a schedule whose only defect "
+        "was planning behind a slow neighbour.  The monopolizer never "
+        "strikes and never frees the budget, so that strike marched the "
+        "peer to auto-disable in three ticks"
+    )
+    assert _MARCHED_PEER_FACTORY_CALLS == [], (
+        "the peer's factory must never be called on a leftover below the "
+        "minimum fundable grant — there was no grant that could honour it"
+    )
+
+    suppression_updates = _suppression_updates(conn)
+    assert len(suppression_updates) == 1
+    _, suppression_args = suppression_updates[0]
+    assert suppression_args[0] == [peer_id]
+    peer_next_fires: object = suppression_args[1]
+    assert isinstance(peer_next_fires, list)
+    assert peer_next_fires[0] == _NOW + timedelta(seconds=1.0)
+    assert deferral_actors == ["marched_peer_actor"], (
+        "each deferral must record the taskq.cron.budget_deferrals counter "
+        "under the starving schedule's actor — the sustained-rate signal "
+        "that exposes a monopolizer no strike will ever name"
+    )
+
+
+async def test_the_march_arc_defers_the_peer_quietly_until_the_operator_knob_frees_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The full slow-monopolizer arc, and the operator lever that ends it.
+    Through three ticks the monopolizer SUCCEEDS every time (its factory
+    fits its grant) and the peer defers every tick — never struck, never
+    auto-disabled, one budget_deferrals count per tick: the quiet-
+    starvation shape the counter exists to expose.  Then the operator
+    tightens TASKQ_CRON_PAYLOAD_FACTORY_TIMEOUT below the monopolizer's
+    real duration: that same tick the monopolizer takes its FIRST strike
+    (the knob's intended consequence — its drain begins) while the peer
+    is funded a 0.4s grant and fires."""
+    monopolizer_id = new_uuid()
+    peer_id = new_uuid()
+    # 1.0s whole tick → 0.9s funded; monopolizer duration 0.70, peer 0.30.
+    march_settings = _cron_settings(
+        DISPATCHER_COMMAND_TIMEOUT="1.0", CRON_PAYLOAD_FACTORY_TIMEOUT="1.0"
+    )
+    # The fairness lever: declared budget 0.5s < the monopolizer's 0.70s.
+    knob_settings = _cron_settings(
+        DISPATCHER_COMMAND_TIMEOUT="1.0", CRON_PAYLOAD_FACTORY_TIMEOUT="0.5"
+    )
+
+    fake_time = _SteppableMonotonic(100.0)
+    granted: list[float | None] = []
+    durations = {
+        "tests.test_cron_loop._knob_monopolizer_factory": 0.70,
+        "tests.test_cron_loop._knob_peer_factory": 0.30,
+    }
+
+    async def _duration_resolver(
+        row: object, *, timeout_s: float | None = None
+    ) -> dict[str, object]:
+        """Stand-in for resolve_payload with per-factory DURATIONS: a
+        factory consumes exactly its duration and returns when the grant
+        covers it; under a grant too small it consumes the grant and
+        raises the resolver's own timeout shape (what wait_for does)."""
+        assert isinstance(row, _FakeCronRecord)
+        factory = row["payload_factory"]
+        assert isinstance(factory, str)
+        duration = durations[factory]
+        granted.append(timeout_s)
+        if timeout_s is not None and duration > timeout_s:
+            fake_time.advance(timeout_s)
+            raise TimeoutError(f"cron payload factory {factory!r} timed out after {timeout_s:g}s")
+        fake_time.advance(duration)
+        return {}
+
+    monkeypatch.setattr(cron_loop, "resolve_payload", _duration_resolver)
+    monkeypatch.setattr(cron_loop, "time", fake_time)
+    deferral_actors: list[str] = []
+    monkeypatch.setattr(cron_loop, "record_cron_budget_deferral", deferral_actors.append)
+
+    backend = InMemoryBackend(clock=FakeClock(_NOW))
+    actor_rows = [
+        _make_actor_config_row(actor="knob_monopolizer_actor"),
+        _make_actor_config_row(actor="knob_peer_actor"),
+    ]
+
+    def _rows() -> list[_FakeCronRecord]:
+        # The monopolizer stays due at the front of the order (an
+        # at-cadence or catch-up-crawl shape): its next_fire_at is always
+        # older than the peer's owed slot.
+        return [
+            _make_schedule_row(
+                actor="knob_monopolizer_actor",
+                cron_expr="0 * * * *",
+                payload_factory="tests.test_cron_loop._knob_monopolizer_factory",
+                next_fire_at=datetime(2025, 1, 1, 10, 0, 0, tzinfo=UTC),
+                schedule_id=monopolizer_id,
+            ),
+            _make_schedule_row(
+                actor="knob_peer_actor",
+                cron_expr="0 * * * *",
+                payload_factory="tests.test_cron_loop._knob_peer_factory",
+                next_fire_at=datetime(2025, 1, 1, 10, 0, 30, tzinfo=UTC),
+                schedule_id=peer_id,
+            ),
+        ]
+
+    for tick_no in range(3):
+        conn = _FakeCronConn(schedule_rows=_rows(), actor_config_rows=actor_rows)
+        fired = await _tick(conn, settings=march_settings, backend=backend)
+
+        assert fired == 1, (
+            f"tick {tick_no + 1}: the slow monopolizer SUCCEEDS every tick — "
+            "that is exactly what makes it never drain"
+        )
+        assert _failure_updates(conn) == [], (
+            f"tick {tick_no + 1}: nobody may strike — the pre-fix march put "
+            "the peer in this UPDATE with a manufactured micro-grant timeout "
+            "and auto-disabled it on tick 3"
+        )
+        suppression_updates = _suppression_updates(conn)
+        assert len(suppression_updates) == 1
+        assert suppression_updates[0][1][0] == [peer_id], (
+            f"tick {tick_no + 1}: the peer defers, unstruck, unfired"
+        )
+        success_ids = _success_updates(conn)[0][1][0]
+        assert success_ids == [monopolizer_id]
+
+    assert deferral_actors == ["knob_peer_actor"] * 3, (
+        "one budget_deferrals count per deferred tick, under the starving "
+        "schedule's actor — three ticks of quiet starvation are three "
+        "counts an operator can alert on"
+    )
+
+    # The operator lever: declared budget 0.5s, below the monopolizer's
+    # 0.70s real duration.  Same rows, same durations — only the setting
+    # changed.
+    conn = _FakeCronConn(schedule_rows=_rows(), actor_config_rows=actor_rows)
+    fired = await _tick(conn, settings=knob_settings, backend=backend)
+
+    assert fired == 1, (
+        "the PEER is the tick's one fire — the monopolizer's first strike begins its drain"
+    )
+    failure_updates = _failure_updates(conn)
+    assert len(failure_updates) == 1
+    _, failure_args = failure_updates[0]
+    assert failure_args[0] == [monopolizer_id], (
+        "the knob's intended consequence: a factory slower than the "
+        "declared budget takes the strike it has earned"
+    )
+    assert failure_args[2] == [1], "the monopolizer's drain starts at strike one"
+    assert failure_args[3] == [False]
+    success_ids = _success_updates(conn)[0][1][0]
+    assert success_ids == [peer_id], "the starved peer fires the very tick the knob tightens"
+    assert granted[-1] == pytest.approx(0.4), (
+        "the peer's grant under the knob is min(configured 0.5, remaining "
+        "0.4) — above the 0.225s minimum fundable grant, so the 0.30s "
+        "factory fits it"
+    )
+    assert _suppression_updates(conn) == []
+
+
 async def test_healthy_factory_peer_survives_the_hung_neighbours_drain_and_fires_when_budget_frees(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1987,6 +2254,29 @@ async def _hung_unit_factory() -> dict[str, object]:  # pyright: ignore[reportUn
 
 def _fast_unit_factory() -> dict[str, object]:  # pyright: ignore[reportUnusedFunction]  # Why: resolved at runtime via its dotted path (payload_factory), never imported; pyright cannot see the string reference.
     """Payload factory that returns instantly — the healthy peer shape."""
+    return {}
+
+
+_MARCHED_PEER_FACTORY_CALLS: list[float] = []
+"""Call log of _marched_peer_unit_factory — module scope because the
+factory is reached only via its dotted path; the test that consumes it
+clears and reads it around one awaited tick (the _HANG_STATE convention
+in the integration tier)."""
+
+
+async def _slow_monopolizer_unit_factory() -> dict[str, object]:  # pyright: ignore[reportUnusedFunction]  # Why: resolved at runtime via its dotted path (payload_factory), never imported; pyright cannot see the string reference.
+    """Payload factory that consumes most of the smallest funded budget
+    (0.70s of 0.9s) and SUCCEEDS — the slow-successful monopolizer that
+    never strikes, never auto-disables and never frees the budget."""
+    await asyncio.sleep(0.70)
+    return {}
+
+
+async def _marched_peer_unit_factory() -> dict[str, object]:  # pyright: ignore[reportUnusedFunction]  # Why: resolved at runtime via its dotted path (payload_factory), never imported; pyright cannot see the string reference.
+    """Payload factory needing 0.30s — fits any fundable grant at the
+    smallest budget, but never the micro-grant a monopolizer leaves."""
+    _MARCHED_PEER_FACTORY_CALLS.append(asyncio.get_running_loop().time())
+    await asyncio.sleep(0.30)
     return {}
 
 
