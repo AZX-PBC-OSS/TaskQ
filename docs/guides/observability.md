@@ -645,7 +645,32 @@ leader-sampled gauges or worker-path counters must be evaluated against
 **worker** scrapes, not the `ui serve` process.
 
 The operational "which metric catches which failure mode" table is in
-[ops.md — Observability and alerting](ops.md#8-observability-and-alerting).
+[ops.md, Observability and alerting](ops.md#8-observability-and-alerting),
+and [ops.md §12, Scaling playbook](ops.md#12-scaling-playbook-from-signal-to-knob) maps the
+tunable failure modes to the knob that addresses them. Where each shipped alert lands:
+
+| Alert | Playbook row (ops.md §12) | Runbook |
+|---|---|---|
+| `TaskQQueueDepthHigh` | [Queue depth growing, live workers idle](ops.md#12-scaling-playbook-from-signal-to-knob) (or the saturation row when utilisation is high too) | none |
+| `TaskQQueueUnserved` | [Pending backlog with `stranded > 0`](ops.md#12-scaling-playbook-from-signal-to-knob) | [TaskQQueueUnserved](runbooks.md#taskqqueueunserved) |
+| `TaskQStrandedJobs` | [Pending backlog with `stranded > 0`](ops.md#12-scaling-playbook-from-signal-to-knob) | [TaskQStrandedJobs](runbooks.md#taskqstrandedjobs) |
+| `TaskQScheduledBacklogGrowing` | [Cron piling up at tick](ops.md#12-scaling-playbook-from-signal-to-knob) | [TaskQScheduledBacklogGrowing](runbooks.md#taskqscheduledbackloggrowing) |
+| `TaskQPromotionStalled` | [Cron piling up at tick](ops.md#12-scaling-playbook-from-signal-to-knob) | [TaskQPromotionStalled](runbooks.md#taskqpromotionstalled) |
+| `TaskQCronLockContention` | [Cron piling up at tick](ops.md#12-scaling-playbook-from-signal-to-knob) | [TaskQCronLockContention](runbooks.md#taskqcronlockcontention) |
+| `TaskQCronScheduleDisabled` | cron schedule failure, upstream of any sizing knob | none |
+| `TaskQRateLimitDependencyOutage` | [Rate-limit denials](ops.md#12-scaling-playbook-from-signal-to-knob) | [TaskQRateLimitDependencyOutage](runbooks.md#taskqratelimitdependencyoutage) |
+| `TaskQRunningLeaseExpired` | [`terminal-write-failed` logs / disowned jobs](ops.md#12-scaling-playbook-from-signal-to-knob) | [TaskQRunningLeaseExpired](runbooks.md#taskqrunningleaseexpired) |
+| `TaskQHeartbeatMisses`, `TaskQLockExpiringSoon` | worker-to-Postgres health, not actor config (same row as the terminal-write failures) | none |
+| `TaskQDispatchLatencyHigh` | [Queue depth growing, live workers idle](ops.md#12-scaling-playbook-from-signal-to-knob) when depth also grows; otherwise PgBouncer/pool trouble (the database-health row) | none |
+| `TaskQFailedJobRateHigh` | failure classification ([ops.md §6](ops.md#6-classifying-failures-terminal-retryable-transient)), not a scaling knob | [TaskQFailedJobRateHigh](runbooks.md#taskqfailedjobratehigh) |
+| `TaskQRetryRateHigh` | failure classification ([ops.md §6](ops.md#6-classifying-failures-terminal-retryable-transient)) | [TaskQRetryRateHigh](runbooks.md#taskqretryratehigh) |
+| `TaskQAbandonedJobs` | actor ignores cancellation ([ops.md §2](ops.md#2-timeouts-start_to_close-and-schedule_to_close)) | [TaskQAbandonedJobs](runbooks.md#taskqabandonedjobs) |
+| `TaskQSweepTimeouts`, `TaskQSweepDegraded`, `TaskQLeaderLockContention` | maintenance sweep load, no worker knob | [TaskQSweepTimeouts](runbooks.md#taskqsweeptimeouts), [TaskQSweepDegraded](runbooks.md#taskqsweepdegraded), [TaskQLeaderLockContention](runbooks.md#taskqleaderlockcontention) |
+| `TaskQLeaderSplitBrainOrNoLeader` | leadership, no sizing knob | none |
+| `TaskQProgressPublishFailures` | Redis health on the progress path, no worker knob | none |
+
+The remaining tuned-by-dashboard conditions (actor saturation, event-loop lag) ship no
+alert on purpose; both are read off the gauges in the playbook table.
 
 ---
 
