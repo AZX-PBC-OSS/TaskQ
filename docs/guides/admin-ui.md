@@ -190,7 +190,7 @@ these endpoints in production — they can modify job state.
 
 ## Routes
 
-All `GET` routes are read-only HTML pages. `POST` routes (cancel, retry, schedule management, rate-limit reset) are CSRF-protected write operations.
+All `GET` routes are read-only HTML pages. `POST` routes (cancel, retry, schedule management, rate-limit reset) are CSRF-protected write operations. Every page is reachable from the top navigation bar (Queues, Jobs, History, Workers, Actors, Batches, Schedules, Rate Limits, Reservations, Leader); the job detail page is linked from any job ID in the lists.
 
 ### `GET /admin/`
 
@@ -236,7 +236,9 @@ Archived rows (from `jobs_archive`) are shown with an "archived" badge in the So
 
 ### `GET /admin/jobs`
 
-Job listing page with "Live Jobs" and "Archived" tabs. Supports filtering by status (multi-select), actor (substring match), queue, time range, identity key, fairness key, free-text search (matches job ID or actor), and tags. Results are paginated at 100 rows using keyset pagination and can be sorted by created_at, actor, queue, status, or attempt. HTMX partial refreshes update the table without a full page reload. The table is polled at `TASKQ_ADMIN_UI_POLLING_INTERVAL_SECONDS` whenever the Live Jobs tab is open; with the live toggle on, an SSE stream (`/admin/sse/jobs`, PG `LISTEN` on the schema's events channel) additionally brings a refresh forward the moment an event arrives. The events channel carries only the running-job cancel fast-path today — terminal writes and dispatch do not NOTIFY it — which is why polling stays the source of truth and SSE is an accelerator, never a replacement.
+Job listing page with "Live Jobs" and "Archived" tabs. Supports filtering by status (multi-select), actor (substring match), queue, time range, identity key, fairness key, free-text search (matches job ID or actor), and tags. Results are paginated at 100 rows using keyset pagination and can be sorted by created_at, started_at, actor, queue, status, or attempt. HTMX partial refreshes update the table without a full page reload. The table is polled at `TASKQ_ADMIN_UI_POLLING_INTERVAL_SECONDS` whenever the Live Jobs tab is open; with the live toggle on, an SSE stream (`/admin/sse/jobs`, PG `LISTEN` on the schema's events channel) additionally brings a refresh forward the moment an event arrives. The events channel carries only the running-job cancel fast-path today — terminal writes and dispatch do not NOTIFY it — which is why polling stays the source of truth and SSE is an accelerator, never a replacement.
+
+Sorting by `started_at` ascending together with a `status=running` filter is the "running longest" view: the jobs that have held a worker the longest come first. `started_at` is NULL for jobs that have not started, and those rows sort last in both directions (NULLS LAST) so paging through live rows is never interrupted by the not-yet-started tail.
 
 **Query parameters (selected):**
 
@@ -255,7 +257,7 @@ Job detail. Shows the full job record, attempt history from `job_attempts`, and 
 
 If the job has already been pruned to `jobs_archive`, the page loads from the archive table instead; attempt history comes from `job_attempts_archive` and the event log is empty (events are not archived). An "archived" banner is shown at the top of the page.
 
-The job detail page includes a **Cancel** button (for non-terminal jobs) and a **Retry** button (for jobs in any terminal state — `succeeded`, `failed`, `cancelled`, `crashed`, or `abandoned`). Both are CSRF-protected POST forms. When `admin_actions_enabled` is `false` (the default), both buttons return `403` on submit; set `TASKQ_ADMIN_ACTIONS_ENABLED=true` to enable them.
+The job detail page includes a **Cancel** button (for non-terminal jobs) and a **Retry** button (for jobs in any terminal state — `succeeded`, `failed`, `cancelled`, `crashed`, or `abandoned`). Both are CSRF-protected POST forms guarded by a browser `confirm()` dialog, so a double-click or stray Enter cannot fire the write. When `admin_actions_enabled` is `false` (the default), both buttons return `403` on submit; set `TASKQ_ADMIN_ACTIONS_ENABLED=true` to enable them.
 
 ### `POST /admin/jobs/{job_id}/cancel`
 
@@ -356,6 +358,7 @@ The `/admin/actors` page lists all stored `actor_config` rows with:
 - Last updated timestamp
 
 Each row has a **Deregister** button with `force` and `purge queue` checkboxes.
+The form asks for confirmation in the browser before submitting.
 Deregistration requires `TASKQ_ADMIN_ACTIONS_ENABLED=true`. The form is
 CSRF-protected via the synchronizer-token pattern.
 
@@ -371,6 +374,10 @@ Response codes:
 - `403` — admin actions disabled or CSRF validation failed
 - `404` — actor not found (no `actor_config` row)
 - `409` — actor has active jobs or enabled schedules (force=False)
+
+### `GET /admin/batches`
+
+Batch overview. Reads all rows from the `batches` table: batch ID (linked to its finalizer job's detail page when one is set), queue, status (`active`, `complete`, or `aborted`), expected size, consecutive failures against the failure threshold, originating actor, and created/completed timestamps. Active batches sort first, then the most recent rows. The page renders at most 200 batches and says so when the cap is reached; there is no pagination. If the batches migration has not been applied, renders a notice instead of raising.
 
 ### `GET /admin/sse/{topic}`
 
