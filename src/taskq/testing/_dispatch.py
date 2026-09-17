@@ -57,26 +57,13 @@ async def _dispatch_batch(
     # round-robin-ordered; it is only a None guard, never a selection.
     _use_round_robin = any(self._queues.get(q) == "round_robin" for q in (queues or []))
 
-    # ── per_actor_capacity + repend_capacity + candidates laterals ────
+    # ── per_actor_capacity + candidates lateral ─────────────────────────
     # Candidates come FROM the actor_config registry, exactly PG's
-    # per_actor_capacity and repend_capacity CTEs
-    # (backend/_dispatch_sql.py): zero registered actors means zero
-    # capacity rows means zero candidates — "no actors registered" must
-    # never read as "no filter" (the mirror was greener than
-    # production). residual = the round's limit when the actor has no
+    # per_actor_capacity CTE (backend/_dispatch_sql.py): zero registered
+    # actors means zero capacity rows means zero candidates — "no actors
+    # registered" must never read as "no filter" (the mirror was greener
+    # than production). residual = the round's limit when the actor has no
     # max_concurrent, else max(max_concurrent - in_flight, 0).
-    #
-    # Routing contract, mirroring PG's two candidate arms: a pending row
-    # routes by its OWN queue label while never claimed
-    # (started_at IS NULL — producer placement governs, so post-move
-    # strays and enqueue overrides keep their queue), and by the actor's
-    # CURRENT stored assignment once claimed (started_at IS NOT NULL —
-    # every re-pend path keeps the row's label as audit trail but
-    # follows the assignment, so a move's running-job tail drains
-    # through the target queue's consumers). started_at is the durable
-    # "was claimed" marker: dispatch stamps it and no re-pend path on
-    # either backend clears it (attempt is NOT a marker — the
-    # snooze/refund arms give the claim's increment back).
     candidates: list[JobRow] = []
     _fairness_rank: dict[UUID, int] = {}
     for _actor, _cfg in self._actor_configs_meta.items():
@@ -86,27 +73,15 @@ async def _dispatch_batch(
             continue
         _bound = _residual * _DISPATCH_OVERSAMPLE
         _by_queue: dict[str, list[JobRow]] = _dd(list)
-        _repended_by_fk: dict[str, list[JobRow]] = _dd(list)
         for row in self._jobs.values():
-            if not (
+            if (
                 row.status == "pending"
                 and row.actor == _actor
+                and row.queue in queues
                 and row.scheduled_at <= now
                 and (row.schedule_to_close is None or row.schedule_to_close > now)
             ):
-                continue
-            if row.started_at is None:
-                # Label-routed arm: PG's per_actor_capacity x
-                # unnest(queues) probes, queue label against the
-                # subscription.
-                if row.queue in queues:
-                    _by_queue[row.queue].append(row)
-            elif _cfg.queue in queues:
-                # Assignment-routed arm: PG's repend_capacity gate (the
-                # actor's stored assignment against the subscription) —
-                # the row's own label is irrelevant once claimed.
-                _fk = row.fairness_key if row.fairness_key is not None else "__null__"
-                _repended_by_fk[_fk].append(row)
+                _by_queue[row.queue].append(row)
         for _queue_rows in _by_queue.values():
             if _use_round_robin:
                 _fk_groups: dict[str, list[JobRow]] = _dd(list)
@@ -140,23 +115,6 @@ async def _dispatch_batch(
                 # starve a dispatchable job sorting behind the bound.
                 _queue_rows.sort(key=lambda r: (-r.priority, r.scheduled_at, r.id))
                 candidates.extend(_queue_rows[:_bound])
-        # Assignment-routed admission, mirroring PG's rr_tail_keys
-        # per-cohort probes: the same per-cohort residual * oversample
-        # bound (a queue-agnostic global bound would truncate before the
-        # cohort partition, exactly the preemption the label-routed arm's
-        # comment above describes), one rank series per cohort. In
-        # round-robin mode the ranks are real, so a re-pended row takes
-        # its cohort turn beside never-claimed rows; a cohort carrying
-        # both populations has two rank series that interleave by
-        # priority downstream, never starving either. In strict-FIFO
-        # mode the rank is inert (that variant ranks by priority alone),
-        # matching PG's NULL::bigint fairness_rank on its arm.
-        for _fk_rows in _repended_by_fk.values():
-            _fk_rows.sort(key=lambda r: (-r.priority, r.scheduled_at, r.id))
-            for _rank, _r in enumerate(_fk_rows[:_bound], 1):
-                if _use_round_robin:
-                    _fairness_rank[_r.id] = _rank
-                candidates.append(_r)
 
     # ── identity_dedup, BEFORE ranking ──────────────────────────────────
     # PG dedupes candidates per (actor, identity_key) before pending_rank

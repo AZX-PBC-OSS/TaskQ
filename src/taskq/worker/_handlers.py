@@ -99,24 +99,14 @@ __all__ = [
 ]
 
 # Infra failures during the terminal-write itself (DB connection drop,
-# timeout acquiring a pool connection, socket errors, pool/conn
-# lifecycle refusals) — as opposed to the actor's own exception, which
-# is what decide_after_failure/error_info describe. These must NOT be
-# treated as "the actor failed with this exception": doing so would
-# overwrite the real error_info and re-run the retry decision against
-# the wrong exception type. See `_log_terminal_write_failed`.
-#
-# asyncpg.InterfaceError is the pool/conn lifecycle family the dispatch
-# release path and POOL_INFRA_EXCEPTIONS already classify as
-# infrastructure: a bounded pool close (worker teardown, credential
-# rotation drain) terminates or releases the slot connection underneath
-# an in-flight dispatch, and the fallback terminal write then hits a
-# closed pool or a released proxy — teardown infrastructure, never a
-# job outcome; letting it escape paints a job failure that never
-# happened (drain mode counts it as exit 3).
+# timeout acquiring a pool connection, socket errors) — as opposed to the
+# actor's own exception, which is what decide_after_failure/error_info
+# describe. These must NOT be treated as "the actor failed with this
+# exception": doing so would overwrite the real error_info and re-run the
+# retry decision against the wrong exception type. See
+# `_log_terminal_write_failed`.
 _TERMINAL_WRITE_INFRA_EXCEPTIONS: tuple[type[BaseException], ...] = (
     asyncpg.PostgresError,
-    asyncpg.InterfaceError,
     OSError,
     TimeoutError,
 )

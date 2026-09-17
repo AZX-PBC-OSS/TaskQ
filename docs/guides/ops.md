@@ -138,12 +138,7 @@ async def reindex_bucket(payload: Payload) -> None: ...
   by the leader's sweep even while its lease — the global `TASKQ_LOCK_LEASE`
   (default 60 s) — is still valid: the shorter of the two deadlines governs. Size it
   `>= 2x` the fleet's `TASKQ_HEARTBEAT_INTERVAL`; a value below one heartbeat
-  interval reclaims a healthy job on a single missed beat. The same rule names the
-  upper-bound trap: a `heartbeat_timeout` at or above `TASKQ_LOCK_LEASE` never
-  governs — the lease deadline (last beat + lease) always precedes the heartbeat
-  deadline (last beat + timeout), so the lease arm reclaims first and the per-job
-  budget silently no-ops. Size it inside the window: `>= 2x`
-  `TASKQ_HEARTBEAT_INTERVAL` and `< TASKQ_LOCK_LEASE`.
+  interval reclaims a healthy job on a single missed beat.
 - **The stored `error_message` of a genuine `start_to_close` timeout is the literal string
   `"start_to_close"`** — alert on `error_class == "TimeoutError"` if you want all timeouts, and
   remember an actor raising its own `TimeoutError` is indistinguishable by class.
@@ -223,14 +218,7 @@ target has no row of its own), so old-queue strays drain through the target's co
 Workers boot on either side of the matching code deploy (a
 stale literal logs `actor-config-queue-override` and adopts the stored queue); ensure
 workers consume the new queue, and keep consuming the old one until every producer runs
-the new literal. Running jobs the move leaves behind finish on the workers that claimed
-them; any that re-pend instead (failure retry, crash reclaim, operator retry) keep their
-old queue label as an audit trail but are routed at dispatch by the actor's *current*
-assignment — so the running-job tail drains through the target queue's consumers and
-never strands on the retired source queue. A mid-drain abort (timeout, lost connection)
-re-raises after the `actor-queue-move-aborted` event logs how many rows were already
-committed onto the target; re-running the move continues where it stopped. `metadata`
-is the remaining structural field: changing it after a row
+the new literal. `metadata` is the remaining structural field: changing it after a row
 exists **refuses to boot** (`ActorConfigDriftList`) — set
 `TASKQ_FORCE_UPDATE_ACTOR_CONFIG=true` for exactly one boot. Never leave it set. See
 [workers.md — ActorConfig sync](workers.md#actorconfig-sync).
@@ -1037,7 +1025,6 @@ The condensed "know this before your first incident" list. Each row links to the
 | Expecting `schedule_to_close` to kill a running attempt | long attempt survives past deadline | it only gates *future* dispatches ([§2](#2-timeouts-start_to_close-and-schedule_to_close)) |
 | `start_to_close` expected to kill a sync actor's thread | job marked timed out, side effects continue anyway | sync actors keep running — poll `ctx.should_abort()` ([actors.md](actors.md#sync-actors)) |
 | `heartbeat_timeout` set below one heartbeat interval | healthy jobs reclaimed on a single missed beat | size it `>= 2x` `TASKQ_HEARTBEAT_INTERVAL` — the per-job analogue of the `lock_lease >= 4 x heartbeat_interval` invariant ([§2](#2-timeouts-start_to_close-and-schedule_to_close)) |
-| `heartbeat_timeout` at or above the fleet's `TASKQ_LOCK_LEASE` | the per-job budget silently never governs: the lease deadline (last beat + lease) always precedes the heartbeat deadline (last beat + timeout), so the lease arm reclaims first and the knob no-ops — the reclaim event honestly names `cause='lock_expired'` | size it inside the window: `>= 2x` `TASKQ_HEARTBEAT_INTERVAL` and below `TASKQ_LOCK_LEASE` ([§2](#2-timeouts-start_to_close-and-schedule_to_close)) |
 | Retry window shorter than routine provider blips | terminal exhaustion on an ordinary 5xx | fewer attempts, longer `base` ([§6](#6-classifying-failures-terminal-retryable-transient)) |
 | Snoozing finalizer with a tight `time_budget` | `DeadlineExceeded` mid-batch | size the budget to batch duration + retries; `time_budget` requires `kind="indefinite"` ([§5](#5-fan-out-at-scale-chunks-cursors-idempotency)) |
 | `max_retry_backoff` raised, long backoffs still capped | retries at 24 h ceiling | the ceiling is `min(policy.cap, TASKQ_MAX_RETRY_BACKOFF)` ([retries.md](retries.md#3-backoff-algorithms)) |

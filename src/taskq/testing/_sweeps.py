@@ -27,8 +27,7 @@ from typing import TYPE_CHECKING
 import structlog
 
 from taskq.backend._protocol import AttemptRow, CancelPhase, JobId, JobRow
-from taskq.backend._sweeps import (  # pyright: ignore[reportPrivateUsage]  # Why: the twins must enforce the identical contract the Postgres sweeps enforce — one validator, one message map, one seam, no drift.
-    _ATTEMPT_MESSAGES,
+from taskq.backend._sweeps import (  # pyright: ignore[reportPrivateUsage]  # Why: the twins must enforce the identical boundary contract the Postgres sweeps enforce — one validator, one seam, no drift.
     _validate_positive,
 )
 from taskq.constants import DEFAULT_EVENT_WRITER_BATCH_SIZE
@@ -179,11 +178,7 @@ async def _reclaim_expired_locks(
     #   silent past it while the lease is still valid), disjoint by the
     #   same lock_expires_at >= now exclusion the SQL's UNION ALL uses,
     #   with NULL last_heartbeat_at never eligible (NULL + interval is
-    #   NULL in PG; the twin's None-guard mirrors it) and a beat not in
-    #   the past never eligible either (the SQL's
-    #   last_heartbeat_at < statement_timestamp() index range bound —
-    #   the twin states the conjunct itself, not just the deadline
-    #   arithmetic it implies for positive timeouts);
+    #   NULL in PG; the twin's None-guard mirrors it);
     # * bounded batches — each arm transitions at most batch_size rows
     #   per call (the SQL's per-arm LIMIT), so one call reclaims at most
     #   2 x batch_size rows, exactly like the UNION ALL;
@@ -197,10 +192,7 @@ async def _reclaim_expired_locks(
     # * terminal labels — the retry branch resets cancel state (clean
     #   slate for the next dispatch); the exhausted branch lands on
     #   'cancelled' when a cancel was in-flight, 'crashed' otherwise,
-    #   while the attempt row records outcome='crashed' either way, its
-    #   error_message naming the deadline that fired (the same
-    #   _ATTEMPT_MESSAGES map the PG sweep feeds its batched INSERT —
-    #   no drift surface);
+    #   while the attempt row records outcome='crashed' either way;
     # * outbox channel — both arms' events carry reason='lock_expired'
     #   (the slice poll_reclaim_events tails) with a cause key naming
     #   which deadline fired.
@@ -237,16 +229,6 @@ async def _reclaim_expired_locks(
             and heartbeat_deadline is not None
             and row.lock_expires_at is not None
             and row.lock_expires_at >= now
-            # The SQL's index range bound, stated as its own conjunct: a
-            # beat not in the past is never holder silence, however the
-            # row-exact deadline arithmetic reads (a FUTURE-stamped beat
-            # plus a degenerate negative timeout — direct-SQL-reachable —
-            # makes the deadline alone admit a row the SQL provably never
-            # reclaims). The None-guard is implied by heartbeat_deadline
-            # but kept so the conjunct stays SQL-verbatim and narrows the
-            # comparison's type.
-            and row.last_heartbeat_at is not None
-            and row.last_heartbeat_at < now
             and heartbeat_deadline < now
             and (row.cancel_phase == 0 or heartbeat_deadline < now - deep_expiry_margin)
         ):
@@ -266,9 +248,7 @@ async def _reclaim_expired_locks(
             finished_at=now,
             outcome="crashed",
             error_class="WorkerCrashed",
-            # Names the deadline that fired (the PG batched INSERT's $6
-            # array comes from the same map), never the sibling arm's.
-            error_message=_ATTEMPT_MESSAGES[cause],
+            error_message="lock expired before worker reported terminal state",
             error_traceback=None,
             duration_ms=duration_ms,
             worker_id=row.locked_by_worker,
