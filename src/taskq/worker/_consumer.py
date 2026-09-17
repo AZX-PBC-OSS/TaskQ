@@ -101,6 +101,7 @@ from taskq.worker._handlers import (
     _dispatch_exception,
     _handle_reservation_class_denied,
     _log_terminal_write_failed,
+    _terminal_write_with_retry,
     _TerminalWriteFailed,
 )
 from taskq.worker.cancel import ActiveJobRegistry
@@ -1321,8 +1322,8 @@ async def _consume_autonomous(
         _auto_settings.result_max_bytes if _auto_settings is not None else MAX_RESULT_BYTES,
     )
     try:
-        succeeded_landed = await shield_with_retrieval(
-            backend.mark_succeeded(
+        succeeded_landed = await _terminal_write_with_retry(
+            lambda: backend.mark_succeeded(
                 job.id,
                 worker_id,
                 result_bytes=result_bytes,
@@ -1330,7 +1331,10 @@ async def _consume_autonomous(
                 progress_state=_pstate,
                 fallback_result_ttl=fallback_result_ttl,
                 attempt=job.attempt,
-            )
+            ),
+            log=log,
+            job=job,
+            write_name="mark_succeeded",
         )
     except _TERMINAL_WRITE_INFRA_EXCEPTIONS as infra_exc:
         _log_terminal_write_failed(log, job, None, infra_exc)
