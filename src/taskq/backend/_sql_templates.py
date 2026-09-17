@@ -168,7 +168,7 @@ class SqlTemplates:
     singleton_preflight: str
     enqueue_max_pending_count: str
     enqueue_select_by_key: str
-    enqueue_notify: str
+    wake_notify: str
     enqueue_batch: str
     enqueue_batch_fetch_existing: str
     enqueue_batch_fetch_singleton_blockers: str
@@ -1311,7 +1311,10 @@ SELECT count(*) FROM "{s}".jobs
 WHERE actor = $1 AND status IN ('pending', 'scheduled')""",
         enqueue_select_by_key=f"""\
 SELECT * FROM "{s}".jobs WHERE idempotency_scope = $1 AND idempotency_key = $2""",
-        enqueue_notify="SELECT pg_notify($1, '')",
+        # The wake for paths that re-pend a row by UPDATE (admin retry):
+        # the jobs INSERT trigger covers every insert path, so no enqueue
+        # path issues this.
+        wake_notify="SELECT pg_notify($1, '')",
         enqueue_batch=f"""\
 INSERT INTO "{s}".jobs (
     id, actor, queue, identity_key, fairness_key,

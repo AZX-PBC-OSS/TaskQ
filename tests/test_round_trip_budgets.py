@@ -17,7 +17,10 @@ from uuid import UUID
 
 from taskq._ids import new_job_id, new_uuid
 from taskq.backend._dispatch import QueueModeCache, _dispatch_batch
+from taskq.backend._enqueue import _enqueue
+from taskq.backend._protocol import EnqueueArgs, JobRow
 from taskq.backend._sql_templates import render as render_sql
+from taskq.testing.clock import FakeClock
 
 _SCHEMA = "taskq"
 _SQL = render_sql(_SCHEMA)
@@ -223,3 +226,41 @@ async def test_an_empty_dispatch_round_is_claim_then_probe() -> None:
     rows = await _dispatch(conn)
     assert rows == []
     assert _shape(conn.wire) == ["claim", "probe"]
+
+
+# ── enqueue ───────────────────────────────────────────────────────────────
+
+
+def _enqueue_args(**overrides: Any) -> EnqueueArgs:
+    base: dict[str, Any] = {
+        "id": new_job_id(),
+        "actor": "test_actor",
+        "queue": _QUEUE,
+        "payload": {},
+        "max_attempts": 3,
+        "retry_kind": "transient",
+        "scheduled_at": None,
+    }
+    base.update(overrides)
+    return EnqueueArgs(**base)
+
+
+async def _enqueue_on_pool(conn: _RecordingConn, args: EnqueueArgs) -> JobRow:
+    return await _enqueue(
+        _RecordingPool(conn),  # type: ignore[arg-type]  # Why: duck-typed recording pool.
+        _SQL,
+        _SCHEMA,
+        FakeClock(_NOW),
+        args,
+    )
+
+
+async def test_a_plain_enqueue_is_one_statement() -> None:
+    """INSERT … RETURNING, nothing else: no transaction (the INSERT is
+    atomic on its own and the arm takes no lock) and no app-side notify
+    (the row trigger is the wake source)."""
+    args = _enqueue_args()
+    conn = _RecordingConn({"INSERT INTO": [_job_record(job_id=args.id)]})
+    row = await _enqueue_on_pool(conn, args)
+    assert row.id == args.id
+    assert _shape(conn.wire) == ['INSERT INTO "taskq".jobs']

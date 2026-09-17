@@ -182,7 +182,7 @@ class _ConnStandin:
         return None
 
     async def execute(self, sql: str, *args: object) -> str:
-        self._note("pg_notify" if "pg_notify" in sql else "execute")
+        self._note("execute")
         return "OK"
 
 
@@ -313,15 +313,15 @@ async def test_plain_enqueue_insert_runs_without_savepoint() -> None:
     row = await _enqueue_with_conn(conn, _SQL, _SCHEMA_LABEL, FakeClock(_NOW), _make_args())
 
     assert isinstance(row, JobRow)
-    assert conn.events == ["stmt:insert", "stmt:pg_notify"], (
+    assert conn.events == ["stmt:insert"], (
         f"a plain enqueue must open no savepoint; events={conn.events}"
     )
     assert conn.statement_depths["insert"] == 0
 
 
-async def test_singleton_insert_success_releases_savepoint_and_notifies_outside_it() -> None:
+async def test_singleton_insert_success_releases_savepoint_after_the_insert() -> None:
     """The savepoint bounds exactly the INSERT: on success it RELEASEs
-    before the notify, so the wrap never widens into the rest of the
+    right after it, so the wrap never widens into the rest of the
     enqueue."""
     conn = _ConnStandin(insert_rec=_Record(_full_record()))
 
@@ -335,11 +335,9 @@ async def test_singleton_insert_success_releases_savepoint_and_notifies_outside_
         "savepoint-enter",
         "stmt:insert",
         "savepoint-release",
-        "stmt:pg_notify",
     ], f"events={conn.events}"
     assert conn.statement_depths["singleton_preflight"] == 0, (
         "the preflight is a read outside the savepoint"
     )
     assert conn.statement_depths["insert"] == 1, "the INSERT runs inside the savepoint"
-    assert conn.statement_depths["pg_notify"] == 0, "the savepoint closes before the notify"
     assert conn.tx_depth == 0

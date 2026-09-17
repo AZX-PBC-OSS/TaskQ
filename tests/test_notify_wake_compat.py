@@ -1,9 +1,9 @@
 """Integration tests for the enqueue → NOTIFY → wake path.
 
 Verifies the end-to-end low-latency dispatch path: ``JobsClient.enqueue()``
-→ ``PostgresBackend.enqueue`` ``pg_notify`` at
-``src/taskq/backend/postgres.py:717-727`` → listener callback → subscriber
-event, plus the polling-fallback path when the listener is killed.
+→ ``PostgresBackend.enqueue`` INSERT → the ``tr_notify_job_insert`` trigger's
+``pg_notify`` at commit → listener callback → subscriber event, plus the
+polling-fallback path when the listener is killed.
 """
 
 import asyncio
@@ -104,8 +104,8 @@ async def test_enqueue_wakes_subscriber_with_listener(pg_dsn: str) -> None:
 
     Demonstrates that a ``PostgresBackend.enqueue(...)`` call wakes a subscriber
     holding a ``subscribe_wake()`` event within a bounded wall-clock window.
-    The pg_notify fires at commit from ``src/taskq/backend/postgres.py:717-727``
-    and the callback from ``src/taskq/worker/notify.py`` delivers to the
+    The pg_notify is the jobs INSERT trigger's, delivered at commit, and
+    the callback from ``src/taskq/worker/notify.py`` delivers to the
     per-backend subscriber registry.
     """
     worker_settings = make_integration_settings(pg_dsn)

@@ -330,9 +330,10 @@ async def test_singleton_unique_violation_raises_collision() -> None:
 # ── _enqueue_on_conn: result_ttl sets result_expires_at ──────────────────
 
 
-async def test_result_ttl_path_succeeds_and_notifies() -> None:
-    """When ``result_ttl`` is set, the INSERT succeeds, the row is returned,
-    and a pg_notify is issued for the new row."""
+async def test_result_ttl_path_succeeds_without_an_app_side_notify() -> None:
+    """When ``result_ttl`` is set, the INSERT succeeds and the row is
+    returned; the wake is the INSERT trigger's, so no pg_notify statement
+    follows."""
     rec = _Record(_full_record())
     conn = _FakeEnqueueConn(fetchrow_map={"RETURNING": rec, "INSERT": rec})
     args = _make_args(result_ttl=timedelta(hours=1))
@@ -341,8 +342,7 @@ async def test_result_ttl_path_succeeds_and_notifies() -> None:
     row = await _enqueue_on_conn(conn, _SQL, _SCHEMA_LABEL, clock, args)
 
     assert isinstance(row, JobRow)
-    # pg_notify was issued (enqueue_notify SQL).
-    assert any("pg_notify" in sql for sql in conn.execute_calls)
+    assert not any("pg_notify" in sql for sql in conn.execute_calls)
 
 
 # ── _enqueue_on_conn: idempotency-key ON CONFLICT dedup ──────────────────
@@ -591,8 +591,9 @@ async def test_enqueue_batch_fast_schedule_interval_and_result_ttl() -> None:
     count = await _enqueue_batch_fast(pool, _SQL, _SCHEMA_LABEL, [args])
 
     assert count == 2
-    # pg_notify issued after COPY.
-    assert any("pg_notify" in sql for sql in conn.execute_calls)
+    # The wake is the INSERT trigger's (COPY fires it per row): no
+    # app-side pg_notify follows the fixup.
+    assert not any("pg_notify" in sql for sql in conn.execute_calls)
 
 
 # ── _enqueue_batch_fast: scheduled vs pending status ─────────────────────

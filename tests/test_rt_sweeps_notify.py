@@ -123,9 +123,9 @@ async def test_sweep2_fires_no_notifications(
     deliberate, test-visible decision.
 
     Observation hygiene: seeding the corpus inserts 'pending' jobs rows
-    directly, and the schema's ``tr_notify_job_insert`` trigger
-    (defense-in-depth for direct SQL inserts, see the initial migration)
-    fires the SAME wake channel for them — deduplicated by PostgreSQL to
+    directly, and the schema's ``tr_notify_job_insert`` trigger (the wake
+    source for every insert, TaskQ's own or direct SQL) fires the SAME
+    wake channel for them — deduplicated by PostgreSQL to
     one delivery per transaction, since duplicate (channel, payload)
     notifications inside one transaction coalesce.  The seed's delivery
     is drained and discarded before the sweep runs, so ``seen`` below

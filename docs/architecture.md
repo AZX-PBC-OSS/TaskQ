@@ -1047,14 +1047,26 @@ event delivery without fleet-wide fanout.
 
 ### Enqueue path
 
-After a successful INSERT into `jobs`, `PostgresBackend.enqueue` executes:
-
-```sql
-SELECT pg_notify(wake_channel(schema), '')
-```
+The wake is the `tr_notify_job_insert` row trigger's: `AFTER INSERT ON jobs
+… WHEN (NEW.status = 'pending')`, it issues `pg_notify(wake_channel(schema),
+'')` for every row that lands dispatchable. No enqueue path issues a notify
+of its own — single INSERT, batch INSERT and COPY all rely on the trigger.
+Every insert path decides `status` server-side (a future `scheduled_at`
+lands as `scheduled`), so the WHEN clause is what keeps a future-dated
+enqueue from waking the fleet; Postgres coalesces identical
+`(channel, payload)` notifications within one transaction, so a batch costs
+one delivery. (An app-side notify after the INSERT was the same pair the
+trigger emits: coalesced with it in a transaction, a second delivery to
+every listener on a caller's bare connection — pinned by
+`tests/test_enqueue_wake_source.py`.) A plain pool enqueue is therefore
+exactly one statement, `INSERT … RETURNING *`, in autocommit
+(`tests/test_round_trip_budgets.py`). pg-boss folds its notify into the
+INSERT gated on the row being due; Oban notifies only for `available` rows.
 
 The empty payload is intentional — consumers do not need to parse it; the
-notification alone is sufficient to trigger a dispatch poll.
+notification alone is sufficient to trigger a dispatch poll. Paths that
+re-pend a row by UPDATE (admin retry, the reclaim sweeps) issue their own
+`pg_notify`, since the trigger fires on INSERT only.
 
 ### Consumer path
 

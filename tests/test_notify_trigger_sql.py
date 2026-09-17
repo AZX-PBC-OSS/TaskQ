@@ -46,9 +46,8 @@ async def test_a_pending_insert_wakes_listeners_on_the_schema_channel(
 ) -> None:
     """A direct SQL INSERT of a pending job notifies the schema's wake channel.
 
-    This is the trigger's whole reason to exist: the application-side
-    pg_notify in the enqueue path is the primary wake, and this is
-    defence-in-depth for rows inserted by SQL that never goes through TaskQ.
+    The trigger is the sole wake source for inserts — every enqueue path
+    relies on it, and so does SQL that never goes through TaskQ.
     Asserting it end to end covers every property the DDL greps restated —
     the function exists, the trigger is AFTER INSERT ON jobs FOR EACH ROW, and
     the channel is built from TG_TABLE_SCHEMA — and, unlike them, it fails if

@@ -48,7 +48,6 @@ from taskq.connections import (
 )
 from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: the canonical identifier regex, shared with every schema-qualified SQL site — a local copy would drift.
-    wake_channel,
 )
 from taskq.exceptions import (
     BatchMaxPendingExceededError,
@@ -755,8 +754,9 @@ async def _enqueue_on_conn(
 
     Includes unique_for preflight, singleton preflight, max_pending
     count, INSERT (savepoint-isolated on the singleton arm and the
-    bounded idempotency arm — see the collision catches below),
-    idempotency-key SELECT on conflict, and pg_notify. Does NOT acquire
+    bounded idempotency arm — see the collision catches below), and the
+    idempotency-key SELECT on conflict; the wake is the INSERT trigger's,
+    not a statement of this function's. Does NOT acquire
     from ``worker_pool`` — the caller supplies the connection. A
     transaction is opened here when the caller-supplied connection
     carries none and the enqueue needs transaction-scoped serialization:
@@ -1117,11 +1117,13 @@ async def _enqueue_on_conn(
     if not is_new:
         _refuse_cross_actor_idempotency_hit(args, row)
 
+    # No app-side pg_notify: the jobs INSERT trigger (tr_notify_job_insert)
+    # is the sole wake source for every insert path, gated on the row
+    # landing as 'pending' — which the INSERT decides server-side, so a
+    # future-dated row wakes nobody. An app-side statement was the same
+    # (channel, payload) pair the trigger emits: coalesced with it inside
+    # a transaction, a second delivery to every listener outside one.
     if is_new:
-        await conn.execute(
-            sql.enqueue_notify,
-            wake_channel(schema),
-        )
         logger.info(
             "enqueue",
             kind="enqueue",
@@ -1181,41 +1183,44 @@ async def _enqueue(
     unique_for_lock_timeout_ms: float = DEFAULT_UNIQUE_FOR_LOCK_TIMEOUT_MS,
     idempotency_lock_timeout_ms: float = DEFAULT_IDEMPOTENCY_LOCK_TIMEOUT_MS,
 ) -> JobRow:
+    # No transaction of its own: the plain arm is one atomic INSERT, and
+    # _enqueue_on_conn opens a scope exactly where one is needed — the
+    # capped / single-flight preflights, the singleton savepoint, the
+    # bounded idempotency wait — so a wrapper here only added BEGIN and
+    # COMMIT round trips to every enqueue.
     async def _attempt() -> JobRow:
         try:
             async with pool.acquire() as conn:
-                async with conn.transaction():
-                    return await _enqueue_on_conn(
-                        conn,
-                        sql,
-                        schema,
-                        clock,
-                        args,
-                        max_pending_lock_timeout_ms=max_pending_lock_timeout_ms,
-                        unique_for_lock_timeout_ms=unique_for_lock_timeout_ms,
-                        idempotency_lock_timeout_ms=idempotency_lock_timeout_ms,
-                    )
+                return await _enqueue_on_conn(
+                    conn,
+                    sql,
+                    schema,
+                    clock,
+                    args,
+                    max_pending_lock_timeout_ms=max_pending_lock_timeout_ms,
+                    unique_for_lock_timeout_ms=unique_for_lock_timeout_ms,
+                    idempotency_lock_timeout_ms=idempotency_lock_timeout_ms,
+                )
         except _LegacyIdempotencyKeyConflictError as exc:
             public = exc.to_public()
 
-        # One retry on a fresh transaction. If the violation was a same-pair
+        # One retry on a fresh statement. If the violation was a same-pair
         # race, the conflicting row is now committed (a unique-violation report
         # means the other transaction committed) and the composite arbiter
         # dedupes cleanly below. If it was genuine cross-scope reuse, the
         # legacy index violates again and the public typed error is raised.
         try:
             async with pool.acquire() as conn:
-                async with conn.transaction():
-                    return await _enqueue_on_conn(
-                        conn,
-                        sql,
-                        schema,
-                        clock,
-                        args,
-                        max_pending_lock_timeout_ms=max_pending_lock_timeout_ms,
-                        unique_for_lock_timeout_ms=unique_for_lock_timeout_ms,
-                        idempotency_lock_timeout_ms=idempotency_lock_timeout_ms,
-                    )
+                return await _enqueue_on_conn(
+                    conn,
+                    sql,
+                    schema,
+                    clock,
+                    args,
+                    max_pending_lock_timeout_ms=max_pending_lock_timeout_ms,
+                    unique_for_lock_timeout_ms=unique_for_lock_timeout_ms,
+                    idempotency_lock_timeout_ms=idempotency_lock_timeout_ms,
+                )
         except _LegacyIdempotencyKeyConflictError as exc:
             logger.warning(
                 "scoped-idempotency-migration-pending",
@@ -1519,11 +1524,6 @@ async def _enqueue_batch(
             it — nothing from the batch is admitted, as for a singleton
             collision."""
             inserted_ids: set[UUID] = {rec["id"] for rec in returning_recs}
-            if inserted_ids:
-                await conn.execute(
-                    sql.enqueue_notify,
-                    wake_channel(schema),
-                )
 
             new_rows_by_id: dict[UUID, object] = {rec["id"]: rec for rec in returning_recs}
 
@@ -2041,10 +2041,6 @@ async def _enqueue_batch_fast(
         await conn.execute(
             sql.enqueue_batch_fast_fixup,
             *fixup_cols,
-        )
-        await conn.execute(
-            sql.enqueue_notify,
-            wake_channel(schema),
         )
         return count, refusals, refused_indices
 
