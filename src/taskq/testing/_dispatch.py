@@ -149,6 +149,23 @@ async def _dispatch_batch(
     # An empty attempt is side-effect free by the same invariant PG keeps
     # (zero admissions means nothing was written), so re-attempts start
     # clean.
+    # One pass groups the round's dispatchable population by actor —
+    # pending, due, and inside its schedule_to_close — in table order, so
+    # the per-actor sorts below see the same rows in the same order a
+    # per-actor scan produced. The actor loop then reads its own group
+    # instead of rescanning every job per registered actor (O(actors x
+    # jobs) per round, and per expansion), which is what made the twin
+    # the slow half of every differential run at fleet-sized registries.
+    # The store is not written between here and the claim writes below.
+    _dispatchable_by_actor: dict[str, list[JobRow]] = _dd(list)
+    for row in self._jobs.values():
+        if (
+            row.status == "pending"
+            and row.scheduled_at <= now
+            and (row.schedule_to_close is None or row.schedule_to_close > now)
+        ):
+            _dispatchable_by_actor[row.actor].append(row)
+
     oversample = _DISPATCH_OVERSAMPLE
     expansions = 0
     while True:
@@ -171,14 +188,7 @@ async def _dispatch_batch(
             _bound = _residual * oversample
             _by_queue: dict[str, list[JobRow]] = _dd(list)
             _repended_by_fk: dict[str, list[JobRow]] = _dd(list)
-            for row in self._jobs.values():
-                if not (
-                    row.status == "pending"
-                    and row.actor == _actor
-                    and row.scheduled_at <= now
-                    and (row.schedule_to_close is None or row.schedule_to_close > now)
-                ):
-                    continue
+            for row in _dispatchable_by_actor.get(_actor, ()):
                 if not row.assignment_routed:
                     # Label-routed arm: PG's per_actor_capacity x
                     # unnest(queues) probes, queue label against the
