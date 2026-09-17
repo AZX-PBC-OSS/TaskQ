@@ -277,7 +277,8 @@ def configure_exporters(settings: _ExporterSettings) -> ExporterWiring:
 
     try:
         from opentelemetry.sdk._configuration import (
-            _initialize_components,  # pyright: ignore[reportPrivateUsage]  # Why: the SDK ships its env-var configurator as a private module; it is the exact code path opentelemetry-instrument runs, and re-implementing it would drift from the SDK's own parsing of the same variables.
+            _get_exporter_entry_point,  # pyright: ignore[reportPrivateUsage]  # Why: the SDK ships its env-var configurator as a private module; it is the exact code path opentelemetry-instrument runs, and re-implementing it would drift from the SDK's own parsing of the same variables.
+            _initialize_components,  # pyright: ignore[reportPrivateUsage]  # Why: see above -- same module, same reasoning.
         )
     except ImportError:
         _warn_unavailable(
@@ -299,11 +300,21 @@ def configure_exporters(settings: _ExporterSettings) -> ExporterWiring:
         os.environ[_PROMETHEUS_PORT_ENV] = str(plan.prometheus_port)
         os.environ.setdefault(_PROMETHEUS_HOST_ENV, settings.health_host)
 
+    def _resolve(names: list[str], signal: Literal["traces", "metrics", "logs"]) -> list[str]:
+        # Why the SDK's own resolver and not a local map: the bare "otlp"
+        # entry point is the gRPC exporter in every signal, and the protocol
+        # variables (OTEL_EXPORTER_OTLP_PROTOCOL and its per-signal forms)
+        # select the HTTP one only when the name is resolved through this
+        # mapping. Names handed to _initialize_components directly SKIP it
+        # (it applies only to its own environment parse), so without this
+        # step a worker configured with http/protobuf silently exported gRPC.
+        return [_get_exporter_entry_point(name, signal) for name in names]
+
     try:
         _initialize_components(
-            trace_exporter_names=plan.extras("traces"),
-            metric_exporter_names=plan.extras("metrics"),
-            log_exporter_names=plan.extras("logs"),
+            trace_exporter_names=_resolve(plan.extras("traces"), "traces"),
+            metric_exporter_names=_resolve(plan.extras("metrics"), "metrics"),
+            log_exporter_names=_resolve(plan.extras("logs"), "logs"),
         )
     except Exception as exc:
         raise OtelExporterConfigurationError(

@@ -6,6 +6,7 @@ help:
 	@echo "  make test         - Run all tests (parallel)"
 	@echo "  make test-fast    - Run non-integration tests (parallel)"
 	@echo "  make test-e2e      - Run e2e tests (containerized workers; serial)"
+	@echo "  make test-otel    - Run the OTLP round-trip validation lane (collector container; serial)"
 	@echo "  make clean-e2e    - Remove e2e strays (worker images, wheel cache, stale containers)"
 	@echo "  make lint         - Run ruff linter"
 	@echo "  make format       - Format code with ruff"
@@ -81,6 +82,12 @@ test-fast: env
 # would ask uv to sync a second time, which is what --no-sync exists to stop.
 test-e2e: env
 	$(UVRUN) pytest --e2e -m e2e tests/e2e
+
+# The OTLP validation lane: TaskQ worker exporter wiring pushed through a real
+# collector container and asserted from its exported file output. Same shape as
+# test-e2e: serial (one collector per module), opt-in only, Docker required.
+test-otel: env
+	$(UVRUN) pytest --otel-validation -m otel_validation tests/otel_validation
 
 # Manual cleanup of the e2e tier's machine-level strays: worker images the
 # tier built (pid-owned ones whose owner is dead, plus legacy

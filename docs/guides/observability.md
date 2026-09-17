@@ -105,6 +105,63 @@ Common receiver addresses:
 - **Azure Monitor**: OTLP URL derived from the App Insights connection string
 - **PostHog**: PostHog Cloud OTLP endpoint
 
+### Validating the OTLP export path (collector round trip)
+
+The export path is validated end to end in a dedicated lane: a real `taskq
+worker`, configured only through the standard OTel environment variables,
+exports spans and metrics over OTLP to a real collector container, and the
+test asserts on what the collector exported (the dispatch span under the
+configured `service.name`, the `taskq.jobs.attempt_failures` counter, and the
+masked form of a credential seeded into a failed job's error text). The same
+protocol that satisfies the collector is what the vendor intakes below
+consume.
+
+```bash
+make test-otel
+# or directly:
+uv run pytest --otel-validation -m otel_validation tests/otel_validation
+```
+
+The lane requires Docker and skips cleanly (it does not error) when the
+daemon is unreachable. It is opt-in: it never runs in the default test
+invocations.
+
+#### Application Insights
+
+TaskQ reads only the standard OTel variables, so the connection string's
+`IngestionEndpoint` is what the operator copies into the OTLP endpoint; the
+SDK appends the per-signal paths (`/v1/traces`, `/v1/metrics`) to that base.
+The connection string itself stays set exactly as the platform tooling
+expects it:
+
+```bash
+export APPLICATIONINSIGHTS_CONNECTION_STRING="InstrumentationKey=<guid>;IngestionEndpoint=https://<region>.in.applicationinsights.azure.com/"
+export OTEL_EXPORTER_OTLP_ENDPOINT="https://<region>.in.applicationinsights.azure.com/"
+export OTEL_EXPORTER_OTLP_PROTOCOL="http/protobuf"
+export OTEL_SERVICE_NAME="my-app-worker"
+```
+
+#### Datadog
+
+The agent's OTLP intake is a standard OTLP receiver on fixed ports: 4317 for
+gRPC (the default protocol) or 4318 for `http/protobuf`. Point the standard
+endpoint at the agent; `DD_SITE` and `DD_API_KEY` configure Datadog's own
+SDK family, which TaskQ does not ship, so TaskQ ignores them (they are only
+needed by processes exporting to the intake API directly, without an agent):
+
+```bash
+export OTEL_EXPORTER_OTLP_ENDPOINT="http://localhost:4317"
+export OTEL_EXPORTER_OTLP_PROTOCOL="grpc"
+export DD_SITE="datadoghq.com"
+export DD_API_KEY="<key>"   # for the agentless direct-intake shape only
+export OTEL_SERVICE_NAME="my-app-worker"
+```
+
+Run the validation lane once from a deployment-shaped shell (the variables
+above, with the endpoint pointed at a local collector) before relying on it
+in production; the lane's assertions are the contract the export path must
+keep.
+
 ### Instrumentation name
 
 All spans and metrics are created under instrumentation name `"taskq"` (the
