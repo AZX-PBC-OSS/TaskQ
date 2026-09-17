@@ -1099,7 +1099,7 @@ def test_live_jobs_table_non_running_rows_have_no_lease_state(
 
 def test_live_jobs_list_computes_running_for_server_side() -> None:
     """The live-tab list query must compute ``running_for_ms`` server-side
-    against the database clock for running rows — the same
+    against the database clock for running rows, the same
     single-arbiter shape the lease columns pin: ``started_at`` is
     database-written, so a Python-clock span would skew by the
     app-to-database offset, and a column the query never computes can
@@ -1124,7 +1124,7 @@ def test_live_jobs_list_computes_running_for_server_side() -> None:
 def test_live_jobs_table_renders_running_for_on_running_rows(
     stub_pool: _StubPool,
 ) -> None:
-    """A running row renders its live elapsed span in the Duration cell —
+    """A running row renders its live elapsed span in the Duration cell:
     duration_ms is NULL while a job runs (no finished_at), and the dash
     that used to render there hid exactly the rows an operator triaging
     the running-longest view needs a number on."""
