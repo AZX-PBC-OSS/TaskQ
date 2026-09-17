@@ -23,8 +23,11 @@ Failover SLA:
                        deletes the row; the next election wins it)
   Worker killed      ≤ leader_lease + heartbeat_interval + one round trip
   Silent leader      ≤ leader_lease + heartbeat_interval + one round trip
-  Won, unassumable   ≤ leader_lease + heartbeat_interval (the trust-spent
-                       hand-back deletes the row; see
+  Won, unassumable   ≤ leader_lease + heartbeat_interval + one failing
+                       cycle's connection attempts (each bounded by
+                       reload_factory_timeout; the trust-spent hand-back
+                       deletes the row — the lapse backstop cannot fire
+                       while sub-lease re-wins keep refreshing it; see
                        ``_hand_back_unassumable_lease``)
   Partition detect   ≤ watchdog_interval + heartbeat_interval + 2 s
   PG failover        ≤ heartbeat_interval
