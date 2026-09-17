@@ -55,7 +55,13 @@ from taskq.retry import ActorConfigLike
 from taskq.worker._bootstrap import (  # pyright: ignore[reportPrivateUsage]  # Why: _registered_connection_init_hook is the single reader of the registry half of the with_connection_init channel; bootstrap uses it at pool build and dispatch needs the same probe for pools bootstrap did not build. No cycle: _bootstrap does not import dispatch.
     _registered_connection_init_hook,
 )
-from taskq.worker._consumer import consume_one_job
+from taskq.worker._consumer import (
+    _log as _consumer_log,  # pyright: ignore[reportPrivateUsage]  # Why: the job-bound logger is built once here and handed to consume_one_job; binding it off the consumer's own logger keeps the `logger` field on every job line exactly what consume_one_job binds by default.
+)
+from taskq.worker._consumer import (
+    bind_job_log,
+    consume_one_job,
+)
 from taskq.worker._handlers import (
     _TERMINAL_WRITE_INFRA_EXCEPTIONS,  # pyright: ignore[reportPrivateUsage]  # Why: dispatch_one_job's direct-call path for _handle_generic_exception needs the same infra guard as _run_terminal_path to prevent false terminal Redis publishes and exception mislabeling.
     AttemptOutcome,
@@ -560,11 +566,16 @@ async def dispatch_one_job(
                         payload_schema_ver=str(job.payload_schema_ver),
                     )
 
-                    span_ctx = consumer_span.get_span_context()
-                    dispatch_trace_id: str = ""
-                    if span_ctx.is_valid:
-                        dispatch_trace_id = format(span_ctx.trace_id, "032x")
-
+                    # Bound once for the whole job: the DI-resolution
+                    # context below and the live context consume_one_job
+                    # builds share it, off the consumer's own logger so a
+                    # job's lines carry one logger name whichever context
+                    # emitted them.
+                    job_log = bind_job_log(
+                        logger_arg if logger_arg is not None else _consumer_log,
+                        job,
+                        span=consumer_span,
+                    )
                     interim_ctx: JobContext[BaseModel] = JobContext(
                         job_id=job.id,
                         actor=job.actor,
@@ -574,16 +585,7 @@ async def dispatch_one_job(
                         worker_id=worker_id,
                         payload=validated_payload,
                         jobs=job_enqueuer,
-                        log=bind_job_context(
-                            dispatch_log,
-                            job_id=job.id,
-                            actor=job.actor,
-                            queue=job.queue,
-                            attempt=job.attempt,
-                            identity_key=job.identity_key,
-                            trace_id=dispatch_trace_id,
-                            batch_id=batch_id or None,
-                        ),
+                        log=job_log,
                         span=consumer_span
                         if not isinstance(consumer_span, trace.NonRecordingSpan)
                         else None,
@@ -660,6 +662,7 @@ async def dispatch_one_job(
                             settings=deps.settings,
                             error_reporter=error_reporter,
                             fallback_result_ttl=actor_ref.result_ttl,
+                            job_log=job_log,
                         )
                         outcome = result
 

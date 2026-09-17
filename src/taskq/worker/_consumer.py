@@ -162,6 +162,39 @@ _dependency_failure_warned: dict[str, float] = {}
 by error class (bounded: the stores' exception vocabulary)."""
 
 
+def bind_job_log(
+    log: structlog.stdlib.BoundLogger, job: JobRow, *, span: trace.Span
+) -> structlog.stdlib.BoundLogger:
+    """Bind *job*'s fields onto *log* — the one logger every line of a
+    job's dispatch and consumption carries.
+
+    The trace id comes from *span* (the CONSUMER span) when it is valid
+    and is the empty string otherwise; ``batch_id`` rides along when the
+    row's metadata carries one. The dispatch path binds this once for the
+    DI-resolution context and hands the result to :func:`consume_one_job`
+    as ``job_log``; a direct caller gets the same binding by default.
+    """
+    trace_id = ""
+    span_context = span.get_span_context()
+    if span_context.is_valid:
+        trace_id = format(span_context.trace_id, "032x")
+    batch_id: str | None = None
+    if job.metadata:
+        raw_bid = job.metadata.get("batch_id")
+        if raw_bid is not None:
+            batch_id = str(raw_bid)
+    return bind_job_context(
+        log,
+        job_id=job.id,
+        actor=job.actor,
+        queue=job.queue,
+        attempt=job.attempt,
+        identity_key=job.identity_key,
+        trace_id=trace_id,
+        batch_id=batch_id,
+    )
+
+
 def _encode_result(result: object, max_bytes: int = MAX_RESULT_BYTES) -> bytes | None:
     """Serialize an actor return value to orjson bytes exactly once.
 
@@ -301,6 +334,7 @@ async def consume_one_job(
     settings: WorkerSettings | None = None,
     error_reporter: ErrorReporter | None = None,
     fallback_result_ttl: timedelta | None = None,
+    job_log: structlog.stdlib.BoundLogger | None = None,
 ) -> AttemptOutcome:
     """Run one job's full  try/except sequence.
 
@@ -347,6 +381,11 @@ async def consume_one_job(
     The reporter call is wrapped in a try/except — a failing reporter
     never crashes the worker.
 
+    ``job_log`` is the job-bound logger a caller has already built (the
+    dispatch path binds one for the DI-resolution context and hands it
+    here so the job's lines come from one logger, bound once); when
+    ``None`` it is bound here from ``logger`` and the current span.
+
     ``transaction_conn`` is the connection the job's transaction runs
     on — the connection this dispatch acquired from the worker's slot
     pool on the per-slot path, or the resolved LOOP-scope
@@ -366,30 +405,9 @@ async def consume_one_job(
     ``finally`` block.  Release is best-effort (not shielded) per
     "Cancellation and shutdown boundary".
     """
-    log = logger if logger is not None else _log
     consumer_span = trace.get_current_span()
-
-    trace_id: str = ""
-    span_context = consumer_span.get_span_context()
-    if span_context.is_valid:
-        trace_id = format(span_context.trace_id, "032x")
-
-    batch_id: str | None = None
-    if job.metadata:
-        raw_bid = job.metadata.get("batch_id")
-        if raw_bid is not None:
-            batch_id = str(raw_bid)
-
-    job_log = bind_job_context(
-        log,
-        job_id=job.id,
-        actor=job.actor,
-        queue=job.queue,
-        attempt=job.attempt,
-        identity_key=job.identity_key,
-        trace_id=trace_id,
-        batch_id=batch_id,
-    )
+    if job_log is None:
+        job_log = bind_job_log(logger if logger is not None else _log, job, span=consumer_span)
 
     _rl_limits: Sequence[str | KeyedRateLimitRef | TokenBucket | SlidingWindow] = (
         rate_limits if rate_limits is not None else ()
