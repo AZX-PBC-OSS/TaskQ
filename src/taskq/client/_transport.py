@@ -9,13 +9,10 @@ import structlog
 
 from taskq._close import CLOSE_TIMEOUT_SECS, close_redis_bounded
 from taskq.backend._protocol import JobId, JobRow, JobStatus
+from taskq.backend.statemachine import TERMINAL_STATUSES
 from taskq.progress._events import ProgressEvent
 
 logger = structlog.get_logger("taskq.client._transport")
-
-_TERMINAL_STATUSES: frozenset[str] = frozenset(
-    {"succeeded", "failed", "cancelled", "crashed", "abandoned"}
-)
 
 
 def _is_terminal(event: Any) -> bool:
@@ -140,5 +137,5 @@ async def pg_poll_event_stream[EventT](
         seq = row.progress_seq
         status = row.status
         yield row_to_event(row, status_changed)
-        if row.status in _TERMINAL_STATUSES:
+        if row.status in TERMINAL_STATUSES:
             return

@@ -1278,19 +1278,25 @@ async def _stream_pg(
     either. Holds no connection of its own, so pool-only clients stream
     like any other.
     """
-    interval = min(poll_timeout, _PG_STREAM_POLL_INTERVAL_S)
-    while True:
-        await asyncio.sleep(interval)
+    from taskq.client._transport import pg_poll_event_stream
+
+    async def _fetch_row() -> JobRow:
         row = await client.backend.get(job_id)
         if row is None:
+            # stream() promised a terminal event; a row that vanished cannot
+            # deliver one, and that is the caller's KeyError, not a quiet end.
             raise KeyError(job_id)
-        if row.progress_seq != last_seq or row.status != last_status:
-            last_seq = row.progress_seq
-            last_status = row.status
-            event = _row_to_event(row)
-            yield event
-            if event.terminal:
-                return
+        return row
+
+    async for event in pg_poll_event_stream(
+        _fetch_row,
+        lambda row, _status_changed: _row_to_event(row),
+        job_id=job_id,
+        poll_interval=min(poll_timeout, _PG_STREAM_POLL_INTERVAL_S),
+        last_seq=last_seq,
+        last_status=last_status,
+    ):
+        yield event
 
 
 async def _stream_redis(
