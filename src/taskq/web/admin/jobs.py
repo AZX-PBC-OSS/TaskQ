@@ -6,7 +6,7 @@ to ensure route registration order (static paths before {job_id}).
 
 import uuid
 from collections.abc import AsyncGenerator
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -239,7 +239,9 @@ def _cursor_values(
     ends in the unfinished rows), and parses to ``None``.  A malformed
     cursor -- hand-edited URL, stale bookmark, or an empty value on a
     column that has no NULL range -- returns ``None`` so the caller falls
-    back to the unpaged first page rather than surfacing a driver error.
+    back to the unpaged first page rather than surfacing a driver error;
+    the caller must then treat the page as NOT paged-into (no cursor was
+    applied, so there is no page before it) whatever the query string said.
     """
     if not cursor_id:
         return None
@@ -262,24 +264,26 @@ def _build_paginated_sql(
     sort: str,
     order: str,
 ) -> tuple[str, list[Any]]:
-    """Build a keyset-paginated SELECT for the given table and column list."""
-    ordering = _build_order(sort, order, sortable)
-    # "next" walks the ORDER BY forwards and "prev" walks it backwards.
-    # The ordering renders both the reversed comparison and the reversed
-    # NULLS placement from that one flag -- reversing only the directions
-    # would strand the NULL range at the wrong end of a "prev" page.
-    forward = cursor_dir != "prev"
+    """Build a keyset-paginated SELECT for the given table and column list.
+
+    See :func:`_paginated_page` for the direction and cursor semantics; this
+    is the SQL half of it, kept separate so the statement shape can be
+    asserted on its own.
+    """
+    page = _paginated_page(sortable, cursor_at, cursor_id, cursor_dir, sort, order)
+    ordering = page.ordering
     from_clause = f'SELECT {cols} FROM "{schema}".{table}'
 
     cursor_clause = ""
-    values = _cursor_values(ordering, cursor_at, cursor_id)
-    if values is not None:
-        predicate, cursor_params = ordering.sql_after(values, len(params) + 1, forward=forward)
+    if page.cursor is not None:
+        predicate, cursor_params = ordering.sql_after(
+            page.cursor, len(params) + 1, forward=page.forward
+        )
         cursor_clause = f" AND {predicate}"
         params = [*params, *cursor_params]
 
     outer_order = ordering.order_by_sql()
-    if not forward:
+    if not page.forward:
         inner = (
             f"{from_clause} WHERE {where} {cursor_clause} "
             f"ORDER BY {ordering.order_by_sql(forward=False)} LIMIT {_FETCH_SIZE}"
@@ -287,6 +291,52 @@ def _build_paginated_sql(
         return f"SELECT * FROM ({inner}) sub ORDER BY {outer_order}", params
     sql = f"{from_clause} WHERE {where} {cursor_clause} ORDER BY {outer_order} LIMIT {_FETCH_SIZE}"
     return sql, params
+
+
+@dataclass(frozen=True, slots=True)
+class _PaginatedPage:
+    """How one jobs-list request is positioned in its result set.
+
+    ``cursor`` is the applied keyset cursor (``None`` on the unpaged first
+    page - absent OR malformed in the query string), and ``forward`` is the
+    walk direction that was actually used.  Both the SQL builder and the
+    handler's has_prev / has_next derivation read these so they can never
+    disagree about whether a cursor was applied.
+    """
+
+    ordering: JobOrdering
+    cursor: tuple[CursorValue, ...] | None
+    forward: bool
+
+    @property
+    def paged_in(self) -> bool:
+        return self.cursor is not None
+
+
+def _paginated_page(
+    sortable: dict[str, SortColumn],
+    cursor_at: str | None,
+    cursor_id: str | None,
+    cursor_dir: str,
+    sort: str,
+    order: str,
+) -> _PaginatedPage:
+    """Resolve the ordering, the applied cursor and the walk direction.
+
+    "next" walks the ORDER BY forwards and "prev" walks it backwards.  The
+    ordering renders both the reversed comparison and the reversed NULLS
+    placement from that one flag -- reversing only the directions would
+    strand the NULL range at the wrong end of a "prev" page.
+
+    A "prev" walk needs a cursor to walk back from: with none applied the
+    request is the unpaged first page and is walked forwards, whatever the
+    query string said -- a reversed unpaged query would serve the TAIL of
+    the result set as if it were the first page.
+    """
+    ordering = _build_order(sort, order, sortable)
+    cursor = _cursor_values(ordering, cursor_at, cursor_id)
+    forward = cursor is None or cursor_dir != "prev"
+    return _PaginatedPage(ordering=ordering, cursor=cursor, forward=forward)
 
 
 def _parse_time_range(
@@ -418,8 +468,9 @@ def register(router: APIRouter) -> None:
             parse_time_filter(time_to, "time_to"),
         )
 
-        # Shared parser: dedupes, caps the item count and per-item length
-        # (the enqueue-side tag contract), and 400s on abuse.
+        # Shared parser: dedupes, caps per-item length (the enqueue-side tag
+        # contract; the item count is deliberately uncapped, see
+        # parse_job_tags), and 400s on abuse.
         tag_list: list[str] | None = parse_job_tags(tags)
 
         where, params = _build_where(
@@ -435,6 +486,7 @@ def register(router: APIRouter) -> None:
             within=within,
         )
 
+        sortable = _SORTABLE_LIVE if tab == "live" else _SORTABLE_ARCHIVE
         if tab == "live":
             query_sql, query_params = _build_paginated_sql(
                 schema,
@@ -471,22 +523,23 @@ def register(router: APIRouter) -> None:
         display_rows = [_normalize_row(dict(r)) for r in rows[:_PAGE_SIZE]]
 
         # `overfetched` only tells us whether more rows exist on the side of
-        # the result set we just queried (the direction of `cursor_dir`).
+        # the result set we just queried (the direction actually walked).
         # A page reached via "prev" already knows a "next" page exists (we
         # came from it), and vice versa — so has_next/has_prev must be
         # direction-aware rather than both derived from the same flag.
         #
-        # `cursor_id` and not `cursor_at` is what marks a page as paged-into:
-        # on a NULLS LAST column the seam value itself is legitimately empty
-        # (a cursor inside the `finished_at IS NULL` range), and reading
-        # emptiness as "no cursor" hid the link back.
-        paged_in = bool(cursor_id)
-        if cursor_dir == "prev":
+        # Paged-into means a cursor was APPLIED, which is what the resolved
+        # page reports: the query string alone cannot say so, because a
+        # malformed cursor is dropped and the first page served, and on a
+        # NULLS LAST column the seam value itself is legitimately empty.
+        page = _paginated_page(sortable, cursor_at, cursor_id, cursor_dir, sort, order)
+        cursor_dir = "next" if page.forward else "prev"
+        if not page.forward:
             has_prev = overfetched
-            has_next = paged_in
+            has_next = True
         else:
             has_next = overfetched
-            has_prev = paged_in
+            has_prev = page.paged_in
 
         next_cursor_at: str = ""
         next_cursor_id: str = ""
@@ -494,7 +547,6 @@ def register(router: APIRouter) -> None:
         prev_cursor_id: str = ""
         if display_rows:
             # Use the active sort column as the cursor key
-            sortable = _SORTABLE_LIVE if tab == "live" else _SORTABLE_ARCHIVE
             cursor_col = (sortable.get(sort) or next(iter(sortable.values()))).name
             last = display_rows[-1]
             next_cursor_at = _cursor_field(last.get(cursor_col))
