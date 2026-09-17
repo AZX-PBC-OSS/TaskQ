@@ -11,7 +11,7 @@ import asyncio
 import contextlib
 from collections.abc import AsyncGenerator, Awaitable, Callable, Generator, Mapping
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import AsyncExitStack, asynccontextmanager
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any, assert_never, cast
@@ -62,7 +62,7 @@ def make_resolver(
 
 
 class ScopeContainer:
-    """Concrete scope-lifetime container owning a cache, teardown list, and AsyncExitStack.
+    """Concrete scope-lifetime container owning a cache and a teardown list.
 
     The container is responsible for ALL factory invocation, caching, and
     teardown registration. The solver engine NEVER calls a factory directly
@@ -78,7 +78,6 @@ class ScopeContainer:
     ) -> None:
         self._scope: Scope = scope
         self._cache: dict[type, object] = {}
-        self._stack: AsyncExitStack = AsyncExitStack()
         self._teardowns: list[Callable[[], Any]] = []
         self._resolver: _Resolver = resolver
         self._sync_gen_executor: ThreadPoolExecutor | None = None
