@@ -179,7 +179,7 @@ default settings (60 s lease, 10 s interval, 2 s command timeout) the floor
 is 56 s — at or above what the lease has to harvest — so the renewal runs
 on **every beat exactly as before**; the rewrite savings apply from leases
 of roughly 70 s upward (2× at 70 s, 4× at 90 s, ~6× at 120 s; see
-[perf-evidence-lease-renewal.md](../perf-evidence-lease-renewal.md) for the
+`perf-evidence-lease-renewal.md` at the repo root for the
 sizing math, the enforced-bound measurement, and the fix-round history).
 A live worker's lease never comes closer to expiring than one worst
 beat-gap below the renewal threshold (`threshold − interval − 2 ×
