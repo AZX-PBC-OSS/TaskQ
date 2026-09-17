@@ -83,6 +83,21 @@ _LIVE_COLS = (
     "CASE WHEN started_at IS NOT NULL AND finished_at IS NOT NULL "
     "  THEN extract(epoch from finished_at - started_at) * 1000 "
     "  ELSE NULL END AS duration_ms, "
+    # The live twin of duration_ms: a running row has no finished_at, so
+    # duration_ms is NULL while it runs and the Duration cell rendered a
+    # dash for exactly the rows an operator most needs a number on. The
+    # elapsed span is computed SERVER-SIDE against the database clock —
+    # the same single-arbiter shape as lease_expired below it: started_at
+    # is database-written, so measuring it against this process's clock
+    # would skew the span by the app-to-database offset. clock_timestamp()
+    # (VOLATILE) is fine here because this is a projection over the ≤
+    # page-size fetched rows, not a WHERE bound, so there is no index
+    # condition to lose. Rendered only while status='running'; it
+    # disappears the row transition terminal, where duration_ms takes
+    # over as the settled value.
+    "CASE WHEN status = 'running' AND started_at IS NOT NULL "
+    "  THEN extract(epoch from clock_timestamp() - started_at) * 1000 "
+    "  ELSE NULL END AS running_for_ms, "
     # retry_kind travels with max_attempts so the Attempt cell can mark the
     # ceiling inert on an indefinite-kind row instead of advertising a
     # budget the job is not enforcing (retries.md §2).
