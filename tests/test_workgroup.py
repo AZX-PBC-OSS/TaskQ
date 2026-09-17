@@ -14,6 +14,7 @@ from uuid import UUID
 
 import asyncpg
 import pytest
+import structlog.testing
 
 from taskq.worker.workgroup import (
     SupervisorConfig,
@@ -2242,3 +2243,55 @@ def test_missing_actors_attribute_is_rejected_at_config_load(
 
     with pytest.raises(ValueError, match="registry"):
         load_workgroup_config(_write_toml(tmp_path, toml))
+
+
+# ── The shutdown-grace window warning (F3) ─────────────────────────────
+
+
+def _worker_settings_for_grace_window():  # type: ignore[no-untyped-def]  # Why: the local import keeps the module's import surface light; the return is always a real WorkerSettings.
+    from taskq.settings import WorkerSettings
+
+    return WorkerSettings.load_from_dict(
+        {"TASKQ_PG_DSN": "postgresql://x:x@localhost/x"},
+        validate=False,
+    )
+
+
+def test_shutdown_grace_below_the_release_floor_warns_with_the_numbers() -> None:
+    """The workgroup's default 30s grace SIGKILLs children before a held
+    release can land: CANCELLING alone consumes the children's 30s
+    cancellation grace, so the RELEASING write never happens and every
+    interrupted job rides the lease-expiry crash path (slower, and it
+    spends the attempt the release would have refunded). The warning
+    names the floor and the clean-exit number."""
+    from taskq.worker.workgroup import _warn_shutdown_grace_window
+
+    settings = _worker_settings_for_grace_window()
+    assert settings.cancellation_grace_period + settings.cleanup_grace_period == 40.0
+
+    scfg = SupervisorConfig()  # shutdown_grace default 30.0 < 40.0
+    assert scfg.shutdown_grace == 30.0
+    with structlog.testing.capture_logs() as logs:
+        _warn_shutdown_grace_window(scfg, settings)
+
+    entry = next(
+        log for log in logs if log["event"] == "workgroup.shutdown_grace_below_release_floor"
+    )
+    assert entry["log_level"] == "warning"
+    assert entry["shutdown_grace"] == 30.0
+    assert entry["release_floor_seconds"] == 40.0
+    assert entry["clean_exit_floor_seconds"] == settings.worst_case_shutdown_seconds
+    assert "shutdown_grace" in entry["remedy"]
+
+
+def test_shutdown_grace_at_or_above_the_release_floor_stays_quiet() -> None:
+    """The control: a grace that lets the release land (45s against the
+    40s floor) emits nothing — a warning that fires on correct configs is
+    noise that buries the next real one."""
+    from taskq.worker.workgroup import _warn_shutdown_grace_window
+
+    settings = _worker_settings_for_grace_window()
+    scfg = SupervisorConfig(shutdown_grace=45.0)
+    with structlog.testing.capture_logs() as logs:
+        _warn_shutdown_grace_window(scfg, settings)
+    assert [e for e in logs if e["event"] == "workgroup.shutdown_grace_below_release_floor"] == []
