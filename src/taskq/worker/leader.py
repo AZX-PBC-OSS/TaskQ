@@ -317,10 +317,13 @@ class MaintenanceLeader:
         # leader to recover a transient failure before standing down —
         # because every re-win mints a fresh full window, so nothing
         # else bounds how long the pod can keep a row it cannot use.
-        # Cleared only by a successful assume (the one thing that ends
-        # the episode); deliberately NOT cleared by the trust-spent
-        # resign itself, so a pod that re-wins while still broken hands
-        # the row straight back instead of buying another window.
+        # Cleared by a successful assume (the pod can lead again) and by
+        # an OBSERVED ELECTION LOSS (a peer holds the row now — the
+        # episode is over, and a later win starts a fresh one with a
+        # fresh budget); deliberately NOT cleared by the trust-spent
+        # resign itself, so a pod that re-wins while still broken —
+        # no peer having taken the row in between — hands the row
+        # straight back instead of buying another window.
         self._unassumable_anchor: LeaderTerm | None = None
         # Log-once latch for a refused courtesy advisory-lock probe: a
         # managed Postgres refusing ``pg_try_advisory_lock`` refuses it on
@@ -753,6 +756,13 @@ class MaintenanceLeader:
         like every resign — a failure costs at most the wait the lapse
         would have charged, and the next cycle re-attempts while the
         episode persists.
+
+        An episode ends two ways: a successful assume (this pod proved
+        it can lead) or an observed election loss (a peer holds the row
+        — the election loop clears the anchor there). The resign itself
+        does NOT end it: a pod that re-wins while still broken, with no
+        peer having taken the row in between, must hand the row straight
+        back, not buy a fresh window per cycle.
         """
         anchor = self._unassumable_anchor
         if anchor is None:
@@ -864,6 +874,19 @@ class MaintenanceLeader:
                     await asyncio.sleep(self._deps.settings.heartbeat_interval)
                     continue
             else:
+                # A lost election is the observable end of any
+                # won-but-unassumable episode: the row a live peer now
+                # holds is not this pod's to hand back, so a LATER win of
+                # this pod starts a fresh episode with a fresh trust
+                # budget — without this, an anchor left spent by an old
+                # episode resigned the first conn-open blip of every
+                # later term (the per-blip thrash the budget exists to
+                # reject, arriving for exactly the pods that once had an
+                # episode). The anti-fresh-window rule is untouched: a
+                # re-win while still broken never passes through here —
+                # the own-row arm or a free-row INSERT wins instead — so
+                # the anchor still survives the resign itself.
+                self._unassumable_anchor = None
                 record_election_attempt(str(self._worker_id), won=False)
                 await self._record_lost_election()
             # Reaching here means a full election cycle completed (won, lost,
