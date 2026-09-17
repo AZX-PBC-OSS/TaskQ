@@ -100,7 +100,8 @@ async def _interrupt_database(dsn: str) -> int:
     conn = await asyncpg.connect(dsn)
     try:
         app_name = await conn.fetchval(
-            "SELECT application_name FROM pg_stat_activity WHERE pid = pg_backend_pid()"
+            "SELECT application_name FROM pg_stat_activity "
+            "WHERE pid = pg_backend_pid() AND datname = current_database()"
         )
         rows = await conn.fetch(
             "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
