@@ -123,16 +123,35 @@ _PG_DETAIL_RE = re.compile(r"^[ \t|+]*DETAIL:.*$", re.MULTILINE)
 #: exception sits in an ``ExceptionGroup``'s list, one more ``])`` per
 #: nesting level) at end of line. The closing alternatives can only succeed
 #: at end-of-line, so they keep a repr's trailing closers when present
-#: without ever stopping the scrub early and leaving row values behind. The
-#: final bare ``$`` leg is fail-closed: a DETAIL whose tail matches NEITHER
-#: safe delimiter (an unterminated repr, or one embedded mid-line with more
-#: text after it) is scrubbed through end of line rather than shipped — a
-#: delimiter miss must delete more text, never less of the secret.
-#: ``MULTILINE`` makes ``$`` match per real line, so a repr line embedded in
-#: a rendered traceback (real newlines around it) is scrubbed too. Optional
-#: escaped ``\r`` covers the CRLF boundary shape.
+#: without ever stopping the scrub early and leaving row values behind.
+#: The closers leg ends in ``[ \t]*`` — same-line trailing whitespace only,
+#: deliberately NOT ``\s*``: ``\s`` crosses newlines, so a DETAIL value
+#: carrying a quote, closers and a (CR/)LF boundary could satisfy the leg
+#: by peering PAST the line end — on CR-bearing text it really does, and
+#: the scrub then stopped at the mid-value quote and kept what the
+#: no-closers control scrubbed. A terminator that cannot cross a line
+#: boundary fails closed there instead: the closers ride the scrub (more
+#: deletion, never less), and the repr-tail shape the leg exists for —
+#: closers, optional same-line spaces, end of line — still terminates it
+#: (``test_repr_channel_pins``'s embedded-traceback case).
+#:
+#: The ``[ \t|+]*`` after the escaped newline is the same marker class
+#: :data:`_PG_DETAIL_RE` carries, for the same reason: the repr channel
+#: sees marker-prefixed DETAIL text too — an exception message that embeds
+#: a rendered ``ExceptionGroup`` traceback (or any echoed ``| | DETAIL:``
+#: text) reprs with the markers inline after the escaped newline, and an
+#: anchor without the class shipped the row value verbatim on exactly the
+#: poison-message vector the marker class was added for.
+#:
+#: The final bare ``$`` leg is fail-closed: a DETAIL whose tail matches
+#: NEITHER safe delimiter (an unterminated repr, or one embedded mid-line
+#: with more text after it) is scrubbed through end of line rather than
+#: shipped — a delimiter miss must delete more text, never less of the
+#: secret. ``MULTILINE`` makes ``$`` match per real line, so a repr line
+#: embedded in a rendered traceback (real newlines around it) is scrubbed
+#: too. Optional escaped ``\r`` covers the CRLF boundary shape.
 _PG_DETAIL_ESCAPED_RE = re.compile(
-    r"(?:\\r)?\\n[ \t]*DETAIL:.*?(?=(?:\\r)?\\n|['\"][)\]]*\s*$|$)",
+    r"(?:\\r)?\\n[ \t|+]*DETAIL:.*?(?=(?:\\r)?\\n|['\"][)\]]*[ \t]*$|$)",
     re.MULTILINE,
 )
 
