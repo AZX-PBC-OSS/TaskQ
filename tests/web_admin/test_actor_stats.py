@@ -64,7 +64,7 @@ class _FetchPool:
     def __init__(self, conn: _FetchConn) -> None:
         self._conn = conn
 
-    def acquire(self) -> _FetchAcquireCtx:
+    def acquire(self, *, timeout: float | None = None) -> _FetchAcquireCtx:
         return _FetchAcquireCtx(self._conn)
 
 

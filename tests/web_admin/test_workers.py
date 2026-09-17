@@ -555,7 +555,7 @@ class _WorkersScriptedPool:
     def __init__(self, conn: _WorkersScriptedConn) -> None:
         self._conn = conn
 
-    def acquire(self) -> _WorkersScriptedAcquireCtx:
+    def acquire(self, *, timeout: float | None = None) -> _WorkersScriptedAcquireCtx:
         return _WorkersScriptedAcquireCtx(self._conn)
 
 

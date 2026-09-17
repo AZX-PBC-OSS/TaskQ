@@ -402,7 +402,7 @@ class _ScriptedPool:
     def __init__(self, conn: _ScriptedConn) -> None:
         self._conn = conn
 
-    def acquire(self) -> _ScriptedAcquireCtx:
+    def acquire(self, *, timeout: float | None = None) -> _ScriptedAcquireCtx:
         return _ScriptedAcquireCtx(self._conn)
 
 

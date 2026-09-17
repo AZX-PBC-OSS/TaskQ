@@ -10,8 +10,9 @@ from fastapi import APIRouter, Depends
 from fastapi.responses import HTMLResponse
 from jinja2 import Environment
 
+from taskq.web._pool import BoundedPool
 from taskq.web.admin._factory import (
-    get_pg_pool,
+    get_admin_pool,
     get_realtime_ctx,
     get_schema,
     get_templates,
@@ -49,7 +50,7 @@ def register(router: APIRouter) -> None:
 
     @router.get("/batches", response_class=HTMLResponse)
     async def batches_page(  # pyright: ignore[reportUnusedFunction]  # Why: registered via FastAPI decorator; pyright cannot see the route registration.
-        pool: asyncpg.Pool = Depends(get_pg_pool),
+        pool: BoundedPool = Depends(get_admin_pool),
         schema: str = Depends(get_schema),
         tmpl: Environment = Depends(get_templates),
         realtime_ctx: tuple[str, str] = Depends(get_realtime_ctx),
