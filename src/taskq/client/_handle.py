@@ -21,7 +21,11 @@ from pydantic import BaseModel, TypeAdapter, ValidationError
 
 from taskq.backend._protocol import AttemptRow, Backend, JobId, JobRow, JobStatus
 from taskq.backend.statemachine import TERMINAL_STATUSES
-from taskq.client._transport import pg_poll_event_stream, redis_event_stream
+from taskq.client._transport import (
+    parse_progress_event,
+    pg_poll_event_stream,
+    redis_event_stream,
+)
 from taskq.constants import progress_channel
 from taskq.exceptions import JobFailed, ResultUnavailable
 from taskq.progress._events import ProgressEvent
@@ -373,9 +377,8 @@ class JobHandle[R: BaseModel | None]:
 
         async def decode(raw_str: str) -> ProgressEvent | None:
             nonlocal last_seq
-            try:
-                event = ProgressEvent.model_validate_json(raw_str)
-            except Exception:
+            event = parse_progress_event(raw_str, job_id=self.job_id)
+            if event is None:
                 return None
             if event.kind == "progress" and event.seq <= last_seq:
                 return None
@@ -413,6 +416,7 @@ class JobHandle[R: BaseModel | None]:
         async for event in pg_poll_event_stream(
             lambda: self._backend.get(self.job_id),
             row_to_event,
+            job_id=self.job_id,
             poll_interval=_WAIT_POLL_INTERVAL,
         ):
             yield event

@@ -8,7 +8,8 @@ from typing import Any
 import structlog
 
 from taskq._close import CLOSE_TIMEOUT_SECS, close_redis_bounded
-from taskq.backend._protocol import JobRow, JobStatus
+from taskq.backend._protocol import JobId, JobRow, JobStatus
+from taskq.progress._events import ProgressEvent
 
 logger = structlog.get_logger("taskq.client._transport")
 
@@ -19,6 +20,28 @@ _TERMINAL_STATUSES: frozenset[str] = frozenset(
 
 def _is_terminal(event: Any) -> bool:
     return bool(getattr(event, "terminal", None))
+
+
+def parse_progress_event(raw_str: str, *, job_id: JobId) -> ProgressEvent | None:
+    """Parse one published progress message, or ``None`` when it is not one.
+
+    A message on a job's channel that does not deserialise is discarded so
+    the stream carries on - the next publish or the safety-net re-fetch
+    still delivers the state - but never silently: a publisher emitting
+    garbage on the channel is a defect an operator has to be able to see,
+    so every discard is logged with the job it belonged to. Both Redis
+    streams (``TaskQ.stream`` and ``JobHandle.progress_stream``) go
+    through here so neither can drop a message without a trace.
+    """
+    try:
+        return ProgressEvent.model_validate_json(raw_str)
+    except Exception as exc:
+        logger.warning(
+            "stream-event-deserialise-error",
+            job_id=str(job_id),
+            error=repr(exc),
+        )
+        return None
 
 
 async def redis_event_stream[EventT](
@@ -89,6 +112,7 @@ async def pg_poll_event_stream[EventT](
     fetch_row: Callable[[], Awaitable[JobRow | None]],
     row_to_event: Callable[[JobRow, bool], EventT],
     *,
+    job_id: JobId,
     poll_interval: float = 0.5,
     last_seq: int = -1,
     last_status: JobStatus | None = None,
@@ -97,7 +121,10 @@ async def pg_poll_event_stream[EventT](
 
     *row_to_event* receives the row and a ``status_changed`` flag so the
     caller can distinguish state-change events from progress-only updates.
-    Terminates when the row is not found or a terminal status is reached.
+    Terminates when a terminal status is reached - or, without a terminal
+    event, when the row is no longer found (pruned or deleted underneath
+    the stream); that end is logged as ``progress-stream-job-missing`` so
+    a stream that stopped short of terminal can be traced to its cause.
     """
     seq = last_seq
     status = last_status
@@ -105,6 +132,7 @@ async def pg_poll_event_stream[EventT](
         await asyncio.sleep(poll_interval)
         row = await fetch_row()
         if row is None:
+            logger.warning("progress-stream-job-missing", job_id=str(job_id))
             return
         if row.progress_seq == seq and row.status == status:
             continue

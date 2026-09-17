@@ -96,7 +96,6 @@ from taskq.constants import (
     wake_channel,
 )
 from taskq.cron import ScheduleHandle
-from taskq.progress._events import ProgressEvent
 from taskq.types import BulkCancelResult, CancelResult
 
 __all__ = ["ActorsClient", "EventRow", "JobEvent", "TaskQ", "orjson_response_class"]
@@ -1312,7 +1311,7 @@ async def _stream_redis(
     on each message the authoritative row is re-fetched via
     ``backend.get(job_id)`` to produce a ``JobEvent``.
     """
-    from taskq.client._transport import redis_event_stream
+    from taskq.client._transport import parse_progress_event, redis_event_stream
 
     channel = progress_channel(schema, job_id)
     state = {"last_seq": last_seq, "last_status": last_status}
@@ -1328,14 +1327,7 @@ async def _stream_redis(
         return None
 
     async def decode(raw_str: str) -> JobEvent | None:
-        try:
-            ProgressEvent.model_validate_json(raw_str)
-        except Exception as exc:
-            logger.warning(
-                "stream-event-deserialise-error",
-                job_id=str(job_id),
-                error=repr(exc),
-            )
+        if parse_progress_event(raw_str, job_id=job_id) is None:
             return None
         return await _refetch()
 
