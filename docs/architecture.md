@@ -892,8 +892,9 @@ with the in-flight cancel state puts operator intent first:
 
 The earlier design evaluated the retry budget *before* `cancel_phase`, so a
 retryable job with a cancel in flight went back to `pending` with its cancel
-columns wiped — the operator's request silently lost, and the result counted a
-row as cancel-honored that was in fact uncancelled. The reset-on-re-pend that
+columns wiped — the operator's request silently lost: the cancel call itself
+had returned normally (the request was initiated), while the row was re-pended
+uncancelled with no surviving marker of the request. The reset-on-re-pend that
 design carried existed to prevent a re-cancel loop (a re-pended row still
 carrying `cancel_phase` would be re-cancelled by each new claimant, then
 reclaimed again). Ordering the cancel branch first removes the loop
