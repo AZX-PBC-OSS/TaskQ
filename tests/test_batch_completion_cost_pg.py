@@ -194,6 +194,34 @@ async def test_counter_writes_count_members_only_through_the_open_members_index(
         _assert_member_access_is_open_members_index_only(plan, name)
 
 
+async def test_counter_writes_skip_the_member_probe_when_the_batch_row_did_not_update(
+    seeded_schema: Any,
+) -> None:
+    """A missing or inactive batch row updates nothing, and the member
+    probe hangs off the UPDATE's returned rows as a LATERAL: with none, the
+    probe's index scan is never executed. An unconditional probe would pay
+    the seek for a batch the hook has nothing to count for."""
+    conn, schema, _bid = seeded_schema
+    sql = render_batch_sql(schema)
+    missing = new_uuid()
+
+    for name, statement in (
+        ("increment_batch_failures", sql.increment_batch_failures),
+        ("reset_batch_failures", sql.reset_batch_failures),
+    ):
+        rows = await conn.fetch(
+            f"EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) {statement}",
+            missing,
+            str(missing),
+        )
+        plan = "\n".join(r["QUERY PLAN"] for r in rows)
+        probe_nodes = [line for line in plan.splitlines() if " on jobs" in line]
+        assert probe_nodes, f"{name}: the member probe is missing from the plan:\n{plan}"
+        assert all("(never executed)" in line for line in probe_nodes), (
+            f"{name} probed members of a batch row it did not update:\n{plan}"
+        )
+
+
 async def test_counter_writes_return_the_index_served_open_member_count(
     seeded_schema: Any,
 ) -> None:
