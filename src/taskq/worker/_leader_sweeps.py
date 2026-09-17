@@ -1709,19 +1709,27 @@ async def _backlog_detection_loop(ctx: SweepContext, shutdown: asyncio.Event) ->
             # both caches are rebuilt whole from the snapshot and a
             # vanished (actor, queue) pair vanishes from the series instead
             # of ageing forever at a stale value.
+            #
+            # BOTH snapshots are built before EITHER cache is written — the
+            # comprehensions are plain locals, not call arguments. As
+            # arguments, a row valid for depth but malformed for
+            # oldest_age ran the first update and then raised in the second
+            # comprehension, landing a fresh depth cache beside a frozen
+            # age cache: a mixed state whose frozen half is exactly the
+            # TaskQQueueDepthHigh operand. Built first, a malformed row
+            # leaves both caches at their last values together — the
+            # failure stays atomic, and it still counts on the metric plane
+            # below.
             try:
-                update_actor_backlog_cache(
-                    {
-                        (str(row["actor"]), str(row["queue"])): int(row["depth"])
-                        for row in actor_rows
-                    }
-                )
-                update_actor_oldest_pending_age_cache(
-                    {
-                        (str(row["actor"]), str(row["queue"])): float(row["oldest_age"] or 0.0)
-                        for row in actor_rows
-                    }
-                )
+                actor_depths = {
+                    (str(row["actor"]), str(row["queue"])): int(row["depth"]) for row in actor_rows
+                }
+                actor_ages = {
+                    (str(row["actor"]), str(row["queue"])): float(row["oldest_age"] or 0.0)
+                    for row in actor_rows
+                }
+                update_actor_backlog_cache(actor_depths)
+                update_actor_oldest_pending_age_cache(actor_ages)
             except Exception as exc:
                 # Same failure surface as the fetch above, so same routing:
                 # a malformed row leaves the per-actor caches stale exactly
