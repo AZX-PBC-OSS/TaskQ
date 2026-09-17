@@ -959,29 +959,70 @@ class TokenBucket:
         *,
         lock_timeout_ms: float | None = None,
     ) -> RateLimitDecision:
-        """PG fallback path using FOR UPDATE on rate_limit_buckets.
+        """PG path: ONE upsert statement whose conflict arm does the arithmetic.
 
-        Runs in a single transaction: SELECT … FOR UPDATE (blocking, NOT SKIP
-        LOCKED), compute token arithmetic in Python, upsert the new state.
-        The epoch math runs on ``EXTRACT(EPOCH FROM clock_timestamp())``
-        read in the same transaction, so the stored ``ts`` is server-domain
-        by construction — a node with a skewed Python clock cannot mint
-        phantom refill.
+        ``INSERT … ON CONFLICT (bucket_name) DO UPDATE … RETURNING`` — the
+        preseed, the locked state read, and the upsert of the pre-fused
+        shape (BEGIN + set_config + SAVEPOINT + preseed + SELECT FOR
+        UPDATE + RELEASE + upsert + COMMIT, 8 round trips in bounded
+        mode) collapse into a single statement (#228). The token
+        arithmetic runs server-side under the row lock the conflict arm
+        itself takes:
+
+        * cold start (no row) — the INSERT arm admits from full
+          capacity, the same spend decision the preseed-then-read shape
+          computed after preseeding a full row;
+        * existing row — the conflict arm re-fetches the row's latest
+          committed version (the documented ON CONFLICT DO UPDATE
+          semantics under READ COMMITTED — the atomic-counter upsert
+          idiom), applies elapsed refill and the spend, and writes the
+          new state, so concurrent first acquires and concurrent spends
+          serialize exactly as the preseed + FOR UPDATE pair did.
+
+        The time domain for the arithmetic is ``statement_timestamp()``
+        (STABLE — one value for the whole statement), deliberately: the
+        spend decision and the ``granted`` flag are separate evaluations
+        of the same expression, and a VOLATILE ``clock_timestamp()``
+        could let them straddle the spend boundary between evaluations
+        (grant recorded, spend not taken — or the reverse). A stable
+        statement clock makes every evaluation identical, and the
+        stored ``ts`` is the same value the elapsed math used. The WRITE
+        stamps (``updated_at`` / ``last_used_at``) stay
+        ``clock_timestamp()``: they must stay co-monotonic with every
+        other row's stamps, and they feed no arithmetic.
+
+        The decision rides the row home as a transient ``granted`` key
+        in the state document: RETURNING sees only the FINAL row, and
+        ``allowed`` is not derivable from the token count alone (a
+        denial stores the post-refill count; an allowance stores
+        post-refill-minus-count — the same final count is reachable
+        both ways). Every existing reader ignores unknown keys (peek
+        reads ``tokens``; the refund reads ``tokens``/``ts``; the
+        reclaim sweeps read ``tokens``/``refill``/``capacity``), and the
+        next write — refund or a later acquire — replaces the whole
+        document, so the key is inert bookkeeping between acquires.
 
         The row-lock WAIT is bounded by the operator's
         ``token_bucket_lock_timeout_ms`` budget (defaulting to
-        :data:`DEFAULT_TOKEN_BUCKET_LOCK_TIMEOUT_MS`): with
-        ``rate_limit_pg_fallback_enabled`` on, a Redis outage funnels all
-        admission through this lock, so an unbounded wait would let one
-        black-holed holder (dead TCP, no FIN) stall its bucket's admission
-        until the server's keepalives reap it. On budget exhaustion the
-        acquire FAILS CLOSED — the limiter's denial outcome, ``allowed=False``
-        with a retry hint of one more budget, the same channel the log-style
-        sliding window's lock timeout denial takes — never an exception,
-        never an admission: a racer that could not read the bucket can
-        never spend or admit tokens. ``lock_timeout_ms <= 0`` waits
-        indefinitely, the ``lock_timeout`` GUC convention shared with
-        migrate.py and ``taskq._advisory``.
+        :data:`DEFAULT_TOKEN_BUCKET_LOCK_TIMEOUT_MS`), preserving the
+        pre-fused semantics: with ``rate_limit_pg_fallback_enabled`` on,
+        a Redis outage funnels all admission through this lock, so an
+        unbounded wait would let one black-holed holder (dead TCP, no
+        FIN) stall its bucket's admission until the server's keepalives
+        reap it. The bound rides the same ``set_config(..., true)`` SET
+        LOCAL the enqueue path's bounded idempotency wait uses, in the
+        acquire's own transaction — a refusal aborts the transaction
+        outright and the bound dies with it, so the savepoint (and its
+        RELEASE) the savepoint-wrapped read needed is pure cost here
+        (see test_round_trip_budgets' keyed-enqueue pin for the shape).
+        On budget exhaustion the acquire FAILS CLOSED — the limiter's
+        denial outcome, ``allowed=False`` with a retry hint of one more
+        budget — never an exception, never an admission: a racer that
+        could not write the bucket spent and admitted nothing, because
+        the whole spend was one statement that either landed or raised.
+        ``lock_timeout_ms <= 0`` waits indefinitely (one autocommit
+        statement, no transaction and no GUC), the ``lock_timeout`` GUC
+        convention shared with migrate.py and ``taskq._advisory``.
         """
         if pg_pool is None:
             raise RateLimitDependencyUnavailable("pg_pool not injected for postgres backend")
@@ -995,108 +1036,92 @@ class TokenBucket:
 
         # Schema-name interpolation ; schema_name is
         # pre-validated against _IDENT_RE at WorkerSettings load time.
-        # The preseed stamps ts server-side via jsonb_build_object so the
-        # first acquire's elapsed math is server-domain even before the
-        # SELECT below folds the epoch in. It also carries the
-        # fleet-reclaim marking ($3): the keyed flag and a fresh
-        # last_used_at, so a row the acquire itself had to create (the
-        # publish failed, or a prior fleet sweep reclaimed it) is marked
-        # correctly at birth — a keyed PG bucket's row must never depend
-        # on a side quest's outcome for its reclamation bookkeeping.
-        preseed_sql = (
-            f'INSERT INTO "{schema}".rate_limit_buckets (bucket_name, kind, state, updated_at, keyed, last_used_at) '  # noqa: S608  # Why: schema_name pre-validated; values are $1/$2/$3/$4-bound
+        # $1 name, $2 capacity, $3 refill, $4 keyed mark, $5 count.
+        #
+        # The conflict arm's SET expressions reference the EXISTING row
+        # as ``rate_limit_buckets.<col>`` (the ON CONFLICT DO UPDATE
+        # convention); the COALESCE fallbacks mirror the pre-fused
+        # Python fallbacks for rows written before the state document
+        # carried a key (tokens -> capacity, ts -> now, so elapsed is
+        # zero). The fleet-reclaim marking rides the write the conflict
+        # arm already makes: last_used_at refreshes on every acquire —
+        # including denials, whose state write must not read as idle —
+        # and keyed takes the CURRENT owner's mark (EXCLUDED.keyed), so
+        # a keyed bucket acquiring over a stale static-marked row claims
+        # it and a static bucket acquiring over a former keyed row
+        # retires it.
+        _now_epoch = "EXTRACT(EPOCH FROM statement_timestamp())"
+        _old_tokens = "COALESCE((rate_limit_buckets.state->>'tokens')::float8, $2::float8)"
+        _old_ts = f"COALESCE((rate_limit_buckets.state->>'ts')::float8, {_now_epoch})"
+        # Post-refill token count — the spend decision's left side.
+        # Every evaluation is identical (statement_timestamp() is
+        # stable), so the CASE below and the granted flag cannot
+        # disagree at the spend boundary.
+        _refilled = (
+            f"LEAST($2::float8, {_old_tokens} + GREATEST({_now_epoch} - {_old_ts}, 0) * $3::float8)"
+        )
+        # Cold start: the bucket begins full — the same spend decision
+        # against capacity the preseed-then-read shape computed.
+        _cold_tokens = (
+            "CASE WHEN $2::float8 >= $5::float8 THEN $2::float8 - $5::float8 ELSE $2::float8 END"
+        )
+        fused_sql = (
+            f'INSERT INTO "{schema}".rate_limit_buckets (bucket_name, kind, state, updated_at, keyed, last_used_at) '  # noqa: S608  # Why: schema_name is pre-validated against _IDENT_RE at settings load time; every value is $-bound.
             f"VALUES ($1, 'token_bucket', "
-            f"jsonb_build_object('tokens', $2::float8, "
-            f"'ts', EXTRACT(EPOCH FROM clock_timestamp()), "
-            f"'capacity', $4::float8, 'refill', $5::float8), "
-            f"clock_timestamp(), $3, clock_timestamp()) "
-            f"ON CONFLICT (bucket_name) DO NOTHING"
-        )
-        select_sql = (
-            f"SELECT state, EXTRACT(EPOCH FROM clock_timestamp()) AS now_s "  # noqa: S608  # Why: schema_name is pre-validated against _IDENT_RE at settings load time; bucket_name is $1-bound
-            f'FROM "{schema}".rate_limit_buckets WHERE bucket_name=$1 FOR UPDATE'
-        )
-        # The upsert rides the fleet-reclaim marking on the write it
-        # already makes: last_used_at refreshes on every acquire (the
-        # staleness signal the leader sweep trusts), and keyed takes the
-        # CURRENT owner's mark — EXCLUDED.keyed — so a keyed bucket
-        # acquiring over a stale static-marked row claims it (reclaimable
-        # once idle again) and a static bucket acquiring over a former
-        # keyed row retires it (a live static declaration owns its row
-        # and must never lose it to the sweep).
-        upsert_sql = (
-            f'INSERT INTO "{schema}".rate_limit_buckets (bucket_name, kind, state, updated_at, keyed, last_used_at) '  # noqa: S608  # Why: schema_name pre-validated; values are $1/$2/$3-bound
-            f"VALUES ($1, 'token_bucket', $2::jsonb, clock_timestamp(), $3, clock_timestamp()) "
-            f"ON CONFLICT (bucket_name) DO UPDATE SET state=EXCLUDED.state, "
-            f"updated_at=clock_timestamp(), last_used_at=clock_timestamp(), "
-            f"keyed=EXCLUDED.keyed"
+            f"jsonb_build_object('tokens', {_cold_tokens}, "
+            f"'ts', {_now_epoch}, "
+            f"'capacity', $2::float8, 'refill', $3::float8, "
+            f"'granted', $2::float8 >= $5::float8), "
+            f"clock_timestamp(), $4, clock_timestamp()) "
+            f"ON CONFLICT (bucket_name) DO UPDATE SET "
+            f"state = jsonb_build_object( "
+            f"'tokens', CASE WHEN {_refilled} >= $5::float8 "
+            f"THEN {_refilled} - $5::float8 ELSE {_refilled} END, "
+            f"'ts', {_now_epoch}, "
+            f"'capacity', $2::float8, 'refill', $3::float8, "
+            f"'granted', {_refilled} >= $5::float8), "
+            f"updated_at = clock_timestamp(), last_used_at = clock_timestamp(), "
+            f"keyed = EXCLUDED.keyed "
+            f"RETURNING (state->>'tokens')::float8 AS tokens_after, "
+            f"(state->>'granted')::bool AS granted"
         )
 
-        async with pg_pool.acquire() as conn, conn.transaction():
+        async def _fused_acquire(
+            conn: "asyncpg.Connection | asyncpg.pool.PoolConnectionProxy[asyncpg.Record]",
+        ) -> "asyncpg.Record | None":
+            return await conn.fetchrow(
+                fused_sql, self._name, self._capacity, self._refill, self._keyed, count
+            )
 
-            async def _preseed_and_read() -> "asyncpg.Record | None":
-                # Cold-start guard: SELECT ... FOR UPDATE cannot lock a row
-                # that does not exist yet, so concurrent first acquires
-                # would each read `row is None` and independently admit up
-                # to `capacity` tokens. Pre-seed a full-capacity row
-                # (idempotent — DO NOTHING on conflict) so the very first
-                # acquire also serializes on the row lock below.
-                await conn.execute(
-                    preseed_sql,
-                    self._name,
-                    self._capacity,
-                    self._keyed,
-                    self._capacity,
-                    self._refill,
-                )
-                return await conn.fetchrow(select_sql, self._name)
+        row: asyncpg.Record | None = None
 
-            row: asyncpg.Record | None = None
+        if lock_timeout_ms > 0:
+            # Why a function-level import: this module is imported by
+            # taskq.ratelimit, which taskq.testing imports transitively
+            # — that boundary must stay importable without the asyncpg
+            # driver installed. The acquire only ever runs against a
+            # real connection, where asyncpg is guaranteed present.
+            from asyncpg.exceptions import LockNotAvailableError
 
-            if lock_timeout_ms > 0:
-                # Bounded row-lock wait, mechanics mirrored from
-                # taskq._advisory's contended tier. set_config(..., true)
-                # is SET LOCAL semantics, so the bound covers every lock
-                # wait this transaction can take — the preseed's conflict
-                # check, the SELECT FOR UPDATE, the upsert's speculative
-                # insert — and dies with the transaction's own commit; no
-                # save/restore cycle is needed (unlike the enqueue helper,
-                # whose caller keeps using the transaction afterwards).
-                # The savepoint keeps the transaction committable after a
-                # 55P03 (a raw statement error would leave it aborted);
-                # the client-side backstop bounds the network black hole
-                # the server-side timeout cannot see.
-                #
-                # Why a function-level import: this module is imported by
-                # taskq.ratelimit, which taskq.testing imports
-                # transitively — that boundary must stay importable
-                # without the asyncpg driver installed. The acquire only
-                # ever runs against a real connection, where asyncpg is
-                # guaranteed present.
-                from asyncpg.exceptions import LockNotAvailableError
-
-                await conn.execute(_LOCK_TIMEOUT_SET_SQL, f"{round(lock_timeout_ms)}ms")
-
-                async def _locked_state_read() -> None:
-                    nonlocal row
-                    async with conn.transaction():
-                        row = await _preseed_and_read()
-
+            async with pg_pool.acquire() as conn:
                 try:
-                    await asyncio.wait_for(
-                        _locked_state_read(),
-                        timeout=lock_timeout_ms / 1000.0
-                        + DEFAULT_ADVISORY_LOCK_CLIENT_BACKSTOP_SLACK_S,
-                    )
+                    async with conn.transaction():
+                        await conn.execute(_LOCK_TIMEOUT_SET_SQL, f"{round(lock_timeout_ms)}ms")
+                        row = await asyncio.wait_for(
+                            _fused_acquire(conn),
+                            timeout=lock_timeout_ms / 1000.0
+                            + DEFAULT_ADVISORY_LOCK_CLIENT_BACKSTOP_SLACK_S,
+                        )
                 except (LockNotAvailableError, TimeoutError):
                     # Fail closed: the limiter's denial outcome with a
-                    # retry hint of one more budget — the timed-out racer
-                    # wrote nothing (the savepoint rolled the preseed
-                    # back; the upsert never ran), so nothing is admitted
-                    # or spent. The warning is the operator signal that
-                    # the bucket (or its holder) is contended or sick
-                    # rather than merely busy — the same event name the
-                    # log-style path emits for the same condition.
+                    # retry hint of one more budget — the fused statement
+                    # is atomic, so the timed-out racer wrote nothing
+                    # (no preseed to roll back, no upsert that could have
+                    # landed half-spent). The warning is the operator
+                    # signal that the bucket (or its holder) is contended
+                    # or sick rather than merely busy — the same event
+                    # name the log-style path emits for the same
+                    # condition.
                     logger.warning(
                         "ratelimit-lock-timeout",
                         bucket_name=self._name,
@@ -1112,60 +1137,50 @@ class TokenBucket:
                     )
                     log_decision(result)
                     return result
-            else:
-                # lock_timeout_ms <= 0: the indefinite mode — the GUC
-                # convention's opt-out, and the pre-bound behavior.
-                row = await _preseed_and_read()
+        else:
+            # lock_timeout_ms <= 0: the indefinite mode — the GUC
+            # convention's opt-out. One autocommit statement; the
+            # conflict arm's row lock waits as long as the holder holds.
+            async with pg_pool.acquire() as conn:
+                row = await _fused_acquire(conn)
 
-            if row is None:
-                # Unreachable in the normal path — the preseed above guarantees
-                # the row exists before the SELECT. Kept as a defensive fallback
-                # (e.g. a concurrent DELETE between preseed and select).
-                now = float(await conn.fetchval("SELECT EXTRACT(EPOCH FROM clock_timestamp())"))
-                tokens = self._capacity
-                ts = now
-            else:
-                now = float(row["now_s"])
-                state = jsonb_to_dict(row["state"])
-                tokens = float(state.get("tokens", self._capacity))  # type: ignore[index]  # Why: rate_limit_buckets.state is NOT NULL; jsonb_to_dict only returns None for SQL NULL, which cannot occur here; fallback for rows missing keys (e.g. from schema migrations or interop writes)
-                ts = float(state.get("ts", now))  # type: ignore[index]  # Why: same — state is non-None; fallback to now for rows missing "ts"
+        if row is None:
+            # Unreachable in the normal path — RETURNING always yields
+            # the written row (insert arm or conflict arm). Kept as a
+            # defensive denial (e.g. a trigger swallowing RETURNING):
+            # never an admission from a write we did not observe.
+            logger.error(
+                "ratelimit-pg-acquire-no-returning-row",
+                bucket_name=self._name,
+            )
+            result = RateLimitDecision(
+                allowed=False,
+                remaining=0.0,
+                retry_after=None if self._refill == 0.0 else _retry_after(count / self._refill),
+                bucket_name=self._name,
+                backend="postgres",
+            )
+            log_decision(result)
+            return result
 
-            elapsed = max(0.0, now - ts)
-            tokens = min(self._capacity, tokens + elapsed * self._refill)
-
-            retry_after: timedelta | None
-            allowed: bool
-
-            if tokens >= count:
-                tokens -= count
-                allowed = True
-                retry_after = timedelta(0)
-            else:
-                allowed = False
-                if self._refill == 0.0:
-                    retry_after = None
-                else:
-                    retry_after = _retry_after((count - tokens) / self._refill)
-
-            # _jsonb_param serializes via orjson — passing a dict directly
-            # to conn.execute fails because asyncpg does not auto-encode
-            # Python dicts as jsonb.
-            # capacity and refill ride the state (see _state_payload) so
-            # the row can be judged without the bucket's declaration: the
-            # fleet-reclaim sweep and the eviction drain both need to know
-            # whether an idle row still carries consumed quota, and a
-            # fixed quota (refill = 0) never recovers on its own —
-            # deleting such a row lets the next acquire re-preseed at full
-            # capacity and re-admit a budget the tenant already spent.
-            state_param = jsonb_param(self._state_payload(tokens, now))
-            # updated_at, the state ts, and the fleet-reclaim stamps
-            # (last_used_at refresh, keyed re-mark) are all server-domain
-            # now
-            await conn.execute(upsert_sql, self._name, state_param, self._keyed)
+        granted = bool(row["granted"])
+        tokens_after = float(row["tokens_after"])
+        # remaining is the final token count either way: post-spend on
+        # allowance, post-refill on denial — exactly the pre-fused
+        # arithmetic's two arms. retry_after: the deficit against the
+        # post-refill count, None for a fixed quota (no automatic
+        # recovery), the same channel the memory/Redis backends take.
+        retry_after: timedelta | None
+        if granted:
+            retry_after = timedelta(0)
+        elif self._refill == 0.0:
+            retry_after = None
+        else:
+            retry_after = _retry_after((count - tokens_after) / self._refill)
 
         result = RateLimitDecision(
-            allowed=allowed,
-            remaining=tokens,
+            allowed=granted,
+            remaining=tokens_after,
             retry_after=retry_after,
             bucket_name=self._name,
             backend="postgres",

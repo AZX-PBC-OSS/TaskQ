@@ -516,7 +516,7 @@ For full `FakeClock` walkthroughs, see
 | Backend | Value | Storage | Notes |
 |---|---|---|---|
 | Redis | `"redis"` | Redis sorted set / hash | Fastest. Requires `taskq-py[redis]` extra and `TASKQ_REDIS_URL`. Atomic Lua scripts prevent race conditions. |
-| Postgres | `"postgres"` | `rate_limit_buckets`, `rate_limit_window_entries` | No extra dependencies. Slower; uses bounded `FOR UPDATE` row locks (token bucket — `TASKQ_TOKEN_BUCKET_LOCK_TIMEOUT_MS`; GCRA — `TASKQ_SLIDING_WINDOW_LOCK_TIMEOUT_MS`) and a bounded per-bucket advisory lock (log-style sliding window, same setting as GCRA — see the note above). Also serves as fallback when Redis is unavailable. |
+| Postgres | `"postgres"` | `rate_limit_buckets`, `rate_limit_window_entries` | No extra dependencies. Each acquire is a single fused `INSERT … ON CONFLICT DO UPDATE … RETURNING` (token bucket, GCRA) or one CTE statement (log-style window) doing the arithmetic server-side under a bounded lock — 4 round trips in bounded mode (BEGIN + `set_config` + statement + COMMIT), 1 in indefinite mode; see [perf-evidence-rate-limit-pg.md](https://github.com/AZX-PBC-OSS/TaskQ/blob/main/perf-evidence-rate-limit-pg.md). Lock waits are bounded (`FOR UPDATE` row lock — token bucket/GCRA, `TASKQ_TOKEN_BUCKET_LOCK_TIMEOUT_MS` / `TASKQ_SLIDING_WINDOW_LOCK_TIMEOUT_MS`; per-bucket advisory lock — log-style, same setting as GCRA). Also serves as fallback when Redis is unavailable. |
 | Memory | `"memory"` | Per-process `asyncio.Lock`-guarded data structure | No external dependencies. State is lost on restart and **not shared across worker processes**. Use in tests and single-process development only. |
 
 !!! warning "Redis backend without the `[redis]` extra"

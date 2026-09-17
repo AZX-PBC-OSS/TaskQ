@@ -23,7 +23,7 @@ from taskq._advisory import (
     DEFAULT_ADVISORY_LOCK_CLIENT_BACKSTOP_SLACK_S,
     acquire_advisory_xact_lock_bounded,
 )
-from taskq.backend._records import jsonb_param, jsonb_to_dict
+from taskq.backend._records import jsonb_to_dict
 from taskq.exceptions import RateLimitDependencyUnavailable
 from taskq.ratelimit._decision_log import log_decision
 from taskq.ratelimit._lock_budget import resolve_sliding_window_lock_timeout_ms
@@ -258,8 +258,9 @@ async def _refund_pg_log(
 
 
 #: Bounded wait (milliseconds) for the per-bucket log-style advisory
-#: lock. The lock is held across a DELETE + count/INSERT pair (a few
-#: round trips — low single-digit milliseconds on a healthy pool), so
+#: lock. The lock is held across ONE fused statement (prune + admission
+#: insert + count + retry hint in a single round trip — #228), so a
+#: holder's critical section is one statement's execution time, and
 #: 5 s tolerates a burst of hundreds of queued racers while capping
 #: tail latency instead of letting it scale with the racer count, and a
 #: black-holed holder (dead TCP, no FIN) blocks its bucket for at most
@@ -316,32 +317,56 @@ async def _acquire_pg_log(
     window_ms = int(self._window.total_seconds() * 1000)
     schema = settings.schema_name
 
-    delete_sql = (
-        f'DELETE FROM "{schema}".rate_limit_window_entries '  # noqa: S608  # Why: schema_name is pre-validated against _IDENT_RE at settings load time; bucket_name is $1-bound
+    # ONE fused statement for the whole locked critical section (#228):
+    # the pre-fused shape spent DELETE + INSERT + COUNT (+ retry SELECT on
+    # denial) as four separate round trips under the advisory lock —
+    # lock hold time linear in round trips is exactly the contention tail
+    # the two-tier lock machinery exists to bound. The CTEs:
+    #
+    # * ``pruned`` — evicts out-of-window entries (the maintenance the
+    #   pre-fused DELETE did; its effect is invisible to the count below
+    #   because pruned rows are, by definition, outside the window the
+    #   count measures — the two row sets are disjoint under the same
+    #   statement snapshot).
+    # * ``inserted`` — the admission INSERT, guarded by an in-window
+    #   count read at the STATEMENT's snapshot. The advisory lock (taken
+    #   by a PRIOR statement in this transaction) serializes racers, and
+    #   each racer's statement snapshot postdates the previous holder's
+    #   commit — the cron-tick lesson (test_round_trip_budgets): a lock
+    #   probe folded INTO the work statement would read a snapshot that
+    #   predates its own lock grant and re-admit the batch. The lock
+    #   stays a separate statement; the WORK is one.
+    # * the main SELECT — everything the decision needs, from the same
+    #   snapshot: whether the insert landed (a data-modifying CTE's
+    #   RETURNING is visible to the parent query), the in-window count
+    #   (pre-insert; post-count = pre + inserted, computed below), and
+    #   on denial the oldest in-window entry for the retry hint (the
+    #   pruned rows were out-of-window, so the oldest in-window entry is
+    #   the same one the pre-fused denial's retry SELECT found after the
+    #   DELETE).
+    fused_sql = (
+        f"WITH pruned AS ( "  # noqa: S608  # Why: schema_name is pre-validated against _IDENT_RE at settings load time; every value is $-bound.
+        f'DELETE FROM "{schema}".rate_limit_window_entries '
         f"WHERE bucket_name = $1 "
-        f"AND ts < clock_timestamp() - ($2::bigint * INTERVAL '1 millisecond')"
-    )
-    insert_sql = (
-        f'INSERT INTO "{schema}".rate_limit_window_entries (bucket_name, ts, request_id) '  # noqa: S608  # Why: schema_name pre-validated; values are $1/$3-bound
+        f"AND ts < clock_timestamp() - ($2::bigint * INTERVAL '1 millisecond') "
+        f"RETURNING 1 "
+        f"), inserted AS ( "
+        f'INSERT INTO "{schema}".rate_limit_window_entries (bucket_name, ts, request_id) '
         f"SELECT $1, clock_timestamp(), $3::uuid "
-        f"WHERE ("
-        f'SELECT count(*) FROM "{schema}".rate_limit_window_entries '
+        f'WHERE (SELECT count(*) FROM "{schema}".rate_limit_window_entries '
         f"WHERE bucket_name = $1 "
-        f"AND ts >= clock_timestamp() - ($2::bigint * INTERVAL '1 millisecond')"
-        f") < $4::integer "
-        f"RETURNING 1"
-    )
-    retry_select_sql = (
-        f"SELECT ts, clock_timestamp() AS server_now "  # noqa: S608  # Why: schema_name pre-validated; bucket_name is $1-bound
-        f'FROM "{schema}".rate_limit_window_entries '
+        f"AND ts >= clock_timestamp() - ($2::bigint * INTERVAL '1 millisecond')) < $4::integer "
+        f"RETURNING 1 "
+        f") "
+        f"SELECT EXISTS(SELECT 1 FROM inserted) AS inserted, "
+        f'(SELECT count(*) FROM "{schema}".rate_limit_window_entries '
         f"WHERE bucket_name = $1 "
-        f"AND ts >= clock_timestamp() - ($2::bigint * INTERVAL '1 millisecond') "
-        f"ORDER BY ts ASC LIMIT 1"
-    )
-    count_sql = (
-        f'SELECT count(*) FROM "{schema}".rate_limit_window_entries '  # noqa: S608  # Why: schema_name pre-validated; bucket_name is $1-bound
-        f"WHERE bucket_name = $1 "
-        f"AND ts >= clock_timestamp() - ($2::bigint * INTERVAL '1 millisecond')"
+        f"AND ts >= clock_timestamp() - ($2::bigint * INTERVAL '1 millisecond')) AS count_in_window, "
+        f'(SELECT e.ts FROM "{schema}".rate_limit_window_entries e '
+        f"WHERE e.bucket_name = $1 "
+        f"AND e.ts >= clock_timestamp() - ($2::bigint * INTERVAL '1 millisecond') "
+        f"ORDER BY e.ts ASC LIMIT 1) AS oldest_ts, "
+        f"clock_timestamp() AS server_now"
     )
 
     allowed: bool
@@ -377,8 +402,8 @@ async def _acquire_pg_log(
     # lock scheduler hands off at holder-release rate, not at a client
     # poll cadence), bounds the wait with a savepoint-scoped
     # lock_timeout, and backstops the network black hole client-side.
-    # Once acquired, the lock is transaction-scoped and the
-    # delete/count/insert sequence below is unchanged — the window
+    # Once acquired, the lock is transaction-scoped and the fused
+    # statement below is the whole critical section — the window
     # itself stays EXACT.
     #
     # On budget exhaustion the acquire FAILS CLOSED: a racer that could
@@ -417,27 +442,29 @@ async def _acquire_pg_log(
             log_decision(result, style=self._style)
             return result
 
-        await conn.execute(delete_sql, self._name, window_ms)
-
-        inserted = await conn.fetchrow(
-            insert_sql,
+        fused_row = await conn.fetchrow(
+            fused_sql,
             self._name,
             window_ms,
             request_id,
             self._limit,
         )
+        allowed = fused_row is not None and bool(fused_row["inserted"])
 
-        if inserted is not None:
-            allowed = True
-            count_row = await conn.fetchrow(count_sql, self._name, window_ms)
-            count_after = int(count_row["count"]) if count_row is not None else self._limit
+        if allowed:
+            # Post-insert in-window count = the pre-insert count the
+            # statement read plus this insert (the statement's own
+            # snapshot cannot see its CTE's write; the arithmetic is
+            # exact either way).
+            count_after = int(fused_row["count_in_window"]) + 1 if fused_row else self._limit
             retry_after = timedelta(0)
         else:
-            allowed = False
-            oldest_row = await conn.fetchrow(retry_select_sql, self._name, window_ms)
-            if oldest_row is not None:
-                oldest_ts = oldest_row["ts"]
-                server_now = oldest_row["server_now"]
+            # Denial: the retry hint is the oldest in-window entry's
+            # window expiry — the same entry the pre-fused retry SELECT
+            # found (the prune removed only out-of-window rows).
+            oldest_ts = fused_row["oldest_ts"] if fused_row is not None else None
+            server_now = fused_row["server_now"] if fused_row is not None else None
+            if oldest_ts is not None and server_now is not None:
                 retry_after = (oldest_ts + timedelta(milliseconds=window_ms)) - server_now
                 if retry_after <= timedelta(0):
                     retry_after = timedelta(milliseconds=1)
@@ -466,12 +493,19 @@ async def _acquire_pg_gcra(
 ) -> RateLimitDecision:
     """Acquire GCRA-style against PG.
 
-    The TAT epoch math runs on ``EXTRACT(EPOCH FROM clock_timestamp())``
-    read inside the same locked transaction, so the stored TAT is
-    server-domain by construction and a node with a skewed Python clock
-    cannot move the shared admission boundary.
+    ONE fused ``INSERT … ON CONFLICT DO UPDATE … WHERE … RETURNING``
+    (#228): the pre-fused shape spent a preseed, a blocking ``SELECT …
+    FOR UPDATE``, and a TAT upsert (BEGIN + set_config + SAVEPOINT
+    around them — 8 round trips in bounded mode); the conflict arm now
+    advances the TAT server-side under the row lock it takes itself,
+    and the ALLOWANCE is the update's WHERE clause, so RETURNING yields
+    a row exactly when the acquire was granted (a cold start is always
+    granted — emission <= window for limit >= 1). The TAT epoch math
+    runs on ``statement_timestamp()`` in the same locked statement, so
+    the stored TAT is server-domain by construction and a node with a
+    skewed Python clock cannot move the shared admission boundary.
 
-    The bucket row's FOR UPDATE WAIT is bounded by the operator's
+    The bucket row's lock WAIT is bounded by the operator's
     ``sliding_window_lock_timeout_ms`` budget (defaulting to
     :data:`DEFAULT_SLIDING_WINDOW_LOCK_TIMEOUT_MS`), mirroring the
     log-style acquire's advisory-lock budget in the same module: with
@@ -482,8 +516,9 @@ async def _acquire_pg_gcra(
     acquire FAILS CLOSED — the limiter's denial outcome, ``allowed=False``
     with a retry hint of one more budget, never an exception and never
     an admission: a racer that could not read the TAT can never advance
-    it. ``lock_timeout_ms <= 0`` waits indefinitely, the ``lock_timeout``
-    GUC convention shared with migrate.py and ``taskq._advisory``.
+    it. ``lock_timeout_ms <= 0`` waits indefinitely (one autocommit
+    statement, no transaction and no GUC), the ``lock_timeout`` GUC
+    convention shared with migrate.py and ``taskq._advisory``.
     """
     if pg_pool is None:
         raise RateLimitDependencyUnavailable("pg_pool not injected for postgres backend")
@@ -499,24 +534,54 @@ async def _acquire_pg_gcra(
     delay_tolerance_seconds = window_seconds
     schema = settings.schema_name
 
-    select_sql = (
-        f"SELECT kind, state, EXTRACT(EPOCH FROM clock_timestamp()) AS now_s "  # noqa: S608  # Why: schema_name is pre-validated against _IDENT_RE at settings load time; bucket_name is $1-bound
-        f'FROM "{schema}".rate_limit_buckets '
-        f"WHERE bucket_name = $1 FOR UPDATE"
-    )
-    preseed_sql = (
-        f'INSERT INTO "{schema}".rate_limit_buckets (bucket_name, kind, state, updated_at) '  # noqa: S608  # Why: schema_name pre-validated; values are $1-bound
+    # ONE fused upsert (#228): the pre-fused shape spent preseed + SELECT
+    # FOR UPDATE + upsert (BEGIN + set_config + SAVEPOINT around them) —
+    # 8 round trips in bounded mode. The conflict arm computes the TAT
+    # advance server-side, and the ALLOWANCE is the update's WHERE
+    # clause, so RETURNING yields a row exactly when the acquire was
+    # granted (or the bucket was cold — the INSERT arm, and a cold start
+    # is always allowed: emission <= window for limit >= 1, so the
+    # allow_at boundary is at or before now). A denial updates nothing —
+    # the pre-fused behavior, preserved exactly (the TAT stands, the
+    # row's stamps are untouched), and the retry hint is read by the
+    # one follow-up statement below rather than folded into the upsert:
+    # a WHERE-gated conflict arm returns NO row on denial, so the hint's
+    # inputs (the standing TAT, the server now) must come from a read.
+    #
+    # The kind guard rides the WHERE too, preserving the loud
+    # misconfiguration refusal: a token-bucket row under this name
+    # fails the guard exactly as the pre-fused SELECT's kind check
+    # raised, and the follow-up read below distinguishes the two
+    # no-row causes (kind mismatch -> RuntimeError; otherwise denial).
+    #
+    # statement_timestamp() (STABLE) is the arithmetic's clock: the
+    # WHERE's allowance test and the SET's TAT advance are separate
+    # evaluations of the same GREATEST(...) expression, and a stable
+    # statement clock keeps them identical — the same doctrine the
+    # fused token-bucket acquire documents.
+    _now_epoch = "EXTRACT(EPOCH FROM statement_timestamp())"
+    _old_tat = f"COALESCE((rate_limit_buckets.state->>'tat')::float8, {_now_epoch})"
+    _base_tat = f"GREATEST({_now_epoch}, {_old_tat})"
+    fused_sql = (
+        f'INSERT INTO "{schema}".rate_limit_buckets (bucket_name, kind, state, updated_at) '  # noqa: S608  # Why: schema_name is pre-validated against _IDENT_RE at settings load time; every value is $-bound.
         f"VALUES ($1, 'gcra', "
-        f"jsonb_build_object('tat', EXTRACT(EPOCH FROM clock_timestamp())), clock_timestamp()) "
-        f"ON CONFLICT (bucket_name) DO NOTHING"
-    )
-    upsert_sql = (
-        f'INSERT INTO "{schema}".rate_limit_buckets (bucket_name, kind, state, updated_at) '  # noqa: S608  # Why: schema_name pre-validated; values are $1/$2-bound
-        f"VALUES ($1, 'gcra', $2::jsonb, clock_timestamp()) "
-        f"ON CONFLICT (bucket_name) DO UPDATE "
-        f"SET state = EXCLUDED.state, updated_at = EXCLUDED.updated_at "
+        f"jsonb_build_object('tat', {_now_epoch} + $2::float8), "
+        f"clock_timestamp()) "
+        f"ON CONFLICT (bucket_name) DO UPDATE SET "
+        f"state = jsonb_build_object('tat', {_base_tat} + $2::float8), "
+        f"updated_at = clock_timestamp() "
         f"WHERE rate_limit_buckets.kind = 'gcra' "
-        f"RETURNING 1"
+        f"AND {_now_epoch} >= {_base_tat} + $2::float8 - $3::float8 "
+        f"RETURNING (state->>'tat')::float8 AS new_tat, "
+        f"{_now_epoch}::float8 AS now_s"
+    )
+    # The denial follow-up: the standing TAT and the server now for the
+    # retry hint, plus the kind the WHERE guard may have refused on.
+    deny_read_sql = (
+        f"SELECT kind, (state->>'tat')::float8 AS tat, "  # noqa: S608  # Why: schema_name is pre-validated against _IDENT_RE at settings load time; bucket_name is $1-bound.
+        f"EXTRACT(EPOCH FROM clock_timestamp()) AS now_s "
+        f'FROM "{schema}".rate_limit_buckets '
+        f"WHERE bucket_name = $1"
     )
 
     allowed: bool
@@ -524,57 +589,38 @@ async def _acquire_pg_gcra(
     remaining_estimate: float
     pg_previous_state: dict[str, object] | None = None
 
-    async with pg_pool.acquire() as conn, conn.transaction():
+    async def _fused_acquire(
+        conn: "asyncpg.Connection | asyncpg.pool.PoolConnectionProxy[asyncpg.Record]",
+    ) -> "asyncpg.Record | None":
+        return await conn.fetchrow(fused_sql, self._name, emission_interval_seconds, window_seconds)
 
-        async def _preseed_and_read() -> "asyncpg.Record | None":
-            # Cold-start guard mirroring the token-bucket PG path: SELECT
-            # ... FOR UPDATE cannot lock a row that does not exist yet, so
-            # two concurrent first acquires would each read `row is None`,
-            # each admit, and race last-writer-wins on the TAT. Pre-seed a
-            # row stamped with the server-clock TAT (idempotent — DO
-            # NOTHING on conflict) so first use also serialises on the row
-            # lock below.
-            await conn.execute(preseed_sql, self._name)
-            return await conn.fetchrow(select_sql, self._name)
+    row: asyncpg.Record | None = None
 
-        row: asyncpg.Record | None = None
+    if lock_timeout_ms > 0:
+        # Why a function-level import: this module is imported by
+        # taskq.ratelimit, which taskq.testing imports transitively —
+        # that boundary must stay importable without the asyncpg driver
+        # installed. The acquire only ever runs against a real
+        # connection, where asyncpg is guaranteed present.
+        from asyncpg.exceptions import LockNotAvailableError
 
-        if lock_timeout_ms > 0:
-            # Bounded row-lock wait, mechanics mirrored from
-            # taskq._advisory's contended tier. set_config(..., true) is
-            # SET LOCAL semantics, so the bound covers every lock wait
-            # this transaction can take — the preseed's conflict check,
-            # the SELECT FOR UPDATE, the upsert's speculative insert — and
-            # dies with the transaction's own commit; no save/restore
-            # cycle is needed (unlike the enqueue helper, whose caller
-            # keeps using the transaction afterwards). The savepoint keeps
-            # the transaction committable after a 55P03 (a raw statement
-            # error would leave it aborted); the client-side backstop
-            # bounds the network black hole the server-side timeout
-            # cannot see.
-            from asyncpg.exceptions import LockNotAvailableError
-
-            await conn.execute(_LOCK_TIMEOUT_SET_SQL, f"{round(lock_timeout_ms)}ms")
-
-            async def _locked_state_read() -> None:
-                nonlocal row
-                async with conn.transaction():
-                    row = await _preseed_and_read()
-
+        async with pg_pool.acquire() as conn:
             try:
-                await asyncio.wait_for(
-                    _locked_state_read(),
-                    timeout=lock_timeout_ms / 1000.0
-                    + DEFAULT_ADVISORY_LOCK_CLIENT_BACKSTOP_SLACK_S,
-                )
+                async with conn.transaction():
+                    await conn.execute(_LOCK_TIMEOUT_SET_SQL, f"{round(lock_timeout_ms)}ms")
+                    row = await asyncio.wait_for(
+                        _fused_acquire(conn),
+                        timeout=lock_timeout_ms / 1000.0
+                        + DEFAULT_ADVISORY_LOCK_CLIENT_BACKSTOP_SLACK_S,
+                    )
             except (LockNotAvailableError, TimeoutError):
                 # Fail closed: the limiter's denial outcome with a retry
-                # hint of one more budget — the timed-out racer wrote
-                # nothing (the savepoint rolled the preseed back; the
-                # upsert never ran), so the TAT was never advanced. The
-                # warning is the operator signal that the bucket (or its
-                # holder) is contended or sick rather than merely busy —
-                # the same event name the log-style path emits for the
+                # hint of one more budget — the fused statement is
+                # atomic, so the timed-out racer advanced no TAT and
+                # admitted nothing. The warning is the operator signal
+                # that the bucket (or its holder) is contended or sick
+                # rather than merely busy — the same event name the
+                # log-style path and the token-bucket path emit for the
                 # same condition.
                 logger.warning(
                     "ratelimit-lock-timeout",
@@ -591,65 +637,64 @@ async def _acquire_pg_gcra(
                 )
                 log_decision(result, style=self._style)
                 return result
-        else:
-            # lock_timeout_ms <= 0: the indefinite mode — the GUC
-            # convention's opt-out, and the pre-bound behavior.
-            row = await _preseed_and_read()
+    else:
+        # lock_timeout_ms <= 0: the indefinite mode — the GUC
+        # convention's opt-out. One autocommit statement; the conflict
+        # arm's row lock waits as long as the holder holds.
+        async with pg_pool.acquire() as conn:
+            row = await _fused_acquire(conn)
 
-        if row is None:
-            # Unreachable in the normal path — the preseed above guarantees
-            # the row exists before the SELECT. Kept as a defensive fallback
-            # (e.g. a concurrent DELETE/reset between preseed and select).
-            # First use: no row to fold the server epoch into — take a
-            # separate read on the same connection/transaction.
-            now_seconds = float(await conn.fetchval("SELECT EXTRACT(EPOCH FROM clock_timestamp())"))
-            current_tat = now_seconds
-        else:
-            existing_kind: str = row["kind"]
-            if existing_kind != "gcra":
-                raise RuntimeError(
-                    f"bucket_name {self._name!r} is already registered with kind != 'gcra'; "
-                    f"refusing to corrupt prior state. Rename one of the colliding registrations."
-                )
-            now_seconds = float(row["now_s"])
-            state = jsonb_to_dict(row["state"])
-            current_tat = float(state.get("tat", now_seconds))  # type: ignore[index]  # Why: rate_limit_buckets.state is NOT NULL; jsonb_to_dict only returns None for SQL NULL, which cannot occur here; fallback to now_seconds for rows missing "tat" (e.g. from schema migrations or interop writes)
-
-        tat = max(now_seconds, current_tat) + emission_interval_seconds
-        pre_acquire_tat = max(now_seconds, current_tat)
-        allow_at = tat - delay_tolerance_seconds
-
-        if now_seconds >= allow_at:
-            allowed = True
-            new_tat = tat
-            state_param = jsonb_param({"tat": new_tat})
-            returned = await conn.fetchrow(upsert_sql, self._name, state_param)
-            if returned is None:
-                raise RuntimeError(
-                    f"bucket_name {self._name!r} is already registered with kind != 'gcra'; "
-                    f"refusing to corrupt prior state. Rename one of the colliding registrations."
-                )
-            remaining_estimate = float(
-                max(
-                    0,
-                    int(
-                        (delay_tolerance_seconds - (new_tat - now_seconds))
-                        / emission_interval_seconds
-                    ),
-                )
+    if row is not None:
+        # Granted (or cold start, which is always granted): the RETURNING
+        # row carries the advanced TAT and the statement clock the
+        # arithmetic used. The refund's previous_state pair is derivable
+        # exactly: the pre-acquire TAT is the candidate minus one
+        # emission interval, the post-acquire TAT is the candidate.
+        allowed = True
+        new_tat = float(row["new_tat"])
+        now_seconds = float(row["now_s"])
+        retry_after = timedelta(0)
+        remaining_estimate = float(
+            max(
+                0,
+                int(
+                    (delay_tolerance_seconds - (new_tat - now_seconds)) / emission_interval_seconds
+                ),
             )
-            retry_after = timedelta(0)
-            pg_previous_state = {
-                "pre_acquire_tat": pre_acquire_tat,
-                "post_acquire_tat": new_tat,
-            }
-        else:
-            allowed = False
+        )
+        pg_previous_state = {
+            "pre_acquire_tat": new_tat - emission_interval_seconds,
+            "post_acquire_tat": new_tat,
+        }
+    else:
+        # Denied (or the kind guard refused). One follow-up read carries
+        # the retry hint's inputs and discriminates the guard's refusal —
+        # the loud misconfiguration error the pre-fused SELECT raised.
+        allowed = False
+        remaining_estimate = 0.0
+        async with pg_pool.acquire() as conn:
+            deny_row = await conn.fetchrow(deny_read_sql, self._name)
+        if deny_row is not None and deny_row["kind"] != "gcra":
+            raise RuntimeError(
+                f"bucket_name {self._name!r} is already registered with kind != 'gcra'; "
+                f"refusing to corrupt prior state. Rename one of the colliding registrations."
+            )
+        if deny_row is not None:
+            now_seconds = float(deny_row["now_s"])
+            current_tat = float(deny_row["tat"]) if deny_row["tat"] is not None else now_seconds
+            allow_at = (
+                max(now_seconds, current_tat) + emission_interval_seconds - delay_tolerance_seconds
+            )
             retry_after_seconds = allow_at - now_seconds
             if retry_after_seconds <= 0:
                 retry_after_seconds = 0.001
             retry_after = timedelta(seconds=retry_after_seconds)
-            remaining_estimate = 0.0
+        else:
+            # The row vanished between the fused statement and this read
+            # (a concurrent reset) — the pre-fused preseed made this
+            # unreachable; keep a bounded defensive hint rather than an
+            # admission the upsert never granted.
+            retry_after = timedelta(milliseconds=1)
 
     result = RateLimitDecision(
         allowed=allowed,
