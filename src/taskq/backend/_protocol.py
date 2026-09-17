@@ -2185,14 +2185,14 @@ class Backend(Protocol):
         batch_id: UUID,
         *,
         connection: "ConnLike | None" = None,
-    ) -> tuple[int, int | None]: ...
+    ) -> tuple[int, int | None, int]: ...
 
     async def reset_batch_failures(
         self,
         batch_id: UUID,
         *,
         connection: "ConnLike | None" = None,
-    ) -> None: ...
+    ) -> int: ...
 
     async def abort_batch(
         self,

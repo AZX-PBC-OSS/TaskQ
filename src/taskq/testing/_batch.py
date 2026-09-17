@@ -117,30 +117,33 @@ def _increment_batch_failures(
     backend: "InMemoryBackend",
     batch_id: UUID,
     connection: object | None = None,
-) -> tuple[int, int | None]:
+) -> tuple[int, int | None, int]:
     row = backend._batches.get(batch_id)
     if row is None:
-        return (0, None)
+        return (0, None, 0)
     if row.status != "active":
-        return (0, None)
+        return (0, None, 0)
 
     new_count = row.consecutive_failures + 1
     backend._batches[batch_id] = replace(row, consecutive_failures=new_count)
-    return (new_count, row.failure_threshold)
+
+    remaining = _count_batch_non_terminal(backend, batch_id)
+    return (new_count, row.failure_threshold, remaining)
 
 
 def _reset_batch_failures(
     backend: "InMemoryBackend",
     batch_id: UUID,
     connection: object | None = None,
-) -> None:
+) -> int:
     row = backend._batches.get(batch_id)
     if row is None:
-        return
+        return 0
     if row.status != "active":
-        return
+        return 0
 
     backend._batches[batch_id] = replace(row, consecutive_failures=0)
+    return _count_batch_non_terminal(backend, batch_id)
 
 
 def _abort_batch(

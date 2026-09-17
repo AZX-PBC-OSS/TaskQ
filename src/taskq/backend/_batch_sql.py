@@ -102,19 +102,39 @@ SELECT id, queue, status, expected_size, consecutive_failures,
 FROM "{schema}".batches
 WHERE id = $1"""
 
-# Both counter writes are keyed single-row updates on batches and
-# nothing else: they run on every batched job's terminal write, so any
-# member aggregate riding along would be paid N times per N-member batch.
+# Both counter writes run on every batched job's terminal write, so the
+# member count they return must not walk the batch: the counts CTE is
+# the open-member predicate, which jobs_batch_open_members_idx serves as
+# one index range over the members still open — never the terminal
+# history — so its cost tracks what remains, not what the batch was.
 _INCREMENT_BATCH_FAILURES_SQL = """\
-UPDATE "{schema}".batches
-SET consecutive_failures = consecutive_failures + 1
-WHERE id = $1 AND status = 'active'
-RETURNING consecutive_failures, failure_threshold"""
+WITH updated AS (
+    UPDATE "{schema}".batches
+    SET consecutive_failures = consecutive_failures + 1
+    WHERE id = $1 AND status = 'active'
+    RETURNING consecutive_failures, failure_threshold
+),
+counts AS (
+    SELECT count(*)::int AS remaining
+    FROM "{schema}".jobs
+    WHERE {open_member}
+)
+SELECT u.consecutive_failures, u.failure_threshold, c.remaining
+FROM updated u CROSS JOIN counts c"""
 
 _RESET_BATCH_FAILURES_SQL = """\
-UPDATE "{schema}".batches
-SET consecutive_failures = 0
-WHERE id = $1 AND status = 'active'"""
+WITH updated AS (
+    UPDATE "{schema}".batches
+    SET consecutive_failures = 0
+    WHERE id = $1 AND status = 'active'
+    RETURNING 1
+),
+counts AS (
+    SELECT count(*)::int AS remaining
+    FROM "{schema}".jobs
+    WHERE {open_member}
+)
+SELECT c.remaining FROM updated u CROSS JOIN counts c"""
 
 _ABORT_BATCH_JOBS_SQL = """\
 UPDATE "{schema}".jobs
@@ -134,10 +154,10 @@ SET status = 'aborted', completed_at = clock_timestamp()
 WHERE id = $1 AND status = 'active'"""
 
 # The NOT EXISTS guard arbitrates completion server-side, in this
-# statement's own snapshot: a member count read by an earlier statement
-# runs in ITS READ COMMITTED snapshot, which after a batches-row lock
-# wait can predate a concurrent member's terminal write, so no count
-# from the caller is ever the completion decision. The guard shape is
+# statement's own snapshot: the increment/reset counts CTE runs in ITS
+# statement's READ COMMITTED snapshot, which after a batches-row lock
+# wait can predate a concurrent member's terminal write, so a count of
+# zero from the caller is never the completion decision. The guard shape is
 # the one complete_stale_batches already uses (worker/_leader_shared.py);
 # the status = 'active' sibling condition keeps abort-wins-over-complete
 # intact. The probe itself is the open-member predicate served by
@@ -266,8 +286,12 @@ def render_batch_sql(schema: str) -> BatchSql:
     return BatchSql(
         create_batch=_CREATE_BATCH_SQL.format(schema=schema),
         get_batch=_GET_BATCH_SQL.format(schema=schema),
-        increment_batch_failures=_INCREMENT_BATCH_FAILURES_SQL.format(schema=schema),
-        reset_batch_failures=_RESET_BATCH_FAILURES_SQL.format(schema=schema),
+        increment_batch_failures=_INCREMENT_BATCH_FAILURES_SQL.format(
+            schema=schema, open_member=_open_member_where(batch_id_param=2)
+        ),
+        reset_batch_failures=_RESET_BATCH_FAILURES_SQL.format(
+            schema=schema, open_member=_open_member_where(batch_id_param=2)
+        ),
         abort_batch_jobs=_ABORT_BATCH_JOBS_SQL.format(schema=schema),
         abort_batch_row=_ABORT_BATCH_ROW_SQL.format(schema=schema),
         complete_batch=_COMPLETE_BATCH_SQL.format(
@@ -361,30 +385,34 @@ async def increment_batch_failures(
     conn: ConnLike,
     sql: BatchSql,
     batch_id: UUID,
-) -> tuple[int, int | None]:
-    """Atomically increment consecutive_failures and return the new count
-    and the batch's failure_threshold.
+) -> tuple[int, int | None, int]:
+    """Atomically increment consecutive_failures and return the new count,
+    the batch's failure_threshold, and the number of non-terminal member jobs.
 
-    Returns ``(0, None)`` if the batch row does not exist or is no longer
-    active. A keyed single-row write: the member population is not
-    consulted (see :func:`count_batch_non_terminal` for that).
+    Returns ``(0, None, 0)`` if the batch row does not exist. The member
+    count is the same index-served probe as :func:`count_batch_non_terminal`.
     """
-    rec = await conn.fetchrow(sql.increment_batch_failures, batch_id)
+    rec = await conn.fetchrow(sql.increment_batch_failures, batch_id, str(batch_id))
     if rec is None:
-        return (0, None)
-    return (rec["consecutive_failures"], rec["failure_threshold"])
+        return (0, None, 0)
+    return (rec["consecutive_failures"], rec["failure_threshold"], rec["remaining"])
 
 
 async def reset_batch_failures(
     conn: ConnLike,
     sql: BatchSql,
     batch_id: UUID,
-) -> None:
-    """Reset consecutive_failures to 0. No-op if the batch row does not
-    exist or is no longer active. A keyed single-row write, like
-    :func:`increment_batch_failures`.
+) -> int:
+    """Reset consecutive_failures to 0 and return the number of non-terminal
+    member jobs.
+
+    Returns ``0`` if the batch row does not exist. The member count is the
+    same index-served probe as :func:`count_batch_non_terminal`.
     """
-    await conn.execute(sql.reset_batch_failures, batch_id)
+    rec = await conn.fetchrow(sql.reset_batch_failures, batch_id, str(batch_id))
+    if rec is None:
+        return 0
+    return rec["remaining"]
 
 
 async def abort_batch(

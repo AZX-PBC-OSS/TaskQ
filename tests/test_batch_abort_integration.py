@@ -576,7 +576,7 @@ class _IncrementRaisesBackend(InMemoryBackend):
         batch_id: UUID,
         *,
         connection: object = None,
-    ) -> tuple[int, int | None]:
+    ) -> tuple[int, int | None, int]:
         raise RuntimeError("simulated backend failure")
 
 

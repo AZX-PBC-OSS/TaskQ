@@ -1040,7 +1040,7 @@ class InMemoryBackend:
         batch_id: UUID,
         *,
         connection: object = None,
-    ) -> tuple[int, int | None]:
+    ) -> tuple[int, int | None, int]:
         return _increment_batch_failures(self, batch_id, connection)
 
     async def reset_batch_failures(
@@ -1048,8 +1048,8 @@ class InMemoryBackend:
         batch_id: UUID,
         *,
         connection: object = None,
-    ) -> None:
-        _reset_batch_failures(self, batch_id, connection)
+    ) -> int:
+        return _reset_batch_failures(self, batch_id, connection)
 
     async def abort_batch(
         self,
