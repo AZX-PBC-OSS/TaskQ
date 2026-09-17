@@ -277,6 +277,7 @@ async def _run_terminal_path(  # pyright: ignore[reportUnusedFunction]  # Why: c
     outcome: AttemptOutcome,
     job_exc: BaseException | None = None,
     disowned_jobs: set[UUID] | None = None,
+    job_log: structlog.stdlib.BoundLogger | None = None,
 ) -> AttemptOutcome:
     """Pre-terminal flush, handler call, dirty reset, publish, and outcome.
 
@@ -301,7 +302,7 @@ async def _run_terminal_path(  # pyright: ignore[reportUnusedFunction]  # Why: c
         )
     except _TERMINAL_WRITE_INFRA_EXCEPTIONS as infra_exc:
         _log_terminal_write_failed(
-            _log,
+            job_log,
             job,
             job_exc if job_exc is not None else infra_exc,
             infra_exc,
@@ -509,6 +510,7 @@ async def consume_one_job(
                 settings=deps.settings if deps is not None else settings,
                 redis_client=deps.redis_client if deps is not None else redis_client,
                 disowned_jobs=deps.disowned_jobs if deps is not None else None,
+                job_log=job_log,
                 handler=_handle_reservation_class_denied,
                 handler_args=(backend, job, worker_id, e, consumer_span, job_log, actor_config),
                 handler_kwargs=handler_kwargs,
@@ -576,6 +578,7 @@ async def consume_one_job(
                 settings=deps.settings if deps is not None else settings,
                 redis_client=deps.redis_client if deps is not None else redis_client,
                 disowned_jobs=deps.disowned_jobs if deps is not None else None,
+                job_log=job_log,
                 handler=_handle_reservation_class_denied,
                 handler_args=(
                     backend,
@@ -779,8 +782,8 @@ async def consume_one_job(
                 # fleet with its budget refunded instead of terminalising
                 # it. hold=0 — the actor already unwound, so the row is
                 # genuinely free and lands pending at the head of the
-                # order (River's JobSetStateInterrupted shape: available
-                # immediately, attempt refunded, no error recorded). The
+                # order: available immediately, attempt refunded, no error
+                # recorded. The
                 # row is the final arbiter: a "noop" means an operator
                 # cancel raced the deploy onto the row, and the attempt
                 # falls through to the ordinary cancel write below.
@@ -801,7 +804,7 @@ async def consume_one_job(
                     # reclaims it. Do NOT fall through to mark_cancelled —
                     # the row carries no operator cancel, so a cancel write
                     # here would terminalise an infrastructure interruption.
-                    _log_terminal_write_failed(_log, job, None, infra_exc)
+                    _log_terminal_write_failed(job_log, job, None, infra_exc)
                     _disown_job(_disowned_jobs, job)
                     raise
                 if interrupt_outcome != "noop":
@@ -859,7 +862,7 @@ async def consume_one_job(
                 # routing the infra error into generic job-failure handling
                 # eats a TaskGroup cancellation and hangs __aexit__ forever.
                 cancel_landed = None
-                _log_terminal_write_failed(_log, job, None, infra_exc)
+                _log_terminal_write_failed(job_log, job, None, infra_exc)
                 _disown_job(_disowned_jobs, job)
             # Announce only a transition the row actually took: on a
             # fenced-out write (the row moved to another owner mid-cancel)
@@ -1076,11 +1079,10 @@ async def _consume_transactional(
                 # the outer handler), never by returning. Cancelling a
                 # returned actor here would discard a computed result from
                 # a terminal job nothing re-runs (and roll back the writes
-                # it completed). This is the resolution the vendored
-                # references implement: a job that returns after a stop or
-                # cancel request completes (River's executor reports the
-                # result of a soft-stopped job that returned;
-                # vendor/river/internal/jobexecutor/job_executor.go).
+                # it completed). That is the resolution the
+                # cooperative-cancel contract dictates: a job that returns
+                # after a stop or cancel request completes keeps its
+                # result.
                 if (
                     progress_buffers is not None
                     and worker_pool is not None
@@ -1351,9 +1353,7 @@ async def _consume_autonomous(
     # the outer handler; the actor that degrades gracefully and returns
     # has finished). Discarding a returned result here wrote 'cancelled'
     # over completed work on a terminal row nothing re-runs, and reported
-    # a different outcome than the caller was handed. River resolves the
-    # same race the same way (a job that returns after its soft-stop
-    # completes; vendor/river/internal/jobexecutor/job_executor.go).
+    # a different outcome than the caller was handed.
 
     _pbuf = await _pre_terminal_flush(job, worker_id, progress_buffers, _auto_pool, _auto_settings)
     _pseq, _pstate = _seq_and_state_after_flush_attempt(_pbuf)
