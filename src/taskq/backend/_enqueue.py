@@ -1547,27 +1547,15 @@ async def _enqueue_batch(
             savepoint scope so a cross-actor refusal rolls the INSERT back with
             it — nothing from the batch is admitted, as for a singleton
             collision."""
-            inserted_ids: set[UUID] = {rec["id"] for rec in returning_recs}
-
-            new_rows_by_id: dict[UUID, object] = {rec["id"]: rec for rec in returning_recs}
+            # The INSERT returns the full rows (RETURNING *), so the new
+            # rows need no re-read by id. asyncpg's uuid codec already
+            # returns stdlib uuid.UUID, so the ids key directly.
+            new_recs_by_id: dict[UUID, object] = {rec["id"]: rec for rec in returning_recs}
 
             collision_pairs: list[tuple[str, str]] = []
             for args in admitted_args:
-                if args.idempotency_key is not None and args.id not in inserted_ids:
+                if args.idempotency_key is not None and args.id not in new_recs_by_id:
                     collision_pairs.append((args.idempotency_scope, str(args.idempotency_key)))
-
-            new_item_ids = list(inserted_ids)
-            full_new_recs: dict[UUID, object] = {}
-            if new_item_ids:
-                recs = await conn.fetch(
-                    sql.enqueue_batch_fetch_by_ids,
-                    new_item_ids,
-                )
-                for rec in recs:
-                    # Why no UUID(bytes=...) reconstruction: asyncpg's uuid codec
-                    # already returns stdlib uuid.UUID — same assumption the
-                    # inserted_ids set above makes.
-                    full_new_recs[rec["id"]] = rec
 
             existing_by_idem: dict[tuple[str, str], object] = {}
             if collision_pairs:
@@ -1595,9 +1583,9 @@ async def _enqueue_batch(
             try:
                 result: list[JobRow] = []
                 for args in admitted_args:
-                    arg_uuid = args.id
-                    if arg_uuid in full_new_recs:
-                        result.append(_job_row_from_record(full_new_recs[arg_uuid]))  # type: ignore[arg-type]  # Why: asyncpg Record is duck-typed; _job_row_from_record accepts asyncpg.Record at runtime
+                    new_rec = new_recs_by_id.get(args.id)
+                    if new_rec is not None:
+                        result.append(_job_row_from_record(new_rec))  # type: ignore[arg-type]  # Why: asyncpg Record is duck-typed; _job_row_from_record accepts asyncpg.Record at runtime
                     elif (
                         args.idempotency_key is not None
                         and (args.idempotency_scope, str(args.idempotency_key)) in existing_by_idem
@@ -1608,14 +1596,10 @@ async def _enqueue_batch(
                         _log_enqueue_dedup(row, dedup_reason="idempotency_key")
                         result.append(row)
                     else:
-                        partial = new_rows_by_id.get(arg_uuid)
-                        if partial is not None:
-                            result.append(_job_row_from_record(partial))  # type: ignore[arg-type]  # Why: asyncpg Record is duck-typed; _job_row_from_record accepts asyncpg.Record at runtime
-                        else:
-                            raise RuntimeError(
-                                f"enqueue_batch: no row found for args.id={args.id!r} "
-                                f"after INSERT; this is a bug"
-                            )
+                        raise RuntimeError(
+                            f"enqueue_batch: no row found for args.id={args.id!r} "
+                            f"after INSERT; this is a bug"
+                        )
             finally:
                 _dedup_warn_budget.reset(dedup_budget_token)
                 _log_enqueue_dedup_warn_summary(dedup_budget, dedup_reason="idempotency_key")

@@ -172,7 +172,6 @@ class SqlTemplates:
     enqueue_batch: str
     enqueue_batch_fetch_existing: str
     enqueue_batch_fetch_singleton_blockers: str
-    enqueue_batch_fetch_by_ids: str
     enqueue_batch_fast_fixup: str
 
     # ── Read SQL templates ─────────────────────────────────────────
@@ -1383,7 +1382,7 @@ FROM unnest(
     result_ttl, tags_jsonb, stc_raw,
     retry_base, retry_cap, retry_backoff, retry_jitter)
 ON CONFLICT (idempotency_scope, idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING
-RETURNING id, actor, queue, identity_key, status, idempotency_key, idempotency_scope""",
+RETURNING *""",
         enqueue_batch_fetch_existing=f"""\
 SELECT j.* FROM "{s}".jobs j
 JOIN unnest($1::text[], $2::text[]) AS pairs(scope, key)
@@ -1396,8 +1395,6 @@ SELECT actor FROM "{s}".jobs
 WHERE actor = ANY($1::text[])
   AND status IN ('pending', 'scheduled', 'running')
   AND metadata @> '{{"singleton": true}}'::jsonb""",
-        enqueue_batch_fetch_by_ids=f"""\
-SELECT * FROM "{s}".jobs WHERE id = ANY($1::uuid[])""",
         # Post-COPY corrective UPDATE for enqueue_batch_fast.  COPY cannot
         # compute/decide anything, so it writes only domain-insensitive
         # columns (COPY_ENQUEUE_COLUMNS) and this UPDATE — executed inside

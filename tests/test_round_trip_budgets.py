@@ -17,7 +17,7 @@ from uuid import UUID
 
 from taskq._ids import new_job_id, new_uuid
 from taskq.backend._dispatch import QueueModeCache, _dispatch_batch
-from taskq.backend._enqueue import _enqueue, _enqueue_with_conn
+from taskq.backend._enqueue import _enqueue, _enqueue_batch, _enqueue_with_conn
 from taskq.backend._protocol import EnqueueArgs, JobRow
 from taskq.backend._sql_templates import render as render_sql
 from taskq.testing.clock import FakeClock
@@ -308,3 +308,20 @@ async def test_a_keyed_enqueue_in_a_callers_transaction_keeps_the_restore_discip
         "RELEASE",
         "COMMIT",
     ]
+
+
+async def test_a_batch_enqueue_is_one_insert_inside_its_transaction() -> None:
+    """The batch INSERT returns the full rows (RETURNING *), so the result
+    is assembled from the INSERT's own records without re-reading them by
+    id; the transaction is the batch's atomicity, not a wrapper around a
+    single statement."""
+    items = [_enqueue_args() for _ in range(3)]
+    conn = _RecordingConn({"INSERT INTO": [_job_record(job_id=a.id) for a in items]})
+    rows = await _enqueue_batch(
+        _RecordingPool(conn),  # type: ignore[arg-type]  # Why: duck-typed recording pool.
+        _SQL,
+        _SCHEMA,
+        items,
+    )
+    assert [r.id for r in rows] == [a.id for a in items]
+    assert _shape(conn.wire) == ["BEGIN", 'INSERT INTO "taskq".jobs (', "COMMIT"]

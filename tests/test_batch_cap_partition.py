@@ -416,10 +416,8 @@ async def test_pg_enqueue_batch_inserts_admitted_items_only() -> None:
         fetch_map={
             # count_pending_jobs: the capped actor holds one row.
             "GROUP BY actor": [_Record({"actor": args_list[1].actor, "cnt": 1})],
-            # The batch INSERT's RETURNING + the follow-up full-row fetch
-            # both see only the admitted items.
-            "RETURNING id, actor": [_rec(args_list[0]), _rec(args_list[2])],
-            "id = ANY($1::uuid[])": [_rec(args_list[0]), _rec(args_list[2])],
+            # The batch INSERT's RETURNING * sees only the admitted items.
+            "INSERT INTO": [_rec(args_list[0]), _rec(args_list[2])],
         }
     )
 
@@ -443,7 +441,7 @@ async def test_pg_enqueue_batch_inserts_admitted_items_only() -> None:
     assert len(count_calls) == 1
     # The INSERT statement ran exactly once and carried only the admitted
     # items' ids — the refused actor's item never reached the statement.
-    insert_calls = [c for c in conn.fetch_calls if "RETURNING id, actor" in c[0]]
+    insert_calls = [c for c in conn.fetch_calls if "INSERT INTO" in c[0]]
     assert len(insert_calls) == 1
     assert list(insert_calls[0][1][0]) == admitted_ids
 
@@ -473,7 +471,7 @@ async def test_pg_enqueue_batch_abort_mode_refuses_whole_call() -> None:
 
     assert exc_info.value.actor == args_list[1].actor
     # Nothing reached the INSERT: the refusal fired at admission time.
-    assert not any("RETURNING id, actor" in c[0] for c in conn.fetch_calls)
+    assert not any("INSERT INTO" in c[0] for c in conn.fetch_calls)
 
 
 async def test_pg_partition_refusal_logs_and_records_per_refused_actor(
@@ -509,9 +507,8 @@ async def test_pg_partition_refusal_logs_and_records_per_refused_actor(
                 _Record({"actor": capped_a.actor, "cnt": 1}),
                 _Record({"actor": capped_b.actor, "cnt": 1}),
             ],
-            # The admitted healthy item's RETURNING + full-row fetch.
-            "RETURNING id, actor": [_rec(healthy)],
-            "id = ANY($1::uuid[])": [_rec(healthy)],
+            # The admitted healthy item's RETURNING *.
+            "INSERT INTO": [_rec(healthy)],
         }
     )
 
