@@ -51,9 +51,16 @@ _OPT_IN_TIERS: tuple[tuple[str, str], ...] = (
 
 
 def _is_opt_in_path(path: Path) -> str | None:
-    """The flag that gates *path*'s tier, or None when the path is not in one."""
+    """The flag that gates *path*'s tier, or None when the path is not in one.
+
+    Accepts both shapes the gates see: the tier directory itself
+    (``pytest_ignore_collect`` recurses directories) and a file inside it
+    (``pytest_collection_modifyitems`` reads each item's file path).
+    """
     for dirname, flag in _OPT_IN_TIERS:
         if path.name == dirname and path.parent.name == "tests":
+            return flag
+        if path.parent.name == dirname and path.parent.parent.name == "tests":
             return flag
     return None
 
