@@ -41,7 +41,10 @@ from taskq.testing.assertions import wait_for
 from taskq.testing.fixtures import JobsApp
 from taskq.testing.pg import create_worker
 from taskq.worker._consumer import consume_one_job
-from taskq.worker.shutdown import orchestrate_shutdown
+from taskq.worker.shutdown import (  # pyright: ignore[reportPrivateUsage]  # Why: the exit tail is the deadline model the hold assertions recompute.
+    _watchdog_exit_tail,
+    orchestrate_shutdown,
+)
 
 if TYPE_CHECKING:
     from taskq.backend.postgres import PostgresBackend
@@ -265,16 +268,21 @@ async def test_shutdown_releases_an_unresponsive_actor_behind_the_remaining_budg
         assert after.locked_by_worker is None and after.lock_expires_at is None
         assert after.interrupt_count == 1
 
-        # The hold is the remaining termination budget: positive (the row is
-        # deferred, not free) and never exceeding the process's total
-        # termination budget (it is the REMAINING share, counted from the
-        # start of the shutdown, not a fresh budget at release time).
+        # The hold is the remaining termination budget PLUS the watchdog's
+        # exit tail — the dump-interval lag before the deadline trip is
+        # observed and the bounded flush the trip performs before
+        # os._exit — and never exceeds that sum (the remaining share is
+        # counted from the start of the shutdown, not a fresh budget at
+        # release time).
         hold = after.scheduled_at - datetime.now(UTC)
         termination = deps.settings.termination_grace_period
-        assert timedelta(0) < hold <= timedelta(seconds=termination), (
+        tail = _watchdog_exit_tail(deps.settings)
+        assert timedelta(0) < hold <= timedelta(seconds=termination + tail), (
             f"the release of a still-running actor must be deferred until the "
-            f"releasing process is provably gone: hold reads {hold}, expected "
-            f"within (0, {termination}s]"
+            f"releasing process is provably gone — the deadline itself is not "
+            f"enough, the watchdog's exit tail ({tail}s) is part of the "
+            f"promise: hold reads {hold}, expected within (0, "
+            f"{termination + tail}s]"
         )
     finally:
         # Let the zombie actor return; its late success write must be a no-op
