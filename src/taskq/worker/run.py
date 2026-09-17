@@ -33,7 +33,6 @@ import secrets
 import socket
 import time
 from collections.abc import Mapping
-from dataclasses import dataclass
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any, Final, cast
 from uuid import UUID
@@ -60,7 +59,6 @@ from taskq.exceptions import MissingProvider
 from taskq.obs import bind_job_context, get_logger
 from taskq.ratelimit.refs import KeyedReservationRef
 from taskq.ratelimit.reservation import ConcurrencyReservation
-from taskq.retry import OnCancel, OnRetryExhausted, OnSuccess, RetryClassifierHook, RetryPolicy
 from taskq.settings import WorkerSettings
 from taskq.worker._bootstrap import worker_main, worker_main_async
 from taskq.worker._transient import TRANSIENT_PG_ERRORS
@@ -170,26 +168,6 @@ def _jittered_poll_interval(interval: float, rng: random.Random) -> float:
 
 class _StubPayload(BaseModel):
     """Minimal payload model for stub JobContext (no actor handler runs)."""
-
-
-@dataclass(frozen=True, slots=True)
-class _DispatchActorConfig:
-    """Frozen dataclass satisfying ActorConfigLike for dispatch_one_job.
-
-    Built from ActorRef fields; provides the retry policy the consumer's
-    exception classifier needs along with non_retryable_exceptions and
-    on_retry_exhausted from the @actor decorator.
-    """
-
-    retry: RetryPolicy
-    non_retryable_exceptions: tuple[type[BaseException], ...] = ()
-    retry_classifier: RetryClassifierHook | None = None
-    on_retry_exhausted: OnRetryExhausted | None = None
-    on_retry_exhausted_timeout: float = 3.0
-    on_success: OnSuccess | None = None
-    on_success_timeout: float = 3.0
-    on_cancel: OnCancel | None = None
-    on_cancel_timeout: float = 3.0
 
 
 def make_heartbeat_kwargs(
@@ -803,17 +781,6 @@ async def di_consumer_loop(
             continue
 
         actor_ref = actor_registry[job.actor]
-        actor_config = _DispatchActorConfig(
-            retry=actor_ref.retry,
-            non_retryable_exceptions=actor_ref.non_retryable_exceptions,
-            retry_classifier=actor_ref.retry_classifier,
-            on_retry_exhausted=actor_ref.on_retry_exhausted,
-            on_retry_exhausted_timeout=actor_ref.on_retry_exhausted_timeout,
-            on_success=actor_ref.on_success,
-            on_success_timeout=actor_ref.on_success_timeout,
-            on_cancel=actor_ref.on_cancel,
-            on_cancel_timeout=actor_ref.on_cancel_timeout,
-        )
         try:
             outcome = await dispatch_one_job(
                 backend=backend,
@@ -825,7 +792,7 @@ async def di_consumer_loop(
                 thread_scope=thread_scope,
                 loop_scope=loop_scope,
                 actor_ref=actor_ref,  # type: ignore[arg-type]  # Why: ActorRef[Any, Any] is not ActorRef[BaseModel, BaseModel | None]; pyright cannot widen the generic parameters, but the runtime contract is sound — actor_ref carries the correct payload_type and fn.
-                actor_config=actor_config,
+                actor_config=actor_ref.config,
                 clock=clock,
                 active_jobs=deps.active_jobs,
                 max_retry_backoff=deps.settings.max_retry_backoff,
