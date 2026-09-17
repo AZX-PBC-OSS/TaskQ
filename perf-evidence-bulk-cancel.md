@@ -161,10 +161,15 @@ UPDATE plus its event writes.
 
 ```
 uv run --no-sync pytest tests/test_cancel_where_bounded.py tests/test_rt_cancel_drain_keyset_cost.py tests/test_sweepaudit_bounded_writes.py tests/test_migrations_unit.py -q
-→ 117 passed
+→ 121 passed
 
 uv run --no-sync pytest tests/test_index_audit.py -q
 → 28 passed, 4 pre-existing failures owned by other units (verified red
   with this unit's migration absent: backlog-depth gauge grouping,
   move-queue composite-index pin, two event-retention outbox arms)
 ```
+
+121 recounts the original 117-run capture: the four #237 fixpoint pins in
+`test_cancel_where_bounded.py` (re-pend behind the cursor, the #237+#238
+composition, first-empty-round termination, the churn cap) postdate it, and
+the keyset-cost pins were re-run under their round-aware grouping.

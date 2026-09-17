@@ -28,11 +28,19 @@ the straggler up; the drain stops at the first round that matched nothing,
 capped at the constant bound so sustained concurrent churn cannot turn
 the fixpoint into an unbounded loop.
 
-Each statement still cancels EVERY matching job, and one call still
-returns the complete :class:`BulkCancelResult` plus NOTIFY targets — but
-the work executes as a sequence of bounded committed batches
-(``batch_size`` driving-CTE rows per transaction), not one unbounded
-transaction. The drain terminates on the WINDOW count — the
+Completeness is scoped to those rounds, not absolute: each statement
+cancels every matching job it windows, and one call returns the complete
+:class:`BulkCancelResult` plus NOTIFY targets — but the work executes as
+a sequence of bounded committed batches (``batch_size`` driving-CTE rows
+per transaction), not one unbounded transaction, and the call's
+completeness is bounded by the fixpoint. A match set still being re-fed
+by concurrent churn when the round cap is reached returns normally with
+a residual a re-run converges (the EPQ predicates skip everything
+earlier rounds cancelled), and a row re-pended behind the keyset cursor
+inside the final round's own passes is likewise left for that re-run —
+the same deliberately non-atomic contract the drain has always documented
+for a concurrent enqueue slipping a new matching row in between batches.
+The drain terminates on the WINDOW count — the
 ``matched_count`` aggregate each driving statement returns from its own
 MATERIALIZED ``matching`` CTE — never on the UPDATE's affected-row
 count: under READ COMMITTED a row windowed by the CTE that a dispatcher
@@ -44,8 +52,7 @@ window was full means more matching rows may remain, so the drain keeps
 going; the affected count drives only the result totals and the event
 writes. A mid-operation failure therefore leaves partial progress
 rather than rolling everything back: a re-run continues where it
-stopped, because the EPQ predicates skip the rows earlier committed
-batches already cancelled. Each batch's ``job_events`` rows are written
+stopped, for the same reason. Each batch's ``job_events`` rows are written
 by the same bounded transaction as their driving UPDATE, and the batch
 carries a server-side ``statement_timeout`` (``SET LOCAL`` semantics,
 the same capture/restore discipline the maintenance sweeps use), so the

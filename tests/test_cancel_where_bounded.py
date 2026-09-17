@@ -1761,12 +1761,19 @@ async def test_cancel_in_flight_reclaimed_mid_drain_is_terminal_cancelled(
     the re-pended row sat at an id the pending arm had already passed so
     no later arm of the call could see it (#237) — the call returned
     normally reporting nothing about a job whose cancel it had been asked
-    to complete.  Either fix alone saves this timing; the composition is
-    red only when both are broken, which is the point of walking it end
-    to end.  With both fixes the sweep itself terminalises the row
-    'cancelled' — the honest resolution for a request whose only
-    cooperative writer is provably gone — with the audit columns
-    preserved.
+    to complete.  That doubly-lost OUTCOME needs both defects together;
+    the pin is stronger than that outcome: patch-out experiments show the
+    test red with EITHER fix alone reverted — #237 out (single pass, no
+    rounds): the row ends 'cancelled' via the fixed sweep but
+    ``ps_drains_started`` reads 1, not the asserted 2; #238 out
+    (budget-first sweep): the rounds catch the re-pended row so it ends
+    'cancelled', but via arm 1 directly — ``cancelled_directly`` reads 5,
+    not the asserted 4, and the preserved-audit-column assertions fail
+    (the sweep wiped the phase before the round cancelled it).  So the
+    scenario pins each fix independently AND their composition.  With
+    both fixes the sweep itself terminalises the row 'cancelled' — the
+    honest resolution for a request whose only cooperative writer is
+    provably gone — with the audit columns preserved.
     """
     schema = module_pg_schema.schema_name
     conn = clean_pg_conn
