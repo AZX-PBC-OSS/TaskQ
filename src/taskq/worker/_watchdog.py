@@ -101,6 +101,17 @@ _loop_lag_warns = _meter.create_counter(
     "metric + deferred task dump), labelled by detector. The terminal tier "
     "is watchdog_trips_total.",
 )
+_event_loop_lag = _meter.create_histogram(
+    name="taskq.worker.event_loop_lag_seconds",
+    unit="s",
+    description="Event-loop scheduling latency measured by the lag watchdog: "
+    "seconds between the watchdog thread asking the loop to run a callback "
+    "and the loop running it, one sample per landed beat (about one per "
+    "poll interval on a healthy loop, microseconds each) plus the stall "
+    "observed so far when the terminal tier trips. The continuous signal "
+    "below the warn/trip thresholds: a rising p99 is a loop being blocked "
+    "before it is blocked long enough to page. No dimensions.",
+)
 
 # Tick-age observable gauge follows the codebase's cache + callback
 # pattern (see taskq.obs.update_queue_depth_cache): ages() writes the
@@ -504,6 +515,12 @@ class LoopLagWatchdog:
         self._last_beat = clock()
         self._started = clock()
         self._warned = False
+        # The beat request whose latency the lag histogram measures: the
+        # request outstanding when a stall begins is the one that lands
+        # when the loop recovers, so it is held (not re-stamped by the
+        # polls during the stall) until its beat is sampled.
+        self._beat_requested_at = clock()
+        self._beat_sampled = True
         self._stop = threading.Event()
         self._thread = threading.Thread(
             target=self._run,
@@ -584,16 +601,28 @@ class LoopLagWatchdog:
                 )
             )
 
+    def _sample_landed_beat(self) -> None:
+        """Record the latency of the outstanding beat request once it lands."""
+        if self._beat_sampled or self._last_beat < self._beat_requested_at:
+            return
+        _event_loop_lag.record(self._last_beat - self._beat_requested_at)
+        self._beat_sampled = True
+
     def _watch(self) -> None:
         while not self._stop.wait(self._poll_interval):
             if not self._armed():
                 continue
+            self._sample_landed_beat()
             lag = self._clock() - self._last_beat
             if lag > self._warn_budget and not self._warned:
                 self._warned = True
                 self._warn(lag)
             if lag > self._budget:
                 _watchdog_trips.add(1, {"detector": "event-loop-lag"})
+                # The stall's own sample: no beat will land, so the time
+                # since the last one is the lag the trip is reporting.
+                _event_loop_lag.record(lag)
+                self._beat_sampled = True
                 _log.critical(
                     "worker-watchdog-trip",
                     kind="worker_watchdog_trip",
@@ -617,6 +646,9 @@ class LoopLagWatchdog:
                 # (a test, an embedded host), stop rather than re-trip and
                 # re-dump on every subsequent poll.
                 return
+            if self._beat_sampled:
+                self._beat_requested_at = self._clock()
+                self._beat_sampled = False
             try:
                 self._loop.call_soon_threadsafe(self._beat)
             except RuntimeError:

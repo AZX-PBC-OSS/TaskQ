@@ -433,6 +433,8 @@ you *which* jobs absorbed them.
 | `taskq.dispatch.duration` | `s` | `queue` | Batch dispatch SQL query latency (SQL execution only). |
 | `taskq.lock.expires_in_seconds` | `s` | — | Lease remaining on this worker's job locks at the moment the heartbeat renewed them: `lock_lease` minus the measured gap since the previous renewal (nothing on the first), so a late or failed tick lowers the sample and `TaskQLockExpiringSoon` can fire; 0 when the renewal landed after expiry. A healthy worker reads `lock_lease − heartbeat_interval`. Buckets: 0, 5, 10, 15, 20, 30, 45, 60 s. |
 | `taskq.heartbeat.tick_duration_seconds` | `s` | — | Wall-clock seconds per heartbeat tick. |
+| `taskq.worker.event_loop_lag_seconds` | `s` | — | Event-loop scheduling latency measured by the lag watchdog: seconds between the watchdog thread asking the loop to run a callback and the loop running it — one sample per landed beat (about one per `TASKQ_WATCHDOG_CHECK_INTERVAL` on a healthy loop, microseconds each) plus the stall observed at a trip. The continuous signal under the warn/trip thresholds: a rising p99 is a loop being blocked (a sync call without `asyncio.to_thread`, a GC pause, a saturated CPU) before it is blocked long enough to page; the lock-TTL histogram and `TaskQLockExpiringSoon` follow it. See [The watchdog family](#the-watchdog-family). |
+| `taskq.worker.shutdown_duration_seconds` | `s` | — | Wall-clock seconds from the first shutdown signal to clean worker teardown; recorded only on a clean exit (a watchdog trip force-exits without recording). |
 | `taskq.maintenance_leader.sweep_duration_ms` | `ms` | — | Per-sweep-tick wall-clock duration. |
 
 ### Observable gauges (polled)
@@ -461,6 +463,21 @@ you *which* jobs absorbed them.
 | `taskq.jobs.oldest_pending_age_seconds` | `s` | `actor`, `queue` | Seconds since the oldest PENDING job became eligible, per (actor, queue). Depth alone is ambiguous — a deep queue that drains is healthy throughput — but an actor nobody consumes has a pending job whose age grows with wall clock. Distinct from `oldest_due_age_seconds`, which measures promotion (scheduled → pending) and reads 0 for pending work no consumer takes. Sampled from the same grouped snapshot as `actor_backlog`, so depth and age can never describe two different moments. |
 | `taskq.jobs.running_lease_expired` | `1` | — | Running jobs whose lock lease is past expiry (the zombie-running shape). Healthy reads 0 — the reclaim sweep drains expired leases within a tick or two — so a sustained non-zero reading means reclaim is not draining. Sampled by every worker with `taskq.jobs.by_status`; the per-job truth (`locked_by_worker`, `lock_expires_at`) is on the admin `/jobs` lease column, not on a label. |
 | `taskq.jobs.stranded` | `1` | `actor`, `reason` | Pending/scheduled jobs that can never be dispatched, sampled by the leader. `reason` is `no_actor_config` (the actor has no `actor_config` row) or `unserved_queue` (the queue dispatch routes the actor on has no **live** worker subscribed — a worker whose heartbeat has gone stale does not serve a queue, even before the stale-worker sweep removes its row). An empty reading means recovery; `TaskQStrandedJobs` reads this series. |
+
+### The watchdog family
+
+The in-worker watchdog (`taskq.worker._watchdog`; [workers.md — In-worker watchdog](workers.md)) emits one instrument per detector so a hang is attributable without a shell on the pod. All are recorded by the worker process itself; none carry identity labels.
+
+| Metric name | Kind | Unit | Attributes | Description |
+|---|---|---|---|---|
+| `taskq.worker.event_loop_lag_seconds` | histogram | `s` | — | Per-beat event-loop scheduling latency (above). Healthy: microseconds; a blocked loop yields one sample the length of the block once it recovers. |
+| `taskq.worker.watchdog_loop_lag_warns_total` | counter | `1` | `detector` (`event-loop-lag-warn`) | Tier-1 lag warnings: the loop exceeded `TASKQ_WATCHDOG_LOOP_LAG_WARN_BUDGET` — once per stall (the latch clears on the next beat), with a thread dump and a deferred task-stack dump. Non-terminal. |
+| `taskq.worker.watchdog_trips_total` | counter | `1` | `detector` (`event-loop-lag`, `stale-loop-tick`, `shutdown-deadline`) | Terminal trips: the worker force-exited with `EXIT_WATCHDOG` because the loop exceeded `TASKQ_WATCHDOG_LOOP_LAG_BUDGET`, an interval-driven loop stopped ticking, or shutdown outlived `TASKQ_TERMINATION_GRACE_PERIOD`. In-flight jobs are reclaimed by the leader on lock-lease expiry. |
+| `taskq.worker.loop_tick_age_seconds` | gauge | `s` | `loop` | Seconds since each interval-driven sibling loop (heartbeat, producer, the leader loops, ...) last ticked — the `/ready` body's `loop_tick_ages`, exported. A loop whose age grows past its period × grace factor is the stale-loop-tick trip in the making. |
+| `taskq.worker.sibling_crashes_total` | counter | `1` | `loop` | Sibling task exits by exception (never cancellations): the crash that sets the shutdown event and takes the worker down. |
+| `taskq.worker.shutdown_duration_seconds` | histogram | `s` | — | Clean shutdown wall-clock time; a trip records nothing here, so a missing sample beside a `shutdown-deadline` trip is the expected shape. |
+
+Read them together: `event_loop_lag_seconds` rising → `watchdog_loop_lag_warns_total` → `watchdog_trips_total{detector="event-loop-lag"}` is one stall escalating through the tiers; `loop_tick_age_seconds{loop="heartbeat"}` climbing while the lag histogram stays flat is a loop that is scheduling but not ticking (blocked on an await — a pool acquire, a wedged connection), the `stale-loop-tick` shape.
 
 ### Sweep samples: rows and duration are different populations
 
