@@ -1004,8 +1004,8 @@ async def tick_cron(
 
     tick_started = time.monotonic()
     lock_name = schema_lock_name("cron", schema)
-    # One statement for the try-lock, the planning clock and the due read
-    # (pg-boss folds its cron lock into the read the same way): the leader
+    # One statement for the try-lock, the planning clock and the due read:
+    # the leader
     # ticks once a second and is idle almost always, so the idle tick's
     # cost is the round-trip count. The lock sits in a MATERIALIZED CTE
     # so it is taken exactly once and before the read; the LATERAL read is

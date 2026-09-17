@@ -385,11 +385,9 @@ def test_doctor_reports_pending_jobs_whose_actor_has_no_registry_or_config_row(
     elected leader — not something `doctor`, a read-only, on-demand,
     run-anytime command, should depend on.
 
-    Vendor precedent (Oban, an Elixir Postgres-backed queue): resolving an
-    unknown worker module is NOT silent — ``Oban.Worker.from_string/1``
-    (vendor/oban/lib/oban/worker.ex:571-585) returns
-    ``{:error, %RuntimeError{message: "unknown worker: " <> name}}`` at
-    dispatch, so the job is claimed and fails loudly with a named error
+    Resolving an unknown worker module is NOT silent in the enqueue-time
+    check a Postgres queue can make: the job is claimed and fails loudly
+    with a named error
     rather than sitting unclaimed forever with nothing to say why. TaskQ's
     dispatch SQL instead joins ``actor_config``, so a job like this is
     never even a dispatch candidate — no attempt, no error, nothing. If
@@ -397,7 +395,7 @@ def test_doctor_reports_pending_jobs_whose_actor_has_no_registry_or_config_row(
     deliberate tradeoff — troubleshooting.md, "Stranded jobs: ... The
     detector only warns — it does not delete or reassign."), the burden
     shifts entirely onto `doctor` and the stranded-jobs sweep to be the
-    loud surface instead of the dispatch error Oban gets for free — and
+    loud surface instead of a dispatch-time error — and
     `doctor` is the one of those two an operator can run on demand,
     read-only, mid-incident, without waiting up to 60s for a leader tick.
 

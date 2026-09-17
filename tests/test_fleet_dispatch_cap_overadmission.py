@@ -3,8 +3,8 @@ past a capped actor's max_concurrent when several pods contend, forcing
 the window-expansion loop to run?
 
 The issue thread for the under-claim fix names this explicitly as the
-inverse hazard: pgqueuer's own history is a lock node that
-slides past a capacity-bound window and over-admits. TaskQ's fix keeps a
+inverse hazard: a lock node that
+slides past a capacity-bound window over-admits. TaskQ's fix keeps a
 pre-lock window for capped actors specifically to avoid that, and adds a
 window-expansion retry when a round returns empty. This test stresses
 both mechanisms together: many pods, a capped actor, and enough backlog

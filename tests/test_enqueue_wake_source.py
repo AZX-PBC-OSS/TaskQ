@@ -8,9 +8,9 @@ path the app-side statement was pure cost; on a caller's bare connection
 the INSERT and the notify were two transactions and every listener was
 woken twice per enqueue; and the app-side statement was gated on "a row was
 inserted", not on the row being dispatchable, so a future-dated enqueue
-woke the whole fleet for nothing. pg-boss folds its notify into the INSERT
-gated on the row being due; the trigger's WHEN clause is the same gate here
-(every insert path decides ``status`` server-side, so ``pending`` means
+woke the whole fleet for nothing. The trigger's WHEN clause gates the
+notify on the row being due (every insert path decides ``status``
+server-side, so ``pending`` means
 dispatchable now).
 
 Each assertion counts deliveries over a settling window rather than

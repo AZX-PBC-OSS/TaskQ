@@ -6,9 +6,9 @@ When they do not, ``enqueue(send_receipt, key="order-1")`` after
 ``enqueue(refund, key="order-1")`` used to return the REFUND's handle with
 ``was_existing=True`` and an INFO-level dedup log: a handle whose
 ``.result()`` is another actor's, indistinguishable to the caller from a
-successful dedup of its own job. River folds the job kind into its unique
-key and Oban's default unique fields include the worker, so neither can
-hand back a different worker's job; TaskQ's index cannot include the actor
+successful dedup of its own job. A uniqueness contract that includes the
+actor cannot hand back a different actor's job; TaskQ's index cannot
+include the actor
 without a migration, so the dedup hit is checked instead and a mismatch
 raises :class:`IdempotencyKeyActorMismatchError` naming both actors and the
 existing job. A same-actor hit still returns the existing row.

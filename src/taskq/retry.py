@@ -221,10 +221,10 @@ def _reclaim_jitter_fraction(job_id: UUID, attempt: int) -> float:
     every path.  The fleet spread random jitter buys is preserved:
     distinct ids hash to distinct fractions, so a mass-expired cohort
     still arrives across the jitter band instead of at one synchronised
-    instant.  (River and Oban spread reclaims with a random draw — they
-    can, because exactly one process ever computes a given row's retry
-    delay; the deviation here is the dual-statement, dual-implementation
-    parity requirement, not a different spreading goal.)
+    instant.  (A per-evaluation random draw needs exactly one process ever
+    to compute a given row's retry delay; the row-derived hash here is the
+    dual-statement, dual-implementation parity requirement, not a
+    different spreading goal.)
 
     md5 is a hash here, not a cipher: the input is a row identity, and
     32 bits of it become scheduling noise.
@@ -279,8 +279,6 @@ def _capped_jitter_band(raw_s: float, cap_s: float, jitter: float) -> tuple[floa
     upper edge clamped to it) keeps the draw uniform over what remains —
     ``[cap·(1-j), cap]`` for a saturated row — with the documented bounds
     ``0 ≤ delay ≤ cap`` intact and ``jitter=0`` still the identity.
-    Dramatiq re-jitters at its cap and Oban clamps before jittering for
-    the same reason.
 
     Shared by :func:`compute_backoff` (RNG draw) and
     :func:`_compute_reclaim_backoff` (row-derived fraction); the SQL twin

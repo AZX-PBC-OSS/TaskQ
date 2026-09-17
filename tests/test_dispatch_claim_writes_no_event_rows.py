@@ -6,7 +6,7 @@ under the 429 denial contract a denied job is claimed and rescheduled until
 capacity frees or its ``schedule_to_close`` expires, so one ``job_events``
 row per claim is exactly the unbounded-growth vector the aggregated denial
 counters on the job row (``rate_limit_blocked_count`` / ``snooze_count``)
-replaced. Neither vendored grain (River, Oban) writes a per-claim row.
+replaced.
 
 These tests pin the contract at the real dispatch seam — a batch of claims
 lands the rows ``running`` with the attempt increment and writes ZERO

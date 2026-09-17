@@ -239,11 +239,9 @@ exist."""
 # replay is idempotent per row — strictly more robust than a fresh draw.
 # The fleet spread random() bought is preserved: distinct ids hash to
 # distinct fractions, so a mass-expired cohort still arrives spread across
-# the jitter band instead of at one synchronised point.  (River and Oban
-# spread reclaims with a random draw per evaluation — vendor/river's
-# retrySeconds adds rand.Float64()*0.2-0.1, vendor/oban's Backoff.jitter
-# draws :rand.uniform() — which they can do because exactly one process
-# ever computes a given row's retry delay; the deviation here is the
+# the jitter band instead of at one synchronised point.  (A per-evaluation
+# random draw needs exactly one process ever to compute a given row's
+# retry delay; the per-row hash here is the
 # dual-statement, dual-implementation parity requirement, not a different
 # spreading goal.)
 #
@@ -1441,8 +1439,8 @@ async def sweep_scheduled_to_pending(
     frees or its deadline expires, so a row per promotion is precisely
     the unbounded-growth vector the aggregated denial counters on the job
     row replaced. The transitions of record are the terminal writes and
-    the sweep/cancel audit entries; neither vendored grain (River, Oban)
-    writes a per-promotion row. The sweep's own observability is the
+    the sweep/cancel audit entries; the promotion itself writes no row,
+    so the table cannot grow per promotion. The sweep's own observability is the
     per-call count log below and the per-row ``state_change`` log lines
     (logs, not durable rows).
 

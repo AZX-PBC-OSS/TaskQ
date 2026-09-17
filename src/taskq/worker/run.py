@@ -140,11 +140,10 @@ drained or a peer won it; the triggers that keep arriving meanwhile (a
 schema-wide NOTIFY wakes every worker, every completion frees a slot) are
 folded into one round after this wait instead of each paying a full
 dispatch round plus the loser's window expansions. A full round is exempt:
-backlog drain re-claims immediately. Between River's 100 ms FetchCooldown
-and Oban's 5 ms dispatch_cooldown, sized for this worker's small slot
+backlog drain re-claims immediately. Sized for this worker's small slot
 count: it is the worst-case added claim latency for a job that arrives
 right after a short round. A module constant rather than a setting because
-the value is a latency-vs-load trade the peers also fix at a default; the
+the value is a latency-vs-load trade with a sensible fixed default; the
 settings surface is owned elsewhere and grows a knob only when a
 deployment shows it needs one.
 """

@@ -60,11 +60,10 @@ writes ``except PayloadValidationError as exc: if exc.payload_schema_ver
 == OLD_VERSION: ...`` to distinguish "row predates this schema" from
 "caller sent garbage" must get a truthful value on every path.
 
-No vendor precedent search applies: this is not a missing capability
-relative to another queue library (River/Oban/Sidekiq have no
-Pydantic-model payload-versioning concept at all -- see
-tests/test_register_stub_payload_type_fidelity.py's docstring for that
-same point argued in full). This is argued from internal consistency: a
+Typed payload-versioning is not a capability comparison against other
+queue libraries -- see tests/test_register_stub_payload_type_fidelity.py's
+docstring for the registration-fidelity point argued in full. This is
+argued from internal consistency: a
 field documented as part of an exception's public contract
 (jobs-clients.md's error table) must be populated by every path that
 contract's callers can reach, or the docs overstate what the field is

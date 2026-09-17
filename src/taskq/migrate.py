@@ -174,9 +174,9 @@ class Migration:
 #: queue is FIFO, so once the DDL is queued every later statement on that
 #: table (dispatch, enqueue, heartbeat) queues behind IT. Unbounded, that
 #: wait outlives the workers' heartbeat budget: the fleet self-terminates
-#: while the migration is still waiting. Thirty seconds is the wait pg-boss
-#: applies to every migration; it exceeds any healthy lock hold by orders of
-#: magnitude and is short enough that a fleet parked behind it survives.
+#: while the migration is still waiting. Thirty seconds exceeds any healthy
+#: lock hold by orders of magnitude and is short enough that a fleet parked
+#: behind it survives.
 #: Bounds the WAIT only: a statement that already holds its lock (an index
 #: build) is never interrupted by ``lock_timeout``. Override per call with
 #: ``apply_pending(..., ddl_lock_timeout=...)``; ``0`` waits indefinitely.

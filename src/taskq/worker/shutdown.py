@@ -25,13 +25,7 @@ both graces is interrupted with a hold at RELEASING (released only once
 the process is provably gone). ``abandoned`` stays on the operator-cancel
 ladder (the row carries ``cancel_requested_at``): the FORCING escalation
 probe and the RELEASING ``mark_interrupted`` fence keep an operator's
-request ahead of any release. Vendor shape: River releases soft-stopped
-jobs with the attempt refunded and lets an operator cancel win
-(``vendor/river/internal/jobexecutor/job_executor.go``'s
-``softStopped`` branch; ``river_job.sql``'s ``JobSetStateIfRunningMany``);
-Sidekiq requeues before killing because losing a job is worse than
-running it twice (``vendor/sidekiq/lib/sidekiq/manager.rb``
-``hard_shutdown``).
+request ahead of any release.
 """
 
 import asyncio
@@ -173,9 +167,8 @@ async def drain_local_queue_to_pending(deps: "WorkerDeps", worker_id: UUID) -> i
     # The attempt refund: the claim stamped attempt + 1 for an execution
     # this hand-back says never happened, so the increment goes back —
     # the same non-consuming-release idiom the snooze/unavailable and
-    # interruption arms carry (_ATTEMPT_REFUND_SQL; River refunds the same
-    # way on a soft stop, vendor/river/internal/jobexecutor/job_executor.go
-    # `max(jobRow.Attempt-1, 0)`). Without it every rolling deploy spends
+    # interruption arms carry through _ATTEMPT_REFUND_SQL. Without it
+    # every rolling deploy spends
     # one retry of every claimed-but-unstarted job's budget. The alias
     # ``j`` is what the shared fragment qualifies on.
     sql = (
@@ -391,9 +384,10 @@ async def orchestrate_shutdown(
         # mark_interrupted hands the row back to the fleet with the claim's
         # attempt increment refunded, HELD behind the rest of this
         # process's termination budget so no other pod can claim the row
-        # while this one might still touch it (Sidekiq's requeue-before-
-        # kill ordering — the release lands before the process dies, never
-        # after — with the overlap Sidekiq accepts closed by the hold).
+        # while this one might still touch it. The release is ordered
+        # before the process dies, never after, and the hold closes the
+        # overlap where the row is claimable while the dying process could
+        # still touch it.
         deps.shutdown_phase = ShutdownPhase.RELEASING
         hold = _release_hold(deps, settings, loop)
         _log.info(
