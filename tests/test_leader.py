@@ -166,6 +166,14 @@ class FakeConn:
         self.execute_calls.append((sql, args))
         if self._on_execute is not None:
             self._on_execute()
+        # Why a DELETE tag for the resign: the command tag is the delete
+        # COUNT, and resign() now reads it to decide whether the row was
+        # actually handed back — a double answering "UPDATE 1" here would
+        # report every resign as a no-op (the same class of lie as the
+        # fetchval doubles answering lease statements with a bool: the
+        # shape the caller reads must be the shape the real driver sends).
+        if sql.lstrip().upper().startswith("DELETE FROM") and "maintenance_leader" in sql:
+            return "DELETE 1"
         return "UPDATE 1"
 
     async def fetchrow(self, sql: str, *args: object) -> object | None:
@@ -3916,6 +3924,55 @@ async def test_a_blip_after_a_peer_takeover_gets_a_fresh_trust_window(
     # the term it won in phase 3.
     assert deps.leader_term is not None
     assert any(e.get("event") == "leader-elected" for e in captured)
+
+
+async def test_the_hand_back_warn_does_not_fire_when_the_resign_did_not_land(
+    monkeypatch: Any,  # type: ignore[reportUnknownParameterType]
+) -> None:
+    """F2: ``leader-resigned-unassumable`` is the policy record — "this
+    pod handed the lease back because it cannot assume it" — so it must
+    fire only when the resign actually DELETED the row.
+
+    The attack run logged 20 of those WARNs against zero successful
+    resigns: the WARN used to follow the best-effort ``resign()``
+    unconditionally, and a resign with no live conn returns silently —
+    so the runbook's "the fleet is leading from elsewhere" advice was
+    pointed at a row nobody had resigned. The gate is ``resign()``'s own
+    return: the delete count from the command tag, not the absence of
+    an error (a fenced no-op is success-shaped).
+    """
+    leader, deps, _backend, _leader_conn, _, shutdown = await _make_leader(monkeypatch=monkeypatch)
+    _ = shutdown
+
+    # A spent anchor (an old episode's budget is long past) and a fenced
+    # term, so the hand-back's resign is due RIGHT NOW.
+    loop = asyncio.get_running_loop()
+    spent = LeaderTerm(elected_at=datetime.now(UTC), trusted_until=loop.time() - 1.0)
+    leader._unassumable_anchor = spent  # pyright: ignore[reportPrivateUsage]  # Why: driving the exact spent-anchor branch IS the test.
+    leader._resign_fence = spent  # pyright: ignore[reportPrivateUsage]  # Why: the fence the resign would carry.
+
+    # No live conn anywhere: resign() has nothing to ride and returns
+    # False silently — the hand-back must not claim a hand-back.
+    deps.leader_conn = None
+    assert leader._leader_monitor_conn is None
+    with structlog.testing.capture_logs() as silent:
+        await leader._hand_back_unassumable_lease(  # pyright: ignore[reportPrivateUsage]  # Why: the gate under test is this method's own logging decision.
+            reason="dedicated_conn_open_failed"
+        )
+    assert not any(e.get("kind") == "leader_resigned_unassumable" for e in silent), (
+        "the WARN claimed a handed-back lease while no resign could even be issued"
+    )
+
+    # A live conn whose DELETE lands: the WARN fires — the record is
+    # true exactly when the row is gone.
+    deps.leader_conn = FakeConn(fetchval_result=True)  # type: ignore[assignment]  # Why: FakeConn is a drop-in for asyncpg.Connection in unit tests; the harness in this file assigns it the same way.
+    with structlog.testing.capture_logs() as landed:
+        await leader._hand_back_unassumable_lease(  # pyright: ignore[reportPrivateUsage]  # Why: same seam, affirmative arm.
+            reason="dedicated_conn_open_failed"
+        )
+    hand_backs = [e for e in landed if e.get("kind") == "leader_resigned_unassumable"]
+    assert len(hand_backs) == 1
+    assert hand_backs[0]["reason"] == "dedicated_conn_open_failed"
 
 
 # ── Leadership gap-window after reload ──────────────────────────────────

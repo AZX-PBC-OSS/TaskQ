@@ -677,7 +677,7 @@ class MaintenanceLeader:
             - _LEADER_TRUST_MARGIN_SECS,
         )
 
-    async def resign(self) -> None:
+    async def resign(self) -> bool:
         """Hand the lease back so a peer elects on its next cycle.
 
         Fenced on the term, so a resign issued after a takeover cannot delete
@@ -701,19 +701,29 @@ class MaintenanceLeader:
         on a pod that never led (``leader_term`` is None, so the fallback
         fence is the one that applies): it rides the leader conn the
         winning elect just used, before that conn is dropped.
+
+        Returns whether the resign actually DELETED the row. ``False`` is
+        the ordinary fenced no-op (a successor's row, or none left) and
+        every best-effort shape (no term to resign, no live conn to ride,
+        the write raising): the no-op and no-term/no-conn shapes are
+        silent by design — at teardown they are normal — while a raised
+        write carries its own ``leader-resign-failed`` WARN. A caller
+        whose policy REPORTS a hand-back must not do so on a ``False``
+        here, which is why the #234 trust-spent hand-back WARNs only on
+        a ``True``.
         """
         term = self._deps.leader_term or self._resign_fence
         if term is None:
-            return
+            return False
         conn = self._deps.leader_conn
         if conn is None or conn.is_closed():
             conn = self._leader_monitor_conn
         if conn is None or conn.is_closed():
-            return
+            return False
         _elect, _renew, resign_sql = build_leader_lease_sql(self._deps.settings.schema_name)
         try:
             async with asyncio.timeout(CLOSE_TIMEOUT_SECS):
-                await conn.execute(resign_sql, self._worker_id, term.elected_at)
+                tag = await conn.execute(resign_sql, self._worker_id, term.elected_at)
         except Exception as exc:
             log.warning(
                 "leader-resign-failed",
@@ -721,12 +731,28 @@ class MaintenanceLeader:
                 worker_id=str(self._worker_id),
                 error=repr(exc),
             )
-            return
+            return False
+        # The command tag is the truthful delete count: "DELETE 1" is a
+        # row handed back, "DELETE 0" is the fence correctly matching
+        # nothing (a successor's row, or the row already resigned). A
+        # caller reporting the hand-back must read this, not the absence
+        # of an error — a fenced no-op is a success-shaped failure.
+        parts = tag.split()
+        deleted = len(parts) == 2 and parts[0].upper() == "DELETE" and parts[1] != "0"
+        if not deleted:
+            log.info(
+                "leader-resign-noop",
+                kind="leader_resign_noop",
+                worker_id=str(self._worker_id),
+                tag=tag,
+            )
+            return False
         log.info(
             "leader-resigned",
             kind="leader_resigned",
             worker_id=str(self._worker_id),
         )
+        return True
 
     async def _hand_back_unassumable_lease(self, *, reason: str) -> None:
         """Give back a lease this pod won but could not assume (#234).
@@ -775,7 +801,18 @@ class MaintenanceLeader:
             # could not legally hold the row yet, so keeping it costs the
             # fleet nothing a live leader's transient failure would not.
             return
-        await self.resign()
+        deleted = await self.resign()
+        if not deleted:
+            # The WARN below is the policy record — "this pod handed the
+            # lease back because it cannot assume it" — and must not
+            # claim a hand-back that did not land: a resign with no live
+            # conn returns silently and a fenced no-op succeeds at
+            # nothing, and reporting either as a hand-back sends the
+            # runbook's "the fleet is leading from elsewhere" advice to
+            # an operator staring at a row nobody resigned. The shapes
+            # that tried and failed carry ``leader-resign-failed``; the
+            # episode persists either way, so the next won cycle retries.
+            return
         log.warning(
             "leader-resigned-unassumable",
             kind="leader_resigned_unassumable",
