@@ -197,14 +197,9 @@ class WorkerDeps:
     # callback-aware reconnect (re-registers LISTEN + callbacks on the new
     # connection). None before the listener starts or after it stops.
     notify_reconnect_fn: Callable[[], Awaitable[None]] | None = None
-    # The INCREMENTAL AsyncExitStack from open_worker_deps — every
-    # teardown registered after the deps shell opens (the dedicated-conn
-    # / redis guards, the per-slot pool via _maybe_open_slot_pool, and
-    # hot-reload swaps via reload_credentials). It unwinds BEFORE the
-    # shell's own role pools at context exit; unwinding it directly
-    # (mid-flight, bounded) detaches exactly those late registrations
-    # and leaves the role pools serving. None before open_worker_deps
-    # yields or after it exits.
+    # The AsyncExitStack from open_worker_deps, stored so
+    # reload_credentials can register hot-swapped pools for LIFO teardown.
+    # None before open_worker_deps yields or after it exits.
     _exit_stack: AsyncExitStack | None = None
     is_leader: asyncio.Event = field(default_factory=asyncio.Event)
     producer_stop_event: asyncio.Event = field(default_factory=asyncio.Event)
@@ -333,20 +328,10 @@ async def open_worker_deps(
 
     Startup ordering: validate settings → open dispatcher_pool →
     open heartbeat_pool → open worker_pool → open notify_conn → open
-    leader_conn → open redis_client.  Uses two
-    :class:`~contextlib.AsyncExitStack` instances so that a failure
-    during step N closes steps 1..N-1 before the exception propagates:
-    the base stack owns the role pools (their lifecycle is this
-    context), the incremental stack — exposed as ``deps._exit_stack`` —
-    owns every teardown registered after the deps shell exists
-    (dedicated-conn / redis guards, the per-slot pool, hot-reload
-    swaps).  Teardown is LIFO across both: at context exit the
-    incremental stack unwinds first (late registrations close before
-    the role pools), and unwinding ``deps._exit_stack`` on its own
-    detaches only those late registrations — the bounded,
-    graceful-window-then-terminate surface a mid-flight caller can
-    drive without closing the role pools still serving in-flight
-    dispatches.
+    leader_conn → open redis_client.  Uses
+    :class:`~contextlib.AsyncExitStack` so that a failure during step N
+    closes steps 1..N-1 before the exception propagates.  Teardown is
+    LIFO.
 
     ``connections`` provides per-role overrides — pre-constructed,
     caller-owned resources or zero-arg async factories — replacing the
@@ -407,22 +392,7 @@ async def open_worker_deps(
     owns_notify = conns.notify_conn is None  # DSN or factory → TaskQ-owned
     owns_leader = conns.leader_conn is None
 
-    # Two stacks, one LIFO sequence at teardown. ``base_stack`` owns the
-    # open-sequence ROLE POOLS (dispatcher / heartbeat / worker): their
-    # lifecycle is the open_worker_deps context itself, so they close
-    # when the context exits — never on a manual unwind of
-    # ``deps._exit_stack``. ``incremental_stack`` (exposed as
-    # ``deps._exit_stack``) owns every teardown registered AFTER the
-    # deps shell exists: the dedicated-conn / redis guards below, the
-    # per-slot pool (``_maybe_open_slot_pool``), and every hot-reload
-    # swap (``reload_credentials``) — the detachable surface a caller
-    # can unwind mid-flight (bounded, graceful-window-then-terminate)
-    # without tearing down the role pools still serving in-flight
-    # dispatches. At context exit the incremental stack unwinds FIRST
-    # (it is entered last), then the base pools — exactly the LIFO
-    # order the single-stack shape produced.
-    incremental_stack = AsyncExitStack()
-    async with AsyncExitStack() as base_stack, incremental_stack:
+    async with AsyncExitStack() as stack:
         # DSN-fallback factories — built inline with explicit kwargs so pyright
         # can trace types through ``asyncpg.create_pool`` (a ``**dict`` splat
         # would erase them). ``None`` when the DSN is unused (every role for
@@ -489,7 +459,7 @@ async def open_worker_deps(
             conns.dispatcher_pool,
             conns.dispatcher_pool_factory,
             dispatcher_dsn_factory,
-            base_stack,
+            stack,
             settings=settings,
             label="dispatcher",
             host=_dsn_host(direct_dsn) if direct_dsn else None,
@@ -500,7 +470,7 @@ async def open_worker_deps(
             conns.heartbeat_pool,
             conns.heartbeat_pool_factory,
             heartbeat_dsn_factory,
-            base_stack,
+            stack,
             settings=settings,
             label="heartbeat",
             host=_dsn_host(direct_dsn) if direct_dsn else None,
@@ -511,7 +481,7 @@ async def open_worker_deps(
             conns.worker_pool,
             conns.worker_pool_factory,
             worker_dsn_factory,
-            base_stack,
+            stack,
             settings=settings,
             label="worker",
             host=_dsn_host(pooled_dsn) if pooled_dsn else None,
@@ -547,7 +517,7 @@ async def open_worker_deps(
             redis_client_factory=conns.redis_client_factory,
             owns_notify_conn=owns_notify,
             owns_leader_conn=owns_leader,
-            _exit_stack=incremental_stack,
+            _exit_stack=stack,
         )
 
         # ── notify_conn (pg_dsn_direct, TCP keepalive) ────────────────
@@ -620,7 +590,7 @@ async def open_worker_deps(
                     await close_conn_bounded(conn, "notify", CLOSE_TIMEOUT_SECS)
                     deps.notify_conn = None
 
-            incremental_stack.push_async_callback(_close_notify_conn)
+            stack.push_async_callback(_close_notify_conn)
 
         # Issue LISTEN so the connection is in subscription state. Why
         # bounded: the open runs before any watchdog is armed, and a
@@ -711,7 +681,7 @@ async def open_worker_deps(
                     await close_conn_bounded(conn, "leader", CLOSE_TIMEOUT_SECS)
                     deps.leader_conn = None
 
-            incremental_stack.push_async_callback(_close_leader_conn)
+            stack.push_async_callback(_close_leader_conn)
 
         # ── redis_client ───────────────────────────────────────────────
         redis_client: redis_async.Redis | None = None  # type: ignore[type-arg]  # Why: redis-py stubs expose Redis as an unparameterised generic; the type arg cannot be supplied without a stubs update.
@@ -809,7 +779,7 @@ async def open_worker_deps(
                     await close_redis_bounded(client, "worker", CLOSE_TIMEOUT_SECS)
                     deps.redis_client = None
 
-            incremental_stack.push_async_callback(_close_redis_client)
+            stack.push_async_callback(_close_redis_client)
 
             async def _drain_pending_publishes() -> None:
                 """Give in-flight fire-and-forget progress publishes a bounded
@@ -819,7 +789,7 @@ async def open_worker_deps(
                         deps.pending_publish_tasks, timeout=PUBLISH_DRAIN_TIMEOUT_SECS
                     )
 
-            incremental_stack.push_async_callback(_drain_pending_publishes)
+            stack.push_async_callback(_drain_pending_publishes)
 
         try:
             yield deps

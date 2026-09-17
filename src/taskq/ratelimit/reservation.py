@@ -47,32 +47,10 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger("taskq.ratelimit.reservation")
 
-# One statement, one row set, two conflict-arm rules. The stamp rule:
-# re-materialisation over rows that SURVIVED (the registry's re-resolve
-# path after an idle eviction whose rows outlived the pending-reclaim
-# drain, held by another worker's live leases) restarts the horizon —
-# ensure_slots' contract promises the bucket a fresh ``last_used_at``,
-# and a bucket that just came back into a live registry must not read
-# as idle past the horizon on staleness that predates its
-# re-materialisation, or the leader tick between the ensure and the
-# acquire's first stamp deletes the whole bucket out from under the
-# acquiring worker. The mark rule: ``keyed = existing AND EXCLUDED`` —
-# the mark may be born true (the INSERT arm) or driven to false, never
-# resurrected. A keyed=false row is a static claim, and the registry's
-# concrete-name collision guard is process-local: another process's
-# registry can legally hold a static declaration whose concrete name
-# equals this keyed ref's, and flipping those rows true would hand the
-# fleet sweep a STATIC reservation's rows (no keyed lifecycle, no heal,
-# no re-materialisation — every later acquisition on that worker denies
-# forever). The reverse direction stays: a static bootstrap ensure over
-# former keyed rows retires the mark (never-sweep again). The conflict
-# arm never touches the holder/lease columns — held state is untouched.
 _ENSURE_SLOTS_SQL_TEMPLATE = """\
 INSERT INTO "{schema}".reservation_slots (bucket_name, slot_index, keyed, last_used_at)
 SELECT $1, generate_series(0, $2 - 1), $3, clock_timestamp()
-ON CONFLICT (bucket_name, slot_index) DO UPDATE SET
-    keyed = reservation_slots.keyed AND EXCLUDED.keyed,
-    last_used_at = clock_timestamp()"""
+ON CONFLICT (bucket_name, slot_index) DO UPDATE SET keyed = EXCLUDED.keyed"""
 
 # One statement, one row, both outcomes. The acquire branch is the
 # original CTE untouched except for the last_used_at stamp. The denial
@@ -600,25 +578,13 @@ class ConcurrencyReservation:
 
         Inserts the bucket's full slot row set with this reservation's
         fleet-reclaimable mark and a fresh ``last_used_at``; the conflict
-        arm (rows already present — re-materialisation over survivors,
-        or another process's earlier materialisation) refreshes
-        ``last_used_at`` on every conflicting row and converges the
-        ``keyed`` mark toward immortality without ever touching the
-        holder/lease columns (held state is untouched):
-
-        - a keyed materialisation (or its heal) re-marks rows that are
-          already keyed and refreshes their staleness — re-materialised
-          survivors restart the horizon;
-        - a keyed materialisation over rows marked ``keyed=false``
-          leaves them false: that mark is a STATIC claim (born false,
-          possibly declared in a process whose registry this worker's
-          process-local collision guard cannot see), and a static
-          reservation has no acquire-path heal — swept rows would deny
-          forever;
-        - a later static declaration of the same name (the bootstrap's
-          startup ensure) retires keyed rows to ``keyed=false`` —
-          never-sweep again, the immortality direction a live static
-          declaration owns.
+        arm flips ONLY the ``keyed`` mark (never the holder/lease
+        columns — held state is untouched), so re-ensuring stays
+        idempotent while the mark always reflects the CURRENT owner:
+        a keyed materialisation (or its heal) claiming a name re-marks
+        its rows fleet-reclaimable, and a later static declaration of
+        the same name (the bootstrap's startup ensure) marks them
+        never-sweep again.
         """
         async with pool.acquire() as conn:
             await conn.execute(self._ensure_sql, self._name, self._slots, self._keyed)

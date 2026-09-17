@@ -37,15 +37,7 @@ bounded committed batches, then one final transaction locks and flips the
 stored assignment and carries the source queue's ``queues`` row to the
 target when the target has none — so old-queue strays drain through the
 target's consumers and worker boot stays consistent at every intermediate
-state of the rolling deploy. The actor's left-behind running rows are
-untouched; each finishes on the worker that claimed it, and any re-pend
-of one (failure retry, lease/heartbeat reclaim, operator retry) keeps the
-row's queue label as an audit trail while dispatch routes it by the
-actor's CURRENT assignment (``taskq/backend/_dispatch_sql.py``'s routing
-contract), so the running-job tail drains through the target's consumers
-rather than stranding on the retired source queue. A mid-drain abort
-re-raises after the ``actor-queue-move-aborted`` event names the
-committed-so-far count. See :class:`ActorQueueMoveResult` for the
+state of the rolling deploy. See :class:`ActorQueueMoveResult` for the
 return contract.
 """
 
@@ -79,12 +71,9 @@ from taskq.exceptions import (
     ActorHasEnabledSchedulesError,
     ActorNotFoundError,
 )
-from taskq.obs import get_logger
 
 if TYPE_CHECKING:
     import asyncpg
-
-logger = get_logger(__name__)
 
 __all__ = [
     "UNSET",
@@ -404,18 +393,12 @@ class ActorQueueMoveResult:
     """Outcome of a ``move_actor_queue`` call.
 
     ``jobs_moved`` counts the actor's pending+scheduled rows rewritten onto
-    the target queue by THIS call (the backlog that now drains through the
-    target's consumers; a re-run after an aborted move counts only the
-    remainder it moved itself). ``running_jobs_left`` counts the actor's
-    running rows, which are deliberately untouched — each finishes on the
-    worker that claimed it, and a row that instead re-pends (a failure
-    retry, a lease/heartbeat reclaim, an operator retry) keeps its
-    original queue label as an audit trail but is ROUTED, at dispatch, by
-    the actor's current stored assignment: the tail drains through the
-    target queue's consumers and never strands on the retired source
-    queue. ``queues_row_carried`` is ``True`` only when the target queue
-    had no row and inherited the source queue's mode and max_concurrent;
-    a configured target stands unchanged.
+    the target queue (the backlog that now drains through the target's
+    consumers). ``running_jobs_left`` counts the actor's running rows, which
+    are deliberately untouched — their queue field is inert once claimed and
+    they finish on the worker that claimed them. ``queues_row_carried`` is
+    ``True`` only when the target queue had no row and inherited the source
+    queue's mode and max_concurrent; a configured target stands unchanged.
     """
 
     actor: str
@@ -449,17 +432,11 @@ async def move_actor_queue(
       ``batch_size`` of the actor's OWN pending/scheduled rows onto the
       target queue — the actor predicate keeps a neighbor's rows on the
       source queue — so they drain through the target's consumers. Running
-      rows are untouched: each finishes on the worker that claimed it, and
-      a row that instead re-pends keeps its original queue label as an
-      audit trail but is routed at dispatch by the actor's CURRENT
-      assignment (``taskq/backend/_dispatch_sql.py``'s routing contract:
-      ``started_at IS NOT NULL`` rows follow ``actor_config.queue``), so
-      the running-job tail drains through the target's consumers too. A
-      crash mid-drain leaves the batches already committed as partial
-      progress; a re-run continues where it stopped (the drain's queue
-      predicate skips rows earlier batches moved), and the abort itself
-      is observable — the ``actor-queue-move-aborted`` event carries the
-      committed-so-far count.
+      rows are untouched (their queue is inert once claimed; they finish
+      on the claiming worker). A crash mid-drain leaves the batches
+      already committed as partial progress; a re-run continues where it
+      stopped (the drain's queue predicate skips rows earlier batches
+      moved).
     * **The flip** then lands in ONE final transaction: the assignment row
       is locked (``FOR UPDATE``), the target queue's row inherits the
       source queue's ``mode`` and ``max_concurrent`` when (and only when)
@@ -475,21 +452,9 @@ async def move_actor_queue(
     The flip lands AFTER the drain so a crash between the phases leaves a
     re-runnable state (the stored assignment still names the source queue,
     so a re-run re-drains and re-flips); a crash after the flip means the
-    move was already complete. Any failure after the first committed
-    batch — the drain's own aborts (a per-batch ``statement_timeout``, a
-    lost connection) and the flip's races alike — is re-raised AFTER the
-    ``actor-queue-move-aborted`` event logs the durable state: *actor*,
-    *from_queue*, *to_queue*, *jobs_moved* (this call's committed count),
-    and *error_class*. The committed rows are real partial progress no
-    caller can see in a raised exception; the event is the operator's
-    evidence that a re-run continues rather than restarts. Preflight
-    refusals (unknown actor, same-queue no-op, invalid queue name) raise
-    before any write and log nothing. Jobs a stale producer enqueues to
-    the source queue after the flip are served by source-queue consumers
-    (see the rolling-deploy note below) — never stranded, and never
-    served by the target's: producer placement governs a never-claimed
-    row's routing, which is exactly what keeps the stray contract
-    distinguishable from the re-pended tail's.
+    move was already complete. Jobs a stale producer enqueues to the
+    source queue after the flip are served by source-queue consumers (see
+    the rolling-deploy note below) — never stranded.
 
     Rolling deploys: run this before, during, or after deploying the
     matching ``@actor(queue=...)`` literal — in any order. At every
@@ -532,90 +497,67 @@ async def move_actor_queue(
             "a move onto the same queue is a no-op"
         )
 
-    # Phases 1 and 2 run under one abort reporter: every failure after
-    # the first committed batch leaves durable partial progress (the
-    # drain commits per batch; a flip failure rolls back only the flip),
-    # and a raised exception carries no count — the structured event is
-    # the operator's only evidence that a re-run continues rather than
-    # restarts. The preflight refusals above raised before any write, so
-    # they correctly never reach this handler.
+    # Phase 1 — the bounded backlog drain.
     jobs_moved = 0
-    try:
-        # Phase 1 — the bounded backlog drain.
-        while True:
-            async with conn.transaction():
-                prev_timeout = await _apply_batch_statement_timeout(conn, statement_timeout_ms)
-                row = await conn.fetchrow(
-                    _MOVE_BACKLOG_BATCH_SQL.format(schema=schema),
-                    actor,
-                    from_queue,
-                    new_queue,
-                    batch_size,
-                )
-                # Success path only: restore the caller's timeout inside the
-                # still-open transaction; on error the rollback has already
-                # discarded the SET LOCAL.
-                await _restore_statement_timeout(conn, prev_timeout)
-            matched = int(row["matched_count"]) if row is not None else 0
-            # Affected rows only — an EPQ-dropped row is never reported as moved.
-            jobs_moved += int(row["moved_count"]) if row is not None else 0
-            if matched < batch_size:
-                break
-
-        # Phase 2 — the flip, in one transaction.
+    while True:
         async with conn.transaction():
-            locked_from: str | None = await conn.fetchval(
-                _MOVE_LOCK_ASSIGNMENT_SQL.format(schema=schema),
+            prev_timeout = await _apply_batch_statement_timeout(conn, statement_timeout_ms)
+            row = await conn.fetchrow(
+                _MOVE_BACKLOG_BATCH_SQL.format(schema=schema),
                 actor,
-            )
-            if locked_from is None:
-                # The concurrent-delete race (a deregister won between the
-                # preflight and this lock) — same handling as deregister's
-                # DELETE-zero-rows case.
-                raise ActorNotFoundError(actor)
-            if locked_from != from_queue:
-                detail = (
-                    "the same move completed concurrently"
-                    if locked_from == new_queue
-                    else f"it now names {locked_from!r}"
-                )
-                raise ValueError(
-                    f"actor {actor!r}'s assignment changed while the move was "
-                    f"draining ({detail}); re-run against the current assignment"
-                )
-
-            carry_status = await conn.execute(
-                _MOVE_CARRY_QUEUE_ROW_SQL.format(schema=schema),
                 from_queue,
                 new_queue,
+                batch_size,
             )
-            queues_row_carried = _affected_count(carry_status) > 0
+            # Success path only: restore the caller's timeout inside the
+            # still-open transaction; on error the rollback has already
+            # discarded the SET LOCAL.
+            await _restore_statement_timeout(conn, prev_timeout)
+        matched = int(row["matched_count"]) if row is not None else 0
+        # Affected rows only — an EPQ-dropped row is never reported as moved.
+        jobs_moved += int(row["moved_count"]) if row is not None else 0
+        if matched < batch_size:
+            break
 
-            running_left = await conn.fetchval(
-                _MOVE_COUNT_RUNNING_SQL.format(schema=schema),
-                actor,
-            )
-
-            await conn.execute(
-                _MOVE_SET_ASSIGNMENT_SQL.format(schema=schema),
-                actor,
-                new_queue,
-            )
-    except Exception as exc:
-        # Log-then-reraise, never swallow: the count names writes that are
-        # already committed and that the raised exception cannot carry.
-        # error_class only (not the message): the exception text leaves the
-        # trust boundary for whatever telemetry backend is configured, and
-        # asyncpg str() appends the server's DETAIL quoting row values.
-        logger.error(
-            "actor-queue-move-aborted",
-            actor=actor,
-            from_queue=from_queue,
-            to_queue=new_queue,
-            jobs_moved=jobs_moved,
-            error_class=type(exc).__name__,
+    # Phase 2 — the flip, in one transaction.
+    async with conn.transaction():
+        locked_from: str | None = await conn.fetchval(
+            _MOVE_LOCK_ASSIGNMENT_SQL.format(schema=schema),
+            actor,
         )
-        raise
+        if locked_from is None:
+            # The concurrent-delete race (a deregister won between the
+            # preflight and this lock) — same handling as deregister's
+            # DELETE-zero-rows case.
+            raise ActorNotFoundError(actor)
+        if locked_from != from_queue:
+            detail = (
+                "the same move completed concurrently"
+                if locked_from == new_queue
+                else f"it now names {locked_from!r}"
+            )
+            raise ValueError(
+                f"actor {actor!r}'s assignment changed while the move was "
+                f"draining ({detail}); re-run against the current assignment"
+            )
+
+        carry_status = await conn.execute(
+            _MOVE_CARRY_QUEUE_ROW_SQL.format(schema=schema),
+            from_queue,
+            new_queue,
+        )
+        queues_row_carried = _affected_count(carry_status) > 0
+
+        running_left = await conn.fetchval(
+            _MOVE_COUNT_RUNNING_SQL.format(schema=schema),
+            actor,
+        )
+
+        await conn.execute(
+            _MOVE_SET_ASSIGNMENT_SQL.format(schema=schema),
+            actor,
+            new_queue,
+        )
 
     return ActorQueueMoveResult(
         actor=actor,
