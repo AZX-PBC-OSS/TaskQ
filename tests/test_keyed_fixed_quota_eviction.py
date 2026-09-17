@@ -1,18 +1,18 @@
 """Fixed-quota keyed buckets: which backends idle eviction must hold.
 
 #244: ``TokenBucket.holds_consumed_quota`` held EVERY Postgres fixed-quota
-keyed bucket — spent or not — so once a worker had seen
+keyed bucket, spent or not, so once a worker had seen
 ``max_keyed_rate_limits`` distinct keys, every NEW key raised
 ``ReservationUnavailable`` (routed by the consumer to the 429
-snooze/reschedule semantics — new tenants livelocked until process
+snooze/reschedule semantics, new tenants livelocked until process
 restart). The hold's premise was that evicting the registry entry would
 reset a spent quota; for the PG backend that premise is false twice over:
 
-* no row-delete path can lose the quota — the per-worker pending-reclaim
+* no row-delete path can lose the quota: the per-worker pending-reclaim
   drain and the maintenance leader's fleet sweep share
   ``_no_consumed_quota_sql``, which vetoes deleting a row whose fixed
   quota is partly spent;
-* re-materialization resumes from the surviving row — the acquire path
+* re-materialization resumes from the surviving row: the acquire path
   preseeds ``ON CONFLICT DO NOTHING`` and reads the existing state under
   the bucket row's lock.
 
@@ -20,8 +20,8 @@ The memory backend is the one real hold: its token state lives only on
 the in-process instance, so eviction would genuinely reset a spent quota.
 
 This file pins the predicate per backend, the eviction's use of it, the
-cap-refusal regression (the #244 reproduction, inverted), and — against
-real Postgres — that evict-then-reacquire never resets or double-grants a
+cap-refusal regression (the #244 reproduction, inverted), and, against
+real Postgres, that evict-then-reacquire never resets or double-grants a
 spent fixed quota (the adversarial-review shape: two workers evict and
 re-materialize the same key concurrently).
 """
@@ -56,7 +56,7 @@ class _TenantPayload(BaseModel):
 
 
 def _pg_ref(base_name: str, *, capacity: float = 5.0) -> KeyedRateLimitRef:
-    """A PG-backend FIXED-QUOTA keyed ref — the #244 shape."""
+    """A PG-backend FIXED-QUOTA keyed ref, the #244 shape."""
     return KeyedRateLimitRef.typed(
         _TenantPayload,
         base_name=base_name,
@@ -99,7 +99,7 @@ def _seed_idle(reg: RateLimitRegistry, *buckets: str) -> None:
 async def test_pg_fixed_quota_bucket_is_not_held_spent_or_not() -> None:
     """A PG fixed-quota bucket never holds its registry entry on eviction:
     the row-delete vetoes own the state-safety guarantee, so the in-process
-    hold is redundant bookkeeping — and (pre-fix) it was the cap-filling
+    hold is redundant bookkeeping, and (pre-fix) it was the cap-filling
     leak that refused every new key past ``max_keyed_rate_limits`` (#244)."""
     for spent in (False, True):
         # The instance carries no token state on the postgres backend:
@@ -108,7 +108,7 @@ async def test_pg_fixed_quota_bucket_is_not_held_spent_or_not() -> None:
         tb = TokenBucket(name=f"tbfq_{spent}", capacity=5, refill_per_second=0, backend="postgres")
         assert tb.holds_consumed_quota() is False, (
             f"backend=postgres fixed-quota bucket (spent={spent}) must not "
-            "hold idle eviction — the quota lives in the rate_limit_buckets "
+            "hold idle eviction, the quota lives in the rate_limit_buckets "
             "row, and both delete paths veto deleting a spent one"
         )
 
@@ -116,7 +116,7 @@ async def test_pg_fixed_quota_bucket_is_not_held_spent_or_not() -> None:
 async def test_memory_fixed_quota_bucket_held_only_when_actually_spent() -> None:
     """The memory backend IS a real hold: token state lives on the
     instance, so eviction would reset a spent quota. A full (unspent)
-    bucket is evictable — resetting a full bucket to full loses nothing."""
+    bucket is evictable, resetting a full bucket to full loses nothing."""
     clock = FakeClock(_START)
     spent = TokenBucket(name="tbfq_mem_spent", capacity=5, refill_per_second=0, backend="memory")
     full = TokenBucket(name="tbfq_mem_full", capacity=5, refill_per_second=0, backend="memory")
@@ -126,18 +126,18 @@ async def test_memory_fixed_quota_bucket_held_only_when_actually_spent() -> None
         assert decision.allowed
 
     assert spent.holds_consumed_quota() is True, (
-        "a memory fixed-quota bucket that spent quota must be held — "
+        "a memory fixed-quota bucket that spent quota must be held, "
         "eviction would silently reset the drained quota to full"
     )
     assert full.holds_consumed_quota() is False, (
-        "a memory fixed-quota bucket at full capacity must be evictable — "
+        "a memory fixed-quota bucket at full capacity must be evictable, "
         "holding it fills the keyed cap with never-used entries for nothing"
     )
 
 
 async def test_refilling_buckets_are_never_held() -> None:
     """Refilling buckets converge back toward full on their own, so
-    eviction forfeits at most one refill window — no backend holds them."""
+    eviction forfeits at most one refill window, no backend holds them."""
     for backend in ("postgres", "memory", "redis"):
         tb = TokenBucket(
             name=f"tbfq_r_{backend}", capacity=5, refill_per_second=1.0, backend=backend
@@ -150,7 +150,7 @@ async def test_refilling_buckets_are_never_held() -> None:
 
 async def test_idle_eviction_recycles_pg_fixed_quota_entries() -> None:
     """The eviction sweep (and the opportunistic cap-pressure path that
-    calls it) must recycle idle PG fixed-quota keyed entries — the #244
+    calls it) must recycle idle PG fixed-quota keyed entries, the #244
     reproduction: cap 2, two idle never-again-used PG fixed-quota keys,
     and the third key must resolve instead of being refused forever."""
     reg = RateLimitRegistry()
@@ -182,7 +182,7 @@ async def test_idle_eviction_recycles_pg_fixed_quota_entries() -> None:
 async def test_idle_eviction_still_holds_spent_memory_fixed_quota() -> None:
     """The memory exemption survives the fix: a partially spent memory
     fixed-quota bucket is preserved by the same sweep that now recycles
-    PG entries — eviction there WOULD reset the spent quota."""
+    PG entries, eviction there WOULD reset the spent quota."""
     reg = RateLimitRegistry()
     clock = FakeClock(_START)
     ref = _mem_ref("tbfq-mem-hold")
@@ -201,7 +201,7 @@ async def test_idle_eviction_still_holds_spent_memory_fixed_quota() -> None:
     _seed_idle(reg, bucket)
 
     assert reg.evict_idle_keyed_rate_limits(idle_for=timedelta(0)) == 0, (
-        "a spent memory fixed-quota bucket must stay held — its quota "
+        "a spent memory fixed-quota bucket must stay held, its quota "
         "lives only on the instance and eviction would reset it"
     )
     assert reg.has_rate_limit(bucket)
@@ -238,7 +238,7 @@ class TestPgFixedQuotaEvictReacquire:
     async def test_spent_quota_survives_eviction_and_rematerialization(self, pg_dsn: str) -> None:
         """The #244 verification pass on real PG, now pinned: evicting a
         spent PG fixed-quota entry keeps its row (the drain's delete veto)
-        and re-resolving the key resumes from the surviving state — the
+        and re-resolving the key resumes from the surviving state, the
         budget the tenant already spent is never handed back."""
         schema = await self._fresh_schema(pg_dsn)
         settings = _settings(TASKQ_PG_DSN=pg_dsn, TASKQ_SCHEMA_NAME=schema)
@@ -282,7 +282,7 @@ class TestPgFixedQuotaEvictReacquire:
                 bucket,
             )
             assert surviving is not None and float(surviving) == 3.0, (
-                "the reclaim drain deleted a partly-spent fixed-quota row — "
+                "the reclaim drain deleted a partly-spent fixed-quota row, "
                 "the consumed-quota veto (_no_consumed_quota_sql) must keep it"
             )
 
@@ -307,7 +307,7 @@ class TestPgFixedQuotaEvictReacquire:
             assert decision.remaining == 2.0, (
                 f"re-materialization must resume the spent quota (expected "
                 f"2.0 remaining after resuming from 3.0 and spending one, got "
-                f"{decision.remaining}) — a reset to full capacity hands "
+                f"{decision.remaining}), a reset to full capacity hands "
                 "back a budget the tenant already spent"
             )
 
@@ -346,7 +346,7 @@ class TestPgFixedQuotaEvictReacquire:
                 bucket,
             )
             assert float(final_tokens) == 0.0, (
-                "the whole fixed quota was spent across the eviction cycle — "
+                "the whole fixed quota was spent across the eviction cycle, "
                 "the budget never reset and never over-granted"
             )
         finally:
@@ -357,7 +357,7 @@ class TestPgFixedQuotaEvictReacquire:
         """Two workers (registries) evict their entries for the same
         fixed-quota key and then re-materialize concurrently: the row
         preseed (ON CONFLICT DO NOTHING) plus the locked state read must
-        serialize the spend — total grants across both workers never
+        serialize the spend, total grants across both workers never
         exceed the capacity."""
         schema = await self._fresh_schema(pg_dsn)
         settings = _settings(TASKQ_PG_DSN=pg_dsn, TASKQ_SCHEMA_NAME=schema)
@@ -402,12 +402,12 @@ class TestPgFixedQuotaEvictReacquire:
             granted = sum(1 for allowed in results if allowed)
 
             assert granted <= capacity, (
-                f"{granted} grants for a capacity-{capacity} fixed quota — "
+                f"{granted} grants for a capacity-{capacity} fixed quota, "
                 "concurrent evict+re-materialization double-granted quota "
                 "(the preseed/locked-read serialization is broken)"
             )
             assert granted == capacity, (
-                f"only {granted} of {capacity} tokens were grantable — the "
+                f"only {granted} of {capacity} tokens were grantable, the "
                 "fused cold-start path under-granted a full fixed quota"
             )
         finally:

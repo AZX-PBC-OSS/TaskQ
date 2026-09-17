@@ -154,16 +154,16 @@ documents for max_concurrent, and self-corrects on the next round when
 the over-claimed jobs fill the slots. Static buckets ride the
 per-actor fold directly. Queue-cap buckets ride it scoped to the queue
 being probed (``queue_cap_headroom``, folded into each candidates
-lateral's per-(actor, queue) admission LIMIT) — a fleet-wide queue
+lateral's per-(actor, queue) admission LIMIT), a fleet-wide queue
 cap binds per queue, so queue X's saturation must not zero the same
 actor's admission on queue Y (#242). Keyed buckets ride NOTHING here,
 deliberately: their concrete names are payload-derived per job and
 resolvable only in-process, so the claim cannot know which key a
-pending row needs — one saturated tenant must not block every other
+pending row needs, one saturated tenant must not block every other
 tenant of the actor. Their caps stay enforced where the key is known,
 in the consumer's post-claim ``acquire_for_actor`` (the authority),
 which resolves ``f"{base_name}:{key}"`` from the validated payload and
-denies (snooze) when that key's bucket is full — for keyed rows the
+denies (snooze) when that key's bucket is full: for keyed rows the
 gate's damper is traded away entirely, and the bounded
 claim→deny→snooze cycle is the accepted cost of not gating a whole
 actor on one tenant's saturation.
@@ -1387,7 +1387,7 @@ def _render_dispatch_sql(
     The queue-cap namespace tokens (``__QUEUE_CAP_PREFIX__`` and its derived
     length) are substituted from :data:`taskq.constants.QUEUE_CONCURRENCY_PREFIX`
     so the headroom fold's bucket-name discriminator and the registry's
-    queue-cap name builder can never drift apart — the same
+    queue-cap name builder can never drift apart, the same
     single-source-of-truth rule the acquire predicate shares with the
     reservation statements. The prefix's charset (validated at constant
     definition) contains no single quotes or braces, so the literal

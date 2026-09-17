@@ -416,7 +416,7 @@ def _rl_settings(**overrides: Any) -> Any:
 
 
 async def test_bounded_token_bucket_acquire_is_four_round_trips() -> None:
-    """BEGIN + set_config + the fused upsert + COMMIT — the bounded lock
+    """BEGIN + set_config + the fused upsert + COMMIT, the bounded lock
     wait needs the transaction for the SET LOCAL to span the statement,
     and nothing more (the savepoint the savepoint-wrapped read needed is
     pure cost here, exactly as the keyed-enqueue pin above documents for
@@ -442,7 +442,7 @@ async def test_bounded_token_bucket_acquire_is_four_round_trips() -> None:
 
 async def test_indefinite_token_bucket_acquire_is_one_statement() -> None:
     """``lock_timeout_ms <= 0``: the fused acquire is one autocommit
-    statement — no transaction to span (the pre-fused shape needed one
+    statement, no transaction to span (the pre-fused shape needed one
     for preseed + read + upsert), no GUC."""
     from taskq.ratelimit.token_bucket import TokenBucket
 
@@ -461,10 +461,10 @@ async def test_indefinite_token_bucket_acquire_is_one_statement() -> None:
 async def test_log_window_acquire_is_lock_plus_one_statement() -> None:
     """BEGIN + try-lock + the fused window statement + COMMIT: the whole
     locked critical section (prune + admission insert + count + retry
-    inputs) is ONE statement under the advisory lock — the pre-fused
+    inputs) is ONE statement under the advisory lock, the pre-fused
     shape spent DELETE + INSERT + COUNT as three more round trips inside
-    the lock (plus a retry SELECT on denial), so lock hold time — the
-    contention tail the two-tier lock exists to bound — is now one
+    the lock (plus a retry SELECT on denial), so lock hold time, the
+    contention tail the two-tier lock exists to bound, is now one
     statement's execution."""
     from datetime import timedelta
     from uuid import UUID
@@ -528,7 +528,7 @@ async def test_bounded_gcra_acquire_is_four_round_trips() -> None:
 
 async def test_gcra_denial_adds_exactly_one_retry_hint_read() -> None:
     """A GCRA denial pays the fused statement plus ONE follow-up read
-    (the retry hint's inputs and the kind-guard discriminator) — the
+    (the retry hint's inputs and the kind-guard discriminator), the
     pre-fused denial already carried its hint from the locked SELECT;
     the fused denial's WHERE-gated upsert returns no row, so the hint
     comes from the read."""

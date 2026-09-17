@@ -8,7 +8,7 @@ state alone (``reservation_slots.job_id`` → ``jobs.actor`` — the database
 carries no actor→bucket declaration mapping). The contract pinned
 here, through the production claim path:
 
-* an actor whose every held STATIC bucket is full is admitted nothing —
+* an actor whose every held STATIC bucket is full is admitted nothing:
   its pending rows stay pending instead of churning a shared consumer
   coroutine per row into a denied ``acquire_for_actor`` (the measured
   25-45% neighbour-throughput regression of the un-gated shape);
@@ -24,16 +24,16 @@ here, through the production claim path:
 
 Two scoping rules (#242) extend the contract:
 
-* KEYED buckets are excluded from the claim-time fold — their concrete
+* KEYED buckets are excluded from the claim-time fold: their concrete
   names are payload-derived per job (``f"{base_name}:{key}"``), so the
   claim cannot know which pending row needs which key; one saturated
   tenant must not block every other tenant of the same actor. Their caps
   stay enforced where the key IS known: the consumer's post-claim
   ``acquire_for_actor`` resolves the concrete name from the validated
-  payload and denies (snooze) when that key's bucket is full — pinned
+  payload and denies (snooze) when that key's bucket is full, pinned
   here end-to-end (a saturated tenant's extra jobs deny while its
   sibling tenant's jobs complete).
-* QUEUE-CAP buckets fold per (actor, queue), not per actor — the
+* QUEUE-CAP buckets fold per (actor, queue), not per actor: the
   fleet-wide queue cap binds per queue, so queue X's saturation must not
   zero the same actor's claims on queue Y.
 """
@@ -252,7 +252,7 @@ async def test_keyed_bucket_never_gates_its_holder_actor(pg_dsn: str) -> None:
     """A KEYED bucket held full by one tenant must not gate the actor's
     other rows (#242): the claim cannot know which payload-derived key a
     pending row needs, so the keyed occupancy leaves the headroom fold
-    entirely — the per-key cap stays with the consumer's post-claim
+    entirely: the per-key cap stays with the consumer's post-claim
     acquire. A STATIC full bucket gates the same actor (the first test);
     the keyed twin of the same shape must not."""
     schema = f"headroom_keyed_{new_base62()}".lower()
@@ -290,7 +290,7 @@ async def test_keyed_bucket_never_gates_its_holder_actor(pg_dsn: str) -> None:
         claimed = await pod.claim([_QUEUE], 10)
         assert sibling_ids <= {job.id for job in claimed}, (
             "a keyed bucket held full by one tenant gated the actor's "
-            "other rows — the claim cannot know which pending row needs "
+            "other rows, the claim cannot know which pending row needs "
             "which payload-derived key, so keyed occupancy must leave the "
             "headroom fold entirely (#242)"
         )
@@ -307,7 +307,7 @@ async def test_keyed_bucket_never_gates_its_holder_actor(pg_dsn: str) -> None:
 
 async def test_queue_cap_saturation_scopes_to_its_queue(pg_dsn: str) -> None:
     """A full QUEUE-CAP bucket gates its holder actors' claims on THAT
-    queue only — the same actor's claims on every other queue flow
+    queue only, the same actor's claims on every other queue flow
     untouched (#242: pre-fix, the per-actor MIN fold zeroed the actor's
     admission everywhere once any one queue's cap saturated)."""
     schema = f"headroom_qcap_{new_base62()}".lower()
@@ -337,7 +337,7 @@ async def test_queue_cap_saturation_scopes_to_its_queue(pg_dsn: str) -> None:
         claimed = await pod.claim([_QUEUE, _QUEUE_ALT], 10)
         assert {job.id for job in claimed} == alt_ids, (
             "a full queue-cap bucket on one queue gated the SAME actor's "
-            "claims on another queue — the queue cap binds per queue, so "
+            "claims on another queue, the queue cap binds per queue, so "
             "its headroom fold must be scoped to the queue being probed"
         )
 
@@ -385,7 +385,7 @@ async def test_queue_cap_fold_covers_the_round_robin_arm(pg_dsn: str) -> None:
         claimed = await pod.claim([_QUEUE, _QUEUE_ALT], 10)
         assert {job.id for job in claimed} == alt_ids, (
             "the round-robin arm's admission window ignored the queue-cap "
-            "headroom fold — a full cap bucket must gate its holder actor's "
+            "headroom fold, a full cap bucket must gate its holder actor's "
             "claims on that queue in BOTH dispatch variants"
         )
 
@@ -454,8 +454,8 @@ async def test_keyed_limit_enforces_post_claim_per_tenant(pg_dsn: str) -> None:
     """#242 end-to-end: tenant A saturates its keyed session bucket (one
     hog job holds the only slot); tenant B's jobs of the SAME actor
     complete (the claim never gated them on A's keyed occupancy), while
-    A's further jobs are denied by the consumer's acquire — rescheduled,
-    never run — so the per-key cap is enforced exactly where the
+    A's further jobs are denied by the consumer's acquire, rescheduled,
+    never run, so the per-key cap is enforced exactly where the
     exclusion moved it."""
     schema = f"headroom_keyed_e2e_{new_base62()}".lower()
     async with open_fleet(
@@ -567,7 +567,7 @@ async def test_keyed_limit_enforces_post_claim_per_tenant(pg_dsn: str) -> None:
         assert len(b_done) == _N_TENANT_B, (
             f"tenant B completed only {len(b_done)}/{_N_TENANT_B} jobs within the "
             f"{_RUN_CEILING_SECONDS}s ceiling while tenant A's keyed bucket was "
-            "saturated — one tenant's keyed occupancy must not strand the "
+            "saturated, one tenant's keyed occupancy must not strand the "
             "actor's other tenants (#242)"
         )
 
@@ -578,12 +578,12 @@ async def test_keyed_limit_enforces_post_claim_per_tenant(pg_dsn: str) -> None:
         a_running = [jid for jid in job_ids["a"] if states[jid] == "running"]
         assert len(a_running) == 1, (
             f"{len(a_running)} tenant-A jobs are running against a "
-            "single-slot keyed session bucket — the per-key cap is not "
+            "single-slot keyed session bucket, the per-key cap is not "
             "enforcing"
         )
         denied_count = int(denied_rows[0]["n"])
         assert denied_count >= _N_TENANT_A_FLOOD, (
-            f"only {denied_count} tenant-A jobs were ever denied — the keyed "
+            f"only {denied_count} tenant-A jobs were ever denied, the keyed "
             "cap must keep denying the saturated tenant's extra jobs from "
             "the consumer's post-claim acquire (the authority the claim's "
             "exclusion relies on)"

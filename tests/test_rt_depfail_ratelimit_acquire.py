@@ -315,6 +315,6 @@ async def test_redis_outage_fallback_composition_runs_actor_via_pg() -> None:
     assert any(
         "rate_limit_buckets" in sql for sql in pool.conns[0].executed + pool.conns[0].fetched
     ), (
-        "the fallback acquire must have run the token-bucket PG statements — "
+        "the fallback acquire must have run the token-bucket PG statements, "
         "the fused acquire is one fetchrow (#228)"
     )

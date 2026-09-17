@@ -306,7 +306,7 @@ async def test_state_key_set_acquire_adds_granted_refund_restores_canonical(
     """The state document's key set is pinned per writer: the fused
     acquire's row carries the canonical keys plus the transient ``granted``
     decision bit, and a refund rewrites the document back to exactly the
-    canonical set — so any future key-iterating reader of the state
+    canonical set, so any future key-iterating reader of the state
     document trips here instead of assuming a fixed shape."""
     from taskq.backend._records import jsonb_to_dict
 
@@ -330,7 +330,7 @@ async def test_state_key_set_acquire_adds_granted_refund_restores_canonical(
     assert decision.allowed
     after_acquire = await _state_keys()
     assert after_acquire == {"tokens", "ts", "capacity", "refill", "granted"}, (
-        f"the fused acquire's state document keys drifted: {sorted(after_acquire)} — "
+        f"the fused acquire's state document keys drifted: {sorted(after_acquire)}, "
         "the canonical set is tokens/ts/capacity/refill and the acquire adds "
         "exactly the transient 'granted' decision bit"
     )
@@ -338,7 +338,7 @@ async def test_state_key_set_acquire_adds_granted_refund_restores_canonical(
     await tb.refund(decision, count=1.0, pg_pool=module_pg_pool, settings=settings)
     after_refund = await _state_keys()
     assert after_refund == {"tokens", "ts", "capacity", "refill"}, (
-        f"the refund's state document keys drifted: {sorted(after_refund)} — "
+        f"the refund's state document keys drifted: {sorted(after_refund)}, "
         "the refund rewrites the document through _state_payload and must "
         "drop the transient 'granted' key, restoring exactly the canonical set"
     )

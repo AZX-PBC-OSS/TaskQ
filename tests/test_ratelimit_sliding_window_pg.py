@@ -869,7 +869,7 @@ async def test_peek_gcra_retry_after_clamped_to_1ms() -> None:
 async def test_acquire_log_oldest_row_none_fallback() -> None:
     """acquire_pg_log: the fused statement's row reports the admission
     insert as not landed (denied) and no oldest in-window entry (the
-    window drained between the count and the read) — retry_after falls
+    window drained between the count and the read), retry_after falls
     back to 1 ms."""
     sw = SlidingWindow(
         name="fake_log3", limit=1, window=timedelta(seconds=10), backend="postgres", style="log"
@@ -917,8 +917,8 @@ async def test_acquire_log_retry_after_clamped_to_1ms() -> None:
 
 async def test_acquire_gcra_kind_collision_race_on_upsert() -> None:
     """acquire_pg_gcra: the fused upsert's WHERE guard (kind = 'gcra')
-    refuses a row a competing writer flipped to another kind — RETURNING
-    comes back empty — and the denial follow-up read reports the foreign
+    refuses a row a competing writer flipped to another kind, RETURNING
+    comes back empty, and the denial follow-up read reports the foreign
     kind. Raises RuntimeError, exactly as the pre-fused SELECT's kind
     check did: refusing to corrupt prior state is a loud error, not a
     silent denial."""
