@@ -13,6 +13,7 @@ import json
 import shutil
 import subprocess
 from pathlib import Path
+from urllib.parse import parse_qs
 
 import pytest
 
@@ -39,9 +40,13 @@ let now = 0;
 let timers = [];
 let nextTimer = 1;
 
-global.window = { __taskqJobConfig: { tab: "live", liveOn: true, pollIntervalMs: 1000, basePath: "/admin" } };
+global.window = { __taskqJobConfig: { tab: "live", liveOn: true, pollIntervalMs: 1000, basePath: "/admin" }, htmx: {} };
 global.document = {
     addEventListener(name, fn) { listeners[name] = fn; },
+    body: {
+        addEventListener(name, fn) { listeners[name] = fn; },
+        removeEventListener(name, fn) { if (listeners[name] === fn) delete listeners[name]; },
+    },
     getElementById() { return { requestSubmit() { log.push("submit"); } }; },
     querySelector() { return null; },
     createElement() { return { querySelector() { return null; } }; },
@@ -58,7 +63,20 @@ global.EventSource = class {
 };
 global.setInterval = (fn, ms) => { const id = nextTimer++; timers.push({ id, fn, ms, due: now + ms }); return id; };
 global.clearInterval = (id) => { timers = timers.filter((t) => t.id !== id); };
-global.fetch = (url) => { log.push("fetch:" + url.split("?")[0]); return { then() { return { then() { return { catch() {} }; } }; } }; };
+global.fetch = (url) => {
+    log.push("fetch:" + url.split("?")[0]);
+    log.push("qs:" + (url.split("?")[1] || ""));
+    return { then() { return { then() { return { catch() {} }; } }; } };
+};
+
+// What htmx fires before issuing a request: the path is what the anchor or
+// form declared (pagination links carry their cursor in the query string,
+// form submits never do). Emits only if the component registered a listener.
+function htmxRequest(params) {
+    const qs = new URLSearchParams(params).toString();
+    const fn = listeners["htmx:beforeRequest"];
+    if (fn) fn({ detail: { requestConfig: { path: "/admin/jobs" + (qs ? "?" + qs : "") } } });
+}
 
 function advance(ms) {
     const target = now + ms;
@@ -77,6 +95,16 @@ page.init();
 
 if (scenario === "poll-while-sse-connected") {
     advance(3000);
+} else if (scenario === "poll-preserves-cursor") {
+    htmxRequest({ cursor_at: "2026-09-16T12:00:00", cursor_id: "j9", cursor_dir: "next" });
+    advance(3000);
+} else if (scenario === "filter-submit-repages") {
+    htmxRequest({ cursor_at: "2026-09-16T12:00:00", cursor_id: "j9", cursor_dir: "next" });
+    htmxRequest({});
+    advance(3000);
+} else if (scenario === "sse-forward-on-cursor-page") {
+    htmxRequest({ cursor_at: "2026-09-16T12:00:00", cursor_id: "j9", cursor_dir: "next" });
+    global.lastEventSource.emit("state_change", { type: "cancel", job_id: "j1", worker_id: "w1" });
 } else if (scenario === "sse-payload-without-status") {
     global.lastEventSource.emit("state_change", { type: "cancel", job_id: "j1", worker_id: "w1" });
 } else if (scenario === "sse-terminal-status-for-unlisted-row") {
@@ -116,6 +144,52 @@ def test_live_mode_keeps_polling_while_sse_is_connected() -> None:
     log = _drive("poll-while-sse-connected")
     assert "sse-open:/admin/sse/jobs" in log
     assert log.count("fetch:/admin/jobs") == 3, log
+
+
+@requires_node
+def test_poll_without_a_cursor_refreshes_page_one() -> None:
+    """Without a cursor the poll refetches the unpaged first page: live mode
+    keeps the table current from the operator's own vantage point."""
+    log = _drive("poll-while-sse-connected")
+    qs_entries = [e for e in log if e.startswith("qs:")]
+    assert len(qs_entries) == 3, log
+    assert all("cursor_at" not in q for q in qs_entries)
+
+
+@requires_node
+def test_poll_while_on_a_cursor_page_fetches_that_page() -> None:
+    """The poll runs unconditionally in live mode, so it must refetch the
+    page the operator is on: the cursor synced from the last pagination
+    click rides along on every poll fetch, and a reader on page two is
+    never yanked back to page one."""
+    log = _drive("poll-preserves-cursor")
+    assert log.count("fetch:/admin/jobs") == 3, log
+    for q in (e for e in log if e.startswith("qs:")):
+        parsed = parse_qs(q[3:])
+        assert parsed["cursor_at"] == ["2026-09-16T12:00:00"], log
+        assert parsed["cursor_id"] == ["j9"], log
+        assert parsed["cursor_dir"] == ["next"], log
+
+
+@requires_node
+def test_a_request_without_a_cursor_is_the_explicit_repage() -> None:
+    """A submit that carries no cursor (a filter change, a tab switch, the
+    live toggle) clears the cursor: re-paginating is the operator's own
+    action, so the poll goes back to fetching page one."""
+    log = _drive("filter-submit-repages")
+    qs_entries = [e for e in log if e.startswith("qs:")]
+    assert len(qs_entries) == 3, log
+    assert all("cursor_at" not in q for q in qs_entries)
+
+
+@requires_node
+def test_sse_refresh_forward_does_not_reset_the_cursor_page() -> None:
+    """A state change the client cannot apply locally refreshes forward only
+    when no cursor is active: on a cursor page the poll already refreshes
+    the operator's page in place, and a cursor-less refresh from here would
+    swap page one under the reader."""
+    log = _drive("sse-forward-on-cursor-page")
+    assert log.count("fetch:/admin/jobs") == 0, log
 
 
 @requires_node
