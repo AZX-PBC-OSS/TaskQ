@@ -69,11 +69,13 @@
                 pollTimer: null,
 
                 init: function () {
-                    if (this.tab === "live" && this.liveOn) {
-                        this.connectSSE();
-                    } else if (this.tab === "live") {
-                        this.startPolling();
-                    }
+                    if (this.tab !== "live") return;
+                    // Polling is the source of truth in both modes: the events
+                    // channel carries only the cancel fast-path (terminal writes
+                    // and dispatch never NOTIFY it), so SSE can only bring a
+                    // refresh forward, never replace the poll.
+                    this.startPolling();
+                    if (this.liveOn) this.connectSSE();
                 },
 
                 switchTab: function (t) {
@@ -92,7 +94,6 @@
                         if (form) form.requestSubmit();
                     } else {
                         this.disconnectSSE();
-                        this.startPolling();
                     }
                 },
 
@@ -119,12 +120,7 @@
                     es.addEventListener("error", function () {
                         es.close();
                         self.eventSource = null;
-                        self.startPolling();
                     });
-                    if (this.pollTimer) {
-                        clearInterval(this.pollTimer);
-                        this.pollTimer = null;
-                    }
                 },
 
                 disconnectSSE: function () {
@@ -132,7 +128,7 @@
                 },
 
                 startPolling: function () {
-                    if (this.pollTimer || this.eventSource) return;
+                    if (this.pollTimer) return;
                     var self = this;
                     this.pollTimer = setInterval(function () { self.refreshTable(); }, this.pollIntervalMs);
                 },
@@ -148,10 +144,14 @@
                             badge.textContent = evt.status;
                             badge.className = BADGE_CLASSES[evt.status] || "";
                         }
-                    } else if (evt.status && TERMINAL_STATUSES.indexOf(evt.status) === -1) {
-                        this.pendingCount++;
-                        this.refreshTable();
+                        return;
                     }
+                    // Anything the client cannot apply locally - a payload with
+                    // no status (the cancel NOTIFY names the job only), or a
+                    // transition for a job the table does not show (its listing
+                    // membership just changed) - is answered by fetching the
+                    // server's view, which is the only source of truth.
+                    this.refreshTable();
                 },
 
                 refreshTable: function () {
