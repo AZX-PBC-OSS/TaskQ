@@ -61,6 +61,10 @@ class _FakeCronRecord:
     def __init__(self, data: dict[str, object]) -> None:
         self._data = data
 
+    @property
+    def data(self) -> dict[str, object]:
+        return self._data
+
     def __getitem__(self, key: str) -> object:
         return self._data[key]
 
@@ -103,10 +107,6 @@ class _FakeCronConn(FakeConn):
 
     async def fetchval(self, sql: str, *args: object) -> object:
         self.fetchval_calls.append((sql, args))
-        if "pg_try_advisory_xact_lock" in sql:
-            return True
-        if "clock_timestamp" in sql:
-            return _NOW
         if "COUNT" in sql:
             return self._disabled_count
         raise AssertionError(f"unexpected fetchval: {sql}")
@@ -126,8 +126,16 @@ class _FakeCronConn(FakeConn):
         if "actor_config" in sql:
             return self.actor_config_rows
         if "cron_schedules" in sql:
+            # The tick's one folded statement: the lock verdict and the
+            # planning clock ride every row; an empty due set is one row
+            # with NULL schedule columns.
             self.read_due_schedules = True
-            return self.schedule_rows
+            if not self.schedule_rows:
+                return [_FakeCronRecord({"got": True, "server_now": _NOW, "id": None})]
+            return [
+                _FakeCronRecord({**row.data, "got": True, "server_now": _NOW})
+                for row in self.schedule_rows
+            ]
         if '"taskq".jobs' in sql:
             # The policy preflights (singleton blockers, max_pending counts)
             # and the DST overlap-twin probe read the jobs table; this fake

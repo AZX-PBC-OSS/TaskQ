@@ -325,3 +325,52 @@ async def test_a_batch_enqueue_is_one_insert_inside_its_transaction() -> None:
     )
     assert [r.id for r in rows] == [a.id for a in items]
     assert _shape(conn.wire) == ["BEGIN", 'INSERT INTO "taskq".jobs (', "COMMIT"]
+
+
+# ── cron tick ─────────────────────────────────────────────────────────────
+
+
+async def test_an_idle_cron_tick_is_one_statement() -> None:
+    """The tick's advisory try-lock, its planning clock and the due read
+    are one statement (the lock in a MATERIALIZED CTE the read is gated
+    on), so the leader's once-a-second idle tick costs one round trip
+    inside its transaction instead of three."""
+    from taskq.settings import WorkerSettings
+    from taskq.testing.actor import FakeBackend, as_backend
+    from taskq.worker.cron_loop import tick_cron
+
+    conn = _RecordingConn(
+        {"pg_try_advisory_xact_lock": [_Record({"got": True, "server_now": _NOW, "id": None})]}
+    )
+    fired = await tick_cron(
+        conn,  # type: ignore[arg-type]  # Why: duck-typed recording connection.
+        WorkerSettings(),
+        as_backend(FakeBackend()),
+        _SCHEMA,
+        new_uuid(),
+    )
+    assert fired == 0
+    assert len(conn.wire) == 1, _shape(conn.wire)
+    assert "pg_try_advisory_xact_lock" in conn.wire[0]
+    assert "cron_schedules" in conn.wire[0]
+
+
+async def test_a_contended_cron_tick_reads_no_schedules() -> None:
+    """``got = false`` short-circuits inside the same statement: no
+    schedule rows come back and the tick fires nothing."""
+    from taskq.settings import WorkerSettings
+    from taskq.testing.actor import FakeBackend, as_backend
+    from taskq.worker.cron_loop import tick_cron
+
+    conn = _RecordingConn(
+        {"pg_try_advisory_xact_lock": [_Record({"got": False, "server_now": _NOW, "id": None})]}
+    )
+    fired = await tick_cron(
+        conn,  # type: ignore[arg-type]  # Why: duck-typed recording connection.
+        WorkerSettings(),
+        as_backend(FakeBackend()),
+        _SCHEMA,
+        new_uuid(),
+    )
+    assert fired == 0
+    assert len(conn.wire) == 1

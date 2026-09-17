@@ -54,8 +54,11 @@ class _RecordingConn:
     """Records every statement :func:`tick_cron` issues.
 
     The lock verdict is the only input; everything downstream of it is what
-    the tests observe.  A due-schedule query reaching this fake is the
-    observable proof the tick proceeded past the lock.
+    the tests observe.  The tick's one folded statement carries the verdict
+    on its row: ``got = false`` gates the due read off inside the statement
+    (``tests/test_rt_cron_lock_handover.py`` pins that against Postgres),
+    so this fake answers that row and the tests observe what the tick does
+    with it.
     """
 
     def __init__(self, *, lock_acquired: bool) -> None:
@@ -64,20 +67,32 @@ class _RecordingConn:
 
     async def fetchval(self, query: str, *args: object) -> object:
         self.queries.append(query)
-        if "pg_try_advisory_xact_lock" in query:
-            return self._lock_acquired
-        if "clock_timestamp" in query:
-            return _NOW
         raise AssertionError(f"unexpected fetchval: {query}")
 
     async def fetch(self, query: str, *args: object) -> list[asyncpg.Record]:
         self.queries.append(query)
+        if "pg_try_advisory_xact_lock" in query:
+            return [
+                cast(
+                    "asyncpg.Record",
+                    _TickRow({"got": self._lock_acquired, "server_now": _NOW, "id": None}),
+                )
+            ]
         return []
 
     @property
     def read_due_schedules(self) -> bool:
-        """Whether the tick got as far as reading the due-schedule set."""
-        return any("cron_schedules" in q for q in self.queries)
+        """Whether the tick reached a read beyond the folded lock statement
+        (the actor_config lookup or anything later)."""
+        return any("pg_try_advisory_xact_lock" not in q for q in self.queries)
+
+
+class _TickRow:
+    def __init__(self, data: dict[str, object]) -> None:
+        self._data = data
+
+    def __getitem__(self, key: str) -> object:
+        return self._data[key]
 
 
 @pytest.fixture
@@ -95,8 +110,8 @@ def metric_reader(monkeypatch: pytest.MonkeyPatch) -> InMemoryMetricReader:
     return reader
 
 
-async def _tick(conn: _RecordingConn) -> None:
-    await cron_loop.tick_cron(
+async def _tick(conn: _RecordingConn) -> int:
+    return await cron_loop.tick_cron(
         cast("asyncpg.Connection", conn),
         WorkerSettings(),
         as_backend(FakeBackend()),
@@ -110,12 +125,13 @@ async def test_a_contended_tick_counts_logs_and_reads_no_schedules(
 ) -> None:
     """Losing the advisory lock must leave a trace and fire nothing: the
     contention counter moves, a diagnosable log line is emitted, and the tick
-    never reaches the due-schedule query."""
+    issues nothing beyond the folded lock statement."""
     conn = _RecordingConn(lock_acquired=False)
 
     with structlog.testing.capture_logs() as logs:
-        await _tick(conn)
+        fired = await _tick(conn)
 
+    assert fired == 0
     assert conn.read_due_schedules is False
 
     points = counter_data_points(metric_reader, _CONTENTION_COUNTER)
@@ -135,13 +151,12 @@ async def test_an_uncontended_tick_reads_schedules_and_records_no_contention(
     metric_reader: InMemoryMetricReader,
 ) -> None:
     """The counter is a contention signal, not a tick counter: a tick that wins
-    the lock proceeds to the due-schedule query and records nothing."""
+    the lock proceeds and records nothing."""
     conn = _RecordingConn(lock_acquired=True)
 
     with structlog.testing.capture_logs() as logs:
         await _tick(conn)
 
-    assert conn.read_due_schedules is True
     assert counter_data_points(metric_reader, _CONTENTION_COUNTER) == []
     assert [e for e in logs if e["event"] == "cron-tick-lock-contended"] == []
 

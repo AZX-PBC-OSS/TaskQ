@@ -130,6 +130,30 @@ class _TickBudgetExhaustedError(TimeoutError):
     """
 
 
+CRON_TICK_SQL_TEMPLATE: Final = (
+    "WITH lock AS MATERIALIZED ("
+    "  SELECT pg_try_advisory_xact_lock(hashtextextended($1, 0)) AS got"
+    ") "
+    "SELECT lock.got, statement_timestamp() AS server_now, s.* "
+    "FROM lock LEFT JOIN LATERAL ("
+    "  SELECT id, actor, cron_expr, timezone, dst_strategy, payload_factory, "
+    "         metadata, last_fired_at, consecutive_failures, next_fire_at, identity_key "
+    '  FROM "{schema}".cron_schedules '
+    "  WHERE lock.got AND enabled = true AND next_fire_at <= statement_timestamp() "
+    "  ORDER BY next_fire_at "
+    "  LIMIT $2"
+    ") s ON true"
+)
+"""The tick's one opening statement: the cron try-lock ($1 = the lock
+name), the planning clock, and the due read ($2 = the batch limit).
+
+Formatted with ``schema``; the plan-shape audit
+(``tests/test_index_audit.py``) explains this same text, so the
+index-servable due bound cannot drift there unnoticed. See
+:func:`tick_cron` for why the three ride one statement and why the due
+bound is ``statement_timestamp()``.
+"""
+
 _COMMIT_GATE_CHANNEL: Final = "taskq_cron_commit"
 """Self-addressed channel the tick uses to learn that its own transaction
 committed.
@@ -938,11 +962,13 @@ async def tick_cron(
     in full; the remainder stays due and untouched until its tick.
 
     The catch-up cutoff and the beyond-window recompute seed are read from
-    the PG server clock inside this transaction: the due-check
-    (``next_fire_at <= now()``) is server-side, so every croniter seed must
-    come from the same domain.  Seeding from the leader's Python clock
-    shifts every recomputed fire by the app↔DB skew and can recompute
-    ``next_fire_at`` into the server's past (a fire loop).
+    the PG server clock in the same statement as the due read: the
+    due-check (``next_fire_at <= statement_timestamp()``) is server-side,
+    so every croniter seed must come from the same domain — and from the
+    same instant, so a due row's ``next_fire_at`` never exceeds the seed.
+    Seeding from the leader's Python clock shifts every recomputed fire by
+    the app↔DB skew and can recompute ``next_fire_at`` into the server's
+    past (a fire loop).
 
     *actor_policies* carries the worker's ``actor_registry`` singleton /
     ``max_pending`` flags (``None`` — the default, and every pre-plumbing
@@ -964,10 +990,33 @@ async def tick_cron(
 
     tick_started = time.monotonic()
     lock_name = schema_lock_name("cron", schema)
-    lock_acquired: bool = await conn.fetchval(
-        "SELECT pg_try_advisory_xact_lock(hashtextextended($1, 0))",
+    # One statement for the try-lock, the planning clock and the due read
+    # (pg-boss folds its cron lock into the read the same way): the leader
+    # ticks once a second and is idle almost always, so the idle tick's
+    # cost is the round-trip count. The lock sits in a MATERIALIZED CTE
+    # so it is taken exactly once and before the read; the LATERAL read is
+    # gated on the verdict, so a contended tick reads nothing and returns
+    # one row with got = false. LEFT JOIN keeps that one row (and the
+    # idle tick's) when the read yields nothing.
+    #
+    # statement_timestamp() (STABLE) — not clock_timestamp() (VOLATILE) —
+    # for the due bound: a volatile comparison cannot be a btree index
+    # condition, so cron_schedules_next_fire_idx (partial on enabled,
+    # keyed on next_fire_at) would degrade from an Index Cond that stops
+    # at the boundary to a post-scan filter walk of every enabled entry,
+    # per tick, every second. Measured at 10k enabled schedules (PG 18,
+    # EXPLAIN ANALYZE): clock_timestamp() walks all 10,000 entries
+    # (1.04 ms); statement_timestamp() is an Index Cond scan (2 buffers,
+    # 0.005 ms). The same instant is the planning clock (server_now):
+    # every croniter seed and the due bound come from one server-side
+    # reading, so a due row is never "in the future" of its own seed.
+    tick_rows: list[asyncpg.Record] = await conn.fetch(
+        CRON_TICK_SQL_TEMPLATE.format(schema=schema),
         lock_name,
+        limit,
     )
+    head = tick_rows[0]
+    lock_acquired: bool = bool(head["got"])
     if not lock_acquired:
         # Why observable: this branch is benign for the sub-second leader
         # handover it exists to cover, but it is indistinguishable from total
@@ -989,28 +1038,10 @@ async def tick_cron(
         )
         return 0
 
-    server_now: datetime = await conn.fetchval("SELECT clock_timestamp()")
-    # statement_timestamp() (STABLE) — not clock_timestamp() (VOLATILE) —
-    # for the due bound: a volatile comparison cannot be a btree index
-    # condition, so cron_schedules_next_fire_idx (partial on enabled,
-    # keyed on next_fire_at) would degrade from an Index Cond that stops
-    # at the boundary to a post-scan filter walk of every enabled entry,
-    # per tick, every second. Measured at 10k enabled schedules (PG 18,
-    # EXPLAIN ANALYZE): clock_timestamp() walks all 10,000 entries
-    # (1.04 ms); statement_timestamp() is an Index Cond scan (2 buffers,
-    # 0.005 ms). statement_timestamp() is the wall clock at this
-    # statement's start — the same domain as server_now above (read
-    # moments earlier in this same transaction), differing only by the
-    # statement's own execution time.
-    rows: list[asyncpg.Record] = await conn.fetch(
-        f"SELECT id, actor, cron_expr, timezone, dst_strategy, payload_factory, "
-        f"metadata, last_fired_at, consecutive_failures, next_fire_at, identity_key "
-        f'FROM "{schema}".cron_schedules '
-        f"WHERE enabled = true AND next_fire_at <= statement_timestamp() "
-        f"ORDER BY next_fire_at "
-        f"LIMIT $1",
-        limit,
-    )
+    server_now: datetime = head["server_now"]
+    # The idle tick's one row carries the verdict and the clock with NULL
+    # schedule columns; a due row always has an id.
+    rows = [row for row in tick_rows if row["id"] is not None]
     if not rows:
         return 0
 

@@ -231,14 +231,14 @@ class TestTickStatementShape:
         )
         assert counting.matching(_PROBE) == 1, "the probe must be issued exactly once"
 
-    async def test_empty_due_set_costs_exactly_lock_clock_and_due(
+    async def test_empty_due_set_costs_exactly_one_statement(
         self,
         clean_pg_conn: asyncpg.Connection,
         module_pg_schema: ModulePgSchema,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """Nothing due → probe + clock + due SELECT and NOTHING else: no
-        actor_config fetch, no UPDATE, no enqueue call."""
+        """Nothing due → the one folded probe + clock + due SELECT and
+        NOTHING else: no actor_config fetch, no UPDATE, no enqueue call."""
         schema = module_pg_schema.schema_name
         settings = cron_settings(schema)
         backend = make_backend(settings)
@@ -268,11 +268,15 @@ class TestTickStatementShape:
 
         assert fired == 0
         assert enqueue_calls == []
-        assert counting.count == 3, (
+        assert counting.count == 1, (
             f"an empty tick issued {counting.count} statements: "
-            f"{counting.statements} — the allowed shape is probe, clock, due SELECT"
+            f"{counting.statements} — the allowed shape is the one folded "
+            "probe + clock + due SELECT"
         )
         assert _PROBE in counting.statements[0]
+        assert "LEFT JOIN LATERAL" in counting.statements[0], (
+            "the due read must ride the same statement as the probe"
+        )
         assert counting.matching("actor_config") == 0
         assert counting.matching("UPDATE") == 0
 
