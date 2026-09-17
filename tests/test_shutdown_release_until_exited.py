@@ -37,6 +37,8 @@ from typing import Literal, Self
 from unittest.mock import MagicMock
 from uuid import UUID
 
+import asyncpg
+import pytest
 from pydantic import BaseModel
 
 from taskq._ids import new_uuid
@@ -47,6 +49,9 @@ from taskq.settings import WorkerSettings
 from taskq.testing.actor import EmptyPayload, FakeBackend, as_backend, default_actor_config
 from taskq.testing.clock import FakeClock
 from taskq.testing.jobs import make_job_row
+from taskq.worker import (
+    _handlers as _handlers_mod,  # pyright: ignore[reportPrivateUsage]  # Why: the retry backoff is monkeypatched to keep the infra-failure test inside the unit lane's time budget.
+)
 from taskq.worker._consumer import consume_one_job
 from taskq.worker.cancel import ActiveJobRegistry
 from taskq.worker.deps import WorkerDeps
@@ -73,6 +78,27 @@ def _settings(*, cleanup_grace: float = 0.4, termination_grace: float = 20.0) ->
 
 
 # ── Test doubles ─────────────────────────────────────────────────────────
+
+
+class _InfraFailingReleaseBackend(FakeBackend):
+    """Every mark_interrupted attempt fails with the pool-lifecycle family.
+
+    The class asyncpg raises from a bounded pool close (worker teardown):
+    the exact infra error the #233 arm must swallow so the cancellation,
+    not the InterfaceError, escapes the consumer.
+    """
+
+    async def mark_interrupted(
+        self,
+        job_id: UUID,
+        worker_id: UUID,
+        *,
+        attempt: int,
+        hold: timedelta,
+        progress_seq: int = 0,
+        progress_state: dict[str, object] | None = None,
+    ) -> Literal["pending", "scheduled", "failed:DeadlineExceeded", "noop"]:
+        raise asyncpg.InterfaceError("pool is closing")
 
 
 class _ParkedTxConnection:
@@ -558,4 +584,76 @@ async def test_the_transactional_release_lands_only_after_the_unwind() -> None:
     assert backend.mark_interrupted_calls[0]["hold"] == timedelta(0), (
         "the unwind completed inside the bounded park, so the actor is "
         "provably gone with its transaction: the row is genuinely free"
+    )
+
+
+# ── #233: an infra-failed release write must not eat the cancellation ────
+
+
+async def test_infra_failed_release_write_propagates_the_cancellation_not_the_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The exhausted-retry InterfaceError is swallowed; CancelledError wins.
+
+    The old arm ended in a bare ``raise`` inside ``except
+    _TERMINAL_WRITE_INFRA_EXCEPTIONS``, which re-raised the InterfaceError
+    and REPLACED the CancelledError being handled: the interruption escaped
+    ``consume_one_job`` as a job exception and dispatch's generic handler
+    spent the attempt's budget on a deploy. The fix mirrors the
+    ``mark_cancelled`` arm — log, disown, fall to the handler's final
+    raise so the cancellation propagates.
+    """
+    # Zero the retry backoff so the four attempts fit the unit lane; the
+    # retry MACHINERY is not under test here, only the arm's routing.
+    monkeypatch.setattr(
+        _handlers_mod, "_TERMINAL_WRITE_BACKOFF", (timedelta(0), timedelta(0), timedelta(0))
+    )
+    settings = _settings()
+    deps = _deps_with(settings)
+    backend = _InfraFailingReleaseBackend()
+    registry = ActiveJobRegistry()
+    job = make_job_row()
+    clock: Clock = FakeClock(_NOW)
+
+    async def body(running: JobRow, ctx: JobContext[BaseModel]) -> object:
+        del running, ctx
+        await asyncio.sleep(3600)
+        return {"unreachable": True}
+
+    attempt = asyncio.ensure_future(
+        consume_one_job(
+            as_backend(backend),
+            job,
+            _WORKER_ID,
+            deps=deps,  # type: ignore[arg-type]  # Why: MagicMock(spec=WorkerDeps) with the attrs the consumer reads set to real values.
+            run_actor=body,
+            actor_config=default_actor_config(),
+            payload_type=EmptyPayload,
+            clock=clock,
+            active_jobs=registry,
+        )
+    )
+    await asyncio.sleep(0.05)
+    await _stamp_shutdown_origin(registry, job.id)
+
+    attempt.cancel()
+    escaped: BaseException | None = None
+    try:
+        await asyncio.wait_for(attempt, timeout=10.0)
+    except asyncio.CancelledError as exc:
+        escaped = exc
+
+    assert isinstance(escaped, asyncio.CancelledError), (
+        "the cancellation must be what leaves the consumer — an "
+        "InterfaceError escaping here is the deploy-mislabelled-as-failure "
+        f"bug (#233); got {escaped!r}"
+    )
+    assert job.id in deps.disowned_jobs, (
+        "the infra-failed release is best-effort: the row stays running and "
+        "disowned so lock-lease expiry reclaims it"
+    )
+    assert backend.mark_cancelled_calls == [], (
+        "an infra-failed infrastructure release must NOT fall through to "
+        "mark_cancelled — the row carries no operator cancel, and a cancel "
+        "write here would terminalise a deploy interruption"
     )
