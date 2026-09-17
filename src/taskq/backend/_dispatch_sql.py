@@ -82,9 +82,11 @@ The geometry below pins each stage to the round's own constants:
   ``eligible_candidates``' post-lock re-check) — a CASE branch
   subquery is evaluated only when its branch is taken, so an uncapped
   fleet does ZERO running-row work per round and a capped fleet pays
-  only its own capped actors' running rows (each an index-only scan of
-  ``jobs_actor_running_idx``), never the fleet-wide materialization the
-  CTE cost on every round. Pinned by
+  only its own capped actors' running rows (each a scan over the
+  running-row partial indexes — the planner picks
+  ``jobs_actor_running_idx`` or the ``jobs_locked_by_worker_running_idx``
+  partial at its own cost discretion, heap-visiting either way), never
+  the fleet-wide materialization the CTE cost on every round. Pinned by
   tests/test_dispatch_running_rows_scope_bound.py.
 * the terminal UPDATE re-finds its rows through
   ``j.id = ANY(ARRAY(SELECT id FROM eligible))`` — the id array
@@ -265,7 +267,9 @@ pa_actors AS (
 -- correlated count gated on `ac.max_concurrent IS NOT NULL` (see
 -- per_actor_capacity): an uncapped fleet pays zero running-row work per
 -- round, and a capped one pays only its own capped actors' running rows
--- — each an index-only scan over jobs_actor_running_idx — never the
+-- — each a scan over the running-row partial indexes (the planner
+-- picks jobs_actor_running_idx or the jobs_locked_by_worker_running_idx
+-- partial at its own cost discretion, heap-visiting either way) — never the
 -- fleet's. The best-effort TOCTOU doctrine the CTE's comment carried
 -- moves with the count.)
 -- Best-effort under concurrent dispatchers: this snapshot is read once at
@@ -417,8 +421,9 @@ per_actor_capacity AS (
                   -- running_per_actor CTE this replaced scanned and
                   -- aggregated every running row in the fleet on every
                   -- round, whether or not any actor declared a cap), and
-                  -- a capped actor pays one index-only scan of its OWN
-                  -- jobs_actor_running_idx entries -- bounded by that
+                  -- a capped actor pays one scan of its OWN running-row
+                  -- index entries (the running partial indexes; see the
+                  -- module docstring) -- bounded by that
                   -- actor's running rows, never the fleet's. Same value
                   -- as the CTE produced, and the same statement
                   -- snapshot: one claim statement runs under one READ
@@ -824,8 +829,8 @@ eligible_candidates AS (
   -- way the capacity CTEs' residuals are (see per_actor_capacity): a
   -- CASE branch subquery is evaluated only when taken, so an uncapped
   -- claimed actor costs ZERO running-row work here and a capped one
-  -- costs one index-only scan of its own jobs_actor_running_idx
-  -- entries per claimed row (at most limit_n rows, each bounded by
+  -- costs one scan of its own running-row index entries per claimed
+  -- row (at most limit_n rows, each bounded by
   -- that actor's running rows) -- never the fleet's. Same value, same
   -- statement snapshot as the residual's count, so the post-lock
   -- re-limit below re-checks the identical in_flight the admission

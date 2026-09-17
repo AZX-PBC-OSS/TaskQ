@@ -104,8 +104,10 @@ class TestDispatchStrictFifoSql:
         running-row work zero; a LEFT JOIN against a count source could
         not give that (the join is evaluated per row regardless), which
         is why the gate must live inside the CASE. The count itself is
-        an index-only scan over the actor's own jobs_actor_running_idx
-        entries — bounded by that actor's running rows, never the
+        a scan over the actor's own running-row partial-index entries
+        (the planner picks jobs_actor_running_idx or the
+        jobs_locked_by_worker_running_idx partial at its own cost
+        discretion) — bounded by that actor's running rows, never the
         fleet's.
         """
         for variant, sql in (
