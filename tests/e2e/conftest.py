@@ -458,7 +458,12 @@ async def e2e_schema(
     finally:
         await conn.close()
 
-    await apply_pending_locked(e2e_pg.host_dsn, schema=schema)
+    # All phases, deliberately: each e2e module gets a throwaway schema no
+    # other process ever reads, so the rolling-deploy overlap window the
+    # pre/post phase split exists to protect cannot occur here. The locked
+    # default applies pre only, which would leave the post-phase migrations
+    # pending and push the runtime onto its legacy-compatibility paths.
+    await apply_pending_locked(e2e_pg.host_dsn, schema=schema, phase=None)
 
     conn = await asyncpg.connect(e2e_pg.host_dsn)
     try:

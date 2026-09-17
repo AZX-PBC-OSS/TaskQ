@@ -620,6 +620,25 @@ What to audit:
   or checkpoint via progress state (the released row carries the last
   checkpoint).
 
+### Maintenance leadership is now a bounded lease
+
+> **Unreleased.** Requires one new pre-phase migration.
+
+`maintenance_leader` gains an `expires_at` column
+(`01.00.12_01_pre_leader_lease.sql`). Leadership is held by the row while
+its lease is unexpired and renewed on the heartbeat cadence, so a leader
+that dies without closing its connection is replaced within
+`TASKQ_LEADER_LEASE` plus one heartbeat instead of waiting on the
+server's connection-reaping horizon. The migration is pre-phase and
+rolling-safe: it only adds a nullable column that pre-lease pods never
+read, and rolling back to the previous release ignores it. Recovering a
+dead leader now needs no privilege beyond table access, so the
+`pg_terminate_backend` runbook steps are gone. The advisory lock a new
+leader also takes is a transition courtesy for mixed-version fleets and
+is never waited on; it is removed entirely in the release after every
+pod in your fleet runs this one. Size `TASKQ_LEADER_LEASE` at four or
+more heartbeat intervals (the default, 40 s, already is).
+
 ---
 
 ## Silent behaviour changes

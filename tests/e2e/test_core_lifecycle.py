@@ -78,11 +78,14 @@ async def test_job_transitions_recorded(
     e2e_schema: E2ESchema,
     run_id: str,
 ) -> None:
-    """The job's lifecycle transitions land in ``{schema}.job_events``.
+    """The job's lifecycle terminal transition lands in ``{schema}.job_events``.
 
-    A one-shot success records exactly two ``state_change`` rows: dispatch's
-    pending→running and the terminal write's running→succeeded. ``detail`` is
-    JSONB; asyncpg returns it as ``str``, so it is parsed before asserting.
+    A one-shot success records exactly one ``state_change`` row: the terminal
+    write's running→succeeded. A claim deliberately writes no event row (an
+    admission denial or a claim that never runs an actor would otherwise mint
+    unbounded bookkeeping), so the terminal transition is the one of record.
+    ``detail`` is JSONB; asyncpg returns it as ``str``, so it is parsed
+    before asserting.
     """
     handle = await e2e_client.enqueue(send_welcome_email, _welcome_payload(run_id))
     await handle.wait(timeout=60)
@@ -97,11 +100,11 @@ async def test_job_transitions_recorded(
         handle.job_id,
     )
 
-    assert len(rows) == 2
+    assert len(rows) == 1
     assert {row["kind"] for row in rows} == {"state_change"}
     details: list[dict[str, str]] = [json.loads(row["detail"]) for row in rows]
     transitions = [(detail["from_state"], detail["to_state"]) for detail in details]
-    assert transitions == [("pending", "running"), ("running", "succeeded")]
+    assert transitions == [("running", "succeeded")]
 
 
 async def test_effects_written_by_actor(
