@@ -98,9 +98,11 @@ from taskq.worker._handlers import (
     _TERMINAL_WRITE_INFRA_EXCEPTIONS,
     AttemptOutcome,
     _AttemptFencedOut,
+    _disown_job,
     _dispatch_exception,
     _handle_reservation_class_denied,
     _log_terminal_write_failed,
+    _terminal_write_with_retry,
     _TerminalWriteFailed,
 )
 from taskq.worker.cancel import ActiveJobRegistry
@@ -160,6 +162,39 @@ _dependency_failure_warned: dict[str, float] = {}
 by error class (bounded: the stores' exception vocabulary)."""
 
 
+def bind_job_log(
+    log: structlog.stdlib.BoundLogger, job: JobRow, *, span: trace.Span
+) -> structlog.stdlib.BoundLogger:
+    """Bind *job*'s fields onto *log* — the one logger every line of a
+    job's dispatch and consumption carries.
+
+    The trace id comes from *span* (the CONSUMER span) when it is valid
+    and is the empty string otherwise; ``batch_id`` rides along when the
+    row's metadata carries one. The dispatch path binds this once for the
+    DI-resolution context and hands the result to :func:`consume_one_job`
+    as ``job_log``; a direct caller gets the same binding by default.
+    """
+    trace_id = ""
+    span_context = span.get_span_context()
+    if span_context.is_valid:
+        trace_id = format(span_context.trace_id, "032x")
+    batch_id: str | None = None
+    if job.metadata:
+        raw_bid = job.metadata.get("batch_id")
+        if raw_bid is not None:
+            batch_id = str(raw_bid)
+    return bind_job_context(
+        log,
+        job_id=job.id,
+        actor=job.actor,
+        queue=job.queue,
+        attempt=job.attempt,
+        identity_key=job.identity_key,
+        trace_id=trace_id,
+        batch_id=batch_id,
+    )
+
+
 def _encode_result(result: object, max_bytes: int = MAX_RESULT_BYTES) -> bytes | None:
     """Serialize an actor return value to orjson bytes exactly once.
 
@@ -192,6 +227,40 @@ def _encode_result(result: object, max_bytes: int = MAX_RESULT_BYTES) -> bytes |
     return data
 
 
+async def _pre_terminal_flush(
+    job: JobRow,
+    worker_id: UUID,
+    progress_buffers: "dict[UUID, _ProgressBuffer] | None",
+    worker_pool: "asyncpg.Pool | None",
+    settings: WorkerSettings | None,
+) -> "_ProgressBuffer | None":
+    """Flush the job's dirty progress buffer ahead of its terminal write
+    and return the buffer the write's progress fields are read from.
+
+    The flush is shielded so a cancel landing mid-statement cannot strand
+    the progress row half-written — but the shield costs a Task per call,
+    and the flush itself is a no-op for a clean buffer (the common case:
+    an actor that reported no progress). The dirty check is made here so
+    only a flush that will issue a statement pays for the shield; the
+    buffer's own no-op guard still holds behind it.
+    """
+    if progress_buffers is None:
+        return None
+    buffer = progress_buffers.get(job.id)
+    if buffer is None or not buffer.dirty or worker_pool is None or settings is None:
+        return buffer
+    await shield_with_retrieval(
+        _flush_buffer_immediate(
+            worker_pool,
+            settings.schema_name,
+            job.id,
+            worker_id,
+            progress_buffers,
+        )
+    )
+    return progress_buffers.get(job.id)
+
+
 async def _run_terminal_path(  # pyright: ignore[reportUnusedFunction]  # Why: called by _dispatch_exception in _handlers.py via lazy import
     *,
     job: JobRow,
@@ -207,6 +276,8 @@ async def _run_terminal_path(  # pyright: ignore[reportUnusedFunction]  # Why: c
     terminal: bool,
     outcome: AttemptOutcome,
     job_exc: BaseException | None = None,
+    disowned_jobs: set[UUID] | None = None,
+    job_log: structlog.stdlib.BoundLogger | None = None,
 ) -> AttemptOutcome:
     """Pre-terminal flush, handler call, dirty reset, publish, and outcome.
 
@@ -217,24 +288,11 @@ async def _run_terminal_path(  # pyright: ignore[reportUnusedFunction]  # Why: c
     Infra failures (DB/network) raised by *handler*'s terminal write are
     caught here — not re-dispatched into generic exception handling, which
     would misclassify the infra error as the actor's failure (*job_exc*).
-    The job row stays ``running`` and is reclaimed via lock-lease expiry.
+    The job row stays ``running``; it is disowned into *disowned_jobs* so
+    the heartbeat stops renewing it and lock-lease expiry reclaims it.
     """
-    if progress_buffers is not None and worker_pool is not None and settings is not None:
-        await shield_with_retrieval(
-            _flush_buffer_immediate(
-                worker_pool,
-                settings.schema_name,
-                job.id,
-                worker_id,
-                progress_buffers,
-            )
-        )
-        _pbuf = progress_buffers.get(job.id)
-        _pseq, _pstate = _seq_and_state_after_flush_attempt(_pbuf)
-    else:
-        _pseq, _pstate = _seq_and_state_after_flush_attempt(
-            progress_buffers.get(job.id) if progress_buffers is not None else None
-        )
+    _pbuf = await _pre_terminal_flush(job, worker_id, progress_buffers, worker_pool, settings)
+    _pseq, _pstate = _seq_and_state_after_flush_attempt(_pbuf)
     try:
         handler_result: AttemptOutcome = await handler(
             *handler_args,
@@ -244,11 +302,12 @@ async def _run_terminal_path(  # pyright: ignore[reportUnusedFunction]  # Why: c
         )
     except _TERMINAL_WRITE_INFRA_EXCEPTIONS as infra_exc:
         _log_terminal_write_failed(
-            _log,
+            job_log if job_log is not None else _log,
             job,
             job_exc if job_exc is not None else infra_exc,
             infra_exc,
         )
+        _disown_job(disowned_jobs, job)
         return outcome
     if progress_buffers is not None:
         _buf = progress_buffers.get(job.id)
@@ -296,6 +355,7 @@ async def consume_one_job(
     settings: WorkerSettings | None = None,
     error_reporter: ErrorReporter | None = None,
     fallback_result_ttl: timedelta | None = None,
+    job_log: structlog.stdlib.BoundLogger | None = None,
 ) -> AttemptOutcome:
     """Run one job's full  try/except sequence.
 
@@ -342,6 +402,11 @@ async def consume_one_job(
     The reporter call is wrapped in a try/except — a failing reporter
     never crashes the worker.
 
+    ``job_log`` is the job-bound logger a caller has already built (the
+    dispatch path binds one for the DI-resolution context and hands it
+    here so the job's lines come from one logger, bound once); when
+    ``None`` it is bound here from ``logger`` and the current span.
+
     ``transaction_conn`` is the connection the job's transaction runs
     on — the connection this dispatch acquired from the worker's slot
     pool on the per-slot path, or the resolved LOOP-scope
@@ -361,30 +426,9 @@ async def consume_one_job(
     ``finally`` block.  Release is best-effort (not shielded) per
     "Cancellation and shutdown boundary".
     """
-    log = logger if logger is not None else _log
     consumer_span = trace.get_current_span()
-
-    trace_id: str = ""
-    span_context = consumer_span.get_span_context()
-    if span_context.is_valid:
-        trace_id = format(span_context.trace_id, "032x")
-
-    batch_id: str | None = None
-    if job.metadata:
-        raw_bid = job.metadata.get("batch_id")
-        if raw_bid is not None:
-            batch_id = str(raw_bid)
-
-    job_log = bind_job_context(
-        log,
-        job_id=job.id,
-        actor=job.actor,
-        queue=job.queue,
-        attempt=job.attempt,
-        identity_key=job.identity_key,
-        trace_id=trace_id,
-        batch_id=batch_id,
-    )
+    if job_log is None:
+        job_log = bind_job_log(logger if logger is not None else _log, job, span=consumer_span)
 
     _rl_limits: Sequence[str | KeyedRateLimitRef | TokenBucket | SlidingWindow] = (
         rate_limits if rate_limits is not None else ()
@@ -465,6 +509,8 @@ async def consume_one_job(
                 worker_pool=deps.worker_pool if deps is not None else worker_pool,
                 settings=deps.settings if deps is not None else settings,
                 redis_client=deps.redis_client if deps is not None else redis_client,
+                disowned_jobs=deps.disowned_jobs if deps is not None else None,
+                job_log=job_log,
                 handler=_handle_reservation_class_denied,
                 handler_args=(backend, job, worker_id, e, consumer_span, job_log, actor_config),
                 handler_kwargs=handler_kwargs,
@@ -531,6 +577,8 @@ async def consume_one_job(
                 worker_pool=deps.worker_pool if deps is not None else worker_pool,
                 settings=deps.settings if deps is not None else settings,
                 redis_client=deps.redis_client if deps is not None else redis_client,
+                disowned_jobs=deps.disowned_jobs if deps is not None else None,
+                job_log=job_log,
                 handler=_handle_reservation_class_denied,
                 handler_args=(
                     backend,
@@ -560,6 +608,7 @@ async def consume_one_job(
     _effective_redis = deps.redis_client if deps is not None else redis_client
     _progress_buffers = deps.progress_buffers if deps is not None else None
     _pending_publish_tasks = getattr(deps, "pending_publish_tasks", None)
+    _disowned_jobs = deps.disowned_jobs if deps is not None else None
 
     if _progress_buffers is not None:
         # attempt seeds the buffer's flush-fence epoch: a stale flush
@@ -663,6 +712,7 @@ async def consume_one_job(
                             worker_pool=_effective_pool,
                             error_reporter=error_reporter,
                             fallback_result_ttl=fallback_result_ttl,
+                            disowned_jobs=_disowned_jobs,
                         )
                         _completion = _OK if tx_outcome == "succeeded" else None
                         if tx_outcome == "succeeded":
@@ -732,8 +782,8 @@ async def consume_one_job(
                 # fleet with its budget refunded instead of terminalising
                 # it. hold=0 — the actor already unwound, so the row is
                 # genuinely free and lands pending at the head of the
-                # order (River's JobSetStateInterrupted shape: available
-                # immediately, attempt refunded, no error recorded). The
+                # order: available immediately, attempt refunded, no error
+                # recorded. The
                 # row is the final arbiter: a "noop" means an operator
                 # cancel raced the deploy onto the row, and the attempt
                 # falls through to the ordinary cancel write below.
@@ -750,11 +800,12 @@ async def consume_one_job(
                     )
                 except _TERMINAL_WRITE_INFRA_EXCEPTIONS as infra_exc:
                     # Best-effort, exactly like the cancel write below: the
-                    # row stays 'running' and lock-lease expiry reclaims
-                    # it. Do NOT fall through to mark_cancelled — the row
-                    # carries no operator cancel, so a cancel write here
-                    # would terminalise an infrastructure interruption.
-                    _log_terminal_write_failed(_log, job, None, infra_exc)
+                    # row stays 'running', disowned so lock-lease expiry
+                    # reclaims it. Do NOT fall through to mark_cancelled —
+                    # the row carries no operator cancel, so a cancel write
+                    # here would terminalise an infrastructure interruption.
+                    _log_terminal_write_failed(job_log, job, None, infra_exc)
+                    _disown_job(_disowned_jobs, job)
                     raise
                 if interrupt_outcome != "noop":
                     _interrupted_status = (
@@ -805,13 +856,14 @@ async def consume_one_job(
                 )
             except _TERMINAL_WRITE_INFRA_EXCEPTIONS as infra_exc:
                 # Why: the terminal write is best-effort on this path — the
-                # row stays 'running' and lock-lease expiry reclaims it
-                # (identical to the success-path infra failure). The
-                # CancelledError MUST still propagate below: routing the
-                # infra error into generic job-failure handling eats a
-                # TaskGroup cancellation and hangs __aexit__ forever.
+                # row stays 'running', disowned so lock-lease expiry
+                # reclaims it (identical to the success-path infra
+                # failure). The CancelledError MUST still propagate below:
+                # routing the infra error into generic job-failure handling
+                # eats a TaskGroup cancellation and hangs __aexit__ forever.
                 cancel_landed = None
-                _log_terminal_write_failed(_log, job, None, infra_exc)
+                _log_terminal_write_failed(job_log, job, None, infra_exc)
+                _disown_job(_disowned_jobs, job)
             # Announce only a transition the row actually took: on a
             # fenced-out write (the row moved to another owner mid-cancel)
             # or an infra-failed one (the row is still 'running'), a
@@ -854,9 +906,12 @@ async def consume_one_job(
         except _TerminalWriteFailed:
             # Success-path terminal write failed with an infra error.
             # Already logged via _log_terminal_write_failed inside the
-            # success path.  The job stays ``running`` — lock-lease expiry
-            # reclaims it.  Do NOT re-dispatch into _handle_generic_exception
-            # (that would mislabel the infra error as the actor's failure).
+            # success path.  The job stays ``running`` — disowned here so
+            # the heartbeat stops renewing it and lock-lease expiry
+            # reclaims it.  Do NOT re-dispatch into
+            # _handle_generic_exception (that would mislabel the infra
+            # error as the actor's failure).
+            _disown_job(_disowned_jobs, job)
             return "failed"
 
         except (
@@ -882,6 +937,7 @@ async def consume_one_job(
                 redis_client=_effective_redis,
                 error_reporter=error_reporter,
                 text=attempt_text,
+                disowned_jobs=_disowned_jobs,
             )
 
         finally:
@@ -956,6 +1012,7 @@ async def _consume_transactional(
     worker_pool: asyncpg.Pool | None = None,
     error_reporter: ErrorReporter | None = None,
     fallback_result_ttl: timedelta | None = None,
+    disowned_jobs: set[UUID] | None = None,
 ) -> AttemptOutcome:
     """Transactional success/failure path when a transaction conn is available.
 
@@ -1022,11 +1079,10 @@ async def _consume_transactional(
                 # the outer handler), never by returning. Cancelling a
                 # returned actor here would discard a computed result from
                 # a terminal job nothing re-runs (and roll back the writes
-                # it completed). This is the resolution the vendored
-                # references implement: a job that returns after a stop or
-                # cancel request completes (River's executor reports the
-                # result of a soft-stopped job that returned;
-                # vendor/river/internal/jobexecutor/job_executor.go).
+                # it completed). That is the resolution the
+                # cooperative-cancel contract dictates: a job that returns
+                # after a stop or cancel request completes keeps its
+                # result.
                 if (
                     progress_buffers is not None
                     and worker_pool is not None
@@ -1244,6 +1300,7 @@ async def _consume_transactional(
             redis_client=redis_client,
             pre_handler=enqueuer.discard_buffer,
             error_reporter=error_reporter,
+            disowned_jobs=disowned_jobs,
         )
 
 
@@ -1296,33 +1353,18 @@ async def _consume_autonomous(
     # the outer handler; the actor that degrades gracefully and returns
     # has finished). Discarding a returned result here wrote 'cancelled'
     # over completed work on a terminal row nothing re-runs, and reported
-    # a different outcome than the caller was handed. River resolves the
-    # same race the same way (a job that returns after its soft-stop
-    # completes; vendor/river/internal/jobexecutor/job_executor.go).
+    # a different outcome than the caller was handed.
 
-    if progress_buffers is not None and _auto_pool is not None and _auto_settings is not None:
-        await shield_with_retrieval(
-            _flush_buffer_immediate(
-                _auto_pool,
-                _auto_settings.schema_name,
-                job.id,
-                worker_id,
-                progress_buffers,
-            )
-        )
-        _pbuf = progress_buffers.get(job.id)
-        _pseq, _pstate = _seq_and_state_after_flush_attempt(_pbuf)
-    else:
-        _pbuf = progress_buffers.get(job.id) if progress_buffers is not None else None
-        _pseq, _pstate = _seq_and_state_after_flush_attempt(_pbuf)
+    _pbuf = await _pre_terminal_flush(job, worker_id, progress_buffers, _auto_pool, _auto_settings)
+    _pseq, _pstate = _seq_and_state_after_flush_attempt(_pbuf)
 
     result_bytes = _encode_result(
         result,
         _auto_settings.result_max_bytes if _auto_settings is not None else MAX_RESULT_BYTES,
     )
     try:
-        succeeded_landed = await shield_with_retrieval(
-            backend.mark_succeeded(
+        succeeded_landed = await _terminal_write_with_retry(
+            lambda: backend.mark_succeeded(
                 job.id,
                 worker_id,
                 result_bytes=result_bytes,
@@ -1330,7 +1372,10 @@ async def _consume_autonomous(
                 progress_state=_pstate,
                 fallback_result_ttl=fallback_result_ttl,
                 attempt=job.attempt,
-            )
+            ),
+            log=log,
+            job=job,
+            write_name="mark_succeeded",
         )
     except _TERMINAL_WRITE_INFRA_EXCEPTIONS as infra_exc:
         _log_terminal_write_failed(log, job, None, infra_exc)

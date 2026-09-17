@@ -919,7 +919,7 @@ class PostgresBackend:
                 if rec is None:
                     return False
                 await conn.execute(
-                    self._sql.enqueue_notify,
+                    self._sql.wake_notify,
                     wake_channel(self._schema_name),
                 )
         # The statement's reopened CTE (see retry_job in

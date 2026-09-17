@@ -46,7 +46,7 @@ implementations available as extras:
 | A password passed as a fixed string is reused for every connection the pool opens later. | The factory builders pass `password=` as an **async callable**, which asyncpg awaits once per physical connection - pool growth and idle-recycle replacements each authenticate with a freshly fetched credential. |
 | Azure Redis requires a `CredentialProvider` returning `(username, token)` per reconnect. | You own the `redis.asyncio.Redis` client → pass a `CredentialProvider`. |
 | You already run an app-wide pool (FastAPI lifespan) and want to share it. | Pass the pool directly — TaskQ will **not** close a caller-owned resource. |
-| Migrations / `TaskQ.stream()` open their own `asyncpg.connect(dsn)`. | `apply_pending_locked` and the client accept a `conn` / `conn_factory` so LISTEN/migrate work without a DSN. |
+| Migrations / `TaskQ.watch_reclaims()` open their own `asyncpg.connect(dsn)`. | `apply_pending_locked` and the client accept a `conn` / `conn_factory` so LISTEN/migrate work without a DSN. |
 
 ### Ownership rule (read this carefully)
 
@@ -85,7 +85,7 @@ Three consequences worth knowing:
 | Worker — Redis | `WorkerConnections.redis_client` | `redis_client_factory` | |
 | Client — main pool | `TaskQ(pool=...)` (caller-owned) | `TaskQ(pool_factory=...)` or `TaskQ(dsn=..., pg_provider=...)` | TaskQ-owned; rotate with `await tq.reload_credentials()` |
 | Client — Redis | `TaskQ(redis_client=...)` ✓ existing | — | |
-| Client — stream LISTEN conn | `TaskQ(listen_conn=...)` | `TaskQ(pg_conn_factory=...)` | Replaces the DSN-only LISTEN transport |
+| Client — `watch_reclaims` LISTEN conn | `TaskQ(listen_conn=...)` | `TaskQ(pg_conn_factory=...)` | Replaces the DSN-only LISTEN transport; `stream()` polls through the main pool and needs neither |
 | Migrate — locked apply | `apply_pending_locked(conn=...)` | `apply_pending_locked(conn_factory=...)` | `list_applied` / `apply_pending` take an open conn only — no factory |
 | Admin UI | `create_router(pg_pool=..., redis_client=...)` ✓ existing | — | Or `taskq ui serve --pg-credential-provider` / `--redis-credential-provider` |
 | CLI — `taskq worker` | — | `--pg-credential-provider` / `--redis-credential-provider` (env: `TASKQ_PG_CREDENTIAL_PROVIDER` / `TASKQ_REDIS_CREDENTIAL_PROVIDER`) | Builds **every** worker role: all four pools (dispatcher, heartbeat, worker, and the conditional per-slot transaction pool), `notify_conn`, `leader_conn`, Redis |
@@ -305,12 +305,14 @@ behaviour before this changed; it no longer is.
 Two things per-connection refresh cannot do, for which the
 **credential hot-reload** below is still the answer:
 
-* **A changed username.** asyncpg resolves `user=` once per pool and
-  accepts a callable only for `password=`. Providers that issue a fresh
-  username alongside each password (HashiCorp Vault dynamic database
-  credentials) need a pool rebuild; the password callable raises a
-  `RuntimeError` naming this rather than pairing a fresh password with
-  the stale username.
+* **A username-bearing pair.** asyncpg resolves `user=` once per pool
+  and accepts a callable only for `password=`, and a dynamic username is
+  only valid with the password issued alongside it. Providers that issue
+  a fresh username alongside each password (HashiCorp Vault dynamic
+  database credentials) therefore pin one pair per pool: every physical
+  connection authenticates with that pair's password, and the pair is
+  replaced by the pool rebuild. Schedule the reload shorter than the
+  lease TTL.
 * **Forcing a full pool rebuild** - e.g. to drop sessions opened under a
   revoked credential, or after a DSN/endpoint change.
 
@@ -511,9 +513,12 @@ AWS IAM RDS auth tokens are valid for **15 minutes**.
 `generate_db_auth_token` itself is local SigV4 signing, but resolving the
 ambient AWS credential chain can block on STS/IMDS HTTPS refreshes — so
 the provider offloads the boto call to a thread rather than stalling the
-event loop. Pass `region=None` (the default) to let botocore fall back
-to the ambient client region. Reload on a schedule shorter than 15
-minutes for long-lived workers (e.g. `TASKQ_RELOAD_INTERVAL=720`).
+event loop, and builds its `boto3.client('rds')` once on first use (pass
+`client=` to supply your own). Pass `region=None` (the default) to let
+botocore fall back to the ambient client region. No reload schedule is
+needed for token freshness: every physical connection the pool opens
+signs a fresh token through the `password=` callable (see
+[Token refresh for long-lived pools](#token-refresh-for-long-lived-pools)).
 
 **Prerequisites**: enable IAM database authentication on the RDS instance;
 create an IAM-mapped DB user (`GRANT rds_iam TO myuser`); grant
@@ -547,8 +552,18 @@ WorkerConnections(
 Vault's database secrets engine issues a **fresh username + password** on
 each `generate_credentials` call, with a configurable lease TTL. Unlike
 token providers, `PgCredential.username` is always set — the DSN's user
-is overridden. `hvac` is synchronous; the provider offloads
-`generate_credentials` to a thread via `asyncio.to_thread`.
+is overridden — and the pair is only valid together, so the factory
+builders pin **one lease per pool / dedicated connection**: `user=` is
+the lease's username and every physical connection authenticates with
+that lease's password (a pool never burns a lease per connection).
+Rotation is the pool rebuild: run the worker with
+`TASKQ_RELOAD_INTERVAL` (or send `SIGHUP`) at an interval shorter than
+the role's lease TTL so each pool is rebuilt on a fresh lease before
+Vault revokes the previous user. Each issued lease is logged as
+`vault-lease-issued` with its `lease_id` and `lease_duration`, so the
+reload interval can be checked against the TTL Vault actually granted.
+`hvac` is synchronous; the provider offloads `generate_credentials` to a
+thread via `asyncio.to_thread`.
 
 **Prerequisites**: enable the database secrets engine; configure a
 connection and role pointing at your Postgres. The DSN's host/port/dbname
@@ -787,7 +802,7 @@ top-level.
 takes per role. TaskQ invokes it at `open()` and **owns** the result, and
 `await tq.reload_credentials()` re-invokes it to swap the pool in place: the
 backend behind `enqueue`/`get`/`list`/`cancel`, the `tq.actors` client and the
-`stream()` LISTEN fallback all move to the new pool, and the old one is closed
+`stream()` poll all move to the new pool, and the old one is closed
 with a bounded drain. Nothing needs to reach into the client's internals, and
 no restart is required when a token expires.
 
@@ -825,14 +840,15 @@ Note that `reload_credentials()` is not needed for ordinary token refresh:
 `make_pg_pool_factory` passes `password=` to asyncpg as a callable, so every
 *new physical connection* already authenticates with a freshly fetched
 credential. Reload is how you drop sessions opened under a **revoked**
-credential, and the only way to pick up a **changed username** (asyncpg
-resolves `user=` once per pool).
+credential, and the only way to rotate a **username-bearing pair** such as
+a Vault lease (asyncpg resolves `user=` once per pool, so the pool stays on
+the pair it was built with).
 
 ### LISTEN transport
 
 `TaskQ` accepts `pool=` and `redis_client=` (caller-owned). Two additions
 close the remaining DSN-only gaps for the LISTEN/NOTIFY transport in
-`stream()`:
+`watch_reclaims()`:
 
 ```python
 from taskq import make_dedicated_conn_factory
@@ -840,14 +856,17 @@ from taskq import make_dedicated_conn_factory
 tq = TaskQ(
     pool=app_state.pg_pool,  # caller-owned
     redis_client=app_state.redis,  # caller-owned
-    # LISTEN transport for tq.stream() without a DSN:
+    # LISTEN transport for tq.watch_reclaims() without a DSN:
     pg_conn_factory=make_dedicated_conn_factory(settings.pg_dsn_direct, provider),  # OR
     listen_conn=app_state.listen_conn,  # pre-constructed, caller-owned
 )
 ```
 
-Without one of Redis / `pg_conn_factory` / `listen_conn`, `tq.stream()`
-raises a documented `RuntimeError` in pool-only mode.
+`tq.stream()` needs neither: on Postgres alone it re-reads the job row
+through the main pool every `min(poll_timeout, 0.5)` seconds (nothing
+announces a job's transitions over NOTIFY), so it works in pool-only mode
+and holds no connection per stream. With `redis_client=` it subscribes to
+the job's progress channel instead.
 
 ---
 

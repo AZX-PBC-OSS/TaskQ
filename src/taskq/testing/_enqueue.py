@@ -48,7 +48,10 @@ async def _enqueue(self: "InMemoryBackend", args: EnqueueArgs) -> JobRow:
     # imports the asyncpg driver; the testing package's import surface
     # stays driver-free at import time (the taskq._advisory convention),
     # and this call path only ever runs where the driver is installed.
-    from taskq.backend._enqueue import _log_enqueue_dedup
+    from taskq.backend._enqueue import (
+        _log_enqueue_dedup,
+        _refuse_cross_actor_idempotency_hit,
+    )
 
     if args.unique_for is not None and args.identity_key is not None:
         now = self._clock.now()
@@ -146,6 +149,7 @@ async def _enqueue(self: "InMemoryBackend", args: EnqueueArgs) -> JobRow:
         if existing_id is not None:
             existing_row = self._jobs.get(existing_id)
             if existing_row is not None:
+                _refuse_cross_actor_idempotency_hit(args, existing_row)
                 _log_enqueue_dedup(existing_row, dedup_reason="idempotency_key")
                 return _read_copy(existing_row)
 
@@ -302,6 +306,7 @@ async def _enqueue_batch(
     # certifying code that leaves phantom rows behind on PG.
     _check_batch_job_ids(self, admitted_args)
     _check_batch_singletons(self, admitted_args)
+    _check_batch_idempotency_actors(self, admitted_args)
     # Why a function-level import: the dedup WARNING budget lives with
     # the PG enqueue path (taskq.backend._enqueue), whose module scope
     # imports the asyncpg driver; the testing package's import surface
@@ -382,6 +387,32 @@ def _check_batch_job_ids(self: "InMemoryBackend", admitted_args: list[EnqueueArg
                 f"(job id {args.id} appears twice in this batch)"
             )
         seen.add(args.id)
+
+
+def _check_batch_idempotency_actors(
+    self: "InMemoryBackend", admitted_args: list[EnqueueArgs]
+) -> None:
+    """Reject the whole batch BEFORE any insert when an admitted item's
+    idempotency hit would resolve to a stored job of another actor.
+
+    The PG bulk tier raises the mismatch inside the transaction that owns
+    the INSERT and rolls the whole batch back, admitting nothing; the
+    per-item loop below would discover it at the offending item's index
+    and leave the good prefix stored. Same shared rule and typed error as
+    the single path (``_refuse_cross_actor_idempotency_hit``), so the two
+    backends name the same actors for the same batch.
+    """
+    from taskq.backend._enqueue import _refuse_cross_actor_idempotency_hit
+
+    for args in admitted_args:
+        if args.idempotency_key is None:
+            continue
+        existing_id = self._idempotency_index.get((args.idempotency_scope, args.idempotency_key))
+        if existing_id is None:
+            continue
+        existing_row = self._jobs.get(existing_id)
+        if existing_row is not None:
+            _refuse_cross_actor_idempotency_hit(args, existing_row)
 
 
 def _check_batch_singletons(self: "InMemoryBackend", admitted_args: list[EnqueueArgs]) -> None:

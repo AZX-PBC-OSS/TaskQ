@@ -33,6 +33,7 @@ from taskq.backend._sweeps import (
 from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining
     DEFAULT_EVENT_WRITER_BATCH_SIZE,
+    cron_commit_gate_channel,
     schema_lock_name,
 )
 from taskq.cron import (
@@ -130,17 +131,43 @@ class _TickBudgetExhaustedError(TimeoutError):
     """
 
 
-_COMMIT_GATE_CHANNEL: Final = "taskq_cron_commit"
-"""Self-addressed channel the tick uses to learn that its own transaction
-committed.
+CRON_TICK_SQL_TEMPLATE: Final = (
+    "WITH lock AS MATERIALIZED ("
+    "  SELECT pg_try_advisory_xact_lock(hashtextextended($1, 0)) AS got"
+    ") "
+    "SELECT lock.got, statement_timestamp() AS server_now, s.* "
+    "FROM lock LEFT JOIN LATERAL ("
+    "  SELECT id, actor, cron_expr, timezone, dst_strategy, payload_factory, "
+    "         metadata, last_fired_at, consecutive_failures, next_fire_at, identity_key "
+    '  FROM "{schema}".cron_schedules '
+    "  WHERE lock.got AND enabled = true AND next_fire_at <= statement_timestamp() "
+    "  ORDER BY next_fire_at "
+    "  LIMIT $2"
+    ") s ON true"
+)
+"""The tick's one opening statement: the cron try-lock ($1 = the lock
+name), the planning clock, and the due read ($2 = the batch limit).
 
-Postgres delivers a ``NOTIFY`` to its own session only if the emitting
-transaction commits, and never if it rolls back — the only commit signal
-available to a function that runs INSIDE the caller's transaction and
-returns before the ``COMMIT``.  The notification rides back on the same
-packet as the ``COMMIT`` response, so the tick's telemetry lands while
-the caller is still inside its transaction block.
+Rendered with ``{schema}`` replaced by the schema name; the plan-shape audit
+(``tests/test_index_audit.py``) explains this same text, so the
+index-servable due bound cannot drift there unnoticed. See
+:func:`tick_cron` for why the three ride one statement and why the due
+bound is ``statement_timestamp()``.
 """
+
+# The commit-gate channel — ``cron_commit_gate_channel(schema)`` in
+# ``taskq.constants`` — is the self-addressed channel the tick uses to
+# learn that its own transaction committed. Postgres delivers a ``NOTIFY``
+# to its own session only if the emitting transaction commits, and never
+# if it rolls back — the only commit signal available to a function that
+# runs INSIDE the caller's transaction and returns before the ``COMMIT``.
+# The notification rides back on the same packet as the ``COMMIT``
+# response, so the tick's telemetry lands while the caller is still inside
+# its transaction block. Schema-scoped because channels share one
+# database-wide namespace: a foreign schema's cron session on the same
+# channel would not only hear this one's signals — its notification would
+# mark THIS session confirmed-listening (the gate records the sender's
+# pid) without this session's LISTEN ever having survived a commit.
 
 
 _armed_commit_emits: dict[int, tuple[str, Callable[[], None]]] = {}
@@ -239,7 +266,9 @@ def _dispatch_commit_gate(_conn: object, pid: int, _channel: str, payload: str) 
     armed[1]()
 
 
-async def _emit_on_commit(conn: asyncpg.Connection, emit: Callable[[], None]) -> None:
+async def _emit_on_commit(
+    conn: asyncpg.Connection, emit: Callable[[], None], *, schema: str
+) -> None:
     """Arrange for *emit* to run only if the caller's transaction commits.
 
     Every claim the tick's telemetry makes — a strike, an auto-disable, a
@@ -248,9 +277,9 @@ async def _emit_on_commit(conn: asyncpg.Connection, emit: Callable[[], None]) ->
     lets a failed ``COMMIT`` leave operators reading an auto-disable for a
     schedule the database still has enabled, and a failure count for a
     strike the database says never happened.  Gating on the ``NOTIFY``
-    (see :data:`_COMMIT_GATE_CHANNEL`) makes the telemetry say exactly
+    (see the commit-gate channel note above) makes the telemetry say exactly
     what the database kept: a rollback delivers nothing, so nothing is
-    reported.
+    reported. The channel is *schema*'s own commit-gate channel.
 
     A pid not yet in :data:`_confirmed_listening` -- either this is its
     first tick, or an earlier tick's ``LISTEN`` was silently undone by
@@ -268,12 +297,13 @@ async def _emit_on_commit(conn: asyncpg.Connection, emit: Callable[[], None]) ->
     and a tick that struck a schedule must always say so.
     """
     nonce = str(new_uuid())
+    channel = cron_commit_gate_channel(schema)
     pid: int | None = None
     try:
         pid = conn.get_server_pid()
         if pid not in _confirmed_listening:
-            await conn.remove_listener(_COMMIT_GATE_CHANNEL, _dispatch_commit_gate)  # pyright: ignore[reportArgumentType]  # Why: stubs over-narrow the callback type; asyncpg accepts a sync callback at runtime.
-        await conn.add_listener(_COMMIT_GATE_CHANNEL, _dispatch_commit_gate)  # pyright: ignore[reportArgumentType]  # Why: stubs over-narrow the callback type; asyncpg accepts a sync callback at runtime.
+            await conn.remove_listener(channel, _dispatch_commit_gate)  # pyright: ignore[reportArgumentType]  # Why: stubs over-narrow the callback type; asyncpg accepts a sync callback at runtime.
+        await conn.add_listener(channel, _dispatch_commit_gate)  # pyright: ignore[reportArgumentType]  # Why: stubs over-narrow the callback type; asyncpg accepts a sync callback at runtime.
         if pid not in _termination_hooked:
             # One hook per connection: retire this session's gate state when
             # the connection dies, so the maps track live sessions only and a
@@ -285,7 +315,7 @@ async def _emit_on_commit(conn: asyncpg.Connection, emit: Callable[[], None]) ->
         # Replaces this session's previous entry: a tick whose transaction
         # rolled back left an emission no notification can ever answer.
         _armed_commit_emits[pid] = (nonce, emit)
-        await conn.execute("SELECT pg_notify($1, $2)", _COMMIT_GATE_CHANNEL, nonce)
+        await conn.execute("SELECT pg_notify($1, $2)", channel, nonce)
     except (AttributeError, asyncpg.PostgresError, asyncpg.InterfaceError) as exc:
         if pid is not None:
             _armed_commit_emits.pop(pid, None)
@@ -938,11 +968,13 @@ async def tick_cron(
     in full; the remainder stays due and untouched until its tick.
 
     The catch-up cutoff and the beyond-window recompute seed are read from
-    the PG server clock inside this transaction: the due-check
-    (``next_fire_at <= now()``) is server-side, so every croniter seed must
-    come from the same domain.  Seeding from the leader's Python clock
-    shifts every recomputed fire by the app↔DB skew and can recompute
-    ``next_fire_at`` into the server's past (a fire loop).
+    the PG server clock in the same statement as the due read: the
+    due-check (``next_fire_at <= statement_timestamp()``) is server-side,
+    so every croniter seed must come from the same domain — and from the
+    same instant, so a due row's ``next_fire_at`` never exceeds the seed.
+    Seeding from the leader's Python clock shifts every recomputed fire by
+    the app↔DB skew and can recompute ``next_fire_at`` into the server's
+    past (a fire loop).
 
     *actor_policies* carries the worker's ``actor_registry`` singleton /
     ``max_pending`` flags (``None`` — the default, and every pre-plumbing
@@ -964,10 +996,33 @@ async def tick_cron(
 
     tick_started = time.monotonic()
     lock_name = schema_lock_name("cron", schema)
-    lock_acquired: bool = await conn.fetchval(
-        "SELECT pg_try_advisory_xact_lock(hashtextextended($1, 0))",
+    # One statement for the try-lock, the planning clock and the due read:
+    # the leader
+    # ticks once a second and is idle almost always, so the idle tick's
+    # cost is the round-trip count. The lock sits in a MATERIALIZED CTE
+    # so it is taken exactly once and before the read; the LATERAL read is
+    # gated on the verdict, so a contended tick reads nothing and returns
+    # one row with got = false. LEFT JOIN keeps that one row (and the
+    # idle tick's) when the read yields nothing.
+    #
+    # statement_timestamp() (STABLE) — not clock_timestamp() (VOLATILE) —
+    # for the due bound: a volatile comparison cannot be a btree index
+    # condition, so cron_schedules_next_fire_idx (partial on enabled,
+    # keyed on next_fire_at) would degrade from an Index Cond that stops
+    # at the boundary to a post-scan filter walk of every enabled entry,
+    # per tick, every second. Measured at 10k enabled schedules (PG 18,
+    # EXPLAIN ANALYZE): clock_timestamp() walks all 10,000 entries
+    # (1.04 ms); statement_timestamp() is an Index Cond scan (2 buffers,
+    # 0.005 ms). The same instant is the planning clock (server_now):
+    # every croniter seed and the due bound come from one server-side
+    # reading, so a due row is never "in the future" of its own seed.
+    tick_rows: list[asyncpg.Record] = await conn.fetch(
+        CRON_TICK_SQL_TEMPLATE.replace("{schema}", schema),
         lock_name,
+        limit,
     )
+    head = tick_rows[0]
+    lock_acquired: bool = bool(head["got"])
     if not lock_acquired:
         # Why observable: this branch is benign for the sub-second leader
         # handover it exists to cover, but it is indistinguishable from total
@@ -989,28 +1044,10 @@ async def tick_cron(
         )
         return 0
 
-    server_now: datetime = await conn.fetchval("SELECT clock_timestamp()")
-    # statement_timestamp() (STABLE) — not clock_timestamp() (VOLATILE) —
-    # for the due bound: a volatile comparison cannot be a btree index
-    # condition, so cron_schedules_next_fire_idx (partial on enabled,
-    # keyed on next_fire_at) would degrade from an Index Cond that stops
-    # at the boundary to a post-scan filter walk of every enabled entry,
-    # per tick, every second. Measured at 10k enabled schedules (PG 18,
-    # EXPLAIN ANALYZE): clock_timestamp() walks all 10,000 entries
-    # (1.04 ms); statement_timestamp() is an Index Cond scan (2 buffers,
-    # 0.005 ms). statement_timestamp() is the wall clock at this
-    # statement's start — the same domain as server_now above (read
-    # moments earlier in this same transaction), differing only by the
-    # statement's own execution time.
-    rows: list[asyncpg.Record] = await conn.fetch(
-        f"SELECT id, actor, cron_expr, timezone, dst_strategy, payload_factory, "
-        f"metadata, last_fired_at, consecutive_failures, next_fire_at, identity_key "
-        f'FROM "{schema}".cron_schedules '
-        f"WHERE enabled = true AND next_fire_at <= statement_timestamp() "
-        f"ORDER BY next_fire_at "
-        f"LIMIT $1",
-        limit,
-    )
+    server_now: datetime = head["server_now"]
+    # The idle tick's one row carries the verdict and the clock with NULL
+    # schedule columns; a due row always has an id.
+    rows = [row for row in tick_rows if row["id"] is not None]
     if not rows:
         return 0
 
@@ -1297,7 +1334,7 @@ async def tick_cron(
                 )
                 record_backpressure_error(entry.actor, kind="max_pending")
 
-    await _emit_on_commit(conn, _emit)
+    await _emit_on_commit(conn, _emit, schema=schema)
     return len(successes)
 
 

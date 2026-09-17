@@ -172,10 +172,14 @@ def _make_job_row(actor_name: str) -> JobRow:
 async def _run_one_job_with_fake_dispatch(
     fake_dispatch: Any,
     actor_name: str,
+    *,
+    actor_ref: Any | None = None,
 ) -> WorkerDeps:
     """Run di_consumer_loop for one job with a patched dispatch_one_job.
 
     Returns the WorkerDeps so the caller can inspect drain_failures.
+    ``actor_ref`` substitutes a caller-built registration for the plain
+    default actor (a test that needs retry policy or hooks on it).
     """
     from taskq.worker.run import di_consumer_loop
 
@@ -190,8 +194,9 @@ async def _run_one_job_with_fake_dispatch(
     await _bootstrap_scopes(registry, process_scope, thread_scope, loop_scope)
 
     @actor(name=actor_name)
-    async def _test_actor(payload: BaseModel, ctx: JobContext[BaseModel]) -> None: ...
+    async def _default_actor(payload: BaseModel, ctx: JobContext[BaseModel]) -> None: ...
 
+    _test_actor = actor_ref if actor_ref is not None else _default_actor
     job = _make_job_row(actor_name)
 
     local_queue: asyncio.Queue[JobRow] = asyncio.Queue()
@@ -323,6 +328,52 @@ async def test_di_consumer_loop_no_increment_on_scheduled() -> None:
         _fake_dispatch, actor_name="test_drain_fail_scheduled"
     )
     assert deps.drain_failures == 0
+
+
+async def test_di_consumer_loop_dispatches_with_the_actors_own_registration() -> None:
+    """The config the consumer loop hands to dispatch is the actor's
+    registration itself — retry policy, non-retryable set and hooks — so
+    what the consumer's retry decision reads is exactly what @actor
+    declared, with no per-job copy that could drift from it."""
+    from taskq.retry import RetryPolicy
+
+    async def _exhausted(job: JobRow, exc: BaseException) -> None: ...
+
+    async def _succeeded(job: JobRow, result: object) -> None: ...
+
+    @actor(
+        name="test_drain_actor_registration",
+        retry=RetryPolicy(max_attempts=7, jitter=0.0),
+        non_retryable_exceptions=(ValueError,),
+        on_retry_exhausted=_exhausted,
+        on_retry_exhausted_timeout=1.5,
+        on_success=_succeeded,
+        on_success_timeout=2.5,
+    )
+    async def _configured_actor(payload: BaseModel, ctx: JobContext[BaseModel]) -> None: ...
+
+    handed: list[Any] = []
+
+    async def _fake_dispatch(*args: object, **kwargs: object) -> AttemptOutcome:
+        handed.append(kwargs["actor_config"])
+        return "succeeded"
+
+    await _run_one_job_with_fake_dispatch(
+        _fake_dispatch,
+        actor_name="test_drain_actor_registration",
+        actor_ref=_configured_actor,
+    )
+
+    assert len(handed) == 1
+    config = handed[0]
+    assert config.retry is _configured_actor.retry
+    assert config.retry.max_attempts == 7
+    assert config.non_retryable_exceptions == (ValueError,)
+    assert config.on_retry_exhausted is _exhausted
+    assert config.on_retry_exhausted_timeout == 1.5
+    assert config.on_success is _succeeded
+    assert config.on_success_timeout == 2.5
+    assert config.on_cancel is None
 
 
 async def test_di_consumer_loop_increments_on_exception() -> None:

@@ -19,7 +19,7 @@ the unit lane pins the arithmetic and the PG lane pins the SQL.
 """
 
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, cast
 
 import asyncpg
 import pytest
@@ -92,11 +92,13 @@ class _FakeConn:
 
     def __init__(self, row: dict[str, object] | None) -> None:
         self._row = row
+        self.transactions_opened = 0
 
     async def fetchrow(self, _sql: str, *_params: object) -> dict[str, object] | None:
         return self._row
 
     def transaction(self) -> "_NullTxn":
+        self.transactions_opened += 1
         return _NullTxn()
 
 
@@ -294,3 +296,15 @@ class TestReservationDenialHintPg:
         # next acquire takes the slot normally.
         lease = await res.acquire(new_uuid(), new_uuid(), module_pg_pool)
         assert int(lease) == 0
+
+
+async def test_pg_acquire_runs_its_single_statement_without_an_explicit_transaction() -> None:
+    """The acquire is one data-modifying-CTE statement and a single
+    statement is atomic on its own; wrapping it in ``conn.transaction()``
+    only adds a BEGIN and a COMMIT round trip per reserved job."""
+    res = _reservation()
+    pool = _FakePgPool({"slot_index": 0, "acquired_at": _START, "retry_after_seconds": None})
+
+    await res.acquire(new_uuid(), new_uuid(), cast(Any, pool))
+
+    assert pool._conn.transactions_opened == 0  # pyright: ignore[reportPrivateUsage]  # Why: the fake's own recorded state.

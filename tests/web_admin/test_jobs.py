@@ -13,7 +13,7 @@ from taskq._ids import new_uuid
 from taskq.web.admin import create_router
 from taskq.web.admin.jobs import _normalize_row, _truncate_traceback
 
-from . import _StubPool
+from . import StubConnection, StubRecord, _StubPool
 
 # ── Job detail route: discovery and registration ───────────────────────
 
@@ -746,6 +746,80 @@ def test_build_paginated_sql_prev_direction_reverses_order() -> None:
     )
     assert "SELECT * FROM (" in sql
     assert "ASC" in sql  # reversed from DESC
+
+
+def test_build_paginated_sql_prev_direction_without_a_cursor_is_the_first_page() -> None:
+    """``cursor_dir=prev`` with no usable cursor has nothing to walk back
+    from: the query is the unpaged first page, not the reversed tail of the
+    result set."""
+    from taskq.web.admin.jobs import _SORTABLE_LIVE, _build_paginated_sql
+
+    for cursor_id in (None, "not-a-uuid"):
+        sql, params = _build_paginated_sql(
+            schema="taskq",
+            table="jobs",
+            cols="*",
+            sortable=_SORTABLE_LIVE,
+            where="status = ANY($1)",
+            params=[["pending"]],
+            cursor_at="2025-01-01T00:00:00+00:00",
+            cursor_id=cursor_id,
+            cursor_dir="prev",
+            sort="created_at",
+            order="desc",
+        )
+        assert "SELECT * FROM (" not in sql, cursor_id
+        assert "ASC" not in sql, cursor_id
+        assert params == [["pending"]], cursor_id
+
+
+class _OneJobConnection(StubConnection):
+    """Connection whose jobs-list query returns one row so the table (and its
+    pagination block) renders; every other query stays empty."""
+
+    async def fetch(self, query: str, *args: object) -> list[StubRecord]:
+        if ".jobs WHERE" in query:
+            return [StubRecord(_render_job_table_row(id=new_uuid()))]
+        return []
+
+
+class _OneJobPool(_StubPool):
+    def acquire(self) -> Any:
+        conn = _OneJobConnection()
+
+        class _Ctx:
+            async def __aenter__(self) -> StubConnection:
+                return conn
+
+            async def __aexit__(self, *args: object) -> None:
+                pass
+
+        return _Ctx()
+
+
+def test_jobs_route_malformed_cursor_renders_the_first_page_without_a_prev_link(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A stale bookmark's cursor is dropped and the first page served; the
+    page must then not claim to be paged-into. With one row and no more,
+    neither a "Previous" nor a "Next" link may render - a link built from a
+    cursor that was never applied walks the operator into the wrong page."""
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from taskq.web.admin import setup_admin_state
+
+    monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
+    bundle = create_router(_OneJobPool())  # pyright: ignore[reportArgumentType]  # Why: test duck-type pool.
+    app = FastAPI()
+    setup_admin_state(app, bundle)
+    app.include_router(bundle.router)
+    client = TestClient(app)
+
+    response = client.get("/jobs?tab=live&cursor_at=garbage&cursor_id=garbage&cursor_dir=prev")
+    assert response.status_code == 200
+    assert "cursor_dir=prev" not in response.text
+    assert "cursor_dir=next" not in response.text
 
 
 # ── _parse_time_range: explicit instants vs. a relative window ──────────

@@ -221,10 +221,10 @@ def _reclaim_jitter_fraction(job_id: UUID, attempt: int) -> float:
     every path.  The fleet spread random jitter buys is preserved:
     distinct ids hash to distinct fractions, so a mass-expired cohort
     still arrives across the jitter band instead of at one synchronised
-    instant.  (River and Oban spread reclaims with a random draw — they
-    can, because exactly one process ever computes a given row's retry
-    delay; the deviation here is the dual-statement, dual-implementation
-    parity requirement, not a different spreading goal.)
+    instant.  (A per-evaluation random draw needs exactly one process ever
+    to compute a given row's retry delay; the row-derived hash here is the
+    dual-statement, dual-implementation parity requirement, not a
+    different spreading goal.)
 
     md5 is a hash here, not a cipher: the input is a row identity, and
     32 bits of it become scheduling noise.
@@ -265,6 +265,42 @@ def _jittered_seconds(raw_s: float, jitter: float, source: random.Random) -> flo
     return max(0.0, raw_s * source.uniform(1.0 - jitter, 1.0 + jitter))
 
 
+def _capped_jitter_band(raw_s: float, cap_s: float, jitter: float) -> tuple[float, float]:
+    """The jitter band ``[raw·(1-j), raw·(1+j)]`` fitted under *cap_s*.
+
+    The cap bounds the BAND, not the drawn value. Clipping the drawn value
+    (``min(cap, raw·U(1-j, 1+j))``) collapses the upper half of a saturated
+    row's band onto ``cap`` exactly, so about half of any cohort at the cap
+    — the default exponential policy from attempt 11, every ``fixed`` or
+    ``linear`` policy whose base meets the cap, every reclaimed cohort at
+    the ceiling — comes due at the same instant: the thundering herd
+    jitter exists to prevent, on the retries most likely to be fleet-wide.
+    Fitting the band first (``raw`` clamped to the cap, then the band's
+    upper edge clamped to it) keeps the draw uniform over what remains —
+    ``[cap·(1-j), cap]`` for a saturated row — with the documented bounds
+    ``0 ≤ delay ≤ cap`` intact and ``jitter=0`` still the identity.
+
+    Shared by :func:`compute_backoff` (RNG draw) and
+    :func:`_compute_reclaim_backoff` (row-derived fraction); the SQL twin
+    ``_RECLAIM_DELAY_SQL`` evaluates the same expressions in the same
+    operand order, so the reclaim delays agree bit for bit.
+    """
+    capped_raw = min(cap_s, raw_s)
+    lower = capped_raw * (1.0 - jitter)
+    upper = min(capped_raw * (1.0 + jitter), cap_s)
+    return lower, upper
+
+
+def _draw_in_band(lower: float, upper: float, fraction: float, cap_s: float) -> float:
+    """``lower + (upper - lower)·fraction``, ``fraction`` in ``[0, 1)``.
+
+    The band already lies inside ``[0, cap]``; the closing ``min`` only
+    absorbs float rounding at the top edge and cannot pile draws onto the
+    cap the way the old value-clamp did. Operand order is the SQL twin's.
+    """
+    return min(cap_s, lower + (upper - lower) * fraction)
+
+
 def apply_jitter(
     delay: timedelta,
     jitter: float,
@@ -302,6 +338,9 @@ def compute_backoff(
 
     formula: multiplicative-symmetric jitter —
       delay = raw * rng.uniform(1 - jitter, 1 + jitter)
+    with the band fitted under the cap before the draw (see
+    :func:`_capped_jitter_band`), so a saturated row spreads over
+    ``[cap·(1-j), cap]`` instead of stacking on the cap.
     This is NOT Full Jitter (uniform(0, raw)) because Full Jitter
     collapses toward zero on attempt 1, causing thundering-herd
     retries. See Marc Brooker, "Exponential Backoff And Jitter",
@@ -326,7 +365,10 @@ def compute_backoff(
     cap_s = min(policy.cap.total_seconds(), max_retry_backoff.total_seconds())
 
     raw = _raw_backoff_seconds(base_s, cap_s, policy.backoff, attempt)
-    delay = min(cap_s, _jittered_seconds(raw, policy.jitter, source))
+    lower, upper = _capped_jitter_band(raw, cap_s, policy.jitter)
+    # One draw, as uniform(a, b) is a + (b - a) * random(): identical RNG
+    # consumption to the symmetric multiplication below the cap.
+    delay = _draw_in_band(lower, upper, source.random(), cap_s)
     return timedelta(seconds=delay)
 
 
@@ -343,10 +385,10 @@ def _compute_reclaim_backoff(  # pyright: ignore[reportUnusedFunction]  # Why: c
 
     The Python twin of ``_RECLAIM_DELAY_SQL`` (``taskq.backend._sweeps``):
     same three-way raw branch (shared through :func:`_raw_backoff_seconds`),
-    same ``min(policy.cap, max_retry_backoff)`` effective ceiling applied
-    before and after the jitter multiplication, same multiplicative-symmetric
-    factor evaluated in the SQL's operand order (``raw * (1.0 + jitter *
-    (2.0 * f - 1.0))``) so the two agree bit for bit — pinned by
+    same ``min(policy.cap, max_retry_backoff)`` effective ceiling, same
+    band fitted under that ceiling (:func:`_capped_jitter_band`) and the
+    same ``lower + (upper - lower) * f`` draw evaluated in the SQL's operand
+    order, so the two agree bit for bit — pinned by
     ``tests/test_reclaim_backoff_policy_parity.py``.  The jitter is derived
     from the row, never drawn: the leader's sweep and a partitioned worker's
     isolate_self can each transition the same row within one outage window,
@@ -358,16 +400,14 @@ def _compute_reclaim_backoff(  # pyright: ignore[reportUnusedFunction]  # Why: c
     exponent (``GREATEST(j.attempt - 1, 0)``, mirrored by
     :func:`_raw_backoff_seconds`) and hashes the row's raw stamped attempt
     (``j.attempt::text``), so this function does the same rather than
-    rejecting the input.  The ``max(0.0, ...)`` floor mirrors
-    :func:`_jittered_seconds`; on the validated domain (``jitter <= 1``) the
-    factor is non-negative and the floor is inert.
+    rejecting the input.
     """
     fraction = _reclaim_jitter_fraction(job_id, attempt)
     base_s = policy.base.total_seconds()
     cap_s = min(policy.cap.total_seconds(), max_retry_backoff.total_seconds())
     raw = _raw_backoff_seconds(base_s, cap_s, policy.backoff, attempt)
-    delay = min(cap_s, max(0.0, raw * (1.0 + policy.jitter * (2.0 * fraction - 1.0))))
-    return timedelta(seconds=delay)
+    lower, upper = _capped_jitter_band(raw, cap_s, policy.jitter)
+    return timedelta(seconds=_draw_in_band(lower, upper, fraction, cap_s))
 
 
 class RetryOverride(BaseModel):

@@ -211,6 +211,7 @@ async def _succeed_with_dirty_buffer(
     deps.worker_pool = None
     deps.settings = _settings()
     deps.redis_client = None
+    deps.disowned_jobs = set()
 
     async def actor(running: JobRow, ctx: JobContext[BaseModel]) -> dict[str, object]:
         await ctx.progress(step=1, detail="halfway")
@@ -290,6 +291,7 @@ async def _cancelled_write(*, report_progress: bool) -> dict[str, object]:
     deps.worker_pool = None
     deps.settings = _settings()
     deps.redis_client = None
+    deps.disowned_jobs = set()
 
     async def actor(running: JobRow, ctx: JobContext[BaseModel]) -> dict[str, object]:
         if report_progress:

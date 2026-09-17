@@ -19,7 +19,14 @@ startup.
 5. After firing, the leader computes the next fire time and updates `next_fire_at`.
 
 The cron loop runs inside the maintenance leader's `TaskGroup` alongside the scheduled-wake
-loop, sweep loops, and prune/archive loops.
+loop, sweep loops, and prune/archive loops. It ticks once a second inside a short
+transaction, and a tick opens with **one** statement: the schema's cron advisory try-lock
+(a materialized CTE, so it is taken exactly once and before the read), the planning clock,
+and the due read gated on the lock verdict — the idle tick, by far the commonest, costs
+`BEGIN`, that statement, `COMMIT` (`tests/test_round_trip_budgets.py` and
+`tests/test_rt_cron_lock_handover.py` pin the shape; `tests/test_index_audit.py` pins that
+the due bound stays an index condition). A leader that loses the try-lock during a handover
+reads nothing and records `taskq.cron.lock_contention`.
 
 ---
 

@@ -46,12 +46,15 @@ rotation schedule is needed:
 * Redis - reconnects re-fetch via the redis-py ``CredentialProvider``
   adapter.
 
-The one thing that cannot refresh in place is a **changed username**:
-asyncpg resolves ``user=`` once per pool / connection and accepts a
-callable only for ``password=``. Providers that rotate usernames (e.g.
-Vault dynamic database credentials) need a pool rebuild - ``SIGHUP`` /
-``taskq.worker.deps.reload_credentials`` - and raise a clear error rather
-than pairing a fresh password with a stale username.
+The one thing that cannot refresh in place is a **username-bearing
+pair**: asyncpg resolves ``user=`` once per pool / connection and accepts
+a callable only for ``password=``, and a dynamic username is only valid
+with the password issued alongside it. Providers that issue a fresh
+username per credential (Vault dynamic database credentials) therefore
+pin the pair for the pool's life - the callable hands asyncpg the pair's
+password - and rotate on the pool rebuild that ``SIGHUP`` /
+``TASKQ_RELOAD_INTERVAL`` / ``taskq.worker.deps.reload_credentials``
+performs, scheduled shorter than the lease TTL.
 """
 
 from __future__ import annotations
@@ -138,11 +141,14 @@ class PgCredentialProvider(Protocol):
     Implementations fetch a fresh token / dynamic username+password each
     call. Called by :func:`make_pg_pool_factory` /
     :func:`make_dedicated_conn_factory` once at pool / connection
-    construction (to resolve ``user=`` and fail fast), and then again for
-    every **physical** connection asyncpg opens thereafter - not on each
-    ``acquire()``, which hands back an already-authenticated connection
-    from the pool. Implementations are expected to cache and only hit the
-    issuing service when the cached credential is near expiry.
+    construction (to resolve ``user=`` and fail fast). A credential with
+    ``username`` unset is then re-fetched for every **physical**
+    connection asyncpg opens thereafter - not on each ``acquire()``, which
+    hands back an already-authenticated connection from the pool - so
+    token providers are expected to cache and only hit the issuing service
+    when the cached token is near expiry. A credential that carries a
+    ``username`` is an issued pair used for the pool's life and is fetched
+    again only when the pool is rebuilt.
     """
 
     async def get_pg_credential(self) -> PgCredential:
@@ -259,7 +265,7 @@ def enrich_pg_dsn(dsn: str, credential: PgCredential) -> str:
 def _make_pg_password_callable(
     provider: PgCredentialProvider,
     *,
-    pinned_username: str | None,
+    pinned: PgCredential,
     role: str,
 ) -> Callable[[], Awaitable[str]]:
     """Build the ``password=`` callable asyncpg invokes per physical connection.
@@ -279,17 +285,31 @@ def _make_pg_password_callable(
     roughly one token-lifetime after deploy - green at rollout, dead hours
     later.
 
-    ``pinned_username`` is the username asyncpg was configured with at pool /
-    connection construction. asyncpg's ``user=`` is **not** callable - it is
-    resolved once in ``_parse_connect_arguments`` - so a provider that issues a
-    *new username* alongside each password (HashiCorp Vault dynamic database
-    credentials being the case that matters) cannot have that username applied
-    per connection. Silently pairing a fresh password with the stale username
-    would authenticate as the wrong role or fail with an opaque server-side
-    error, so a changed username is raised as a configuration error naming the
-    mechanism that does handle it (``SIGHUP`` / ``reload_credentials``, which
-    rebuilds the pool and therefore re-resolves ``user=``).
+    *pinned* is the credential the pool / connection was built with. Which of
+    its two shapes it has decides what the callable does per connection:
+
+    * ``username is None`` (Entra ID, AWS IAM RDS): the principal is the DSN
+      user and only the token rotates, so every physical connection re-fetches
+      and authenticates with the current token.
+    * ``username`` set (Vault dynamic database credentials): the username and
+      password were **issued together as one lease** and are only valid as a
+      pair. asyncpg's ``user=`` is not callable - it is resolved once in
+      ``_parse_connect_arguments`` - so the pool is pinned to that username for
+      its life, and the only password that can ever authenticate it is the
+      pair's. Re-fetching here would burn a fresh lease per physical
+      connection and hand asyncpg a password for a username the pool was never
+      built with. The callable therefore returns the pinned pair's password;
+      the pair is replaced when the factory is re-invoked (``SIGHUP`` /
+      ``reload_credentials`` rebuilding the pool), which is where a lease
+      rotates.
     """
+    if pinned.username is not None:
+        pair_password = pinned.password
+
+        async def _pinned_pair_password() -> str:
+            return pair_password
+
+        return _pinned_pair_password
 
     async def _fetch_password() -> str:
         try:
@@ -306,19 +326,6 @@ def _make_pg_password_callable(
                 error_type=type(exc).__name__,
             )
             raise
-
-        if credential.username is not None and credential.username != pinned_username:
-            msg = (
-                f"PgCredentialProvider changed the username for the {role!r} connection "
-                f"mid-rotation (built with user={pinned_username!r}, provider now returns "
-                f"user={credential.username!r}). asyncpg resolves `user=` once per pool / "
-                "connection and only `password=` per physical connection, so the new "
-                "username cannot be applied in place. Send SIGHUP to the worker "
-                "(taskq.worker.deps.reload_credentials) to rebuild with the new username, "
-                "or use a provider whose username is stable across rotations."
-            )
-            raise RuntimeError(msg)
-
         return credential.password
 
     return _fetch_password
@@ -362,22 +369,25 @@ def make_pg_pool_factory(
     asyncpg invokes and awaits once per *physical* connection - the
     connections opened at pool creation, those opened later by pool
     growth, and the replacements opened after
-    ``max_inactive_connection_lifetime`` recycles an idle connection. Every
-    new connection therefore authenticates with a freshly fetched
-    credential, and no external rotation is required. This matters because
-    Postgres authenticates at connect time only: a credential resolved once
-    and reused as a fixed string keeps working on already-open connections
+    ``max_inactive_connection_lifetime`` recycles an idle connection. For
+    a token credential (``username`` unset: Entra ID, AWS IAM RDS) every
+    new connection therefore authenticates with a freshly fetched token,
+    and no external rotation is required. This matters because Postgres
+    authenticates at connect time only: a credential resolved once and
+    reused as a fixed string keeps working on already-open connections
     while every new connection fails, roughly one token-lifetime after
     deploy.
 
-    ``SIGHUP`` (see ``taskq.worker.deps.reload_credentials``) still works
-    and is no longer *required* for token refresh. It remains the way to
-    force a full pool rebuild - and the only way to pick up a **changed
-    username**, since asyncpg resolves ``user=`` once per pool and accepts
-    a callable only for ``password=``. A provider that rotates its username
-    (e.g. Vault dynamic database credentials) raises a ``RuntimeError``
-    naming this constraint rather than pairing a fresh password with a
-    stale username.
+    A **username-bearing** credential (Vault dynamic database credentials)
+    is one issued pair: asyncpg resolves ``user=`` once per pool, so the
+    pool is pinned to that username and every physical connection
+    authenticates with the pair's password - re-fetching would burn a
+    lease per connection for a password the pinned user cannot use. Such
+    a pool rotates when the factory is re-invoked: ``SIGHUP`` /
+    ``TASKQ_RELOAD_INTERVAL`` (``taskq.worker.deps.reload_credentials``)
+    rebuilds it on a fresh pair, so schedule the reload shorter than the
+    lease TTL. Reload is also the way to force a full pool rebuild for a
+    token credential (dropping sessions opened under a revoked token).
 
     Per-connection setup: *init* is forwarded verbatim to
     ``asyncpg.create_pool`` and runs **once per new physical connection**
@@ -430,14 +440,12 @@ def make_pg_pool_factory(
         # Fetched once here to resolve `user=` (not callable in asyncpg) and to
         # fail fast at pool construction on a broken provider, rather than
         # deferring the first failure to the first connection attempt. The
-        # password itself goes in as a callable so it is re-fetched per
-        # physical connection.
+        # password goes in as a callable: re-fetched per physical connection
+        # for a token credential, the pair's own for a username-bearing one.
         credential = await provider.get_pg_credential()
         kwargs: dict[str, Any] = {
             "dsn": ensure_sslmode_require(dsn),
-            "password": _make_pg_password_callable(
-                provider, pinned_username=credential.username, role="pool"
-            ),
+            "password": _make_pg_password_callable(provider, pinned=credential, role="pool"),
             "min_size": min_size,
             "max_size": max_size,
             "max_inactive_connection_lifetime": max_inactive_connection_lifetime,
@@ -479,15 +487,18 @@ def make_dedicated_conn_factory(
     :func:`make_pg_pool_factory`, the credential is passed as keyword
     arguments (precedence over userinfo and query params; the token
     never appears in the DSN string), and ``password=`` is an async
-    callable that asyncpg awaits per physical connection.
+    callable that asyncpg awaits per physical connection - a fresh token
+    for a token credential, the issued pair's password for a
+    username-bearing one.
 
     A dedicated connection is opened once and then held for the life of
     the worker, so the callable normally fires exactly once - but these
     are precisely the long-lived connections a credential expiry kills,
-    and the callable is what makes every *re-open* (a LISTEN connection
-    reconnecting after the server drops it, or ``reload_credentials``
-    rebuilding it) authenticate with a fresh credential rather than the
-    one captured when the factory was first invoked.
+    and the callable is what makes a *re-open* by asyncpg (a LISTEN
+    connection reconnecting after the server drops it) authenticate with
+    the current token rather than the one captured when the factory was
+    first invoked. ``reload_credentials`` re-invokes the factory itself,
+    which is where a username-bearing pair is replaced.
 
     *command_timeout* is forwarded to ``asyncpg.connect`` as the default
     per-operation timeout. The worker's DSN-built ``notify_conn`` /
@@ -522,7 +533,7 @@ def make_dedicated_conn_factory(
         kwargs: dict[str, Any] = {
             "dsn": ensure_sslmode_require(dsn),
             "password": _make_pg_password_callable(
-                provider, pinned_username=credential.username, role="dedicated_conn"
+                provider, pinned=credential, role="dedicated_conn"
             ),
         }
         if credential.username is not None:

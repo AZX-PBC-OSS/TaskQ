@@ -1104,8 +1104,9 @@ async def _mark_interrupted(
     row = self._jobs.get(job_id)
     # The fence mirrors the SQL arm conjunct-for-conjunct: running, owned
     # by this worker, at the presented attempt epoch, and outside any
-    # operator cancel (cancel_phase = 0 — an operator cancel in flight wins
-    # and reads back as "noop", River's cancel_attempted_at precedence).
+    # operator cancel (cancel_phase = 0: an operator cancel in flight wins
+    # and reads back as "noop", since a row with a cancel timestamp set is
+    # cancelled, never re-available).
     if (
         row is None
         or row.status != "running"

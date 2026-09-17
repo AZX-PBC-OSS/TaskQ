@@ -87,9 +87,9 @@ _PROTECTIVE_POLICY = RetryPolicy(
 _FLAT_RECLAIM_DELAY = timedelta(seconds=5)
 
 #: A policy whose cap sits above the operator's global backoff ceiling. With
-#: ``backoff='fixed'`` the curve is flat at base, so every jitter draw lands
-#: above the ceiling and the clamp — not the draw — decides the stamped
-#: delay, deterministically.
+#: ``backoff='fixed'`` the curve is flat at base, far above the ceiling, so
+#: the ceiling — not the curve — decides the stamped delay: the jitter band
+#: is fitted under it, and the delay lands in ``[ceiling·(1-j), ceiling]``.
 _WIDE_POLICY = RetryPolicy(
     backoff="fixed",
     base=timedelta(days=3),
@@ -343,11 +343,11 @@ async def test_reclaim_delay_is_capped_by_the_global_backoff_ceiling(
 
     delay = await _reclaim_delay(backend_pair, job_id)
 
-    assert delay >= DEFAULT_MAX_RETRY_BACKOFF, (
-        f"a crash-reclaimed job was rescheduled {delay} out, under the "
-        f"{DEFAULT_MAX_RETRY_BACKOFF} ceiling: with a policy whose every "
-        "jitter draw exceeds the ceiling, the clamp — not a smaller value — "
-        "must decide the delay"
+    assert delay >= DEFAULT_MAX_RETRY_BACKOFF * (1 - _WIDE_POLICY.jitter), (
+        f"a crash-reclaimed job was rescheduled {delay} out, below the jitter "
+        f"band under the {DEFAULT_MAX_RETRY_BACKOFF} ceiling: with a policy whose "
+        "curve sits above the ceiling, the band fitted under the ceiling — not "
+        "a smaller value — must decide the delay"
     )
     assert delay <= DEFAULT_MAX_RETRY_BACKOFF + _CLOCK_GAP_SLACK, (
         f"a crash-reclaimed job with retry_cap={_WIDE_POLICY.cap} was "
@@ -387,11 +387,11 @@ async def test_reclaim_delay_honours_a_non_default_backoff_ceiling(
 
     delay = await _reclaim_delay(backend_pair, job_id)
 
-    assert delay >= ceiling, (
-        f"a crash-reclaimed job was rescheduled {delay} out, under the "
-        f"operator's configured {ceiling} ceiling: with a policy whose every "
-        "jitter draw exceeds the ceiling, the clamp — not a smaller value — "
-        "must decide the delay"
+    assert delay >= ceiling * (1 - _WIDE_POLICY.jitter), (
+        f"a crash-reclaimed job was rescheduled {delay} out, below the jitter "
+        f"band under the operator's configured {ceiling} ceiling: with a policy "
+        "whose curve sits above the ceiling, the band fitted under the ceiling — "
+        "not a smaller value — must decide the delay"
     )
     assert delay <= ceiling + _CLOCK_GAP_SLACK, (
         f"a crash-reclaimed job was rescheduled {delay} out under an "

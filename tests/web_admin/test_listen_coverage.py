@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import asyncpg
 import pytest
+import structlog.testing
 
 pytest.importorskip("fastapi")
 pytest.importorskip("jinja2")
@@ -242,3 +243,35 @@ async def test_listen_cleanup_releases_connection(pg_dsn: str) -> None:
             await pool.release(conn)
     finally:
         await pool.close()
+
+
+async def test_listen_reconnect_is_reported_with_its_cause() -> None:
+    """An SSE feed that keeps failing to LISTEN (a pool that cannot connect,
+    a bouncer that rejects session commands) degrades to keepalives only;
+    the operator must be able to see why from the logs, so each reconnect
+    is a warning naming the channel and the failure, not a debug line."""
+    pool = MagicMock()
+    good_conn = AsyncMock()
+    pool.acquire = AsyncMock(
+        side_effect=[asyncpg.PostgresConnectionError("lost"), RuntimeError("boom"), good_conn]
+    )
+    pool.release = AsyncMock()
+
+    gen = listen_with_reconnect(
+        pool,  # pyright: ignore[reportArgumentType]  # Why: test duck-type pool.
+        "chan",
+        keepalive_interval=0.05,
+        backoff_initial=0.01,
+        backoff_max=0.05,
+    )
+    with structlog.testing.capture_logs() as logs:
+        for _ in range(3):
+            await asyncio.wait_for(gen.__anext__(), timeout=5.0)
+    await gen.aclose()
+
+    reconnects = [log for log in logs if log["event"] == "listen-reconnect"]
+    assert [log["error_type"] for log in reconnects] == [
+        "PostgresConnectionError",
+        "RuntimeError",
+    ]
+    assert all(log["log_level"] == "warning" and log["channel"] == "chan" for log in reconnects)

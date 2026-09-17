@@ -13,7 +13,10 @@ emitted — alert on them verbatim:
   or terminal), with full error_class/error_message/error_traceback.
 - ``job-failed`` — ERROR, exactly once per dead job, emitted by all five
   handlers after the terminal write persists.
-- ``terminal-write-failed`` — ERROR, infra write failure.
+- ``terminal-write-retry`` — WARNING, one per retried attempt of a
+  terminal write that hit an infra error (attempt number, wait, cause).
+- ``terminal-write-failed`` — ERROR, infra write failure after the retry
+  budget is spent.
 
 Note the spelling split: this module emits ``job-failed`` hyphenated (the
 prevailing convention elsewhere in the tree) but ``job_timeout`` /
@@ -28,10 +31,11 @@ fix; until then this list tells the truth about what is emitted.
 shared between ``consume_one_job`` and ``_consume_transactional``.
 """
 
+import asyncio
 import traceback
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from datetime import timedelta
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Final, Literal
 from uuid import UUID
 
 import asyncpg
@@ -94,6 +98,7 @@ __all__ = [
     "AttemptOutcome",
     "_AttemptFencedOut",
     "_TerminalWriteFailed",
+    "_disown_job",
     "_dispatch_exception",
     "_handle_generic_exception",
     "_handle_reservation_class_denied",
@@ -101,6 +106,7 @@ __all__ = [
     "_handle_snooze",
     "_handle_timeout",
     "_log_terminal_write_failed",
+    "_terminal_write_with_retry",
 ]
 
 # Infra failures during the terminal-write itself (DB connection drop,
@@ -125,6 +131,72 @@ _TERMINAL_WRITE_INFRA_EXCEPTIONS: tuple[type[BaseException], ...] = (
     OSError,
     TimeoutError,
 )
+
+
+_TERMINAL_WRITE_ATTEMPTS: Final[int] = 3
+"""How many times one terminal write is attempted before it is reported
+as failed. Three: enough to ride out a connection reset or a
+pool-acquire timeout. The heartbeat keeps renewing the lease for the
+whole window (the job is disowned only after the budget is spent), so
+the lock lease cannot lapse mid-retry."""
+
+_TERMINAL_WRITE_BACKOFF: Final[tuple[timedelta, ...]] = (
+    timedelta(milliseconds=50),
+    timedelta(milliseconds=200),
+)
+"""The wait before the second and third attempt. Short and geometric: a
+blip that has not cleared within a quarter of a second is an outage the
+lease-reclaim path owns, not something the consumer should sit on."""
+
+_TERMINAL_WRITE_JITTER: Final[float] = 0.25
+"""Spread on each backoff wait, so every consumer slot that hit the same
+blip does not re-issue its write on the same tick."""
+
+
+async def _terminal_write_with_retry[T](
+    write: Callable[[], Awaitable[T]],
+    *,
+    log: structlog.stdlib.BoundLogger,
+    job: JobRow,
+    write_name: str,
+) -> T:
+    """Run one pool-path terminal write, retrying the infra-failure family.
+
+    *write* builds the backend call afresh per attempt (a coroutine can be
+    awaited once). Each attempt runs under ``shield_with_retrieval`` so an
+    external cancel never strands an in-flight statement, and only
+    :data:`_TERMINAL_WRITE_INFRA_EXCEPTIONS` is retried — a fence outcome
+    (``False``, ``"noop"``, ``None``) is the backend's answer and returns
+    as-is, and any other exception is a defect that stays loud on the
+    first raise. The final infra failure propagates unchanged, so every
+    caller's existing ``terminal-write-failed`` handling is the terminal
+    outcome of an exhausted budget.
+
+    Not for ``*_with_conn`` writes: those run on the job's own transaction
+    connection, and an infra error there has already aborted the
+    transaction — re-issuing the statement on it cannot land.
+    """
+    for attempt in range(1, _TERMINAL_WRITE_ATTEMPTS + 1):
+        try:
+            return await shield_with_retrieval(write())
+        except _TERMINAL_WRITE_INFRA_EXCEPTIONS as infra_exc:
+            if attempt >= _TERMINAL_WRITE_ATTEMPTS:
+                raise
+            wait = apply_jitter(_TERMINAL_WRITE_BACKOFF[attempt - 1], _TERMINAL_WRITE_JITTER)
+            log.warning(
+                "terminal-write-retry",
+                kind="terminal_write_retry",
+                job_id=str(job.id),
+                actor=job.actor,
+                write=write_name,
+                attempt=attempt,
+                max_attempts=_TERMINAL_WRITE_ATTEMPTS,
+                retry_in_ms=int(wait.total_seconds() * 1000),
+                infra_error_class=type(infra_exc).__name__,
+                infra_error_message=str(infra_exc),
+            )
+            await asyncio.sleep(wait.total_seconds())
+    raise AssertionError("unreachable: the attempt loop returns or raises")
 
 
 class _TerminalWriteFailed(BaseException):
@@ -177,9 +249,10 @@ def _log_terminal_write_failed(
 ) -> None:
     """Log a terminal-write infra failure without mutating job state.
 
-    The job row is left in ``running`` — no mark_failed/mark_succeeded
-    write happened — so lock-lease expiry and the crash sweep reclaim it
-    for retry. This is intentionally NOT re-dispatched into
+    The job row is left in ``running`` — none of the write's attempts
+    landed (see :func:`_terminal_write_with_retry`) — so lock-lease
+    expiry and the crash sweep reclaim it for retry. This is intentionally
+    NOT re-dispatched into
     ``_handle_generic_exception`` (that would classify the *infra*
     exception as the actor's failure, discarding the real one and
     re-running the retry decision against the wrong exception type).
@@ -201,6 +274,20 @@ def _log_terminal_write_failed(
         infra_error_message=str(infra_exc),
         infra_error_traceback=_format_exc(infra_exc),
     )
+
+
+def _disown_job(disowned_jobs: "set[UUID] | None", job: JobRow) -> None:
+    """Record that this worker is done with *job* but could not move its row.
+
+    Called wherever a terminal write's retry budget is spent and the row
+    is left ``running`` under this worker's lock. The heartbeat excludes
+    the recorded ids from lease renewal (see ``WorkerDeps.disowned_jobs``),
+    which is what turns "lock-lease expiry reclaims it" from a promise
+    into the actual recovery. ``None`` is a caller with no worker deps —
+    a direct test invocation — and nothing to record into.
+    """
+    if disowned_jobs is not None:
+        disowned_jobs.add(job.id)
 
 
 def _format_exc(exc: BaseException) -> str:
@@ -348,8 +435,8 @@ async def _handle_timeout(
     )
     record_attempt_failure(job.actor, error_info.error_class, retryable=isinstance(decision, Retry))
     if isinstance(decision, Retry):
-        updated_row = await shield_with_retrieval(
-            safe_mark_failed_or_retry(
+        updated_row = await _terminal_write_with_retry(
+            lambda: safe_mark_failed_or_retry(
                 backend,
                 job.id,
                 worker_id,
@@ -359,7 +446,10 @@ async def _handle_timeout(
                 progress_state=progress_state,
                 log=log,
                 attempt=job.attempt,
-            )
+            ),
+            log=log,
+            job=job,
+            write_name="mark_failed_or_retry",
         )
         if updated_row is None:
             # Fenced out: the row moved underneath this attempt (a reclaim
@@ -393,8 +483,8 @@ async def _handle_timeout(
             return "failed"
         return "scheduled"
     else:
-        updated_row = await shield_with_retrieval(
-            safe_mark_failed_or_retry(
+        updated_row = await _terminal_write_with_retry(
+            lambda: safe_mark_failed_or_retry(
                 backend,
                 job.id,
                 worker_id,
@@ -404,7 +494,10 @@ async def _handle_timeout(
                 progress_state=progress_state,
                 log=log,
                 attempt=job.attempt,
-            )
+            ),
+            log=log,
+            job=job,
+            write_name="mark_failed_or_retry",
         )
         if updated_row is None:
             # Fenced out — see the retry branch above.
@@ -470,15 +563,18 @@ async def _handle_snooze(
     # The row's snooze_count column is the deferral counter — the
     # backend's snooze arm increments it; no metadata mirror is merged
     # here (one source of truth).
-    tri = await shield_with_retrieval(
-        backend.mark_snoozed(
+    tri = await _terminal_write_with_retry(
+        lambda: backend.mark_snoozed(
             job.id,
             worker_id,
             s.delay,
             progress_seq=progress_seq,
             progress_state=progress_state,
             attempt=job.attempt,
-        )
+        ),
+        log=log,
+        job=job,
+        write_name="mark_snoozed",
     )
     if tri == "scheduled":
         span.add_event(
@@ -561,8 +657,8 @@ async def _handle_retry_after(
     *,
     error_reporter: ErrorReporter | None = None,
 ) -> AttemptOutcome:
-    tri = await shield_with_retrieval(
-        backend.mark_retry_after(
+    tri = await _terminal_write_with_retry(
+        lambda: backend.mark_retry_after(
             job.id,
             worker_id,
             r.delay,
@@ -570,7 +666,10 @@ async def _handle_retry_after(
             progress_seq=progress_seq,
             progress_state=progress_state,
             attempt=job.attempt,
-        )
+        ),
+        log=log,
+        job=job,
+        write_name="mark_retry_after",
     )
     if tri == "scheduled":
         span.add_event(
@@ -675,8 +774,8 @@ async def _handle_reservation_class_denied(
     # floor still applies downstream. Timing-only: retry_after is
     # advisory, never an admission or budget decision.
     retry_after = apply_jitter(e.retry_after, actor_config.retry.jitter)
-    tri = await shield_with_retrieval(
-        backend.mark_snoozed(
+    tri = await _terminal_write_with_retry(
+        lambda: backend.mark_snoozed(
             job.id,
             worker_id,
             retry_after,
@@ -686,7 +785,10 @@ async def _handle_reservation_class_denied(
             progress_state=progress_state,
             attempt=job.attempt,
             denial_reason=denial_reason,
-        )
+        ),
+        log=log,
+        job=job,
+        write_name="mark_snoozed",
     )
     if tri == "scheduled":
         span.add_event(
@@ -809,8 +911,8 @@ async def _handle_generic_exception(
     decision = decide_after_failure(actor_config, e, job_state, max_retry_backoff=max_retry_backoff)
     record_attempt_failure(job.actor, error_info.error_class, retryable=isinstance(decision, Retry))
     if isinstance(decision, Retry):
-        updated_row = await shield_with_retrieval(
-            safe_mark_failed_or_retry(
+        updated_row = await _terminal_write_with_retry(
+            lambda: safe_mark_failed_or_retry(
                 backend,
                 job.id,
                 worker_id,
@@ -820,7 +922,10 @@ async def _handle_generic_exception(
                 progress_state=progress_state,
                 log=log,
                 attempt=job.attempt,
-            )
+            ),
+            log=log,
+            job=job,
+            write_name="mark_failed_or_retry",
         )
         if updated_row is None:
             # Fenced out: the row moved underneath this attempt (a reclaim
@@ -854,8 +959,8 @@ async def _handle_generic_exception(
             return "failed"
         return "scheduled"
     else:
-        updated_row = await shield_with_retrieval(
-            safe_mark_failed_or_retry(
+        updated_row = await _terminal_write_with_retry(
+            lambda: safe_mark_failed_or_retry(
                 backend,
                 job.id,
                 worker_id,
@@ -865,7 +970,10 @@ async def _handle_generic_exception(
                 progress_state=progress_state,
                 log=log,
                 attempt=job.attempt,
-            )
+            ),
+            log=log,
+            job=job,
+            write_name="mark_failed_or_retry",
         )
         if updated_row is None:
             # Fenced out — see the retry branch above.
@@ -931,6 +1039,7 @@ async def _dispatch_exception(
     pre_handler: Callable[[], None] | None = None,
     error_reporter: ErrorReporter | None = None,
     text: ExceptionText | None = None,
+    disowned_jobs: "set[UUID] | None" = None,
 ) -> AttemptOutcome:
     """Route *exc* to the appropriate terminal handler via ``_run_terminal_path``.
 
@@ -949,6 +1058,9 @@ async def _dispatch_exception(
     report a traceback reuse it rather than rendering a second time. The
     transactional path catches inside the span and passes none, and only
     those handlers render — a snooze never pays for a traceback.
+
+    *disowned_jobs* is the worker's disowned set, handed to
+    ``_run_terminal_path`` for the exhausted-write path.
     """
     from taskq.worker._consumer import _run_terminal_path
 
@@ -963,6 +1075,8 @@ async def _dispatch_exception(
             worker_pool=worker_pool,
             settings=settings,
             redis_client=redis_client,
+            disowned_jobs=disowned_jobs,
+            job_log=log,
             handler=_handle_timeout,
             handler_args=(
                 backend,
@@ -989,6 +1103,8 @@ async def _dispatch_exception(
             worker_pool=worker_pool,
             settings=settings,
             redis_client=redis_client,
+            disowned_jobs=disowned_jobs,
+            job_log=log,
             handler=_handle_snooze,
             handler_args=(backend, job, worker_id, exc, consumer_span, log, actor_config),
             handler_kwargs={"error_reporter": error_reporter},
@@ -1006,6 +1122,8 @@ async def _dispatch_exception(
             worker_pool=worker_pool,
             settings=settings,
             redis_client=redis_client,
+            disowned_jobs=disowned_jobs,
+            job_log=log,
             handler=_handle_retry_after,
             handler_args=(backend, job, worker_id, exc, consumer_span, log, actor_config),
             handler_kwargs={"error_reporter": error_reporter},
@@ -1023,6 +1141,8 @@ async def _dispatch_exception(
             worker_pool=worker_pool,
             settings=settings,
             redis_client=redis_client,
+            disowned_jobs=disowned_jobs,
+            job_log=log,
             handler=_handle_reservation_class_denied,
             handler_args=(backend, job, worker_id, exc, consumer_span, log, actor_config),
             handler_kwargs={
@@ -1044,6 +1164,8 @@ async def _dispatch_exception(
         worker_pool=worker_pool,
         settings=settings,
         redis_client=redis_client,
+        disowned_jobs=disowned_jobs,
+        job_log=log,
         handler=_handle_generic_exception,
         handler_args=(
             backend,

@@ -283,6 +283,17 @@ class WorkerDeps:
     # is first). Feeds the /ready shutdown_elapsed_seconds surface.
     shutdown_started_at: float | None = None
     heartbeat_failures: int = 0
+    disowned_jobs: set[UUID] = field(default_factory=set[UUID])
+    """Jobs this worker has finished with but could not record an outcome
+    for — every attempt of the terminal write failed with an infra error,
+    so the row is still ``running`` and locked to this worker. The
+    heartbeat renews leases by ``locked_by_worker`` and excludes these ids,
+    so the row's lease lapses on schedule and the reclaim sweep hands it
+    back to the fleet — the recovery the terminal-write-failed log promises,
+    which a lease renewed for the life of the process would never deliver.
+    The consumer adds an id on the exhausted-write path, the heartbeat drops
+    ids whose row is no longer this worker's running row, and the producer
+    drops an id it claims again (the row is a live job of ours once more)."""
     progress_buffers: dict[UUID, _ProgressBuffer] = field(
         default_factory=dict[UUID, _ProgressBuffer]
     )

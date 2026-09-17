@@ -239,11 +239,9 @@ exist."""
 # replay is idempotent per row — strictly more robust than a fresh draw.
 # The fleet spread random() bought is preserved: distinct ids hash to
 # distinct fractions, so a mass-expired cohort still arrives spread across
-# the jitter band instead of at one synchronised point.  (River and Oban
-# spread reclaims with a random draw per evaluation — vendor/river's
-# retrySeconds adds rand.Float64()*0.2-0.1, vendor/oban's Backoff.jitter
-# draws :rand.uniform() — which they can do because exactly one process
-# ever computes a given row's retry delay; the deviation here is the
+# the jitter band instead of at one synchronised point.  (A per-evaluation
+# random draw needs exactly one process ever to compute a given row's
+# retry delay; the per-row hash here is the
 # dual-statement, dual-implementation parity requirement, not a different
 # spreading goal.)
 #
@@ -263,9 +261,25 @@ _RECLAIM_JITTER_FRACTION_SQL = (
 """The reclaim jitter fraction in [0, 1): deterministic per (job, attempt),
 identical in this database and in ``taskq.retry._reclaim_jitter_fraction``."""
 
+# The jitter band fitted under the effective cap — the twin of
+# taskq.retry._capped_jitter_band: the raw curve value clamped to the cap,
+# the band's lower edge raw·(1-j), its upper edge raw·(1+j) clamped to the
+# cap. The cap bounds the BAND, not the drawn value: clamping the drawn
+# value collapsed the upper half of a saturated row's band onto the cap,
+# so half of any cohort reclaimed at the ceiling came due at one instant.
+_RECLAIM_CAPPED_RAW_SQL = f"LEAST({_RECLAIM_EFFECTIVE_CAP_SQL}, {_RECLAIM_RAW_BACKOFF_SQL})"
+_RECLAIM_BAND_LOWER_SQL = f"({_RECLAIM_CAPPED_RAW_SQL} * (1.0 - j.retry_jitter))"
+_RECLAIM_BAND_UPPER_SQL = (
+    f"LEAST({_RECLAIM_CAPPED_RAW_SQL} * (1.0 + j.retry_jitter), {_RECLAIM_EFFECTIVE_CAP_SQL})"
+)
+
 _RECLAIM_DELAY_SQL = (
-    f"(LEAST({_RECLAIM_EFFECTIVE_CAP_SQL}, {_RECLAIM_RAW_BACKOFF_SQL} "
-    f"* (1.0 + j.retry_jitter * (2.0 * {_RECLAIM_JITTER_FRACTION_SQL} - 1.0)))) * interval '1 second'"
+    # lower + (upper - lower) · fraction, then a closing LEAST that only
+    # absorbs float rounding at the top edge (the band already lies inside
+    # [0, cap]) — operand for operand taskq.retry._draw_in_band.
+    f"(LEAST({_RECLAIM_EFFECTIVE_CAP_SQL}, {_RECLAIM_BAND_LOWER_SQL} "
+    f"+ ({_RECLAIM_BAND_UPPER_SQL} - {_RECLAIM_BAND_LOWER_SQL}) "
+    f"* {_RECLAIM_JITTER_FRACTION_SQL})) * interval '1 second'"
 )
 """How far out a reclaimed job is rescheduled — the job's own
 ``RetryPolicy`` curve (base, cap, backoff kind, jitter), stamped on the
@@ -273,7 +287,8 @@ row at enqueue time, evaluated exactly as the reclaim curve twin
 :func:`taskq.retry._compute_reclaim_backoff` would for this attempt,
 including its ceiling: the lesser of the row's stamped cap and the
 operator's ``max_retry_backoff``, bound per statement through the
-``{max_backoff_seconds}`` placeholder.
+``{max_backoff_seconds}`` placeholder, and including the band fitted
+under that ceiling so a cohort at the cap spreads over ``[cap·(1-j), cap]``.
 
 A fleet-wide event — a node drain, a zone loss, an OOM sweep across a
 deployment — expires many leases at once, and one sweep hands the whole
@@ -1424,8 +1439,8 @@ async def sweep_scheduled_to_pending(
     frees or its deadline expires, so a row per promotion is precisely
     the unbounded-growth vector the aggregated denial counters on the job
     row replaced. The transitions of record are the terminal writes and
-    the sweep/cancel audit entries; neither vendored grain (River, Oban)
-    writes a per-promotion row. The sweep's own observability is the
+    the sweep/cancel audit entries; the promotion itself writes no row,
+    so the table cannot grow per promotion. The sweep's own observability is the
     per-call count log below and the per-row ``state_change`` log lines
     (logs, not durable rows).
 

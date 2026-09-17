@@ -1776,6 +1776,7 @@ async def test_pre_terminal_flush_before_mark_succeeded() -> None:
     deps.worker_pool = pool
     deps.settings = settings
     deps.redis_client = None
+    deps.disowned_jobs = set()
 
     async def actor(_job: object, ctx: JobContext[BaseModel]) -> dict[str, object]:
         assert isinstance(ctx, JobContext)
@@ -1853,6 +1854,7 @@ async def test_cancel_clean_buffer_passes_base_seq_not_zero() -> None:
     deps.worker_pool = None
     deps.settings = settings
     deps.redis_client = None
+    deps.disowned_jobs = set()
 
     async def actor(_job: object, _ctx: JobContext[BaseModel]) -> object:
         raise asyncio.CancelledError
@@ -1916,6 +1918,7 @@ async def test_deps_parameter_enables_buffer_registration() -> None:
     deps.worker_pool = pool
     deps.settings = settings
     deps.redis_client = None
+    deps.disowned_jobs = set()
 
     progress_called = False
 
@@ -1965,6 +1968,7 @@ async def test_autonomous_explicit_params_override_deps() -> None:
     deps.worker_pool = None
     deps.settings = settings
     deps.redis_client = None
+    deps.disowned_jobs = set()
 
     progress_called = False
 
@@ -2487,3 +2491,45 @@ async def test_denial_on_budget_exhausted_job_never_reaches_a_terminal_write() -
         "is the only durable record of contention now that denials write no "
         "job_events and no job_attempts rows."
     )
+
+
+async def test_consume_one_job_uses_the_caller_bound_job_log() -> None:
+    """A caller that already bound the job's logger (the dispatch path
+    binds one for the interim context) hands it in as ``job_log`` and the
+    actor's ctx logs through that very logger — no second binding."""
+    import structlog
+
+    from taskq.obs import bind_job_context
+    from taskq.testing.actor import FakeBackend, StubActorConfig, as_backend
+    from taskq.testing.clock import FakeClock
+    from taskq.testing.jobs import make_job_row
+
+    job = make_job_row()
+    caller_log = bind_job_context(
+        structlog.get_logger("test.caller"),
+        job_id=job.id,
+        actor=job.actor,
+        queue=job.queue,
+        attempt=job.attempt,
+        identity_key=None,
+        trace_id="",
+    )
+    seen: list[structlog.stdlib.BoundLogger] = []
+
+    async def actor(_job: object, ctx: JobContext[BaseModel]) -> dict[str, object]:
+        seen.append(ctx.log)
+        return {}
+
+    outcome = await consume_one_job(
+        as_backend(FakeBackend()),
+        job,
+        job.locked_by_worker or _WORKER_ID,
+        run_actor=actor,
+        actor_config=StubActorConfig(retry=RetryPolicy()),
+        payload_type=EmptyPayload,
+        clock=FakeClock(_NOW),
+        job_log=caller_log,
+    )
+
+    assert outcome == "succeeded"
+    assert seen == [caller_log]

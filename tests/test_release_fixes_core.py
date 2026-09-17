@@ -182,7 +182,7 @@ async def test_handle_generic_exception_propagates_infra_write_failure() -> None
     from taskq.retry import RetryPolicy
     from taskq.testing.actor import StubActorConfig
     from taskq.testing.jobs import make_job_row
-    from taskq.worker._handlers import _handle_generic_exception
+    from taskq.worker._handlers import _TERMINAL_WRITE_ATTEMPTS, _handle_generic_exception
 
     infra_exc = asyncpg.PostgresConnectionError("connection lost")
     backend = _RaisingBackend(infra_exc)
@@ -210,7 +210,10 @@ async def test_handle_generic_exception_propagates_infra_write_failure() -> None
             log,
         )
 
-    assert backend.calls == 1
+    # Every attempt of the bounded retry budget was spent on the write and
+    # nothing else was written: the infra error is neither swallowed nor
+    # re-routed into a second terminal write.
+    assert backend.calls == _TERMINAL_WRITE_ATTEMPTS
 
 
 @pytest.mark.asyncio
@@ -228,7 +231,7 @@ async def test_dispatch_exception_swallows_infra_failure_all_handlers(
     from taskq.retry import RetryPolicy
     from taskq.testing.actor import StubActorConfig
     from taskq.testing.jobs import make_job_row
-    from taskq.worker._handlers import _dispatch_exception
+    from taskq.worker._handlers import _TERMINAL_WRITE_ATTEMPTS, _dispatch_exception
 
     infra_exc = asyncpg.PostgresConnectionError("connection lost")
 
@@ -276,7 +279,7 @@ async def test_dispatch_exception_swallows_infra_failure_all_handlers(
         redis_client=None,
     )
 
-    assert backend.calls == 1
+    assert backend.calls == _TERMINAL_WRITE_ATTEMPTS
     assert outcome in ("failed", "scheduled")
 
 

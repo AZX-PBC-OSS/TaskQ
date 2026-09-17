@@ -299,7 +299,7 @@ the schema name, and it is now enforced on **both** stores.
 | Namespace | Format | Example |
 |---|---|---|
 | Advisory locks | `taskq:{purpose}:{schema}` | `taskq:maintenance_leader:taskq`, `taskq:cron:taskq`, `taskq:prune:taskq`, `taskq:archive_expiry:taskq`, `taskq:migrate:taskq` |
-| NOTIFY channels | `taskq_wake_{schema}`, `taskq_events_{schema}`, `taskq_worker_{schema}_{worker_id}` | `taskq_wake_taskq` |
+| NOTIFY channels | `taskq_wake_{tag}`, `taskq_events_{tag}`, `taskq_worker_{tag}_{worker_id}`, where `{tag}` is the first 10 hex digits of `sha224(schema)` (channels are 63-byte identifiers; the schema name alone may be that long) | `taskq_wake_124a200651` for schema `taskq` |
 | Tables | every table lives inside the schema | `taskq.jobs`, `staging.jobs` |
 | Keyed PG locks | schema-qualified like their Redis twins | `taskq:{schema}:sw:{name}` (sliding-window PG fallback), `taskq:unique_for:{schema}:{actor}:{identity_key}` (enqueue single-flight) |
 

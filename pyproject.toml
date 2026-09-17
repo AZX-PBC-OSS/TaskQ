@@ -430,6 +430,7 @@ ignore = [
 # cryptographic purposes.
 "tests/test_retry_backoff.py" = ["S311"]
 "tests/test_retry_backoff_overflow.py" = ["S311"]
+"tests/test_retry_jitter_at_cap.py" = ["S311"]
 # S311: random.Random used for poll-jitter determinism in producer-wake
 # tests, not cryptographic purposes.
 "tests/test_worker_producer_wake.py" = ["S311"]

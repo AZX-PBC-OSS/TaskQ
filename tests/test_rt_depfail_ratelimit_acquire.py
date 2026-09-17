@@ -9,6 +9,7 @@ the job's ``error_message`` is the misattribution class.
 
 from datetime import UTC, datetime
 from typing import Any
+from uuid import UUID
 
 import pytest
 import redis
@@ -53,6 +54,7 @@ class _FakeWorkerDeps:
         self.settings.worker_group = "default"
         self.redis_client: Any = None
         self.progress_buffers: dict[Any, Any] = {}
+        self.disowned_jobs: set[UUID] = set()
 
 
 def _make_scopes(

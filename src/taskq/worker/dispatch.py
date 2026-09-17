@@ -27,6 +27,7 @@ from opentelemetry.trace import SpanKind, StatusCode
 from pydantic import BaseModel
 
 from taskq._di.registry import ProviderRegistry
+from taskq._di.scope import Scope
 from taskq._di.scopes import LoopScope, ProcessScope, ThreadScope, build_actor_scope
 from taskq._validation import validate_actor_payload
 from taskq.actor import ActorRef
@@ -38,6 +39,7 @@ from taskq.constants import DEFAULT_MAX_RETRY_BACKOFF
 from taskq.context import JobContext
 from taskq.obs import (
     ConsumedOutcome,
+    ErrorReporter,
     bind_job_context,
     get_logger,
     record_consumed_message,
@@ -53,10 +55,17 @@ from taskq.retry import ActorConfigLike
 from taskq.worker._bootstrap import (  # pyright: ignore[reportPrivateUsage]  # Why: _registered_connection_init_hook is the single reader of the registry half of the with_connection_init channel; bootstrap uses it at pool build and dispatch needs the same probe for pools bootstrap did not build. No cycle: _bootstrap does not import dispatch.
     _registered_connection_init_hook,
 )
-from taskq.worker._consumer import consume_one_job
+from taskq.worker._consumer import (
+    _log as _consumer_log,  # pyright: ignore[reportPrivateUsage]  # Why: the job-bound logger is built once here and handed to consume_one_job; binding it off the consumer's own logger keeps the `logger` field on every job line exactly what consume_one_job binds by default.
+)
+from taskq.worker._consumer import (
+    bind_job_log,
+    consume_one_job,
+)
 from taskq.worker._handlers import (
     _TERMINAL_WRITE_INFRA_EXCEPTIONS,  # pyright: ignore[reportPrivateUsage]  # Why: dispatch_one_job's direct-call path for _handle_generic_exception needs the same infra guard as _run_terminal_path to prevent false terminal Redis publishes and exception mislabeling.
     AttemptOutcome,
+    _disown_job,  # pyright: ignore[reportPrivateUsage]  # Why: same rationale as _TERMINAL_WRITE_INFRA_EXCEPTIONS above.
     _handle_generic_exception,  # pyright: ignore[reportPrivateUsage]  # Why: _handle_generic_exception implements the same exception→retry/fail routing as consume_one_job's inner handlers; dispatch_one_job needs it for DI-resolution failures that escape consume_one_job's own try/except.
     _log_terminal_write_failed,  # pyright: ignore[reportPrivateUsage]  # Why: same rationale as _TERMINAL_WRITE_INFRA_EXCEPTIONS above.
 )
@@ -67,6 +76,22 @@ if TYPE_CHECKING:
     import redis.asyncio as redis_async
 
 logger: structlog.stdlib.BoundLogger = get_logger(__name__)
+
+
+def _redis_client_type() -> "type[redis_async.Redis] | None":
+    """The LOOP-scope key a registered Redis client is cached under, or
+    ``None`` when the redis extra is not installed — resolved once at
+    import, the same shape as the consumer's dependency-exception family,
+    so no dispatch pays an import (or, without the extra, an ImportError
+    raise and a finder walk) per job."""
+    try:
+        import redis.asyncio as _redis_mod
+    except ImportError:
+        return None
+    return _redis_mod.Redis
+
+
+_REDIS_CLIENT_TYPE: Final["type[redis_async.Redis] | None"] = _redis_client_type()
 
 # Why the shared pool-infra family (defined in taskq.worker.deps, the
 # module that owns the pools): the acquire below runs no queries, so any
@@ -147,6 +172,88 @@ def _effective_reservations(
         if rl_registry.has_reservation(queue_cap_name):
             return [queue_cap_name, *reservations]
     return reservations
+
+
+async def _resolve_error_reporter(
+    registry: ProviderRegistry,
+    *,
+    process_scope: ProcessScope,
+    thread_scope: ThreadScope,
+    loop_scope: LoopScope,
+) -> ErrorReporter | None:
+    """The :class:`ErrorReporter` the application registered, or ``None``.
+
+    The reporter is a long-lived hook — a PROCESS-scope value for the
+    stateless adapters most deployments register, a THREAD or LOOP scope
+    for one holding a loop-lifetime connection — so it is read from the
+    scope container its registration named. Hot path: one registry probe
+    and one cache lookup per job, no allocation; the LOOP read goes
+    through the same resolved-cache seam the rate-limit registry and the
+    transaction connection use.
+
+    A TRANSIENT registration is degraded here rather than failing the job:
+    a per-job raise turned one misregistration into every job of every
+    actor dying before payload validation, each burning its retry budget,
+    which is an outage with a config-error root cause. Worker startup is
+    the loud gate for the same shape (it refuses the registration before
+    any job exists); this per-job guard only backstops paths that never
+    bootstrapped, so it proceeds without a reporter behind a window-gated
+    WARNING. A reporter that never fires is indistinguishable from a
+    healthy fleet with no failures, which is why the degradation is
+    logged at all.
+    """
+    if not registry.has_provider(ErrorReporter):
+        return None
+    entry = registry.get(ErrorReporter)
+    raw: object | None
+    match entry.scope:
+        case Scope.PROCESS:
+            raw = await process_scope.get_or_create(ErrorReporter, entry)
+        case Scope.THREAD:
+            raw = thread_scope.get(ErrorReporter)
+        case Scope.LOOP:
+            raw = loop_scope.resolved_cache().get(ErrorReporter)
+        case _:
+            _warn_reporter_defect("scope", entry.scope.name)
+            return None
+    if isinstance(raw, ErrorReporter):
+        return raw
+    _warn_reporter_defect("type", type(raw).__name__ if raw is not None else "None")
+    return None
+
+
+_REPORTER_DEFECT_LOG_WINDOW_S: Final[float] = 60.0
+"""Minimum seconds between two ``error-reporter-defect`` WARNINGs, keyed by
+defect kind (bounded: the two-element vocabulary). A misregistered reporter
+resolves on every job, so one line per occurrence is a log flood, not a
+signal."""
+
+_reporter_defect_warned: dict[str, float] = {}
+"""Monotonic stamp of the last emitted reporter-defect WARNING, keyed by
+defect kind."""
+
+
+def _warn_reporter_defect(kind: str, detail: str) -> None:
+    """Emit the ``error-reporter-defect`` WARNING at most once per window.
+
+    *kind* is ``scope`` (a registration at a scope the hook cannot outlive,
+    with the registered scope name as *detail*) or ``type`` (a provider that
+    resolved to a value without the reporter protocol, with the runtime type
+    as *detail*). The hook is skipped either way: a broken reporter is a
+    misconfiguration, not a job outcome, so the job's own failure handling
+    proceeds untouched.
+    """
+    now = time.monotonic()
+    last = _reporter_defect_warned.get(kind)
+    if last is not None and now - last < _REPORTER_DEFECT_LOG_WINDOW_S:
+        return
+    _reporter_defect_warned[kind] = now
+    logger.warning(
+        "error-reporter-defect",
+        kind="error_reporter_defect",
+        defect=kind,
+        detail=detail,
+    )
 
 
 async def _ensure_registered_init_on_slot_conn(
@@ -248,7 +355,8 @@ async def dispatch_one_job(
        (``loop_slot_values``), so the actor's own writes join this job's
        transaction and concurrent slots never share a connection.
     2. Create the CONSUMER span with link to the PRODUCER span.
-    3. Validate the payload against actor_ref's payload schema.
+    3. Resolve the registered :class:`~taskq.obs.ErrorReporter` (if any)
+       and validate the payload against actor_ref's payload schema.
     4. Build the interim JobContext with the CONSUMER span.
     5. Open build_actor_scope to resolve DI kwargs.
     6. Hand the resolved kwargs to consume_one_job via a run_actor
@@ -481,7 +589,21 @@ async def dispatch_one_job(
                 attributes=consumer_attrs,
                 links=links,
             ) as consumer_span:
+                # Resolved first, inside the try: a failure before the
+                # actor runs (payload validation, DI resolution) is a
+                # terminal failure like any other, and the outer handler
+                # below reports it through the same hook. A reporter
+                # misregistration surfaces the same way a broken actor
+                # dependency does — on the job, through the retry
+                # decision — rather than tearing down the consumer loop.
+                error_reporter: ErrorReporter | None = None
                 try:
+                    error_reporter = await _resolve_error_reporter(
+                        registry,
+                        process_scope=process_scope,
+                        thread_scope=thread_scope,
+                        loop_scope=loop_scope,
+                    )
                     # The row's stored version rides the raise — not the
                     # helper's current-version default — so a row that
                     # predates a payload migration is distinguishable from
@@ -493,11 +615,16 @@ async def dispatch_one_job(
                         payload_schema_ver=str(job.payload_schema_ver),
                     )
 
-                    span_ctx = consumer_span.get_span_context()
-                    dispatch_trace_id: str = ""
-                    if span_ctx.is_valid:
-                        dispatch_trace_id = format(span_ctx.trace_id, "032x")
-
+                    # Bound once for the whole job: the DI-resolution
+                    # context below and the live context consume_one_job
+                    # builds share it, off the consumer's own logger so a
+                    # job's lines carry one logger name whichever context
+                    # emitted them.
+                    job_log = bind_job_log(
+                        logger_arg if logger_arg is not None else _consumer_log,
+                        job,
+                        span=consumer_span,
+                    )
                     interim_ctx: JobContext[BaseModel] = JobContext(
                         job_id=job.id,
                         actor=job.actor,
@@ -507,16 +634,7 @@ async def dispatch_one_job(
                         worker_id=worker_id,
                         payload=validated_payload,
                         jobs=job_enqueuer,
-                        log=bind_job_context(
-                            dispatch_log,
-                            job_id=job.id,
-                            actor=job.actor,
-                            queue=job.queue,
-                            attempt=job.attempt,
-                            identity_key=job.identity_key,
-                            trace_id=dispatch_trace_id,
-                            batch_id=batch_id or None,
-                        ),
+                        log=job_log,
                         span=consumer_span
                         if not isinstance(consumer_span, trace.NonRecordingSpan)
                         else None,
@@ -558,14 +676,10 @@ async def dispatch_one_job(
                             rl_registry = raw_rl
 
                         redis_client: redis_async.Redis | None = None
-                        try:
-                            import redis.asyncio as _redis_mod  # type: ignore[no-redef]  # Why: runtime import for DI lookup; TYPE_CHECKING import is for annotations only
-
-                            raw_redis = loop_scope.resolved_cache().get(_redis_mod.Redis)
-                            if isinstance(raw_redis, _redis_mod.Redis):
+                        if _REDIS_CLIENT_TYPE is not None:
+                            raw_redis = loop_scope.resolved_cache().get(_REDIS_CLIENT_TYPE)
+                            if isinstance(raw_redis, _REDIS_CLIENT_TYPE):
                                 redis_client = raw_redis
-                        except ImportError:
-                            pass
 
                         # Fleet-wide per-queue concurrency cap (see
                         # _effective_reservations): O(1) membership test, no
@@ -595,7 +709,9 @@ async def dispatch_one_job(
                             redis_client=redis_client,
                             worker_pool=deps.worker_pool,
                             settings=deps.settings,
+                            error_reporter=error_reporter,
                             fallback_result_ttl=actor_ref.result_ttl,
+                            job_log=job_log,
                         )
                         outcome = result
 
@@ -663,17 +779,19 @@ async def dispatch_one_job(
                             max_retry_backoff,
                             consumer_span,
                             handler_log,
+                            error_reporter=error_reporter,
                         )
                     except _TERMINAL_WRITE_INFRA_EXCEPTIONS as infra_exc:
                         # An infra-failed terminal write leaves the row
-                        # RUNNING — lock-lease expiry and the sweep are the
-                        # recovery — so no batch counter may budge on a
-                        # write that never landed: the same rule the hook
-                        # itself applies to the clean-return path's "noop"
-                        # (a terminal write that matched nothing). The hook
-                        # call therefore lives in the else below, on a
-                        # real terminal outcome only.
+                        # RUNNING — disowned, so lock-lease expiry and the
+                        # sweep are the recovery — and no batch counter may
+                        # budge on a write that never landed: the same rule
+                        # the hook itself applies to the clean-return
+                        # path's "noop" (a terminal write that matched
+                        # nothing). The hook call therefore lives in the
+                        # else below, on a real terminal outcome only.
                         _log_terminal_write_failed(handler_log, job, exc, infra_exc)
+                        _disown_job(deps.disowned_jobs, job)
                     else:
                         outcome = handler_result
                         # Best-effort, matching the hook call on consume's

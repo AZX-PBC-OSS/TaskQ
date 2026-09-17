@@ -692,7 +692,11 @@ class ConcurrencyReservation:
             )
             return slot_index
 
-        async with pool.acquire() as conn, conn.transaction():
+        # No explicit transaction: the acquire is one data-modifying-CTE
+        # statement, atomic on its own — its FOR UPDATE SKIP LOCKED row
+        # lock lives exactly as long as the statement — so BEGIN/COMMIT
+        # would be two extra round trips per reserved job.
+        async with pool.acquire() as conn:
             row = await conn.fetchrow(
                 self._acquire_sql,
                 self._name,

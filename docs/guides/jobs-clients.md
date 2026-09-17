@@ -272,8 +272,9 @@ remaining steps. Later steps only execute when earlier ones did not match or rai
    `max_pending` with a plain in-process count and takes no advisory lock at all, so
    InMemoryBackend-based tests cannot reproduce or catch a regression of this transactional-holder
    lock-duration cost — only a Postgres-backed test observes it.
-5. **`idempotency_key` upsert** — if `idempotency_key` is provided and matches an existing row,
-   returns the existing handle with `was_existing=True`.
+5. **`idempotency_key` upsert** — if `idempotency_key` is provided and matches an existing row
+   **of the same actor**, returns the existing handle with `was_existing=True`. A match on
+   another actor's row raises `IdempotencyKeyActorMismatchError` (see below).
 6. **Job INSERT** — inserts the new row and returns a handle with `was_existing=False`.
 
 ### `idempotency_key`
@@ -285,6 +286,20 @@ remaining steps. Later steps only execute when earlier ones did not match or rai
   business key in different scopes to both succeed, decoupling the dedupe
   horizon from `prune_retention_*`. Namespace keys to avoid collisions
   between actors: `"send_receipt:order_123"`, not `"order_123"`.
+- **A hit on another actor's job is refused, not returned.** Uniqueness is
+  per scope across *all* actors, so `enqueue(send_receipt, key="order-1")`
+  after `enqueue(refund, key="order-1")` finds the refund's row. That is not a
+  dedup of the receipt job, and handing back the refund's handle (whose
+  `.result()` is the refund's) would be indistinguishable from one — so the
+  enqueue raises `IdempotencyKeyActorMismatchError`, naming both actors and
+  the existing job id, with nothing enqueued. In `enqueue_batch` the refusal
+  is all-or-nothing: the whole batch is withdrawn, like a singleton
+  collision, so it can be resubmitted after fixing the key without
+  duplicating its other items. (River folds the job kind into its unique
+  key and Oban's default unique fields include the worker, so neither can
+  return another worker's job; TaskQ's index cannot include the actor
+  without a migration, so the hit is checked instead.) The same-actor case
+  is unchanged: the existing handle comes back with `was_existing=True`.
 - Maximum length: **1024 UTF-8 bytes** (`TASKQ_IDEMPOTENCY_KEY_MAX_BYTES`, raisable to 1300). The bound is the composite unique index `jobs_idempotency_scope_key_uniq`: a Postgres btree v4 entry cannot exceed 2704 bytes, counted encoded — so the cap is in bytes, not characters.
 - Empty strings and whitespace-only strings raise `ValueError` before any backend call.
 - **No TTL.** `idempotency_scope` decouples the dedupe horizon by *namespace*, not by *time* —

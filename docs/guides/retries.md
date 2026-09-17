@@ -141,7 +141,9 @@ Jitter is multiplicative-symmetric:
 delay = raw × uniform(1 - jitter, 1 + jitter)
 ```
 
-The result is clamped to `[0, effective_cap]`. With the default `jitter=0.2`, each computed delay varies by ±20% of the raw value. For example, a raw delay of 10s produces a value in `[8s, 12s]`.
+The band `[raw × (1 − jitter), raw × (1 + jitter)]` is fitted under `effective_cap` *before* the draw, so the result always lies in `[0, effective_cap]`. With the default `jitter=0.2`, each computed delay varies by ±20% of the raw value. For example, a raw delay of 10s produces a value in `[8s, 12s]`.
+
+At the cap the band is one-sided: once the curve saturates (the default exponential policy from attempt 11 on, any `fixed`/`linear` policy whose base reaches the cap, a curve above `max_retry_backoff`), the delay is drawn uniformly from `[cap × (1 − jitter), cap]` — `[48min, 60min]` for the default policy. The cap bounds the band, not the drawn value: clamping the drawn value would collapse the upper half of the band onto the cap exactly, so half of a cohort retrying at the cap — the retries most likely to follow a fleet-wide event — would come due at the same instant.
 
 **Why not Full Jitter (`uniform(0, raw)`)?** Full Jitter collapses toward zero on attempt 1, causing a thundering-herd effect for high-volume actors. Multiplicative-symmetric jitter preserves the expected delay while still spreading retries across the fleet. (See Marc Brooker, "Exponential Backoff And Jitter", AWS Architecture Blog.)
 

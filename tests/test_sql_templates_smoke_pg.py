@@ -69,6 +69,10 @@ import taskq.backend
 import taskq.ratelimit
 import taskq.worker
 import taskq.worker._leader_sweeps as leader_sweeps_mod  # pyright: ignore[reportPrivateUsage]  # Why: the detector query is function-local in this module; the guard extracts the exact source statement (module docstring) rather than restating a copy that could drift.
+from taskq.backend._batch_sql import (  # pyright: ignore[reportPrivateUsage]  # Why: the batch statements' {open_member} probe is rendered by this module's own helper and bundle; the guard renders through them so its text is the production text, never a copy.
+    BatchSql,
+    render_batch_sql,
+)
 from taskq.backend._sql_templates import (  # pyright: ignore[reportPrivateUsage]  # Why: rendering the production bundle through its own render() is the point of the guard; a re-derived copy would drift from the SQL that actually runs.
     SqlTemplates,
     render,
@@ -157,7 +161,25 @@ def _discover_sql_constants() -> dict[str, str]:
 # register it.
 
 
-def _render_extra(placeholder: str, owning_module: str) -> object:
+_POSITIONAL_PARAM_RE: Final = re.compile(r"\$(\d+)")
+
+
+def _render_extra(placeholder: str, owning_module: str, body: str) -> object:
+    if placeholder == "open_member":
+        # taskq.backend._batch_sql renders {open_member} through its own
+        # _open_member_where(batch_id_param=N), binding the batch id as the
+        # next positional parameter after the ones the statement already
+        # carries ($2 for the counter and completion writes, $1 for the bare
+        # count). The rendered text is pinned to the production bundle by
+        # the gaps test's _batch_open_member_render_matches_bundle tripwire.
+        helper = getattr(importlib.import_module(owning_module), "_open_member_where", None)
+        if not callable(helper):
+            raise AssertionError(
+                f"{owning_module}._open_member_where is gone; the open-member "
+                "probe's render path changed — re-review this resolver"
+            )
+        next_param = max((int(n) for n in _POSITIONAL_PARAM_RE.findall(body)), default=0) + 1
+        return helper(batch_id_param=next_param)
     if placeholder == "terminal_not_in":
         # Each module carrying {terminal_not_in} templates defines its own
         # _TERMINAL_NOT_IN over TERMINAL_STATUSES; rendering with the owning
@@ -186,7 +208,7 @@ def _render_constant(qualified: str, body: str, schema: str) -> str:
     if not placeholders:
         return body.format(schema=schema)
     owning_module = qualified.rsplit(":", 1)[0]
-    extras = {ph: _render_extra(ph, owning_module) for ph in placeholders}
+    extras = {ph: _render_extra(ph, owning_module, body) for ph in placeholders}
     return body.format(schema=schema, **extras)
 
 
@@ -478,6 +500,28 @@ def test_the_guard_has_no_silent_gaps() -> None:
     assert not token_leaks, (
         "Rendered dispatch variants still carry __TOKEN__ holes — the "
         "template's fragments are no longer fully interpolated:\n  " + "\n  ".join(token_leaks)
+    )
+
+    # The open-member probe tripwire: every _batch_sql constant the guard
+    # rendered with {open_member} must be, text for text, a field of the
+    # bundle render_batch_sql ships — the guard's parameter numbering is
+    # the module's own, not a drifting copy.
+    bundle_statements = {
+        getattr(render_batch_sql(schema), field.name) for field in fields(BatchSql)
+    }
+    open_member_drift = [
+        name
+        for name, body in discovered.items()
+        if "{open_member}" in body and _render_constant(name, body, schema) not in bundle_statements
+    ]
+    assert not open_member_drift, (
+        "Open-member statements whose guard render is not a render_batch_sql "
+        "field — the guard's {open_member} substitution drifted from "
+        "_batch_sql's own render path:\n  " + "\n  ".join(open_member_drift)
+    )
+    assert any("{open_member}" in body for body in discovered.values()), (
+        "No discovered constant carries {open_member} any more — the batch "
+        "probe render changed shape; drop this tripwire and the resolver branch"
     )
 
     marker_drift = [

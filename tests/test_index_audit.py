@@ -82,6 +82,7 @@ from taskq.worker._leader_sweeps import (
     _QUERY_OLDEST_DUE_AGE_SQL_TEMPLATE,  # pyright: ignore[reportPrivateUsage]  # Why: same as above — pin the production statement, not a copy.
     _QUERY_RUNNING_LEASE_EXPIRED_SQL_TEMPLATE,  # pyright: ignore[reportPrivateUsage]  # Why: same — the zombie-running gauge's exact statement.
 )
+from taskq.worker.cron_loop import CRON_TICK_SQL_TEMPLATE
 
 pytestmark = pytest.mark.integration
 
@@ -89,19 +90,6 @@ _AUDIT_INDEXES = (
     "jobs_queue_active_idx",
     "jobs_actor_active_id_idx",
     "job_attempts_worker_id_idx",
-)
-
-# Cron due-select, verbatim from tick_cron (src/taskq/worker/cron_loop.py);
-# it is an f-string inside the function there, so this copy is the pin's
-# reference — keep in sync (the assert on statement_timestamp() below is
-# what catches drift back to the non-index-servable clock_timestamp()).
-_CRON_DUE_SQL_TEMPLATE = (
-    "SELECT id, actor, cron_expr, timezone, dst_strategy, payload_factory, "
-    "metadata, last_fired_at, consecutive_failures, next_fire_at, identity_key "
-    'FROM "{schema}".cron_schedules '
-    "WHERE enabled = true AND next_fire_at <= statement_timestamp() "
-    "ORDER BY next_fire_at "
-    "LIMIT $1"
 )
 
 # cancel_where's pending/scheduled driving statement, rebuilt exactly as
@@ -861,13 +849,19 @@ async def test_backlog_depth_gauge_is_index_bounded(audit_schema: Any, pg_dsn: s
 
 
 async def test_cron_due_tick_is_index_bounded_without_sort(audit_schema: Any, pg_dsn: str) -> None:
-    """The every-second due tick: cron_schedules_next_fire_idx serves the
-    bound as an Index Cond, and the index's key order satisfies ORDER BY
-    next_fire_at — a Sort node here means the ordered path regressed."""
+    """The every-second tick's one statement (the try-lock, the planning
+    clock and the due read folded together): cron_schedules_next_fire_idx
+    serves the bound as an Index Cond inside the LATERAL read, and the
+    index's key order satisfies ORDER BY next_fire_at — a Sort node here
+    means the ordered path regressed. The lock CTE is materialized, so
+    the try-lock is taken exactly once and before the read."""
     schema, _ = audit_schema
     conn = await asyncpg.connect(pg_dsn)
     try:
-        plan = await _explain(conn, _CRON_DUE_SQL_TEMPLATE.format(schema=schema), 100)
+        plan = await _explain(
+            conn, CRON_TICK_SQL_TEMPLATE.format(schema=schema), "taskq:cron:audit", 100
+        )
+        assert "CTE lock" in plan, f"the try-lock must be a materialized CTE:\n{plan}"
         _assert_index_cond(
             plan,
             "cron_schedules_next_fire_idx",

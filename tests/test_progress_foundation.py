@@ -17,6 +17,7 @@ from taskq.constants import (
     PROGRESS_GLOBAL_CHANNEL_FMT,
     progress_channel,
     progress_global_channel,
+    schema_channel_tag,
 )
 from taskq.exceptions import ProgressTooLarge, TaskQError
 from taskq.progress import ProgressEvent
@@ -275,12 +276,12 @@ def test_progress_buffer_data_type_is_dict_str_object() -> None:
 def test_progress_channel_format() -> None:
     job_id = new_job_id()
     result = progress_channel("taskq", job_id)
-    assert result == f"taskq:taskq:progress:{job_id}"
+    assert result == f"taskq:{schema_channel_tag('taskq')}:progress:{job_id}"
 
 
 def test_progress_channel_with_str_job_id() -> None:
     result = progress_channel("taskq", "abc-123")
-    assert result == "taskq:taskq:progress:abc-123"
+    assert result == f"taskq:{schema_channel_tag('taskq')}:progress:abc-123"
 
 
 def test_progress_channel_validates_schema() -> None:
@@ -290,7 +291,7 @@ def test_progress_channel_validates_schema() -> None:
 
 def test_progress_global_channel_format() -> None:
     result = progress_global_channel("taskq")
-    assert result == "taskq:taskq:progress"
+    assert result == f"taskq:{schema_channel_tag('taskq')}:progress"
 
 
 def test_progress_global_channel_validates_schema() -> None:
@@ -301,13 +302,13 @@ def test_progress_global_channel_validates_schema() -> None:
 def test_progress_channel_matches_fmt_constant() -> None:
     job_id = new_job_id()
     assert progress_channel("myschema", job_id) == PROGRESS_CHANNEL_FMT.format(
-        schema="myschema", job_id=job_id
+        schema_tag=schema_channel_tag("myschema"), job_id=job_id
     )
 
 
 def test_progress_global_channel_matches_fmt_constant() -> None:
     assert progress_global_channel("myschema") == PROGRESS_GLOBAL_CHANNEL_FMT.format(
-        schema="myschema"
+        schema_tag=schema_channel_tag("myschema")
     )
 
 
@@ -334,7 +335,7 @@ def test_progress_global_channel_rejects_digit_start_schema() -> None:
 def test_progress_channel_underscore_schema() -> None:
     job_id = new_job_id()
     result = progress_channel("_private", job_id)
-    assert result == f"taskq:_private:progress:{job_id}"
+    assert result == f"taskq:{schema_channel_tag('_private')}:progress:{job_id}"
 
 
 # ── WorkerSettings progress fields ─────────────────────────────────────────

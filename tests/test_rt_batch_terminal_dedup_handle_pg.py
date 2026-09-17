@@ -45,7 +45,13 @@ async def test_batch_enqueue_surfaces_terminal_dedup_on_handle(
     try:
         client = JobsClient(backend=backend)
 
-        first = await backend.enqueue(make_enqueue_args(idempotency_key="pg-batch-terminal-1"))
+        # The stored row belongs to the batch's own actor: a same-actor hit
+        # dedups, a cross-actor one is refused.
+        first = await backend.enqueue(
+            make_enqueue_args(
+                actor="rt_batch_terminal_dedup_actor", idempotency_key="pg-batch-terminal-1"
+            )
+        )
         await clean_pg_conn.execute(
             f'UPDATE "{module_pg_schema.schema_name}".jobs '  # noqa: S608  # Why: schema name comes from the test fixture, not user input.
             "SET status = 'failed', finished_at = now() WHERE id = $1::uuid",
