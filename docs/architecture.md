@@ -969,12 +969,18 @@ leads for as long as the failure lasts, fleet-wide. The election loop
 therefore anchors the first such failure's trust window and, once it is
 spent, resigns the row through the fence (`_hand_back_unassumable_lease`,
 fenced on the current win's term so a peer that already took over is never
-deleted); the anchor is cleared only by a successful assume, so a pod that
-re-wins while still broken hands the row straight back rather than buying a
-fresh window. One failed open inside the window is a blip that costs nothing
-— the own-row arm's cheap route back (a credential reload) is exactly what
-that window preserves — and the worst case matches the dead-leader SLA:
-`leader_lease + heartbeat_interval`, not forever.
+deleted); the anchor is cleared by a successful assume or by an observed
+election loss (a peer holds the row — a later win starts a fresh episode),
+so a pod that re-wins while still broken hands the row straight back rather
+than buying a fresh window. One failed open inside the window is a blip that
+costs nothing — the own-row arm's cheap route back (a credential reload) is
+exactly what that window preserves — and the worst case is the dead-leader
+SLA plus the duration of one failing cycle's connection attempts (each
+bounded by `reload_factory_timeout`, 30 s at defaults, so roughly
+`leader_lease + heartbeat_interval + 30 s` ≈ 80 s at defaults): the bound
+rests on the hand-back, not the lapse, because sub-lease re-wins keep
+refreshing `expires_at` and the lapse backstop cannot fire while the pod
+keeps winning.
 
 ### What the leader does
 
