@@ -113,6 +113,11 @@ class VaultDynamicDbProvider(PgCredentialProvider):
         self._client = client
         self._role = role
         self._mount_point = mount_point
+        # The TTL of the lease this provider last issued, in seconds. Nothing
+        # here schedules rotation with it: it is the bound an operator's
+        # reload schedule has to beat, surfaced so the pool factory's
+        # pinned-pair startup warning can name it (see taskq.auth).
+        self.last_lease_duration: float | None = None
 
     async def get_pg_credential(self) -> PgCredential:
         def _fetch() -> dict[str, Any]:
@@ -125,6 +130,7 @@ class VaultDynamicDbProvider(PgCredentialProvider):
         response = await asyncio.to_thread(_fetch)
         data: dict[str, Any] = response["data"]
         username, password = data["username"], data["password"]
+        self.last_lease_duration = response.get("lease_duration")
         # The lease TTL is the bound the operator's reload schedule must beat;
         # logging it beside the identity Vault issued is what lets a later
         # "password authentication failed for user v-…" be traced to an

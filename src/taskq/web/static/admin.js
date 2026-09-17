@@ -67,8 +67,12 @@
                 pendingCount: 0,
                 eventSource: null,
                 pollTimer: null,
+                // The page the operator is on, as the cursor of the last
+                // pagination click; null on the unpaged first page.
+                cursor: null,
 
                 init: function () {
+                    this.trackPagination();
                     if (this.tab !== "live") return;
                     // Polling is the source of truth in both modes: the events
                     // channel carries only the cancel fast-path (terminal writes
@@ -76,6 +80,32 @@
                     // refresh forward, never replace the poll.
                     this.startPolling();
                     if (this.liveOn) this.connectSSE();
+                },
+
+                trackPagination: function () {
+                    // htmx drives every request that can move the operator's
+                    // page: a pagination link's path carries the cursor it
+                    // follows, while a form submit (filters, tab switch, live
+                    // toggle) never carries one and re-pages from the start.
+                    // Syncing the cursor from each request path keeps the poll
+                    // and the SSE refresh forward pointing at the page the
+                    // operator is on. Guarded: htmx is absent on pages (and
+                    // test harnesses) that never paginate.
+                    if (!window.htmx) return;
+                    var self = this;
+                    this._onHtmxRequest = function (evt) {
+                        var cfg = evt.detail && evt.detail.requestConfig;
+                        var path = (evt.detail && evt.detail.path) || (cfg && cfg.path) || "";
+                        var qs = new URLSearchParams(path.split("?")[1] || "");
+                        var at = qs.get("cursor_at") || "";
+                        var id = qs.get("cursor_id") || "";
+                        if (at && id) {
+                            self.cursor = { at: at, id: id, dir: qs.get("cursor_dir") || "next" };
+                        } else {
+                            self.cursor = null;
+                        }
+                    };
+                    document.body.addEventListener("htmx:beforeRequest", this._onHtmxRequest);
                 },
 
                 switchTab: function (t) {
@@ -99,6 +129,10 @@
 
                 showPending: function () {
                     this.pendingCount = 0;
+                    // Showing the pending jobs is an explicit jump to the
+                    // unpaged first page: drop the cursor, not just the form's
+                    // copy of it.
+                    this.cursor = null;
                     var form = document.getElementById("job-filters");
                     if (form) {
                         var ca = form.querySelector('input[name="cursor_at"]');
@@ -150,8 +184,11 @@
                     // no status (the cancel NOTIFY names the job only), or a
                     // transition for a job the table does not show (its listing
                     // membership just changed) - is answered by fetching the
-                    // server's view, which is the only source of truth.
-                    this.refreshTable();
+                    // server's view, which is the only source of truth. On a
+                    // cursor page that refresh is left to the poll, which
+                    // refetches the operator's page in place: a cursor-less
+                    // refresh from here would swap page one under the reader.
+                    if (!this.cursor) this.refreshTable();
                 },
 
                 refreshTable: function () {
@@ -162,9 +199,18 @@
                     if (!form) return;
                     var fd = new FormData(form);
                     var params = new URLSearchParams(fd);
-                    params.delete("cursor_at");
-                    params.delete("cursor_id");
                     params.set("tab", this.tab);
+                    // The poll refetches the page the operator is on: the
+                    // cursor synced from the last pagination click rides
+                    // along, so live mode never yanks a reader back to page
+                    // one. A submit without a cursor (filters, tab switch,
+                    // live toggle) cleared it, which is the explicit re-page.
+                    var cursor = this.cursor;
+                    if (cursor) {
+                        params.set("cursor_at", cursor.at);
+                        params.set("cursor_id", cursor.id);
+                        params.set("cursor_dir", cursor.dir);
+                    }
                     fetch(this.basePath + "/jobs?" + params.toString(), { headers: { "HX-Request": "true" } })
                         .then(function (r) { return r.text(); })
                         .then(function (html) {
@@ -179,6 +225,10 @@
 
                 destroy: function () {
                     this.disconnectSSE();
+                    if (this._onHtmxRequest) {
+                        document.body.removeEventListener("htmx:beforeRequest", this._onHtmxRequest);
+                        this._onHtmxRequest = null;
+                    }
                     if (this.pollTimer) { clearInterval(this.pollTimer); this.pollTimer = null; }
                 }
             };

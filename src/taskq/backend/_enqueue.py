@@ -407,6 +407,47 @@ async def _attribute_copy_duplicate(
     return _attribute_duplicate_pair(detail, set(keyed))
 
 
+async def _classify_copy_idempotency_mismatch(
+    conn: ConnLike,
+    sql: SqlTemplates,
+    admitted_args: list[EnqueueArgs],
+    scope: str | None,
+    key: str | None,
+) -> tuple[str, str, UUID | None] | None:
+    """Tell a cross-actor COPY collision from a same-actor duplicate.
+
+    Returns ``(incoming_actor, existing_actor, existing_job_id)`` when the
+    pair the COPY aborted on spans two actors, and ``None`` when it does
+    not or cannot be resolved. The pair's holder is either a committed
+    table row (fetched fresh: the savepoint has rolled the COPY back, so
+    the caller's scope answers queries again) or an earlier item of this
+    same COPY (rebuilt from ``admitted_args``; its rows never persisted,
+    so the id is unknown and reported as ``None``). A pair the resolution
+    cannot see a holder for (a concurrent commit-and-delete racer) stays
+    unclassified and the caller reports the typed duplicate instead.
+    """
+    if scope is None or key is None:
+        return None
+    items = [
+        args
+        for args in admitted_args
+        if args.idempotency_scope == scope
+        and args.idempotency_key is not None
+        and str(args.idempotency_key) == key
+    ]
+    if not items:
+        return None
+    recs = await conn.fetch(sql.enqueue_batch_fetch_existing, [scope], [key])
+    if recs:
+        stored = recs[0]
+        if stored["actor"] != items[0].actor:
+            return (items[0].actor, str(stored["actor"]), stored["id"])
+        return None
+    if len(items) > 1 and items[0].actor != items[-1].actor:
+        return (items[-1].actor, items[0].actor, None)
+    return None
+
+
 async def _attribute_singleton_collision(
     conn: ConnLike,
     sql: SqlTemplates,
@@ -719,7 +760,10 @@ def _refuse_cross_actor_idempotency_hit(args: EnqueueArgs, existing: JobRow) -> 
     job's, indistinguishable from a successful dedup — so the hit is
     refused with the typed error naming both actors and the existing job
     (nothing was inserted: the arbiter skipped the row). Shared by the
-    single and batch tiers and mirrored by the in-memory twin.
+    single and batch tiers, mirrored by the in-memory twin and classified
+    the same way on the batch-fast COPY tier (whose abort is total, so the
+    error is raised in place of the duplicate error, not instead of a
+    returned handle).
     """
     if existing.actor != args.actor:
         logger.warning(
@@ -2010,6 +2054,30 @@ async def _enqueue_batch_fast(
                 dup_scope, dup_key = await _attribute_copy_duplicate(
                     conn, sql, admitted_args, exc.detail
                 )
+                mismatch = await _classify_copy_idempotency_mismatch(
+                    conn, sql, admitted_args, dup_scope, dup_key
+                )
+                if mismatch is not None:
+                    incoming_actor, existing_actor, existing_job_id = mismatch
+                    logger.warning(
+                        "idempotency-key-actor-mismatch",
+                        actor=incoming_actor,
+                        existing_actor=existing_actor,
+                        existing_job_id=(
+                            str(existing_job_id) if existing_job_id is not None else None
+                        ),
+                        idempotency_key=dup_key,
+                        idempotency_scope=dup_scope,
+                        batch_size=len(args_list),
+                        detection_path="batch_fast_unique_violation_catch",
+                    )
+                    raise IdempotencyKeyActorMismatchError(
+                        actor=incoming_actor,
+                        existing_actor=existing_actor,
+                        existing_job_id=existing_job_id,
+                        idempotency_key=dup_key or "",
+                        idempotency_scope=dup_scope,
+                    ) from exc
                 logger.info(
                     "batch-fast-duplicate-idempotency-key",
                     batch_size=len(args_list),

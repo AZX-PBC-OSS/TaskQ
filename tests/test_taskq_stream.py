@@ -36,6 +36,7 @@ from taskq.client._taskq import (
     _stream_redis,
     _watch_reclaims_pg,
 )
+from taskq.client._transport import pg_poll_event_stream
 from taskq.progress._events import ProgressEvent
 from taskq.settings import TaskQSettings
 from taskq.testing.assertions import wait_for
@@ -320,6 +321,75 @@ async def test_taskq_init_rejects_pg_conn_factory_and_listen_conn() -> None:
     """TaskQ.__init__ rejects providing both pg_conn_factory and listen_conn."""
     with pytest.raises(ValueError, match=r"pg_conn_factory.*listen_conn"):
         TaskQ(pool=object(), pg_conn_factory=lambda: None, listen_conn=object())  # type: ignore[arg-type]
+
+
+# ── PG transport: transient poll errors ──────────────────────────────────
+#
+# The poll transport re-reads the row through the client's pool, so a pool
+# blip (connection reset, pool-acquire refusal) surfaces as an exception
+# out of the fetch. The stream must survive it the way the LISTEN
+# transport did, not kill the caller's async for.
+
+
+async def test_stream_pg_survives_a_transient_poll_error_and_recovers() -> None:
+    """A pool or connection error on one poll does not end the stream: the
+    failure is logged once, the loop retries after the next interval, and
+    the terminal event still arrives."""
+    rows = [_row(status="succeeded", progress_seq=1)]
+    calls = {"n": 0}
+
+    async def _fetch_row() -> JobRow:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise asyncpg.InterfaceError("connection closed")
+        return rows.pop(0)
+
+    with structlog.testing.capture_logs() as captured:
+        events = [
+            event
+            async for event in pg_poll_event_stream(
+                _fetch_row,
+                lambda row, _status_changed: _row_to_event(row),
+                job_id=cast(JobId, _JOB_ID),
+                poll_interval=0.01,
+            )
+        ]
+
+    assert [e.status for e in events] == ["succeeded"]
+    assert events[-1].terminal is True
+    blips = [e for e in captured if e["event"] == "stream-poll-error"]
+    assert len(blips) == 1
+    assert blips[0]["job_id"] == str(_JOB_ID)
+    assert blips[0]["error_type"] == "InterfaceError"
+    # The exception's message (and the exception object itself) never reach
+    # the log: server error text can quote row data.
+    assert "error" not in blips[0]
+
+
+async def test_stream_pg_poll_errors_never_escape_the_generator() -> None:
+    """Consecutive blips are all survived: no exception escapes to the
+    caller's async for, and events resume once the fetch does."""
+    rows = [_row(status="running", progress_seq=0), _row(status="succeeded", progress_seq=1)]
+    calls = {"n": 0}
+
+    async def _fetch_row() -> JobRow:
+        calls["n"] += 1
+        if calls["n"] <= 3:
+            raise OSError("connection reset by peer")
+        return rows.pop(0)
+
+    events = [
+        event
+        async for event in pg_poll_event_stream(
+            _fetch_row,
+            lambda row, _status_changed: _row_to_event(row),
+            job_id=cast(JobId, _JOB_ID),
+            poll_interval=0.01,
+        )
+    ]
+
+    assert [e.status for e in events] == ["running", "succeeded"]
+    assert events[-1].terminal is True
 
 
 # ── Bounded owned-LISTEN-conn closes ─────────────────────────────────────

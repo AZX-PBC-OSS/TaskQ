@@ -122,12 +122,36 @@ async def pg_poll_event_stream[EventT](
     event, when the row is no longer found (pruned or deleted underneath
     the stream); that end is logged as ``progress-stream-job-missing`` so
     a stream that stopped short of terminal can be traced to its cause.
+
+    A transient pool or connection error on a fetch does not end the
+    stream: one warning (``stream-poll-error``, the job id and the
+    exception type only - never the message, which can carry server-side
+    text) is logged and the loop retries after the next poll interval, the
+    same survive-and-retry the LISTEN transport gave connection blips. A
+    vanished row is not an error and still ends the generator, so
+    ``TaskQ.stream``'s KeyError contract is unchanged.
     """
+    import asyncpg
+
     seq = last_seq
     status = last_status
     while True:
         await asyncio.sleep(poll_interval)
-        row = await fetch_row()
+        try:
+            row = await fetch_row()
+        except (asyncpg.PostgresError, asyncpg.InterfaceError, OSError, TimeoutError) as exc:
+            # One warning per failed fetch, named for the job and the
+            # exception type: enough to trace an outage, without the
+            # message text (server errors can quote data). The next poll
+            # interval is the retry; a blip that clears is invisible
+            # beyond this line, and one that does not keeps logging here
+            # rather than killing the caller's async for.
+            logger.warning(
+                "stream-poll-error",
+                job_id=str(job_id),
+                error_type=type(exc).__name__,
+            )
+            continue
         if row is None:
             logger.warning("progress-stream-job-missing", job_id=str(job_id))
             return
