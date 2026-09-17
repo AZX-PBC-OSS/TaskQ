@@ -456,16 +456,20 @@ class HealthTcpBindError(RuntimeError):
 
 
 class HealthUnixBindCollisionError(OSError):
-    """The Unix health socket path is not this worker's to bind, but TCP is up.
+    """The Unix health socket path could not be bound, but the TCP listener is up.
 
     Raised by :meth:`HealthServer.start` when the Unix bind fails while
     ``health_port`` is set and that listener IS already serving: the
-    collision — almost always a live peer worker owning the path, which
-    :func:`_bind_unix_socket` refuses to steal — costs the Unix surface
-    alone, and the boot keeps the port-routed probe surface answering
-    (#245; before, the Unix bind failure aborted ``start()`` before the
-    TCP bind was even attempted, leaving a registered, claiming worker
-    with no listener at all).
+    failure — a live peer worker owning the path (``EADDRINUSE``, which
+    :func:`_bind_unix_socket` refuses to steal), or any other unusable
+    path (a directory at it, ``EACCES`` on the directory chain, ...) —
+    costs the Unix surface alone, and the boot keeps the port-routed
+    probe surface answering (#245; before, the Unix bind failure
+    aborted ``start()`` before the TCP bind was even attempted, leaving
+    a registered, claiming worker with no listener at all). The message
+    says which shape it is: the peer collision prescribes a unique
+    ``TASKQ_HEALTH_SOCKET_PATH`` per replica, the other errnos point at
+    what actually sits at the path.
 
     Subclasses :class:`OSError` so a caller following the historical
     "warn and continue on a health OSError" rule (the fix for #207)
@@ -474,17 +478,29 @@ class HealthUnixBindCollisionError(OSError):
     managed to bind, so ``stop()`` must still be called — exactly what
     the worker bootstrap does with this type (warn, push the stop
     callback, keep booting), while a bare ``OSError`` leaves it owning
-    nothing.
+    nothing. That ownership is why the type covers every Unix-bind
+    errno, not just the peer collision: a directory at the path with a
+    port set still owns the TCP listener, and surfacing it as the bare
+    "owns nothing" OSError would leak it.
     """
 
     def __init__(self, path: str, cause: OSError) -> None:
         self.path = path
+        if cause.errno == errno.EADDRINUSE:
+            detail = (
+                "a live peer worker owns the path — give each replica a "
+                "unique TASKQ_HEALTH_SOCKET_PATH"
+            )
+        else:
+            detail = (
+                f"the path is unusable ({cause}) — check what sits at "
+                "TASKQ_HEALTH_SOCKET_PATH and the permissions leading to it"
+            )
         super().__init__(
             cause.errno,
-            f"health unix socket path {path!r} could not be bound ({cause}); "
+            f"health unix socket path {path!r} could not be bound; "
             "the TCP probe listener is serving, so booting continues with "
-            "the Unix surface alone missing — give each replica a unique "
-            "TASKQ_HEALTH_SOCKET_PATH",
+            f"the Unix surface alone missing — {detail}",
         )
 
 
