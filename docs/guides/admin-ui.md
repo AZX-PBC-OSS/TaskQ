@@ -24,8 +24,8 @@ The server reads configuration from the standard `TASKQ_` environment variables 
 | `TASKQ_ADMIN_PORT` | `8080` | Bind port for the admin server. |
 | `TASKQ_ADMIN_URL` | `http://localhost:8080` | Public base URL as seen from a browser. Used by the example trigger app to build redirect URLs after enqueueing. Override when admin and trigger app are on different hosts or ports. |
 | `TASKQ_PG_DSN` | `postgresql://taskq:taskq@localhost:5432/taskq` | Postgres connection string. |
-| `TASKQ_REDIS_URL` | _(none)_ | Optional. When set, enables real-time mode (SSE push) and live Redis state on the rate-limits page. |
-| `TASKQ_ADMIN_UI_POLLING_INTERVAL_SECONDS` | `2.0` | Page refresh interval in polling and polling-degraded modes. |
+| `TASKQ_REDIS_URL` | _(none)_ | Optional. When set, per-job progress streams over Redis pub/sub (the "real-time mode" badge) and the rate-limits page shows live Redis state. Page tables poll Postgres either way. |
+| `TASKQ_ADMIN_UI_POLLING_INTERVAL_SECONDS` | `2.0` | Page refresh interval (every page polls Postgres on it). |
 | `TASKQ_ADMIN_UI_ALLOW_RATE_LIMIT_RESET` | `false` | When `True`, enables the reset button on the `/rate-limits` page. |
 | `TASKQ_SCHEMA_NAME` | `taskq` | Postgres schema containing TaskQ tables. |
 | `TASKQ_ENVIRONMENT` | _(none)_ | Set to `dev` or `development` to bypass the fail-closed auth check (local development only). |
@@ -377,7 +377,7 @@ Response codes:
 
 ### `GET /admin/sse/{topic}`
 
-SSE (Server-Sent Events) endpoint. Accepts any `topic` string. On connect it emits an initial `event: status` frame with `{"status": "awaiting_progress_backend"}`, then sends `: keepalive` comments every 30 seconds to prevent connection timeout. See [Real-time vs polling mode](#real-time-vs-polling-mode) below.
+SSE (Server-Sent Events) endpoint over a PG `LISTEN` on the schema's events channel. `topic` is one of `jobs`, `workers`, `queues`, `history` (anything else is `400`). On connect it emits an initial `event: status` frame with `{"status": "awaiting_progress_backend"}`, then `event: state_change` frames as NOTIFY payloads arrive and `: keepalive` comments every 30 seconds. The jobs page is its only consumer today. Capped per topic by `TASKQ_ADMIN_MAX_SSE_CONNECTIONS`; see [How pages refresh](#how-pages-refresh) below.
 
 ### `GET /admin/static/{path}`
 
@@ -439,66 +439,63 @@ taskq ui serve
 
 ---
 
-## Real-time vs polling mode
+## How pages refresh
 
-The admin UI automatically selects its update strategy based on Redis availability, and shows a
-badge in the top-right corner of every page indicating the current mode.
+Every page refreshes by **polling Postgres**; that is the source of truth in every
+configuration. Two things sit on top of it, and neither replaces it:
 
-### Three-state badge
+* **The jobs page's SSE accelerator.** With the *Live refresh* toggle on, the jobs
+  list also opens an `EventSource` to `GET /admin/sse/jobs`, a PG `LISTEN` on the
+  schema's events channel. That channel carries only the running-job cancel
+  fast-path today — terminal writes and dispatch never `NOTIFY` it — so an event can
+  bring a refresh forward or update one row's badge in place, never stand in for
+  the poll. If the stream drops (a proxy idle timeout, a server restart) the
+  browser's own `EventSource` reconnect runs; the poll carries the page meanwhile.
+  With the toggle **paused**, the table is frozen: the poll stops, the stream is
+  closed, and the table stays exactly as the operator left it until they resume
+  (which reloads it) or act on it themselves.
+* **The job detail page's progress stream.** With Redis configured, the detail page
+  streams per-job progress over `GET /admin/jobs/api/job/{job_id}/progress/stream`
+  (Redis pub/sub, see [progress.md](progress.md)); without Redis it polls
+  `GET /admin/jobs/api/job/{job_id}/state`.
+
+The polling cadence is `TASKQ_ADMIN_UI_POLLING_INTERVAL_SECONDS` (default `2.0` s,
+minimum `0.1` s) on every page.
+
+### The mode badge
+
+Every page shows a badge in the top-right corner. It reports the Redis health
+check that gates the **progress stream** — it says nothing about the jobs page's
+`LISTEN` accelerator, which needs no Redis.
 
 | Badge label | `data-mode` value | Meaning |
 |---|---|---|
-| **real-time mode** | `realtime` | Redis is configured and reachable. Pages update via SSE (`EventSource`). |
-| **polling mode** | `polling` | No `TASKQ_REDIS_URL` configured. Pages refresh by polling Postgres on an interval. |
-| **polling mode (Redis unavailable)** | `polling-degraded` | `TASKQ_REDIS_URL` is set but Redis is currently unreachable. Automatic fallback to Postgres polling. |
+| **real-time mode** | `realtime` | Redis is configured and reachable: per-job progress streams over SSE. |
+| **polling mode** | `polling` | No `TASKQ_REDIS_URL` configured: per-job progress is polled from Postgres. |
+| **polling mode (Redis unavailable)** | `polling-degraded` | `TASKQ_REDIS_URL` is set but Redis is not answering: per-job progress falls back to polling until it is. |
 
-The server re-checks Redis health every 5 seconds (cached per process). The badge reflects the
-result of the most recent check.
-
-### Real-time mode (Redis configured)
-
-When Redis is available, the page JS opens an `EventSource` connection to
-`GET /admin/sse/{topic}`. Updates are pushed over that connection, which triggers
-[HTMX](https://htmx.org/) partial-page refreshes without a full reload.
-
-If the `EventSource` connection emits an error, the JS closes it and automatically falls back to
-Postgres polling at `TASKQ_ADMIN_UI_POLLING_INTERVAL_SECONDS` intervals. The badge transitions
-to `polling-degraded`. A 30-second health heartbeat is sent on the SSE connection to keep it
-alive through proxies that would otherwise time out idle connections.
-
-### Polling mode (no Redis)
-
-When Redis is not configured, the page JS polls Postgres directly using HTMX `hx-trigger="every Ns"`.
-The poll interval is controlled by `TASKQ_ADMIN_UI_POLLING_INTERVAL_SECONDS` (default `2.0` s).
-All pages remain fully functional; data is just slightly less fresh than in real-time mode.
+The server re-checks Redis health every 5 seconds (cached per process). The badge
+reflects the result of the most recent check.
 
 ### Configuration
 
 | Variable | Default | Description |
 |---|---|---|
-| `TASKQ_REDIS_URL` | _(none)_ | When set, enables real-time mode. Must be a valid Redis URL (e.g. `redis://localhost:6379/0`). |
-| `TASKQ_ADMIN_UI_POLLING_INTERVAL_SECONDS` | `2.0` | Page refresh interval (seconds) in polling and polling-degraded modes. Minimum: 0.1 s. |
-| `TASKQ_ADMIN_MAX_SSE_CONNECTIONS` | `50` | Per-topic cap on concurrent SSE connections in real-time mode. |
+| `TASKQ_REDIS_URL` | _(none)_ | When set, per-job progress streams over Redis pub/sub and the rate-limits page shows live Redis state. Must be a valid Redis URL (e.g. `redis://localhost:6379/0`). |
+| `TASKQ_ADMIN_UI_POLLING_INTERVAL_SECONDS` | `2.0` | Page refresh interval (seconds). Minimum: 0.1 s. |
+| `TASKQ_ADMIN_MAX_SSE_CONNECTIONS` | `50` | Per-topic cap on concurrent `GET /admin/sse/{topic}` connections. |
+| `TASKQ_PROGRESS_MAX_SSE_CONNECTIONS` | `50` | Cap on concurrent per-job progress streams in this process. |
 
-### SSE connection limit
+### SSE connection limits
 
-The `GET /admin/sse/{topic}` endpoint bounds concurrent connections per topic
-with an independent `asyncio.Semaphore` sized to `TASKQ_ADMIN_MAX_SSE_CONNECTIONS`.
+`GET /admin/sse/{topic}` bounds concurrent connections per topic with an
+independent `asyncio.Semaphore` sized to `TASKQ_ADMIN_MAX_SSE_CONNECTIONS`.
 Valid topics are `jobs`, `workers`, `queues`, and `history`; each gets its own
-semaphore.
-
-- Default: `50`
-- Minimum: `1` (validated at settings load time)
-- When the semaphore is full, new connections receive `429 Too Many Requests` immediately.
-
-!!! warning "`/admin/jobs/sse/live` has no connection cap"
-    The jobs-list live-refresh endpoint `GET /admin/jobs/sse/live` is a
-    **separate route** from `GET /admin/sse/{topic}`. It backs the LISTEN/NOTIFY
-    stream that drives real-time job-table badge updates and has **no semaphore
-    and no connection limit**. Only the generic `/admin/sse/{topic}` routes
-    described above are capped by `TASKQ_ADMIN_MAX_SSE_CONNECTIONS`. If you need
-    to bound live-refresh connections, enforce the limit at the reverse proxy or
-    load balancer layer.
+semaphore. When the semaphore is full, new connections receive
+`429 Too Many Requests` immediately. The per-job progress stream is capped the
+same way by `TASKQ_PROGRESS_MAX_SSE_CONNECTIONS`. Every stream holds a Postgres
+`LISTEN` connection or a Redis pub/sub subscription and an asyncio task for as
+long as the client stays connected, which is what the caps bound.
 
 ---
 
@@ -525,18 +522,18 @@ a `<script>` block in the page's `{% block head %}`.
 Key features:
 - **Tab switching** (`switchTab`) — switches between "Live Jobs" and "Archived" views
   by submitting the filter form with `tab` parameter.
-- **Polling** — the Live Jobs tab always polls on `poll_interval_ms` via
-  `setInterval`; the poll is the source of truth for the table in both toggle
-  states. The poll refetches the page the operator is on: the keyset cursor
+- **Polling** — the Live Jobs tab polls on `poll_interval_ms` via
+  `setInterval` while live refresh is on; the poll is the source of truth for
+  the table. The poll refetches the page the operator is on: the keyset cursor
   synced from the last pagination click rides along, so live mode never yanks
   a reader back to page one, and the SSE refresh-forward is skipped while a
   cursor is active (the poll already refreshes that page in place).
-- **Live refresh toggle** — when enabled, additionally connects to SSE so a
-  state-change event brings a refresh forward; when paused, the SSE connection is
-  closed and only the poll runs.
+- **Live refresh toggle** — on, the poll runs and SSE is connected so a
+  state-change event brings a refresh forward; paused, both stop and the table is
+  frozen until the operator resumes (which reloads it) or acts on it.
 - **SSE integration** — `connectSSE()` opens an `EventSource` to
-  `{base_path}/sse/jobs`. On `error` the connection is closed and polling carries
-  on unchanged. A `state_change` event whose `status` matches a row in the table
+  `{base_path}/sse/jobs`. On `error` the stream is left to the browser's own
+  reconnect and polling carries on unchanged. A `state_change` event whose `status` matches a row in the table
   updates that row's badge in place; any other event — a payload without a
   `status` (the cancel NOTIFY names the job only) or a transition for a job the
   table does not show — refreshes the table from the server.
@@ -568,9 +565,11 @@ Every page displays a mode badge in the top-right corner of the header (set in
 
 | Badge label | `data-mode` | Meaning |
 |---|---|---|
-| **real-time mode** | `realtime` | Redis configured and reachable; SSE push active |
-| **polling mode** | `polling` | No `TASKQ_REDIS_URL` configured; HTMX polling |
-| **polling mode (Redis unavailable)** | `polling-degraded` | Redis configured but unreachable; automatic fallback |
+| **real-time mode** | `realtime` | Redis configured and reachable; per-job progress streams over Redis pub/sub |
+| **polling mode** | `polling` | No `TASKQ_REDIS_URL` configured; per-job progress is polled |
+| **polling mode (Redis unavailable)** | `polling-degraded` | Redis configured but unreachable; per-job progress falls back to polling |
+
+Page tables refresh by polling in every mode; see [How pages refresh](#how-pages-refresh).
 
 The server re-checks Redis health every 5 seconds (cached per-process in
 `_factory.py:_RedisHealthCache`). The badge reflects the most recent check.
