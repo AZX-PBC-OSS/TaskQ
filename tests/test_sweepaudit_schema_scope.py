@@ -170,8 +170,20 @@ class _RecordingPgConn:
         self.executed.append((sql, args))
         return "OK"
 
-    async def fetchrow(self, sql: str, *args: object) -> dict[str, int]:
+    async def fetchrow(self, sql: str, *args: object) -> dict[str, object]:
         self.executed.append((sql, args))
+        if "AS inserted" in sql:
+            # The fused log-window statement (#228) is one round trip, so
+            # one row carries the whole decision: the admission bit, the
+            # pre-insert in-window count, and the denial retry inputs.
+            # Its text contains count(*) (the in-window count CTE), so
+            # this arm must come first.
+            return {
+                "inserted": 1,
+                "count_in_window": 3,
+                "oldest_ts": None,
+                "server_now": None,
+            }
         if "count(*)" in sql:
             return {"count": 3}
         return {"inserted": 1}

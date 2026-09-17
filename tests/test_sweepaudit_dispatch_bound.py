@@ -206,11 +206,17 @@ async def test_dispatch_lateral_scheduled_at_bound_is_index_served(
         # the direct $5 parameter (the depth fix's foldable-bound
         # doctrine — subquery LIMITs never fold into row estimates), so
         # the wrapper must bind the same five typed parameters the real
-        # statement binds.
+        # statement binds. queue_cap_headroom joins them as a third
+        # literalized producer (the lateral's LIMIT probe selects from
+        # it, #242): the empty relation is the uncapped-pair shape this
+        # pin has always exercised, where the scalar probe yields NULL
+        # and LEAST ignores it, leaving the residual bound untouched.
         wrapped = (
             "WITH params AS (SELECT $1::text[] AS queues, $2::int AS limit_n, "
             "$3::uuid AS worker_id, $4::interval AS lock_lease, "
-            "$5::int AS oversample) "
+            "$5::int AS oversample), "
+            "queue_cap_headroom AS (SELECT NULL::text AS actor, "
+            "NULL::text AS queue, NULL::bigint AS headroom WHERE false) "
             "SELECT * FROM (SELECT 'dispatch_probe'::text AS actor, 10::int AS residual) pac "
             "CROSS JOIN LATERAL (VALUES ('default'::text)) AS sq(queue_name) "
             f"CROSS JOIN LATERAL ({lateral}) j"

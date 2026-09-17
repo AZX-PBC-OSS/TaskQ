@@ -298,8 +298,11 @@ running_identities AS (
 -- actor -> bucket declaration mapping (the DB has none — declarations
 -- live in the workers' rate-limit registries), so static and queue-cap
 -- buckets both ride it. KEYED buckets deliberately do not: their
--- concrete names are payload-derived per job (f"{{base_name}}:{{key}}",
--- resolved in-process by the consumer's acquire_for_actor), so the claim
+-- concrete names are payload-derived per job (the base name, a colon,
+-- and the per-job key, composed in-process by the consumer's
+-- acquire_for_actor; the comment spells the shape out brace-free, the
+-- SQL template guard refuses unregistered render placeholders), so the
+-- claim
 -- cannot know which key a pending row will need: folding a keyed
 -- bucket's occupancy in would gate the actor on a tenant the pending
 -- row may not even belong to (one saturated tenant blocking every other
@@ -376,8 +379,9 @@ reservation_headroom AS (
   GROUP BY h.actor
 ),
 -- The queue-scoped half of the headroom fold: acquirable slots of held
--- QUEUE-CAP buckets (taskq:global:queue:{{queue}}, registered per queue
--- with a max_concurrent), keyed by the (actor, queue) the constraint
+-- QUEUE-CAP buckets (the taskq:global:queue: reserved prefix plus the
+-- queue name, registered per queue with a max_concurrent), keyed by the
+-- (actor, queue) the constraint
 -- actually binds. The queue is recovered from the bucket name (the
 -- register() reserved-prefix guard makes the prefix an unambiguous
 -- discriminator: no user or keyed declaration can produce a name
