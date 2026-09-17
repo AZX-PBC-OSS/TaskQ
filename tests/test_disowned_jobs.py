@@ -5,8 +5,7 @@ the row is left ``running`` and the documented recovery is lock-lease
 expiry. That recovery only works if this worker's heartbeat stops
 extending the row's lease: the renewal is keyed by ``locked_by_worker``,
 so without a per-worker disowned set the row would be renewed for as long
-as the process lived. pgqueuer and pg-boss renew by explicit job-id set
-for the same reason; these tests pin the disowned set at both ends —
+as the process lived. These tests pin the disowned set at both ends —
 the consumer records it, the heartbeat honours and prunes it, and the
 producer clears it when the fleet hands the row back to this worker.
 """

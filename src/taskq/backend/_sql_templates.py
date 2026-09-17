@@ -126,10 +126,7 @@ _MIN_DEFERRAL_INTERVAL_SQL: Final[str] = (
 # increment, floored at 0. The refund revisits an attempt number, which is
 # collision-safe: a non-terminal release writes no job_attempts row, so the
 # PK (job_id, attempt) is never revisited by a writer (see the mark_snoozed
-# comment block below for the full argument). Vendor precedent for the
-# shape: Oban ``inc: [attempt: -1]``, River ``max(attempt-1, 0)``
-# (vendor/river/internal/jobexecutor/job_executor.go's softStopped branch),
-# graphile-worker-rs ``GREATEST(0, attempts - 1)``.
+# comment block below for the full argument).
 # The reference is alias-qualified (``j.``): every consumer of the fragment
 # aliases its target table ``j``.
 _ATTEMPT_REFUND_SQL: Final[str] = "GREATEST(j.attempt - 1, 0)"
@@ -1079,14 +1076,11 @@ UNION ALL SELECT * FROM deadline_failed""",
         # the snooze/denial arms above), one job_events state_change with
         # reason 'interrupted' records the transition, and interrupt_count
         # bumps on the row (the same row-counter doctrine as
-        # snooze_count / rate_limit_blocked_count, 01.00.08_01). Vendor
-        # shape: River's soft-stop branch —
-        # vendor/river/internal/jobexecutor/job_executor.go
-        # (`isSoftStopCancelError` distinguishes the stop by the context's
-        # cause, not the error type; the softStopped branch calls
-        # JobSetStateInterrupted with `max(attempt-1, 0)`) and
-        # vendor/river/riverdriver/river_driver_interface.go
-        # (`JobSetStateInterrupted`: state available, reason interrupted).
+        # snooze_count / rate_limit_blocked_count, 01.00.08_01). The
+        # release is a soft stop: the stop is recognised by the context's
+        # cancellation cause rather than by the error type, and the
+        # interrupted row lands back 'available' with reason 'interrupted'
+        # and its attempt refunded.
         #
         # Two arms, exhaustive over every fenced row:
         #   released        — the release itself. hold > 0 parks the row
@@ -1098,8 +1092,8 @@ UNION ALL SELECT * FROM deadline_failed""",
         #                     order — the row is genuinely free and the
         #                     actor is gone, so the non-consuming deferral
         #                     floor applies only to a real hold, never to
-        #                     the zero case (River's interrupted job is
-        #                     available immediately).
+        #                     the zero case (an interrupted job is
+        #                     claimable immediately).
         #   deadline_failed — the hold would push the row past its
         #                     schedule_to_close: the job fails on the
         #                     deadline like every deferral arm's deadline
@@ -1109,10 +1103,10 @@ UNION ALL SELECT * FROM deadline_failed""",
         # The fence carries `cancel_phase = 0` beside the ownership and
         # attempt-epoch conjuncts: an operator cancel in flight WINS over
         # the infrastructure interruption (the call returns no row and the
-        # caller routes to the cancel ladder). River resolves the same
-        # collision the same way — river_job.sql's JobSetStateIfRunningMany
-        # terminalises as 'cancelled', never 'available', when the row
-        # carries cancel_attempted_at. The cancel columns are reset on
+        # caller routes to the cancel ladder). A row carrying
+        # cancel_attempted_at terminalises as 'cancelled', never
+        # 'available'; the fence is what keeps the infrastructure release
+        # from laundering the operator's request. The cancel columns are reset on
         # release exactly as mark_retry's arm does (the next attempt must
         # not inherit a phase); the fence guarantees they were already 0,
         # so an operator's audit columns are never wiped.

@@ -3,8 +3,7 @@
 A sub-second Postgres blip during the one statement that records a job's
 outcome must not cost the fleet a full at-least-once re-execution (or,
 before the lease is disowned, a stranded row). The consumer retries the
-pool-path terminal writes a bounded number of times with backoff — the
-shape River's job completer and Oban's executor use — and only then
+pool-path terminal writes a bounded number of times with backoff, and only then
 reports the write as failed. Fence outcomes are not retried: a write that
 matched nothing is an answer, not an outage.
 """

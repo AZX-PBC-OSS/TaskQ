@@ -267,10 +267,9 @@ class IdempotencyKeyActorMismatchError(TaskQError):
     the existing row; a cross-actor hit cannot be one — the caller asked for
     THIS actor's job and would receive a handle whose result is another
     actor's, indistinguishable from a successful dedup — so it is refused.
-    River folds the job kind into its unique key and Oban's default unique
-    fields include the worker; the composite index here cannot include the
-    actor without a migration, so the hit is checked after the fact and
-    refused instead of silently resolved.
+    The composite index here cannot include the actor without a migration,
+    so the hit is checked after the fact and refused instead of silently
+    resolved.
 
     Nothing was inserted (single enqueue: the arbiter skipped the row; batch:
     the whole batch is rolled back, all-or-nothing like a singleton

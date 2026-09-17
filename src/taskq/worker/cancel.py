@@ -474,8 +474,8 @@ class _ActiveJob:
     orchestrator stamps SHUTDOWN when it signals the job. The consumer's
     ``CancelledError`` routing reads it to tell an operator's terminal
     cancel apart from an infrastructure interruption — the two surface
-    identically as ``CancelledError`` (River's ``isSoftStopCancelError``
-    reads the context's cause for the same distinction).
+    identically as ``CancelledError``, so the distinction has to come from
+    the recorded origin, not from the raised error's type.
     """
 
     job_id: JobId

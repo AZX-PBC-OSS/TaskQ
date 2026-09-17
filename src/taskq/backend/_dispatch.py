@@ -210,8 +210,8 @@ async def _dispatch_batch(
     unbounded-growth vector the aggregated denial counters on the job row
     (``snooze_count`` / ``rate_limit_blocked_count``) replaced. The
     transitions of record are the terminal writes and the sweep/cancel
-    audit entries; neither vendored grain (River, Oban) writes a per-claim
-    row either. The claim's observability rides the ``kind='dispatch'``
+    audit entries; the claim itself writes no row, so the jobs table cannot
+    grow per claim. The claim's observability rides the ``kind='dispatch'``
     log line and OTEL span in ``_dispatch_sql.dispatch_batch``.
     """
     queue_attr = queues[0] if queues else ""
@@ -220,8 +220,9 @@ async def _dispatch_batch(
     # needs a shared snapshot — the mode resolve and the claimable probe are
     # read-only, and an empty round holds no locks between iterations.
     # asyncpg sends BEGIN and COMMIT as their own round trips, so a
-    # transaction here only tripled the cost of every claim (River,
-    # pgqueuer, procrastinate and pg-boss all fetch in autocommit).
+    # transaction here only tripled the cost of every claim; the claim is
+    # one statement, so autocommit already gives it all the atomicity it
+    # needs.
     async with dispatcher_pool.acquire(timeout=acquire_timeout) as conn:
         queue_modes = (
             queue_mode_cache.resolved_modes(queues) if queue_mode_cache is not None else None

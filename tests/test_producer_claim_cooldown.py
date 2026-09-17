@@ -6,7 +6,7 @@ the most expensive statement in the system, plus window expansions for
 every loser — per trigger. After a round that came back short (fewer rows
 than asked, or none) the producer waits a small jittered cooldown before
 the next round and folds every trigger that lands meanwhile into that one
-round: River's FetchCooldown and Oban's dispatch_cooldown. A full round
+round. A full round
 keeps re-claiming immediately (there is backlog to drain), a trigger that
 lands mid-round is never lost, and the fallback poll keeps its own cadence.
 """

@@ -5,17 +5,17 @@ already elapsed must produce a job that can actually be re-executed —
 not a row that silently re-fails via the deadline sweep on its very next
 tick while the operator-facing surface reports success.
 
-Background — what an operator expects. Sidekiq's ``SortedEntry#retry``
-(``vendor/sidekiq/lib/sidekiq/api.rb:644-649``) re-pushes the job as a
-fresh ``Client.push`` with a decremented ``retry_count`` — a genuinely
-new unit of work with a fresh schedule. Oban's ``retry_job``
-(``vendor/oban/lib/oban/engines/lite.ex:296-309``) keeps the same row
+Background — the two shapes an operator expects. One shape re-pushes the
+job as a genuinely
+new unit of work with a fresh schedule and a decremented retry count.
+The other keeps the same row
 and the same monotonic ``attempt``/bumped ``max_attempts`` shape TaskQ
 uses (``fragment("MAX(?, ? + 1)", j.max_attempts, j.attempt)`` mirrors
 TaskQ's ``LEAST(GREATEST(max_attempts, attempt + 1), 32767)`` in
-``_sql_templates.py``'s ``retry_job`` template) — but Oban's jobs have
-no absolute-deadline column analogous to ``schedule_to_close``, so
-Oban's shape cannot go stale the way TaskQ's can. Both vendors agree on
+``_sql_templates.py``'s ``retry_job`` template) — but that shape cannot
+go stale in a schema whose jobs carry no absolute-deadline column
+analogous to ``schedule_to_close``; with one, a retry of an
+already-expired job re-fails on the next sweep tick. Both shapes agree on
 one thing neither of TaskQ's current behaviours honours: a manual retry
 must actually be capable of running again. Whichever shape TaskQ keeps,
 "the operator clicked Retry and it says success" must mean the job can

@@ -302,7 +302,7 @@ async def _run_terminal_path(  # pyright: ignore[reportUnusedFunction]  # Why: c
         )
     except _TERMINAL_WRITE_INFRA_EXCEPTIONS as infra_exc:
         _log_terminal_write_failed(
-            job_log,
+            job_log if job_log is not None else _log,
             job,
             job_exc if job_exc is not None else infra_exc,
             infra_exc,

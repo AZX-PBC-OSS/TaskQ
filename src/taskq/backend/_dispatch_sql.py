@@ -631,9 +631,8 @@ ranked AS MATERIALIZED (
 -- and the lock node moves to its next input row when a lock would
 -- block, so SKIP LOCKED slides past a peer's held rows to deeper
 -- unlocked ones and the Limit still stops the scan at limit_n
--- ACQUIRED rows. Unlike the vendored pgqueuer uncapped arm, whose
--- lock node reads the live index and is bounded only by acquired rows,
--- this stream reads the MATERIALIZED candidate window: examined rows
+-- ACQUIRED rows. The lock node here reads the MATERIALIZED candidate
+-- window rather than the live index: examined rows
 -- are bounded by the window itself (residual * oversample per
 -- (actor, queue) cohort probe), which is what keeps the depth
 -- contract intact -- but a peer holding the WHOLE window still

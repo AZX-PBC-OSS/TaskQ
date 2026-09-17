@@ -906,9 +906,9 @@ async def _mark_interrupted(
     away): refund the claim's attempt increment, count the interruption on
     the row, write one ``reason='interrupted'`` event. Fenced on ownership,
     attempt epoch and ``cancel_phase = 0`` — an operator cancel in flight
-    wins and reads back as ``"noop"`` (River: a row whose
-    ``cancel_attempted_at`` is set is cancelled, never re-available —
-    river_job.sql ``JobSetStateIfRunningMany``). A hold that would outlive
+    wins and reads back as ``"noop"`` (a row whose
+    ``cancel_attempted_at`` is set is cancelled, never re-available).
+    A hold that would outlive
     ``schedule_to_close`` fails the row on the deadline instead.
     """
     branch: str

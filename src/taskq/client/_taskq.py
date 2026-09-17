@@ -1273,9 +1273,10 @@ async def _stream_pg(
     there gave each stream a dedicated session and a full row re-read per
     enqueue in the schema, while the writes being streamed for still
     surfaced only at the poll bound. A primary-key read at a fixed cadence
-    is what pg-boss's ``fetch`` and River's poll fallback do; River's
-    ``Subscribe`` is in-process and cannot see other workers' completions
-    either. Holds no connection of its own, so pool-only clients stream
+    is the only mechanism that works across processes here: no database
+    object announces this job's terminal write to the polling session, and
+    an in-process subscription cannot see other workers' completions.
+    Holds no connection of its own, so pool-only clients stream
     like any other.
     """
     from taskq.client._transport import pg_poll_event_stream

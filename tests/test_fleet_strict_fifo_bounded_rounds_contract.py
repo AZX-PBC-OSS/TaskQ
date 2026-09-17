@@ -4,7 +4,7 @@ docs/guides/workers.md:214 currently reads: "``strict_fifo`` (default) |
 Jobs are dispatched in priority-then-time order (``priority DESC,
 scheduled_at, id``). Every pending job competes freely — a deep queue of
 one actor can starve others if all candidates share high priority." Read
-plainly, that sentence tells an adopter coming from Celery/Oban/Sidekiq
+plainly, that sentence tells an adopter
 that ``strict_fifo`` offers NO cross-actor fairness guarantee at all, and
 that they must reach for ``round_robin`` + ``fairness_key`` the moment more
 than one actor shares a queue.
@@ -38,19 +38,18 @@ the SAME tight bound holds through the production fleet path — real
 harness in ``tests/_fleet.py`` — so the contract is pinned at the layer an
 adopter actually calls, not only at the SQL layer underneath it.
 
-Vendor framing: this is the guarantee Sidekiq's ``:strict`` queue mode
-explicitly disclaims providing across DIFFERENT queues (a strict-ordered
-queue can starve a lower one — vendor/sidekiq/lib/sidekiq/capsule.rb:57-58,
-the ``:strict`` comment: "all queues have 0 weight and are checked strictly
-in order") and that Sidekiq's default weighted-random mode only
-approximates probabilistically, never with a bound
-(vendor/sidekiq/lib/sidekiq/fetch.rb — queue order is re-shuffled by
+Framing: strict priority order explicitly provides no cross-queue bound
+across DIFFERENT queues (a strict-ordered
+queue can starve a lower one: all queues have 0 weight and are checked strictly
+in order), and weighted-random ordering only
+approximates fairness probabilistically, never with a bound
+(queue order is re-shuffled by
 weight, not rotated by a provable schedule). TaskQ's actor-level rotation
-is stronger than either Sidekiq mode: it is a hard, provable, per-round
+is stronger than both: it is a hard, provable, per-round
 bound, not a probabilistic approximation or a documented-as-unbounded
 "strict" order. The finding here is not that TaskQ's engineering is
 lacking — it demonstrably is not — but that workers.md:214 describes the
-weaker (Sidekiq-strict-like) behaviour TaskQ does NOT have, instead of the
+weaker strict-order behaviour TaskQ does NOT have, instead of the
 stronger, bounded behaviour it does. This test exists so that line can be
 rewritten against a machine-checked number instead of prose that
 undersells its own guarantee.
