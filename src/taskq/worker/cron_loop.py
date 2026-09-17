@@ -12,7 +12,7 @@ import re
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Final, Literal
 from uuid import UUID
 from zoneinfo import ZoneInfo
@@ -113,7 +113,7 @@ reserve leaves room for the tick's own writes and its COMMIT.
 
 class _TickBudgetExhaustedError(TimeoutError):
     """The tick's funded budget was spent before this schedule's payload
-    factory could be called, so the schedule is struck without waiting.
+    factory could be called, so the schedule is DEFERRED, not struck.
 
     The planning loop awaits each schedule's factory in turn, so the
     batch's AGGREGATE factory wait — not any single factory's — is what
@@ -123,12 +123,43 @@ class _TickBudgetExhaustedError(TimeoutError):
     strike the tick recorded, and the identical batch is re-selected on
     the next tick.  Failing the schedule the moment no funded wait
     remains keeps the tick inside its deadline however many hung
-    factories share the batch, and the strike keeps the schedule on its
-    path to auto-disable.  A ``TimeoutError`` subclass because the
-    outcome is a deadline expiring — but the message names the budget,
-    not a hang: the factory never ran, so a "timed out" claim against it
-    would be a lie.
+    factories share the batch (#174).
+
+    The failure this names is the TICK's, not the schedule's: the factory
+    never ran, so a strike here is evidence against a schedule that did
+    nothing — a hung NEIGHBOUR consumed the budget.  Striking the
+    never-funded schedules made one hung factory march every healthy
+    factory-backed schedule behind it toward auto-disable in lockstep
+    (#235), because the failure UPDATE never advances ``next_fire_at``:
+    the identical batch returned in the identical order every tick.  The
+    planning loop therefore routes this exception into the suppression
+    bucket — ``next_fire_at`` advances a short retry, no strike — while
+    the schedule whose factory RAN and timed out keeps its strike, so
+    the genuinely-hung factory still reaches auto-disable on its own
+    evidence.  A ``TimeoutError`` subclass because the outcome is a
+    deadline expiring — but the message names the budget, not a hang:
+    the factory never ran, so a "timed out" claim against it would be a
+    lie.
     """
+
+
+_TICK_BUDGET_RETRY_DELAY: Final = timedelta(seconds=1.0)
+"""How far a budget-deferred schedule's ``next_fire_at`` advances: one
+leader cadence, NOT the schedule's next cron slot.
+
+The deferred slot is still owed — only its funding was missing — so
+skipping to the next cron slot would silently drop a healthy schedule's
+fire because a NEIGHBOUR hung (#235's harm, one period later).  One
+second matches the leader loop's tick cadence, and the due read's
+``next_fire_at <= statement_timestamp()`` bound makes the schedule due
+again on the very next tick, whose ``server_now`` sits at least one
+cadence past this tick's.  The deferral is bounded by the monopolizers'
+own drain: each tick the budget-consuming schedule at the front of the
+``next_fire_at`` order takes a strike, so after
+``cron_auto_disable_threshold`` ticks it is disabled and the budget
+frees; every deferred schedule then fires, its owed slot still inside
+the catch-up window.
+"""
 
 
 CRON_LOCK_SQL_TEMPLATE: Final = "SELECT pg_try_advisory_xact_lock(hashtextextended($1, 0)) AS got"
@@ -457,14 +488,28 @@ class _BufferedFailureTelemetry:
 
 @dataclass(frozen=True, slots=True)
 class _SuppressedFire:
-    """One planned fire dropped before the enqueue by a policy preflight,
-    with its computed ``next_fire_at`` (the suppression UPDATE advances the
-    schedule with it) and the fields the post-write log events need."""
+    """One planned fire dropped before the enqueue — by a policy preflight
+    (singleton / max_pending) or by the tick's budget running out before
+    the payload factory could be called — with the ``next_fire_at`` the
+    suppression UPDATE advances the schedule to, and the fields the
+    post-write log events need.
+
+    Two advance flavours share this bucket because both must leave the
+    schedule's failure accounting untouched (a suppressed slot neither
+    punishes nor amnestiates), but they advance differently:
+    ``singleton_collision`` / ``max_pending`` advance to the computed
+    NEXT CRON SLOT — that slot is genuinely unlandable while the blocker
+    holds, so re-trying it would hot-loop against the blocker — while
+    ``tick_budget`` advances only :data:`_TICK_BUDGET_RETRY_DELAY`: the
+    slot is still owed and perfectly landable, only its funding was
+    missing, so the schedule retries on the very next tick instead of
+    losing the slot (#235).
+    """
 
     schedule_id: UUID
     actor: str
     next_fire_at: datetime
-    reason: Literal["singleton_collision", "max_pending"]
+    reason: Literal["singleton_collision", "max_pending", "tick_budget"]
     blocking_job_id: UUID | None
     current_count: int | None
     max_pending: int | None
@@ -1018,7 +1063,10 @@ async def tick_cron(
     client enqueue would get, and a fire blocked by an active singleton
     job or a full pending cap is SUPPRESSED: dropped from the batch,
     ``next_fire_at`` advanced, neither a fire nor a failure (suppressed
-    slots are absent from the return count).  The ``max_pending`` cap is
+    slots are absent from the return count).  A factory-backed schedule
+    the tick's funded budget could not pay for is suppressed the same
+    way — one leader cadence of retry, no strike, because its factory
+    never ran (#235).  The ``max_pending`` cap is
     resolved per actor against the operator-stored ``actor_config`` row
     the tick already reads — a non-NULL stored value is authoritative
     over the registry literal, the client path's own rule — so a stored
@@ -1095,6 +1143,11 @@ async def tick_cron(
 
     successes: list[_FireSuccess] = []
     failures: list[_FireFailure] = []
+    # Budget deferrals are collected HERE, inside the planning loop, and
+    # policy suppressions join them below — both flow into the one
+    # suppression UPDATE, the branch that advances next_fire_at without
+    # touching failure accounting.
+    suppressed: list[_SuppressedFire] = []
     # Failure telemetry (spans, auto-disable events, metric deltas) is
     # buffered here and exported ONLY after every statement of the tick
     # has executed — see the emission section at the end of this function.
@@ -1130,6 +1183,32 @@ async def tick_cron(
                         tick_started=tick_started,
                     )
                 )
+            except _TickBudgetExhaustedError:
+                # Budget deferral, not a failure — ordered BEFORE the
+                # generic except because this exception subclasses
+                # TimeoutError (and Exception).  The factory NEVER RAN:
+                # the only schedule with evidence against it is the one
+                # whose factory consumed the budget ahead of this one,
+                # and that schedule took its own strike through the
+                # generic branch.  Striking here too was #235: the
+                # failure UPDATE never advances next_fire_at, so the
+                # identical batch returned in the identical order every
+                # tick and healthy factory-backed schedules rode a hung
+                # neighbour's strikes to auto-disable.  The span closes
+                # UNSET, exactly like every other suppressed plan's —
+                # the deferral is a post-commit log event, not a
+                # failure claim the database can still roll back.
+                suppressed.append(
+                    _SuppressedFire(
+                        schedule_id=row["id"],
+                        actor=row["actor"],
+                        next_fire_at=server_now + _TICK_BUDGET_RETRY_DELAY,
+                        reason="tick_budget",
+                        blocking_job_id=None,
+                        current_count=None,
+                        max_pending=None,
+                    )
+                )
             except Exception as exc:
                 # Why buffered, not marked on the span above: that span
                 # records the planning ATTEMPT and closes UNSET; the failure
@@ -1152,7 +1231,6 @@ async def tick_cron(
     # success carries a flag, so ticks without flagged actors spend zero
     # extra statements.  Suppressed plans leave the enqueue list here and
     # never reach the failure path below.
-    suppressed: list[_SuppressedFire] = []
     # Overlap-twin delivery is settled BEFORE the policy preflight: a
     # suppressed plan leaves the success list here, and its next_fire
     # flows into the suppression UPDATE below — whether the fold-1 twin
@@ -1160,9 +1238,10 @@ async def tick_cron(
     # policy, and both UPDATE paths must carry the same advance.
     successes = await _skip_already_delivered_overlap_twins(conn, schema, successes, actor_policies)
     if actor_policies and successes:
-        successes, suppressed = await _suppress_policy_collisions(
+        successes, policy_suppressed = await _suppress_policy_collisions(
             conn, schema, successes, actor_policies, actor_configs
         )
+        suppressed.extend(policy_suppressed)
 
     if successes:
         successes = await _enqueue_planned_fires(
@@ -1189,7 +1268,10 @@ async def tick_cron(
         # last_fire_error write, no consecutive_failures increment and no
         # reset either — a suppressed slot must neither punish nor amnesty.
         # Advancing next_fire_at alone keeps sequential catch-up moving and
-        # prevents a hot re-fire loop against the active blocker.
+        # prevents a hot re-fire loop against the active blocker; a
+        # budget-deferred entry rides the same statement with its
+        # one-cadence retry (see _SuppressedFire for why the two flavours
+        # advance differently).
         await conn.execute(
             f'UPDATE "{schema}".cron_schedules s '
             f"SET next_fire_at = f.next_fire "
@@ -1343,6 +1425,23 @@ async def tick_cron(
                     detection_path="cron_tick_preflight",
                     schedule_id=str(entry.schedule_id),
                     worker_id=str(worker_id),
+                )
+            elif entry.reason == "tick_budget":
+                # INFO, not WARNING: the deferred schedule did nothing
+                # wrong and the condition is transient by construction
+                # (the monopolizer ahead of it is draining toward
+                # auto-disable on its own strikes).  The failure-side
+                # signal lives on the monopolizer's "cron fire failed"
+                # line; this event is the fairness trail — an operator
+                # seeing it every tick knows a neighbour is eating the
+                # tick's factory budget.
+                log.info(
+                    "cron-fire-budget-deferred",
+                    kind="cron_fire",
+                    actor=entry.actor,
+                    schedule_id=str(entry.schedule_id),
+                    worker_id=str(worker_id),
+                    next_fire_at=entry.next_fire_at.isoformat(),
                 )
             else:
                 log.warning(
@@ -1516,10 +1615,13 @@ async def _plan_fire(
     *tick_started* is the tick's ``time.monotonic()`` origin; the payload
     factory's deadline is clamped against what is left of the leader's
     whole-tick budget from it (see :func:`_factory_deadline`).  When no
-    funded wait remains, a factory-backed schedule fails immediately with
+    funded wait remains, a factory-backed schedule raises
     :class:`_TickBudgetExhaustedError` — the factory is never called — so
-    a batch of hung factories cannot sum past the whole-tick deadline.
-    Static-payload schedules pay no factory wait and plan regardless.
+    a batch of hung factories cannot sum past the whole-tick deadline;
+    the planning loop routes that exception into the suppression bucket
+    (a one-cadence retry, no strike — the factory never ran, so there is
+    no evidence against the schedule).  Static-payload schedules pay no
+    factory wait and plan regardless.
 
     *actor_policies* stamps the planned args with the actor's singleton /
     ``max_pending`` flags exactly the way the client enqueue path stamps

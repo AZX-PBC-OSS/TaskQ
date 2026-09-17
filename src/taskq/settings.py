@@ -1877,10 +1877,15 @@ class WorkerSettings(TaskQSettings):
         "for a cron schedule's payload factory (both the off-loop call and "
         "the coroutine a factory returns). Default 5.0s. The tick clamps it "
         "to stay strictly inside what is left of the leader's whole-tick "
-        "deadline (dispatcher_command_timeout), so the named per-schedule "
-        "failure this deadline records is what fires, never the whole-tick "
-        "cancellation; a value at or above that deadline is therefore an "
-        "upper bound, not the effective one.",
+        "deadline (dispatcher_command_timeout), so a factory that runs and "
+        "outlives its granted deadline takes the named per-schedule failure "
+        "this setting exists to record, never the whole-tick cancellation; "
+        "a value at or above that deadline is therefore an upper bound, not "
+        "the effective one. When the tick's funded budget is already spent "
+        "before a factory is called, the schedule is deferred (next_fire_at "
+        "advances one tick cadence) rather than struck: the factory never "
+        "ran, so there is no evidence against the schedule — only the "
+        "schedule whose factory consumed the budget is failing.",
     )
 
     # ── Until-idle drain mode ────────────────────────────────────────────
