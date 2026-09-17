@@ -2457,9 +2457,14 @@ def update_running_lease_expired_cache(count: int) -> None:
     worker emits nothing): this gauge is the direct count. A healthy
     fleet reads 0 (the reclaim sweep drains expired leases within a tick
     or two of expiry), so a SUSTAINED non-zero reading means reclaim is
-    not draining. No dimensions: the fleet total is the alertable shape,
-    and the per-job truth (locked_by_worker, lock_expires_at) lives on
-    the row and the admin jobs page, not on a label.
+    not draining. Rows with a cancel in flight (cancel_phase != 0) are
+    carved out: the reclaim sweep deliberately waits out the cancel grace
+    ladder for them, so their lease expiring mid-cancel is the protocol
+    working, not a zombie — the never-completing cancel is
+    TaskQAbandonedJobs' to page. No dimensions: the fleet total is the
+    alertable shape, and the per-job truth (locked_by_worker,
+    lock_expires_at) lives on the row and the admin jobs page, not on a
+    label.
     """
     global _running_lease_expired_count
     _running_lease_expired_count = count
@@ -2475,9 +2480,12 @@ _running_lease_expired_gauge = get_meter().create_observable_gauge(
     name="taskq.jobs.running_lease_expired",
     description=(
         "Running jobs whose lock lease is past expiry (the zombie-running "
-        "shape). Healthy reads 0 — the reclaim sweep drains expired leases "
-        "within a tick or two — so a sustained non-zero reading means "
-        "reclaim is not draining. Sampled by every worker with "
+        "shape), with rows in a cancel phase (cancel_phase != 0) carved out "
+        "— the reclaim sweep deliberately waits out the cancel grace ladder "
+        "for those, so an expired lease mid-cancel is the protocol working, "
+        "not a zombie. Healthy reads 0 — the reclaim sweep drains expired "
+        "leases within a tick or two — so a sustained non-zero reading "
+        "means reclaim is not draining. Sampled by every worker with "
         "taskq.jobs.by_status."
     ),
     unit="1",

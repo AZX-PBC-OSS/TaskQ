@@ -354,9 +354,15 @@ groups:
           summary: "TaskQ running jobs are stuck on expired leases"
           description: >-
             Running jobs whose lock lease is past expiry, sustained for 5
-            minutes. A healthy fleet reads 0 — the reclaim sweep drains
-            expired leases within a tick or two of expiry — so a sustained
-            non-zero reading means reclaim is not draining: work is claimed
-            and stuck while health probes stay green. Inspect the admin
-            /jobs lease column (or jobs.lock_expires_at) for the holders.
-            Runbook: docs/guides/runbooks.md#taskqrunningleaseexpired.
+            minutes — with rows in a cancel phase carved out: the reclaim
+            sweep deliberately waits cancel grace + cleanup grace + 60 s
+            past expiry for a cancelling row before it pre-empts, so an
+            expired lease mid-cancel is the protocol working, not an
+            incident (a cancel that never completes pages as
+            TaskQAbandonedJobs instead). A healthy fleet reads 0 — the
+            reclaim sweep drains expired leases within a tick or two of
+            expiry — so a sustained non-zero reading means reclaim is not
+            draining: work is claimed and stuck while health probes stay
+            green. Inspect the admin /jobs lease column (or
+            jobs.lock_expires_at) for the holders. Runbook:
+            docs/guides/runbooks.md#taskqrunningleaseexpired.
