@@ -977,8 +977,7 @@ async def _enqueue_on_conn(
         # conversion does not undo that, so the refusal would leave the
         # caller's transaction dead on this detection path but alive on
         # the preflight paths. The savepoint rollback restores the scope
-        # before the conversion raises; on the pool-owned wrapper the
-        # savepoint nests inside it. Every other enqueue keeps the bare
+        # before the conversion raises. Every other enqueue keeps the bare
         # INSERT: their violation outcomes are raw or migration-window
         # errors, not refusals a caller catches and continues from.
         idempotency_bounded_wait = (
