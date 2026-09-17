@@ -1102,3 +1102,68 @@ async def test_class_shape_teardown_failure_isolation() -> None:
     await loop_scope.shutdown()
 
     assert inst_a.exited
+
+
+# ── has_teardown_work ─────────────────────────────────────────────
+
+
+async def test_has_teardown_work_false_for_plain_resolutions() -> None:
+    """A container that only served plain (teardown-free) values reports no
+    close work, so a per-job caller can skip the shielded close task."""
+    container = ScopeContainer(scope=Scope.TRANSIENT, resolver=_stub_resolver)
+    assert container.has_teardown_work is False
+
+    entry = ProviderEntry(
+        type_=_SvcA,
+        scope=Scope.TRANSIENT,
+        kind="class",
+        impl=_SvcA,
+        factory_shape=FactoryShape.CLASS,
+        lifecycle=ProviderLifecycle.Plain,
+    )
+    await container.get_or_create(_SvcA, entry)
+
+    assert container.has_teardown_work is False
+
+
+async def test_has_teardown_work_true_until_generator_teardown_runs() -> None:
+    container = ScopeContainer(scope=Scope.TRANSIENT, resolver=_stub_resolver)
+
+    async def make_client() -> AsyncIterator[_MockClient]:
+        yield _MockClient()
+
+    entry = ProviderEntry(
+        type_=_MockClient,
+        scope=Scope.TRANSIENT,
+        kind="factory",
+        impl=make_client,
+        factory_shape=FactoryShape.ASYNC_GENERATOR,
+    )
+    await container.get_or_create(_MockClient, entry)
+    assert container.has_teardown_work is True
+
+    await container.aclose()
+    assert container.has_teardown_work is False
+
+
+async def test_has_teardown_work_true_while_sync_gen_executor_is_open() -> None:
+    """The pinned SYNC_GENERATOR executor is close work of its own even
+    after every per-provider teardown has run."""
+    container = ScopeContainer(scope=Scope.TRANSIENT, resolver=_stub_resolver)
+
+    def make_resource() -> Iterator[_MockResource]:
+        yield _MockResource()
+
+    entry = ProviderEntry(
+        type_=_MockResource,
+        scope=Scope.TRANSIENT,
+        kind="factory",
+        impl=make_resource,
+        factory_shape=FactoryShape.SYNC_GENERATOR,
+    )
+    await container.get_or_create(_MockResource, entry)
+    container._teardowns.clear()  # pyright: ignore[reportPrivateUsage]  # Why: isolates the executor half of the predicate from the teardown-list half.
+    assert container.has_teardown_work is True
+
+    await container.aclose()
+    assert container.has_teardown_work is False

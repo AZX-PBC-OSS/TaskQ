@@ -78,15 +78,15 @@ def _settings() -> WorkerSettings:
 async def _tick_publishes(client: object) -> None:
     """One sustained-outage window: every progress tick attempts a publish
     and every round trip fails."""
-    log = structlog.get_logger("rt_depfail")
     channel = progress_channel("taskq_rt", _JOB_ID)
     for seq in range(_ATTEMPTS):
         await _publish_event(
             client,  # type: ignore[arg-type]  # Why: duck-typed double standing in for redis.asyncio.Redis at the publish seam
             channel,
             '{"v": 1}',
+            job_id=_JOB_ID,
+            actor="rt_actor",
             seq=seq,
-            log=log,
             channel_label="per_job",
         )
 
@@ -107,7 +107,6 @@ async def test_publish_failure_log_emission_is_bounded_under_sustained_outage(
     """
     error = ConnectionError("redis dead")
     client = _DeadRedisClient(error)
-    log = structlog.get_logger("rt_depfail")
 
     with structlog.testing.capture_logs() as captured:
         if path == "direct":
@@ -119,8 +118,9 @@ async def test_publish_failure_log_emission_is_bounded_under_sustained_outage(
                     progress_channel("taskq_rt", _JOB_ID),
                     progress_global_channel("taskq_rt"),
                     '{"v": 1}',
+                    job_id=_JOB_ID,
+                    actor="rt_actor",
                     seq=seq,
-                    log=log,
                 )
 
     failure_warnings = [

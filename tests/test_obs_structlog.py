@@ -552,3 +552,35 @@ def test_missing_mandatory_field_detected_by_schema_validator() -> None:
     with pytest.raises(jsonschema.ValidationError, match="kind") as exc_info:
         jsonschema.validate(instance=log_dict, schema=_LOG_LINE_SCHEMA)
     assert "kind" in str(exc_info.value.message)
+
+
+# ── Level filtering happens before the processor chain ────────────
+
+
+def test_debug_below_configured_level_skips_processor_chain(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A ``debug()`` call at the default INFO level must not run the
+    processors at all: per-job DEBUG sites otherwise pay the whole chain
+    (contextvars merge, timestamp, OTel span lookup, scrub) for a line
+    stdlib then drops."""
+    from taskq.obs import _structlog as structlog_mod
+
+    calls: list[str] = []
+    real_span_processor = structlog_mod._otel_span_processor  # type: ignore[reportPrivateUsage]  # Why: the spy must wrap the module attribute the chain is built from.
+
+    def spy(
+        logger: object, method: str, event_dict: structlog.types.EventDict
+    ) -> structlog.types.EventDict:
+        calls.append(method)
+        return real_span_processor(logger, method, event_dict)
+
+    monkeypatch.setattr(structlog_mod, "_otel_span_processor", spy)
+    obs_mod.setup_logging(level="INFO")
+
+    log = obs_mod.get_logger("_test_level_filter")
+    log.debug("dropped_before_processing")
+    assert calls == []
+
+    log.info("processed")
+    assert calls == ["info"]

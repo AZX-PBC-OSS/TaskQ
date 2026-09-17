@@ -485,10 +485,14 @@ async def test_loop_cache_persists_across_invocations() -> None:
     await process_scope.shutdown()
 
 
-# ── TRANSIENT scope INFO logging ──────────────────────────────────────
+# ── TRANSIENT scope open/close logging ────────────────────────────────
 
 
 async def test_transient_scope_logging() -> None:
+    """The per-job open/close lines are DEBUG: they carry only the actor
+    name, nothing consumes them, and at INFO they would be two rendered
+    lines per job."""
+
     async def my_actor(payload: _Payload, ctx: JobContext[_Payload]) -> dict[str, object]:
         return {}
 
@@ -498,17 +502,24 @@ async def test_transient_scope_logging() -> None:
     await _bootstrap_scopes(registry, process_scope, thread_scope, loop_scope)
 
     mock_ctx = _make_job_ctx()
-    async with build_actor_scope(
-        registry=registry,
-        process_scope=process_scope,
-        thread_scope=thread_scope,
-        loop_scope=loop_scope,
-        actor_func=my_actor,
-        actor_name="my_actor",
-        passthrough_kwargs={"ctx": mock_ctx, "payload": _Payload()},
-    ) as resolved:
-        assert resolved.ctx is mock_ctx
-        assert resolved.di_kwargs == {}
+    with structlog.testing.capture_logs() as captured:
+        async with build_actor_scope(
+            registry=registry,
+            process_scope=process_scope,
+            thread_scope=thread_scope,
+            loop_scope=loop_scope,
+            actor_func=my_actor,
+            actor_name="my_actor",
+            passthrough_kwargs={"ctx": mock_ctx, "payload": _Payload()},
+        ) as resolved:
+            assert resolved.ctx is mock_ctx
+            assert resolved.di_kwargs == {}
+
+    scope_lines = [e for e in captured if e["event"].startswith("transient-scope-")]
+    assert [(e["event"], e["log_level"], e["actor_name"]) for e in scope_lines] == [
+        ("transient-scope-opened", "debug", "my_actor"),
+        ("transient-scope-closed", "debug", "my_actor"),
+    ]
 
     await loop_scope.shutdown()
     await thread_scope.shutdown()
@@ -676,3 +687,102 @@ def test_transient_consumer_of_process_clock_no_violation() -> None:
     registry.register_value(Clock, Scope.PROCESS, SystemClock())
     registry.register_class(_TransientConsumer, Scope.TRANSIENT)
     registry.validate()
+
+
+# ── TRANSIENT close is skipped when there is nothing to close ─────────
+
+
+async def test_actor_scope_exit_skips_shielded_close_without_teardown_work(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Most jobs resolve nothing with a teardown, yet every exit spawned a
+    shielded task to run a no-op close; the exit consults the container
+    and only shields a close that has work to do."""
+    from taskq._di import scopes as scopes_mod
+
+    shielded: list[object] = []
+    real_shield = scopes_mod.shield_with_retrieval
+
+    async def spy(aw: Any) -> Any:
+        shielded.append(aw)
+        return await real_shield(aw)
+
+    monkeypatch.setattr(scopes_mod, "shield_with_retrieval", spy)
+
+    async def plain_actor(payload: _Payload, ctx: JobContext[_Payload]) -> dict[str, object]:
+        return {}
+
+    registry = ProviderRegistry()
+    registry.validate()
+    process_scope, thread_scope, loop_scope = _make_scopes(registry)
+    await _bootstrap_scopes(registry, process_scope, thread_scope, loop_scope)
+
+    async with build_actor_scope(
+        registry=registry,
+        process_scope=process_scope,
+        thread_scope=thread_scope,
+        loop_scope=loop_scope,
+        actor_func=plain_actor,
+        actor_name="plain_actor",
+        passthrough_kwargs={"ctx": _make_job_ctx(), "payload": _Payload()},
+    ):
+        pass
+
+    assert shielded == []
+
+    await loop_scope.shutdown()
+    await thread_scope.shutdown()
+    await process_scope.shutdown()
+
+
+async def test_actor_scope_exit_shields_close_when_teardown_is_pending(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from taskq._di import scopes as scopes_mod
+
+    shielded: list[object] = []
+    real_shield = scopes_mod.shield_with_retrieval
+
+    async def spy(aw: Any) -> Any:
+        shielded.append(aw)
+        return await real_shield(aw)
+
+    monkeypatch.setattr(scopes_mod, "shield_with_retrieval", spy)
+
+    torn_down = False
+
+    async def make_transient() -> AsyncIterator[_TransDep]:
+        nonlocal torn_down
+        yield _TransDep()
+        torn_down = True
+
+    async def my_actor(
+        payload: _Payload,
+        ctx: JobContext[_Payload],
+        dep: Annotated[_TransDep, Scope.TRANSIENT],
+    ) -> dict[str, object]:
+        return {}
+
+    registry = ProviderRegistry()
+    registry.register_factory(_TransDep, Scope.TRANSIENT, make_transient)
+    registry.validate()
+    process_scope, thread_scope, loop_scope = _make_scopes(registry)
+    await _bootstrap_scopes(registry, process_scope, thread_scope, loop_scope)
+
+    async with build_actor_scope(
+        registry=registry,
+        process_scope=process_scope,
+        thread_scope=thread_scope,
+        loop_scope=loop_scope,
+        actor_func=my_actor,
+        actor_name="my_actor",
+        passthrough_kwargs={"ctx": _make_job_ctx(), "payload": _Payload()},
+    ):
+        pass
+
+    assert len(shielded) == 1
+    assert torn_down
+
+    await loop_scope.shutdown()
+    await thread_scope.shutdown()
+    await process_scope.shutdown()

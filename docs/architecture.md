@@ -1585,6 +1585,14 @@ overhead. For batched jobs:
 | `cancelled` / `crashed` | Counts non-terminal jobs; if none remain, marks batch `complete`. Does not touch the failure counter. |
 | `snoozed` / `reservation_denied` / `rate_limit_denied` / `scheduled` | Returns immediately — the job is rescheduled, not terminal. |
 
+"No non-terminal jobs remain" is decided by `complete_batch`'s own `NOT
+EXISTS` guard in its statement's snapshot (the count the counter writes
+return is advisory). Both the guard and that count are the open-member
+probe served by `jobs_batch_open_members_idx` — a partial index over
+exactly the non-terminal members, keyed by `batch_id` — so each terminal
+write costs an index range over the members still open, never a walk of
+the batch's whole membership.
+
 Aborting cancels all pending and scheduled child jobs (`pending` /
 `scheduled` → `cancelled`) with a hardcoded `error_message = 'Batch
 aborted due to consecutive failures'` and sets the batch row to

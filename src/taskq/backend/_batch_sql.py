@@ -35,7 +35,7 @@ from taskq.backend._protocol import (
 )
 from taskq.backend._records import _batch_row_from_record
 from taskq.backend._sql_templates import SqlTemplates
-from taskq.backend.statemachine import TERMINAL_STATUSES
+from taskq.backend.statemachine import ACTIVE_STATUSES, TERMINAL_STATUSES
 from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining
     DEFAULT_CHUNK_SIZE,
@@ -72,6 +72,24 @@ __all__ = [
 # added to the state machine.
 _TERMINAL_NOT_IN = "NOT IN (" + ",".join(f"'{s}'" for s in TERMINAL_STATUSES) + ")"
 
+_ACTIVE_IN = "IN (" + ", ".join(f"'{s}'" for s in sorted(ACTIVE_STATUSES)) + ")"
+
+
+def _open_member_where(batch_id_param: int) -> str:
+    """The open-member probe: "a member of the batch bound at ``$N`` (as
+    text) that is not terminal".
+
+    Spelled so jobs_batch_open_members_idx (01.00.13_03) serves it: the
+    batch id is the index's expression key, and the positive, sorted
+    status list is the index predicate's exact text, which is what lets
+    the planner prove the partial index applies. Every per-terminal-write
+    question about open members goes through this one predicate; the
+    ``metadata @>`` containment form stays only for the statements that
+    must touch terminal members too (abort's cancel, list counts, prune).
+    """
+    return f"(metadata->>'batch_id') = ${batch_id_param}\n      AND status {_ACTIVE_IN}"
+
+
 _CREATE_BATCH_SQL = """\
 INSERT INTO "{schema}".batches
 (id, queue, expected_size, failure_threshold, finalizer_job_id, originating_actor)
@@ -84,6 +102,11 @@ SELECT id, queue, status, expected_size, consecutive_failures,
 FROM "{schema}".batches
 WHERE id = $1"""
 
+# Both counter writes run on every batched job's terminal write, so the
+# member count they return must not walk the batch: the counts CTE is
+# the open-member predicate, which jobs_batch_open_members_idx serves as
+# one index range over the members still open — never the terminal
+# history — so its cost tracks what remains, not what the batch was.
 _INCREMENT_BATCH_FAILURES_SQL = """\
 WITH updated AS (
     UPDATE "{schema}".batches
@@ -94,8 +117,7 @@ WITH updated AS (
 counts AS (
     SELECT count(*)::int AS remaining
     FROM "{schema}".jobs
-    WHERE metadata @> $2::jsonb
-      AND status {terminal_not_in}
+    WHERE {open_member}
 )
 SELECT u.consecutive_failures, u.failure_threshold, c.remaining
 FROM updated u CROSS JOIN counts c"""
@@ -110,8 +132,7 @@ WITH updated AS (
 counts AS (
     SELECT count(*)::int AS remaining
     FROM "{schema}".jobs
-    WHERE metadata @> $2::jsonb
-      AND status {terminal_not_in}
+    WHERE {open_member}
 )
 SELECT c.remaining FROM updated u CROSS JOIN counts c"""
 
@@ -136,10 +157,12 @@ WHERE id = $1 AND status = 'active'"""
 # statement's own snapshot: the increment/reset counts CTE runs in ITS
 # statement's READ COMMITTED snapshot, which after a batches-row lock
 # wait can predate a concurrent member's terminal write, so a count of
-# zero from the caller is never the completion decision. The guard shape
-# is the one complete_stale_batches already uses (worker/
-# _leader_shared.py); the status = 'active' sibling condition keeps
-# abort-wins-over-complete intact.
+# zero from the caller is never the completion decision. The guard shape is
+# the one complete_stale_batches already uses (worker/_leader_shared.py);
+# the status = 'active' sibling condition keeps abort-wins-over-complete
+# intact. The probe itself is the open-member predicate served by
+# jobs_batch_open_members_idx, so the guard costs one index seek per
+# terminal write however many members the batch has.
 #
 # The membership CTE closes the append-race window the guard alone cannot
 # see: a READ COMMITTED snapshot cannot see another transaction's
@@ -175,14 +198,12 @@ WHERE id = $1 AND status = 'active'
   AND EXISTS (SELECT 1 FROM membership)
   AND NOT EXISTS (
     SELECT 1 FROM "{schema}".jobs
-    WHERE metadata @> $2::jsonb
-      AND status {terminal_not_in}
+    WHERE {open_member}
   )"""
 
 _COUNT_BATCH_NON_TERMINAL_SQL = """\
 SELECT count(*)::int FROM "{schema}".jobs
-WHERE metadata @> $1::jsonb
-  AND status {terminal_not_in}"""
+WHERE {open_member}"""
 
 _LIST_BATCHES_BASE_SQL = """\
 SELECT b.id, b.queue, b.status, b.expected_size, b.consecutive_failures,
@@ -266,16 +287,18 @@ def render_batch_sql(schema: str) -> BatchSql:
         create_batch=_CREATE_BATCH_SQL.format(schema=schema),
         get_batch=_GET_BATCH_SQL.format(schema=schema),
         increment_batch_failures=_INCREMENT_BATCH_FAILURES_SQL.format(
-            schema=schema, terminal_not_in=_TERMINAL_NOT_IN
+            schema=schema, open_member=_open_member_where(batch_id_param=2)
         ),
         reset_batch_failures=_RESET_BATCH_FAILURES_SQL.format(
-            schema=schema, terminal_not_in=_TERMINAL_NOT_IN
+            schema=schema, open_member=_open_member_where(batch_id_param=2)
         ),
         abort_batch_jobs=_ABORT_BATCH_JOBS_SQL.format(schema=schema),
         abort_batch_row=_ABORT_BATCH_ROW_SQL.format(schema=schema),
-        complete_batch=_COMPLETE_BATCH_SQL.format(schema=schema, terminal_not_in=_TERMINAL_NOT_IN),
+        complete_batch=_COMPLETE_BATCH_SQL.format(
+            schema=schema, open_member=_open_member_where(batch_id_param=2)
+        ),
         count_batch_non_terminal=_COUNT_BATCH_NON_TERMINAL_SQL.format(
-            schema=schema, terminal_not_in=_TERMINAL_NOT_IN
+            schema=schema, open_member=_open_member_where(batch_id_param=1)
         ),
         list_batches_base=_LIST_BATCHES_BASE_SQL.format(
             schema=schema, terminal_not_in=_TERMINAL_NOT_IN
@@ -366,13 +389,10 @@ async def increment_batch_failures(
     """Atomically increment consecutive_failures and return the new count,
     the batch's failure_threshold, and the number of non-terminal member jobs.
 
-    Returns ``(0, None, 0)`` if the batch row does not exist.
+    Returns ``(0, None, 0)`` if the batch row does not exist. The member
+    count is the same index-served probe as :func:`count_batch_non_terminal`.
     """
-    rec = await conn.fetchrow(
-        sql.increment_batch_failures,
-        batch_id,
-        _batch_filter_json(batch_id),
-    )
+    rec = await conn.fetchrow(sql.increment_batch_failures, batch_id, str(batch_id))
     if rec is None:
         return (0, None, 0)
     return (rec["consecutive_failures"], rec["failure_threshold"], rec["remaining"])
@@ -386,13 +406,10 @@ async def reset_batch_failures(
     """Reset consecutive_failures to 0 and return the number of non-terminal
     member jobs.
 
-    Returns ``0`` if the batch row does not exist.
+    Returns ``0`` if the batch row does not exist. The member count is the
+    same index-served probe as :func:`count_batch_non_terminal`.
     """
-    rec = await conn.fetchrow(
-        sql.reset_batch_failures,
-        batch_id,
-        _batch_filter_json(batch_id),
-    )
+    rec = await conn.fetchrow(sql.reset_batch_failures, batch_id, str(batch_id))
     if rec is None:
         return 0
     return rec["remaining"]
@@ -448,7 +465,7 @@ async def complete_batch(
     against the now-visible membership.
     """
     try:
-        await conn.execute(sql.complete_batch, batch_id, _batch_filter_json(batch_id))
+        await conn.execute(sql.complete_batch, batch_id, str(batch_id))
     except LockNotAvailableError:
         # Delayed on the membership lock — see the docstring. Debug, not
         # warning: this is the same optimistic-CAS miss class as the
@@ -470,7 +487,7 @@ async def count_batch_non_terminal(
     batch_id: UUID,
 ) -> int:
     """Count non-terminal member jobs for a batch."""
-    return await conn.fetchval(sql.count_batch_non_terminal, _batch_filter_json(batch_id))
+    return await conn.fetchval(sql.count_batch_non_terminal, str(batch_id))
 
 
 async def list_batches(

@@ -803,6 +803,26 @@ table the apply can stall the worker fleet's writes for a noticeable window.
   `01.00.02_01` precedent; the migration file's header carries the full
   derivation.
 
+### Migration `01.00.13_03` adds the batch open-members index
+
+> **Unreleased.** Operational note; nothing breaks. Same lock caveat as
+> `01.00.06_01` above.
+
+`01.00.13_03_pre_jobs_batch_open_members_index.sql` adds
+`jobs_batch_open_members_idx`, a partial index over the non-terminal
+members of every batch keyed by `batch_id`. It serves the member probe
+every batched job's terminal write runs (`complete_batch`'s guard and the
+`remaining` count the failure-counter writes return, the same probe as
+`count_batch_non_terminal`) as one index range over the members still
+open, where the `metadata @>` containment form walked the batch's whole
+membership on every write. Pre-phase and rolling-safe: the previous
+release's statements never reference the index and this release's run
+without it (only the cost bound is lost). Like every sibling index
+migration it is a plain `CREATE INDEX` — the build takes a write-blocking
+lock on `jobs`, so on a large `jobs` table build it `CONCURRENTLY` by hand
+first (the statement is in the migration file) and let the migration
+no-op.
+
 ### Bulk cancel and force-deregistration now make bounded committed progress
 
 > **Unreleased.** Changes the failure semantics of `JobsClient.cancel_where()`

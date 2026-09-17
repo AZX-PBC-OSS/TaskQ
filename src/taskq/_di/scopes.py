@@ -11,7 +11,7 @@ import asyncio
 import contextlib
 from collections.abc import AsyncGenerator, Awaitable, Callable, Generator, Mapping
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import AsyncExitStack, asynccontextmanager
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any, assert_never, cast
@@ -21,11 +21,7 @@ from pydantic import BaseModel
 
 from taskq._di.registry import ProviderRegistry
 from taskq._di.scope import Scope
-from taskq._di.solver import (
-    _cached_introspection,  # pyright: ignore[reportPrivateUsage]  # Why: the shadow-derivation walk mirrors the solver's own parameter introspection; reusing its memoized introspection keeps per-job cost at cached-tuple access instead of re-running get_type_hints.
-    _unwrap_scope_override,  # pyright: ignore[reportPrivateUsage]  # Why: same — the walk must unwrap Annotated[...] exactly as the solver does, or a Scope-marked shadowed parameter would be misread.
-    solve_dependencies,
-)
+from taskq._di.solver import solve_dependencies
 from taskq._di.types import FactoryShape, ProviderEntry, ProviderLifecycle
 from taskq._di.types import ScopeContainer as ScopeContainerProtocol
 from taskq._shield import shield_with_retrieval
@@ -66,7 +62,7 @@ def make_resolver(
 
 
 class ScopeContainer:
-    """Concrete scope-lifetime container owning a cache, teardown list, and AsyncExitStack.
+    """Concrete scope-lifetime container owning a cache and a teardown list.
 
     The container is responsible for ALL factory invocation, caching, and
     teardown registration. The solver engine NEVER calls a factory directly
@@ -82,7 +78,6 @@ class ScopeContainer:
     ) -> None:
         self._scope: Scope = scope
         self._cache: dict[type, object] = {}
-        self._stack: AsyncExitStack = AsyncExitStack()
         self._teardowns: list[Callable[[], Any]] = []
         self._resolver: _Resolver = resolver
         self._sync_gen_executor: ThreadPoolExecutor | None = None
@@ -256,6 +251,17 @@ class ScopeContainer:
 
         self._teardowns.append(_teardown)
         return value
+
+    @property
+    def has_teardown_work(self) -> bool:
+        """Whether :meth:`aclose` has anything left to run.
+
+        False once every registered teardown has run and the pinned
+        SYNC_GENERATOR executor (if one was ever opened) is shut down —
+        i.e. exactly when ``aclose()`` would return without awaiting
+        anything, which lets a per-job caller skip scheduling it.
+        """
+        return bool(self._teardowns) or self._sync_gen_executor is not None
 
     async def aclose(self) -> None:
         """Close the container with the log-and-continue teardown policy."""
@@ -496,73 +502,6 @@ class LoopScope(ScopeContainer):
         return self._cache.get(type_)
 
 
-def _shadow_derived_providers(
-    registry: ProviderRegistry,
-    slot_values: Mapping[type, object],
-) -> frozenset[type]:
-    """The provider types whose dependency closure reaches a shadowed type.
-
-    Walks the registry's provider graph statically — the same parameter
-    introspection the solver performs at resolution time (memoized by
-    ``_cached_introspection``), followed recursively through
-    provider→provider edges — and returns every NON-value provider whose
-    own parameters, or any transitively injected provider's parameters,
-    name a type in *slot_values*. Those are the LOOP-scoped factories
-    that bake a LOOP-registered connection (or anything derived from
-    one) into the singleton the scope's bootstrap resolution created;
-    the per-slot view re-resolves them per actor invocation instead.
-
-    VALUE providers are never returned: a value carries no dependency
-    graph, so it cannot derive from anything. Unregistered parameter
-    types contribute nothing (a validated registry has none left).
-    """
-
-    providers = registry.providers
-    shadow_types = frozenset(slot_values)
-    verdict: dict[type, bool] = {}
-
-    def _entry_callable(entry: ProviderEntry[object]) -> object | None:
-        # The callable whose parameters name this provider's
-        # dependencies: the factory itself, or the class's __init__ —
-        # the same pair the solver resolves through.
-        if entry.factory_shape is FactoryShape.VALUE:
-            return None
-        if entry.factory_shape is FactoryShape.CLASS:
-            return cast("type[Any]", entry.impl).__init__
-        return entry.impl
-
-    def _reaches(t: type, seen: frozenset[type]) -> bool:
-        if t in verdict:
-            return verdict[t]
-        if t in seen:
-            # A cycle's back-edge cannot be the path that makes either
-            # member shadow-derived; the verdict is decided by the rest
-            # of each member's dependencies.
-            return False
-        entry = providers.get(t)
-        if entry is None or entry.factory_shape is FactoryShape.VALUE:
-            verdict[t] = t in shadow_types
-            return verdict[t]
-        callable_ = _entry_callable(entry)
-        hit = False
-        if callable_ is not None:
-            hints, _sig_params = _cached_introspection(callable_)
-            for param_name, annotation in hints.items():
-                if param_name == "return":
-                    continue
-                unwrapped, _override = _unwrap_scope_override(param_name, annotation)
-                lookup_type = unwrapped if unwrapped is not None else annotation
-                if not isinstance(lookup_type, type):
-                    continue
-                if lookup_type in shadow_types or _reaches(lookup_type, seen | {t}):
-                    hit = True
-                    break
-        verdict[t] = hit
-        return hit
-
-    return frozenset(t for t in providers if _reaches(t, frozenset()))
-
-
 class LoopScopeSlotView:
     """Per-actor-invocation view of the LOOP scope for one consumer slot.
 
@@ -745,7 +684,7 @@ async def build_actor_scope(
             loop_scope,
             loop_slot_values,
             invocation_runner=transient_scope,
-            shadow_derived=_shadow_derived_providers(registry, loop_slot_values),
+            shadow_derived=registry.shadow_derived_providers(frozenset(loop_slot_values)),
         )
 
     scope_containers = {
@@ -769,7 +708,10 @@ async def build_actor_scope(
 
     transient_scope._resolver = _resolver_with_all  # pyright: ignore[reportPrivateUsage]  # Why: build_actor_scope constructs the TRANSIENT container and must wire its resolver to see all four scope containers; the resolver is a closure detail owned by this call site
 
-    logger.info("transient-scope-opened", actor_name=actor_name)
+    # DEBUG, not INFO: this pair fires once per job carrying only the
+    # actor name, so at the default level it is a per-job rendering cost
+    # for a line nothing consumes.
+    logger.debug("transient-scope-opened", actor_name=actor_name)
     try:
         di_kwargs = await solve_dependencies(
             func=actor_func,
@@ -801,8 +743,12 @@ async def build_actor_scope(
             # shield_with_retrieval, not plain asyncio.shield: a detached
             # teardown that fails under a double cancel must have its
             # outcome retrieved and logged, not lost (see taskq._shield).
-            await shield_with_retrieval(transient_scope.aclose())
+            # Skipped outright when the container has nothing to close:
+            # most jobs resolve no teardown-bearing provider, and the
+            # shield's task creation would be the whole cost.
+            if transient_scope.has_teardown_work:
+                await shield_with_retrieval(transient_scope.aclose())
         except asyncio.CancelledError:
             raise
         finally:
-            logger.info("transient-scope-closed", actor_name=actor_name)
+            logger.debug("transient-scope-closed", actor_name=actor_name)

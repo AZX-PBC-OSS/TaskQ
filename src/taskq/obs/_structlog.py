@@ -164,6 +164,13 @@ def setup_logging(
         return
 
     shared_processors: list[structlog.types.Processor] = [
+        # First, and deliberately unwrapped: a call below the configured
+        # level must cost nothing beyond this level comparison, so the
+        # per-job DEBUG sites do not run the whole chain for a line stdlib
+        # then drops. Unwrapped because ``DropEvent`` is a ``BaseException``
+        # that ``_safe_processor_wrapper`` would let through anyway, and the
+        # comparison itself cannot raise.
+        structlog.stdlib.filter_by_level,
         _safe_processor_wrapper(structlog.contextvars.merge_contextvars),
         _safe_processor_wrapper(structlog.stdlib.add_log_level),
         _safe_processor_wrapper(structlog.stdlib.add_logger_name),
