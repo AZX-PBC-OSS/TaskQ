@@ -41,6 +41,7 @@ from pydantic import BaseModel
 from taskq._ids import new_base62, new_uuid
 from taskq.exceptions import ReservationUnavailable
 from taskq.migrate import apply_pending
+from taskq.ratelimit.composition import RateLimitHandle
 from taskq.ratelimit.refs import KeyedRateLimitRef
 from taskq.ratelimit.registry import RateLimitRegistry
 from taskq.ratelimit.token_bucket import TokenBucket
@@ -138,7 +139,9 @@ async def test_refilling_buckets_are_never_held() -> None:
     """Refilling buckets converge back toward full on their own, so
     eviction forfeits at most one refill window — no backend holds them."""
     for backend in ("postgres", "memory", "redis"):
-        tb = TokenBucket(name=f"tbfq_r_{backend}", capacity=5, refill_per_second=1.0, backend=backend)  # pyright: ignore[arg-type]  # Why: literal backend names, the constructor's own domain.
+        tb = TokenBucket(
+            name=f"tbfq_r_{backend}", capacity=5, refill_per_second=1.0, backend=backend
+        )  # pyright: ignore[arg-type]  # Why: literal backend names, the constructor's own domain.
         assert tb.holds_consumed_quota() is False
 
 
@@ -232,9 +235,7 @@ class TestPgFixedQuotaEvictReacquire:
         finally:
             await conn.close()
 
-    async def test_spent_quota_survives_eviction_and_rematerialization(
-        self, pg_dsn: str
-    ) -> None:
+    async def test_spent_quota_survives_eviction_and_rematerialization(self, pg_dsn: str) -> None:
         """The #244 verification pass on real PG, now pinned: evicting a
         spent PG fixed-quota entry keeps its row (the drain's delete veto)
         and re-resolving the key resumes from the surviving state — the
@@ -261,7 +262,7 @@ class TestPgFixedQuotaEvictReacquire:
 
             bucket = "tfix-resume:acme"
             state = await pool.fetchval(
-                f'SELECT state->>\'tokens\' FROM "{schema}".rate_limit_buckets '  # noqa: S608  # Why: per-test schema identifier, not user input; bucket_name is $1-bound below.
+                f"SELECT state->>'tokens' FROM \"{schema}\".rate_limit_buckets "  # noqa: S608  # Why: per-test schema identifier, not user input; bucket_name is $1-bound below.
                 "WHERE bucket_name = $1",
                 bucket,
             )
@@ -276,7 +277,7 @@ class TestPgFixedQuotaEvictReacquire:
             await reg.drain_pending_reservation_reclaims(pool)
 
             surviving = await pool.fetchval(
-                f'SELECT state->>\'tokens\' FROM "{schema}".rate_limit_buckets '  # noqa: S608  # Why: as above.
+                f"SELECT state->>'tokens' FROM \"{schema}\".rate_limit_buckets "  # noqa: S608  # Why: as above.
                 "WHERE bucket_name = $1",
                 bucket,
             )
@@ -297,7 +298,11 @@ class TestPgFixedQuotaEvictReacquire:
                 settings=settings,
             )
             assert len(resumed) == 1
-            decision = resumed[0].decision
+            handle = resumed[0]
+            assert isinstance(handle, RateLimitHandle), (
+                "a rate-limit-only acquisition must yield a RateLimitHandle"
+            )
+            decision = handle.decision
             assert decision.allowed
             assert decision.remaining == 2.0, (
                 f"re-materialization must resume the spent quota (expected "
@@ -322,7 +327,9 @@ class TestPgFixedQuotaEvictReacquire:
                     settings=settings,
                 )
                 assert len(more) == 1
-                assert more[0].decision.allowed
+                more_handle = more[0]
+                assert isinstance(more_handle, RateLimitHandle)
+                assert more_handle.decision.allowed
             with pytest.raises(ReservationUnavailable):
                 await reg.acquire_for_actor(
                     rate_limits=[ref],
@@ -334,7 +341,7 @@ class TestPgFixedQuotaEvictReacquire:
                     settings=settings,
                 )
             final_tokens = await pool.fetchval(
-                f'SELECT state->>\'tokens\' FROM "{schema}".rate_limit_buckets '  # noqa: S608  # Why: per-test schema identifier, not user input; bucket_name is $1-bound below.
+                f"SELECT state->>'tokens' FROM \"{schema}\".rate_limit_buckets "  # noqa: S608  # Why: per-test schema identifier, not user input; bucket_name is $1-bound below.
                 "WHERE bucket_name = $1",
                 bucket,
             )
@@ -346,9 +353,7 @@ class TestPgFixedQuotaEvictReacquire:
             await pool.close()
             await self._drop_schema(pg_dsn, schema)
 
-    async def test_concurrent_rematerialization_never_double_grants(
-        self, pg_dsn: str
-    ) -> None:
+    async def test_concurrent_rematerialization_never_double_grants(self, pg_dsn: str) -> None:
         """Two workers (registries) evict their entries for the same
         fixed-quota key and then re-materialize concurrently: the row
         preseed (ON CONFLICT DO NOTHING) plus the locked state read must
@@ -388,7 +393,9 @@ class TestPgFixedQuotaEvictReacquire:
                 except ReservationUnavailable:
                     return False
                 assert len(acquired) == 1
-                return acquired[0].decision.allowed
+                handle = acquired[0]
+                assert isinstance(handle, RateLimitHandle)
+                return handle.decision.allowed
 
             jobs = [(reg_a if i % 2 == 0 else reg_b, new_uuid()) for i in range(2 * capacity)]
             results = await asyncio.gather(*[_one(reg, j) for reg, j in jobs])

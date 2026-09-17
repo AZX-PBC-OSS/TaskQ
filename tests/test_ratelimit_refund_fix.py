@@ -344,7 +344,16 @@ async def test_acquire_pg_log_decision_carries_request_id() -> None:
         style="log",
     )
     rid = new_uuid()
-    pool = _FakeFullPgPool(fetchrow_result={"count": 1})
+    pool = _FakeFullPgPool(
+        # The fused statement's row (#228): the insert landed, everything
+        # else the decision reads from it.
+        fetchrow_result={
+            "inserted": True,
+            "count_in_window": 0,
+            "oldest_ts": None,
+            "server_now": None,
+        }
+    )
 
     decision = await _acquire_pg_log(
         sw,
