@@ -286,3 +286,59 @@ async def test_pg_refund_fixed_quota_recovers(
     assert r.allowed is True
     r = await tb.acquire(count=1.0, pg_pool=module_pg_pool, settings=settings)
     assert r.allowed is False
+
+
+# ── the state document's key set (the transient `granted` key) ────────────
+#
+# The fused acquire stamps a transient `granted` boolean into the state
+# document so the decision can ride the row home through RETURNING; every
+# reader reads NAMED keys only, so the key is inert — but a future reader
+# that iterates the key set would silently inherit that assumption. This
+# pin makes the assumption loud: acquire -> the key set is the canonical
+# set PLUS `granted`; refund -> exactly the canonical set (the refund
+# rewrites the document through `_state_payload`, dropping the transient).
+
+
+async def test_state_key_set_acquire_adds_granted_refund_restores_canonical(
+    module_pg_schema: ModulePgSchema,
+    module_pg_pool: asyncpg.Pool,
+) -> None:
+    """The state document's key set is pinned per writer: the fused
+    acquire's row carries the canonical keys plus the transient ``granted``
+    decision bit, and a refund rewrites the document back to exactly the
+    canonical set — so any future key-iterating reader of the state
+    document trips here instead of assuming a fixed shape."""
+    from taskq.backend._records import jsonb_to_dict
+
+    schema = module_pg_schema.schema_name
+    settings = WorkerSettings.load_from_dict(
+        {"pg_dsn": module_pg_schema.pg_dsn, "schema_name": schema},
+    )
+    tb = _pg_bucket(capacity=10, refill=1)
+
+    async def _state_keys() -> set[str]:
+        async with module_pg_pool.acquire() as conn:
+            raw = await conn.fetchval(
+                f'SELECT state FROM "{schema}".rate_limit_buckets '  # noqa: S608  # Why: schema is fixture-derived; bucket_name is $1-bound.
+                "WHERE bucket_name = $1",
+                tb.name,
+            )
+        assert raw is not None, "fixture broken: the acquire must have written the row"
+        return set(jsonb_to_dict(raw))
+
+    decision = await tb.acquire(1.0, pg_pool=module_pg_pool, settings=settings)
+    assert decision.allowed
+    after_acquire = await _state_keys()
+    assert after_acquire == {"tokens", "ts", "capacity", "refill", "granted"}, (
+        f"the fused acquire's state document keys drifted: {sorted(after_acquire)} — "
+        "the canonical set is tokens/ts/capacity/refill and the acquire adds "
+        "exactly the transient 'granted' decision bit"
+    )
+
+    await tb.refund(decision, count=1.0, pg_pool=module_pg_pool, settings=settings)
+    after_refund = await _state_keys()
+    assert after_refund == {"tokens", "ts", "capacity", "refill"}, (
+        f"the refund's state document keys drifted: {sorted(after_refund)} — "
+        "the refund rewrites the document through _state_payload and must "
+        "drop the transient 'granted' key, restoring exactly the canonical set"
+    )
