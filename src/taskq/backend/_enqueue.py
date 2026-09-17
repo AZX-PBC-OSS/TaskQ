@@ -1349,7 +1349,7 @@ async def _lock_batch_membership(conn: ConnLike, schema: str, batch_ids: list[UU
     The lock is the append side of the complete-vs-append race: a member
     append transaction holds the batches row FOR UPDATE from before its
     member INSERTs until its commit, and ``complete_batch``'s membership
-    CTE takes the same row FOR UPDATE NOWAIT — the conflict is the only
+    CTE takes the same row FOR UPDATE SKIP LOCKED — the conflict is the only
     thing that can make a READ COMMITTED completion guard aware of an
     uncommitted member INSERT it cannot see, so the completer delays (see
     ``_COMPLETE_BATCH_SQL``'s comment in _batch_sql.py). Rows that do not
@@ -1357,7 +1357,7 @@ async def _lock_batch_membership(conn: ConnLike, schema: str, batch_ids: list[UU
     the bulk-import paths never create one) lock nothing — a batch that
     does not exist cannot be completed, so there is no race to close.
 
-    Blocking (no NOWAIT) is deliberate on this side: appenders serialize
+    Blocking (no SKIP LOCKED) is deliberate on this side: appenders serialize
     per batch, each hold bounded by its own short chunk transaction, and
     the deadlock detector covers the one exotic inversion (an appender
     waiting on a member's idempotency arbiter while that member's hook

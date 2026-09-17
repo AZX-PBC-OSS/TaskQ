@@ -47,6 +47,7 @@ from uuid import UUID
 
 import asyncpg
 import pytest
+import structlog.testing
 
 from taskq._ids import new_base62, new_job_id, new_uuid
 from taskq._json import dumps_str
@@ -269,5 +270,94 @@ async def test_concurrent_member_terminal_vs_threshold_abort_ends_aborted_once(
                 "cancels pending/scheduled members and the two racing terminal writes "
                 "both landed."
             )
+    finally:
+        await _teardown(stack, pg_dsn, schema)
+
+
+async def test_delayed_completion_inside_a_caller_transaction_keeps_the_terminal_write(
+    pg_dsn: str,
+) -> None:
+    """A completion delayed by the membership lock must be a delay, not an
+    abort of the caller's transaction: the batch helpers document that
+    they nest inside a caller's open transaction (the ``connection=``
+    arm), and a lock refusal that poisoned it (SQLSTATE 55P03 leaves the
+    transaction failed even when the exception is caught) would roll back
+    the terminal write committed alongside the hook. The cancelled
+    outcome is the hook path that reaches the completion probe with no
+    counter write ahead of it, so the probe is what meets the appender's
+    lock. The write lands, the batch stays 'active' for the append to
+    commit, and the next arbitration completes it."""
+    schema = f"tqr_{new_base62()}".lower()
+    stack, deps, backend = await _open_pg_backend(pg_dsn, schema_name=schema)
+    batch_sql = render_batch_sql(schema)
+    bid = new_uuid()
+    actor = "tqr_bmember_tx_actor"
+    try:
+        async with deps.worker_pool.acquire() as conn:
+            await _seed_actor(conn, schema, actor)
+            await create_batch(
+                conn,
+                batch_sql,
+                bid,
+                queue=_QUEUE,
+                expected_size=1,
+                failure_threshold=None,
+                finalizer_job_id=None,
+                originating_actor=None,
+            )
+            m1 = _member_args(actor, bid)
+            rows: list[JobRow] = await backend.enqueue_batch([m1], connection=conn)
+        assert len(rows) == 1, "fixture broken: seeding"
+        job = rows[0]
+
+        conn_w = await deps.worker_pool.acquire()
+        conn_a = await deps.worker_pool.acquire()
+        try:
+            tx_a = conn_a.transaction()
+            await tx_a.start()
+            try:
+                m2 = _member_args(actor, bid)
+                await backend.enqueue_batch([m2], connection=conn_a)
+
+                async with conn_w.transaction():
+                    await conn_w.execute(
+                        f"UPDATE \"{schema}\".jobs SET status = 'cancelled', "
+                        "finished_at = clock_timestamp() WHERE id = $1",
+                        job.id,
+                    )
+                    with structlog.testing.capture_logs() as captured:
+                        await apply_batch_terminal_outcome(
+                            backend, job, "cancelled", transaction_conn=conn_w
+                        )
+                    # The caller's transaction is still usable after the
+                    # delayed completion.
+                    assert await conn_w.fetchval("SELECT 1") == 1
+                    delayed = [
+                        e
+                        for e in captured
+                        if e.get("event") == "complete_batch_delayed_membership_lock"
+                    ]
+                    assert [e["batch_id"] for e in delayed] == [str(bid)], (
+                        "a delay on the membership lock must stay traceable"
+                    )
+            except BaseException:
+                await tx_a.rollback()
+                raise
+            else:
+                await tx_a.commit()
+
+            row = await backend.get(job.id)
+            assert row is not None and row.status == "cancelled", (
+                f"the terminal write committed alongside a delayed completion was lost: "
+                f"status={row.status if row is not None else None!r}"
+            )
+            batch: BatchRow | None = await get_batch(conn_w, batch_sql, bid)
+            assert batch is not None and batch.status == "active", (
+                "a completion delayed by an in-flight append leaves the batch active"
+            )
+            assert await _non_terminal_members(conn_w, schema, bid) == 1
+        finally:
+            await deps.worker_pool.release(conn_w)
+            await deps.worker_pool.release(conn_a)
     finally:
         await _teardown(stack, pg_dsn, schema)

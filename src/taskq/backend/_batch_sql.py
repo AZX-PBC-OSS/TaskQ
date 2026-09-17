@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING, cast
 from uuid import UUID
 
 import structlog
-from asyncpg.exceptions import LockNotAvailableError, UniqueViolationError
+from asyncpg.exceptions import UniqueViolationError
 
 from taskq._json import dumps_str
 from taskq.backend._cursor import decode_batch_cursor
@@ -175,34 +175,45 @@ WHERE id = $1 AND status = 'active'"""
 # before its INSERTs to its commit -- see _enqueue.py's
 # _lock_batch_membership), so the guard alone would complete the batch
 # and the append would then commit a pending member onto a terminal row.
-# FOR UPDATE NOWAIT makes the conflict itself the signal: an in-flight
-# append holds the row, this statement raises LockNotAvailableError
-# (SQLSTATE 55P03), and complete_batch() treats that as a DELAY -- the
-# docstring's own "can delay completion but never complete prematurely"
-# contract -- leaving the row 'active' for the append to commit and the
-# next hook or the stale-batch sweep to re-arbitrate. NOWAIT, not a
-# blocking wait, is load-bearing: the completer runs on the worker's
-# terminal connection inside the caller's open transaction, and blocking
-# here would park a terminal write behind an appender of unbounded
-# duration. The lock is held to this statement's commit, so an appender
-# arriving after it serializes behind the completion instead of racing
-# it. A batch row that does not exist locks nothing: EXISTS fails and
-# the UPDATE no-ops exactly as it did before the CTE.
+# FOR UPDATE SKIP LOCKED makes the conflict itself the signal: an
+# in-flight append holds the row, the CTE yields nothing, and the UPDATE
+# no-ops -- a DELAY, the docstring's own "can delay completion but never
+# complete prematurely" contract -- leaving the row 'active' for the
+# append to commit and the next hook or the stale-batch sweep to
+# re-arbitrate. Skipping, not a blocking wait, is load-bearing: the
+# completer may run inside a caller's open transaction (the
+# ``connection=`` arm, the shape the terminal-outcome hook uses), and
+# blocking here would park a terminal write behind an appender of
+# unbounded duration. Skipping rather than NOWAIT is equally
+# load-bearing: a NOWAIT refusal is an error (SQLSTATE 55P03) that
+# leaves the enclosing transaction aborted even once caught, so the
+# terminal write committed alongside the probe would roll back with it.
+# The lock is held to this statement's commit, so an appender arriving
+# after it serializes behind the completion instead of racing it. The
+# statement reports which of the three outcomes it took -- completed,
+# delayed on the lock, or nothing to do (no row, not active, or a member
+# still open) -- so a delay stays traceable without an exception.
 _COMPLETE_BATCH_SQL = """\
 WITH membership AS (
     SELECT id
     FROM "{schema}".batches
     WHERE id = $1
-    FOR UPDATE NOWAIT
+    FOR UPDATE SKIP LOCKED
+),
+completed AS (
+    UPDATE "{schema}".batches
+    SET status = 'complete', completed_at = clock_timestamp()
+    WHERE id = $1 AND status = 'active'
+      AND EXISTS (SELECT 1 FROM membership)
+      AND NOT EXISTS (
+        SELECT 1 FROM "{schema}".jobs
+        WHERE {open_member}
+      )
+    RETURNING id
 )
-UPDATE "{schema}".batches
-SET status = 'complete', completed_at = clock_timestamp()
-WHERE id = $1 AND status = 'active'
-  AND EXISTS (SELECT 1 FROM membership)
-  AND NOT EXISTS (
-    SELECT 1 FROM "{schema}".jobs
-    WHERE {open_member}
-  )"""
+SELECT EXISTS (SELECT 1 FROM completed) AS completed,
+       EXISTS (SELECT 1 FROM "{schema}".batches WHERE id = $1)
+         AND NOT EXISTS (SELECT 1 FROM membership) AS delayed_on_membership_lock"""
 
 _COUNT_BATCH_NON_TERMINAL_SQL = """\
 SELECT count(*)::int FROM "{schema}".jobs
@@ -456,27 +467,27 @@ async def complete_batch(
     was vetoed lands once the last member turns terminal.
 
     Delay also covers the member-append window: the statement's
-    membership CTE takes the batches row ``FOR UPDATE NOWAIT``, and a
-    concurrent append transaction holding that lock (the streaming chunk
-    path — see ``_COMPLETE_BATCH_SQL``'s comment) makes the statement
-    raise :class:`asyncpg.exceptions.LockNotAvailableError`. That is a
-    DELAY, not an error: a READ COMMITTED snapshot cannot see the
-    appender's uncommitted member INSERT, so completing now would be
-    precisely the premature completion the guard exists to prevent. The
-    row stays ``'active'``, the append commits, and the next terminal
-    hook or the leader's ``complete_stale_batches`` sweep re-arbitrates
-    against the now-visible membership.
+    membership CTE takes the batches row ``FOR UPDATE SKIP LOCKED``, and
+    a concurrent append transaction holding that lock (the streaming
+    chunk path — see ``_COMPLETE_BATCH_SQL``'s comment) makes the CTE
+    yield nothing, so the UPDATE no-ops. That is a DELAY, not an error: a
+    READ COMMITTED snapshot cannot see the appender's uncommitted member
+    INSERT, so completing now would be precisely the premature completion
+    the guard exists to prevent. The row stays ``'active'``, the append
+    commits, and the next terminal hook or the leader's
+    ``complete_stale_batches`` sweep re-arbitrates against the
+    now-visible membership. Nothing raises, so the probe is safe inside a
+    caller's open transaction: a lock refusal that raised would leave that
+    transaction aborted and roll back the terminal write beside it.
     """
-    try:
-        await conn.execute(sql.complete_batch, batch_id, str(batch_id))
-    except LockNotAvailableError:
-        # Delayed on the membership lock — see the docstring. Debug, not
-        # warning: this is the same optimistic-CAS miss class as the
-        # guard's own veto (a concurrent writer won the arbitration), an
-        # expected outcome under concurrency that reconciliation already
-        # covers; the log line exists so a delayed completion is
-        # traceable to its cause when someone asks why a batch with all
-        # terminal members is still 'active'.
+    outcome = await conn.fetchrow(sql.complete_batch, batch_id, str(batch_id))
+    if outcome is not None and outcome["delayed_on_membership_lock"]:
+        # Debug, not warning: this is the same optimistic-CAS miss class
+        # as the guard's own veto (a concurrent writer won the
+        # arbitration), an expected outcome under concurrency that
+        # reconciliation already covers; the log line exists so a delayed
+        # completion is traceable to its cause when someone asks why a
+        # batch with all terminal members is still 'active'.
         logger.debug(
             "complete_batch_delayed_membership_lock",
             kind="batch",
