@@ -488,9 +488,7 @@ def record_reclaimed_jobs(actor: str, disposition: str, count: int = 1) -> None:
     try:
         _reclaimed_jobs.add(count, {"actor": actor, "disposition": disposition})
     except Exception:
-        _log.warning(
-            "otel-metric-record-failed", instrument_name="taskq.jobs.reclaimed"
-        )
+        _log.warning("otel-metric-record-failed", instrument_name="taskq.jobs.reclaimed")
 
 
 #: Why the ``queue`` label is capped on the job-side instruments

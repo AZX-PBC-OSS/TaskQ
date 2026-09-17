@@ -1,6 +1,8 @@
 """Actors overview and deregister admin pages."""
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from datetime import timedelta
+
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from jinja2 import Environment
 
@@ -8,7 +10,12 @@ from taskq.actor_config_ops import deregister_actor, list_actor_summaries
 from taskq.exceptions import ActorDeregistrationError, ActorNotFoundError
 from taskq.settings import TaskQSettings
 from taskq.web._pool import BoundedPool
-from taskq.web.admin._actor_stats import STATS_LIMIT, fetch_actor_stats
+from taskq.web.admin._actor_stats import (
+    STATS_LIMIT,
+    STATS_WINDOWS,
+    fetch_actor_stats,
+    resolve_stats_window,
+)
 from taskq.web.admin._constants import parse_text_filter
 from taskq.web.admin._factory import (
     get_admin_pool,
@@ -30,14 +37,17 @@ def _merge_actor_stats(
     config_rows: list[dict[str, object]],
     stats_rows: list[dict[str, object]],
 ) -> list[dict[str, object]]:
-    """Merge archive executor stats into the actor_config summaries by name.
+    """Merge completed-work executor stats into the actor_config summaries
+    by name.
 
-    The config rows stay in name order; actors with archive history but no
-    ``actor_config`` row are appended after them, hottest first (the stats
-    read's own order), so an actor driving traffic is never invisible just
-    because its config row has not been synced. ``failure_share`` is the
-    failed fraction of the actor's archived jobs, rendered as a percent
-    string; ``None`` when the actor has no archived jobs.
+    The config rows stay in name order; actors with completed-job history
+    but no ``actor_config`` row are appended after them, hottest first
+    (the stats read's own order), so an actor driving traffic is never
+    invisible just because its config row has not been synced.
+    ``failure_share`` is the failed fraction of the actor's completed
+    jobs, rendered as a percent string; ``None`` when the actor has no
+    completed jobs. ``last_error_class`` is the most recent error class
+    the actor's completed rows carry (``None`` when none ever did).
     """
     stats_by_actor: dict[str, dict[str, object]] = {str(r["actor"]): r for r in stats_rows}
     merged: list[dict[str, object]] = []
@@ -53,6 +63,7 @@ def _merge_actor_stats(
         row["p50_duration_ms"] = stats["p50_duration_ms"] if stats else None
         row["p95_duration_ms"] = stats["p95_duration_ms"] if stats else None
         row["last_activity_at"] = stats["last_activity_at"] if stats else None
+        row["last_error_class"] = stats["last_error_class"] if stats else None
         row["failure_share"] = _failure_share(row["jobs_total"], row["failed_count"])
         merged.append(row)
     for actor, stats in stats_by_actor.items():
@@ -73,6 +84,7 @@ def _merge_actor_stats(
                 "p50_duration_ms": stats["p50_duration_ms"],
                 "p95_duration_ms": stats["p95_duration_ms"],
                 "last_activity_at": stats["last_activity_at"],
+                "last_error_class": stats["last_error_class"],
                 "failure_share": _failure_share(stats["total"], stats["failed"]),
             }
         )
@@ -97,12 +109,16 @@ def register(router: APIRouter) -> None:
         realtime_ctx: tuple[str, str] = Depends(get_realtime_ctx),
         csrf_token: str = Depends(get_csrf_token),
         notice: str | None = None,
+        window: str | None = Query(default=None),
     ) -> HTMLResponse:
+        # Closed-set treatment (a typo must not silently fall back to
+        # all-time while the URL claims a recency view).
+        window_delta: timedelta | None = resolve_stats_window(window)
         actors: list[dict[str, object]] = []
         stats_rows: list[dict[str, object]] = []
         async with pool.acquire() as conn:
             actors = await list_actor_summaries(conn, schema=schema)
-            stats_rows = await fetch_actor_stats(conn, schema=schema)
+            stats_rows = await fetch_actor_stats(conn, schema=schema, window=window_delta)
         merged = _merge_actor_stats(actors, stats_rows)
         stats_truncated = len(stats_rows) >= STATS_LIMIT
         realtime_mode, mode_label = realtime_ctx
@@ -111,6 +127,8 @@ def register(router: APIRouter) -> None:
             actors=merged,
             stats_truncated=stats_truncated,
             stats_limit=STATS_LIMIT,
+            window=window or "all",
+            stats_windows=["all", *STATS_WINDOWS],
             realtime_mode=realtime_mode,
             mode_label=mode_label,
             csrf_token=csrf_token,

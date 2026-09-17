@@ -1155,9 +1155,7 @@ def test_live_jobs_table_settled_duration_wins_over_running_for(
     html = _render_live_table(stub_pool, [both_row])
 
     assert "2.5s" in html
-    assert "1m 5s" not in html, (
-        "a row that has settled must not render the live span beside it"
-    )
+    assert "1m 5s" not in html, "a row that has settled must not render the live span beside it"
 
 
 # ── started_at sort: running-longest view ───────────────────────────────

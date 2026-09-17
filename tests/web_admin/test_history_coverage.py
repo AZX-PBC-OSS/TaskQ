@@ -432,7 +432,10 @@ async def test_history_stats_uses_orjson_response_class(stub_pool: _StubPool) ->
         if isinstance(route, APIRoute) and route.path == "/api/history/stats"
     )
 
-    resp = await endpoint(pool=stub_pool, schema="taskq")
+    # window=None is the documented default (all time); the direct drive
+    # bypasses FastAPI's query-string resolution, so the default is
+    # passed explicitly rather than left to a Query object.
+    resp = await endpoint(pool=stub_pool, schema="taskq", window=None)
 
     assert isinstance(resp, orjson_response_class())
     assert resp.status_code == 200
