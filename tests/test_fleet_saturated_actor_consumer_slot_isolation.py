@@ -25,20 +25,17 @@ from every other actor sharing the same worker process's consumer pool --
 not a correctness bug (the healthy actor's jobs still eventually complete)
 but a throughput regression the pin measures directly.
 
-Vendor precedent: River gives every queue its OWN producer and its OWN
-``MaxWorkers`` worker pool (vendor/river/client.go:662-672, the
-``QueueConfig.MaxWorkers`` field; the per-queue ``Config.Queues`` map is
-resolved into one execution pool per queue name). A queue whose jobs are
+The contrasting architecture gives every queue its OWN producer and its
+OWN worker pool (a queue is a unit of concurrency, not a label on a
+shared unit). A queue whose jobs are
 all denied capacity can only ever starve ITS OWN pool's workers -- it
-structurally cannot touch a sibling queue's dedicated worker slots. Oban's
-``Oban.Queue`` likewise sizes and runs each queue as an independent
-supervised producer (a queue is a unit of concurrency, not a label on a
-shared unit). TaskQ's single-shared-pool-per-worker-process design is a
+structurally cannot touch a sibling queue's dedicated worker slots.
+TaskQ's single-shared-pool-per-worker-process design is a
 real, documented architectural choice (docs/guides/workers.md's
 "Concurrency model" table has no "per-queue worker pool" row at all — only
 process/queue/actor/reservation *caps*, none of which isolate one actor's
 consumer-slot churn from another's), so this test does not ask TaskQ to
-adopt River's per-queue-pool shape. It pins the narrower, checkable
+adopt a per-queue-pool shape. It pins the narrower, checkable
 contract an adopter will assume holds regardless of internal architecture:
 capacity denied to one actor must not measurably reduce a co-located
 healthy actor's completion throughput on the same worker.

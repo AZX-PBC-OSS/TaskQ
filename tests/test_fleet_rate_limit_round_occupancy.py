@@ -3,16 +3,9 @@ jobs it is about to deny -- and, measured against real Postgres, it does
 not: TaskQ's per-actor fairness allocation in dispatch SQL already
 prevents this.
 
-Vendor precedent: Oban's `Oban.Pro.Engines.Smart` fetches jobs for
-execution and, for a rate-limited queue, is documented to defer fetching
-jobs above the limit rather than fetching-then-rejecting (the general
-"engine decides admission before fetch" shape Oban Pro follows -- Oban's
-free/Basic engine, the only one present in `vendor/oban`, has no rate
-limiting at all, so there is no in-tree Oban source to cite for this
-specific behaviour; it is described here only as the shape the paid
-product is documented to ship, not as a vendor/ citation). Sidekiq has
-no core rate limiter (Enterprise-only, not vendored) so there is no
-Sidekiq precedent either way.
+The general shape this sits in: for a rate-limited queue, admission is
+decided before the fetch (jobs above the limit are deferred from being
+fetched at all) rather than fetching-then-rejecting.
 
 The hypothesis this test was written to check: TaskQ's own docs
 (docs/guides/rate-limiting.md, "Wiring to Actors") state the dispatch

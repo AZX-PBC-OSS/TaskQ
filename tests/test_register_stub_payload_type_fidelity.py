@@ -48,13 +48,9 @@ Pydantic mechanism a real Postgres-backed worker uses; the divergence
 was entirely inside ``InMemoryBackend``'s own default, not in Postgres
 vs. in-memory storage semantics.
 
-No vendor precedent search applies here -- Celery/Sidekiq/Oban/River
-don't have a Pydantic-payload-model concept to validate against in the
-first place (Celery tasks take positional/keyword args, not a typed
-model; Sidekiq jobs take JSON-serializable args; Oban args are an Ecto
-embedded schema validated by the worker's own changeset, which
-Oban.Testing does not bypass -- vendor/oban/lib/oban/testing.ex makes
-no payload-shape claim at all). This is argued from first principles:
+No cross-library precedent applies here -- the common queue libraries
+carry untyped or worker-validated payloads, so there is no typed-payload
+testing surface to compare against. This is argued from first principles:
 a library that advertises "end-to-end type safety" and "Payload...
 validated at decoration time" (docs/index.md) as a *selling point*
 cannot then default its own test harness to skip that exact

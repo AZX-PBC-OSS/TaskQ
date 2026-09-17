@@ -38,9 +38,8 @@ class CancelOrigin(IntEnum):
 
     The terminal routing for a cancelled attempt keys on the ORIGIN, not on
     the exception type (a deploy and an operator cancel both surface as
-    ``CancelledError``) — River's ``isSoftStopCancelError`` makes the same
-    distinction through the context's cause
-    (``vendor/river/internal/jobexecutor/job_executor.go``).
+    ``CancelledError``), so the distinction must come from the row's
+    cancel bookkeeping rather than from the raised error's type.
 
     NONE     — no cancel has been signalled.
     OPERATOR — the row's ``cancel_requested_at`` was observed (the heartbeat

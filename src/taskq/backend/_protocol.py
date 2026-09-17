@@ -1911,12 +1911,11 @@ class Backend(Protocol):
         (``GREATEST(attempt - 1, 0)``), no ``job_attempts`` row is written
         (an interruption is not an execution outcome), one ``job_events``
         state_change with ``detail.reason = 'interrupted'`` records the
-        transition, and the row's ``interrupt_count`` is bumped. This is
-        River's soft-stop shape transplanted: the attempt is handed back
-        with its budget untouched
-        (``vendor/river/internal/jobexecutor/job_executor.go``'s
-        ``softStopped`` branch calling ``JobSetStateInterrupted`` with
-        ``max(attempt-1, 0)``).
+        transition, and the row's ``interrupt_count`` is bumped. The
+        hand-back is non-consuming: the attempt is returned with its
+        budget untouched, the ``GREATEST(attempt - 1, 0)`` refund flooring
+        the claim's increment so an interrupted job restarts with the
+        attempts it had not spent.
 
         *hold* > 0 parks the row ``scheduled`` until the releasing process
         is provably gone (a job released while its coroutine may still be
@@ -1931,10 +1930,9 @@ class Backend(Protocol):
         Fenced on ownership, the attempt epoch, and ``cancel_phase = 0``:
         an operator cancel in flight wins and the call returns ``"noop"``
         so the caller routes to the cancel ladder (the row carries the
-        operator's request; the deploy must not launder it into a release —
-        River's ``JobSetStateIfRunningMany`` resolves the same collision
-        the same way, cancelling rather than releasing a row whose
-        ``cancel_attempted_at`` is set).
+        operator's request; the deploy must not launder it into a release:
+        a row whose ``cancel_attempted_at`` is set terminalises as
+        cancelled, never as available).
 
         *attempt* is the attempt-identity epoch — see
         :meth:`mark_succeeded`. Here it is required, not optional: a

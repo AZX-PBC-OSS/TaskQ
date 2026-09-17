@@ -187,10 +187,9 @@ failure path already self-describes through this column
 (``DeadlineExceeded``, ``WorkerCrashed``, ``ActorDeregistered``), and the
 admin UI, ``taskq doctor`` and the archive all read it already. A status
 enum change would break every consumer of the eight-value union for a
-distinction that is not a different state. Vendor precedent records the
-cancel durably on the row the same way — River stamps
-``cancel_attempted_at`` (a row whose cancel timestamp is set is
-cancelled, never re-available), Oban stamps ``cancelled_at``.
+distinction that is not a different state. The cancel is recorded
+durably on the row itself: a row whose cancel timestamp is set is
+cancelled, never re-available.
 """
 
 MIN_DEFERRAL_INTERVAL: Final[timedelta] = timedelta(seconds=1)

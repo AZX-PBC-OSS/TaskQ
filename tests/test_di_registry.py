@@ -422,6 +422,21 @@ class _UnrelatedHelper:
         self.settings = settings
 
 
+class _CycleA:
+    def __init__(
+        self, b: "_CycleB"
+    ) -> (
+        None
+    ):  # Why: the cycle is the point; both names exist at module scope by introspection time.
+        self.b = b
+
+
+class _CycleB:
+    def __init__(self, a: _CycleA, conn: _SlotConnection) -> None:
+        self.a = a
+        self.conn = conn
+
+
 def _shadow_registry() -> ProviderRegistry:
     registry = ProviderRegistry()
     registry.register_value(_Settings, Scope.PROCESS, _Settings())
@@ -482,3 +497,25 @@ def test_shadow_derived_providers_before_seal_sees_later_registrations() -> None
     assert registry.shadow_derived_providers(frozenset({_SlotConnection})) == frozenset(
         {_ConnectionHelper}
     )
+
+
+def test_shadow_derived_cycle_verdict_does_not_depend_on_entry_point() -> None:
+    """Two providers in a dependency cycle, one of which also reaches a
+    shadowed type: the walk must answer the same for either entry point.
+
+    Entering the walk at the non-shadow member used to answer False for
+    its partner (the cycle's back-edge truncated the walk before the
+    shadow dependency was visible) and cached that artifact, so a later
+    query at the clean entry point returned the poisoned memo.
+    """
+    registry = ProviderRegistry()
+    registry.register_value(_SlotConnection, Scope.LOOP, _SlotConnection())
+    registry.register_class(_CycleA, Scope.LOOP)
+    registry.register_class(_CycleB, Scope.LOOP)
+
+    first = registry.shadow_derived_providers(frozenset({_SlotConnection}))
+    second = registry.shadow_derived_providers(frozenset({_SlotConnection}))
+
+    assert first == second
+    assert _CycleA in second
+    assert _CycleB in second

@@ -675,6 +675,19 @@ raises, so nothing points you at the call site — audit for them explicitly.
   now records one event per distinct holder a pod finds in its way.
   Dashboards that graphed the old always-rising counter will go flat.
 
+* **`dispatch_scope_by_home_queue` is a deprecated no-op.** The setting
+  (removed from the docs of the old probe-narrowing shape it applied to) is
+  accepted again so configurations that set it keep loading, but dispatch is
+  assignment-routed now and the flag has nothing left to apply. The worker
+  logs a `deprecated-setting-ignored` WARNING at startup when it is set;
+  delete `TASKQ_DISPATCH_SCOPE_BY_HOME_QUEUE` from the environment.
+
+* **Scrubbed exception messages on the `job_exception` / `job_timeout` log
+  lines are bounded at 2000 characters.** The durable `ErrorInfo` row keeps
+  the full text (the admin UI reads it there); only the log line truncates,
+  and it reports the dropped remainder count. The bound follows
+  `TASKQ_EXCEPTION_MESSAGE_MAX_CHARS` when raised.
+
 ### `unique_for`'s default `unique_states` now includes `succeeded`
 
 > **Unreleased.** Breaking for actors using `unique_for` without an
@@ -813,10 +826,15 @@ existing job **of a different actor** used to return that job's handle with
 logged at INFO as an ordinary dedup. It now raises
 `IdempotencyKeyActorMismatchError` (naming both actors, the key, the scope
 and the existing job id) with nothing enqueued; in `enqueue_batch` the whole
-batch is withdrawn. Same-actor hits are unchanged. Keys were always
-documented as unique per scope across actors; namespace them per actor
-(`"send_receipt:order_123"`) or use per-actor `idempotency_scope` values.
-See [jobs-clients.md](jobs-clients.md#idempotency_key).
+batch is withdrawn. `enqueue_batch_fast` aborts the whole COPY either way
+(all-or-nothing bulk-import semantics are unchanged) and now classifies the
+abort the same way: a cross-actor pair raises
+`IdempotencyKeyActorMismatchError`, a same-actor pair keeps
+`DuplicateIdempotencyKeyError`. Same-actor hits on the single and batch
+tiers are unchanged. Keys were always documented as unique per scope across
+actors; namespace them per actor (`"send_receipt:order_123"`) or use
+per-actor `idempotency_scope` values. See
+[jobs-clients.md](jobs-clients.md#idempotency_key).
 
 ### NOTIFY channels embed a hash of the schema: adopt by restart
 
@@ -1477,6 +1495,14 @@ changelog becomes the authoritative record and these notes age out.
   `taskq.error_reporter.failures` OTel counter. `report()` takes
   `(job, exception)` — the same argument order as `on_retry_exhausted` —
   and is guarded by the `error_reporter_timeout` setting (default 3 s).
+  The registration's scope is validated at worker startup: a reporter
+  registered at `TRANSIENT` scope (which the hook, running after the
+  actor's scope closed, could never resolve) fails the boot with a
+  `RuntimeError` naming the scope, where dispatch time previously raised
+  per job. A dispatch that never bootstrapped (in-process runners)
+  degrades instead: the hook is skipped behind a window-gated
+  `error-reporter-defect` WARNING, and a provider resolving to a value
+  without the reporter protocol warns the same way.
 - **`retry_classifier` hook on `@actor`** for exception-instance-level
   retry classification (inspect attributes like HTTP status codes, return
   `RetryOverride` to refine kind/delay per occurrence). Non-`RetryOverride`

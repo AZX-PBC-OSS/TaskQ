@@ -4,9 +4,8 @@ asyncpg sends ``BEGIN`` and ``COMMIT`` (and, nested, ``SAVEPOINT`` /
 ``RELEASE``) as their own round trips, so ``conn.transaction()`` around a
 single atomic statement triples its cost. The fake below records every
 statement AND every transaction boundary in order, so each pin below is
-the exact wire conversation a path spends. Peers run the equivalent
-statements on the pool in autocommit (River's ``JobGetAvailable``,
-pgqueuer's dequeue, pg-boss's fetch); Oban alone wraps its fetch.
+the exact wire conversation a path spends. A single-statement claim needs no transaction, so the equivalent fetch
+runs on the pool in autocommit and pays no BEGIN/COMMIT round trips.
 """
 
 from collections.abc import AsyncGenerator

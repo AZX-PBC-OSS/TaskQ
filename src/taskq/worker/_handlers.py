@@ -133,10 +133,10 @@ _TERMINAL_WRITE_INFRA_EXCEPTIONS: tuple[type[BaseException], ...] = (
 
 _TERMINAL_WRITE_ATTEMPTS: Final[int] = 3
 """How many times one terminal write is attempted before it is reported
-as failed. Three, like River's job completer: enough to ride out a
-connection reset or a pool-acquire timeout, few enough that the whole
-budget stays well inside one heartbeat interval so the lock lease cannot
-lapse mid-retry."""
+as failed. Three: enough to ride out a connection reset or a
+pool-acquire timeout. The heartbeat keeps renewing the lease for the
+whole window (the job is disowned only after the budget is spent), so
+the lock lease cannot lapse mid-retry."""
 
 _TERMINAL_WRITE_BACKOFF: Final[tuple[timedelta, ...]] = (
     timedelta(milliseconds=50),
@@ -1061,6 +1061,7 @@ async def _dispatch_exception(
             settings=settings,
             redis_client=redis_client,
             disowned_jobs=disowned_jobs,
+            job_log=log,
             handler=_handle_timeout,
             handler_args=(
                 backend,
@@ -1088,6 +1089,7 @@ async def _dispatch_exception(
             settings=settings,
             redis_client=redis_client,
             disowned_jobs=disowned_jobs,
+            job_log=log,
             handler=_handle_snooze,
             handler_args=(backend, job, worker_id, exc, consumer_span, log, actor_config),
             handler_kwargs={"error_reporter": error_reporter},
@@ -1106,6 +1108,7 @@ async def _dispatch_exception(
             settings=settings,
             redis_client=redis_client,
             disowned_jobs=disowned_jobs,
+            job_log=log,
             handler=_handle_retry_after,
             handler_args=(backend, job, worker_id, exc, consumer_span, log, actor_config),
             handler_kwargs={"error_reporter": error_reporter},
@@ -1124,6 +1127,7 @@ async def _dispatch_exception(
             settings=settings,
             redis_client=redis_client,
             disowned_jobs=disowned_jobs,
+            job_log=log,
             handler=_handle_reservation_class_denied,
             handler_args=(backend, job, worker_id, exc, consumer_span, log, actor_config),
             handler_kwargs={
@@ -1146,6 +1150,7 @@ async def _dispatch_exception(
         settings=settings,
         redis_client=redis_client,
         disowned_jobs=disowned_jobs,
+        job_log=log,
         handler=_handle_generic_exception,
         handler_args=(
             backend,

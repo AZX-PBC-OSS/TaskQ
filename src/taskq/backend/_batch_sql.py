@@ -103,24 +103,27 @@ FROM "{schema}".batches
 WHERE id = $1"""
 
 # Both counter writes run on every batched job's terminal write, so the
-# member count they return must not walk the batch: the counts CTE is
+# member count they return must not walk the batch: the LATERAL probe is
 # the open-member predicate, which jobs_batch_open_members_idx serves as
 # one index range over the members still open — never the terminal
 # history — so its cost tracks what remains, not what the batch was.
+# The LATERAL only executes for the rows the UPDATE returned: a batch
+# that is missing or no longer active costs one empty-scan of `updated`,
+# never the member probe.
 _INCREMENT_BATCH_FAILURES_SQL = """\
 WITH updated AS (
     UPDATE "{schema}".batches
     SET consecutive_failures = consecutive_failures + 1
     WHERE id = $1 AND status = 'active'
     RETURNING consecutive_failures, failure_threshold
-),
-counts AS (
+)
+SELECT u.consecutive_failures, u.failure_threshold, c.remaining
+FROM updated u
+LEFT JOIN LATERAL (
     SELECT count(*)::int AS remaining
     FROM "{schema}".jobs
     WHERE {open_member}
-)
-SELECT u.consecutive_failures, u.failure_threshold, c.remaining
-FROM updated u CROSS JOIN counts c"""
+) c ON true"""
 
 _RESET_BATCH_FAILURES_SQL = """\
 WITH updated AS (
@@ -128,13 +131,13 @@ WITH updated AS (
     SET consecutive_failures = 0
     WHERE id = $1 AND status = 'active'
     RETURNING 1
-),
-counts AS (
+)
+SELECT c.remaining FROM updated u
+LEFT JOIN LATERAL (
     SELECT count(*)::int AS remaining
     FROM "{schema}".jobs
     WHERE {open_member}
-)
-SELECT c.remaining FROM updated u CROSS JOIN counts c"""
+) c ON true"""
 
 _ABORT_BATCH_JOBS_SQL = """\
 UPDATE "{schema}".jobs

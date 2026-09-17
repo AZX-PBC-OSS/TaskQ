@@ -916,6 +916,16 @@ class WorkerSettings(TaskQSettings):
         "transient oversubscription — the setting governs the steady state "
         "so the common case never pays the expansion round trip.",
     )
+    dispatch_scope_by_home_queue: bool = Field(
+        default=False,
+        description="TASKQ_DISPATCH_SCOPE_BY_HOME_QUEUE. Deprecated no-op, "
+        "accepted so configurations that set it keep loading: dispatch is "
+        "assignment-routed now (the jobs row carries the routing decision "
+        "the old per-actor-capacity scoping approximated), so the flag has "
+        "nothing left to apply. The worker logs a deprecated-setting "
+        "warning at startup when it is set; remove it from the "
+        "environment.",
+    )
     # -- Admission row-lock budgets ---------------------------------------
     # Defaults are the values of the rate-limit package's
     # DEFAULT_TOKEN_BUCKET_LOCK_TIMEOUT_MS /

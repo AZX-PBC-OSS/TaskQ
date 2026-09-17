@@ -45,19 +45,31 @@ def shadow_derived_providers(
         return entry.impl
 
     def _reaches(t: type, seen: frozenset[type]) -> bool:
+        verdict_, _tainted = _reaches_tracked(t, seen)
+        return verdict_
+
+    def _reaches_tracked(t: type, seen: frozenset[type]) -> tuple[bool, bool]:
+        """``(reaches, clean)``: clean is False when a cycle back-edge
+        truncated the walk, so a False verdict is an artifact of the
+        truncation rather than the type's answer from a clean entry point.
+        """
         if t in verdict:
-            return verdict[t]
+            return verdict[t], True
         if t in seen:
             # A cycle's back-edge cannot be the path that makes either
             # member shadow-derived; the verdict is decided by the rest
-            # of each member's dependencies.
-            return False
+            # of each member's dependencies. The False is provisional:
+            # the member is left uncached so an entry elsewhere on the
+            # real graph (where the cycle's own shadow dependency is
+            # visible) computes the true verdict.
+            return False, False
         entry = providers.get(t)
         if entry is None or entry.factory_shape is FactoryShape.VALUE:
             verdict[t] = t in shadow_types
-            return verdict[t]
+            return verdict[t], True
         callable_ = _entry_callable(entry)
         hit = False
+        tainted = False
         if callable_ is not None:
             hints, _sig_params = _cached_introspection(callable_)
             for param_name, annotation in hints.items():
@@ -67,11 +79,20 @@ def shadow_derived_providers(
                 lookup_type = unwrapped if unwrapped is not None else annotation
                 if not isinstance(lookup_type, type):
                     continue
-                if lookup_type in shadow_types or _reaches(lookup_type, seen | {t}):
+                sub, sub_clean = _reaches_tracked(lookup_type, seen | {t})
+                tainted = tainted or not sub_clean
+                if lookup_type in shadow_types or sub:
                     hit = True
                     break
+        if tainted:
+            # A truncation fired somewhere below: this False is what the
+            # truncated view sees, not what the type answers from a clean
+            # root. Caching it would pin the artifact; cache clean walks
+            # only (a True result is always real, but skipping the cache
+            # for tainted walks either way keeps the rule one-line).
+            return hit, False
         verdict[t] = hit
-        return hit
+        return hit, True
 
     return frozenset(
         t

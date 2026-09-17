@@ -33,22 +33,19 @@ corrupt retry bookkeeping if the actor is registered later).
 Vendor precedent for "how does a test harness handle a job whose
 handler isn't wired up for execution":
 
-- Sidekiq's ``fake!`` mode never runs job bodies at all -- pushing onto
-  ``Sidekiq::Queues`` is the entire contract, and nothing pretends a
-  push means completion (vendor/sidekiq/lib/sidekiq/test_api.rb:84-90,
-  ``atomic_push`` under ``Sidekiq::Testing.fake?`` just appends to the
+- A fake test mode that never runs job bodies at all: pushing onto the
+  in-memory queue is the entire contract, and nothing pretends a
+  push means completion (the push just appends to the
   in-memory array; there is no drain-and-silently-skip step).
-- Sidekiq's ``inline!`` mode calls the real job class synchronously at
-  enqueue time (vendor/sidekiq/lib/sidekiq/test_api.rb:91-97,
-  ``klass.process_job(job_hash)``) -- there is no notion of "a job
-  whose class isn't registered drains successfully"; if the constant
-  doesn't resolve, ``Object.const_get`` raises immediately.
-- River's rivertest.Worker[T] (vendor/river/rivertest/rivertest.go and
-  worker_test.go) requires the caller supply the concrete worker to
-  invoke; there is no separate "drain" step that can silently skip an
+- An inline test mode that calls the real job class synchronously at
+  enqueue time has no notion of "a job whose class isn't registered
+  drains successfully"; if the class constant doesn't resolve, the
+  constant lookup raises immediately.
+- A test harness that requires the caller to supply the concrete worker
+  to invoke has no separate "drain" step that can silently skip an
   unregistered job type.
 
-None of the three vendors have a state where "enqueued but nothing
+None of those shapes have a state where "enqueued but nothing
 will ever run it" is indistinguishable from "ran to completion".
 
 This test intentionally exercises the failure via the *documented*

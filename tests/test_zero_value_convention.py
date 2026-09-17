@@ -28,13 +28,12 @@ stated once in the "The `0` convention" section at the top of
 there on its family's row, and each field's own settings description
 states the same polarity.
 
-Why not a runtime unification: the alternative considered was River's
-shape — one reserved sentinel (``-1``) for "infinite", ``0`` never
-overloaded, enforced at settings load (vendor/river/client.go,
-``Config.validate()`` L550-632: "JobTimeout cannot be negative, except
-for -1 (infinite)", the same shape repeating for the retention and
-reindex timeouts; Oban instead refuses ``0`` outright for its pruner —
-vendor/oban/lib/oban/config.ex, ``validate/1``). A single sentinel is
+Why not a runtime unification: the alternative considered was a
+single reserved sentinel (``-1``) for "infinite", ``0`` never
+overloaded, enforced at settings load (``-1`` the sole negative value
+allowed, the same shape repeating for the retention and reindex
+timeouts); the stricter alternative refuses ``0`` outright for the
+affected fields. A single sentinel is
 the cleaner shape, but adopting it now would REDEFINE what the literal
 ``0`` does on fields TaskQ already ships: an operator running
 ``TASKQ_MAX_PENDING_LOCK_TIMEOUT_MS=0`` today has deliberately asked for

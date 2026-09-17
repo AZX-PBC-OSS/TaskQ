@@ -1,8 +1,8 @@
 """Docs-contract pins for the crash-vs-shutdown attempt accounting.
 
 ``docs/guides/retries.md`` is where a newcomer lands to learn what an
-"attempt" costs, and it must state the two things an adopter from
-Sidekiq/River/Oban gets wrong by default: a crash mid-execution (SIGKILL)
+"attempt" costs, and it must state the two things an adopter gets wrong
+by default: a crash mid-execution (SIGKILL)
 SPENDS the attempt while a graceful shutdown (SIGTERM) REFUNDS it, and the
 default retry budgets/curves differ by orders of magnitude across the
 vendors. A doc edit that drifts from the shipped behaviour fails these

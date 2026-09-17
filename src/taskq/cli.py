@@ -2239,8 +2239,8 @@ def _ensure_cwd_on_sys_path() -> None:
     ``taskq worker --actors myapp.actors:registry`` could not resolve the
     application's modules when run from its own project directory.
     ``python -m taskq`` prepends the cwd itself; inserting it here gives
-    the console script the same import semantics (the ``python -m celery
-    -A myapp worker`` shape) before any ``module:attr`` resolution runs.
+    the console script the same import semantics any ``python -m``
+    invocation gets before any ``module:attr`` resolution runs.
     """
     cwd = os.getcwd()
     if cwd not in sys.path:
