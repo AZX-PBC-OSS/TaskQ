@@ -11,6 +11,7 @@ specific marker and then close the connection.
 """
 
 import asyncio
+import functools
 import json
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
@@ -211,15 +212,19 @@ def _make_stream_endpoint(
     tests wrap the call in ``asyncio.timeout`` so a hung cleanup wedges the
     RED state fast instead of blocking a portal thread.
     """
+    redis = _StubRedis(pubsub)
     router = create_router(
         pg_pool,
-        _StubRedis(pubsub),
+        redis,
         schema=_SCHEMA_LABEL,
         sse_heartbeat_interval=_HEARTBEAT,
     )
     for route in router.routes:
         if isinstance(route, APIRoute) and route.path.endswith("/progress/stream"):
-            return route.endpoint
+            # The pool and Redis client are FastAPI dependencies on the
+            # endpoint (resolved per request from the host's state); bound
+            # here the way the dependency graph would bind them.
+            return functools.partial(route.endpoint, pg_pool=pg_pool, redis_client=redis)
     raise AssertionError("progress stream route not found")
 
 
@@ -626,7 +631,13 @@ async def test_503_before_sse_uses_orjson_response_class() -> None:
         if isinstance(route, APIRoute) and route.path.endswith("/progress/stream")
     )
 
-    resp = await endpoint(job_id=_JOB_ID, request=_mock_request(), last_event_id=None)
+    resp = await endpoint(
+        job_id=_JOB_ID,
+        request=_mock_request(),
+        last_event_id=None,
+        pg_pool=_StubPool(_pg_row()),
+        redis_client=None,
+    )
 
     assert isinstance(resp, orjson_response_class())
     assert resp.status_code == 503

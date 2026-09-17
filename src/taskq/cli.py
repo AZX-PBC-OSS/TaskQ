@@ -16,6 +16,7 @@ import asyncio
 import contextlib
 import importlib
 import os
+import signal
 import sys
 from collections.abc import AsyncGenerator, Mapping
 from dataclasses import dataclass
@@ -51,10 +52,12 @@ from taskq.actor_config_ops import (
 from taskq.auth import (
     PgCredentialProvider,
     RedisCredentialProvider,
+    ReloadSchedule,
     build_worker_connections,
     make_dedicated_conn_factory,
     make_pg_pool_factory,
     make_redis_client_factory,
+    reload_schedule_of,
 )
 from taskq.backend._protocol import parse_retry_kind
 from taskq.connections import ConnFactory, PoolFactory, RedisFactory, WorkerConnections
@@ -1695,6 +1698,114 @@ def _build_sso_bundle(settings: TaskQSettings, base_path: str) -> Any | None:
     return None
 
 
+async def _build_ui_pool(pool_factory: PoolFactory) -> asyncpg.Pool:
+    """Invoke *pool_factory* under the UI's first-use bound.
+
+    Why bounded: UI startup arms no watchdog — a hung token endpoint inside
+    the factory would park `taskq ui serve` forever before any request is
+    served, and a hung rotation would park the reload loop with the old
+    pool still serving and nothing reporting it. _UI_FACTORY_TIMEOUT_SECS
+    is the SAME bound the worker applies to its bootstrap and reload
+    factory calls (worker/deps.py).
+    """
+    try:
+        pool = await asyncio.wait_for(pool_factory(), timeout=_UI_FACTORY_TIMEOUT_SECS)
+    except TimeoutError as exc:
+        raise TimeoutError(
+            f"taskq ui serve: pool_factory did not return within "
+            f"{_UI_FACTORY_TIMEOUT_SECS}s — the credential "
+            "provider behind it (e.g. a token endpoint) is "
+            "black-holed. UI startup fails loudly instead of "
+            "parking forever."
+        ) from exc
+    assert pool is not None, "pool_factory returned None"
+    return pool
+
+
+def _ui_live_pool(application: Any) -> asyncpg.Pool:
+    """The admin pool currently serving requests.
+
+    ``app.state.pg_pool`` is the single live reference: admin routes
+    resolve it per request through ``get_pg_pool`` and a credential
+    rotation replaces it there, so anything that runs across a rotation
+    (the readiness probe, the shutdown close) reads it here instead of
+    capturing the pool it started with.
+    """
+    pool: asyncpg.Pool = application.state.pg_pool
+    return pool
+
+
+@contextlib.asynccontextmanager
+async def _ui_credential_rotation(
+    application: Any, pool_factory: PoolFactory, settings: TaskQSettings
+) -> AsyncGenerator[None]:
+    """Rebuild the admin pool on SIGHUP and on its :class:`ReloadSchedule`.
+
+    The UI's counterpart of the worker's reload coordinator. A provider
+    that issues a username-bearing pair (Vault dynamic credentials) pins
+    the pool to that pair for its life - the ``password=`` callable can
+    refresh a token per connection but never a username - so without a
+    rebuild every connection recycled after the lease expires fails
+    authentication and the admin UI dies quietly one lease after deploy.
+    The cadence is the operator's ``TASKQ_RELOAD_INTERVAL`` when set,
+    otherwise derived from the lease the factory was granted (half the
+    TTL, see :class:`taskq.auth.ReloadSchedule`); a factory whose schedule
+    can derive nothing only rotates on SIGHUP, and has already warned.
+
+    A rebuild builds the new pool first and swaps it into
+    ``app.state.pg_pool`` only once it exists, so a failed factory call
+    leaves the live pool serving; the old pool is then closed with the
+    same bounded drain the shutdown uses. SIGHUP is registered on the
+    running loop where the platform allows it (not Windows, not a
+    non-main thread); elsewhere the schedule alone drives rotation and the
+    absence is logged once.
+    """
+    from taskq._reload_loop import run_reload_schedule
+
+    declared = reload_schedule_of(pool_factory)
+    schedule = ReloadSchedule(
+        configured=settings.reload_interval,
+        sources=(declared,) if declared is not None else (),
+    )
+    trigger = asyncio.Event()
+
+    async def _rebuild() -> None:
+        new_pool = await _build_ui_pool(pool_factory)
+        old_pool = _ui_live_pool(application)
+        application.state.pg_pool = new_pool
+        await close_pool_bounded(old_pool, "ui-admin-reload", CLOSE_TIMEOUT_SECS)
+
+    loop = asyncio.get_running_loop()
+    sighup_registered = False
+    if hasattr(signal, "SIGHUP"):
+        try:
+            loop.add_signal_handler(signal.SIGHUP, trigger.set)
+            sighup_registered = True
+        except (NotImplementedError, RuntimeError, ValueError):
+            # Not the main thread (a test client's portal) or a platform
+            # without loop signal handlers: the schedule still rotates.
+            logger.warning("sighup-handler-unavailable", role="ui-admin", os_name=os.name)
+    logger.info(
+        "ui-credential-rotation-armed",
+        reload_interval=schedule.interval,
+        derived_from_lease=schedule.derived,
+        lease_duration=schedule.lease_duration,
+        sighup=sighup_registered,
+    )
+    task = asyncio.create_task(
+        run_reload_schedule(schedule, _rebuild, trigger=trigger, role="ui-admin"),
+        name="ui.credential_rotation",
+    )
+    try:
+        yield
+    finally:
+        if sighup_registered:
+            loop.remove_signal_handler(signal.SIGHUP)
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+
 def _ui_serve(
     pg_dsn: str,
     schema: str,
@@ -1765,23 +1876,7 @@ def _ui_serve(
             # process opens re-authenticates with a fresh token; the DSN
             # path is unchanged.
             if pool_factory is not None:
-                # Why bounded: UI startup arms no watchdog — a hung token
-                # endpoint inside the factory would park `taskq ui serve`
-                # forever before any request is served.
-                # _UI_FACTORY_TIMEOUT_SECS is the SAME bound the worker
-                # applies to its bootstrap factory calls (worker/deps.py).
-                try:
-                    pg_pool = await asyncio.wait_for(
-                        pool_factory(), timeout=_UI_FACTORY_TIMEOUT_SECS
-                    )
-                except TimeoutError as exc:
-                    raise TimeoutError(
-                        f"taskq ui serve: pool_factory did not return within "
-                        f"{_UI_FACTORY_TIMEOUT_SECS}s — the credential "
-                        "provider behind it (e.g. a token endpoint) is "
-                        "black-holed. UI startup fails loudly instead of "
-                        "parking forever."
-                    ) from exc
+                pg_pool = await _build_ui_pool(pool_factory)
             else:
                 # settings (the TaskQSettings this UI was launched with) is
                 # in scope, so the pair resolves through statement_cache_kwargs;
@@ -1803,20 +1898,29 @@ def _ui_serve(
                     max_cached_statement_lifetime=stmt_kwargs["max_cached_statement_lifetime"],
                 )
             assert pg_pool is not None, "asyncpg.create_pool returned None"
-            pool = pg_pool
+            # application.state.pg_pool is the one live pool: every admin
+            # route resolves it per request (get_pg_pool), so a credential
+            # rotation swaps it there and nothing holds a stale reference.
+            application.state.pg_pool = pg_pool
 
             async def _close_ui_pool() -> None:
                 # Why module-global reads at call time: tests monkeypatch
                 # close_pool_bounded / CLOSE_TIMEOUT_SECS as
                 # observation and timeout-shrink seams (same convention as
-                # taskq.worker.deps).
-                await close_pool_bounded(pool, "ui-admin", CLOSE_TIMEOUT_SECS)
+                # taskq.worker.deps). Read off app.state, not the local: a
+                # rotation may have replaced the pool built above.
+                await close_pool_bounded(application.state.pg_pool, "ui-admin", CLOSE_TIMEOUT_SECS)
 
             # Why a pushed callback instead of stack.enter_async_context(pool):
             # Pool.__aexit__ closes UNBOUNDED — a dead PG would wedge UI
             # shutdown. The bounded helper terminates the pool on
             # timeout and never raises.
             stack.push_async_callback(_close_ui_pool)
+
+            if pool_factory is not None:
+                await stack.enter_async_context(
+                    _ui_credential_rotation(application, pool_factory, settings)
+                )
 
             redis_client: object | None = None
             if redis_url is not None:
@@ -1886,7 +1990,7 @@ def _ui_serve(
                 redis_client = client
 
             bundle = create_router(
-                pool,
+                application.state.pg_pool,
                 schema=schema,
                 redis_client=redis_client,
                 auth_dependency=auth_dependency,
@@ -1894,6 +1998,10 @@ def _ui_serve(
             )
 
             setup_admin_state(application, bundle)
+            # setup_admin_state copies the bundle's pool back onto app.state;
+            # a rotation that ran between the build and here (the first
+            # tick of a very short lease) must not be undone by that copy.
+            application.state.pg_pool = _ui_live_pool(application)
             application.include_router(bundle.router, prefix="/admin")
             if sso_bundle is not None:
                 application.include_router(sso_bundle.router, prefix="/admin")
@@ -1922,7 +2030,9 @@ def _ui_serve(
                     # identical probe (acquire + SELECT 1) with
                     # health_pg_ping_timeout (worker/health.py); an
                     # unbounded probe turns a wedged pool or a black-holed
-                    # PG into a wedged prober.
+                    # PG into a wedged prober. Resolved per probe: the pool
+                    # is replaced by a credential rotation.
+                    pool = _ui_live_pool(application)
                     async with pool.acquire(timeout=_UI_PG_PING_TIMEOUT_SECS) as conn:
                         await asyncio.wait_for(
                             conn.execute("SELECT 1"),
@@ -2067,7 +2177,13 @@ def ui_serve(
             pg_provider,
             max_size=4,
             command_timeout=_UI_POOL_COMMAND_TIMEOUT_SECS,
+            # The cadence the lifespan's rotation loop rebuilds this pool
+            # on: TASKQ_RELOAD_INTERVAL when set, else derived from the
+            # lease the provider grants (see ReloadSchedule).
+            reload_schedule=ReloadSchedule(configured=settings.reload_interval),
         )
+        # One-shot: the migration connection is opened, used and closed at
+        # startup, so it declares no long-lived schedule.
         conn_factory = make_dedicated_conn_factory(resolved_dsn, pg_provider)
 
     redis_factory: RedisFactory | None = None

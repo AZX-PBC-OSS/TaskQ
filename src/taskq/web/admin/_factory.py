@@ -614,11 +614,17 @@ def create_router(
     #   /jobs/api/job/{job_id}/state             (poll-state JSON)
     from taskq.web.progress import create_router as _create_progress_router
 
+    # The pool and Redis client are resolved per request from app.state,
+    # exactly as the admin routes resolve theirs: `taskq ui serve` replaces
+    # the pool on a credential rotation, and a router serving from the pool
+    # it was constructed with would be serving from a closed one.
     progress_router = _create_progress_router(
         pg_pool,
         redis_client,
         schema=schema,
         auth_dependency=auth_dependency,
+        resolve_pg_pool=get_pg_pool,
+        resolve_redis_client=get_redis_client,
     )
     router.include_router(progress_router, prefix="/jobs")
 

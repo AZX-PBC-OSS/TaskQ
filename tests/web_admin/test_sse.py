@@ -21,7 +21,7 @@ from . import _StubPool
 # outlives the real signature stops standing in for anything.
 async def _finite_sse_generator(
     semaphore: asyncio.Semaphore,
-    pool: object | None,
+    resolve_pool: Callable[[], object | None],
     schema: str | None,
 ) -> AsyncIterator[str]:
     try:
@@ -50,7 +50,7 @@ def test_sse_route_registered_via_discovery(
 async def test_sse_generator_yields_sentinel() -> None:
     """The SSE async generator yields the sentinel event as its first output."""
     sem = asyncio.Semaphore(1)
-    gen = _sse_generator(sem, None, None)
+    gen = _sse_generator(sem, lambda: None, None)
     first = await gen.__anext__()
     assert first == 'event: status\ndata: {"status":"awaiting_progress_backend"}\n\n'
     await gen.aclose()
@@ -66,7 +66,7 @@ async def test_sse_generator_releases_semaphore_on_close() -> None:
     sem = asyncio.Semaphore(1)
     await sem.acquire()
     assert sem._value == 0  # pyright: ignore[reportPrivateUsage]  # Why: no public API to read semaphore value; needed to verify permit state.
-    gen = _sse_generator(sem, None, None)
+    gen = _sse_generator(sem, lambda: None, None)
     await gen.__anext__()
     await gen.aclose()
     assert sem._value == 1  # pyright: ignore[reportPrivateUsage]  # Why: same as above.
@@ -190,7 +190,7 @@ async def test_sse_generator_keepalive_when_no_pg(
     monkeypatch.setattr(_sse_mod, "_KEEPALIVE_INTERVAL", 0.05)
     sem = asyncio.Semaphore(1)
     await sem.acquire()  # simulate the endpoint's pre-acquire
-    gen = _sse_generator(sem, None, None)
+    gen = _sse_generator(sem, lambda: None, None)
     first = await gen.__anext__()
     assert "awaiting_progress_backend" in first
     second = await gen.__anext__()
@@ -207,14 +207,17 @@ async def test_sse_generator_pg_path_emits_state_change_and_keepalive(
 ) -> None:
     """With pool+schema the generator forwards payloads as state_change events."""
 
-    async def _fake_listen(pool: object, channel: str, **kw: object) -> AsyncIterator[str | None]:
+    async def _fake_listen(
+        resolve_pool: Callable[[], object], channel: str, **kw: object
+    ) -> AsyncIterator[str | None]:
         yield '{"job_id":"123","status":"running"}'
         yield None  # keepalive signal
 
     monkeypatch.setattr(_sse_mod, "listen_with_reconnect", _fake_listen)
     sem = asyncio.Semaphore(1)
     await sem.acquire()
-    gen = _sse_generator(sem, object(), "taskq")
+    pool = object()
+    gen = _sse_generator(sem, lambda: pool, "taskq")
     first = await gen.__anext__()
     assert "awaiting_progress_backend" in first
     second = await gen.__anext__()

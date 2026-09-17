@@ -664,7 +664,7 @@ def register(router: APIRouter) -> None:
             from taskq.web.admin._listen import listen_with_reconnect
 
             try:
-                async for payload in listen_with_reconnect(pool, channel):
+                async for payload in listen_with_reconnect(lambda: get_pg_pool(request), channel):
                     if await request.is_disconnected():
                         return
                     if payload is None:

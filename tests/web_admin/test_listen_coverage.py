@@ -23,6 +23,18 @@ from taskq.web.admin._listen import (  # Why: importorskip guard must precede.
 # ── _make_notify_callback ───────────────────────────────────────────────
 
 
+def _open_conn() -> AsyncMock:
+    """A LISTEN connection double that reports itself open.
+
+    ``is_closed`` is synchronous on asyncpg; left as an AsyncMock attribute
+    it would return a (truthy) coroutine and the generator would treat the
+    healthy connection as terminated on every keepalive.
+    """
+    conn = AsyncMock()
+    conn.is_closed = MagicMock(return_value=False)
+    return conn
+
+
 async def test_make_notify_callback_puts_nonempty_payload() -> None:
     """A non-empty NOTIFY payload is enqueued."""
     queue: asyncio.Queue[str | None] = asyncio.Queue()
@@ -54,12 +66,12 @@ async def test_make_notify_callback_skips_none_payload() -> None:
 async def test_listen_reconnect_on_postgres_connection_error() -> None:
     """A PostgresConnectionError on acquire yields a keepalive, then reconnects."""
     pool = MagicMock()
-    good_conn = AsyncMock()
+    good_conn = _open_conn()
     pool.acquire = AsyncMock(side_effect=[asyncpg.PostgresConnectionError("lost"), good_conn])
     pool.release = AsyncMock()
 
     gen = listen_with_reconnect(
-        pool,  # pyright: ignore[reportArgumentType]  # Why: test duck-type pool.
+        lambda: pool,
         "chan",
         keepalive_interval=0.05,
         backoff_initial=0.01,
@@ -78,12 +90,12 @@ async def test_listen_reconnect_on_postgres_connection_error() -> None:
 async def test_listen_reconnect_on_generic_exception() -> None:
     """A generic Exception on acquire yields a keepalive, then reconnects."""
     pool = MagicMock()
-    good_conn = AsyncMock()
+    good_conn = _open_conn()
     pool.acquire = AsyncMock(side_effect=[RuntimeError("boom"), good_conn])
     pool.release = AsyncMock()
 
     gen = listen_with_reconnect(
-        pool,  # pyright: ignore[reportArgumentType]  # Why: test duck-type pool.
+        lambda: pool,
         "chan",
         keepalive_interval=0.05,
         backoff_initial=0.01,
@@ -102,7 +114,7 @@ async def test_listen_reconnect_on_generic_exception() -> None:
 async def test_listen_backoff_doubles_up_to_max() -> None:
     """Backoff doubles on consecutive connection failures, capped at backoff_max."""
     pool = MagicMock()
-    good_conn = AsyncMock()
+    good_conn = _open_conn()
     # Three failures then success: forces backoff to double twice.
     pool.acquire = AsyncMock(
         side_effect=[
@@ -115,7 +127,7 @@ async def test_listen_backoff_doubles_up_to_max() -> None:
     pool.release = AsyncMock()
 
     gen = listen_with_reconnect(
-        pool,  # pyright: ignore[reportArgumentType]  # Why: test duck-type pool.
+        lambda: pool,
         "chan",
         keepalive_interval=0.05,
         backoff_initial=0.01,
@@ -134,12 +146,12 @@ async def test_listen_backoff_doubles_up_to_max() -> None:
 async def test_listen_finally_releases_connection_on_close() -> None:
     """aclose() triggers the finally block which releases the connection."""
     pool = MagicMock()
-    good_conn = AsyncMock()
+    good_conn = _open_conn()
     pool.acquire = AsyncMock(return_value=good_conn)
     pool.release = AsyncMock()
 
     gen = listen_with_reconnect(
-        pool,  # pyright: ignore[reportArgumentType]  # Why: test duck-type pool.
+        lambda: pool,
         "chan",
         keepalive_interval=0.05,
         backoff_initial=0.01,
@@ -165,7 +177,7 @@ async def test_listen_delivers_payload(pg_dsn: str) -> None:
     pool = await asyncpg.create_pool(pg_dsn, min_size=2, max_size=4)
     try:
         channel = "test_listen_payload"
-        gen = listen_with_reconnect(pool, channel, keepalive_interval=5.0)
+        gen = listen_with_reconnect(lambda: pool, channel, keepalive_interval=5.0)
 
         async def notify() -> None:
             # Bounded poll until the listener's LISTEN registration is
@@ -213,7 +225,7 @@ async def test_listen_keepalive_yields_none(pg_dsn: str) -> None:
     """With no NOTIFY, the generator yields None after the keepalive interval."""
     pool = await asyncpg.create_pool(pg_dsn, min_size=1, max_size=2)
     try:
-        gen = listen_with_reconnect(pool, "test_listen_keepalive", keepalive_interval=0.2)
+        gen = listen_with_reconnect(lambda: pool, "test_listen_keepalive", keepalive_interval=0.2)
         payload = await asyncio.wait_for(gen.__anext__(), timeout=3.0)
         assert payload is None
         await gen.aclose()
@@ -231,7 +243,7 @@ async def test_listen_cleanup_releases_connection(pg_dsn: str) -> None:
     """
     pool = await asyncpg.create_pool(pg_dsn, min_size=1, max_size=1)
     try:
-        gen = listen_with_reconnect(pool, "test_listen_cleanup", keepalive_interval=0.1)
+        gen = listen_with_reconnect(lambda: pool, "test_listen_cleanup", keepalive_interval=0.1)
         payload = await asyncio.wait_for(gen.__anext__(), timeout=3.0)
         assert payload is None  # keepalive: the sole connection is held by the generator
         await gen.aclose()
@@ -251,14 +263,14 @@ async def test_listen_reconnect_is_reported_with_its_cause() -> None:
     the operator must be able to see why from the logs, so each reconnect
     is a warning naming the channel and the failure, not a debug line."""
     pool = MagicMock()
-    good_conn = AsyncMock()
+    good_conn = _open_conn()
     pool.acquire = AsyncMock(
         side_effect=[asyncpg.PostgresConnectionError("lost"), RuntimeError("boom"), good_conn]
     )
     pool.release = AsyncMock()
 
     gen = listen_with_reconnect(
-        pool,  # pyright: ignore[reportArgumentType]  # Why: test duck-type pool.
+        lambda: pool,
         "chan",
         keepalive_interval=0.05,
         backoff_initial=0.01,

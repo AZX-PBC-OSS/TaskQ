@@ -47,6 +47,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import functools
 import json
 from collections.abc import AsyncGenerator
 from datetime import timedelta
@@ -371,15 +372,20 @@ async def test_progress_stream_cap_429_and_slot_reuse_after_disconnect() -> None
     streams (client disconnect) frees both slots so a new stream connects.
     """
     pubsub = _PassivePubSub()
+    pool = _StubPool(_pg_row())
+    redis = _StubRedis(pubsub)
     router = create_router(
-        _StubPool(_pg_row()),  # pyright: ignore[reportArgumentType]  # Why: duck-typed stub pool satisfies the asyncpg.Pool surface the route reads.
-        _StubRedis(pubsub),  # pyright: ignore[reportArgumentType]  # Why: duck-typed pubsub satisfies the erased Any redis boundary.
+        pool,  # pyright: ignore[reportArgumentType]  # Why: duck-typed stub pool satisfies the asyncpg.Pool surface the route reads.
+        redis,  # pyright: ignore[reportArgumentType]  # Why: duck-typed pubsub satisfies the erased Any redis boundary.
         schema="taskq",
         sse_heartbeat_interval=timedelta(seconds=15),
         max_sse_connections=2,
     )
+    # The pool and Redis client are dependencies on the endpoint (resolved
+    # per request from the host's state); bound here as the dependency
+    # graph would bind them.
     endpoint = next(
-        route.endpoint
+        functools.partial(route.endpoint, pg_pool=pool, redis_client=redis)
         for route in router.routes
         if isinstance(route, APIRoute) and route.path.endswith("/progress/stream")
     )

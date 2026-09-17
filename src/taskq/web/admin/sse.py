@@ -9,11 +9,11 @@ Importing this module requires the ``taskq[fastapi]`` optional extra.
 """
 
 import asyncio
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Callable
 
 import asyncpg
 import structlog
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
 from taskq.constants import events_channel
@@ -45,18 +45,27 @@ def _get_semaphore(topic: str, max_connections: int) -> asyncio.Semaphore:
 
 async def _sse_generator(
     semaphore: asyncio.Semaphore,
-    pool: asyncpg.Pool | None,
+    resolve_pool: Callable[[], asyncpg.Pool | None],
     schema: str | None,
 ) -> AsyncGenerator[str, None]:
     try:
         yield 'event: status\ndata: {"status":"awaiting_progress_backend"}\n\n'
 
+        pool = resolve_pool()
         use_pg = pool is not None and schema is not None
 
         if use_pg:
             channel = events_channel(schema)  # type: ignore[arg-type]  # Why: use_pg guard ensures schema is str at runtime
+
+            def _live_pool() -> asyncpg.Pool:
+                # Re-resolved on every LISTEN (re)connect: a credential
+                # rotation replaces the admin pool under a running stream.
+                current = resolve_pool()
+                assert current is not None, "the admin pool was unset under a live SSE stream"
+                return current
+
             async for payload in listen_with_reconnect(
-                pool,  # type: ignore[arg-type]  # Why: use_pg guard ensures pool is not None at runtime
+                _live_pool,
                 channel,
                 keepalive_interval=_KEEPALIVE_INTERVAL,
                 backoff_initial=_RECONNECT_BACKOFF_INITIAL,
@@ -80,8 +89,8 @@ def register(router: APIRouter) -> None:
     @router.get("/sse/{topic}")
     async def sse_endpoint(  # pyright: ignore[reportUnusedFunction]  # Why: registered via FastAPI decorator; pyright cannot see the route registration.
         topic: str,
+        request: Request,
         settings: TaskQSettings = Depends(get_settings),
-        pool: asyncpg.Pool | None = Depends(get_pg_pool),
         schema: str | None = Depends(get_schema),
     ) -> StreamingResponse:
         _valid_topics = frozenset({"queues", "jobs", "workers", "history"})
@@ -95,7 +104,7 @@ def register(router: APIRouter) -> None:
                 status_code=429,
                 detail="too many SSE connections for this topic",
             ) from None
-        gen = _sse_generator(semaphore, pool, schema)
+        gen = _sse_generator(semaphore, lambda: get_pg_pool(request), schema)
         return StreamingResponse(
             content=gen,
             media_type="text/event-stream; charset=utf-8",
