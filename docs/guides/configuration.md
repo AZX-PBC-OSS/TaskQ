@@ -84,6 +84,7 @@ Applies to all commands: `worker`, `migrate`, `ui serve`, `health`.
 | `TASKQ_ENVIRONMENT` | `str \| None` | `None` | Deployment label; does not select `.env` files (that is `ENV`'s job). Values `dev` or `development` suppress the unauthenticated-admin warning. Any other value triggers it. | all |
 | `TASKQ_ADMIN_MAX_SSE_CONNECTIONS` | `int` | `50` | Maximum concurrent SSE connections the admin UI will serve. Min: 1. | ui serve |
 | `TASKQ_PROGRESS_MAX_SSE_CONNECTIONS` | `int` | `50` | Maximum concurrent per-job progress SSE streams this process will serve. Each stream holds a Redis pubsub subscription and an asyncio task for as long as the client stays connected, so an uncapped endpoint is a resource-exhaustion surface on the app hosting the pipeline. Min: 1. | ui serve |
+| `TASKQ_PROGRESS_REQUIRE_AUTH` | `bool` | `true` | When `true` (the default), `taskq.web.progress.create_router` raises `RuntimeError` if `auth_dependency` is `None` in a non-dev environment, failing closed. Set to `false` to allow unauthenticated per-job progress/state endpoints in non-dev (not recommended, only for deployments that authenticate at the ingress). | ui serve |
 | `TASKQ_ADMIN_WORKER_LIVENESS_SECONDS` | `int` | `30` | How recently a worker must have written `last_seen_at` to count as alive: the admin UI's orphan-queue banner and leader `watchdog_healthy`, and on the worker side the leader's `taskq.queue.live_workers` gauge and the stranded-jobs detector's unserved-queue arm. Measured by Postgres against the statement clock. Must comfortably exceed `TASKQ_HEARTBEAT_INTERVAL`. Min: 1. | ui serve, worker (leader) |
 | `TASKQ_ADMIN_HOST` | `str` | `0.0.0.0` | Bind address for `taskq ui serve`. | ui serve |
 | `TASKQ_ADMIN_PORT` | `int` | `8080` | Bind port for `taskq ui serve`. Range: 1–65535. | ui serve |
@@ -92,6 +93,8 @@ Applies to all commands: `worker`, `migrate`, `ui serve`, `health`.
 | `TASKQ_ADMIN_UI_ALLOW_RATE_LIMIT_RESET` | `bool` | `false` | When `True`, the admin UI shows a reset button on the rate-limits page and serves the `POST /rate-limits/{bucket_name}/reset` endpoint. Default `False` for safety. | ui serve |
 | `TASKQ_ADMIN_UI_REQUIRE_AUTH` | `bool` | `true` | When `true` (the default), `create_router` raises `RuntimeError` if `auth_dependency` is `None` in a non-dev environment, failing closed. Set to `false` to allow an unauthenticated admin UI in non-dev (not recommended — only for air-gapped or localhost-only deployments). | ui serve |
 | `TASKQ_ADMIN_ACTIONS_ENABLED` | `bool` | `false` | When `true`, the admin UI permits destructive actions (run schedule now, retry job, cancel job). Default `false` — prevents on-demand triggering of registered business logic via the admin UI without explicit opt-in. Separate from `auth_dependency`, which controls read access to all admin routes. | ui serve |
+| `TASKQ_ADMIN_UI_FRAME_ANCESTORS` | `str` | `none` | Who may frame admin pages: `none` (the default, nobody) or `self` (the admin UI's own origin, for a host app that embeds the admin UI in its dashboard). Emitted as both `Content-Security-Policy: frame-ancestors ...` and the legacy `X-Frame-Options` (DENY / SAMEORIGIN). Anything else fails at settings load: a typo that silently became "no header" would take the clickjacking defence off in exactly the deployment that believed it had configured it. | ui serve |
+| `TASKQ_ADMIN_UI_SECURE_COOKIES` | `bool` | `true` | Sets the `Secure` flag on the admin UI's CSRF cookie. A configured value, not one inferred from `request.url.scheme`: behind a TLS-terminating edge (Azure Application Gateway, App Service) the app sees plain http, so an inferred flag is silently dropped on a connection the browser reached over HTTPS. Set `false` only for local http dev, where the browser rejects a Secure cookie and the admin UI stops working. | ui serve |
 | `TASKQ_SSO_BACKEND` | `str` | `none` | Selects the SSO backend for the admin UI: `none` (default, unauthenticated/BYO-auth), `oidc` (`taskq[oidc]`), or `saml` (`taskq[saml]`). See [sso.md](sso.md). | ui serve |
 | `TASKQ_HEALTH_TOKEN` | `str` | `""` (empty) | Bearer token for machine-to-machine access to health/metrics endpoints. When set, health and metrics routes require a matching `Authorization: Bearer <token>` header. Leave empty for unauthenticated cluster-internal access — but see `TASKQ_HEALTH_REQUIRE_TOKEN`, which fails closed on an empty token outside dev. | ui serve |
 | `TASKQ_HEALTH_REQUIRE_TOKEN` | `bool` | `true` | When `true` (the default), `taskq ui serve` raises `RuntimeError` if `TASKQ_HEALTH_TOKEN` is empty in a non-dev environment, failing closed. Set to `false` to allow unauthenticated health/metrics endpoints in non-dev (e.g. when relying on network policy instead of a bearer token). | ui serve |
@@ -100,6 +103,17 @@ Applies to all commands: `worker`, `migrate`, `ui serve`, `health`.
 | `TASKQ_EXAMPLE_PORT` | `int` | `8000` | Bind port for the example trigger app. Ignored by worker and admin. | example app |
 
 See [admin-ui.md](admin-ui.md) for admin-specific behaviour driven by these vars.
+
+### SSO sub-settings (`TASKQ_OIDC_*` / `TASKQ_SAML_*`)
+
+Selecting `TASKQ_SSO_BACKEND=oidc` or `saml` activates two dedicated sub-config classes, `OIDCSettings` (loaded from `TASKQ_OIDC_*` env vars) and `SAMLSettings` (loaded from `TASKQ_SAML_*`). Each field carries a full description in `src/taskq/settings.py`; the walkthrough, defaults and per-field tables live in [sso.md](sso.md). Summary:
+
+| Class | Env prefix | Fields |
+|---|---|---|
+| `OIDCSettings` | `TASKQ_OIDC_` | `ISSUER`, `CLIENT_ID`, `CLIENT_SECRET` (secret), `REDIRECT_URI`, `SESSION_SECRET` (secret), `SESSION_MAX_AGE_SECONDS`, `SCOPE`, `GROUP_CLAIM`, `ALLOWED_GROUPS` |
+| `SAMLSettings` | `TASKQ_SAML_` | `ENTITY_ID`, `ACS_URL`, `IDP_ENTITY_ID`, `IDP_SSO_URL`, `IDP_X509_CERT`, `SP_X509_CERT`, `SP_PRIVATE_KEY` (secret), `SESSION_SECRET` (secret), `SESSION_MAX_AGE_SECONDS`, `GROUP_ATTRIBUTE`, `ALLOWED_GROUPS` |
+
+Both `SESSION_SECRET` fields sign session cookies: use at least 32 bytes of random data, and rotate to invalidate all sessions. `ALLOWED_GROUPS` is a comma-separated group allowlist on either backend.
 
 ---
 
@@ -124,6 +138,7 @@ Extends `TaskQSettings`. All fields below apply to the worker process only.
 | `TASKQ_HEARTBEAT_POOL_SIZE` | `int` | `4` | Max connections for the heartbeat pool. | Min: 1 |
 | `TASKQ_HEARTBEAT_COMMAND_TIMEOUT` | `float` (seconds) | `2.0` | Per-query timeout for the heartbeat pool — deliberately tighter than `TASKQ_DISPATCHER_COMMAND_TIMEOUT`, since a beat slower than the tick cannot keep a lock lease alive. Raise it on a loaded or cross-region Postgres: `TASKQ_MAX_HEARTBEAT_FAILURES` consecutive timeouts self-terminate the worker. | > 0 |
 | `TASKQ_MAX_CONCURRENCY` | `int` | `8` | Max concurrent jobs per worker process. `worker_pool` size is derived as `int(max_concurrency * 1.5)`. When a LOOP-scope `asyncpg.Connection` is registered, it also sizes the per-slot transaction pool (`max_concurrency + 1` direct connections, fully warmed at boot) — changes require a worker restart and move the direct-connection budget. | Min: 1 |
+| `TASKQ_DISPATCH_SCOPE_BY_HOME_QUEUE` | `bool` | `false` | Deprecated no-op, accepted so configurations that set it keep loading: dispatch is assignment-routed now, so the flag has nothing left to apply. The worker logs a deprecated-setting warning at startup when it is set; remove it from the environment. | — |
 
 For the fleet-level connection budget these pools feed into (per-worker counts, idle floors, the
 PgBouncer recommendation threshold), see [ops.md — Sizing](ops.md#4-sizing-workers-and-postgres-connections).
@@ -153,6 +168,8 @@ The leader runs periodic sweep cycles that reclaim expired locks, expire results
 | `TASKQ_SWEEP_BREAKER_FAILURE_THRESHOLD` | `int` | `3` | Consecutive sweep-batch cancellations (within `TASKQ_SWEEP_BREAKER_WINDOW_SECS`) before the batch-size breaker latches to the reduced tier for the rest of the process lifetime. Any success between failures resets the consecutive count; a latched breaker does not unlatch. | Min: 1 |
 | `TASKQ_SWEEP_BREAKER_WINDOW_SECS` | `float` (seconds) | `600.0` | Rolling window the sweep breaker counts consecutive failures within. | Min: 1.0 |
 | `TASKQ_SWEEP_DRAIN_BATCHES` | `int` | `8` | Maximum event-writer batches the leader's sweep loop executes per sweep per tick before leaving the remainder to the next tick. Bounded so one iteration cannot monopolise the loop; every batch commits, so a stopped drain keeps its progress. | Range: 1–1000 |
+| `TASKQ_EVENT_RETENTION_BATCH_SIZE` | `int` | `10000` | `job_events` rows deleted per leader sweep tick, one committed batch, once `TASKQ_EVENT_RETENTION_PERIOD` has aged them out. | Min: 1 |
+| `TASKQ_KEYED_ROW_RECLAIM_BATCH_SIZE` | `int` | `256` | Rows the fleet keyed-row reclaim sweep deletes per committed batch per tick (`reservation_slots` rows and PG-state-backed keyed `rate_limit_buckets` rows, once `TASKQ_KEYED_ROW_RECLAIM_PERIOD` has aged them idle). The constant-size bound keeps one tick's DELETE independent of the dead-worker backlog it is recovering from. | Min: 1 |
 
 See [maintenance-sweeps.md](maintenance-sweeps.md) for why these bounds exist — the failure modes they prevent, the derivation of each default, the breaker's latching rationale, and the failure semantics of the bounded bulk operations.
 
@@ -272,8 +289,8 @@ See [rate-limiting.md](rate-limiting.md) for the fallback behaviour.
 |---|---|---|---|---|
 | `TASKQ_HEALTH_ENABLED` | `bool` | `true` | Master switch for the worker health server (both transports). | — |
 | `TASKQ_HEALTH_SOCKET_PATH` | `str` | `/tmp/taskq_health.sock` | Unix socket path for the health server. | — |
-| `TASKQ_HEALTH_PORT` | `int \| None` | unset | TCP port for the HTTP health listener serving `/live` and `/ready`. Unset means **no TCP listener at all** — setting a port is the opt-in. Required on Azure Container Apps, whose probes support only `httpGet`/`tcpSocket` and cannot reach a Unix socket. If the port cannot be bound the worker **fails to start**. `0` binds an ephemeral port (tests only) — this family's "off" is *unset*, not `0` (see [The `0` convention](#the-0-convention)). | 0-65535 |
-| `TASKQ_HEALTH_HOST` | `str` | `0.0.0.0` | Bind address for the TCP health listener and the Prometheus scrape listener. Only used when `TASKQ_HEALTH_PORT` or `TASKQ_METRICS_PORT` is set. Defaults to all interfaces because ACA and Kubernetes probe and scrape the replica over the pod network; narrow to `127.0.0.1` when only a local sidecar probes. | — |
+| `TASKQ_HEALTH_PORT` | `int \| None` | unset | TCP port for the HTTP health listener serving `/live` and `/ready`. Unset means **no TCP listener at all**: setting a port is the opt-in. Required on Azure Container Apps, whose probes support only `httpGet`/`tcpSocket` and cannot reach a Unix socket. If the port cannot be bound the worker logs `health-http-bind-failed` at ERROR and `health-server-unavailable` at WARN and **keeps booting without that listener** (see [deployment.md — Health probes](deployment.md#health-probes)): give each replica a unique port and alert on the WARN. `0` binds an ephemeral port (tests only); this family's "off" is *unset*, not `0` (see [The `0` convention](#the-0-convention)). | 0-65535 |
+| `TASKQ_HEALTH_HOST` | `str` | `0.0.0.0` | Bind address for the TCP health listener and the Prometheus scrape listener. Only used when `TASKQ_HEALTH_PORT` or `TASKQ_METRICS_PORT` is set. Defaults to all interfaces because ACA and Kubernetes probe and scrape the replica over the pod network; narrow to `127.0.0.1` when only a local sidecar probes. The scrape listener alone can be pointed elsewhere with `TASKQ_METRICS_HOST`. | — |
 | `TASKQ_HEALTH_PG_PING_TIMEOUT` | `float` (seconds) | `0.2` | Timeout for the readiness PG ping — the role-pool ping, and the per-slot transaction pool's ping when that pool exists (overlapping probes share a single ping). | Min: 0.0 |
 | `TASKQ_HEALTH_REQUEST_TIMEOUT` | `float` (seconds) | `2.0` | Time a probe gets to send its whole request line and headers before the connection is dropped unanswered. Bounds a drip-feed client that would otherwise hold a connection open by staying just inside a per-line timeout. Keep at or below the shortest probe `timeoutSeconds` you configure. | > 0 |
 | `TASKQ_HEALTH_MAX_HEADER_BYTES` | `int` | `16384` | Cap on a probe request's accumulated request line plus headers. Pairs with `TASKQ_HEALTH_REQUEST_TIMEOUT` to bound a peer sending many small lines fast enough to stay inside the deadline. | > 0 |
@@ -340,7 +357,9 @@ A hot-reload rebuilds factory-backed resources; it never re-reads settings. `TAS
 | `TASKQ_LOG_FORMAT` | `str` | `json` | Log renderer. `json` for production; `console` for human-readable dev output. Only these two values are valid. | Must be `json` or `console` |
 | `TASKQ_LOG_LEVEL` | `str` | `INFO` | Root logger level. | — |
 | `TASKQ_OTEL_AUTOCONFIGURE` | `bool` | `true` | When `true`, the `taskq worker` CLI installs SDK tracer and meter providers from the standard OTel environment variables (`OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_TRACES_EXPORTER`, `OTEL_METRICS_EXPORTER`, `OTEL_LOGS_EXPORTER`) and from `TASKQ_METRICS_PORT`, through the same configurator `opentelemetry-instrument` uses — only when the `[otel]` extra is installed and no provider is set yet. Set `false` when the embedding application or a vendor distro configures the SDK itself. `OTEL_SDK_DISABLED=true` is honoured either way. See [observability.md — setup](observability.md#1-opentelemetry-setup). | — |
-| `TASKQ_METRICS_PORT` | `int \| None` | `None` | TCP port for the worker's standalone Prometheus scrape listener, bound on `TASKQ_HEALTH_HOST`. Unset means no listener — setting a port is the opt-in (the `TASKQ_HEALTH_PORT` shape). Needs the `[prometheus]` extra and `TASKQ_OTEL_AUTOCONFIGURE=true`; the worker then serves every series it records at `http://<host>:<port>/metrics` (see [observability.md — Serving the metrics](observability.md#serving-the-metrics-the-prometheus-endpoint)). | Range: 1–65535 |
+| `TASKQ_EXCEPTION_MESSAGE_MAX_CHARS` | `int` | `2000` | Bound on exception message text on spans and logs, after scrubbing. Matches the admin UI's traceback bound so there is one number for how much error text is kept, not two. Truncation appends the dropped character count, so an operator can see text was cut and raise this. The stack trace is a separate field and is not bounded by this. | Min: 100 |
+| `TASKQ_METRICS_PORT` | `int \| None` | `None` | TCP port for the worker's standalone Prometheus scrape listener, bound on `TASKQ_METRICS_HOST` (falling back to `TASKQ_HEALTH_HOST`). Unset means no listener, so setting a port is the opt-in (the `TASKQ_HEALTH_PORT` shape). Needs the `[prometheus]` extra and `TASKQ_OTEL_AUTOCONFIGURE=true`; the worker then serves every series it records at `http://<host>:<port>/metrics` (see [observability.md — Serving the metrics](observability.md#serving-the-metrics-the-prometheus-endpoint)). A listener that cannot be configured or bound raises `OtelExporterConfigurationError` and the worker **exits 1** rather than start with its scrape silently dead. | Range: 1–65535 |
+| `TASKQ_METRICS_HOST` | `str \| None` | `None` | Bind address for the Prometheus scrape listener alone, overriding `TASKQ_HEALTH_HOST` for that listener, so the scrape and the probes can sit on different interfaces: the loopback sidecar scraper next to a pod-network prober is the shape that needs this. Unset falls back to `TASKQ_HEALTH_HOST`. Only used when `TASKQ_METRICS_PORT` is set. The scrape endpoint is unauthenticated: SECURITY.md and [observability.md](observability.md#serving-the-metrics-the-prometheus-endpoint) document what it exposes; keep a loopback bind or the pod network. | — |
 
 See [observability.md](observability.md) for OTel configuration.
 
@@ -357,8 +376,19 @@ See [observability.md](observability.md) for OTel configuration.
 | `TASKQ_CRON_CATCH_UP_WINDOW` | `timedelta` | `1h` | Missed firings within this window are caught up sequentially; older misses are skipped. | Must not be negative |
 | `TASKQ_CRON_AUTO_DISABLE_THRESHOLD` | `int` | `3` | Consecutive failures before a schedule is auto-disabled. | Min: 1 |
 | `TASKQ_CRON_TICK_LIMIT` | `int` | `100` | Maximum schedules one cron tick selects, plans and fires. A catch-up burst larger than this drains across successive one-second ticks instead of one oversized transaction; the remainder stays due and untouched until its tick. | Range: 1–10000 |
+| `TASKQ_CRON_PAYLOAD_FACTORY_TIMEOUT` | `float` (seconds) | `5.0` | Per-call deadline for a cron schedule's payload factory (both the off-loop call and the coroutine a factory returns). The tick clamps it to stay strictly inside what is left of the leader's whole-tick deadline (`TASKQ_DISPATCHER_COMMAND_TIMEOUT`), so a value at or above that deadline is an upper bound, not the effective one. | Must be > 0 and finite |
 
 See [cron.md](cron.md) for cron scheduling details.
+
+### Until-idle drain mode
+
+These settings only apply when the worker is started with `--until-idle` (run until the queues drain, then exit):
+
+| Env Var | Type | Default | Description | Constraints |
+|---|---|---|---|---|
+| `TASKQ_IDLE_SETTLE_WINDOW` | `float` (seconds) | `2.0` | Time the drain monitor waits after queues appear empty before declaring drained. | Min: 0.0 |
+| `TASKQ_IDLE_POLL_INTERVAL` | `float` (seconds) | `1.0` | How often the drain monitor checks queue depth. | Min: 0.1 |
+| `TASKQ_IDLE_MAX_RUNTIME` | `float \| None` (seconds) | `None` | Maximum wall-clock time for until-idle mode; when exceeded the worker exits with code 4. `None` means no limit. | Must be > 0 when set |
 
 ### Progress Fanout
 

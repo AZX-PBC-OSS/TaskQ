@@ -1269,8 +1269,9 @@ class WorkerSettings(TaskQSettings):
         ge=1,
         le=65535,
         description="TASKQ_METRICS_PORT. TCP port for the worker's standalone "
-        "Prometheus scrape listener, bound on TASKQ_HEALTH_HOST. Unset (the "
-        "default) means no listener — setting a port is the opt-in, the same "
+        "Prometheus scrape listener, bound on TASKQ_METRICS_HOST (falling back "
+        "to TASKQ_HEALTH_HOST). Unset (the "
+        "default) means no listener, so setting a port is the opt-in, the same "
         "shape as TASKQ_HEALTH_PORT. Needs the [prometheus] extra and "
         "TASKQ_OTEL_AUTOCONFIGURE=true: the `taskq worker` CLI then adds a "
         "PrometheusMetricReader to the SDK meter provider it installs, so "
@@ -1283,11 +1284,18 @@ class WorkerSettings(TaskQSettings):
     # -- Health server ------------------------------------------
     health_enabled: bool = Field(
         default=True,
-        description="TASKQ_HEALTH_ENABLED. Enable the Unix-socket health server.",
+        description="TASKQ_HEALTH_ENABLED. Enable the health server: both the "
+        "Unix socket and the optional TCP listener (health_port). False "
+        "disables both, and a health_port set alongside it is not honoured, "
+        "so probes against that port fail.",
     )
     health_socket_path: str = Field(
         default="/tmp/taskq_health.sock",  # noqa: S108  # Why: default. Production deployments override via env var (typically /run/taskq.sock under tmpfs).
-        description="TASKQ_HEALTH_SOCKET_PATH. Unix socket path for the health server.",
+        description="TASKQ_HEALTH_SOCKET_PATH. Unix socket path for the health "
+        "server, serving /live, /ready, /metrics and the opt-in /tasks "
+        "endpoint. Give each co-located process a unique path: a path whose "
+        "live peer holds it fails to bind (see health_port for what happens "
+        "then).",
     )
     health_pg_ping_timeout: float = Field(
         default=0.2,
@@ -1328,11 +1336,15 @@ class WorkerSettings(TaskQSettings):
         ge=0,
         le=65535,
         description="TASKQ_HEALTH_PORT. TCP port for the HTTP health listener serving "
-        "/live and /ready. Unset (the default) means no TCP listener at all — setting a "
+        "/live and /ready. Unset (the default) means no TCP listener at all, so setting a "
         "port is the opt-in. Required on Azure Container Apps, whose probes support only "
         "httpGet/tcpSocket and cannot reach a Unix socket (there is no exec probe type). "
-        "The Unix socket keeps working either way. If the port cannot be bound the worker "
-        "fails to start rather than run with probes silently dead. 0 binds an ephemeral "
+        "The Unix socket keeps working either way. If the port cannot be bound the listener "
+        "fails loudly (health-http-bind-failed at ERROR, then health-server-unavailable at "
+        "WARN) and the worker keeps booting without it: every probe against the port then "
+        "fails at the orchestrator, so give each replica a unique port and alert on the "
+        "WARN (a tcpSocket probe against a port some other process holds would pass while "
+        "probing the wrong process). 0 binds an ephemeral "
         "port (tests only).",
     )
     health_request_timeout: float = Field(
