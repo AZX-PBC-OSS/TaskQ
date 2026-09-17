@@ -433,7 +433,7 @@ extends the active filter without a second edit.
 | running → cancelled | `reclaim_expired_locks` sweep (leader, Sweep 1 — cancel in-flight, retries exhausted) |
 | running → abandoned | `CancelController.run_post_tx` (heartbeat, post-phase-3) / shutdown RELEASING phase (operator cancel in flight only) |
 | running → crashed | `reclaim_expired_locks` sweep (leader, Sweep 1) |
-| running → pending/scheduled | `mark_interrupted` (consumer on a shutdown-origin cancel; shutdown RELEASING phase) — the attempt is refunded, `interrupt_count` bumps |
+| running → pending/scheduled | `mark_interrupted` (consumer on a shutdown-origin cancel; shutdown RELEASING phase) — the attempt is refunded, `interrupt_count` bumps; `pending` when the actor has provably exited (async actor unwound, sync actor's thread finished, transactional unwind done — the consumer parks on the tracked exit handles, bounded by the remaining termination budget, before writing), `scheduled` behind the process's exit window (deadline + watchdog exit tail) when it has not |
 | pending/scheduled → cancelled | `write_cancel_request` (client) |
 | pending/scheduled → failed | `deadline_sweep` (leader, Sweep 2) |
 
@@ -1174,6 +1174,26 @@ The `shutdown_event.set()` is ordered before the close park to stop the
 election loop and release `_main`'s `await shutdown_event.wait()` inside the
 `open_worker_deps` context, allowing the deps exit-stack guard to unwind
 concurrently.
+
+### The no-concurrent-run promise
+
+An interruption release (`mark_interrupted`) is held back until the
+interrupted actor has *provably exited* — the promise is that no other pod can
+claim a row while this process might still touch it. An async actor proves it
+by unwinding (the `CancelledError` propagated through its frames); a sync
+`def` actor proves it only when its executor thread finishes, because
+`task.cancel()` cancels the await, never the thread; the transactional path
+proves it when its tx task finishes unwinding the rollback. The consumer's
+cancellation arm parks on the tracked exit handles, bounded by the remaining
+termination budget, and releases `pending` (hold=0) only on a provable exit
+inside that window; otherwise the release is `scheduled` behind the rest of
+the process's exit window — the termination deadline **plus the watchdog's
+exit tail**, because the deadline is observed only once per
+`watchdog_dump_interval` and the trip then flushes metrics (bounded ~2s)
+before `os._exit`. An actor that outlives the window is still released, never
+stranded. With `watchdog_enabled = false` there is no guaranteed exit to hold
+against, so the hold degrades to `lock_lease` — the bound the lease-expiry
+path already imposes.
 
 The `ShutdownWatchdog` (detector 1) runs concurrently outside the TaskGroup
 and enforces `termination_grace_period` as a hard wall — see
