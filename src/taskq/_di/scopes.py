@@ -253,6 +253,17 @@ class ScopeContainer:
         self._teardowns.append(_teardown)
         return value
 
+    @property
+    def has_teardown_work(self) -> bool:
+        """Whether :meth:`aclose` has anything left to run.
+
+        False once every registered teardown has run and the pinned
+        SYNC_GENERATOR executor (if one was ever opened) is shut down —
+        i.e. exactly when ``aclose()`` would return without awaiting
+        anything, which lets a per-job caller skip scheduling it.
+        """
+        return bool(self._teardowns) or self._sync_gen_executor is not None
+
     async def aclose(self) -> None:
         """Close the container with the log-and-continue teardown policy."""
         pending_cancel: BaseException | None = None
@@ -733,7 +744,11 @@ async def build_actor_scope(
             # shield_with_retrieval, not plain asyncio.shield: a detached
             # teardown that fails under a double cancel must have its
             # outcome retrieved and logged, not lost (see taskq._shield).
-            await shield_with_retrieval(transient_scope.aclose())
+            # Skipped outright when the container has nothing to close:
+            # most jobs resolve no teardown-bearing provider, and the
+            # shield's task creation would be the whole cost.
+            if transient_scope.has_teardown_work:
+                await shield_with_retrieval(transient_scope.aclose())
         except asyncio.CancelledError:
             raise
         finally:
