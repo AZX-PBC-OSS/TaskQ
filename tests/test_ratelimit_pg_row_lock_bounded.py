@@ -108,9 +108,9 @@ class _RowLockFakeConn:
     55P03 (*select_times_out*: the server-side ``lock_timeout`` fired
     while the row was held by a black-holed peer) or returns the
     decision row (*granted*). The refund's ``SELECT … FOR UPDATE``
-    keeps its own shape (unchanged by the fusion — the refund is the
+    keeps its own shape (unchanged by the fusion, the refund is the
     cold rollback path). ``set_config`` calls record the GUC budget;
-    ``fused_results`` records the fused acquires that RETURNED — a
+    ``fused_results`` records the fused acquires that RETURNED, a
     timeout records nothing, the fail-closed observable.
     """
 
@@ -166,7 +166,7 @@ class _RowLockFakeConn:
 
 class _BlackHoleRowLockConn(_RowLockFakeConn):
     """Row-lock statement that NEVER returns (network black hole: the
-    server is unreachable, the statement never completes) — only the
+    server is unreachable, the statement never completes), only the
     client-side wait_for backstop can bound this."""
 
     def __init__(self, select_row: dict[str, object] | None = None) -> None:
@@ -302,7 +302,7 @@ class TestTokenBucketRowLockBoundedWaitUnit:
         # statement is one autocommit round trip, its row lock ending
         # with the statement.
         assert conn.savepoint_opens == 0, (
-            "indefinite mode must not open a transaction — the pre-fused "
+            "indefinite mode must not open a transaction, the pre-fused "
             "shape needed one to span preseed + read + upsert; the fused "
             "statement does not"
         )
@@ -421,7 +421,7 @@ class TestGcraRowLockBoundedWaitUnit:
         )
         assert decision.allowed is True
         assert conn.savepoint_opens == 0, (
-            "indefinite mode must not open a transaction — the pre-fused "
+            "indefinite mode must not open a transaction, the pre-fused "
             "shape needed one to span preseed + read + upsert; the fused "
             "statement does not"
         )

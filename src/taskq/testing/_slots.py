@@ -9,7 +9,7 @@ the slot table can be consulted from the heartbeat path.
 The ``keyed`` mark on each slot state mirrors the PG ``keyed`` column
 (migration 01.00.10_02): rows created by a keyed materialisation carry
 it, and the dispatch twin's reservation-headroom gate reads it to
-exclude keyed buckets from the per-actor fold — the same exclusion the
+exclude keyed buckets from the per-actor fold, the same exclusion the
 PG claim's ``reservation_holdings`` CTE applies (a keyed bucket's
 concrete name is payload-derived per job, so claim time cannot know
 which pending row needs it; #242).
@@ -49,7 +49,7 @@ class _SlotTable:
         """Materialise *slots* rows for *bucket_name*, stamping the keyed mark.
 
         Existing rows are untouched (the PG ``ensure_slots`` conflict arm
-        never touches holder state, and the mark converges toward false —
+        never touches holder state, and the mark converges toward false,
         born-true rows keep it here exactly as PG's
         ``keyed = existing AND EXCLUDED`` keeps theirs).
         """

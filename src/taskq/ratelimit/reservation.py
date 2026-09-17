@@ -266,7 +266,7 @@ class _SlotState:
     ``keyed`` mirrors the PG ``reservation_slots.keyed`` column (migration
     01.00.10_02): rows materialised by a keyed reservation carry the
     fleet-reclaimable mark. Preserved by every state-rebuilding statement
-    below exactly as PG's statements preserve it — acquire/release/extend
+    below exactly as PG's statements preserve it, acquire/release/extend
     never flip the mark, only ``ensure_slots(keyed=...)`` stamps it at
     materialisation.
     """

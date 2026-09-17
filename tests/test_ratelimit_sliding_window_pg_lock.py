@@ -1,7 +1,7 @@
 """Bounded-wait contract for the log-style PG sliding-window bucket lock.
 
-``_acquire_pg_log`` serialises its per-bucket window work — one fused
-prune + admission-insert + count statement (#228) — behind a
+``_acquire_pg_log`` serialises its per-bucket window work, one fused
+prune + admission-insert + count statement (#228), behind a
 transaction-scoped advisory lock keyed ``taskq:{schema}:sw:{name}``. This
 module pins three properties:
 

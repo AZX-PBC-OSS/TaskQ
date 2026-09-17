@@ -389,14 +389,14 @@ class TokenBucket:
         cannot prove safe to delete as one it must keep.
 
         THE CANONICAL KEY SET is exactly ``{tokens, ts, capacity,
-        refill}`` — this method is its definition, and every reader of the
+        refill}``, this method is its definition, and every reader of the
         document reads NAMED keys only (``_peek_pg`` reads ``tokens``;
         ``_refund_pg`` reads ``tokens``/``ts``; the reclaim sweeps read
         ``tokens``/``refill``/``capacity``), so an unknown key is inert.
         Exactly one writer adds a key beyond it: the fused PG acquire
         (``_acquire_pg``) stamps a transient ``granted`` boolean so the
         decision can ride the row home through RETURNING (RETURNING sees
-        only the final row) — it describes the acquire that last wrote
+        only the final row), it describes the acquire that last wrote
         the state and is replaced by the next write (a refund rewrites
         the document through this method, dropping it; the next acquire
         re-adds it). The key-set pin in
@@ -426,7 +426,7 @@ class TokenBucket:
         What eviction destroys differs by where the state lives, and only
         ONE backend actually loses the budget:
 
-        * **memory** — token state lives on the instance and nowhere else,
+        * **memory**: token state lives on the instance and nowhere else,
           so eviction discards it and the next acquire materializes at
           FULL capacity. The instance is right here, so the exemption is
           exact: only a bucket that has actually spent some quota is held.
@@ -437,14 +437,14 @@ class TokenBucket:
           deleting a row whose fixed quota is partly spent, and
           re-materialization resumes from the surviving row (the acquire
           preseeds ``ON CONFLICT DO NOTHING`` and reads the existing state
-          under the row lock). The registry entry is pure bookkeeping —
+          under the row lock). The registry entry is pure bookkeeping,
           dropping it loses nothing, so no PG fixed-quota bucket is held.
           Holding them anyway (the pre-#244 shape) was worse than a
           wasted entry: every PG fixed-quota key ever seen counted against
           ``max_keyed_rate_limits`` forever, so once the cap filled, every
           NEW key was refused with ``ReservationUnavailable`` and its jobs
           snooze-looped until process restart (#244).
-        * **redis** — the backend keeps fixed-quota state for 24 h of its
+        * **redis**: the backend keeps fixed-quota state for 24 h of its
           own accord (see ``_compute_ttl_seconds``), so a re-materialized
           bucket resumes prior state there and eviction is state-safe.
 
@@ -977,7 +977,7 @@ class TokenBucket:
     ) -> RateLimitDecision:
         """PG path: ONE upsert statement whose conflict arm does the arithmetic.
 
-        ``INSERT … ON CONFLICT (bucket_name) DO UPDATE … RETURNING`` — the
+        ``INSERT … ON CONFLICT (bucket_name) DO UPDATE … RETURNING``, the
         preseed, the locked state read, and the upsert of the pre-fused
         shape (BEGIN + set_config + SAVEPOINT + preseed + SELECT FOR
         UPDATE + RELEASE + upsert + COMMIT, 8 round trips in bounded
@@ -985,22 +985,22 @@ class TokenBucket:
         arithmetic runs server-side under the row lock the conflict arm
         itself takes:
 
-        * cold start (no row) — the INSERT arm admits from full
+        * cold start (no row): the INSERT arm admits from full
           capacity, the same spend decision the preseed-then-read shape
           computed after preseeding a full row;
-        * existing row — the conflict arm re-fetches the row's latest
+        * existing row: the conflict arm re-fetches the row's latest
           committed version (the documented ON CONFLICT DO UPDATE
-          semantics under READ COMMITTED — the atomic-counter upsert
+          semantics under READ COMMITTED, the atomic-counter upsert
           idiom), applies elapsed refill and the spend, and writes the
           new state, so concurrent first acquires and concurrent spends
           serialize exactly as the preseed + FOR UPDATE pair did.
 
         The time domain for the arithmetic is ``statement_timestamp()``
-        (STABLE — one value for the whole statement), deliberately: the
+        (STABLE, one value for the whole statement), deliberately: the
         spend decision and the ``granted`` flag are separate evaluations
         of the same expression, and a VOLATILE ``clock_timestamp()``
         could let them straddle the spend boundary between evaluations
-        (grant recorded, spend not taken — or the reverse). A stable
+        (grant recorded, spend not taken, or the reverse). A stable
         statement clock makes every evaluation identical, and the
         stored ``ts`` is the same value the elapsed math used. The WRITE
         stamps (``updated_at`` / ``last_used_at``) stay
@@ -1011,11 +1011,11 @@ class TokenBucket:
         in the state document: RETURNING sees only the FINAL row, and
         ``allowed`` is not derivable from the token count alone (a
         denial stores the post-refill count; an allowance stores
-        post-refill-minus-count — the same final count is reachable
+        post-refill-minus-count, the same final count is reachable
         both ways). Every existing reader ignores unknown keys (peek
         reads ``tokens``; the refund reads ``tokens``/``ts``; the
         reclaim sweeps read ``tokens``/``refill``/``capacity``), and the
-        next write — refund or a later acquire — replaces the whole
+        next write, refund or a later acquire, replaces the whole
         document, so the key is inert bookkeeping between acquires.
 
         The row-lock WAIT is bounded by the operator's
@@ -1027,13 +1027,13 @@ class TokenBucket:
         FIN) stall its bucket's admission until the server's keepalives
         reap it. The bound rides the same ``set_config(..., true)`` SET
         LOCAL the enqueue path's bounded idempotency wait uses, in the
-        acquire's own transaction — a refusal aborts the transaction
+        acquire's own transaction, a refusal aborts the transaction
         outright and the bound dies with it, so the savepoint (and its
         RELEASE) the savepoint-wrapped read needed is pure cost here
         (see test_round_trip_budgets' keyed-enqueue pin for the shape).
-        On budget exhaustion the acquire FAILS CLOSED — the limiter's
+        On budget exhaustion the acquire FAILS CLOSED, the limiter's
         denial outcome, ``allowed=False`` with a retry hint of one more
-        budget — never an exception, never an admission: a racer that
+        budget, never an exception, never an admission: a racer that
         could not write the bucket spent and admitted nothing, because
         the whole spend was one statement that either landed or raised.
         ``lock_timeout_ms <= 0`` waits indefinitely (one autocommit

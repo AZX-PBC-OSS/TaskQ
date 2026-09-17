@@ -1191,7 +1191,7 @@ async def test_reset_pg_executes_delete() -> None:
 async def test_acquire_pg_defensive_row_none_denies_never_admits() -> None:
     """A missing RETURNING row is a defensive DENIAL: the pre-fused shape
     could compute a decision from a full-capacity assumption because its
-    preseed had written the row it then failed to re-read — the fused
+    preseed had written the row it then failed to re-read, the fused
     statement IS the write, so a row it did not observe is a write that
     did not happen, and never an admission."""
     pool = _FakeFullPgPool(fetchrow_result=None)
@@ -1208,8 +1208,8 @@ async def test_acquire_pg_defensive_row_none_denies_never_admits() -> None:
 
 
 async def test_acquire_pg_existing_row_allowed_decodes_state() -> None:
-    """acquire() decodes the fused statement's RETURNING row — the final
-    token count and the decision bit — and reports both."""
+    """acquire() decodes the fused statement's RETURNING row, the final
+    token count and the decision bit, and reports both."""
     pool = _FakeFullPgPool(fetchrow_result={"tokens_after": 6.0, "granted": True})
     tb = _pg_bucket(capacity=10, refill=1, name="pg-row-existing-allowed")
 
@@ -1235,7 +1235,7 @@ async def test_acquire_pg_existing_row_denied_with_refill_computes_retry_after()
 
 async def test_acquire_pg_existing_row_denied_fixed_quota_retry_after_none() -> None:
     """acquire() denied by the fused row's decision bit with refill=0
-    reports retry_after=None — a fixed quota has no recovery time."""
+    reports retry_after=None, a fixed quota has no recovery time."""
     pool = _FakeFullPgPool(fetchrow_result={"tokens_after": 0.0, "granted": False})
     tb = _pg_bucket(capacity=10, refill=0, name="pg-row-existing-fixed")
 

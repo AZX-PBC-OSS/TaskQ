@@ -496,11 +496,11 @@ async def _acquire_pg_gcra(
     ONE fused ``INSERT … ON CONFLICT DO UPDATE … WHERE … RETURNING``
     (#228): the pre-fused shape spent a preseed, a blocking ``SELECT …
     FOR UPDATE``, and a TAT upsert (BEGIN + set_config + SAVEPOINT
-    around them — 8 round trips in bounded mode); the conflict arm now
+    around them, 8 round trips in bounded mode); the conflict arm now
     advances the TAT server-side under the row lock it takes itself,
     and the ALLOWANCE is the update's WHERE clause, so RETURNING yields
     a row exactly when the acquire was granted (a cold start is always
-    granted — emission <= window for limit >= 1). The TAT epoch math
+    granted, emission <= window for limit >= 1). The TAT epoch math
     runs on ``statement_timestamp()`` in the same locked statement, so
     the stored TAT is server-domain by construction and a node with a
     skewed Python clock cannot move the shared admission boundary.
