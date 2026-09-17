@@ -540,6 +540,9 @@ async def test_producer_reowns_a_disowned_job_it_claims_again() -> None:
         settings=settings,
         liveness=SimpleNamespace(tick=lambda *a, **k: None, forget=lambda *a, **k: None),
         disowned_jobs=disowned,
+        # The producer's availability subtracts active jobs (#229); this
+        # test's single claimed job is never registered.
+        active_jobs=SimpleNamespace(count=lambda: 0),
     )
     local_queue: asyncio.Queue[JobRow] = asyncio.Queue(maxsize=1)
     shutdown_event = asyncio.Event()

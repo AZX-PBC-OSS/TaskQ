@@ -332,7 +332,9 @@ replicas is up to 40 concurrent jobs before any fleet-wide cap applies.
 
 ### Process-level bound
 
-`max_concurrency` (default `8`, env `TASKQ_MAX_CONCURRENCY`) is the upper bound on simultaneously executing jobs. The `local_queue` maxsize equals `max_concurrency`, so the producer can lock at most that many additional rows beyond those already executing.
+`max_concurrency` (default `8`, env `TASKQ_MAX_CONCURRENCY`) is the upper bound on simultaneously executing jobs — and, since the producer sizes every claim by the slots genuinely free (`local_queue` capacity minus queued rows minus actively running jobs), also the upper bound on rows this worker holds **locked** at once. A worker whose consumers are all busy claims nothing further: its next claim fires the moment a job finishes (the consumer wakes the producer at the deregister that frees the slot), not on the next poll tick. The transient window between a consumer taking a row from the queue and registering it in the active-jobs registry is one scheduler step wide, so a claim can overshoot the free-slot count by at most the consumer count for that instant.
+
+The trade this makes: local prefetch used to hide one dispatch round trip for sub-millisecond actors (the producer claimed a fresh batch while the last one was still executing). With exact slot accounting, a finished row's replacement claim waits for the accounting to settle — bounded by the same-tick deregister wake, not a poll interval. The win is that a busy worker no longer locks up to 2× `max_concurrency` rows (double the crash-reclaim exposure, and pending work locked behind long jobs while peer workers idle).
 
 `worker_pool_size` is derived automatically:
 
