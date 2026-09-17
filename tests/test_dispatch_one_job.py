@@ -1207,6 +1207,7 @@ async def _dispatch_with(
     actor_fn: Callable[..., Coroutine[Any, Any, object]],
     *,
     backend: FakeBackend | None = None,
+    job: JobRow | None = None,
 ) -> tuple[Any, str]:
     """Dispatch one job through the real dispatch path against a FakeBackend
     with a per-test isolated meter; return (reader, outcome)."""
@@ -1219,7 +1220,7 @@ async def _dispatch_with(
         outcome = await dispatch_one_job(
             backend=as_backend(fake_backend),
             deps=_as_deps(_FakeWorkerDeps()),
-            job=make_job_row(payload={"value": 42}),
+            job=job if job is not None else make_job_row(payload={"value": 42}),
             worker_id=_WORKER_ID,
             registry=scopes.registry,
             process_scope=scopes.process_scope,
@@ -1264,6 +1265,32 @@ async def test_start_to_close_timeout_is_counted_and_its_duration_labelled(
     assert [dict(p.attributes or {}) for p in durations] == [
         {"actor": "test_actor", "queue": "default", "outcome": "scheduled"}
     ]
+
+
+async def test_queue_wait_is_the_rows_own_eligible_to_claimed_interval(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """taskq.jobs.queue_wait_seconds is started_at - scheduled_at from the
+    claimed row's server-clock stamps (Oban's queue_time), per (actor,
+    queue) — what every dispatched job actually waited, where the sampled
+    oldest_pending_age gauge only shows the head of the line."""
+    from taskq.testing.otel import histogram_points
+
+    async def ok_actor(payload: _Payload, ctx: JobContext[_Payload]) -> None:
+        return None
+
+    job = replace(
+        make_job_row(payload={"value": 42}),
+        scheduled_at=_NOW,
+        started_at=_NOW + timedelta(seconds=2.5),
+    )
+    reader, outcome = await _dispatch_with(monkeypatch, ok_actor, job=job)
+    assert outcome == "succeeded"
+    points = histogram_points(reader, "taskq.jobs.queue_wait_seconds")
+    assert len(points) == 1
+    assert dict(points[0].attributes or {}) == {"actor": "test_actor", "queue": "default"}
+    assert points[0].count == 1
+    assert points[0].sum == pytest.approx(2.5)
 
 
 async def test_success_duration_is_labelled_succeeded(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -42,6 +42,7 @@ from taskq.obs import (
     get_logger,
     record_consumed_message,
     record_process_duration,
+    record_queue_wait,
     record_slot_pool_acquire_failure,
     safe_start_span,
 )
@@ -461,6 +462,15 @@ async def dispatch_one_job(
             raw_conn = loop_scope.resolved_cache().get(asyncpg.Connection)
             if raw_conn is not None:
                 transaction_conn = cast(asyncpg.Connection, raw_conn)  # pyright: ignore[reportUnknownVariableType,reportAssignmentType]  # Why: resolved_cache returns Mapping[type, object]; the DI resolver guarantees the value registered under asyncpg.Connection is one, matching bootstrap's and the enqueuer's trust of the same key.
+        # Queue wait from the claimed row's own server-clock stamps, outside
+        # the span for sampling independence; a row a test left unstamped
+        # records nothing rather than a guess.
+        if job.started_at is not None:
+            record_queue_wait(
+                job.actor,
+                job.queue,
+                max(0.0, (job.started_at - job.scheduled_at).total_seconds()),
+            )
         t0 = time.monotonic()
         outcome: AttemptOutcome = "failed"
 
