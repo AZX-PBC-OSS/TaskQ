@@ -1032,15 +1032,16 @@ than stalling the fleet; the build itself, once it holds the lock, is not.
 ### The assignment-routed marker round applies in bounded lock windows
 
 > **Unreleased.** Operational note for the `01.00.12_05` / `01.00.12_07` /
-> `01.00.12_08` round; the upgrade's lock profile changes, the end state
-> does not (same columns, same backfill, same indexes).
+> `01.00.12_08` / `01.00.12_09` round; the upgrade's lock profile changes,
+> the end state does not (same columns, same backfill, same indexes plus
+> the two new probe indexes below).
 
 The marker round originally shipped as one migration whose single
 transaction held `ACCESS EXCLUSIVE` on `jobs` (taken by the `ADD COLUMN`)
 across the re-pend backfill and two full-table index builds — every read,
 heartbeat and claim on the table queued behind it for the whole run, long
 enough to burn a live fleet's heartbeat budget during the apply
-([#250](https://github.com/AZX-PBC-OSS/TaskQ/issues/250)). It is now three
+([#250](https://github.com/AZX-PBC-OSS/TaskQ/issues/250)). It is now four
 single-purpose migrations, each holding the narrowest lock its work
 allows:
 
@@ -1064,6 +1065,31 @@ single build would outrun the workers' heartbeat budget the statements to
 pre-build `CONCURRENTLY` by hand are in each migration file's OPS NOTE
 (the migration then no-ops via `IF NOT EXISTS`). The wait for each lock
 is bounded by `ddl_lock_timeout` as everywhere else.
+
+Two more changes land with the same round ([#243](https://github.com/AZX-PBC-OSS/TaskQ/issues/243)):
+
+- The dead probe index pair is gone. The unreleased stack built
+  `jobs_repended_probe_idx` (`01.00.11_01`) and dropped it again two
+  files later (`01.00.12_05:post`) — no shipped code ever read its
+  predicate, so every upgrade paid one write-blocking full-table build
+  for nothing. Neither file ships now. If you ran a **dev checkout** of
+  the unreleased stack against a database, that database still carries
+  the index and its ledger rows; drop it by hand
+  (`DROP INDEX IF EXISTS "{schema}".jobs_repended_probe_idx;`) — nothing
+  reads it. Released deployments never had it.
+- `01.00.12_09` adds the producer-placed population's two probe indexes
+  (`jobs_unrouted_actor_dispatch_idx`,
+  `jobs_unrouted_round_robin_probe_idx`), partial on
+  `status = 'pending' AND NOT assignment_routed`. The label-routed
+  dispatch arms filter `NOT assignment_routed`; on the pending-only
+  twins that conjunct is a post-scan Filter, so every claim probe walked
+  the re-pended rows ahead of the rows it could admit — claim cost grew
+  linearly in re-pend depth, exactly on the crash-reclaim tails a
+  fleet-wide restart produces. The probes now ride the marker-partial
+  indexes and visit zero re-pended rows; the re-pended population keeps
+  its own probe index (`jobs_assignment_routed_probe_idx`, in
+  `01.00.12_08`), so each arm's probe stops at its own population's
+  rows.
 
 ### Bulk cancel and force-deregistration now make bounded committed progress
 

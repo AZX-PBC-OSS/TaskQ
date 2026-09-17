@@ -57,7 +57,7 @@
 -- 'running', 'scheduled')` manually outside the migration runner during
 -- a maintenance window, then let this migration no-op via IF NOT EXISTS.
 -- Plain CREATE INDEX here, not the no-transaction CONCURRENTLY form, for
--- the deadlock reason 01.00.11_01_pre_repended_probe_index.sql derives.
+-- the deadlock reason 01.00.09_01_pre_round_robin_probe_index.sql derives.
 CREATE INDEX IF NOT EXISTS jobs_batch_open_members_idx
     ON "{schema}".jobs ((metadata->>'batch_id'))
     WHERE (metadata->>'batch_id') IS NOT NULL
