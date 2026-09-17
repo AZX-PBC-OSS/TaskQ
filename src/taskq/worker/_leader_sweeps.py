@@ -1439,9 +1439,30 @@ _QUERY_OLDEST_DUE_AGE_SQL_TEMPLATE = (
 # rows with a past lease are invisible in jobs.by_status (a healthy running
 # count) and in the miss counters (a dead worker emits nothing), and this one
 # statement is the direct count.
+#
+# The cancel_phase = 0 carve-out: a row with a cancel in flight
+# (cancel_phase != 0 — an operator asked to cancel, and the worker owns the
+# terminal write) is in the cancellation protocol's own window, where an
+# expired lease is EXPECTED, not a zombie — the reclaim sweep's lease arm
+# deliberately waits cancel_grace + cleanup_grace + 60 s past lease expiry
+# before it pre-empts one (backend/_sweeps.py's
+# `cancel_phase = 0 OR lock_expires_at < now - <grace ladder>`), so a merely
+# slow cancel is not mistaken for a crash. Counting those rows here made
+# TaskQRunningLeaseExpired page on reclaim working exactly as designed: with
+# the alert's 5-minute `for`, the gauge stays non-zero for roughly grace +
+# 60 s plus a sweep interval and a sampling interval, and combined graces
+# from about four minutes up crossed the firing line on every cancel. The
+# filter keys on the PHASE, not on the sweep's grace ladder, so it stays
+# correct whatever that ladder becomes — and a cancelling row that outlives
+# the whole ladder is not lost: reclaim takes it (to 'cancelled', the
+# caller's request honored) and the never-completing cancel has its own
+# pager in TaskQAbandonedJobs. The term rides as a post-scan Filter over
+# the expired-lease candidates the Index Cond already bounded — cancel_phase
+# is NOT NULL DEFAULT 0, and count(*) had to visit those rows anyway.
 _QUERY_RUNNING_LEASE_EXPIRED_SQL_TEMPLATE = (
     'SELECT count(*) FROM "{schema}".jobs '
-    "WHERE status = 'running' AND lock_expires_at < statement_timestamp()"
+    "WHERE status = 'running' AND lock_expires_at < statement_timestamp() "
+    "AND cancel_phase = 0"
 )
 # Running jobs per actor, and the age of the oldest running attempt per
 # actor, from ONE grouped read so count and age never describe two moments.

@@ -277,18 +277,29 @@ The leader-count operand is what makes this alertable at all. A healthy multi-wo
 
 ## TaskQRunningLeaseExpired
 
-**What fired.** `taskq_jobs_running_lease_expired > 0` for 5 minutes: running jobs whose lock lease is past expiry, sustained. A healthy fleet reads 0 — the leader's reclaim sweep (`sweep_name="expired_locks"`) drains expired leases within a tick or two of expiry — so a sustained non-zero count means reclaim is not draining. Work is claimed and stuck in `running` while health probes stay green: the zombie-running shape.
+**What fired.** `taskq_jobs_running_lease_expired > 0` for 5 minutes: running jobs whose lock lease is past expiry, sustained, with no cancel in flight — rows in a cancel phase (`cancel_phase != 0`) are carved out of the gauge, because the reclaim sweep deliberately waits cancel grace + cleanup grace + 60 s past expiry for a cancelling row before it pre-empts it, so an expired lease mid-cancel is the cancellation protocol working, not an incident (a cancel the actor never yields to pages as [TaskQAbandonedJobs](#taskqabandonedjobs) instead). A healthy fleet reads 0 — the leader's reclaim sweep (`sweep_name="expired_locks"`) drains expired leases within a tick or two of expiry — so a sustained non-zero count means reclaim is not draining. Work is claimed and stuck in `running` while health probes stay green: the zombie-running shape.
 
 **How to confirm.**
 
 - Metric: `taskq_jobs_running_lease_expired` (sampled by every worker, so one flapping series is a sampling artifact — the alert fires on the sustained value). Cross-check the reclaim sweep's health: `taskq_maintenance_leader_sweep_last_success_seconds{sweep_name="expired_locks"}` fresh means the sweep runs but rows regrow faster than it drains (workers dying or wedging mid-run); a stale stamp means the sweep itself is stopped (see [TaskQPromotionStalled](#taskqpromotionstalled) — the same signature, different sweep).
-- SQL — the zombies and their holders:
+- SQL — the zombies and their holders (the gauge's own predicate, cancel phases excluded):
 
   ```sql
   SELECT id, actor, locked_by_worker, lock_expires_at,
          now() - lock_expires_at AS overdue_by, attempt, max_attempts
   FROM taskq.jobs
   WHERE status = 'running' AND lock_expires_at < clock_timestamp()
+    AND cancel_phase = 0
+  ORDER BY lock_expires_at;
+  ```
+
+  Cancelling rows the sweep is still waiting out (expected, not zombies — the same grace ladder the reclaim sweep applies):
+
+  ```sql
+  SELECT id, actor, cancel_phase, cancel_requested_at, lock_expires_at
+  FROM taskq.jobs
+  WHERE status = 'running' AND lock_expires_at < clock_timestamp()
+    AND cancel_phase != 0
   ORDER BY lock_expires_at;
   ```
 
