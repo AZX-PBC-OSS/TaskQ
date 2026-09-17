@@ -621,6 +621,7 @@ CONTEXT:  PL/pgSQL function taskq.enqueue(text) line 12 at SQL statement
 | Variable | Default | Effect |
 |---|---|---|
 | `TASKQ_EXCEPTION_REDACTION_ENABLED` | `true` | When `false`, `DETAIL:` lines are **not** dropped, on both the span and the log path. |
+| `TASKQ_EXCEPTION_MESSAGE_MAX_CHARS` | `2000` | Bound on the scrubbed `error_message` carried by the `job_exception` / `job_timeout` log lines and the span's exception event; a truncated message ends with the dropped character count. The durable `ErrorInfo` row (what the admin UI and `JobRow.error_message` read) keeps the full text. |
 
 Setting it to `false` is a debugging aid, not a production setting. What you
 gain is the offending row value, usually the fastest way to identify which
