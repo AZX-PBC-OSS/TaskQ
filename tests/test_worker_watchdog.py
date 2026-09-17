@@ -164,6 +164,49 @@ async def test_shutdown_watchdog_trips_past_deadline(exit_codes: list[int]) -> N
     assert exit_codes == [EXIT_WATCHDOG]
 
 
+def test_trip_exits_even_when_the_counter_and_log_sink_raise(
+    exit_codes: list[int],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A raising metric add or a raising log write must not skip the exit.
+
+    The counter add and the critical log used to run BEFORE the
+    try/finally that guarantees os._exit. Either raising there killed the
+    watchdog task with no exit, and the tracked-exit gate lost its bound:
+    a stuck actor thread would then hold the process open past the
+    deadline a released row's hold modeled. Both now sit inside the try,
+    and the pre-exit flushes are suppressed rather than trusted, so the
+    only statement that cannot be skipped is the exit itself.
+    """
+    import taskq.worker._watchdog as watchdog_mod
+
+    def _raise(*args: object, **kwargs: object) -> None:
+        raise RuntimeError("observability hook blew up")
+
+    class _RaisingCounter:
+        def add(self, *args: object, **kwargs: object) -> None:
+            _raise()
+
+    class _RaisingLog:
+        def critical(self, *args: object, **kwargs: object) -> None:
+            _raise()
+
+    monkeypatch.setattr(watchdog_mod, "_watchdog_trips", _RaisingCounter())
+    monkeypatch.setattr(watchdog_mod, "_log", _RaisingLog())
+    # The dump renders to stderr and the flushes follow. A broken pipe
+    # there is the same hazard class, so make the dump raise too.
+    monkeypatch.setattr(watchdog_mod, "dump_task_stacks", _raise)
+
+    with pytest.raises(_ExitSentinelError):
+        trip("shutdown-deadline", "test: every observability hook raised")
+
+    assert exit_codes == [EXIT_WATCHDOG], (
+        "the force-exit is the one statement of the trip that must survive "
+        "every observability hook raising; a skipped exit unbounds the "
+        "tracked-exit gate"
+    )
+
+
 async def test_shutdown_watchdog_cancelled_on_clean_exit(exit_codes: list[int]) -> None:
     shutdown = asyncio.Event()
     watchdog = ShutdownWatchdog(shutdown, deadline=60.0, dump_interval=1.0)
