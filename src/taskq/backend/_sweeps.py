@@ -131,6 +131,7 @@ from taskq.obs import (
 
 __all__ = [
     "_RECLAIM_DISPOSITIONS",
+    "_RECLAIM_UNKNOWN_DISPOSITION",
     "_SWEEP_1_SQL",
     "_SWEEP_2_SQL",
     "_SWEEP_3_SQL",
@@ -140,6 +141,7 @@ __all__ = [
     "_SWEEP_IDLE_KEYED_SLOTS_SQL",
     "_SWEEP_RESULT_TTL_SQL",
     "SweepBatchSizer",
+    "_reclaim_disposition",
     "prune_job_events",
     "sweep_deadline_exceeded",
     "sweep_expired_events",
@@ -332,11 +334,45 @@ _ATTEMPT_MESSAGES: dict[str, str] = {
 #: ``{has_budget}`` fragment exists to remove — one edit to the branch
 #: conditions must not leave a disposition literal silently disagreeing
 #: with the status it labels.
+#:
+#: The map's key set is pinned to the CASE's reachable statuses by
+#: ``tests/test_obs_reclaim_counters.py`` (both directions), and the
+#: lookups are total through :func:`_reclaim_disposition` — see that
+#: function for why a bare ``[...]`` here is the reclaim loop's
+#: kill-streak, not a crash to be tolerated.
 _RECLAIM_DISPOSITIONS: dict[str, str] = {
     "pending": "repended",
     "crashed": "crashed",
     "cancelled": "cancelled",
 }
+
+#: The disposition an unmapped post-update status counts under. Counting
+#: the unknowns — rather than dropping the rows or raising — preserves
+#: the metric's totals and makes map/code drift VISIBLE on dashboards as
+#: its own series, which is the property that turns a silent invariant
+#: breach into an operator-visible one.
+_RECLAIM_UNKNOWN_DISPOSITION: str = "unknown"
+
+
+def _reclaim_disposition(status: str) -> str:
+    """The disposition label for *status*; ``"unknown"`` when unmapped.
+
+    Total by construction, and it must be: this lookup runs inside the
+    reclaim sweep's transaction on the fleet's crash-recovery path, and a
+    bare ``_RECLAIM_DISPOSITIONS[status]`` on an unmapped status (a
+    future CASE branch — the #238 evolution, a migration-era change —
+    without its map entry) raises KeyError mid-transaction: the whole
+    reclaim batch rolls back (no job_attempts, no job_events, no wake
+    NOTIFY, no metric), the exception escapes the sweep loop's
+    NotImplementedError/TRANSIENT_PG_ERRORS guards into
+    ``UnexpectedLoopErrorGuard``, and five consecutive ticks kill the
+    leader worker — crash recovery dead fleet-wide. The in-memory twin
+    dies the same way mid-loop, leaving a half-drained corpus. The
+    exhaustiveness pin in ``tests/test_obs_reclaim_counters.py`` makes
+    the drift fail CI loudly; this default keeps the sweep alive and
+    counting on the day the pin is violated anyway.
+    """
+    return _RECLAIM_DISPOSITIONS.get(status, _RECLAIM_UNKNOWN_DISPOSITION)
 
 
 _SWEEP_1_BODY = """\
@@ -1217,9 +1253,13 @@ async def sweep_expired_locks(
     The RETURNING also carries ``j.actor`` and the post-update
     ``j.status``; from those this function aggregates the
     ``taskq.jobs.reclaimed{actor, disposition}`` counter (disposition via
-    :data:`_RECLAIM_DISPOSITIONS`: ``repended`` / ``crashed`` /
-    ``cancelled``) and records it once per (actor, disposition) pair
-    after the transaction — the per-actor crash split the generic
+    :func:`_reclaim_disposition` over :data:`_RECLAIM_DISPOSITIONS`:
+    ``repended`` / ``crashed`` / ``cancelled``, and the explicit
+    ``unknown`` for a status no current CASE branch writes — a total
+    lookup, so map/code drift counts on the dashboard instead of rolling
+    the batch back; see the helper's docstring) and records it once per
+    (actor, disposition) pair after the transaction — the per-actor
+    crash split the generic
     ``taskq.maintenance_leader.sweep_rows{sweep_name}`` total cannot
     express. The in-memory twin emits the identical counter so the two
     backends' label sets cannot drift.
@@ -1281,8 +1321,13 @@ async def sweep_expired_locks(
                 # The disposition label derives from the ONE branch
                 # arbiter — the status this statement just wrote — so the
                 # counter's split can never disagree with the row's own
-                # disposition (see _RECLAIM_DISPOSITIONS).
-                reclaim_counts[(actor_name, _RECLAIM_DISPOSITIONS[new_status])] += 1
+                # disposition (see _RECLAIM_DISPOSITIONS). Total lookup:
+                # an unmapped status counts as the explicit "unknown"
+                # disposition instead of raising mid-transaction — the
+                # batch is the fleet's crash-recovery path (see
+                # _reclaim_disposition for the kill-streak chain a bare
+                # [] here would re-arm).
+                reclaim_counts[(actor_name, _reclaim_disposition(new_status))] += 1
 
                 # started_at is database-written and the attempt row's
                 # finished_at is stamped clock_timestamp(); the elapsed span
