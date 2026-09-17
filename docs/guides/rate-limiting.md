@@ -1100,10 +1100,19 @@ bound the Python-process-local registry dict; the Redis TTL bounds Redis memory.
     the drained quota to full — whereas the Redis backend deliberately retains that same state
     for 24h. The trade-off is deliberate: such buckets count against `max_keyed_rate_limits`
     until their quota returns to full (refund/reset) or the process restarts, so under
-    sustained high-cardinality fixed-quota keys the cap can fill permanently and deny *new*
+    sustained high-cardinality fixed-quota **memory** keys the cap can fill and deny *new*
     keys. The cap fails closed rather than silently resetting quotas. Buckets that are full
     (no quota consumed) and refilling buckets are evicted normally — the latter self-heal
     because their state converges back toward full on its own.
+
+    `backend="postgres"` fixed-quota buckets are evicted normally (they are *not* exempt):
+    their quota state lives in the `rate_limit_buckets` row, and eviction of the registry
+    entry cannot lose it. Both row-deletion paths — the per-worker pending-reclaim drain and
+    the maintenance leader's fleet sweep — refuse to delete a row whose fixed quota is partly
+    spent, and a re-materialized bucket resumes from the surviving row (the acquire preseeds
+    `ON CONFLICT DO NOTHING` and reads the existing state under the row lock). Recycling the
+    registry entry is what keeps `max_keyed_rate_limits` from filling with never-again-used
+    fixed-quota keys and refusing every new key past the cap.
 
 !!! note "Independent caps for keyed reservations and keyed rate limits"
     `settings.max_keyed_reservations` (default `10_000`) governs keyed

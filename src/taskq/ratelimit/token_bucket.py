@@ -407,24 +407,30 @@ class TokenBucket:
         loses at most one refill window's worth of tokens — an accepted,
         bounded divergence.
 
-        What eviction destroys differs by where the state lives, and both
-        shapes lose the same budget:
+        What eviction destroys differs by where the state lives, and only
+        ONE backend actually loses the budget:
 
-        * **memory** — token state lives on the instance, so eviction
-          discards it and the next acquire materializes at FULL capacity.
-          The instance is right here, so the exemption is exact: only a
-          bucket that has actually spent some quota is held.
+        * **memory** — token state lives on the instance and nowhere else,
+          so eviction discards it and the next acquire materializes at
+          FULL capacity. The instance is right here, so the exemption is
+          exact: only a bucket that has actually spent some quota is held.
         * **postgres** — the ``rate_limit_buckets`` row IS the state, and
-          eviction's reclaim drain deletes it; the next acquire re-preseeds
-          via ``ON CONFLICT DO NOTHING`` at full capacity. Remaining tokens
-          are not readable without a round trip on this synchronous path,
-          so every PG fixed-quota bucket is held. Holding an unspent one
-          costs a registry entry; dropping a spent one over-admits against
-          a budget that is gone.
-
-        Redis keeps fixed-quota state for 24 h of its own accord (see
-        ``_compute_ttl_seconds``), so a re-materialized bucket resumes
-        prior state there and eviction is state-safe.
+          evicting the REGISTRY entry does not delete it: both row-delete
+          paths (the maintenance leader's fleet sweep and the per-worker
+          pending-reclaim drain, sharing ``_no_consumed_quota_sql``) veto
+          deleting a row whose fixed quota is partly spent, and
+          re-materialization resumes from the surviving row (the acquire
+          preseeds ``ON CONFLICT DO NOTHING`` and reads the existing state
+          under the row lock). The registry entry is pure bookkeeping —
+          dropping it loses nothing, so no PG fixed-quota bucket is held.
+          Holding them anyway (the pre-#244 shape) was worse than a
+          wasted entry: every PG fixed-quota key ever seen counted against
+          ``max_keyed_rate_limits`` forever, so once the cap filled, every
+          NEW key was refused with ``ReservationUnavailable`` and its jobs
+          snooze-looped until process restart (#244).
+        * **redis** — the backend keeps fixed-quota state for 24 h of its
+          own accord (see ``_compute_ttl_seconds``), so a re-materialized
+          bucket resumes prior state there and eviction is state-safe.
 
         Reads ``_tokens`` without the bucket's async lock; safe because the
         only caller (the registry's idle-eviction sweep) runs synchronously
@@ -433,9 +439,10 @@ class TokenBucket:
         """
         if self._refill != 0.0:
             return False
-        if self._backend == "postgres":
-            return True
         if self._backend != "memory":
+            # postgres: the row-delete vetoes carry the state-safety
+            # guarantee (see the docstring); redis: the 24 h TTL does.
+            # Neither's quota can be reset by a REGISTRY eviction.
             return False
         # Why the protected read: _InMemoryBucket._tokens is this module's
         # own accumulator, and the registry's idle-eviction sweep (the
