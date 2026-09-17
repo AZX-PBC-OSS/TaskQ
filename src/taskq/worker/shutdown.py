@@ -478,24 +478,34 @@ async def orchestrate_shutdown(
             except asyncio.CancelledError:
                 continue
             except Exception as exc:
-                # No retry, no disown — the row stays running and locked,
-                # and its recovery is the lease-expiry reclaim sweep. That
-                # reliance is LOAD-BEARING and bounded by validation, not
-                # by this code: the parked consumer's later release write
-                # is what usually saves the row, and WorkerSettings'
-                # ``release_park_lease_floor`` invariant
-                # (``lock_lease >= termination - cancellation - cleanup +
-                # heartbeat - terminal-write budget``, hard-failed at
-                # settings load) guarantees that write lands before the
-                # lease the stopped heartbeat left behind can expire. The
-                # double-write-failure shape (this write AND the
-                # consumer's both failing) is the warning-tier
-                # ``release_disown_lease_floor`` — see
-                # ``_emit_startup_warnings``. If you are tempted to add a
-                # retry here, first read the mark_cancelled arm's comment
-                # in _consumer.py: a retry wait inside this phase races the
-                # watchdog's deadline and the teardown the deadline
-                # bounds; the sweep is the designed backstop.
+                # No retry, no disown. The row stays running and locked.
+                # Its recovery is the lease-expiry reclaim sweep. What
+                # keeps that fallback safe is NOT a settings-load
+                # rejection. No such validation exists, by design. Two
+                # real protections do the work, and both live in code:
+                #
+                # 1. The parked consumer's later release write usually
+                #    saves the row outright. That park is lease-capped
+                #    (WorkerSettings.release_park_lease_cap, applied in
+                #    _actor_exit_wait_budget): the cap is exactly the
+                #    bound that puts the parked release write ahead of the
+                #    earliest lease reclaim for every config that loads.
+                #    Do not remove the cap on the belief that startup
+                #    validation catches a bad config here. It does not.
+                #    With the cap gone, a lease shorter than the
+                #    termination budget lets the sweep re-pend this row
+                #    while its actor thread still executes.
+                # 2. When both writes fail (this one and the consumer's,
+                #    whose exhausted retries disown the row), the residue
+                #    is the WorkerSettings.release_disown_lease_floor
+                #    bound. That one is surfaced as a startup warning by
+                #    _emit_startup_warnings, again not a rejection.
+                #
+                # If you are tempted to add a retry here, first read the
+                # mark_cancelled arm's comment in _consumer.py: a retry
+                # wait inside this phase races the watchdog's deadline and
+                # the teardown that deadline bounds. The sweep is the
+                # designed backstop.
                 _log.warning(
                     "release-pg-write-failed",
                     job_id=str(active.job_id),
