@@ -1,5 +1,5 @@
 """Standing guard: a user-visible breaking change must be recorded where
-release-please reads it — and what it reads is narrower than the repo.
+release-please reads it, and what it reads is narrower than the repo.
 
 ``CHANGELOG.md`` is generated on release by release-please from
 conventional commits (``.github/workflows/release-please.yml``,
@@ -20,7 +20,7 @@ around, shape what counts as compliant:
 1. **One note per commit.** The parser surfaces at most ONE breaking
    note per commit message: a message stacking several ``BREAKING CHANGE:``
    paragraphs silently drops all but one (which one survives depends on
-   the paragraph layout — run-together footer lines keep only the last).
+   the paragraph layout; run-together footer lines keep only the last).
    A marker only counts here when it is structurally unambiguous: a
    ``type!:`` subject, a single-footer message, or one footer inside a
    ``BEGIN_NESTED_COMMIT``/``END_NESTED_COMMIT`` block (each block becomes
@@ -28,11 +28,11 @@ around, shape what counts as compliant:
 2. **The walk is windowed.** release-please collects commits by walking
    the target branch's newest history looking for the last release SHA
    and stops after ``commit-search-depth`` commits (default 500) whether
-   or not it found it — the notes are built from that window, not
+   or not it found it; the notes are built from that window, not
    automatically from ``<last-tag>..HEAD``. When a release cycle outgrows
    the configured depth, real breaking markers fall out of the window
    without any error: five markers were silently lost that way during
-   the 0.3.0 cycle (a3013fb, 07a6cfe, abc38d1, 12fd571, 801095c — the
+   the 0.3.0 cycle (a3013fb, 07a6cfe, abc38d1, 12fd571, 801095c, the
    last a correctly-marked ``feat(testing)!`` break with no
    upgrading.md section at all).
 
@@ -42,25 +42,25 @@ The class rules, mechanically enforced here:
    not produce.
 2. Every breaking change the docs promise (a breaking-flagged section of
    ``docs/guides/upgrading.md``, plus the explicit policy entries below)
-   is recorded where release-please reads it — and each policy entry
+   is recorded where release-please reads it, and each policy entry
    carries the release whose notes must carry it, so the census is
-   load-bearing at every point of the entry's life: while that release
+   critical at every point of the entry's life: while that release
    is pending, the needle must hit a carrier inside the range the walk
-   covers; once the manifest reaches that release (the cut — the release
+   covers; once the manifest reaches that release (the cut, where the release
    PR bumps the manifest and merges in the generated CHANGELOG), the
    needle is verified against the shipped CHANGELOG's breaking bullets
    for that version instead. The census therefore retires by
    construction at the cut rather than going permanently red against a
-   range the carriers no longer sit in — and stays load-bearing after
+   range the carriers no longer sit in, and stays critical after
    it, because a regeneration that drops a shipped entry fails here.
 3. The walk's configured depth covers the whole ``<last-shipped-tag>..HEAD``
    range, so the markers the docs promise are inside the window. The
-   anchor is the last SHIPPED release — the manifest's version when its
+   anchor is the last SHIPPED release: the manifest's version when its
    tag exists, else the newest resolvable version tag below it (the
    release-PR branch bumps the manifest ahead of the tag; release-please
    itself anchors at the last shipped release in that state).
 4. The ``release-as`` pin, when present, is a floor for a pending
-   release — never a stale leftover pinning an already-shipped version.
+   release, never a stale leftover pinning an already-shipped version.
 """
 
 from __future__ import annotations
@@ -99,7 +99,7 @@ _DEFAULT_COMMIT_SEARCH_DEPTH = 500
 
 
 def _git(*args: str) -> str:
-    result = subprocess.run(  # noqa: S603  # Why: fixed literal argv shape — git from PATH, as elsewhere in this suite; the range's base is this file's own tag derivation, no shell.
+    result = subprocess.run(  # noqa: S603  # Why: fixed literal argv shape: git from PATH, as elsewhere in this suite; the range's base is this file's own tag derivation, no shell.
         ["git", *args],  # noqa: S607  # Why: git resolved from PATH, as elsewhere in this suite; fixed literal argv, no shell.
         capture_output=True,
         text=True,
@@ -122,13 +122,13 @@ def _released_version() -> tuple[int, int, int]:
 
 
 def _last_shipped_tag() -> str:
-    """The tag of the last SHIPPED release — release-please's own anchor.
+    """The tag of the last SHIPPED release: release-please's own anchor.
 
     Normally that is ``v<manifest>``. On the release PR branch the
     manifest is bumped to the release being cut *before* its tag exists;
     release-please anchors at the last shipped release in that state, and
     so does this guard: the newest resolvable version tag at or below the
-    manifest's version. Loud when nothing qualifies — this guard's
+    manifest's version. Loud when nothing qualifies: this guard's
     assertions are about the range the walk covers, and a checkout that
     cannot see any release tag cannot answer them.
     """
@@ -142,7 +142,7 @@ def _last_shipped_tag() -> str:
     if not resolvable:
         raise RuntimeError(
             "no resolvable version tag at or below the manifest's "
-            f"{released} — the breaking-change guard needs the range "
+            f"{released}: the breaking-change guard needs the range "
             "release-please walks, and a checkout without release tags "
             "cannot answer it (full-history fetch, per the CI checkouts "
             "this suite runs in)"
@@ -160,7 +160,7 @@ def _carriers_in_range() -> list[tuple[str, str]]:
 
     Returns ``(sha, text)`` pairs where ``text`` is the note text
     release-please would surface verbatim. Only structurally unambiguous
-    markers count — the parser yields at most one note per commit
+    markers count: the parser yields at most one note per commit
     message, so a bare message stacking several ``BREAKING CHANGE:``
     footers cannot be relied on to surface any particular one of them
     (the 0.3.0 notes lost the snooze/denial marker exactly this way).
@@ -214,7 +214,7 @@ def _shipped_breaking_bullets(version: str) -> list[str] | None:
     """The breaking bullets of a SHIPPED release's CHANGELOG section.
 
     ``None`` when CHANGELOG.md has no section for that version; the
-    bullet texts (minus the leading ``* ``) otherwise — the same note
+    bullet texts (minus the leading ``* ``) otherwise, the same note
     texts the generated release notes carry, so a needle that hits a
     carrier hits the shipped bullet for the same entry.
     """
@@ -237,7 +237,7 @@ def _shipped_breaking_bullets(version: str) -> list[str] | None:
 
 #: The policy map: every section of docs/guides/upgrading.md that
 #: promises a breaking change, keyed by a fragment of its heading and
-#: carrying ``(target_release, needles)`` — the release whose notes must
+#: carrying ``(target_release, needles)``: the release whose notes must
 #: carry the entry, and the needle a carrier (while pending) or a
 #: shipped CHANGELOG bullet (once cut) must contain. The completeness half
 #: of the guard (see ``_breaking_flagged_sections``) fails when a new
@@ -283,7 +283,7 @@ _BREAKING_SECTION_ENTRIES: dict[str, tuple[str, tuple[str, ...]]] = {
     ),
     "Time is unified on the database clock": (
         "0.3.0",
-        # The rendered note is the footer text, not the bang subject —
+        # The rendered note is the footer text, not the bang subject:
         # the needle must hit what actually ships in the bullets.
         ("EnqueueArgs.scheduled_at",),
     ),
@@ -407,15 +407,15 @@ def test_changelog_carries_only_release_please_generated_sections() -> None:
 
 def test_documented_breaking_changes_are_visible_to_release_please() -> None:
     """Every breaking change the docs promise is recorded where the
-    machinery reads it — at every point of the entry's life.
+    machinery reads it, at every point of the entry's life.
 
     While the entry's target release is pending (the manifest's released
     version is below it), the needle must hit a structurally unambiguous
-    carrier in the walk range — otherwise the release files the break
+    carrier in the walk range; otherwise the release files the break
     under the wrong heading with the wrong version bump, or omits it
     entirely. The markers are counted over ``<last-shipped-tag>..HEAD``
     (whose depth the next guard pins), and only in the forms the parser
-    reliably surfaces: the 0.3.0 cycle lost real markers both ways —
+    reliably surfaces. The 0.3.0 cycle lost real markers both ways:
     five to the walk window, and the snooze/denial accounting break to
     the parser's one-note-per-commit limit (its corrective footer rode a
     message stacking three run-together ``BREAKING CHANGE:`` lines, and
@@ -423,9 +423,9 @@ def test_documented_breaking_changes_are_visible_to_release_please() -> None:
 
     Once the manifest reaches the target release, the entry is verified
     against the shipped CHANGELOG's breaking bullets for that version
-    instead — the census retires by construction at the cut (the
+    instead. The census retires by construction at the cut (the
     carriers sit below the new tag and can never re-enter the range),
-    and stays load-bearing after it: a regeneration that drops a
+    and stays critical after it: a regeneration that drops a
     shipped entry fails here.
     """
     unmapped = [
@@ -437,7 +437,7 @@ def test_documented_breaking_changes_are_visible_to_release_please() -> None:
         "for them:\n  "
         + "\n  ".join(unmapped)
         + "\nA documented breaking change with no policy entry is a "
-        "breaking change nobody has marked — add the mapping entry (with "
+        "breaking change nobody has marked: add the mapping entry (with "
         "its target release) and the marker commit it points at, or "
         "soften the guide's flag."
     )
@@ -449,13 +449,13 @@ def test_documented_breaking_changes_are_visible_to_release_please() -> None:
             assert bullets is not None, (
                 f"the policy entry for {key!r} targets {target}, which the "
                 f"manifest records as shipped, but CHANGELOG.md has no "
-                f"[{target}] section — either the release cut without its "
+                f"[{target}] section: either the release cut without its "
                 "generated changelog (fix the changelog) or the entry's "
                 "target is wrong (prune or re-target the map entry)"
             )
             assert any(all(needle in bullet for needle in needles) for bullet in bullets), (
                 f"the shipped [{target}] CHANGELOG section does not carry "
-                f"{needles!r} for upgrading.md's {key!r} — a documented "
+                f"{needles!r} for upgrading.md's {key!r}: a documented "
                 "breaking change went missing from the shipped release "
                 "notes. Re-mark it in a fresh commit on the pending "
                 "release, or prune the stale map entry if the guide's "
@@ -467,7 +467,7 @@ def test_documented_breaking_changes_are_visible_to_release_please() -> None:
         assert any(all(needle in text for needle in needles) for _, text in carriers), (
             f"upgrading.md documents {key!r} as breaking for {target}, but "
             "no structurally unambiguous breaking marker in "
-            f"{_release_range()} carries {needles!r} — release-please "
+            f"{_release_range()} carries {needles!r}: release-please "
             "builds the notes purely from markers in the range it walks "
             "(at most one note per commit message), so this break would "
             "ship invisible. Mark it in a fresh commit: a `type!:` "
@@ -483,11 +483,11 @@ def test_release_walk_depth_covers_the_release_range() -> None:
 
     release-please walks the newest ``commit-search-depth`` commits
     (default 500) looking for the last release SHA and stops there
-    whether or not it found it — no error, just a shorter range. During
+    whether or not it found it (no error, just a shorter range). During
     the 0.3.0 cycle main grew past 500 commits since v0.2.2 and five
     real breaking markers (a3013fb, 07a6cfe, abc38d1, 12fd571, 801095c)
     fell out of the window without any failure. After each release the
-    window resets to the new tag, so this only bites long cycles —
+    window resets to the new tag, so this only bites long cycles,
     which is exactly when it is silent.
     """
     config = json.loads(_RELEASE_CONFIG.read_text())
@@ -496,7 +496,7 @@ def test_release_walk_depth_covers_the_release_range() -> None:
     assert depth >= count, (
         f"release-please walks at most {depth} commits "
         f"(commit-search-depth) but the release range "
-        f"{_release_range()} is {count} commits long — the notes are "
+        f"{_release_range()} is {count} commits long: the notes are "
         "silently built from a window that excludes the oldest "
         f"{count - depth} commits and every breaking marker they carry. "
         "Raise commit-search-depth in release-please-config.json (it "
@@ -511,7 +511,7 @@ def test_release_as_pin_is_a_pending_release_floor_not_a_stale_leftover() -> Non
 
     Why a floor while pending: the breaking changes reach ``main``
     through a merge whose strategy the release machinery does not
-    control — a squash-merge collapses every ``fix!:`` marker on the
+    control: a squash-merge collapses every ``fix!:`` marker on the
     stack into one hand-written message, and a marker-less history
     computes a PATCH bump, shipping user-visible breaks as a patch
     release. ``release-as`` fixes the floor regardless of how history
@@ -519,7 +519,7 @@ def test_release_as_pin_is_a_pending_release_floor_not_a_stale_leftover() -> Non
 
     Why it must not linger: ``release-as`` forces the version on EVERY
     subsequent run until removed. Once the pinned version's tag exists,
-    the pin is spent — leaving it in place re-pins the next release at
+    the pin is spent; leaving it in place re-pins the next release at
     an already-shipped version. The lifecycle this asserts: absent
     (normal marker-driven operation) or pending (above the manifest's
     last released minor) passes; equal to the manifest (the release PR
@@ -539,7 +539,7 @@ def test_release_as_pin_is_a_pending_release_floor_not_a_stale_leftover() -> Non
     pinned_text = str(package["release-as"])
     pinned = tuple(int(part) for part in pinned_text.split("."))
     pinned_tag_resolved = (
-        subprocess.run(  # noqa: S603  # Why: fixed literal argv shape — the tag name is this file's own config derivation, git from PATH, no shell.
+        subprocess.run(  # noqa: S603  # Why: fixed literal argv shape: the tag name is this file's own config derivation, git from PATH, no shell.
             ["git", "rev-parse", "--verify", "--quiet", f"v{pinned_text}"],  # noqa: S607  # Why: git resolved from PATH, as elsewhere in this suite; fixed literal argv, no shell.
             capture_output=True,
             text=True,
@@ -551,7 +551,7 @@ def test_release_as_pin_is_a_pending_release_floor_not_a_stale_leftover() -> Non
         pytest.fail(
             f"release-please-config.json still pins release-as {pinned_text} "
             f"but v{pinned_text} has shipped (the manifest is at "
-            f"{manifest['.']}) — the pin is spent and must be removed: "
+            f"{manifest['.']}); the pin is spent and must be removed: "
             "release-as forces the version on every subsequent run, so a "
             "lingering pin re-pins the next release at an already-shipped "
             "version."
@@ -559,7 +559,7 @@ def test_release_as_pin_is_a_pending_release_floor_not_a_stale_leftover() -> Non
     assert pinned[:2] > released[:2] or pinned == released, (
         f"the hand-pinned release version {pinned_text} is neither a "
         f"minor-or-greater bump above the last released version "
-        f"{manifest['.']} nor the release currently being cut — a "
+        f"{manifest['.']} nor the release currently being cut: a "
         "patch-level floor ships the stack's breaking changes as a patch "
         "release, and a pin behind the manifest re-pins an old version."
     )

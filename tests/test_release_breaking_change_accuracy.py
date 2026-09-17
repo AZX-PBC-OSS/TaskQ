@@ -8,7 +8,7 @@ truthfulness of the notes is therefore a property of that range.
 
 Two range shapes matter, and this file asserts over each where it can:
 
-* **The feeding range** — ``v<last-release>..HEAD`` (per
+* **The feeding range**: ``v<last-release>..HEAD`` (per
   ``.release-please-manifest.json``; the walk's depth over this range is
   pinned by ``test_breaking_change_markers.py``). Existence pins over
   this range ask: will the regenerated notes carry the corrected
@@ -21,7 +21,7 @@ Two range shapes matter, and this file asserts over each where it can:
   release-please reads for an already-merged commit: a
   ``BEGIN_COMMIT_OVERRIDE`` section in the associated pull request's
   body.
-* **The branch's own commits** — ``<fork-point>..HEAD``. Quality pins
+* **The branch's own commits**: ``<fork-point>..HEAD``. Quality pins
   over this range ask: is every breaking note THIS branch adds framed
   correctly? Everything here is mutable before merge, so every entry is
   held to the full contract.
@@ -133,7 +133,7 @@ def _fork_point() -> str | None:
 
 
 def _feeding_range() -> str | None:
-    """``v<last-release>..HEAD`` — the range release-please feeds the
+    """``v<last-release>..HEAD``: the range release-please feeds the
     pending release's notes from, or None when the tag is not resolvable
     in this checkout."""
     tag = f"v{_LAST_RELEASED}"
