@@ -28,7 +28,7 @@ from taskq.settings import WorkerSettings
 from taskq.testing.assertions import wait_for_condition
 from taskq.testing.health import unique_health_sock_path
 from taskq.worker.deps import WorkerDeps
-from taskq.worker.health import HealthServer
+from taskq.worker.health import HealthServer, HealthTcpBindError
 from taskq.worker.run import _main
 
 
@@ -352,22 +352,20 @@ async def test_probe_on_a_shared_socket_path_still_answers_for_the_first_worker(
 
 
 @pytest.mark.integration
-async def test_second_worker_on_a_colliding_health_port_still_boots_and_registers(
+async def test_second_worker_on_a_colliding_health_port_refuses_to_start(
     pg_dsn: str,
 ) -> None:
-    """TCP sibling of the unix-socket collision pin: the optional TCP
-    listener binds through the same unguarded boot call site, so a port
-    collision must degrade the same way — WARN and keep booting, never
-    abort the worker.
+    """TCP sibling of the unix-socket collision pin, with the OPPOSITE
+    contract: the TCP probe port is the one the deployment manifest routed
+    to this replica, so a worker that boots without it answers nothing
+    there — or worse, under a tcpSocket probe on a port a live peer holds,
+    the peer's listener answers for it and masks this worker's death. The
+    newcomer must refuse to start (HealthTcpBindError) while the worker
+    already bound keeps serving untouched.
 
     Both workers here are configured with the SAME ``health_port`` (and
     deliberately distinct unix socket paths, so only the TCP listener
-    collides). The first worker binds the port; the second's
-    ``asyncio.start_server`` raises ``OSError(EADDRINUSE)`` out of
-    ``HealthServer.start`` — the exact shape that, unguarded, aborts boot.
-    The second worker must still register in the fleet and keep running:
-    the health listener is an accessory, and a worker that can do work
-    must never fail to start over it.
+    collides).
     """
     schema = f"thsi_{new_base62()}".lower()
     conn = await asyncpg.connect(pg_dsn)
@@ -431,50 +429,30 @@ async def test_second_worker_on_a_colliding_health_port_still_boots_and_register
             timeout=30.0,
         )
 
-        worker_b = asyncio.create_task(_main(_worker_settings()))
+        with pytest.raises(HealthTcpBindError) as excinfo:
+            await asyncio.wait_for(_main(_worker_settings()), timeout=30.0)
+        assert excinfo.value.port == shared_port
 
-        async def _second_worker_registered() -> bool:
-            probe = await asyncpg.connect(pg_dsn)
-            try:
-                count: int = await probe.fetchval(
-                    f'SELECT count(*) FROM "{schema}".workers'  # noqa: S608  # Why: schema is a test-minted identifier, never user input.
-                )
-            finally:
-                await probe.close()
-            return count >= 2
-
+        probe = await asyncpg.connect(pg_dsn)
         try:
-            await wait_for_condition(
-                _second_worker_registered,
-                description="the second worker registering itself in the fleet "
-                "despite its health port colliding with the first worker's",
-                timeout=15.0,
+            count: int = await probe.fetchval(
+                f'SELECT count(*) FROM "{schema}".workers'  # noqa: S608  # Why: schema is a test-minted identifier, never user input.
             )
-        except TimeoutError:
-            # It never registered. Find out why: did its boot task die?
-            assert worker_b.done(), (
-                "the second worker neither registered in the fleet nor is its "
-                "boot task still running — it is stuck, not merely slow"
-            )
-            exc = worker_b.exception()
-            assert exc is None, (
-                "the second worker's boot crashed instead of continuing without a "
-                f"working health listener, over a health-port collision alone: {exc!r}. "
-                "A worker that can do work must never fail to start; a health-port "
-                "collision is not a structural problem and must not abort boot."
-            )
-            raise
-
-        assert not worker_b.done(), (
-            "the second worker's boot task ended instead of running as a live worker"
+        finally:
+            await probe.close()
+        assert count >= 1, (
+            "the first worker must be registered in the fleet; the refused "
+            "worker's own row (it registered earlier in boot, then died on "
+            "the health listener) is the stale-worker sweep's to prune"
         )
+
         assert not worker_a.done(), (
-            "the first worker must still be running — a port collision on the "
-            "newcomer's side must not disturb the worker already bound there"
+            "the first worker must still be running — the newcomer's refusal "
+            "must not disturb the worker already bound there"
         )
         assert await _tcp_answering(), (
             "the first worker's TCP health listener stopped answering after the "
-            "second worker booted on the same port"
+            "second worker's refused boot"
         )
     finally:
         for task in (worker_b, worker_a):
