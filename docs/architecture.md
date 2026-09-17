@@ -1132,7 +1132,7 @@ begins, so health endpoints and consumers can observe the current phase:
 | `NONE` | 0 | Running normally |
 | `DRAINING` | 1 | Stop accepting new dispatch; re-pend locked-but-unstarted jobs (attempt refunded) |
 | `CANCELLING` | 2 | Cooperative cancel of remaining in-flight jobs (set `cancel_event`, stamp the shutdown origin) |
-| `FORCING` | 3 | Force-cancel grace: `task.cancel()` + `write_cancel_escalation(phase=2)` (lands only on rows carrying an operator's cancel request) |
+| `FORCING` | 3 | Force-cancel grace: `task.cancel()` (delivered even when the escalation PG write fails — the local cancel is never skipped) + `write_cancel_escalation(phase=2)` (lands only on rows carrying an operator's cancel request) |
 | `RELEASING` | 4 | Release never-unwound jobs back to the fleet via `mark_interrupted` (attempt refunded, held behind the remaining termination budget **plus the watchdog's exit tail** past the deadline — the dump-interval check lag and the bounded pre-`os._exit` flush); operator-cancelled jobs still reach `abandoned` |
 
 Phase ordering invariant: `NONE → DRAINING → CANCELLING → FORCING → RELEASING`.
