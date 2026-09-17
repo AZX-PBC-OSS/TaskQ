@@ -70,6 +70,7 @@ an operator cancel outlasting its graces and never a consumer outcome.
 __all__ = [
     "INSTRUMENTATION_NAME",
     "ConsumedOutcome",
+    "StrandedReason",
     "get_meter",
     "get_tracer",
     "otel_enabled",
@@ -108,6 +109,7 @@ __all__ = [
     "update_heartbeat_consecutive_failures",
     "update_keyed_reclaim_pending",
     "update_queue_depth_cache",
+    "update_queue_live_workers_cache",
     "update_reservation_slots_cache",
 ]
 
@@ -888,29 +890,36 @@ def update_queue_depth_cache(data: dict[str, int]) -> None:
     _queue_depth_cache = dict(data)
 
 
-def _observe_queue_depth(options: CallbackOptions) -> Iterable[Observation]:
-    # A gauge is observable, not additive, so the counter sites'
-    # per-item label mapping cannot be reused here: every overflow queue
-    # yielding its own `_other_` observation would report one queue's
-    # depth instead of the total. The partition is therefore computed
-    # before yielding: the deepest `_MAX_QUEUE_LABEL_VALUES` queues keep
-    # their own series (ties broken by queue name, for determinism), and
-    # everything shallower collapses onto ONE `_other_` observation
-    # carrying the summed overflow depth, so the reported total always
-    # equals the true total. Depth ranking -- not name order and not
-    # first-seen admission -- keeps the deepest queues, the ones an
-    # operator pages on, individually visible past the cap. Nothing
-    # shared is mutated: `_queue_label_values` stays owned by the
-    # job-side instruments.
-    ranked = sorted(_queue_depth_cache.items(), key=lambda item: (-item[1], item[0]))
+def _observe_capped_per_queue(cache: Mapping[str, int]) -> Iterable[Observation]:
+    """Yield one observation per queue from *cache*, capped like the depth gauge.
+
+    A gauge is observable, not additive, so the counter sites' per-item
+    label mapping cannot be reused here: every overflow queue yielding its
+    own `_other_` observation would report one queue's value instead of
+    the total. The partition is therefore computed before yielding: the
+    `_MAX_QUEUE_LABEL_VALUES` largest queues keep their own series (ties
+    broken by queue name, for determinism), and everything smaller
+    collapses onto ONE `_other_` observation carrying the summed overflow,
+    so the reported total always equals the true total. Value ranking --
+    not name order and not first-seen admission -- keeps the largest
+    queues, the ones an operator pages on, individually visible past the
+    cap. Nothing shared is mutated: `_queue_label_values` stays owned by
+    the job-side instruments. Shared by the queue-depth and
+    live-workers gauges, which the same sampler tick feeds.
+    """
+    ranked = sorted(cache.items(), key=lambda item: (-item[1], item[0]))
     admitted = ranked[:_MAX_QUEUE_LABEL_VALUES]
     overflow = ranked[_MAX_QUEUE_LABEL_VALUES:]
-    for queue, depth in admitted:
-        yield Observation(depth, {"queue": queue})
+    for queue, value in admitted:
+        yield Observation(value, {"queue": queue})
     if overflow:
         yield Observation(
-            sum(depth for _queue, depth in overflow), {"queue": _QUEUE_LABEL_OVERFLOW}
+            sum(value for _queue, value in overflow), {"queue": _QUEUE_LABEL_OVERFLOW}
         )
+
+
+def _observe_queue_depth(options: CallbackOptions) -> Iterable[Observation]:
+    return _observe_capped_per_queue(_queue_depth_cache)
 
 
 _queue_depth_gauge = get_meter().create_observable_gauge(
@@ -926,24 +935,68 @@ _queue_depth_gauge = get_meter().create_observable_gauge(
 )
 
 
-_stranded_jobs_cache: dict[str, int] = {}
+_queue_live_workers_cache: dict[str, int] = {}
 
 
-def update_stranded_jobs_cache(data: dict[str, int]) -> None:
+def update_queue_live_workers_cache(data: dict[str, int]) -> None:
+    """Replace the per-queue live-worker cache with fresh data from the
+    leader's query — sampled in the same tick as the queue depth, so the
+    two can be joined on ``queue`` without describing different moments.
+
+    A worker is live when its ``last_seen_at`` is within the liveness
+    window (``admin_worker_liveness_seconds``); a dead-but-unswept worker
+    row does not count. A queue with pending work and no live worker is
+    the condition ``TaskQQueueUnserved`` fires on, and it is invisible to
+    every other gauge: depth alone cannot say whether anyone is consuming.
+    """
+    global _queue_live_workers_cache
+    _queue_live_workers_cache = dict(data)
+
+
+def _observe_queue_live_workers(options: CallbackOptions) -> Iterable[Observation]:
+    return _observe_capped_per_queue(_queue_live_workers_cache)
+
+
+_queue_live_workers_gauge = get_meter().create_observable_gauge(
+    name="taskq.queue.live_workers",
+    description=(
+        "Workers whose last_seen_at is within the liveness window, per queue "
+        "they subscribe to, sampled by the leader with taskq.queue.depth "
+        "(same cap: the largest _MAX_QUEUE_LABEL_VALUES queues keep their own "
+        f"series; the rest collapse onto one '{_QUEUE_LABEL_OVERFLOW}' series). "
+        "A queue with depth > 0 and no live worker is unserved."
+    ),
+    unit="1",
+    callbacks=[_observe_queue_live_workers],
+)
+
+
+type StrandedReason = Literal["no_actor_config", "unserved_queue"]
+"""Why a pending/scheduled row can never dispatch — the closed ``reason``
+label set of ``taskq.jobs.stranded``."""
+
+_stranded_jobs_cache: dict[tuple[str, StrandedReason], int] = {}
+
+
+def update_stranded_jobs_cache(data: Mapping[tuple[str, StrandedReason], int]) -> None:
     """Replace the stranded-jobs cache with fresh data from the leader's query.
 
     Stranded jobs are pending/scheduled rows that can never dispatch: the
     actor has no `actor_config` row (the dispatch CTE derives its
     candidates from `per_actor_capacity`, which is `FROM actor_config`),
-    or the row sits on a queue no registered worker serves (dispatch
-    probes only its own subscription's queues). Both shapes accumulate
-    invisibly to dispatch and the deadline sweep; the detector's
-    per-shape warning events name which condition held.
+    or the row sits on a queue no LIVE registered worker serves (dispatch
+    probes only its own subscription's queues, and a worker whose
+    last_seen_at has gone stale is not dispatching). Both shapes
+    accumulate invisibly to dispatch and the deadline sweep. Keyed by
+    ``(actor, reason)`` so the gauge says which condition held — the two
+    have different remediations (register the actor vs. subscribe a
+    worker to the queue), and a per-actor total made an operator who
+    found the actor_config row present conclude the detector lied.
 
     This gauge exists because the detector previously emitted a log line and
     nothing else, exactly once per actor per process lifetime -- so the
     condition was invisible in metrics and its only trace was a single WARN at
-    onset, which is the moment nobody is looking. An empty dict clears the
+    onset, which is the moment nobody is looking. An empty mapping clears the
     gauge, so recovery is visible too.
     """
     global _stranded_jobs_cache
@@ -951,15 +1004,17 @@ def update_stranded_jobs_cache(data: dict[str, int]) -> None:
 
 
 def _observe_stranded_jobs(options: CallbackOptions) -> Iterable[Observation]:
-    for actor, count in _stranded_jobs_cache.items():
-        yield Observation(count, {"actor": actor})
+    for (actor, reason), count in _stranded_jobs_cache.items():
+        yield Observation(count, {"actor": actor, "reason": reason})
 
 
 _stranded_jobs_gauge = get_meter().create_observable_gauge(
     name="taskq.jobs.stranded",
     description=(
-        "Pending/scheduled jobs whose actor has no actor_config row and which "
-        "therefore can never be dispatched, sampled by the leader."
+        "Pending/scheduled jobs that can never be dispatched, sampled by the "
+        "leader. Attributes: actor, reason ('no_actor_config' — the actor "
+        "has no actor_config row; 'unserved_queue' — the queue dispatch "
+        "routes the row on has no live worker subscribed)."
     ),
     unit="1",
     callbacks=[_observe_stranded_jobs],

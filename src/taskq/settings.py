@@ -324,9 +324,11 @@ class TaskQSettings(DotEnvConfig):
         default=30,
         ge=1,
         description="TASKQ_ADMIN_WORKER_LIVENESS_SECONDS. How recently a worker "
-        "must have written last_seen_at to count as alive in the admin UI: it "
-        "drives the 'queue has pending jobs but no alive worker' banner and the "
-        "leader's watchdog_healthy verdict. Must comfortably exceed "
+        "must have written last_seen_at to count as alive: it drives the admin "
+        "UI's 'queue has pending jobs but no alive worker' banner and the "
+        "leader's watchdog_healthy verdict, and on the worker side the leader's "
+        "taskq.queue.live_workers gauge and the stranded-jobs detector's "
+        "unserved-queue arm. Must comfortably exceed "
         "TASKQ_HEARTBEAT_INTERVAL (default 10 s), so the default 30 s is three "
         "beats; a deployment that lengthens the heartbeat, or whose PG is "
         "cross-region, has to raise this or every healthy worker reads as dead. "

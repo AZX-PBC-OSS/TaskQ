@@ -28,6 +28,7 @@ from taskq.constants import (
     schema_lock_name,
 )
 from taskq.obs import (
+    StrandedReason,
     get_logger,
     record_lock_contention,
     record_sweep_success,
@@ -37,6 +38,7 @@ from taskq.obs import (
     update_jobs_by_status_cache,
     update_oldest_due_age_cache,
     update_queue_depth_cache,
+    update_queue_live_workers_cache,
     update_reservation_slots_cache,
     update_running_lease_expired_cache,
     update_scheduled_count_cache,
@@ -1320,7 +1322,28 @@ async def _archive_expiry_loop(ctx: SweepContext, shutdown: asyncio.Event) -> No
             )
 
 
+#: Live workers per subscribed queue. statement_timestamp() (STABLE) for
+#: the liveness bound, the same two-clock rule as every sibling sampler: a
+#: volatile bound cannot be a btree index condition on workers_last_seen_idx.
+#: The window is the admin UI's own liveness setting
+#: (``admin_worker_liveness_seconds``), so the gauge, the admin banner and
+#: the stranded-jobs detector all agree on which worker counts as alive.
+_QUERY_QUEUE_LIVE_WORKERS_SQL_TEMPLATE = (
+    "SELECT q AS queue, count(*) AS count "
+    'FROM "{schema}".workers w, unnest(w.queues) AS q '
+    "WHERE w.last_seen_at > statement_timestamp() - make_interval(secs => $1) "
+    "GROUP BY q"
+)
+
+
 async def _queue_depth_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
+    """Sample per-queue depth and per-queue live workers every
+    ``queue_depth_interval`` on the leader.
+
+    Both reads run on one connection in one tick so the two gauges can be
+    joined on ``queue`` (``TaskQQueueUnserved``: depth with no live
+    worker) without describing different moments.
+    """
     schema = ctx.deps.settings.schema_name
     if not _IDENT_RE.match(schema):
         # Why error, not warning: this returns, permanently muting the
@@ -1335,6 +1358,8 @@ async def _queue_depth_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
         )
         return
     sql = _QUERY_QUEUE_DEPTH_SQL_TEMPLATE.format(schema=schema)
+    live_workers_sql = _QUERY_QUEUE_LIVE_WORKERS_SQL_TEMPLATE.format(schema=schema)
+    liveness_secs = ctx.deps.settings.admin_worker_liveness_seconds
     while not shutdown.is_set():
         ctx.deps.liveness.tick("leader.queue_depth", period=ctx.deps.settings.queue_depth_interval)
         if ctx.deps.leading():
@@ -1343,8 +1368,12 @@ async def _queue_depth_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
                     timeout=ctx.deps.settings.dispatcher_command_timeout
                 ) as conn:
                     rows = await conn.fetch(sql)
+                    worker_rows = await conn.fetch(live_workers_sql, liveness_secs)
                 cache: dict[str, int] = {row["queue"]: row["count"] for row in rows}
                 update_queue_depth_cache(cache)
+                update_queue_live_workers_cache(
+                    {str(row["queue"]): int(row["count"]) for row in worker_rows}
+                )
             except Exception as exc:
                 _sampler_read_failed(ctx, "queue_depth", "queue-depth-sampling-failed", exc)
         await _sleep_interruptible(shutdown, ctx.deps.settings.queue_depth_interval)
@@ -1718,7 +1747,9 @@ async def _stranded_jobs_loop(ctx: SweepContext, shutdown: asyncio.Event) -> Non
     # the unserved arm is evaluated only when the config row exists. A
     # config-missing row counts once, in the config category — naming a
     # queue for it would point the operator at a label dispatch never
-    # reads.
+    # reads. "Serves" means a LIVE worker subscribes to the queue: a
+    # dead-but-unswept worker row would otherwise hide an unserved queue
+    # for the whole stale-worker sweep window.
     _stranded_sql = """\
     SELECT s.actor,
            count(*) AS cnt,
@@ -1736,6 +1767,13 @@ async def _stranded_jobs_loop(ctx: SweepContext, shutdown: asyncio.Event) -> Non
                  AND NOT EXISTS (
                    SELECT 1 FROM "{schema}".workers w
                    WHERE r.routing_queue = ANY(w.queues)
+                     -- A worker row whose heartbeat has gone stale is not
+                     -- dispatching; until the stale-worker sweep removes
+                     -- it, it must not count as serving the queue.
+                     -- statement_timestamp() (STABLE), the two-clock rule
+                     -- every sampler follows; the window is the admin UI's
+                     -- own liveness setting.
+                     AND w.last_seen_at > statement_timestamp() - make_interval(secs => $1)
                  ) AS unserved_queue
         FROM (
             SELECT j.actor,
@@ -1777,6 +1815,7 @@ async def _stranded_jobs_loop(ctx: SweepContext, shutdown: asyncio.Event) -> Non
         )
         return
     sql = _stranded_sql.format(schema=schema)
+    liveness_secs = ctx.deps.settings.admin_worker_liveness_seconds
 
     while not shutdown.is_set():
         ctx.deps.liveness.tick(
@@ -1789,7 +1828,7 @@ async def _stranded_jobs_loop(ctx: SweepContext, shutdown: asyncio.Event) -> Non
             async with ctx.deps.worker_pool.acquire(
                 timeout=ctx.deps.settings.dispatcher_command_timeout
             ) as conn:
-                rows = await conn.fetch(sql)
+                rows = await conn.fetch(sql, liveness_secs)
         except Exception as exc:
             # error_class/error_message (not the shared helper's error=repr(exc))
             # and the stranded-jobs-query-failed name are a documented log
@@ -1809,19 +1848,24 @@ async def _stranded_jobs_loop(ctx: SweepContext, shutdown: asyncio.Event) -> Non
         # actor -> (no-actor-config rows, unserved-queue rows, unserved
         # queue names) — the per-shape facts the warning events report.
         shapes: dict[str, tuple[int, int, list[str]]] = {}
+        # (actor, reason) -> rows: the gauge's own shape, so a series says
+        # which condition held.
+        by_reason: dict[tuple[str, StrandedReason], int] = {}
         for row in rows:
             actor = row["actor"]
             current[actor] = row["cnt"]
-            shapes[actor] = (
-                row["no_actor_config_cnt"],
-                row["unserved_queue_cnt"],
-                list(row["unserved_queues"]),
-            )
+            no_config_cnt = int(row["no_actor_config_cnt"])
+            unserved_cnt = int(row["unserved_queue_cnt"])
+            shapes[actor] = (no_config_cnt, unserved_cnt, list(row["unserved_queues"]))
+            if no_config_cnt:
+                by_reason[(actor, "no_actor_config")] = no_config_cnt
+            if unserved_cnt:
+                by_reason[(actor, "unserved_queue")] = unserved_cnt
 
         # Always publish the gauge, including the empty case: an operator needs
         # to see the condition persist, grow, and clear. A log line at onset
         # cannot express any of that.
-        update_stranded_jobs_cache(current)
+        update_stranded_jobs_cache(by_reason)
 
         now = time.monotonic()
         for actor, cnt in current.items():

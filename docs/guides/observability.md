@@ -438,7 +438,8 @@ you *which* jobs absorbed them.
 
 | Metric name | Unit | Attributes | Description |
 |---|---|---|---|
-| `taskq.queue.depth` | `1` | `queue` | Pending and scheduled jobs per queue. Sampled by the leader every 15 s. |
+| `taskq.queue.depth` | `1` | `queue` | Pending and scheduled jobs per queue. Sampled by the leader every 15 s; the 100 deepest queues keep their series, the rest collapse onto `_other_`. |
+| `taskq.queue.live_workers` | `1` | `queue` | Workers whose `last_seen_at` is inside the liveness window (`TASKQ_ADMIN_WORKER_LIVENESS_SECONDS`), per queue they subscribe to — sampled in the same leader tick as `taskq.queue.depth`, same cap, so the two join on `queue`. A queue with depth and no live worker is unserved (`TaskQQueueUnserved`); a dead-but-unswept worker row does not count. |
 | `taskq.reservation.slots_used` | `1` | `bucket` | In-use reservation slots per rate-limit bucket. Sampled by the leader every 15 s. |
 | `taskq.maintenance_leader.is_leader` | `1` | `worker_id` | `1` on the elected leader pod, `0` on all others. |
 | `taskq.cron.disabled_schedules` | `1` | — | Count of currently disabled cron schedules. |
@@ -454,7 +455,7 @@ you *which* jobs absorbed them.
 | `taskq.jobs.actor_backlog` | `1` | `actor`, `queue` | Pending jobs per (actor, queue). No worker refuses to start because an actor's queue has no consumer — in a multi-worker fleet no supervisor can know what consumes a queue — so a misrouted actor piles up pending rows while every probe stays green. A queue-summed depth cannot tell that apart from a busy shared queue; this actor's own series rises while its queue-mates stay flat. Exact below the sampler's 1000-row per-pair cap and reading 1000 — a lower bound, never an under-count — at or above it (a series pinned at 1000 means "at least this deep"); the companion `oldest_pending_age_seconds` carries the part that grows without bound. |
 | `taskq.jobs.oldest_pending_age_seconds` | `s` | `actor`, `queue` | Seconds since the oldest PENDING job became eligible, per (actor, queue). Depth alone is ambiguous — a deep queue that drains is healthy throughput — but an actor nobody consumes has a pending job whose age grows with wall clock. Distinct from `oldest_due_age_seconds`, which measures promotion (scheduled → pending) and reads 0 for pending work no consumer takes. Sampled from the same grouped snapshot as `actor_backlog`, so depth and age can never describe two different moments. |
 | `taskq.jobs.running_lease_expired` | `1` | — | Running jobs whose lock lease is past expiry (the zombie-running shape). Healthy reads 0 — the reclaim sweep drains expired leases within a tick or two — so a sustained non-zero reading means reclaim is not draining. Sampled by every worker with `taskq.jobs.by_status`; the per-job truth (`locked_by_worker`, `lock_expires_at`) is on the admin `/jobs` lease column, not on a label. |
-| `taskq.jobs.stranded` | `1` | `actor` | Pending/scheduled jobs whose actor has no `actor_config` row and which can therefore never be dispatched, sampled by the leader. An empty reading means recovery. |
+| `taskq.jobs.stranded` | `1` | `actor`, `reason` | Pending/scheduled jobs that can never be dispatched, sampled by the leader. `reason` is `no_actor_config` (the actor has no `actor_config` row) or `unserved_queue` (the queue dispatch routes the actor on has no **live** worker subscribed — a worker whose heartbeat has gone stale does not serve a queue, even before the stale-worker sweep removes its row). An empty reading means recovery; `TaskQStrandedJobs` reads this series. |
 
 ### Sweep samples: rows and duration are different populations
 
@@ -543,7 +544,7 @@ span does not inflate metric counts relative to a partially-sampled trace.
 The repo ships alert rules for the metrics above — import them instead of
 writing from scratch:
 
-- [`src/taskq/contrib/prometheus/rules.yaml`](https://github.com/AZX-PBC-OSS/TaskQ/blob/main/src/taskq/contrib/prometheus/rules.yaml) — 18 rules (queue depth, heartbeat misses, terminal-failed share, retried-failure share, abandoned jobs, lock TTL, leader split-brain, dispatch latency, progress failures, disabled cron, scheduled-backlog growth, promotion stall, sweep timeouts, sweep degraded tier, maintenance-lock contention, rate-limit dependency outage, cron lock contention, expired-lease zombies)
+- [`src/taskq/contrib/prometheus/rules.yaml`](https://github.com/AZX-PBC-OSS/TaskQ/blob/main/src/taskq/contrib/prometheus/rules.yaml) — 20 rules (queue depth, heartbeat misses, terminal-failed share, retried-failure share, abandoned jobs, lock TTL, leader split-brain, dispatch latency, progress failures, disabled cron, scheduled-backlog growth, promotion stall, sweep timeouts, sweep degraded tier, maintenance-lock contention, rate-limit dependency outage, cron lock contention, unserved queue, stranded jobs, expired-lease zombies)
 - `src/taskq/contrib/kubernetes/prometheus_rule.yaml` — the same rules as a PrometheusRule CRD for Kubernetes
 
 The rules fire on the series above, so they only work where those series are

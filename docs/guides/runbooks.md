@@ -378,6 +378,59 @@ The leader-count operand is what makes this alertable at all. A healthy multi-wo
 
 ---
 
+## TaskQQueueUnserved
+
+**What fired.** `taskq_queue_depth{queue!="_other_"} > 0 unless on(queue) taskq_queue_live_workers > 0` for 2 minutes: a queue holds pending or scheduled jobs and **no live worker subscribes to it** — no worker row whose `last_seen_at` is inside `TASKQ_ADMIN_WORKER_LIVENESS_SECONDS` (default 30 s, three heartbeats) lists the queue in its `queues`. Nothing will consume the work. Both gauges come from the same leader sampler tick, so the join never compares two moments; a worker row that stopped heartbeating does not count even before the stale-worker sweep removes it.
+
+**How to confirm.**
+
+- Metric: `taskq_queue_depth{queue="<q>"}` beside `taskq_queue_live_workers{queue="<q>"}` (absent, or 0).
+- Database — who last served the queue and when:
+
+  ```sql
+  SELECT id, hostname, pid, worker_label, last_seen_at,
+         last_seen_at > clock_timestamp() - interval '30 seconds' AS live
+  FROM taskq.workers
+  WHERE '<q>' = ANY(queues)
+  ORDER BY last_seen_at DESC;
+  ```
+
+  No rows: nothing ever subscribed (a producer enqueues onto a queue name nobody runs, or the queue was dropped from every `TASKQ_QUEUES` at the last deploy). Rows, none live: the replicas serving it are down or partitioned from Postgres — check their `/ready` and `TaskQHeartbeatMisses`.
+- The admin UI's queues page shows the same condition as the "pending jobs but no alive worker" banner.
+
+**How to remediate.**
+
+1. Start (or scale up) a worker whose `TASKQ_QUEUES` includes the queue, or add the queue to an existing worker's subscription. The backlog drains on its own once a live worker subscribes; nothing was lost.
+2. If the queue name is a producer mistake (a typo, a stale config), re-route the jobs: `taskq actor-config move-queue` for a whole actor, or re-enqueue. The stranded-jobs detector names the actors involved (`taskq_jobs_stranded{reason="unserved_queue"}`).
+3. Confirm recovery: `taskq_queue_live_workers{queue="<q>"} > 0` and the depth falling.
+
+---
+
+## TaskQStrandedJobs
+
+**What fired.** `taskq_jobs_stranded > 0` for 5 minutes: pending/scheduled jobs that can never be dispatched, with the reason on the label. `reason="no_actor_config"`: the actor has no `actor_config` row (deregistered with `taskq actor-config deregister`, or never registered by any worker), so the dispatch CTE — which derives its candidates from `actor_config` — never sees the rows. `reason="unserved_queue"`: the queue dispatch routes the actor on (the actor's current assignment for a re-pended row, the row's own queue otherwise) has no live worker subscribed. Neither dispatch nor the deadline sweep will ever touch these rows.
+
+**How to confirm.**
+
+- Metric: `taskq_jobs_stranded` by `actor, reason` — sampled by the leader every `TASKQ_STRANDED_JOBS_INTERVAL`; the `stranded-jobs-no-actor-config` / `stranded-jobs-unserved-queue` log events carry the same counts, and the second names the queues.
+- Database:
+
+  ```sql
+  -- no_actor_config
+  SELECT j.actor, count(*) FROM taskq.jobs j
+  WHERE j.status IN ('pending', 'scheduled')
+    AND NOT EXISTS (SELECT 1 FROM taskq.actor_config ac WHERE ac.actor = j.actor)
+  GROUP BY j.actor;
+  ```
+
+**How to remediate.**
+
+1. `no_actor_config`: run a worker that registers the actor (registration writes the row at boot), or, if the actor is gone for good, cancel the rows (`JobsClient.cancel_where(JobFilter(actor=...))`, or the admin UI's cancel action) so they stop counting.
+2. `unserved_queue`: follow [TaskQQueueUnserved](#taskqqueueunserved) — subscribe a live worker to the named queue, or move the actor's assignment with `taskq actor-config move-queue`.
+3. Confirm recovery: the series clears on the next detector tick (an empty reading is published, not a frozen last value) and the `stranded-jobs-cleared` event logs.
+
+---
+
 ## Related documentation
 
 - [Observability](observability.md) — the metrics these alerts evaluate,

@@ -246,6 +246,7 @@ def reset_otel_gauge_caches() -> None:
     """
     otel_mod._queue_depth_cache = {}  # pyright: ignore[reportPrivateUsage]  # Why: test isolation seam — the suite's established pattern for module-global caches with no other reset surface.
     otel_mod._stranded_jobs_cache = {}  # pyright: ignore[reportPrivateUsage]  # Why: same seam as above.
+    otel_mod._queue_live_workers_cache = {}  # pyright: ignore[reportPrivateUsage]  # Why: same seam as above.
     otel_mod._reservation_slots_cache = {}  # pyright: ignore[reportPrivateUsage]  # Why: same seam as above.
     otel_mod._keyed_reclaim_pending = 0  # pyright: ignore[reportPrivateUsage]  # Why: same seam as above.
     otel_mod._sweep_success_cache = {}  # pyright: ignore[reportPrivateUsage]  # Why: same seam as above.

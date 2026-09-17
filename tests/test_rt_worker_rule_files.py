@@ -68,9 +68,18 @@ _JOB_OUTCOME_SEVERITIES = {
     "TaskQAbandonedJobs": "critical",
 }
 
+#: The unserved-queue family: a queue with work and no live worker
+#: (critical — nothing will consume it), and the per-reason stranded gauge.
+_UNSERVED_ALERTS = ("TaskQQueueUnserved", "TaskQStrandedJobs")
+
+_UNSERVED_SEVERITIES = {
+    "TaskQQueueUnserved": "critical",
+    "TaskQStrandedJobs": "warning",
+}
+
 #: Every runbook-carrying alert, for the checks that apply to both
 #: generations alike.
-_ALL_RUNBOOKED_ALERTS = _NEW_ALERTS + _OUTAGE_ALERTS + _JOB_OUTCOME_ALERTS
+_ALL_RUNBOOKED_ALERTS = _NEW_ALERTS + _OUTAGE_ALERTS + _JOB_OUTCOME_ALERTS + _UNSERVED_ALERTS
 
 
 def _rules_from(path: Path) -> list[dict[str, Any]]:
@@ -288,6 +297,31 @@ def test_job_outcome_alerts_read_the_series_that_mean_what_they_say() -> None:
         assert 'messaging_client_consumed_messages_total{outcome="failed"}' in failed
 
 
+def test_unserved_queue_alerts_join_depth_to_live_workers_on_queue() -> None:
+    """A queue with work and no live worker is invisible to every other
+    alert: depth alone cannot say whether anyone consumes. The alert must
+    join the two same-tick gauges on ``queue`` (an explicit modifier, so
+    the join cannot silently empty) and skip the ``_other_`` overflow,
+    whose member set differs between the gauges. The stranded alert reads
+    the per-reason gauge. Both files, at their severities."""
+    for rules_path in (_RULES_YAML, _K8S_RULES_YAML):
+        by_name = {r["alert"]: r for r in _rules_from(rules_path)}
+        for alert, severity in _UNSERVED_SEVERITIES.items():
+            assert alert in by_name, f"{rules_path.name} is missing {alert!r}"
+            assert by_name[alert]["labels"]["severity"] == severity
+        expr = " ".join(str(by_name["TaskQQueueUnserved"]["expr"]).split())
+        assert 'taskq_queue_depth{queue!="_other_"} > 0 unless on(queue)' in expr
+        assert "taskq_queue_live_workers > 0" in expr
+        text = " ".join(str(v) for v in by_name["TaskQQueueUnserved"]["annotations"].values())
+        assert "$labels.queue" in text
+        stranded = " ".join(str(by_name["TaskQStrandedJobs"]["expr"]).split())
+        assert stranded == "taskq_jobs_stranded > 0"
+        stranded_text = " ".join(
+            str(v) for v in by_name["TaskQStrandedJobs"]["annotations"].values()
+        )
+        assert "$labels.reason" in stranded_text and "$labels.actor" in stranded_text
+
+
 def test_dimensionless_series_annotations_carry_no_label_references() -> None:
     """Alerts on series the bridge emits with NO dimensions must not
     reference ``$labels.<dim>`` in their annotations: the rendered alert
@@ -345,6 +379,9 @@ _SERIES_LABELS: dict[str, frozenset[str]] = {
     # while that pod holds the lease — pinned label-free so a join
     # against it can never silently go empty.
     "taskq_maintenance_leader_lease_expires_in_seconds": frozenset(),
+    "taskq_queue_depth": frozenset({"queue"}),
+    "taskq_queue_live_workers": frozenset({"queue"}),
+    "taskq_jobs_stranded": frozenset({"actor", "reason"}),
 }
 
 #: Matches `<series_name>{<label filters>}` or a bare `<series_name>`.

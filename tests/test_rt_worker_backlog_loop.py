@@ -374,7 +374,7 @@ async def test_demotion_keeps_backlog_gauges_and_clears_leader_scoped() -> None:
 
     update_queue_depth_cache({"default": 4})
     update_reservation_slots_cache({"gpu": 2})
-    update_stranded_jobs_cache({"orphan": 7})
+    update_stranded_jobs_cache({("orphan", "no_actor_config"): 7})
     otel_mod.update_jobs_by_status_cache({"scheduled": 9})  # pyright: ignore[reportPrivateUsage]  # Why: the cache-update seams are the loop's own inputs; the public re-export covers the backlog pair being asserted.
     update_scheduled_count_cache(9)
     update_oldest_due_age_cache(42.0)

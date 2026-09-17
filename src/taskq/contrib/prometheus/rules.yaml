@@ -294,6 +294,41 @@ groups:
             releasing the transaction-scoped lock is the fleet-wide cron
             stall. Runbook: docs/guides/runbooks.md#taskqcronlockcontention.
 
+      - alert: TaskQQueueUnserved
+        expr: taskq_queue_depth{queue!="_other_"} > 0 unless on(queue) taskq_queue_live_workers > 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "TaskQ queue {{ $labels.queue }} has {{ $value }} queued jobs and no live worker"
+          description: >-
+            A queue holds pending or scheduled jobs and no worker whose
+            heartbeat is inside the liveness window
+            (TASKQ_ADMIN_WORKER_LIVENESS_SECONDS) subscribes to it, for 2
+            minutes. Nothing will consume the work: a deploy dropped the
+            queue from every TASKQ_QUEUES, the only replica serving it is
+            down, or a producer enqueues onto a queue name nobody runs. Both
+            series come from the same leader sampler tick, so the join never
+            compares two moments; the `_other_` overflow bucket is excluded
+            because its member set differs between the two gauges. Runbook:
+            docs/guides/runbooks.md#taskqqueueunserved.
+
+      - alert: TaskQStrandedJobs
+        expr: taskq_jobs_stranded > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "TaskQ actor {{ $labels.actor }} has {{ $value }} stranded jobs ({{ $labels.reason }})"
+          description: >-
+            Pending/scheduled jobs that can never dispatch, sustained for 5
+            minutes, with the reason on the label: no_actor_config (the actor
+            has no actor_config row — deregistered, or never registered by a
+            worker) or unserved_queue (the queue dispatch routes the actor on
+            has no live worker subscribed). Neither dispatch nor the deadline
+            sweep will ever touch these rows; the leader's detector is the
+            only signal. Runbook: docs/guides/runbooks.md#taskqstrandedjobs.
+
       - alert: TaskQRunningLeaseExpired
         expr: taskq_jobs_running_lease_expired > 0
         for: 5m
