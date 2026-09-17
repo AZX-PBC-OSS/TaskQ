@@ -1636,17 +1636,20 @@ async def _backlog_detection_loop(ctx: SweepContext, shutdown: asyncio.Event) ->
                 # comparison silently false while the loop stays alive.
                 # The empty fallback clears the per-actor caches below
                 # rather than freezing them at readings the worker can no
-                # longer see, and the failure rides the actor sampler's
-                # log path: the tick degrades visibly, never silently.
+                # longer see — which is also why the failure must ride the
+                # metric plane, not only the log: clearing the series
+                # resolves TaskQQueueDepthHigh (its operand is the
+                # oldest-pending age) at the exact moment the incident it
+                # alerts on is killing the read, and a WARN line is not
+                # alertable. The except below routes through
+                # _sampler_read_failed so the failure counts on
+                # taskq.maintenance_leader.sweep_timeouts under this
+                # sampler's own sweep_name (TaskQSweepTimeouts): the tick
+                # degrades visibly AND alertably, never silently.
                 try:
                     actor_rows = await conn.fetch(actor_backlog_sql)
                 except Exception as exc:
-                    log.warning(
-                        "actor-backlog-sampling-failed",
-                        kind="actor_backlog_sampling_failed",
-                        worker_id=str(ctx.worker_id),
-                        error=repr(exc),
-                    )
+                    _sampler_read_failed(ctx, "actor_backlog", "actor-backlog-sampling-failed", exc)
                     actor_rows = []
             status_counts = {str(row["status"]): int(row["count"]) for row in status_rows}
             update_jobs_by_status_cache(status_counts)
@@ -1677,14 +1680,14 @@ async def _backlog_detection_loop(ctx: SweepContext, shutdown: asyncio.Event) ->
             )
             # Per-actor attribution is isolated end to end from the
             # fleet-wide detectors above, which are already written by this
-            # point: a failed fetch substituted the empty snapshot (logged on
-            # the actor sampler's path) and a malformed row is caught here,
-            # so neither costs the tick its promotion-stall and
-            # zombie-running samples. An actor that drains to empty must also
-            # stop reporting rather than freeze at its last depth, so both
-            # caches are rebuilt whole from the snapshot and a vanished
-            # (actor, queue) pair vanishes from the series instead of ageing
-            # forever at a stale value.
+            # point: a failed fetch substituted the empty snapshot (counted
+            # on the actor sampler's own failure path) and a malformed row
+            # is caught here, so neither costs the tick its promotion-stall
+            # and zombie-running samples. An actor that drains to empty must
+            # also stop reporting rather than freeze at its last depth, so
+            # both caches are rebuilt whole from the snapshot and a
+            # vanished (actor, queue) pair vanishes from the series instead
+            # of ageing forever at a stale value.
             try:
                 update_actor_backlog_cache(
                     {
@@ -1699,12 +1702,14 @@ async def _backlog_detection_loop(ctx: SweepContext, shutdown: asyncio.Event) ->
                     }
                 )
             except Exception as exc:
-                log.warning(
-                    "actor-backlog-sampling-failed",
-                    kind="actor_backlog_sampling_failed",
-                    worker_id=str(ctx.worker_id),
-                    error=repr(exc),
-                )
+                # Same failure surface as the fetch above, so same routing:
+                # a malformed row leaves the per-actor caches stale exactly
+                # as a failed fetch leaves them empty — either way this
+                # read did not happen, and a read that did not happen is
+                # the whole fault a detector must report (warnings are not
+                # alertable). Counted under the sampler's own sweep_name,
+                # never only logged.
+                _sampler_read_failed(ctx, "actor_backlog", "actor-backlog-sampling-failed", exc)
         except Exception as exc:
             _sampler_read_failed(ctx, "backlog_detection", "backlog-detection-sampling-failed", exc)
         await _sleep_interruptible(shutdown, ctx.deps.settings.queue_depth_interval)
