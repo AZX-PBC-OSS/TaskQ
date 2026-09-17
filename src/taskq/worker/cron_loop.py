@@ -131,36 +131,63 @@ class _TickBudgetExhaustedError(TimeoutError):
     """
 
 
-CRON_TICK_SQL_TEMPLATE: Final = (
-    "WITH lock AS MATERIALIZED ("
-    "  SELECT pg_try_advisory_xact_lock(hashtextextended($1, 0)) AS got"
-    ") "
-    "SELECT lock.got, statement_timestamp() AS server_now, s.* "
-    "FROM lock LEFT JOIN LATERAL ("
-    "  SELECT id, actor, cron_expr, timezone, dst_strategy, payload_factory, "
-    "         metadata, last_fired_at, consecutive_failures, next_fire_at, identity_key "
-    '  FROM "{schema}".cron_schedules '
-    "  WHERE lock.got AND enabled = true AND next_fire_at <= statement_timestamp() "
-    "  ORDER BY next_fire_at "
-    "  LIMIT $2"
-    ") s ON true"
-)
-"""The tick's one opening statement: the cron try-lock ($1 = the lock
-name), the planning clock, and the due read ($2 = the batch limit).
+CRON_LOCK_SQL_TEMPLATE: Final = "SELECT pg_try_advisory_xact_lock(hashtextextended($1, 0)) AS got"
+"""The tick's first statement: the cron try-lock ($1 = the lock name) and
+nothing else.
 
-Rendered by :func:`cron_tick_sql`; the plan-shape audit
-(``tests/test_index_audit.py``) explains the same rendering, so the
-index-servable due bound cannot drift there unnoticed. See
-:func:`tick_cron` for why the three ride one statement and why the due
-bound is ``statement_timestamp()``.
+The due read CANNOT share this statement, tempting as the one-round-trip
+idle tick is. Under READ COMMITTED a statement's snapshot is taken when
+the statement starts, before the MATERIALIZED CTE evaluates: with the
+probe and the due read folded, a commit landing between the snapshot and
+the probe handed the contender the lock together with a snapshot from
+before the winner's ``next_fire_at`` advance was visible, and the loser
+re-fired the batch the lock had just granted to the winner — seen once
+in CI as two concurrent ticks firing 3 + 3 for a 3-schedule due set,
+reproducibly only on a runner slow enough to deschedule the Postgres
+backend inside that gap. Reading due in a later statement puts the read
+strictly after the lock is held, where its fresh snapshot includes every
+advance the previous leader committed.
+"""
+
+CRON_DUE_SQL_TEMPLATE: Final = (
+    "SELECT statement_timestamp() AS server_now, s.id, s.actor, s.cron_expr, "
+    "s.timezone, s.dst_strategy, s.payload_factory, s.metadata, s.last_fired_at, "
+    "s.consecutive_failures, s.next_fire_at, s.identity_key "
+    'FROM "{schema}".cron_schedules s '
+    "WHERE s.enabled = true AND s.next_fire_at <= statement_timestamp() "
+    "ORDER BY s.next_fire_at "
+    "LIMIT $1"
+)
+"""The tick's second statement: the planning clock and the due read
+($1 = the batch limit), issued only after the lock is held.
+
+``statement_timestamp()`` (STABLE) — not ``clock_timestamp()`` (VOLATILE) —
+for the due bound: a volatile comparison cannot be a btree index condition,
+so cron_schedules_next_fire_idx (partial on enabled, keyed on
+next_fire_at) would degrade from an Index Cond that stops at the boundary
+to a post-scan filter walk of every enabled entry, per tick, every second.
+Measured at 10k enabled schedules (PG 18, EXPLAIN ANALYZE):
+clock_timestamp() walks all 10,000 entries (1.04 ms); statement_timestamp()
+is an Index Cond scan (2 buffers, 0.005 ms). The same instant is the
+planning clock (server_now): every croniter seed and the due bound come
+from one server-side reading, so a due row is never "in the future" of its
+own seed.
 """
 
 
-def cron_tick_sql(schema: str) -> str:
-    """The tick statement for *schema* — token replacement, like every
+def cron_lock_sql(schema: str) -> str:
+    """The tick's lock statement for *schema* — token replacement, like every
     other schema interpolation, so a literal brace in the template can
     never turn a tick into a ``KeyError``."""
-    return CRON_TICK_SQL_TEMPLATE.replace("{schema}", schema)
+    return CRON_LOCK_SQL_TEMPLATE.replace("{schema}", schema)
+
+
+def cron_due_sql(schema: str) -> str:
+    """The tick's due statement for *schema* — same token replacement
+    discipline as :func:`cron_lock_sql`; the plan-shape audit
+    (``tests/test_index_audit.py``) explains this statement, so the
+    index-servable due bound cannot drift there unnoticed."""
+    return CRON_DUE_SQL_TEMPLATE.replace("{schema}", schema)
 
 
 # The commit-gate channel — ``cron_commit_gate_channel(schema)`` in
@@ -1004,34 +1031,19 @@ async def tick_cron(
 
     tick_started = time.monotonic()
     lock_name = schema_lock_name("cron", schema)
-    # One statement for the try-lock, the planning clock and the due read:
-    # the leader
-    # ticks once a second and is idle almost always, so the idle tick's
-    # cost is the round-trip count. The lock sits in a MATERIALIZED CTE
-    # so it is taken exactly once and before the read; the LATERAL read is
-    # gated on the verdict, so a contended tick reads nothing and returns
-    # one row with got = false. LEFT JOIN keeps that one row (and the
-    # idle tick's) when the read yields nothing.
-    #
-    # statement_timestamp() (STABLE) — not clock_timestamp() (VOLATILE) —
-    # for the due bound: a volatile comparison cannot be a btree index
-    # condition, so cron_schedules_next_fire_idx (partial on enabled,
-    # keyed on next_fire_at) would degrade from an Index Cond that stops
-    # at the boundary to a post-scan filter walk of every enabled entry,
-    # per tick, every second. Measured at 10k enabled schedules (PG 18,
-    # EXPLAIN ANALYZE): clock_timestamp() walks all 10,000 entries
-    # (1.04 ms); statement_timestamp() is an Index Cond scan (2 buffers,
-    # 0.005 ms). The same instant is the planning clock (server_now):
-    # every croniter seed and the due bound come from one server-side
-    # reading, so a due row is never "in the future" of its own seed.
-    tick_rows: list[asyncpg.Record] = await conn.fetch(
-        cron_tick_sql(schema),
-        lock_name,
-        limit,
-    )
-    head = tick_rows[0]
-    lock_acquired: bool = bool(head["got"])
-    if not lock_acquired:
+    # Two statements: the try-lock, then the planning clock + due read. The
+    # leader ticks once a second and is idle almost always, so the idle
+    # tick's cost is the round-trip count — but the read cannot share the
+    # probe's statement: under READ COMMITTED the statement's snapshot is
+    # taken before the probe evaluates, so a commit landing in that gap
+    # handed the contender the lock with a pre-advance snapshot and the
+    # winner's batch refired (the double-fire this lock exists to
+    # prevent). The due statement's own snapshot postdates the lock, so it
+    # sees every advance the previous leader committed. The planning
+    # clock, the due bound and their measurement record all live on
+    # CRON_DUE_SQL_TEMPLATE; the lock probe lives on CRON_LOCK_SQL_TEMPLATE.
+    lock_rows: list[asyncpg.Record] = await conn.fetch(cron_lock_sql(schema), lock_name)
+    if not lock_rows or not bool(lock_rows[0]["got"]):
         # Why observable: this branch is benign for the sub-second leader
         # handover it exists to cover, but it is indistinguishable from total
         # cron failure. The lock is transaction-scoped and releases on
@@ -1052,12 +1064,13 @@ async def tick_cron(
         )
         return 0
 
-    server_now: datetime = head["server_now"]
-    # The idle tick's one row carries the verdict and the clock with NULL
-    # schedule columns; a due row always has an id.
-    rows = [row for row in tick_rows if row["id"] is not None]
-    if not rows:
+    tick_rows: list[asyncpg.Record] = await conn.fetch(cron_due_sql(schema), limit)
+    if not tick_rows:
         return 0
+
+    server_now: datetime = tick_rows[0]["server_now"]
+    # A due row always has an id; the clock reading rides every row.
+    rows = tick_rows
 
     # One round trip for every distinct actor in the batch.  A missing actor
     # is not an error here — the planning loop turns each affected schedule

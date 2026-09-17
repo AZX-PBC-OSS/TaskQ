@@ -82,7 +82,7 @@ from taskq.worker._leader_sweeps import (
     _QUERY_OLDEST_DUE_AGE_SQL_TEMPLATE,  # pyright: ignore[reportPrivateUsage]  # Why: same as above — pin the production statement, not a copy.
     _QUERY_RUNNING_LEASE_EXPIRED_SQL_TEMPLATE,  # pyright: ignore[reportPrivateUsage]  # Why: same — the zombie-running gauge's exact statement.
 )
-from taskq.worker.cron_loop import cron_tick_sql
+from taskq.worker.cron_loop import cron_due_sql
 
 pytestmark = pytest.mark.integration
 
@@ -849,17 +849,15 @@ async def test_backlog_depth_gauge_is_index_bounded(audit_schema: Any, pg_dsn: s
 
 
 async def test_cron_due_tick_is_index_bounded_without_sort(audit_schema: Any, pg_dsn: str) -> None:
-    """The every-second tick's one statement (the try-lock, the planning
-    clock and the due read folded together): cron_schedules_next_fire_idx
-    serves the bound as an Index Cond inside the LATERAL read, and the
-    index's key order satisfies ORDER BY next_fire_at — a Sort node here
-    means the ordered path regressed. The lock CTE is materialized, so
-    the try-lock is taken exactly once and before the read."""
+    """The every-second tick's due statement (the probe runs first in its
+    own statement; see CRON_LOCK_SQL_TEMPLATE for why the read cannot
+    share it): cron_schedules_next_fire_idx serves the bound as an Index
+    Cond, and the index's key order satisfies ORDER BY next_fire_at — a
+    Sort node here means the ordered path regressed."""
     schema, _ = audit_schema
     conn = await asyncpg.connect(pg_dsn)
     try:
-        plan = await _explain(conn, cron_tick_sql(schema), "taskq:cron:audit", 100)
-        assert "CTE lock" in plan, f"the try-lock must be a materialized CTE:\n{plan}"
+        plan = await _explain(conn, cron_due_sql(schema), 100)
         _assert_index_cond(
             plan,
             "cron_schedules_next_fire_idx",

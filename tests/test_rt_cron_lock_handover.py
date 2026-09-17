@@ -229,6 +229,10 @@ class TestTickStatementShape:
             f"{counting.statements[0]!r} — a due-set read before the probe lets two "
             "leaders plan the same schedules concurrently"
         )
+        assert "cron_schedules" not in counting.statements[0], (
+            "the probe's statement must read no schedules: the due read shares "
+            "the statement's pre-lock snapshot, which is the double-fire window"
+        )
         assert counting.matching(_PROBE) == 1, "the probe must be issued exactly once"
 
     async def test_empty_due_set_costs_exactly_one_statement(
@@ -237,7 +241,7 @@ class TestTickStatementShape:
         module_pg_schema: ModulePgSchema,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """Nothing due → the one folded probe + clock + due SELECT and
+        """Nothing due → the probe, then the clock + due SELECT, and
         NOTHING else: no actor_config fetch, no UPDATE, no enqueue call."""
         schema = module_pg_schema.schema_name
         settings = cron_settings(schema)
@@ -268,14 +272,16 @@ class TestTickStatementShape:
 
         assert fired == 0
         assert enqueue_calls == []
-        assert counting.count == 1, (
+        assert counting.count == 2, (
             f"an empty tick issued {counting.count} statements: "
-            f"{counting.statements} — the allowed shape is the one folded "
-            "probe + clock + due SELECT"
+            f"{counting.statements} — the allowed shape is the probe, then the "
+            "clock + due SELECT"
         )
         assert _PROBE in counting.statements[0]
-        assert "LEFT JOIN LATERAL" in counting.statements[0], (
-            "the due read must ride the same statement as the probe"
+        assert "cron_schedules" not in counting.statements[0], (
+            "the probe's statement must read no schedules: a due read that "
+            "shares the probe's statement runs on that statement's pre-lock "
+            "snapshot, which is the double-fire window"
         )
         assert counting.matching("actor_config") == 0
         assert counting.matching("UPDATE") == 0

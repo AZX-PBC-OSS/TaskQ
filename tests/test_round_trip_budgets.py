@@ -329,17 +329,27 @@ async def test_a_batch_enqueue_is_one_insert_inside_its_transaction() -> None:
 # ── cron tick ─────────────────────────────────────────────────────────────
 
 
-async def test_an_idle_cron_tick_is_one_statement() -> None:
-    """The tick's advisory try-lock, its planning clock and the due read
-    are one statement (the lock in a MATERIALIZED CTE the read is gated
-    on), so the leader's once-a-second idle tick costs one round trip
-    inside its transaction instead of three."""
+async def test_an_idle_cron_tick_is_two_statements() -> None:
+    """The tick's advisory try-lock and its due read are two statements:
+    the probe's statement reads nothing else, and the due read runs only
+    after the lock is held.
+
+    The fold these two statements replace was the bug: under READ
+    COMMITTED a folded statement's snapshot predates its own lock probe,
+    so a leader commit landing inside that gap handed the contender the
+    lock with a pre-advance snapshot and re-fired the batch (seen in CI
+    as 3 + 3 for a 3-schedule due set). One extra round trip on the
+    once-a-second idle tick buys the due read a snapshot that postdates
+    the lock."""
     from taskq.settings import WorkerSettings
     from taskq.testing.actor import FakeBackend, as_backend
     from taskq.worker.cron_loop import tick_cron
 
     conn = _RecordingConn(
-        {"pg_try_advisory_xact_lock": [_Record({"got": True, "server_now": _NOW, "id": None})]}
+        {
+            "pg_try_advisory_xact_lock": [_Record({"got": True})],
+            "cron_schedules": [],
+        }
     )
     fired = await tick_cron(
         conn,  # type: ignore[arg-type]  # Why: duck-typed recording connection.
@@ -349,21 +359,23 @@ async def test_an_idle_cron_tick_is_one_statement() -> None:
         new_uuid(),
     )
     assert fired == 0
-    assert len(conn.wire) == 1, _shape(conn.wire)
+    assert len(conn.wire) == 2, _shape(conn.wire)
     assert "pg_try_advisory_xact_lock" in conn.wire[0]
-    assert "cron_schedules" in conn.wire[0]
+    assert "cron_schedules" not in conn.wire[0], (
+        "the probe's statement must read no schedules: a due read that shares "
+        "the probe's statement runs on that statement's pre-lock snapshot"
+    )
+    assert "cron_schedules" in conn.wire[1]
 
 
-async def test_a_contended_cron_tick_reads_no_schedules() -> None:
-    """``got = false`` short-circuits inside the same statement: no
-    schedule rows come back and the tick fires nothing."""
+async def test_a_contended_cron_tick_issues_no_due_read() -> None:
+    """``got = false`` ends the tick after the probe: the due statement is
+    never issued and nothing fires."""
     from taskq.settings import WorkerSettings
     from taskq.testing.actor import FakeBackend, as_backend
     from taskq.worker.cron_loop import tick_cron
 
-    conn = _RecordingConn(
-        {"pg_try_advisory_xact_lock": [_Record({"got": False, "server_now": _NOW, "id": None})]}
-    )
+    conn = _RecordingConn({"pg_try_advisory_xact_lock": [_Record({"got": False})]})
     fired = await tick_cron(
         conn,  # type: ignore[arg-type]  # Why: duck-typed recording connection.
         WorkerSettings(),
@@ -373,3 +385,4 @@ async def test_a_contended_cron_tick_reads_no_schedules() -> None:
     )
     assert fired == 0
     assert len(conn.wire) == 1
+    assert "cron_schedules" not in conn.wire[0]

@@ -126,17 +126,16 @@ class _FakeCronConn(FakeConn):
         self.fetch_calls.append((sql, args))
         if "actor_config" in sql:
             return self.actor_config_rows
+        if "pg_try_advisory_xact_lock" in sql:
+            # The tick's first statement: the lock probe, nothing else.
+            return [_FakeCronRecord({"got": True})]
         if "cron_schedules" in sql:
-            # The tick's one folded statement: the lock verdict and the
-            # planning clock ride every row; an empty due set is one row
-            # with NULL schedule columns.
+            # The tick's second statement: the due read. The planning clock
+            # rides every row; an empty due set is no rows at all.
             self.read_due_schedules = True
             if not self.schedule_rows:
-                return [_FakeCronRecord({"got": True, "server_now": _NOW, "id": None})]
-            return [
-                _FakeCronRecord({**row.data, "got": True, "server_now": _NOW})
-                for row in self.schedule_rows
-            ]
+                return []
+            return [_FakeCronRecord({**row.data, "server_now": _NOW}) for row in self.schedule_rows]
         if '"taskq".jobs' in sql:
             # The policy preflights (singleton blockers, max_pending counts)
             # and the DST overlap-twin probe read the jobs table; this fake
