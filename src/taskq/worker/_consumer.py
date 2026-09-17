@@ -963,11 +963,26 @@ async def consume_one_job(
                     # reclaims it. Do NOT fall through to mark_cancelled —
                     # the row carries no operator cancel, so a cancel write
                     # here would terminalise an infrastructure interruption.
+                    # The infra error is swallowed, never re-raised: a bare
+                    # `raise` here re-raises infra_exc, REPLACING the
+                    # CancelledError this handler is handling, so the
+                    # interruption escapes consume_one_job as a job
+                    # exception and dispatch's generic handler spends the
+                    # attempt's budget on a deploy — the exact mislabel the
+                    # mark_cancelled arm's comment below describes (an
+                    # eaten cancellation) (#233). Logged and disowned
+                    # above; the `raise` at the end of this handler
+                    # propagates the cancellation.
                     _log_terminal_write_failed(job_log, job, None, infra_exc)
                     _disown_job(_disowned_jobs, job)
-                    raise
                 except asyncio.CancelledError:
                     _disown_job(_disowned_jobs, job)
+                    raise
+                if interrupt_outcome is None:
+                    # Infra-failed release write: logged and disowned
+                    # above, and nothing further may write (the comment in
+                    # the except arm says why). The handler's final raise
+                    # below is what leaves this arm.
                     raise
                 if interrupt_outcome != "noop":
                     _interrupted_status = (
