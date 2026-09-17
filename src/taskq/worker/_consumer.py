@@ -106,6 +106,9 @@ from taskq.worker._handlers import (
     _terminal_write_with_retry,
     _TerminalWriteFailed,
 )
+from taskq.worker._watchdog import (  # pyright: ignore[reportPrivateUsage]  # Why: the tracked-handle registry registration for a detached tx unwind — the designated-writer contract mirrors the ctx stash beside it; no cycle (_watchdog imports nothing from the consumer side).
+    register_tracked_actor_handle,
+)
 from taskq.worker.cancel import ActiveJobRegistry
 from taskq.worker.deps import POOL_INFRA_EXCEPTIONS, WorkerDeps
 from taskq.worker.shutdown import (  # pyright: ignore[reportPrivateUsage]  # Why: the consumer's release arm and the RELEASING phase are the two writers of the same interruption release; they must share the one hold computation rather than drift (see _interrupted_actor_hold).
@@ -445,11 +448,11 @@ def _actor_exit_wait_budget(
     Deadline-anchored when the shutdown started and the watchdog enforces
     the deadline: the remaining termination budget minus *reserve* (the
     release write's own bounded budget — parking to the last second would
-    leave the release itself racing the watchdog trip). Without an anchor
-    or a guaranteed exit (watchdog disabled, a bare call, a shutdown that
-    never stamped its start) the bound is the orchestrator's own post-cancel
-    patience — the cleanup grace, after which RELEASING releases the row
-    regardless, so parking longer buys nothing.
+    leave the release itself racing the watchdog trip). Without an anchor or a guaranteed exit (watchdog
+    disabled, a bare call, a shutdown that never stamped its start) the
+    bound is the orchestrator's own post-cancel patience — the cleanup
+    grace, after which RELEASING releases the row regardless, so parking
+    longer buys nothing.
     """
     if not settings.watchdog_enabled:
         return settings.cleanup_grace_period
@@ -1465,6 +1468,7 @@ async def _consume_transactional(
             # release back when the unwind (or the thread inside it)
             # never finishes (#232).
             ctx._set_tx_unwind_task(tx_task)  # pyright: ignore[reportPrivateUsage]  # Why: the transactional consumer is the designated writer of the unwind handle (see the setter's contract); the consumer's shutdown arm is its designated reader.
+            register_tracked_actor_handle(tx_task)  # pyright: ignore[reportPrivateUsage]  # Why: the process-wide twin of the ctx stash — a tx task still unwinding past the TaskGroup keeps the shutdown watchdog armed (see await_tracked_actor_reap), the same as a live sync-actor thread.
             # Past the actor (commit machinery in flight) the detached
             # task is deliberately left to finish: its eventual outcome
             # must be retrieved here or asyncio reports "Task exception

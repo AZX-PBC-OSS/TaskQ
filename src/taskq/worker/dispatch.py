@@ -72,6 +72,9 @@ from taskq.worker._handlers import (
     _handle_generic_exception,  # pyright: ignore[reportPrivateUsage]  # Why: _handle_generic_exception implements the same exception→retry/fail routing as consume_one_job's inner handlers; dispatch_one_job needs it for DI-resolution failures that escape consume_one_job's own try/except.
     _log_terminal_write_failed,  # pyright: ignore[reportPrivateUsage]  # Why: same rationale as _TERMINAL_WRITE_INFRA_EXCEPTIONS above.
 )
+from taskq.worker._watchdog import (  # pyright: ignore[reportPrivateUsage]  # Why: the tracked-handle registry is the dispatch layer's designated writer surface (see register_tracked_actor_handle's contract); no cycle — _watchdog imports nothing from the worker consumer side.
+    register_tracked_actor_handle,
+)
 from taskq.worker.cancel import ActiveJobRegistry
 from taskq.worker.deps import POOL_INFRA_EXCEPTIONS, WorkerDeps
 
@@ -128,6 +131,12 @@ async def _run_sync_actor_tracked(
     """
     thread_task: asyncio.Task[object] = asyncio.ensure_future(asyncio.to_thread(fn, **actor_kwargs))
     ctx._set_sync_actor_task(thread_task)
+    # The process-wide twin of the ctx stash: the shutdown path's exit
+    # gate (await_tracked_actor_reap) reads this registry to decide
+    # whether the watchdog may be disarmed — a live thread here keeps it
+    # armed past the TaskGroup, which is what makes the release hold's
+    # exit window true by construction.
+    register_tracked_actor_handle(thread_task)
     try:
         return await asyncio.shield(thread_task)
     except asyncio.CancelledError:

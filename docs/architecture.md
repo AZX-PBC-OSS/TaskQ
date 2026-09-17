@@ -1179,21 +1179,41 @@ concurrently.
 
 An interruption release (`mark_interrupted`) is held back until the
 interrupted actor has *provably exited* — the promise is that no other pod can
-claim a row while this process might still touch it. An async actor proves it
-by unwinding (the `CancelledError` propagated through its frames); a sync
-`def` actor proves it only when its executor thread finishes, because
-`task.cancel()` cancels the await, never the thread; the transactional path
-proves it when its tx task finishes unwinding the rollback. The consumer's
+claim a row while this process might still run or touch the work. An async
+actor proves it by unwinding (the `CancelledError` propagated through its
+frames); a sync `def` actor proves it only when its executor thread finishes,
+because `task.cancel()` cancels the await, never the thread; the transactional
+path proves it when its tx task finishes unwinding the rollback. The consumer's
 cancellation arm parks on the tracked exit handles, bounded by the remaining
-termination budget, and releases `pending` (hold=0) only on a provable exit
-inside that window; otherwise the release is `scheduled` behind the rest of
-the process's exit window — the termination deadline **plus the watchdog's
-exit tail**, because the deadline is observed only once per
-`watchdog_dump_interval` and the trip then flushes metrics (bounded ~2s)
-before `os._exit`. An actor that outlives the window is still released, never
-stranded. With `watchdog_enabled = false` there is no guaranteed exit to hold
-against, so the hold degrades to `lock_lease` — the bound the lease-expiry
-path already imposes.
+termination budget, and releases `pending` (hold=0) only on a provable exit inside that
+window; otherwise the release is `scheduled` behind the rest of the process's
+exit window — the termination deadline **plus the watchdog's exit tail**
+(check lag + bounded flush + render slack), because the deadline trip is not
+instantaneous. An actor that outlives the window is still released, never
+stranded.
+
+The exit bound is **enforced, not modelled**: the shutdown watchdog stays
+armed until every tracked actor handle is reaped (`await_tracked_actor_reap`
+gates the disarm in the worker's exit path), so the process either exits
+cleanly with no live actor — its remaining lifetime is bounded pool closes,
+which touch no row — or the deadline trip `os._exit`s it with the
+still-running thread inside, under the dedicated
+`tracked-actor-outlived-teardown` reason. Without that gate the clean path
+disarmed the watchdog and then joined the detached thread in
+`asyncio.Runner.close()` (`THREAD_JOIN_TIMEOUT`, 300s) — a released row became
+claimable while its actor still ran. The alternative closure — a hard
+`os._exit(0)` on every clean exit — is rejected because TaskQ is a library:
+embedders run the worker in-process (cennan's CLI, TAStack's `ta_worker`), and
+a hard exit on the clean path would kill the host's own cleanup. In-process
+embedders with the watchdog enabled get the closure for free — the watchdog is
+TaskQ's own task on the embedder's loop, and the trip semantics are unchanged.
+
+The promise is scoped: it holds when the watchdog is enabled, or when the
+platform SIGKILL lands by `termination_grace_period + exit tail`. With
+`watchdog_enabled = false` there is no trip to enforce the bound, the hold
+degrades to `lock_lease` — the bound the lease-expiry path already imposes —
+and the platform grace must supply the ceiling the watchdog would have (see
+the platform-grace window in docs/guides/workers.md).
 
 The `ShutdownWatchdog` (detector 1) runs concurrently outside the TaskGroup
 and enforces `termination_grace_period` as a hard wall — see

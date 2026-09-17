@@ -44,10 +44,13 @@ __all__ = [
     "QUEUE_CONCURRENCY_PREFIX",
     "RECLAIM_EVENT_VISIBILITY_DELAY",
     "RECLAIM_OUTBOX_RETENTION_MULTIPLIER",
+    "RELEASE_EXIT_TAIL_SLACK_SECS",
     "RESERVATION_RETRY_HINT_MARGIN",
     "SMALLINT_MAX",
     "SMALLINT_MIN",
+    "TERMINAL_WRITE_BUDGET_SECS",
     "WAKE_CHANNEL_FMT",
+    "WATCHDOG_METRICS_FLUSH_TIMEOUT_SECS",
     "WORKER_CHANNEL_FMT",
     "base_name_collides_with_reserved_prefix",
     "check_max_attempts_domain",
@@ -444,6 +447,42 @@ default silently gets a different batch size per backend — the same class
 of divergence that made the in-memory and Postgres backends disagree
 before. The value itself is a poll batch, not a tuning knob: callers that
 care pass ``limit=`` explicitly.
+"""
+
+TERMINAL_WRITE_BUDGET_SECS: Final[float] = 5.0
+"""Wall-clock budget for one retried pool-path terminal write.
+
+The canonical value behind ``taskq.worker._handlers._TERMINAL_WRITE_BUDGET``
+(and the retry loop's attempt backoff fitting inside it). Lives in
+``taskq.constants`` because the SETTINGS layer also reads it: the
+shutdown-release park reserves exactly this much of the termination budget
+for its own release write (see
+``WorkerSettings.release_park_lease_floor``), and the validation that
+keeps the park inside the heartbeat-kept lease must use the same number —
+importing it here is what keeps the two from drifting apart.
+"""
+
+WATCHDOG_METRICS_FLUSH_TIMEOUT_SECS: Final[float] = 2.0
+"""Hard join bound on the pre-``os._exit`` metrics flush.
+
+The canonical value behind ``taskq.worker._watchdog._METRICS_FLUSH_TIMEOUT_SECS``.
+Shared to ``taskq.constants`` for the same reason as the budget above: it
+is one of the three terms of the release hold's exit tail
+(``WorkerSettings.release_exit_tail_seconds``), and the settings-layer
+lease arithmetic that guards the disown path must not re-declare it.
+"""
+
+RELEASE_EXIT_TAIL_SLACK_SECS: Final[float] = 1.0
+"""Fixed slack term of the release hold's exit tail.
+
+Covers the unbounded-but-small synchronous work ``trip()`` performs between
+the deadline check and the flush: the task-stack render and the critical
+log write. Neither has a bound of its own (a full stderr pipe under a slow
+docker logging driver outlives any fixed slack — documented as the
+residual in docs/guides/workers.md), so a second is a heuristic, chosen
+generous against dozens of live tasks on a loaded loop; the cost of
+over-padding a release hold is latency, never overlap. Canonical home is
+here so the settings-layer tail and the worker-layer hold read one number.
 """
 
 MAX_RESULT_BYTES: Final[int] = 65536

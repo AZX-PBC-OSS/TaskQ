@@ -663,14 +663,22 @@ What to audit:
   straight back to `pending` while the body was still executing, and a
   second worker could claim it — two live runners for one row across every
   deploy that caught a sync actor mid-body. The release now waits (bounded
-  by the remaining termination budget) for the thread and holds the row
-  behind the process's exit window when the thread outlives the wait. A
-  fleet of sync actors should teach long loops to poll
+  by the remaining termination budget) for the thread
+  and holds the row behind the process's exit window when the thread
+  outlives the wait. A fleet of sync actors should teach long loops to poll
   `ctx.should_abort()` so they exit inside the cancellation grace and get
   the immediate `pending` release instead of the held one.
-
-What to audit:
-
+* **An actor that outlives its budget is now ended at the deadline trip.**
+  The shutdown watchdog stays armed until every tracked actor handle is
+  reaped, and the trip carries a dedicated
+  `tracked-actor-outlived-teardown` reason. Previously the clean path
+  disarmed the watchdog and then joined the detached thread for up to
+  `THREAD_JOIN_TIMEOUT` (300s) — a released row could become claimable
+  while its actor still ran. The thread's late completion accomplished
+  nothing (the row was already released-with-hold and the fleet re-attempts
+  the work), so ending it at the deadline loses nothing — but an
+  embedder's own cleanup that expected the process to outlive a stuck
+  actor no longer does.
 * **`abandoned` now means "operator cancel".** A graceful shutdown never
   produces `cancelled` or `abandoned` for infrastructure reasons; any
   alert or dashboard that reads those statuses as deploy noise should now
