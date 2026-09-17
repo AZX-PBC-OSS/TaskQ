@@ -35,14 +35,12 @@ import pytest
 import pytest_asyncio
 
 from taskq._ids import new_uuid
-from taskq.testing._shared_containers import creator_labels
 
 from ._assertions import (
     fetch_effects,
     fetch_job_rows,
     poll_until,
     wait_for_effects,
-    wait_for_worker_ready,
 )
 from .actors import (
     ShortJobPayload,
@@ -55,9 +53,8 @@ from .actors import (
 from .conftest import (
     _DELETE_ORDER,
     E2EWorker,
-    _container_logs,
     _flushdb,
-    _stop_container,
+    running_worker,
 )
 
 if TYPE_CHECKING:
@@ -134,37 +131,23 @@ async def drain_worker(
     a running worker use this dedicated fixture instead. Each test gets
     a fresh worker container, torn down after the test.
     """
-    from testcontainers.core.container import DockerContainer
-
-    container = DockerContainer(image=e2e_worker_image.tag)
-    container.with_kwargs(
-        labels=creator_labels()
-    )  # Ownership labels: sweepable under disabled Ryuk (see e2e_network's sweep).
-    container.with_network(e2e_network).with_network_aliases(
-        f"worker-drain-{e2e_schema.schema_name}-{new_uuid().hex[:6]}"
-    )
-    for key, value in e2e_schema.worker_env.items():
-        container.with_env(key, value)
-
-    await asyncio.to_thread(container.start)
-    try:
-        try:
-            await wait_for_worker_ready(e2e_pg_pool, e2e_schema.schema_name, timeout=30.0)
-        except TimeoutError:
-            logs = _container_logs(container)
-            msg = f"drain e2e worker failed readiness gate\n{logs}"
-            raise RuntimeError(msg) from None
-        yield E2EWorker(container=container, schema=e2e_schema.schema_name)
-    finally:
-        if request.config.option.verbose >= 2:
-            print(_container_logs(container))
-        await asyncio.to_thread(_stop_container, container)
+    async with running_worker(
+        request,
+        network=e2e_network,
+        schema=e2e_schema,
+        pg_pool=e2e_pg_pool,
+        image=e2e_worker_image,
+        alias=f"worker-drain-{e2e_schema.schema_name}-{new_uuid().hex[:6]}",
+        label="drain e2e worker",
+    ) as worker:
+        yield worker
 
 
 # ── Test ──────────────────────────────────────────────────────────────────
 
 
 async def test_sigterm_drains_inflight_job(
+    request: pytest.FixtureRequest,
     e2e_client: TaskQ,
     e2e_worker: E2EWorker,
     e2e_pg_pool: asyncpg.Pool,
@@ -188,8 +171,6 @@ async def test_sigterm_drains_inflight_job(
     the job nothing but time — and a fresh ``send_welcome_email`` job
     completes normally, proving the system is functional after the SIGTERM.
     """
-    from testcontainers.core.container import DockerContainer
-
     # ── Phase 1: enqueue, wait for start, SIGTERM ──────────────────────
     handle = await e2e_client.enqueue(
         slow_deliver_webhook,
@@ -261,20 +242,15 @@ async def test_sigterm_drains_inflight_job(
         description="old worker heartbeat gone stale",
     )
 
-    replacement = DockerContainer(image=e2e_worker_image.tag)
-    replacement.with_kwargs(
-        labels=creator_labels()
-    )  # Ownership labels: sweepable under disabled Ryuk (see e2e_network's sweep).
-    replacement.with_network(e2e_network).with_network_aliases(
-        f"worker-repl-{e2e_schema.schema_name}"
-    )
-    for key, value in e2e_schema.worker_env.items():
-        replacement.with_env(key, value)
-
-    await asyncio.to_thread(replacement.start)
-    try:
-        await wait_for_worker_ready(e2e_pg_pool, e2e_schema.schema_name, timeout=30.0)
-
+    async with running_worker(
+        request,
+        network=e2e_network,
+        schema=e2e_schema,
+        pg_pool=e2e_pg_pool,
+        image=e2e_worker_image,
+        alias=f"worker-repl-{e2e_schema.schema_name}",
+        label="replacement e2e worker",
+    ):
         run_id_2 = new_uuid().hex
         handle2 = await e2e_client.enqueue(
             send_welcome_email,
@@ -312,8 +288,6 @@ async def test_sigterm_drains_inflight_job(
             "completion is the job's FIRST spent attempt — the deploy cost "
             f"no budget; attempt reads {rows[0]['attempt']}"
         )
-    finally:
-        await asyncio.to_thread(_stop_container, replacement)
 
 
 # ── Graceful drain completes short job ────────────────────────────────────
