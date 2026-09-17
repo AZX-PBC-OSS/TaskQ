@@ -10,6 +10,7 @@ from fastapi.responses import HTMLResponse
 from jinja2 import Environment
 
 from taskq.settings import TaskQSettings
+from taskq.web.admin._constants import parse_text_filter
 from taskq.web.admin._factory import (
     get_pg_pool,
     get_realtime_ctx,
@@ -120,6 +121,10 @@ def register(router: APIRouter) -> None:
         cursor_at: str | None = Query(default=None),
         cursor_id: str | None = Query(default=None),
     ) -> HTMLResponse:
+        # The queue name from the path binds as a text parameter in every
+        # query below - the same NUL guard the list filters apply, or a
+        # %00 in the URL is an opaque driver 500.
+        parse_text_filter(queue, "queue")
         if status not in _ALLOWED_STATUSES:
             raise HTTPException(status_code=400, detail=f"invalid status filter: {status!r}")
 

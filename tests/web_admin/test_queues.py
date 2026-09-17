@@ -50,6 +50,21 @@ def test_queue_detail_returns_html(
     assert "text/html" in ct
 
 
+def test_queue_detail_nul_in_queue_name_returns_400(
+    monkeypatch: pytest.MonkeyPatch, make_app: Callable[..., Any]
+) -> None:
+    """A %00 in the path's queue name is a clean 400, not an asyncpg 22021 500.
+
+    The name is bound as a text parameter by every detail query - the same
+    driver-level NUL class the list filters guard against.
+    """
+    monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
+    client = make_app()
+    response = client.get("/queues/bad%00name")  # pyright: ignore[reportUnknownVariableType]  # Why: TestClient.get return type is Any.
+    assert response.status_code == 400  # pyright: ignore[reportUnknownVariableType]
+    assert "NUL" in response.text  # pyright: ignore[reportUnknownVariableType]
+
+
 # ── Queue detail: invalid status filter ────────────────────────────────
 
 

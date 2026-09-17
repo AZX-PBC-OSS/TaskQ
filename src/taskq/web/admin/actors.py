@@ -8,6 +8,7 @@ from jinja2 import Environment
 from taskq.actor_config_ops import deregister_actor, list_actor_summaries
 from taskq.exceptions import ActorDeregistrationError, ActorNotFoundError
 from taskq.settings import TaskQSettings
+from taskq.web.admin._constants import parse_text_filter
 from taskq.web.admin._factory import (
     get_base_path,
     get_csrf_token,
@@ -66,6 +67,9 @@ def register(router: APIRouter) -> None:
     ) -> RedirectResponse:
         if not settings.admin_actions_enabled:
             raise HTTPException(status_code=403, detail="Admin actions are disabled")
+        # The actor name from the path binds as a text parameter - the same
+        # NUL guard the list filters apply, or a %00 is an opaque driver 500.
+        parse_text_filter(actor, "actor")
 
         form = await request.form()
         force = form.get("force") == "true"
