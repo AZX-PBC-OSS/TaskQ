@@ -25,8 +25,6 @@ from taskq.worker.run import worker_main_async
 
 pytestmark = pytest.mark.integration
 
-_SCHEMA = f"twcg_{new_base62()}".lower()
-
 
 def _gauge_values(reader: InMemoryMetricReader, name: str) -> list[float]:
     for metric in collect_metrics(reader):
@@ -50,16 +48,17 @@ async def test_bootstrap_feeds_the_capacity_gauges(pg_dsn: str) -> None:
     )
     assert _gauge_values(reader, "taskq.worker.max_concurrency") == []
 
+    schema = f"twcg_{new_base62()}".lower()
     conn = await asyncpg.connect(pg_dsn)
     try:
-        await conn.execute(f'DROP SCHEMA IF EXISTS "{_SCHEMA}" CASCADE')
-        await apply_pending(conn, schema=_SCHEMA)
+        await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        await apply_pending(conn, schema=schema)
     finally:
         await conn.close()
     settings = WorkerSettings.load_from_dict(
         {
             "pg_dsn": pg_dsn,
-            "schema_name": _SCHEMA,
+            "schema_name": schema,
             "max_concurrency": "3",
             "health_socket_path": unique_health_sock_path("capacity_gauges"),
         }
@@ -82,6 +81,6 @@ async def test_bootstrap_feeds_the_capacity_gauges(pg_dsn: str) -> None:
     finally:
         conn = await asyncpg.connect(pg_dsn)
         try:
-            await conn.execute(f'DROP SCHEMA IF EXISTS "{_SCHEMA}" CASCADE')
+            await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
         finally:
             await conn.close()
