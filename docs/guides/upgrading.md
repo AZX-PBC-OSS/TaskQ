@@ -927,6 +927,11 @@ table the apply can stall the worker fleet's writes for a noticeable window.
   (e.g. right after a prune sweep), on any deployment where `jobs` is large.
   Most deployments see momentary builds — the bounded maintenance sweeps keep
   steady-state `jobs` small.
+- The wait *for* the lock is bounded (`ddl_lock_timeout`, 30 s by default —
+  see [the migration gave up waiting for a table lock](#the-migration-gave-up-waiting-for-a-table-lock)):
+  a session holding `jobs` open fails the migration cleanly instead of parking
+  the fleet behind it. The bound never interrupts a build that already holds
+  its lock.
 - It is transactional *deliberately*: the `CREATE INDEX CONCURRENTLY` form
   deadlocks under the migration runner's own serialized-migrator advisory
   lock (the concurrent build waits on every transaction that started before
@@ -953,7 +958,9 @@ without it (only the cost bound is lost). Like every sibling index
 migration it is a plain `CREATE INDEX` — the build takes a write-blocking
 lock on `jobs`, so on a large `jobs` table build it `CONCURRENTLY` by hand
 first (the statement is in the migration file) and let the migration
-no-op.
+no-op. As with `01.00.06_01`, the wait for the lock is bounded by
+`ddl_lock_timeout` and a held `jobs` fails the migration cleanly rather
+than stalling the fleet; the build itself, once it holds the lock, is not.
 
 ### Bulk cancel and force-deregistration now make bounded committed progress
 
