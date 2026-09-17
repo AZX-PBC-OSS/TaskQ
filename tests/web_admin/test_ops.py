@@ -5,6 +5,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
+import structlog.testing
 
 pytest.importorskip("fastapi")
 pytest.importorskip("jinja2")
@@ -1393,3 +1394,70 @@ def test_reservations_page_table_missing(
     resp = client.get("/reservations")
     assert resp.status_code == 200
     assert "reservations not installed" in resp.text
+
+
+# ── A degraded page never looks like an empty healthy one ─────────────────
+
+
+def test_rate_limits_page_reports_a_failed_live_peek(
+    monkeypatch: pytest.MonkeyPatch, clean_rl_registry: Any
+) -> None:
+    """When the live peek across the registry fails, the page says so - a
+    warning naming the error type, and a visible degraded notice - rather
+    than rendering every bucket with no live state as if none were busy."""
+    from taskq.ratelimit.token_bucket import TokenBucket
+
+    monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
+    clean_rl_registry.register(
+        TokenBucket("api:tb", capacity=10, refill_per_second=1, backend="postgres")
+    )
+
+    async def _broken_peek(*_: object, **__: object) -> dict[str, object]:
+        raise ConnectionResetError("pg gone")
+
+    monkeypatch.setattr(clean_rl_registry, "peek_all", _broken_peek)
+    conn = _ScriptedConn(fetch_map={"rate_limit_buckets ORDER": []})
+    client = _make_client_with_pool(_ScriptedPool(conn))
+    with structlog.testing.capture_logs() as logs:
+        resp = client.get("/rate-limits")
+    assert resp.status_code == 200
+    assert "live state unavailable" in resp.text.lower()
+    assert "ConnectionResetError" in resp.text
+    entry = next(e for e in logs if e["event"] == "ratelimit-peek-all-failed")
+    assert entry["log_level"] == "warning"
+    assert entry["error_type"] == "ConnectionResetError"
+
+
+def test_reservations_page_reports_a_failed_slot_sync(
+    monkeypatch: pytest.MonkeyPatch, clean_rl_registry: Any
+) -> None:
+    """A slot sync that fails leaves the page on the rows it read before
+    the sync, and says so: a warning with the error type and a visible
+    degraded notice, never a silently stale table."""
+    from taskq.ratelimit.reservation import ConcurrencyReservation
+
+    monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
+    clean_rl_registry.register(
+        ConcurrencyReservation("premium-api", slots=5, lease=timedelta(seconds=30), schema="taskq")
+    )
+
+    async def _broken_sync(*_: object, **__: object) -> None:
+        raise TimeoutError
+
+    monkeypatch.setattr("taskq.ratelimit.reservation.sync_slots", _broken_sync)
+    conn = _ScriptedConn(
+        fetch_map={
+            "GROUP BY bucket_name": [],
+            "job_id IS NOT NULL": [],
+            "slot_index FROM": [],
+        },
+    )
+    client = _make_client_with_pool(_ScriptedPool(conn))
+    with structlog.testing.capture_logs() as logs:
+        resp = client.get("/reservations")
+    assert resp.status_code == 200
+    assert "slot sync failed" in resp.text.lower()
+    assert "TimeoutError" in resp.text
+    entry = next(e for e in logs if e["event"] == "reservation-sync-failed")
+    assert entry["log_level"] == "warning"
+    assert entry["error_type"] == "TimeoutError"

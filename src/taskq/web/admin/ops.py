@@ -571,6 +571,7 @@ def register(router: APIRouter) -> None:
 
         # Attempt live peek for non-memory backends if dependencies are available.
         live_states: dict[str, object] = {}
+        live_peek_error: str | None = None
         try:
             rl_settings = WorkerSettings.load_from_dict(
                 {
@@ -604,8 +605,17 @@ def register(router: APIRouter) -> None:
                 if state.refill_per_second is not None:
                     d["refill_per_second"] = state.refill_per_second
                 live_states[name] = d
-        except Exception:
-            logger.debug("ratelimit-peek-all-failed", exc_info=True)
+        except Exception as exc:
+            # The page still renders on PG state alone, but a bucket with no
+            # live state must not read as a bucket with nothing in flight:
+            # the failure is reported and the page says it is degraded.
+            live_peek_error = type(exc).__name__
+            logger.warning(
+                "ratelimit-peek-all-failed",
+                error_type=live_peek_error,
+                error=str(exc),
+                buckets=len(configured),
+            )
 
         redis_available = False
         redis_configured = redis_client is not None
@@ -655,6 +665,7 @@ def register(router: APIRouter) -> None:
             redis_state=redis_state,
             redis_available=redis_available,
             redis_configured=redis_configured,
+            live_peek_error=live_peek_error,
             has_memory_buckets=has_memory_buckets,
             realtime_mode=realtime_mode,
             mode_label=mode_label,
@@ -763,14 +774,25 @@ def register(router: APIRouter) -> None:
                 logger.debug("reservation-slots-table-missing")
                 reservations_installed = False
 
+        sync_error: str | None = None
         if reservations_installed and reservation_primitives:
             try:
                 await sync_slots(reservation_primitives, pool.pool, schema=schema)
                 async with pool.acquire() as conn:
                     rows = await conn.fetch(reservations_sql)
                     held_slot_rows = await conn.fetch(held_slots_sql)
-            except Exception:
-                logger.debug("reservation-sync-failed", exc_info=True)
+            except Exception as exc:
+                # The rows read before the sync still render, but a table
+                # that silently predates a failed sync is a stale table the
+                # operator cannot tell from a fresh one: report it and say
+                # so on the page.
+                sync_error = type(exc).__name__
+                logger.warning(
+                    "reservation-sync-failed",
+                    error_type=sync_error,
+                    error=str(exc),
+                    primitives=len(reservation_primitives),
+                )
 
         pg_state: dict[str, dict[str, object]] = {}
         for r in rows:
@@ -810,6 +832,7 @@ def register(router: APIRouter) -> None:
         html = tmpl.get_template("reservations.html").render(
             reservations=reservations,
             reservations_installed=reservations_installed,
+            sync_error=sync_error,
             notice_text="reservations not installed — run taskq migrate up to enable",
             held_slots=held_slots,
             realtime_mode=realtime_mode,
