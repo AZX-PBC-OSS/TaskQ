@@ -71,6 +71,7 @@ from taskq.constants import (
 __all__ = [
     "ApplyFailureDiagnosis",
     "Migration",
+    "MigrationLockTimeoutError",
     "Phase",
     "apply_pending",
     "apply_pending_locked",
@@ -163,6 +164,48 @@ class Migration:
 
     def checksum(self, schema: str) -> str:
         return hashlib.sha256(self.render(schema).encode("utf-8")).hexdigest()
+
+
+#: Seconds a transactional migration's DDL may wait for a table lock before
+#: the migration fails (``SET LOCAL lock_timeout`` inside its transaction).
+#: ``ALTER TABLE`` takes ACCESS EXCLUSIVE, which queues behind any session
+#: holding even ACCESS SHARE on the table — an actor's open transaction
+#: connection mid-job, an admin snapshot, ``pg_dump`` — and Postgres' lock
+#: queue is FIFO, so once the DDL is queued every later statement on that
+#: table (dispatch, enqueue, heartbeat) queues behind IT. Unbounded, that
+#: wait outlives the workers' heartbeat budget: the fleet self-terminates
+#: while the migration is still waiting. Thirty seconds is the wait pg-boss
+#: applies to every migration; it exceeds any healthy lock hold by orders of
+#: magnitude and is short enough that a fleet parked behind it survives.
+#: Bounds the WAIT only: a statement that already holds its lock (an index
+#: build) is never interrupted by ``lock_timeout``. Override per call with
+#: ``apply_pending(..., ddl_lock_timeout=...)``; ``0`` waits indefinitely.
+DEFAULT_MIGRATION_DDL_LOCK_TIMEOUT: float = 30.0
+
+
+class MigrationLockTimeoutError(RuntimeError):
+    """A transactional migration waited ``ddl_lock_timeout`` for a table lock
+    and gave up; its transaction rolled back and nothing was applied.
+
+    Raised in place of the driver's ``LockNotAvailableError`` (kept as the
+    cause) so the report names the migration, the bound that expired, and
+    the remedy — the holder must be found and ended, or the bound raised —
+    rather than the bare ``canceling statement due to lock timeout``.
+    """
+
+    def __init__(self, migration: Migration, timeout: float) -> None:
+        self.migration = migration
+        self.timeout = timeout
+        super().__init__(
+            f"migration {migration.filename} waited {timeout}s for a lock on a table it "
+            "alters and gave up (ddl_lock_timeout): another session holds a conflicting "
+            "lock on it — a long-running or idle-in-transaction connection, pg_dump, or an "
+            "admin query. The migration rolled back and nothing was applied. Find the "
+            "holder in pg_stat_activity / pg_locks and end it or wait for it, then re-run; "
+            "to wait longer, raise ddl_lock_timeout (apply_pending / apply_pending_locked) "
+            "— 0 waits indefinitely, at the cost of parking every statement on the table "
+            "behind the queued DDL."
+        )
 
 
 def discover() -> list[Migration]:
@@ -520,6 +563,7 @@ async def apply_pending(
     phase: Phase | None = None,
     target: str | None = None,
     max_steps: int | None = None,
+    ddl_lock_timeout: float = DEFAULT_MIGRATION_DDL_LOCK_TIMEOUT,
 ) -> list[Migration]:
     """Apply pending migrations.
 
@@ -535,8 +579,17 @@ async def apply_pending(
     :param phase: restrict to ``pre`` or ``post`` migrations only.
     :param target: stop after applying this version (inclusive).
     :param max_steps: stop after this many applies.
+    :param ddl_lock_timeout: seconds a transactional migration may wait for
+        a table lock (:data:`DEFAULT_MIGRATION_DDL_LOCK_TIMEOUT`); applied
+        as ``SET LOCAL lock_timeout`` inside each migration's own
+        transaction, so it never outlives the migration, and never applied
+        to ``-- taskq:no-transaction`` files, whose ``CONCURRENTLY`` waits
+        are heavyweight-lock waits by design. A wait that outlives it
+        raises :class:`MigrationLockTimeoutError`; ``0`` waits indefinitely.
     :returns: migrations that were applied (in order).
     """
+    if ddl_lock_timeout < 0:
+        raise ValueError(f"ddl_lock_timeout must be >= 0, got {ddl_lock_timeout}")
     if not _IDENT_RE.match(schema):
         raise ValueError(f"invalid schema name {schema!r}")
 
@@ -633,7 +686,18 @@ async def apply_pending(
         try:
             if migration.use_transaction:
                 async with conn.transaction():
-                    await conn.execute(migration.render(schema))
+                    if ddl_lock_timeout > 0:
+                        # SET LOCAL: scoped to this migration's transaction,
+                        # so the session's own lock_timeout (reset to
+                        # unlimited by migration_advisory_lock for the
+                        # no-transaction files) is untouched.
+                        await conn.execute(
+                            f"SET LOCAL lock_timeout = {int(ddl_lock_timeout * 1000)}"
+                        )
+                    try:
+                        await conn.execute(migration.render(schema))
+                    except asyncpg.LockNotAvailableError as exc:
+                        raise MigrationLockTimeoutError(migration, ddl_lock_timeout) from exc
                     if not ledger_ready:
                         await _ensure_ledger_use_transaction_column(conn, schema)
                         ledger_ready = True
@@ -740,9 +804,10 @@ _MIGRATION_UNLOCK_SQL = "SELECT pg_advisory_unlock(hashtextextended($1, 0))"
 #: `pg_advisory_lock` is a blocking acquire with no client-side bound, so a
 #: replica arriving while another holds the lock mid-DDL waited indefinitely
 #: with no log line -- long enough to blow past a container platform's startup
-#: probe, get killed, restart, and block again. This bounds the WAIT only; it
-#: is reset before the migrations themselves run so a legitimately long DDL
-#: step (index builds, ADD CONSTRAINT ... CHECK) is never killed halfway.
+#: probe, get killed, restart, and block again. This bounds the WAIT for the
+#: advisory lock only; it is reset before the migrations themselves run, and
+#: the table-lock waits of the migrations are bounded separately by
+#: :data:`DEFAULT_MIGRATION_DDL_LOCK_TIMEOUT`.
 DEFAULT_MIGRATION_LOCK_TIMEOUT: float = 120.0
 
 
@@ -962,13 +1027,18 @@ async def migration_advisory_lock(
     one fixed schema while the caller's settings name another — the same
     defect class the qualification itself fixes.
 
-    ``lock_timeout`` bounds only the WAIT, via Postgres' ``lock_timeout`` GUC
-    (which governs advisory-lock acquisition). It is reset to unlimited before
-    the body runs, so a long DDL step is never killed midway. ``0`` waits
-    indefinitely, the pre-existing behaviour. If the reset fails (a wedged
-    caller-owned connection), the failure is logged as a warning naming the
-    connection and the lock flow proceeds — that connection keeps the wait
-    bound as its session-wide ``lock_timeout`` until it is closed.
+    ``lock_timeout`` bounds only the WAIT for the advisory lock, via
+    Postgres' ``lock_timeout`` GUC. It is reset to unlimited before the body
+    runs: the session-wide value must not bound the ``-- taskq:no-transaction``
+    files, whose ``CONCURRENTLY`` phases wait on heavyweight locks by design,
+    while each transactional migration bounds its own table-lock wait with
+    ``SET LOCAL`` (see :func:`apply_pending`'s ``ddl_lock_timeout``). Neither
+    bound can interrupt a statement that already holds its lock — a long
+    index build is governed by ``statement_timeout``, widened below. ``0``
+    waits indefinitely, the pre-existing behaviour. If the reset fails (a
+    wedged caller-owned connection), the failure is logged as a warning
+    naming the connection and the lock flow proceeds — that connection keeps
+    the wait bound as its session-wide ``lock_timeout`` until it is closed.
 
     ``statement_timeout`` is widened to unlimited immediately after the
     lock is acquired — once, for the whole apply phase, and NEVER on the
@@ -1004,8 +1074,9 @@ async def migration_advisory_lock(
         )
         raise SystemExit(msg) from exc
     finally:
-        # Reset before the DDL so a legitimately long migration step is not
-        # killed by the wait bound.
+        # Reset before the DDL: the transactional files bound their own
+        # table-lock waits with SET LOCAL, and the no-transaction files'
+        # CONCURRENTLY waits must stay unbounded.
         if lock_timeout > 0:
             try:
                 await conn.execute("SET lock_timeout = 0")
@@ -1068,16 +1139,19 @@ async def apply_pending_locked(
     conn: asyncpg.Connection | None = None,
     conn_factory: Callable[[], Awaitable[asyncpg.Connection]] | None = None,
     lock_timeout: float = DEFAULT_MIGRATION_LOCK_TIMEOUT,
+    ddl_lock_timeout: float = DEFAULT_MIGRATION_DDL_LOCK_TIMEOUT,
 ) -> list[Migration]:
     """Apply pending migrations under a session-level advisory lock.
 
     Acquires ``pg_advisory_lock`` to prevent concurrent startup races,
     applies pending migrations, and releases the lock.
 
-    ``lock_timeout`` bounds only the **wait** for the lock, via Postgres'
-    ``lock_timeout`` GUC, which applies to advisory-lock acquisition. It is
-    reset to unlimited before the migrations run, so a long DDL step is never
-    interrupted midway. Pass ``0`` to wait indefinitely (the old behaviour).
+    ``lock_timeout`` bounds only the **wait** for the advisory lock, via
+    Postgres' ``lock_timeout`` GUC. It is reset to unlimited before the
+    migrations run; each transactional migration then bounds its own
+    table-lock waits with ``ddl_lock_timeout`` (see :func:`apply_pending`),
+    which cannot interrupt a statement that already holds its lock. Pass
+    ``0`` to wait indefinitely (the old behaviour).
     The session's ``statement_timeout`` is widened to unlimited for the
     apply phase for the same reason — a caller-supplied session default
     must not abort a long DDL statement mid-build (it would fail
@@ -1130,7 +1204,12 @@ async def apply_pending_locked(
             c = await asyncpg.connect(dsn)
         async with migration_advisory_lock(c, lock_timeout, schema=schema):
             applied = await apply_pending(
-                c, schema=schema, phase=phase, target=target, max_steps=max_steps
+                c,
+                schema=schema,
+                phase=phase,
+                target=target,
+                max_steps=max_steps,
+                ddl_lock_timeout=ddl_lock_timeout,
             )
         if applied:
             logger.info("migrations-applied-before-startup", count=len(applied))

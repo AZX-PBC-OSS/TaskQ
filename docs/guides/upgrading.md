@@ -133,6 +133,29 @@ The whole file rolled back automatically, so the schema is exactly as it was
 before the attempt. Fix the cause of the error, then re-run `taskq migrate
 up`.
 
+### The migration gave up waiting for a table lock
+
+A transactional migration's DDL (`ALTER TABLE jobs`, a plain `CREATE INDEX`)
+needs a lock that any session holding even a read on the table blocks — an
+actor's open transaction connection mid-job, an admin snapshot, `pg_dump`.
+Postgres queues lock requests first-come-first-served, so once the DDL is
+queued every later statement on that table (dispatch, enqueue, heartbeat)
+queues behind it; left unbounded, the wait outlives the workers' heartbeat
+budget and the fleet self-terminates while the migration is still waiting.
+Each transactional migration therefore waits at most
+`DEFAULT_MIGRATION_DDL_LOCK_TIMEOUT` (30 s, `SET LOCAL lock_timeout` inside
+its own transaction) and then fails with `MigrationLockTimeoutError`; the
+report names the migration, the bound, and this remedy. The migration rolled
+back and nothing was applied: find the holder in `pg_stat_activity` /
+`pg_locks`, end it or wait for it, then re-run `taskq migrate up`. To wait
+longer from your own deploy tooling, pass `ddl_lock_timeout=` to
+`apply_pending` / `apply_pending_locked` (`0` waits indefinitely, at the
+cost of parking every statement on the table behind the queued DDL). The
+bound governs the *wait* only — a statement that already holds its lock,
+such as an index build, is never interrupted by it. `-- taskq:no-transaction`
+migrations are not bounded: their `CONCURRENTLY` phases wait on heavyweight
+locks by design.
+
 ### Non-transactional migration (`-- taskq:no-transaction`)
 
 Nothing rolls back: statements before the failure remain applied, and the
