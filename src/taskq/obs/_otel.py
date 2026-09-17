@@ -715,7 +715,7 @@ def record_queue_wait(actor: str, queue: str, waited_seconds: float) -> None:
     """Record how long a job waited from eligibility to claim.
 
     Called once per dispatch from the claimed row's own server-clock
-    stamps: ``started_at - scheduled_at`` (Oban's ``queue_time``). The
+    stamps: ``started_at - scheduled_at``, eligibility to claim. The
     per-job companion of the sampled ``oldest_pending_age_seconds``: the
     gauge shows the head of the line, this histogram shows what every
     dispatched job actually waited, retries and re-pends included. Labels

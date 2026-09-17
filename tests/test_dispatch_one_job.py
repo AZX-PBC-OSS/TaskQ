@@ -626,7 +626,7 @@ async def test_dispatch_threads_the_rows_stored_schema_ver(
     """
     import taskq.worker.dispatch as dispatch_mod
 
-    real_validate = dispatch_mod.validate_actor_payload
+    real_validate = dispatch_mod.validate_actor_payload  # pyright: ignore[reportPrivateImportUsage]  # Why: the spy must read and replace the dispatch module's own binding, the seam the dispatch call site resolves; the helper's home module is private, so the re-export is not declared.
     seen_versions: list[str | None] = []
 
     def spy_validate(
@@ -1276,7 +1276,7 @@ async def test_queue_wait_is_the_rows_own_eligible_to_claimed_interval(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """taskq.jobs.queue_wait_seconds is started_at - scheduled_at from the
-    claimed row's server-clock stamps (Oban's queue_time), per (actor,
+    claimed row's server-clock stamps (eligibility to claim), per (actor,
     queue) — what every dispatched job actually waited, where the sampled
     oldest_pending_age gauge only shows the head of the line."""
     from taskq.testing.otel import histogram_points

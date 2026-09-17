@@ -1765,10 +1765,12 @@ async def _stranded_jobs_loop(ctx: SweepContext, shutdown: asyncio.Event) -> Non
       every label-keyed surface names a queue the fleet does serve.
 
     The unserved-queue predicate is fleet-wide by construction: the
-    ``workers`` table carries every registered worker's subscription,
-    and a crashed worker's row survives until the stale-worker grace
-    prunes it, so a fleet-wide restart does not false-alarm — only a
-    queue nothing has served past that grace strands.
+    ``workers`` table carries every registered worker's subscription, and
+    a worker row counts as serving only while its ``last_seen_at`` is
+    inside the liveness window, so a fleet-wide restart does not read as
+    stranded once the restarting workers re-register, while a queue whose
+    every subscriber has gone quiet reads unserved immediately instead of
+    hiding behind a dead row until the stale-worker sweep prunes it.
 
     Off the hot dispatch path — runs every 60 s when this worker is leader.
     """
