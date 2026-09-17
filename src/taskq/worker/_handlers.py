@@ -66,6 +66,8 @@ from taskq.obs import (
     ExceptionText,
     invoke_error_reporter,
     log_state_change,
+    record_attempt_failure,
+    record_job_timeout,
     record_reservation_denial,
     render_exception,
 )
@@ -510,6 +512,7 @@ async def _handle_timeout(
         error_message=log_message,
         error_traceback=log_traceback,
     )
+    record_job_timeout(job.actor, kind="start_to_close")
     job_state = JobRetryState(
         attempt=job.attempt,
         max_attempts=job.max_attempts,
@@ -523,6 +526,7 @@ async def _handle_timeout(
         job_state,
         max_retry_backoff=max_retry_backoff,
     )
+    record_attempt_failure(job.actor, error_info.error_class, retryable=isinstance(decision, Retry))
     if isinstance(decision, Retry):
         updated_row = await _terminal_write_with_retry(
             lambda: safe_mark_failed_or_retry(
@@ -556,6 +560,7 @@ async def _handle_timeout(
             # schedule_to_close lies before the next dispatch, so the
             # backend landed it failed with DeadlineExceeded — a terminal
             # failure, reported exactly like a Fail decision.
+            record_job_timeout(job.actor, kind="schedule_to_close")
             await _report_terminal_failure(
                 span=span,
                 log=log,
@@ -676,6 +681,7 @@ async def _handle_snooze(
         )
         return "scheduled"
     elif tri == "failed":
+        record_job_timeout(job.actor, kind="schedule_to_close")
         span.add_event(
             "lifecycle.failed",
             attributes={
@@ -773,6 +779,8 @@ async def _handle_retry_after(
         return "scheduled"
     elif tri in ("failed:DeadlineExceeded", "failed:MaxAttemptsExceeded"):
         cause = tri.split(":")[1]
+        if cause == "DeadlineExceeded":
+            record_job_timeout(job.actor, kind="schedule_to_close")
         span.add_event(
             "lifecycle.failed",
             attributes={
@@ -889,6 +897,7 @@ async def _handle_reservation_class_denied(
         )
         return "scheduled"
     elif tri == "failed":
+        record_job_timeout(job.actor, kind="schedule_to_close")
         span.add_event(
             "lifecycle.failed",
             attributes={
@@ -987,6 +996,7 @@ async def _handle_generic_exception(
         start_to_close=job.start_to_close,
     )
     decision = decide_after_failure(actor_config, e, job_state, max_retry_backoff=max_retry_backoff)
+    record_attempt_failure(job.actor, error_info.error_class, retryable=isinstance(decision, Retry))
     if isinstance(decision, Retry):
         updated_row = await _terminal_write_with_retry(
             lambda: safe_mark_failed_or_retry(
@@ -1018,6 +1028,7 @@ async def _handle_generic_exception(
         if updated_row.status == "failed":
             # The write's deadline arm refused the retry — see
             # _handle_timeout's retry branch.
+            record_job_timeout(job.actor, kind="schedule_to_close")
             await _report_terminal_failure(
                 span=span,
                 log=log,

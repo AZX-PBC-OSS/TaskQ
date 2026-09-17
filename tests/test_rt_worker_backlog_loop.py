@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Mapping
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from typing import cast
@@ -24,6 +24,7 @@ import pytest
 
 from taskq._ids import new_uuid
 from taskq.backend._protocol import Backend
+from taskq.obs import StrandedReason
 from taskq.settings import WorkerSettings
 from taskq.testing.clock import FakeClock
 from taskq.testing.fixtures import ModulePgSchema
@@ -76,7 +77,7 @@ class _ActorBacklogFailingConn(_ConnStub):
     """
 
     async def fetch(self, sql: str, *args: object) -> list[dict[str, object]]:
-        if "group by actor" in " ".join(sql.lower().split()):
+        if "group by actor, queue" in " ".join(sql.lower().split()):
             raise asyncpg.exceptions.QueryCanceledError(
                 "canceling statement due to statement timeout"
             )
@@ -374,7 +375,7 @@ async def test_demotion_keeps_backlog_gauges_and_clears_leader_scoped() -> None:
 
     update_queue_depth_cache({"default": 4})
     update_reservation_slots_cache({"gpu": 2})
-    update_stranded_jobs_cache({"orphan": 7})
+    update_stranded_jobs_cache({("orphan", "no_actor_config"): 7})
     otel_mod.update_jobs_by_status_cache({"scheduled": 9})  # pyright: ignore[reportPrivateUsage]  # Why: the cache-update seams are the loop's own inputs; the public re-export covers the backlog pair being asserted.
     update_scheduled_count_cache(9)
     update_oldest_due_age_cache(42.0)
@@ -441,7 +442,7 @@ def _reservation_cache() -> dict[str, int]:
     return dict(otel_mod._reservation_slots_cache)  # pyright: ignore[reportPrivateUsage]  # Why: see above.
 
 
-def _stranded_cache() -> dict[str, int]:
+def _stranded_cache() -> dict[tuple[str, StrandedReason], int]:
     import taskq.obs._otel as otel_mod
 
     return dict(otel_mod._stranded_jobs_cache)  # pyright: ignore[reportPrivateUsage]  # Why: see above.
@@ -476,21 +477,61 @@ async def _seed_running_job(
     *,
     locked_by_worker: UUID | None,
     lock_expires_at: datetime | None,
+    actor: str = "test_actor",
+    started_at: datetime | None = None,
 ) -> UUID:
-    """Seed one running row with the lock columns the zombie predicate reads."""
+    """Seed one running row with the lock columns the zombie predicate reads
+    (and the actor / started_at the running-age sampler groups on)."""
     job_id = new_uuid()
     await conn.execute(
         f'INSERT INTO "{schema}".jobs (id, actor, queue, payload, max_attempts, '  # noqa: S608  # Why: schema is the module fixture's validated identifier; no user input.
         "retry_kind, status, priority, scheduled_at, locked_by_worker, "
-        "lock_expires_at) "
-        "VALUES ($1, 'test_actor', 'default', '{}'::jsonb, 1, 'non_retryable', "
-        "'running', 0, $2, $3, $4)",
+        "lock_expires_at, started_at) "
+        "VALUES ($1, $5, 'default', '{}'::jsonb, 1, 'non_retryable', "
+        "'running', 0, $2, $3, $4, $6)",
         job_id,
         datetime.now(UTC),
         locked_by_worker,
         lock_expires_at,
+        actor,
+        started_at,
     )
     return job_id
+
+
+async def _drive_one_running_sample(
+    ctx: SweepContext,
+) -> tuple[dict[str, int] | None, dict[str, float] | None]:
+    """Run the loop until the per-actor running gauges (count, oldest age)
+    are fed once; both come from one statement, so one tick feeds both."""
+    counts: list[dict[str, int]] = []
+    ages: list[dict[str, float]] = []
+    original_count = _leader_sweeps.update_jobs_running_cache
+    original_age = _leader_sweeps.update_actor_oldest_running_age_cache
+
+    def _spy_count(data: Mapping[str, int]) -> None:
+        counts.append(dict(data))
+
+    def _spy_age(data: Mapping[str, float]) -> None:
+        ages.append(dict(data))
+
+    _leader_sweeps.update_jobs_running_cache = _spy_count  # type: ignore[assignment]  # Why: test-only instrumentation of the module's imported name, the file's established seam.
+    _leader_sweeps.update_actor_oldest_running_age_cache = _spy_age  # type: ignore[assignment]  # Why: see above.
+    shutdown = asyncio.Event()
+    task = asyncio.create_task(_backlog_detection_loop(ctx, shutdown))
+    try:
+        for _ in range(400):
+            if counts and ages:
+                break
+            await asyncio.sleep(0.01)
+    finally:
+        _leader_sweeps.update_jobs_running_cache = original_count  # type: ignore[assignment]  # Why: restoring the spied module attribute.
+        _leader_sweeps.update_actor_oldest_running_age_cache = original_age  # type: ignore[assignment]  # Why: see above.
+        shutdown.set()
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+    return (counts[0] if counts else None), (ages[0] if ages else None)
 
 
 def _pg_ctx(
@@ -630,3 +671,78 @@ async def test_running_lease_expired_counts_only_expired_running_jobs(
         f"{expired_lease!r} — the zombie-running predicate is "
         "status='running' AND lock_expires_at < now, nothing broader"
     )
+
+
+async def test_running_jobs_are_counted_per_actor(
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_schema: ModulePgSchema,
+) -> None:
+    """taskq.jobs.running is an exact per-actor count of the running
+    population — the capacity view beside the per-process active_jobs
+    gauge: which actors hold the fleet's slots while pending work waits.
+    Pending rows are not in it, and an actor with nothing running is
+    absent rather than reported as 0."""
+    schema = module_pg_schema.schema_name
+    now = datetime.now(UTC)
+    worker = new_uuid()
+    for _ in range(2):
+        await _seed_running_job(
+            clean_pg_conn,
+            schema,
+            locked_by_worker=worker,
+            lock_expires_at=now + timedelta(seconds=60),
+            actor="resize_image",
+        )
+    await _seed_running_job(
+        clean_pg_conn,
+        schema,
+        locked_by_worker=worker,
+        lock_expires_at=now + timedelta(seconds=60),
+        actor="send_email",
+    )
+    await _seed_job(clean_pg_conn, schema, status="pending", scheduled_at=now)
+
+    ctx = _pg_ctx(clean_pg_conn, schema=schema, is_leader=False)
+    running, _ages = await _drive_one_running_sample(ctx)
+
+    assert running == {"resize_image": 2, "send_email": 1}
+
+
+async def test_oldest_running_age_is_per_actor_from_started_at(
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_schema: ModulePgSchema,
+) -> None:
+    """taskq.jobs.oldest_running_age_seconds is the age of each actor's
+    oldest running attempt, measured from started_at by the server clock —
+    the series that shows an attempt outliving what the actor normally
+    takes when nothing (no start_to_close) will end it. An actor with a
+    fresh attempt reads near 0; an actor whose oldest attempt started 90 s
+    ago reads about 90 even though it also has a fresh one."""
+    schema = module_pg_schema.schema_name
+    now = datetime.now(UTC)
+    worker = new_uuid()
+    for started in (now - timedelta(seconds=90), now):
+        await _seed_running_job(
+            clean_pg_conn,
+            schema,
+            locked_by_worker=worker,
+            lock_expires_at=now + timedelta(seconds=60),
+            actor="resize_image",
+            started_at=started,
+        )
+    await _seed_running_job(
+        clean_pg_conn,
+        schema,
+        locked_by_worker=worker,
+        lock_expires_at=now + timedelta(seconds=60),
+        actor="send_email",
+        started_at=now,
+    )
+
+    ctx = _pg_ctx(clean_pg_conn, schema=schema, is_leader=False)
+    running, ages = await _drive_one_running_sample(ctx)
+
+    assert running == {"resize_image": 2, "send_email": 1}
+    assert ages is not None and set(ages) == {"resize_image", "send_email"}
+    assert 85.0 <= ages["resize_image"] <= 100.0, ages
+    assert 0.0 <= ages["send_email"] <= 10.0, ages

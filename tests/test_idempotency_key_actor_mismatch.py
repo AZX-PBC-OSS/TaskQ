@@ -162,3 +162,29 @@ async def test_same_actor_duplicate_on_the_fast_tier_stays_the_duplicate_error(
 
     with pytest.raises(DuplicateIdempotencyKeyError):
         await backend_pair.enqueue_batch_fast([_args("actor_a", key)])
+
+
+def test_in_batch_mismatch_carries_no_stored_job_id() -> None:
+    """The fast-path batch can collide two of its own items across actors
+    before anything is stored: the error then names the batch collision
+    instead of a job id, and ``existing_job_id`` is ``None``."""
+    err = IdempotencyKeyActorMismatchError(
+        actor="send_email",
+        existing_actor="send_sms",
+        existing_job_id=None,
+        idempotency_key="order-1",
+        idempotency_scope=None,
+    )
+    assert err.existing_job_id is None
+    assert "an item of the same batch for actor 'send_sms'" in str(err)
+    assert "matched job None" not in str(err)
+
+    stored = new_job_id()
+    err = IdempotencyKeyActorMismatchError(
+        actor="send_email",
+        existing_actor="send_sms",
+        existing_job_id=stored,
+        idempotency_key="order-1",
+        idempotency_scope=None,
+    )
+    assert f"matched job {stored} of actor 'send_sms'" in str(err)

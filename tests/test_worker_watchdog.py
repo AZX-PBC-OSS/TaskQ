@@ -260,6 +260,103 @@ def test_loop_lag_watchdog_arms_early_on_first_tick(exit_codes: list[int]) -> No
     assert watchdog._armed()
 
 
+# ── Detector 4: the event-loop lag histogram ─────────────────────────
+
+
+class _HistogramRecorder:
+    def __init__(self) -> None:
+        self.samples: list[float] = []
+
+    def record(self, value: float, attrs: dict[str, object] | None = None) -> None:
+        self.samples.append(value)
+
+
+async def test_event_loop_lag_histogram_samples_a_blocked_loop(
+    monkeypatch: pytest.MonkeyPatch, exit_codes: list[int]
+) -> None:
+    """taskq.worker.event_loop_lag_seconds is the continuous signal under
+    the warn/trip thresholds: a healthy loop samples microseconds per
+    beat, and a loop blocked for 0.3 s produces one sample at least that
+    long (the beat request outstanding when the block began lands when it
+    ends — the requests polled during the block must not re-stamp it)."""
+    from taskq.worker import _watchdog as watchdog_mod
+
+    histogram = _HistogramRecorder()
+    monkeypatch.setattr(watchdog_mod, "_event_loop_lag", histogram)
+    block, poll = 0.3, 0.01
+    watchdog = LoopLagWatchdog(
+        asyncio.get_running_loop(),
+        LoopLiveness(),
+        budget=100.0,
+        warn_budget=50.0,
+        startup_grace=0.0,
+        poll_interval=poll,
+    )
+    watchdog.start()
+    try:
+        deadline = time.monotonic() + 5.0
+        while len(histogram.samples) < 3 and time.monotonic() < deadline:  # noqa: ASYNC110  # Why: the producer is a thread with no event to await; a bounded poll is the seam.
+            await asyncio.sleep(poll)
+        healthy = list(histogram.samples)
+        assert len(healthy) >= 3, "a responsive loop must produce a sample per landed beat"
+        assert max(healthy) < block / 2, healthy
+
+        time.sleep(block)  # noqa: ASYNC251  # Why: blocking the loop IS the scenario under test.
+
+        # The beat outstanding across the block lands when it ends and is
+        # sampled on the watchdog's next poll; a beat that had landed just
+        # before the block may be sampled first, so wait for the block-
+        # sized sample rather than the first new one.
+        deadline = time.monotonic() + 5.0
+        while (  # noqa: ASYNC110  # Why: as above.
+            not any(s >= block - poll for s in histogram.samples[len(healthy) :])
+            and time.monotonic() < deadline
+        ):
+            await asyncio.sleep(poll)
+        stalled = histogram.samples[len(healthy) :]
+        assert stalled and max(stalled) >= block - poll, (
+            f"the sample must carry the block, not the last poll's request: {stalled}"
+        )
+        assert max(stalled) < block + 1.0
+        assert exit_codes == []
+    finally:
+        watchdog.stop()
+
+
+async def test_event_loop_lag_trip_records_the_stall_before_exit(
+    monkeypatch: pytest.MonkeyPatch, exit_codes: list[int]
+) -> None:
+    """A loop that never recovers trips; the stall observed at the trip is
+    recorded so the histogram is not silent about the one lag that
+    mattered most."""
+    from taskq.worker import _watchdog as watchdog_mod
+
+    histogram = _HistogramRecorder()
+    monkeypatch.setattr(watchdog_mod, "_event_loop_lag", histogram)
+    monkeypatch.setattr(watchdog_mod, "_flush_metrics_before_exit", lambda: None)
+    monkeypatch.setattr("taskq.worker._watchdog.faulthandler.dump_traceback", lambda *a, **k: None)
+    t, clock = _clock()
+    watchdog = LoopLagWatchdog(
+        _NeverResponsiveLoop(),  # type: ignore[arg-type]
+        LoopLiveness(clock=clock),
+        budget=1.0,
+        warn_budget=0.5,
+        startup_grace=0.0,
+        poll_interval=0.01,
+        clock=clock,
+    )
+    watchdog.start()
+    try:
+        t[0] = 5.0
+        deadline = time.monotonic() + 5.0
+        while not exit_codes and time.monotonic() < deadline:
+            time.sleep(0.01)  # noqa: ASYNC251  # Why: the trip fires on the watchdog thread against a fake loop; nothing here is awaitable.
+    finally:
+        watchdog.stop()
+    assert exit_codes == [EXIT_WATCHDOG]
+    assert histogram.samples and max(histogram.samples) >= 1.0, histogram.samples
+
+
 # ── Detector 4, tier 1: non-terminal lag warning ─────────────────────
 
 

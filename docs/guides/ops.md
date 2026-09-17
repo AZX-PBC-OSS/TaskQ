@@ -191,6 +191,24 @@ misconfiguration:
     actor can run longer than its bucket's `lease`, two of them will hold one slot. Size the lease
     above your p-max runtime, not your p99.
 
+### When to add workers: saturation, not depth
+
+Depth alone does not say whether the fleet is short of slots or the slots are idle. The
+capacity gauges answer it per process and per actor:
+
+| Signal | PromQL | Reads |
+|---|---|---|
+| Utilisation ≥ 0.9 for 10 m **and** `oldest_pending_age` rising | `taskq_worker_active_jobs / taskq_worker_max_concurrency > 0.9` beside `max by (actor) (taskq_jobs_oldest_pending_age_seconds)` climbing | every slot is busy and pending work is ageing: **add workers** (or raise `TASKQ_MAX_CONCURRENCY` where the actors are I/O-bound). |
+| Utilisation high, `oldest_pending_age` flat | as above, age not climbing | the fleet is busy but keeping up — no action. |
+| Utilisation low, `oldest_pending_age` rising | `... < 0.5` with the age climbing | slots are free and work still waits: not a capacity problem — an admission cap (`max_concurrent`, a reservation or rate limit: `taskq_reservation_denials_total`), an unserved queue (`TaskQQueueUnserved`), or a promotion stall (`TaskQPromotionStalled`). Adding workers changes nothing. |
+| One actor holding the slots | `sum by (actor) (taskq_jobs_running)` dominated by one actor while others' `oldest_pending_age` climbs | that actor's `max_concurrent` (or a queue cap) is the lever, not the replica count. |
+| Running age past the actor's p99 with `timeouts` flat | `max by (actor) (taskq_jobs_oldest_running_age_seconds)` beyond `histogram_quantile(0.99, rate(messaging_process_duration_seconds_bucket[1h]))` while `taskq_jobs_timeouts_total{kind="start_to_close"}` does not move | an actor with no `start_to_close`: the attempt has outlived what the actor normally takes and nothing will end it — declare the budget (see [§2](#2-timeouts-start_to_close-and-schedule_to_close)). |
+
+`taskq_worker_active_jobs` / `taskq_worker_max_concurrency` are one series per worker process
+(the health socket's `taskq_active_jobs` is the same number, but only a real scrape sees these
+two); `taskq_jobs_running{actor}` is the fleet-wide running count per actor, sampled by every
+worker beside `taskq_jobs_by_status`.
+
 ### Capacity ownership: the seed-only trap
 
 The `@actor(max_concurrent=...)` literal only *seeds* the `actor_config` row on first
@@ -961,20 +979,26 @@ success. The job queue is your timer, and dedup makes the pattern crash-safe.
 
 ### Wiring an exporter
 
-TaskQ emits via the OpenTelemetry **API** and never overrides standard OTel vars; the SDK and
-exporter are your boilerplate. Two supported shapes:
+TaskQ emits via the OpenTelemetry **API** and never overrides standard OTel vars. Two
+supported shapes:
 
-- **OTLP** (collector, Jaeger, Tempo, Datadog, Sentry, PostHog): set
-  `OTEL_EXPORTER_OTLP_ENDPOINT` (`:4317` gRPC / `:4318` HTTP), `OTEL_SERVICE_NAME`,
-  `OTEL_RESOURCE_ATTRIBUTES` — or initialize the SDK in-process
-  (`examples/otel_setup.py`).
+- **OTLP** (collector, Jaeger, Tempo, Datadog, Sentry, PostHog): install `taskq-py[otel]`
+  and set `OTEL_EXPORTER_OTLP_ENDPOINT` (`:4317` gRPC / `:4318` HTTP), `OTEL_SERVICE_NAME`,
+  `OTEL_RESOURCE_ATTRIBUTES`. `taskq worker` installs the SDK providers from those variables
+  at startup and logs `otel-exporter-configured traces=otlp metrics=otlp source=env`
+  (`opentelemetry-instrument taskq worker` is the equivalent launcher; an embedded worker
+  calls `taskq.obs.configure_exporters(settings)` or initializes the SDK in-process —
+  `examples/otel_setup.py`).
 - **Vendor SDK in-process** (e.g. Azure Monitor / App Insights): call the vendor's
-  `configure_azure_monitor(...)` **inside the worker process** before it starts.
+  `configure_azure_monitor(...)` **inside the worker process** before it starts; the worker
+  logs `otel-exporter-preconfigured` and leaves the vendor's providers alone.
 
-!!! warning "An exporter env var set on the container does nothing by itself"
+!!! warning "A vendor connection string on the container does nothing by itself"
     `APPLICATIONINSIGHTS_CONNECTION_STRING` on a worker container exports nothing unless the
-    worker process itself configures the exporter; with no exporter configured, OTel drops
-    spans and metrics **silently** — health stays green while nothing is collected. Verify
+    worker process itself calls the vendor's configure function — it is not one of the
+    standard `OTEL_*` variables the worker wires from. The standard variables set without
+    the `[otel]` extra export nothing either; the worker says so at startup
+    (`otel-exporter-unavailable`, naming the extra). Verify the startup line and that
     telemetry actually arrives (one trace, one metric series) before trusting the pipeline.
 
 Every job emits an `enqueue` PRODUCER span, a `process` CONSUMER span (linked, with
@@ -989,16 +1013,22 @@ Every job emits an `enqueue` PRODUCER span, a `process` CONSUMER span (linked, w
 | `taskq.queue.depth` (by queue — counts `pending` **and** `scheduled`) | backlog growth, starved queues, fan-out storms |
 | `taskq.jobs.by_status` (by status — `pending` and `scheduled` reported separately) | which side of promotion the backlog sits on |
 | `taskq.jobs.actor_backlog` (by actor **and** queue — `pending` only; exact below the sampler's 1000-row per-pair cap, reading 1000 at/above it) | the unconsumed actor: one actor's series rises while its queue-mates stay flat — invisible in any queue-summed view |
+| `taskq.jobs.queue_wait_seconds` (histogram by actor and queue) | what dispatched jobs actually waited — a rising p99 with flat depth is dispatch starvation (priority/fairness, admission caps), not backlog |
 | `taskq.jobs.oldest_pending_age_seconds` (by actor and queue) | the same condition as a head-of-line age growing with wall clock — the series `TaskQQueueDepthHigh` fires on |
 | `taskq.jobs.oldest_due_age_seconds` | how long the oldest due `scheduled` job has waited for promotion |
 | `taskq_maintenance_leader_sweep_last_success_seconds` (by sweep) | per-sweep stalls — a sweep that stops completing |
 | `taskq_maintenance_leader_sweep_timeouts_total` (by sweep) | batches aborted by deadlines or server-side cancels |
-| `taskq.jobs.stranded` (gauge) | jobs whose actor has no `actor_config` row — can never dispatch |
+| `taskq.queue.live_workers` (by queue, same tick as depth) | a queue with work and no live worker — `TaskQQueueUnserved` joins it against `taskq.queue.depth` |
+| `taskq.jobs.stranded` (by actor and `reason`) | jobs that can never dispatch: `no_actor_config` (no `actor_config` row) or `unserved_queue` (no live worker on the routing queue) |
 | `taskq.dispatch.duration` | dispatch contention (PgBouncer/pool trouble) |
+| `taskq.jobs.oldest_running_age_seconds` (by actor) | an attempt that outlived what the actor normally takes with `taskq.jobs.timeouts` flat — an actor with no `start_to_close` |
+| `taskq.worker.active_jobs` / `taskq.worker.max_concurrency` (one series per process) and `taskq.jobs.running` (by actor) | slot saturation — utilisation ≥ 0.9 with `oldest_pending_age` rising is "add workers"; which actor holds the slots (see [§3 — When to add workers](#when-to-add-workers-saturation-not-depth)) |
 | `taskq.worker.slot_pool.acquire_failures` / `taskq.worker.slot_pool.connections_in_use` | per-slot pool exhaustion and saturation — an acquire failure is infrastructure (the job is left for lock-lease reclaim, not failed); the gauge pinned at the pool maximum with zero acquire failures is saturation, visible below the acquire-failure cliff |
-| `messaging.process.duration` | actor latency, slow chunks |
+| `messaging.process.duration` (by `outcome`) | actor latency, slow chunks — filter `outcome="succeeded"` for the healthy percentiles |
+| `taskq.jobs.attempt_failures` (by actor, `error_type`, `retryable`) | a dependency failing under retry cover (`retryable="true"` rising while the terminal-failed share stays flat) — the series `TaskQRetryRateHigh` fires on |
+| `taskq.jobs.abandoned` (by actor) | an actor that ignores cancellation — an operator cancel outlasted both graces; never produced by a deploy |
 | `taskq.lock.expires_in_seconds` | heartbeat trouble before it becomes `crashed` jobs |
-| `taskq.deadline_exceeded_sweep.jobs_failed` | `schedule_to_close` too tight |
+| `taskq.jobs.timeouts` (by actor and `kind`) | `start_to_close` hits per attempt; `schedule_to_close` hits however the deadline was enforced (sweep or handler arm) — `taskq.deadline_exceeded_sweep.jobs_failed` is the sweep's own count |
 | `taskq.backpressure.errors` (filter `kind` to the capacity kinds) | `max_pending` rejections — producer pressure |
 | `taskq.cron.disabled_schedules` | a cron outage with one log line |
 | `taskq.maintenance_leader.is_leader` summed != 1 | leader split-brain / no leader |
@@ -1080,13 +1110,15 @@ and bounded fan-out per job (chunk sizes in the hundreds, not the tens of thousa
 
 Ship-ready alert rules for the metrics above exist in the repo and are ready to import:
 [`src/taskq/contrib/prometheus/rules.yaml`](https://github.com/AZX-PBC-OSS/TaskQ/blob/main/src/taskq/contrib/prometheus/rules.yaml)
-(17 rules: queue depth, heartbeat misses, crashed-job rate, abandoned jobs, lock TTL, leader
-split-brain, dispatch latency, progress failures, disabled cron, scheduled-backlog growth,
-promotion stall, sweep timeouts, sweep degraded tier, maintenance-lock contention, rate-limit
-dependency outage, cron lock contention, expired-lease zombies) and the equivalent PrometheusRule
+(20 rules: queue depth, heartbeat misses, terminal-failed share, retried-failure share, abandoned
+jobs, lock TTL, leader split-brain, dispatch latency, progress failures, disabled cron,
+scheduled-backlog growth, promotion stall, sweep timeouts, sweep degraded tier, maintenance-lock
+contention, rate-limit dependency outage, cron lock contention, unserved queue, stranded jobs,
+expired-lease zombies) and the equivalent PrometheusRule
 CRD at `src/taskq/contrib/kubernetes/prometheus_rule.yaml`. Importing them is not enough — make
-sure something **scrapes** `/jobs/health/metrics` (see
-[deployment.md — Prometheus scrape](deployment.md#observability-setup)).
+sure something **scrapes the workers** (`TASKQ_METRICS_PORT`, every pod; see
+[deployment.md — Prometheus scrape](deployment.md#observability-setup)): the rules read
+worker-side series the admin process's `/jobs/health/metrics` never carries.
 
 ---
 

@@ -362,7 +362,7 @@ def _emit_all_four(actor: str, queue: str) -> None:
     obs_mod.record_published_message(actor, queue)
     obs_mod.record_dispatch_duration(queue, 0.001)
     obs_mod.record_consumed_message(actor, queue, outcome="succeeded")
-    obs_mod.record_process_duration(actor, queue, 0.001)
+    obs_mod.record_process_duration(actor, queue, 0.001, outcome="succeeded")
 
 
 def test_queue_label_cap_and_overflow_label_are_pinned() -> None:

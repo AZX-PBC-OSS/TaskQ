@@ -24,6 +24,7 @@ the detector (or an equivalent signal).
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Mapping
 from datetime import timedelta
 from typing import cast
 from unittest.mock import Mock
@@ -124,9 +125,17 @@ async def _run_detector(
         worker_id=new_uuid(),
     )
     published: list[dict[str, int]] = []
+    published_by_reason: list[dict[tuple[str, str], int]] = []
 
-    def _capture(data: dict[str, int]) -> None:
-        published.append(dict(data))
+    def _capture(data: Mapping[tuple[str, str], int]) -> None:
+        # The gauge is keyed (actor, reason); the per-actor total these
+        # attacks assert on is the sum over reasons, and the last
+        # per-reason snapshot is kept for the liveness assertions.
+        published_by_reason.append(dict(data))
+        folded: dict[str, int] = {}
+        for (actor, _reason), count in data.items():
+            folded[actor] = folded.get(actor, 0) + count
+        published.append(folded)
 
     monkeypatch.setattr("taskq.worker._leader_sweeps.update_stranded_jobs_cache", _capture)
 
@@ -137,7 +146,13 @@ async def _run_detector(
         shutdown.set()
         await asyncio.wait_for(task, timeout=5.0)
     assert published, "detector loop never published a tick"
+    _last_by_reason[0] = published_by_reason[-1]
     return published[-1], [dict(event) for event in captured]
+
+
+#: The most recent (actor, reason)-keyed gauge snapshot ``_run_detector``
+#: saw, for the tests that assert on the reason label.
+_last_by_reason: list[dict[tuple[str, str], int]] = [{}]
 
 
 async def _run_stranded_detector_once(
@@ -576,6 +591,141 @@ async def test_unserved_event_names_the_queue_dispatch_would_route_by(
             f"event must name the unserved assignment {_UNSERVED_ASSIGNMENT_QUEUE!r} "
             f"— naming the label {_SERVED_LABEL_QUEUE!r} (served) reports the "
             f"healthy queue as the problem; event={repend_event!r}"
+        )
+    finally:
+        if pool is not None:
+            await pool.close()
+        await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        await conn.close()
+
+
+# ── Liveness: a dead-but-unswept worker row does not serve a queue ──────
+
+
+async def _seed_unserved_queue_job(conn: asyncpg.Connection, schema: str) -> None:
+    """One pending row WITH actor_config on a queue nobody live serves."""
+    await conn.execute(
+        f'INSERT INTO "{schema}".actor_config (actor, queue) VALUES ($1, $2)',
+        _SHAPE_I_ACTOR,
+        "default",
+    )
+    await conn.execute(
+        f'INSERT INTO "{schema}".jobs '
+        "(id, actor, queue, payload, max_attempts, retry_kind, status, scheduled_at) "
+        "VALUES ($1, $2, $3, '{}'::jsonb, 3, 'transient', 'pending', clock_timestamp())",
+        new_uuid(),
+        _SHAPE_I_ACTOR,
+        _NO_WORKER_QUEUE,
+    )
+
+
+async def _seed_worker(conn: asyncpg.Connection, schema: str, *, seen_ago_secs: float) -> None:
+    await conn.execute(
+        f'INSERT INTO "{schema}".workers (id, hostname, pid, queues, last_seen_at) '
+        "VALUES ($1, 'h', 1, $2, clock_timestamp() - make_interval(secs => $3))",
+        new_uuid(),
+        [_NO_WORKER_QUEUE],
+        seen_ago_secs,
+    )
+
+
+async def test_stale_worker_row_does_not_serve_a_queue(
+    pg_dsn: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A worker row whose last_seen_at is older than the liveness window is
+    not dispatching; until the stale-worker sweep removes it, the row must
+    not hide an unserved queue. The gauge names the reason, and a fresh
+    worker on the same queue clears it."""
+    schema = f"torp_{new_base62()}".lower()
+    conn = await asyncpg.connect(pg_dsn)
+    pool: asyncpg.Pool | None = None
+    try:
+        await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        await apply_pending(conn, schema=schema)
+        await _seed_unserved_queue_job(conn, schema)
+        # admin_worker_liveness_seconds defaults to 30: this row is dead.
+        await _seed_worker(conn, schema, seen_ago_secs=120.0)
+
+        pool = await asyncpg.create_pool(pg_dsn, min_size=1, max_size=2)
+        gauge = await _run_stranded_detector_once(pg_dsn, pool, schema, monkeypatch)
+        assert gauge.get(_SHAPE_I_ACTOR, 0) == 1, (
+            f"a stale worker row must not count as serving {_NO_WORKER_QUEUE!r}; "
+            f"published {gauge!r}"
+        )
+        assert _last_by_reason[0] == {(_SHAPE_I_ACTOR, "unserved_queue"): 1}
+
+        await _seed_worker(conn, schema, seen_ago_secs=1.0)
+        gauge = await _run_stranded_detector_once(pg_dsn, pool, schema, monkeypatch)
+        assert gauge == {}, f"a live worker serves the queue; published {gauge!r}"
+    finally:
+        if pool is not None:
+            await pool.close()
+        await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        await conn.close()
+
+
+async def test_queue_depth_loop_samples_live_workers_per_queue(
+    pg_dsn: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """taskq.queue.live_workers counts only workers inside the liveness
+    window, per subscribed queue, from the same tick as the depth — so a
+    queue with depth and no live worker is joinable on ``queue``."""
+    from taskq.worker._leader_sweeps import _queue_depth_loop
+
+    schema = f"torp_{new_base62()}".lower()
+    conn = await asyncpg.connect(pg_dsn)
+    pool: asyncpg.Pool | None = None
+    try:
+        await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        await apply_pending(conn, schema=schema)
+        await _seed_unserved_queue_job(conn, schema)
+        await _seed_worker(conn, schema, seen_ago_secs=120.0)  # dead: not counted
+        await conn.execute(
+            f'INSERT INTO "{schema}".workers (id, hostname, pid, queues, last_seen_at) '
+            "VALUES ($1, 'h', 1, $2, clock_timestamp())",
+            new_uuid(),
+            ["default", "reports"],
+        )
+        await conn.execute(
+            f'INSERT INTO "{schema}".workers (id, hostname, pid, queues, last_seen_at) '
+            "VALUES ($1, 'h', 2, $2, clock_timestamp())",
+            new_uuid(),
+            ["default"],
+        )
+
+        settings = WorkerSettings.load_from_dict(
+            {
+                "TASKQ_PG_DSN": pg_dsn,
+                "TASKQ_SCHEMA_NAME": schema,
+                "TASKQ_QUEUE_DEPTH_INTERVAL": "0.05",
+            },
+            validate=False,
+        )
+        pool = await asyncpg.create_pool(pg_dsn, min_size=1, max_size=2)
+        ctx = SweepContext(
+            deps=_DetectorDeps(settings, pool),  # type: ignore[arg-type]  # Why: duck-typed WorkerDeps carrying exactly the fields the loop reads.
+            backend=None,  # type: ignore[arg-type]  # Why: the depth loop never touches ctx.backend.
+            clock=SystemClock(),
+            worker_id=new_uuid(),
+        )
+        depths: list[dict[str, int]] = []
+        live: list[dict[str, int]] = []
+        monkeypatch.setattr(
+            "taskq.worker._leader_sweeps.update_queue_depth_cache", lambda d: depths.append(dict(d))
+        )
+        monkeypatch.setattr(
+            "taskq.worker._leader_sweeps.update_queue_live_workers_cache",
+            lambda d: live.append(dict(d)),
+        )
+        shutdown = asyncio.Event()
+        task = asyncio.create_task(_queue_depth_loop(ctx, shutdown))
+        await asyncio.sleep(0.25)
+        shutdown.set()
+        await asyncio.wait_for(task, timeout=5.0)
+
+        assert depths and depths[-1] == {_NO_WORKER_QUEUE: 1}
+        assert live and live[-1] == {"default": 2, "reports": 1}, (
+            f"the dead worker's {_NO_WORKER_QUEUE!r} subscription must not count; got {live[-1]!r}"
         )
     finally:
         if pool is not None:

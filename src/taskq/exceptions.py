@@ -274,11 +274,12 @@ class IdempotencyKeyActorMismatchError(TaskQError):
     Nothing was inserted (single enqueue: the arbiter skipped the row; batch:
     the whole batch is rolled back, all-or-nothing like a singleton
     collision; batch fast: the COPY aborts the whole batch the same way).
-    ``existing_job_id`` is ``None`` only on the batch-fast tier, when the
-    holder was an earlier item of the same COPY batch — its row never
-    persisted, so there is no id to name. Namespace keys per actor
-    (``"send_receipt:order_123"``) or give the two actors different
-    ``idempotency_scope`` values.
+    Namespace keys per actor (``"send_receipt:order_123"``) or
+    give the two actors different ``idempotency_scope`` values.
+
+    ``existing_job_id`` names the stored job the key matched; it is ``None``
+    when the collision is between two items of the same fast-path batch,
+    where no row was stored for either.
     """
 
     def __init__(
@@ -296,15 +297,15 @@ class IdempotencyKeyActorMismatchError(TaskQError):
         self.idempotency_key = idempotency_key
         self.idempotency_scope = idempotency_scope
         matched = (
-            f"job {existing_job_id} of actor {existing_actor!r}"
+            f"matched job {existing_job_id} of actor {existing_actor!r}"
             if existing_job_id is not None
-            else f"an item of the same batch for actor {existing_actor!r}"
+            else f"collided with an item of the same batch for actor {existing_actor!r}"
         )
         super().__init__(
             f"enqueue for actor {actor!r} with idempotency_key {idempotency_key!r} "
-            f"(scope {idempotency_scope!r}) matched {matched}: keys are unique per "
-            "scope across actors, and a hit on another actor's job is not a dedup of "
-            "this one. Nothing was enqueued. Namespace the key per actor or use a "
+            f"(scope {idempotency_scope!r}) {matched}: keys are unique per scope "
+            "across actors, and a hit on another actor's job is not a dedup of this "
+            "one. Nothing was enqueued. Namespace the key per actor or use a "
             "different idempotency_scope."
         )
 
