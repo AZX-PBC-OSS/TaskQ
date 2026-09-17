@@ -191,18 +191,18 @@ async def test_diff_batch_counters_on_terminal_and_missing(pg_dsn: str) -> None:
     mem, pg = await run_differential(_terminal_batch_counter_writes, pg_dsn=pg_dsn)
     assert_mirror(
         "batch counter writes match only active rows: increment/reset "
-        "against a terminal batch return the inert shape (0, None, 0)/0, a "
+        "against a terminal batch return the inert shape (0, None)/None, a "
         "missing batch returns the same, and complete_batch never flips an "
         "aborted row — identically on both backends",
         mem,
         pg,
     )
     assert pg["records"] == {
-        "increment_on_aborted": [0, None, 0],
-        "reset_on_aborted": 0,
+        "increment_on_aborted": [0, None],
+        "reset_on_aborted": None,
         "complete_on_aborted": "aborted",
-        "increment_missing": [0, None, 0],
-        "reset_missing": 0,
+        "increment_missing": [0, None],
+        "reset_missing": None,
     }
 
 

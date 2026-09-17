@@ -195,7 +195,7 @@ _NO_STORED_STATE_ESCAPES: dict[str, str] = {
     "poll_cancel_flags": "returns CancelFlag — frozen, scalar fields only",
     "prune_old_batches": "returns a count",
     "reclaim_expired_locks": "returns a count",
-    "reset_batch_failures": "returns a count",
+    "reset_batch_failures": "returns None",
     "retry_job": "returns bool",
     "scheduled_to_pending": "returns a count",
     "set_queue_mode": "returns None; scalar arguments",
