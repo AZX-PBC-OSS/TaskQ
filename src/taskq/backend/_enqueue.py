@@ -749,6 +749,7 @@ async def _enqueue_on_conn(
     max_pending_lock_timeout_ms: float = DEFAULT_MAX_PENDING_LOCK_TIMEOUT_MS,
     unique_for_lock_timeout_ms: float = DEFAULT_UNIQUE_FOR_LOCK_TIMEOUT_MS,
     idempotency_lock_timeout_ms: float = DEFAULT_IDEMPOTENCY_LOCK_TIMEOUT_MS,
+    owns_transaction: bool = False,
 ) -> JobRow:
     """Core enqueue logic running on *conn*.
 
@@ -764,7 +765,16 @@ async def _enqueue_on_conn(
     check-then-insert. A caller who already holds a transaction owns the
     scope — the advisory locks then span that caller's transaction, so
     single-flight and cap exactness hold until its commit/rollback.
+
+    *owns_transaction*: no transaction on *conn* outlives this call — the
+    pool path's bare connection, or the transaction this function opened
+    itself for the preflight arms. Then a refusal may abort the scope
+    outright and a transaction-local GUC needs no restore, so the
+    bounded idempotency arm skips the savepoint and the read-then-restore
+    of ``lock_timeout`` that only a caller-owned transaction needs. A bare
+    connection always qualifies: any scope opened here ends here.
     """
+    owns_transaction = owns_transaction or not conn.is_in_transaction()
     unique_for_single_flight = args.unique_for is not None and args.identity_key is not None
     if (args.max_pending is not None or unique_for_single_flight) and not conn.is_in_transaction():
         # Why a transaction here and not just the lock: pg_advisory_xact_lock
@@ -793,6 +803,7 @@ async def _enqueue_on_conn(
                 max_pending_lock_timeout_ms=max_pending_lock_timeout_ms,
                 unique_for_lock_timeout_ms=unique_for_lock_timeout_ms,
                 idempotency_lock_timeout_ms=idempotency_lock_timeout_ms,
+                owns_transaction=True,
             )
     if args.unique_for is not None and args.identity_key is not None:
         # Why a lock at all: what follows is a check-then-insert. Under READ
@@ -973,10 +984,24 @@ async def _enqueue_on_conn(
         idempotency_bounded_wait = (
             args.idempotency_key is not None and idempotency_lock_timeout_ms > 0
         )
-        async with _optional_savepoint(conn, enabled=singleton_enqueue or idempotency_bounded_wait):
+        # The savepoint and the read-then-restore exist for a caller-owned
+        # transaction, which must survive a refusal and keep its own
+        # lock_timeout. On a scope this call owns a refusal aborts the
+        # scope outright and the transaction-local bound ends with it, so
+        # neither is paid; the one scope an owned path still opens is a
+        # real short transaction on a bare connection, so that the bounded
+        # arm's SET LOCAL spans its INSERT.
+        restore_lock_timeout = idempotency_bounded_wait and not owns_transaction
+        if owns_transaction:
+            scope_needed = idempotency_bounded_wait and not conn.is_in_transaction()
+        else:
+            scope_needed = singleton_enqueue or idempotency_bounded_wait
+        async with _optional_savepoint(conn, enabled=scope_needed):
             # Bound upfront (not only in the branch) so the restore below
             # is provably bound on every path it runs.
             prior_lock_timeout: str | None = None
+            if restore_lock_timeout:
+                prior_lock_timeout = await conn.fetchval(_LOCK_TIMEOUT_READ_SQL)
             if idempotency_bounded_wait:
                 # Bounded speculative-token wait — the RED contract of
                 # tests/test_rt_locks_actor_tx_enqueue_serialization.py:
@@ -1001,7 +1026,6 @@ async def _enqueue_on_conn(
                 # No client-side backstop: the pool conns carry
                 # command_timeout, which owns the network-black-hole
                 # regime; the GUC owns the lock-wait regime.
-                prior_lock_timeout = await conn.fetchval(_LOCK_TIMEOUT_READ_SQL)
                 await conn.execute(_LOCK_TIMEOUT_SET_SQL, f"{round(idempotency_lock_timeout_ms)}ms")
             rec = await conn.fetchrow(
                 sql.enqueue,
@@ -1032,7 +1056,7 @@ async def _enqueue_on_conn(
                 args.retry_backoff,
                 args.retry_jitter,
             )
-            if idempotency_bounded_wait:
+            if restore_lock_timeout:
                 # Restore before the savepoint's RELEASE — see above. The
                 # None arm is unreachable (the read ran under the same
                 # flag); str() tolerates it for the type checker anyway.

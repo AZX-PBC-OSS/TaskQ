@@ -17,7 +17,7 @@ from uuid import UUID
 
 from taskq._ids import new_job_id, new_uuid
 from taskq.backend._dispatch import QueueModeCache, _dispatch_batch
-from taskq.backend._enqueue import _enqueue
+from taskq.backend._enqueue import _enqueue, _enqueue_with_conn
 from taskq.backend._protocol import EnqueueArgs, JobRow
 from taskq.backend._sql_templates import render as render_sql
 from taskq.testing.clock import FakeClock
@@ -264,3 +264,47 @@ async def test_a_plain_enqueue_is_one_statement() -> None:
     row = await _enqueue_on_pool(conn, args)
     assert row.id == args.id
     assert _shape(conn.wire) == ['INSERT INTO "taskq".jobs']
+
+
+async def test_a_keyed_pool_enqueue_bounds_its_wait_without_a_savepoint_or_restore() -> None:
+    """The bounded idempotency wait needs a transaction for SET LOCAL to
+    span the INSERT — and nothing more when the transaction is the
+    enqueue's own: a refusal aborts it outright, and the transaction-local
+    bound dies with it, so the savepoint and the read-then-restore of the
+    caller's lock_timeout that a caller-owned transaction needs are pure
+    cost here."""
+    args = _enqueue_args(idempotency_key="k-1")
+    conn = _RecordingConn({"INSERT INTO": [_job_record(job_id=args.id)]})
+    await _enqueue_on_pool(conn, args)
+    assert _shape(conn.wire) == [
+        "BEGIN",
+        "SELECT set_config('lock_timeout', $1, tr",
+        'INSERT INTO "taskq".jobs',
+        "COMMIT",
+    ]
+
+
+async def test_a_keyed_enqueue_in_a_callers_transaction_keeps_the_restore_discipline() -> None:
+    """A caller-owned transaction outlives the enqueue: the bound is set
+    inside a savepoint and the caller's prior lock_timeout is read and
+    restored before RELEASE, so nothing leaks onto the caller's later
+    statements."""
+    args = _enqueue_args(idempotency_key="k-1")
+    conn = _RecordingConn(
+        {
+            "INSERT INTO": [_job_record(job_id=args.id)],
+            "current_setting": [_Record({"current_setting": "0"})],
+        }
+    )
+    async with conn.transaction():
+        await _enqueue_with_conn(conn, _SQL, _SCHEMA, FakeClock(_NOW), args)  # type: ignore[arg-type]  # Why: duck-typed recording connection.
+    assert _shape(conn.wire) == [
+        "BEGIN",
+        "SAVEPOINT",
+        "SELECT current_setting('lock_timeout')",
+        "SELECT set_config('lock_timeout', $1, tr",
+        'INSERT INTO "taskq".jobs',
+        "SELECT set_config('lock_timeout', $1, tr",
+        "RELEASE",
+        "COMMIT",
+    ]
