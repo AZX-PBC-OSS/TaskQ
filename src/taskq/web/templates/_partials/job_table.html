@@ -20,7 +20,7 @@
     {% endif %}
     <a href="{{ base_path }}/jobs?tab={{ tab }}&sort={{ field }}&order={{ next_order }}{{ filter_qs() }}"
        hx-get="{{ base_path }}/jobs?tab={{ tab }}&sort={{ field }}&order={{ next_order }}{{ filter_qs() }}"
-       hx-target="#job-table-container" hx-swap="outerHTML"
+       hx-target="#job-table-container" hx-swap="outerHTML" hx-push-url="true"
        class="no-underline hover:text-slate-700 dark:hover:text-slate-200 {{ 'text-blue-600 dark:text-blue-400' if is_active else '' }}">
         {{ label }}{{ indicator }}
     </a>
@@ -32,29 +32,29 @@
         <table class="w-full text-sm">
             <thead>
                 <tr class="bg-slate-50 dark:bg-slate-800 border-b border-slate-200 dark:border-slate-700">
-                    <th class="px-3 py-2.5 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">ID</th>
+                    <th class="px-3 py-2.5 text-left text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">ID</th>
                     <th class="px-3 py-2.5 text-left text-xs font-semibold uppercase tracking-wider">{{ sort_header('Actor', 'actor', sort, order) }}</th>
                     <th class="px-3 py-2.5 text-left text-xs font-semibold uppercase tracking-wider">{{ sort_header('Queue', 'queue', sort, order) }}</th>
                     <th class="px-3 py-2.5 text-left text-xs font-semibold uppercase tracking-wider">{{ sort_header('Status', 'status', sort, order) }}</th>
                     {% if tab == 'live' %}
-                    <th class="px-3 py-2.5 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">Progress</th>
+                    <th class="px-3 py-2.5 text-left text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Progress</th>
                     {% endif %}
                     <th class="px-3 py-2.5 text-left text-xs font-semibold uppercase tracking-wider">{{ sort_header('Created', 'created_at', sort, order) }}</th>
                     <th class="px-3 py-2.5 text-left text-xs font-semibold uppercase tracking-wider">{{ sort_header('Started', 'started_at', sort, order) }}</th>
                     {% if tab == 'live' %}
-                    <th class="px-3 py-2.5 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">Lease</th>
+                    <th class="px-3 py-2.5 text-left text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Lease</th>
                     {% endif %}
                     <th class="px-3 py-2.5 text-left text-xs font-semibold uppercase tracking-wider">{{ sort_header('Finished', 'finished_at', sort, order) if tab == 'archived' else 'Finished' }}</th>
-                    <th class="px-3 py-2.5 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">Duration</th>
+                    <th class="px-3 py-2.5 text-left text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Duration</th>
                     <th class="px-3 py-2.5 text-left text-xs font-semibold uppercase tracking-wider">{{ sort_header('Attempt', 'attempt', sort, order) }}</th>
-                    <th class="px-3 py-2.5 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">Tags</th>
+                    <th class="px-3 py-2.5 text-left text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Tags</th>
                     {% if tab == 'archived' %}
-                    <th class="px-3 py-2.5 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">Archived</th>
+                    <th class="px-3 py-2.5 text-left text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Archived</th>
                     {% endif %}
-                    <th class="px-3 py-2.5 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">Actions</th>
+                    <th class="px-3 py-2.5 text-left text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Actions</th>
                 </tr>
             </thead>
-            <tbody class="divide-y divide-surface-100 dark:divide-surface-800">
+            <tbody class="divide-y divide-slate-200 dark:divide-slate-800">
             {% for job in jobs %}
                 <tr class="job-row hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors"
                     data-job-id="{{ job.id }}"
@@ -76,7 +76,7 @@
                             <div class="flex-1 h-1.5 bg-slate-200 dark:bg-slate-700 rounded-full overflow-hidden max-w-[80px]">
                                 <div class="progress-bar h-full bg-blue-500 rounded-full" style="width: {{ ps.get('percent', 0) }}%"></div>
                             </div>
-                            <span class="text-xs text-slate-500">{{ ps.get('percent', '') }}{% if ps.get('percent') %}%{% endif %}</span>
+                            <span class="text-xs text-slate-500 dark:text-slate-400">{{ ps.get('percent', '') }}{% if ps.get('percent') %}%{% endif %}</span>
                         </div>
                         {% elif job.status == 'running' %}
                         <span class="text-xs text-slate-400">—</span>
@@ -113,10 +113,10 @@
                     <td class="px-3 py-2 text-xs whitespace-nowrap">
                         {{ timestamp_cell(job.finished_at) }}
                     </td>
-                    <td class="px-3 py-2 text-xs font-mono text-slate-500">
+                    <td class="px-3 py-2 text-xs font-mono text-slate-500 dark:text-slate-400">
                         {% if job.duration_ms is not none %}{{ duration_fmt(job.duration_ms) }}{% else %}—{% endif %}
                     </td>
-                    <td class="px-3 py-2 text-xs text-slate-500">{{ attempt_budget(job) }}</td>
+                    <td class="px-3 py-2 text-xs text-slate-500 dark:text-slate-400">{{ attempt_budget(job) }}</td>
                     <td class="px-3 py-2 max-w-[180px]">
                         <div class="flex flex-wrap gap-1">
                             {% for tag in (job.tags or [])[:3] %}
@@ -128,7 +128,7 @@
                         </div>
                     </td>
                     {% if tab == 'archived' %}
-                    <td class="px-3 py-2 text-xs text-slate-500 whitespace-nowrap">
+                    <td class="px-3 py-2 text-xs text-slate-500 dark:text-slate-400 whitespace-nowrap">
                         {% if job.get('archived_at') %}{{ job.archived_at[:19] }}{% else %}—{% endif %}
                     </td>
                     {% endif %}
@@ -148,24 +148,34 @@
 
     {# Pagination #}
     {% if has_next or has_prev %}
-    <div class="flex items-center justify-between px-3 py-2 border-t border-slate-200 dark:border-slate-700 bg-slate-50/50 dark:bg-slate-800/50 text-xs text-slate-500">
+    <div class="flex items-center justify-between px-3 py-2 border-t border-slate-200 dark:border-slate-700 bg-slate-50/50 dark:bg-slate-800/50 text-xs text-slate-500 dark:text-slate-400">
         <span>Showing {{ jobs | length }} results</span>
         <div class="flex gap-1">
             {% if has_prev %}
             <a href="{{ page_url(prev_cursor_at, prev_cursor_id, 'prev') }}"
                hx-get="{{ page_url(prev_cursor_at, prev_cursor_id, 'prev') }}"
-               hx-target="#job-table-container" hx-swap="outerHTML"
+               hx-target="#job-table-container" hx-swap="outerHTML show:#job-table-container:top" hx-push-url="true"
                class="inline-flex items-center gap-1 px-2.5 py-1 rounded border border-slate-300 dark:border-slate-600 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors">
                 <i data-lucide="chevron-left" class="w-3.5 h-3.5"></i> Previous
             </a>
+            {% else %}
+            <span aria-disabled="true"
+                  class="inline-flex items-center gap-1 px-2.5 py-1 rounded border border-slate-200 dark:border-slate-700 text-slate-300 dark:text-slate-600 select-none cursor-not-allowed">
+                <i data-lucide="chevron-left" class="w-3.5 h-3.5"></i> Previous
+            </span>
             {% endif %}
             {% if has_next %}
             <a href="{{ page_url(next_cursor_at, next_cursor_id, 'next') }}"
                hx-get="{{ page_url(next_cursor_at, next_cursor_id, 'next') }}"
-               hx-target="#job-table-container" hx-swap="outerHTML"
+               hx-target="#job-table-container" hx-swap="outerHTML show:#job-table-container:top" hx-push-url="true"
                class="inline-flex items-center gap-1 px-2.5 py-1 rounded border border-slate-300 dark:border-slate-600 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors">
                 Next <i data-lucide="chevron-right" class="w-3.5 h-3.5"></i>
             </a>
+            {% else %}
+            <span aria-disabled="true"
+                  class="inline-flex items-center gap-1 px-2.5 py-1 rounded border border-slate-200 dark:border-slate-700 text-slate-300 dark:text-slate-600 select-none cursor-not-allowed">
+                Next <i data-lucide="chevron-right" class="w-3.5 h-3.5"></i>
+            </span>
             {% endif %}
         </div>
     </div>
