@@ -854,8 +854,8 @@ async def test_cron_due_tick_is_index_bounded_without_sort(audit_schema: Any, pg
     own statement; see CRON_LOCK_SQL_TEMPLATE for why the read cannot
     share it): cron_schedules_next_fire_idx serves the bound as an Index
     Cond and presorts the first ORDER BY key (next_fire_at). The s.id
-    tiebreaker — budget deferrals mint next_fire_at ties, and which tied
-    row is funded first must not depend on heap order — may only be paid
+    tiebreaker exists because budget deferrals mint next_fire_at ties, and which tied
+    row is funded first must not depend on heap order.  It may only be paid
     for with an Incremental Sort over the tie prefix the LIMIT actually
     reads; a plain Sort node (sorting the whole scan output) means the
     ordered path regressed."""
