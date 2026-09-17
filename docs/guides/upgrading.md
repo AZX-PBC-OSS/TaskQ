@@ -152,7 +152,10 @@ longer from your own deploy tooling, pass `ddl_lock_timeout=` to
 `apply_pending` / `apply_pending_locked` (`0` waits indefinitely, at the
 cost of parking every statement on the table behind the queued DDL). The
 bound governs the *wait* only — a statement that already holds its lock,
-such as an index build, is never interrupted by it. `-- taskq:no-transaction`
+such as an index build, is never interrupted by it. The runner's own upgrade
+of the `schema_migrations` ledger (an `ALTER TABLE` before the first
+migration of a run) waits under the same bound and reports the same error,
+naming the ledger instead of a migration. `-- taskq:no-transaction`
 migrations are not bounded: their `CONCURRENTLY` phases wait on heavyweight
 locks by design.
 
