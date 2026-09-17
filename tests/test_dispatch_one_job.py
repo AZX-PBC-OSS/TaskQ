@@ -99,6 +99,7 @@ class _FakeWorkerDeps:
         self.settings.worker_group = "default"
         self.redis_client: Any | None = None
         self.progress_buffers: dict[Any, Any] = {}
+        self.disowned_jobs: set[UUID] = set()
 
 
 def _as_deps(fd: _FakeWorkerDeps) -> Any:

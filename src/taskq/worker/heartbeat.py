@@ -3,8 +3,11 @@
 Each tick acquires one connection from heartbeat_pool, opens a single
 transaction, and atomically extends workers.last_seen_at, jobs lock /
 heartbeat columns, and reservation_slots leases for jobs locked by this
-worker. After max_heartbeat_failures consecutive connection failures,
-isolate_self proactively transitions running jobs and signals shutdown.
+worker — except the jobs the worker has disowned (``WorkerDeps.disowned_jobs``:
+finished with, outcome unrecordable), whose leases must lapse so the
+reclaim sweep can hand them back. After max_heartbeat_failures
+consecutive connection failures, isolate_self proactively transitions
+running jobs and signals shutdown.
 """
 
 import asyncio
@@ -45,6 +48,24 @@ from taskq.worker.deps import WorkerDeps
 logger: structlog.stdlib.BoundLogger = get_logger(__name__)
 
 _meter = get_meter()
+
+# The renewal statements come from backend._sql with the worker-and-status
+# predicate every other reader of them shares (the backend's own
+# heartbeat_jobs, the PG fixtures); the disowned exclusion is this loop's
+# concern alone, so it is appended here rather than widening the shared
+# template's parameter list. Both templates end in their WHERE clause, so
+# a conjunct appends cleanly; the reservation template's subquery is
+# closed before the conjunct, so it filters the slot rows by job_id.
+_DISOWNED_JOBS_EXCLUSION_SQL = " AND NOT (id = ANY($3::uuid[]))"
+_DISOWNED_SLOTS_EXCLUSION_SQL = " AND NOT (job_id = ANY($3::uuid[]))"
+
+# Which disowned ids still name a running row locked to this worker: the
+# rest have been reclaimed (re-pended, or claimed by another worker) and
+# leave the set. Only issued on a tick whose set is non-empty.
+_SELECT_STILL_HELD_SQL_TEMPLATE = (
+    'SELECT id FROM "{schema}".jobs '
+    "WHERE id = ANY($1::uuid[]) AND locked_by_worker = $2 AND status = 'running'"
+)
 _tick_duration = _meter.create_histogram(
     name="taskq.heartbeat.tick_duration_seconds",
     unit="s",
@@ -68,6 +89,9 @@ async def heartbeat_loop(
         update_jobs_lock_sql,
         update_reservation_leases_sql,
     ) = build_heartbeat_sql(schema)
+    update_jobs_lock_sql += _DISOWNED_JOBS_EXCLUSION_SQL
+    update_reservation_leases_sql += _DISOWNED_SLOTS_EXCLUSION_SQL
+    select_still_held_sql = _SELECT_STILL_HELD_SQL_TEMPLATE.format(schema=schema)
 
     while not shutdown.is_set():
         deps.liveness.tick("heartbeat", period=interval)
@@ -80,9 +104,22 @@ async def heartbeat_loop(
                     deps.heartbeat_pool.acquire(timeout=interval) as conn,
                     conn.transaction(),
                 ):
+                    # Snapshot: consumers add to the set while this tick
+                    # awaits, and an id that arrives mid-tick belongs to
+                    # the next tick's exclusion — the prune below must
+                    # not read it as "still held" and drop it.
+                    disowned = list(deps.disowned_jobs)
                     await conn.execute(update_worker_liveness_sql, worker_id)
-                    jobs_tag = await conn.execute(update_jobs_lock_sql, worker_id, lock_lease)
-                    await conn.execute(update_reservation_leases_sql, worker_id, lock_lease)
+                    jobs_tag = await conn.execute(
+                        update_jobs_lock_sql, worker_id, lock_lease, disowned
+                    )
+                    await conn.execute(
+                        update_reservation_leases_sql, worker_id, lock_lease, disowned
+                    )
+                    if disowned:
+                        held_rows = await conn.fetch(select_still_held_sql, disowned, worker_id)
+                        still_held = {row["id"] for row in held_rows}
+                        deps.disowned_jobs.difference_update(set(disowned) - still_held)
                     if cancel_controller is not None:
                         try:
                             await cancel_controller.run_in_tx(conn)  # type: ignore[arg-type]  # Why: asyncpg PoolConnectionProxy is a Connection subclass at runtime; pyright types don't reflect this delegation.

@@ -20,6 +20,7 @@ and the fallback attempt itself stays visible through the
 
 from datetime import UTC, datetime
 from typing import Any
+from uuid import UUID
 
 import asyncpg
 import redis
@@ -64,6 +65,7 @@ class _FakeWorkerDeps:
         self.settings.worker_group = "default"
         self.redis_client: Any = None
         self.progress_buffers: dict[Any, Any] = {}
+        self.disowned_jobs: set[UUID] = set()
 
 
 def _make_scopes(

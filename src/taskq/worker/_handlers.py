@@ -96,6 +96,7 @@ __all__ = [
     "AttemptOutcome",
     "_AttemptFencedOut",
     "_TerminalWriteFailed",
+    "_disown_job",
     "_dispatch_exception",
     "_handle_generic_exception",
     "_handle_reservation_class_denied",
@@ -271,6 +272,20 @@ def _log_terminal_write_failed(
         infra_error_message=str(infra_exc),
         infra_error_traceback=_format_exc(infra_exc),
     )
+
+
+def _disown_job(disowned_jobs: "set[UUID] | None", job: JobRow) -> None:
+    """Record that this worker is done with *job* but could not move its row.
+
+    Called wherever a terminal write's retry budget is spent and the row
+    is left ``running`` under this worker's lock. The heartbeat excludes
+    the recorded ids from lease renewal (see ``WorkerDeps.disowned_jobs``),
+    which is what turns "lock-lease expiry reclaims it" from a promise
+    into the actual recovery. ``None`` is a caller with no worker deps —
+    a direct test invocation — and nothing to record into.
+    """
+    if disowned_jobs is not None:
+        disowned_jobs.add(job.id)
 
 
 def _format_exc(exc: BaseException) -> str:
@@ -1009,6 +1024,7 @@ async def _dispatch_exception(
     pre_handler: Callable[[], None] | None = None,
     error_reporter: ErrorReporter | None = None,
     text: ExceptionText | None = None,
+    disowned_jobs: "set[UUID] | None" = None,
 ) -> AttemptOutcome:
     """Route *exc* to the appropriate terminal handler via ``_run_terminal_path``.
 
@@ -1027,6 +1043,9 @@ async def _dispatch_exception(
     report a traceback reuse it rather than rendering a second time. The
     transactional path catches inside the span and passes none, and only
     those handlers render — a snooze never pays for a traceback.
+
+    *disowned_jobs* is the worker's disowned set, handed to
+    ``_run_terminal_path`` for the exhausted-write path.
     """
     from taskq.worker._consumer import _run_terminal_path
 
@@ -1041,6 +1060,7 @@ async def _dispatch_exception(
             worker_pool=worker_pool,
             settings=settings,
             redis_client=redis_client,
+            disowned_jobs=disowned_jobs,
             handler=_handle_timeout,
             handler_args=(
                 backend,
@@ -1067,6 +1087,7 @@ async def _dispatch_exception(
             worker_pool=worker_pool,
             settings=settings,
             redis_client=redis_client,
+            disowned_jobs=disowned_jobs,
             handler=_handle_snooze,
             handler_args=(backend, job, worker_id, exc, consumer_span, log, actor_config),
             handler_kwargs={"error_reporter": error_reporter},
@@ -1084,6 +1105,7 @@ async def _dispatch_exception(
             worker_pool=worker_pool,
             settings=settings,
             redis_client=redis_client,
+            disowned_jobs=disowned_jobs,
             handler=_handle_retry_after,
             handler_args=(backend, job, worker_id, exc, consumer_span, log, actor_config),
             handler_kwargs={"error_reporter": error_reporter},
@@ -1101,6 +1123,7 @@ async def _dispatch_exception(
             worker_pool=worker_pool,
             settings=settings,
             redis_client=redis_client,
+            disowned_jobs=disowned_jobs,
             handler=_handle_reservation_class_denied,
             handler_args=(backend, job, worker_id, exc, consumer_span, log, actor_config),
             handler_kwargs={
@@ -1122,6 +1145,7 @@ async def _dispatch_exception(
         worker_pool=worker_pool,
         settings=settings,
         redis_client=redis_client,
+        disowned_jobs=disowned_jobs,
         handler=_handle_generic_exception,
         handler_args=(
             backend,

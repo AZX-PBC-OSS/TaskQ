@@ -1776,6 +1776,7 @@ async def test_pre_terminal_flush_before_mark_succeeded() -> None:
     deps.worker_pool = pool
     deps.settings = settings
     deps.redis_client = None
+    deps.disowned_jobs = set()
 
     async def actor(_job: object, ctx: JobContext[BaseModel]) -> dict[str, object]:
         assert isinstance(ctx, JobContext)
@@ -1853,6 +1854,7 @@ async def test_cancel_clean_buffer_passes_base_seq_not_zero() -> None:
     deps.worker_pool = None
     deps.settings = settings
     deps.redis_client = None
+    deps.disowned_jobs = set()
 
     async def actor(_job: object, _ctx: JobContext[BaseModel]) -> object:
         raise asyncio.CancelledError
@@ -1916,6 +1918,7 @@ async def test_deps_parameter_enables_buffer_registration() -> None:
     deps.worker_pool = pool
     deps.settings = settings
     deps.redis_client = None
+    deps.disowned_jobs = set()
 
     progress_called = False
 
@@ -1965,6 +1968,7 @@ async def test_autonomous_explicit_params_override_deps() -> None:
     deps.worker_pool = None
     deps.settings = settings
     deps.redis_client = None
+    deps.disowned_jobs = set()
 
     progress_called = False
 

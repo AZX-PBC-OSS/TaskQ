@@ -66,6 +66,7 @@ class _BufDeps:
         self.dispatcher_pool: object | None = None
         self.settings: WorkerSettings | None = None
         self.redis_client: object | None = None
+        self.disowned_jobs: set[UUID] = set()
 
 
 def _make_ctx(
@@ -173,7 +174,7 @@ async def test_surrogate_detail_must_not_break_the_terminal_write() -> None:
         actor_config=default_actor_config(),
         payload_type=PassthroughPayload,
         clock=FakeClock(datetime(2026, 1, 1, tzinfo=UTC)),
-        deps=_BufDeps(buffers),  # pyright: ignore[arg-type]  # Why: duck-typed WorkerDeps; the consumer reads only progress_buffers/pool/settings/redis off it.
+        deps=_BufDeps(buffers),  # pyright: ignore[arg-type]  # Why: duck-typed WorkerDeps; the consumer reads only progress_buffers/pool/settings/redis/disowned_jobs off it.
     )
     assert outcome == "succeeded", (
         f"contract: a surrogate progress detail must not break the terminal write; outcome={outcome!r}"

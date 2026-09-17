@@ -1732,6 +1732,14 @@ These invariants must remain true across all changes.
    `WHERE status = 'running' AND locked_by_worker = $worker_id`. A rowcount of 0
    means the write was a no-op (concurrent writer already moved the row).
    `WorkerOwnershipMismatch` is raised for unexpected ownership failures.
+   A pool-path terminal write that fails with an infrastructure error is
+   retried a bounded number of times (`terminal-write-retry`); when the budget
+   is spent the row stays `running` and the worker **disowns** it
+   (`WorkerDeps.disowned_jobs`): the heartbeat's lease renewal excludes
+   disowned ids, so lock-lease expiry — not the process's lifetime — bounds how
+   long the row stays orphaned, and the reclaim sweep hands it back to the
+   fleet. The producer re-owns an id it claims again; the heartbeat drops ids
+   whose row is no longer this worker's running row.
 
 4. **Schema identifier validation is defence-in-depth, not single-point** —
    `PostgresBackend.__init__` validates `schema_name` against `_IDENT_RE` once

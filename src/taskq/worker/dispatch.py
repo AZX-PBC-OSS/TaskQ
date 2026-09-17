@@ -59,6 +59,7 @@ from taskq.worker._consumer import consume_one_job
 from taskq.worker._handlers import (
     _TERMINAL_WRITE_INFRA_EXCEPTIONS,  # pyright: ignore[reportPrivateUsage]  # Why: dispatch_one_job's direct-call path for _handle_generic_exception needs the same infra guard as _run_terminal_path to prevent false terminal Redis publishes and exception mislabeling.
     AttemptOutcome,
+    _disown_job,  # pyright: ignore[reportPrivateUsage]  # Why: same rationale as _TERMINAL_WRITE_INFRA_EXCEPTIONS above.
     _handle_generic_exception,  # pyright: ignore[reportPrivateUsage]  # Why: _handle_generic_exception implements the same exception→retry/fail routing as consume_one_job's inner handlers; dispatch_one_job needs it for DI-resolution failures that escape consume_one_job's own try/except.
     _log_terminal_write_failed,  # pyright: ignore[reportPrivateUsage]  # Why: same rationale as _TERMINAL_WRITE_INFRA_EXCEPTIONS above.
 )
@@ -718,14 +719,15 @@ async def dispatch_one_job(
                         )
                     except _TERMINAL_WRITE_INFRA_EXCEPTIONS as infra_exc:
                         # An infra-failed terminal write leaves the row
-                        # RUNNING — lock-lease expiry and the sweep are the
-                        # recovery — so no batch counter may budge on a
-                        # write that never landed: the same rule the hook
-                        # itself applies to the clean-return path's "noop"
-                        # (a terminal write that matched nothing). The hook
-                        # call therefore lives in the else below, on a
-                        # real terminal outcome only.
+                        # RUNNING — disowned, so lock-lease expiry and the
+                        # sweep are the recovery — and no batch counter may
+                        # budge on a write that never landed: the same rule
+                        # the hook itself applies to the clean-return
+                        # path's "noop" (a terminal write that matched
+                        # nothing). The hook call therefore lives in the
+                        # else below, on a real terminal outcome only.
                         _log_terminal_write_failed(handler_log, job, exc, infra_exc)
+                        _disown_job(deps.disowned_jobs, job)
                     else:
                         outcome = handler_result
                         # Best-effort, matching the hook call on consume's

@@ -309,6 +309,10 @@ async def producer_loop(
             if jobs:
                 made_a_claim = True
                 for job in jobs:
+                    # A row this worker disowned, the sweep re-pended and
+                    # this claim took back is a live job of ours again:
+                    # its lease must be renewed from here on.
+                    deps.disowned_jobs.discard(job.id)
                     await local_queue.put(job)
                 if wake_event is not None:
                     wake_event.clear()
@@ -715,6 +719,10 @@ async def di_consumer_loop(
                     job_id=str(job.id),
                     actor=job.actor,
                 )
+                # The row is still running under this worker's lock with
+                # nothing left to move it: disown it so the heartbeat stops
+                # renewing the lease and the reclaim sweep hands it back.
+                deps.disowned_jobs.add(job.id)
             else:
                 # The snooze tri-state is the write's fence and must be
                 # read, not dropped: "scheduled" released the row,

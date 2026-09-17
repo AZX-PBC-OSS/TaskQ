@@ -98,6 +98,7 @@ from taskq.worker._handlers import (
     _TERMINAL_WRITE_INFRA_EXCEPTIONS,
     AttemptOutcome,
     _AttemptFencedOut,
+    _disown_job,
     _dispatch_exception,
     _handle_reservation_class_denied,
     _log_terminal_write_failed,
@@ -208,6 +209,7 @@ async def _run_terminal_path(  # pyright: ignore[reportUnusedFunction]  # Why: c
     terminal: bool,
     outcome: AttemptOutcome,
     job_exc: BaseException | None = None,
+    disowned_jobs: set[UUID] | None = None,
 ) -> AttemptOutcome:
     """Pre-terminal flush, handler call, dirty reset, publish, and outcome.
 
@@ -218,7 +220,8 @@ async def _run_terminal_path(  # pyright: ignore[reportUnusedFunction]  # Why: c
     Infra failures (DB/network) raised by *handler*'s terminal write are
     caught here — not re-dispatched into generic exception handling, which
     would misclassify the infra error as the actor's failure (*job_exc*).
-    The job row stays ``running`` and is reclaimed via lock-lease expiry.
+    The job row stays ``running``; it is disowned into *disowned_jobs* so
+    the heartbeat stops renewing it and lock-lease expiry reclaims it.
     """
     if progress_buffers is not None and worker_pool is not None and settings is not None:
         await shield_with_retrieval(
@@ -250,6 +253,7 @@ async def _run_terminal_path(  # pyright: ignore[reportUnusedFunction]  # Why: c
             job_exc if job_exc is not None else infra_exc,
             infra_exc,
         )
+        _disown_job(disowned_jobs, job)
         return outcome
     if progress_buffers is not None:
         _buf = progress_buffers.get(job.id)
@@ -466,6 +470,7 @@ async def consume_one_job(
                 worker_pool=deps.worker_pool if deps is not None else worker_pool,
                 settings=deps.settings if deps is not None else settings,
                 redis_client=deps.redis_client if deps is not None else redis_client,
+                disowned_jobs=deps.disowned_jobs if deps is not None else None,
                 handler=_handle_reservation_class_denied,
                 handler_args=(backend, job, worker_id, e, consumer_span, job_log, actor_config),
                 handler_kwargs=handler_kwargs,
@@ -532,6 +537,7 @@ async def consume_one_job(
                 worker_pool=deps.worker_pool if deps is not None else worker_pool,
                 settings=deps.settings if deps is not None else settings,
                 redis_client=deps.redis_client if deps is not None else redis_client,
+                disowned_jobs=deps.disowned_jobs if deps is not None else None,
                 handler=_handle_reservation_class_denied,
                 handler_args=(
                     backend,
@@ -561,6 +567,7 @@ async def consume_one_job(
     _effective_redis = deps.redis_client if deps is not None else redis_client
     _progress_buffers = deps.progress_buffers if deps is not None else None
     _pending_publish_tasks = getattr(deps, "pending_publish_tasks", None)
+    _disowned_jobs = deps.disowned_jobs if deps is not None else None
 
     if _progress_buffers is not None:
         # attempt seeds the buffer's flush-fence epoch: a stale flush
@@ -664,6 +671,7 @@ async def consume_one_job(
                             worker_pool=_effective_pool,
                             error_reporter=error_reporter,
                             fallback_result_ttl=fallback_result_ttl,
+                            disowned_jobs=_disowned_jobs,
                         )
                         _completion = _OK if tx_outcome == "succeeded" else None
                         if tx_outcome == "succeeded":
@@ -751,11 +759,12 @@ async def consume_one_job(
                     )
                 except _TERMINAL_WRITE_INFRA_EXCEPTIONS as infra_exc:
                     # Best-effort, exactly like the cancel write below: the
-                    # row stays 'running' and lock-lease expiry reclaims
-                    # it. Do NOT fall through to mark_cancelled — the row
-                    # carries no operator cancel, so a cancel write here
-                    # would terminalise an infrastructure interruption.
+                    # row stays 'running', disowned so lock-lease expiry
+                    # reclaims it. Do NOT fall through to mark_cancelled —
+                    # the row carries no operator cancel, so a cancel write
+                    # here would terminalise an infrastructure interruption.
                     _log_terminal_write_failed(_log, job, None, infra_exc)
+                    _disown_job(_disowned_jobs, job)
                     raise
                 if interrupt_outcome != "noop":
                     _interrupted_status = (
@@ -806,13 +815,14 @@ async def consume_one_job(
                 )
             except _TERMINAL_WRITE_INFRA_EXCEPTIONS as infra_exc:
                 # Why: the terminal write is best-effort on this path — the
-                # row stays 'running' and lock-lease expiry reclaims it
-                # (identical to the success-path infra failure). The
-                # CancelledError MUST still propagate below: routing the
-                # infra error into generic job-failure handling eats a
-                # TaskGroup cancellation and hangs __aexit__ forever.
+                # row stays 'running', disowned so lock-lease expiry
+                # reclaims it (identical to the success-path infra
+                # failure). The CancelledError MUST still propagate below:
+                # routing the infra error into generic job-failure handling
+                # eats a TaskGroup cancellation and hangs __aexit__ forever.
                 cancel_landed = None
                 _log_terminal_write_failed(_log, job, None, infra_exc)
+                _disown_job(_disowned_jobs, job)
             # Announce only a transition the row actually took: on a
             # fenced-out write (the row moved to another owner mid-cancel)
             # or an infra-failed one (the row is still 'running'), a
@@ -855,9 +865,12 @@ async def consume_one_job(
         except _TerminalWriteFailed:
             # Success-path terminal write failed with an infra error.
             # Already logged via _log_terminal_write_failed inside the
-            # success path.  The job stays ``running`` — lock-lease expiry
-            # reclaims it.  Do NOT re-dispatch into _handle_generic_exception
-            # (that would mislabel the infra error as the actor's failure).
+            # success path.  The job stays ``running`` — disowned here so
+            # the heartbeat stops renewing it and lock-lease expiry
+            # reclaims it.  Do NOT re-dispatch into
+            # _handle_generic_exception (that would mislabel the infra
+            # error as the actor's failure).
+            _disown_job(_disowned_jobs, job)
             return "failed"
 
         except (
@@ -883,6 +896,7 @@ async def consume_one_job(
                 redis_client=_effective_redis,
                 error_reporter=error_reporter,
                 text=attempt_text,
+                disowned_jobs=_disowned_jobs,
             )
 
         finally:
@@ -957,6 +971,7 @@ async def _consume_transactional(
     worker_pool: asyncpg.Pool | None = None,
     error_reporter: ErrorReporter | None = None,
     fallback_result_ttl: timedelta | None = None,
+    disowned_jobs: set[UUID] | None = None,
 ) -> AttemptOutcome:
     """Transactional success/failure path when a transaction conn is available.
 
@@ -1245,6 +1260,7 @@ async def _consume_transactional(
             redis_client=redis_client,
             pre_handler=enqueuer.discard_buffer,
             error_reporter=error_reporter,
+            disowned_jobs=disowned_jobs,
         )
 
 

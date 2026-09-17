@@ -26,6 +26,7 @@ import asyncio
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any
+from uuid import UUID
 
 import asyncpg
 import pytest
@@ -342,6 +343,7 @@ async def test_sibling_failure_does_not_discard_pending_sub_jobs(
                 self.settings.worker_group = "default"
                 self.redis_client: Any | None = None
                 self.progress_buffers: dict[Any, Any] = {}
+                self.disowned_jobs: set[UUID] = set()
 
         deps = _Deps()
         deps.slot_pool = slot_pool

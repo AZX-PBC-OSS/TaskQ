@@ -499,6 +499,7 @@ async def test_autonomous_no_pool_pops_buffer_without_flush() -> None:
     deps.worker_pool = None
     deps.settings = settings
     deps.redis_client = None
+    deps.disowned_jobs = set()
 
     async def actor(_job: object, _ctx: JobContext[BaseModel]) -> dict[str, object]:
         return {"ok": True}
