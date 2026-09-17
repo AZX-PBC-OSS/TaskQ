@@ -505,6 +505,64 @@ async def test_make_pg_pool_factory_omits_new_params_when_not_provided() -> None
     assert "setup" not in call_kwargs
 
 
+# ---- make_pg_pool_factory - lease pair without reload --------------------------------------------------
+
+
+class _LeasePairProvider(_FakePgProvider):
+    """Fake provider whose credential is one lease, with the TTL it issued
+    remembered the way a real expiring-lease provider surfaces it."""
+
+    def __init__(self) -> None:
+        super().__init__(password="pw", username="lease-user")
+        self.last_lease_duration = 3600
+
+
+async def _run_pool_factory(provider: _FakePgProvider, **kwargs: Any) -> list[Any]:
+    factory = make_pg_pool_factory("postgresql://user@host:5432/db", provider, **kwargs)
+    with (
+        structlog.testing.capture_logs() as captured,
+        patch("asyncpg.create_pool", new=AsyncMock(return_value=MagicMock())),
+    ):
+        await factory()
+    return [e for e in captured if e["event"] == "pg-lease-pair-pinned-without-reload"]
+
+
+async def test_pool_factory_warns_when_a_lease_pair_has_no_reload() -> None:
+    """A username-bearing credential is one lease pair pinned to the pool's
+    life: with no reload scheduled, building the pool warns that reconnects
+    fail authentication once the lease expires, naming TASKQ_RELOAD_INTERVAL
+    and the lease TTL the provider exposes."""
+    warnings = await _run_pool_factory(_LeasePairProvider())
+    assert len(warnings) == 1
+    assert warnings[0]["role"] == "pool"
+    assert warnings[0]["lease_ttl"] == 3600.0
+    # And the pool was still built (factory() returned above): a warning,
+    # never a refusal.
+    assert "TASKQ_RELOAD_INTERVAL" in warnings[0]["remedy"]
+
+
+async def test_pool_factory_warns_without_a_ttl_when_the_provider_exposes_none() -> None:
+    """A provider that does not surface its lease TTL still triggers the
+    warning; the TTL field is simply None."""
+    warnings = await _run_pool_factory(_FakePgProvider(password="pw", username="lease-user"))
+    assert len(warnings) == 1
+    assert warnings[0]["lease_ttl"] is None
+
+
+async def test_pool_factory_stays_silent_when_a_reload_is_scheduled() -> None:
+    """A username-bearing credential with a reload interval is the supported
+    rotation: the pool is rebuilt on a fresh lease, so no warning."""
+    warnings = await _run_pool_factory(_LeasePairProvider(), reload_interval=300.0)
+    assert warnings == []
+
+
+async def test_pool_factory_stays_silent_for_a_token_only_provider() -> None:
+    """A token credential (username None) re-fetches per physical
+    connection, so no reload schedule is required and no warning fires."""
+    warnings = await _run_pool_factory(_FakePgProvider(password="tok-123"))
+    assert warnings == []
+
+
 # ---- make_dedicated_conn_factory ------------------------------------------------------------------------------
 
 

@@ -331,6 +331,64 @@ def _make_pg_password_callable(
     return _fetch_password
 
 
+# --- Lease-pair pinned pool warning ---
+
+
+def _lease_ttl_hint(provider: PgCredentialProvider) -> float | None:
+    """The lease TTL the provider last issued, when it exposes one.
+
+    Probed by attribute name, not a Protocol field: no provider is required
+    to track one, but a provider whose credential is an expiring lease can
+    surface the bound the operator's reload schedule has to beat, and the
+    startup warning below names it beside ``TASKQ_RELOAD_INTERVAL``.
+    """
+    for attr in ("lease_ttl", "last_lease_duration"):
+        value = getattr(provider, attr, None)
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return float(value)
+    return None
+
+
+def _warn_lease_pair_without_reload(
+    provider: PgCredentialProvider,
+    credential: PgCredential,
+    *,
+    role: str,
+    reload_interval: float | None,
+) -> None:
+    """Warn at startup when a username-bearing credential is pinned to a pool
+    nothing rebuilds.
+
+    A credential that carries a ``username`` is one issued lease pair, and
+    asyncpg resolves ``user=`` once per pool, so the pool is pinned to that
+    pair for its life (see :func:`_make_pg_password_callable`): unlike a
+    token credential it cannot refresh per connection, and every reconnect
+    authenticates with the pair's password. When no reload is scheduled the
+    pair is never replaced, so reconnects fail authentication once the
+    lease expires. The operator may rotate the lease externally, so this is
+    a warning, never a refusal.
+    """
+    if credential.username is None or reload_interval is not None:
+        return
+    logger.warning(
+        "pg-lease-pair-pinned-without-reload",
+        kind="lease_pair_without_reload",
+        role=role,
+        lease_ttl=_lease_ttl_hint(provider),
+        reason=(
+            "the credential provider issued a username-bearing credential: the "
+            "username and password are one lease, so this pool is pinned to "
+            "that pair for its life and every reconnect authenticates with the "
+            "pair's password, which stops authenticating once the lease expires"
+        ),
+        remedy=(
+            "set TASKQ_RELOAD_INTERVAL below the lease TTL so the pool is "
+            "rebuilt on a fresh pair, or rotate the lease externally; this is "
+            "a warning only, the process runs either way"
+        ),
+    )
+
+
 # --- Factory builders ---
 #
 # All factories are zero-arg async callables matching the ``PoolFactory`` /
@@ -353,6 +411,7 @@ def make_pg_pool_factory(
     setup: Callable[[asyncpg.Connection], Awaitable[None]] | None = None,
     server_settings: dict[str, str] | None = None,
     connection_class: type[asyncpg.Connection] | None = None,
+    reload_interval: float | None = None,
 ) -> PoolFactory:
     """Build a :data:`~taskq.connections.PoolFactory` backed by *provider*.
 
@@ -433,6 +492,19 @@ def make_pg_pool_factory(
     the :class:`asyncpg.Connection` subclass used by the pool. Use it to
     install custom codecs or override connection methods across the
     entire pool.
+
+    *reload_interval* is the operator's reload schedule
+    (``TASKQ_RELOAD_INTERVAL``), if any, and is only consulted for one
+    startup warning: a username-bearing credential pins this pool to the
+    issued lease pair (see the username-bearing paragraph above), so with
+    no reload scheduled the pool logs
+    ``pg-lease-pair-pinned-without-reload`` when it is built - naming the
+    lease TTL the provider exposes, if any - because reconnects will fail
+    authentication once the lease expires. It is a warning, never a
+    refusal: an operator rotating the lease externally can ignore it.
+    Callers that know the schedule (:func:`build_worker_connections`)
+    forward it; paths with no rotation mechanism (the admin UI pool) pass
+    nothing and so warn for every username-bearing provider.
     """
     import asyncpg  # Why: deferred so this module is import-safe without asyncpg at module load.
 
@@ -443,6 +515,9 @@ def make_pg_pool_factory(
         # password goes in as a callable: re-fetched per physical connection
         # for a token credential, the pair's own for a username-bearing one.
         credential = await provider.get_pg_credential()
+        _warn_lease_pair_without_reload(
+            provider, credential, role="pool", reload_interval=reload_interval
+        )
         kwargs: dict[str, Any] = {
             "dsn": ensure_sslmode_require(dsn),
             "password": _make_pg_password_callable(provider, pinned=credential, role="pool"),
@@ -702,6 +777,9 @@ def build_worker_connections(
         # The kwargs are forwarded explicitly (not splatted) so pyright
         # traces types through make_pg_pool_factory's typed parameters.
         stmt_kwargs = statement_cache_kwargs(settings)
+        # The reload schedule rides along so a username-bearing provider with
+        # no schedule gets the pinned-pair startup warning (see
+        # make_pg_pool_factory); token providers never trigger it.
         conns.dispatcher_pool_factory = make_pg_pool_factory(
             direct,
             pg_provider,
@@ -710,6 +788,7 @@ def build_worker_connections(
             command_timeout=settings.dispatcher_command_timeout,
             statement_cache_size=stmt_kwargs["statement_cache_size"],
             max_cached_statement_lifetime=stmt_kwargs["max_cached_statement_lifetime"],
+            reload_interval=settings.reload_interval,
         )
         conns.heartbeat_pool_factory = make_pg_pool_factory(
             direct,
@@ -719,6 +798,7 @@ def build_worker_connections(
             command_timeout=settings.heartbeat_command_timeout,
             statement_cache_size=stmt_kwargs["statement_cache_size"],
             max_cached_statement_lifetime=stmt_kwargs["max_cached_statement_lifetime"],
+            reload_interval=settings.reload_interval,
         )
         conns.worker_pool_factory = make_pg_pool_factory(
             pooled,
@@ -727,6 +807,7 @@ def build_worker_connections(
             max_inactive_connection_lifetime=lifetime,
             statement_cache_size=stmt_kwargs["statement_cache_size"],
             max_cached_statement_lifetime=stmt_kwargs["max_cached_statement_lifetime"],
+            reload_interval=settings.reload_interval,
         )
         conns.notify_conn_factory = make_dedicated_conn_factory(
             direct, pg_provider, command_timeout=settings.dispatcher_command_timeout
