@@ -202,7 +202,13 @@ async def test_write_that_keeps_failing_is_reported_after_the_budget() -> None:
     assert backend.write_calls == 4
     retries = _events(captured, "terminal-write-retry")
     assert [e["attempt"] for e in retries] == [1, 2, 3]
-    assert [e["retry_in_ms"] for e in retries] == pytest.approx([50, 200, 800], rel=0.25)
+    # The event records the COMPUTED wait truncated to an int:
+    # base * uniform(1 - _TERMINAL_WRITE_JITTER, 1 + _TERMINAL_WRITE_JITTER),
+    # so the shipped band is [0.75*base, 1.25*base] and the int() truncation
+    # shaves up to a millisecond off the low edge (a 0.749 draw on the 50 ms
+    # base records 37, 0.5 ms below the naive rel=0.25 floor — CI rolled
+    # exactly that once). abs=1 re-admits only the truncated millisecond.
+    assert [e["retry_in_ms"] for e in retries] == pytest.approx([50, 200, 800], rel=0.25, abs=1)
     failed = _events(captured, "terminal-write-failed")
     assert len(failed) == 1
     assert failed[0]["infra_error_class"] == "OSError"

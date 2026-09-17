@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import timedelta
+from urllib.parse import urlparse, urlunparse
 
 import asyncpg
 import pytest
@@ -61,8 +62,27 @@ async def _status_of(fleet: Fleet, job_id: JobId) -> str:
     return str(rows[0]["status"])
 
 
+def _interrupt_scoped_dsn(pg_dsn: str, schema: str) -> str:
+    """The pod's DSN tagged with ``application_name=<schema>``.
+
+    The tag is what makes the interruption below scoped: the testcontainers
+    Postgres hosts every xdist worker's databases, and a database-wide
+    terminate lands inside whatever statement the OTHER worker is running
+    mid-flight — the flakes that produced were self-inflicted cross-worker
+    kills, not product behavior. The pod's pools inherit the tag from this
+    DSN, so a scoped kill drops exactly this test's pod connections.
+    """
+    parsed = urlparse(pg_dsn)
+    query = (
+        f"application_name={schema}"
+        if not parsed.query
+        else f"{parsed.query}&application_name={schema}"
+    )
+    return urlunparse(parsed._replace(query=query))
+
+
 async def _interrupt_database(dsn: str) -> int:
-    """Terminate every other session on this database.
+    """Terminate every other session carrying this DSN's application_name.
 
     This is what a restart, a failover, or a maintenance window does to a
     client holding connections: the backends go away and the client discovers
@@ -70,15 +90,23 @@ async def _interrupt_database(dsn: str) -> int:
     can assert the interruption actually happened rather than passing because
     nothing was hit.
 
-    pg_stat_activity is cluster-wide and the container hosts every xdist
-    worker's database, so the scope comes from the terminating connection's
-    own database rather than a name passed in.
+    The scope is the application_name the scoped DSN carries (see
+    :func:`_interrupt_scoped_dsn`), not the database: pg_stat_activity is
+    cluster-wide and the container hosts every xdist worker's databases, so
+    a database-wide kill reaches into concurrent tests on other workers and
+    flakes them. The terminating connection carries the same
+    application_name, so the pid guard excludes it.
     """
     conn = await asyncpg.connect(dsn)
     try:
+        app_name = await conn.fetchval(
+            "SELECT application_name FROM pg_stat_activity WHERE pid = pg_backend_pid()"
+        )
         rows = await conn.fetch(
             "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
-            "WHERE datname = current_database() AND pid <> pg_backend_pid()"
+            "WHERE datname = current_database() AND pid <> pg_backend_pid() "
+            "AND application_name = $1",
+            app_name,
         )
         return len(rows)
     finally:
@@ -96,13 +124,13 @@ async def test_a_pod_keeps_working_after_the_database_drops_its_connections(
     outage that only a rolling restart clears.
     """
     schema = f"fleet_pgfail_{new_base62()}".lower()
+    dsn = _interrupt_scoped_dsn(pg_dsn, schema)
     async with open_fleet(
-        pg_dsn,
+        dsn,
         schema=schema,
         pods=("pod-1",),
         actors=((_ACTOR, _QUEUE),),
     ) as fleet:
-        dsn = str(fleet.settings.pg_dsn)
         pod = fleet.pod("pod-1")
 
         # A completed job before the interruption, so the comparison afterwards
@@ -199,13 +227,13 @@ async def test_a_job_in_flight_across_an_interruption_is_not_destroyed(
     work, and nothing about it alerts anyone if the row is quietly terminal.
     """
     schema = f"fleet_pgfail_inflight_{new_base62()}".lower()
+    dsn = _interrupt_scoped_dsn(pg_dsn, schema)
     async with open_fleet(
-        pg_dsn,
+        dsn,
         schema=schema,
         pods=("pod-1", "pod-2"),
         actors=((_ACTOR, _QUEUE),),
     ) as fleet:
-        dsn = str(fleet.settings.pg_dsn)
         pod = fleet.pod("pod-1")
 
         job_ids = await fleet.enqueue(1, actor=_ACTOR, queue=_QUEUE, max_attempts=3)
@@ -268,13 +296,13 @@ async def test_an_interruption_does_not_duplicate_a_completed_job(
     identities are the audit an operator reads, so they must not repeat either.
     """
     schema = f"fleet_pgfail_dup_{new_base62()}".lower()
+    dsn = _interrupt_scoped_dsn(pg_dsn, schema)
     async with open_fleet(
-        pg_dsn,
+        dsn,
         schema=schema,
         pods=("pod-1", "pod-2"),
         actors=((_ACTOR, _QUEUE),),
     ) as fleet:
-        dsn = str(fleet.settings.pg_dsn)
         pod = fleet.pod("pod-1")
 
         job_ids = await fleet.enqueue(1, actor=_ACTOR, queue=_QUEUE)
@@ -374,13 +402,13 @@ async def test_bulk_cancel_recovers_typed_after_the_database_drops_its_connectio
     too.
     """
     schema = f"fleet_pgfail_cancel_{new_base62()}".lower()
+    dsn = _interrupt_scoped_dsn(pg_dsn, schema)
     async with open_fleet(
-        pg_dsn,
+        dsn,
         schema=schema,
         pods=("pod-1",),
         actors=((_ACTOR, _QUEUE),),
     ) as fleet:
-        dsn = str(fleet.settings.pg_dsn)
         pod = fleet.pod("pod-1")
 
         job_ids = await fleet.enqueue(1, actor=_ACTOR, queue=_QUEUE)
