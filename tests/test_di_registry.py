@@ -403,3 +403,82 @@ def test_validate_succeeds_on_valid_registry() -> None:
     registry.validate()
     assert registry._validated is True
     assert registry._sealed is True
+
+
+# ── Shadow-derived provider closure ─────────────────────────────────
+
+
+class _SlotConnection:
+    pass
+
+
+class _ConnectionHelper:
+    def __init__(self, conn: _SlotConnection) -> None:
+        self.conn = conn
+
+
+class _UnrelatedHelper:
+    def __init__(self, settings: _Settings) -> None:
+        self.settings = settings
+
+
+def _shadow_registry() -> ProviderRegistry:
+    registry = ProviderRegistry()
+    registry.register_value(_Settings, Scope.PROCESS, _Settings())
+    registry.register_value(_SlotConnection, Scope.LOOP, _SlotConnection())
+    registry.register_class(_ConnectionHelper, Scope.LOOP)
+    registry.register_class(_UnrelatedHelper, Scope.LOOP)
+    return registry
+
+
+def test_shadow_derived_providers_walks_the_provider_graph() -> None:
+    registry = _shadow_registry()
+    registry.validate()
+
+    derived = registry.shadow_derived_providers(frozenset({_SlotConnection}))
+
+    assert derived == frozenset({_ConnectionHelper})
+
+
+def test_shadow_derived_providers_is_memoized_once_sealed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The closure is a pure function of (sealed graph, shadowed types) and
+    the per-slot dispatch path asks for it on every job; the second call
+    must not walk the graph again."""
+    from taskq._di import _shadow
+
+    calls: list[object] = []
+    real = _shadow._cached_introspection  # type: ignore[reportPrivateUsage]  # Why: the spy must wrap the name the walk resolves through.
+
+    def spy(func: object) -> object:
+        calls.append(func)
+        return real(func)  # type: ignore[arg-type]  # Why: passthrough spy; the real helper's signature is the contract.
+
+    monkeypatch.setattr(_shadow, "_cached_introspection", spy)
+
+    registry = _shadow_registry()
+    registry.validate()
+
+    first = registry.shadow_derived_providers(frozenset({_SlotConnection}))
+    walked = len(calls)
+    assert walked > 0
+    second = registry.shadow_derived_providers(frozenset({_SlotConnection}))
+
+    assert second == first == frozenset({_ConnectionHelper})
+    assert len(calls) == walked
+
+
+def test_shadow_derived_providers_before_seal_sees_later_registrations() -> None:
+    """Before ``validate()`` seals the graph, a registration can still change
+    the answer, so nothing may be memoized yet."""
+    registry = ProviderRegistry()
+    registry.register_value(_SlotConnection, Scope.LOOP, _SlotConnection())
+
+    assert registry.shadow_derived_providers(frozenset({_SlotConnection})) == frozenset()
+
+    registry.register_class(_ConnectionHelper, Scope.LOOP)
+
+    assert registry.shadow_derived_providers(frozenset({_SlotConnection})) == frozenset(
+        {_ConnectionHelper}
+    )

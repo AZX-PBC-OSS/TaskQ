@@ -20,6 +20,7 @@ from typing import (
 
 import structlog
 
+from taskq._di._shadow import shadow_derived_providers
 from taskq._di._utils import (
     _origin_is_job_context,  # pyright: ignore[reportPrivateUsage] — internal helper shared within _di package; the _di prefix itself signals package-level privacy
 )
@@ -56,6 +57,7 @@ class ProviderRegistry:
         self._sealed: bool = False
         self._plan_cache: dict[tuple[str, Scope], list[type]] = {}
         self._validating: bool = False
+        self._shadow_derived_cache: dict[frozenset[type], frozenset[type]] = {}
 
     def register_value[T](self, type_: type[T], scope: Scope, value: T) -> None:
         if self._sealed:
@@ -222,6 +224,26 @@ class ProviderRegistry:
         Returning a copy prevents callers from mutating registry state.
         """
         return dict(self._providers)
+
+    def shadow_derived_providers(self, shadow_types: frozenset[type]) -> frozenset[type]:
+        """Every non-value provider whose dependency closure reaches one of
+        *shadow_types* (see :func:`taskq._di._shadow.shadow_derived_providers`).
+
+        Memoized per *shadow_types* once the registry is sealed: the
+        closure is a pure function of the (then immutable) provider graph,
+        and the per-slot dispatch path asks for it on every job. Before
+        the seal a registration can still change the answer, so the walk
+        runs uncached. The memo is keyed by the worker's own slot wiring
+        (one key per distinct shadowed-type set), never by user input, so
+        it needs no bound.
+        """
+        if not self._sealed:
+            return shadow_derived_providers(self._providers, shadow_types)
+        derived = self._shadow_derived_cache.get(shadow_types)
+        if derived is None:
+            derived = shadow_derived_providers(self._providers, shadow_types)
+            self._shadow_derived_cache[shadow_types] = derived
+        return derived
 
     def validate(
         self,
