@@ -344,7 +344,12 @@ bounded committed batches, then one final transaction locks the stored
 assignment, carries the old queue's `queues` row (mode + `max_concurrent`) to
 the target when the target has no row of its own, and flips it — so
 old-queue strays drain through the target's consumers, and a crash mid-drain
-re-runs cleanly. Running jobs finish where they were claimed; other actors
+re-runs cleanly (the abort logs `actor-queue-move-aborted` with the count
+already committed). Running jobs finish on the workers that claimed them;
+any that re-pend instead (failure retry, crash reclaim, operator retry) keep
+their old queue label as an audit trail but are routed at dispatch by the
+actor's *current* assignment, so the running-job tail drains through the
+target queue's consumers; other actors
 on the old queue are untouched; cron fires follow the moved assignment from
 the flip on.
 

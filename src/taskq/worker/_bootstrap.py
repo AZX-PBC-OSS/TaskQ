@@ -1066,15 +1066,27 @@ async def _main(
                 error=str(exc),
             )
 
-        process_scope = ProcessScope(resolver=resolver)
+        # The scope bootstraps' first use of user-registered factories
+        # runs in the pre-watchdog window (the loop keeps scheduling, so
+        # the lag watchdog never trips; the stale-tick detectors arm
+        # only after bootstrap), so each factory await carries the same
+        # reload_factory_timeout bound every WorkerConnections factory
+        # open got in the #162 wave: a black-holed "database pools, HTTP
+        # clients" DI factory fails boot loudly within the bound instead
+        # of wedging worker startup undetected.
+        process_scope = ProcessScope(
+            resolver=resolver, factory_timeout=settings.reload_factory_timeout
+        )
         scope_containers[Scope.PROCESS] = process_scope
         await process_scope.bootstrap(registry, settings)
 
-        thread_scope = ThreadScope(resolver=resolver)
+        thread_scope = ThreadScope(
+            resolver=resolver, factory_timeout=settings.reload_factory_timeout
+        )
         scope_containers[Scope.THREAD] = thread_scope
         await thread_scope.bootstrap(registry, process_scope)
 
-        loop_scope = LoopScope(resolver=resolver)
+        loop_scope = LoopScope(resolver=resolver, factory_timeout=settings.reload_factory_timeout)
         scope_containers[Scope.LOOP] = loop_scope
         await loop_scope.bootstrap(registry, process_scope, thread_scope)
 

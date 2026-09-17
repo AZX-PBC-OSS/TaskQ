@@ -955,8 +955,13 @@ def actor_config_move_queue(
     max_concurrent to the target when the target has no row of its own, and
     moves the actor's pending/scheduled backlog onto the target (bounded
     batches, then one final transaction for the flip) so old-queue strays
-    drain through the target's consumers. Running jobs finish where they
-    were claimed. Cron fires follow the moved assignment from the flip on.
+    drain through the target's consumers. Running jobs finish on the
+    workers that claimed them; any that re-pend instead (failure retry,
+    crash reclaim, operator retry) keep their old queue label as an audit
+    trail but are ROUTED at dispatch by the actor's current assignment —
+    the tail drains through the target queue's consumers, never stranded
+    on the retired source queue. Cron fires follow the moved assignment
+    from the flip on.
 
     Workers boot on either side of the matching code deploy, in any order:
     a stale `@actor(queue=...)` literal logs `actor-config-queue-override`
@@ -1002,7 +1007,12 @@ async def _actor_config_move_queue(
         f"NOTE: ensure workers consume {result.to_queue!r} now, and keep "
         f"consuming {result.from_queue!r} until every producer runs the "
         f"matching literal — stale producers keep enqueueing to "
-        f"{result.from_queue!r}.",
+        f"{result.from_queue!r}, and those strays stay served by "
+        f"{result.from_queue!r}'s consumers. Left-behind running jobs "
+        f"(running_jobs_left={result.running_jobs_left}) finish on their "
+        f"claiming workers; any that re-pend route to {result.to_queue!r}'s "
+        f"consumers via the assignment, so they drain even after "
+        f"{result.from_queue!r} is retired.",
         err=True,
     )
 
