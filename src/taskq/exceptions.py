@@ -274,7 +274,8 @@ class IdempotencyKeyActorMismatchError(TaskQError):
 
     Nothing was inserted (single enqueue: the arbiter skipped the row; batch:
     the whole batch is rolled back, all-or-nothing like a singleton
-    collision). Namespace keys per actor (``"send_receipt:order_123"``) or
+    collision; batch fast: the COPY aborts the whole batch the same way).
+    Namespace keys per actor (``"send_receipt:order_123"``) or
     give the two actors different ``idempotency_scope`` values.
     """
 
@@ -931,7 +932,10 @@ class ScopedIdempotencyMigrationPendingError(TaskQError):
 
 class DuplicateIdempotencyKeyError(TaskQError):
     """``enqueue_batch_fast`` aborted: an item's
-    ``(idempotency_scope, idempotency_key)`` pair is already enqueued.
+    ``(idempotency_scope, idempotency_key)`` pair is already enqueued by the
+    SAME actor. A pair spanning two actors raises
+    :class:`IdempotencyKeyActorMismatchError` instead, the same refusal the
+    single and batch tiers apply.
 
     COPY has no ``ON CONFLICT`` arbiter, so a same-pair duplicate —
     repeated within the batch or raced against a row the composite

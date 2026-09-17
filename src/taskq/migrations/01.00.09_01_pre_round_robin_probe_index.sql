@@ -1,6 +1,6 @@
 -- Round-robin dispatch probe index: the expression index serving the
 -- per-cohort candidate probes and the rr_keys cohort enumeration in
--- taskq/backend/_dispatch_sql.py's round-robin CTE (the
+-- taskq/backend/_dispatch_sql.py's round-robin CTE (issue #130's
 -- depth-bounded dispatch geometry). Forward-only; there is no down
 -- migration. To revert, restore from backup. The literal "{schema}"
 -- token is substituted at apply time by the migration runner.

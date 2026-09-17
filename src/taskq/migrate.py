@@ -590,6 +590,14 @@ async def apply_pending(
     """
     if ddl_lock_timeout < 0:
         raise ValueError(f"ddl_lock_timeout must be >= 0, got {ddl_lock_timeout}")
+    if 0 < ddl_lock_timeout < 0.001:
+        # A wait below one millisecond truncates to lock_timeout = 0, which
+        # Postgres reads as "wait indefinitely": the opposite of the bound
+        # the caller asked for, silently. Refuse it instead.
+        raise ValueError(
+            f"ddl_lock_timeout must be 0 (wait indefinitely) or at least one "
+            f"millisecond, got {ddl_lock_timeout}s"
+        )
     if not _IDENT_RE.match(schema):
         raise ValueError(f"invalid schema name {schema!r}")
 

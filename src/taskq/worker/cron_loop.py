@@ -148,7 +148,7 @@ CRON_TICK_SQL_TEMPLATE: Final = (
 """The tick's one opening statement: the cron try-lock ($1 = the lock
 name), the planning clock, and the due read ($2 = the batch limit).
 
-Formatted with ``schema``; the plan-shape audit
+Rendered with ``{schema}`` replaced by the schema name; the plan-shape audit
 (``tests/test_index_audit.py``) explains this same text, so the
 index-servable due bound cannot drift there unnoticed. See
 :func:`tick_cron` for why the three ride one statement and why the due
@@ -1017,7 +1017,7 @@ async def tick_cron(
     # every croniter seed and the due bound come from one server-side
     # reading, so a due row is never "in the future" of its own seed.
     tick_rows: list[asyncpg.Record] = await conn.fetch(
-        CRON_TICK_SQL_TEMPLATE.format(schema=schema),
+        CRON_TICK_SQL_TEMPLATE.replace("{schema}", schema),
         lock_name,
         limit,
     )
