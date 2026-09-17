@@ -289,6 +289,11 @@ def test_endpoint_alone_installs_otlp_exporters() -> None:
     metrics (the spec default), not providers with nothing attached. The
     endpoint is never contacted: the process reports and exits before any
     export interval, skipping the SDK's atexit flush."""
+    # The scenario builds the real OTLP exporter inside the subprocess, so a
+    # tree without the exporter dist (an extras-isolation leg that installs
+    # the SDK but not [otel]) must skip rather than exercise the fail-closed
+    # refusal the [oidc]/[saml] legs pin through other tests.
+    pytest.importorskip("opentelemetry.exporter.otlp")
     out = _run_scenario(
         _PREAMBLE
         + """

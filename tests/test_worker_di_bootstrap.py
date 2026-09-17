@@ -1399,8 +1399,16 @@ async def test_health_socket_collision_warns_and_boots() -> None:
     refusing to boot would crash-loop a healthy pair during a rolling
     restart. The boot warns and carries on."""
 
+    async def _peer_serve(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        # A real peer worker answers probes and closes. Closing matters:
+        # without it the accepted transport lingers, and on Python 3.12
+        # ``wait_closed()`` below waits for it forever.
+        writer.close()
+        with contextlib.suppress(ConnectionError):
+            await writer.wait_closed()
+
     peer_path = unique_health_sock_path("health_collision_peer")
-    peer = await asyncio.start_unix_server(lambda r, w: None, path=peer_path)
+    peer = await asyncio.start_unix_server(_peer_serve, path=peer_path)
     try:
         settings = _settings(**{"TASKQ_HEALTH_SOCKET_PATH": peer_path})
         with structlog.testing.capture_logs() as logs:

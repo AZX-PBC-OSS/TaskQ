@@ -318,8 +318,7 @@ from taskq.backend import JobRow
 
 
 @actor(on_cancel=my_cleanup)
-async def provision(payload: Payload, ctx: JobContext[Payload]) -> Result:
-    ...
+async def provision(payload: Payload, ctx: JobContext[Payload]) -> Result: ...
 ```
 
 The hook fires when a running job ends `cancelled` — the actor observed the cancellation (cooperatively or under escalation), and the consumer's terminal write moved the row. It receives the terminal `JobRow` and nothing else: a cancelled attempt produced no result.

@@ -38,6 +38,24 @@ import pytest
 
 _HAS_OTEL_SDK = importlib.util.find_spec("opentelemetry.sdk") is not None
 
+
+def _find_spec(name: str) -> bool:
+    """``find_spec`` that answers False instead of raising when a parent
+    package is absent (``opentelemetry.exporter`` does not exist at all in
+    the extras-isolation legs that install no exporter dist)."""
+    try:
+        return importlib.util.find_spec(name) is not None
+    except ModuleNotFoundError:
+        return False
+
+
+# The full-mode scenarios build the real OTLP exporter inside the subprocess;
+# an SDK without the exporter dist (extras-isolation legs that install the
+# dev group's SDK transitively but not [otel]) fails at the entry point, so
+# the guard below needs both, not the SDK alone.
+_HAS_OTLP_EXPORTER = _find_spec("opentelemetry.exporter.otlp")
+_FULL_MODE = _HAS_OTEL_SDK and _HAS_OTLP_EXPORTER
+
 _CONNECTION_STRING_ENV = "APPLICATIONINSIGHTS_CONNECTION_STRING"
 _AGENT_SITE_ENV = "DD_SITE"
 _AGENT_KEY_ENV = "DD_API_KEY"
@@ -244,8 +262,8 @@ def test_connection_string_ingestion_endpoint_is_the_otlp_base() -> None:
 
 
 @pytest.mark.skipif(
-    not _HAS_OTEL_SDK,
-    reason="opentelemetry-sdk (the [otel] extra) is not installed; the full-mode assertions need it",
+    not _FULL_MODE,
+    reason="opentelemetry-sdk with the OTLP exporter (the [otel] extra) is not installed; the full-mode assertions need both",
 )
 def test_connection_string_block_is_accepted_and_exports_to_the_ingest_paths(
     ingest_endpoint: str,
@@ -273,8 +291,8 @@ def test_connection_string_block_is_accepted_and_exports_to_the_ingest_paths(
 
 
 @pytest.mark.skipif(
-    not _HAS_OTEL_SDK,
-    reason="opentelemetry-sdk (the [otel] extra) is not installed; the full-mode assertions need it",
+    not _FULL_MODE,
+    reason="opentelemetry-sdk with the OTLP exporter (the [otel] extra) is not installed; the full-mode assertions need both",
 )
 def test_agent_intake_block_is_accepted_and_exports_to_the_agent_ports(
     ingest_endpoint: str,

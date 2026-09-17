@@ -40,11 +40,12 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, cast
 
 import asyncpg
 import pytest
 import structlog
+import typer
 from typer.testing import CliRunner
 
 from taskq._ids import new_job_id, new_uuid
@@ -1034,12 +1035,15 @@ def test_queue_migrate_requires_the_target_queue_to_be_named_explicitly() -> Non
     assert missing_target.exit_code != 0, "a migrate with no target queue must not be accepted"
 
     # The command itself must exist, or the refusal above is just typer
-    # rejecting an unknown subcommand and this pin means nothing.
-    help_result = runner.invoke(app, ["queue", "migrate", "--help"])
-    assert help_result.exit_code == 0, (
-        f"`taskq queue migrate` must exist; got {help_result.exit_code}: {help_result.output!r}"
-    )
-    assert "--to" in help_result.output, (
+    # rejecting an unknown subcommand and this pin means nothing. The option
+    # surface is asserted against the declared parameters rather than the
+    # rendered --help text: Rich wraps help output to the terminal width, so
+    # a substring check on the rendering fails on narrow terminals (e.g. CI)
+    # even though the option is present.
+    root = cast(Any, typer.main.get_command(app))
+    migrate_cmd = root.commands["queue"].commands["migrate"]
+    declared = {opt for param in migrate_cmd.params for opt in param.opts}
+    assert "--to" in declared, (
         "the target queue must be named by an explicit --to option, so the "
         "actor and the queue can never be transposed"
     )
