@@ -1591,3 +1591,151 @@ async def test_leader_whose_row_was_taken_over_steps_down_on_the_next_renewal(
                 await task
     finally:
         await stack.aclose()
+
+
+# ── A won-but-unassumable lease goes back to the fleet (#234) ───────────
+
+
+class _UnassumableLeader(MaintenanceLeader):
+    """A pod that keeps WINNING elections but can never open the dedicated
+    conns an assume requires — the conn-count-pressure shape from #234:
+    the one leader-conn slot the election itself uses opens fine, the two
+    extra dedicated conns are refused every cycle."""
+
+    async def _open_dedicated_conn(self, label: str) -> asyncpg.Connection:
+        raise asyncpg.TooManyConnectionsError("remaining connection slots are reserved")
+
+
+@pytest.mark.asyncio
+async def test_won_but_unassumable_leader_hands_the_lease_to_a_peer(
+    pg_dsn: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    """#234, end to end on real Postgres: a pod whose elections keep
+    succeeding but whose dedicated-conn opens keep failing must not hold
+    the lease forever.
+
+    Every own-row re-win re-falsifies the peers' lapse predicate, so
+    before the fix nobody led for as long as the failure lasted — the
+    whole maintenance plane, reclaim sweep included, stopped fleet-wide.
+    The fix hands the row back once the episode's trust budget (one
+    ``leader_lease`` window) is spent, so the healthy peer takes over on
+    its next cycle — bounded by the same SLA a dead leader already had —
+    and the broken pod's LATER teardown resign stays fenced out of the
+    successor's row.
+    """
+    (
+        schema,
+        stack_a,
+        deps_a,
+        backend_a,
+        wid_a,
+        stack_b,
+        deps_b,
+        backend_b,
+        wid_b,
+    ) = await _open_two(pg_dsn, f"test_leader_{new_base62()}")
+    try:
+        # The shortest honoured lease at this heartbeat: the episode's
+        # trust budget (lease - margin) is one second, so the hand-back
+        # fires on the second or third failed cycle instead of paying the
+        # default 40 s window in a test.
+        deps_a.settings.leader_lease = 2.0
+
+        # Per-pod shutdown events, the production shape: the red-team
+        # phase below shuts down ONLY the broken pod, and a shared event
+        # would tear the healthy peer down with it.
+        shutdown_a = asyncio.Event()
+        shutdown_b = asyncio.Event()
+        # Pod A starts ALONE so it is the certain first winner; pod B
+        # joins only once A is demonstrably in the won-but-unassumable
+        # state, which is the state whose fleet-wide cost is the issue.
+        leader_a = _UnassumableLeader(deps_a, wid_a, backend_a, clock=SystemClock())
+        election_a = asyncio.create_task(leader_a.run(shutdown_a))
+        heartbeat_a = asyncio.create_task(heartbeat_loop(deps_a, wid_a, shutdown_a))
+        election_b: asyncio.Task[None] | None = None
+        heartbeat_b: asyncio.Task[None] | None = None
+        try:
+            _route_logs_to_stdlib()
+            with caplog.at_level(logging.DEBUG):
+                await wait_for_condition(
+                    lambda: any(
+                        "leader-dedicated-conn-failed" in record.getMessage()
+                        and str(wid_a) in record.getMessage()
+                        for record in caplog.records
+                    ),
+                    description="pod A must win its elect and fail the dedicated "
+                    "opens before the peer joins",
+                    timeout=10.0,
+                )
+
+                election_b, heartbeat_b = await _run_pod(deps_b, backend_b, wid_b, shutdown_b)
+
+                await wait_for_condition(
+                    lambda: any(
+                        "leader-resigned-unassumable" in record.getMessage()
+                        and str(wid_a) in record.getMessage()
+                        for record in caplog.records
+                    ),
+                    description="the trust-spent hand-back never resigned the "
+                    "won-but-unassumable lease",
+                    timeout=10.0,
+                )
+                await wait_for_condition(
+                    lambda: deps_b.is_leader.is_set(),
+                    description="the healthy peer never took over the lease the "
+                    "broken pod kept re-winning",
+                    timeout=15.0,
+                )
+
+                assert not deps_a.is_leader.is_set(), (
+                    "a pod that cannot open its dedicated conns never led"
+                )
+                assert int(deps_a.is_leader.is_set()) + int(deps_b.is_leader.is_set()) == 1, (
+                    "exactly one leader after the hand-back"
+                )
+
+                async with deps_b.dispatcher_pool.acquire() as conn:
+                    holder = await conn.fetchval(
+                        f'SELECT worker_id FROM "{schema}".maintenance_leader '  # Why: schema is a test-minted identifier, never user input.
+                        f"WHERE singleton = true"
+                    )
+                assert holder is not None and UUID(str(holder)) == wid_b, (
+                    "the lease row must name the healthy peer after the hand-back"
+                )
+
+            # Red-team double-resign: shut down ONLY the broken pod. Its
+            # teardown resign runs AFTER the takeover, fenced on its own
+            # last won term — a different (worker_id, elected_at) from the
+            # successor's — so B's row must survive it while B keeps
+            # renewing. (A shared shutdown event here would resign B's own
+            # row through B's teardown too, and prove nothing.)
+            shutdown_a.set()
+            with suppress(asyncio.CancelledError, ExceptionGroup):
+                await election_a
+            with suppress(asyncio.CancelledError, ExceptionGroup):
+                await heartbeat_a
+
+            async with deps_b.dispatcher_pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    f'SELECT worker_id FROM "{schema}".maintenance_leader WHERE singleton = true'  # Why: schema is a test-minted identifier, never user input.
+                )
+            assert row is not None and UUID(str(row["worker_id"])) == wid_b, (
+                "the broken pod's teardown resign deleted the successor's lease "
+                "row — the fence exists to make that impossible"
+            )
+            assert deps_b.is_leader.is_set(), "the successor must still be leading"
+        finally:
+            shutdown_a.set()
+            shutdown_b.set()
+            leftover = [
+                task
+                for task in (election_b, heartbeat_b, election_a, heartbeat_a)
+                if task is not None
+            ]
+            for task in leftover:
+                task.cancel()
+            with suppress(asyncio.CancelledError, ExceptionGroup):
+                await asyncio.gather(*leftover, return_exceptions=True)
+    finally:
+        await stack_b.aclose()
+        await stack_a.aclose()
