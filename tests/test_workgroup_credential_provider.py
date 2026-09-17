@@ -279,11 +279,17 @@ async def test_spawned_child_acquires_connections_through_the_provider(
         )
     finally:
         if proc.returncode is None:
-            proc.terminate()
+            # The returncode stays None until the loop reaps the exit, so a
+            # child that exited under a loaded runner reaches terminate()
+            # already dead. The supervisor's own _kill_child guards the
+            # same race with the same suppressions.
+            with contextlib.suppress(ProcessLookupError):
+                proc.terminate()
             try:
                 await asyncio.wait_for(proc.wait(), timeout=10.0)
             except TimeoutError:
-                proc.kill()
+                with contextlib.suppress(ProcessLookupError):
+                    proc.kill()
                 await proc.wait()
         # Reap the stream pumps the way the supervisor's liveness monitor
         # does, so no cancelled task is left un-awaited.
