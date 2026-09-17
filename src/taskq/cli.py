@@ -1819,6 +1819,11 @@ def _build_sso_bundle(settings: TaskQSettings, base_path: str) -> Any | None:
             secure_cookie=secure,
             group_attribute=saml.group_attribute,
             allowed_groups=saml.allowed_groups_set,
+            # Threaded explicitly (same rationale as session_max_age_seconds):
+            # SAMLAuthConfig carries its own default, so a missed pass-through
+            # would silently pin the flag off and make
+            # TASKQ_SAML_ALLOW_COOKIELESS_FALLBACK a no-op.
+            allow_cookieless_fallback=saml.allow_cookieless_fallback,
         )
         return create_saml_auth(config, base_path=base_path)
     return None

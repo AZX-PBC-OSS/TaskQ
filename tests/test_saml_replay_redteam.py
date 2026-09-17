@@ -1,10 +1,12 @@
 """Red-team checks for the cross-site SAML fix's dual AuthnRequest binding.
 
-The fix (see saml.py's _PendingAuthnRequests) accepts a callback with no
-usable correlation cookie by falling back to a server-side pending-request
-set keyed by the assertion's *validated* InResponseTo. These tests probe
-whether that fallback can be abused to replay a captured, correctly-signed
-assertion, or to double-spend one AuthnRequest ID into two sessions.
+The cookie-less fallback (see saml.py's _PendingAuthnRequests) — opt-in
+since #240 via ``allow_cookieless_fallback`` — accepts a callback with no
+usable correlation cookie when the assertion's *validated* InResponseTo
+names an AuthnRequest this process issued and has not spent. These tests
+probe whether that fallback can be abused to replay a captured,
+correctly-signed assertion, or to double-spend one AuthnRequest ID into
+two sessions.
 """
 
 from __future__ import annotations
@@ -34,6 +36,10 @@ _TEST_BASE_URL = "http://testserver.invalid"
 
 
 def _config(**kwargs: Any) -> SAMLAuthConfig:
+    # allow_cookieless_fallback: these tests red-team the fallback itself,
+    # which is opt-in (default off) since #240 — a cookie-less callback on a
+    # default deployment is refused before any of the behavior under test
+    # here is reached.
     return SAMLAuthConfig(
         entity_id=SP_ENTITY_ID,
         acs_url=ACS_URL,
@@ -42,6 +48,7 @@ def _config(**kwargs: Any) -> SAMLAuthConfig:
         idp_x509_cert=IDP_CERT_PEM,
         session_secret=_SESSION_SECRET,
         secure_cookie=False,
+        allow_cookieless_fallback=True,
         **kwargs,
     )
 
