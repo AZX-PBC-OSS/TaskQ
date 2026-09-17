@@ -1228,4 +1228,11 @@ taskq actor-config deregister my-actor.run-123 --force --purge-queue
 
 The `/admin/actors` page lists all `actor_config` rows with active job counts
 and schedule counts. Each row has a deregister form with `force` and
-`purge_queue` checkboxes (requires `TASKQ_ADMIN_ACTIONS_ENABLED=true`).
+`purge_queue` checkboxes (requires `TASKQ_ADMIN_ACTIONS_ENABLED=true`). Each
+row also carries the executor statistics the shared per-actor stats read
+computes — completed jobs (live terminal rows included), failures with their
+share, the most recent `error_class`, and duration percentiles — with a
+window toggle for the recency view; see
+[admin-ui.md — `GET /admin/actors`](admin-ui.md#get-adminactors) and the
+[`taskq.jobs.reclaimed{actor, disposition}`](observability.md#counters)
+counter for the per-actor crash split the expired-locks sweep records.
