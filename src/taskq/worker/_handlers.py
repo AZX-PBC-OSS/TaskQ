@@ -61,6 +61,7 @@ from taskq.obs import (
     ExceptionText,
     invoke_error_reporter,
     log_state_change,
+    record_attempt_failure,
     record_reservation_denial,
     render_exception,
 )
@@ -343,6 +344,7 @@ async def _handle_timeout(
         job_state,
         max_retry_backoff=max_retry_backoff,
     )
+    record_attempt_failure(job.actor, error_info.error_class, retryable=isinstance(decision, Retry))
     if isinstance(decision, Retry):
         updated_row = await shield_with_retrieval(
             safe_mark_failed_or_retry(
@@ -796,6 +798,7 @@ async def _handle_generic_exception(
         start_to_close=job.start_to_close,
     )
     decision = decide_after_failure(actor_config, e, job_state, max_retry_backoff=max_retry_backoff)
+    record_attempt_failure(job.actor, error_info.error_class, retryable=isinstance(decision, Retry))
     if isinstance(decision, Retry):
         updated_row = await shield_with_retrieval(
             safe_mark_failed_or_retry(

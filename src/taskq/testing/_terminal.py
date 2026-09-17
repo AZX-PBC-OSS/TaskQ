@@ -47,6 +47,7 @@ from taskq.exceptions import (
     UnencodableValue,
     WorkerOwnershipMismatch,
 )
+from taskq.obs import record_job_abandoned
 from taskq.testing._reads import _read_copy
 
 if TYPE_CHECKING:
@@ -631,6 +632,7 @@ async def _mark_abandoned(
         to_state="abandoned",
         job_id=str(job_id),
     )
+    record_job_abandoned(row.actor)
     return True
 
 
