@@ -674,6 +674,25 @@ more heartbeat intervals (the default, 40 s, already is).
 These change what your code *does* without changing what it *accepts*. Nothing
 raises, so nothing points you at the call site — audit for them explicitly.
 
+* **Cron payload-factory budget exhaustion now defers instead of
+  striking, and micro-grants no longer exist.** A factory-backed cron
+  schedule the tick's funded budget could not pay for used to take a
+  failure strike (`consecutive_failures` +1, `last_fire_error` set to a
+  "tick budget exhausted" reason) — marching healthy schedules behind
+  one hung factory to auto-disable in lockstep. It now advances
+  `next_fire_at` one leader tick and retries: no strike, no error text.
+  A leftover too small to honour was also previously granted as a
+  micro-grant, cutting slower factories into manufactured
+  "timed-out-after-0.08s" strikes behind a *slow-but-successful*
+  monopolizer that never drains; a factory is now called only when the
+  leftover can fund at least `min(TASKQ_CRON_PAYLOAD_FACTORY_TIMEOUT, a
+  quarter of the tick's funded budget)` — smaller leftovers defer.
+  Operators keying on the old `last_fire_error` text should watch the
+  `cron-fire-budget-deferred` log event and the new
+  `taskq.cron.budget_deferrals` counter instead (see the cron guide's
+  tick-budget section and the `TaskQCronBudgetDeferrals` runbook;
+  genuinely slow/hung factories still strike exactly as before).
+
 * **`taskq_leader_lock_contention_total` stops rising in a healthy fleet.** It
   previously incremented on every follower's every heartbeat, so the
   sustained-rate alert fired permanently wherever more than one pod ran. It
