@@ -19,7 +19,11 @@ Clock-domain normalization
 The two sides' clocks are independent (FakeClock is frozen until advanced;
 PG advances in wall time).  Scenarios therefore express time as OFFSETS from
 a per-side anchor captured at calibration (``side.ts(offset_seconds)``), and
-the snapshot normalizes every timestamp to a domain-relative bucket:
+the snapshot normalizes every timestamp to a domain-relative bucket. At
+snapshot the memory clock is first advanced by exactly the wall time the PG
+side consumed running the scenario, so both sides' action-written
+timestamps sit at the same logical elapsed and bucket identically however
+loaded the runner is:
 
 * ``None`` — the column is NULL;
 * ``"past"`` — the instant is at least 0.5 s before the snapshot's now;
@@ -986,6 +990,22 @@ async def run_differential(
     try:
         await scenario(mem)
         await scenario(pg)
+        # Co-drive the memory clock to the PG side's elapsed time. The
+        # scenario's action-written timestamps (claims, cancels) anchor to
+        # each side's own clock: PG's to the server clock, which advances
+        # with real runner time, the memory's to the frozen FakeClock,
+        # which does not. Bucketing both sides against their own now then
+        # diverges on a loaded runner — a lifecycle field written at the
+        # enqueue reads "now" on the frozen clock and "past" on the
+        # advanced one, and a lease reads one second lower. This is the
+        # harness's own drive-both-to-the-same-logical-time rule, applied
+        # at snapshot: the memory clock advances by exactly the elapsed
+        # the PG side experienced, so action-written fields bucket
+        # identically and the rounding absorbs only sub-second residual.
+        assert pg._t0 is not None  # pyright: ignore[reportPrivateUsage]  # Why: harness-owned anchor; the established same-module pattern.
+        elapsed = await pg.now() - pg._t0
+        assert mem._clock is not None  # pyright: ignore[reportPrivateUsage]
+        mem._clock.advance(elapsed)
         mem_obs = await mem.snapshot()
         pg_obs = await pg.snapshot()
         return mem_obs, pg_obs
