@@ -29,7 +29,13 @@ statement itself returns.  The two layers below pin that contract:
   ``state_change`` detail, per-row ``occurred_at`` co-monotonic with
   ``job_events.id``, running jobs get cooperative cancel (never
   terminal), re-runs are idempotent, and the returned counts equal the
-  rows actually cancelled.
+  rows actually cancelled.  Completeness includes the mid-drain re-pend
+  dimension (#237): a matching running row moved back to pending /
+  scheduled BEHIND the pending arm's keyset cursor — a crash reclaim, a
+  denial snooze, a shutdown interrupt, a consumer retry — must still be
+  cancelled by the same call, and the two-arm drain must terminate as a
+  bounded fixpoint (a first empty round stops it; a hard round cap
+  bounds it under sustained churn), never an unbounded loop.
 
 Counting mutated rows and event rows per transaction — from the driving
 statement's own RETURNING aggregates — rather than wall-clock seconds
@@ -50,9 +56,11 @@ partial progress and a re-run resumes where it stopped.
 
 from __future__ import annotations
 
+import asyncio
 import json
-from collections.abc import AsyncGenerator, Sequence
+from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
 
@@ -60,11 +68,17 @@ import asyncpg
 import pytest
 
 from taskq._ids import new_uuid
-from taskq.backend._cancel_bulk import _cancel_where
+from taskq.backend._cancel_bulk import (
+    _MAX_CANCEL_DRAIN_ROUNDS,
+    _UUID_MIN,
+    _cancel_where,
+)
 from taskq.backend._protocol import JobFilter
 from taskq.backend._sql_templates import render
+from taskq.backend.postgres import PostgresBackend
 from taskq.testing.assertions import parse_detail
 from taskq.testing.fixtures import ModulePgSchema
+from taskq.testing.pg import create_running_job, create_worker
 
 pytestmark = pytest.mark.integration
 
@@ -1508,4 +1522,429 @@ async def test_partial_drain_progress_is_durable_and_a_rerun_resumes(
     )
     assert still_pending == len(untouched), (
         "the interrupted drain and its re-run must both stay inside the filter"
+    )
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# LAYER 2b — the fixpoint rounds (#237): mid-drain re-pends behind the
+# keyset cursor, and their termination/cost bound.
+#
+# The keyset cursor that keeps each batch cheap (perf-evidence-bulk-cancel.md)
+# has a blind spot no single pair of passes can close: a matching RUNNING row
+# rescheduled mid-drain (crash reclaim → pending, denial snooze → scheduled,
+# shutdown interrupt → pending, consumer retry → scheduled/pending) lands at
+# an id the pending arm's cursor has ALREADY passed, and the running arm —
+# strictly after it, matching only `running AND cancel_phase = 0` — cannot
+# see the re-pended row either.  The pre-rounds drain returned normally with
+# such a row uncancelled, contradicting the "cancels EVERY matching job"
+# contract.  These tests interleave real concurrent writers (the production
+# reclaim sweep, a churn producer) between the drain's batches through a
+# pool stand-in, then pin that the next round's fresh-cursor pass catches
+# the straggler, that a quiescent tail terminates at the first empty round,
+# and that sustained churn stops at the hard round cap instead of looping.
+# ══════════════════════════════════════════════════════════════════════════
+
+
+class _DrainSpyPool:
+    """Pool stand-in that interleaves a hook between the drain's batches
+    and records every driving fetchrow's arm and keyset cursor.
+
+    The hook fires BEFORE each acquire's transaction opens — the one
+    moment a concurrent writer can act on rows the drain has windowed
+    past without contending a held row lock — and runs on the RAW pool,
+    exactly where a real reclaim sweep or peer producer would run.
+
+    The driving-statement observation sniffs the two arms' distinctive
+    status predicates (`status IN ('pending', 'scheduled')` /
+    `status = 'running'`) and reads the cursor from the drain's own
+    bind order (`*filter_params, batch_cursor, batch_size`), so the
+    round arithmetic below measures the shipped statements rather than
+    a reimplementation.
+    """
+
+    def __init__(
+        self,
+        pool: Any,
+        before_acquire: Callable[[int], Awaitable[None]] | None = None,
+    ) -> None:
+        self._pool = pool
+        self._before_acquire = before_acquire
+        self.acquire_count = 0
+        #: (arm, keyset cursor) per driving fetchrow, in call order.
+        self.driving: list[tuple[str, UUID]] = []
+
+    @asynccontextmanager
+    async def acquire(self, **kwargs: object) -> AsyncGenerator[Any]:
+        self.acquire_count += 1
+        if self._before_acquire is not None:
+            await self._before_acquire(self.acquire_count)
+        async with self._pool.acquire(**kwargs) as inner:
+            outer = self
+
+            class _Conn:
+                def __init__(self, c: Any) -> None:
+                    self._c = c
+
+                async def fetchrow(self, sql: str, *args: object) -> Any:
+                    if "status IN ('pending', 'scheduled')" in sql:
+                        outer.driving.append(("ps", args[-2]))
+                    elif "status = 'running'" in sql:
+                        outer.driving.append(("run", args[-2]))
+                    return await self._c.fetchrow(sql, *args)
+
+                def __getattr__(self, name: str) -> Any:
+                    return getattr(self._c, name)
+
+            yield _Conn(inner)
+
+    # -- round arithmetic over the recorded driving statements -------
+
+    @property
+    def ps_drains_started(self) -> int:
+        """How many pending/scheduled arm drains began — one per fixpoint
+        round that actually ran, identified by the fresh-cursor pass
+        (the first batch of every arm binds ``_UUID_MIN``)."""
+        return sum(1 for arm, cursor in self.driving if arm == "ps" and cursor == _UUID_MIN)
+
+    @property
+    def ps_batches(self) -> int:
+        return sum(1 for arm, _cursor in self.driving if arm == "ps")
+
+    @property
+    def run_batches(self) -> int:
+        return sum(1 for arm, _cursor in self.driving if arm == "run")
+
+
+# The grace pair the sweep tests use: the cancel carve-out's deep
+# threshold is then 30 + 30 + 60 = 120s, so a lock 180s past is deeply
+# expired (admits a cancel_phase != 0 row) and a lock 10s past is only
+# baseline-expired (admits a phase-0 row, keeps a phase-1 row running).
+_SWEEP_CANCEL_GRACE = timedelta(seconds=30)
+_SWEEP_CLEANUP_GRACE = timedelta(seconds=30)
+
+
+async def _seed_running_matching_job(
+    conn: asyncpg.Connection,
+    schema: str,
+    worker_id: UUID,
+    *,
+    tags: Sequence[str],
+    cancel_phase: int = 0,
+    lock_expires_at: datetime,
+) -> UUID:
+    """One running job carrying *tags*, via the suite's shared seeder
+    (the running-row shape the drain's running arm matches), with the
+    tag stamped by a follow-up UPDATE — ``create_running_job`` predates
+    tag-aware seeding and tests patch columns this way."""
+    job_id = await create_running_job(
+        conn,
+        schema,
+        worker_id,
+        cancel_phase=cancel_phase,
+        cancel_requested_at=datetime.now(UTC) if cancel_phase else None,
+        lock_expires_at=lock_expires_at,
+        with_events=False,
+    )
+    await conn.execute(
+        f'UPDATE "{schema}".jobs SET tags = $2::text[] WHERE id = $1',  # noqa: S608  # Why: schema is a test-fixture identifier, validated by render() in every caller; the tag array is $N-bound.
+        job_id,
+        list(tags),
+    )
+    return job_id
+
+
+async def test_repend_behind_the_cursor_is_caught_by_the_next_round(
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
+) -> None:
+    """A matching running row the crash-reclaim sweep re-pends BEHIND the
+    pending arm's keyset cursor mid-drain must still be cancelled by the
+    same call (#237).
+
+    Reproduction of the defect on the pre-rounds drain: the row was
+    'running' when the pending arm windowed past its id (no window ever
+    held it), the sweep hands it back 'pending' between the two arms,
+    and the running arm matches only ``running AND cancel_phase = 0`` —
+    so the call returned normally with the row uncancelled.  The fix's
+    next round restarts the pending arm's cursor at the bottom of the
+    key space and cancels the straggler there.
+    """
+    schema = module_pg_schema.schema_name
+    conn = clean_pg_conn
+    render(schema)
+    worker_id = new_uuid()
+    await create_worker(conn, schema, worker_id)
+
+    # Seeded FIRST and 20ms before the pending backlog: job ids are
+    # UUIDv7 (millisecond precision + random tail), so the sleep puts
+    # the running row's id strictly below every backlog id — the
+    # pending arm's first batch advances the cursor past it.
+    moved_job_id = await _seed_running_matching_job(
+        conn,
+        schema,
+        worker_id,
+        tags=["midflight"],
+        lock_expires_at=datetime.now(UTC) - timedelta(seconds=10),
+    )
+    await asyncio.sleep(0.02)
+    backlog_ids = [new_uuid() for _ in range(4)]
+    await _seed_jobs(conn, schema, backlog_ids, status="pending", tags=["midflight"])
+
+    batch_size = 2
+    swept: list[bool] = []
+
+    async def _sweep_the_running_row_on_arm2(n: int) -> None:
+        # Acquire ordinal 4 = the running arm's first batch: the pending
+        # arm drained 3 batches (2, 2, 0 windows) and its cursor is above
+        # the running row's id; the running arm's transaction has NOT
+        # opened yet, so the production sweep acts on the unlocked row
+        # exactly where a real leader's tick would.
+        if n != 4 or swept:
+            return
+        swept.append(True)
+        async with module_pg_pool.acquire() as sweep_conn:
+            count = await PostgresBackend.sweep_expired_locks(
+                sweep_conn,
+                _SWEEP_CANCEL_GRACE,
+                _SWEEP_CLEANUP_GRACE,
+                schema=schema,
+            )
+        assert count == 1, "the hook's sweep must reclaim the running row"
+
+    pool = _DrainSpyPool(module_pg_pool, _sweep_the_running_row_on_arm2)
+    result, _notify = await _cancel_where(
+        pool,  # type: ignore[arg-type]  # Why: duck-typed pool; only acquire() is used.
+        schema,
+        render(schema),
+        JobFilter(tags=("midflight",)),
+        "offboard",
+        batch_size=batch_size,
+    )
+
+    assert swept, "the interleaving hook never fired — the reproduction did not run"
+    assert result.cancelled_directly == 5, (
+        f"every matching job must be cancelled by the one call: the 4 seeded "
+        f"pending rows plus the row the sweep re-pended behind the cursor "
+        f"(got {result.cancelled_directly}; the pre-rounds drain returned 4 "
+        f"and left the straggler pending with its cancel silently lost)"
+    )
+    row = await conn.fetchrow(
+        f'SELECT status, cancel_phase FROM "{schema}".jobs WHERE id = $1',  # noqa: S608  # Why: schema is a test-fixture identifier, validated by render() above; the job id is $N-bound.
+        moved_job_id,
+    )
+    assert row is not None
+    assert row["status"] == "cancelled"
+    assert row["cancel_phase"] == 0
+
+    # The round arithmetic: round 1 drained the backlog, round 2 caught
+    # the straggler, round 3 confirmed zero and stopped the fixpoint.
+    assert pool.ps_drains_started == 3, (
+        f"expected the fixpoint to run rounds 1 (backlog), 2 (straggler) and "
+        f"3 (empty confirmation); saw {pool.ps_drains_started} pending-arm "
+        f"drains"
+    )
+
+
+async def test_cancel_in_flight_reclaimed_mid_drain_is_terminal_cancelled(
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
+) -> None:
+    """The #237 + #238 composition, end to end: a running job whose cancel
+    is ALREADY in flight (phase 1, requested_at stamped — a prior
+    single-job cancel), reclaimed by the production sweep between the
+    drain's two arms, behind the pending arm's cursor.
+
+    Doubly lost on the pre-fix code: the budget-first sweep re-pended the
+    row 'pending' with the operator's cancel columns WIPED (#238), and
+    the re-pended row sat at an id the pending arm had already passed so
+    no later arm of the call could see it (#237) — the call returned
+    normally reporting nothing about a job whose cancel it had been asked
+    to complete.  Either fix alone saves this timing; the composition is
+    red only when both are broken, which is the point of walking it end
+    to end.  With both fixes the sweep itself terminalises the row
+    'cancelled' — the honest resolution for a request whose only
+    cooperative writer is provably gone — with the audit columns
+    preserved.
+    """
+    schema = module_pg_schema.schema_name
+    conn = clean_pg_conn
+    render(schema)
+    worker_id = new_uuid()
+    await create_worker(conn, schema, worker_id)
+
+    # Phase 1 from the start: an operator already asked for this cancel
+    # before the bulk call.  Lock 180s past — deeply expired, so the
+    # sweep's cancel carve-out admits the phase-1 row between the arms.
+    cancelled_job_id = await _seed_running_matching_job(
+        conn,
+        schema,
+        worker_id,
+        tags=["midflight"],
+        cancel_phase=1,
+        lock_expires_at=datetime.now(UTC) - timedelta(seconds=180),
+    )
+    await asyncio.sleep(0.02)
+    backlog_ids = [new_uuid() for _ in range(4)]
+    await _seed_jobs(conn, schema, backlog_ids, status="pending", tags=["midflight"])
+
+    batch_size = 2
+    swept: list[bool] = []
+
+    async def _sweep_the_cancel_in_flight_row_on_arm2(n: int) -> None:
+        if n != 4 or swept:
+            return
+        swept.append(True)
+        async with module_pg_pool.acquire() as sweep_conn:
+            count = await PostgresBackend.sweep_expired_locks(
+                sweep_conn,
+                _SWEEP_CANCEL_GRACE,
+                _SWEEP_CLEANUP_GRACE,
+                schema=schema,
+            )
+        assert count == 1, "the hook's sweep must reclaim the cancel-in-flight row"
+
+    pool = _DrainSpyPool(module_pg_pool, _sweep_the_cancel_in_flight_row_on_arm2)
+    result, _notify = await _cancel_where(
+        pool,  # type: ignore[arg-type]  # Why: duck-typed pool; only acquire() is used.
+        schema,
+        render(schema),
+        JobFilter(tags=("midflight",)),
+        "offboard",
+        batch_size=batch_size,
+    )
+
+    assert swept, "the interleaving hook never fired — the reproduction did not run"
+    # The drain itself never matched the row (running+phase-1 for arm 2's
+    # predicate, terminal by the time any fresh cursor ran): its cancel
+    # was honored by the sweep, and the result must not claim otherwise.
+    assert result.cancelled_directly == 4
+    assert result.cancel_requested == 0
+
+    row = await conn.fetchrow(
+        f"SELECT status, cancel_phase, cancel_requested_at, finished_at, error_class "  # noqa: S608  # Why: schema is a test-fixture identifier, validated by render() above; the job id is $N-bound.
+        f'FROM "{schema}".jobs WHERE id = $1',
+        cancelled_job_id,
+    )
+    assert row is not None
+    assert row["status"] == "cancelled", (
+        "the composition's doubly-lost cancel must land terminal 'cancelled' — "
+        "on the pre-fix code this row sat 'pending' with cancel_phase=0 and a "
+        "NULL cancel_requested_at, the operator's request erased"
+    )
+    assert row["cancel_phase"] == 1, "the honored request's audit trail survives"
+    assert row["cancel_requested_at"] is not None
+    assert row["finished_at"] is not None
+
+    attempt_row = await conn.fetchrow(
+        f'SELECT outcome, error_class FROM "{schema}".job_attempts '  # noqa: S608  # Why: schema is a test-fixture identifier, validated by render() above; the job id is $N-bound.
+        f"WHERE job_id = $1 ORDER BY started_at DESC LIMIT 1",
+        cancelled_job_id,
+    )
+    assert attempt_row is not None
+    assert attempt_row["outcome"] == "crashed"
+    assert attempt_row["error_class"] == "WorkerCrashed"
+
+    # The fixpoint still converged: round 2 confirmed nothing left.
+    assert pool.ps_drains_started == 2
+
+
+async def test_drain_rounds_terminate_at_the_first_empty_round(
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
+) -> None:
+    """The fixpoint's termination and cost bound on a quiescent match set:
+    exactly two rounds run — round 1 drains, round 2 re-walks from the
+    bottom of the key space, matches nothing, and stops the loop.
+
+    This is the bound proof for the no-churn case: the second pass is the
+    price of the #237 fix (one extra empty two-arm pass), and it is paid
+    ONCE, not per batch — a regression to an unbounded loop shows up as
+    more pending-arm drains, and a regression to the single-pass drain as
+    exactly one.
+    """
+    schema = module_pg_schema.schema_name
+    conn = clean_pg_conn
+    render(schema)
+    job_ids = [new_uuid() for _ in range(3)]
+    await _seed_jobs(conn, schema, job_ids, status="pending", tags=["quiescent"])
+
+    pool = _DrainSpyPool(module_pg_pool)
+    result, _notify = await _cancel_where(
+        pool,  # type: ignore[arg-type]  # Why: duck-typed pool; only acquire() is used.
+        schema,
+        render(schema),
+        JobFilter(tags=("quiescent",)),
+        None,
+        batch_size=2,
+    )
+
+    assert result.cancelled_directly == 3
+    assert pool.ps_drains_started == 2, (
+        f"a quiescent drain must run exactly 2 rounds (drain + one empty "
+        f"confirmation); saw {pool.ps_drains_started} — the fixpoint either "
+        f"never confirmed (1) or did not terminate (> 2)"
+    )
+    # The per-batch cost bound is unchanged by the rounds: every batch is
+    # still one keyset window. 3 rows / batch 2 → round 1 windows 2,1;
+    # round 2 windows 0; the running arm windows 0 once per round.
+    assert pool.ps_batches == 3
+    assert pool.run_batches == 2
+
+
+async def test_drain_rounds_are_hard_capped_under_sustained_repend_churn(
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
+) -> None:
+    """The adversarial termination bound: a producer that re-feeds the
+    match set on EVERY batch of the drain is a steady input, and an
+    uncapped while-progress fixpoint would chase it forever.
+
+    The hard cap (``_MAX_CANCEL_DRAIN_ROUNDS``) is what keeps one call's
+    work a constant multiple of one drain: the call must return at the
+    cap with the churn it caught cancelled and the tail left for a
+    re-run — the same non-atomic contract the drain already documents
+    for concurrent enqueues, bounded instead of unbounded.
+    """
+    schema = module_pg_schema.schema_name
+    conn = clean_pg_conn
+    render(schema)
+    job_ids = [new_uuid() for _ in range(2)]
+    await _seed_jobs(conn, schema, job_ids, status="pending", tags=["churny"])
+
+    async def _feed_one_matching_row_on_every_acquire(_n: int) -> None:
+        async with module_pg_pool.acquire() as churn_conn:
+            await _seed_jobs(churn_conn, schema, [new_uuid()], status="pending", tags=["churny"])
+
+    pool = _DrainSpyPool(module_pg_pool, _feed_one_matching_row_on_every_acquire)
+    result, _notify = await _cancel_where(
+        pool,  # type: ignore[arg-type]  # Why: duck-typed pool; only acquire() is used.
+        schema,
+        render(schema),
+        JobFilter(tags=("churny",)),
+        None,
+        batch_size=2,
+    )
+
+    assert pool.ps_drains_started == _MAX_CANCEL_DRAIN_ROUNDS, (
+        f"sustained churn must exhaust the hard round cap (exactly "
+        f"{_MAX_CANCEL_DRAIN_ROUNDS} pending-arm drains), not exceed it and "
+        f"not stop early while progress was still being made; saw "
+        f"{pool.ps_drains_started}"
+    )
+    # Everything seeded before the final round's running arm drained was
+    # cancelled; the row fed during that last arm's acquire is the
+    # documented residual, left for a re-run.
+    assert result.cancelled_directly >= 2
+    leftover = await conn.fetchval(
+        f'SELECT count(*) FROM "{schema}".jobs '  # noqa: S608  # Why: schema is a test-fixture identifier, validated by render() above.
+        "WHERE status = 'pending' AND tags @> ARRAY['churny']::text[]"
+    )
+    assert leftover >= 1, (
+        "the churn fed after the last pending-arm drain must be left for a "
+        "re-run — the cap's documented residual, not a silent loss: a re-run "
+        "resumes and converges"
     )
