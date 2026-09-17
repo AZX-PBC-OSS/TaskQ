@@ -597,7 +597,13 @@ def test_reservations_page_sync_slots_success_refetches(monkeypatch: pytest.Monk
     reservation = ConcurrencyReservation("premium-api", slots=5, lease=timedelta(seconds=30))
     monkeypatch.setattr(rl_registry, "_reservations", {"premium-api": reservation})
 
-    async def _fake_sync_slots(reservations: object, pool: object, *, schema: str) -> None:
+    async def _fake_sync_slots(
+        reservations: object,
+        pool: object,
+        *,
+        schema: str,
+        timeout: "float | None" = None,  # noqa: ASYNC109  # Why: mirrors the production signature the route calls.
+    ) -> None:
         return None
 
     monkeypatch.setattr("taskq.ratelimit.reservation.sync_slots", _fake_sync_slots)
