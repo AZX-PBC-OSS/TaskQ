@@ -1293,7 +1293,7 @@ class PostgresBackend:
         batch_id: UUID,
         *,
         connection: ConnLike | None = None,
-    ) -> tuple[int, int | None]:
+    ) -> tuple[int, int | None, int]:
         if connection is not None:
             return await _increment_batch_failures(connection, self._batch_sql, batch_id)
         async with self._worker_pool.acquire() as conn:
@@ -1304,12 +1304,11 @@ class PostgresBackend:
         batch_id: UUID,
         *,
         connection: ConnLike | None = None,
-    ) -> None:
+    ) -> int:
         if connection is not None:
-            await _reset_batch_failures(connection, self._batch_sql, batch_id)
-            return
+            return await _reset_batch_failures(connection, self._batch_sql, batch_id)
         async with self._worker_pool.acquire() as conn:
-            await _reset_batch_failures(conn, self._batch_sql, batch_id)
+            return await _reset_batch_failures(conn, self._batch_sql, batch_id)
 
     async def abort_batch(
         self,

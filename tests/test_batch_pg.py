@@ -134,7 +134,7 @@ class TestPostgresCreateBatch:
 
 
 class TestPostgresIncrementBatchFailures:
-    async def test_increment_returns_count_and_threshold(self, jobs_app: JobsApp) -> None:
+    async def test_increment_returns_count_threshold_remaining(self, jobs_app: JobsApp) -> None:
         deps = jobs_app.deps
         backend = jobs_app.backend
         schema = deps.settings.schema_name
@@ -147,21 +147,22 @@ class TestPostgresIncrementBatchFailures:
             await _insert_test_job(conn, schema, bid, status="pending")
             await _insert_test_job(conn, schema, bid, status="succeeded")
 
-        count, threshold = await backend.increment_batch_failures(bid)
+        count, threshold, remaining = await backend.increment_batch_failures(bid)
         assert count == 1
         assert threshold == 3
+        assert remaining == 2
 
-        count, threshold = await backend.increment_batch_failures(bid)
+        count, threshold, remaining = await backend.increment_batch_failures(bid)
         assert count == 2
         assert threshold == 3
-        # The counter write leaves the member population untouched.
-        assert await backend.count_batch_non_terminal(bid) == 2
+        assert remaining == 2
 
     async def test_increment_no_batch_returns_zeros(self, jobs_app: JobsApp) -> None:
         backend = jobs_app.backend
-        count, threshold = await backend.increment_batch_failures(new_uuid())
+        count, threshold, remaining = await backend.increment_batch_failures(new_uuid())
         assert count == 0
         assert threshold is None
+        assert remaining == 0
 
     async def test_increment_with_null_threshold(self, jobs_app: JobsApp) -> None:
         backend = jobs_app.backend
@@ -169,7 +170,7 @@ class TestPostgresIncrementBatchFailures:
 
         await backend.create_batch(bid, "default", 5, None, None, None)
 
-        count, threshold = await backend.increment_batch_failures(bid)
+        count, threshold, _remaining = await backend.increment_batch_failures(bid)
         assert count == 1
         assert threshold is None
 
@@ -225,7 +226,7 @@ class TestPostgresAbortBatch:
 
 
 class TestPostgresResetBatchFailures:
-    async def test_reset_zeroes_the_counter(self, jobs_app: JobsApp) -> None:
+    async def test_reset_returns_remaining(self, jobs_app: JobsApp) -> None:
         deps = jobs_app.deps
         backend = jobs_app.backend
         schema = deps.settings.schema_name
@@ -241,18 +242,17 @@ class TestPostgresResetBatchFailures:
         await backend.increment_batch_failures(bid)
         await backend.increment_batch_failures(bid)
 
-        await backend.reset_batch_failures(bid)
+        remaining = await backend.reset_batch_failures(bid)
+        assert remaining == 2
 
         row = await backend.get_batch(bid)
         assert row is not None
         assert row.consecutive_failures == 0
-        assert await backend.count_batch_non_terminal(bid) == 2
 
-    async def test_reset_no_batch_is_a_noop(self, jobs_app: JobsApp) -> None:
+    async def test_reset_no_batch_returns_zero(self, jobs_app: JobsApp) -> None:
         backend = jobs_app.backend
-        missing = new_uuid()
-        await backend.reset_batch_failures(missing)
-        assert await backend.get_batch(missing) is None
+        remaining = await backend.reset_batch_failures(new_uuid())
+        assert remaining == 0
 
 
 # ── complete_batch ───────────────────────────────────────────────
@@ -546,8 +546,8 @@ class TestPostgresConcurrentIncrement:
             tasks = [tg.create_task(backend.increment_batch_failures(bid)) for _ in range(n)]
         results = [t.result() for t in tasks]
 
-        # Every call should have returned a valid (count, threshold).
-        for count, threshold in results:
+        # Every call should have returned a valid (count, threshold, remaining).
+        for count, threshold, _remaining in results:
             assert 1 <= count <= n
             assert threshold == 100
 

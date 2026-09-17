@@ -31,7 +31,10 @@ from taskq._ids import new_base62, new_job_id, new_uuid
 from taskq._json import dumps_str
 from taskq.backend._batch_sql import (
     _batch_filter_json,  # pyright: ignore[reportPrivateUsage]  # Why: the parity pin compares the production probe against the legacy containment predicate it replaced.
+    count_batch_non_terminal,
+    increment_batch_failures,
     render_batch_sql,
+    reset_batch_failures,
 )
 from taskq.backend._protocol import EnqueueArgs, JobRow
 from taskq.backend.statemachine import TERMINAL_STATUSES
@@ -87,10 +90,6 @@ async def _explain(conn: asyncpg.Connection, sql: str, *params: object) -> str:
     return "\n".join(r["QUERY PLAN"] for r in rows)
 
 
-def _scans_jobs(plan: str) -> bool:
-    return any(" on jobs" in line for line in plan.splitlines())
-
-
 @pytest.fixture
 async def seeded_schema(pg_dsn: str) -> Any:
     schema = f"batch_cost_{new_base62()}".lower()
@@ -144,10 +143,43 @@ async def test_open_members_index_exists_and_is_partial_on_open_batch_members(
 # ── per-write cost ────────────────────────────────────────────────────
 
 
-async def test_counter_writes_do_not_visit_member_jobs(seeded_schema: Any) -> None:
-    """The consecutive-failure increment and reset are keyed single-row
-    writes on ``batches``; a plan that scans ``jobs`` aggregates over the
-    whole member set on every terminal write."""
+def _assert_member_access_is_open_members_index_only(plan: str, name: str) -> None:
+    """Every ``jobs`` node in *plan* must be a scan of the open-members
+    index with the batch id as its Index Cond and no per-row status
+    Filter (which renders against the ``job_status`` enum): anything else
+    walks the batch's full member population on every terminal write."""
+    lines = plan.splitlines()
+    jobs_nodes = [line for line in lines if " on jobs" in line]
+    assert jobs_nodes, f"{name}: expected the member probe in the plan:\n{plan}"
+    # An Index Scan names its index on the jobs node; a bitmap plan names
+    # it on a child Bitmap Index Scan under a "Bitmap Heap Scan on jobs".
+    # Either way, no Seq Scan and no other index may reach jobs.
+    other_access = [
+        line
+        for line in jobs_nodes
+        if "Seq Scan" in line or ("using " in line and _OPEN_MEMBERS_INDEX not in line)
+    ]
+    bitmap_indexes = [line for line in lines if "Bitmap Index Scan on" in line]
+    other_access += [line for line in bitmap_indexes if _OPEN_MEMBERS_INDEX not in line]
+    assert not other_access, (
+        f"{name} reaches member jobs other than through {_OPEN_MEMBERS_INDEX}:\n{plan}"
+    )
+    assert any("Index Cond:" in line and "batch_id" in line for line in lines), (
+        f"{name}: the batch id must be an Index Cond on {_OPEN_MEMBERS_INDEX}:\n{plan}"
+    )
+    status_filters = [line for line in lines if "Filter:" in line and "job_status" in line]
+    assert not status_filters, (
+        f"{name}: the member status test must be proven by the index predicate, not "
+        f"applied per row:\n{plan}"
+    )
+
+
+async def test_counter_writes_count_members_only_through_the_open_members_index(
+    seeded_schema: Any,
+) -> None:
+    """The consecutive-failure increment and reset return the open-member
+    count; that count must come from the open-members index (a range over
+    the members still open), never a walk of the batch's whole membership."""
     conn, schema, bid = seeded_schema
     sql = render_batch_sql(schema)
 
@@ -155,8 +187,31 @@ async def test_counter_writes_do_not_visit_member_jobs(seeded_schema: Any) -> No
         ("increment_batch_failures", sql.increment_batch_failures),
         ("reset_batch_failures", sql.reset_batch_failures),
     ):
-        plan = await _explain(conn, statement, bid)
-        assert not _scans_jobs(plan), f"{name} visits member jobs per terminal write:\n{plan}"
+        plan = await _explain(conn, statement, bid, str(bid))
+        _assert_member_access_is_open_members_index_only(plan, name)
+
+
+async def test_counter_writes_return_the_index_served_open_member_count(
+    seeded_schema: Any,
+) -> None:
+    """The ``remaining`` the counter writes return equals the index-served
+    ``count_batch_non_terminal`` probe on a mixed member population."""
+    conn, schema, bid = seeded_schema
+    sql = render_batch_sql(schema)
+    meta = json.dumps({"batch_id": str(bid)})
+    await conn.executemany(
+        f'INSERT INTO "{schema}".jobs '
+        "(id, queue, actor, payload, max_attempts, retry_kind, metadata, status) "
+        "VALUES ($1, 'default', 'seed_actor', '{}'::jsonb, 1, 'non_retryable', $2::jsonb, $3)",
+        [(new_job_id(), meta, status) for status in ("scheduled", "running", "failed", "crashed")],
+    )
+
+    probe = await count_batch_non_terminal(conn, sql, bid)
+    count, threshold, remaining_after_increment = await increment_batch_failures(conn, sql, bid)
+    remaining_after_reset = await reset_batch_failures(conn, sql, bid)
+
+    assert (count, threshold) == (1, None)
+    assert remaining_after_increment == remaining_after_reset == probe == 3
 
 
 async def test_complete_batch_probe_is_served_by_the_open_members_index(
@@ -171,20 +226,7 @@ async def test_complete_batch_probe_is_served_by_the_open_members_index(
 
     plan = await _explain(conn, sql.complete_batch, bid, str(bid))
 
-    assert _OPEN_MEMBERS_INDEX in plan, f"expected {_OPEN_MEMBERS_INDEX} in plan:\n{plan}"
-    cond_lines = [line for line in plan.splitlines() if "Index Cond:" in line]
-    assert any("batch_id" in line for line in cond_lines), (
-        f"the batch id must be an Index Cond on {_OPEN_MEMBERS_INDEX}:\n{plan}"
-    )
-    # A per-row status test on jobs renders against the job_status enum;
-    # the batches row's own `status = 'active'` filter is text and expected.
-    jobs_filters = [
-        line for line in plan.splitlines() if "Filter:" in line and "job_status" in line
-    ]
-    assert not jobs_filters, (
-        f"the member status test must be proven by the index predicate, not applied "
-        f"per row:\n{plan}"
-    )
+    _assert_member_access_is_open_members_index_only(plan, "complete_batch")
 
 
 async def test_count_batch_non_terminal_matches_the_containment_predicate(
