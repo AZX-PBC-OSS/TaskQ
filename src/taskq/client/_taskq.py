@@ -53,7 +53,7 @@ if TYPE_CHECKING:
     import redis.asyncio as redis_async
     from starlette.responses import JSONResponse
 
-    from taskq.auth import PgCredentialProvider
+    from taskq.auth import PgCredentialProvider, ReloadSchedule
     from taskq.connections import ConnFactory, PoolFactory
     from taskq.settings import TaskQSettings
 
@@ -447,6 +447,19 @@ class TaskQ:
         Maximum seconds to wait between transport wakeups before re-fetching
         job state. Defaults to ``30.0``. :meth:`stream` on Postgres alone
         has no wakeups and polls every ``min(poll_timeout, 0.5)`` seconds.
+    reload_interval:
+        Seconds between automatic :meth:`reload_credentials` rebuilds of a
+        factory-built pool (``pool_factory`` / ``pg_provider``); the
+        client-side ``TASKQ_RELOAD_INTERVAL``. When ``None`` (the default)
+        the cadence is derived from the lease the provider grants - a
+        Vault dynamic credential is rebuilt at half its lease TTL (see
+        :class:`taskq.auth.ReloadSchedule`) - and a factory whose
+        credential carries no lease is never rebuilt automatically
+        (token providers refresh per connection and need no rebuild).
+        The rotation runs as a background task for the life of the client;
+        a rebuild that fails leaves the live pool serving and is retried
+        on the next tick. Ignored for ``dsn=`` and ``pool=``, which have
+        nothing to rebuild from.
     """
 
     def __init__(
@@ -465,6 +478,7 @@ class TaskQ:
         listen_conn: "asyncpg.Connection | None" = None,
         poll_timeout: float = 30.0,
         reclaim_event_visibility_delay: timedelta | None = None,
+        reload_interval: float | None = None,
     ) -> None:
         # True when every connection the client will use came from a pool
         # TaskQ built itself, so its per-query bound is known here. A
@@ -483,7 +497,7 @@ class TaskQ:
             # (taskq.auth.make_pg_pool_factory, the same builder
             # build_worker_connections uses); pg_provider is sugar that
             # collapses into it, so everything downstream sees one code path.
-            from taskq.auth import make_pg_pool_factory
+            from taskq.auth import ReloadSchedule, make_pg_pool_factory
 
             pool_factory = make_pg_pool_factory(
                 dsn,
@@ -494,6 +508,7 @@ class TaskQ:
                 # floor: the budgets are env-configured, so the derivation
                 # reads the same values open()'s settings load will see.
                 command_timeout=_client_pool_command_timeout_secs(),
+                reload_schedule=ReloadSchedule(configured=reload_interval),
             )
             dsn = None
 
@@ -554,6 +569,45 @@ class TaskQ:
         # Held so reload_credentials can swap the pool into the live backend
         # without reaching through the JobsClient into PostgresBackend._deps.
         self._deps: _ClientDeps | None = None
+        if reload_interval is not None and reload_interval <= 0:
+            raise ValueError(
+                f"TaskQ 'reload_interval' must be a positive number of seconds, "
+                f"got {reload_interval!r}"
+            )
+        if reload_interval is not None and pool_factory is None:
+            raise ValueError(
+                "TaskQ 'reload_interval' requires 'pool_factory' (or 'pg_provider'): a "
+                "pool built from 'dsn' or passed as 'pool=' has no factory to rebuild from"
+            )
+        self._reload_schedule = self._make_reload_schedule(pool_factory, reload_interval)
+        self._reload_task: asyncio.Task[None] | None = None
+        # Serializes reload_credentials: the scheduled rotation and an
+        # explicit call racing each other would each build a pool and one
+        # would close the other's fresh one.
+        self._reload_lock = asyncio.Lock()
+
+    @staticmethod
+    def _make_reload_schedule(
+        pool_factory: "PoolFactory | None", reload_interval: float | None
+    ) -> "ReloadSchedule | None":
+        """The cadence the factory-built pool is rebuilt on, or ``None``
+        when there is no factory to rebuild from.
+
+        An explicit ``reload_interval`` wins; otherwise the factory's own
+        declared schedule (:func:`taskq.auth.reload_schedule_of`) supplies
+        the lease it was granted, so an opaque ``pool_factory=`` built with
+        :func:`taskq.auth.make_pg_pool_factory` rotates on its lease too.
+        """
+        if pool_factory is None:
+            return None
+        from taskq.auth import ReloadSchedule, reload_schedule_of
+
+        declared = reload_schedule_of(pool_factory)
+        if declared is not None and reload_interval is None:
+            return declared
+        return ReloadSchedule(
+            configured=reload_interval, sources=(declared,) if declared is not None else ()
+        )
 
     # ── Lifecycle ──────────────────────────────────────────────────────────
 
@@ -689,6 +743,35 @@ class TaskQ:
             self._client._redis_client = self._redis_client  # pyright: ignore[reportPrivateUsage]  # Why: TaskQ owns the JobsClient lifecycle; assigning the caller-owned redis_client directly bypasses _open_redis so the client is NOT entered on the exit stack — TaskQ.close() must not close a caller-owned client.
         elif self._redis_url is not None:
             await self._client._open_redis(settings)  # pyright: ignore[reportPrivateUsage]  # Why: TaskQ owns the JobsClient lifecycle; _open_redis is the canonical hook for the owner to call after construction.
+        self._start_credential_rotation()
+
+    def _start_credential_rotation(self) -> None:
+        """Run :meth:`reload_credentials` on the pool's :class:`ReloadSchedule`.
+
+        Started only when there is a cadence to run: a factory-built pool
+        whose schedule has an interval - configured, or derived from the
+        lease the factory was just granted in :meth:`open`. A token
+        provider's pool has neither and rotates only when
+        :meth:`reload_credentials` is called. The task is owned by the
+        client and cancelled in :meth:`close`.
+        """
+        schedule = self._reload_schedule
+        if schedule is None or schedule.interval is None:
+            return
+        from taskq._reload_loop import run_reload_schedule
+
+        logger.info(
+            "client-credential-rotation-armed",
+            reload_interval=schedule.interval,
+            derived_from_lease=schedule.derived,
+            lease_duration=schedule.lease_duration,
+        )
+        self._reload_task = asyncio.create_task(
+            run_reload_schedule(
+                schedule, self.reload_credentials, trigger=asyncio.Event(), role="client"
+            ),
+            name="taskq.client.credential_rotation",
+        )
 
     async def close(self) -> None:
         """Close the client and release the pool if owned.
@@ -696,6 +779,11 @@ class TaskQ:
         Called automatically by ``__aexit__``. Safe to call explicitly.
         No-op if already closed.
         """
+        if self._reload_task is not None:
+            self._reload_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._reload_task
+            self._reload_task = None
         if self._client is not None:
             await self._client.close()
             self._client = None
@@ -719,13 +807,14 @@ class TaskQ:
         the ``stream()`` poll - at the new pool, then closes the old
         one with the same bounded drain used at ``close()``.
 
-        Call this on a schedule shorter than your credential's lifetime (an
-        Entra access token is typically ~60 min), or on any signal your issuer
-        gives you. It is not needed for the ordinary token refresh that
-        :func:`taskq.auth.make_pg_pool_factory` already does per physical
-        connection; it is how you drop sessions opened under a revoked
-        credential, and the only way to rotate a **username-bearing pair**
-        such as a Vault lease, since asyncpg resolves ``user=`` once per pool.
+        A username-bearing pair (a Vault lease) is rotated automatically on
+        the client's :class:`~taskq.auth.ReloadSchedule` - ``reload_interval``
+        when given, otherwise half the granted lease TTL - so this is the
+        on-demand path: call it on any signal your issuer gives you, or to
+        drop sessions opened under a revoked token. It is not needed for
+        the ordinary token refresh that :func:`taskq.auth.make_pg_pool_factory`
+        already does per physical connection. Concurrent calls (the
+        scheduled rotation and an explicit one) are serialized.
 
         Raises :class:`RuntimeError` if the client is not open, or if the pool
         is caller-owned (``pool=``) - TaskQ must never close a pool it does not
@@ -743,35 +832,36 @@ class TaskQ:
                 "a pool passed as 'pool=' is caller-owned and must be rotated by its owner."
             )
 
-        old_pool = self._pool
-        # Built before anything is swapped, so a factory failure leaves the
-        # live pool in place — see the docstring. Why bounded: a hung token
-        # endpoint must fail the rotation loudly (the live pool keeps
-        # serving), never wedge the client — the SAME bound the worker's
-        # reload_credentials applies to its identical factory calls.
-        try:
-            new_pool = await asyncio.wait_for(
-                self._pool_factory(), timeout=_RELOAD_FACTORY_TIMEOUT_SECS
-            )
-        except TimeoutError as exc:
-            raise TimeoutError(
-                f"TaskQ.reload_credentials(): pool_factory did not return "
-                f"within {_RELOAD_FACTORY_TIMEOUT_SECS}s — the live pool is "
-                "untouched and still serving. Check the credential provider "
-                "behind TaskQ 'pool_factory'."
-            ) from exc
+        async with self._reload_lock:
+            old_pool = self._pool
+            # Built before anything is swapped, so a factory failure leaves the
+            # live pool in place — see the docstring. Why bounded: a hung token
+            # endpoint must fail the rotation loudly (the live pool keeps
+            # serving), never wedge the client — the SAME bound the worker's
+            # reload_credentials applies to its identical factory calls.
+            try:
+                new_pool = await asyncio.wait_for(
+                    self._pool_factory(), timeout=_RELOAD_FACTORY_TIMEOUT_SECS
+                )
+            except TimeoutError as exc:
+                raise TimeoutError(
+                    f"TaskQ.reload_credentials(): pool_factory did not return "
+                    f"within {_RELOAD_FACTORY_TIMEOUT_SECS}s — the live pool is "
+                    "untouched and still serving. Check the credential provider "
+                    "behind TaskQ 'pool_factory'."
+                ) from exc
 
-        self._pool = new_pool
-        self._deps.worker_pool = new_pool
-        self._deps.heartbeat_pool = new_pool
-        # Rebuilt rather than mutated: ActorsClient takes its pool at
-        # construction and is a cheap, stateless facade over it.
-        self._actors_client = ActorsClient(new_pool, schema=self._schema)
+            self._pool = new_pool
+            self._deps.worker_pool = new_pool
+            self._deps.heartbeat_pool = new_pool
+            # Rebuilt rather than mutated: ActorsClient takes its pool at
+            # construction and is a cheap, stateless facade over it.
+            self._actors_client = ActorsClient(new_pool, schema=self._schema)
 
-        if old_pool is not None:
-            # Why bounded: an enqueue in flight on the old pool can stall
-            # Pool.close() indefinitely against a dead PG.
-            await close_pool_bounded(old_pool, "client-reload", CLOSE_TIMEOUT_SECS)
+            if old_pool is not None:
+                # Why bounded: an enqueue in flight on the old pool can stall
+                # Pool.close() indefinitely against a dead PG.
+                await close_pool_bounded(old_pool, "client-reload", CLOSE_TIMEOUT_SECS)
 
     async def __aenter__(self) -> "TaskQ":
         await self.open()
