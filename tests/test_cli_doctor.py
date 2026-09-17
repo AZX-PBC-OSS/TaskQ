@@ -452,3 +452,30 @@ def test_doctor_reports_pending_jobs_whose_actor_has_no_registry_or_config_row(
         "'stranded-jobs-no-actor-config' event in "
         "taskq/worker/_leader_sweeps.py)."
     )
+
+
+def test_doctor_platform_grace_below_worst_case_reports_the_sigkill_risk(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The platform's stop grace is invisible to the running worker, so a
+    deployment that pinned it against an older, smaller worst case gets
+    SIGKILLed mid-teardown on every shutdown after the tail grew. Doctor
+    names the shortfall and the fix when the operator supplies the number."""
+    _patch_db(monkeypatch, actor_rows=[_row("doctor_alpha", queue="default")], queue_rows=[])
+
+    result = _invoke("--platform-grace-seconds", "30")
+
+    assert "below the worker's modelled worst-case shutdown" in result.output
+    assert "crash reclaim" in result.output
+    assert "SIGKILL" in result.output
+
+
+def test_doctor_platform_grace_above_worst_case_confirms_coverage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_db(monkeypatch, actor_rows=[_row("doctor_alpha", queue="default")], queue_rows=[])
+
+    result = _invoke("--platform-grace-seconds", "600")
+
+    assert "covers the worker's modelled worst-case shutdown" in result.output
+    assert "SIGKILL" not in result.output

@@ -1514,6 +1514,18 @@ def doctor(
             "Stored rows are read against these registered actors.",
         ),
     ],
+    platform_grace_seconds: Annotated[
+        float | None,
+        typer.Option(
+            "--platform-grace-seconds",
+            help="The orchestrator's stop grace for this deployment (Kubernetes "
+            "terminationGracePeriodSeconds, ACA/ECS stop timeout, compose "
+            "stop_grace_period, systemd TimeoutStopSec). When given, doctor compares "
+            "it against the worker's modelled worst-case shutdown and reports the "
+            "shortfall: a platform grace below it SIGKILLs the worker mid-teardown "
+            "and in-flight work re-runs.",
+        ),
+    ] = None,
 ) -> None:
     """Report capacity and configuration conditions that fail silently.
 
@@ -1534,13 +1546,14 @@ def doctor(
     `taskq actor-config diff`, which exits non-zero by design.
     """
     registry = _load_actor_registry(actors)
-    settings = TaskQSettings.load()
-    asyncio.run(_doctor(settings, registry))
+    settings = WorkerSettings.load()
+    asyncio.run(_doctor(settings, registry, platform_grace_seconds))
 
 
 async def _doctor(
-    settings: TaskQSettings,
+    settings: WorkerSettings,
     registry: Mapping[str, ActorRef[Any, Any]],
+    platform_grace_seconds: float | None = None,
 ) -> None:
     conn = await asyncpg.connect(str(settings.pg_dsn))
     try:
@@ -1557,6 +1570,33 @@ async def _doctor(
         typer.echo("  (no stored actor_config rows)")
 
     findings = _doctor_findings(registry, rows, queues, stranded)
+
+    # The one finding that needs an operator-supplied number: the platform's
+    # stop grace (Kubernetes terminationGracePeriodSeconds, ACA/ECS stop
+    # timeout, compose stop_grace_period, systemd TimeoutStopSec) is
+    # invisible to the running worker, and when it sits below the worker's
+    # own modelled worst case the orchestrator SIGKILLs the teardown
+    # mid-flight — the shutdown degrades to crash reclaim (leases expire,
+    # work re-runs) exactly when a deploy is already in progress. The
+    # comparison runs here, where the worst case is computed from the same
+    # settings the fleet boots with.
+    worst_case = settings.worst_case_shutdown_seconds
+    if platform_grace_seconds is not None:
+        if platform_grace_seconds < worst_case:
+            findings.append(
+                f"platform stop grace ({platform_grace_seconds:g}s) is below the worker's "
+                f"modelled worst-case shutdown ({worst_case:.0f}s): the orchestrator "
+                "SIGKILLs the worker mid-teardown and shutdown degrades to crash reclaim "
+                "(leases expire, in-flight work re-runs). Raise the platform grace above "
+                "the worst case, or lower the shutdown budgets the worst case is computed "
+                "from (docs/guides/upgrading.md carries the arithmetic)."
+            )
+        else:
+            typer.echo(
+                f"platform stop grace: {platform_grace_seconds:g}s covers the worker's "
+                f"modelled worst-case shutdown ({worst_case:.0f}s)."
+            )
+
     typer.echo("")
     if not findings:
         typer.echo("no findings — every registered actor has a stored row and every")
