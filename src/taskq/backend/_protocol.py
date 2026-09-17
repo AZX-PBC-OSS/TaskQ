@@ -949,14 +949,16 @@ class CancelFlag:
 
 
 MAX_JOB_LIST_LIMIT: Final[int] = 10_000
-"""Largest page :class:`JobFilter` will ask a backend for.
+"""Largest page ``JobsClient.list`` will ask a backend for.
 
 A page is one round trip that materialises every row it returns, on the
 server and in the client; ``cursor`` is what reaches the rows past it. An
 unbounded limit let one call ask for the whole table, which is a query
 plan and a memory spike no caller can want by accident. The same ceiling
 River applies to its job list (``JobListParams.First`` panics above
-10,000)."""
+10,000). Enforced by the client's list entry, not by :class:`JobFilter`
+itself: the same filter drives ``cancel_where``, which ignores ``limit``
+and whose in-process implementation lists with no page at all."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -1035,7 +1037,8 @@ class JobFilter:
     actor: str | None = None
     identity_key: IdentityKey | None = None
     batch_id: UUID | None = None
-    # One page; at most MAX_JOB_LIST_LIMIT. cursor reaches the rest.
+    # One list page (JobsClient.list caps it at MAX_JOB_LIST_LIMIT; cursor
+    # reaches the rest). Ignored by cancel_where.
     limit: int = 100
     cursor: str | None = None
     tags: tuple[str, ...] | None = None
@@ -1050,11 +1053,6 @@ class JobFilter:
         # silently drop rows.  Reject it here so both fail identically.
         if self.limit < 0:
             raise ValueError(f"limit must be >= 0, got {self.limit}")
-        if self.limit > MAX_JOB_LIST_LIMIT:
-            raise ValueError(
-                f"limit must be <= {MAX_JOB_LIST_LIMIT}, got {self.limit}; page with "
-                "cursor for larger result sets"
-            )
         if self.status is not None:
             values = (self.status,) if isinstance(self.status, str) else tuple(self.status)
             unknown = [v for v in values if v not in JOB_STATUS_VALUES]

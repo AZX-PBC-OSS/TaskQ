@@ -1233,7 +1233,7 @@ Frozen dataclass. All fields are optional.
 | `batch_id` | `UUID \| None` | `None` | Filter by batch ID. |
 | `tags` | `tuple[str, ...] \| None` | `None` | Filter by tags. Uses `&&` (array overlap) with a GIN index. Returns jobs that match any of the given tags. |
 | `order_by` | `JobSortField \| None` | `None` | Sort order for results. `None` resolves to `JobSortField.SCHEDULED_AT_ASC` — see [JobSortField](#jobsortfield). |
-| `limit` | `int` | `100` | Maximum number of rows to return: one page, `0`–`10_000` (`taskq.backend._protocol.MAX_JOB_LIST_LIMIT`; a page materialises every row it returns, so a larger result set is paged with `cursor`). |
+| `limit` | `int` | `100` | Maximum number of rows to return: one page. `JobsClient.list()` rejects a limit above `10_000` (`taskq.backend._protocol.MAX_JOB_LIST_LIMIT`; a page materialises every row it returns, so a larger result set is paged with `cursor`). Ignored by `cancel_where`. |
 | `cursor` | `str \| None` | `None` | Opaque keyset-pagination token from `JobPage.next_cursor`. |
 
 ```python

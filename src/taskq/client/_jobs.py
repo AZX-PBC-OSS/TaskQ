@@ -1569,11 +1569,17 @@ class JobsClient:
         the last page: the backend is asked for one row past the limit, so
         a last page that happens to fill the limit is still known to be the
         last, and a caller paging until the cursor runs out never fetches an
-        empty trailing page. At the page ceiling
-        (:data:`~taskq.backend._protocol.MAX_JOB_LIST_LIMIT`) there is no
-        room to look past the limit, so a full page there carries a cursor
-        that may lead to one empty page.
+        empty trailing page. ``filter.limit`` is capped at
+        :data:`~taskq.backend._protocol.MAX_JOB_LIST_LIMIT` (``ValueError``
+        above it); at the ceiling there is no room to look past the limit,
+        so a full page there carries a cursor that may lead to one empty
+        page.
         """
+        if filter.limit > MAX_JOB_LIST_LIMIT:
+            raise ValueError(
+                f"limit must be <= {MAX_JOB_LIST_LIMIT}, got {filter.limit}; page with cursor "
+                "for larger result sets"
+            )
         if filter.limit < MAX_JOB_LIST_LIMIT:
             probe = dataclasses.replace(filter, limit=filter.limit + 1)
         else:

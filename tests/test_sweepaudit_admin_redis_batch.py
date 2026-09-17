@@ -99,7 +99,7 @@ async def test_fetch_redis_state_is_one_pipelined_round_trip() -> None:
         ]
     )
 
-    result = await _fetch_redis_rl_state(client, "sweepaudit", names)  # type: ignore[arg-type]  # Why: recording stand-in for redis.asyncio.Redis at the module's Any erasure boundary.
+    result = await _fetch_redis_rl_state(client, "sweepaudit", names, read_timeout=1.0)  # type: ignore[arg-type]  # Why: recording stand-in for redis.asyncio.Redis at the module's Any erasure boundary.
 
     # Exactly one pipeline, executed exactly once — N commands, 1 round trip.
     assert len(client.pipelines) == 1, (
@@ -129,7 +129,7 @@ async def test_fetch_redis_state_is_one_pipelined_round_trip() -> None:
 async def test_fetch_redis_state_empty_names_is_no_round_trip() -> None:
     """No buckets → no pipeline, no round trip, empty result."""
     client = _RecordingRedis([])
-    result = await _fetch_redis_rl_state(client, "sweepaudit", [])  # type: ignore[arg-type]  # Why: same erasure boundary as above.
+    result = await _fetch_redis_rl_state(client, "sweepaudit", [], read_timeout=1.0)  # type: ignore[arg-type]  # Why: same erasure boundary as above.
     assert result == {}
     assert client.pipelines == []
     assert client.direct_calls == []
@@ -150,7 +150,9 @@ async def test_fetch_redis_state_degrades_to_none_on_failure() -> None:
             return pipe
 
     client = _FailingRedis([])
-    result = await _fetch_redis_rl_state(client, "sweepaudit", [("tb_a", "token_bucket")])  # type: ignore[arg-type]  # Why: same erasure boundary as above.
+    result = await _fetch_redis_rl_state(
+        client, "sweepaudit", [("tb_a", "token_bucket")], read_timeout=1.0
+    )  # type: ignore[arg-type]  # Why: same erasure boundary as above.
     assert result is None
 
 
@@ -174,6 +176,7 @@ async def test_fetch_redis_state_against_fakeredis() -> None:
             ("log_live", "sliding_window_log"),
             ("missing", "token_bucket"),
         ],
+        read_timeout=1.0,
     )
     assert result is not None
     assert result == {

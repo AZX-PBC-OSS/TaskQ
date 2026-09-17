@@ -419,6 +419,18 @@ class TestList:
         assert asked == [MAX_JOB_LIST_LIMIT]
         assert len(page.jobs) == 1 and page.next_cursor is None
 
+    async def test_list_rejects_a_limit_above_the_page_ceiling(self) -> None:
+        """A page is one round trip that materialises every row it returns;
+        the ceiling keeps one call from asking for the whole table by
+        accident. The ceiling itself is accepted; cursor reaches the rest.
+        JobFilter itself stays unbounded, since cancel_where ignores limit."""
+        from taskq.backend._protocol import MAX_JOB_LIST_LIMIT
+
+        _backend, client = _make_client()
+        too_big = JobFilter(limit=MAX_JOB_LIST_LIMIT + 1)
+        with pytest.raises(ValueError, match=f"limit must be <= {MAX_JOB_LIST_LIMIT}"):
+            await client.list(too_big)
+
     async def test_list_limit_zero_yields_an_empty_page_with_no_cursor(self) -> None:
         backend, client = _make_client()
         await backend.enqueue(make_enqueue_args(scheduled_at=_START))
