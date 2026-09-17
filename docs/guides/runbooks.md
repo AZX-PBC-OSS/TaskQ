@@ -298,8 +298,136 @@ The leader-count operand is what makes this alertable at all. A healthy multi-wo
 
 1. If `TaskQHeartbeatMisses` is firing or the holders' workers are gone: the jobs self-heal — the reclaim sweep transitions them (retryable → `pending` after a backoff; exhausted → `crashed`). The alert's value is that it stays non-zero when that does NOT happen.
 2. If the reclaim sweep is stalled or timing out: follow [TaskQPromotionStalled](#taskqpromotionstalled) and [TaskQSweepTimeouts](#taskqsweeptimeouts) — fix the sweep/database; the zombies are a symptom.
-3. If the sweep is healthy and the count still regrows: jobs are repeatedly outliving their lease — the lease (`lock_lease`-shaped settings) is shorter than the actor's real run time and heartbeats are not renewing fast enough. Check `TaskQLockExpiringSoon` (firing means renewals are barely keeping ahead) and widen the lease/heartbeat budget for those actors; do not restart workers to "clear" the gauge — the same jobs will zombie again.
+3. If the sweep is healthy and the count still regrows: jobs are repeatedly outliving their lease — the lease (`lock_lease`-shaped settings) is shorter than the actor's real run time and heartbeats are not renewing fast enough. Check `TaskQLockExpiringSoon` (it reads the measured lease left at each renewal — `lock_lease` minus the gap since the previous one — so firing means renewals are landing late, from a slow heartbeat pool, failed ticks or a blocked event loop; `taskq_worker_event_loop_lag_seconds` and `taskq_heartbeat_misses_total` say which) and widen the lease/heartbeat budget for those actors; do not restart workers to "clear" the gauge — the same jobs will zombie again.
 4. Confirm recovery: `taskq_jobs_running_lease_expired` returns to 0 and stays there across several sweep intervals.
+
+---
+
+## TaskQFailedJobRateHigh
+
+**What fired.** `sum(rate(messaging_client_consumed_messages_total{outcome="failed"}[5m])) / sum(rate(messaging_client_consumed_messages_total[5m])) > 0.01` for 5 minutes: more than 1% of consumed attempts ended in a **terminal** failure — a non-retryable exception class, or the retry budget (`max_attempts` / `schedule_to_close`) exhausted. Retried failures are not in this share: they end as `outcome="scheduled"` and are counted by [TaskQRetryRateHigh](#taskqretryratehigh).
+
+**How to confirm.**
+
+- Metric: `messaging_client_consumed_messages_total{outcome="failed"}` by `actor`, and `taskq_jobs_attempt_failures_total{retryable="false"}` by `actor, error_type` — the second names the exception class per actor.
+- Database, the terminal rows and their reason:
+
+  ```sql
+  SELECT actor, error_class, count(*)
+  FROM taskq.jobs
+  WHERE status = 'failed' AND finished_at > clock_timestamp() - interval '15 minutes'
+  GROUP BY actor, error_class ORDER BY count(*) DESC;
+  ```
+
+  `error_class = 'DeadlineExceeded'` is a `schedule_to_close` budget too tight for the actor's retry curve (`taskq_jobs_timeouts_total{kind="schedule_to_close"}` rises with it); a `PayloadValidationError` is a producer shipping a payload the actor's schema rejects; anything else is the actor's own exception.
+
+**How to remediate.**
+
+1. One actor, one `error_class`: fix that actor or its dependency; failed rows can be retried from the admin UI's Retry button or `backend.retry_job()` once the cause is fixed.
+2. `DeadlineExceeded` dominating: widen `schedule_to_close` (or the retry `base`/`cap`) for the actor — see [ops.md — Timeouts](ops.md#2-timeouts-start_to_close-and-schedule_to_close).
+3. Many actors at once: a shared dependency (database, downstream API) — check `TaskQRetryRateHigh` and `TaskQDispatchLatencyHigh` first; the terminal share is the tail end of the same incident once budgets run out.
+
+---
+
+## TaskQRetryRateHigh
+
+**What fired.** `sum(rate(taskq_jobs_attempt_failures_total{retryable="true"}[5m])) / sum(rate(messaging_client_consumed_messages_total[5m])) > 0.1` for 10 minutes: more than 10% of consumed attempts raised and were rescheduled for another try. Each retry burns an attempt, a backoff delay and a worker slot, so a sustained rate is a dependency failing under retry cover — the jobs still complete, the terminal-failed share stays flat, and nothing else fires until budgets run out.
+
+**How to confirm.**
+
+- Metric: `taskq_jobs_attempt_failures_total{retryable="true"}` by `actor, error_type` — the exception class per actor is the diagnosis (`ConnectionError` / `TimeoutError` on one actor is its downstream; `asyncpg` classes across actors is the database).
+- Database, jobs currently waiting on a retry and what they last raised:
+
+  ```sql
+  SELECT actor, error_class, count(*), min(scheduled_at) AS next_try
+  FROM taskq.jobs
+  WHERE status = 'scheduled' AND attempt > 1
+  GROUP BY actor, error_class ORDER BY count(*) DESC;
+  ```
+
+**How to remediate.**
+
+1. Fix or wait out the dependency the `error_type` names; retries recover on their own once it answers again. Do not raise `max_attempts` to "make it go away" — that spends more slots on the same failure.
+2. If the rate is one actor with a transient class that is really permanent (a bad payload that will never succeed), classify it: `non_retryable_exceptions` on the actor, or a `retry_classifier` — see [ops.md — Classifying failures](ops.md#6-classifying-failures-terminal-retryable-transient).
+3. Confirm recovery: the retried share falls back under the threshold and `taskq_jobs_by_status{status="scheduled"}` drains.
+
+---
+
+## TaskQAbandonedJobs
+
+**What fired.** `rate(taskq_jobs_abandoned_total[5m]) > 0` for 5 minutes: a job was **abandoned** — an operator-requested cancel outlasted both grace periods (the actor was asked to stop, then forced with `task.cancel()`, and still never exited), so the running attempt was taken from it. Shutdowns never produce this: a deploy releases (interrupts) in-flight jobs back to the fleet. A retry or snooze never reaches this series either — those are `outcome="scheduled"` on the consumed-messages counter — so any rate here is a real actor ignoring cancellation.
+
+**How to confirm.**
+
+- Metric: `taskq_jobs_abandoned_total` by `actor` — recorded by the abandon write itself, on both backends.
+- Database, the abandoned rows and the attempts that were taken away:
+
+  ```sql
+  SELECT j.id, j.actor, j.finished_at, a.worker_id, a.duration_ms
+  FROM taskq.jobs j
+  JOIN taskq.job_attempts a ON a.job_id = j.id AND a.attempt = j.attempt
+  WHERE j.status = 'abandoned' AND j.error_class = 'CancelAbandoned'
+  ORDER BY j.finished_at DESC LIMIT 50;
+  ```
+
+**How to remediate.**
+
+1. The named actor does not yield to cancellation: it is blocking the event loop (a sync call without `asyncio.to_thread`), swallowing `CancelledError`, or running a native call that cannot be interrupted. Make it cooperative — poll `ctx.cancellation_requested` (or await `ctx.cancel_event`) in long loops, keep blocking work off the loop — see [ops.md — Thread-unsafe native libraries](ops.md#thread-unsafe-native-libraries).
+2. The abandoned row is terminal; the actor's coroutine may still be running in the worker until the process restarts. If it holds resources, restart that worker (`taskq_active_jobs` on its health socket shows the stuck slot).
+3. If the graces are simply too short for a well-behaved actor's cleanup, widen `TASKQ_CANCELLATION_GRACE_PERIOD` / `TASKQ_CLEANUP_GRACE_PERIOD` — but only after (1) is ruled out.
+
+---
+
+## TaskQQueueUnserved
+
+**What fired.** `taskq_queue_depth{queue!="_other_"} > 0 unless on(queue) taskq_queue_live_workers > 0` for 2 minutes: a queue holds pending or scheduled jobs and **no live worker subscribes to it** — no worker row whose `last_seen_at` is inside `TASKQ_ADMIN_WORKER_LIVENESS_SECONDS` (default 30 s, three heartbeats) lists the queue in its `queues`. Nothing will consume the work. Both gauges come from the same leader sampler tick, so the join never compares two moments; a worker row that stopped heartbeating does not count even before the stale-worker sweep removes it.
+
+**How to confirm.**
+
+- Metric: `taskq_queue_depth{queue="<q>"}` beside `taskq_queue_live_workers{queue="<q>"}` (absent, or 0).
+- Database — who last served the queue and when:
+
+  ```sql
+  SELECT id, hostname, pid, worker_label, last_seen_at,
+         last_seen_at > clock_timestamp() - interval '30 seconds' AS live
+  FROM taskq.workers
+  WHERE '<q>' = ANY(queues)
+  ORDER BY last_seen_at DESC;
+  ```
+
+  No rows: nothing ever subscribed (a producer enqueues onto a queue name nobody runs, or the queue was dropped from every `TASKQ_QUEUES` at the last deploy). Rows, none live: the replicas serving it are down or partitioned from Postgres — check their `/ready` and `TaskQHeartbeatMisses`.
+- The admin UI's queues page shows the same condition as the "pending jobs but no alive worker" banner.
+
+**How to remediate.**
+
+1. Start (or scale up) a worker whose `TASKQ_QUEUES` includes the queue, or add the queue to an existing worker's subscription. The backlog drains on its own once a live worker subscribes; nothing was lost.
+2. If the queue name is a producer mistake (a typo, a stale config), re-route the jobs: `taskq actor-config move-queue` for a whole actor, or re-enqueue. The stranded-jobs detector names the actors involved (`taskq_jobs_stranded{reason="unserved_queue"}`).
+3. Confirm recovery: `taskq_queue_live_workers{queue="<q>"} > 0` and the depth falling.
+
+---
+
+## TaskQStrandedJobs
+
+**What fired.** `taskq_jobs_stranded > 0` for 5 minutes: pending/scheduled jobs that can never be dispatched, with the reason on the label. `reason="no_actor_config"`: the actor has no `actor_config` row (deregistered with `taskq actor-config deregister`, or never registered by any worker), so the dispatch CTE — which derives its candidates from `actor_config` — never sees the rows. `reason="unserved_queue"`: the queue dispatch routes the actor on (the actor's current assignment for a re-pended row, the row's own queue otherwise) has no live worker subscribed. Neither dispatch nor the deadline sweep will ever touch these rows.
+
+**How to confirm.**
+
+- Metric: `taskq_jobs_stranded` by `actor, reason` — sampled by the leader every `TASKQ_STRANDED_JOBS_INTERVAL`; the `stranded-jobs-no-actor-config` / `stranded-jobs-unserved-queue` log events carry the same counts, and the second names the queues.
+- Database:
+
+  ```sql
+  -- no_actor_config
+  SELECT j.actor, count(*) FROM taskq.jobs j
+  WHERE j.status IN ('pending', 'scheduled')
+    AND NOT EXISTS (SELECT 1 FROM taskq.actor_config ac WHERE ac.actor = j.actor)
+  GROUP BY j.actor;
+  ```
+
+**How to remediate.**
+
+1. `no_actor_config`: run a worker that registers the actor (registration writes the row at boot), or, if the actor is gone for good, cancel the rows (`JobsClient.cancel_where(JobFilter(actor=...))`, or the admin UI's cancel action) so they stop counting.
+2. `unserved_queue`: follow [TaskQQueueUnserved](#taskqqueueunserved) — subscribe a live worker to the named queue, or move the actor's assignment with `taskq actor-config move-queue`.
+3. Confirm recovery: the series clears on the next detector tick (an empty reading is published, not a frozen last value) and the `stranded-jobs-cleared` event logs.
 
 ---
 

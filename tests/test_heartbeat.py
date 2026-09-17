@@ -700,6 +700,70 @@ async def test_otel_histogram_recorded_on_success() -> None:
     assert recorded[0] > 0
 
 
+# ── taskq.lock.expires_in_seconds is a measurement, not the constant ──
+
+
+class _SlowSecondAcquirePool(FakePool):
+    """FakePool whose second acquire stalls, so the second renewal lands
+    late — the shape a slow pool or a blocked loop produces."""
+
+    def __init__(self, stall: float) -> None:
+        super().__init__()
+        self._stall = stall
+
+    @asynccontextmanager
+    async def acquire(self, *, timeout: float | None = None) -> AsyncGenerator[FakeConn, None]:  # noqa: ASYNC109 # Why: mirrors asyncpg.Pool.acquire's signature, as FakePool does.
+        if self.acquire_count == 1:
+            await asyncio.sleep(self._stall)
+        async with super().acquire(timeout=timeout) as conn:
+            yield conn
+
+
+async def test_lock_ttl_sample_is_the_lease_minus_the_gap_between_renewals() -> None:
+    """The histogram used to record ``lock_lease`` on every tick — the
+    configured constant — so a heartbeat running late could never move
+    it. It must record the lease the previous renewal stamped minus the
+    time until this one landed: nothing on the first renewal (no reference
+    yet), and a sample below the lease by at least the delay on a delayed
+    tick."""
+    import taskq.worker.heartbeat as hb_mod
+
+    interval, lease, stall = 0.5, 2.0, 0.3
+    samples: list[float] = []
+    two_samples = asyncio.Event()
+
+    def _capture(worker_id: str, remaining: float) -> None:
+        samples.append(remaining)
+        if len(samples) >= 2:
+            two_samples.set()
+
+    saved = hb_mod.record_lock_expires_in_seconds
+    hb_mod.record_lock_expires_in_seconds = _capture
+    try:
+        pool = _SlowSecondAcquirePool(stall)
+        deps = _make_deps(heartbeat_pool=pool, heartbeat_interval=interval, lock_lease=lease)
+        shutdown = asyncio.Event()
+        task = asyncio.create_task(heartbeat_loop(deps, new_uuid(), shutdown))
+        try:
+            await wait_for(two_samples, timeout=5.0)
+        finally:
+            shutdown.set()
+            await task
+    finally:
+        hb_mod.record_lock_expires_in_seconds = saved
+
+    delayed, recovered = samples[0], samples[1]
+    assert delayed <= lease - (interval + stall) + 0.05, (
+        f"the delayed renewal must report the lease minus its gap, got {delayed}"
+    )
+    assert 0.0 < delayed < lease
+    # Three renewals landed, two samples: the first renewal measures nothing.
+    assert pool.acquire_count >= 3
+    # The cadence is anchored to tick start, so the renewal after a late
+    # one lands early and its sample climbs back toward the lease.
+    assert delayed < recovered < lease
+
+
 # ── OTel consecutive_failures gauge callback wired ──────────────
 
 

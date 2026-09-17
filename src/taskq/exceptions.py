@@ -307,6 +307,10 @@ class IdempotencyKeyActorMismatchError(TaskQError):
     collision; batch fast: the COPY aborts the whole batch the same way).
     Namespace keys per actor (``"send_receipt:order_123"``) or
     give the two actors different ``idempotency_scope`` values.
+
+    ``existing_job_id`` names the stored job the key matched; it is ``None``
+    when the collision is between two items of the same fast-path batch,
+    where no row was stored for either.
     """
 
     def __init__(
@@ -314,7 +318,7 @@ class IdempotencyKeyActorMismatchError(TaskQError):
         *,
         actor: str,
         existing_actor: str,
-        existing_job_id: UUID,
+        existing_job_id: UUID | None,
         idempotency_key: str,
         idempotency_scope: str | None,
     ) -> None:
@@ -323,12 +327,17 @@ class IdempotencyKeyActorMismatchError(TaskQError):
         self.existing_job_id = existing_job_id
         self.idempotency_key = idempotency_key
         self.idempotency_scope = idempotency_scope
+        matched = (
+            f"matched job {existing_job_id} of actor {existing_actor!r}"
+            if existing_job_id is not None
+            else f"collided with an item of the same batch for actor {existing_actor!r}"
+        )
         super().__init__(
             f"enqueue for actor {actor!r} with idempotency_key {idempotency_key!r} "
-            f"(scope {idempotency_scope!r}) matched job {existing_job_id} of actor "
-            f"{existing_actor!r}: keys are unique per scope across actors, and a hit on "
-            "another actor's job is not a dedup of this one. Nothing was enqueued. "
-            "Namespace the key per actor or use a different idempotency_scope."
+            f"(scope {idempotency_scope!r}) {matched}: keys are unique per scope "
+            "across actors, and a hit on another actor's job is not a dedup of this "
+            "one. Nothing was enqueued. Namespace the key per actor or use a "
+            "different idempotency_scope."
         )
 
 

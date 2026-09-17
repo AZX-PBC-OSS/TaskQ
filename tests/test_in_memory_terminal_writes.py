@@ -502,6 +502,29 @@ class TestMarkAbandonedCancelPhaseGuard:
         assert state_changes[0].detail["from_state"] == "running"
         assert state_changes[0].detail["to_state"] == "abandoned"
 
+    async def test_abandon_counts_on_the_abandoned_series(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An applied abandon is the only producer of taskq.jobs.abandoned —
+        the series TaskQAbandonedJobs pages on — labelled by the row's
+        actor; a predicate miss records nothing."""
+        from taskq.testing.otel import counter_data_points, setup_meter
+
+        reader = setup_meter(monkeypatch)
+        backend = _make_backend()
+        job_id, _wid = await _enqueue_and_dispatch(backend)
+
+        assert await backend.mark_abandoned(job_id) is False  # cancel_phase 0: miss
+        assert counter_data_points(reader, "taskq.jobs.abandoned") == []
+
+        _set_cancel_phase(backend, job_id, 2)
+        assert await backend.mark_abandoned(job_id) is True
+
+        points = counter_data_points(reader, "taskq.jobs.abandoned")
+        row = await backend.get(job_id)
+        assert row is not None
+        assert [(p.value, dict(p.attributes or {})) for p in points] == [(1, {"actor": row.actor})]
+
 
 # ── attempt-epoch fencing (same worker, later attempt) ─────────────────
 

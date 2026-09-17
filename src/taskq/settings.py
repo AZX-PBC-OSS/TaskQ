@@ -332,9 +332,11 @@ class TaskQSettings(DotEnvConfig):
         default=30,
         ge=1,
         description="TASKQ_ADMIN_WORKER_LIVENESS_SECONDS. How recently a worker "
-        "must have written last_seen_at to count as alive in the admin UI: it "
-        "drives the 'queue has pending jobs but no alive worker' banner and the "
-        "leader's watchdog_healthy verdict. Must comfortably exceed "
+        "must have written last_seen_at to count as alive: it drives the admin "
+        "UI's 'queue has pending jobs but no alive worker' banner and the "
+        "leader's watchdog_healthy verdict, and on the worker side the leader's "
+        "taskq.queue.live_workers gauge and the stranded-jobs detector's "
+        "unserved-queue arm. Must comfortably exceed "
         "TASKQ_HEARTBEAT_INTERVAL (default 10 s), so the default 30 s is three "
         "beats; a deployment that lengthens the heartbeat, or whose PG is "
         "cross-region, has to raise this or every healthy worker reads as dead. "
@@ -1289,16 +1291,20 @@ class WorkerSettings(TaskQSettings):
     )
 
     # -- Prometheus standalone metrics server ------------------
-    metrics_port: int = Field(
-        default=9090,
+    metrics_port: int | None = Field(
+        default=None,
         ge=1,
         le=65535,
-        description="TASKQ_METRICS_PORT. Reserved; no shipped serve path "
-        "reads it today. The Prometheus surfaces that exist: `taskq ui "
-        "serve` mounts GET /jobs/health/metrics on its admin port "
-        "(TASKQ_ADMIN_PORT) — see observability.md — and the worker's "
-        "health socket serves three process gauges at /metrics. Neither "
-        "binds this port.",
+        description="TASKQ_METRICS_PORT. TCP port for the worker's standalone "
+        "Prometheus scrape listener, bound on TASKQ_HEALTH_HOST. Unset (the "
+        "default) means no listener — setting a port is the opt-in, the same "
+        "shape as TASKQ_HEALTH_PORT. Needs the [prometheus] extra and "
+        "TASKQ_OTEL_AUTOCONFIGURE=true: the `taskq worker` CLI then adds a "
+        "PrometheusMetricReader to the SDK meter provider it installs, so "
+        "every taskq_* / messaging_* series this worker records — the "
+        "leader-sampled gauges and the dispatch/consume counters the admin "
+        "process never sees — is served at http://<host>:<port>/metrics. "
+        "See observability.md — Serving the metrics.",
     )
 
     # -- Health server ------------------------------------------
@@ -1327,11 +1333,13 @@ class WorkerSettings(TaskQSettings):
         "never mounted on the admin UI surface.",
     )
     health_host: str = Field(
-        default="0.0.0.0",  # noqa: S104  # Why: a container probe reaches the replica over the pod network, so a loopback bind would be unprobeable. Only ever bound when health_port is explicitly set.
+        default="0.0.0.0",  # noqa: S104  # Why: a container probe reaches the replica over the pod network, so a loopback bind would be unprobeable. Only ever bound when health_port or metrics_port is explicitly set.
         description="TASKQ_HEALTH_HOST. Bind address for the optional TCP health "
-        "listener. Only used when health_port is set. Defaults to all interfaces "
-        "because Azure Container Apps and Kubernetes probe the replica over the pod "
-        "network; narrow it to 127.0.0.1 when a local sidecar is the only prober.",
+        "listener and the optional Prometheus scrape listener. Only used when "
+        "health_port or metrics_port is set. Defaults to all interfaces "
+        "because Azure Container Apps and Kubernetes probe and scrape the replica "
+        "over the pod network; narrow it to 127.0.0.1 when a local sidecar is the "
+        "only prober.",
     )
     health_port: int | None = Field(
         default=None,
@@ -1559,6 +1567,18 @@ class WorkerSettings(TaskQSettings):
         default=True,
         description="TASKQ_OTEL_ENABLED. When False, the library suppresses all span "
         "and metric creation but operations still succeed .",
+    )
+    otel_autoconfigure: bool = Field(
+        default=True,
+        description="TASKQ_OTEL_AUTOCONFIGURE. When True (the default), the `taskq "
+        "worker` CLI installs SDK tracer and meter providers from the standard "
+        "OTel environment variables (OTEL_EXPORTER_OTLP_ENDPOINT, "
+        "OTEL_TRACES_EXPORTER, OTEL_METRICS_EXPORTER, OTEL_LOGS_EXPORTER) and "
+        "from TASKQ_METRICS_PORT, through the same configurator "
+        "opentelemetry-instrument uses, whenever the [otel] extra is installed "
+        "and no provider is set yet. Set False when the embedding application "
+        "or a vendor distro configures the SDK itself and the worker must not "
+        "touch the global providers. Honours OTEL_SDK_DISABLED either way.",
     )
     exception_message_max_chars: int = Field(
         default=2000,

@@ -403,6 +403,38 @@ def _no_developer_dotfiles(  # pyright: ignore[reportUnusedFunction]  # Why: aut
         mp.undo()
 
 
+#: The variables that ask the worker CLI to install SDK exporter providers
+#: (``taskq.obs.configure_exporters``). Stripped for the whole suite: the
+#: process-global providers are set-once, so a developer's ambient
+#: ``OTEL_EXPORTER_OTLP_ENDPOINT`` would otherwise let the first CLI test
+#: install real exporters into the test process and shadow every later
+#: test's meter isolation.
+_OTEL_EXPORTER_TRIGGER_ENVS: tuple[str, ...] = (
+    "OTEL_EXPORTER_OTLP_ENDPOINT",
+    "OTEL_TRACES_EXPORTER",
+    "OTEL_METRICS_EXPORTER",
+    "OTEL_LOGS_EXPORTER",
+    "OTEL_SDK_DISABLED",
+    "TASKQ_OTEL_AUTOCONFIGURE",
+    "TASKQ_METRICS_PORT",
+)
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _no_ambient_otel_exporter_env() -> Iterator[None]:  # pyright: ignore[reportUnusedFunction]  # Why: autouse fixture consumed implicitly by the test runner; pyright does not track fixture usage.
+    """Make the suite hermetic w.r.t. the developer's ambient OTel exporter
+    variables — see ``_OTEL_EXPORTER_TRIGGER_ENVS``. Tests that exercise
+    the wiring set the variables they need explicitly (and run the
+    set-once provider scenarios in subprocesses)."""
+    mp = pytest.MonkeyPatch()
+    for var in _OTEL_EXPORTER_TRIGGER_ENVS:
+        mp.delenv(var, raising=False)
+    try:
+        yield
+    finally:
+        mp.undo()
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _sweep_health_sock_files() -> Iterator[None]:  # pyright: ignore[reportUnusedFunction]  # Why: autouse fixture consumed implicitly by the test runner; pyright does not track fixture usage.
     """Sweep this process's own tq-*-<pid>-*.sock files after the session.

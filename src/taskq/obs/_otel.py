@@ -56,16 +56,28 @@ from taskq.obs._redact_exc import add_exception_event, render_exception
 
 INSTRUMENTATION_NAME: str = "taskq"
 
-type ConsumedOutcome = Literal["succeeded", "failed", "cancelled", "abandoned"]
+type ConsumedOutcome = Literal["succeeded", "failed", "cancelled", "scheduled"]
+"""The ``outcome`` label set of ``messaging.client.consumed.messages``.
+
+Every value has a producer: the three terminal outcomes, and ``scheduled``
+for an attempt that ended with the row released back to the queue — a
+retryable failure, a ``Snooze`` / ``RetryAfter``, or an admission denial.
+``taskq.jobs.attempt_failures`` separates the failure share of
+``scheduled``; ``taskq.jobs.abandoned`` counts real abandonment, which is
+an operator cancel outlasting its graces and never a consumer outcome.
+"""
 
 __all__ = [
     "INSTRUMENTATION_NAME",
     "ConsumedOutcome",
+    "StrandedReason",
+    "TimeoutKind",
     "get_meter",
     "get_tracer",
     "otel_enabled",
     "reconcile_cron_failures",
     "record_archived_jobs",
+    "record_attempt_failure",
     "record_backpressure_error",
     "record_cancel_requested",
     "record_consumed_message",
@@ -76,6 +88,7 @@ __all__ = [
     "record_error_reporter_failure",
     "record_expired_archive_jobs",
     "record_heartbeat_miss",
+    "record_job_abandoned",
     "record_leader_lease_expires_in_seconds",
     "record_lock_expires_in_seconds",
     "record_process_duration",
@@ -83,6 +96,7 @@ __all__ = [
     "record_progress_publish_failure",
     "record_pruned_jobs",
     "record_published_message",
+    "record_queue_wait",
     "record_ratelimit_denial",
     "record_ratelimit_refund_failure",
     "record_reservation_denial",
@@ -95,8 +109,10 @@ __all__ = [
     "set_otel_enabled",
     "update_disabled_schedules_count",
     "update_heartbeat_consecutive_failures",
+    "update_jobs_running_cache",
     "update_keyed_reclaim_pending",
     "update_queue_depth_cache",
+    "update_queue_live_workers_cache",
     "update_reservation_slots_cache",
 ]
 
@@ -435,6 +451,9 @@ def record_deadline_exceeded_swept(actor: str, count: int = 1) -> None:
         _log.warning(
             "otel-metric-record-failed", instrument_name="taskq.deadline_exceeded_sweep.jobs_failed"
         )
+    # The sweep's arm of the whole-job deadline, on the timeouts family
+    # beside the handler arms (gated, unlike the sweep counter above).
+    record_job_timeout(actor, kind="schedule_to_close", count=count)
 
 
 #: Why the ``queue`` label is capped on the job-side instruments
@@ -590,37 +609,161 @@ def record_consumed_message(actor: str, queue: str, *, outcome: ConsumedOutcome)
     to ensure sampling independence.
     Respects ``_otel_enabled`` — no-op when False.
 
-    ``outcome`` is constrained to the semconv-specified valid set
-    ``{succeeded, failed, cancelled, abandoned}``.
-    The consumer-path ``AttemptOutcome`` includes ``"scheduled"`` for
-    snooze/retry/reservation-denial; callers must map that to
-    ``"abandoned"`` before calling (the consumer released the job back
-    to the queue without completing it).
+    ``outcome`` is the closed :data:`ConsumedOutcome` set. A consumer-path
+    ``AttemptOutcome`` of ``"scheduled"`` (retry, snooze, admission denial)
+    is recorded as exactly that — the row went back to the queue — never
+    as ``abandoned``, which is the operator-cancel outcome and has its own
+    counter (:func:`record_job_abandoned`). A ``"noop"`` attempt consumed
+    nothing and must not reach this recorder.
     """
     if not _otel_enabled:
         return
     _consumed_messages.add(1, {"actor": actor, "queue": _bounded_queue(queue), "outcome": outcome})
 
 
+def record_attempt_failure(actor: str, error_type: str | None = None, *, retryable: bool) -> None:
+    """Count one attempt that ended in an actor failure, retried or terminal.
+
+    Called from the failure handlers (``worker/_handlers.py``) once per
+    handled exception, after the retry decision and before the terminal
+    write: an attempt that raised failed whether or not the row write that
+    follows lands, and the consumed-messages ``outcome`` says what happened
+    to the row. ``retryable`` is the classifier's decision — ``true`` when
+    the attempt is rescheduled for another try, ``false`` when the failure
+    is terminal (a non-retryable class, or the attempt budget exhausted) —
+    which is what a retry-rate alert reads. ``error_type`` is the exception
+    class name; omitted, it derives from the exception being handled
+    (``_resolve_error_type``): a closed set, never caller text.
+    Respects ``_otel_enabled`` — no-op when False.
+    """
+    if not _otel_enabled:
+        return
+    _lazy_counter(
+        "taskq.jobs.attempt_failures",
+        description=(
+            "Attempts that ended in an actor failure. Attributes: actor, "
+            "error_type (exception class name — a closed set; see "
+            "_resolve_error_type), retryable ('true' when the attempt is "
+            "rescheduled for another try, 'false' when the failure is "
+            "terminal). The failure share of consumed outcome='scheduled'."
+        ),
+    ).add(
+        1,
+        {
+            "actor": actor,
+            "error_type": _resolve_error_type(error_type),
+            "retryable": "true" if retryable else "false",
+        },
+    )
+
+
+def record_job_abandoned(actor: str) -> None:
+    """Count one job abandoned by an operator cancel that outlasted its graces.
+
+    Called from ``mark_abandoned`` on both backends once the abandon write
+    applied: the actor was asked to stop, then forced, and never exited, so
+    the row is taken from it. Shutdowns never produce this — a deploy
+    interrupts running attempts back to the fleet instead — which is why
+    any non-zero rate is worth a page. Attributes: actor.
+    Respects ``_otel_enabled`` — no-op when False.
+    """
+    if not _otel_enabled:
+        return
+    _lazy_counter(
+        "taskq.jobs.abandoned",
+        description=(
+            "Jobs abandoned: an operator cancel outlasted the cooperative and "
+            "forced grace periods and the running attempt was taken away. "
+            "Never produced by a shutdown (those interrupt). Attributes: actor."
+        ),
+    ).add(1, {"actor": actor})
+
+
 _process_duration = get_meter().create_histogram(
     "messaging.process.duration",
     description=(
-        "Job execution duration, labeled by actor and queue (capped -- see _bounded_queue)."
+        "Job execution duration, labeled by actor, queue (capped -- see "
+        "_bounded_queue) and outcome (the consumed-messages outcome set), so "
+        "a timed-out or failed attempt's duration is not folded into the "
+        "success distribution."
     ),
     unit="s",
 )
 
 
-def record_process_duration(actor: str, queue: str, elapsed: float) -> None:
+def record_process_duration(
+    actor: str, queue: str, elapsed: float, *, outcome: ConsumedOutcome
+) -> None:
     """Record job execution duration on the histogram.
 
-    Called outside the CONSUMER span body for sampling independence.
+    Called outside the CONSUMER span body for sampling independence, with
+    the same ``outcome`` the consumed-messages counter records for the
+    attempt: a ``start_to_close`` timeout lands at exactly the budget and
+    a failure at whatever it took, and either would drag a success
+    percentile if the distributions were shared.
     Respects ``_otel_enabled`` — no-op when False.
     Custom buckets are the operator's responsibility via SDK Views.
     """
     if not _otel_enabled:
         return
-    _process_duration.record(elapsed, {"actor": actor, "queue": _bounded_queue(queue)})
+    _process_duration.record(
+        elapsed, {"actor": actor, "queue": _bounded_queue(queue), "outcome": outcome}
+    )
+
+
+def record_queue_wait(actor: str, queue: str, waited_seconds: float) -> None:
+    """Record how long a job waited from eligibility to claim.
+
+    Called once per dispatch from the claimed row's own server-clock
+    stamps: ``started_at - scheduled_at`` (Oban's ``queue_time``). The
+    per-job companion of the sampled ``oldest_pending_age_seconds``: the
+    gauge shows the head of the line, this histogram shows what every
+    dispatched job actually waited, retries and re-pends included. Labels
+    are the job-side pair (actor, queue capped as everywhere).
+    Respects ``_otel_enabled`` — no-op when False.
+    """
+    if not _otel_enabled:
+        return
+    _lazy_histogram(
+        "taskq.jobs.queue_wait_seconds",
+        description=(
+            "Seconds a job waited between becoming eligible (scheduled_at) "
+            "and being claimed (started_at), both server-clock stamps on the "
+            "dispatched row. Attributes: actor, queue (capped — see "
+            "_bounded_queue)."
+        ),
+        unit="s",
+    ).record(waited_seconds, {"actor": actor, "queue": _bounded_queue(queue)})
+
+
+type TimeoutKind = Literal["start_to_close", "schedule_to_close"]
+"""Which budget a job exceeded — the closed ``kind`` label set of
+``taskq.jobs.timeouts``."""
+
+
+def record_job_timeout(actor: str, *, kind: TimeoutKind, count: int = 1) -> None:
+    """Count *count* jobs that exceeded a time budget.
+
+    ``start_to_close`` is recorded at the timeout handler once per
+    attempt that hit its per-attempt budget, retried or not.
+    ``schedule_to_close`` is recorded wherever the whole-job deadline is
+    what ended it: the deadline sweep (which counts a batch at a time),
+    and the handler arms where the backend's deadline arbitration refused
+    a retry, a snooze or a denial's requeue with ``DeadlineExceeded``.
+    Respects ``_otel_enabled`` — no-op when False.
+    """
+    if not _otel_enabled:
+        return
+    _lazy_counter(
+        "taskq.jobs.timeouts",
+        description=(
+            "Jobs that exceeded a time budget. Attributes: actor, kind "
+            "('start_to_close' — the per-attempt budget, at the timeout "
+            "handler; 'schedule_to_close' — the whole-job deadline, at the "
+            "deadline sweep and the handler arms the backend refused with "
+            "DeadlineExceeded)."
+        ),
+    ).add(count, {"actor": actor, "kind": kind})
 
 
 #: Why identity values are not metric dimensions
@@ -670,16 +813,24 @@ def record_process_duration(actor: str, queue: str, elapsed: float) -> None:
 
 _lock_expires_in_seconds = get_meter().create_histogram(
     "taskq.lock.expires_in_seconds",
-    description="Remaining TTL at each heartbeat renewal. No dimensions.",
+    description=(
+        "Lease remaining on this worker's job locks at the moment the "
+        "heartbeat renewed them: lock_lease minus the gap since the previous "
+        "renewal, measured, so a late or failed tick lowers the sample. "
+        "0 when the renewal landed after expiry. No dimensions."
+    ),
     unit="s",
     explicit_bucket_boundaries_advisory=(0, 5, 10, 15, 20, 30, 45, 60),
 )
 
 
 def record_lock_expires_in_seconds(worker_id: str, remaining_ttl: float) -> None:
-    """Record remaining lock TTL on the histogram.
+    """Record the measured remaining lock TTL on the histogram.
 
-    Called in heartbeat.py at each successful heartbeat renewal.
+    Called in heartbeat.py at each successful renewal after the first,
+    with the lease the previous renewal stamped minus the time elapsed
+    since — a measurement, never the configured constant, so the
+    lock-expiry alert can fire when renewals run late.
     Respects ``_otel_enabled`` — no-op when False.
     """
     if not _otel_enabled:
@@ -798,6 +949,82 @@ _slot_pool_occupancy_gauge = get_meter().create_observable_gauge(
 )
 
 
+# ── Worker capacity ──────────────────────────────────────────────────
+#
+# The health socket renders taskq_active_jobs by hand, which no scrape
+# reaches; these are the OTel twins a real exporter carries. No labels:
+# one series per process is the shape (the pod is the identity, on the
+# scrape target's own labels), and utilisation is the per-process ratio
+# active_jobs / max_concurrency.
+
+
+class _ActiveJobsSource(Protocol):
+    """Structural slice of ``ActiveJobRegistry`` the active-jobs gauge reads.
+
+    Keeps this observability leaf free of a worker import; bootstrap
+    passes the real registry, which satisfies this shape structurally.
+    ``count`` is a dict length — safe to read from the SDK reader thread.
+    """
+
+    def count(self) -> int: ...
+
+
+_worker_capacity_source: tuple[_ActiveJobsSource, int] | None = None
+"""(active-jobs registry, max_concurrency) — set once by worker bootstrap."""
+
+
+def set_worker_capacity_source(active_jobs: _ActiveJobsSource | None, max_concurrency: int) -> None:
+    """Point the worker capacity gauges at *active_jobs* and *max_concurrency*.
+
+    Called once at worker bootstrap, after the deps that own the
+    registry exist. ``None`` clears the source — both gauges report
+    nothing, matching a process that hosts no worker.
+    """
+    global _worker_capacity_source
+    _worker_capacity_source = (active_jobs, max_concurrency) if active_jobs is not None else None
+
+
+def _observe_worker_active_jobs(options: CallbackOptions) -> Iterable[Observation]:
+    source = _worker_capacity_source
+    if source is None:
+        return
+    try:
+        # Why defensive: a collection read must never raise into the
+        # SDK's export path, whatever the registry is mid-way through.
+        count = source[0].count()
+    except Exception:
+        return
+    yield Observation(count)
+
+
+def _observe_worker_max_concurrency(options: CallbackOptions) -> Iterable[Observation]:
+    source = _worker_capacity_source
+    if source is None:
+        return
+    yield Observation(source[1])
+
+
+get_meter().create_observable_gauge(
+    name="taskq.worker.active_jobs",
+    description=(
+        "Jobs in flight on this worker process. No dimensions: one series "
+        "per process. Divide by taskq.worker.max_concurrency for utilisation."
+    ),
+    unit="1",
+    callbacks=[_observe_worker_active_jobs],
+)
+
+get_meter().create_observable_gauge(
+    name="taskq.worker.max_concurrency",
+    description=(
+        "This worker process's configured max_concurrency — the ceiling "
+        "taskq.worker.active_jobs saturates against. No dimensions."
+    ),
+    unit="1",
+    callbacks=[_observe_worker_max_concurrency],
+)
+
+
 _queue_depth_cache: dict[str, int] = {}
 
 
@@ -811,29 +1038,36 @@ def update_queue_depth_cache(data: dict[str, int]) -> None:
     _queue_depth_cache = dict(data)
 
 
-def _observe_queue_depth(options: CallbackOptions) -> Iterable[Observation]:
-    # A gauge is observable, not additive, so the counter sites'
-    # per-item label mapping cannot be reused here: every overflow queue
-    # yielding its own `_other_` observation would report one queue's
-    # depth instead of the total. The partition is therefore computed
-    # before yielding: the deepest `_MAX_QUEUE_LABEL_VALUES` queues keep
-    # their own series (ties broken by queue name, for determinism), and
-    # everything shallower collapses onto ONE `_other_` observation
-    # carrying the summed overflow depth, so the reported total always
-    # equals the true total. Depth ranking -- not name order and not
-    # first-seen admission -- keeps the deepest queues, the ones an
-    # operator pages on, individually visible past the cap. Nothing
-    # shared is mutated: `_queue_label_values` stays owned by the
-    # job-side instruments.
-    ranked = sorted(_queue_depth_cache.items(), key=lambda item: (-item[1], item[0]))
+def _observe_capped_per_queue(cache: Mapping[str, int]) -> Iterable[Observation]:
+    """Yield one observation per queue from *cache*, capped like the depth gauge.
+
+    A gauge is observable, not additive, so the counter sites' per-item
+    label mapping cannot be reused here: every overflow queue yielding its
+    own `_other_` observation would report one queue's value instead of
+    the total. The partition is therefore computed before yielding: the
+    `_MAX_QUEUE_LABEL_VALUES` largest queues keep their own series (ties
+    broken by queue name, for determinism), and everything smaller
+    collapses onto ONE `_other_` observation carrying the summed overflow,
+    so the reported total always equals the true total. Value ranking --
+    not name order and not first-seen admission -- keeps the largest
+    queues, the ones an operator pages on, individually visible past the
+    cap. Nothing shared is mutated: `_queue_label_values` stays owned by
+    the job-side instruments. Shared by the queue-depth and
+    live-workers gauges, which the same sampler tick feeds.
+    """
+    ranked = sorted(cache.items(), key=lambda item: (-item[1], item[0]))
     admitted = ranked[:_MAX_QUEUE_LABEL_VALUES]
     overflow = ranked[_MAX_QUEUE_LABEL_VALUES:]
-    for queue, depth in admitted:
-        yield Observation(depth, {"queue": queue})
+    for queue, value in admitted:
+        yield Observation(value, {"queue": queue})
     if overflow:
         yield Observation(
-            sum(depth for _queue, depth in overflow), {"queue": _QUEUE_LABEL_OVERFLOW}
+            sum(value for _queue, value in overflow), {"queue": _QUEUE_LABEL_OVERFLOW}
         )
+
+
+def _observe_queue_depth(options: CallbackOptions) -> Iterable[Observation]:
+    return _observe_capped_per_queue(_queue_depth_cache)
 
 
 _queue_depth_gauge = get_meter().create_observable_gauge(
@@ -849,24 +1083,68 @@ _queue_depth_gauge = get_meter().create_observable_gauge(
 )
 
 
-_stranded_jobs_cache: dict[str, int] = {}
+_queue_live_workers_cache: dict[str, int] = {}
 
 
-def update_stranded_jobs_cache(data: dict[str, int]) -> None:
+def update_queue_live_workers_cache(data: dict[str, int]) -> None:
+    """Replace the per-queue live-worker cache with fresh data from the
+    leader's query — sampled in the same tick as the queue depth, so the
+    two can be joined on ``queue`` without describing different moments.
+
+    A worker is live when its ``last_seen_at`` is within the liveness
+    window (``admin_worker_liveness_seconds``); a dead-but-unswept worker
+    row does not count. A queue with pending work and no live worker is
+    the condition ``TaskQQueueUnserved`` fires on, and it is invisible to
+    every other gauge: depth alone cannot say whether anyone is consuming.
+    """
+    global _queue_live_workers_cache
+    _queue_live_workers_cache = dict(data)
+
+
+def _observe_queue_live_workers(options: CallbackOptions) -> Iterable[Observation]:
+    return _observe_capped_per_queue(_queue_live_workers_cache)
+
+
+_queue_live_workers_gauge = get_meter().create_observable_gauge(
+    name="taskq.queue.live_workers",
+    description=(
+        "Workers whose last_seen_at is within the liveness window, per queue "
+        "they subscribe to, sampled by the leader with taskq.queue.depth "
+        "(same cap: the largest _MAX_QUEUE_LABEL_VALUES queues keep their own "
+        f"series; the rest collapse onto one '{_QUEUE_LABEL_OVERFLOW}' series). "
+        "A queue with depth > 0 and no live worker is unserved."
+    ),
+    unit="1",
+    callbacks=[_observe_queue_live_workers],
+)
+
+
+type StrandedReason = Literal["no_actor_config", "unserved_queue"]
+"""Why a pending/scheduled row can never dispatch — the closed ``reason``
+label set of ``taskq.jobs.stranded``."""
+
+_stranded_jobs_cache: dict[tuple[str, StrandedReason], int] = {}
+
+
+def update_stranded_jobs_cache(data: Mapping[tuple[str, StrandedReason], int]) -> None:
     """Replace the stranded-jobs cache with fresh data from the leader's query.
 
     Stranded jobs are pending/scheduled rows that can never dispatch: the
     actor has no `actor_config` row (the dispatch CTE derives its
     candidates from `per_actor_capacity`, which is `FROM actor_config`),
-    or the row sits on a queue no registered worker serves (dispatch
-    probes only its own subscription's queues). Both shapes accumulate
-    invisibly to dispatch and the deadline sweep; the detector's
-    per-shape warning events name which condition held.
+    or the row sits on a queue no LIVE registered worker serves (dispatch
+    probes only its own subscription's queues, and a worker whose
+    last_seen_at has gone stale is not dispatching). Both shapes
+    accumulate invisibly to dispatch and the deadline sweep. Keyed by
+    ``(actor, reason)`` so the gauge says which condition held — the two
+    have different remediations (register the actor vs. subscribe a
+    worker to the queue), and a per-actor total made an operator who
+    found the actor_config row present conclude the detector lied.
 
     This gauge exists because the detector previously emitted a log line and
     nothing else, exactly once per actor per process lifetime -- so the
     condition was invisible in metrics and its only trace was a single WARN at
-    onset, which is the moment nobody is looking. An empty dict clears the
+    onset, which is the moment nobody is looking. An empty mapping clears the
     gauge, so recovery is visible too.
     """
     global _stranded_jobs_cache
@@ -874,15 +1152,17 @@ def update_stranded_jobs_cache(data: dict[str, int]) -> None:
 
 
 def _observe_stranded_jobs(options: CallbackOptions) -> Iterable[Observation]:
-    for actor, count in _stranded_jobs_cache.items():
-        yield Observation(count, {"actor": actor})
+    for (actor, reason), count in _stranded_jobs_cache.items():
+        yield Observation(count, {"actor": actor, "reason": reason})
 
 
 _stranded_jobs_gauge = get_meter().create_observable_gauge(
     name="taskq.jobs.stranded",
     description=(
-        "Pending/scheduled jobs whose actor has no actor_config row and which "
-        "therefore can never be dispatched, sampled by the leader."
+        "Pending/scheduled jobs that can never be dispatched, sampled by the "
+        "leader. Attributes: actor, reason ('no_actor_config' — the actor "
+        "has no actor_config row; 'unserved_queue' — the queue dispatch "
+        "routes the row on has no live worker subscribed)."
     ),
     unit="1",
     callbacks=[_observe_stranded_jobs],
@@ -1961,6 +2241,77 @@ get_meter().create_observable_gauge(
     ),
     unit="1",
     callbacks=[_observe_actor_backlog],
+)
+
+
+def update_jobs_running_cache(data: Mapping[str, int]) -> None:
+    """Replace the per-actor running-count cache with fresh data.
+
+    Fed by the backlog sampler from one grouped read over the running
+    population. Per actor, not per (actor, queue): the running row's
+    queue label is not what dispatched it (re-pended rows route by the
+    actor's assignment), and the capacity question is per actor —
+    which actors hold the fleet's slots while pending work waits. An
+    actor with no running jobs vanishes from the series rather than
+    freezing at its last count.
+    """
+    global _jobs_running_cache
+    _jobs_running_cache = dict(data)
+
+
+def _observe_jobs_running(options: CallbackOptions) -> Iterable[Observation]:
+    for actor, count in _jobs_running_cache.items():
+        yield Observation(count, {"actor": actor})
+
+
+_jobs_running_cache: dict[str, int] = {}
+
+get_meter().create_observable_gauge(
+    name="taskq.jobs.running",
+    description=(
+        "Running jobs per actor, sampled by every worker with taskq.jobs.by_status. "
+        "Beside taskq.worker.active_jobs (per process) and "
+        "taskq.jobs.oldest_pending_age_seconds, says which actors hold the "
+        "fleet's slots while pending work waits."
+    ),
+    unit="1",
+    callbacks=[_observe_jobs_running],
+)
+
+
+def update_actor_oldest_running_age_cache(data: Mapping[str, float]) -> None:
+    """Replace the per-actor oldest-running-age cache with fresh data.
+
+    Fed by the backlog sampler from the same grouped read as
+    :func:`update_jobs_running_cache`, so count and age describe one
+    moment. An attempt older than the actor's normal runtime while
+    ``taskq.jobs.timeouts`` stays flat is an actor with no
+    ``start_to_close``: nothing will end the attempt, and no other gauge
+    can show it (``running_lease_expired`` reads 0 while the heartbeat
+    keeps renewing). An actor with nothing running vanishes from the
+    series.
+    """
+    global _actor_oldest_running_age_cache
+    _actor_oldest_running_age_cache = dict(data)
+
+
+def _observe_actor_oldest_running_age(options: CallbackOptions) -> Iterable[Observation]:
+    for actor, age in _actor_oldest_running_age_cache.items():
+        yield Observation(age, {"actor": actor})
+
+
+_actor_oldest_running_age_cache: dict[str, float] = {}
+
+get_meter().create_observable_gauge(
+    name="taskq.jobs.oldest_running_age_seconds",
+    description=(
+        "Seconds since the oldest running attempt of each actor started, "
+        "sampled by every worker with taskq.jobs.running. Past the actor's "
+        "usual p99 with taskq.jobs.timeouts flat, it is an actor with no "
+        "start_to_close."
+    ),
+    unit="s",
+    callbacks=[_observe_actor_oldest_running_age],
 )
 
 

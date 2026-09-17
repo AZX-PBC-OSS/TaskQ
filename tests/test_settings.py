@@ -1995,3 +1995,22 @@ def test_settings_repr_dsn_passwords_self_redact() -> None:
     r = repr(s)
     assert "dsn-pass-DO-NOT-PRINT" not in r
     assert "user:***@host:5432/db" in r
+
+
+# ── OTel exporter auto-configuration knobs ─────────────────────────
+
+
+def test_otel_autoconfigure_defaults_on_and_is_a_switch() -> None:
+    """The worker CLI wires SDK providers from the OTel env vars unless the
+    operator opts out; the opt-out must round-trip as a boolean."""
+    assert _load().otel_autoconfigure is True
+    assert _load(TASKQ_OTEL_AUTOCONFIGURE="false").otel_autoconfigure is False
+
+
+def test_metrics_port_is_unset_by_default_and_opt_in() -> None:
+    """Unset means no Prometheus listener (the health_port shape); a port
+    is the opt-in and stays range-checked."""
+    assert _load().metrics_port is None
+    assert _load(TASKQ_METRICS_PORT="9464").metrics_port == 9464
+    with pytest.raises(ConstraintViolationError):
+        _load(TASKQ_METRICS_PORT="0")

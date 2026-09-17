@@ -408,27 +408,37 @@ async def test_consumed_counter_disabled(monkeypatch: pytest.MonkeyPatch) -> Non
     assert len(collect_metrics(setup_meter(monkeypatch))) == 0
 
 
-# ── ConsumedOutcome label set (regression: outcome must not be "scheduled") ─
+# ── ConsumedOutcome label set (a released row is "scheduled", never "abandoned") ─
 
 
-async def test_consumed_outcome_scheduled_maps_to_abandoned(
+async def test_consumed_outcome_scheduled_is_recorded_as_itself(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """_to_consumed_outcome maps "scheduled" to "abandoned" for instrument 2."""
+    """A retry or snooze released the row back to the queue; relabelling it
+    "abandoned" made every retry page TaskQAbandonedJobs."""
     from taskq.worker.dispatch import _to_consumed_outcome
 
-    assert _to_consumed_outcome("scheduled") == "abandoned"
+    assert _to_consumed_outcome("scheduled") == "scheduled"
 
 
-async def test_consumed_outcome_passes_through_valid_labels(
+async def test_consumed_outcome_passes_through_terminal_labels(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """_to_consumed_outcome passes succeeded/failed/cancelled through unchanged."""
     from taskq.worker.dispatch import _to_consumed_outcome
 
     assert _to_consumed_outcome("succeeded") == "succeeded"
     assert _to_consumed_outcome("failed") == "failed"
     assert _to_consumed_outcome("cancelled") == "cancelled"
+
+
+async def test_consumed_outcome_refuses_a_noop() -> None:
+    """A noop consumed nothing: the finally block skips the recorder for it,
+    so a noop reaching the map is a caller defect and must not be
+    relabelled into a real outcome."""
+    from taskq.worker.dispatch import _to_consumed_outcome
+
+    with pytest.raises(ValueError, match="noop"):
+        _to_consumed_outcome("noop")
 
 
 async def test_consumed_counter_all_valid_outcomes(
@@ -439,13 +449,13 @@ async def test_consumed_counter_all_valid_outcomes(
 
     reader = setup_meter(monkeypatch)
 
-    for outcome in ("succeeded", "failed", "cancelled", "abandoned"):
+    for outcome in ("succeeded", "failed", "cancelled", "scheduled"):
         obs_mod.record_consumed_message("actor_a", "default", outcome=outcome)
 
     dps = counter_data_points(reader, "messaging.client.consumed.messages")
     assert len(dps) == 4
     recorded = {dp.attributes.get("outcome") for dp in dps if dp.attributes is not None}
-    assert recorded == {"succeeded", "failed", "cancelled", "abandoned"}
+    assert recorded == {"succeeded", "failed", "cancelled", "scheduled"}
 
 
 # ── process duration histogram (instrument 3) ──────────────────
@@ -457,13 +467,14 @@ async def test_process_duration_records_elapsed(
     """record_process_duration records histogram with actor and queue."""
     reader = setup_meter(monkeypatch)
 
-    obs_mod.record_process_duration("my_actor", "default", 0.42)
+    obs_mod.record_process_duration("my_actor", "default", 0.42, outcome="succeeded")
 
     points = histogram_points(reader, "messaging.process.duration")
     assert len(points) == 1
     assert points[0].attributes is not None
     assert points[0].attributes.get("actor") == "my_actor"
     assert points[0].attributes.get("queue") == "default"
+    assert points[0].attributes.get("outcome") == "succeeded"
     assert points[0].count >= 1
     assert points[0].sum >= 0.42
 
@@ -473,6 +484,6 @@ async def test_process_duration_disabled(monkeypatch: pytest.MonkeyPatch) -> Non
     setup_meter(monkeypatch)
     obs_mod.set_otel_enabled(False)
 
-    obs_mod.record_process_duration("my_actor", "default", 0.42)
+    obs_mod.record_process_duration("my_actor", "default", 0.42, outcome="succeeded")
 
     assert len(collect_metrics(setup_meter(monkeypatch))) == 0
