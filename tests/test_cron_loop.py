@@ -12,6 +12,8 @@ to the ambient trace context.
 Pure-Python, no PG required.
 """
 
+import asyncio
+import re
 from collections.abc import Callable, Iterator, Mapping
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
@@ -1623,6 +1625,369 @@ class TestFactoryDeadlineMath:
             "past the whole-tick deadline"
         )
         assert cron_loop._factory_deadline(settings, 100.0) is None
+
+
+# ── tick-budget exhaustion defers the schedule instead of striking it ──
+#
+# The funded factory budget is FIRST-COME: a schedule whose factory
+# consumed the whole grant (it ran, it timed out, it struck) leaves
+# nothing for the factory-backed schedules after it in next_fire_at
+# order.  Those schedules' factories NEVER RAN — striking them was #235:
+# the failure UPDATE never advances next_fire_at, so the identical batch
+# returned in the identical order every tick and healthy schedules rode
+# a hung neighbour's strikes to auto-disable.  The boundary is crisp:
+# a factory that RAN and raised strikes (its own evidence); a factory
+# the tick could not fund is DEFERRED — next_fire_at advances one leader
+# cadence (not the next cron slot: the slot is still owed, only its
+# funding was missing), consecutive_failures and last_fire_error are
+# untouched, and the schedule retries on the very next tick.
+
+
+def _suppression_updates(
+    conn: _FakeCronConn,
+) -> list[tuple[str, tuple[object, ...]]]:
+    """The recorded suppression-branch UPDATEs, identified by their SET
+    spelling (the success UPDATE shares the ``next_fire_at = f.next_fire``
+    tail but begins its SET with ``last_fired_at``)."""
+    return [
+        (sql, args) for sql, args in conn.execute_calls if "SET next_fire_at = f.next_fire" in sql
+    ]
+
+
+class _SteppableMonotonic:
+    """A ``time`` module double whose ``monotonic()`` the test advances in
+    steps — the same seam the integration tier's skewed-datetime shims
+    use (``test_cron_integration.py``), applied to the tick's elapsed
+    clock so the funded-budget boundary is reached deterministically
+    without a real factory hang on every tick."""
+
+    def __init__(self, t0: float) -> None:
+        self._now = t0
+
+    def monotonic(self) -> float:
+        return self._now
+
+    def advance(self, seconds: float) -> None:
+        self._now += seconds
+
+
+async def test_budget_exhausted_factory_schedule_is_deferred_not_struck(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A factory that consumes its whole grant legitimately — and fires —
+    leaves nothing for the next factory-backed schedule in next_fire_at
+    order; that schedule rides the suppression UPDATE (next_fire_at + one
+    leader cadence, nothing else): no failure UPDATE carries it, no
+    failure span is exported for it, its factory is never called."""
+    _, exporter = setup_tracer(monkeypatch)
+
+    fired_id = new_uuid()
+    deferred_id = new_uuid()
+    # The deferred schedule's owed slot is 10:00:30 on an HOURLY expr, so
+    # a skip-to-next-slot regression would write 11:00 — the contract is
+    # the one-cadence retry at _NOW + 1s.
+    conn = _FakeCronConn(
+        schedule_rows=[
+            _make_schedule_row(
+                actor="full_grant_actor",
+                cron_expr="0 * * * *",
+                payload_factory="tests.test_cron_loop._full_grant_unit_factory",
+                next_fire_at=datetime(2025, 1, 1, 10, 0, 0, tzinfo=UTC),
+                schedule_id=fired_id,
+            ),
+            _make_schedule_row(
+                actor="deferred_factory_actor",
+                cron_expr="0 * * * *",
+                payload_factory="tests.test_cron_loop._fast_unit_factory",
+                next_fire_at=datetime(2025, 1, 1, 10, 0, 30, tzinfo=UTC),
+                schedule_id=deferred_id,
+            ),
+        ],
+        actor_config_rows=[
+            _make_actor_config_row(actor="full_grant_actor"),
+            _make_actor_config_row(actor="deferred_factory_actor"),
+        ],
+    )
+    settings = _cron_settings()  # 5.0s whole tick → 4.5s funded
+    backend = InMemoryBackend(clock=FakeClock(_NOW))
+
+    fake_time = _SteppableMonotonic(100.0)
+    resolver_calls: list[str | None] = []
+
+    async def _grant_consuming_resolver(
+        row: object, *, timeout_s: float | None = None
+    ) -> dict[str, object]:
+        """Stand-in for resolve_payload: the full-grant factory consumes
+        exactly its granted deadline of the tick's elapsed budget and
+        succeeds; no other factory is reached in this tick."""
+        assert isinstance(row, _FakeCronRecord)
+        resolver_calls.append(row["payload_factory"])
+        fake_time.advance(timeout_s or 0.0)
+        return {}
+
+    monkeypatch.setattr(cron_loop, "resolve_payload", _grant_consuming_resolver)
+    monkeypatch.setattr(cron_loop, "time", fake_time)
+
+    import structlog.testing
+
+    with structlog.testing.capture_logs() as captured:
+        fired = await _tick(conn, settings, backend)
+
+    assert fired == 1, "the full-grant schedule fires; the deferred slot is not a fire"
+    assert resolver_calls == ["tests.test_cron_loop._full_grant_unit_factory"], (
+        "the deferred schedule's factory must never be called — there was "
+        "no funded wait left to grant it"
+    )
+    success_updates = _success_updates(conn)
+    assert len(success_updates) == 1
+    assert success_updates[0][1][0] == [fired_id], (
+        "only the full-grant schedule advanced as a success"
+    )
+
+    suppression_updates = _suppression_updates(conn)
+    assert len(suppression_updates) == 1, (
+        "the never-funded schedule must ride the suppression UPDATE — the "
+        "one branch that advances next_fire_at without touching failure "
+        "accounting"
+    )
+    _, args = suppression_updates[0]
+    assert args[0] == [deferred_id]
+    next_fires: object = args[1]
+    assert isinstance(next_fires, list)
+    assert next_fires[0] == _NOW + timedelta(seconds=1.0), (
+        "the deferral advance is ONE leader cadence, not the schedule's "
+        "next cron slot — the owed slot is still landable, only its "
+        "funding was missing, so skipping to 11:00 would drop a healthy "
+        f"schedule's fire because a neighbour hogged the budget; got {next_fires[0]}"
+    )
+
+    assert _failure_updates(conn) == [], (
+        "a factory that never ran is no evidence against the schedule — "
+        "the strike path must stay reserved for factories that ran"
+    )
+    error_spans = [
+        s for s in exporter.spans_named("cron fire") if s.status.status_code == StatusCode.ERROR
+    ]
+    assert error_spans == [], "no failure claim may be exported for a deferral"
+
+    deferred_events = [
+        e
+        for e in captured
+        if e["event"] == "cron-fire-budget-deferred" and e.get("schedule_id") == str(deferred_id)
+    ]
+    assert len(deferred_events) == 1, (
+        "the deferral must leave a named log trail — an operator seeing it "
+        "every tick knows a neighbour is eating the tick's factory budget"
+    )
+    assert deferred_events[0]["log_level"] == "info"
+    assert not [e for e in captured if e["event"] == "cron fire failed"], (
+        "the deferred schedule must not be logged as a failure"
+    )
+
+
+async def test_one_hung_factory_strikes_itself_and_defers_its_healthy_factory_peer() -> None:
+    """The #235 shape against the REAL resolver at the smallest real
+    budget: one due schedule whose factory hangs consumes the tick's
+    whole funded budget, so the healthy factory-backed schedule after it
+    in next_fire_at order is deferred — while the hung one takes its own
+    named strike and stays un-advanced at the front of the order."""
+    hung_id = new_uuid()
+    peer_id = new_uuid()
+    settings = _cron_settings(
+        DISPATCHER_COMMAND_TIMEOUT="1.0", CRON_PAYLOAD_FACTORY_TIMEOUT="1.0"
+    )  # funded budget: 0.9s
+    conn = _FakeCronConn(
+        schedule_rows=[
+            _make_schedule_row(
+                actor="hung_unit_actor",
+                cron_expr="0 * * * *",
+                payload_factory="tests.test_cron_loop._hung_unit_factory",
+                next_fire_at=datetime(2025, 1, 1, 10, 0, 0, tzinfo=UTC),
+                schedule_id=hung_id,
+            ),
+            _make_schedule_row(
+                actor="healthy_unit_actor",
+                cron_expr="0 * * * *",
+                payload_factory="tests.test_cron_loop._fast_unit_factory",
+                next_fire_at=datetime(2025, 1, 1, 10, 0, 30, tzinfo=UTC),
+                schedule_id=peer_id,
+            ),
+        ],
+        actor_config_rows=[
+            _make_actor_config_row(actor="hung_unit_actor"),
+            _make_actor_config_row(actor="healthy_unit_actor"),
+        ],
+    )
+    backend = InMemoryBackend(clock=FakeClock(_NOW))
+
+    fired = await _tick(conn, settings, backend)
+
+    assert fired == 0, "the hung schedule fails, the healthy one defers — nothing fires"
+
+    failure_updates = _failure_updates(conn)
+    assert len(failure_updates) == 1
+    _, failure_args = failure_updates[0]
+    assert failure_args[0] == [hung_id], "only the schedule whose factory RAN is struck"
+    assert failure_args[2] == [1]
+    assert failure_args[3] == [False]
+    error_texts: object = failure_args[1]
+    assert isinstance(error_texts, list)
+    error_text = str(error_texts[0])
+    assert "_hung_unit_factory" in error_text, (
+        "the strike must name the factory that hung — the dotted path is "
+        "the only thing that distinguishes it from every other schedule"
+    )
+    granted_match = re.search(r"timed out after (\d+(?:\.\d+)?)s", error_text)
+    assert granted_match is not None, (
+        f"the strike must name the effective deadline; got {error_text!r}"
+    )
+    assert float(granted_match.group(1)) == pytest.approx(0.9, abs=0.1), (
+        "the strike must name the EFFECTIVE granted deadline — the funded "
+        "clamp (whole-tick x 0.9 minus elapsed), not the configured 1.0s — "
+        f"so an operator reads which budget fired; got {error_text!r}"
+    )
+
+    suppression_updates = _suppression_updates(conn)
+    assert len(suppression_updates) == 1
+    _, suppression_args = suppression_updates[0]
+    assert suppression_args[0] == [peer_id], (
+        "the healthy factory-backed schedule AFTER the hung one must be "
+        "deferred, not struck — its factory was never called"
+    )
+    peer_next_fires: object = suppression_args[1]
+    assert isinstance(peer_next_fires, list)
+    assert peer_next_fires[0] == _NOW + timedelta(seconds=1.0)
+
+    assert _success_updates(conn) == []
+
+
+async def test_healthy_factory_peer_survives_the_hung_neighbours_drain_and_fires_when_budget_frees(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The full #235 arc, tick by tick: through three hang-ticks the
+    monopolizer accumulates ITS OWN strikes (auto-disable flips on the
+    third) while the healthy factory-backed peer behind it is deferred
+    every tick and never struck; the tick the monopolizer is gone the
+    peer's factory is funded at the full clamp and it fires."""
+    hung_id = new_uuid()
+    peer_id = new_uuid()
+    settings = _cron_settings()  # 5.0s whole tick → 4.5s funded, 3-strike threshold
+
+    fake_time = _SteppableMonotonic(100.0)
+    granted: list[float | None] = []
+
+    async def _grant_consuming_resolver(
+        row: object, *, timeout_s: float | None = None
+    ) -> dict[str, object]:
+        """Stand-in for resolve_payload: a factory whose call outlives its
+        granted deadline consumes exactly that grant of the tick's
+        elapsed budget and raises the resolver's own timeout shape; a
+        healthy factory returns instantly."""
+        assert isinstance(row, _FakeCronRecord)
+        factory = row["payload_factory"]
+        granted.append(timeout_s)
+        if factory == "tests.test_cron_loop._never_resolves_unit":
+            assert timeout_s is not None
+            fake_time.advance(timeout_s)
+            raise TimeoutError(f"cron payload factory {factory!r} timed out after {timeout_s:g}s")
+        return {}
+
+    monkeypatch.setattr(cron_loop, "resolve_payload", _grant_consuming_resolver)
+    monkeypatch.setattr(cron_loop, "time", fake_time)
+
+    backend = InMemoryBackend(clock=FakeClock(_NOW))
+
+    def _rows_for_tick(hung_consecutive: int, include_hung: bool) -> list[_FakeCronRecord]:
+        rows = []
+        if include_hung:
+            # Strikes never advance next_fire_at: the monopolizer stays
+            # due at the front of the order every tick until disabled.
+            rows.append(
+                _make_schedule_row(
+                    actor="drain_hung_actor",
+                    cron_expr="0 * * * *",
+                    payload_factory="tests.test_cron_loop._never_resolves_unit",
+                    consecutive_failures=hung_consecutive,
+                    next_fire_at=datetime(2025, 1, 1, 10, 0, 0, tzinfo=UTC),
+                    schedule_id=hung_id,
+                )
+            )
+        rows.append(
+            _make_schedule_row(
+                actor="drain_peer_actor",
+                cron_expr="0 * * * *",
+                payload_factory="tests.test_cron_loop._fast_unit_factory",
+                next_fire_at=datetime(2025, 1, 1, 10, 0, 30, tzinfo=UTC),
+                schedule_id=peer_id,
+            )
+        )
+        return rows
+
+    actor_rows = [
+        _make_actor_config_row(actor="drain_hung_actor"),
+        _make_actor_config_row(actor="drain_peer_actor"),
+    ]
+
+    for tick_no in range(3):
+        conn = _FakeCronConn(
+            schedule_rows=_rows_for_tick(tick_no, include_hung=True),
+            actor_config_rows=actor_rows,
+        )
+        await _tick(conn, settings, backend)
+
+        failure_updates = _failure_updates(conn)
+        assert len(failure_updates) == 1, (
+            f"tick {tick_no + 1}: exactly the monopolizer may be struck"
+        )
+        _, failure_args = failure_updates[0]
+        assert failure_args[0] == [hung_id]
+        assert failure_args[2] == [tick_no + 1], "the monopolizer's own strikes accumulate"
+        assert failure_args[3] == [tick_no + 1 == 3], (
+            "auto-disable must fire for the genuinely-hung-every-time "
+            "factory on ITS third strike — never on the neighbour's"
+        )
+
+        suppression_updates = _suppression_updates(conn)
+        assert len(suppression_updates) == 1
+        _, suppression_args = suppression_updates[0]
+        assert suppression_args[0] == [peer_id], (
+            f"tick {tick_no + 1}: the healthy peer is deferred every "
+            "hang-tick — suppressed, never struck"
+        )
+        assert _success_updates(conn) == []
+
+    # The monopolizer is disabled: the next tick's batch holds only the
+    # peer, whose factory is funded at the full clamp and fires.
+    conn = _FakeCronConn(
+        schedule_rows=_rows_for_tick(3, include_hung=False),
+        actor_config_rows=actor_rows,
+    )
+    fired = await _tick(conn, settings, backend)
+
+    assert fired == 1, "the deferred schedule fires the very tick the budget frees"
+    success_updates = _success_updates(conn)
+    assert len(success_updates) == 1
+    assert success_updates[0][1][0] == [peer_id]
+    assert _failure_updates(conn) == []
+    assert _suppression_updates(conn) == []
+    assert granted[-1] == pytest.approx(4.5), (
+        "with the monopolizer gone the peer's factory is granted the full "
+        "clamp — min(cron_payload_factory_timeout, remaining funded "
+        "budget); a fairness cap below the configured deadline would have "
+        "shrunk this grant and struck a factory that fits comfortably"
+    )
+
+
+async def _hung_unit_factory() -> dict[str, object]:  # pyright: ignore[reportUnusedFunction]  # Why: resolved at runtime via its dotted path (payload_factory), never imported; pyright cannot see the string reference.
+    """Payload factory (dotted-path resolvable) that never returns in
+    time: the resolver's per-factory wait_for is what cuts it."""
+    await asyncio.sleep(30)
+    return {}
+
+
+def _fast_unit_factory() -> dict[str, object]:  # pyright: ignore[reportUnusedFunction]  # Why: resolved at runtime via its dotted path (payload_factory), never imported; pyright cannot see the string reference.
+    """Payload factory that returns instantly — the healthy peer shape."""
+    return {}
 
 
 # ── the commit-gate fallback is loud ───────────────────────────────────
