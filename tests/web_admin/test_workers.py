@@ -687,3 +687,85 @@ def test_workers_query_counts_running_rows_through_the_partial_index(
     assert "locked_by_worker = w.id" in sql
     assert "status = 'running'" in sql
     assert "count(*)" in sql
+
+
+# ── Workers page: stall hotspots column ──────────────────────────────
+
+
+def _hotspot_row(metadata: str) -> StubRecord:
+    return StubRecord(
+        id="33333333-3333-3333-3333-333333333333",
+        hostname="worker-3",
+        pid=99,
+        queues="default",
+        last_seen_at="2025-01-01T00:00:00+00:00",
+        is_leader=False,
+        running_jobs=0,
+        metadata=metadata,
+    )
+
+
+def _hotspot_client(monkeypatch: pytest.MonkeyPatch, metadata: str) -> Any:
+    monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
+    conn = _WorkersScriptedConn([_hotspot_row(metadata)])
+    bundle = create_router(_WorkersScriptedPool(conn))  # pyright: ignore[reportArgumentType]  # Why: test duck-type pool.
+    app = FastAPI()
+    app.include_router(bundle.router)
+    setup_admin_state(app, bundle)
+    return TestClient(app)
+
+
+def test_workers_page_renders_stall_hotspots_hottest_first(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The workers overview renders the stall tally the heartbeat merged
+    into the row metadata, hottest actor first, with kind counts."""
+    client = _hotspot_client(
+        monkeypatch,
+        '{"notify_enabled": true, "max_concurrency": 4, "loop_stalls": '
+        '{"resize_image": {"blocking_call": 2, "gil_held": 1}, '
+        '"send_email": {"gil_held": 12}}}',
+    )
+    resp = client.get("/workers")
+    assert resp.status_code == 200
+    # Hottest first: send_email's 12 beats resize_image's 3.
+    assert resp.text.index("send_email x12 (gil_held)") < resp.text.index(
+        "resize_image x3 (blocking_call 2, gil_held 1)"
+    )
+
+
+def test_workers_page_hotspots_empty_when_no_tally(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A worker that attributed no stalls shows the empty marker, and a
+    worker registered before the tally existed (no key at all) too."""
+    client = _hotspot_client(monkeypatch, '{"notify_enabled": true, "max_concurrency": 4}')
+    resp = client.get("/workers")
+    assert resp.status_code == 200
+    assert "x12" not in resp.text
+    assert "Stall hotspots" in resp.text
+
+
+def test_workers_page_carries_the_tally_definition_note(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The page states what the column counts and what it does not: the
+    tally counts ATTRIBUTED stalls, the Running / Max column counts
+    running rows."""
+    client = _hotspot_client(monkeypatch, "{}")
+    resp = client.get("/workers")
+    assert "attributed event-loop stalls" in resp.text
+    assert "Running / Max column counts running rows" in resp.text
+
+
+def test_workers_page_survives_a_malformed_tally(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A hand-edited or stale metadata shape (not a dict, bad counts)
+    renders as empty rather than taking down the page."""
+    client = _hotspot_client(
+        monkeypatch,
+        '{"notify_enabled": true, "max_concurrency": 4, "loop_stalls": ["not", "a", "dict"]}',
+    )
+    resp = client.get("/workers")
+    assert resp.status_code == 200

@@ -1,5 +1,7 @@
 """Workers overview and leader detail admin pages."""
 
+from typing import cast
+
 import asyncpg
 import structlog
 from fastapi import APIRouter, Depends
@@ -52,6 +54,49 @@ _LEADER_SQL = (
 )
 
 
+def format_stall_hotspots(tally: object) -> str:
+    """Render a worker's stall tally hottest-first, or ``''`` when empty.
+
+    *tally* is the ``loop_stalls`` value of the workers row metadata:
+    ``{actor: {kind: count}}`` as the watchdog's tally holder wrote it.
+    Actors sort by total attributed stalls, descending (ties by name);
+    each renders as ``actor xN (kinds)`` with the kind counts shown
+    plain when there is one kind and ``kind count`` pairs hottest-first
+    when there are several. Malformed shapes (metadata written by an
+    older worker, or hand-edited) render as empty rather than raising:
+    a broken tally must not take down the page that shows it.
+    """
+    if not isinstance(tally, dict):
+        return ""
+    tally_map = cast("dict[str, object]", tally)
+    entries: list[tuple[int, str, dict[str, int]]] = []
+    for actor_name, kinds in tally_map.items():
+        if not isinstance(kinds, dict):
+            continue
+        kind_map = cast("dict[str, object]", kinds)
+        kind_counts = {
+            str(kind): int(count)
+            for kind, count in kind_map.items()
+            if isinstance(count, (int, float)) and not isinstance(count, bool)
+        }
+        if not kind_counts:
+            continue
+        total = sum(kind_counts.values())
+        entries.append((total, str(actor_name), kind_counts))
+    entries.sort(key=lambda e: (-e[0], e[1]))
+    parts: list[str] = []
+    for total, actor_name, kind_counts in entries:
+        if len(kind_counts) == 1:
+            kinds = next(iter(kind_counts))
+        else:
+            kinds = ", ".join(
+                f"{kind} {count}"
+                for kind, count in sorted(kind_counts.items(), key=lambda kv: (-kv[1], kv[0]))
+            )
+        parts.append(f"{actor_name} x{total} ({kinds})")
+    return "; ".join(parts)
+
+
 def register(router: APIRouter) -> None:
     """Attach workers overview and leader detail routes to *router*."""
 
@@ -75,11 +120,14 @@ def register(router: APIRouter) -> None:
             # Reserved-but-unclaimed capacity (rate-limit slots, in-flight
             # dispatch probes) is deliberately NOT in either number.
             if isinstance(md, dict):
-                w["max_concurrency"] = md.get("max_concurrency")
-                w["notify_enabled"] = bool(md.get("notify_enabled", False))
+                md_map = cast("dict[str, object]", md)
+                w["max_concurrency"] = md_map.get("max_concurrency")
+                w["notify_enabled"] = bool(md_map.get("notify_enabled", False))
+                w["stall_hotspots"] = format_stall_hotspots(md_map.get("loop_stalls"))
             else:
                 w["max_concurrency"] = None
                 w["notify_enabled"] = False
+                w["stall_hotspots"] = ""
         realtime_mode, mode_label = realtime_ctx
         html = tmpl.get_template("workers.html").render(
             workers=workers,
