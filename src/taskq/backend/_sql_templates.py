@@ -1421,8 +1421,8 @@ WHERE actor = ANY($1::text[])
         # safe on this path too.  An UPDATE never fires the INSERT trigger,
         # so the wake for the rows this statement makes runnable is its
         # own: one pg_notify on $6 (the wake channel), issued only when at
-        # least one row landed 'pending' — the pg-boss shape, where the
-        # notify is folded into the write and gated on the row being due.
+        # least one row landed 'pending' — the notify folded into the write
+        # and gated on the row being due.
         enqueue_batch_fast_fixup=f"""\
 WITH params AS (
     SELECT * FROM unnest(
