@@ -350,11 +350,22 @@ is marked `SameSite=None` when `secure_cookie` is on and is scoped to the
 The correlation cookie is the binding: the callback accepts an assertion only
 when its `InResponseTo` matches the request ID the signed cookie carries
 (python3-saml enforces the same comparison inside `process_response`), and the
-cookie is single-use — cleared on every callback outcome — with a 300 s TTL.
-Because it is signed with `session_secret`, **any replica sharing the secret
-can verify it**: multi-replica deployments and `uvicorn --workers N` need no
-sticky sessions, and a login whose callback lands on a different process than
-the one that issued it completes normally.
+cookie is single-use — cleared on every callback outcome, and its request ID
+recorded as answered so a re-supplied captured copy cannot buy a second
+assertion on the process that answered it — with a 300 s TTL. Because it is
+signed with `session_secret`, **any replica sharing the secret can verify
+it**: multi-replica deployments and `uvicorn --workers N` need no sticky
+sessions, and a login whose callback lands on a different process than the
+one that issued it completes normally.
+
+One caveat survives that: the consumed-assertion replay record (and the
+answered-request record) are per process. A party who captured a complete ACS
+POST — cookie plus response body — can mint one additional session per
+sibling process within the 300 s cookie window, and the records are
+capped/evictable under a flood of valid assertions. Over HTTPS that capture
+implies a compromised client, a MITM, or a TLS break, each of which already
+yields session theft directly; closing it fully needs a replay record in a
+store every replica shares, which is tracked separately.
 
 ### The cookie-less fallback (opt-in, default off)
 

@@ -34,6 +34,7 @@ _REQUEST_MAX_AGE: int = 300
 _REPLAY_CACHE_MAX_ENTRIES: int = 10_000
 _REPLAY_FALLBACK_TTL_SECONDS: int = 3600
 _PENDING_REQUEST_MAX_ENTRIES: int = 10_000
+_ANSWERED_REQUEST_MAX_ENTRIES: int = 10_000
 
 
 class SAMLAuthConfig(BaseModel):
@@ -186,10 +187,10 @@ def _clear_request_cookie(response: Response, secure: bool, path: str) -> None:
 class _ExpiringIdSet:
     """Process-local set of SAML correlation IDs, each with its own expiry.
 
-    Both SAML ID gates need the same store: a bounded set of IDs that ages out
-    on its own. Entries past their expiry are dropped on every touch — an ID
-    past its window is already refused on the assertion's own timestamps, so
-    pruning it loses nothing — and the set is capped, evicting the
+    Every SAML ID gate needs the same store: a bounded set of IDs that ages
+    out on its own. Entries past their expiry are dropped on every touch — an
+    ID past its window is already refused on the assertion's own timestamps,
+    so pruning it loses nothing — and the set is capped, evicting the
     soonest-to-expire entry, so a flood of IDs cannot grow it without bound.
 
     Process-local: a multi-process deployment runs one set per process, so a
@@ -274,9 +275,12 @@ class _PendingAuthnRequests:
     started can mint a session, so a captured or IdP-initiated response is
     still refused -- while losing the narrower binding to one browser: the
     posting browser need not be the one that started the login, which is
-    the login-CSRF tradeoff the flag's documentation states plainly. IDs
-    expire with the AuthnRequest's own lifetime and are spent on first use,
-    so the window is a single login attempt wide.
+    the login-CSRF tradeoff the flag's documentation states plainly. On that
+    fallback path the spend is a real gate: the ID is consumed by the first
+    assertion that answers it, so the window is a single login attempt wide.
+    The cookie path does not consult this set for admission -- the login may
+    have been issued by a sibling process -- so the ID's single-use property
+    there is enforced by :class:`_AnsweredAuthnRequests` instead.
     """
 
     def __init__(self) -> None:
@@ -295,11 +299,50 @@ class _PendingAuthnRequests:
     def discard(self, request_id: str) -> None:
         """Drop *request_id* without requiring that this process issued it.
 
-        The cookie-valid callback path spends the ID best-effort: the login
+        The cookie-valid callback path drops the ID best-effort: the login
         may have been issued by a sibling process, so the ID's absence here
         is not an error on that path -- the signed cookie is the binding.
+        Dropping is bookkeeping, not a gate; admission on that path and the
+        ID's single-use property are enforced elsewhere (the answered-request
+        record below).
         """
         self._issued.discard(request_id)
+
+
+class _AnsweredAuthnRequests:
+    """Record of AuthnRequest IDs an accepted assertion has already answered.
+
+    The server-side half of the AuthnRequest ID's single-use property on the
+    cookie path. The browser's half -- clearing the correlation cookie on
+    every callback outcome -- binds the honest browser; a party that
+    captured the POST holds a copy of the cookie that clearing cannot reach,
+    and on the issuing process the pending-set drop is deliberately not a
+    gate. This record refuses a second DISTINCT assertion answering the same
+    request ID -- the shape the replay cache cannot refuse, because the
+    attacker's second response carries a fresh assertion ID.
+
+    Entries live for the correlation cookie's own window (``_REQUEST_MAX_AGE``):
+    after that the cookie can no longer authenticate a presentation on the
+    cookie path, and the fallback path's pending-set spend has aged out too,
+    so an answered-ID record has nothing left to refuse.
+
+    Process-local like every store in this module, and capped/evictable like
+    every other (eviction requires a flood of *accepted* logins, since only
+    an accepted presentation writes here) -- a sibling process or an
+    eviction under flood pressure is not covered. That needs a replay
+    record in a store every replica shares, which is tracked separately as
+    a follow-up.
+    """
+
+    def __init__(self) -> None:
+        self._answered = _ExpiringIdSet(_ANSWERED_REQUEST_MAX_ENTRIES)
+
+    def already_answered(self, request_id: str, *, now: float) -> bool:
+        return self._answered.contains(request_id, now=now)
+
+    def record(self, request_id: str, *, now: float) -> None:
+        """Mark *request_id* as answered; a later presentation of it is refused."""
+        self._answered.add(request_id, now + _REQUEST_MAX_AGE, now=now)
 
 
 def create_saml_auth(config: SAMLAuthConfig, *, base_path: str = "") -> AuthBundle:
@@ -331,6 +374,7 @@ def create_saml_auth(config: SAMLAuthConfig, *, base_path: str = "") -> AuthBund
     settings_dict = _build_settings(config)
     replay_cache = _AssertionReplayCache()
     pending_requests = _PendingAuthnRequests()
+    answered_requests = _AnsweredAuthnRequests()
     router = APIRouter(tags=["sso-saml"])
 
     @router.get("/login")
@@ -376,8 +420,10 @@ def create_saml_auth(config: SAMLAuthConfig, *, base_path: str = "") -> AuthBund
             # binding: python3-saml itself compares the response's
             # InResponseTo against the cookie's request_id inside
             # process_response, and the cookie is signed with session_secret
-            # (verifiable by every replica sharing it), single-use (cleared
-            # below), and 300 s old at most. Without one, the validated
+            # (verifiable by every replica sharing it), 300 s old at most,
+            # and single-use twice over -- cleared below for the honest
+            # browser, and answered-recorded below so a re-supplied captured
+            # copy cannot buy a second assertion. Without one, the validated
             # InResponseTo is looked up in the pending set -- but only when
             # the deployment opted into that fallback, because nothing about
             # it ties the response to the browser posting it.
@@ -408,24 +454,32 @@ def create_saml_auth(config: SAMLAuthConfig, *, base_path: str = "") -> AuthBund
             if not isinstance(in_response_to, str) or not in_response_to:
                 raise ValueError("SAML response answers no AuthnRequest")
             if request_id is not None:
-                # Cookie path: the signed, single-use, 300 s cookie is the
-                # binding. The pending set is process-local, so requiring a
-                # successful spend here would reject any callback served by a
-                # sibling replica or worker process that never saw the login
-                # (#239) -- and an unauthenticated /login flood evicting the
-                # ID would break a legitimate login the same way. Discard
-                # instead of requiring: the ID is still spent in the process
-                # that issued it, and the replay cache below refuses the
-                # second presentation of the same assertion.
+                # Cookie path: the signed, 300 s cookie is the binding. The
+                # pending set is process-local, so requiring a successful
+                # spend here would reject any callback served by a sibling
+                # replica or worker process that never saw the login (#239)
+                # -- and an unauthenticated /login flood evicting the ID
+                # would break a legitimate login the same way. The ID is
+                # dropped best-effort instead, and its single-use property
+                # on this path is enforced right here by the answered-request
+                # record: a second DISTINCT assertion answering an
+                # already-answered ID -- the captured cookie re-supplied, a
+                # fresh assertion ID so the replay cache cannot refuse it --
+                # is refused server-side, not only by the browser's cookie
+                # having been cleared. The replay cache below still refuses
+                # a re-presentation of the same assertion.
                 if in_response_to != request_id:
                     raise ValueError("SAML response does not answer this browser's AuthnRequest")
+                if answered_requests.already_answered(in_response_to, now=time.time()):
+                    raise ValueError("SAML response answers an already-answered AuthnRequest")
                 pending_requests.discard(in_response_to)
             elif config.allow_cookieless_fallback:
                 # Opt-in fallback: the validated InResponseTo must name an
-                # AuthnRequest this process issued and has not spent. Nothing
-                # binds the response to the browser posting it (login CSRF,
-                # #240) -- the flag's documentation says so, and the default
-                # is off.
+                # AuthnRequest this process issued and has not spent -- the
+                # spend IS the single-use gate on this path. Nothing binds
+                # the response to the browser posting it (login CSRF, #240)
+                # -- the flag's documentation says so, and the default is
+                # off.
                 if not pending_requests.spend(in_response_to, now=time.time()):
                     raise ValueError("SAML response answers no pending AuthnRequest")
             else:
@@ -439,6 +493,15 @@ def create_saml_auth(config: SAMLAuthConfig, *, base_path: str = "") -> AuthBund
                     "(TASKQ_SAML_ALLOW_COOKIELESS_FALLBACK=true) and accept "
                     "the login-CSRF tradeoff documented in docs/guides/sso.md"
                 )
+            # Whichever gate admitted it, the AuthnRequest ID is now
+            # answered: recorded so a second distinct assertion answering it
+            # is refused even when the posting party re-supplies a captured
+            # correlation cookie (the browser's own copy is cleared below).
+            # On the fallback path the pending-set spend already refuses a
+            # second fallback presentation; the record additionally closes
+            # the cross-path replay -- fallback acceptance, then a cookie-
+            # path replay of a fresh assertion with the captured cookie.
+            answered_requests.record(in_response_to, now=time.time())
 
             # An assertion whose InResponseTo is absent (or otherwise valid but
             # captured) can be re-POSTed while its window is live; only a
@@ -491,6 +554,8 @@ def create_saml_auth(config: SAMLAuthConfig, *, base_path: str = "") -> AuthBund
             session_manager.set_session_cookie(response, identity)
             # The AuthnRequest ID is single-use: drop it whether the callback
             # succeeded or failed, so a second POST must begin a new login.
+            # That is the browser's half; the answered-request record above
+            # is the server-side half against a re-supplied captured cookie.
             _clear_request_cookie(response, config.secure_cookie, callback_path)
             return response
         except Exception:
