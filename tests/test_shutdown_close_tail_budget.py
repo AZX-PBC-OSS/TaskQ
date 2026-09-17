@@ -5,7 +5,7 @@ Regression cover for the sizing trap: the settings validator enforces only
 exit-stack unwind that runs *after* those phases is additive and was invisible.
 Against a dead Postgres/Redis the worker can therefore need materially longer
 than ``termination_grace_period``, get SIGKILLed mid-unwind, and leave terminal
-writes unlanded. The shipped default (75/30/10) covers the modelled worst case;
+writes unlanded. The shipped default (85/30/10) covers the modelled worst case;
 custom grace combinations can still fall short, which is why the shortfall is
 surfaced as a startup warning rather than a validation error (an operator may
 deliberately run a tighter budget than the dead-backend worst case).
@@ -143,3 +143,28 @@ def test_startup_warning_names_the_numbers_and_the_remedy() -> None:
     assert entry["worst_case_seconds"] == 82.0
     assert entry["close_tail_seconds"] == 42.0
     assert entry["log_level"] == "warning"
+
+
+def test_startup_warning_remedy_cross_references_the_upgrading_entry() -> None:
+    """The warning's remedy points at the upgrading entry for the default change.
+
+    The warning compares settings to settings: the platform's stop grace is
+    invisible to the worker, so a deployment that pinned
+    ``terminationGracePeriodSeconds`` (or a sibling platform grace) against
+    the old 75s default gets no warning of its own. The remedy is the one
+    surface that reaches the operator mid-incident, so it must hand them
+    the doc entry that names the raise-it-before-upgrading action.
+    """
+    from taskq.worker._bootstrap import _emit_startup_warnings
+
+    s = _settings(
+        TASKQ_TERMINATION_GRACE_PERIOD="60",
+        TASKQ_CANCELLATION_GRACE_PERIOD="30",
+        TASKQ_CLEANUP_GRACE_PERIOD="10",
+    )
+    assert s.shutdown_budget_is_sufficient is False
+    with structlog.testing.capture_logs() as logs:
+        _emit_startup_warnings(s)
+    entry = next(log for log in logs if log["event"] == "shutdown-budget-exceeds-termination-grace")
+    assert "docs/guides/upgrading.md" in entry["remedy"]
+    assert "75s" in entry["remedy"]

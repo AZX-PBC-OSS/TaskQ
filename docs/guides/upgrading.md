@@ -1352,6 +1352,56 @@ to strand jobs quietly will now stop your process from starting.
 
 ---
 
+## The default termination grace period rose from 75 seconds to 85
+
+> **Unreleased.** Action required before upgrading for any deployment that
+> set its platform's stop grace against the old 75 s number: Kubernetes
+> `terminationGracePeriodSeconds`, an Azure Container Apps or ECS stop
+> timeout, Docker Compose `stop_grace_period`, or systemd `TimeoutStopSec`.
+
+`TASKQ_TERMINATION_GRACE_PERIOD` (the worker's own SIGTERM-to-forced-exit
+budget) now defaults to 85 s, up from 75 s. Nothing rejects the old value:
+an explicitly set number keeps working, and a deployment that never set the
+variable picks the new default up on its next image roll.
+
+**Why.** Two provider-release closes joined the modelled teardown tail. The
+bounded-close unwind that runs at the end of every shutdown (see
+`taskq._close.worst_case_teardown_tail`) went from 6 sequential closes
+(~32 s) to 8 (~42 s): the credential providers a managed-identity
+deployment resolves (one Postgres, one Redis) each close once, after every
+resource built through them. At the default phase graces (30 s + 10 s) the
+modelled worst case rose from 72 s to 82 s, so the old 75 s default no
+longer covered it and the new 85 s default does.
+
+**The action.** A platform grace pinned to 75 s now sits ~10 s below what
+the worker needs, so the platform SIGKILLs the worker mid-teardown, right
+in the provider-release step that motivated the change. The kill truncates
+in-flight terminal writes, the jobs' leases expire, and the leader's
+crash-reclaim sweep re-runs the work later: the shutdown degrades to the
+crash-reclaim path instead of finishing cleanly. Before upgrading:
+
+- raise the platform grace above the worker's worst case: at the shipped
+  defaults, 85 s is the safe floor; or
+- compute it from your settings:
+  `TASKQ_CANCELLATION_GRACE_PERIOD + TASKQ_CLEANUP_GRACE_PERIOD + ~42 s`.
+  The formula and its caveats (the conditional per-slot pool, the ~87 s
+  sibling-crash path) are in
+  [deployment.md](deployment.md#health-probes)'s fail-closed grace notes;
+- and keep the platform grace at or above `TASKQ_TERMINATION_GRACE_PERIOD`
+  itself, so the worker's own watchdog, not the platform, owns the
+  shutdown deadline.
+
+Two surfaces help confirm the sizing. The worker logs
+`shutdown-budget-exceeds-termination-grace` at startup when its own
+settings fall short of the model, but that warning compares settings to
+settings: the platform's grace is invisible to the worker, so a manifest
+still pinned to 75 s produces no warning anywhere and can only be caught
+by auditing the deployment config against the formula above. The settings
+tables in [configuration.md](configuration.md#validation-constraints) and
+[workers.md](workers.md#workersettings-reference) carry the new default.
+
+---
+
 ## Unreleased features
 
 The features and notes below land with the next release. The canonical

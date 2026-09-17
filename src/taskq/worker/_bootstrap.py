@@ -962,7 +962,10 @@ def _emit_startup_warnings(settings: WorkerSettings) -> None:
                 f"{settings.worst_case_shutdown_seconds}s (Kubernetes "
                 "terminationGracePeriodSeconds, Azure Container Apps "
                 "terminationGracePeriodSeconds), or lower "
-                "TASKQ_CANCELLATION_GRACE_PERIOD / TASKQ_CLEANUP_GRACE_PERIOD."
+                "TASKQ_CANCELLATION_GRACE_PERIOD / TASKQ_CLEANUP_GRACE_PERIOD. "
+                "If this warning appeared right after an upgrade, see the "
+                "termination-grace default entry in docs/guides/upgrading.md: "
+                "a platform grace pinned to the old 75s default needs raising too."
             ),
         )
 

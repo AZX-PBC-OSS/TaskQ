@@ -102,6 +102,38 @@ def test_upgrading_guide_carries_the_interrupt_entry() -> None:
     )
 
 
+def test_upgrading_guide_carries_the_grace_default_change() -> None:
+    text = _normalized(_DOCS / "guides" / "upgrading.md")
+    assert "default termination grace period rose from 75 seconds to 85" in text, (
+        "upgrading.md must carry the TASKQ_TERMINATION_GRACE_PERIOD default "
+        "change (75s to 85s): a deployment whose platform grace was sized "
+        "against the old number SIGKILLs the worker mid-teardown after "
+        "upgrading, and the docs are the only place that names the action"
+    )
+    assert "crash-reclaim" in text, (
+        "upgrading.md must say what a short platform grace degrades to: "
+        "leases expire and the leader's crash-reclaim sweep re-runs the "
+        "work instead of the shutdown finishing cleanly"
+    )
+    assert "deployment.md" in text, (
+        "upgrading.md must point at the deployment recipes that carry the "
+        "sized platform graces and the worst-case formula"
+    )
+
+
+def test_deployment_guide_sizes_the_platform_grace_from_the_new_tail() -> None:
+    text = _normalized(_DOCS / "guides" / "deployment.md")
+    assert "8 sequential bounded closes" in text and "42s of tail" in text, (
+        "deployment.md's grace notes must carry the new teardown-tail "
+        "arithmetic (8 closes, ~42s) so a manifest sized from them fits the "
+        "shipped teardown"
+    )
+    assert "85 / 30 / 10" in text, (
+        "deployment.md must state the new default grace combination the "
+        "safe platform value is computed from"
+    )
+
+
 def test_phase_labels_in_architecture_and_cli_tables() -> None:
     architecture = _normalized(_DOCS / "architecture.md")
     cli = _normalized(_DOCS / "guides" / "cli.md")

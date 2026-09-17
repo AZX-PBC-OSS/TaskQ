@@ -18,7 +18,7 @@ TaskQ is an async-native, Postgres-backed background job library for Python 3.12
 - [ ] **Migrations** — `taskq migrate up` run before workers start (or `TASKQ_MIGRATE_ON_START=true` for the admin UI)
 - [ ] **Worker supervisor** — systemd unit, Docker container, or Kubernetes Deployment
 - [ ] **Health probes** — `taskq health live` / `taskq health ready` wired to exec probes (not `httpGet` — the worker serves on a Unix socket)
-- [ ] **Shutdown budget** — `termination_grace_period` > `cancellation_grace_period + cleanup_grace_period + 5`
+- [ ] **Shutdown budget** — `termination_grace_period` > `cancellation_grace_period + cleanup_grace_period + 5`, and the platform stop grace (Kubernetes `terminationGracePeriodSeconds`, Compose `stop_grace_period`, systemd `TimeoutStopSec`) above the worker's whole worst case, not just this setting: see the [grace warning](#health-probes)
 - [ ] **Job timeouts** — `TASKQ_DEFAULT_START_TO_CLOSE` set as a fleet safety net; every long-running actor declares its own `start_to_close`; every `kind="indefinite"` actor has a `retry.time_budget` (see [ops.md](ops.md#2-timeouts-start_to_close-and-schedule_to_close))
 - [ ] **Connection budget** — fleet connection count computed against Postgres `max_connections` including application pools (see [ops.md](ops.md#4-sizing-workers-and-postgres-connections))
 - [ ] **DLQ routing** — `on_retry_exhausted` / `ErrorReporter` target chosen; there is no built-in dead-letter queue
