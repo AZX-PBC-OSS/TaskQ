@@ -8,6 +8,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any, Final
 
 import structlog
+from pydantic import ValidationError
 
 from taskq._close import CLOSE_TIMEOUT_SECS, close_redis_bounded
 from taskq.backend._protocol import JobId, JobRow, JobStatus
@@ -68,11 +69,24 @@ def parse_progress_event(raw_str: str, *, job_id: JobId) -> ProgressEvent | None
     """
     try:
         return ProgressEvent.model_validate_json(raw_str)
+    except ValidationError as exc:
+        # The failing locations and their count, never the error's repr: a
+        # pydantic ValidationError embeds input_value, which is the message
+        # payload itself - a user's progress detail or data field - and
+        # this warning is emitted for every consumer of the channel.
+        logger.warning(
+            "stream-event-deserialise-error",
+            job_id=str(job_id),
+            error_type=type(exc).__name__,
+            error_count=exc.error_count(),
+            locations=sorted({".".join(str(part) for part in err["loc"]) for err in exc.errors()}),
+        )
+        return None
     except Exception as exc:
         logger.warning(
             "stream-event-deserialise-error",
             job_id=str(job_id),
-            error=repr(exc),
+            error_type=type(exc).__name__,
         )
         return None
 

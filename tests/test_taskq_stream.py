@@ -1214,3 +1214,35 @@ def test_orjson_response_render_routes_through_taskq_json() -> None:
     assert rendered == _stdlib_json.dumps(
         content, ensure_ascii=False, allow_nan=False, separators=(",", ":")
     ).encode("utf-8")
+
+
+# ── Deserialise errors never carry the payload ──────────────────────────
+
+
+def test_parse_progress_event_logs_locations_and_count_not_the_payload() -> None:
+    """A message that fails validation is reported by the failing field
+    locations and their count. pydantic's ValidationError repr embeds
+    input_value - the message payload, a user's own progress data - and
+    that must never reach the log."""
+    from taskq.client._transport import parse_progress_event
+
+    raw = '{"kind":"progress","seq":"SENTINEL-PAYLOAD","status":"running"}'
+    with structlog.testing.capture_logs() as logs:
+        assert parse_progress_event(raw, job_id=cast(JobId, _JOB_ID)) is None
+    entry = next(log for log in logs if log["event"] == "stream-event-deserialise-error")
+    assert entry["error_type"] == "ValidationError"
+    assert entry["error_count"] == len(entry["locations"])
+    assert "seq" in entry["locations"]
+    assert "job_id" in entry["locations"]
+    assert "SENTINEL-PAYLOAD" not in repr(entry)
+    assert "input_value" not in repr(entry)
+
+
+def test_parse_progress_event_reports_invalid_json_as_one_error() -> None:
+    from taskq.client._transport import parse_progress_event
+
+    with structlog.testing.capture_logs() as logs:
+        assert parse_progress_event("not json {", job_id=cast(JobId, _JOB_ID)) is None
+    entry = next(log for log in logs if log["event"] == "stream-event-deserialise-error")
+    assert entry["error_count"] == 1
+    assert "not json" not in repr(entry)
