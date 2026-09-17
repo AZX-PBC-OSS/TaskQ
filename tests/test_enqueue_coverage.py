@@ -591,9 +591,14 @@ async def test_enqueue_batch_fast_schedule_interval_and_result_ttl() -> None:
     count = await _enqueue_batch_fast(pool, _SQL, _SCHEMA_LABEL, [args])
 
     assert count == 2
-    # The wake is the INSERT trigger's (COPY fires it per row): no
-    # app-side pg_notify follows the fixup.
-    assert not any("pg_notify" in sql for sql in conn.execute_calls)
+    # The wake is the fixup's own: COPY lands every row 'scheduled' so the
+    # INSERT trigger stays silent, and the fixup statement carries one
+    # pg_notify gated server-side on a row it actually made runnable. These
+    # rows are future-dated, so the gate selects none of them; the statement
+    # text still binds the gate and the channel.
+    fixup_calls = [sql for sql in conn.execute_calls if "pg_notify" in sql]
+    assert len(fixup_calls) == 1
+    assert "status = 'pending'" in fixup_calls[0]
 
 
 # ── _enqueue_batch_fast: scheduled vs pending status ─────────────────────
