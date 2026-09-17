@@ -601,12 +601,12 @@ async def _maybe_open_slot_pool(
     # the role pools a shared provider also serves are still open, which
     # is why a tracked provider is skipped rather than closed here.
     provider = credential_provider_of(factory)
-    if pg_credential_provider is not None and provider is not None and not any(
-        p is provider for p in deps._credential_providers
+    if (
+        pg_credential_provider is not None
+        and provider is not None
+        and not any(p is provider for p in deps._credential_providers)
     ):
-        stack.push_async_callback(
-            close_provider_bounded, provider, "slot", CLOSE_TIMEOUT_SECS
-        )
+        stack.push_async_callback(close_provider_bounded, provider, "slot", CLOSE_TIMEOUT_SECS)
         deps._credential_providers = (*deps._credential_providers, provider)
 
     try:
