@@ -20,11 +20,10 @@ from typing import TYPE_CHECKING
 import pytest
 import pytest_asyncio
 
-from taskq.testing._shared_containers import creator_labels
 from taskq.worker._watchdog import EXIT_WATCHDOG
 
-from ._assertions import wait_for_worker_ready
-from .conftest import E2EWorker, _container_logs, _stop_container
+from ._assertions import poll_until
+from .conftest import E2EWorker, _container_logs, running_worker
 
 if TYPE_CHECKING:
     import asyncpg
@@ -60,8 +59,6 @@ async def clean_e2e_state(request: pytest.FixtureRequest) -> AsyncIterator[None]
     e2e_dragonfly = request.getfixturevalue("e2e_dragonfly")
     schema = e2e_schema.schema_name
 
-    from ._assertions import poll_until
-
     async def _no_running_jobs() -> bool:
         count = await e2e_pg_pool.fetchval(
             f'SELECT count(*) FROM "{schema}".jobs WHERE status = $1',
@@ -93,44 +90,40 @@ async def blocker_worker(
     e2e_worker_image: BuiltImage,
 ) -> AsyncIterator[E2EWorker]:
     """Dedicated worker container with a fast loop-lag watchdog."""
-    from testcontainers.core.container import DockerContainer
+    async with running_worker(
+        request,
+        network=e2e_network,
+        schema=e2e_schema,
+        pg_pool=e2e_pg_pool,
+        image=e2e_worker_image,
+        alias=f"worker-blocker-{e2e_schema.schema_name}",
+        env={
+            **e2e_schema.worker_env,
+            **_watchdog_env(),
+            "TASKQ_WATCHDOG_LOOP_LAG_STARTUP_GRACE": "2.0",
+        },
+        label="loop-blocker e2e worker",
+    ) as worker:
+        yield worker
 
-    container = DockerContainer(image=e2e_worker_image.tag)
-    container.with_kwargs(
-        labels=creator_labels()
-    )  # Ownership labels: sweepable under disabled Ryuk (see e2e_network's sweep).
-    container.with_network(e2e_network).with_network_aliases(
-        f"worker-blocker-{e2e_schema.schema_name}"
-    )
-    for key, value in e2e_schema.worker_env.items():
-        container.with_env(key, value)
-    # Fast trip: detector 4 must win before the 10s staleness floor.
-    # Re-enable the watchdog (the conftest fleet runs with it off) and size
-    # the lease to hold the fast budget: 5.0 + 0.5 < 8.0 satisfies the
-    # lag-lease invariant, and 5.0 > the 1.0s default check interval keeps
-    # the detector clear of its own sampling cadence. The warn budget rides
-    # at 1.0s so tier 1 can fire before the 5.0s terminal tier — a warn
-    # budget at or above the terminal budget silently disables tier 1 and
-    # fails the worker's settings validation.
-    container.with_env("TASKQ_WATCHDOG_ENABLED", "true")
-    container.with_env("TASKQ_LOCK_LEASE", "8.0")
-    container.with_env("TASKQ_WATCHDOG_LOOP_LAG_BUDGET", "5.0")
-    container.with_env("TASKQ_WATCHDOG_LOOP_LAG_WARN_BUDGET", "1.0")
-    container.with_env("TASKQ_WATCHDOG_LOOP_LAG_STARTUP_GRACE", "2.0")
 
-    await asyncio.to_thread(container.start)
-    try:
-        try:
-            await wait_for_worker_ready(e2e_pg_pool, e2e_schema.schema_name, timeout=30.0)
-        except TimeoutError:
-            logs = _container_logs(container)
-            msg = f"loop-blocker e2e worker failed readiness gate\n{logs}"
-            raise RuntimeError(msg) from None
-        yield E2EWorker(container=container, schema=e2e_schema.schema_name)
-    finally:
-        if request.config.option.verbose >= 2:
-            print(_container_logs(container))
-        await asyncio.to_thread(_stop_container, container)
+def _watchdog_env() -> dict[str, str]:
+    """Fast trip: detector 4 must win before the 10s staleness floor.
+    Re-enables the watchdog (the conftest fleet runs with it off) and
+    sizes the lease to hold the fast budget: 5.0 + 0.5 < 8.0 satisfies
+    the lag-lease invariant, and 5.0 > the 1.0s default check interval
+    keeps the detector clear of its own sampling cadence. The warn budget
+    rides at 1.0s so tier 1 can fire before the 5.0s terminal tier — a
+    warn budget at or above the terminal budget silently disables tier 1
+    and fails the worker's settings validation. (The blocker fixture
+    additionally tightens the startup grace; the replacement worker in
+    the recovery test keeps the default, exactly as it always has.)"""
+    return {
+        "TASKQ_WATCHDOG_ENABLED": "true",
+        "TASKQ_LOCK_LEASE": "8.0",
+        "TASKQ_WATCHDOG_LOOP_LAG_BUDGET": "5.0",
+        "TASKQ_WATCHDOG_LOOP_LAG_WARN_BUDGET": "1.0",
+    }
 
 
 async def test_sync_blocking_actor_trips_loop_lag_watchdog(
@@ -152,7 +145,6 @@ async def test_sync_blocking_actor_trips_loop_lag_watchdog(
 
     # Beat lands ~2s (grace) + lag budget 5s + poll cadence; generous bound
     # for Docker starvation.
-    from ._assertions import poll_until
 
     await poll_until(
         _exited,
@@ -172,6 +164,7 @@ async def test_sync_blocking_actor_trips_loop_lag_watchdog(
 
 
 async def test_watchdog_kill_orphan_is_reclaimed_and_fleet_recovers(
+    request: pytest.FixtureRequest,
     e2e_client: TaskQ,
     blocker_worker: E2EWorker,
     e2e_pg_pool: asyncpg.Pool,
@@ -185,9 +178,7 @@ async def test_watchdog_kill_orphan_is_reclaimed_and_fleet_recovers(
     (not left 'running' forever), and a replacement worker keeps the fleet
     functional. The poison job itself is cancelled before it can re-block
     a worker — the assertion is the reclaim, not its completion."""
-    from testcontainers.core.container import DockerContainer
-
-    from ._assertions import fetch_effects, poll_until
+    from ._assertions import fetch_effects
     from .actors import (
         LoopBlockerPayload,
         WelcomeEmailPayload,
@@ -205,9 +196,7 @@ async def test_watchdog_kill_orphan_is_reclaimed_and_fleet_recovers(
         await asyncio.to_thread(wrapped.reload)
         return str(wrapped.status) == "exited"
 
-    from ._assertions import poll_until as _poll
-
-    await _poll(
+    await poll_until(
         _exited,
         timeout=90.0,
         description="blocker worker to exit via the loop-lag watchdog",
@@ -215,15 +204,6 @@ async def test_watchdog_kill_orphan_is_reclaimed_and_fleet_recovers(
 
     # The row is orphaned 'running'; the lease (8s) expires. A replacement
     # worker's leader sweep must reclaim it within the recovery window.
-    replacement = DockerContainer(image=e2e_worker_image.tag)
-    replacement.with_kwargs(
-        labels=creator_labels()
-    )  # Ownership labels: sweepable under disabled Ryuk (see e2e_network's sweep).
-    replacement.with_network(e2e_network).with_network_aliases(
-        f"worker-repl-blocker-{e2e_schema.schema_name}"
-    )
-    for key, value in e2e_schema.worker_env.items():
-        replacement.with_env(key, value)
     # The replacement is the only live worker, and this test's tail needs
     # the fleet to self-heal: a redispatched poison job re-blocks it, and
     # without the lag watchdog that block is permanent — the reclaim flips
@@ -232,14 +212,16 @@ async def test_watchdog_kill_orphan_is_reclaimed_and_fleet_recovers(
     # as the blocker (re-enabled; the conftest fleet runs with it off), so
     # a re-blocked replacement dies, the job is re-orphaned and reclaimed
     # again, and the cycle continues until the cancel lands.
-    replacement.with_env("TASKQ_WATCHDOG_ENABLED", "true")
-    replacement.with_env("TASKQ_LOCK_LEASE", "8.0")
-    replacement.with_env("TASKQ_WATCHDOG_LOOP_LAG_BUDGET", "5.0")
-    replacement.with_env("TASKQ_WATCHDOG_LOOP_LAG_WARN_BUDGET", "1.0")
-    await asyncio.to_thread(replacement.start)
-    try:
-        await wait_for_worker_ready(e2e_pg_pool, e2e_schema.schema_name, timeout=30.0)
-
+    async with running_worker(
+        request,
+        network=e2e_network,
+        schema=e2e_schema,
+        pg_pool=e2e_pg_pool,
+        image=e2e_worker_image,
+        alias=f"worker-repl-blocker-{e2e_schema.schema_name}",
+        env={**e2e_schema.worker_env, **_watchdog_env()},
+        label="loop-blocker replacement e2e worker",
+    ):
         schema = e2e_schema.schema_name
 
         async def _reclaimed() -> bool:
@@ -269,5 +251,3 @@ async def test_watchdog_kill_orphan_is_reclaimed_and_fleet_recovers(
         assert len(effects) == 1, (
             f"replacement fleet should process new work after the trip: {effects}"
         )
-    finally:
-        await asyncio.to_thread(_stop_container, replacement)

@@ -26,7 +26,7 @@ import subprocess
 from collections.abc import AsyncGenerator, AsyncIterator, Iterator
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING, NamedTuple
+from typing import TYPE_CHECKING, NamedTuple, Protocol
 
 import pytest
 import pytest_asyncio
@@ -124,6 +124,16 @@ class E2ESchema(NamedTuple):
     host_dsn: str
     worker_env: dict[str, str]
     redis_db: int
+
+
+class WorkerSchema(Protocol):
+    """What :func:`running_worker` needs of a schema: the name its
+    readiness gate and network alias are keyed by. ``E2ESchema``
+    satisfies it, and so do the chaos modules' schema tuples, which
+    carry their own env builders instead of the fleet ``worker_env``."""
+
+    @property
+    def schema_name(self) -> str: ...
 
 
 class E2EWorker(NamedTuple):
@@ -611,21 +621,24 @@ async def running_worker(
     request: pytest.FixtureRequest,
     *,
     network: Network,
-    schema: E2ESchema,
+    schema: WorkerSchema,
     pg_pool: asyncpg.Pool,
     image: BuiltImage,
     alias: str,
-    env: dict[str, str] | None = None,
+    env: dict[str, str],
     label: str = "e2e worker",
 ) -> AsyncGenerator[E2EWorker]:
     """One worker container on the shared network, gated on a real
-    end-to-end readiness signal (fresh heartbeat row in ``{schema}.workers``),
+    end-to-end readiness signal (fresh heartbeat row in ``schema_name.workers``),
     stopped and removed on exit even when the body fails.
 
-    Every worker fixture — module-scoped, serial, or disposable per test —
-    is this one context, so the ownership labels, the readiness gate and
-    the teardown cannot drift between them. On readiness timeout the
-    container logs are dumped into the failure message.
+    Every worker fixture — module-scoped, serial, disposable, or a test's
+    in-test replacement — is this one context, so the ownership labels, the
+    readiness gate and the teardown cannot drift between them. The worker
+    env is the caller's (the fleet env plus whatever the module overrides);
+    the schema argument only needs the name the gate and alias are keyed
+    by. On readiness timeout the container logs are dumped into the failure
+    message.
     """
     from testcontainers.core.container import DockerContainer
 
@@ -637,7 +650,7 @@ async def running_worker(
     # die, instead of keeping them for the 24h backstop).
     container.with_kwargs(labels=creator_labels())
     container.with_network(network).with_network_aliases(alias)
-    for key, value in (env if env is not None else schema.worker_env).items():
+    for key, value in env.items():
         container.with_env(key, value)
 
     # Gate on THIS container's heartbeat: a sibling worker already beating
@@ -682,6 +695,7 @@ async def e2e_worker(
         pg_pool=e2e_pg_pool,
         image=e2e_worker_image,
         alias=f"worker-{e2e_schema.schema_name}",
+        env=e2e_schema.worker_env,
     ) as worker:
         yield worker
 
@@ -705,6 +719,7 @@ async def e2e_disposable_worker(
         pg_pool=e2e_pg_pool,
         image=e2e_worker_image,
         alias=f"worker-disposable-{e2e_schema.schema_name}-{new_uuid().hex[:6]}",
+        env=e2e_schema.worker_env,
         label="disposable e2e worker",
     ) as worker:
         yield worker

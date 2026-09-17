@@ -72,7 +72,7 @@ from taskq._ids import new_uuid
 from taskq.testing._shared_containers import creator_labels, skip_test_without_docker
 from tests.conftest import free_host_port
 
-from ._assertions import fetch_effects, poll_until, wait_for_effects, wait_for_worker_ready
+from ._assertions import fetch_effects, poll_until, wait_for_effects
 from .actors import LongRunningPayload, long_running_job
 from .conftest import (
     _E2E_EFFECTS_DDL,
@@ -86,13 +86,12 @@ from .conftest import (
     _flushdb,
     _next_redis_db,
     _probe_pg,
-    _stop_container,
+    running_worker,
 )
 
 if TYPE_CHECKING:
     import asyncpg
     from testcontainers.community.postgres import PostgresContainer
-    from testcontainers.core.container import DockerContainer
     from testcontainers.core.network import Network
 
     from taskq import TaskQ
@@ -316,45 +315,6 @@ def _worker_env(
     }
 
 
-async def _start_gated_worker(
-    *,
-    image_tag: str,
-    network: Network,
-    worker_env: dict[str, str],
-    alias: str,
-    pool: asyncpg.Pool,
-    schema: str,
-    label: str,
-) -> DockerContainer:
-    """Start a worker container and gate on a fresh post-register
-    heartbeat row in ``{schema}.workers`` (mirrors the conftest's
-    e2e_worker readiness gate).
-
-    On readiness timeout the container logs are dumped into the failure
-    message and the container is stopped before raising.
-    """
-    from testcontainers.core.container import DockerContainer
-
-    container = DockerContainer(image=image_tag)
-    container.with_kwargs(
-        labels=creator_labels()
-    )  # Ownership labels: sweepable under disabled Ryuk (see e2e_network's sweep).
-    container.with_network(network).with_network_aliases(alias)
-    for key, value in worker_env.items():
-        container.with_env(key, value)
-
-    await asyncio.to_thread(container.start)
-    try:
-        await wait_for_worker_ready(pool, schema, timeout=30.0)
-    except TimeoutError:
-        logs = _container_logs(container)
-        await asyncio.to_thread(_stop_container, container)
-        msg = f"{label} failed readiness gate\n{logs}"
-        raise RuntimeError(msg) from None
-    return container
-
-
-@pytest_asyncio.fixture
 async def chaos_worker(
     request: pytest.FixtureRequest,
     e2e_network: Network,
@@ -370,21 +330,17 @@ async def chaos_worker(
     heartbeat interval and TASKQ_MAX_HEARTBEAT_FAILURES=3, PG loss drives
     isolate_self in ~2 s.
     """
-    container = await _start_gated_worker(
-        image_tag=e2e_worker_image.tag,
+    async with running_worker(
+        request,
         network=e2e_network,
-        worker_env=_worker_env(chaos_pg, e2e_dragonfly, chaos_schema),
+        schema=chaos_schema,
+        pg_pool=chaos_pool,
+        image=e2e_worker_image,
         alias=f"worker-pgr-{chaos_schema.schema_name}",
-        pool=chaos_pool,
-        schema=chaos_schema.schema_name,
+        env=_worker_env(chaos_pg, e2e_dragonfly, chaos_schema),
         label="chaos e2e worker",
-    )
-    try:
-        yield E2EWorker(container=container, schema=chaos_schema.schema_name)
-    finally:
-        if request.config.option.verbose >= 2:
-            print(_container_logs(container))
-        await asyncio.to_thread(_stop_container, container)
+    ) as worker:
+        yield worker
 
 
 @pytest_asyncio.fixture
@@ -498,31 +454,26 @@ async def test_pg_restart_isolates_worker_and_recovers_on_replacement(
     )
 
     # -- Start the replacement worker ---------------------------------------
-    # Identical env to the first worker. The workers table still holds the
-    # dead worker's row, but the readiness gate requires a FRESH
-    # post-register heartbeat (within 10 s, after started_at); the first
-    # worker's last heartbeat predates the outage, so only the replacement
-    # can satisfy it.
-    replacement = await _start_gated_worker(
-        image_tag=e2e_worker_image.tag,
+    # Identical env to the first worker. The readiness gate snapshots the
+    # workers beating before the replacement starts; the first worker's
+    # last heartbeat predates the outage, so only the replacement can
+    # satisfy the gate.
+    async with running_worker(
+        request,
         network=e2e_network,
-        worker_env=_worker_env(chaos_pg, e2e_dragonfly, chaos_schema),
+        schema=chaos_schema,
+        pg_pool=chaos_pool,
+        image=e2e_worker_image,
         alias=f"worker-pgr2-{schema}",
-        pool=chaos_pool,
-        schema=schema,
+        env=_worker_env(chaos_pg, e2e_dragonfly, chaos_schema),
         label="replacement chaos e2e worker",
-    )
-    try:
+    ):
         # The replacement's leader sweep (2 s interval) reclaims the
         # expired lock, records attempt 1 as crashed, and re-pends with
         # the 5 s retry backoff; the job re-dispatches and runs its 30 s
         # actor to success. The pre-outage client pool reconnects via
         # fresh acquires now that PG is back.
         await handle.wait(timeout=_RECOVERY_TIMEOUT)
-    finally:
-        if request.config.option.verbose >= 2:
-            print(_container_logs(replacement))
-        await asyncio.to_thread(_stop_container, replacement)
 
     # -- Assertions ----------------------------------------------------------
     started = await fetch_effects(chaos_pool, schema, run_id, kind="started")

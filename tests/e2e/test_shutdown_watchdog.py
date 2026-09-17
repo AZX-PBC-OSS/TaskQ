@@ -44,7 +44,7 @@ from taskq.testing._shared_containers import creator_labels, skip_test_without_d
 from taskq.worker._watchdog import EXIT_WATCHDOG
 from tests.conftest import free_host_port
 
-from ._assertions import poll_until, wait_for_effects, wait_for_worker_ready
+from ._assertions import poll_until, wait_for_effects
 from .actors import LongRunningPayload, long_running_job
 from .conftest import (
     _E2E_EFFECTS_DDL,
@@ -58,7 +58,7 @@ from .conftest import (
     _flushdb,
     _next_redis_db,
     _probe_pg,
-    _stop_container,
+    running_worker,
 )
 
 if TYPE_CHECKING:
@@ -205,38 +205,6 @@ def _worker_env(
     }
 
 
-async def _start_gated_worker(
-    *,
-    image_tag: str,
-    network: Network,
-    worker_env: dict[str, str],
-    alias: str,
-    pool: asyncpg.Pool,
-    schema: str,
-    label: str,
-) -> DockerContainer:
-    """Start a worker container and gate on a fresh heartbeat."""
-    from testcontainers.core.container import DockerContainer
-
-    container = DockerContainer(image=image_tag)
-    container.with_kwargs(
-        labels=creator_labels()
-    )  # Ownership labels: sweepable under disabled Ryuk (see e2e_network's sweep).
-    container.with_network(network).with_network_aliases(alias)
-    for key, value in worker_env.items():
-        container.with_env(key, value)
-
-    await asyncio.to_thread(container.start)
-    try:
-        await wait_for_worker_ready(pool, schema, timeout=30.0)
-    except TimeoutError:
-        logs = _container_logs(container)
-        await asyncio.to_thread(_stop_container, container)
-        msg = f"{label} failed readiness gate\n{logs}"
-        raise RuntimeError(msg) from None
-    return container
-
-
 @pytest_asyncio.fixture
 async def chaos_worker(
     request: pytest.FixtureRequest,
@@ -248,21 +216,17 @@ async def chaos_worker(
     chaos_pool: asyncpg.Pool,
 ) -> AsyncIterator[E2EWorker]:
     """Worker container with tight watchdog timing."""
-    container = await _start_gated_worker(
-        image_tag=e2e_worker_image.tag,
+    async with running_worker(
+        request,
         network=e2e_network,
-        worker_env=_worker_env(chaos_pg, e2e_dragonfly, chaos_schema),
+        schema=chaos_schema,
+        pg_pool=chaos_pool,
+        image=e2e_worker_image,
         alias=f"worker-sdw-{chaos_schema.schema_name}",
-        pool=chaos_pool,
-        schema=chaos_schema.schema_name,
+        env=_worker_env(chaos_pg, e2e_dragonfly, chaos_schema),
         label="shutdown-watchdog e2e worker",
-    )
-    try:
-        yield E2EWorker(container=container, schema=chaos_schema.schema_name)
-    finally:
-        if request.config.option.verbose >= 2:
-            print(_container_logs(container))
-        await asyncio.to_thread(_stop_container, container)
+    ) as worker:
+        yield worker
 
 
 @pytest_asyncio.fixture
