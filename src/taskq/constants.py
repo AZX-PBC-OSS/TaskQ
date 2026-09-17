@@ -453,13 +453,14 @@ TERMINAL_WRITE_BUDGET_SECS: Final[float] = 5.0
 """Wall-clock budget for one retried pool-path terminal write.
 
 The canonical value behind ``taskq.worker._handlers._TERMINAL_WRITE_BUDGET``
-(and the retry loop's attempt backoff fitting inside it). Lives in
-``taskq.constants`` because the SETTINGS layer also reads it: the
-shutdown-release park reserves exactly this much of the termination budget
-for its own release write (see
-``WorkerSettings.release_park_lease_floor``), and the validation that
-keeps the park inside the heartbeat-kept lease must use the same number —
-importing it here is what keeps the two from drifting apart.
+(and the retry loop's attempt backoff fitting inside it). The settings
+layer reads the same number for the release park's lease cap
+(``WorkerSettings.release_park_lease_cap``: ``lock_lease`` minus
+``heartbeat_interval`` minus this budget). That cap is the protection that
+puts the parked release write ahead of the earliest lease reclaim. There
+is deliberately no cross-field rejection at settings load for that shape.
+Sharing the constant here is what keeps the cap and the retry budget from
+drifting apart.
 """
 
 WATCHDOG_METRICS_FLUSH_TIMEOUT_SECS: Final[float] = 2.0

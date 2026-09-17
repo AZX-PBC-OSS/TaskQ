@@ -647,7 +647,10 @@ plus the watchdog's exit tail — the dump-interval lag before the deadline
 trip is observed and the ~2s bounded flush before `os._exit` — when the
 actor never provably exits (the row stays unclaimable until the exiting
 process is provably gone; with `TASKQ_WATCHDOG_ENABLED=false` the hold is
-`TASKQ_LOCK_LEASE`). The claim's `attempt` increment is refunded — the
+`TASKQ_LOCK_LEASE`). The no-concurrent-run promise is two-legged: it holds
+when the watchdog is enabled, or when the platform SIGKILL lands at or
+before `TASKQ_TERMINATION_GRACE_PERIOD` plus the exit tail. The claim's
+`attempt` increment is refunded — the
 same idiom the snooze/denial arms use — so a deploy no longer spends a
 job's retry budget, and a job interrupted on every deploy is rescheduled
 until it finishes or its `schedule_to_close` fails it with

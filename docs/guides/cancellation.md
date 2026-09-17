@@ -333,6 +333,8 @@ The contract is the same one the other lifecycle hooks carry:
 
 A shutdown interruption is also not a cancel: when `ctx.cancel_origin is CancelOrigin.SHUTDOWN`, the attempt is released back to the fleet (`pending` again, budget refunded) rather than terminalised, so `on_cancel` does not fire. An operator cancel that races a deploy still wins the row — the job ends `cancelled` and the hook fires.
 
+For in-process embedders: do not stop the worker by cancelling its loop tasks directly. The tracked-exit gate (which keeps the shutdown watchdog armed until actor threads are reaped) lives in the worker's own exit path and never runs on an external cancel. Stop through the worker's shutdown event, the same path a signal takes, and the gate holds.
+
 ---
 
 ## See also
