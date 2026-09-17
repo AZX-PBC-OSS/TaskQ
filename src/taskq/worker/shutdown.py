@@ -34,7 +34,7 @@ import signal
 import sys
 from datetime import timedelta
 from enum import IntEnum
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final
 from uuid import UUID
 
 import structlog
@@ -57,7 +57,10 @@ from taskq.progress._buffer import (
     _terminal_seq_and_state,  # pyright: ignore[reportPrivateUsage]  # Why: the release write carries the coalesced buffer exactly as the consumer's own terminal writes do — one seq/state projection, not a second copy.
 )
 from taskq.worker._transient import TRANSIENT_PG_ERRORS
-from taskq.worker._watchdog import dump_task_stacks
+from taskq.worker._watchdog import (
+    _METRICS_FLUSH_TIMEOUT_SECS,  # pyright: ignore[reportPrivateUsage]  # Why: the flush bound is half of the exit tail the releasing hold must cover (see _watchdog_exit_tail); importing the one constant beats re-declaring the watchdog's own deadline.
+    dump_task_stacks,
+)
 
 if TYPE_CHECKING:
     from taskq.settings import WorkerSettings
@@ -71,6 +74,14 @@ __all__ = [
 ]
 
 _log: structlog.stdlib.BoundLogger = get_logger(__name__)
+
+_EXIT_TAIL_SLACK_SECS: Final = 1.0
+"""Unbounded-but-small share of the watchdog's post-deadline exit tail: the
+synchronous task-stack render and the critical log write ``trip()`` performs
+between the deadline check and the bounded metrics flush (see
+:func:`_watchdog_exit_tail`). Neither has a bound of its own; a second is
+generous against dozens of live tasks on a loaded loop, and the cost of
+over-padding a release hold is latency, never overlap."""
 
 
 def _orchestration_in_progress(
@@ -208,8 +219,25 @@ async def drain_local_queue_to_pending(deps: "WorkerDeps", worker_id: UUID) -> i
         return 0
 
 
+def _watchdog_exit_tail(settings: "WorkerSettings") -> float:
+    """Seconds past the termination deadline the process can still be alive.
+
+    The deadline trip is not instantaneous. ``ShutdownWatchdog`` checks the
+    deadline once per ``watchdog_dump_interval`` sleep, so a deadline that
+    passes mid-sleep is only observed up to a full interval late; ``trip()``
+    then renders every live task's stack (synchronous, on the loop thread)
+    and joins the bounded metrics flush (``_METRICS_FLUSH_TIMEOUT_SECS``)
+    before ``os._exit``. The stack render and the critical log write have
+    no bound of their own, so a fixed slack covers them. A hold that ends
+    at the bare deadline leaves exactly this window in which the row is
+    claimable while the dying process can still touch it — the overlap the
+    hold exists to prevent (#232).
+    """
+    return settings.watchdog_dump_interval + _METRICS_FLUSH_TIMEOUT_SECS + _EXIT_TAIL_SLACK_SECS
+
+
 def _release_hold(
-    deps: "WorkerDeps",
+    deps: "WorkerDeps | None",
     settings: "WorkerSettings",
     loop: asyncio.AbstractEventLoop,
 ) -> timedelta:
@@ -219,22 +247,31 @@ def _release_hold(
     must not be claimable by another pod until this process cannot touch it
     any more. The shutdown watchdog force-exits at
     ``termination_grace_period`` counted from the shutdown's start, so the
-    hold is the budget's remaining share (zero is fine: the release then
-    lands pending, and a past-budget process is already on borrowed time).
-    With ``watchdog_enabled = False`` there is no guaranteed exit, so the
-    hold is ``lock_lease`` — the bound the lease-expiry path already imposes
-    today, now without spending the attempt.
+    hold is the budget's remaining share plus the exit tail past the
+    deadline itself — the dump-interval lag before the trip is observed and
+    the bounded flush the trip performs before ``os._exit``
+    (:func:`_watchdog_exit_tail`). Zero is fine: the release then lands
+    pending, and a past-budget process is already on borrowed time the tail
+    still covers. With ``watchdog_enabled = False`` there is no guaranteed
+    exit, so the hold is ``lock_lease`` — the bound the lease-expiry path
+    already imposes today, now without spending the attempt.
+
+    *deps* may be ``None`` (the consumer's release arm on a bare direct
+    call): there is no shutdown start to anchor on, so the defensive full
+    budget applies — the same bound the watchdog enforces from the first
+    signal.
     """
     if not settings.watchdog_enabled:
         return timedelta(seconds=settings.lock_lease)
-    started_at = deps.shutdown_started_at
+    tail = _watchdog_exit_tail(settings)
+    started_at = deps.shutdown_started_at if deps is not None else None
     if started_at is None:
         # Unreachable through orchestrate_shutdown (DRAINING stamps it
         # first); the defensive shape is the full budget, the same bound
         # the watchdog enforces from the first signal.
-        return timedelta(seconds=settings.termination_grace_period)
+        return timedelta(seconds=settings.termination_grace_period + tail)
     remaining = settings.termination_grace_period - (loop.time() - started_at)
-    return timedelta(seconds=max(0.0, remaining))
+    return timedelta(seconds=max(0.0, remaining) + tail)
 
 
 def _cancel_origin_counts(deps: "WorkerDeps") -> dict[str, int]:
@@ -383,11 +420,13 @@ async def orchestrate_shutdown(
         # both cancels. The shutdown owes it a release, not a verdict:
         # mark_interrupted hands the row back to the fleet with the claim's
         # attempt increment refunded, HELD behind the rest of this
-        # process's termination budget so no other pod can claim the row
-        # while this one might still touch it. The release is ordered
-        # before the process dies, never after, and the hold closes the
-        # overlap where the row is claimable while the dying process could
-        # still touch it.
+        # process's termination budget — plus the watchdog's exit tail
+        # past the deadline itself (the dump-interval lag before the trip
+        # is observed and the bounded flush before os._exit) — so no other
+        # pod can claim the row while this one might still touch it. The
+        # release is ordered before the process dies, never after, and the
+        # hold closes the overlap where the row is claimable while the
+        # dying process could still touch it.
         deps.shutdown_phase = ShutdownPhase.RELEASING
         hold = _release_hold(deps, settings, loop)
         _log.info(
