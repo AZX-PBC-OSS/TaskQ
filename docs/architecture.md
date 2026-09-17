@@ -1218,6 +1218,21 @@ degrades to `lock_lease` — the bound the lease-expiry path already imposes —
 and the platform grace must supply the ceiling the watchdog would have (see
 the platform-grace window in docs/guides/workers.md).
 
+#### Deliberate divergence from the queue ancestors
+
+No peer ships this contract. Celery requeues a job whose worker died mid-run
+(`worker/request.py`: an unacked message returns on `worker-lost`, by design —
+the at-least-once overlap is accepted), and River rescues stuck rows purely by
+a visibility timeout racing the attempt. TaskQ deliberately diverges: an
+interruption *releases with a hold sized to the releaser's own enforced exit*
+rather than accepting the overlap, at the cost of one exit-window of latency
+for an actor that outlives its budget. The other half of the design — the
+heartbeat continuing through the drain so a slow-but-alive worker's leases are
+not reclaimed out from under it — aligns with dramatiq's worker shutdown
+(`worker.py`: the broker drain waits for in-flight messages) and Celery 5.6+'s
+documented warm-shutdown waiting for active tasks
+(`docs/userguide/workers.rst`).
+
 The `ShutdownWatchdog` (detector 1) runs concurrently outside the TaskGroup
 and enforces `termination_grace_period` as a hard wall — see
 [Watchdog Subsystem](#watchdog-subsystem).
