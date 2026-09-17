@@ -27,20 +27,22 @@ def _settings(**overrides: object) -> WorkerSettings:
     return WorkerSettings.load_from_dict(dict(overrides), validate=False)  # type: ignore[arg-type]  # Why: load_from_dict takes a str-keyed mapping of raw values; overrides are typed loosely for test brevity.
 
 
-def test_teardown_tail_counts_six_sequential_closes_plus_publish_drain() -> None:
-    """6 sequential bounded closes + the publish drain.
+def test_teardown_tail_counts_eight_sequential_closes_plus_publish_drain() -> None:
+    """8 sequential bounded closes + the publish drain.
 
-    Six: the three role pools plus the conditional per-slot transaction
-    pool (the worst case a worker can present), plus notify_conn and
-    redis_client. Not seven: the leader connection is closed and nulled
-    by orchestrate_shutdown concurrently with the unwind, so the exit
-    stack's own leader guard skips it. Counting it would overstate the
-    tail.
+    Eight: the three role pools plus the conditional per-slot transaction
+    pool (the worst case a worker can present), plus notify_conn,
+    redis_client, and the two credential providers a provider-backed
+    deployment resolves (pg and redis — each closed once, after every
+    resource built through it). Not nine: the leader connection is closed
+    and nulled by orchestrate_shutdown concurrently with the unwind, so
+    the exit stack's own leader guard skips it. Counting it would
+    overstate the tail.
     """
-    assert worst_case_teardown_tail() == 6 * CLOSE_TIMEOUT_SECS + PUBLISH_DRAIN_TIMEOUT_SECS
-    assert worst_case_teardown_tail() == 32.0
+    assert worst_case_teardown_tail() == 8 * CLOSE_TIMEOUT_SECS + PUBLISH_DRAIN_TIMEOUT_SECS
+    assert worst_case_teardown_tail() == 42.0
     # Scales with the per-resource bound rather than hard-coding it.
-    assert worst_case_teardown_tail(close_timeout=1.0) == 6 * 1.0 + PUBLISH_DRAIN_TIMEOUT_SECS
+    assert worst_case_teardown_tail(close_timeout=1.0) == 8 * 1.0 + PUBLISH_DRAIN_TIMEOUT_SECS
 
 
 def test_worst_case_shutdown_is_phases_plus_tail() -> None:
@@ -56,8 +58,9 @@ def test_taskq_defaults_cover_the_modelled_worst_case() -> None:
     raised its own ``shutdown-budget-exceeds-termination-grace`` boot
     warning, which made the warning pure noise (a downstream redteam
     finding). The tail counts the conditional per-slot pool's close
-    (32s), putting the modelled worst case at 72s; 75 keeps 3s of
-    headroom over it. The ~77s sibling-crash path (seven sequential
+    and the two credential-provider closes (42s), putting the modelled
+    worst case at 82s; 85 keeps 3s of
+    headroom over it. The ~87s sibling-crash path (nine sequential
     closes) still exceeds the default by 2s on per-slot workers — that
     path is the documented caveat the model deliberately understates;
     operators running the per-slot path with tight crash budgets should
@@ -65,14 +68,14 @@ def test_taskq_defaults_cover_the_modelled_worst_case() -> None:
     """
     s = _settings()
     assert (s.termination_grace_period, s.cancellation_grace_period, s.cleanup_grace_period) == (
-        75.0,
+        85.0,
         30.0,
         10.0,
     )
     # Still passes the documented validator invariant...
     assert s.cancellation_grace_period + s.cleanup_grace_period < s.termination_grace_period - 5.0
     # ...and now covers the real worst case instead of falling short of it.
-    assert s.worst_case_shutdown_seconds == 72.0
+    assert s.worst_case_shutdown_seconds == 82.0
     assert s.shutdown_budget_is_sufficient is True
 
 
@@ -82,11 +85,11 @@ def test_sufficient_budget_is_recognised() -> None:
         TASKQ_CANCELLATION_GRACE_PERIOD="30",
         TASKQ_CLEANUP_GRACE_PERIOD="10",
     )
-    # The pre-fix default: valid, and short of the 72s modelled worst case.
+    # The pre-fix default: valid, and short of the 82s modelled worst case.
     assert s.shutdown_budget_is_sufficient is False
 
     lowered = _settings(TASKQ_CANCELLATION_GRACE_PERIOD="20", TASKQ_CLEANUP_GRACE_PERIOD="5")
-    assert lowered.worst_case_shutdown_seconds == 57.0
+    assert lowered.worst_case_shutdown_seconds == 67.0
     assert lowered.shutdown_budget_is_sufficient is True
 
 
@@ -137,6 +140,6 @@ def test_startup_warning_names_the_numbers_and_the_remedy() -> None:
             close_tail_seconds=worst_case_teardown_tail(),
         )
     entry = next(log for log in logs if log["event"] == "shutdown-budget-exceeds-termination-grace")
-    assert entry["worst_case_seconds"] == 72.0
-    assert entry["close_tail_seconds"] == 32.0
+    assert entry["worst_case_seconds"] == 82.0
+    assert entry["close_tail_seconds"] == 42.0
     assert entry["log_level"] == "warning"

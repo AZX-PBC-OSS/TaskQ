@@ -26,7 +26,12 @@ from typing import Any, cast
 import asyncpg
 import structlog
 
-from taskq._close import CLOSE_TIMEOUT_SECS, close_pool_bounded, worst_case_teardown_tail
+from taskq._close import (
+    CLOSE_TIMEOUT_SECS,
+    close_pool_bounded,
+    close_provider_bounded,
+    worst_case_teardown_tail,
+)
 from taskq._di import ProviderRegistry, Scope
 from taskq._di.scopes import LoopScope, ProcessScope, ThreadScope, make_resolver
 from taskq._dsn import dsn_host as _dsn_host
@@ -36,6 +41,7 @@ from taskq.actor_config_ops import list_actor_configs
 from taskq.auth import (
     PgCredentialProvider,
     ReloadSchedule,
+    credential_provider_of,
     make_pg_pool_factory,
     reload_schedule_of,
 )
@@ -586,6 +592,22 @@ async def _maybe_open_slot_pool(
         factory = _slot_pool_factory(
             settings, pg_credential_provider, session_state, init=inherited_init
         )
+
+    # The slot pool's provider, when it is NOT already tracked on deps (it
+    # usually is: the documented worker path builds every role through the
+    # same provider, which open_worker_deps closes after the role pools).
+    # Pushed BEFORE the pool's teardown guard so LIFO unwinds the slot
+    # pool first and the credential that built it second — and never while
+    # the role pools a shared provider also serves are still open, which
+    # is why a tracked provider is skipped rather than closed here.
+    provider = credential_provider_of(factory)
+    if pg_credential_provider is not None and provider is not None and not any(
+        p is provider for p in deps._credential_providers
+    ):
+        stack.push_async_callback(
+            close_provider_bounded, provider, "slot", CLOSE_TIMEOUT_SECS
+        )
+        deps._credential_providers = (*deps._credential_providers, provider)
 
     try:
         pool = await asyncio.wait_for(factory(), timeout=settings.reload_factory_timeout)

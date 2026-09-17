@@ -910,7 +910,7 @@ All variables use the `TASKQ_` prefix. `WorkerSettings` extends `TaskQSettings`;
 | `TASKQ_HEARTBEAT_INTERVAL` | `float` | `10.0` | Seconds between heartbeat ticks |
 | `TASKQ_LOCK_LEASE` | `float` | `60.0` | Seconds before a lock is reclaimed; must be `>= 4 * heartbeat_interval` |
 | `TASKQ_MAX_HEARTBEAT_FAILURES` | `int` | `3` | Consecutive heartbeat failures before `isolate_self` |
-| `TASKQ_TERMINATION_GRACE_PERIOD` | `float` | `75.0` | Total seconds from SIGTERM to forced exit; sized to cover the default shutdown worst case (72s) |
+| `TASKQ_TERMINATION_GRACE_PERIOD` | `float` | `85.0` | Total seconds from SIGTERM to forced exit; sized to cover the default shutdown worst case (82s) |
 | `TASKQ_CANCELLATION_GRACE_PERIOD` | `float` | `30.0` | Seconds for cooperative cancel phase |
 | `TASKQ_CLEANUP_GRACE_PERIOD` | `float` | `10.0` | Seconds for force-cancel cleanup phase |
 | `TASKQ_MAX_RETRY_BACKOFF` | `timedelta` | `PT24H` | Global ceiling on per-attempt retry backoff |

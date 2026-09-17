@@ -98,6 +98,7 @@ __all__ = [
     "RedisCredentialProvider",
     "ReloadSchedule",
     "build_worker_connections",
+    "credential_provider_of",
     "enrich_pg_dsn",
     "ensure_sslmode_require",
     "make_dedicated_conn_factory",
@@ -368,6 +369,8 @@ secret stores apply to their own renewals."""
 
 _RELOAD_SCHEDULE_ATTR: Final[str] = "taskq_reload_schedule"
 
+_PROVIDER_ATTR: Final[str] = "taskq_credential_provider"
+
 
 @dataclass(slots=True, eq=False)
 class ReloadSchedule:
@@ -472,8 +475,37 @@ def reload_schedule_of(factory: object) -> ReloadSchedule | None:
     return schedule if isinstance(schedule, ReloadSchedule) else None
 
 
+def credential_provider_of(
+    factory: object,
+) -> PgCredentialProvider | RedisCredentialProvider | None:
+    """The credential provider a pool / connection / Redis factory was built
+    over, or ``None`` for a factory built some other way.
+
+    Every factory :func:`make_pg_pool_factory`, :func:`make_dedicated_conn_factory`
+    and :func:`make_redis_client_factory` return declares the provider it
+    fetches credentials from. A consumer that owns the factory's resources
+    (``open_worker_deps``) reads it here to release the provider at teardown
+    once every pool and client built through it is closed - the provider's
+    own resources (the Entra ID providers' lazily created credential session)
+    must outlive the connections that authenticate with it. ``None`` for a
+    factory built some other way: such a factory declares no provider, and
+    its consumer has nothing to release.
+    """
+    provider = getattr(factory, _PROVIDER_ATTR, None)
+    if provider is None or isinstance(provider, (PgCredentialProvider, RedisCredentialProvider)):
+        return provider
+    return None
+
+
 def _declare_reload_schedule[F: Callable[..., Any]](factory: F, schedule: ReloadSchedule) -> F:
     setattr(factory, _RELOAD_SCHEDULE_ATTR, schedule)
+    return factory
+
+
+def _declare_provider[F: Callable[..., Any]](factory: F, provider: object) -> F:
+    """Stamp *provider* on *factory* so the owner of the factory's consumer
+    can release the provider at teardown (see :func:`credential_provider_of`)."""
+    setattr(factory, _PROVIDER_ATTR, provider)
     return factory
 
 
@@ -706,7 +738,7 @@ def make_pg_pool_factory(
         assert pool is not None  # asyncpg returns None only for record_class paths
         return pool
 
-    return _declare_reload_schedule(factory, schedule)
+    return _declare_provider(_declare_reload_schedule(factory, schedule), provider)
 
 
 def make_dedicated_conn_factory(
@@ -808,7 +840,7 @@ def make_dedicated_conn_factory(
         # lifecycle position as a pool's init - so it is declared as the
         # inheritable init hook verbatim.
         setattr(factory, _CONNECTION_INIT_HOOK_ATTR, setup)
-    return _declare_reload_schedule(factory, schedule)
+    return _declare_provider(_declare_reload_schedule(factory, schedule), provider)
 
 
 def make_redis_client_factory(
@@ -876,7 +908,7 @@ def make_redis_client_factory(
             **client_kwargs,
         )
 
-    return factory
+    return _declare_provider(factory, provider)
 
 
 # --- Whole-worker wiring ---

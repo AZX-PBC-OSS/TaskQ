@@ -1190,16 +1190,16 @@ class WorkerSettings(TaskQSettings):
 
     # ── Cancellation and cleanup grace periods ───────────
     termination_grace_period: float = Field(
-        default=75.0,
+        default=85.0,
         ge=5.0,
         description="TASKQ_TERMINATION_GRACE_PERIOD (seconds). Total wall-clock "
         "budget from SIGTERM to forced exit; the shutdown watchdog counts "
         "it down from the first shutdown signal. Must satisfy "
         "cancellation_grace + cleanup_grace < termination_grace - 5, and "
         "should cover the modelled worst case cancellation_grace + "
-        "cleanup_grace + the ~32s bounded-close teardown tail (see "
+        "cleanup_grace + the ~42s bounded-close teardown tail (see "
         "WorkerSettings.worst_case_shutdown_seconds) — the default does: "
-        "30 + 10 + 32 = 72s. The ~77s sibling-crash path (seven closes, "
+        "30 + 10 + 42 = 82s. The ~87s sibling-crash path (nine closes, "
         "including the conditional per-slot pool) exceeds the default by "
         "2s on per-slot workers — that path is the documented caveat the "
         "model understates; raise this setting when per-slot workers need "

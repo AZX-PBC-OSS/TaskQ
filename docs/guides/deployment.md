@@ -480,11 +480,12 @@ Add a `PodDisruptionBudget` (`minAvailable: 1`, selector matching `app: taskq-wo
     the shipped default does cover it, but a custom value below the worst case
     only warns at startup. Against a dead or hung
     Postgres/Redis — an Azure Cache failover, or a token expiry dropping every
-    connection, i.e. exactly when you are being SIGTERMed — each of the 6
+    connection, i.e. exactly when you are being SIGTERMed — each of the 8
     sequential bounded closes (four pools: dispatcher, heartbeat, worker, and
-    the conditional per-slot transaction pool; plus `notify_conn` and the
-    Redis client) can take `CLOSE_TIMEOUT_SECS` (5s), plus a 2s
-    progress-publish drain: **32s of tail**.
+    the conditional per-slot transaction pool; plus `notify_conn`, the
+    Redis client, and the two credential-provider closes a managed-identity
+    deployment resolves) can take `CLOSE_TIMEOUT_SECS` (5s), plus a 2s
+    progress-publish drain: **42s of tail**.
 
     Size the pod grace from the whole budget:
 
@@ -492,13 +493,13 @@ Add a `PodDisruptionBudget` (`minAvailable: 1`, selector matching `app: taskq-wo
     terminationGracePeriodSeconds
         >= TASKQ_CANCELLATION_GRACE_PERIOD
          + TASKQ_CLEANUP_GRACE_PERIOD
-         + 32      # 6 bounded closes x 5s + 2s publish drain
+         + 42      # 8 bounded closes x 5s + 2s publish drain
     ```
 
-    At TaskQ's defaults (75 / 30 / 10) the modelled worst case is **72s**, so
-    `terminationGracePeriodSeconds: 80` is a safe value at defaults — not the
+    At TaskQ's defaults (85 / 30 / 10) the modelled worst case is **82s**, so
+    `terminationGracePeriodSeconds: 90` is a safe value at defaults — not the
     `60`-ish the old advice implied. (The default grace covers the model with
-    3s to spare — but the ~77s sibling-crash path, seven sequential closes
+    3s to spare — but the ~87s sibling-crash path, nine sequential closes
     where the orchestrated leader-conn close never ran, including the
     conditional per-slot pool, now exceeds the default by 2s on per-slot
     workers. Deployments running the per-slot path with tight crash budgets
@@ -570,7 +571,7 @@ The admin UI service follows the same pattern with `command: ["taskq", "ui", "se
 !!! warning "stop_grace_period must exceed termination_grace_period"
     Docker's `stop_grace_period` (default 10s) controls how long Compose waits
     between SIGTERM and SIGKILL. Set it above `TASKQ_TERMINATION_GRACE_PERIOD`
-    **plus the ~32s bounded-close tail** (see the terminationGracePeriodSeconds
+    **plus the ~42s bounded-close tail** (see the terminationGracePeriodSeconds
     warning above)
     so the worker can complete its shutdown sequence.
 
