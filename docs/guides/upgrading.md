@@ -667,6 +667,44 @@ is never waited on; it is removed entirely in the release after every
 pod in your fleet runs this one. Size `TASKQ_LEADER_LEASE` at four or
 more heartbeat intervals (the default, 40 s, already is).
 
+### The SAML cookie-less ACS fallback is opt-in and defaults off
+
+> **Unreleased.** Breaking for SAML deployments whose users complete login
+> with the correlation cookie withheld by the browser.
+
+The SAML ACS callback previously accepted a response with no usable
+`taskq_saml_request` correlation cookie whenever its validated
+`InResponseTo` named a pending AuthnRequest the process had issued — the
+#180 fallback for browsers that block the cross-site cookie. Two problems
+came with it: nothing tied that response to the browser posting it, so an
+attacker who starts a login and captures the signed response for their own
+account could plant it on a cookie-less victim (login CSRF, #240); and the
+same process-local pending-set requirement rejected every SAML login whose
+callback landed on a different admin replica or `uvicorn --workers N`
+process than the one that issued it (#239).
+
+One policy fixes both: **the signed correlation cookie is the binding** —
+verifiable by every replica sharing `session_secret`, so cross-replica
+callbacks now succeed with no sticky sessions — and the cookie-less
+fallback moved behind `TASKQ_SAML_ALLOW_COOKIELESS_FALLBACK`, **default
+`false`**. What to do on upgrade:
+
+- **Default deployments (flag unset):** cookie-less callbacks are now
+  refused with the standard login error. A user who hits it should retry
+  from the same browser, which re-issues a fresh correlation cookie. If it
+  recurs for users on third-party-cookie-blocking browsers, decide whether
+  to opt in.
+- **Deployments that must serve cookie-blocking browsers:** set
+  `TASKQ_SAML_ALLOW_COOKIELESS_FALLBACK=true` and accept the login-CSRF
+  tradeoff — it is stated plainly in
+  [sso.md](sso.md#the-cookie-less-fallback-opt-in-default-off). With the
+  flag on, put the SSO routes behind sticky sessions: the fallback's
+  pending-request record is per process, so a cookie-less callback must
+  land on the process that issued the login.
+- Sticky sessions are **no longer required** for the default (cookie)
+  path; multi-replica and `uvicorn --workers N` deployments can drop them
+  for SAML logins.
+
 ---
 
 ## Silent behaviour changes
