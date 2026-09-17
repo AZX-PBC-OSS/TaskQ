@@ -56,7 +56,16 @@ from taskq.obs._redact_exc import add_exception_event, render_exception
 
 INSTRUMENTATION_NAME: str = "taskq"
 
-type ConsumedOutcome = Literal["succeeded", "failed", "cancelled", "abandoned"]
+type ConsumedOutcome = Literal["succeeded", "failed", "cancelled", "scheduled"]
+"""The ``outcome`` label set of ``messaging.client.consumed.messages``.
+
+Every value has a producer: the three terminal outcomes, and ``scheduled``
+for an attempt that ended with the row released back to the queue — a
+retryable failure, a ``Snooze`` / ``RetryAfter``, or an admission denial.
+``taskq.jobs.attempt_failures`` separates the failure share of
+``scheduled``; ``taskq.jobs.abandoned`` counts real abandonment, which is
+an operator cancel outlasting its graces and never a consumer outcome.
+"""
 
 __all__ = [
     "INSTRUMENTATION_NAME",
@@ -66,6 +75,7 @@ __all__ = [
     "otel_enabled",
     "reconcile_cron_failures",
     "record_archived_jobs",
+    "record_attempt_failure",
     "record_backpressure_error",
     "record_cancel_requested",
     "record_consumed_message",
@@ -76,6 +86,7 @@ __all__ = [
     "record_error_reporter_failure",
     "record_expired_archive_jobs",
     "record_heartbeat_miss",
+    "record_job_abandoned",
     "record_leader_lease_expires_in_seconds",
     "record_lock_expires_in_seconds",
     "record_process_duration",
@@ -590,16 +601,74 @@ def record_consumed_message(actor: str, queue: str, *, outcome: ConsumedOutcome)
     to ensure sampling independence.
     Respects ``_otel_enabled`` — no-op when False.
 
-    ``outcome`` is constrained to the semconv-specified valid set
-    ``{succeeded, failed, cancelled, abandoned}``.
-    The consumer-path ``AttemptOutcome`` includes ``"scheduled"`` for
-    snooze/retry/reservation-denial; callers must map that to
-    ``"abandoned"`` before calling (the consumer released the job back
-    to the queue without completing it).
+    ``outcome`` is the closed :data:`ConsumedOutcome` set. A consumer-path
+    ``AttemptOutcome`` of ``"scheduled"`` (retry, snooze, admission denial)
+    is recorded as exactly that — the row went back to the queue — never
+    as ``abandoned``, which is the operator-cancel outcome and has its own
+    counter (:func:`record_job_abandoned`). A ``"noop"`` attempt consumed
+    nothing and must not reach this recorder.
     """
     if not _otel_enabled:
         return
     _consumed_messages.add(1, {"actor": actor, "queue": _bounded_queue(queue), "outcome": outcome})
+
+
+def record_attempt_failure(actor: str, error_type: str | None = None, *, retryable: bool) -> None:
+    """Count one attempt that ended in an actor failure, retried or terminal.
+
+    Called from the failure handlers (``worker/_handlers.py``) once per
+    handled exception, after the retry decision and before the terminal
+    write: an attempt that raised failed whether or not the row write that
+    follows lands, and the consumed-messages ``outcome`` says what happened
+    to the row. ``retryable`` is the classifier's decision — ``true`` when
+    the attempt is rescheduled for another try, ``false`` when the failure
+    is terminal (a non-retryable class, or the attempt budget exhausted) —
+    which is what a retry-rate alert reads. ``error_type`` is the exception
+    class name; omitted, it derives from the exception being handled
+    (``_resolve_error_type``): a closed set, never caller text.
+    Respects ``_otel_enabled`` — no-op when False.
+    """
+    if not _otel_enabled:
+        return
+    _lazy_counter(
+        "taskq.jobs.attempt_failures",
+        description=(
+            "Attempts that ended in an actor failure. Attributes: actor, "
+            "error_type (exception class name — a closed set; see "
+            "_resolve_error_type), retryable ('true' when the attempt is "
+            "rescheduled for another try, 'false' when the failure is "
+            "terminal). The failure share of consumed outcome='scheduled'."
+        ),
+    ).add(
+        1,
+        {
+            "actor": actor,
+            "error_type": _resolve_error_type(error_type),
+            "retryable": "true" if retryable else "false",
+        },
+    )
+
+
+def record_job_abandoned(actor: str) -> None:
+    """Count one job abandoned by an operator cancel that outlasted its graces.
+
+    Called from ``mark_abandoned`` on both backends once the abandon write
+    applied: the actor was asked to stop, then forced, and never exited, so
+    the row is taken from it. Shutdowns never produce this — a deploy
+    interrupts running attempts back to the fleet instead — which is why
+    any non-zero rate is worth a page. Attributes: actor.
+    Respects ``_otel_enabled`` — no-op when False.
+    """
+    if not _otel_enabled:
+        return
+    _lazy_counter(
+        "taskq.jobs.abandoned",
+        description=(
+            "Jobs abandoned: an operator cancel outlasted the cooperative and "
+            "forced grace periods and the running attempt was taken away. "
+            "Never produced by a shutdown (those interrupt). Attributes: actor."
+        ),
+    ).add(1, {"actor": actor})
 
 
 _process_duration = get_meter().create_histogram(

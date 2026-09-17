@@ -102,22 +102,21 @@ class SlotPoolAcquireError(Exception):
 _SLOT_CONN_INIT_APPLIED_ATTR: Final[str] = "taskq_slot_conn_init_applied"
 
 
-def _to_consumed_outcome(attempt_outcome: str) -> ConsumedOutcome:
-    """Map an AttemptOutcome to the semconv-valid ConsumedOutcome label set.
+def _to_consumed_outcome(attempt_outcome: AttemptOutcome) -> ConsumedOutcome:
+    """Map an AttemptOutcome onto the consumed-messages ``outcome`` label.
 
-    ``AttemptOutcome`` includes ``"scheduled"`` for snooze/retry/reservation-denial
-    and ``"noop"`` for a terminal write that matched nothing (the job moved
-    underneath this worker), neither of which is in the instrument 2 valid set
-    ``{succeeded, failed, cancelled, abandoned}``.  ``"noop`` outcomes never
-    reach the consumed-message recorder — ``dispatch_one_job``'s finally
-    block skips both job-outcome metrics for them (nothing was consumed;
-    the re-dispatch records the real message and duration) — so this
-    mapping exists for ``"scheduled"`` and as a defensive total map should
-    any other caller pass a noop through.
+    The two sets differ by one value: ``"noop"``, a terminal write that
+    matched nothing because the job moved underneath this worker. A noop
+    consumed nothing — the re-dispatch records the real message and
+    duration — so ``dispatch_one_job``'s finally block skips both
+    job-outcome metrics for it, and a noop reaching this map is a caller
+    defect, refused rather than relabelled. Every other value, ``scheduled``
+    included, is recorded as itself: a snooze or retry released the row
+    back to the queue, which is not abandonment.
     """
-    if attempt_outcome in ("scheduled", "noop"):
-        return "abandoned"
-    return attempt_outcome  # type: ignore[return-value]  # Why: AttemptOutcome is Literal["succeeded","failed","cancelled","scheduled","noop"]; after the released-back-to-queue branch the remaining values are exactly the ConsumedOutcome union but pyright cannot narrow across the return-site coercion
+    if attempt_outcome == "noop":
+        raise ValueError("a noop attempt consumed nothing and has no consumed-message outcome")
+    return attempt_outcome
 
 
 def _effective_reservations(
