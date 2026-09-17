@@ -1964,7 +1964,7 @@ def test_saml_allow_cookieless_fallback_malformed_fails_loud() -> None:
 
     The flag trades browser binding for cookie-blocked-browser support, so a
     silent default would hand the operator the opposite policy from the one
-    they believe they set. dotenvmodel raises TypeCoercionError — the same
+    they believe they set. dotenvmodel raises TypeCoercionError, the same
     fail-loud coercion every other bool setting gets.
     """
     with pytest.raises(TypeCoercionError):

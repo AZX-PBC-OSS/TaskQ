@@ -1169,7 +1169,7 @@ def _captured_saml_config(monkeypatch: pytest.MonkeyPatch, env: dict[str, str]) 
     """Run _build_sso_bundle against spied create_saml_auth; return the config it built.
 
     The spy replaces the backend factory, so no onelogin/libxmlsec1 install
-    is needed to pin what the CLI layer threads INTO it — the pass-through
+    is needed to pin what the CLI layer threads INTO it: the pass-through
     is the behavior under test, not the bundle it produces.
     """
     import taskq.cli as cli_mod
@@ -1199,8 +1199,8 @@ def test_ui_serve_saml_bundle_passes_the_cookieless_fallback_flag_through(
 ) -> None:
     """TASKQ_SAML_ALLOW_COOKIELESS_FALLBACK=true reaches SAMLAuthConfig.
 
-    A dropped pass-through fails *silently off* — the config carries its own
-    default — so nothing ever errors; the flag just becomes a no-op and the
+    A dropped pass-through fails *silently off* (the config carries its own
+    default), so nothing ever errors; the flag just becomes a no-op and the
     operator's cookie-blocked-browser support quietly disappears. Same
     hazard class as the session_max_age_seconds pass-through pinned below,
     which cli.py's own comment warns about.
@@ -1221,7 +1221,7 @@ def test_ui_serve_saml_bundle_passes_the_cookieless_fallback_flag_through(
     )
     # The older pass-through of the same hazard class, pinned while here:
     assert config.session_max_age_seconds == 1234, (
-        "TASKQ_SAML_SESSION_MAX_AGE_SECONDS must reach the runtime config — "
+        "TASKQ_SAML_SESSION_MAX_AGE_SECONDS must reach the runtime config; "
         "SAMLAuthConfig's own 28800 default would silently mask a miss"
     )
 

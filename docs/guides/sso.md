@@ -386,11 +386,11 @@ full signature and timestamp validation, its `InResponseTo` names an
 AuthnRequest the receiving process issued in the last 5 minutes and has not
 yet spent.
 
-**The tradeoff, stated plainly:** nothing ties that response to the browser
-posting it. An attacker who starts a login, authenticates at the IdP as
+**The tradeoff, stated directly:** nothing ties that response to the browser
+posting it. A party who starts a login, authenticates at the IdP as
 themselves, and captures the signed response without posting it to the ACS
 can have a cookie-less victim's browser POST it within the 5-minute window;
-the victim receives a session cookie for the attacker's NameID. The replay
+the victim receives a session cookie for that party's NameID. The replay
 cache only blocks the *second* presentation of the same assertion. If your
 threat model cannot carry that, leave the flag off.
 
