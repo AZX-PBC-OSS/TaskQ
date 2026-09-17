@@ -71,6 +71,22 @@ if TYPE_CHECKING:
 
 logger: structlog.stdlib.BoundLogger = get_logger(__name__)
 
+
+def _redis_client_type() -> "type[redis_async.Redis] | None":
+    """The LOOP-scope key a registered Redis client is cached under, or
+    ``None`` when the redis extra is not installed — resolved once at
+    import, the same shape as the consumer's dependency-exception family,
+    so no dispatch pays an import (or, without the extra, an ImportError
+    raise and a finder walk) per job."""
+    try:
+        import redis.asyncio as _redis_mod
+    except ImportError:
+        return None
+    return _redis_mod.Redis
+
+
+_REDIS_CLIENT_TYPE: Final["type[redis_async.Redis] | None"] = _redis_client_type()
+
 # Why the shared pool-infra family (defined in taskq.worker.deps, the
 # module that owns the pools): the acquire below runs no queries, so any
 # member raised there is connect-time infrastructure, never a job
@@ -609,14 +625,10 @@ async def dispatch_one_job(
                             rl_registry = raw_rl
 
                         redis_client: redis_async.Redis | None = None
-                        try:
-                            import redis.asyncio as _redis_mod  # type: ignore[no-redef]  # Why: runtime import for DI lookup; TYPE_CHECKING import is for annotations only
-
-                            raw_redis = loop_scope.resolved_cache().get(_redis_mod.Redis)
-                            if isinstance(raw_redis, _redis_mod.Redis):
+                        if _REDIS_CLIENT_TYPE is not None:
+                            raw_redis = loop_scope.resolved_cache().get(_REDIS_CLIENT_TYPE)
+                            if isinstance(raw_redis, _REDIS_CLIENT_TYPE):
                                 redis_client = raw_redis
-                        except ImportError:
-                            pass
 
                         # Fleet-wide per-queue concurrency cap (see
                         # _effective_reservations): O(1) membership test, no
