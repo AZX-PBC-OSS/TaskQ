@@ -24,6 +24,7 @@ startup line so an operator can verify the pipeline from the log alone.
 
 import importlib
 import os
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Literal, Protocol
 
@@ -115,6 +116,9 @@ class _ExporterSettings(Protocol):
 
     @property
     def health_host(self) -> str: ...
+
+    @property
+    def metrics_host(self) -> str | None: ...
 
 
 @dataclass(frozen=True)
@@ -265,6 +269,16 @@ def configure_exporters(settings: _ExporterSettings) -> ExporterWiring:
         return "none"
 
     if _provider_already_set():
+        if settings.metrics_port is not None:
+            _log.warning(
+                "otel-exporter-scrape-not-served",
+                port=settings.metrics_port,
+                reason=(
+                    "a tracer or meter provider is already installed, so this "
+                    "worker wires no exporters and the requested scrape port "
+                    "stays unbound"
+                ),
+            )
         _log.info(
             "otel-exporter-preconfigured",
             detail=(
@@ -291,14 +305,37 @@ def configure_exporters(settings: _ExporterSettings) -> ExporterWiring:
         )
         return "sdk_missing"
 
+    def _make_prometheus_env_restore(saved: dict[str, str | None], /) -> Callable[[], None]:
+        """Roll the two reader variables back to their pre-call state: the
+        reader reads them once at construction, and a value left in
+        ``os.environ`` would leak to child processes and override an
+        operator's own ``OTEL_EXPORTER_PROMETHEUS_*`` choice there."""
+
+        def _restore() -> None:
+            for key, prior in saved.items():
+                if prior is None:
+                    del os.environ[key]
+                else:
+                    os.environ[key] = prior
+
+        return _restore
+
+    _restore_prometheus_env: Callable[[], None] | None = None
     if plan.prometheus_port is not None:
         # The SDK's Prometheus reader binds its listener from these two
         # variables and nothing else. TASKQ_METRICS_PORT is the explicit
-        # opt-in, so it is authoritative for the port; the host follows the
-        # worker's other TCP listener unless the operator addressed the
-        # reader directly.
+        # opt-in, so it is authoritative for the port; the host follows
+        # TASKQ_METRICS_HOST, then the worker's other TCP listener, unless
+        # the operator addressed the reader directly. The write is scoped
+        # to the _initialize_components call below and rolled back after
+        # it (see _make_prometheus_env_restore).
+        _saved_prometheus_env = {
+            key: os.environ.get(key) for key in (_PROMETHEUS_PORT_ENV, _PROMETHEUS_HOST_ENV)
+        }
         os.environ[_PROMETHEUS_PORT_ENV] = str(plan.prometheus_port)
-        os.environ.setdefault(_PROMETHEUS_HOST_ENV, settings.health_host)
+        if _PROMETHEUS_HOST_ENV not in os.environ:
+            os.environ[_PROMETHEUS_HOST_ENV] = settings.metrics_host or settings.health_host
+        _restore_prometheus_env = _make_prometheus_env_restore(_saved_prometheus_env)
 
     def _resolve(names: list[str], signal: Literal["traces", "metrics", "logs"]) -> list[str]:
         # Why the SDK's own resolver and not a local map: the bare "otlp"
@@ -310,11 +347,15 @@ def configure_exporters(settings: _ExporterSettings) -> ExporterWiring:
         # step a worker configured with http/protobuf silently exported gRPC.
         return [_get_exporter_entry_point(name, signal) for name in names]
 
+    _bound_host: str | None = None
     try:
         _initialize_components(
             trace_exporter_names=_resolve(plan.extras("traces"), "traces"),
             metric_exporter_names=_resolve(plan.extras("metrics"), "metrics"),
             log_exporter_names=_resolve(plan.extras("logs"), "logs"),
+        )
+        _bound_host = (
+            os.environ.get(_PROMETHEUS_HOST_ENV) if plan.prometheus_port is not None else None
         )
     except Exception as exc:
         raise OtelExporterConfigurationError(
@@ -325,6 +366,9 @@ def configure_exporters(settings: _ExporterSettings) -> ExporterWiring:
             "taskq-py[prometheus] (prometheus), or set TASKQ_OTEL_AUTOCONFIGURE=false "
             "to configure the SDK yourself."
         ) from exc
+    finally:
+        if _restore_prometheus_env is not None:
+            _restore_prometheus_env()
 
     _log.info(
         "otel-exporter-configured",
@@ -333,8 +377,6 @@ def configure_exporters(settings: _ExporterSettings) -> ExporterWiring:
         logs=",".join(plan.logs),
         source=",".join(plan.sources),
         prometheus_port=plan.prometheus_port,
-        prometheus_host=(
-            os.environ.get(_PROMETHEUS_HOST_ENV) if plan.prometheus_port is not None else None
-        ),
+        prometheus_host=_bound_host,
     )
     return "configured"

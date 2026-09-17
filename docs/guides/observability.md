@@ -386,7 +386,18 @@ source=prometheus prometheus_port=9464`; with an OTLP endpoint set as well,
 provider. `OTEL_METRICS_EXPORTER=prometheus` with
 `OTEL_EXPORTER_PROMETHEUS_PORT`/`_HOST` is the SDK's own spelling of the
 same thing and works identically; `TASKQ_METRICS_PORT` is authoritative
-for the port when both are set. Unset, no listener is bound.
+for the port when both are set, and the worker's own write of the port and
+host is scoped to the SDK call and rolled back, so neither value leaks to
+child processes. Unset, no listener is bound; when a provider is already
+installed by the embedding application, the worker wires nothing and the
+port stays unbound behind an `otel-exporter-scrape-not-served` WARNING.
+
+> **The scrape endpoint is unauthenticated.** It exposes actor names,
+> queue names, and exception class names — never payloads or credentials,
+> but real operational metadata. The listener binds the health host
+> (`TASKQ_HEALTH_HOST`, `0.0.0.0` by default): keep it on the pod network,
+> behind a network policy or an authenticating proxy if your cluster is
+> shared.
 
 - The worker's health socket separately serves three hand-rendered process
   gauges — `taskq_active_jobs`, `taskq_is_leader`, `taskq_shutdown_phase` —

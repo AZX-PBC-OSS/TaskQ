@@ -1314,6 +1314,15 @@ class WorkerSettings(TaskQSettings):
         "over the pod network; narrow it to 127.0.0.1 when a local sidecar is the "
         "only prober.",
     )
+    metrics_host: str | None = Field(
+        default=None,
+        description="TASKQ_METRICS_HOST. Bind address for the optional Prometheus "
+        "scrape listener, overriding TASKQ_HEALTH_HOST for that listener alone, so "
+        "the scrape and the probes can sit on different interfaces (a loopback "
+        "sidecar scraper next to a pod-network probe is the shape that needs "
+        "this). Unset falls back to TASKQ_HEALTH_HOST. Only used when "
+        "metrics_port is set.",
+    )
     health_port: int | None = Field(
         default=None,
         ge=0,

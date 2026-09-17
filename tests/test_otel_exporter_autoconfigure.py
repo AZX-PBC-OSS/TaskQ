@@ -95,6 +95,7 @@ class Settings:
     otel_autoconfigure: bool = True
     metrics_port: int | None = None
     health_host: str = "127.0.0.1"
+    metrics_host: str | None = None
 
 
 def report(outcome, events):
@@ -335,6 +336,137 @@ print("SAME_TRACER_PROVIDER:" + str(trace.get_tracer_provider() is mine))
     assert out["SAME_TRACER_PROVIDER"] == "True"
     assert out["METER_IS_SDK"] == "False"
     assert out["CONFIGURED_LINES"] == "0"
+
+
+def test_preconfigured_with_metrics_port_warns_the_scrape_is_not_served() -> None:
+    """``TASKQ_METRICS_PORT`` under a pre-set provider binds no listener, and
+    the only prior signal was an INFO line: a deployment that set the port
+    expecting a scrape endpoint saw nothing, silently. The preconfigured
+    outcome now warns with the port it did not bind."""
+    out = _run_scenario(
+        _PREAMBLE
+        + """
+mine = SdkTracerProvider()
+trace.set_tracer_provider(mine)
+with structlog.testing.capture_logs() as events:
+    outcome = configure_exporters(Settings(metrics_port=9464))
+report(outcome, events)
+print("SCRAPE_NOT_SERVED:" + str(sum(1 for e in events if e["event"] == "otel-exporter-scrape-not-served")))
+print("SCRAPE_PORT:" + str([e.get("port") for e in events if e["event"] == "otel-exporter-scrape-not-served"]))
+""",
+        env={"OTEL_TRACES_EXPORTER": "console"},
+    )
+    assert out["OUTCOME"] == "preconfigured"
+    assert out["SCRAPE_NOT_SERVED"] == "1"
+    assert out["SCRAPE_PORT"] == "[9464]"
+
+
+def test_prometheus_env_write_is_scoped_to_the_sdk_call() -> None:
+    """The port and host the worker hands the SDK's reader are written as
+    environment variables because the reader reads nothing else, but the
+    write must not outlive the call: a value left in ``os.environ`` leaks
+    to child processes and overrides the operator's own choice there. The
+    configured outcome still reports the host it bound."""
+    pytest.importorskip("opentelemetry.exporter.prometheus")
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    out = _run_scenario(
+        _PREAMBLE
+        + f"""
+import os
+with structlog.testing.capture_logs() as events:
+    outcome = configure_exporters(Settings(metrics_port={port}, health_host="127.0.0.1"))
+report(outcome, events)
+line = [e for e in events if e["event"] == "otel-exporter-configured"][-1]
+print("BOUND_PORT:" + str(line.get("prometheus_port")))
+print("BOUND_HOST:" + str(line.get("prometheus_host")))
+print("PROM_PORT_AFTER:" + str(os.environ.get("OTEL_EXPORTER_PROMETHEUS_PORT")))
+print("PROM_HOST_AFTER:" + str(os.environ.get("OTEL_EXPORTER_PROMETHEUS_HOST")))
+""",
+        env={"OTEL_EXPORTER_OTLP_ENDPOINT": "http://collector:4317"},
+    )
+    assert out["OUTCOME"] == "configured"
+    assert out["BOUND_PORT"] == str(port)
+    assert out["BOUND_HOST"] == "127.0.0.1"
+    assert out["PROM_PORT_AFTER"] == "None"
+    assert out["PROM_HOST_AFTER"] == "None"
+
+
+def test_metrics_host_overrides_health_host_for_the_scrape_listener() -> None:
+    """Probes and the scrape may need different interfaces: the health TCP
+    listener follows TASKQ_HEALTH_HOST while the scrape follows
+    TASKQ_METRICS_HOST, so a loopback sidecar scraper can sit next to a
+    pod-network prober. Unset, the scrape falls back to the health host."""
+    pytest.importorskip("opentelemetry.exporter.prometheus")
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    out = _run_scenario(
+        _PREAMBLE
+        + f"""
+with structlog.testing.capture_logs() as events:
+    outcome = configure_exporters(
+        Settings(metrics_port={port}, health_host="0.0.0.0", metrics_host="127.0.0.1")
+    )
+report(outcome, events)
+line = [e for e in events if e["event"] == "otel-exporter-configured"][-1]
+print("BOUND_HOST:" + str(line.get("prometheus_host")))
+""",
+        env={},
+    )
+    assert out["OUTCOME"] == "configured"
+    assert out["BOUND_HOST"] == "127.0.0.1"
+
+
+def test_metrics_host_unset_falls_back_to_the_health_host() -> None:
+    pytest.importorskip("opentelemetry.exporter.prometheus")
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    out = _run_scenario(
+        _PREAMBLE
+        + f"""
+with structlog.testing.capture_logs() as events:
+    outcome = configure_exporters(Settings(metrics_port={port}, health_host="0.0.0.0"))
+report(outcome, events)
+line = [e for e in events if e["event"] == "otel-exporter-configured"][-1]
+print("BOUND_HOST:" + str(line.get("prometheus_host")))
+""",
+        env={},
+    )
+    assert out["OUTCOME"] == "configured"
+    assert out["BOUND_HOST"] == "0.0.0.0"  # noqa: S104  # Why: asserting the documented all-interfaces fallback, not binding one.
+
+
+def test_metrics_port_bind_failure_fails_the_startup_loudly() -> None:
+    """A scrape listener the operator asked for and cannot get must fail the
+    worker's startup, the same contract the health TCP listener keeps: an
+    orchestrator was told to scrape this port, and a worker that comes up
+    with the listener dead answers nothing there while its probes stay
+    green."""
+    pytest.importorskip("opentelemetry.exporter.prometheus")
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        probe.listen(1)
+        taken_port = probe.getsockname()[1]
+        # The scenario runs while THIS process still holds the port: the
+        # child must find it taken.
+        out = _run_scenario(
+            _PREAMBLE
+            + f"""
+from taskq.obs._exporter import OtelExporterConfigurationError
+try:
+    configure_exporters(Settings(metrics_port={taken_port}, health_host="127.0.0.1"))
+    print("OUTCOME:configured")
+except OtelExporterConfigurationError as exc:
+    print("OUTCOME:bind_failed")
+    print("IS_BIND_ERROR:" + str(isinstance(exc.__cause__, OSError)))
+""",
+            env={},
+        )
+    assert out["OUTCOME"] == "bind_failed"
+    assert out["IS_BIND_ERROR"] == "True"
 
 
 def test_metrics_port_serves_the_worker_series_over_http() -> None:

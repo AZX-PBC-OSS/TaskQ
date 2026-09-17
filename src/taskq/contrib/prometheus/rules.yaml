@@ -52,7 +52,13 @@ groups:
             consumed attempts over the last 5 minutes. Retried failures are
             not in this share — they end as outcome="scheduled" and are
             counted by taskq_jobs_attempt_failures_total{retryable="true"}
-            (TaskQRetryRateHigh). Both sides are summed to fleet-wide
+            (TaskQRetryRateHigh). An attempt whose TERMINAL WRITE failed on
+            infrastructure (a transient Postgres outage at the wrong moment)
+            also ends as outcome="failed" and is re-claimed after the lease
+            lapses, so a spike coinciding with database errors is an infra
+            signal, not an actor-failure signal: the terminal-write-failed
+            ERROR log and a job row still running with no error_class are
+            the tells. Both sides are summed to fleet-wide
             scalars so the ratio never silently empties on a label mismatch.
             Inspect job_attempts.error_class for the root cause. Runbook:
             docs/guides/runbooks.md#taskqfailedjobratehigh.

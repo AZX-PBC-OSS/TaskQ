@@ -81,61 +81,101 @@ def env() -> Generator[_PromEnv, None, None]:  # pyright: ignore[reportReturnTyp
 # - Histograms with unit="s" get _seconds suffix (bridge appends unit name)
 # - Histograms whose name already ends in a unit word do NOT get a double suffix
 
-_NAME_MAP: list[tuple[str, str]] = [
-    ("messaging.client.published.messages", "messaging_client_published_messages_total"),
-    ("messaging.client.consumed.messages", "messaging_client_consumed_messages_total"),
-    ("messaging.process.duration", "messaging_process_duration_seconds"),  # unit="s"
-    ("taskq.dispatch.duration", "taskq_dispatch_duration_seconds"),  # unit="s"
-    ("taskq.queue.depth", "taskq_queue_depth"),
-    ("taskq.lock.expires_in_seconds", "taskq_lock_expires_in_seconds"),  # name already ends in unit
-    ("taskq.heartbeat.misses", "taskq_heartbeat_misses_total"),
-    ("taskq.reservation.slots_used", "taskq_reservation_slots_used"),
-    ("taskq.maintenance_leader.is_leader", "taskq_maintenance_leader_is_leader"),
-    ("taskq.cancellation.phase_transitions", "taskq_cancellation_phase_transitions_total"),
-    ("taskq.error_reporter.failures", "taskq_error_reporter_failures_total"),
-    ("taskq.progress.publish_failures", "taskq_progress_publish_failures_total"),
-    ("taskq.ratelimit.refund_failures", "taskq_ratelimit_refund_failures_total"),
-    ("taskq.leader.election_attempts", "taskq_leader_election_attempts_total"),
-    ("taskq.leader.election_failures", "taskq_leader_election_failures_total"),
-    ("taskq.cron.consecutive_failures", "taskq_cron_consecutive_failures"),
-    ("taskq.cron.disabled_schedules", "taskq_cron_disabled_schedules"),
-    ("taskq.pruned.jobs", "taskq_pruned_jobs_total"),
-    ("taskq.maintenance_leader.sweep_timeouts", "taskq_maintenance_leader_sweep_timeouts_total"),
+_NAME_MAP: list[tuple[str, str, str]] = [
+    # (otel instrument name, prometheus rendering, kind). The kind is what
+    # the scrape renders for that instrument shape: counters also serve a
+    # _total series, histograms also serve _bucket/_sum/_count, gauges and
+    # up-down counters serve the bare name only (an up-down counter can go
+    # down, so the scrape does not render it as a monotonically-rising
+    # _total sum). Verified by the scrape assertions against
+    # _populate_all_instruments, not by source shape.
+    ("messaging.client.published.messages", "messaging_client_published_messages_total", "counter"),
+    ("messaging.client.consumed.messages", "messaging_client_consumed_messages_total", "counter"),
+    ("messaging.process.duration", "messaging_process_duration_seconds", "histogram"),  # unit="s"
+    ("taskq.dispatch.duration", "taskq_dispatch_duration_seconds", "histogram"),  # unit="s"
+    ("taskq.queue.depth", "taskq_queue_depth", "gauge"),
+    (
+        "taskq.lock.expires_in_seconds",
+        "taskq_lock_expires_in_seconds",
+        "histogram",
+    ),  # name already ends in unit
+    ("taskq.heartbeat.misses", "taskq_heartbeat_misses_total", "counter"),
+    ("taskq.reservation.slots_used", "taskq_reservation_slots_used", "gauge"),
+    ("taskq.maintenance_leader.is_leader", "taskq_maintenance_leader_is_leader", "gauge"),
+    (
+        "taskq.cancellation.phase_transitions",
+        "taskq_cancellation_phase_transitions_total",
+        "counter",
+    ),
+    ("taskq.error_reporter.failures", "taskq_error_reporter_failures_total", "counter"),
+    ("taskq.progress.publish_failures", "taskq_progress_publish_failures_total", "counter"),
+    ("taskq.ratelimit.refund_failures", "taskq_ratelimit_refund_failures_total", "counter"),
+    ("taskq.leader.election_attempts", "taskq_leader_election_attempts_total", "counter"),
+    ("taskq.leader.election_failures", "taskq_leader_election_failures_total", "counter"),
+    ("taskq.cron.consecutive_failures", "taskq_cron_consecutive_failures", "up_down"),
+    ("taskq.cron.disabled_schedules", "taskq_cron_disabled_schedules", "gauge"),
+    ("taskq.pruned.jobs", "taskq_pruned_jobs_total", "counter"),
+    (
+        "taskq.maintenance_leader.sweep_timeouts",
+        "taskq_maintenance_leader_sweep_timeouts_total",
+        "counter",
+    ),
     # Name already ends in the unit word "seconds" — the no-double-suffix rule.
     (
         "taskq.maintenance_leader.sweep_last_success_seconds",
         "taskq_maintenance_leader_sweep_last_success_seconds",
+        "gauge",
     ),
-    ("taskq.maintenance_leader.sweep_batch_size", "taskq_maintenance_leader_sweep_batch_size"),
+    (
+        "taskq.maintenance_leader.sweep_batch_size",
+        "taskq_maintenance_leader_sweep_batch_size",
+        "gauge",
+    ),
     (
         "taskq.maintenance_leader.sweep_batch_size_configured",
         "taskq_maintenance_leader_sweep_batch_size_configured",
+        "gauge",
     ),
     # Name already ends in the unit word "seconds" — the no-double-suffix rule.
     (
         "taskq.maintenance_leader.lease_expires_in_seconds",
         "taskq_maintenance_leader_lease_expires_in_seconds",
+        "gauge",
     ),
-    ("taskq.leader.lock_contention", "taskq_leader_lock_contention_total"),
-    ("taskq.cron.lock_contention", "taskq_cron_lock_contention_total"),
-    ("taskq.jobs.by_status", "taskq_jobs_by_status"),
-    ("taskq.jobs.scheduled_count", "taskq_jobs_scheduled_count"),
-    ("taskq.jobs.oldest_due_age_seconds", "taskq_jobs_oldest_due_age_seconds"),  # ends in unit word
-    ("taskq.jobs.running_lease_expired", "taskq_jobs_running_lease_expired"),
-    ("taskq.enqueue.dedups", "taskq_enqueue_dedups_total"),
+    ("taskq.leader.lock_contention", "taskq_leader_lock_contention_total", "counter"),
+    ("taskq.cron.lock_contention", "taskq_cron_lock_contention_total", "counter"),
+    ("taskq.jobs.by_status", "taskq_jobs_by_status", "gauge"),
+    ("taskq.jobs.scheduled_count", "taskq_jobs_scheduled_count", "gauge"),
+    (
+        "taskq.jobs.oldest_due_age_seconds",
+        "taskq_jobs_oldest_due_age_seconds",
+        "gauge",
+    ),  # ends in unit word
+    (
+        "taskq.jobs.oldest_pending_age_seconds",
+        "taskq_jobs_oldest_pending_age_seconds",
+        "gauge",
+    ),  # ends in unit word
+    ("taskq.jobs.running_lease_expired", "taskq_jobs_running_lease_expired", "gauge"),
+    ("taskq.enqueue.dedups", "taskq_enqueue_dedups_total", "counter"),
     (
         "taskq.ratelimit.acquire_dependency_failures",
         "taskq_ratelimit_acquire_dependency_failures_total",
+        "counter",
     ),
-    ("taskq.ratelimit.denials", "taskq_ratelimit_denials_total"),
-    ("taskq.reservation.denials", "taskq_reservation_denials_total"),
-    ("taskq.jobs.attempt_failures", "taskq_jobs_attempt_failures_total"),
-    ("taskq.jobs.abandoned", "taskq_jobs_abandoned_total"),
-    ("taskq.jobs.timeouts", "taskq_jobs_timeouts_total"),
-    ("taskq.worker.event_loop_lag_seconds", "taskq_worker_event_loop_lag_seconds"),  # ends in unit
-    ("taskq.jobs.queue_wait_seconds", "taskq_jobs_queue_wait_seconds"),  # ends in unit
-    ("taskq.jobs.stranded", "taskq_jobs_stranded"),
-    ("taskq.queue.live_workers", "taskq_queue_live_workers"),
+    ("taskq.ratelimit.denials", "taskq_ratelimit_denials_total", "counter"),
+    ("taskq.reservation.denials", "taskq_reservation_denials_total", "counter"),
+    ("taskq.jobs.attempt_failures", "taskq_jobs_attempt_failures_total", "counter"),
+    ("taskq.jobs.abandoned", "taskq_jobs_abandoned_total", "counter"),
+    ("taskq.jobs.timeouts", "taskq_jobs_timeouts_total", "counter"),
+    (
+        "taskq.worker.event_loop_lag_seconds",
+        "taskq_worker_event_loop_lag_seconds",
+        "histogram",
+    ),  # ends in unit
+    ("taskq.jobs.queue_wait_seconds", "taskq_jobs_queue_wait_seconds", "histogram"),  # ends in unit
+    ("taskq.jobs.stranded", "taskq_jobs_stranded", "gauge"),
+    ("taskq.queue.live_workers", "taskq_queue_live_workers", "gauge"),
 ]
 
 _RULES_YAML = (
@@ -264,6 +304,11 @@ def _populate_all_instruments(meter: Any) -> None:
         "taskq.jobs.oldest_due_age_seconds", unit="s", callbacks=[lambda _: [Observation(0.0)]]
     )
     meter.create_observable_gauge(
+        "taskq.jobs.oldest_pending_age_seconds",
+        unit="s",
+        callbacks=[lambda _: [Observation(1.0, {"actor": "a", "queue": "q"})]],
+    )
+    meter.create_observable_gauge(
         "taskq.jobs.running_lease_expired",
         unit="1",
         callbacks=[lambda _: [Observation(0)]],
@@ -380,7 +425,7 @@ def test_metric_name_mapping(env: _PromEnv) -> None:
     """Each OTel instrument name maps to the expected Prometheus name."""
     _populate_all_instruments(env.meter())
     text = env.scrape()
-    for _, prom_name in _NAME_MAP:
+    for _, prom_name, _kind in _NAME_MAP:
         assert prom_name in text, f"Expected Prometheus name {prom_name!r} not found in scrape"
 
 
@@ -391,7 +436,7 @@ def test_all_metric_names_present(env: _PromEnv) -> None:
     """Every instrument in _NAME_MAP appears with # TYPE and # HELP comments."""
     _populate_all_instruments(env.meter())
     text = env.scrape()
-    for _, prom_name in _NAME_MAP:
+    for _, prom_name, _kind in _NAME_MAP:
         assert f"# TYPE {prom_name}" in text, f"Missing # TYPE for {prom_name}"
         assert f"# HELP {prom_name}" in text, f"Missing # HELP for {prom_name}"
 
@@ -426,7 +471,7 @@ def test_create_metrics_router_adds_metrics_route(env: _PromEnv) -> None:
 
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/plain; version=0.0.4")
-    for _, prom_name in _NAME_MAP:
+    for _, prom_name, _kind in _NAME_MAP:
         assert prom_name in response.text, f"Missing {prom_name!r} in /metrics response"
 
 
