@@ -1060,8 +1060,8 @@ class TokenBucket:
         # Python fallbacks for rows written before the state document
         # carried a key (tokens -> capacity, ts -> now, so elapsed is
         # zero). The fleet-reclaim marking rides the write the conflict
-        # arm already makes: last_used_at refreshes on every acquire —
-        # including denials, whose state write must not read as idle —
+        # arm already makes: last_used_at refreshes on every acquire,
+        # including denials, whose state write must not read as idle,
         # and keyed takes the CURRENT owner's mark (EXCLUDED.keyed), so
         # a keyed bucket acquiring over a stale static-marked row claims
         # it and a static bucket acquiring over a former keyed row
@@ -1069,14 +1069,14 @@ class TokenBucket:
         _now_epoch = "EXTRACT(EPOCH FROM statement_timestamp())"
         _old_tokens = "COALESCE((rate_limit_buckets.state->>'tokens')::float8, $2::float8)"
         _old_ts = f"COALESCE((rate_limit_buckets.state->>'ts')::float8, {_now_epoch})"
-        # Post-refill token count — the spend decision's left side.
+        # Post-refill token count: the spend decision's left side.
         # Every evaluation is identical (statement_timestamp() is
         # stable), so the CASE below and the granted flag cannot
         # disagree at the spend boundary.
         _refilled = (
             f"LEAST($2::float8, {_old_tokens} + GREATEST({_now_epoch} - {_old_ts}, 0) * $3::float8)"
         )
-        # Cold start: the bucket begins full — the same spend decision
+        # Cold start: the bucket begins full, the same spend decision
         # against capacity the preseed-then-read shape computed.
         _cold_tokens = (
             "CASE WHEN $2::float8 >= $5::float8 THEN $2::float8 - $5::float8 ELSE $2::float8 END"
@@ -1113,8 +1113,8 @@ class TokenBucket:
 
         if lock_timeout_ms > 0:
             # Why a function-level import: this module is imported by
-            # taskq.ratelimit, which taskq.testing imports transitively
-            # — that boundary must stay importable without the asyncpg
+            # taskq.ratelimit, which taskq.testing imports transitively, and
+            # that boundary must stay importable without the asyncpg
             # driver installed. The acquire only ever runs against a
             # real connection, where asyncpg is guaranteed present.
             from asyncpg.exceptions import LockNotAvailableError
@@ -1130,12 +1130,12 @@ class TokenBucket:
                         )
                 except (LockNotAvailableError, TimeoutError):
                     # Fail closed: the limiter's denial outcome with a
-                    # retry hint of one more budget — the fused statement
+                    # retry hint of one more budget: the fused statement
                     # is atomic, so the timed-out racer wrote nothing
                     # (no preseed to roll back, no upsert that could have
                     # landed half-spent). The warning is the operator
                     # signal that the bucket (or its holder) is contended
-                    # or sick rather than merely busy — the same event
+                    # or sick rather than merely busy: the same event
                     # name the log-style path emits for the same
                     # condition.
                     logger.warning(
@@ -1154,14 +1154,14 @@ class TokenBucket:
                     log_decision(result)
                     return result
         else:
-            # lock_timeout_ms <= 0: the indefinite mode — the GUC
+            # lock_timeout_ms <= 0: the indefinite mode, the GUC
             # convention's opt-out. One autocommit statement; the
             # conflict arm's row lock waits as long as the holder holds.
             async with pg_pool.acquire() as conn:
                 row = await _fused_acquire(conn)
 
         if row is None:
-            # Unreachable in the normal path — RETURNING always yields
+            # Unreachable in the normal path: RETURNING always yields
             # the written row (insert arm or conflict arm). Kept as a
             # defensive denial (e.g. a trigger swallowing RETURNING):
             # never an admission from a write we did not observe.
@@ -1182,7 +1182,7 @@ class TokenBucket:
         granted = bool(row["granted"])
         tokens_after = float(row["tokens_after"])
         # remaining is the final token count either way: post-spend on
-        # allowance, post-refill on denial — exactly the pre-fused
+        # allowance, post-refill on denial, exactly the pre-fused
         # arithmetic's two arms. retry_after: the deficit against the
         # post-refill count, None for a fixed quota (no automatic
         # recovery), the same channel the memory/Redis backends take.

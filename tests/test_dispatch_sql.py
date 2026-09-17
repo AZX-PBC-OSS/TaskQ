@@ -235,7 +235,7 @@ class TestDispatchStrictFifoSql:
         assert "oversample" in params_body
         candidates_body = _cte_body(rendered, "candidates")
         # The admission LIMIT carries the queue-cap headroom fold
-        # (#242): LEAST(pac.residual, queue_cap_headroom) * $5 — NULL
+        # (#242): LEAST(pac.residual, queue_cap_headroom) * $5, NULL
         # (no held cap bucket for the pair) leaves the residual alone.
         assert "LIMIT LEAST(" in candidates_body
         assert "SELECT qc.headroom FROM queue_cap_headroom qc" in candidates_body
@@ -433,7 +433,7 @@ class TestDispatchRoundRobinSql:
             "indexes)"
         )
         # The admission LIMIT carries the queue-cap headroom fold
-        # (#242): LEAST(pac.residual, queue_cap_headroom) * $5 — NULL
+        # (#242): LEAST(pac.residual, queue_cap_headroom) * $5, NULL
         # (no held cap bucket for the pair) leaves the residual alone.
         assert "LIMIT LEAST(" in candidates_body
         assert "SELECT qc.headroom FROM queue_cap_headroom qc" in candidates_body

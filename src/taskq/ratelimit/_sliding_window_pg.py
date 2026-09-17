@@ -259,7 +259,7 @@ async def _refund_pg_log(
 
 #: Bounded wait (milliseconds) for the per-bucket log-style advisory
 #: lock. The lock is held across ONE fused statement (prune + admission
-#: insert + count + retry hint in a single round trip — #228), so a
+#: insert + count + retry hint in a single round trip, #228), so a
 #: holder's critical section is one statement's execution time, and
 #: 5 s tolerates a burst of hundreds of queued racers while capping
 #: tail latency instead of letting it scale with the racer count, and a
@@ -319,24 +319,24 @@ async def _acquire_pg_log(
 
     # ONE fused statement for the whole locked critical section (#228):
     # the pre-fused shape spent DELETE + INSERT + COUNT (+ retry SELECT on
-    # denial) as four separate round trips under the advisory lock —
-    # lock hold time linear in round trips is exactly the contention tail
+    # denial) as four separate round trips under the advisory lock,
+    # and lock hold time linear in round trips is exactly the contention tail
     # the two-tier lock machinery exists to bound. The CTEs:
     #
-    # * ``pruned`` — evicts out-of-window entries (the maintenance the
+    # * ``pruned``: evicts out-of-window entries (the maintenance the
     #   pre-fused DELETE did; its effect is invisible to the count below
     #   because pruned rows are, by definition, outside the window the
-    #   count measures — the two row sets are disjoint under the same
+    #   count measures, the two row sets are disjoint under the same
     #   statement snapshot).
-    # * ``inserted`` — the admission INSERT, guarded by an in-window
+    # * ``inserted``: the admission INSERT, guarded by an in-window
     #   count read at the STATEMENT's snapshot. The advisory lock (taken
     #   by a PRIOR statement in this transaction) serializes racers, and
     #   each racer's statement snapshot postdates the previous holder's
-    #   commit — the cron-tick lesson (test_round_trip_budgets): a lock
+    #   commit, the cron-tick lesson (test_round_trip_budgets): a lock
     #   probe folded INTO the work statement would read a snapshot that
     #   predates its own lock grant and re-admit the batch. The lock
     #   stays a separate statement; the WORK is one.
-    # * the main SELECT — everything the decision needs, from the same
+    # * the main SELECT: everything the decision needs, from the same
     #   snapshot: whether the insert landed (a data-modifying CTE's
     #   RETURNING is visible to the parent query), the in-window count
     #   (pre-insert; post-count = pre + inserted, computed below), and
@@ -403,7 +403,7 @@ async def _acquire_pg_log(
     # poll cadence), bounds the wait with a savepoint-scoped
     # lock_timeout, and backstops the network black hole client-side.
     # Once acquired, the lock is transaction-scoped and the fused
-    # statement below is the whole critical section — the window
+    # statement below is the whole critical section: the window
     # itself stays EXACT.
     #
     # On budget exhaustion the acquire FAILS CLOSED: a racer that could
@@ -460,7 +460,7 @@ async def _acquire_pg_log(
             retry_after = timedelta(0)
         else:
             # Denial: the retry hint is the oldest in-window entry's
-            # window expiry — the same entry the pre-fused retry SELECT
+            # window expiry, the same entry the pre-fused retry SELECT
             # found (the prune removed only out-of-window rows).
             oldest_ts = fused_row["oldest_ts"] if fused_row is not None else None
             server_now = fused_row["server_now"] if fused_row is not None else None
@@ -535,13 +535,13 @@ async def _acquire_pg_gcra(
     schema = settings.schema_name
 
     # ONE fused upsert (#228): the pre-fused shape spent preseed + SELECT
-    # FOR UPDATE + upsert (BEGIN + set_config + SAVEPOINT around them) —
+    # FOR UPDATE + upsert (BEGIN + set_config + SAVEPOINT around them):
     # 8 round trips in bounded mode. The conflict arm computes the TAT
     # advance server-side, and the ALLOWANCE is the update's WHERE
     # clause, so RETURNING yields a row exactly when the acquire was
-    # granted (or the bucket was cold — the INSERT arm, and a cold start
+    # granted (or the bucket was cold, the INSERT arm, and a cold start
     # is always allowed: emission <= window for limit >= 1, so the
-    # allow_at boundary is at or before now). A denial updates nothing —
+    # allow_at boundary is at or before now). A denial updates nothing:
     # the pre-fused behavior, preserved exactly (the TAT stands, the
     # row's stamps are untouched), and the retry hint is read by the
     # one follow-up statement below rather than folded into the upsert:
@@ -557,7 +557,7 @@ async def _acquire_pg_gcra(
     # statement_timestamp() (STABLE) is the arithmetic's clock: the
     # WHERE's allowance test and the SET's TAT advance are separate
     # evaluations of the same GREATEST(...) expression, and a stable
-    # statement clock keeps them identical — the same doctrine the
+    # statement clock keeps them identical, the same doctrine the
     # fused token-bucket acquire documents.
     _now_epoch = "EXTRACT(EPOCH FROM statement_timestamp())"
     _old_tat = f"COALESCE((rate_limit_buckets.state->>'tat')::float8, {_now_epoch})"
@@ -598,7 +598,7 @@ async def _acquire_pg_gcra(
 
     if lock_timeout_ms > 0:
         # Why a function-level import: this module is imported by
-        # taskq.ratelimit, which taskq.testing imports transitively —
+        # taskq.ratelimit, which taskq.testing imports transitively:
         # that boundary must stay importable without the asyncpg driver
         # installed. The acquire only ever runs against a real
         # connection, where asyncpg is guaranteed present.
@@ -615,11 +615,11 @@ async def _acquire_pg_gcra(
                     )
             except (LockNotAvailableError, TimeoutError):
                 # Fail closed: the limiter's denial outcome with a retry
-                # hint of one more budget — the fused statement is
+                # hint of one more budget: the fused statement is
                 # atomic, so the timed-out racer advanced no TAT and
                 # admitted nothing. The warning is the operator signal
                 # that the bucket (or its holder) is contended or sick
-                # rather than merely busy — the same event name the
+                # rather than merely busy: the same event name the
                 # log-style path and the token-bucket path emit for the
                 # same condition.
                 logger.warning(
@@ -638,7 +638,7 @@ async def _acquire_pg_gcra(
                 log_decision(result, style=self._style)
                 return result
     else:
-        # lock_timeout_ms <= 0: the indefinite mode — the GUC
+        # lock_timeout_ms <= 0: the indefinite mode, the GUC
         # convention's opt-out. One autocommit statement; the conflict
         # arm's row lock waits as long as the holder holds.
         async with pg_pool.acquire() as conn:
@@ -668,7 +668,7 @@ async def _acquire_pg_gcra(
         }
     else:
         # Denied (or the kind guard refused). One follow-up read carries
-        # the retry hint's inputs and discriminates the guard's refusal —
+        # the retry hint's inputs and discriminates the guard's refusal:
         # the loud misconfiguration error the pre-fused SELECT raised.
         allowed = False
         remaining_estimate = 0.0
@@ -691,7 +691,7 @@ async def _acquire_pg_gcra(
             retry_after = timedelta(seconds=retry_after_seconds)
         else:
             # The row vanished between the fused statement and this read
-            # (a concurrent reset) — the pre-fused preseed made this
+            # (a concurrent reset): the pre-fused preseed made this
             # unreachable; keep a bounded defensive hint rather than an
             # admission the upsert never granted.
             retry_after = timedelta(milliseconds=1)

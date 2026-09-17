@@ -268,7 +268,7 @@ async def test_queue_cap_fold_applies_in_round_robin_mode() -> None:
     table.ensure_slots(cap_bucket, 1)
     table.acquire(cap_bucket, holder.id, backend._worker_id, timedelta(minutes=10), _START)  # pyright: ignore[reportPrivateUsage]  # Why: see above.
 
-    # Rows on both queues (unkeyed rows share the "__null__ cohort —
+    # Rows on both queues (unkeyed rows share the "__null__ cohort,
     # the per-cohort windows are where the queue-cap bound rides).
     for queue in ("q", "q2"):
         await _enqueue(backend, actor="sat", queue=queue)

@@ -1182,7 +1182,7 @@ async def test_reset_pg_executes_delete() -> None:
 
 
 # ── acquire() postgres: defensive no-RETURNING-row fallback (unreachable
-#    in normal operation — the fused statement's RETURNING always yields
+#    in normal operation: the fused statement's RETURNING always yields
 #    the written row, insert arm or conflict arm; this fake pool returns
 #    None from fetchrow to force the defensive branch, e.g. a trigger
 #    swallowing RETURNING) ──

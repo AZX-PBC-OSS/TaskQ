@@ -300,16 +300,16 @@ running_identities AS (
 -- buckets both ride it. KEYED buckets deliberately do not: their
 -- concrete names are payload-derived per job (f"{{base_name}}:{{key}}",
 -- resolved in-process by the consumer's acquire_for_actor), so the claim
--- cannot know which key a pending row will need — folding a keyed
+-- cannot know which key a pending row will need: folding a keyed
 -- bucket's occupancy in would gate the actor on a tenant the pending
 -- row may not even belong to (one saturated tenant blocking every other
 -- tenant's claims, #242). Keyed caps are still enforced where the key
 -- IS known: the post-claim acquire_for_actor, the admission authority,
 -- resolves the concrete name from the payload and denies (snooze) when
--- that key's bucket is full — the gate below is a damper, never the
+-- that key's bucket is full: the gate below is a damper, never the
 -- enforcement. "Live" mirrors the acquire statement's acquirability
 -- predicate exactly (taskq.ratelimit.reservation): a held row whose
--- lease has not yet expired — with the deliberate clock swap to
+-- lease has not yet expired, with the deliberate clock swap to
 -- statement_timestamp() (STABLE), the same two-clock doctrine the
 -- candidates laterals keep, so the liveness bound can ride
 -- reservation_slots_lease_expires_idx as an Index Cond and the whole
@@ -352,7 +352,7 @@ reservation_holdings AS (
 -- reservations, so the least-free held static bucket caps how many more
 -- of the actor's rows can actually run. Queue-cap buckets are folded
 -- separately (queue_cap_headroom below) because their constraint binds
--- per QUEUE, not per actor — an actor with running jobs on two queues
+-- per QUEUE, not per actor: an actor with running jobs on two queues
 -- must not have queue X's saturation close the gate on queue Y's
 -- claims (#242). The free predicate is the acquire statement's own
 -- (job_id IS NULL OR lease expired — an expired lease is the design's
@@ -380,11 +380,11 @@ reservation_headroom AS (
 -- with a max_concurrent), keyed by the (actor, queue) the constraint
 -- actually binds. The queue is recovered from the bucket name (the
 -- register() reserved-prefix guard makes the prefix an unambiguous
--- discriminator — no user or keyed declaration can produce a name
+-- discriminator: no user or keyed declaration can produce a name
 -- inside the namespace), so the fold needs no declaration mapping, the
 -- same holder-state doctrine as reservation_holdings. A full queue-cap
 -- bucket zeroes its holder actors' admission FOR THAT QUEUE while
--- their claims on every other queue flow untouched — and actors
+-- their claims on every other queue flow untouched, and actors
 -- holding nothing in it are absent here, so the first claim on the
 -- queue is never gated (the damper, not authority, doctrine the static
 -- fold keeps).
@@ -440,17 +440,17 @@ per_actor_capacity AS (
   SELECT
     base.actor,
     base.max_concurrent,
-    -- The reservation-headroom fold (STATIC buckets only — keyed buckets
+    -- The reservation-headroom fold (STATIC buckets only, keyed buckets
     -- are excluded from the derivation, and queue-cap buckets are folded
     -- per queue in the candidates laterals' admission LIMIT): an actor
     -- holding a live slot in a static bucket with no acquirable slot
-    -- left is admitted NOTHING this round — its pending rows could only
+    -- left is admitted NOTHING this round: its pending rows could only
     -- be claimed into consumer coroutines whose acquire_for_actor must
     -- deny them, spending the worker's shared max_concurrency slots on
     -- work that cannot run (the consumer-slot churn this gate exists to
     -- remove). A partially free held static bucket admits at most its
     -- free count. An actor with no live static holdings has headroom
-    -- NULL and LEAST ignores NULL, so the base residual is untouched —
+    -- NULL and LEAST ignores NULL, so the base residual is untouched,
     -- the gate never blocks a first claim, and a full bucket implies a
     -- holder already running whose completion (or lease expiry) re-opens
     -- admission, so saturated work drains the moment capacity frees.
@@ -587,7 +587,7 @@ repend_capacity AS (
     -- into another denial. The queue-cap half is deliberately NOT
     -- folded here: this arm's rows carry any queue label (the marker
     -- population is label-agnostic), and the queue-cap acquire that
-    -- decides each row post-claim uses that row's OWN label — no
+    -- decides each row post-claim uses that row's OWN label: no
     -- single queue's cap could gate the arm without gating rows it
     -- does not bind. The post-claim acquire stays the authority for
     -- that half; the damper for re-pended rows is the static fold.
@@ -1108,12 +1108,12 @@ _STRICT_FIFO_CANDIDATES_LATERAL = """\
     --
     -- The queue-cap headroom rides the LIMIT, per (actor, queue): a
     -- scalar probe of queue_cap_headroom (at most one row per pair, so
-    -- the subquery is exact), NULL — ignored by LEAST — when the actor
+    -- the subquery is exact), NULL, ignored by LEAST, when the actor
     -- holds nothing in this queue's cap bucket, so an uncapped pair
     -- pays the bound not at all. A full queue-cap bucket admits ZERO
     -- rows of its holder actors on THIS queue while their claims on
     -- every other queue flow untouched (#242). The bound stays an
-    -- unfoldable expression like the residual it extends — only the
+    -- unfoldable expression like the residual it extends: only the
     -- SCAN bound above must fold.
     ORDER BY w.probe_rank
     LIMIT LEAST(
@@ -1166,7 +1166,7 @@ _ROUND_ROBIN_CANDIDATES_LATERAL = """\
       -- with residual above limit_n is bound by the round's own limit
       -- first, its tail draining on later rounds per the depth
       -- contract. The queue-cap headroom rides this admission LIMIT
-      -- per (actor, queue) — the same scalar queue_cap_headroom probe
+      -- per (actor, queue): the same scalar queue_cap_headroom probe
       -- the strict-FIFO arm's comment above documents (NULL ignored by
       -- LEAST when the actor holds nothing in this queue's cap), so a
       -- full queue-cap bucket admits zero rows of its holder actors on
