@@ -76,6 +76,16 @@ The geometry below pins each stage to the round's own constants:
   the ``stamp`` UPDATE) is a correlated primary-key LATERAL or a
   one-shot ``ANY(ARRAY(SELECT ...))`` InitPlan — never a plain join the
   planner can serve as a Seq Scan + hash over the whole registry.
+* the per-actor RUNNING count (the old ``running_per_actor`` CTE) is a
+  correlated count gated on ``ac.max_concurrent IS NOT NULL`` in each
+  of its three reads (both capacity CTEs' residuals and
+  ``eligible_candidates``' post-lock re-check) — a CASE branch
+  subquery is evaluated only when its branch is taken, so an uncapped
+  fleet does ZERO running-row work per round and a capped fleet pays
+  only its own capped actors' running rows (each an index-only scan of
+  ``jobs_actor_running_idx``), never the fleet-wide materialization the
+  CTE cost on every round. Pinned by
+  tests/test_dispatch_running_rows_scope_bound.py.
 * the terminal UPDATE re-finds its rows through
   ``j.id = ANY(ARRAY(SELECT id FROM eligible))`` — the id array
   materializes once as an InitPlan and the ScalarArrayOp is served
@@ -149,11 +159,11 @@ whose completion or lease expiry re-opens the gate, so a saturated
 actor drains the moment capacity frees (no starvation inversion).
 Headroom bounds the round's candidate window (residual * oversample);
 final admission can overshoot a partially-free bucket by the
-oversample factor, the same best-effort doctrine running_per_actor
-documents for max_concurrent, and self-corrects on the next round when
-the over-claimed jobs fill the slots. Keyed and queue-cap buckets ride
-the same derivation for free — the gate keys off holder state, not
-declarations.
+oversample factor, the same best-effort doctrine the cap-gated running
+count in per_actor_capacity documents for max_concurrent, and
+self-corrects on the next round when the over-claimed jobs fill the
+slots. Keyed and queue-cap buckets ride the same derivation for free —
+the gate keys off holder state, not declarations.
 
 Routing contract (the running-job-tail fix for
 :func:`taskq.actor_config_ops.move_actor_queue`): a pending row's
@@ -246,25 +256,18 @@ __KEYS_CTE__
 pa_actors AS (
   SELECT DISTINCT actor FROM __KEYS_SOURCE__
 ),
--- Best-effort under concurrent dispatchers, for the same reason as
--- `running_identities` below: this count is read ONCE, before `locked`
--- takes its FOR UPDATE SKIP LOCKED row locks, and is never recomputed.
--- Two dispatchers running concurrently each see the same in_flight, each
--- admit up to `max_concurrent - in_flight`, and lock DISJOINT pending rows
--- -- so SKIP LOCKED does not serialize them and both succeed. The
--- over-dispatch bound is (num_producers - 1) * max_concurrent per round,
--- and those jobs genuinely run: reclaiming stale locks does not undo an
--- over-dispatch. `max_concurrent` is therefore a per-round admission
--- damper, NOT a hard fleet-wide cap.
--- For a strict fleet-wide cap use the leased-slot ConcurrencyReservation
--- (per-queue `queues.max_concurrent`), where the read and the write are
--- the same statement on the same row so no such window exists.
-running_per_actor AS (
-  SELECT actor, count(*) AS in_flight
-  FROM "{schema}".jobs
-  WHERE status = 'running'
-  GROUP BY actor
-),
+-- (No running_per_actor CTE, deliberately: the fleet-wide
+-- `GROUP BY actor` over every running row was materialized on every
+-- claim round — referenced three times, so Postgres could not inline it
+-- — at a cost proportional to the fleet's TOTAL running rows, paid
+-- whether or not a single actor declared a cap. The per-actor running
+-- count now lives in the capacity CTEs' residual expression as a
+-- correlated count gated on `ac.max_concurrent IS NOT NULL` (see
+-- per_actor_capacity): an uncapped fleet pays zero running-row work per
+-- round, and a capped one pays only its own capped actors' running rows
+-- — each an index-only scan over jobs_actor_running_idx — never the
+-- fleet's. The best-effort TOCTOU doctrine the CTE's comment carried
+-- moves with the count.)
 -- Best-effort under concurrent dispatchers: this snapshot is read once at
 -- the start of the CTE and is not re-checked after `locked` takes its
 -- FOR UPDATE SKIP LOCKED row locks, so two dispatchers running this query
@@ -294,7 +297,8 @@ running_identities AS (
 -- self-correcting on the next.
 --
 -- Best-effort under concurrent dispatchers, on the same doctrine as
--- running_per_actor above: this snapshot is read ONCE, before `locked`
+-- the cap-gated running count in per_actor_capacity above: this
+-- snapshot is read ONCE, before `locked`
 -- takes its FOR UPDATE SKIP LOCKED row locks, and never rechecked; the
 -- post-claim acquire_for_actor is the admission authority, so a stale
 -- read degrades to one bounded denial round trip, never a wrong one.
@@ -403,7 +407,49 @@ per_actor_capacity AS (
       ac.max_concurrent,
       CASE WHEN ac.max_concurrent IS NULL
            THEN (SELECT limit_n FROM params)
-           ELSE GREATEST(ac.max_concurrent - COALESCE(r.in_flight, 0), 0)
+           ELSE GREATEST(
+                  ac.max_concurrent
+                  -- The actor's live running count, correlated and
+                  -- CAP-GATED rather than joined from a fleet-wide CTE:
+                  -- a scalar subquery in a CASE branch is evaluated only
+                  -- when that branch is taken, so an uncapped actor pays
+                  -- ZERO running-row work here (the materialized
+                  -- running_per_actor CTE this replaced scanned and
+                  -- aggregated every running row in the fleet on every
+                  -- round, whether or not any actor declared a cap), and
+                  -- a capped actor pays one index-only scan of its OWN
+                  -- jobs_actor_running_idx entries -- bounded by that
+                  -- actor's running rows, never the fleet's. Same value
+                  -- as the CTE produced, and the same statement
+                  -- snapshot: one claim statement runs under one READ
+                  -- COMMITTED snapshot, so this count and the
+                  -- eligible_candidates re-check below read the same
+                  -- world the CTE's single up-front read saw.
+                  --
+                  -- Best-effort under concurrent dispatchers, the
+                  -- doctrine the old CTE's comment carried: the count is
+                  -- read within this statement's snapshot, before the
+                  -- terminal UPDATE flips the claimed rows to running,
+                  -- and is never re-checked after `locked` takes its
+                  -- FOR UPDATE SKIP LOCKED row locks. Two dispatchers
+                  -- running concurrently each see the same in_flight,
+                  -- each admit up to `max_concurrent - in_flight`, and
+                  -- lock DISJOINT pending rows -- so SKIP LOCKED does
+                  -- not serialize them and both succeed. The
+                  -- over-dispatch bound is (num_producers - 1) * max_concurrent
+                  -- per round, and those jobs genuinely
+                  -- run: reclaiming stale locks does not undo an
+                  -- over-dispatch. `max_concurrent` is therefore a
+                  -- per-round admission damper, NOT a hard fleet-wide cap.
+                  -- For a strict fleet-wide cap use the leased-slot
+                  -- ConcurrencyReservation (per-queue
+                  -- `queues.max_concurrent`), where the read and the
+                  -- write are the same statement on the same row so no
+                  -- such window exists.
+                  - (SELECT count(*) FROM "{schema}".jobs rj
+                     WHERE rj.actor = pa.actor
+                       AND rj.status = 'running'),
+                  0)
       END AS residual,
       -- The cross-round fairness signal, carried from the registry row to
       -- every ORDER BY that cuts a round's admitted set. NULL means "never
@@ -437,7 +483,6 @@ per_actor_capacity AS (
       -- below relies on. Exact because actor is the primary key.
       LIMIT 1
     ) ac
-    LEFT JOIN running_per_actor r ON r.actor = pa.actor
     CROSS JOIN LATERAL (
       SELECT 1 AS has_pending
       FROM unnest(p.queues) AS pq(q)
@@ -534,7 +579,18 @@ repend_capacity AS (
       ac.max_concurrent,
       CASE WHEN ac.max_concurrent IS NULL
            THEN (SELECT limit_n FROM params)
-           ELSE GREATEST(ac.max_concurrent - COALESCE(r.in_flight, 0), 0)
+           ELSE GREATEST(
+                  ac.max_concurrent
+                  -- Same cap-gated correlated count as
+                  -- per_actor_capacity's residual (see its comment for
+                  -- the gating doctrine and the TOCTOU bound): the
+                  -- re-pended population's residual arithmetic reads the
+                  -- actor's OWN running rows, never a fleet-wide
+                  -- materialized count.
+                  - (SELECT count(*) FROM "{schema}".jobs rj
+                     WHERE rj.actor = ta.actor
+                       AND rj.status = 'running'),
+                  0)
       END AS residual,
       ac.last_claimed_at AS actor_claimed_at
     FROM (SELECT DISTINCT actor FROM rr_tail_keys) ta
@@ -545,7 +601,6 @@ repend_capacity AS (
       WHERE ac.actor = ta.actor
       LIMIT 1
     ) ac
-    LEFT JOIN running_per_actor r ON r.actor = ta.actor
     WHERE ac.queue = ANY(p.queues)
   ) base
   LEFT JOIN reservation_headroom rh ON rh.actor = base.actor
@@ -747,9 +802,9 @@ eligible_candidates AS (
       PARTITION BY l.actor
       ORDER BY __ELIGIBLE_CANDIDATES_ORDER_BY__
     ) AS actor_rank,
-    COALESCE(r.in_flight, 0) AS in_flight,
+    r.in_flight,
     CASE WHEN ac.max_concurrent IS NOT NULL
-         AND COALESCE(r.in_flight, 0) >= ac.max_concurrent
+         AND r.in_flight >= ac.max_concurrent
          THEN FALSE ELSE TRUE END AS boolean_gate
   FROM claimed l
   -- Same correlated pkey LATERAL as capped_ranked: one probe per
@@ -764,9 +819,34 @@ eligible_candidates AS (
     WHERE ac.actor = l.actor
     LIMIT 1
   ) ac
-  LEFT JOIN running_per_actor r ON r.actor = l.actor
+  -- The claimed row's actor running count, the third read that used to
+  -- come from the fleet-wide running_per_actor CTE. Cap-gated the same
+  -- way the capacity CTEs' residuals are (see per_actor_capacity): a
+  -- CASE branch subquery is evaluated only when taken, so an uncapped
+  -- claimed actor costs ZERO running-row work here and a capped one
+  -- costs one index-only scan of its own jobs_actor_running_idx
+  -- entries per claimed row (at most limit_n rows, each bounded by
+  -- that actor's running rows) -- never the fleet's. Same value, same
+  -- statement snapshot as the residual's count, so the post-lock
+  -- re-limit below re-checks the identical in_flight the admission
+  -- decision used.
+  --
+  -- The LIMIT 1 is the single-evaluation fence, the same pull-up
+  -- doctrine the ac probe above relies on: without it a projection-only
+  -- lateral can be flattened into the outer query, and the gated count
+  -- would then be re-evaluated at every reference site (the in_flight
+  -- column, the boolean_gate, and the WHERE) instead of once per
+  -- claimed row.
+  CROSS JOIN LATERAL (
+    SELECT CASE WHEN ac.max_concurrent IS NULL THEN 0
+                ELSE (SELECT count(*) FROM "{schema}".jobs rj
+                      WHERE rj.actor = l.actor
+                        AND rj.status = 'running')
+           END AS in_flight
+    LIMIT 1
+  ) r
   WHERE ac.max_concurrent IS NULL
-     OR COALESCE(r.in_flight, 0) < ac.max_concurrent
+     OR r.in_flight < ac.max_concurrent
 ),
 eligible AS (
   SELECT ec.id, ec.actor
