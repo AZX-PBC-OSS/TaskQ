@@ -57,6 +57,7 @@ from taskq.connections import (
 )
 from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex for defence-in-depth schema validation at this SQL interpolation site, per architecture.md §8 Invariant 4
+    TERMINAL_WRITE_BUDGET_SECS,  # Why: the release write's own budget — one of the two numbers the release-park lease warning's remedy arithmetic names.
 )
 from taskq.cron import (
     CronScheduleSpec,
@@ -972,6 +973,90 @@ def _emit_startup_warnings(settings: WorkerSettings) -> None:
                 "If this warning appeared right after an upgrade, see the "
                 "termination-grace default entry in docs/guides/upgrading.md: "
                 "a platform grace pinned to the old 75s default needs raising too."
+            ),
+        )
+
+    # Why: the release park's lease cap (the first of the two
+    # lease-vs-park inequalities the release-until-exited design made
+    # load-bearing — this one CLOSED STRUCTURALLY, by the cap in
+    # _actor_exit_wait_budget, so this is a trade-off surface, not a
+    # safety hole). The park's budget bound is the remaining termination
+    # budget minus the release write's own budget; the lease cap
+    # (lock_lease - heartbeat - write budget) binds first whenever
+    # lock_lease < termination - cancellation - cleanup + heartbeat. The
+    # config is SAFE either way — the cap is exactly the bound that keeps
+    # the parked consumer's release write ahead of the earliest lease
+    # reclaim — but a binding cap means deploy-interrupted sync actors
+    # release earlier with longer holds instead of getting the full
+    # budget to finish. Surface the arithmetic so an operator staring at
+    # held rows knows which knob moved. No cross-field rejection here:
+    # the cap makes every loadable config safe, and refusing the config
+    # (the alternative remedy) would reject configs the cap already
+    # protects — see WorkerSettings.release_park_lease_cap.
+    if (
+        settings.watchdog_enabled
+        and settings.release_park_lease_cap < settings.release_park_budget_bound
+    ):
+        _startup_log.warning(
+            "release-park-lease-capped",
+            lock_lease=settings.lock_lease,
+            heartbeat_interval=settings.heartbeat_interval,
+            park_lease_cap_seconds=settings.release_park_lease_cap,
+            park_budget_bound_seconds=settings.release_park_budget_bound,
+            termination_grace_period=settings.termination_grace_period,
+            cancellation_grace_period=settings.cancellation_grace_period,
+            cleanup_grace_period=settings.cleanup_grace_period,
+            remedy=(
+                "safe as configured — the release park is capped so the parked "
+                "consumer's release always beats the lease reclaim — but the cap "
+                f"({settings.release_park_lease_cap}s) binds before the budget "
+                f"bound ({settings.release_park_budget_bound}s): deploy-interrupted "
+                "sync actors release earlier with longer holds instead of "
+                "getting the full termination budget to finish. Raise "
+                "TASKQ_LOCK_LEASE to at least "
+                f"{settings.release_park_budget_bound + settings.heartbeat_interval + TERMINAL_WRITE_BUDGET_SECS:.0f}s "
+                "for the full-budget park"
+            ),
+        )
+
+    # Why: the disown path's lease bound (the second of the two
+    # lease-vs-park inequalities the release-until-exited design made
+    # load-bearing). When BOTH release writers fail their writes (the
+    # RELEASING phase's write and the consumer's, whose exhausted retries
+    # disown the row), the row stays running behind a lease the heartbeat
+    # has already stopped renewing, and the leader's reclaim sweep becomes
+    # the only exit — at the earliest last-heartbeat + lock_lease. For
+    # that to stay behind the process's true exit (the deadline trip plus
+    # the exit tail — where an outlived actor thread dies), the lease must
+    # cover termination - cancellation - cleanup + heartbeat + the exit
+    # tail. The shipped default is 63 against lock_lease 60: a ~3s residue
+    # that requires the double write failure AND a sweep tick landing
+    # inside it. Deliberately a warning, not a hard fail — the shipped
+    # default would not load otherwise, and whether to spend 3 more
+    # seconds of lease on that residue is an operator call the maintainer
+    # surfaces here rather than makes (see
+    # WorkerSettings.release_disown_lease_floor).
+    if settings.watchdog_enabled and settings.lock_lease < settings.release_disown_lease_floor:
+        residue = settings.release_disown_lease_floor - settings.lock_lease
+        _startup_log.warning(
+            "lock-lease-below-disown-exit-floor",
+            lock_lease=settings.lock_lease,
+            disown_floor=settings.release_disown_lease_floor,
+            residue_seconds=round(residue, 2),
+            termination_grace_period=settings.termination_grace_period,
+            cancellation_grace_period=settings.cancellation_grace_period,
+            cleanup_grace_period=settings.cleanup_grace_period,
+            heartbeat_interval=settings.heartbeat_interval,
+            exit_tail_seconds=settings.release_exit_tail_seconds,
+            remedy=(
+                "Raise TASKQ_LOCK_LEASE to at least "
+                f"{settings.release_disown_lease_floor:.0f}s (or lower "
+                "TASKQ_TERMINATION_GRACE_PERIOD) so the leader's reclaim "
+                "sweep cannot take a disowned row before the shutdown "
+                f"watchdog's deadline trip kills its still-running actor — "
+                f"the current settings leave a {residue:.1f}s window that "
+                "requires both release writes to fail AND a sweep tick to "
+                "land inside it"
             ),
         )
 

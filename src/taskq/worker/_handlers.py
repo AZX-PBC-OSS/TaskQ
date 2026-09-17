@@ -56,6 +56,9 @@ from taskq.backend._protocol import (
 from taskq.backend._protocol import (
     SnoozeOutcome as BackendSnoozeOutcome,
 )
+from taskq.constants import (
+    TERMINAL_WRITE_BUDGET_SECS,  # pyright: ignore[reportPrivateUsage]  # Why: the canonical seconds behind _TERMINAL_WRITE_BUDGET — the settings layer's release-park lease floor reserves exactly this much, so the number is shared rather than re-declared.
+)
 from taskq.exceptions import (
     ReservationUnavailable,
     RetryAfter,
@@ -153,14 +156,16 @@ into an at-least-once re-run of work that already finished, so the
 window is worth a little more than the quarter-second a bare connection
 reset needs."""
 
-_TERMINAL_WRITE_BUDGET: Final[timedelta] = timedelta(seconds=5)
+_TERMINAL_WRITE_BUDGET: Final[timedelta] = timedelta(seconds=TERMINAL_WRITE_BUDGET_SECS)
 """Wall time, from the first attempt, within which a retry may still be
 started. Attempts alone do not bound the window: against a black-holed
 Postgres each attempt costs a full statement timeout, and counting to
 four would hold the consumer slot for four of them. A retry whose wait
 would end past the budget is not made. One statement timeout at the
 default settings — a write still failing after that long is an outage,
-not a blip."""
+not a blip. The seconds are canonical in taskq.constants: the settings
+layer's release-park lease floor reserves exactly this much of the
+termination budget for this write, and the two must not drift."""
 
 _TERMINAL_WRITE_JITTER: Final[float] = 0.25
 """Spread on each backoff wait, so every consumer slot that hit the same

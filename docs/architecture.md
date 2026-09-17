@@ -1185,7 +1185,10 @@ frames); a sync `def` actor proves it only when its executor thread finishes,
 because `task.cancel()` cancels the await, never the thread; the transactional
 path proves it when its tx task finishes unwinding the rollback. The consumer's
 cancellation arm parks on the tracked exit handles, bounded by the remaining
-termination budget, and releases `pending` (hold=0) only on a provable exit inside that
+termination budget and capped by the lease
+(`lock_lease - heartbeat - write budget`: the heartbeat stops at
+`shutdown_event`, so the park must never outlive the lease the reclaim sweep
+reads), and releases `pending` (hold=0) only on a provable exit inside that
 window; otherwise the release is `scheduled` behind the rest of the process's
 exit window — the termination deadline **plus the watchdog's exit tail**
 (check lag + bounded flush + render slack), because the deadline trip is not

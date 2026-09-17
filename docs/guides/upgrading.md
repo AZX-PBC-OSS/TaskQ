@@ -663,7 +663,7 @@ What to audit:
   straight back to `pending` while the body was still executing, and a
   second worker could claim it — two live runners for one row across every
   deploy that caught a sync actor mid-body. The release now waits (bounded
-  by the remaining termination budget) for the thread
+  by the remaining termination budget, capped by the lease) for the thread
   and holds the row behind the process's exit window when the thread
   outlives the wait. A fleet of sync actors should teach long loops to poll
   `ctx.should_abort()` so they exit inside the cancellation grace and get
@@ -679,6 +679,18 @@ What to audit:
   the work), so ending it at the deadline loses nothing — but an
   embedder's own cleanup that expected the process to outlive a stuck
   actor no longer does.
+* **Two new startup warnings, no new hard validation.** The release park
+  is lease-capped (`lock_lease - heartbeat - write budget`), which makes
+  the mid-park lease expiry structurally impossible for every loadable
+  config; `release-park-lease-capped` fires when that cap binds before the
+  budget bound (interrupted sync actors release earlier with longer holds
+  — safe, slower). `lock-lease-below-disown-exit-floor` fires at the
+  shipped defaults (60 vs 63): both release writers failing their writes
+  leaves a ~3s window in which the reclaim sweep can take the disowned row
+  before the trip ends its actor. Raising `TASKQ_LOCK_LEASE` to 63+ closes
+  the residue; whether to spend those 3 seconds of lease on a
+  double-write-failure shape is an operator call this release surfaces
+  rather than makes.
 * **`abandoned` now means "operator cancel".** A graceful shutdown never
   produces `cancelled` or `abandoned` for infrastructure reasons; any
   alert or dashboard that reads those statuses as deploy noise should now
