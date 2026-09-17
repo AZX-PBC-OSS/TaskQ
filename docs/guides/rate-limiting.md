@@ -362,6 +362,12 @@ If a job's queue has a registered cap, the worker prepends that reservation to t
 acquire list before running the actor — transparent to actor code, no `@actor` argument
 needed. This is the "implicit, not per-actor opt-in" behavior the issue asked for.
 
+The claim's reservation-headroom gate also reads queue-cap occupancy, but scoped per queue:
+an actor whose running jobs hold a queue's cap slots is admitted nothing **on that queue**
+while the cap bucket is full, while its claims on every other queue flow untouched. An actor
+holding nothing in the cap bucket is never gated by it (the first-claim doctrine — the
+post-claim acquire stays the admission authority).
+
 ### How it works
 
 The queue-level cap is a fleet-wide limit applied per-queue rather than opted into per
@@ -869,6 +875,21 @@ The concrete `ConcurrencyReservation` for a given key is registered the first ti
 seen, and reused for every subsequent job with the same key — it is not re-created on every
 dispatch. Registration is idempotent for identical config, which every acquisition for a given
 `KeyedReservationRef` always produces (its `slots`/`lease` are fixed).
+
+!!! note "Claim-time admission never gates on keyed buckets"
+    The dispatch claim folds live reservation occupancy into per-actor admission (the
+    `reservation_holdings` / `reservation_headroom` CTEs — see
+    [docs/guides/workers.md](workers.md)), but **keyed buckets are excluded from that fold**:
+    their concrete names are payload-derived per job (`f"{base_name}:{key}"`), and the claim
+    cannot know which pending row will need which key. Folding a keyed bucket in would let one
+    saturated tenant block every other tenant's claims of the same actor.
+
+    The trade: a keyed bucket's saturation never stops the claim from admitting the actor's
+    rows, so a saturated tenant's extra jobs are claimed, denied by the post-claim
+    `acquire_for_actor` (which resolves the key from the validated payload — the admission
+    authority), and rescheduled per the 429 semantics. That bounded claim → deny → snooze
+    cycle is the accepted cost of not gating a whole actor on one tenant's occupancy; the
+    per-key cap itself is enforced exactly where the key is known.
 
 !!! warning "Registry growth under high key cardinality"
     Concrete per-key reservations are registered lazily and, absent eviction, never removed.
