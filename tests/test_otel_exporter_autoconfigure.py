@@ -114,6 +114,17 @@ def report(outcome, events):
 """
 
 
+#: Hides the SDK's configurator module before anything imports it: the seam
+#: ``configure_exporters``' missing-SDK path is defined on (a ``from`` import
+#: of ``opentelemetry.sdk._configuration`` raising ``ImportError``). Only
+#: meaningful in a fresh child process; in this process other tests may have
+#: installed real global providers, which changes the outcome entirely.
+_HIDE_SDK = """
+import sys
+sys.modules["opentelemetry.sdk._configuration"] = None
+"""
+
+
 # ── in-process: the planner ───────────────────────────────────────────
 
 
@@ -204,22 +215,30 @@ def test_sdk_disabled_is_honoured(monkeypatch: pytest.MonkeyPatch) -> None:
     assert [e["event"] for e in events] == ["otel-exporter-sdk-disabled"]
 
 
-def test_env_set_without_the_sdk_warns_and_names_the_extra(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_env_set_without_the_sdk_warns_and_names_the_extra() -> None:
     """The failure this wiring exists to remove must not become a crash:
     exporters asked for, SDK missing → one WARNING naming ``otel``, the
-    proxies stay, the worker starts."""
-    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://collector:4317")
-    monkeypatch.setitem(sys.modules, "opentelemetry.sdk._configuration", None)
-    with structlog.testing.capture_logs() as events:
-        outcome = configure_exporters(_Settings())
-    assert outcome == "sdk_missing"
-    unavailable = [e for e in events if e["event"] == "otel-exporter-unavailable"]
-    assert len(unavailable) == 1
-    assert unavailable[0]["extra"] == "otel"
-    assert unavailable[0]["log_level"] == "warning"
-    assert unavailable[0]["source"] == "env"
+    proxies stay, the worker starts.
+
+    Runs in a subprocess that hides the SDK's configurator module before
+    taskq is imported: the outcome requires NO provider to be reachable, and
+    other tests in this process legitimately install real global providers
+    (set-once, never unset), which would make the wiring report
+    ``preconfigured`` instead.
+    """
+    out = _run_scenario(
+        _HIDE_SDK
+        + _PREAMBLE
+        + """
+with structlog.testing.capture_logs() as events:
+    outcome = configure_exporters(Settings())
+report(outcome, events)
+""",
+        env={"OTEL_EXPORTER_OTLP_ENDPOINT": "http://collector:4317"},
+    )
+    assert out["OUTCOME"] == "sdk_missing"
+    assert out["UNAVAILABLE_EXTRAS"] == "otel"
+    assert out["WARNINGS"] == "1"
 
 
 def test_metrics_port_without_the_prometheus_extra_warns_and_names_it(
