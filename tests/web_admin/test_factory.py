@@ -5,6 +5,7 @@ from datetime import timedelta
 from typing import Any
 
 import pytest
+import structlog.testing
 
 pytest.importorskip("fastapi")
 pytest.importorskip("jinja2")
@@ -446,3 +447,28 @@ async def test_gzip_static_only_bypasses_non_static() -> None:
     middleware = GZipStaticOnly(_FakeApp())  # pyright: ignore[reportArgumentType]
     await middleware({"type": "http", "path": "/jobs"}, None, None)
     assert called_directly == ["/jobs"]
+
+
+async def test_clock_offset_probe_failure_is_reported_and_backed_off(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failing clock probe keeps the previous offset and backs off for a
+    TTL - and says so: every relative age on every page is rendered against
+    that offset, so a probe that keeps failing must be visible in the logs
+    rather than silently skewing what the operator reads."""
+    import taskq.web.admin._factory as factory
+
+    class _DeadPool:
+        def acquire(self) -> object:
+            raise ConnectionError("pool is closed")
+
+    monkeypatch.setattr(factory, "_db_clock_offset", factory._DbClockOffset())
+    with structlog.testing.capture_logs() as logs:
+        await factory.refresh_db_clock_offset(_DeadPool())  # pyright: ignore[reportArgumentType]  # Why: test duck-type pool.
+        await factory.refresh_db_clock_offset(_DeadPool())  # pyright: ignore[reportArgumentType]  # Why: inside the back-off window: no second probe.
+
+    entries = [log for log in logs if log["event"] == "admin-clock-offset-probe-failed"]
+    assert len(entries) == 1
+    assert entries[0]["log_level"] == "warning"
+    assert entries[0]["error_type"] == "ConnectionError"
+    assert factory._db_clock_offset.expires_at > 0

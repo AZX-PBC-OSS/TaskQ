@@ -65,9 +65,10 @@ class GZipStaticOnly(_GZipMiddleware):
 # performed in the database's domain even though it runs in Python.
 #
 # Better still, a query can do the arithmetic server-side — the
-# `EXTRACT(EPOCH FROM clock_timestamp() - col)` shape `_LEADER_SQL` uses for
-# `watchdog_healthy` — so no clock participates at all. That is the preferred
-# form for new queries; it renders the number itself, not through this filter.
+# `col >= clock_timestamp()` / `clock_timestamp() - make_interval(...)`
+# comparisons `_LEADER_SQL` (workers.py) uses for `watchdog_healthy` — so no
+# clock participates at all. That is the preferred form for new queries; it
+# renders the answer itself, not through this filter.
 
 _CLOCK_OFFSET_TTL: float = 30.0
 
@@ -87,10 +88,13 @@ async def refresh_db_clock_offset(pool: asyncpg.Pool) -> None:
     """Re-measure the app-to-database clock offset, at most once per TTL.
 
     Installed as a router-level dependency so every admin request keeps the
-    offset fresh for the (synchronous) Jinja filter. Failures are swallowed
-    and the previous offset kept: a clock probe must never take down a page,
-    and a slightly stale offset is still far closer to the truth than
-    ignoring skew entirely.
+    offset fresh for the (synchronous) Jinja filter. A failed probe keeps
+    the previous offset and is logged, once per back-off window, as
+    ``admin-clock-offset-probe-failed``: a clock probe must never take
+    down a page, and a slightly stale offset is still far closer to the
+    truth than ignoring skew entirely - but every relative age on every
+    page renders against it, so a probe that keeps failing has to be
+    visible rather than silently ageing what the operator reads.
     """
     now = time.monotonic()
     if now < _db_clock_offset.expires_at:
@@ -100,9 +104,17 @@ async def refresh_db_clock_offset(pool: asyncpg.Pool) -> None:
         async with pool.acquire() as conn:
             db_now: datetime = await conn.fetchval("SELECT clock_timestamp()")
         after = datetime.now(UTC)
-    except Exception:
-        # Back off for a full TTL rather than probing on every request.
+    except Exception as exc:
+        # Back off for a full TTL rather than probing on every request; the
+        # back-off is also what bounds this warning to one per window.
         _db_clock_offset.expires_at = now + _CLOCK_OFFSET_TTL
+        logger.warning(
+            "admin-clock-offset-probe-failed",
+            error_type=type(exc).__name__,
+            error=str(exc),
+            retry_in_seconds=_CLOCK_OFFSET_TTL,
+            kept_offset_seconds=_db_clock_offset.seconds,
+        )
         return
     # Why the midpoint: the round trip happens between the two local reads, so
     # the server's instant is best compared against the middle of that window
