@@ -31,6 +31,7 @@ from taskq.constants import (
 from taskq.ratelimit.registry import RateLimitRegistry
 from taskq.ratelimit.registry import registry as _rl_singleton
 from taskq.settings import TaskQSettings
+from taskq.web._pool import BoundedPool
 from taskq.web.admin import _static
 
 logger = structlog.get_logger("taskq.web.admin")
@@ -84,7 +85,7 @@ class _DbClockOffset:
 _db_clock_offset = _DbClockOffset()
 
 
-async def refresh_db_clock_offset(pool: asyncpg.Pool) -> None:
+async def refresh_db_clock_offset(pool: BoundedPool) -> None:
     """Re-measure the app-to-database clock offset, at most once per TTL.
 
     Installed as a router-level dependency so every admin request keeps the
@@ -221,12 +222,32 @@ _STATIC_DIR: Path = Path(__file__).resolve().parent.parent / "static"
 
 
 def get_pg_pool(request: Request) -> asyncpg.Pool:
-    """Dependency: yields the asyncpg pool from ``app.state``."""
+    """Dependency: yields the asyncpg pool from ``app.state``.
+
+    The raw pool - for the streams and library calls that manage their own
+    checkouts. Request handlers that run queries take :class:`BoundedPool`
+    through :func:`get_admin_pool` instead, whose every checkout is
+    bounded.
+    """
     pool: asyncpg.Pool = request.app.state.pg_pool
     return pool
 
 
-async def _refresh_clock_offset(pool: asyncpg.Pool = Depends(get_pg_pool)) -> None:
+def get_settings(request: Request) -> TaskQSettings:
+    """Dependency: yields the TaskQSettings from ``app.state``."""
+    s: TaskQSettings = request.app.state.settings
+    return s
+
+
+def get_admin_pool(
+    pool: asyncpg.Pool = Depends(get_pg_pool),
+    settings: TaskQSettings = Depends(get_settings),
+) -> BoundedPool:
+    """Dependency: the admin pool with bounded checkouts (see :class:`BoundedPool`)."""
+    return BoundedPool(pool, acquire_timeout=settings.admin_acquire_timeout, role="admin")
+
+
+async def _refresh_clock_offset(pool: BoundedPool = Depends(get_admin_pool)) -> None:
     """Router-level dependency: keep the app-to-database clock offset fresh."""
     await refresh_db_clock_offset(pool)
 
@@ -272,12 +293,6 @@ def get_templates(request: Request) -> Environment:
     """Dependency: yields the Jinja2 Environment from ``app.state``."""
     env: Environment = request.app.state.templates
     return env
-
-
-def get_settings(request: Request) -> TaskQSettings:
-    """Dependency: yields the TaskQSettings from ``app.state``."""
-    s: TaskQSettings = request.app.state.settings
-    return s
 
 
 async def get_realtime_ctx(

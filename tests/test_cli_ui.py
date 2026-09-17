@@ -183,7 +183,7 @@ def test_ui_serve_lifespan_mounts_admin_router(
             pass
 
     class _CloseablePool:
-        def acquire(self) -> _FakeAcquire:
+        def acquire(self, *, timeout: float | None = None) -> _FakeAcquire:
             return _FakeAcquire()
 
         async def close(self) -> None:

@@ -384,7 +384,7 @@ class _FetchRowPool:
     def __init__(self, conn: _FetchRowConn) -> None:
         self._conn = conn
 
-    def acquire(self) -> _FetchRowAcquireCtx:
+    def acquire(self, *, timeout: float | None = None) -> _FetchRowAcquireCtx:
         return _FetchRowAcquireCtx(self._conn)
 
 

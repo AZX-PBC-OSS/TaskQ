@@ -83,7 +83,7 @@ class _ScriptedPool:
     def __init__(self, conn: _ScriptedConnection) -> None:
         self._conn = conn
 
-    def acquire(self) -> _AcquireCtx:
+    def acquire(self, *, timeout: float | None = None) -> _AcquireCtx:
         return _AcquireCtx(self._conn)
 
 
@@ -672,7 +672,7 @@ async def test_fetch_redis_rl_state_token_bucket_empty_raw_skips() -> None:
     """An empty hgetall result for a token bucket does not populate the result dict."""
     # StubPipelinedRedis's default hgetall reader is the empty-hash case.
     result = await _fetch_redis_rl_state(
-        StubPipelinedRedis(), "taskq", [("api:global", "token_bucket")]
+        StubPipelinedRedis(), "taskq", [("api:global", "token_bucket")], read_timeout=1.0
     )
     assert result == {}
 
@@ -685,7 +685,7 @@ async def test_fetch_redis_rl_state_gcra_present() -> None:
             return b"12345.0"
 
     result = await _fetch_redis_rl_state(
-        _FakeRedis(), "taskq", [("my_gcra", "sliding_window_gcra")]
+        _FakeRedis(), "taskq", [("my_gcra", "sliding_window_gcra")], read_timeout=1.0
     )
     assert result is not None
     assert result["my_gcra"]["tat"] == "12345.0"
@@ -695,7 +695,7 @@ async def test_fetch_redis_rl_state_gcra_absent() -> None:
     """sliding_window_gcra kind with no TAT key present does not populate the result."""
     # StubPipelinedRedis's default get reader is the missing-key case.
     result = await _fetch_redis_rl_state(
-        StubPipelinedRedis(), "taskq", [("my_gcra", "sliding_window_gcra")]
+        StubPipelinedRedis(), "taskq", [("my_gcra", "sliding_window_gcra")], read_timeout=1.0
     )
     assert result == {}
 
@@ -704,7 +704,7 @@ async def test_fetch_redis_rl_state_sliding_window_log_zero_count_skips() -> Non
     """A zero ZCARD count for sliding_window_log does not populate the result."""
     # StubPipelinedRedis's default zcard reader is the empty-zset case.
     result = await _fetch_redis_rl_state(
-        StubPipelinedRedis(), "taskq", [("my_window", "sliding_window_log")]
+        StubPipelinedRedis(), "taskq", [("my_window", "sliding_window_log")], read_timeout=1.0
     )
     assert result == {}
 
@@ -731,7 +731,7 @@ async def test_fetch_redis_rl_state_unknown_kind_raises_value_error() -> None:
 
     redis = _RecordingRedis()
     with pytest.raises(ValueError, match="unknown rate-limit kind"):
-        await _fetch_redis_rl_state(redis, "taskq", [("mystery", "unknown_kind")])
+        await _fetch_redis_rl_state(redis, "taskq", [("mystery", "unknown_kind")], read_timeout=1.0)
     assert redis.commands == [], "validation must land before any Redis round trip"
 
 
@@ -852,7 +852,9 @@ def test_rate_limits_page_redis_configured_but_fetch_fails(
     bucket = TokenBucket("api:global", capacity=3, refill_per_second=1.0, backend="redis")
     monkeypatch.setattr(rl_registry, "_rate_limits", {"api:global": bucket})
 
-    async def _fake_fetch_redis_rl_state(redis_client: object, schema: str, names: object) -> None:
+    async def _fake_fetch_redis_rl_state(
+        redis_client: object, schema: str, names: object, *, read_timeout: float
+    ) -> None:
         return None
 
     monkeypatch.setattr("taskq.web.admin.ops._fetch_redis_rl_state", _fake_fetch_redis_rl_state)

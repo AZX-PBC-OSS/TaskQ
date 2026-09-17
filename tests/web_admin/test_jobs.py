@@ -784,7 +784,7 @@ class _OneJobConnection(StubConnection):
 
 
 class _OneJobPool(_StubPool):
-    def acquire(self) -> Any:
+    def acquire(self, *, timeout: float | None = None) -> Any:
         conn = _OneJobConnection()
 
         class _Ctx:

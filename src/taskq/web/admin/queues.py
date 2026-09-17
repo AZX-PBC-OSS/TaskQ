@@ -10,9 +10,10 @@ from fastapi.responses import HTMLResponse
 from jinja2 import Environment
 
 from taskq.settings import TaskQSettings
+from taskq.web._pool import BoundedPool
 from taskq.web.admin._constants import parse_text_filter
 from taskq.web.admin._factory import (
-    get_pg_pool,
+    get_admin_pool,
     get_realtime_ctx,
     get_schema,
     get_settings,
@@ -83,7 +84,7 @@ def register(router: APIRouter) -> None:
 
     @router.get("/queues", response_class=HTMLResponse)
     async def queue_overview(  # pyright: ignore[reportUnusedFunction]  # Why: registered via FastAPI decorator; pyright cannot see the route registration.
-        pool: asyncpg.Pool = Depends(get_pg_pool),
+        pool: BoundedPool = Depends(get_admin_pool),
         schema: str = Depends(get_schema),
         tmpl: Environment = Depends(get_templates),
         realtime_ctx: tuple[str, str] = Depends(get_realtime_ctx),
@@ -112,7 +113,7 @@ def register(router: APIRouter) -> None:
     @router.get("/queues/{queue:path}", response_class=HTMLResponse)
     async def queue_detail(  # pyright: ignore[reportUnusedFunction]  # Why: registered via FastAPI decorator; pyright cannot see the route registration.
         queue: str,
-        pool: asyncpg.Pool = Depends(get_pg_pool),
+        pool: BoundedPool = Depends(get_admin_pool),
         schema: str = Depends(get_schema),
         tmpl: Environment = Depends(get_templates),
         realtime_ctx: tuple[str, str] = Depends(get_realtime_ctx),

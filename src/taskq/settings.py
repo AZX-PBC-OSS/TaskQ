@@ -377,6 +377,17 @@ class TaskQSettings(DotEnvConfig):
         "False only for local http dev, where a Secure cookie is rejected by "
         "the browser and the admin UI stops working.",
     )
+    admin_acquire_timeout: float = Field(
+        default=5.0,
+        gt=0,
+        description="TASKQ_ADMIN_ACQUIRE_TIMEOUT (seconds). Bounds every wait an "
+        "admin UI or progress request makes for a backend resource before "
+        "its own query runs: a Postgres pool checkout and a Redis read. A "
+        "pool with every connection wedged, or a black-holed broker, answers "
+        "the request with 503 (Retry-After: 2) after this long instead of "
+        "hanging it - and every other request behind it - until the client "
+        "gives up. The query itself is bounded by the pool's command_timeout.",
+    )
     admin_actions_enabled: bool = Field(
         default=False,
         description="TASKQ_ADMIN_ACTIONS_ENABLED. When True, the admin UI permits "

@@ -595,7 +595,7 @@ def test_reservations_template_autoescapes_bucket_name(
 
 async def test_fetch_redis_rl_state_returns_none_when_no_redis() -> None:
     """_fetch_redis_rl_state returns None when redis_client is None."""
-    result = await _fetch_redis_rl_state(None, "taskq", [])
+    result = await _fetch_redis_rl_state(None, "taskq", [], read_timeout=1.0)
     assert result is None
 
 
@@ -611,7 +611,7 @@ async def test_fetch_redis_rl_state_returns_state() -> None:
 
     names = [("api:global", "token_bucket")]
     redis = _FakeRedis({"taskq:taskq:rl:tb:{api:global}": {"tokens": "95"}})
-    result = await _fetch_redis_rl_state(redis, "taskq", names)
+    result = await _fetch_redis_rl_state(redis, "taskq", names, read_timeout=1.0)
     assert result is not None
     assert "api:global" in result
     assert result["api:global"]["tokens"] == "95"
@@ -628,7 +628,7 @@ async def test_fetch_redis_rl_state_returns_none_on_failure() -> None:
             raise ConnectionError("redis down")
 
     names = [("api:global", "token_bucket")]
-    result = await _fetch_redis_rl_state(_BrokenRedis(), "taskq", names)
+    result = await _fetch_redis_rl_state(_BrokenRedis(), "taskq", names, read_timeout=1.0)
     assert result is None
 
 
@@ -644,7 +644,7 @@ async def test_fetch_redis_rl_state_uses_sliding_window_key() -> None:
 
     names = [("my_window", "sliding_window_log")]
     redis = _FakeRedis({"taskq:myschema:sw:{my_window}": 2})
-    result = await _fetch_redis_rl_state(redis, "myschema", names)
+    result = await _fetch_redis_rl_state(redis, "myschema", names, read_timeout=1.0)
     assert result is not None
     assert "my_window" in result
     assert result["my_window"]["count"] == "2"
@@ -658,7 +658,7 @@ async def test_fetch_redis_rl_state_decodes_bytes() -> None:
             return [(b"tokens", b"10"), (b"last_refill", b"2025-01-01")]
 
     names = [("api:global", "token_bucket")]
-    result = await _fetch_redis_rl_state(_FakeRedis(), "taskq", names)
+    result = await _fetch_redis_rl_state(_FakeRedis(), "taskq", names, read_timeout=1.0)
     assert result is not None
     assert result["api:global"]["tokens"] == "10"
 
@@ -674,7 +674,7 @@ async def test_fetch_redis_rl_state_gcra() -> None:
             return "1234567890.0"
 
     names = [("my_gcra", "sliding_window_gcra")]
-    result = await _fetch_redis_rl_state(_FakeRedis(), "myschema", names)
+    result = await _fetch_redis_rl_state(_FakeRedis(), "myschema", names, read_timeout=1.0)
     assert result is not None
     assert "my_gcra" in result
     assert result["my_gcra"]["tat"] == "1234567890.0"
@@ -752,7 +752,7 @@ class _ScriptedPool:
     def __init__(self, conn: _ScriptedConn) -> None:
         self._conn = conn
 
-    def acquire(self) -> object:
+    def acquire(self, *, timeout: float | None = None) -> object:
         conn = self._conn
 
         class _Ctx:

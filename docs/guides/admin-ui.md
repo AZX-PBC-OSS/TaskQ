@@ -32,6 +32,7 @@ The server reads configuration from the standard `TASKQ_` environment variables 
 | `TASKQ_ADMIN_UI_REQUIRE_AUTH` | `true` | When `true` (the default), `create_router()` raises `RuntimeError` in non-dev environments if no `auth_dependency` is configured. Set to `false` to suppress the error and allow an unauthenticated admin UI behind a reverse proxy (not recommended unless you have an external auth layer). |
 | `TASKQ_ADMIN_ACTIONS_ENABLED` | `false` | When `true`, enables destructive admin actions: job cancel, job retry, and schedule run-now. When `false` (the default), these endpoints return `403`. Separate from `auth_dependency`, which controls read access to all admin routes. |
 | `TASKQ_ADMIN_MAX_SSE_CONNECTIONS` | `50` | Per-topic cap on concurrent SSE connections. |
+| `TASKQ_ADMIN_ACQUIRE_TIMEOUT` | `5.0` | Seconds a request waits for a Postgres pool checkout or a Redis read before answering `503` (`Retry-After: 2`). A wedged pool or a black-holed broker fails the request visibly instead of hanging it and every request behind it. |
 | `TASKQ_HEALTH_TOKEN` | _(none)_ | Bearer token for machine-to-machine access to `/jobs/health/*` endpoints. When set, health and metrics routes require a matching `Authorization: Bearer <token>` header. Leave empty for unauthenticated cluster-internal access. |
 | `TASKQ_HEALTH_REQUIRE_TOKEN` | `true` | When `true` (the default), `taskq ui serve` raises `RuntimeError` if `TASKQ_HEALTH_TOKEN` is empty in a non-dev environment, failing closed. Set to `false` to allow unauthenticated health/metrics in non-dev (e.g. when relying on network policy). |
 
@@ -191,6 +192,8 @@ these endpoints in production — they can modify job state.
 ## Routes
 
 All `GET` routes are read-only HTML pages. `POST` routes (cancel, retry, schedule management, rate-limit reset) are CSRF-protected write operations.
+
+Every route checks its database connection out with a bound: a checkout that does not arrive within `TASKQ_ADMIN_ACQUIRE_TIMEOUT` (default 5 s — the pool is exhausted or Postgres is not answering) is answered with `503` and `Retry-After: 2`, and logged as `pool-acquire-timeout` with the pool's occupancy. The query itself is bounded by the pool's `command_timeout` (`taskq ui serve` sets one).
 
 ### `GET /admin/`
 

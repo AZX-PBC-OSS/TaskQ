@@ -1,6 +1,5 @@
 """Actors overview and deregister admin pages."""
 
-import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from jinja2 import Environment
@@ -8,11 +7,12 @@ from jinja2 import Environment
 from taskq.actor_config_ops import deregister_actor, list_actor_summaries
 from taskq.exceptions import ActorDeregistrationError, ActorNotFoundError
 from taskq.settings import TaskQSettings
+from taskq.web._pool import BoundedPool
 from taskq.web.admin._constants import parse_text_filter
 from taskq.web.admin._factory import (
+    get_admin_pool,
     get_base_path,
     get_csrf_token,
-    get_pg_pool,
     get_realtime_ctx,
     get_schema,
     get_settings,
@@ -30,7 +30,7 @@ def register(router: APIRouter) -> None:
 
     @router.get("/actors", response_class=HTMLResponse)
     async def actors_overview(  # pyright: ignore[reportUnusedFunction]  # Why: registered via FastAPI decorator; pyright cannot see the route registration.
-        pool: asyncpg.Pool = Depends(get_pg_pool),
+        pool: BoundedPool = Depends(get_admin_pool),
         schema: str = Depends(get_schema),
         tmpl: Environment = Depends(get_templates),
         realtime_ctx: tuple[str, str] = Depends(get_realtime_ctx),
@@ -60,7 +60,7 @@ def register(router: APIRouter) -> None:
         actor: str,
         request: Request,
         _csrf: None = Depends(validate_csrf),
-        pool: asyncpg.Pool = Depends(get_pg_pool),
+        pool: BoundedPool = Depends(get_admin_pool),
         schema: str = Depends(get_schema),
         base_path: str = Depends(get_base_path),
         settings: TaskQSettings = Depends(get_settings),

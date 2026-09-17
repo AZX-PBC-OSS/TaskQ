@@ -55,6 +55,7 @@ from taskq.constants import (
     progress_channel,
 )
 from taskq.settings import TaskQSettings
+from taskq.web._pool import BoundedPool
 from taskq.web._sse_limit import acquire_sse_slot
 
 logger = structlog.get_logger("taskq.web.progress")
@@ -432,6 +433,7 @@ def create_router(
 
     _schema = schema
     _heartbeat_secs = sse_heartbeat_interval.total_seconds()
+    _acquire_timeout = settings.admin_acquire_timeout
 
     def _constructed_pool() -> asyncpg.Pool:
         return pg_pool
@@ -439,9 +441,16 @@ def create_router(
     def _constructed_redis() -> Any:
         return redis_client
 
-    _get_pool: Callable[..., Any] = (
+    _resolve_pool: Callable[..., Any] = (
         resolve_pg_pool if resolve_pg_pool is not None else _constructed_pool
     )
+
+    def _get_pool(pool: asyncpg.Pool = Depends(_resolve_pool)) -> BoundedPool:
+        # Every checkout below is bounded (TASKQ_ADMIN_ACQUIRE_TIMEOUT): a
+        # pool with nothing to give answers 503 instead of hanging the
+        # request and every request behind it.
+        return BoundedPool(pool, acquire_timeout=_acquire_timeout, role="progress")
+
     _get_redis: Callable[..., Any] = (
         resolve_redis_client if resolve_redis_client is not None else _constructed_redis
     )
@@ -462,7 +471,7 @@ def create_router(
         job_id: UUID,
         request: Request,
         last_event_id: int | None = None,
-        pg_pool: asyncpg.Pool = Depends(_get_pool),
+        pg_pool: BoundedPool = Depends(_get_pool),
         redis_client: Any = Depends(_get_redis),
     ) -> Response:
         """Stream progress events for a job via SSE.
@@ -523,7 +532,7 @@ def create_router(
         last_event_id: int | None,
         sse_slot_semaphore: asyncio.Semaphore,
         release_slot: Callable[[], None],
-        pg_pool: asyncpg.Pool,
+        pg_pool: BoundedPool,
         redis_client: Any,
     ) -> Response:
         resolved_last_event_id = _resolve_last_event_id(request, last_event_id)
@@ -624,7 +633,7 @@ def create_router(
     @router.get("/api/job/{job_id}/state")
     async def job_state(  # pyright: ignore[reportUnusedFunction]  # Why: registered via FastAPI decorator.
         job_id: UUID,
-        pg_pool: asyncpg.Pool = Depends(_get_pool),
+        pg_pool: BoundedPool = Depends(_get_pool),
     ) -> JSONResponse:
         """Return the current progress state for a job (polling fallback).
 
