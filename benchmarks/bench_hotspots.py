@@ -610,6 +610,20 @@ def bench_job_row_decode() -> list[ABResult]:
             span_id="b" * 16,
             metadata='{"source": "test"}',
             tags=["t1", "t2"],
+            snooze_count=0,
+            rate_limit_blocked_count=0,
+            interrupt_count=0,
+            retry_base_seconds=1.0,
+            retry_cap_seconds=60.0,
+            retry_backoff="exponential",
+            retry_jitter=0.1,
+            assignment_routed=False,
+            completed_at=None,
+            consecutive_failures=0,
+            expected_size=None,
+            failure_threshold=None,
+            finalizer_job_id=None,
+            originating_actor=None,
         )
 
     def b_decode(rec: FakeRecord) -> JobRow:
