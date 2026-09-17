@@ -2,6 +2,7 @@
 
 import asyncio
 from collections.abc import Generator
+from typing import Any
 
 import pytest
 from typer.testing import CliRunner
@@ -1144,3 +1145,96 @@ def test_ui_serve_fully_opted_out_in_production(monkeypatch: pytest.MonkeyPatch)
         if _prometheus_available():
             resp = client.get("/jobs/health/metrics")
             assert resp.status_code == 200
+
+
+# ── SSO bundle built from settings: pass-through pins ─────────────────────
+
+
+def _saml_env(**overrides: str) -> dict[str, str]:
+    """Minimal env for _build_sso_bundle to reach the SAML branch."""
+    env = {
+        "TASKQ_SSO_BACKEND": "saml",
+        "TASKQ_SAML_ENTITY_ID": "https://sp.example.com/metadata",
+        "TASKQ_SAML_ACS_URL": "https://app.example.com/admin/callback",
+        "TASKQ_SAML_IDP_ENTITY_ID": "https://idp.example.com",
+        "TASKQ_SAML_IDP_SSO_URL": "https://idp.example.com/sso",
+        "TASKQ_SAML_IDP_X509_CERT": "-----BEGIN CERTIFICATE-----test-----END CERTIFICATE-----",
+        "TASKQ_SAML_SESSION_SECRET": "s" * 32,
+    }
+    env.update(overrides)
+    return env
+
+
+def _captured_saml_config(monkeypatch: pytest.MonkeyPatch, env: dict[str, str]) -> Any:
+    """Run _build_sso_bundle against spied create_saml_auth; return the config it built.
+
+    The spy replaces the backend factory, so no onelogin/libxmlsec1 install
+    is needed to pin what the CLI layer threads INTO it — the pass-through
+    is the behavior under test, not the bundle it produces.
+    """
+    import taskq.cli as cli_mod
+    import taskq.web.admin.auth as auth_pkg
+    from taskq.settings import TaskQSettings
+
+    captured: dict[str, Any] = {}
+
+    def _spy(config: Any, *, base_path: str = "") -> Any:
+        captured["config"] = config
+        return None
+
+    monkeypatch.setattr(auth_pkg, "create_saml_auth", _spy)
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    # settings.saml resolves through SAMLSettings.cached(), which reads the
+    # live environment; the autouse conftest fixture resets that cache
+    # around every test, so it is cold here.
+    bundle = cli_mod._build_sso_bundle(TaskQSettings.load(), base_path="/admin")
+    assert bundle is None, "the spy's return value should flow out unchanged"
+    assert "config" in captured, "_build_sso_bundle never reached the SAML branch"
+    return captured["config"]
+
+
+def test_ui_serve_saml_bundle_passes_the_cookieless_fallback_flag_through(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """TASKQ_SAML_ALLOW_COOKIELESS_FALLBACK=true reaches SAMLAuthConfig.
+
+    A dropped pass-through fails *silently off* — the config carries its own
+    default — so nothing ever errors; the flag just becomes a no-op and the
+    operator's cookie-blocked-browser support quietly disappears. Same
+    hazard class as the session_max_age_seconds pass-through pinned below,
+    which cli.py's own comment warns about.
+    """
+    from taskq.web.admin.auth import SAMLAuthConfig
+
+    config = _captured_saml_config(
+        monkeypatch,
+        _saml_env(
+            TASKQ_SAML_ALLOW_COOKIELESS_FALLBACK="true",
+            TASKQ_SAML_SESSION_MAX_AGE_SECONDS="1234",
+        ),
+    )
+
+    assert isinstance(config, SAMLAuthConfig)
+    assert config.allow_cookieless_fallback is True, (
+        "TASKQ_SAML_ALLOW_COOKIELESS_FALLBACK=true must reach the runtime config"
+    )
+    # The older pass-through of the same hazard class, pinned while here:
+    assert config.session_max_age_seconds == 1234, (
+        "TASKQ_SAML_SESSION_MAX_AGE_SECONDS must reach the runtime config — "
+        "SAMLAuthConfig's own 28800 default would silently mask a miss"
+    )
+
+
+def test_ui_serve_saml_bundle_leaves_the_cookieless_fallback_off_when_unset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No flag in the environment → the runtime config stays off (the default)."""
+    from taskq.web.admin.auth import SAMLAuthConfig
+
+    config = _captured_saml_config(monkeypatch, _saml_env())
+
+    assert isinstance(config, SAMLAuthConfig)
+    assert config.allow_cookieless_fallback is False, (
+        "the cookie-less fallback is opt-in: with the env var unset it must stay off end to end"
+    )
