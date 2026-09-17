@@ -35,7 +35,6 @@ Passing an existing pool (e.g. shared with the rest of the application)::
 
 import asyncio
 import contextlib
-import os
 from collections.abc import AsyncGenerator, AsyncIterator, Iterable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -163,17 +162,22 @@ the clamp below cannot drift onto different spellings."""
 
 
 def _lock_budget_env_overlay() -> dict[str, str]:
-    """The operator's ``TASKQ_*_LOCK_TIMEOUT_MS`` env values, as a
+    """The operator's ``TASKQ_*_LOCK_TIMEOUT_MS`` values, as a
     ``load_from_dict`` overlay.
 
     ``TaskQ.open()`` resolves its settings through ``load_from_dict`` so
     the constructor's own arguments stay authoritative; that loader reads
-    the dict and nothing else, so the budget knobs' documented env
-    channel is probed here and folded in — without it a producer process
-    could never reach the knobs the client pool's per-query bound is
-    derived from. The env names come from the model's own field metadata
-    rather than restated literals, so a field rename moves both sides at
-    once.
+    the dict and nothing else, so the budget knobs' documented env channel
+    is probed here and folded in. The probe goes through
+    :meth:`TaskQSettings.resolve_cascade_value` — the SAME layer
+    resolution the worker's ``TaskQSettings.load()`` applies (process
+    environment, then the ``.env`` cascade, per dotenvmodel's ``override``
+    knob) — so a budget widened only in ``.env`` reaches the client pool's
+    derived ``command_timeout`` the way it always reached the worker's
+    server-side budgets (#251: the previous ``os.environ``-only probe made
+    the two sides silently disagree). The env names come from the model's
+    own field metadata rather than restated literals, so a field rename
+    moves both sides at once.
     """
     from dotenvmodel.loading import get_env_var_name
 
@@ -184,10 +188,40 @@ def _lock_budget_env_overlay() -> dict[str, str]:
     for field_name in _ENQUEUE_LOCK_BUDGET_FIELDS:
         _field_type, field_info = fields[field_name]
         env_name = get_env_var_name(field_name, field_info.alias, TaskQSettings.env_prefix)
-        value = os.environ.get(env_name)
+        value = TaskQSettings.resolve_cascade_value(env_name)
         if value is not None:
             overlay[env_name] = value
     return overlay
+
+
+def _resolve_default_schema_name() -> str:
+    """``TASKQ_SCHEMA_NAME`` through the worker's own cascade, validated
+    alone.
+
+    The value resolves exactly as ``WorkerSettings.load()`` resolves it
+    (process environment, then the ``.env`` cascade —
+    :meth:`TaskQSettings.resolve_cascade_value`), then validates through a
+    dict load carrying ONLY that variable, so the only malformed input
+    that can fail here is a malformed ``schema_name`` itself. That failure
+    is correct and deliberate: the schema is the client's own field, the
+    worker's full load fails the same value, and failing soft here would
+    silently enqueue into a schema no worker reads. A full
+    ``TaskQSettings.load()`` in the constructor instead validated every
+    UNRELATED field too — a malformed ``TASKQ_ADMIN_PORT`` (a setting the
+    client never reads) raised in an embedder's constructor (#251).
+    Unset in every layer, the model's own shipped default applies.
+    """
+    from dotenvmodel.loading import get_env_var_name
+
+    from taskq.settings import TaskQSettings
+
+    fields = TaskQSettings.get_fields()
+    _field_type, field_info = fields["schema_name"]
+    env_name = get_env_var_name("schema_name", field_info.alias, TaskQSettings.env_prefix)
+    raw = TaskQSettings.resolve_cascade_value(env_name)
+    if raw is None:
+        return str(field_info.default)
+    return TaskQSettings.load_from_dict({env_name: raw}).schema_name
 
 
 def _lock_budget_pairs(settings: "TaskQSettings") -> list[tuple[float, float]]:
@@ -538,16 +572,17 @@ class TaskQ:
         self._pool: "asyncpg.Pool | None" = pool  # noqa: UP037  # Why: asyncpg imported under TYPE_CHECKING; quotes required for runtime resolution.
         # Schema resolution keeps one source of truth with the worker and
         # CLI (the ``ui_serve`` idiom): an explicit argument wins, otherwise
-        # the shared configuration load decides — process environment, then
-        # the .env cascade, then the model default. Hardcoding the default
-        # here splits that truth: TASKQ_SCHEMA_NAME honored by the worker
-        # fleet but not by the client is a silent job-loss vector (the
-        # enqueue succeeds into a schema no worker reads; wait() reports
-        # only a bare timeout).
+        # the shared configuration cascade decides — process environment,
+        # then the .env cascade, then the model default, the same layers
+        # WorkerSettings.load() reads (see _resolve_default_schema_name:
+        # the value is validated ALONE, so an unrelated malformed TASKQ_*
+        # var cannot break an embedder's constructor — #251). Hardcoding
+        # the default here splits that truth: TASKQ_SCHEMA_NAME honored by
+        # the worker fleet but not by the client is a silent job-loss
+        # vector (the enqueue succeeds into a schema no worker reads;
+        # wait() reports only a bare timeout).
         if schema is None:
-            from taskq.settings import TaskQSettings
-
-            schema = TaskQSettings.load().schema_name
+            schema = _resolve_default_schema_name()
         self._schema = schema
         self._min_pool_size = min_pool_size
         self._max_pool_size = max_pool_size
@@ -640,9 +675,10 @@ class TaskQ:
         # client hands the backend — one settings flow, not two (and
         # validation failure now fails fast, before a pool is opened). The
         # lock-budget overlay folds the operator's TASKQ_*_LOCK_TIMEOUT_MS
-        # env values into the dict load: that loader reads only the dict,
-        # and the constructor's own arguments stay authoritative (they are
-        # written last).
+        # values — resolved through the SAME env/.env cascade the worker's
+        # load() reads (see _lock_budget_env_overlay) — into the dict load:
+        # that loader reads only the dict, and the constructor's own
+        # arguments stay authoritative (they are written last).
         load_data: dict[str, str] = _lock_budget_env_overlay()
         load_data["TASKQ_SCHEMA_NAME"] = self._schema
         if self._redis_url is not None:

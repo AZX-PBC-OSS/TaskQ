@@ -280,7 +280,11 @@ remaining steps. Later steps only execute when earlier ones did not match or rai
     client-side timer would end the wait as a bare `TimeoutError`. Widening a budget past its
     5 s default re-derives the pool's bound to fit the widened budget at the same margin, so a
     larger `TASKQ_MAX_PENDING_LOCK_TIMEOUT_MS` (or its siblings) takes effect end to end;
-    budgets at or below the defaults change nothing about the pool. `0` or less asks the
+    budgets at or below the defaults change nothing about the pool. The knobs resolve through
+    the same layers the worker reads — process environment, then the `.env` cascade, with
+    `DOTENV_OVERRIDE`/`DOTENV_READ_DOTFILES`/`DOTENV_READ_ENVIRON` honored — so a widening
+    set only in `.env` reaches the client pool's bound exactly as it reaches the worker's
+    server-side budgets. `0` or less asks the
     server to wait indefinitely, which no client-built pool can honor — its per-query bound
     still applies — so on that construction set a large finite value instead. Caller-supplied
     pools (`pool=` / `pool_factory=`) keep their own `command_timeout` and budgets are
