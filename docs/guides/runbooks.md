@@ -119,11 +119,11 @@ Extra workers consume `pending` jobs faster but promote nothing.
 
 ## TaskQSweepTimeouts
 
-**What fired.** `rate(taskq_maintenance_leader_sweep_timeouts_total[5m]) > 0` for 5 minutes: sweep batches are being aborted by deadlines (`TimeoutError` on the client) or server-side cancels (`QueryCanceledError` from `statement_timeout`). The database cannot finish bounded batches.
+**What fired.** `rate(taskq_maintenance_leader_sweep_timeouts_total[5m]) > 0` for 5 minutes: sweep batches are being aborted by deadlines (`TimeoutError` on the client) or server-side cancels (`QueryCanceledError` from `statement_timeout`) — the database cannot finish bounded batches — or a gauge sampler's read did not complete. The `sweep_name` label says which: sweep names are aborted batches; the sampler names (`queue_depth`, `backlog_detection`, `actor_backlog`, `reservation_slots`) are reads that did not happen, counted for every failure class — a dead sampler's gauges go stale or absent while nothing else names the loss, and the per-actor backlog read dying resolves `TaskQQueueDepthHigh` at the exact moment the incident it alerts on is killing the read, which is why that failure must land here.
 
 **How to confirm.**
 
-- Metric: `taskq_maintenance_leader_sweep_timeouts_total` rising, labeled by `sweep_name`; `TaskQSweepDegraded` often follows once the batch-size breaker latches.
+- Metric: `taskq_maintenance_leader_sweep_timeouts_total` rising, labeled by `sweep_name`; `TaskQSweepDegraded` often follows once the batch-size breaker latches. A sampler name rather than a batch name means a gauge read is failing — read that gauge beside the counter: an absent or frozen series while this rate rises is the dead-sampler signature, never a resolved alert.
 - SQL — what the sweeping session is doing when it dies (run while the rate is non-zero):
 
   ```sql

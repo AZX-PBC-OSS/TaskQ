@@ -1949,8 +1949,11 @@ _sweep_timeouts = get_meter().create_counter(
     "taskq.maintenance_leader.sweep_timeouts",
     description=(
         "Sweep calls aborted by a deadline or server-side statement cancel, "
-        "labeled by sweep_name. A non-zero rate means sweeps are being "
-        "cancelled, not completing slowly."
+        "and gauge-sampler reads that did not complete for ANY reason (the "
+        "sampler sweep_names are queue_depth / backlog_detection / "
+        "actor_backlog / reservation_slots), labeled by sweep_name. A "
+        "non-zero rate means work is being aborted or going unobserved, "
+        "not completing slowly."
     ),
     unit="1",
 )
