@@ -37,6 +37,7 @@ from taskq.client._taskq import (
     _watch_reclaims_pg,
 )
 from taskq.client._transport import pg_poll_event_stream
+from taskq.exceptions import StreamUnavailable
 from taskq.progress._events import ProgressEvent
 from taskq.settings import TaskQSettings
 from taskq.testing.assertions import wait_for
@@ -263,6 +264,128 @@ async def test_stream_pg_streams_in_pool_only_mode() -> None:
 
     assert [e.status for e in events] == ["running", "succeeded"]
     assert events[-1].terminal is True
+
+
+async def test_stream_pg_gives_up_after_the_failure_budget_with_its_cause() -> None:
+    """Failures that span the budget are not a blip: the stream ends with
+    StreamUnavailable naming the job, the run length and the last error,
+    instead of polling a dead database forever behind warnings."""
+    from taskq.client import _transport
+
+    readings = iter([0.0, 12.0, 24.0, 31.0])
+
+    async def _fetch_row() -> JobRow:
+        raise asyncpg.InterfaceError("connection closed")
+
+    with structlog.testing.capture_logs() as captured, pytest.raises(StreamUnavailable) as info:
+        async for _ in pg_poll_event_stream(
+            _fetch_row,
+            lambda row, _status_changed: _row_to_event(row),
+            job_id=cast(JobId, _JOB_ID),
+            poll_interval=_transport.POLL_INTERVAL_FLOOR_SECS,
+            failure_budget=30.0,
+            clock=lambda: next(readings),
+        ):
+            pytest.fail("no event can be produced by a fetch that always fails")
+
+    exc = info.value
+    assert exc.job_id == _JOB_ID
+    assert exc.consecutive_failures == 4
+    assert exc.elapsed == 31.0
+    assert isinstance(exc.__cause__, asyncpg.InterfaceError)
+    assert "InterfaceError" in str(exc)
+    assert [e["event"] for e in captured] == ["stream-poll-error"] * 3 + ["stream-poll-abandoned"]
+    abandoned = captured[-1]
+    assert abandoned["job_id"] == str(_JOB_ID)
+    assert abandoned["consecutive_failures"] == 4
+    assert abandoned["elapsed_secs"] == 31.0
+    assert "error" not in abandoned
+
+
+async def test_stream_pg_failure_budget_resets_on_a_successful_read() -> None:
+    """A successful read ends the failure run: two runs each shorter than
+    the budget never add up to it, even when their total does."""
+    from taskq.client import _transport
+
+    readings = iter([0.0, 20.0, 100.0, 120.0])
+    calls = {"n": 0}
+    rows = [_row(status="running", progress_seq=1), _row(status="succeeded", progress_seq=2)]
+
+    async def _fetch_row() -> JobRow:
+        calls["n"] += 1
+        if calls["n"] in (1, 2, 4, 5):
+            raise OSError("reset")
+        return rows.pop(0)
+
+    events = [
+        event
+        async for event in pg_poll_event_stream(
+            _fetch_row,
+            lambda row, _status_changed: _row_to_event(row),
+            job_id=cast(JobId, _JOB_ID),
+            poll_interval=_transport.POLL_INTERVAL_FLOOR_SECS,
+            failure_budget=30.0,
+            clock=lambda: next(readings),
+        )
+    ]
+    assert [e.status for e in events] == ["running", "succeeded"]
+
+
+async def test_stream_pg_non_infra_errors_propagate_unchanged() -> None:
+    """Only pool and connection failures are retried; a KeyError from the
+    row fetch (TaskQ.stream's vanished-row contract) or a programming
+    error propagates immediately."""
+
+    async def _fetch_row() -> JobRow:
+        raise KeyError(_JOB_ID)
+
+    with pytest.raises(KeyError):
+        async for _ in pg_poll_event_stream(
+            _fetch_row,
+            lambda row, _status_changed: _row_to_event(row),
+            job_id=cast(JobId, _JOB_ID),
+            poll_interval=0.01,
+        ):
+            pytest.fail("unreachable")
+
+
+async def test_stream_pg_poll_interval_is_floored_and_jittered(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A caller asking for a 1 ms cadence gets the transport's floor, and
+    each wait is spread over ±20% of it so streams do not poll in lockstep."""
+    from taskq.client import _transport
+
+    waits: list[float] = []
+
+    async def _recording_sleep(seconds: float) -> None:
+        waits.append(seconds)
+
+    monkeypatch.setattr(asyncio, "sleep", _recording_sleep)
+    rows = [_row(status="running", progress_seq=n) for n in range(1, 40)]
+    rows.append(_row(status="succeeded", progress_seq=40))
+
+    async def _fetch_row() -> JobRow:
+        return rows.pop(0)
+
+    events = [
+        event
+        async for event in pg_poll_event_stream(
+            _fetch_row,
+            lambda row, _status_changed: _row_to_event(row),
+            job_id=cast(JobId, _JOB_ID),
+            poll_interval=0.001,
+        )
+    ]
+    assert events[-1].terminal is True
+    floor = _transport.POLL_INTERVAL_FLOOR_SECS
+    lo, hi = (
+        floor * (1 - _transport.POLL_JITTER_FRACTION),
+        floor * (1 + _transport.POLL_JITTER_FRACTION),
+    )
+    assert len(waits) == 40
+    assert all(lo <= w <= hi for w in waits), waits
+    assert len(set(waits)) > 1, "every wait was identical: no jitter"
 
 
 async def test_stream_pg_fetches_once_before_the_first_wait() -> None:

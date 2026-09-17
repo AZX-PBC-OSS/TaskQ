@@ -55,6 +55,37 @@ class ResultUnavailable(TaskQError):
         super().__init__(f"job {row.id} has no stored result")
 
 
+class StreamUnavailable(TaskQError):
+    """A job stream could not re-read its job row for longer than its failure budget.
+
+    Raised by the Postgres poll transport behind :meth:`TaskQ.stream` and
+    :meth:`JobHandle.progress_stream` when every fetch has failed with a
+    pool or connection error for ``elapsed`` seconds (the transport's
+    failure budget). A blip shorter than the budget is retried silently
+    beyond a warning per failed poll; this is the end of the stream, so
+    the caller's ``async for`` cannot wait forever on a database that is
+    not coming back. The last failure is chained as ``__cause__``.
+    """
+
+    def __init__(
+        self,
+        job_id: "JobId",
+        *,
+        consecutive_failures: int,
+        elapsed: float,
+        last_error: BaseException,
+    ) -> None:
+        self.job_id = job_id
+        self.consecutive_failures = consecutive_failures
+        self.elapsed = elapsed
+        self.last_error = last_error
+        super().__init__(
+            f"stream for job {job_id} could not re-read the job row for {elapsed:.1f}s "
+            f"({consecutive_failures} consecutive poll failures); last failure: "
+            f"{type(last_error).__name__}"
+        )
+
+
 class BackpressureError(TaskQError):
     """Base class for synchronous enqueue-time backpressure signals.
 

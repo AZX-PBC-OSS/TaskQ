@@ -119,7 +119,9 @@ _PG_STREAM_POLL_INTERVAL_S: Final[float] = 0.5
 observation latency, since nothing announces a job's progress or terminal
 write over NOTIFY (see ``_stream_pg``). ``poll_timeout`` lowers it, never
 raises it: a client that asked for a 30 s safety net on Redis must not get
-a 30 s blind spot on Postgres."""
+a 30 s blind spot on Postgres. The transport floors it at
+``taskq.client._transport.POLL_INTERVAL_FLOOR_SECS`` and jitters each
+wait, so a tiny ``poll_timeout`` cannot hammer the database."""
 
 _CLIENT_POOL_COMMAND_TIMEOUT_SECS: Final[float] = 10.0
 """Per-query bound on every pool TaskQ itself builds for the client — the
@@ -446,7 +448,8 @@ class TaskQ:
     poll_timeout:
         Maximum seconds to wait between transport wakeups before re-fetching
         job state. Defaults to ``30.0``. :meth:`stream` on Postgres alone
-        has no wakeups and polls every ``min(poll_timeout, 0.5)`` seconds.
+        has no wakeups and polls every ``min(poll_timeout, 0.5)`` seconds
+        (never below 0.1 s, jittered ±20%).
     reload_interval:
         Seconds between automatic :meth:`reload_credentials` rebuilds of a
         factory-built pool (``pool_factory`` / ``pg_provider``); the
@@ -1158,9 +1161,13 @@ class TaskQ:
           NOTIFY, so the row is re-read through the client's pool every
           ``min(poll_timeout, 0.5)`` seconds: a terminal write is observed
           within half a second, at the cost of one primary-key read per
-          stream per half second. Lower ``poll_timeout`` to tighten it.
-          No connection is held per stream, so this works on a pool-only
-          client as well.
+          stream per half second. Lower ``poll_timeout`` to tighten it, to
+          a floor of 0.1 s; each wait is jittered ±20% so streams opened
+          together do not poll in lockstep. No connection is held per
+          stream, so this works on a pool-only client as well. A pool or
+          connection error on a read is retried on the next poll; reads
+          failing for 30 s straight end the stream with
+          :class:`~taskq.exceptions.StreamUnavailable`.
 
         Usage::
 
@@ -1179,6 +1186,8 @@ class TaskQ:
             Called before ``tq.open()`` or outside an ``async with`` block.
         KeyError
             The job does not exist.
+        StreamUnavailable
+            The Postgres poll could not re-read the row for 30 s straight.
         """
         client = self._require_open()
         row = await client.backend.get(job_id)
