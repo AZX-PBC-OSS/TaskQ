@@ -60,7 +60,16 @@ def test_observability_guide_cron_failures_row_matches_the_shipped_reconcile() -
     told the balance can sit permanently non-zero would distrust a metric
     the code has made trustworthy."""
     text = (_DOCS / "guides" / "observability.md").read_text()
-    section = text[text.index("`taskq.cron.consecutive_failures`") :][:1600]
+    # Anchor on the metrics-table ROW (the pipe-delimited row prefix),
+    # not the first mention of the instrument anywhere in the file: a
+    # prose cross-reference earlier in the guide -- another row citing
+    # this gauge's label cap, say -- steals a first-occurrence anchor and
+    # the window slices prose that never reaches the row the contract
+    # describes. The row prefix identifies the row itself; a rename or
+    # removal of the row raises ValueError and fails loud, as before.
+    # The assertions and window size are unchanged: the row's own text
+    # must still carry the shipped-reconcile language.
+    section = text[text.index("| `taskq.cron.consecutive_failures` |") :][:1600]
     assert "permanent residue" not in section and "permanently non-zero" not in section, (
         "observability.md still describes the pre-reconcile residue behavior; "
         "each tick reconciles the series against the database's per-actor sum, "
