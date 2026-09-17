@@ -145,6 +145,7 @@ taskq migrate up [OPTIONS]
 | `--phase` | `pre \| post \| None` | `None` | Restrict to only `pre` or only `post` phase migrations. When absent, applies both phases in order. |
 | `--target` | `str \| None` | `None` | Stop after applying this migration version (inclusive). Version format matches the filename prefix, e.g. `01.00.00_01`. |
 | `--max-steps` | `int \| None` | `None` | Maximum number of migrations to apply in this invocation. |
+| `--ddl-lock-timeout` | `float` | `30` | Seconds a transactional migration waits for a table lock before it fails and rolls back (`SET LOCAL lock_timeout`; see [Upgrading — the migration gave up waiting for a table lock](upgrading.md#the-migration-gave-up-waiting-for-a-table-lock)). `0` waits indefinitely, parking every statement on the table behind the queued DDL. |
 
 The command is idempotent: each migration is recorded in `{schema}.schema_migrations` and is skipped on subsequent runs. Running `taskq migrate up` with no options applies all pending migrations.
 

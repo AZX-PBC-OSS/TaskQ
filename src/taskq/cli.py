@@ -3,7 +3,7 @@
 Usage::
 
     taskq migrate status
-    taskq migrate up [--phase pre|post] [--target VERSION] [--max-steps N]
+    taskq migrate up [--phase pre|post] [--target VERSION] [--max-steps N] [--ddl-lock-timeout SECS]
     taskq worker --actors myapp.actors:registry
     taskq job show JOB_ID
 
@@ -595,6 +595,14 @@ def migrate_up(
         None, "--target", help="Stop after this version (inclusive). E.g. 01.00.00_01"
     ),
     max_steps: int | None = typer.Option(None, "--max-steps", help="Cap number of applies."),
+    ddl_lock_timeout: float = typer.Option(
+        migrate_mod.DEFAULT_MIGRATION_DDL_LOCK_TIMEOUT,
+        "--ddl-lock-timeout",
+        min=0.0,
+        help="Seconds a transactional migration waits for a table lock before it "
+        "fails and rolls back (SET LOCAL lock_timeout). 0 waits indefinitely, "
+        "parking every statement on the table behind the queued DDL.",
+    ),
     pg_credential_provider: str | None = typer.Option(
         None,
         "--pg-credential-provider",
@@ -616,6 +624,7 @@ def migrate_up(
             phase=phase,
             target=target,
             max_steps=max_steps,
+            ddl_lock_timeout=ddl_lock_timeout,
             conn_factory=conn_factory,
         )
     )
@@ -658,6 +667,7 @@ async def _up(
     phase: migrate_mod.Phase | None,
     target: str | None,
     max_steps: int | None,
+    ddl_lock_timeout: float = migrate_mod.DEFAULT_MIGRATION_DDL_LOCK_TIMEOUT,
     conn_factory: ConnFactory | None = None,
 ) -> None:
     # Why locked: the README names `taskq migrate up` as THE deploy step, and a
@@ -687,6 +697,7 @@ async def _up(
                 phase=phase,
                 target=target,
                 max_steps=max_steps,
+                ddl_lock_timeout=ddl_lock_timeout,
             )
     except SystemExit as exc:
         # Lock contention. Already a precise message; reporting it through

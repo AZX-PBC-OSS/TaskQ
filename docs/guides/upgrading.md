@@ -58,7 +58,8 @@ This is a deliberate tradeoff, not a missing feature:
 
    The command is idempotent — migrations already recorded in
    `{schema}.schema_migrations` are skipped. See [cli.md](cli.md#taskq-migrate-up)
-   for the full option reference (`--phase`, `--target`, `--max-steps`).
+   for the full option reference (`--phase`, `--target`, `--max-steps`,
+   `--ddl-lock-timeout`).
 
    `TASKQ_MIGRATE_ON_START=true` is **not** a substitute here: it is honoured
    only by `taskq ui serve`, which runs as a single process. The worker
@@ -148,9 +149,10 @@ its own transaction) and then fails with `MigrationLockTimeoutError`; the
 report names the migration, the bound, and this remedy. The migration rolled
 back and nothing was applied: find the holder in `pg_stat_activity` /
 `pg_locks`, end it or wait for it, then re-run `taskq migrate up`. To wait
-longer from your own deploy tooling, pass `ddl_lock_timeout=` to
-`apply_pending` / `apply_pending_locked` (`0` waits indefinitely, at the
-cost of parking every statement on the table behind the queued DDL). The
+longer, pass `taskq migrate up --ddl-lock-timeout SECS`, or
+`ddl_lock_timeout=` to `apply_pending` / `apply_pending_locked` from your
+own deploy tooling (`0` waits indefinitely, at the cost of parking every
+statement on the table behind the queued DDL). The
 bound governs the *wait* only — a statement that already holds its lock,
 such as an index build, is never interrupted by it. The runner's own upgrade
 of the `schema_migrations` ledger (an `ALTER TABLE` before the first
