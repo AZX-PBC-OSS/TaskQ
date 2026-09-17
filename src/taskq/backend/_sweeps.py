@@ -477,6 +477,25 @@ _SWEEP_1_BODY = """\
 --   The job_attempts row records outcome='crashed' on every
 --   branch: that IS what happened to the attempt.
 --
+-- THE SHAPE (vendor/river's JobCancel + JobRescuer): operator intent
+-- outranking reclaim-driven retry is river's pattern too. JobCancel
+-- (vendor/river/riverdriver/riverpgxv5/internal/dbsqlc/
+-- river_job.sql:40-77) leaves a running row running — the cooperative
+-- protocol belongs to the live holder — and stamps
+-- metadata.cancel_attempted_at "so that the rescuer knows not to
+-- rescue it, even if it gets stuck in the running state"; the rescuer
+-- (vendor/river/internal/maintenance/job_rescuer.go:195-259) checks
+-- that stamp and routes a stamped stuck job straight to 'cancelled',
+-- never into the retry decision. Two deliberate divergences here:
+-- the marker rides first-class columns (cancel_phase /
+-- cancel_requested_at — readable as an audit trail and PRESERVED on
+-- the terminal row) rather than a metadata JSONB stamp, and the
+-- terminalisation happens in THIS statement, under the grace ladder
+-- the carve-out above already waited out, rather than in a separate
+-- rescuer on its own stuck horizon (river's default is an hour) during
+-- which a cancel-addressed row whose holder is dead simply sits
+-- running.
+--
 -- locked_by_worker is snapshotted raw (the last-known holder id, even when
 -- that worker's workers row was already removed by cleanup_stale_workers on
 -- an earlier tick — possible whenever the stale-worker window,
