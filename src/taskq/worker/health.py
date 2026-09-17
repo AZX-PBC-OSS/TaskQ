@@ -11,6 +11,14 @@ probes — "``exec`` probes aren't supported"
 (https://learn.microsoft.com/en-us/azure/container-apps/health-probes) — so a Unix socket is
 unreachable to a probe there. Kubernetes and ACA both treat 200-399 as success, so an unready
 worker answers 503.
+
+The two transports bind independently in :meth:`HealthServer.start`: a Unix-path collision
+(a live peer worker owns the path, and the bind refuses to steal it) costs the Unix listener
+alone — the TCP listener is still attempted, so port-routed probes keep answering
+(:class:`HealthUnixBindCollisionError`), and with no port configured the boot warns and continues
+with no listener. A TCP bind failure, by contrast, refuses startup
+(:class:`HealthTcpBindError`): the probes the manifest routed to that port would otherwise
+pass against a worker that is silently down.
 """
 
 import asyncio
@@ -426,12 +434,14 @@ class HealthTcpBindError(RuntimeError):
     """The TCP probe listener the deployment routed here could not bind.
 
     Raised by :meth:`HealthServer.start` when ``health_port`` is set and
-    the address cannot be served. Distinct from a bare bind ``OSError`` on
-    the Unix-socket arm: a socket-path collision means a live peer worker
-    owns that path (boot continues, the collision is a WARNING), while an
-    unservable probe port means the orchestrator routes health checks to
-    this replica and nothing answers them — the worker refuses to start
-    rather than run with probes silently dead.
+    the address cannot be served. Distinct from the Unix-socket arm's
+    failures: a socket-path collision means a live peer worker owns that
+    path — with a TCP listener up the boot continues under
+    :class:`HealthUnixBindCollisionError` (a WARNING plus a stop callback),
+    and with none configured it warns and continues owning nothing —
+    while an unservable probe port means the orchestrator routes health
+    checks to this replica and nothing answers them: the worker refuses
+    to start rather than run with probes silently dead.
     """
 
     def __init__(self, host: str, port: int, cause: OSError) -> None:
@@ -442,6 +452,39 @@ class HealthTcpBindError(RuntimeError):
             "the deployment's probes target this port, so refusing to start "
             "is the honest outcome — free the port or change "
             "TASKQ_HEALTH_PORT / TASKQ_HEALTH_HOST"
+        )
+
+
+class HealthUnixBindCollisionError(OSError):
+    """The Unix health socket path is not this worker's to bind, but TCP is up.
+
+    Raised by :meth:`HealthServer.start` when the Unix bind fails while
+    ``health_port`` is set and that listener IS already serving: the
+    collision — almost always a live peer worker owning the path, which
+    :func:`_bind_unix_socket` refuses to steal — costs the Unix surface
+    alone, and the boot keeps the port-routed probe surface answering
+    (#245; before, the Unix bind failure aborted ``start()`` before the
+    TCP bind was even attempted, leaving a registered, claiming worker
+    with no listener at all).
+
+    Subclasses :class:`OSError` so a caller following the historical
+    "warn and continue on a health OSError" rule (the fix for #207)
+    still degrades rather than crashes. The contract differs from a bare
+    bind ``OSError`` in one respect: this server OWNS the TCP listener it
+    managed to bind, so ``stop()`` must still be called — exactly what
+    the worker bootstrap does with this type (warn, push the stop
+    callback, keep booting), while a bare ``OSError`` leaves it owning
+    nothing.
+    """
+
+    def __init__(self, path: str, cause: OSError) -> None:
+        self.path = path
+        super().__init__(
+            cause.errno,
+            f"health unix socket path {path!r} could not be bound ({cause}); "
+            "the TCP probe listener is serving, so booting continues with "
+            "the Unix surface alone missing — give each replica a unique "
+            "TASKQ_HEALTH_SOCKET_PATH",
         )
 
 
@@ -471,28 +514,65 @@ class HealthServer:
         self._deps = deps
         self._socket_path = deps.settings.health_socket_path
 
+        # A Unix bind failure is a PARTIAL outcome now, not the end of
+        # start(): the TCP listener below is the surface the deployment's
+        # port-routed probes actually target, and skipping it because a
+        # peer owns the socket path left the worker registered, claiming,
+        # and answering nothing anywhere (#245). The failure is raised
+        # AFTER the TCP bind, so the caller learns of it only once every
+        # bindable surface is up and owned.
+        unix_bind_error: OSError | None = None
+        sock: socket.socket | None = None
         if deps.settings.health_tasks_enabled:
             old_umask = os.umask(0o077)
             try:
                 sock = _bind_unix_socket(self._socket_path)
+            except OSError as exc:
+                unix_bind_error = exc
             finally:
                 os.umask(old_umask)
         else:
-            sock = _bind_unix_socket(self._socket_path)
-        try:
-            self._server = await asyncio.start_unix_server(self._handle_unix, sock=sock)
-        except BaseException:
-            sock.close()
-            raise
-        # Capture the inode we just bound so `stop()` can later verify it
-        # still owns this path before unlinking — a slow-shutting-down
-        # worker must never delete a *replacement* worker's fresh socket
-        # bound to the same path.
-        with contextlib.suppress(OSError):
-            self._socket_inode = os.stat(self._socket_path).st_ino
-        logger.info("health-server-started", socket_path=self._socket_path)
+            try:
+                sock = _bind_unix_socket(self._socket_path)
+            except OSError as exc:
+                unix_bind_error = exc
 
+        if sock is not None:
+            try:
+                self._server = await asyncio.start_unix_server(self._handle_unix, sock=sock)
+            except BaseException:
+                sock.close()
+                raise
+            # Capture the inode we just bound so `stop()` can later verify it
+            # still owns this path before unlinking — a slow-shutting-down
+            # worker must never delete a *replacement* worker's fresh socket
+            # bound to the same path.
+            with contextlib.suppress(OSError):
+                self._socket_inode = os.stat(self._socket_path).st_ino
+            logger.info("health-server-started", socket_path=self._socket_path)
+
+        # Attempted even when the Unix bind collided: a probe port that
+        # could be served must not stay dark over a socket path it does
+        # not depend on. A TCP bind failure still refuses startup
+        # (``HealthTcpBindError``, its own failure paths cleaning up
+        # whatever this server did bind) whatever the Unix arm did — the
+        # refusal policy for the routed surface governs both arms.
         await self._start_http(deps)
+
+        if unix_bind_error is not None:
+            if self._http_server is None:
+                # No TCP listener configured, so nothing of ours is
+                # serving anywhere: raise the bare OSError and keep
+                # today's contract — the bootstrap's warn-and-continue
+                # records the collision, no stop is owed, nothing of
+                # this server's to clean up.
+                raise unix_bind_error
+            # The TCP listener is up and this server owns it: raise the
+            # collision as its own type so the caller can keep booting
+            # while STILL stopping this server at teardown.
+            raise HealthUnixBindCollisionError(
+                self._socket_path, unix_bind_error
+            ) from unix_bind_error
 
     async def _start_http(self, deps: WorkerDeps) -> None:
         """Bind the optional TCP listener, or fail startup trying.
@@ -529,12 +609,21 @@ class HealthServer:
             await self._server.wait_closed()
 
         if self._socket_path is not None:
+            # A start() that lost the Unix bind to a collision (#245's
+            # partial start) owns neither the server nor the inode, and
+            # the path is a live peer's serving surface: the guard below
+            # would WARN about "not the one this worker bound" for a
+            # socket this worker never bound at all. Nothing to unlink.
+            if self._server is None and self._socket_inode is None:
+                return
             # Unlink only when the inode captured at bind time still names
-            # the file now sitting at the path. A server that never bound —
-            # the collision path, where boot continued while a live peer
-            # kept the file — has no inode, so it can never prove ownership
-            # and never unlinks; deleting the peer's serving surface is
-            # exactly the shutdown-race this guard exists to prevent.
+            # the file now sitting at the path: a replacement worker's
+            # fresh socket bound to the same path after this one stopped
+            # listening must survive this worker's teardown. An inode that
+            # is None here means this server DID bind but could not stat
+            # its own file — ownership unprovable, so it never unlinks;
+            # deleting a stranger's serving surface is exactly the
+            # shutdown-race this guard exists to prevent.
             current_inode: int | None = None
             with contextlib.suppress(OSError):
                 current_inode = os.stat(self._socket_path).st_ino

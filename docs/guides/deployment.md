@@ -344,6 +344,12 @@ work*, not *restart me*.
     action item: give each replica a unique socket path (or a per-replica directory), because
     until you do this replica's health is not observable at the address you configured.
 
+    When `TASKQ_HEALTH_PORT` **is** set, the collision costs the Unix surface alone: the TCP
+    probe listener is bound anyway, so the port your manifest routes probes to keeps answering
+    for this replica (the WARN carries `tcp_listener=serving` to say so). The Unix surface
+    stays the action item above — unique path per replica — and with no port configured the
+    answer is unchanged: warn, boot, no listener anywhere.
+
 !!! danger "A TCP probe port that cannot bind refuses startup"
     The TCP listener is a different contract: the deployment manifest routed health probes
     for THIS replica to `TASKQ_HEALTH_PORT`, and a worker that boots without it answers
@@ -534,7 +540,7 @@ The worker has up to three listeners, and every one of them is **off unless you 
 Fail-closed semantics, identical across the platforms below:
 
 - **Both TCP listeners bind nothing until you set a port.** A worker that binds a port nobody asked for is a surprise network surface; setting the port is the opt-in.
-- **A TCP health listener that cannot bind refuses startup.** The worker logs `health-http-bind-failed` (ERROR) and exits with `HealthTcpBindError` rather than run with the manifest's probe port dead (a `tcpSocket` probe on a port another process holds would pass while checking nothing). The unix socket's collision is deliberately softer: a collision there means a live peer owns the path, so the boot warns (`health-server-unavailable`) and continues.
+- **A TCP health listener that cannot bind refuses startup.** The worker logs `health-http-bind-failed` (ERROR) and exits with `HealthTcpBindError` rather than run with the manifest's probe port dead (a `tcpSocket` probe on a port another process holds would pass while checking nothing). The unix socket's collision is deliberately softer: a collision there means a live peer owns the path, so the boot warns (`health-server-unavailable`) and continues — and because the two transports bind independently, the TCP listener still comes up, so the port the manifest routes probes to keeps answering; only with no `TASKQ_HEALTH_PORT` configured does the collision leave the worker with no listener at all.
 - **The scrape listener refuses startup.** If `[prometheus]` or autoconfigure is missing the worker tells you and binds nothing; if the listener itself cannot be configured or bound, `OtelExporterConfigurationError` exits the worker with code 1 rather than run with its scrape silently dead.
 - The scrape endpoint answers without a token: keep it on interfaces only your scraper reaches.
 

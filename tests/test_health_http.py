@@ -9,6 +9,7 @@ client; nothing here mocks the responder.
 
 import asyncio
 import contextlib
+import errno
 import os
 import pathlib
 import socket
@@ -17,11 +18,13 @@ from collections.abc import AsyncGenerator
 from types import SimpleNamespace
 
 import pytest
+import structlog.testing
 
 from taskq.worker._watchdog import LoopLiveness
 from taskq.worker.health import (
     HealthServer,
     HealthTcpBindError,
+    HealthUnixBindCollisionError,
     register_readiness_check,
     unregister_readiness_check,
 )
@@ -316,6 +319,148 @@ async def test_no_tcp_listener_when_port_unset() -> None:
     """Off by default: nothing binds a port nobody asked for."""
     async with _running(http=False) as (server, _settings):
         assert server.bound_port is None
+
+
+# ── 4b. The two transports bind independently (#245) ────────────────────
+
+
+async def _peer_http_ok(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+    """A live peer worker's stand-in: answers every request with a bare 200."""
+    with contextlib.suppress(
+        Exception
+    ):  # Why: the peer must survive probe clients that vanish mid-request.
+        await asyncio.wait_for(reader.readline(), timeout=5.0)
+        writer.write(b"HTTP/1.0 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+        await writer.drain()
+    writer.close()
+    with contextlib.suppress(OSError):
+        await writer.wait_closed()
+
+
+async def test_unix_collision_with_health_port_still_serves_tcp() -> None:
+    """#245: a Unix-path collision must not take the TCP probe listener
+    down with it.
+
+    Before, ``start()`` bound the Unix socket first and aborted on the
+    collision before ever attempting the TCP bind — so a worker deployed
+    with ``health_port`` (the ACA/K8s probe surface) booted, registered,
+    claimed work, and answered NOTHING at the port its probes target.
+    The TCP bind must be attempted anyway, the collision must surface as
+    its own partial-start type, and ``stop()`` must clean up exactly what
+    the partial start owns: the TCP listener closed, the live peer's
+    socket file left exactly where it was.
+    """
+    peer_path = _next_sock_path()
+    peer = await asyncio.start_unix_server(_peer_http_ok, path=peer_path)
+    server = HealthServer()
+    try:
+        settings = _make_settings(peer_path, health_port=0)
+        with pytest.raises(HealthUnixBindCollisionError) as excinfo:
+            await server.start(_make_deps(settings))
+        assert excinfo.value.path == peer_path
+        assert excinfo.value.errno == errno.EADDRINUSE
+        # The port-routed probe surface is up and answering despite the
+        # collision — this is the whole fix. Captured while the listener
+        # lives: stop() nulls the server object it came from.
+        port = _port(server)
+        resp = await _tcp_get(port, "/live")
+        assert resp.startswith(b"HTTP/1.0 200 OK\r\n"), resp
+        # The peer keeps its serving surface while this worker runs.
+        assert (await _unix_get(peer_path, "/live")).startswith(b"HTTP/1.0 200 OK\r\n")
+
+        with structlog.testing.capture_logs() as stop_logs:
+            await server.stop()
+
+        # Partial-start cleanup: the TCP listener is gone (no leaked fd
+        # serving probes for a dead worker), the peer's file was never this
+        # server's to unlink, and stop() does not WARN about "not the one
+        # this worker bound" for a socket it never bound at all. Checked
+        # with the peer still live — its own close() unlinks its path, and
+        # that must stay the only thing that ever does.
+        port_refused = False
+        try:
+            await asyncio.open_connection("127.0.0.1", port)
+        except OSError:
+            port_refused = True
+        assert port_refused, "stop() left the TCP probe listener serving after teardown"
+        assert pathlib.Path(peer_path).exists(), (  # noqa: ASYNC240  # Why: a single fast metadata read in a test assertion; matches tests/test_health_http.py's existing convention.
+            "stop() unlinked the live peer's socket file"
+        )
+        assert (await _unix_get(peer_path, "/live")).startswith(b"HTTP/1.0 200 OK\r\n"), (
+            "the peer stopped answering after this worker's stop() — its "
+            "serving surface was disturbed"
+        )
+        assert not any(e["event"] == "health-server-stop-skipped-unlink" for e in stop_logs), (
+            "a never-bound path must be skipped silently, not reported as a shutdown-race near-miss"
+        )
+    finally:
+        peer.close()
+        await peer.wait_closed()
+
+
+async def test_unix_collision_without_health_port_keeps_the_bare_oserror_contract() -> None:
+    """No ``health_port`` configured: the collision keeps today's answer.
+
+    Nothing of the server's is serving anywhere, so the boot's
+    warn-and-continue (the #207 contract) fires on a plain ``OSError`` and
+    no stop is owed — ``stop()`` stays a safe no-op that never touches the
+    peer's file. Pinning the TYPE matters: ``HealthUnixBindCollisionError``
+    subclasses ``OSError``, so a bare ``pytest.raises(OSError)`` cannot
+    tell the two contracts apart.
+    """
+    peer_path = _next_sock_path()
+    peer = await asyncio.start_unix_server(_peer_http_ok, path=peer_path)
+    server = HealthServer()
+    try:
+        settings = _make_settings(peer_path)  # health_port unset
+        with pytest.raises(OSError) as excinfo:
+            await server.start(_make_deps(settings))
+        assert type(excinfo.value) is OSError, (
+            "with no TCP listener to save, the collision must stay the bare "
+            f"OSError the bootstrap's warn-and-continue expects, got {type(excinfo.value)}"
+        )
+        assert excinfo.value.errno == errno.EADDRINUSE
+        await server.stop()
+        assert pathlib.Path(peer_path).exists(), (  # noqa: ASYNC240  # Why: a single fast metadata read in a test assertion; matches this file's existing convention.
+            "stop() unlinked a path it never bound"
+        )
+        assert (await _unix_get(peer_path, "/live")).startswith(b"HTTP/1.0 200 OK\r\n")
+    finally:
+        peer.close()
+        await peer.wait_closed()
+
+
+async def test_unix_and_tcp_both_collide_refuses_startup_and_leaves_the_peer_alone() -> None:
+    """When both transports collide, the TCP refusal governs the boot.
+
+    The newcomer must refuse to start (``HealthTcpBindError`` — the
+    manifest routes probes to that port), and its failed boot must not
+    disturb the worker already serving on the Unix path: the peer's
+    socket file survives the newcomer's cleanup untouched.
+    """
+    peer_path = _next_sock_path()
+    peer = await asyncio.start_unix_server(_peer_http_ok, path=peer_path)
+
+    squatter = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    squatter.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    squatter.bind(("127.0.0.1", 0))
+    squatter.listen(1)
+    taken_port = int(squatter.getsockname()[1])
+
+    server = HealthServer()
+    try:
+        settings = _make_settings(peer_path, health_port=taken_port)
+        with pytest.raises(HealthTcpBindError):
+            await server.start(_make_deps(settings))
+        assert pathlib.Path(peer_path).exists(), (  # noqa: ASYNC240  # Why: a single fast metadata read in a test assertion; matches this file's existing convention.
+            "the refused boot unlinked the live peer's unix socket file"
+        )
+        assert (await _unix_get(peer_path, "/live")).startswith(b"HTTP/1.0 200 OK\r\n")
+    finally:
+        await server.stop()
+        squatter.close()
+        peer.close()
+        await peer.wait_closed()
 
 
 # ── 5. Hostile input must not take the listener down ───────────────────
