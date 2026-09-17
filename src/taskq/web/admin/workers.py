@@ -20,8 +20,14 @@ logger = structlog.get_logger("taskq.web.admin.workers")
 
 
 _WORKERS_SQL = (
-    "SELECT w.*, (ml.worker_id IS NOT NULL) AS is_leader "
+    "SELECT w.*, (ml.worker_id IS NOT NULL) AS is_leader, "
+    "COALESCE(running.running_count, 0) AS running_jobs "
     'FROM "{schema}".workers w '
+    "LEFT JOIN LATERAL ("
+    "  SELECT count(*)::int AS running_count "
+    '  FROM "{schema}".jobs j '
+    "  WHERE j.locked_by_worker = w.id AND j.status = 'running'"
+    ") running ON true "
     'LEFT JOIN "{schema}".maintenance_leader ml ON ml.worker_id = w.id '
     "ORDER BY w.last_seen_at DESC"
 )
@@ -63,11 +69,17 @@ def register(router: APIRouter) -> None:
         workers = [dict(r) for r in rows]
         for w in workers:
             md = decode_jsonb(w.get("metadata"))
-            w["notify_enabled"] = (
-                bool(md.get("notify_enabled", False))  # pyright: ignore[reportUnknownArgumentType]  # Why: decode_jsonb returns object; isinstance(md, dict) narrows the container but pyright cannot narrow the dict value type, so the argument is statically unknown.
-                if isinstance(md, dict)
-                else False
-            )
+            # running_jobs counts the worker's own running ROWS (the same
+            # population taskq.worker.active_jobs counts per process); the
+            # max is the registered capacity those rows are bounded by.
+            # Reserved-but-unclaimed capacity (rate-limit slots, in-flight
+            # dispatch probes) is deliberately NOT in either number.
+            if isinstance(md, dict):
+                w["max_concurrency"] = md.get("max_concurrency")
+                w["notify_enabled"] = bool(md.get("notify_enabled", False))
+            else:
+                w["max_concurrency"] = None
+                w["notify_enabled"] = False
         realtime_mode, mode_label = realtime_ctx
         html = tmpl.get_template("workers.html").render(
             workers=workers,

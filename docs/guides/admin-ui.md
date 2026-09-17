@@ -308,7 +308,7 @@ Duration percentiles are derived from `job_attempts_archive.duration_ms` via `pe
 
 ### `GET /admin/workers`
 
-Workers overview. Lists all rows from the `workers` table ordered by `last_seen_at DESC`, with an `is_leader` flag computed by a LEFT JOIN on `maintenance_leader`.
+Workers overview. Lists all rows from the `workers` table ordered by `last_seen_at DESC`, with an `is_leader` flag computed by a LEFT JOIN on `maintenance_leader`, and a **Running / Max** column: the count of `jobs` rows in `status = 'running'` locked by that worker (one index seek per worker over `jobs_locked_by_worker_running_idx`, the same population the `taskq.worker.active_jobs` metric counts per process) against the `max_concurrency` the worker registered in its row metadata. Amber when the worker is at capacity; a dash when an older registration carried no capacity. Reserved-but-unclaimed capacity (rate-limit slots, in-flight dispatch probes) is in neither number.
 
 ### `GET /admin/leader`
 

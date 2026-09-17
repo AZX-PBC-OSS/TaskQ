@@ -511,3 +511,179 @@ def test_workers_page_non_dict_metadata_defaults_notify_disabled(
     response = client.get("/workers")  # pyright: ignore[reportUnknownMemberType]
     assert response.status_code == 200  # pyright: ignore[reportUnknownMemberType]
     assert "worker-2" in response.text  # pyright: ignore[reportUnknownMemberType]
+
+
+# ── Workers page: running / max column ──────────────────────────────────
+
+
+class _WorkersScriptedConn:
+    """Connection returning one preset workers fetch, then empty results."""
+
+    def __init__(self, rows: list[StubRecord], *, schema: str = "taskq") -> None:
+        self._rows = rows
+        self._schema = schema
+
+    async def fetch(self, query: str, *args: object) -> list[StubRecord]:
+        if f'"{self._schema}".workers' in query and "running_count" in query:
+            return self._rows
+        return []
+
+    async def fetchrow(self, query: str, *args: object) -> StubRecord | None:
+        return None
+
+    async def fetchval(self, query: str, *args: object) -> object:
+        if "clock_timestamp()" in query:
+            return datetime.now(UTC)
+        return None
+
+    async def execute(self, query: str, *args: object) -> str:
+        return ""
+
+
+class _WorkersScriptedAcquireCtx:
+    def __init__(self, conn: _WorkersScriptedConn) -> None:
+        self._conn = conn
+
+    async def __aenter__(self) -> _WorkersScriptedConn:
+        return self._conn
+
+    async def __aexit__(self, *args: object) -> None:
+        pass
+
+
+class _WorkersScriptedPool:
+    def __init__(self, conn: _WorkersScriptedConn) -> None:
+        self._conn = conn
+
+    def acquire(self) -> _WorkersScriptedAcquireCtx:
+        return _WorkersScriptedAcquireCtx(self._conn)
+
+
+def test_workers_page_renders_running_over_max(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The workers table renders the per-worker running row count against the
+    registered max_concapacity: the same population the
+    taskq.worker.active_jobs metric counts per process."""
+    monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
+    row = StubRecord(
+        id="11111111-1111-1111-1111-111111111111",
+        hostname="worker-1",
+        pid=1234,
+        queues="default",
+        last_seen_at="2025-01-01T00:00:00+00:00",
+        is_leader=True,
+        running_jobs=2,
+        metadata='{"notify_enabled": true, "max_concurrency": 4}',
+    )
+    conn = _WorkersScriptedConn([row])
+    bundle = create_router(_WorkersScriptedPool(conn))  # pyright: ignore[reportArgumentType]  # Why: test duck-type pool.
+    app = FastAPI()
+    app.include_router(bundle.router)
+    setup_admin_state(app, bundle)
+    client = TestClient(app)
+    resp = client.get("/workers")
+    assert resp.status_code == 200
+    assert "2 / 4" in resp.text
+    # Not at capacity: the neutral badge, not the amber one.
+    assert "bg-amber-100" not in resp.text
+
+
+def test_workers_page_flags_a_saturated_worker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A worker whose running rows reach its registered max renders the
+    at-capacity badge: the saturation signal the scaling playbook's first
+    row reads."""
+    monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
+    row = StubRecord(
+        id="22222222-2222-2222-2222-222222222222",
+        hostname="worker-2",
+        pid=5678,
+        queues="default",
+        last_seen_at="2025-01-01T00:00:00+00:00",
+        is_leader=False,
+        running_jobs=4,
+        metadata='{"notify_enabled": true, "max_concurrency": 4}',
+    )
+    conn = _WorkersScriptedConn([row])
+    bundle = create_router(_WorkersScriptedPool(conn))  # pyright: ignore[reportArgumentType]  # Why: test duck-type pool.
+    app = FastAPI()
+    app.include_router(bundle.router)
+    setup_admin_state(app, bundle)
+    client = TestClient(app)
+    resp = client.get("/workers")
+    assert resp.status_code == 200
+    assert "4 / 4" in resp.text
+    assert "bg-amber-100" in resp.text
+
+
+def test_workers_page_renders_a_dash_when_metadata_lacks_capacity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A workers row whose metadata carries no max_concurrency (an older
+    registration) still shows its running count, with a dash for the max."""
+    monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
+    row = StubRecord(
+        id="33333333-3333-3333-3333-333333333333",
+        hostname="worker-3",
+        pid=99,
+        queues="default",
+        last_seen_at="2025-01-01T00:00:00+00:00",
+        is_leader=False,
+        running_jobs=1,
+        metadata="{}",
+    )
+    conn = _WorkersScriptedConn([row])
+    bundle = create_router(_WorkersScriptedPool(conn))  # pyright: ignore[reportArgumentType]  # Why: test duck-type pool.
+    app = FastAPI()
+    app.include_router(bundle.router)
+    setup_admin_state(app, bundle)
+    client = TestClient(app)
+    resp = client.get("/workers")
+    assert resp.status_code == 200
+    assert "1 /" in resp.text
+    assert "bg-amber-100" not in resp.text
+
+
+def test_workers_query_counts_running_rows_through_the_partial_index(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The workers overview's running count rides the
+    jobs_locked_by_worker_running_idx partial index (locked_by_worker +
+    status = 'running'), not a scan of the jobs table."""
+    monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
+    captured: list[str] = []
+
+    class _CapturingConn(_WorkersScriptedConn):
+        async def fetch(self, query: str, *args: object) -> list[StubRecord]:
+            if "running_count" in query:
+                captured.append(query)
+            return await super().fetch(query, *args)
+
+    conn = _CapturingConn(
+        [
+            StubRecord(
+                id="44444444-4444-4444-4444-444444444444",
+                hostname="worker-4",
+                pid=7,
+                queues="default",
+                last_seen_at="2025-01-01T00:00:00+00:00",
+                is_leader=False,
+                running_jobs=0,
+                metadata="{}",
+            )
+        ]
+    )
+    bundle = create_router(_WorkersScriptedPool(conn))  # pyright: ignore[reportArgumentType]  # Why: test duck-type pool.
+    app = FastAPI()
+    app.include_router(bundle.router)
+    setup_admin_state(app, bundle)
+    client = TestClient(app)
+    resp = client.get("/workers")
+    assert resp.status_code == 200
+    assert captured, "the workers overview never ran the running-count query"
+    sql = captured[0]
+    assert "locked_by_worker = w.id" in sql
+    assert "status = 'running'" in sql
+    assert "count(*)" in sql
