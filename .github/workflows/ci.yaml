@@ -142,7 +142,7 @@ jobs:
       # so this step is what keeps them from becoming silent coverage loss.
       # The version is pinned rather than trusting whatever the runner image
       # ships, so the behaviour under test does not move with the image.
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@v7
         with:
           node-version: "22"
 
@@ -212,7 +212,7 @@ jobs:
 
       # Same reason as the test matrix: the admin.js tests run under Node
       # and fail rather than skip when it is absent under CI=true.
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@v7
         with:
           node-version: "22"
 
