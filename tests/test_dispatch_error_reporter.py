@@ -21,7 +21,6 @@ from pydantic import BaseModel, ConfigDict
 
 from taskq._di.registry import ProviderRegistry
 from taskq._di.scope import Scope
-from taskq._di.scopes import LoopScope, ProcessScope, ThreadScope, make_resolver
 from taskq._ids import new_job_id
 from taskq.actor import ActorRef
 from taskq.backend._protocol import EnqueueArgs, JobRow, RetryKind
@@ -35,6 +34,7 @@ from taskq.testing.clock import FakeClock
 from taskq.testing.in_memory import InMemoryBackend
 from taskq.worker.cancel import ActiveJobRegistry
 from taskq.worker.dispatch import dispatch_one_job
+from tests._di_scopes import BootstrappedScopes
 
 _START = datetime(2026, 1, 1, tzinfo=UTC)
 _ACTOR = "reporting_actor"
@@ -77,36 +77,6 @@ class _FakeWorkerDeps:
         self.disowned_jobs: set[UUID] = set()
 
 
-class _Scopes:
-    """A bootstrapped PROCESS/THREAD/LOOP scope chain over *registry*."""
-
-    def __init__(self, registry: ProviderRegistry) -> None:
-        self.registry = registry
-
-    async def __aenter__(self) -> _Scopes:
-        self.registry.validate()
-        containers: dict[Scope, Any] = {}
-        resolver = make_resolver(self.registry, containers)
-        self.process_scope = ProcessScope(resolver=resolver)
-        self.thread_scope = ThreadScope(resolver=resolver)
-        self.loop_scope = LoopScope(resolver=resolver)
-        containers[Scope.PROCESS] = self.process_scope
-        containers[Scope.THREAD] = self.thread_scope
-        containers[Scope.LOOP] = self.loop_scope
-        settings = WorkerSettings.load_from_dict(
-            {"PG_DSN": "postgres://u:p@localhost:5432/db"},
-        )
-        await self.process_scope.bootstrap(self.registry, settings)
-        await self.thread_scope.bootstrap(self.registry, self.process_scope)
-        await self.loop_scope.bootstrap(self.registry, self.process_scope, self.thread_scope)
-        return self
-
-    async def __aexit__(self, *exc: object) -> None:
-        await self.loop_scope.shutdown()
-        await self.thread_scope.shutdown()
-        await self.process_scope.shutdown()
-
-
 async def _running_job(
     backend: InMemoryBackend,
     *,
@@ -133,7 +103,9 @@ async def _running_job(
     return dispatched[0], worker_id
 
 
-async def _dispatch(scopes: _Scopes, backend: InMemoryBackend, job: JobRow, worker_id: Any) -> str:
+async def _dispatch(
+    scopes: BootstrappedScopes, backend: InMemoryBackend, job: JobRow, worker_id: Any
+) -> str:
     actor_ref: ActorRef[_Payload, None] = ActorRef(
         name=_ACTOR,
         queue="default",
@@ -172,7 +144,7 @@ async def test_process_scoped_reporter_receives_the_terminal_failure() -> None:
     backend = InMemoryBackend(clock=FakeClock(start=_START))
     job, worker_id = await _running_job(backend, retry_kind="non_retryable", max_attempts=1)
 
-    async with _Scopes(registry) as scopes:
+    async with BootstrappedScopes(registry) as scopes:
         outcome = await _dispatch(scopes, backend, job, worker_id)
 
     assert outcome == "failed"
@@ -197,7 +169,7 @@ async def test_other_long_lived_scopes_resolve_the_reporter_the_same_way(scope: 
     backend = InMemoryBackend(clock=FakeClock(start=_START))
     job, worker_id = await _running_job(backend, retry_kind="non_retryable", max_attempts=1)
 
-    async with _Scopes(registry) as scopes:
+    async with BootstrappedScopes(registry) as scopes:
         outcome = await _dispatch(scopes, backend, job, worker_id)
 
     assert outcome == "failed"
@@ -214,7 +186,7 @@ async def test_reporter_is_silent_while_retries_remain() -> None:
     backend = InMemoryBackend(clock=FakeClock(start=_START))
     job, worker_id = await _running_job(backend, retry_kind="transient", max_attempts=3)
 
-    async with _Scopes(registry) as scopes:
+    async with BootstrappedScopes(registry) as scopes:
         outcome = await _dispatch(scopes, backend, job, worker_id)
 
     assert outcome == "scheduled"
@@ -227,7 +199,7 @@ async def test_no_registered_reporter_dispatches_normally() -> None:
     backend = InMemoryBackend(clock=FakeClock(start=_START))
     job, worker_id = await _running_job(backend, retry_kind="non_retryable", max_attempts=1)
 
-    async with _Scopes(ProviderRegistry()) as scopes:
+    async with BootstrappedScopes(ProviderRegistry()) as scopes:
         outcome = await _dispatch(scopes, backend, job, worker_id)
 
     assert outcome == "failed"
@@ -247,7 +219,7 @@ async def test_pre_actor_failure_reports_through_the_same_hook() -> None:
         backend, retry_kind="transient", max_attempts=3, payload={"unexpected": 1}
     )
 
-    async with _Scopes(registry) as scopes:
+    async with BootstrappedScopes(registry) as scopes:
         outcome = await _dispatch(scopes, backend, job, worker_id)
 
     assert outcome == "failed"
@@ -268,7 +240,7 @@ async def test_transient_scoped_reporter_degrades_with_a_window_gated_warning() 
     backend = InMemoryBackend(clock=FakeClock(start=_START))
     job, worker_id = await _running_job(backend, retry_kind="non_retryable", max_attempts=1)
 
-    async with _Scopes(registry) as scopes:
+    async with BootstrappedScopes(registry) as scopes:
         outcome = await _dispatch(scopes, backend, job, worker_id)
 
     assert outcome == "failed"
@@ -289,7 +261,7 @@ async def test_transient_scoped_reporter_warning_is_window_gated() -> None:
     backend = InMemoryBackend(clock=FakeClock(start=_START))
     job, worker_id = await _running_job(backend, retry_kind="non_retryable", max_attempts=1)
 
-    async with _Scopes(registry) as scopes:
+    async with BootstrappedScopes(registry) as scopes:
         await _dispatch(scopes, backend, job, worker_id)
         with structlog.testing.capture_logs() as logs:
             second_job, second_worker = await _running_job(
@@ -314,7 +286,7 @@ async def test_non_reporter_provider_value_degrades_with_a_warning() -> None:
     backend = InMemoryBackend(clock=FakeClock(start=_START))
     job, worker_id = await _running_job(backend, retry_kind="non_retryable", max_attempts=1)
 
-    async with _Scopes(registry) as scopes:
+    async with BootstrappedScopes(registry) as scopes:
         with structlog.testing.capture_logs() as logs:
             outcome = await _dispatch(scopes, backend, job, worker_id)
 

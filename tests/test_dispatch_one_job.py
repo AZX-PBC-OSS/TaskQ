@@ -33,9 +33,6 @@ import taskq.obs as obs_mod
 from taskq._di.registry import ProviderRegistry
 from taskq._di.scope import Scope
 from taskq._di.scopes import (
-    LoopScope,
-    ProcessScope,
-    ThreadScope,
     build_actor_scope,
 )
 from taskq._ids import new_uuid
@@ -55,6 +52,7 @@ from taskq.worker.dispatch import (
     SlotPoolAcquireError,
     dispatch_one_job,
 )
+from tests._di_scopes import bootstrap_scopes, make_scopes
 
 _NOW = datetime(2026, 1, 1, tzinfo=UTC)
 _WORKER_ID = new_uuid()
@@ -106,80 +104,14 @@ def _as_deps(fd: _FakeWorkerDeps) -> Any:
     return fd
 
 
-def _make_scopes(
-    registry: ProviderRegistry,
-) -> tuple[ProcessScope, ThreadScope, LoopScope]:
-    scope_containers: dict[Scope, Any] = {}
-
-    def _resolver(func: object) -> Any:
-        async def _resolve() -> dict[str, object]:
-            from taskq._di.solver import solve_dependencies
-
-            return await solve_dependencies(
-                func=func,
-                registry=registry,
-                scope_containers=scope_containers,
-            )
-
-        return _resolve()
-
-    process_scope = ProcessScope(resolver=_resolver)
-    thread_scope = ThreadScope(resolver=_resolver)
-    loop_scope = LoopScope(resolver=_resolver)
-
-    scope_containers = {
-        Scope.PROCESS: process_scope,
-        Scope.THREAD: thread_scope,
-        Scope.LOOP: loop_scope,
-    }
-
-    def _resolver_full(func: object) -> Any:
-        async def _resolve() -> dict[str, object]:
-            from taskq._di.solver import solve_dependencies
-
-            return await solve_dependencies(
-                func=func,
-                registry=registry,
-                scope_containers=scope_containers,
-            )
-
-        return _resolve()
-
-    process_scope._resolver = _resolver_full  # pyright: ignore[reportPrivateUsage]  # Why: test helper mirrors production make_resolver pattern
-    thread_scope._resolver = _resolver_full  # pyright: ignore[reportPrivateUsage]  # Why: same pattern — updates resolver closure to see full scope_containers dict
-    loop_scope._resolver = _resolver_full  # pyright: ignore[reportPrivateUsage]  # Why: same pattern — updates resolver closure to see full scope_containers dict
-
-    return process_scope, thread_scope, loop_scope
-
-
-async def _bootstrap_scopes(
-    registry: ProviderRegistry,
-    process_scope: ProcessScope,
-    thread_scope: ThreadScope,
-    loop_scope: LoopScope,
-) -> None:
-    from taskq.settings import WorkerSettings
-
-    settings = WorkerSettings.load_from_dict(
-        {
-            "PG_DSN": "postgres://u:p@localhost:5432/db",
-            "LOCK_LEASE": 60,
-            "HEARTBEAT_INTERVAL": 10,
-        },
-    )
-    await process_scope.bootstrap(registry, settings)
-    await thread_scope.bootstrap(registry, process_scope)
-    await loop_scope.bootstrap(registry, process_scope, thread_scope)
-
-
 class _ScopeStack:
     def __init__(self, registry: ProviderRegistry | None = None) -> None:
         self.registry = registry or ProviderRegistry()
 
     async def __aenter__(self) -> "_ScopeStack":
         self.registry.validate()
-        self.process_scope, self.thread_scope, self.loop_scope = _make_scopes(self.registry)
-        await _bootstrap_scopes(
+        self.process_scope, self.thread_scope, self.loop_scope = make_scopes(self.registry)
+        await bootstrap_scopes(
             self.registry, self.process_scope, self.thread_scope, self.loop_scope
         )
         return self

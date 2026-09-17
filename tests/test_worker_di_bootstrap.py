@@ -44,6 +44,7 @@ from taskq.testing.clock import FakeClock
 from taskq.testing.health import unique_health_sock_path
 from taskq.worker.deps import WorkerDeps
 from taskq.worker.run import _main
+from tests._di_scopes import bootstrap_scopes, make_scopes
 from tests.conftest import _FakePool
 
 # ── Helpers ────────────────────────────────────────────────────────
@@ -86,34 +87,6 @@ def _settings(redis_url: str | None = None, **overrides: object) -> WorkerSettin
     for key, value in overrides.items():
         config[key] = value
     return WorkerSettings.load_from_dict(config)
-
-
-def _make_scopes_and_bootstrap(
-    registry: ProviderRegistry,
-) -> tuple[ProcessScope, ThreadScope, LoopScope]:
-    scope_containers: dict[Scope, Any] = {}
-    resolver = make_resolver(registry, scope_containers)
-
-    process_scope = ProcessScope(resolver=resolver)
-    scope_containers[Scope.PROCESS] = process_scope
-    thread_scope = ThreadScope(resolver=resolver)
-    scope_containers[Scope.THREAD] = thread_scope
-    loop_scope = LoopScope(resolver=resolver)
-    scope_containers[Scope.LOOP] = loop_scope
-
-    return process_scope, thread_scope, loop_scope
-
-
-async def _bootstrap_scopes(
-    registry: ProviderRegistry,
-    process_scope: ProcessScope,
-    thread_scope: ThreadScope,
-    loop_scope: LoopScope,
-) -> None:
-    settings = _settings()
-    await process_scope.bootstrap(registry, settings)
-    await thread_scope.bootstrap(registry, process_scope)
-    await loop_scope.bootstrap(registry, process_scope, thread_scope)
 
 
 def _backend_methods_stub() -> Backend:
@@ -261,8 +234,8 @@ async def test_bootstrap_happy_path() -> None:
     registry.register_factory(_LoopDep, Scope.LOOP, lambda: _LoopDep())
     registry.validate()
 
-    process_scope, thread_scope, loop_scope = _make_scopes_and_bootstrap(registry)
-    await _bootstrap_scopes(registry, process_scope, thread_scope, loop_scope)
+    process_scope, thread_scope, loop_scope = make_scopes(registry)
+    await bootstrap_scopes(registry, process_scope, thread_scope, loop_scope, _settings())
 
     assert process_scope.get(WorkerSettings) is settings
     assert isinstance(process_scope.get(_ProcessDep), _ProcessDep)
@@ -420,8 +393,8 @@ async def test_scope_teardown_lifo() -> None:
     registry.register_factory(_LoopDep, Scope.LOOP, make_loop)
     registry.validate()
 
-    process_scope, thread_scope, loop_scope = _make_scopes_and_bootstrap(registry)
-    await _bootstrap_scopes(registry, process_scope, thread_scope, loop_scope)
+    process_scope, thread_scope, loop_scope = make_scopes(registry)
+    await bootstrap_scopes(registry, process_scope, thread_scope, loop_scope, _settings())
 
     async with contextlib.AsyncExitStack() as stack:
         stack.push_async_callback(process_scope.shutdown)
@@ -448,8 +421,8 @@ async def test_scope_teardown_on_exception() -> None:
     registry.register_factory(_LoopDep, Scope.LOOP, make_loop)
     registry.validate()
 
-    process_scope, thread_scope, loop_scope = _make_scopes_and_bootstrap(registry)
-    await _bootstrap_scopes(registry, process_scope, thread_scope, loop_scope)
+    process_scope, thread_scope, loop_scope = make_scopes(registry)
+    await bootstrap_scopes(registry, process_scope, thread_scope, loop_scope, _settings())
 
     with pytest.raises(RuntimeError, match="boom"):
         async with contextlib.AsyncExitStack() as stack:
@@ -1091,8 +1064,8 @@ async def test_di_consumer_loop_uses_process_scope_clock() -> None:
     registry.register_value(Clock, Scope.PROCESS, fake_clock)
     registry.validate()
 
-    process_scope, thread_scope, loop_scope = _make_scopes_and_bootstrap(registry)
-    await _bootstrap_scopes(registry, process_scope, thread_scope, loop_scope)
+    process_scope, thread_scope, loop_scope = make_scopes(registry)
+    await bootstrap_scopes(registry, process_scope, thread_scope, loop_scope, _settings())
 
     captured_clock: Clock | None = None
     dispatch_event = asyncio.Event()
@@ -1197,8 +1170,8 @@ async def test_di_consumer_loop_raises_missing_provider_no_clock() -> None:
     registry.register_value(WorkerSettings, Scope.PROCESS, settings)
     registry.validate()
 
-    process_scope, thread_scope, loop_scope = _make_scopes_and_bootstrap(registry)
-    await _bootstrap_scopes(registry, process_scope, thread_scope, loop_scope)
+    process_scope, thread_scope, loop_scope = make_scopes(registry)
+    await bootstrap_scopes(registry, process_scope, thread_scope, loop_scope, _settings())
 
     local_queue: asyncio.Queue[JobRow] = asyncio.Queue()
     shutdown_event = asyncio.Event()
@@ -1245,8 +1218,8 @@ async def test_di_consumer_loop_releases_job_for_unknown_actor() -> None:
     registry.register_value(Clock, Scope.PROCESS, fake_clock)
     registry.validate()
 
-    process_scope, thread_scope, loop_scope = _make_scopes_and_bootstrap(registry)
-    await _bootstrap_scopes(registry, process_scope, thread_scope, loop_scope)
+    process_scope, thread_scope, loop_scope = make_scopes(registry)
+    await bootstrap_scopes(registry, process_scope, thread_scope, loop_scope, _settings())
 
     backend = _backend_methods_stub()
     released = asyncio.Event()

@@ -56,7 +56,6 @@ from pydantic import BaseModel, ConfigDict
 
 from taskq._di.registry import ProviderRegistry
 from taskq._di.scope import Scope
-from taskq._di.scopes import LoopScope, ProcessScope, ThreadScope
 from taskq._ids import new_job_id, new_uuid
 from taskq.actor import ActorRef
 from taskq.backend._protocol import EnqueueArgs, JobId
@@ -67,12 +66,12 @@ from taskq.context import JobContext
 from taskq.ratelimit.registry import RateLimitRegistry
 from taskq.ratelimit.token_bucket import TokenBucket
 from taskq.retry import RetryPolicy
-from taskq.settings import WorkerSettings
 from taskq.testing.actor import StubActorConfig
 from taskq.testing.fixtures import JobsApp
 from taskq.testing.pg import create_worker
 from taskq.worker.deps import WorkerDeps
 from taskq.worker.dispatch import dispatch_one_job
+from tests._di_scopes import bootstrap_scopes, make_scopes
 
 pytestmark = pytest.mark.integration
 
@@ -121,61 +120,15 @@ def _dead_redis_client(error: Exception) -> redis_async.Redis:
     return client
 
 
-def _make_scopes(
-    registry: ProviderRegistry,
-) -> tuple[ProcessScope, ThreadScope, LoopScope]:
-    scope_containers: dict[Scope, Any] = {}
-
-    def _resolver(func: object) -> Any:
-        async def _resolve() -> dict[str, object]:
-            from taskq._di.solver import solve_dependencies
-
-            return await solve_dependencies(
-                func=func,
-                registry=registry,
-                scope_containers=scope_containers,
-            )
-
-        return _resolve()
-
-    process_scope = ProcessScope(resolver=_resolver)
-    thread_scope = ThreadScope(resolver=_resolver)
-    loop_scope = LoopScope(resolver=_resolver)
-    scope_containers = {
-        Scope.PROCESS: process_scope,
-        Scope.THREAD: thread_scope,
-        Scope.LOOP: loop_scope,
-    }
-    return process_scope, thread_scope, loop_scope
-
-
-async def _bootstrap_scopes(
-    registry: ProviderRegistry,
-    process_scope: ProcessScope,
-    thread_scope: ThreadScope,
-    loop_scope: LoopScope,
-) -> None:
-    settings = WorkerSettings.load_from_dict(
-        {
-            "PG_DSN": "postgres://u:p@localhost:5432/db",
-            "LOCK_LEASE": 60,
-            "HEARTBEAT_INTERVAL": 10,
-        },
-    )
-    await process_scope.bootstrap(registry, settings)
-    await thread_scope.bootstrap(registry, process_scope)
-    await loop_scope.bootstrap(registry, process_scope, thread_scope)
-
-
 class _ScopeStack:
     def __init__(self, registry: ProviderRegistry) -> None:
         self.registry = registry
 
     async def __aenter__(self) -> "_ScopeStack":
         self.registry.validate()
-        scopes = _make_scopes(self.registry)
+        scopes = make_scopes(self.registry)
         self.process_scope, self.thread_scope, self.loop_scope = scopes
-        await _bootstrap_scopes(self.registry, *scopes)
+        await bootstrap_scopes(self.registry, *scopes)
         return self
 
     async def __aexit__(
