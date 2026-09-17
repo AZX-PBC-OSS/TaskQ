@@ -769,7 +769,10 @@ async def build_actor_scope(
 
     transient_scope._resolver = _resolver_with_all  # pyright: ignore[reportPrivateUsage]  # Why: build_actor_scope constructs the TRANSIENT container and must wire its resolver to see all four scope containers; the resolver is a closure detail owned by this call site
 
-    logger.info("transient-scope-opened", actor_name=actor_name)
+    # DEBUG, not INFO: this pair fires once per job carrying only the
+    # actor name, so at the default level it is a per-job rendering cost
+    # for a line nothing consumes.
+    logger.debug("transient-scope-opened", actor_name=actor_name)
     try:
         di_kwargs = await solve_dependencies(
             func=actor_func,
@@ -805,4 +808,4 @@ async def build_actor_scope(
         except asyncio.CancelledError:
             raise
         finally:
-            logger.info("transient-scope-closed", actor_name=actor_name)
+            logger.debug("transient-scope-closed", actor_name=actor_name)

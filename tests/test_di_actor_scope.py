@@ -485,10 +485,14 @@ async def test_loop_cache_persists_across_invocations() -> None:
     await process_scope.shutdown()
 
 
-# ── TRANSIENT scope INFO logging ──────────────────────────────────────
+# ── TRANSIENT scope open/close logging ────────────────────────────────
 
 
 async def test_transient_scope_logging() -> None:
+    """The per-job open/close lines are DEBUG: they carry only the actor
+    name, nothing consumes them, and at INFO they would be two rendered
+    lines per job."""
+
     async def my_actor(payload: _Payload, ctx: JobContext[_Payload]) -> dict[str, object]:
         return {}
 
@@ -498,17 +502,24 @@ async def test_transient_scope_logging() -> None:
     await _bootstrap_scopes(registry, process_scope, thread_scope, loop_scope)
 
     mock_ctx = _make_job_ctx()
-    async with build_actor_scope(
-        registry=registry,
-        process_scope=process_scope,
-        thread_scope=thread_scope,
-        loop_scope=loop_scope,
-        actor_func=my_actor,
-        actor_name="my_actor",
-        passthrough_kwargs={"ctx": mock_ctx, "payload": _Payload()},
-    ) as resolved:
-        assert resolved.ctx is mock_ctx
-        assert resolved.di_kwargs == {}
+    with structlog.testing.capture_logs() as captured:
+        async with build_actor_scope(
+            registry=registry,
+            process_scope=process_scope,
+            thread_scope=thread_scope,
+            loop_scope=loop_scope,
+            actor_func=my_actor,
+            actor_name="my_actor",
+            passthrough_kwargs={"ctx": mock_ctx, "payload": _Payload()},
+        ) as resolved:
+            assert resolved.ctx is mock_ctx
+            assert resolved.di_kwargs == {}
+
+    scope_lines = [e for e in captured if e["event"].startswith("transient-scope-")]
+    assert [(e["event"], e["log_level"], e["actor_name"]) for e in scope_lines] == [
+        ("transient-scope-opened", "debug", "my_actor"),
+        ("transient-scope-closed", "debug", "my_actor"),
+    ]
 
     await loop_scope.shutdown()
     await thread_scope.shutdown()
