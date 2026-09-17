@@ -82,7 +82,7 @@ from taskq.worker._leader_sweeps import (
     _QUERY_OLDEST_DUE_AGE_SQL_TEMPLATE,  # pyright: ignore[reportPrivateUsage]  # Why: same as above — pin the production statement, not a copy.
     _QUERY_RUNNING_LEASE_EXPIRED_SQL_TEMPLATE,  # pyright: ignore[reportPrivateUsage]  # Why: same — the zombie-running gauge's exact statement.
 )
-from taskq.worker.cron_loop import CRON_TICK_SQL_TEMPLATE
+from taskq.worker.cron_loop import cron_tick_sql
 
 pytestmark = pytest.mark.integration
 
@@ -858,9 +858,7 @@ async def test_cron_due_tick_is_index_bounded_without_sort(audit_schema: Any, pg
     schema, _ = audit_schema
     conn = await asyncpg.connect(pg_dsn)
     try:
-        plan = await _explain(
-            conn, CRON_TICK_SQL_TEMPLATE.format(schema=schema), "taskq:cron:audit", 100
-        )
+        plan = await _explain(conn, cron_tick_sql(schema), "taskq:cron:audit", 100)
         assert "CTE lock" in plan, f"the try-lock must be a materialized CTE:\n{plan}"
         _assert_index_cond(
             plan,
