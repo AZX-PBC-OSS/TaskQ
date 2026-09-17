@@ -33,6 +33,7 @@ from taskq.backend._sweeps import (
 from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining
     DEFAULT_EVENT_WRITER_BATCH_SIZE,
+    cron_commit_gate_channel,
     schema_lock_name,
 )
 from taskq.cron import (
@@ -154,17 +155,19 @@ index-servable due bound cannot drift there unnoticed. See
 bound is ``statement_timestamp()``.
 """
 
-_COMMIT_GATE_CHANNEL: Final = "taskq_cron_commit"
-"""Self-addressed channel the tick uses to learn that its own transaction
-committed.
-
-Postgres delivers a ``NOTIFY`` to its own session only if the emitting
-transaction commits, and never if it rolls back — the only commit signal
-available to a function that runs INSIDE the caller's transaction and
-returns before the ``COMMIT``.  The notification rides back on the same
-packet as the ``COMMIT`` response, so the tick's telemetry lands while
-the caller is still inside its transaction block.
-"""
+# The commit-gate channel — ``cron_commit_gate_channel(schema)`` in
+# ``taskq.constants`` — is the self-addressed channel the tick uses to
+# learn that its own transaction committed. Postgres delivers a ``NOTIFY``
+# to its own session only if the emitting transaction commits, and never
+# if it rolls back — the only commit signal available to a function that
+# runs INSIDE the caller's transaction and returns before the ``COMMIT``.
+# The notification rides back on the same packet as the ``COMMIT``
+# response, so the tick's telemetry lands while the caller is still inside
+# its transaction block. Schema-scoped because channels share one
+# database-wide namespace: a foreign schema's cron session on the same
+# channel would not only hear this one's signals — its notification would
+# mark THIS session confirmed-listening (the gate records the sender's
+# pid) without this session's LISTEN ever having survived a commit.
 
 
 _armed_commit_emits: dict[int, tuple[str, Callable[[], None]]] = {}
@@ -263,7 +266,9 @@ def _dispatch_commit_gate(_conn: object, pid: int, _channel: str, payload: str) 
     armed[1]()
 
 
-async def _emit_on_commit(conn: asyncpg.Connection, emit: Callable[[], None]) -> None:
+async def _emit_on_commit(
+    conn: asyncpg.Connection, emit: Callable[[], None], *, schema: str
+) -> None:
     """Arrange for *emit* to run only if the caller's transaction commits.
 
     Every claim the tick's telemetry makes — a strike, an auto-disable, a
@@ -272,9 +277,9 @@ async def _emit_on_commit(conn: asyncpg.Connection, emit: Callable[[], None]) ->
     lets a failed ``COMMIT`` leave operators reading an auto-disable for a
     schedule the database still has enabled, and a failure count for a
     strike the database says never happened.  Gating on the ``NOTIFY``
-    (see :data:`_COMMIT_GATE_CHANNEL`) makes the telemetry say exactly
+    (see the commit-gate channel note above) makes the telemetry say exactly
     what the database kept: a rollback delivers nothing, so nothing is
-    reported.
+    reported. The channel is *schema*'s own commit-gate channel.
 
     A pid not yet in :data:`_confirmed_listening` -- either this is its
     first tick, or an earlier tick's ``LISTEN`` was silently undone by
@@ -292,12 +297,13 @@ async def _emit_on_commit(conn: asyncpg.Connection, emit: Callable[[], None]) ->
     and a tick that struck a schedule must always say so.
     """
     nonce = str(new_uuid())
+    channel = cron_commit_gate_channel(schema)
     pid: int | None = None
     try:
         pid = conn.get_server_pid()
         if pid not in _confirmed_listening:
-            await conn.remove_listener(_COMMIT_GATE_CHANNEL, _dispatch_commit_gate)  # pyright: ignore[reportArgumentType]  # Why: stubs over-narrow the callback type; asyncpg accepts a sync callback at runtime.
-        await conn.add_listener(_COMMIT_GATE_CHANNEL, _dispatch_commit_gate)  # pyright: ignore[reportArgumentType]  # Why: stubs over-narrow the callback type; asyncpg accepts a sync callback at runtime.
+            await conn.remove_listener(channel, _dispatch_commit_gate)  # pyright: ignore[reportArgumentType]  # Why: stubs over-narrow the callback type; asyncpg accepts a sync callback at runtime.
+        await conn.add_listener(channel, _dispatch_commit_gate)  # pyright: ignore[reportArgumentType]  # Why: stubs over-narrow the callback type; asyncpg accepts a sync callback at runtime.
         if pid not in _termination_hooked:
             # One hook per connection: retire this session's gate state when
             # the connection dies, so the maps track live sessions only and a
@@ -309,7 +315,7 @@ async def _emit_on_commit(conn: asyncpg.Connection, emit: Callable[[], None]) ->
         # Replaces this session's previous entry: a tick whose transaction
         # rolled back left an emission no notification can ever answer.
         _armed_commit_emits[pid] = (nonce, emit)
-        await conn.execute("SELECT pg_notify($1, $2)", _COMMIT_GATE_CHANNEL, nonce)
+        await conn.execute("SELECT pg_notify($1, $2)", channel, nonce)
     except (AttributeError, asyncpg.PostgresError, asyncpg.InterfaceError) as exc:
         if pid is not None:
             _armed_commit_emits.pop(pid, None)
@@ -1328,7 +1334,7 @@ async def tick_cron(
                 )
                 record_backpressure_error(entry.actor, kind="max_pending")
 
-    await _emit_on_commit(conn, _emit)
+    await _emit_on_commit(conn, _emit, schema=schema)
     return len(successes)
 
 

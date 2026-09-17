@@ -25,6 +25,7 @@ desynchronizes those retries the same way the deadlock backoff in
 
 import asyncio
 import contextlib
+import logging
 import random
 from collections.abc import Callable, Iterable
 from uuid import UUID
@@ -104,12 +105,17 @@ def _make_callback(
         _notify_received_counter.add(1)
         for event in list(backend._wake_subscribers):  # pyright: ignore[reportPrivateUsage]  # Why: snapshot iteration per ; safe because event.set() is idempotent
             event.set()
-        logger.debug(
-            "notify-received",
-            kind="notify_received",
-            channel=channel,
-            pid=pid,
-        )
+        # Guarded: every enqueue in the schema wakes every listener, and a
+        # structlog call runs the full processor chain before the stdlib
+        # level check drops the record — the level check here is the only
+        # per-notification cost at INFO.
+        if logger.is_enabled_for(logging.DEBUG):
+            logger.debug(
+                "notify-received",
+                kind="notify_received",
+                channel=channel,
+                pid=pid,
+            )
 
     return _on_notify
 

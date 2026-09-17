@@ -194,6 +194,41 @@ class TestWakeFanout:
             cb(mock_conn, 123, "taskq_wake_x", "")
             await asyncio.wait_for(event.wait(), timeout=0.1)
 
+    async def test_callback_makes_no_log_call_when_debug_is_off(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Every enqueue in the schema wakes every listener, and a structlog
+        call runs the whole processor chain before the stdlib level check
+        drops the record: at INFO the callback must ask the level and stop,
+        never build and hand over the record."""
+        import logging
+
+        import taskq.worker.notify as notify_mod
+
+        class _LevelOnlyLogger:
+            def __init__(self) -> None:
+                self.levels_asked: list[int] = []
+                self.calls: list[str] = []
+
+            def is_enabled_for(self, level: int) -> bool:
+                self.levels_asked.append(level)
+                return False
+
+            def debug(self, event: str, **fields: object) -> None:
+                self.calls.append(event)
+
+        fake = _LevelOnlyLogger()
+        monkeypatch.setattr(notify_mod, "logger", fake)
+        backend = _make_backend()
+        cb = _make_callback(backend)
+
+        async with backend.subscribe_wake() as event:
+            cb(_mock_conn(), 123, "taskq_wake_x", "")
+            await asyncio.wait_for(event.wait(), timeout=0.1)
+
+        assert fake.levels_asked == [logging.DEBUG]
+        assert fake.calls == [], "the debug record must not be built when DEBUG is off"
+
 
 # ---- sync callback enforcement ----------------------------------------------------------------
 
