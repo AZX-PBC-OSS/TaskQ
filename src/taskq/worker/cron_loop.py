@@ -49,6 +49,7 @@ from taskq.obs import (
     otel_enabled,
     reconcile_cron_failures,
     record_backpressure_error,
+    record_cron_budget_deferral,
     record_cron_failure,
     record_cron_lock_contention,
     record_published_message,
@@ -111,35 +112,75 @@ reserve leaves room for the tick's own writes and its COMMIT.
 """
 
 
+_MIN_FACTORY_GRANT_FRACTION: Final = 0.25
+"""The smallest share of the tick's FUNDED factory budget a factory wait
+may be granted; a smaller leftover funds no wait at all (the schedule
+defers — see :class:`_TickBudgetExhaustedError`).
+
+A REFUSAL threshold, never a guaranteed minimum — the distinction
+#174's "no floor" invariant turns on.  A guaranteed minimum grant lets
+simultaneously-due hung factories SUM past the whole-tick deadline (N
+factories x floor > budget): the livelock #174 closed.  This threshold
+only refuses grants, never enlarges one: every granted wait still fits
+the remaining budget, so the aggregate bound strictly strengthens (a
+subset of the waits #174's clamp would have granted).
+
+Why refuse at all: the leftover a near-monopolizing factory leaves is a
+lottery ticket, not a budget.  Granted a 0.08s micro-grant, a factory
+faster than that fires, and a factory slower than that is cut by
+``wait_for`` into a plain ``TimeoutError`` — a STRIKE with a
+manufactured "timed out after 0.08s" reason, evidence against a
+schedule whose only defect was planning behind a slow neighbour.  A
+slow-SUCCESSFUL monopolizer (one that fits its own grant every tick)
+never strikes, never auto-disables and never frees the budget, so its
+peers marched to auto-disable on manufactured strikes three ticks at a
+time.  Deferral is the deterministic, strike-free outcome for a leftover
+too small to honour.
+
+The threshold is also capped by ``cron_payload_factory_timeout``: a
+tight factory budget means grants never reach a quarter of the funded
+tick anyway, and requiring a quarter would starve a legitimately
+tight-configured fleet of every grant.  Under the cap the rule reads
+"call a factory only with its full declared budget" — no partial grants
+below what the operator declared adequate.
+"""
+
+
 class _TickBudgetExhaustedError(TimeoutError):
-    """The tick's funded budget was spent before this schedule's payload
-    factory could be called, so the schedule is DEFERRED, not struck.
+    """The tick's funded budget could not fund this schedule's payload
+    factory — no fundable grant remains — so the schedule is DEFERRED,
+    not struck.
 
     The planning loop awaits each schedule's factory in turn, so the
     batch's AGGREGATE factory wait — not any single factory's — is what
-    races the leader's whole-tick ``asyncio.timeout``.  Any per-factory
-    floor under the clamp lets enough simultaneously-due hung factories
-    sum past that deadline: the outer cancellation then rolls back every
-    strike the tick recorded, and the identical batch is re-selected on
-    the next tick.  Failing the schedule the moment no funded wait
-    remains keeps the tick inside its deadline however many hung
-    factories share the batch (#174).
+    races the leader's whole-tick ``asyncio.timeout``.  Any guaranteed
+    minimum grant lets enough simultaneously-due hung factories sum past
+    that deadline: the outer cancellation then rolls back every strike
+    the tick recorded, and the identical batch is re-selected on the
+    next tick.  Refusing the wait the moment no fundable grant remains
+    keeps the tick inside its deadline however many hung factories share
+    the batch (#174) — and the refusal only shrinks the set of granted
+    waits, so that aggregate bound is untouched.
 
-    The failure this names is the TICK's, not the schedule's: the factory
-    never ran, so a strike here is evidence against a schedule that did
-    nothing — a hung NEIGHBOUR consumed the budget.  Striking the
-    never-funded schedules made one hung factory march every healthy
-    factory-backed schedule behind it toward auto-disable in lockstep
-    (#235), because the failure UPDATE never advances ``next_fire_at``:
-    the identical batch returned in the identical order every tick.  The
-    planning loop therefore routes this exception into the suppression
-    bucket — ``next_fire_at`` advances a short retry, no strike — while
-    the schedule whose factory RAN and timed out keeps its strike, so
-    the genuinely-hung factory still reaches auto-disable on its own
-    evidence.  A ``TimeoutError`` subclass because the outcome is a
-    deadline expiring — but the message names the budget, not a hang:
-    the factory never ran, so a "timed out" claim against it would be a
-    lie.
+    No fundable grant means one of two leftovers, and both are the
+    TICK's failure, not the schedule's: the budget is fully spent (a
+    factory ahead consumed it), or the leftover is below the minimum
+    fundable grant (:data:`_MIN_FACTORY_GRANT_FRACTION`) — a micro-grant
+    is a lottery ticket that would strike, via a plain ``TimeoutError``,
+    any factory slower than itself, manufacturing evidence against a
+    schedule whose only defect was planning behind a slow neighbour.
+    Striking the never-funded schedules was #235: a HUNG monopolizer
+    marches its peers to auto-disable in lockstep, and a
+    slow-SUCCESSFUL one (which never strikes, never auto-disables and
+    never frees the budget) marches them just as surely on manufactured
+    micro-grant strikes.  The planning loop therefore routes this
+    exception into the suppression bucket — ``next_fire_at`` advances a
+    short retry, no strike — while the schedule whose factory RAN and
+    timed out keeps its strike, so the genuinely-hung factory still
+    reaches auto-disable on its own evidence.  A ``TimeoutError``
+    subclass because the outcome is a deadline expiring — but the
+    message names the budget, not a hang: the factory never ran, so a
+    "timed out" claim against it would be a lie.
     """
 
 
@@ -153,12 +194,24 @@ fire because a NEIGHBOUR hung (#235's harm, one period later).  One
 second matches the leader loop's tick cadence, and the due read's
 ``next_fire_at <= statement_timestamp()`` bound makes the schedule due
 again on the very next tick, whose ``server_now`` sits at least one
-cadence past this tick's.  The deferral is bounded by the monopolizers'
-own drain: each tick the budget-consuming schedule at the front of the
-``next_fire_at`` order takes a strike, so after
-``cron_auto_disable_threshold`` ticks it is disabled and the budget
-frees; every deferred schedule then fires, its owed slot still inside
-the catch-up window.
+cadence past this tick's.
+
+How long a deferral lasts depends on the monopolizer's shape, and the
+two shapes are NOT symmetric.  A FAILING monopolizer (its factory runs
+and hangs, or raises) takes a strike every tick, stays un-advanced at
+the front of the ``next_fire_at`` order, and is auto-disabled after
+``cron_auto_disable_threshold`` ticks: the budget then frees and every
+deferred schedule fires — bounded, self-rescuing.  A slow-SUCCESSFUL
+monopolizer (its factory fits its grant every tick) never strikes and
+never disables: at cadences at or below the tick, or for the duration
+of a catch-up crawl, it re-appears at the front of every tick's order
+and re-consumes the budget, and its peers defer indefinitely — delayed,
+never struck, never disabled, their owed slots kept alive by the retry
+advance and the catch-up window, but not self-rescuing.  That state is
+what the ``cron-fire-budget-deferred`` log event and the
+``taskq.cron.budget_deferrals`` counter exist to expose (a sustained
+deferral rate names the starving schedule's actor), and the operator
+knobs resolve it — see the cron guide's tick-budget section.
 """
 
 
@@ -186,7 +239,7 @@ CRON_DUE_SQL_TEMPLATE: Final = (
     "s.consecutive_failures, s.next_fire_at, s.identity_key "
     'FROM "{schema}".cron_schedules s '
     "WHERE s.enabled = true AND s.next_fire_at <= statement_timestamp() "
-    "ORDER BY s.next_fire_at "
+    "ORDER BY s.next_fire_at, s.id "
     "LIMIT $1"
 )
 """The tick's second statement: the planning clock and the due read
@@ -203,6 +256,17 @@ is an Index Cond scan (2 buffers, 0.005 ms). The same instant is the
 planning clock (server_now): every croniter seed and the due bound come
 from one server-side reading, so a due row is never "in the future" of its
 own seed.
+
+The ``s.id`` tiebreaker exists because budget deferrals MINT ties: every
+schedule the tick defers advances to the same ``server_now + 1s``, so a
+tie cohort re-enters the next tick's due read with identical
+``next_fire_at`` — and which of them is funded first (the funded prefix
+vs the deferred remainder) must not depend on heap order, which varies
+with vacuum and page layout. ``id`` makes the planning order
+deterministic and reproducible; cron_schedules_next_fire_idx still serves
+the bound and the first ORDER BY key as an Index Cond, with PG's
+Incremental Sort costing only the tie prefix actually read under the
+LIMIT — the index-audit test pins that shape.
 """
 
 
@@ -401,18 +465,32 @@ def _factory_deadline(settings: WorkerSettings, elapsed_s: float) -> float | Non
     """The per-factory deadline for a factory called *elapsed_s* into the
     tick: the configured budget, clamped to stay strictly inside what is
     left of the leader's whole-tick deadline — or ``None`` when that
-    leftover is spent.
+    leftover cannot fund a grant.
 
     See :data:`_TICK_WRITE_RESERVE_FRACTION` for why the clamp is not
-    merely advice to the operator.  ``None`` — never a floor — is the
-    batch-safety half of the contract: per-factory waits sum across the
-    batch (see :class:`_TickBudgetExhaustedError`), so a tick that cannot
-    fund another wait must not grant one.
+    merely advice to the operator, and
+    :data:`_MIN_FACTORY_GRANT_FRACTION` for why the leftover must also
+    clear the minimum fundable grant.  ``None`` — never a guaranteed
+    minimum — is the batch-safety half of the contract: per-factory
+    waits sum across the batch (see :class:`_TickBudgetExhaustedError`),
+    so a tick that cannot fund another wait must not grant one.  The
+    minimum fundable grant is the fairness half: it refuses the
+    micro-grants that would strike a peer for planning behind a slow
+    neighbour, and because it refuses rather than enlarges, the
+    aggregate bound is untouched — granted waits still never sum past
+    the whole-tick deadline.
     """
     whole_tick = settings.dispatcher_command_timeout
-    remaining = whole_tick * (1.0 - _TICK_WRITE_RESERVE_FRACTION) - elapsed_s
+    funded = whole_tick * (1.0 - _TICK_WRITE_RESERVE_FRACTION)
+    remaining = funded - elapsed_s
     budget = min(settings.cron_payload_factory_timeout, remaining)
-    return budget if budget > 0 else None
+    # The threshold a leftover must clear to be a grant at all: a
+    # quarter of the funded budget, capped by the operator's declared
+    # factory scale (a tight cron_payload_factory_timeout means grants
+    # never reach that quarter — requiring it would starve a
+    # tight-configured fleet of every grant).
+    min_fundable = min(funded * _MIN_FACTORY_GRANT_FRACTION, settings.cron_payload_factory_timeout)
+    return budget if budget >= min_fundable else None
 
 
 def _resolve_max_pending(stored: int | None, literal: int | None) -> int | None:
@@ -1428,13 +1506,14 @@ async def tick_cron(
                 )
             elif entry.reason == "tick_budget":
                 # INFO, not WARNING: the deferred schedule did nothing
-                # wrong and the condition is transient by construction
-                # (the monopolizer ahead of it is draining toward
-                # auto-disable on its own strikes).  The failure-side
-                # signal lives on the monopolizer's "cron fire failed"
-                # line; this event is the fairness trail — an operator
-                # seeing it every tick knows a neighbour is eating the
-                # tick's factory budget.
+                # wrong and the condition is transient whenever the
+                # monopolizer ahead of it is failing (its own strikes
+                # drain it toward auto-disable).  The non-transient
+                # shape — a slow-SUCCESSFUL monopolizer that never
+                # strikes and never frees the budget — is what the
+                # counter below exists to expose: a sustained deferral
+                # rate is the operator-visible starvation signal, and
+                # the log line carries the per-schedule trail.
                 log.info(
                     "cron-fire-budget-deferred",
                     kind="cron_fire",
@@ -1443,6 +1522,7 @@ async def tick_cron(
                     worker_id=str(worker_id),
                     next_fire_at=entry.next_fire_at.isoformat(),
                 )
+                record_cron_budget_deferral(entry.actor)
             else:
                 log.warning(
                     "max-pending-exceeded",
@@ -1608,14 +1688,17 @@ async def _plan_fire(
     inside the caller's per-schedule span.
 
     *server_now* is the PG server clock read inside the caller's tick
-    transaction (``clock_timestamp()``) — the single domain for the
-    catch-up cutoff and the beyond-window recompute, matching the
-    server-side due-check that selected this row.
+    transaction (``statement_timestamp()`` of the due read — the same
+    instant as the due bound, so a due row is never "in the future" of
+    its own seed) — the single domain for the catch-up cutoff and the
+    beyond-window recompute, matching the server-side due-check that
+    selected this row.
 
     *tick_started* is the tick's ``time.monotonic()`` origin; the payload
     factory's deadline is clamped against what is left of the leader's
     whole-tick budget from it (see :func:`_factory_deadline`).  When no
-    funded wait remains, a factory-backed schedule raises
+    fundable grant remains — the leftover is spent, or below the minimum
+    fundable grant — a factory-backed schedule raises
     :class:`_TickBudgetExhaustedError` — the factory is never called — so
     a batch of hung factories cannot sum past the whole-tick deadline;
     the planning loop routes that exception into the suppression bucket
