@@ -47,6 +47,7 @@ import contextlib
 import threading
 import time
 from collections.abc import Generator
+from datetime import timedelta
 from typing import Any
 from uuid import UUID
 
@@ -692,22 +693,27 @@ class TestHungFactoryBatchCannotLivelockTheTick:
     deadline wins, its ``CancelledError`` aborts the tick, the transaction
     rolls back every strike, and the identical batch is re-selected on the
     very next tick — forever. The tick must instead stop funding factory
-    waits once its budget is spent: the remaining factory-backed schedules
-    take an immediate, named strike and the tick commits inside its
-    deadline.
+    waits once its budget is spent: the factory-backed schedules the
+    budget could not fund are DEFERRED — ``next_fire_at`` advances one
+    leader cadence, no strike, because their factories never ran (#235:
+    striking them made one hung factory march every schedule behind it to
+    auto-disable in lockstep) — and the tick commits inside its deadline
+    with the funded monopolizer carrying its own strike.
     """
 
-    async def test_a_batch_of_hung_factories_still_commits_strikes_and_fires_the_peer(
+    async def test_a_batch_of_hung_factories_still_commits_the_strike_defers_the_rest_and_fires_the_peer(
         self,
         clean_pg_conn: asyncpg.Connection,
         module_pg_schema: ModulePgSchema,
     ) -> None:
         """20 due schedules on one hung factory plus one healthy static
         peer: the leader-shaped tick must RETURN inside its own deadline
-        (not be cut by it), every hung schedule must carry a committed
-        strike (the path to auto-disable), the schedules the budget could
-        not fund must name the budget exhaustion as their failure reason,
-        and the healthy peer must have fired and advanced."""
+        (not be cut by it), the ONE schedule whose factory consumed the
+        funded budget must carry a committed strike naming its factory
+        (the path to auto-disable), the 19 the budget could not fund must
+        be DEFERRED — no strike, no error text, next_fire_at advanced a
+        short retry that stays strictly between the owed slot and the next
+        hourly slot — and the healthy peer must have fired and advanced."""
         schema = module_pg_schema.schema_name
         settings = cron_settings(schema)
         await seed_actor_config(clean_pg_conn, schema, _ACTOR)
@@ -767,22 +773,40 @@ class TestHungFactoryBatchCannotLivelockTheTick:
         hung_rows = [
             await schedule_row(clean_pg_conn, schema, schedule_id) for schedule_id in hung_ids
         ]
-        for schedule_id, row in zip(hung_ids, hung_rows, strict=True):
-            assert row["consecutive_failures"] == 1, (
-                f"schedule {schedule_id} recorded {row['consecutive_failures']} "
-                "strikes — a rolled-back tick leaves the whole batch at zero, "
-                "so auto-disable is unreachable and the livelock has no telemetry"
-            )
-        budget_exhausted = [
-            row for row in hung_rows if "budget exhausted" in (row["last_fire_error"] or "")
-        ]
-        assert len(budget_exhausted) >= hung_count - 2, (
-            f"only {len(budget_exhausted)} of {hung_count} hung schedules were "
-            "failed immediately with a tick-budget-exhausted reason — at most "
-            "two real factory waits can fit inside the tick's funded budget, "
-            "so every later schedule must be struck without waiting; waiting "
-            "for each is exactly the aggregate overrun that cancels the tick"
+        struck = [row for row in hung_rows if row["consecutive_failures"] == 1]
+        deferred = [row for row in hung_rows if row["consecutive_failures"] == 0]
+        assert len(struck) + len(deferred) == hung_count, (
+            "every hung schedule must be accounted for as struck or deferred — "
+            "anything else means a row escaped both UPDATE branches"
         )
+        assert len(struck) == 1, (
+            f"{len(struck)} of {hung_count} hung schedules took a strike — the "
+            "funded budget admits exactly ONE full factory wait (the first "
+            "planned factory consumes the whole grant), so exactly the "
+            "monopolizer may carry evidence; striking the never-funded "
+            "schedules behind it was #235"
+        )
+        assert "async_hang_factory" in (struck[0]["last_fire_error"] or ""), (
+            "the funded schedule's strike must name the factory that hung — "
+            f"got {struck[0]['last_fire_error']!r}"
+        )
+        assert "timed out" in (struck[0]["last_fire_error"] or "")
+
+        next_slot = due + timedelta(hours=1)
+        for row in deferred:
+            assert row["last_fire_error"] is None, (
+                "a deferred schedule's factory never ran — writing an error "
+                "text against it would be evidence it never gave"
+            )
+            assert due < row["next_fire_at"] < next_slot, (
+                f"deferred schedule advanced to {row['next_fire_at']} — the "
+                "deferral must be a SHORT retry strictly between the owed "
+                f"slot ({due}) and the next hourly slot ({next_slot}): "
+                "staying at the owed slot is the #235 strike path (no "
+                "advance, same batch every tick), and jumping to the next "
+                "slot silently drops a landable fire because a neighbour "
+                "hogged the budget"
+            )
 
         healthy_row = await clean_pg_conn.fetchrow(
             f'SELECT next_fire_at FROM "{schema}".cron_schedules WHERE id = $1',  # noqa: S608  # Why: schema is a test-fixture identifier; id is $-bound.
