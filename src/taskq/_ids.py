@@ -55,9 +55,23 @@ def _encode_int(value: int, width: int) -> str:
     return "".join(reversed(out))
 
 
+_MODULO_HEADROOM_BYTES = 8
+"""Surplus random bytes drawn before the modulo reduction.
+
+Reducing a b-bit random integer modulo ``62**count`` favours the low
+residues whenever ``2**b`` is not a multiple of the modulus; with the
+integer sized to the modulus alone the headroom is 0-7 bits, and at the
+default length the leading character comes out of the low half of the
+alphabet half again as often as it should. Eight extra bytes put the
+range at least ``2**64`` times the modulus, so the bias is below
+``2**-64`` — one ``os.urandom`` call as before, and no retry loop.
+"""
+
+
 def _random_base62(count: int) -> str:
     n = _BASE62_LEN**count
-    rand = int.from_bytes(os.urandom((n.bit_length() + 7) // 8), "big") % n
+    width = (n.bit_length() + 7) // 8 + _MODULO_HEADROOM_BYTES
+    rand = int.from_bytes(os.urandom(width), "big") % n
     return _encode_int(rand, count)
 
 

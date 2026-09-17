@@ -127,6 +127,25 @@ class TestBase62RandomSuffixEntropy:
         distinct = set("".join(suffixes))
         assert len(distinct) >= 30
 
+    def test_random_leading_char_is_uniform(self) -> None:
+        """The leading character is drawn uniformly over the alphabet.
+
+        A modulo reduction of a random integer whose range is not a
+        multiple of 62**length favours the low residues: at length 8 the
+        leading character lands in the low half of the alphabet with
+        probability 0.45 instead of 0.29, a chi-square over 50k samples
+        in the thousands against a mean of 61 for a uniform draw. The
+        bound is eight standard deviations above that mean, so a fair
+        generator never trips it and a modulo-biased one always does.
+        """
+        sample_count = 50_000
+        counts = dict.fromkeys(_BASE62, 0)
+        for _ in range(sample_count):
+            counts[new_base62(8, precision="random")[0]] += 1
+        expected = sample_count / _BASE62_LEN
+        chi_square = sum((observed - expected) ** 2 / expected for observed in counts.values())
+        assert chi_square < 150, f"leading-character chi-square {chi_square:.0f} on 61 df"
+
 
 class TestBase62Sortability:
     def test_second_mode_ids_sort_across_seconds(self) -> None:
