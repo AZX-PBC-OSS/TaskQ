@@ -49,11 +49,11 @@ from taskq.worker._transient import TRANSIENT_PG_ERRORS
 from .test_rt_cron_harness import (
     _HOURLY,
     cron_settings,
-    hour_floor,
     make_backend,
     schedule_row,
     seed_actor_config,
     seed_schedule,
+    server_hour_floor,
 )
 
 _NUL_ACTOR = "rt_nul_factory_actor"
@@ -198,7 +198,7 @@ async def test_nul_bearing_factory_failure_still_reaches_auto_disable(
         actor=_NUL_ACTOR,
         name="nul-factory",
         cron_expr=_HOURLY,
-        next_fire_at=hour_floor(datetime.now(UTC)),
+        next_fire_at=await server_hour_floor(clean_pg_conn),
         payload_factory="tests.test_rt_cancel_nul_guards.nul_message_factory",
     )
 
@@ -248,7 +248,7 @@ async def test_fire_failure_error_text_is_sanitized_at_construction(
         actor=_NUL_ACTOR,
         name="nul-direct",
         cron_expr=_HOURLY,
-        next_fire_at=hour_floor(datetime.now(UTC)),
+        next_fire_at=await server_hour_floor(clean_pg_conn),
     )
     record = await clean_pg_conn.fetchrow(
         f'SELECT * FROM "{schema}".cron_schedules WHERE id = $1',  # noqa: S608  # Why: schema is a test-fixture identifier; the id is $-bound.

@@ -28,7 +28,6 @@ amnesty nor a second strike), and no other schedule touched.
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, datetime
 
 import asyncpg
 import pytest
@@ -43,11 +42,11 @@ from .test_rt_cron_harness import (
     GatedEnqueueBackend,
     count_jobs,
     cron_settings,
-    hour_floor,
     make_backend,
     schedule_row,
     seed_actor_config,
     seed_schedule,
+    server_hour_floor,
 )
 
 pytestmark = pytest.mark.integration
@@ -76,7 +75,7 @@ class TestConcurrentSingletonRace:
         settings = cron_settings(schema)
         await seed_actor_config(clean_pg_conn, schema, _SINGLETON_ACTOR)
         await seed_actor_config(clean_pg_conn, schema, _HEALTHY_ACTOR)
-        due = hour_floor(datetime.now(UTC))
+        due = await server_hour_floor(clean_pg_conn)
         singleton_schedule_id = await seed_schedule(
             clean_pg_conn,
             schema,

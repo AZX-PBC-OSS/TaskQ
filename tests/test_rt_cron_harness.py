@@ -461,6 +461,20 @@ def hour_floor(now: datetime) -> datetime:
     return now.replace(minute=0, second=0, microsecond=0)
 
 
+async def server_hour_floor(conn: asyncpg.Connection) -> datetime:
+    """The current hour boundary on the SERVER's clock.
+
+    Cron seeds and due bounds must live in one clock domain: the tick's
+    due bound is server-side ``statement_timestamp()``, so a seed taken
+    from the test process's clock carries the app↔DB skew into every tick
+    decision — a host behind the server seeds the future (nothing due,
+    the round fires nothing), a host ahead seeds the past. Same kernel on
+    CI today; a different machine tomorrow. Every ``next_fire_at`` a test
+    seeds goes through this, never ``datetime.now``.
+    """
+    return hour_floor(await server_now(conn))
+
+
 def ten_min_floor(now: datetime) -> datetime:
     """The current 10-minute boundary (on-grid for ``*/10`` and ``*/5``)."""
     return now.replace(minute=now.minute - now.minute % 10, second=0, microsecond=0)

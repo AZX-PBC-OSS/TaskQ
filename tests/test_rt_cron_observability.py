@@ -22,7 +22,7 @@ committed writes, with the values a real tick produces):
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import timedelta
 from uuid import UUID
 
 import asyncpg
@@ -43,11 +43,11 @@ from .test_rt_cron_harness import (
     _HOURLY,
     JobIdCollisionBackend,
     cron_settings,
-    hour_floor,
     make_backend,
     schedule_row,
     seed_actor_config,
     seed_schedule,
+    server_hour_floor,
 )
 
 pytestmark = pytest.mark.integration
@@ -77,7 +77,7 @@ class TestObservabilityOnCommit:
             actor=_ACTOR,
             name="recovering",
             cron_expr=_HOURLY,
-            next_fire_at=hour_floor(datetime.now(UTC)),
+            next_fire_at=await server_hour_floor(clean_pg_conn),
             consecutive_failures=2,
         )
 
@@ -128,7 +128,7 @@ class TestObservabilityOnCommit:
         schema = module_pg_schema.schema_name
         settings = cron_settings(schema)
         await seed_actor_config(clean_pg_conn, schema, _ACTOR)
-        due = hour_floor(datetime.now(UTC))
+        due = await server_hour_floor(clean_pg_conn)
         first_id = await seed_schedule(
             clean_pg_conn,
             schema,
@@ -198,7 +198,7 @@ class TestObservabilityOnCommit:
         schema = module_pg_schema.schema_name
         settings = cron_settings(schema)
         await seed_actor_config(clean_pg_conn, schema, _ACTOR, queue=_QUEUE)
-        due = hour_floor(datetime.now(UTC))
+        due = await server_hour_floor(clean_pg_conn)
         bad_id = await seed_schedule(
             clean_pg_conn,
             schema,
@@ -270,7 +270,7 @@ class TestObservabilityOnCommit:
         schema = module_pg_schema.schema_name
         settings = cron_settings(schema)
         await seed_actor_config(clean_pg_conn, schema, _ACTOR, queue=_QUEUE)
-        due = hour_floor(datetime.now(UTC))
+        due = await server_hour_floor(clean_pg_conn)
         _FLAKY_STATE["calls"] = []
         recovering_id = await seed_schedule(
             clean_pg_conn,
@@ -401,7 +401,7 @@ class TestCronFireSpanAttribution:
             actor=_ACTOR,
             name="spans-ok",
             cron_expr=_HOURLY,
-            next_fire_at=hour_floor(datetime.now(UTC)),
+            next_fire_at=await server_hour_floor(clean_pg_conn),
         )
 
         worker_id = new_uuid()
@@ -444,7 +444,7 @@ class TestCronFireSpanAttribution:
             actor=_ACTOR,
             name="struck",
             cron_expr=_HOURLY,
-            next_fire_at=hour_floor(datetime.now(UTC)),
+            next_fire_at=await server_hour_floor(clean_pg_conn),
         )
 
         worker_id = new_uuid()
@@ -512,7 +512,7 @@ class TestAutoDisableTelemetryFollowsTheCommit:
             actor=_ACTOR,
             name="auto-disable-when-commit-fails",
             cron_expr=_HOURLY,
-            next_fire_at=hour_floor(datetime.now(UTC)),
+            next_fire_at=await server_hour_floor(clean_pg_conn),
             payload_factory=_BAD_FACTORY,
             # Threshold is 3, so this tick's strike is the disabling one.
             consecutive_failures=2,
@@ -623,7 +623,7 @@ class TestNoStrikeTelemetryWithoutACommit:
             actor=_ACTOR,
             name="no-telemetry-when-commit-fails",
             cron_expr=_HOURLY,
-            next_fire_at=hour_floor(datetime.now(UTC)),
+            next_fire_at=await server_hour_floor(clean_pg_conn),
             payload_factory=_BAD_FACTORY,
         )
 
@@ -711,7 +711,7 @@ class TestNoStrikeTelemetryWithoutACommit:
             actor=_ACTOR,
             name="success-when-commit-fails",
             cron_expr=_HOURLY,
-            next_fire_at=hour_floor(datetime.now(UTC)),
+            next_fire_at=await server_hour_floor(clean_pg_conn),
             consecutive_failures=2,
         )
 
@@ -797,7 +797,7 @@ class TestNoStrikeTelemetryWithoutACommit:
             actor=_ACTOR,
             name="recovers-after-rolled-back-commit",
             cron_expr=_HOURLY,
-            next_fire_at=hour_floor(datetime.now(UTC)),
+            next_fire_at=await server_hour_floor(clean_pg_conn),
             payload_factory=_BAD_FACTORY,
         )
 
@@ -836,7 +836,7 @@ class TestNoStrikeTelemetryWithoutACommit:
         await clean_pg_conn.execute(
             f'UPDATE "{schema}".cron_schedules SET next_fire_at = $2 WHERE id = $1',  # noqa: S608  # Why: schema is a test-fixture identifier; values are $-bound.
             schedule_id,
-            hour_floor(datetime.now(UTC)),
+            await server_hour_floor(clean_pg_conn),
         )
 
         async with clean_pg_conn.transaction():
@@ -906,7 +906,7 @@ class TestFailureGaugeIsDerivedFromTheDatabase:
         schema = module_pg_schema.schema_name
         settings = cron_settings(schema)
         await seed_actor_config(clean_pg_conn, schema, _ACTOR, queue=_QUEUE)
-        due = hour_floor(datetime.now(UTC))
+        due = await server_hour_floor(clean_pg_conn)
         cleared_id = await seed_schedule(
             clean_pg_conn,
             schema,
@@ -1021,7 +1021,7 @@ class TestFailureGaugeIsDerivedFromTheDatabase:
         gone_actor = "rt_obs_gone_actor"
         await seed_actor_config(clean_pg_conn, schema, gone_actor, queue=_QUEUE)
         await seed_actor_config(clean_pg_conn, schema, _ACTOR, queue=_QUEUE)
-        due = hour_floor(datetime.now(UTC))
+        due = await server_hour_floor(clean_pg_conn)
         gone_id = await seed_schedule(
             clean_pg_conn,
             schema,
@@ -1103,7 +1103,7 @@ class TestFailureGaugeIsDerivedFromTheDatabase:
         schema = module_pg_schema.schema_name
         settings = cron_settings(schema)
         await seed_actor_config(clean_pg_conn, schema, _ACTOR, queue=_QUEUE)
-        due = hour_floor(datetime.now(UTC))
+        due = await server_hour_floor(clean_pg_conn)
         failing_id = await seed_schedule(
             clean_pg_conn,
             schema,
@@ -1206,7 +1206,7 @@ class TestReconciliationLeavesUntouchedActorsAlone:
         schema = module_pg_schema.schema_name
         settings = cron_settings(schema)
         untouched_actor = "rt_obs_untouched_actor"
-        due = hour_floor(datetime.now(UTC))
+        due = await server_hour_floor(clean_pg_conn)
         await seed_actor_config(clean_pg_conn, schema, _ACTOR, queue=_QUEUE)
         await seed_actor_config(clean_pg_conn, schema, untouched_actor, queue=_QUEUE)
         touched_id = await seed_schedule(
@@ -1322,7 +1322,7 @@ class TestReconciliationRequiresADueSchedule:
         schema = module_pg_schema.schema_name
         settings = cron_settings(schema)
         await seed_actor_config(clean_pg_conn, schema, _ACTOR, queue=_QUEUE)
-        due = hour_floor(datetime.now(UTC))
+        due = await server_hour_floor(clean_pg_conn)
         failing_id = await seed_schedule(
             clean_pg_conn,
             schema,

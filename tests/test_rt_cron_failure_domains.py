@@ -30,7 +30,6 @@ observable behaviour:
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, datetime
 
 import asyncpg
 import pytest
@@ -50,11 +49,11 @@ from .test_rt_cron_harness import (
     JobIdCollisionBackend,
     SingletonRaceBackend,
     cron_settings,
-    hour_floor,
     make_backend,
     schedule_row,
     seed_actor_config,
     seed_schedule,
+    server_hour_floor,
     wedge_events,
 )
 
@@ -82,7 +81,7 @@ class TestServerSideEnqueueFailure:
         settings = cron_settings(schema)
         await seed_actor_config(clean_pg_conn, schema, _PRESENT_ACTOR)
 
-        due = hour_floor(datetime.now(UTC))
+        due = await server_hour_floor(clean_pg_conn)
         schedule_ids = [
             await seed_schedule(
                 clean_pg_conn,
@@ -168,7 +167,7 @@ class TestServerSideEnqueueFailure:
         schema = module_pg_schema.schema_name
         settings = cron_settings(schema)
         await seed_actor_config(clean_pg_conn, schema, _PRESENT_ACTOR)
-        due = hour_floor(datetime.now(UTC))
+        due = await server_hour_floor(clean_pg_conn)
         schedule_ids = [
             await seed_schedule(
                 clean_pg_conn,
@@ -234,7 +233,7 @@ class TestSingletonRaceBetweenPreflightAndInsert:
         singleton_actor = "rt_singleton_actor"
         await seed_actor_config(clean_pg_conn, schema, singleton_actor)
         await seed_actor_config(clean_pg_conn, schema, _PRESENT_ACTOR)
-        due = hour_floor(datetime.now(UTC))
+        due = await server_hour_floor(clean_pg_conn)
         racer_id = await seed_schedule(
             clean_pg_conn,
             schema,
@@ -338,7 +337,7 @@ class TestClientSideEnqueueFailure:
         schema = module_pg_schema.schema_name
         settings = cron_settings(schema)
         await seed_actor_config(clean_pg_conn, schema, _PRESENT_ACTOR)
-        due = hour_floor(datetime.now(UTC))
+        due = await server_hour_floor(clean_pg_conn)
         schedule_ids = [
             await seed_schedule(
                 clean_pg_conn,
@@ -397,7 +396,7 @@ class TestFailuresUpdateGuard:
         schema = module_pg_schema.schema_name
         settings = cron_settings(schema)
         await seed_actor_config(clean_pg_conn, schema, _PRESENT_ACTOR)
-        due = hour_floor(datetime.now(UTC))
+        due = await server_hour_floor(clean_pg_conn)
         schedule_id = await seed_schedule(
             clean_pg_conn,
             schema,
@@ -483,7 +482,7 @@ class TestHungPayloadFactory:
         schema = module_pg_schema.schema_name
         settings = cron_settings(schema)
         await seed_actor_config(clean_pg_conn, schema, _PRESENT_ACTOR)
-        due = hour_floor(datetime.now(UTC))
+        due = await server_hour_floor(clean_pg_conn)
         hung_id = await seed_schedule(
             clean_pg_conn,
             schema,
@@ -563,7 +562,7 @@ class TestCallerDeadlineMidTick:
         schema = module_pg_schema.schema_name
         settings = cron_settings(schema)
         await seed_actor_config(clean_pg_conn, schema, _PRESENT_ACTOR)
-        due = hour_floor(datetime.now(UTC))
+        due = await server_hour_floor(clean_pg_conn)
         schedule_ids = [
             await seed_schedule(
                 clean_pg_conn,
@@ -626,7 +625,7 @@ class TestGarbageScheduleRows:
         schema = module_pg_schema.schema_name
         settings = cron_settings(schema)
         await seed_actor_config(clean_pg_conn, schema, _PRESENT_ACTOR)
-        due = hour_floor(datetime.now(UTC))
+        due = await server_hour_floor(clean_pg_conn)
         bad_tz_id = await seed_schedule(
             clean_pg_conn,
             schema,
@@ -701,7 +700,7 @@ class TestMissingActorIsolation:
             max_attempts=7,
             retry_kind="indefinite",
         )
-        due = hour_floor(datetime.now(UTC))
+        due = await server_hour_floor(clean_pg_conn)
         missing_id = await seed_schedule(
             clean_pg_conn,
             schema,
@@ -783,7 +782,7 @@ class TestMissingActorIsolation:
             actor=_MISSING_ACTOR,
             name="missing-3t",
             cron_expr=_HOURLY,
-            next_fire_at=hour_floor(datetime.now(UTC)),
+            next_fire_at=await server_hour_floor(clean_pg_conn),
         )
 
         disabled_counts: list[int] = []

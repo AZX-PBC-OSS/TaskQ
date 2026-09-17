@@ -47,7 +47,6 @@ import contextlib
 import threading
 import time
 from collections.abc import Generator
-from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
@@ -64,11 +63,11 @@ from taskq.worker.cron_loop import tick_cron
 from .test_rt_cron_harness import (
     _HOURLY,
     cron_settings,
-    hour_floor,
     make_backend,
     schedule_row,
     seed_actor_config,
     seed_schedule,
+    server_hour_floor,
 )
 
 pytestmark = pytest.mark.integration
@@ -287,7 +286,7 @@ async def _assert_lock_free_and_cron_fires(
         actor=_ACTOR,
         name="post-probe",
         cron_expr=_HOURLY,
-        next_fire_at=hour_floor(datetime.now(UTC)),
+        next_fire_at=await server_hour_floor(conn),
     )
     probe = await asyncpg.connect(dsn)
     try:
@@ -332,7 +331,7 @@ class TestAsyncHungFactory:
         schema = module_pg_schema.schema_name
         settings = cron_settings(schema, TASKQ_DISPATCHER_COMMAND_TIMEOUT="5.0")
         await seed_actor_config(clean_pg_conn, schema, _ACTOR)
-        due = hour_floor(datetime.now(UTC))
+        due = await server_hour_floor(clean_pg_conn)
         await seed_schedule(
             clean_pg_conn,
             schema,
@@ -406,7 +405,7 @@ class TestSyncHungFactory:
         schema = module_pg_schema.schema_name
         settings = cron_settings(schema, TASKQ_DISPATCHER_COMMAND_TIMEOUT="5.0")
         await seed_actor_config(clean_pg_conn, schema, _ACTOR)
-        due = hour_floor(datetime.now(UTC))
+        due = await server_hour_floor(clean_pg_conn)
         hung_id = await seed_schedule(
             clean_pg_conn,
             schema,
@@ -535,7 +534,7 @@ class TestDefaultTimeoutsCollideIntoWholeTickRollback:
             "reproduction is obsolete"
         )
         await seed_actor_config(clean_pg_conn, schema, _ACTOR)
-        due = hour_floor(datetime.now(UTC))
+        due = await server_hour_floor(clean_pg_conn)
         await seed_schedule(
             clean_pg_conn,
             schema,
@@ -631,7 +630,7 @@ class TestHungFactoryStrikesAtShippedDefaults:
         schema = module_pg_schema.schema_name
         settings = cron_settings(schema)
         await seed_actor_config(clean_pg_conn, schema, _ACTOR)
-        due = hour_floor(datetime.now(UTC))
+        due = await server_hour_floor(clean_pg_conn)
         hung_id = await seed_schedule(
             clean_pg_conn,
             schema,
@@ -712,7 +711,7 @@ class TestHungFactoryBatchCannotLivelockTheTick:
         schema = module_pg_schema.schema_name
         settings = cron_settings(schema)
         await seed_actor_config(clean_pg_conn, schema, _ACTOR)
-        due = hour_floor(datetime.now(UTC))
+        due = await server_hour_floor(clean_pg_conn)
         hung_count = 20
         hung_ids = [
             await seed_schedule(

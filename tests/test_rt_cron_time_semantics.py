@@ -53,6 +53,7 @@ from .test_rt_cron_harness import (
     next_ten_min_boundary,
     seed_actor_config,
     seed_schedule,
+    server_hour_floor,
     server_now,
     ten_min_floor,
 )
@@ -188,7 +189,7 @@ class TestCatchUpRecompute:
         schema = module_pg_schema.schema_name
         settings = cron_settings(schema)
         await seed_actor_config(clean_pg_conn, schema, _ACTOR)
-        frozen = hour_floor(datetime.now(UTC))
+        frozen = await server_hour_floor(clean_pg_conn)
         boundary_slot = frozen - timedelta(hours=1)
         schedule_id = await seed_schedule(
             clean_pg_conn,
@@ -231,7 +232,7 @@ class TestCatchUpRecompute:
         schema = module_pg_schema.schema_name
         settings = cron_settings(schema)
         await seed_actor_config(clean_pg_conn, schema, _ACTOR)
-        frozen = hour_floor(datetime.now(UTC))
+        frozen = await server_hour_floor(clean_pg_conn)
         just_beyond = frozen - timedelta(hours=1) - timedelta(microseconds=1)
         schedule_id = await seed_schedule(
             clean_pg_conn,
@@ -414,7 +415,7 @@ class TestCapSemantics:
         schema = module_pg_schema.schema_name
         settings = cron_settings(schema)
         await seed_actor_config(clean_pg_conn, schema, _ACTOR)
-        due = hour_floor(datetime.now(UTC))
+        due = await server_hour_floor(clean_pg_conn)
         for i in range(3):
             await seed_schedule(
                 clean_pg_conn,
@@ -453,7 +454,7 @@ class TestCapSemantics:
         schema = module_pg_schema.schema_name
         settings = cron_settings(schema)
         await seed_actor_config(clean_pg_conn, schema, _ACTOR)
-        due = hour_floor(datetime.now(UTC))
+        due = await server_hour_floor(clean_pg_conn)
         for i in range(2):
             await seed_schedule(
                 clean_pg_conn,

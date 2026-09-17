@@ -30,7 +30,6 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable
-from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
@@ -47,11 +46,11 @@ from .test_rt_cron_harness import (
     GatedEnqueueBackend,
     count_jobs,
     cron_settings,
-    hour_floor,
     jobs_for_identity,
     make_backend,
     seed_actor_config,
     seed_schedule,
+    server_hour_floor,
     wedge_events,
 )
 
@@ -75,7 +74,7 @@ class TestHandoverDoubleFire:
         schema = module_pg_schema.schema_name
         settings = cron_settings(schema)
         await seed_actor_config(clean_pg_conn, schema, _ACTOR)
-        due = hour_floor(datetime.now(UTC))
+        due = await server_hour_floor(clean_pg_conn)
         identities = [f"handover-{i}" for i in range(3)]
         for i, identity in enumerate(identities):
             await seed_schedule(
@@ -151,7 +150,7 @@ class TestHandoverDoubleFire:
         settings = cron_settings(schema)
         await seed_actor_config(clean_pg_conn, schema, _ACTOR)
         backend = make_backend(settings)
-        due = hour_floor(datetime.now(UTC))
+        due = await server_hour_floor(clean_pg_conn)
 
         for round_no in range(3):
             tag = f"racy-r{round_no}"
@@ -209,7 +208,7 @@ class TestTickStatementShape:
             actor=_ACTOR,
             name="ordering",
             cron_expr=_HOURLY,
-            next_fire_at=hour_floor(datetime.now(UTC)),
+            next_fire_at=await server_hour_floor(clean_pg_conn),
         )
 
         counting = CountingConn(clean_pg_conn)
@@ -301,7 +300,7 @@ class TestManualScheduleManagementMidTick:
         settings = cron_settings(schema)
         await seed_actor_config(clean_pg_conn, schema, "rt_wedge_actor")
         await seed_actor_config(clean_pg_conn, schema, "rt_late_actor")
-        due = hour_floor(datetime.now(UTC))
+        due = await server_hour_floor(clean_pg_conn)
 
         await seed_schedule(
             clean_pg_conn,
