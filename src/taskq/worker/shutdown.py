@@ -34,7 +34,7 @@ import signal
 import sys
 from datetime import timedelta
 from enum import IntEnum
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING
 from uuid import UUID
 
 import structlog
@@ -57,10 +57,7 @@ from taskq.progress._buffer import (
     _terminal_seq_and_state,  # pyright: ignore[reportPrivateUsage]  # Why: the release write carries the coalesced buffer exactly as the consumer's own terminal writes do — one seq/state projection, not a second copy.
 )
 from taskq.worker._transient import TRANSIENT_PG_ERRORS
-from taskq.worker._watchdog import (
-    _METRICS_FLUSH_TIMEOUT_SECS,  # pyright: ignore[reportPrivateUsage]  # Why: the flush bound is half of the exit tail the releasing hold must cover (see _watchdog_exit_tail); importing the one constant beats re-declaring the watchdog's own deadline.
-    dump_task_stacks,
-)
+from taskq.worker._watchdog import dump_task_stacks
 
 if TYPE_CHECKING:
     from taskq.settings import WorkerSettings
@@ -74,14 +71,6 @@ __all__ = [
 ]
 
 _log: structlog.stdlib.BoundLogger = get_logger(__name__)
-
-_EXIT_TAIL_SLACK_SECS: Final = 1.0
-"""Unbounded-but-small share of the watchdog's post-deadline exit tail: the
-synchronous task-stack render and the critical log write ``trip()`` performs
-between the deadline check and the bounded metrics flush (see
-:func:`_watchdog_exit_tail`). Neither has a bound of its own; a second is
-generous against dozens of live tasks on a loaded loop, and the cost of
-over-padding a release hold is latency, never overlap."""
 
 
 def _orchestration_in_progress(
@@ -223,17 +212,21 @@ def _watchdog_exit_tail(settings: "WorkerSettings") -> float:
     """Seconds past the termination deadline the process can still be alive.
 
     The deadline trip is not instantaneous. ``ShutdownWatchdog`` checks the
-    deadline once per ``watchdog_dump_interval`` sleep, so a deadline that
-    passes mid-sleep is only observed up to a full interval late; ``trip()``
-    then renders every live task's stack (synchronous, on the loop thread)
-    and joins the bounded metrics flush (``_METRICS_FLUSH_TIMEOUT_SECS``)
-    before ``os._exit``. The stack render and the critical log write have
-    no bound of their own, so a fixed slack covers them. A hold that ends
-    at the bare deadline leaves exactly this window in which the row is
-    claimable while the dying process can still touch it — the overlap the
-    hold exists to prevent (#232).
+    deadline once per ``watchdog_dump_interval`` sleep (clipped to the
+    deadline, so real check lag is loop jitter and the dump-interval term
+    is margin), then ``trip()`` renders every live task's stack
+    (synchronous, on the loop thread) and joins the bounded metrics flush
+    (``WATCHDOG_METRICS_FLUSH_TIMEOUT_SECS``) before ``os._exit``. The
+    stack render and the critical log write have no bound of their own, so
+    the fixed slack covers them. A hold that ends at the bare deadline
+    leaves exactly this window in which the row is claimable while the
+    dying process can still touch it — the overlap the hold exists to
+    prevent (#232). The composition itself lives on the settings
+    (``WorkerSettings.release_exit_tail_seconds``) so the disown-path
+    lease floor reads the identical arithmetic; this reader exists so the
+    worker layer's call sites stay named.
     """
-    return settings.watchdog_dump_interval + _METRICS_FLUSH_TIMEOUT_SECS + _EXIT_TAIL_SLACK_SECS
+    return settings.release_exit_tail_seconds
 
 
 def _release_hold(
@@ -485,6 +478,24 @@ async def orchestrate_shutdown(
             except asyncio.CancelledError:
                 continue
             except Exception as exc:
+                # No retry, no disown — the row stays running and locked,
+                # and its recovery is the lease-expiry reclaim sweep. That
+                # reliance is LOAD-BEARING and bounded by validation, not
+                # by this code: the parked consumer's later release write
+                # is what usually saves the row, and WorkerSettings'
+                # ``release_park_lease_floor`` invariant
+                # (``lock_lease >= termination - cancellation - cleanup +
+                # heartbeat - terminal-write budget``, hard-failed at
+                # settings load) guarantees that write lands before the
+                # lease the stopped heartbeat left behind can expire. The
+                # double-write-failure shape (this write AND the
+                # consumer's both failing) is the warning-tier
+                # ``release_disown_lease_floor`` — see
+                # ``_emit_startup_warnings``. If you are tempted to add a
+                # retry here, first read the mark_cancelled arm's comment
+                # in _consumer.py: a retry wait inside this phase races the
+                # watchdog's deadline and the teardown the deadline
+                # bounds; the sweep is the designed backstop.
                 _log.warning(
                     "release-pg-write-failed",
                     job_id=str(active.job_id),
