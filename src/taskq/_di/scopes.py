@@ -2,9 +2,9 @@
 
 Implements the log-and-continue teardown policy: each teardown callback
 runs in its own try/except; failures are logged at ERROR; remaining
-teardowns always fire. A parallel ``_teardowns`` list replaces
-``AsyncExitStack.aclose()`` which re-raises the first exception and
-swallows the rest (research line 743-758).
+teardowns always fire. Teardowns are kept in the container's own LIFO
+list rather than an ``AsyncExitStack``, whose ``aclose()`` re-raises the
+first exception and swallows the rest.
 """
 
 import asyncio
@@ -66,7 +66,7 @@ class ScopeContainer:
 
     The container is responsible for ALL factory invocation, caching, and
     teardown registration. The solver engine NEVER calls a factory directly
-    and NEVER touches an AsyncExitStack.
+    and NEVER registers a teardown.
     """
 
     def __init__(
@@ -352,9 +352,8 @@ class ProcessScope(ScopeContainer):
 
         Why: no try/except around get_or_create — earlier providers'
         teardowns are already registered on self._teardowns; the
-        caller's AsyncExitStack runs aclose() on unwind, which
-        iterates whatever teardowns were registered before the
-        failure. Partial-bootstrap leaks are not possible: every
+        caller runs aclose() on unwind, which iterates whatever
+        teardowns were registered before the failure. Partial-bootstrap leaks are not possible: every
         successful get_or_create has its teardown queued before
         the next get_or_create starts.
         """
