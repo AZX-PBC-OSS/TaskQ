@@ -240,7 +240,7 @@ both pin the NEW numbers.
   broke worker boot behind poolers rejecting unknown startup parameters.
   The oracle above is the guard that remains: it fails loudly if an
   estimate surprise ever returns the compile-per-round tax, with JIT
-  enabled, on a plain connection. Operators who want belt-and-suspenders
+  enabled, on a plain connection. Operators who want the extra guard
   set the role default server-side; see docs/guides/ops.md.)*
 - Dispatch cost is now independent of the registered-actor count: the round
   reads actor_config by primary key for its own actors only.

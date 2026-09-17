@@ -95,20 +95,20 @@ _TCP_KEEPIDLE = 30
 _TCP_KEEPINTVL = 5
 _TCP_KEEPCNT = 3
 
-# No ``server_settings=`` on any TaskQ-built pool — deliberately. asyncpg
+# No ``server_settings=`` on any TaskQ-built pool, deliberately. asyncpg
 # rides every ``server_settings`` entry in the STARTUP PACKET, and a pooler
 # that rejects unknown startup parameters (PgBouncer: "unsupported startup
-# parameter: jit") fails the connect — with a single TASKQ_PG_DSN pointed
+# parameter: jit") fails the connect: with a single TASKQ_PG_DSN pointed
 # at the pooler, every TaskQ-built boot connection dies there (#247). The
 # dispatcher pool previously carried ``jit = off`` this way; the guard it
-# provided is available server-side without the pooler hazard —
+# provided is available server-side without the pooler hazard:
 # ``ALTER ROLE ... SET jit = off`` or ``?options=-c jit=off`` on the DSN
-# (docs/guides/ops.md §"Database performance knobs") — and a per-claim
+# (docs/guides/ops.md §"Database performance knobs"), and a per-claim
 # ``SET LOCAL jit = off`` is structurally unavailable: the claim runs in
 # autocommit (one atomic UPDATE ... RETURNING), so there is no transaction
 # for a SET LOCAL to scope to. The measured win never needed the guard
 # anyway: the dispatch statement's estimate cascade is fixed at the source
-# (perf-evidence-dispatch.md — the depth oracle passes with JIT enabled on
+# (perf-evidence-dispatch.md: the depth oracle passes with JIT enabled on
 # a plain connection), and that oracle
 # (tests/test_dispatch_backlog_depth_bound.py) keeps re-proving it. The
 # slot pool's inherited ``search_path``/``role`` (worker/_bootstrap.py) are

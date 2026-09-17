@@ -1135,7 +1135,7 @@ async def _enqueue_on_conn(
             )
             if mark_wrote is not None:
                 # The INSERT is acknowledged: on the autocommit paths it is
-                # COMMITTED (a re-run would duplicate the row — #236); on
+                # COMMITTED (a re-run would duplicate the row, #236); on
                 # the savepoint/transaction arms it is at least past the
                 # point where a retry is provably safe. Marked before the
                 # restore / savepoint RELEASE / follow-up SELECT below,
@@ -1841,7 +1841,7 @@ async def _enqueue_batch(
         guard: _RetryGuard,
     ) -> tuple[list[JobRow], list[MaxPendingExceededError], dict[str, list[int]]]:
         # Retry-safety under the wrapper: the flag is marked only after the
-        # transaction's COMMIT is acknowledged — a parked/dead connection
+        # transaction's COMMIT is acknowledged: a parked/dead connection
         # failing any statement INSIDE the transaction rolled the whole
         # batch back server-side, so a retry re-runs it atomically and
         # duplicates nothing; after the COMMIT (e.g. the release) the flag
@@ -2222,7 +2222,7 @@ async def _enqueue_batch_fast(
         guard: _RetryGuard,
     ) -> tuple[int, list[MaxPendingExceededError], dict[str, list[int]]]:
         # Retry-safety under the wrapper: marked only after the COPY
-        # transaction's COMMIT is acknowledged — a mid-transaction failure
+        # transaction's COMMIT is acknowledged: a mid-transaction failure
         # rolled the whole COPY back, so the retry re-runs it atomically;
         # past the COMMIT the flag refuses the retry (#236).
         async with guard.checkout() as conn:

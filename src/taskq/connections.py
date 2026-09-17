@@ -182,19 +182,19 @@ def lock_budget_command_timeout_secs(
     return bound
 
 
-#: Bound on the pool-release path the retry guard's checkout owns — the
+#: Bound on the pool-release path the retry guard's checkout owns: the
 #: release-time ``reset()`` (``pg_advisory_unlock_all(); CLOSE ALL;
 #: UNLISTEN *; RESET ALL;``) plus, on the max-queries/generation paths,
 #: a graceful close. asyncpg's acquire-context release passes NO timeout
 #: (the holder falls back to the *acquire* timeout, which is ``None``
-#: whenever acquire was unbounded), so a server that dies silently —
-#: no FATAL, no FIN: a frozen/black-holed endpoint — parks that reset
+#: whenever acquire was unbounded), so a server that dies silently,
+#: no FATAL, no FIN: a frozen/black-holed endpoint, parks that reset
 #: forever, wedging the caller's task AND ``pool.close()`` (issue #236's
 #: hang half). Five seconds matches the repo-wide teardown bound
 #: (``taskq._close.CLOSE_TIMEOUT_SECS``): the reset is sub-millisecond
 #: on a live server, so the bound only ever fires against a dead one,
 #: where asyncpg's timeout handler terminates the connection and frees
-#: the holder — the pool reopens a fresh connection on the next acquire.
+#: the holder, and the pool reopens a fresh connection on the next acquire.
 #: Module-level so tests shrink it as a seam (the ``CLOSE_TIMEOUT_SECS``
 #: convention).
 _POOL_RELEASE_RESET_TIMEOUT_SECS: Final[float] = 5.0
@@ -258,7 +258,7 @@ class _RetryGuard:
         if isinstance(acquired, Awaitable):  # pyright: ignore[reportUnnecessaryIsInstance]  # Why: the stubs type asyncpg's acquire() as always-awaitable (PoolAcquireContext), so a real pool only ever takes this arm; the else arm exists because test doubles model only the context-manager half of acquire()'s documented dual surface (see below).
             # asyncpg's acquire() is documented as BOTH awaitable and an
             # async context manager; the await form is the one that lets
-            # the release below carry its own timeout — the context
+            # the release below carry its own timeout: the context
             # manager's __aexit__ releases with no timeout, so the holder
             # falls back to the (unbounded) acquire timeout instead.
             conn = await acquired
@@ -270,7 +270,7 @@ class _RetryGuard:
                 except Exception as exc:
                     # Why swallow: the holder's own release path terminates
                     # the connection on any reset failure (asyncpg pool.py),
-                    # so the pool is already consistent — raising would
+                    # so the pool is already consistent: raising would
                     # either mask the op's real outcome with pool hygiene
                     # (on the error path) or hand the caller a failure for
                     # work that committed (on the success path), which is
@@ -380,7 +380,7 @@ async def _with_fresh_connection_retry[T](  # pyright: ignore[reportUnusedFuncti
     except InternalClientError as exc:
         if guard.wrote:
             # A write from this attempt is already acknowledged; re-running
-            # op would re-issue it with the same identity — against the
+            # op would re-issue it with the same identity: against the
             # enqueue table's primary key that is a UniqueViolationError
             # for work that succeeded, and the error invites the caller's
             # fresh-id retry that DOES run the job twice (#236). The

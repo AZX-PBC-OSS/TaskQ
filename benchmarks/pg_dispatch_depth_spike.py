@@ -685,7 +685,7 @@ async def _go(args: argparse.Namespace) -> list[dict[str, object]]:
         # these numbers the way tests/test_dispatch_backlog_depth_bound.py's
         # JIT oracle pins it. Production no longer sets jit client-side
         # (the dispatcher pool's server_settings entry rode the startup
-        # packet and broke boot behind poolers — #247); the server-side
+        # packet and broke boot behind poolers, #247); the server-side
         # channels (ALTER ROLE ... SET jit = off, DSN ?options=) are
         # documented in docs/guides/ops.md §"Database performance knobs",
         # and --jit-off reproduces that guarded shape to isolate scan

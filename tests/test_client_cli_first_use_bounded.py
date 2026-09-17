@@ -600,7 +600,7 @@ def test_taskq_pg_provider_pool_factory_derives_the_bound_from_a_widened_budget(
 # The worker resolves TASKQ_* through dotenvmodel's cascade (process
 # environment, then the .env files, per DOTENV_OVERRIDE); the client's
 # overlay and its schema default must resolve through the SAME layers with
-# the SAME precedence — a .env-only widening previously reached the
+# the SAME precedence: a .env-only widening previously reached the
 # worker's server-side budgets but not the client pool's derived
 # command_timeout, and the constructor's full TaskQSettings.load() made
 # any malformed UNRELATED TASKQ_* var raise in an embedder's constructor.
