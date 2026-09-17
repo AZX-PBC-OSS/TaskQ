@@ -769,10 +769,19 @@ async def test_enqueue_with_conn_legacy_violation_converts_without_retry() -> No
 #    (the keyed arm's follow-up SELECT) fails with InternalClientError:
 #    the guard's mark refuses the retry; the error propagates and the
 #    INSERT count stays one.
+#
+# What a refused-path regression would actually do (jobs.id is
+# ``uuid PRIMARY KEY`` and the op re-runs with the SAME args): the re-issued
+# INSERT raises UniqueViolationError for an enqueue that already committed —
+# an error returned for work that succeeded, whose caller-side retry (a
+# fresh enqueue call, a fresh id) is the route that runs the job twice. The
+# unit pins below hold the deterministic refusal; the fleet interruption pin
+# (test_fleet_pg_transient_failure.py) holds the live no-UniqueViolation /
+# durability side.
 
 
 class _CountingInsertConn(_FakeEnqueueConn):
-    """Counts INSERT statements issued (the duplication observable)."""
+    """Counts INSERT statements issued (the re-issue observable)."""
 
     def __init__(self, **kwargs: object) -> None:
         super().__init__(**kwargs)  # type: ignore[arg-type]
@@ -881,7 +890,10 @@ async def test_enqueue_post_insert_statement_error_never_re_runs_the_write() -> 
     locally on the parked connection. The guard's mark refuses the retry:
     the error propagates and the INSERT count stays one. Pre-fix the
     wrapper read every InternalClientError as dead-on-acquire and re-ran
-    the enqueue -- a second INSERT against a committed first."""
+    the enqueue with the same args -- against the jobs primary key that
+    re-run raises UniqueViolationError for an enqueue that already
+    committed, the error-for-succeeded-work whose caller-side retry (a
+    fresh id) runs the job twice."""
     conn = _ParkedAfterInsertConn()  # INSERT returns None (ON CONFLICT); follow-up SELECT parks
     pool = _FakePool(conn)
     clock = FakeClock(_NOW)
@@ -890,7 +902,10 @@ async def test_enqueue_post_insert_statement_error_never_re_runs_the_write() -> 
         await _enqueue(pool, _SQL, _SCHEMA_LABEL, clock, _make_args(idempotency_key="k"))  # type: ignore[arg-type]
 
     assert pool.acquire_count == 1, (
-        "a retry after an acknowledged write would commit it twice (#236)"
+        "a retry after an acknowledged write re-issues the INSERT with the "
+        "same id: a UniqueViolationError for work that succeeded, and the "
+        "invitation for the caller's fresh-id re-enqueue that runs the job "
+        "twice (#236)"
     )
     assert conn.insert_calls == 1
 

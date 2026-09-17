@@ -339,17 +339,24 @@ async def _with_fresh_connection_retry[T](  # pyright: ignore[reportUnusedFuncti
     connection died between that write's acknowledgement and a LATER
     statement of the same attempt (a post-INSERT read, a savepoint
     RELEASE, a COMMIT-adjacent restore). Re-running the op would re-issue
-    the write against a fresh connection — for an autocommit write that is
-    a committed row inserted twice, the exact duplication #236 reports —
-    so the error propagates instead. The marker is set AFTER the write's
-    acknowledgement, not before the write is issued, on purpose: the
-    dead-on-acquire case this wrapper exists for can strike the write
+    the write with the same identity against a fresh connection, so the
+    error propagates instead. What that re-run actually produces (the
+    enqueue table's ``id`` is the primary key, and the op's args carry
+    their id): a ``UniqueViolationError`` for an enqueue that already
+    committed and will run — an error handed back for work that
+    SUCCEEDED, which is the first half of #236's harm. The second half is
+    the invitation that error creates: a caller that retries it generates
+    a fresh id (a new enqueue call does), and THAT row lands — the actual
+    job-runs-twice route, and why idempotency keys remain the dedup
+    channel for the retry the caller chooses. The marker is set AFTER the
+    write's acknowledgement, not before the write is issued, on purpose:
+    the dead-on-acquire case this wrapper exists for can strike the write
     statement itself (the plain enqueue arm's INSERT is its first
     statement), and a locally-poisoned protocol rejects that statement
     BEFORE anything reaches the server — unmarked, so the retry runs and
-    nothing duplicates. Marking before the write would refuse that retry
-    and regress the wrapper's whole purpose; the only marking point that
-    is correct for both orderings is the acknowledgement.
+    nothing can conflict. Marking before the write would refuse that
+    retry and regress the wrapper's whole purpose; the only marking point
+    that is correct for both orderings is the acknowledgement.
 
     What the retry does NOT have to gate: a release-time failure after the
     op's body finished. The guard's checkout bounds the release and never
@@ -372,11 +379,14 @@ async def _with_fresh_connection_retry[T](  # pyright: ignore[reportUnusedFuncti
         return await op(guard)
     except InternalClientError as exc:
         if guard.wrote:
-            # A write from this attempt is already durable; re-running op
-            # could commit it a second time (#236). The caller sees the
-            # driver error for a committed write — ambiguous, but never a
-            # silent duplication; idempotency keys remain the caller's
-            # dedup channel for the retry THEY choose to issue.
+            # A write from this attempt is already acknowledged; re-running
+            # op would re-issue it with the same identity — against the
+            # enqueue table's primary key that is a UniqueViolationError
+            # for work that succeeded, and the error invites the caller's
+            # fresh-id retry that DOES run the job twice (#236). The
+            # driver error for a committed write is ambiguous, but never
+            # that invitation; idempotency keys remain the caller's dedup
+            # channel for the retry THEY choose to issue.
             raise
         from taskq.obs import get_logger
 
