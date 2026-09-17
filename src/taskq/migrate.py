@@ -606,7 +606,10 @@ async def apply_pending(
     the next run — so non-transactional migrations must be idempotent.
 
     :param phase: restrict to ``pre`` or ``post`` migrations only.
-    :param target: stop after applying this version (inclusive).
+    :param target: stop after applying this version (inclusive). Must
+        name a version in the discovered set: an unknown target — a
+        deleted or renumbered migration — raises ``ValueError`` rather
+        than silently applying every pending migration.
     :param max_steps: stop after this many applies.
     :param ddl_lock_timeout: seconds a transactional migration may wait for
         a table lock (:data:`DEFAULT_MIGRATION_DDL_LOCK_TIMEOUT`); applied
@@ -650,6 +653,28 @@ async def apply_pending(
         applied_checksums: dict[str, str] = {}
 
     all_migrations = discover()
+
+    # A target the runner no longer bundles must fail loudly. The
+    # truncation loop below only stops when it SEES the target, so an
+    # unknown one falls through and silently applies EVERY pending
+    # migration — the exact inversion of what a caller passing a target
+    # expects, and reachable the moment any release deletes or renumbers
+    # files (this round deleted 01.00.11_01 and 01.00.12_05:post, both
+    # previously valid targets). Refuse before anything is applied.
+    if target is not None and target not in {m.version for m in all_migrations}:
+        range_hint = (
+            f"discovered versions run {all_migrations[0].version} through "
+            f"{all_migrations[-1].version}"
+            if all_migrations
+            else "no migrations are bundled"
+        )
+        raise ValueError(
+            f"unknown migration target {target!r}: not in the bundled migration "
+            f"set ({range_hint}). A target the runner no longer bundles is a "
+            "deleted or renumbered migration; refusing instead of silently "
+            "applying every pending migration. List the discovered versions "
+            "with `taskq migrate status`."
+        )
 
     for m in all_migrations:
         if m.key in applied_checksums:
