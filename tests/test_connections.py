@@ -8,6 +8,8 @@ test_worker_deps.py (marked ``integration``).
 
 from __future__ import annotations
 
+import asyncio
+import time
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -403,14 +405,27 @@ async def test_with_connection_init_closes_the_connection_when_the_hook_fails() 
 class _FakeConn:
     """Structural stand-in for a checked-out pool connection proxy."""
 
+    def __init__(self) -> None:
+        self.terminated = False
+
+    def terminate(self) -> None:
+        self.terminated = True
+
     async def close(self) -> None:
         return None
 
 
 class _FakePool:
-    """Fake ``asyncpg.Pool`` for the guard's checkout: records the release
-    timeout the guard passes, and can be told to fail or to park the
-    release (the dead-server shapes the bound exists for)."""
+    """Fake ``asyncpg.Pool`` for the guard's checkout, modelling asyncpg's
+    ``PoolConnectionHolder.release`` in miniature. The release records the
+    timeout the guard passes and can be told to fail (a parked connection's
+    reset raising) or to PARK — a server that never answers, the shape the
+    bound exists for. A parked release under a budget raises ``TimeoutError``
+    at the budget and TERMINATES the connection (asyncpg's timeout handler
+    does exactly this), freeing the holder either way; with no budget it
+    simply parks — the unbounded shape that wedged the caller's task and
+    ``pool.close()`` (#236's hang half, reproduced live against a
+    SIGSTOP-frozen backend)."""
 
     def __init__(
         self,
@@ -422,8 +437,11 @@ class _FakePool:
         self.release_park_secs = release_park_secs
         self.release_timeouts: list[float | None] = []
         self.releases = 0
+        self.in_use = 0
+        self.terminated_conns: list[_FakeConn] = []
 
     async def acquire(self) -> _FakeConn:
+        self.in_use += 1
         return _FakeConn()
 
     async def release(
@@ -434,12 +452,26 @@ class _FakePool:
     ) -> None:
         self.releases += 1
         self.release_timeouts.append(timeout)
-        if self.release_park_secs is not None:
-            import asyncio
-
-            await asyncio.sleep(self.release_park_secs)
-        if self.release_exc is not None:
-            raise self.release_exc
+        try:
+            if self.release_park_secs is not None:
+                # The reset is awaited UNDER the budget, as asyncpg awaits
+                # it (compat.timeout inside holder.release).
+                await asyncio.wait_for(asyncio.sleep(self.release_park_secs), timeout=timeout)
+            if self.release_exc is not None:
+                # A reset failure: asyncpg's except clause terminates the
+                # connection and re-raises.
+                conn.terminate()
+                self.terminated_conns.append(conn)
+                raise self.release_exc
+        except TimeoutError:
+            # Budget expiry: the connection is terminated and the timeout
+            # re-raised; the holder is freed either way (asyncpg's
+            # terminate -> _release_on_close).
+            conn.terminate()
+            self.terminated_conns.append(conn)
+            raise
+        finally:
+            self.in_use -= 1
 
 
 async def test_fresh_connection_retry_retries_once_on_a_poisoned_handout() -> None:
@@ -578,6 +610,71 @@ async def test_retry_guard_checkout_passes_the_release_bound_to_the_pool() -> No
 
     assert pool.releases == 1
     assert pool.release_timeouts == [_POOL_RELEASE_RESET_TIMEOUT_SECS]
+
+
+async def test_retry_guard_checkout_bounds_a_parked_release_and_frees_the_pool(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#236's hang half as a committed end-to-end pin — the live SIGSTOP
+    experiment's shape (a release whose reset is sent into a server that
+    never answers), driven through the guard's own checkout against a
+    miniature that models what asyncpg's holder.release does at source
+    level: the reset is awaited UNDER the budget; on expiry the connection
+    is TERMINATED, the holder freed, and the timeout re-raised (which the
+    checkout swallows into one WARNING). The op's committed result is
+    returned, and a follow-up checkout on the same pool completes
+    instantly — the pool is not wedged. The unbounded shape this replaces
+    parked the caller's task and ``pool.close()`` forever (live-reproduced:
+    release pending past 3 s with close() wedged; the bounded channel
+    raised at 2.00 s and close() completed instantly)."""
+    from taskq import connections as connections_mod
+
+    shrunk_bound = 0.2
+    monkeypatch.setattr(connections_mod, "_POOL_RELEASE_RESET_TIMEOUT_SECS", shrunk_bound)
+    # The parked reset would answer in 10 s (it never answers at all — the
+    # park is the point); the unbounded release shape waits all of it.
+    pool = _FakePool(release_park_secs=10.0)
+    guard = _RetryGuard(pool, "enqueue")
+
+    async def op() -> str:
+        async with guard.checkout():
+            pass  # the op's statements all acknowledged; its work is committed
+        return "committed"
+
+    # The TEST budget is the red result for a regression to the unbounded
+    # handoff: a checkout that stops passing the bound parks for the full
+    # 10 s and the test budget fires at 2 s instead of the shrunk bound.
+    budget = asyncio.timeout(2.0)
+    started = time.monotonic()
+    with structlog.testing.capture_logs() as logs:
+        async with budget:
+            result = await op()
+    elapsed = time.monotonic() - started
+
+    assert result == "committed", "a parked release must not fail the op's committed work"
+    assert not budget.expired(), (
+        "the checkout parked past the 2 s test budget: the release bound "
+        "never reached the pool — the unbounded #236 hang shape"
+    )
+    assert elapsed < 1.0, (
+        f"the parked release cost {elapsed:.2f}s — the bound is {shrunk_bound}s; "
+        "only the budget plus epsilon should have elapsed"
+    )
+    assert pool.release_timeouts == [shrunk_bound], "the bound must be the one handed to release"
+    assert len(pool.terminated_conns) == 1, "budget expiry must terminate the parked connection"
+    assert pool.terminated_conns[0].terminated
+    assert pool.in_use == 0, "the holder must be freed — a wedged holder is pool.close() stuck"
+    warnings = [e for e in logs if e.get("event") == "pool-release-failed"]
+    assert len(warnings) == 1, "the swallowed timeout is the operator's signal"
+    assert warnings[0]["kind"] == "pool_release_failed"
+    assert warnings[0]["operation"] == "enqueue"
+
+    # The pool is not wedged: a follow-up checkout completes instantly.
+    followup_guard = _RetryGuard(pool, "enqueue")
+    async with asyncio.timeout(1.0):
+        async with followup_guard.checkout():
+            pass
+    assert pool.releases == 2
 
 
 async def test_retry_guard_checkout_swallows_a_failed_release_after_a_committed_op() -> None:
