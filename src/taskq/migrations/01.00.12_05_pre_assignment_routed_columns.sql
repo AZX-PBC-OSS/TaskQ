@@ -1,0 +1,68 @@
+-- The assignment-routed marker columns: the durable flag that tells a
+-- re-pended row apart from a producer-placed one, replacing the started_at
+-- proxy the dispatch CTE's assignment-routed arm used for the same
+-- question. Forward-only; there is no down migration. To revert, restore
+-- from backup. The literal "{schema}" token is substituted at apply time
+-- by the migration runner.
+--
+-- ── Why a marker column and not started_at ────────────────────────────
+-- The routing question the dispatch arm actually asks is about ORIGIN:
+-- was this pending row placed here by a producer, or handed back by a
+-- re-pend? Producer placement governs its own routing (an explicit
+-- enqueue(queue=...) keeps its queue, and a stale producer's post-move
+-- enqueue to a retired source queue stays served by that queue's
+-- consumers); a re-pend routes by the actor's CURRENT stored assignment,
+-- so a move's left-behind tails are not stranded on a queue the operator
+-- was told to stop consuming.
+--
+-- started_at answered that question only by proxy — "was claimed at least
+-- once" — and the proxy is wrong in one direction that matters: an
+-- operator retry of a job that was terminalized BEFORE it was ever
+-- claimed is a re-pend (an operator hands the row back deliberately) but
+-- has started_at IS NULL, so it routed by its stale label and stranded
+-- permanently: pending, due, and invisible to every running consumer.
+-- Widening the arm to all pending rows is not the fix — that would route
+-- producer-placed strays by the assignment too, collapsing the stray
+-- contract the never-claimed arm exists to hold. The marker names the
+-- distinction directly instead of inferring it, so each population is
+-- exactly what its arm means.
+--
+-- started_at keeps its own meaning intact (the audit trail of whether the
+-- job ever ran), which the proxy was quietly overloading.
+--
+-- ── Why the ALTERs live alone in this file ────────────────────────────
+-- ADD COLUMN takes ACCESS EXCLUSIVE on the table: readers and writers
+-- alike queue behind it, and every lock a transaction takes is held to
+-- its COMMIT — so the lock's cost is the cost of everything else the
+-- same transaction runs after the ALTER, not of the ALTER itself. On
+-- this Postgres generation the ALTER is metadata-only (a non-volatile
+-- DEFAULT is stored in the catalog rather than rewriting the table, so
+-- the statement itself is milliseconds and its cost does not scale with
+-- the jobs backlog). Keeping it that way is why this file contains
+-- NOTHING else: the backfill UPDATE and the probe-index builds this
+-- round originally shared the ALTER's transaction, holding ACCESS
+-- EXCLUSIVE on jobs across a backlog-sized UPDATE and two full-table
+-- index builds — long enough for every read, heartbeat and claim on the
+-- table to queue behind it, outliving the workers' heartbeat budget and
+-- self-terminating a live fleet mid-upgrade (issue #250). They now run
+-- as their own migrations, each with the narrowest lock its work allows:
+-- the backfill as 01.00.12_07 (ROW EXCLUSIVE — blocks neither readers
+-- nor other writers) and the index builds as 01.00.12_08 (SHARE —
+-- blocks writes, never reads, one build per transaction so the writes
+-- queued behind one build drain before the next asks for the table).
+-- The ACCESS EXCLUSIVE window here is exactly the two catalog writes
+-- plus the commit.
+--
+-- The runner's ddl_lock_timeout (30 s by default) bounds how long these
+-- ALTERs WAIT for the table lock if a concurrent session holds one; it
+-- never interrupts a lock already held. The hold is what the split
+-- above bounds.
+ALTER TABLE "{schema}".jobs
+    ADD COLUMN IF NOT EXISTS assignment_routed boolean NOT NULL DEFAULT false;
+
+-- The archive mirrors jobs column-for-column. The archive move itself
+-- does not carry this column: an archived row is terminal and never
+-- dispatched again, so the routing marker is inert there and the DDL
+-- default below is the correct value for every archived row.
+ALTER TABLE "{schema}".jobs_archive
+    ADD COLUMN IF NOT EXISTS assignment_routed boolean NOT NULL DEFAULT false;

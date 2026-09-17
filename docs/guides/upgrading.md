@@ -1029,6 +1029,42 @@ no-op. As with `01.00.06_01`, the wait for the lock is bounded by
 `ddl_lock_timeout` and a held `jobs` fails the migration cleanly rather
 than stalling the fleet; the build itself, once it holds the lock, is not.
 
+### The assignment-routed marker round applies in bounded lock windows
+
+> **Unreleased.** Operational note for the `01.00.12_05` / `01.00.12_07` /
+> `01.00.12_08` round; the upgrade's lock profile changes, the end state
+> does not (same columns, same backfill, same indexes).
+
+The marker round originally shipped as one migration whose single
+transaction held `ACCESS EXCLUSIVE` on `jobs` (taken by the `ADD COLUMN`)
+across the re-pend backfill and two full-table index builds — every read,
+heartbeat and claim on the table queued behind it for the whole run, long
+enough to burn a live fleet's heartbeat budget during the apply
+([#250](https://github.com/AZX-PBC-OSS/TaskQ/issues/250)). It is now three
+single-purpose migrations, each holding the narrowest lock its work
+allows:
+
+- `01.00.12_05` — only the two metadata-only `ALTER TABLE ... ADD COLUMN`
+  statements. The `ACCESS EXCLUSIVE` window is the catalog writes plus
+  the commit: milliseconds, independent of table size.
+- `01.00.12_07` — only the backfill `UPDATE`. An `UPDATE` holds `ROW
+  EXCLUSIVE`, which blocks neither readers nor other writers, so a deep
+  re-pend backlog backfills for as long as it needs without parking the
+  fleet.
+- `01.00.12_08` / `01.00.12_09` — only the `CREATE INDEX` builds. Each
+  build takes a `SHARE` lock (writes queue, reads keep flowing) for its
+  own duration only: the builds are separate transactions, and Postgres'
+  FIFO lock queue grants the writes that queued behind one build before
+  the next asks for the table, so the fleet sees one short write-block
+  window per index instead of one continuous window across the round.
+
+Same caveat as `01.00.06_01` above on the builds themselves: build time
+is proportional to the `jobs` row count, and on a deployment where a
+single build would outrun the workers' heartbeat budget the statements to
+pre-build `CONCURRENTLY` by hand are in each migration file's OPS NOTE
+(the migration then no-ops via `IF NOT EXISTS`). The wait for each lock
+is bounded by `ddl_lock_timeout` as everywhere else.
+
 ### Bulk cancel and force-deregistration now make bounded committed progress
 
 > **Unreleased.** Changes the failure semantics of `JobsClient.cancel_where()`
