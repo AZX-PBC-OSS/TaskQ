@@ -126,43 +126,42 @@ class TestCompleteBatchGuard:
 # ── Hook: the completion attempt is optimistic, the guard decides ───
 
 
-class _StaleCountBackend(InMemoryBackend):
-    """Mirror that reports the race's count input: the increment/reset
-    statement's READ COMMITTED snapshot predates a concurrent member's
-    terminal write, so it over-counts non-terminal members. The stored
-    rows are the truth the complete guard re-checks."""
+class _MemberCountRefusingBackend(InMemoryBackend):
+    """Mirror whose member aggregate is off limits: the hook runs on every
+    batched job's terminal write, and a member count there is both a
+    stale input (its snapshot can predate a concurrent member's terminal
+    write) and a per-write cost that grows with the batch."""
 
-    async def reset_batch_failures(
+    async def count_batch_non_terminal(
         self,
         batch_id: UUID,
         *,
         connection: object = None,
     ) -> int:
-        _ = await super().reset_batch_failures(batch_id, connection=connection)
-        return 1  # stale over-count: the other member has since terminated
+        raise AssertionError("the terminal-outcome hook must not count members")
 
 
-class TestHookDoesNotTrustStaleCount:
+class TestHookNeverCountsMembers:
     """The hook must complete the batch from the guarded statement's own
-    re-check, not from the increment/reset statement's count — two
-    members terminating concurrently can each read the other as
-    non-terminal, and a hook that gates on that count leaves the row for
-    the leader sweep."""
+    re-check, never from a member count of its own — two members
+    terminating concurrently can each read the other as non-terminal, and
+    a hook that gates on a count leaves the row for the leader sweep."""
 
-    async def test_stale_overcount_still_completes(self) -> None:
-        backend = _StaleCountBackend(clock=FakeClock(start=_START))
+    async def test_hook_completes_without_a_member_count(self) -> None:
+        backend = _MemberCountRefusingBackend(clock=FakeClock(start=_START))
         bid = new_uuid()
         await _create_batch(backend, bid)
         _seed_member(backend, bid, "succeeded")
         _seed_member(backend, bid, "succeeded")
 
         await apply_batch_terminal_outcome(backend, _terminal_job(bid), "succeeded")
+        await apply_batch_terminal_outcome(backend, _terminal_job(bid), "failed")
 
         row = await backend.get_batch(bid)
         assert row is not None
         assert row.status == "complete", (
-            "the hook trusted the stale count and skipped the completion attempt — "
-            "the concurrent-terminal race that leaves the row for the leader sweep"
+            "the hook skipped the completion attempt — the concurrent-terminal race "
+            "that leaves the row for the leader sweep"
         )
         assert row.completed_at is not None
 

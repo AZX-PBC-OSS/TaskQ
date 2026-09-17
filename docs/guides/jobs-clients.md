@@ -592,8 +592,8 @@ outcome:
   is **aborted**: all pending and scheduled jobs are cancelled
   (`pending` / `scheduled` → `cancelled`) and the batch row is set to
   `aborted`. Running jobs continue to completion.
-- **`cancelled`** / **`crashed`** do not touch the failure counter; they count
-  remaining non-terminal jobs and complete the batch if none remain.
+- **`cancelled`** / **`crashed`** do not touch the failure counter; they
+  attempt completion, which lands once no non-terminal jobs remain.
 
 ### `AbortBatchAfter`
 

@@ -639,6 +639,34 @@ is never waited on; it is removed entirely in the release after every
 pod in your fleet runs this one. Size `TASKQ_LEADER_LEASE` at four or
 more heartbeat intervals (the default, 40 s, already is).
 
+### Batch counter writes no longer return a member count
+
+> **Unreleased.** Breaking only for code that unpacks the return values
+> of the `Backend` protocol's `increment_batch_failures` /
+> `reset_batch_failures`, or implements the protocol. Ships with one
+> new pre-phase migration.
+
+`increment_batch_failures` returns `(consecutive_failures,
+failure_threshold)` and `reset_batch_failures` returns `None`; neither
+carries the count of non-terminal members any more. That count rode
+along as a `count(*)` over every member on every batched job's terminal
+write — an aggregate the terminal-outcome hook never read, because
+completion is decided by `complete_batch`'s own guard — so a batch of N
+members paid O(N²) member visits to complete. Callers that want the
+count use `count_batch_non_terminal`, which answers the same question.
+
+`01.00.13_03_pre_jobs_batch_open_members_index.sql` adds
+`jobs_batch_open_members_idx`, a partial index over the non-terminal
+members of every batch keyed by `batch_id`, which serves
+`complete_batch`'s guard and `count_batch_non_terminal` as one index seek
+instead of a walk over the batch.
+Pre-phase and rolling-safe: the previous release's statements never
+reference the index and this release's run without it (only the cost
+bound is lost). Like every sibling index migration, the plain `CREATE
+INDEX` takes a write-blocking lock on `jobs` for the build; operators
+with a large `jobs` table can build it `CONCURRENTLY` by hand first (the
+statement is in the migration file) and let the migration no-op.
+
 ---
 
 ## Silent behaviour changes

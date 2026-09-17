@@ -270,8 +270,8 @@ class Backend(Protocol):
     ) -> None: ...
     async def increment_batch_failures(
         self, batch_id: UUID, *, connection=None
-    ) -> tuple[int, int | None, int]: ...
-    async def reset_batch_failures(self, batch_id: UUID, *, connection=None) -> int: ...
+    ) -> tuple[int, int | None]: ...
+    async def reset_batch_failures(self, batch_id: UUID, *, connection=None) -> None: ...
     async def abort_batch(self, batch_id: UUID, *, connection=None) -> int: ...
     async def complete_batch(self, batch_id: UUID, *, connection=None) -> None: ...
     async def get_batch(self, batch_id: UUID) -> BatchRow | None: ...
@@ -1580,10 +1580,18 @@ overhead. For batched jobs:
 
 | Outcome | Action |
 |---|---|
-| `succeeded` | Resets `consecutive_failures` to 0. If no non-terminal jobs remain, marks batch `complete`. |
-| `failed` | Increments `consecutive_failures`. If `>= failure_threshold`, aborts the batch. Otherwise, if no non-terminal jobs remain, marks batch `complete`. |
-| `cancelled` / `crashed` | Counts non-terminal jobs; if none remain, marks batch `complete`. Does not touch the failure counter. |
+| `succeeded` | Resets `consecutive_failures` to 0, then attempts completion. |
+| `failed` | Increments `consecutive_failures`. If `>= failure_threshold`, aborts the batch. Otherwise attempts completion. |
+| `cancelled` / `crashed` | Attempts completion. Does not touch the failure counter. |
 | `snoozed` / `reservation_denied` / `rate_limit_denied` / `scheduled` | Returns immediately — the job is rescheduled, not terminal. |
+
+The completion attempt is one statement, `complete_batch`, whose `NOT
+EXISTS` guard decides in its own snapshot whether any member is still
+non-terminal; the hook never counts members itself. The guard's probe is
+served by `jobs_batch_open_members_idx` — a partial index over exactly the
+non-terminal members, keyed by `batch_id` — so every step of the hook is a
+keyed single-row write or one index seek, and the cost of completing a
+batch is linear in its member count rather than quadratic.
 
 Aborting cancels all pending and scheduled child jobs (`pending` /
 `scheduled` → `cancelled`) with a hardcoded `error_message = 'Batch

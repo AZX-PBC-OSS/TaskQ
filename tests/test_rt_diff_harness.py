@@ -707,7 +707,7 @@ class DiffSide:
         self._batches_by_token[token] = bid
         return bid
 
-    async def batch_increment(self, token: str) -> tuple[int, int | None, int]:
+    async def batch_increment(self, token: str) -> tuple[int, int | None]:
         return await self.backend.increment_batch_failures(self._batches_by_token[token])
 
     def batch_id_of(self, token: str) -> UUID:
@@ -718,8 +718,8 @@ class DiffSide:
         """The batch row through the protocol read."""
         return await self.backend.get_batch(self._batches_by_token[token])
 
-    async def batch_reset(self, token: str) -> int:
-        return await self.backend.reset_batch_failures(self._batches_by_token[token])
+    async def batch_reset(self, token: str) -> None:
+        await self.backend.reset_batch_failures(self._batches_by_token[token])
 
     async def batch_abort(self, token: str) -> int:
         return await self.backend.abort_batch(self._batches_by_token[token])

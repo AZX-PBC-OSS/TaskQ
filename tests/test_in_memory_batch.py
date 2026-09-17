@@ -153,18 +153,17 @@ class TestInMemoryIncrementBatchFailures:
         _make_batch_job(backend, batch_id=bid, status="pending")
         _make_batch_job(backend, batch_id=bid, status="scheduled")
 
-        count, threshold, remaining = await backend.increment_batch_failures(bid)
+        count, threshold = await backend.increment_batch_failures(bid)
 
         assert count == 1
         assert threshold == 3
-        assert remaining == 2
+        assert await backend.count_batch_non_terminal(bid) == 2
 
     async def test_increment_no_batch_row_returns_zeros(self) -> None:
         backend = _make_backend()
-        count, threshold, remaining = await backend.increment_batch_failures(new_uuid())
+        count, threshold = await backend.increment_batch_failures(new_uuid())
         assert count == 0
         assert threshold is None
-        assert remaining == 0
 
     async def test_increment_twice_counts_correctly(self) -> None:
         backend = _make_backend()
@@ -172,8 +171,8 @@ class TestInMemoryIncrementBatchFailures:
 
         await _create_test_batch(backend, batch_id=bid, expected_size=5, failure_threshold=3)
 
-        c1, _, _ = await backend.increment_batch_failures(bid)
-        c2, _, _ = await backend.increment_batch_failures(bid)
+        c1, _ = await backend.increment_batch_failures(bid)
+        c2, _ = await backend.increment_batch_failures(bid)
 
         assert c1 == 1
         assert c2 == 2
@@ -187,18 +186,18 @@ class TestInMemoryIncrementBatchFailures:
         await _create_test_batch(backend, batch_id=bid, expected_size=1, failure_threshold=3)
         _make_batch_job(backend, batch_id=bid, status="succeeded")
 
-        count, threshold, remaining = await backend.increment_batch_failures(bid)
+        count, threshold = await backend.increment_batch_failures(bid)
 
         assert count == 1
         assert threshold == 3
-        assert remaining == 0
+        assert await backend.count_batch_non_terminal(bid) == 0
 
 
 # ── TestInMemoryResetBatchFailures ──────────────────────────────────────
 
 
 class TestInMemoryResetBatchFailures:
-    async def test_reset_returns_remaining_count(self) -> None:
+    async def test_reset_zeroes_the_counter(self) -> None:
         backend = _make_backend()
         bid = new_uuid()
 
@@ -207,16 +206,16 @@ class TestInMemoryResetBatchFailures:
         _make_batch_job(backend, batch_id=bid, status="succeeded")
 
         await backend.increment_batch_failures(bid)
-        remaining = await backend.reset_batch_failures(bid)
+        await backend.reset_batch_failures(bid)
 
-        assert remaining == 1
         stored = backend._batches[bid]
         assert stored.consecutive_failures == 0
 
-    async def test_reset_no_batch_returns_zero(self) -> None:
+    async def test_reset_no_batch_is_a_noop(self) -> None:
         backend = _make_backend()
-        remaining = await backend.reset_batch_failures(new_uuid())
-        assert remaining == 0
+        missing = new_uuid()
+        await backend.reset_batch_failures(missing)
+        assert missing not in backend._batches
 
 
 # ── TestInMemoryAbortBatch ──────────────────────────────────────────────

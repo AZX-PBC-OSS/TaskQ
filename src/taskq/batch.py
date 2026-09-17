@@ -392,12 +392,13 @@ async def apply_batch_terminal_outcome(
     Completion is self-arbitrating: every terminal outcome issues the
     ``complete_batch`` attempt, and that statement's ``NOT EXISTS``
     guard decides against the live member set in its own snapshot.  The
-    increment/reset count is advisory only — under READ COMMITTED two
-    members terminating concurrently can each read the other as
-    non-terminal, so a hook that gated the attempt on that count could
-    leave a fully-terminal batch for the leader sweep; the optimistic
-    attempt after the last terminal write is the one that lands, and a
-    premature one is a no-op.
+    hook never counts members itself — under READ COMMITTED two members
+    terminating concurrently can each read the other as non-terminal,
+    so a hook that gated the attempt on a count could leave a
+    fully-terminal batch for the leader sweep, and a count paid on every
+    terminal write would cost a batch of N members N member visits each
+    time; the optimistic attempt after the last terminal write is the
+    one that lands, and a premature one is a no-op.
 
     **Best-effort semantics (M7):** the increment/reset/abort/complete
     writes are best-effort.  A crash between the terminal job write and
@@ -421,16 +422,14 @@ async def apply_batch_terminal_outcome(
 
     if outcome == "succeeded":
         await backend.reset_batch_failures(batch_id, connection=transaction_conn)
-        # The reset's remaining count is that statement's snapshot, not
-        # the completion decision — see the docstring's self-arbitrating
-        # paragraph. complete_batch re-checks membership in its own
-        # statement, so the optimistic attempt can delay but never
-        # complete prematurely.
+        # complete_batch checks membership in its own statement, so the
+        # optimistic attempt can delay but never complete prematurely —
+        # see the docstring's self-arbitrating paragraph.
         await backend.complete_batch(batch_id, connection=transaction_conn)
         return
 
     if outcome == "failed":
-        count, threshold, _remaining = await backend.increment_batch_failures(
+        count, threshold = await backend.increment_batch_failures(
             batch_id, connection=transaction_conn
         )
         if threshold is not None and count >= threshold:
