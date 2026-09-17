@@ -1598,7 +1598,7 @@ async def test_leader_whose_row_was_taken_over_steps_down_on_the_next_renewal(
 
 class _UnassumableLeader(MaintenanceLeader):
     """A pod that keeps WINNING elections but can never open the dedicated
-    conns an assume requires — the conn-count-pressure shape from #234:
+    conns an assume requires, the conn-count-pressure shape from #234:
     the one leader-conn slot the election itself uses opens fine, the two
     extra dedicated conns are refused every cycle."""
 
@@ -1615,11 +1615,11 @@ async def test_won_but_unassumable_leader_hands_the_lease_to_a_peer(
     the lease forever.
 
     Every own-row re-win re-falsifies the peers' lapse predicate, so
-    before the fix nobody led for as long as the failure lasted — the
+    before the fix nobody led for as long as the failure lasted: the
     whole maintenance plane, reclaim sweep included, stopped fleet-wide.
     The fix hands the row back once the episode's trust budget (one
     ``leader_lease`` window) is spent, so the healthy peer takes over on
-    its next cycle — bounded by the same SLA a dead leader already had —
+    its next cycle (bounded by the same SLA a dead leader already had),
     and the broken pod's LATER teardown resign stays fenced out of the
     successor's row.
     """
@@ -1641,7 +1641,7 @@ async def test_won_but_unassumable_leader_hands_the_lease_to_a_peer(
         # default 40 s window in a test.
         deps_a.settings.leader_lease = 2.0
 
-        # Per-pod shutdown events, the production shape: the red-team
+        # Per-pod shutdown events, the production shape: the adversarial-review
         # phase below shuts down ONLY the broken pod, and a shared event
         # would tear the healthy peer down with it.
         shutdown_a = asyncio.Event()
@@ -1703,11 +1703,12 @@ async def test_won_but_unassumable_leader_hands_the_lease_to_a_peer(
                     "the lease row must name the healthy peer after the hand-back"
                 )
 
-            # Red-team double-resign: shut down ONLY the broken pod. Its
-            # teardown resign runs AFTER the takeover, fenced on its own
-            # last won term — a different (worker_id, elected_at) from the
-            # successor's — so B's row must survive it while B keeps
-            # renewing. (A shared shutdown event here would resign B's own
+            # Adversarial-review double-resign: shut down ONLY the broken
+            # pod. Its teardown resign runs AFTER the takeover, fenced on
+            # its own last won term, a different (worker_id, elected_at)
+            # from the successor's, so B's row must survive it while B
+            # keeps renewing. (A shared shutdown event here would resign
+            # B's own
             # row through B's teardown too, and prove nothing.)
             shutdown_a.set()
             with suppress(asyncio.CancelledError, ExceptionGroup):
@@ -1721,7 +1722,7 @@ async def test_won_but_unassumable_leader_hands_the_lease_to_a_peer(
                 )
             assert row is not None and UUID(str(row["worker_id"])) == wid_b, (
                 "the broken pod's teardown resign deleted the successor's lease "
-                "row — the fence exists to make that impossible"
+                "row: the fence exists to make that impossible"
             )
             assert deps_b.is_leader.is_set(), "the successor must still be leading"
         finally:

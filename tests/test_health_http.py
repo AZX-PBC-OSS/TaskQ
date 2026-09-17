@@ -342,7 +342,7 @@ async def test_unix_collision_with_health_port_still_serves_tcp() -> None:
     down with it.
 
     Before, ``start()`` bound the Unix socket first and aborted on the
-    collision before ever attempting the TCP bind — so a worker deployed
+    collision before ever attempting the TCP bind, so a worker deployed
     with ``health_port`` (the ACA/K8s probe surface) booted, registered,
     claimed work, and answered NOTHING at the port its probes target.
     The TCP bind must be attempted anyway, the collision must surface as
@@ -364,7 +364,7 @@ async def test_unix_collision_with_health_port_still_serves_tcp() -> None:
             "the peer-collision message must keep prescribing the per-replica fix"
         )
         # The port-routed probe surface is up and answering despite the
-        # collision — this is the whole fix. Captured while the listener
+        # collision: this is the whole fix. Captured while the listener
         # lives: stop() nulls the server object it came from.
         port = _port(server)
         resp = await _tcp_get(port, "/live")
@@ -379,7 +379,7 @@ async def test_unix_collision_with_health_port_still_serves_tcp() -> None:
         # serving probes for a dead worker), the peer's file was never this
         # server's to unlink, and stop() does not WARN about "not the one
         # this worker bound" for a socket it never bound at all. Checked
-        # with the peer still live — its own close() unlinks its path, and
+        # with the peer still live: its own close() unlinks its path, and
         # that must stay the only thing that ever does.
         port_refused = False
         try:
@@ -391,7 +391,7 @@ async def test_unix_collision_with_health_port_still_serves_tcp() -> None:
             "stop() unlinked the live peer's socket file"
         )
         assert (await _unix_get(peer_path, "/live")).startswith(b"HTTP/1.0 200 OK\r\n"), (
-            "the peer stopped answering after this worker's stop() — its "
+            "the peer stopped answering after this worker's stop(): its "
             "serving surface was disturbed"
         )
         assert not any(e["event"] == "health-server-stop-skipped-unlink" for e in stop_logs), (
@@ -409,15 +409,15 @@ async def test_a_directory_at_the_socket_path_with_a_port_set_reports_the_real_c
     stale-file cleaner cannot remove it), and the old message told the
     operator "a live peer owns the path — give each replica a unique
     TASKQ_HEALTH_SOCKET_PATH", which sends them hunting for a peer that
-    does not exist. The message now names the errno shape — but the TYPE
+    does not exist. The message now names the errno shape, but the TYPE
     and the ownership contract are unchanged: with a port set the TCP
     listener is still up and owned (surfacing ``EISDIR`` as the bare
     "owns nothing" OSError would leak it), ``stop()`` cleans exactly the
     TCP listener, and the directory is never this server's to remove.
 
-    The other attacker shapes never reach the handler at all — a stale
+    The review's other shapes never reach the handler at all (a stale
     socket file, a bind-only leftover, and a regular file are all
-    cleaned by ``_unlink_stale_socket`` and the bind succeeds — pinned
+    cleaned by ``_unlink_stale_socket`` and the bind succeeds), pinned
     by ``test_stale_socket_cleanup`` and the stale-socket suite.
     """
     base = _next_sock_path()
@@ -457,7 +457,7 @@ async def test_unix_collision_without_health_port_keeps_the_bare_oserror_contrac
 
     Nothing of the server's is serving anywhere, so the boot's
     warn-and-continue (the #207 contract) fires on a plain ``OSError`` and
-    no stop is owed — ``stop()`` stays a safe no-op that never touches the
+    no stop is owed: ``stop()`` stays a safe no-op that never touches the
     peer's file. Pinning the TYPE matters: ``HealthUnixBindCollisionError``
     subclasses ``OSError``, so a bare ``pytest.raises(OSError)`` cannot
     tell the two contracts apart.
@@ -487,12 +487,12 @@ async def test_unix_collision_without_health_port_keeps_the_bare_oserror_contrac
 async def test_stop_with_the_socket_already_unlinked_is_clean() -> None:
     """F3: a path already gone at ``stop()`` is the clean outcome, not the race.
 
-    Python 3.13's ``Server.close()`` unlinks the socket it served (inode-guarded
-    — the attacker proved a replacement's file survives it), so by the time
+    Python 3.13's ``Server.close()`` unlinks the socket it served (inode-guarded;
+    the review proved a replacement's file survives it), so by the time
     ``stop()`` looks, every clean stop on 3.13+ finds no file. The file is
     removed by hand here so the pin holds on every version: no
-    ``health-server-stop-skipped-unlink`` WARN — that is reserved for a
-    DIFFERENT file sitting at the path — and the ``health-server-stopped``
+    ``health-server-stop-skipped-unlink`` WARN (that is reserved for a
+    DIFFERENT file sitting at the path), and the ``health-server-stopped``
     record still fires, because the stop did complete.
     """
     sock_path = _next_sock_path()
@@ -511,7 +511,7 @@ async def test_stop_with_the_socket_already_unlinked_is_clean() -> None:
             "a path already unlinked cleanly was reported as a shutdown-race near-miss"
         )
         assert any(e["event"] == "health-server-stopped" for e in captured), (
-            "the clean-stop record must still be emitted — the stop completed"
+            "the clean-stop record must still be emitted: the stop completed"
         )
     finally:
         with contextlib.suppress(OSError):
@@ -521,7 +521,7 @@ async def test_stop_with_the_socket_already_unlinked_is_clean() -> None:
 async def test_unix_and_tcp_both_collide_refuses_startup_and_leaves_the_peer_alone() -> None:
     """When both transports collide, the TCP refusal governs the boot.
 
-    The newcomer must refuse to start (``HealthTcpBindError`` — the
+    The newcomer must refuse to start (``HealthTcpBindError``, the
     manifest routes probes to that port), and its failed boot must not
     disturb the worker already serving on the Unix path: the peer's
     socket file survives the newcomer's cleanup untouched.

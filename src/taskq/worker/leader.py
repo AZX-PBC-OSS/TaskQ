@@ -26,7 +26,7 @@ Failover SLA:
   Won, unassumable   ≤ leader_lease + heartbeat_interval + one failing
                        cycle's connection attempts (each bounded by
                        reload_factory_timeout; the trust-spent hand-back
-                       deletes the row — the lapse backstop cannot fire
+                       deletes the row: the lapse backstop cannot fire
                        while sub-lease re-wins keep refreshing it; see
                        ``_hand_back_unassumable_lease``)
   Partition detect   ≤ watchdog_interval + heartbeat_interval + 2 s
@@ -316,16 +316,16 @@ class MaintenanceLeader:
         # The FIRST term of this pod's current won-but-unassumable episode:
         # a run of election wins whose dedicated-conn opens keep failing
         # (#234). Its ``trusted_until`` is the episode's whole trust
-        # budget — the same window ``_renew_failed`` gives a renewing
-        # leader to recover a transient failure before standing down —
+        # budget (the same window ``_renew_failed`` gives a renewing
+        # leader to recover a transient failure before standing down),
         # because every re-win mints a fresh full window, so nothing
         # else bounds how long the pod can keep a row it cannot use.
         # Cleared by a successful assume (the pod can lead again) and by
-        # an OBSERVED ELECTION LOSS (a peer holds the row now — the
+        # an OBSERVED ELECTION LOSS (a peer holds the row now, the
         # episode is over, and a later win starts a fresh one with a
         # fresh budget); deliberately NOT cleared by the trust-spent
-        # resign itself, so a pod that re-wins while still broken —
-        # no peer having taken the row in between — hands the row
+        # resign itself, so a pod that re-wins while still broken, with
+        # no peer having taken the row in between, hands the row
         # straight back instead of buying another window.
         self._unassumable_anchor: LeaderTerm | None = None
         # Log-once latch for a refused courtesy advisory-lock probe: a
@@ -709,7 +709,7 @@ class MaintenanceLeader:
         the ordinary fenced no-op (a successor's row, or none left) and
         every best-effort shape (no term to resign, no live conn to ride,
         the write raising): the no-op and no-term/no-conn shapes are
-        silent by design — at teardown they are normal — while a raised
+        silent by design (at teardown they are normal), while a raised
         write carries its own ``leader-resign-failed`` WARN. A caller
         whose policy REPORTS a hand-back must not do so on a ``False``
         here, which is why the #234 trust-spent hand-back WARNs only on
@@ -739,7 +739,7 @@ class MaintenanceLeader:
         # row handed back, "DELETE 0" is the fence correctly matching
         # nothing (a successor's row, or the row already resigned). A
         # caller reporting the hand-back must read this, not the absence
-        # of an error — a fenced no-op is a success-shaped failure.
+        # of an error: a fenced no-op is a success-shaped failure.
         parts = tag.split()
         deleted = len(parts) == 2 and parts[0].upper() == "DELETE" and parts[1] != "0"
         if not deleted:
@@ -763,8 +763,8 @@ class MaintenanceLeader:
         A won row whose dedicated conns will not open is the worst state
         an election can end in: this pod's name is on the row, so every
         peer's lapse predicate is re-falsified on each own-row re-win,
-        and ``deps.lead()`` never runs, so no maintenance loop —
-        including the reclaim sweep — runs anywhere in the fleet. Before
+        and ``deps.lead()`` never runs, so no maintenance loop,
+        including the reclaim sweep, runs anywhere in the fleet. Before
         the row lease, dropping ``leader_conn`` released the advisory
         lock and a peer took over; the row outlives the connection now,
         so this pod must hand the row back itself.
@@ -772,23 +772,23 @@ class MaintenanceLeader:
         The budget is the episode's first won term's trust window, set
         in ``_unassumable_anchor``: one failed conn open is a blip, and
         the own-row arm's cheap route back (a credential reload, a
-        momentary ``TooManyConnections``) must keep working — resigning
+        momentary ``TooManyConnections``) must keep working: resigning
         on the first failure would hand the lease to a peer per blip and
         thrash leadership. Past the window this pod no longer trusts the
-        term it keeps refreshing — the split-brain rule ``_renew_term``
-        already enforces as the ``trust_expired`` stand-down — so the
+        term it keeps refreshing (the split-brain rule ``_renew_term``
+        already enforces as the ``trust_expired`` stand-down), so the
         row goes back through the fenced ``resign()`` (its fence is the
         CURRENT win's term, re-captured at the top of every
         ``_assume_leadership``), which rides ``deps.leader_conn``: the
         same connection the winning elect just used, still open here
         because every caller runs this BEFORE dropping it. Best-effort
-        like every resign — a failure costs at most the wait the lapse
+        like every resign: a failure costs at most the wait the lapse
         would have charged, and the next cycle re-attempts while the
         episode persists.
 
         An episode ends two ways: a successful assume (this pod proved
-        it can lead) or an observed election loss (a peer holds the row
-        — the election loop clears the anchor there). The resign itself
+        it can lead) or an observed election loss (a peer holds the row;
+        the election loop clears the anchor there). The resign itself
         does NOT end it: a pod that re-wins while still broken, with no
         peer having taken the row in between, must hand the row straight
         back, not buy a fresh window per cycle.
@@ -806,8 +806,8 @@ class MaintenanceLeader:
             return
         deleted = await self.resign()
         if not deleted:
-            # The WARN below is the policy record — "this pod handed the
-            # lease back because it cannot assume it" — and must not
+            # The WARN below is the policy record ("this pod handed the
+            # lease back because it cannot assume it") and must not
             # claim a hand-back that did not land: a resign with no live
             # conn returns silently and a fenced no-op succeeds at
             # nothing, and reporting either as a hand-back sends the
@@ -918,13 +918,13 @@ class MaintenanceLeader:
                 # won-but-unassumable episode: the row a live peer now
                 # holds is not this pod's to hand back, so a LATER win of
                 # this pod starts a fresh episode with a fresh trust
-                # budget — without this, an anchor left spent by an old
+                # budget. Without this, an anchor left spent by an old
                 # episode resigned the first conn-open blip of every
                 # later term (the per-blip thrash the budget exists to
                 # reject, arriving for exactly the pods that once had an
                 # episode). The anti-fresh-window rule is untouched: a
-                # re-win while still broken never passes through here —
-                # the own-row arm or a free-row INSERT wins instead — so
+                # re-win while still broken never passes through here
+                # (the own-row arm or a free-row INSERT wins instead), so
                 # the anchor still survives the resign itself.
                 self._unassumable_anchor = None
                 record_election_attempt(str(self._worker_id), won=False)
@@ -949,7 +949,7 @@ class MaintenanceLeader:
         ``won_row`` marks the cycles whose election statement had already
         WON the lease before failing (an exception escaping
         :meth:`_assume_leadership`): those leave this pod's name on a row
-        it may never manage to assume, so the #234 hand-back runs FIRST —
+        it may never manage to assume, so the #234 hand-back runs FIRST,
         before the leader conn it rides is dropped.
         """
         if won_row:
@@ -1011,7 +1011,7 @@ class MaintenanceLeader:
         "Give the row back" is budgeted, not immediate: the first failed
         open keeps the row for its own trust window (the own-row arm's
         cheap route back must survive), and a failure past that window
-        hands it back fenced — see :meth:`_hand_back_unassumable_lease`.
+        hands it back fenced (see :meth:`_hand_back_unassumable_lease`).
         """
         term = LeaderTerm(
             elected_at=elected_at,
@@ -1022,8 +1022,8 @@ class MaintenanceLeader:
         # Captured the moment the row is won, BEFORE the conn opens that
         # complete the assume: even a won-then-unassumable election leaves
         # this pod's name on the row, and the resigns that hand exactly
-        # that row back — the trust-spent hand-back (#234) and the
-        # teardown resign — fence on it.  Renewals never change
+        # that row back, the trust-spent hand-back (#234) and the
+        # teardown resign, fence on it.  Renewals never change
         # ``elected_at``, so the fence stays valid for the life of the
         # term.
         self._resign_fence = term
@@ -1063,8 +1063,8 @@ class MaintenanceLeader:
             return False
         self._deps.lead(term)
         # A completed assume ends any won-but-unassumable episode: this
-        # pod has just proven it can lead, so the next failure — whenever
-        # it comes — starts a fresh episode with a fresh trust budget.
+        # pod has just proven it can lead, so the next failure, whenever
+        # it comes, starts a fresh episode with a fresh trust budget.
         self._unassumable_anchor = None
         # Whatever this pod was following is gone; the next peer it finds in
         # its way is a fresh transition, not a continuation.

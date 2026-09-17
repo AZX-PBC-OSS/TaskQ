@@ -14,7 +14,7 @@ worker answers 503.
 
 The two transports bind independently in :meth:`HealthServer.start`: a Unix-path collision
 (a live peer worker owns the path, and the bind refuses to steal it) costs the Unix listener
-alone — the TCP listener is still attempted, so port-routed probes keep answering
+alone: the TCP listener is still attempted, so port-routed probes keep answering
 (:class:`HealthUnixBindCollisionError`), and with no port configured the boot warns and continues
 with no listener. A TCP bind failure, by contrast, refuses startup
 (:class:`HealthTcpBindError`): the probes the manifest routed to that port would otherwise
@@ -436,9 +436,9 @@ class HealthTcpBindError(RuntimeError):
     Raised by :meth:`HealthServer.start` when ``health_port`` is set and
     the address cannot be served. Distinct from the Unix-socket arm's
     failures: a socket-path collision means a live peer worker owns that
-    path — with a TCP listener up the boot continues under
-    :class:`HealthUnixBindCollisionError` (a WARNING plus a stop callback),
-    and with none configured it warns and continues owning nothing —
+    path (with a TCP listener up the boot continues under
+    :class:`HealthUnixBindCollisionError`, a WARNING plus a stop callback,
+    and with none configured it warns and continues owning nothing),
     while an unservable probe port means the orchestrator routes health
     checks to this replica and nothing answers them: the worker refuses
     to start rather than run with probes silently dead.
@@ -460,10 +460,10 @@ class HealthUnixBindCollisionError(OSError):
 
     Raised by :meth:`HealthServer.start` when the Unix bind fails while
     ``health_port`` is set and that listener IS already serving: the
-    failure — a live peer worker owning the path (``EADDRINUSE``, which
-    :func:`_bind_unix_socket` refuses to steal), or any other unusable
-    path (a directory at it, ``EACCES`` on the directory chain, ...) —
-    costs the Unix surface alone, and the boot keeps the port-routed
+    failure, whether a live peer worker owning the path (``EADDRINUSE``,
+    which :func:`_bind_unix_socket` refuses to steal) or any other
+    unusable path (a directory at it, ``EACCES`` on the directory chain,
+    ...), costs the Unix surface alone, and the boot keeps the port-routed
     probe surface answering (#245; before, the Unix bind failure
     aborted ``start()`` before the TCP bind was even attempted, leaving
     a registered, claiming worker with no listener at all). The message
@@ -475,7 +475,7 @@ class HealthUnixBindCollisionError(OSError):
     "warn and continue on a health OSError" rule (the fix for #207)
     still degrades rather than crashes. The contract differs from a bare
     bind ``OSError`` in one respect: this server OWNS the TCP listener it
-    managed to bind, so ``stop()`` must still be called — exactly what
+    managed to bind, so ``stop()`` must still be called, exactly what
     the worker bootstrap does with this type (warn, push the stop
     callback, keep booting), while a bare ``OSError`` leaves it owning
     nothing. That ownership is why the type covers every Unix-bind
@@ -571,7 +571,7 @@ class HealthServer:
         # could be served must not stay dark over a socket path it does
         # not depend on. A TCP bind failure still refuses startup
         # (``HealthTcpBindError``, its own failure paths cleaning up
-        # whatever this server did bind) whatever the Unix arm did — the
+        # whatever this server did bind) whatever the Unix arm did; the
         # refusal policy for the routed surface governs both arms.
         await self._start_http(deps)
 
@@ -579,9 +579,9 @@ class HealthServer:
             if self._http_server is None:
                 # No TCP listener configured, so nothing of ours is
                 # serving anywhere: raise the bare OSError and keep
-                # today's contract — the bootstrap's warn-and-continue
+                # today's contract (the bootstrap's warn-and-continue
                 # records the collision, no stop is owed, nothing of
-                # this server's to clean up.
+                # this server's to clean up).
                 raise unix_bind_error
             # The TCP listener is up and this server owns it: raise the
             # collision as its own type so the caller can keep booting
@@ -633,21 +633,21 @@ class HealthServer:
             if self._server is None and self._socket_inode is None:
                 return
             # The path's unlink has TWO owners once the server above is
-            # closed: this method, and asyncio itself — Server.close()
+            # closed: this method, and asyncio itself. Server.close()
             # unlinks the socket it served (guarded the same way, so a
             # replacement worker's fresh file survives it) on Python
-            # 3.13+, which by the time stop() reaches here has usually
+            # 3.13+, and by the time stop() reaches here it has usually
             # already done the work. A missing file is therefore the
-            # CLEAN outcome on every version — asyncio's unlink, or any
-            # other removal after this server stopped listening — and
+            # CLEAN outcome on every version (asyncio's unlink, or any
+            # other removal after this server stopped listening) and
             # must be recorded as one: no unlink to attempt, the INFO,
             # never the WARN. The WARN is reserved for the real race: a
             # stat that succeeds but names a different inode, meaning a
             # replacement worker bound a fresh socket to the same path,
             # and that file must survive this worker's teardown. An
             # inode that is None with the file present means this server
-            # DID bind but could not stat its own file — ownership
-            # unprovable, so it never unlinks either.
+            # DID bind but could not stat its own file, so ownership
+            # is unprovable and it never unlinks either.
             current_inode: int | None = None
             try:
                 current_inode = os.stat(self._socket_path).st_ino

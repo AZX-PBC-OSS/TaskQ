@@ -86,7 +86,7 @@ class _FailingHealthServer:
 class _UnixCollisionHealthServer:
     """Fake for the #245 partial start: start() raises the collision type
     a real server raises when a live peer owns the socket path but the TCP
-    listener is already up — the server owns something, so stop() must
+    listener is already up: the server owns something, so stop() must
     still run even though start() raised."""
 
     def __init__(self, events: list[str]) -> None:
@@ -255,7 +255,7 @@ async def test_unix_collision_warns_and_boots_but_still_stops_the_server(
 ) -> None:
     """#245's bootstrap half: ``HealthUnixBindCollisionError`` means the server
     owns the TCP listener it managed to bind, so the boot that continues
-    on the strength of that listener must still push the stop callback —
+    on the strength of that listener must still push the stop callback,
     otherwise the probe port would answer for a dead worker until the
     process exits. The stop ordering is the assertion: it must sit
     between health.start and pools_close exactly as a healthy boot's
@@ -272,6 +272,6 @@ async def test_unix_collision_warns_and_boots_but_still_stops_the_server(
 
     assert result == 0, "a unix-path collision with TCP up must not abort the boot"
     assert events == ["pools_open", "health.start", "health.stop", "pools_close"], (
-        "the collision boot must run the full lifecycle — start (partial), "
+        "the collision boot must run the full lifecycle: start (partial), "
         "stop (owed: the TCP listener is owned), pools close"
     )

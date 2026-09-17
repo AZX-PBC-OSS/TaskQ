@@ -1902,14 +1902,14 @@ async def _main(
                     # worker with dead probes is the silent kind of down).
                     raise
                 except HealthUnixBindCollisionError as exc:
-                    # The Unix surface alone is lost — a live peer owns the
-                    # socket path — but the TCP probe listener IS up and
+                    # The Unix surface alone is lost (a live peer owns the
+                    # socket path), but the TCP probe listener IS up and
                     # this server owns it (#245): the boot continues with
                     # port-routed probes answering, the collision stays the
                     # WARN it has been since the #207 fix, and the stop
-                    # callback is STILL pushed — a raised start() gets no
+                    # callback is STILL pushed (a raised start() gets no
                     # `else`, and the TCP listener must not outlive the
-                    # worker. The WARN is the action item it always was:
+                    # worker). The WARN is the action item it always was:
                     # give each replica a unique socket path.
                     _startup_log.warning(
                         "health-server-unavailable",
