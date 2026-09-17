@@ -386,3 +386,181 @@ async def test_a_contended_cron_tick_issues_no_due_read() -> None:
     assert fired == 0
     assert len(conn.wire) == 1
     assert "cron_schedules" not in conn.wire[0]
+
+
+# ── PG rate-limit acquires (the #228 fusion) ─────────────────────────────
+#
+# The pre-fused token-bucket acquire spent BEGIN + set_config + SAVEPOINT
+# + preseed + SELECT FOR UPDATE + RELEASE + upsert + COMMIT (8 round
+# trips, bounded mode); the log-style sliding window spent BEGIN +
+# try-lock + DELETE + INSERT + COUNT (+ a retry SELECT on denial) +
+# COMMIT. The fused shapes (#228):
+
+# * token bucket / GCRA — ONE ``INSERT … ON CONFLICT DO UPDATE …
+#   RETURNING`` doing the arithmetic in the conflict arm; the bounded
+#   mode wraps it in the enqueue path's pinned BEGIN + set_config +
+#   statement + COMMIT shape (no savepoint: a refusal aborts the
+#   transaction and the SET LOCAL dies with it), and the indefinite
+#   mode is the bare statement on autocommit.
+# * log-style window — the whole locked critical section (prune +
+#   admission insert + count + retry-hint inputs) is one CTE statement
+#   under the unchanged two-tier advisory lock.
+
+
+def _rl_settings(**overrides: Any) -> Any:
+    from taskq.settings import WorkerSettings
+
+    base: dict[str, Any] = {"pg_dsn": "postgresql://u:p@h/d", "schema_name": "taskq_fake"}
+    base.update(overrides)
+    return WorkerSettings.load_from_dict(base)
+
+
+async def test_bounded_token_bucket_acquire_is_four_round_trips() -> None:
+    """BEGIN + set_config + the fused upsert + COMMIT — the bounded lock
+    wait needs the transaction for the SET LOCAL to span the statement,
+    and nothing more (the savepoint the savepoint-wrapped read needed is
+    pure cost here, exactly as the keyed-enqueue pin above documents for
+    its own bounded wait)."""
+    from taskq.ratelimit.token_bucket import TokenBucket
+
+    tb = TokenBucket(name="rt_tb", capacity=5, refill_per_second=1.0, backend="postgres")
+    conn = _RecordingConn({"tokens_after": [_Record({"tokens_after": 4.0, "granted": True})]})
+    decision = await tb._acquire_pg(  # pyright: ignore[reportPrivateUsage]  # Why: the acquire is the unit under test; the public surface wraps it in Redis-fallback machinery a fake pool cannot satisfy.
+        1.0,
+        _RecordingPool(conn),  # type: ignore[arg-type]  # Why: duck-typed recording pool.
+        _rl_settings(),
+    )
+    assert decision.allowed is True
+    assert decision.remaining == 4.0
+    assert _shape(conn.wire) == [
+        "BEGIN",
+        "SELECT set_config('lock_timeout', $1, tr",
+        'INSERT INTO "taskq_fake".rate_limit_buck',
+        "COMMIT",
+    ], _shape(conn.wire)
+
+
+async def test_indefinite_token_bucket_acquire_is_one_statement() -> None:
+    """``lock_timeout_ms <= 0``: the fused acquire is one autocommit
+    statement — no transaction to span (the pre-fused shape needed one
+    for preseed + read + upsert), no GUC."""
+    from taskq.ratelimit.token_bucket import TokenBucket
+
+    tb = TokenBucket(name="rt_tb2", capacity=5, refill_per_second=1.0, backend="postgres")
+    conn = _RecordingConn({"tokens_after": [_Record({"tokens_after": 4.0, "granted": True})]})
+    decision = await tb._acquire_pg(  # pyright: ignore[reportPrivateUsage]  # Why: as above.
+        1.0,
+        _RecordingPool(conn),  # type: ignore[arg-type]  # Why: duck-typed recording pool.
+        _rl_settings(),
+        lock_timeout_ms=0.0,
+    )
+    assert decision.allowed is True
+    assert _shape(conn.wire) == ['INSERT INTO "taskq_fake".rate_limit_buck'], _shape(conn.wire)
+
+
+async def test_log_window_acquire_is_lock_plus_one_statement() -> None:
+    """BEGIN + try-lock + the fused window statement + COMMIT: the whole
+    locked critical section (prune + admission insert + count + retry
+    inputs) is ONE statement under the advisory lock — the pre-fused
+    shape spent DELETE + INSERT + COUNT as three more round trips inside
+    the lock (plus a retry SELECT on denial), so lock hold time — the
+    contention tail the two-tier lock exists to bound — is now one
+    statement's execution."""
+    from datetime import timedelta
+    from uuid import UUID
+
+    from taskq.ratelimit._sliding_window_pg import _acquire_pg_log
+    from taskq.ratelimit.sliding_window import SlidingWindow
+
+    sw = SlidingWindow(
+        name="rt_sw", limit=4, window=timedelta(seconds=60), backend="postgres", style="log"
+    )
+    conn = _RecordingConn(
+        {
+            "pg_try_advisory_xact_lock": [_Record({"got": True})],
+            "WITH pruned AS": [
+                _Record(
+                    {"inserted": True, "count_in_window": 0, "oldest_ts": None, "server_now": None}
+                )
+            ],
+        }
+    )
+    decision = await _acquire_pg_log(
+        sw,
+        _RecordingPool(conn),  # type: ignore[arg-type]  # Why: duck-typed recording pool.
+        _rl_settings(),
+        UUID("11111111-1111-1111-1111-111111111111"),
+    )
+    assert decision.allowed is True
+    assert _shape(conn.wire) == [
+        "BEGIN",
+        "SELECT pg_try_advisory_xact_lock(hashtex",
+        'WITH pruned AS ( DELETE FROM "taskq_fake',
+        "COMMIT",
+    ], _shape(conn.wire)
+
+
+async def test_bounded_gcra_acquire_is_four_round_trips() -> None:
+    """The GCRA fused upsert rides the same bounded shape as the token
+    bucket's: BEGIN + set_config + statement + COMMIT, no savepoint."""
+    from datetime import timedelta
+
+    from taskq.ratelimit._sliding_window_pg import _acquire_pg_gcra
+    from taskq.ratelimit.sliding_window import SlidingWindow
+
+    sw = SlidingWindow(
+        name="rt_gcra", limit=4, window=timedelta(seconds=60), backend="postgres", style="gcra"
+    )
+    conn = _RecordingConn({"new_tat": [_Record({"new_tat": 15.25, "now_s": 15.0})]})
+    decision = await _acquire_pg_gcra(
+        sw,
+        _RecordingPool(conn),  # type: ignore[arg-type]  # Why: duck-typed recording pool.
+        _rl_settings(),
+    )
+    assert decision.allowed is True
+    assert _shape(conn.wire) == [
+        "BEGIN",
+        "SELECT set_config('lock_timeout', $1, tr",
+        'INSERT INTO "taskq_fake".rate_limit_buck',
+        "COMMIT",
+    ], _shape(conn.wire)
+
+
+async def test_gcra_denial_adds_exactly_one_retry_hint_read() -> None:
+    """A GCRA denial pays the fused statement plus ONE follow-up read
+    (the retry hint's inputs and the kind-guard discriminator) — the
+    pre-fused denial already carried its hint from the locked SELECT;
+    the fused denial's WHERE-gated upsert returns no row, so the hint
+    comes from the read."""
+    from datetime import timedelta
+
+    from taskq.ratelimit._sliding_window_pg import _acquire_pg_gcra
+    from taskq.ratelimit.sliding_window import SlidingWindow
+
+    sw = SlidingWindow(
+        name="rt_gcra_deny", limit=4, window=timedelta(seconds=60), backend="postgres", style="gcra"
+    )
+    conn = _RecordingConn(
+        {
+            "new_tat": [],  # the fused upsert: no row (denied)
+            "deny_read": [_Record({"kind": "gcra", "tat": 100.0, "now_s": 50.0})],
+        }
+    )
+    conn._responders["SELECT kind, (state->>'tat')"] = [  # pyright: ignore[reportPrivateUsage]  # Why: seeding the denial follow-up read's responder on the recording double.
+        _Record({"kind": "gcra", "tat": 100.0, "now_s": 50.0})
+    ]
+    decision = await _acquire_pg_gcra(
+        sw,
+        _RecordingPool(conn),  # type: ignore[arg-type]  # Why: duck-typed recording pool.
+        _rl_settings(),
+    )
+    assert decision.allowed is False
+    assert decision.retry_after is not None and decision.retry_after > timedelta(0)
+    shapes = _shape(conn.wire)
+    assert shapes == [
+        "BEGIN",
+        "SELECT set_config('lock_timeout', $1, tr",
+        'INSERT INTO "taskq_fake".rate_limit_buck',
+        "COMMIT",
+        "SELECT kind, (state->>'tat')::float8 AS ",
+    ], shapes

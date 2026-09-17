@@ -112,13 +112,18 @@ class _FakePgConn:
 
     def __init__(self) -> None:
         self.executed: list[str] = []
+        self.fetched: list[str] = []
 
     async def execute(self, sql: str, *args: object) -> str:
         self.executed.append(sql)
         return "OK"
 
     async def fetchrow(self, sql: str, *args: object) -> dict[str, object]:
-        return {"state": {"tokens": 5.0, "ts": 0.0}, "now_s": 100.0}
+        self.fetched.append(sql)
+        # The fused acquire's RETURNING row (#228): the final token count
+        # and the decision bit. 5.0 capacity, 1.0 spent -> 4.0 remaining,
+        # granted.
+        return {"tokens_after": 4.0, "granted": True}
 
     def transaction(self) -> "_FakeTx":
         return _FakeTx()
@@ -307,6 +312,9 @@ async def test_redis_outage_fallback_composition_runs_actor_via_pg() -> None:
     assert fallback_warnings[0].get("backend") == "redis"
     assert fallback_warnings[0].get("fallback") == "postgres"
     assert pool.conns, "the fallback must actually have gone to Postgres"
-    assert any("rate_limit_buckets" in sql for sql in pool.conns[0].executed), (
-        "the fallback acquire must have run the token-bucket PG statements"
+    assert any(
+        "rate_limit_buckets" in sql for sql in pool.conns[0].executed + pool.conns[0].fetched
+    ), (
+        "the fallback acquire must have run the token-bucket PG statements — "
+        "the fused acquire is one fetchrow (#228)"
     )

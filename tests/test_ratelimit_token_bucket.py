@@ -290,10 +290,7 @@ async def test_acquire_postgres_works_without_python_clock() -> None:
     the epoch math runs on the server clock folded into the locked read —
     so a missing *clock* argument is not an error (the memory backend is
     the only path that requires one)."""
-    now = _START.timestamp()
-    pool = _FakeFullPgPool(
-        fetchrow_result={"state": f'{{"tokens": 10.0, "ts": {now}}}', "now_s": now}
-    )
+    pool = _FakeFullPgPool(fetchrow_result={"tokens_after": 9.0, "granted": True})
     tb = _pg_bucket(capacity=10, refill=1, name="pg-no-clock")
 
     r = await tb.acquire(count=1, pg_pool=pool, settings=_FakeSettings())
@@ -1184,20 +1181,26 @@ async def test_reset_pg_executes_delete() -> None:
     assert args == ("pg-reset-me",)
 
 
-# ── acquire() postgres: defensive row-is-None fallback (unreachable in
-#    normal operation — the preseed INSERT guarantees the row exists
-#    before the locking SELECT; this fake pool ignores the preseed and
-#    always returns None from fetchrow to force the defensive branch) ──
+# ── acquire() postgres: defensive no-RETURNING-row fallback (unreachable
+#    in normal operation — the fused statement's RETURNING always yields
+#    the written row, insert arm or conflict arm; this fake pool returns
+#    None from fetchrow to force the defensive branch, e.g. a trigger
+#    swallowing RETURNING) ──
 
 
-async def test_acquire_pg_defensive_row_none_uses_full_capacity() -> None:
-    pool = _FakeFullPgPool(fetchrow_result=None, fetchval_result=_START.timestamp())
+async def test_acquire_pg_defensive_row_none_denies_never_admits() -> None:
+    """A missing RETURNING row is a defensive DENIAL: the pre-fused shape
+    could compute a decision from a full-capacity assumption because its
+    preseed had written the row it then failed to re-read — the fused
+    statement IS the write, so a row it did not observe is a write that
+    did not happen, and never an admission."""
+    pool = _FakeFullPgPool(fetchrow_result=None)
     tb = _pg_bucket(capacity=10, refill=1, name="pg-row-none")
 
     r = await tb.acquire(count=3, pg_pool=pool, clock=FakeClock(_START), settings=_FakeSettings())
 
-    assert r.allowed is True
-    assert r.remaining == 7.0
+    assert r.allowed is False
+    assert r.remaining == 0.0
     assert r.backend == "postgres"
 
 
@@ -1205,11 +1208,9 @@ async def test_acquire_pg_defensive_row_none_uses_full_capacity() -> None:
 
 
 async def test_acquire_pg_existing_row_allowed_decodes_state() -> None:
-    """acquire() decodes an existing row's jsonb state and allows when tokens suffice."""
-    now = _START.timestamp()
-    pool = _FakeFullPgPool(
-        fetchrow_result={"state": f'{{"tokens": 10.0, "ts": {now}}}', "now_s": now}
-    )
+    """acquire() decodes the fused statement's RETURNING row — the final
+    token count and the decision bit — and reports both."""
+    pool = _FakeFullPgPool(fetchrow_result={"tokens_after": 6.0, "granted": True})
     tb = _pg_bucket(capacity=10, refill=1, name="pg-row-existing-allowed")
 
     r = await tb.acquire(count=4, pg_pool=pool, clock=FakeClock(_START), settings=_FakeSettings())
@@ -1220,11 +1221,9 @@ async def test_acquire_pg_existing_row_allowed_decodes_state() -> None:
 
 
 async def test_acquire_pg_existing_row_denied_with_refill_computes_retry_after() -> None:
-    """acquire() on an existing exhausted row with refill>0 denies and computes retry_after."""
-    now = _START.timestamp()
-    pool = _FakeFullPgPool(
-        fetchrow_result={"state": f'{{"tokens": 0.0, "ts": {now}}}', "now_s": now}
-    )
+    """acquire() denied by the fused row's decision bit with refill>0
+    computes retry_after from the deficit against the reported tokens."""
+    pool = _FakeFullPgPool(fetchrow_result={"tokens_after": 0.0, "granted": False})
     tb = _pg_bucket(capacity=10, refill=2, name="pg-row-existing-denied")
 
     r = await tb.acquire(count=5, pg_pool=pool, clock=FakeClock(_START), settings=_FakeSettings())
@@ -1235,11 +1234,9 @@ async def test_acquire_pg_existing_row_denied_with_refill_computes_retry_after()
 
 
 async def test_acquire_pg_existing_row_denied_fixed_quota_retry_after_none() -> None:
-    """acquire() on an existing exhausted row with refill=0 denies with retry_after=None."""
-    now = _START.timestamp()
-    pool = _FakeFullPgPool(
-        fetchrow_result={"state": f'{{"tokens": 0.0, "ts": {now}}}', "now_s": now}
-    )
+    """acquire() denied by the fused row's decision bit with refill=0
+    reports retry_after=None — a fixed quota has no recovery time."""
+    pool = _FakeFullPgPool(fetchrow_result={"tokens_after": 0.0, "granted": False})
     tb = _pg_bucket(capacity=10, refill=0, name="pg-row-existing-fixed")
 
     r = await tb.acquire(count=1, pg_pool=pool, clock=FakeClock(_START), settings=_FakeSettings())
