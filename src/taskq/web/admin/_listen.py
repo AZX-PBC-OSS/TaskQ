@@ -82,18 +82,19 @@ async def listen_with_reconnect(
                     yield payload
                 except TimeoutError:
                     yield None
-        except (
-            asyncpg.PostgresConnectionError,
-            asyncpg.InterfaceError,
-            asyncpg.AdminShutdownError,
-            OSError,
-        ):
-            _log.debug("listen-connection-lost", channel=channel)
-            yield None
-            await asyncio.sleep(backoff)
-            backoff = min(backoff * 2, backoff_max)
-        except Exception:
-            _log.debug("listen-reconnect", channel=channel, exc_info=True)
+        except Exception as exc:
+            # Every failure here - a lost session, a pool that cannot
+            # connect, a bouncer rejecting the session-scoped LISTEN - leaves
+            # the feed on keepalives only until a reconnect succeeds. The
+            # consumer sees a healthy-looking stream that never delivers, so
+            # the reconnect is what carries the cause to the operator.
+            _log.warning(
+                "listen-reconnect",
+                channel=channel,
+                error_type=type(exc).__name__,
+                error=str(exc),
+                backoff=backoff,
+            )
             yield None
             await asyncio.sleep(backoff)
             backoff = min(backoff * 2, backoff_max)

@@ -221,14 +221,24 @@ async def test_stream_before_open_raises_runtime_error() -> None:
 # ── PG transport: dsn is None raises RuntimeError ────────────────────────
 
 
-async def test_stream_pg_raises_when_dsn_none() -> None:
-    """PG LISTEN transport raises RuntimeError when no LISTEN source is
-    provided (pool-only construction with no ``pg_conn_factory`` / ``listen_conn``).
-    """
-    row = _row(status="running", progress_seq=0)
-    backend = _stub_backend(rows=[row])
-    client = _make_client(backend)
+def _timed_stub_backend(rows: list[JobRow]) -> tuple[Backend, list[float]]:
+    """Stub Backend whose ``get`` returns successive rows and records the loop
+    time of every call - the observable for "how often does the client hit
+    the database"."""
+    remaining = list(rows)
+    fetched_at: list[float] = []
+    backend = AsyncMock(spec=Backend)
 
+    async def _get(job_id: JobId) -> JobRow | None:
+        fetched_at.append(asyncio.get_running_loop().time())
+        return remaining.pop(0) if remaining else None
+
+    backend.get = _get
+    return backend, fetched_at
+
+
+def _pool_only_taskq(client: JobsClient, *, poll_timeout: float) -> TaskQ:
+    """A TaskQ built on a caller-owned pool: no DSN, no LISTEN source."""
     tq = TaskQ.__new__(TaskQ)
     tq._client = client
     tq._redis_client = None
@@ -236,84 +246,74 @@ async def test_stream_pg_raises_when_dsn_none() -> None:
     tq._pg_conn_factory = None
     tq._listen_conn = None
     tq._schema = _SCHEMA_LABEL
-    tq._poll_timeout = 30.0
-
-    with pytest.raises(RuntimeError, match="LISTEN transport source"):
-        async for _ in tq.stream(cast(JobId, _JOB_ID)):
-            pass
+    tq._poll_timeout = poll_timeout
+    return tq
 
 
-# ── PG transport: pg_conn_factory / listen_conn hooks ────────────────────
-
-
-class _FakeListenConn:
-    """Fake asyncpg.Connection for the LISTEN transport.
-
-    Yields one state change then a terminal status, so the stream exits.
-    """
-
-    def __init__(self) -> None:
-        self.closed = False
-        self.removed: list[str] = []
-
-    async def add_listener(self, channel: str, callback: object) -> None:
-        pass
-
-    async def remove_listener(self, channel: str, callback: object) -> None:
-        self.removed.append(channel)
-
-    async def close(self) -> None:
-        self.closed = True
-
-
-async def test_stream_pg_with_pg_conn_factory_closes_conn() -> None:
-    """pg_conn_factory produces a TaskQ-owned conn that is closed in finally."""
+async def test_stream_pg_streams_in_pool_only_mode() -> None:
+    """The Postgres transport reads the job row through the client's own
+    pool, so a pool-only TaskQ (no DSN, no ``pg_conn_factory`` /
+    ``listen_conn``) streams like any other."""
     rows = [_row(status="running", progress_seq=0), _row(status="succeeded", progress_seq=1)]
-    backend = _stub_backend(rows=rows)
-    client = _make_client(backend)
+    backend, _ = _timed_stub_backend(rows)
+    tq = _pool_only_taskq(_make_client(backend), poll_timeout=0.05)
 
-    fake_conn = _FakeListenConn()
+    events = [e async for e in tq.stream(cast(JobId, _JOB_ID))]
+
+    assert [e.status for e in events] == ["running", "succeeded"]
+    assert events[-1].terminal is True
+
+
+async def test_stream_pg_fetches_once_before_the_first_wait() -> None:
+    """The row fetched to produce the initial snapshot is the one the
+    transport starts from: the next read of the database happens only after
+    the first poll interval, never back-to-back with the snapshot."""
+    rows = [_row(status="running", progress_seq=0), _row(status="succeeded", progress_seq=1)]
+    backend, fetched_at = _timed_stub_backend(rows)
+    tq = _pool_only_taskq(_make_client(backend), poll_timeout=0.2)
+
+    events = [e async for e in tq.stream(cast(JobId, _JOB_ID))]
+
+    assert events[-1].terminal is True
+    assert len(fetched_at) == 2
+    assert fetched_at[1] - fetched_at[0] >= 0.15, fetched_at
+
+
+async def test_stream_pg_observes_a_change_within_one_second_by_default() -> None:
+    """Nothing on the Postgres transport announces a job's progress or
+    terminal write, so the poll cadence IS the observation latency: with the
+    default ``poll_timeout`` a change is seen within a second, not thirty."""
+    rows = [_row(status="running", progress_seq=0), _row(status="succeeded", progress_seq=1)]
+    backend, fetched_at = _timed_stub_backend(rows)
+    tq = _pool_only_taskq(_make_client(backend), poll_timeout=30.0)
+
+    async with asyncio.timeout(5):
+        events = [e async for e in tq.stream(cast(JobId, _JOB_ID))]
+
+    assert events[-1].terminal is True
+    assert fetched_at[1] - fetched_at[0] < 1.0, fetched_at
+
+
+async def test_stream_pg_opens_no_dedicated_connection() -> None:
+    """A LISTEN source configured for ``watch_reclaims`` is not consumed by
+    ``stream()``: the transport holds no connection of its own, so a page of
+    streaming viewers costs no Postgres sessions beyond the pool."""
+    rows = [_row(status="running", progress_seq=0), _row(status="succeeded", progress_seq=1)]
+    backend, _ = _timed_stub_backend(rows)
+    factory_calls = 0
 
     async def factory() -> "asyncpg.Connection":
-        return cast("asyncpg.Connection", fake_conn)
+        nonlocal factory_calls
+        factory_calls += 1
+        raise AssertionError("stream() must not open a dedicated connection")
 
-    tq = TaskQ.__new__(TaskQ)
-    tq._client = client
-    tq._redis_client = None
-    tq._dsn = None
+    tq = _pool_only_taskq(_make_client(backend), poll_timeout=0.05)
     tq._pg_conn_factory = factory
-    tq._listen_conn = None
-    tq._schema = _SCHEMA_LABEL
-    tq._poll_timeout = 30.0
 
     events = [e async for e in tq.stream(cast(JobId, _JOB_ID))]
-    assert len(events) == 2
-    assert events[1].terminal is True
-    # Factory-produced → closed
-    assert fake_conn.closed
 
-
-async def test_stream_pg_with_listen_conn_does_not_close() -> None:
-    """listen_conn is caller-owned; it is NOT closed by the stream."""
-    rows = [_row(status="running", progress_seq=0), _row(status="succeeded", progress_seq=1)]
-    backend = _stub_backend(rows=rows)
-    client = _make_client(backend)
-
-    fake_conn = _FakeListenConn()
-
-    tq = TaskQ.__new__(TaskQ)
-    tq._client = client
-    tq._redis_client = None
-    tq._dsn = None
-    tq._pg_conn_factory = None
-    tq._listen_conn = cast("asyncpg.Connection", fake_conn)
-    tq._schema = _SCHEMA_LABEL
-    tq._poll_timeout = 30.0
-
-    events = [e async for e in tq.stream(cast(JobId, _JOB_ID))]
     assert events[-1].terminal is True
-    # Caller-owned → NOT closed
-    assert not fake_conn.closed
+    assert factory_calls == 0
 
 
 async def test_taskq_init_rejects_pg_conn_factory_and_listen_conn() -> None:
@@ -327,79 +327,17 @@ async def test_taskq_init_rejects_pg_conn_factory_and_listen_conn() -> None:
 # asyncpg's Connection.close() passes no timeout underneath, so against a
 # dead PG it can hang forever — contextlib.suppress(Exception) catches
 # errors but cannot stop a call that never returns. These tests pin that
-# every TaskQ-owned LISTEN-conn close in _stream_pg / _watch_reclaims_pg
-# (teardown AND the watch_reclaims reconnect error paths) goes through
-# close_conn_bounded: after the bound the conn is terminated and the
-# surrounding flow continues. CLOSE_TIMEOUT_SECS is shrunk via the
-# module-global monkeypatch seam (read at call time).
-
-
-class _FakeHungCloseListenConn(_FakeListenConn):
-    """LISTEN conn whose close() hangs until terminate() releases the gate.
-
-    Mirrors the _FakeHungClosePool convention in tests/test_taskq_client.py:
-    asyncpg is a C extension, so spec-mocks cannot express a hang gate.
-    """
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.close_wait = asyncio.Event()  # starts cleared → close() hangs
-        self.close_calls = 0
-        self.terminated = False
-
-    async def close(self) -> None:
-        self.close_calls += 1
-        await self.close_wait.wait()
-        self.closed = True
-
-    def terminate(self) -> None:
-        self.terminated = True
-        self.close_wait.set()
-
-
-async def test_stream_pg_finally_bounds_hung_owned_conn_close(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """_stream_pg teardown: an owned conn whose close() hangs (dead PG at
-    stream end) must not wedge generator finalization — the close is
-    bounded, then the conn is terminated."""
-    import taskq.client._taskq as taskq_mod
-
-    monkeypatch.setattr(taskq_mod, "CLOSE_TIMEOUT_SECS", 0.05)
-    rows = [_row(status="running", progress_seq=0), _row(status="succeeded", progress_seq=1)]
-    backend = _stub_backend(rows=rows)
-    client = _make_client(backend)
-
-    fake_conn = _FakeHungCloseListenConn()
-
-    async def factory() -> asyncpg.Connection:
-        return cast(asyncpg.Connection, fake_conn)
-
-    tq = TaskQ.__new__(TaskQ)
-    tq._client = client
-    tq._redis_client = None
-    tq._dsn = None
-    tq._pg_conn_factory = factory
-    tq._listen_conn = None
-    tq._schema = _SCHEMA_LABEL
-    tq._poll_timeout = 30.0
-
-    # Why the outer timeout: pre-fix the finally awaits conn.close()
-    # unbounded, so the RED state would hang forever instead of failing fast.
-    async with asyncio.timeout(5):
-        events = [e async for e in tq.stream(cast(JobId, _JOB_ID))]
-
-    assert len(events) == 2
-    assert events[1].terminal is True
-    assert fake_conn.close_calls == 1
-    assert fake_conn.terminated is True
+# every TaskQ-owned LISTEN-conn close in _watch_reclaims_pg (teardown AND
+# the reconnect error paths) goes through close_conn_bounded: after the
+# bound the conn is terminated and the surrounding flow continues.
+# CLOSE_TIMEOUT_SECS is shrunk via the module-global monkeypatch seam
+# (read at call time).
 
 
 # ── watch_reclaims: bounded owned-conn closes ────────────────────────────
 #
 # The minimal _watch_reclaims_pg harness helpers are replicated from
-# tests/test_watch_reclaims.py — the same convention already used for
-# _FakeListenConn, which is duplicated across both files.
+# tests/test_watch_reclaims.py.
 
 
 class _FakeHungCloseWatchConn:

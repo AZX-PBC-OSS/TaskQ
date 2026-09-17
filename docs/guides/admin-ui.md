@@ -236,7 +236,7 @@ Archived rows (from `jobs_archive`) are shown with an "archived" badge in the So
 
 ### `GET /admin/jobs`
 
-Job listing page with "Live Jobs" and "Archived" tabs. Supports filtering by status (multi-select), actor (substring match), queue, time range, identity key, fairness key, free-text search (matches job ID or actor), and tags. Results are paginated at 100 rows using keyset pagination and can be sorted by created_at, actor, queue, status, or attempt. HTMX partial refreshes update the table without a full page reload. A live SSE stream (`/admin/jobs/sse/live`) pushes state-change events for real-time badge updates.
+Job listing page with "Live Jobs" and "Archived" tabs. Supports filtering by status (multi-select), actor (substring match), queue, time range, identity key, fairness key, free-text search (matches job ID or actor), and tags. Results are paginated at 100 rows using keyset pagination and can be sorted by created_at, actor, queue, status, or attempt. HTMX partial refreshes update the table without a full page reload. The table is polled at `TASKQ_ADMIN_UI_POLLING_INTERVAL_SECONDS` whenever the Live Jobs tab is open; with the live toggle on, an SSE stream (`/admin/sse/jobs`, PG `LISTEN` on the schema's events channel) additionally brings a refresh forward the moment an event arrives. The events channel carries only the running-job cancel fast-path today — terminal writes and dispatch do not NOTIFY it — which is why polling stays the source of truth and SSE is an accelerator, never a replacement.
 
 **Query parameters (selected):**
 
@@ -522,13 +522,18 @@ a `<script>` block in the page's `{% block head %}`.
 Key features:
 - **Tab switching** (`switchTab`) — switches between "Live Jobs" and "Archived" views
   by submitting the filter form with `tab` parameter.
-- **Live refresh toggle** — when enabled, connects to SSE for real-time state-change
-  events; when paused, polls on `poll_interval_ms` via `setInterval`. Pending-count
-  badge shows accumulated events while paused.
+- **Polling** — the Live Jobs tab always polls on `poll_interval_ms` via
+  `setInterval`; the poll is the source of truth for the table in both toggle
+  states.
+- **Live refresh toggle** — when enabled, additionally connects to SSE so a
+  state-change event brings a refresh forward; when paused, the SSE connection is
+  closed and only the poll runs.
 - **SSE integration** — `connectSSE()` opens an `EventSource` to
-  `{base_path}/sse/jobs`. On `error`, falls back to polling. On `state_change`
-  events, updates the matching table row's status badge or increments the pending
-  counter.
+  `{base_path}/sse/jobs`. On `error` the connection is closed and polling carries
+  on unchanged. A `state_change` event whose `status` matches a row in the table
+  updates that row's badge in place; any other event — a payload without a
+  `status` (the cancel NOTIFY names the job only) or a transition for a job the
+  table does not show — refreshes the table from the server.
 - **Table refresh** — `refreshTable()` fetches `{base_path}/jobs` with current
   filter parameters via HTMX (`HX-Request: true` header), swaps the
   `#job-table-container` element.

@@ -18,7 +18,7 @@ server-to-client via:
     - `ctx.progress()` still works — updates are coalesced and flushed to Postgres.
     - `JobHandle.progress_stream()` falls back to 500 ms Postgres polling (higher latency, same data).
     - The HTTP SSE endpoint returns HTTP 503 with `{"error": "redis_not_configured"}`.
-    - `TaskQ.stream()` falls back to PG LISTEN/NOTIFY (near-real-time, no Redis required).
+    - `TaskQ.stream()` falls back to 500 ms Postgres polling of the job row (a transition is seen within half a second, no Redis required).
 
     Install Redis for immediate event delivery:
 

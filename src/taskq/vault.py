@@ -37,10 +37,18 @@ the DSN's ``user`` and ``password`` with the dynamic values.
 
 Unlike token-as-password providers (AAD, AWS IAM RDS), Vault issues a
 **fresh username** on each lease — the ``PgCredential.username`` field is
-always set. For long-lived workers, send ``SIGHUP`` to the worker process
-on a schedule shorter than the lease TTL — the factory is re-invoked
-automatically to rebuild the pool with a fresh lease (see
-``taskq.worker.deps.reload_credentials``); no restart needed.
+always set — and the pair is only valid together. The factory builders
+therefore pin one lease per pool / dedicated connection: ``user=`` is the
+lease's username and every physical connection asyncpg opens
+authenticates with that lease's password (see
+:func:`~taskq.auth.make_pg_pool_factory`). Rotation happens when the
+factory is re-invoked, so run the worker with ``TASKQ_RELOAD_INTERVAL``
+(or send ``SIGHUP``) on a schedule shorter than the role's lease TTL —
+the pool is rebuilt on a fresh lease (see
+``taskq.worker.deps.reload_credentials``); no restart needed. Each
+issued lease is logged (``vault-lease-issued``: ``lease_id``,
+``lease_duration``, ``username``) so the reload schedule can be checked
+against the TTL Vault actually granted.
 
 ``hvac`` is synchronous; ``generate_credentials`` does network I/O, so the
 provider offloads it to a thread via :func:`asyncio.to_thread` to avoid
@@ -67,6 +75,9 @@ import asyncio
 from typing import Any
 
 from taskq.auth import PgCredential, PgCredentialProvider
+from taskq.obs import get_logger
+
+logger = get_logger(__name__)
 
 __all__ = [
     "VaultDynamicDbProvider",
@@ -79,10 +90,12 @@ __all__ = [
 class VaultDynamicDbProvider(PgCredentialProvider):
     """:class:`~taskq.auth.PgCredentialProvider` backed by Vault's database secrets engine.
 
-    Fetches a dynamic ``(username, password)`` pair from
-    ``secrets.database.generate_credentials`` on each
-    :meth:`get_pg_credential` call. The ``hvac`` client is synchronous and
-    the call does network I/O, so it is offloaded to a thread via
+    Fetches a dynamic ``(username, password)`` pair — a new Vault lease —
+    from ``secrets.database.generate_credentials`` on each
+    :meth:`get_pg_credential` call. The factory builders call it once per
+    pool / connection build and pin the pair, so one lease is issued per
+    build, not per physical connection. The ``hvac`` client is synchronous
+    and the call does network I/O, so it is offloaded to a thread via
     :func:`asyncio.to_thread`.
 
     ``client`` is an ``hvac.Client`` instance (caller-owned — you manage
@@ -102,13 +115,27 @@ class VaultDynamicDbProvider(PgCredentialProvider):
         self._mount_point = mount_point
 
     async def get_pg_credential(self) -> PgCredential:
-        def _fetch() -> tuple[str, str]:
-            response = self._client.secrets.database.generate_credentials(
+        def _fetch() -> dict[str, Any]:
+            response: dict[str, Any] = self._client.secrets.database.generate_credentials(
                 name=self._role,
                 mount_point=self._mount_point,
             )
-            data: dict[str, Any] = response["data"]
-            return data["username"], data["password"]
+            return response
 
-        username, password = await asyncio.to_thread(_fetch)
+        response = await asyncio.to_thread(_fetch)
+        data: dict[str, Any] = response["data"]
+        username, password = data["username"], data["password"]
+        # The lease TTL is the bound the operator's reload schedule must beat;
+        # logging it beside the identity Vault issued is what lets a later
+        # "password authentication failed for user v-…" be traced to an
+        # expired lease rather than a misconfigured role.
+        logger.info(
+            "vault-lease-issued",
+            role=self._role,
+            mount_point=self._mount_point,
+            username=username,
+            lease_id=response.get("lease_id"),
+            lease_duration=response.get("lease_duration"),
+            renewable=response.get("renewable"),
+        )
         return PgCredential(username=username, password=password)
