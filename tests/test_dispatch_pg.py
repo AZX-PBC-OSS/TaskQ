@@ -20,6 +20,7 @@ from uuid import UUID
 import asyncpg as _asyncpg
 import pytest
 
+from taskq._close import close_pool_bounded
 from taskq._ids import new_base62, new_uuid
 from taskq.actor_config import ActorConfig
 from taskq.actor_config_ops import set_actor_config_capacity
@@ -715,7 +716,12 @@ async def statement_timeout_dispatcher_pool(
     try:
         yield pool
     finally:
-        await pool.close()
+        # A statement the server aborted can leave the protocol
+        # mid-operation; close() waits for checked-out connections and
+        # hangs on exactly that state — the hang close_pool_bounded
+        # exists to prevent in the production teardown. Same discipline
+        # here, so a forced-failure test can never hang its own fixture.
+        await close_pool_bounded(pool, "statement-timeout-dispatcher-pool", 5.0)
 
 
 @pytest.mark.asyncio
