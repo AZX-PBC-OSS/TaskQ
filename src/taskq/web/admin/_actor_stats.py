@@ -5,13 +5,13 @@ The ``/api/history/stats`` JSON endpoint and the actors page render the
 same aggregate read; this module owns the SQL so the two surfaces cannot
 drift. Read-only, cardinality-bounded at :data:`STATS_LIMIT` rows.
 
-Why the UNION with live ``jobs`` — the History LIST page already reads
+Why the UNION with live ``jobs``: the History LIST page already reads
 ``jobs_archive`` UNION ``jobs`` (its rows are the same completed work a
 fresh failure lives in), but this aggregate read historically counted the
 archive alone. A terminal row stays in ``jobs`` for its whole prune
 retention before the prune sweep moves it, so an actor's freshest
 failures were invisible to the actors page for exactly as long as they
-matter most — the page could show a clean actor for hours after its jobs
+matter most: the page could show a clean actor for hours after its jobs
 started crashing. The live side counts only terminal rows (the same
 closed status set the prune sweep archives), so running/pending work
 never inflates executor totals, and it is inherently bounded: terminal
@@ -22,16 +22,16 @@ The optional *window* bounds both sides by ``finished_at``. Its bound is
 ``statement_timestamp()`` (STABLE), not ``clock_timestamp()`` (VOLATILE):
 unlike the History list's LIMIT-ed reads, this is an aggregate with no
 LIMIT to hide a post-scan Filter behind, and a VOLATILE bound cannot be
-a btree index condition — a STABLE bound is at least index-ELIGIBLE, so
+a btree index condition: a STABLE bound is at least index-ELIGIBLE, so
 the planner can serve it as an Index Cond. Measured on a 40k-row
 ``jobs_archive`` plus live terminal rows (PG 18, EXPLAIN ANALYZE,
 BUFFERS): the live side's bound IS an Index Cond on the terminal-partial
 ``jobs_finished_at_idx`` (2 buffers for the whole side); the archive
-side's planner choice is selectivity-dependent — a 24h window covering
+side's planner choice is selectivity-dependent: a 24h window covering
 ~3.6% of the table preferred a seq scan (7.7 ms, 1223 buffers) over
 ~1400 index probes plus heap fetches, which is the planner doing its
 job, not the bound failing to be eligible. The all-time read over the
-same corpus costs 52 ms — the same cost class the page's archive-side
+same corpus costs 52 ms, the same cost class the page's archive-side
 aggregate always had (dominated by the archive population, which the
 windowed variant only slices smaller); the UNION's live side adds two
 buffers because terminal live rows are bounded by prune retention.
@@ -51,7 +51,7 @@ STATS_LIMIT: int = 200
 
 #: The window selector's closed set: the named ranges the actors page and
 #: the stats endpoint accept, as durations. "all" (no bound) is handled
-#: by the routes, not the map — it is the documented default, not a range.
+#: by the routes, not the map: it is the documented default, not a range.
 STATS_WINDOWS: dict[str, timedelta] = {
     "1h": timedelta(hours=1),
     "24h": timedelta(hours=24),
@@ -120,7 +120,7 @@ LIMIT {STATS_LIMIT}"""
 #: each side prefixes it with its own keyword (the archive side's only
 #: predicate is ``WHERE``, the live side already filters terminal
 #: statuses so it composes with ``AND``). statement_timestamp() (STABLE)
-#: keeps the bound an Index Cond on both sides' finished_at indexes —
+#: keeps the bound an Index Cond on both sides' finished_at indexes:
 #: see the module docstring for why an aggregate must not take the
 #: VOLATILE form the LIMIT-ed list reads tolerate.
 _WINDOW_BOUND = "j.finished_at >= statement_timestamp() - $1::interval"

@@ -81,7 +81,7 @@ async def test_actors_stats_include_live_terminal_rows_and_respect_the_window(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The actors-page failure view counts the live terminal population,
-    not the archive alone — a terminal row stays in ``jobs`` for its
+    not the archive alone: a terminal row stays in ``jobs`` for its
     whole prune retention before the prune sweep moves it, so an
     archive-only read shows a clean actor for exactly as long as its
     fresh failures matter most. #230's stale-failure bullet, pinned
@@ -136,19 +136,19 @@ async def test_actors_stats_include_live_terminal_rows_and_respect_the_window(
     assert len(all_time_rows) == 1
     assert len(windowed_rows) == 1
 
-    # All-time: both rows — the live failure AND the archived success.
+    # All-time: both rows, the live failure AND the archived success.
     assert all_time_rows[0]["total"] == 2
     assert all_time_rows[0]["failed"] == 1
     assert all_time_rows[0]["succeeded"] == 1
     assert all_time_rows[0]["last_error_class"] == "ValueError"
     # The 24h window keeps the fresh live failure and drops the archived
-    # row — the bound applies to BOTH sides of the UNION.
+    # row: the bound applies to BOTH sides of the UNION.
     assert windowed_rows[0]["total"] == 1
     assert windowed_rows[0]["failed"] == 1
     assert windowed_rows[0]["succeeded"] == 0
     assert windowed_rows[0]["last_error_class"] == "ValueError"
 
-    # The page renders the fresh failure in both views — the exact
+    # The page renders the fresh failure in both views, the exact
     # regression an archive-only read had: the 24h view of a crashing
     # actor showed nothing until the prune moved the rows.
     assert page_all.status_code == 200

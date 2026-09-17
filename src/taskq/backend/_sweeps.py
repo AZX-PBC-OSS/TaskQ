@@ -354,13 +354,13 @@ _ATTEMPT_MESSAGES: dict[str, str] = {
 #: a second CASE literal in the RETURNING on purpose: the status CASE is
 #: the single source of truth for which branch fired, and a second
 #: hand-maintained CASE beside it is exactly the drift surface the
-#: ``{has_budget}`` fragment exists to remove — one edit to the branch
+#: ``{has_budget}`` fragment exists to remove: one edit to the branch
 #: conditions must not leave a disposition literal silently disagreeing
 #: with the status it labels.
 #:
 #: The map's key set is pinned to the CASE's reachable statuses by
 #: ``tests/test_obs_reclaim_counters.py`` (both directions), and the
-#: lookups are total through :func:`_reclaim_disposition` — see that
+#: lookups are total through :func:`_reclaim_disposition`.  See that
 #: function for why a bare ``[...]`` here is the reclaim loop's
 #: kill-streak, not a crash to be tolerated.
 _RECLAIM_DISPOSITIONS: dict[str, str] = {
@@ -370,7 +370,7 @@ _RECLAIM_DISPOSITIONS: dict[str, str] = {
 }
 
 #: The disposition an unmapped post-update status counts under. Counting
-#: the unknowns — rather than dropping the rows or raising — preserves
+#: the unknowns, rather than dropping the rows or raising, preserves
 #: the metric's totals and makes map/code drift VISIBLE on dashboards as
 #: its own series, which is the property that turns a silent invariant
 #: breach into an operator-visible one.
@@ -383,13 +383,13 @@ def _reclaim_disposition(status: str) -> str:
     Total by construction, and it must be: this lookup runs inside the
     reclaim sweep's transaction on the fleet's crash-recovery path, and a
     bare ``_RECLAIM_DISPOSITIONS[status]`` on an unmapped status (a
-    future CASE branch — the #238 evolution, a migration-era change —
+    future CASE branch, the #238 evolution, a migration-era change,
     without its map entry) raises KeyError mid-transaction: the whole
     reclaim batch rolls back (no job_attempts, no job_events, no wake
     NOTIFY, no metric), the exception escapes the sweep loop's
     NotImplementedError/TRANSIENT_PG_ERRORS guards into
     ``UnexpectedLoopErrorGuard``, and five consecutive ticks kill the
-    leader worker — crash recovery dead fleet-wide. The in-memory twin
+    leader worker, crash recovery dead fleet-wide. The in-memory twin
     dies the same way mid-loop, leaving a half-drained corpus. The
     exhaustiveness pin in ``tests/test_obs_reclaim_counters.py`` makes
     the drift fail CI loudly; this default keeps the sweep alive and
@@ -1278,10 +1278,10 @@ async def sweep_expired_locks(
     ``taskq.jobs.reclaimed{actor, disposition}`` counter (disposition via
     :func:`_reclaim_disposition` over :data:`_RECLAIM_DISPOSITIONS`:
     ``repended`` / ``crashed`` / ``cancelled``, and the explicit
-    ``unknown`` for a status no current CASE branch writes — a total
+    ``unknown`` for a status no current CASE branch writes: a total
     lookup, so map/code drift counts on the dashboard instead of rolling
     the batch back; see the helper's docstring) and records it once per
-    (actor, disposition) pair after the transaction — the per-actor
+    (actor, disposition) pair after the transaction: the per-actor
     crash split the generic
     ``taskq.maintenance_leader.sweep_rows{sweep_name}`` total cannot
     express. The in-memory twin emits the identical counter so the two
@@ -1313,7 +1313,7 @@ async def sweep_expired_locks(
     reclaimed: list[_ReclaimedRow] = []
     # (actor, disposition) -> rows this call reclaimed, for the
     # taskq.jobs.reclaimed counter. Aggregated on the row loop and emitted
-    # AFTER the transaction — the same shape sweep_deadline_exceeded uses
+    # AFTER the transaction: the same shape sweep_deadline_exceeded uses
     # for its per-actor counter: per-row metric calls on the DB-hold path
     # are what the batching exists to remove.
     reclaim_counts: Counter[tuple[str, str]] = Counter()
@@ -1342,11 +1342,11 @@ async def sweep_expired_locks(
                 original_worker: UUID | None = rec["locked_by_worker"]
                 reclaim_reason: str = rec["reclaim_reason"]
                 # The disposition label derives from the ONE branch
-                # arbiter — the status this statement just wrote — so the
+                # arbiter, the status this statement just wrote, so the
                 # counter's split can never disagree with the row's own
                 # disposition (see _RECLAIM_DISPOSITIONS). Total lookup:
                 # an unmapped status counts as the explicit "unknown"
-                # disposition instead of raising mid-transaction — the
+                # disposition instead of raising mid-transaction: the
                 # batch is the fleet's crash-recovery path (see
                 # _reclaim_disposition for the kill-streak chain a bare
                 # [] here would re-arm).
@@ -1414,7 +1414,7 @@ async def sweep_expired_locks(
             reason="lock_expired",
             cause=row.reclaim_reason,
         )
-    # Aggregated per (actor, disposition) AFTER the transaction — the
+    # Aggregated per (actor, disposition) AFTER the transaction: the
     # same placement and rationale as sweep_deadline_exceeded's per-actor
     # emission. The generic taskq.maintenance_leader.sweep_rows counter
     # the leader loop records is deliberately left untouched: it stays

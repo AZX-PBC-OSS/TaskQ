@@ -27,7 +27,7 @@ from typing import TYPE_CHECKING
 import structlog
 
 from taskq.backend._protocol import AttemptRow, CancelPhase, JobId, JobRow
-from taskq.backend._sweeps import (  # pyright: ignore[reportPrivateUsage]  # Why: the twins must enforce the identical contract the Postgres sweeps enforce — one validator, one message map, one disposition map and total lookup, one seam, no drift.
+from taskq.backend._sweeps import (  # pyright: ignore[reportPrivateUsage]  # Why: the twins must enforce the identical contract the Postgres sweeps enforce: one validator, one message map, one disposition map and total lookup, one seam, no drift.
     _ATTEMPT_MESSAGES,
     _reclaim_disposition,
     _validate_positive,
@@ -199,7 +199,7 @@ async def _reclaim_expired_locks(
     # * outbox channel — both arms' events carry reason='lock_expired'
     #   (the slice poll_reclaim_events tails) with a cause key naming
     #   which deadline fired.
-    # * reclaimed-jobs counter — both backends aggregate (actor,
+    # * reclaimed-jobs counter: both backends aggregate (actor,
     #   disposition) pairs over the reclaimed rows and record
     #   taskq.jobs.reclaimed after the transition loop, the disposition
     #   derived from the written status through the one shared total
@@ -440,8 +440,8 @@ async def _reclaim_expired_locks(
                 job_id=str(job_id),
             )
         # The disposition derives from the row's own post-transition
-        # status — the same one-map doctrine the PG sweep follows with the
-        # status its RETURNING carries — through the same TOTAL lookup: a
+        # status, the same one-map doctrine the PG sweep follows with the
+        # status its RETURNING carries, through the same TOTAL lookup: a
         # KeyError here died mid-loop and left a half-drained corpus (some
         # rows transitioned, the rest still running, nothing counted), so
         # an unmapped status counts as the explicit "unknown" disposition

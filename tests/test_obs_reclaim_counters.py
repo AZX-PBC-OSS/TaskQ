@@ -8,8 +8,8 @@ backends:
   exercising the ``j.actor`` column added to ``_SWEEP_1_SQL``'s
   ``RETURNING`` and the post-transaction aggregation the sweep records.
 
-Also pins the disposition map's totality, the property the red-team
-attack round established is load-bearing: an unmapped post-update status
+Also pins the disposition map's totality, the property the adversarial
+review round established is critical: an unmapped post-update status
 must not kill the reclaim sweep (it is the fleet's crash-recovery path),
 and map/CASE drift must fail CI loudly instead of surfacing as a
 dashboard anomaly.
@@ -39,7 +39,7 @@ from taskq.testing.otel import counter_data_points
 _START = datetime(2026, 1, 1, tzinfo=UTC)
 _GRACE = timedelta(seconds=30)
 # The cancel carve-out admits a cancel-in-flight job only once the lock
-# has been expired past cancel_grace + cleanup_grace + a flat 60 s — the
+# has been expired past cancel_grace + cleanup_grace + a flat 60 s, the
 # same constant test_rt_sweeps_parity.py derives.
 _CANCEL_LOCK_EXPIRED_AGO = timedelta(seconds=130)
 _PLAIN_LOCK_EXPIRED_AGO = timedelta(seconds=10)
@@ -47,7 +47,7 @@ _STARTED_AGO = timedelta(seconds=30)
 
 # (actor, disposition) pairs the seeded corpus produces: two actors, one
 # re-pended row and one crashed row each, plus one cancelled row on the
-# first actor (budget exhausted with a cancel in flight — the honest
+# first actor (budget exhausted with a cancel in flight: the honest
 # terminal label, not a crash).
 _EXPECTED: Counter[tuple[str, str]] = Counter(
     {
@@ -259,7 +259,7 @@ async def test_pg_reclaim_increments_per_actor_and_disposition(
 
 # ── Map totality: the sweep must survive drift, and CI must see it ───────
 #
-# The red-team attack round drove an unmapped post-update status through
+# The adversarial review round drove an unmapped post-update status through
 # the REAL sweep: a bare ``_RECLAIM_DISPOSITIONS[status]`` raised KeyError
 # inside the transaction -> the whole reclaim batch rolled back (no
 # job_attempts, no job_events, no wake NOTIFY, no metric) -> the exception
@@ -272,7 +272,7 @@ async def test_pg_reclaim_increments_per_actor_and_disposition(
 
 def test_disposition_map_is_exhaustive_over_the_sweep_case_branches() -> None:
     """The map's key set equals the reachable post-update statuses of
-    ``_SWEEP_1_SQL``'s status CASE — exactly, in both directions.
+    ``_SWEEP_1_SQL``'s status CASE: exactly, in both directions.
 
     The robustness tests below keep the sweep ALIVE when this pin is
     violated; this test makes the violation itself fail CI loudly, with
@@ -304,7 +304,7 @@ def test_disposition_map_is_exhaustive_over_the_sweep_case_branches() -> None:
 
 class _FabricatedTx:
     """The sweep transaction's recorder: COMMIT on a clean exit, ROLLBACK
-    when the body raised — the verdict the real connection would get."""
+    when the body raised, the verdict the real connection would get."""
 
     def __init__(self, conn: "_FabricatedReturningConn") -> None:
         self._conn = conn
@@ -320,10 +320,10 @@ class _FabricatedTx:
 class _FabricatedReturningConn:
     """ConnLike whose sweep fetch returns fabricated RETURNING rows.
 
-    The red-team attack shape: everything else answers like Postgres
+    The adversarial review shape: everything else answers like Postgres
     would (the statement_timeout probe, set_config, the batched INSERTs,
     the wake NOTIFY), so the sweep runs its REAL Python path against rows
-    the database never wrote — the only way to reach an unmapped
+    the database never wrote: the only way to reach an unmapped
     post-update status while the CASE still writes the mapped three.
     """
 
@@ -365,17 +365,17 @@ async def test_pg_reclaim_survives_an_unmapped_returning_status(
 ) -> None:
     """A RETURNING row carrying an unmapped post-update status (the
     #238-evolved or migration-era CASE) must not kill the sweep: the
-    disposition lookup is total, so the batch completes — attempts, events,
-    wake NOTIFY, metric — and the unknown counts as its own series instead
+    disposition lookup is total, so the batch completes: attempts, events,
+    wake NOTIFY, metric.  The unknown counts as its own series instead
     of a rolled-back transaction escaping into the leader's kill-streak."""
     from taskq.backend._sweeps import sweep_expired_locks
 
-    # One mapped row, one fabricated-unmapped row ('scheduled' — a status
+    # One mapped row, one fabricated-unmapped row ('scheduled', a status
     # no current CASE branch writes, standing in for any future one).
     conn = _FabricatedReturningConn([_fabricated_row("pending"), _fabricated_row("scheduled")])
 
     count = await sweep_expired_locks(
-        conn,  # pyright: ignore[reportArgumentType]  # Why: test duck-type connection — the attack shape drives the sweep's real Python path with fabricated RETURNING rows.
+        conn,  # pyright: ignore[reportArgumentType]  # Why: test duck-type connection, the review shape drives the sweep's real Python path with fabricated RETURNING rows.
         _GRACE,
         _GRACE,
         schema="taskq",
@@ -393,8 +393,8 @@ async def test_pg_reclaim_survives_an_unmapped_returning_status(
     )
     assert any("job_attempts" in sql for sql in conn.executed_sql)
     # The metric counts BOTH rows: the mapped one under its real
-    # disposition, the unmapped one under the explicit unknown label —
-    # totals preserved, drift visible on the dashboard.
+    # disposition, the unmapped one under the explicit unknown label.
+    # Totals preserved, drift visible on the dashboard.
     observed: Counter[tuple[str, str]] = Counter()
     for dp in counter_data_points(metric_reader, "taskq.jobs.reclaimed"):
         attrs = dict(dp.attributes or {})
@@ -406,7 +406,7 @@ async def test_twin_reclaim_survives_an_unmapped_status(
     metric_reader: InMemoryMetricReader,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The in-memory twin must survive the same drift — a KeyError
+    """The in-memory twin must survive the same drift: a KeyError
     mid-loop left a half-drained corpus (some rows transitioned, the rest
     still running, nothing counted) and no exception path to clean it up.
     Patching the map at its SOURCE module is the drift simulation: the
@@ -427,13 +427,13 @@ async def test_twin_reclaim_survives_an_unmapped_status(
 
     count = await backend.reclaim_expired_locks(_GRACE, _GRACE)
 
-    # The whole corpus drained — no half-drained rows left behind.
+    # The whole corpus drained: no half-drained rows left behind.
     assert count == 3
     statuses = {row.status for row in backend._jobs.values()}  # pyright: ignore[reportPrivateUsage]  # Why: test-only read of the twin's corpus, the established seeding/inspection pattern (test_rt_sweeps_parity.py).
     assert statuses == {"pending"}, (
         f"every row must transition; corpus left half-drained: {statuses}"
     )
-    # And the count landed — under the explicit unknown label, since the
+    # And the count landed, under the explicit unknown label, since the
     # drifted map no longer knows 'pending'.
     observed: Counter[tuple[str, str]] = Counter()
     for dp in counter_data_points(metric_reader, "taskq.jobs.reclaimed"):

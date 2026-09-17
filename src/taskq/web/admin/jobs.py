@@ -86,7 +86,7 @@ _LIVE_COLS = (
     # The live twin of duration_ms: a running row has no finished_at, so
     # duration_ms is NULL while it runs and the Duration cell rendered a
     # dash for exactly the rows an operator most needs a number on. The
-    # elapsed span is computed SERVER-SIDE against the database clock —
+    # elapsed span is computed SERVER-SIDE against the database clock,
     # the same single-arbiter shape as lease_expired below it: started_at
     # is database-written, so measuring it against this process's clock
     # would skew the span by the app-to-database offset. clock_timestamp()

@@ -147,7 +147,7 @@ def test_stats_sql_per_actor_groups_by_actor_only() -> None:
 
 def test_stats_sql_interpolates_no_caller_text() -> None:
     """Only the validated schema identifier is interpolated; the all-time
-    read needs no parameters at all — exactly the parameter-free shape
+    read needs no parameters at all, exactly the parameter-free shape
     the page always served."""
     for per_queue in (True, False):
         sql = _build_stats_sql("taskq", per_queue=per_queue)
@@ -155,7 +155,7 @@ def test_stats_sql_interpolates_no_caller_text() -> None:
 
 
 def test_stats_sql_unions_the_live_terminal_population() -> None:
-    """The aggregate reads the archive UNION the live terminal rows — a
+    """The aggregate reads the archive UNION the live terminal rows: a
     terminal row stays in ``jobs`` for its whole prune retention, so an
     archive-only read hides an actor's freshest failures for exactly as
     long as they matter most (the History LIST page already UNIONs live;
@@ -170,7 +170,7 @@ def test_stats_sql_unions_the_live_terminal_population() -> None:
     assert 'FROM "taskq".jobs j' in sql
     assert "UNION ALL" in sql
     assert "status IN ('abandoned', 'cancelled', 'crashed', 'failed', 'succeeded')" in sql
-    # Both sides join their own attempts table — a live terminal row's
+    # Both sides join their own attempts table: a live terminal row's
     # attempts live in job_attempts until the prune moves both.
     assert 'LEFT JOIN "taskq".job_attempts_archive a ON a.job_id = j.id' in sql
     assert 'LEFT JOIN "taskq".job_attempts a ON a.job_id = j.id' in sql
@@ -178,7 +178,7 @@ def test_stats_sql_unions_the_live_terminal_population() -> None:
 
 def test_stats_sql_window_bounds_both_sides_with_a_stable_clock() -> None:
     """A window bounds BOTH sides by finished_at, bound once as ``$1`` and
-    referenced twice — and anchored to ``statement_timestamp()`` (STABLE),
+    referenced twice, and anchored to ``statement_timestamp()`` (STABLE),
     not ``clock_timestamp()`` (VOLATILE): an aggregate has no LIMIT to
     hide a post-scan Filter behind, and a VOLATILE bound cannot be a
     btree index condition, so the finished_at indexes would stop serving
@@ -199,7 +199,7 @@ def test_stats_sql_window_bounds_both_sides_with_a_stable_clock() -> None:
 
 
 def test_stats_sql_last_error_class_takes_the_most_recent_non_null() -> None:
-    """last_error_class is the actor's most recent row that carries one —
+    """last_error_class is the actor's most recent row that carries one,
     ordered by finished_at DESC NULLS LAST so a pathological NULL-
     finished_at row cannot shadow a stamped one."""
     sql = _build_stats_sql("taskq", per_queue=False)
@@ -223,7 +223,7 @@ def test_resolve_stats_window_defaults_and_named_ranges() -> None:
 def test_resolve_stats_window_rejects_unknown_values_with_400() -> None:
     """An unknown window is a clean 400, never a silent fallback to
     all-time: the URL would claim a recency view while the page served
-    the whole retained history — the wrong-but-plausible answer."""
+    the whole retained history, the wrong-but-plausible answer."""
     with pytest.raises(HTTPException) as exc_info:
         resolve_stats_window("24hr")
     assert exc_info.value.status_code == 400
@@ -285,7 +285,7 @@ def test_history_stats_passes_the_window_through(
 
 
 def test_history_stats_rejects_unknown_window(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The endpoint 400s on an unknown window — same closed set as the page."""
+    """The endpoint 400s on an unknown window, same closed set as the page."""
     conn = _FetchConn(fetch_results=[[]])
     client = _build_app(_FetchPool(conn), monkeypatch)
     response = client.get("/api/history/stats?window=ludicrous")  # pyright: ignore[reportUnknownMemberType]
@@ -383,7 +383,7 @@ def test_actors_page_renders_the_window_toggle(monkeypatch: pytest.MonkeyPatch) 
 
 def test_actors_page_window_reaches_the_stats_read(monkeypatch: pytest.MonkeyPatch) -> None:
     """?window=24h binds the duration on the stats read; the default
-    binds nothing — the operator's toggle is not cosmetic."""
+    binds nothing: the operator's toggle is not cosmetic."""
     conn = _FetchConn(fetch_results=[[], []])
     client = _build_app(_FetchPool(conn), monkeypatch)
     client.get("/actors?window=7d")  # pyright: ignore[reportUnknownMemberType]

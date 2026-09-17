@@ -16,7 +16,7 @@ document.addEventListener('submit', function(e) {
   <div class="flex flex-wrap items-center justify-between gap-2">
     <h2 class="text-xl font-semibold text-slate-800 dark:text-slate-200">Actors</h2>
     {# The stats window toggle: the same selector /api/history/stats takes
-       as its window= parameter. "all" is the default — the whole retained
+       as its window= parameter. "all" is the default: the whole retained
        completed-job history; a named window bounds both the archive and
        the live terminal population by finished_at (server clock). #}
     <nav class="flex gap-1" aria-label="Stats window">
@@ -85,7 +85,7 @@ document.addEventListener('submit', function(e) {
           </td>
           <td class="px-4 py-2 text-sm font-mono">
             {# The most recent error class the actor's completed rows
-               carry — the job row's own error_class (classifier exception
+               carry, the job row's own error_class (classifier exception
                name, WorkerCrashed on reclaim, DeadlineExceeded on the
                deadline sweep), so "what is this actor dying of" reads
                without opening a job. #}
