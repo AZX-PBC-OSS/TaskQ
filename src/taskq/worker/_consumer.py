@@ -227,6 +227,40 @@ def _encode_result(result: object, max_bytes: int = MAX_RESULT_BYTES) -> bytes |
     return data
 
 
+async def _pre_terminal_flush(
+    job: JobRow,
+    worker_id: UUID,
+    progress_buffers: "dict[UUID, _ProgressBuffer] | None",
+    worker_pool: "asyncpg.Pool | None",
+    settings: WorkerSettings | None,
+) -> "_ProgressBuffer | None":
+    """Flush the job's dirty progress buffer ahead of its terminal write
+    and return the buffer the write's progress fields are read from.
+
+    The flush is shielded so a cancel landing mid-statement cannot strand
+    the progress row half-written — but the shield costs a Task per call,
+    and the flush itself is a no-op for a clean buffer (the common case:
+    an actor that reported no progress). The dirty check is made here so
+    only a flush that will issue a statement pays for the shield; the
+    buffer's own no-op guard still holds behind it.
+    """
+    if progress_buffers is None:
+        return None
+    buffer = progress_buffers.get(job.id)
+    if buffer is None or not buffer.dirty or worker_pool is None or settings is None:
+        return buffer
+    await shield_with_retrieval(
+        _flush_buffer_immediate(
+            worker_pool,
+            settings.schema_name,
+            job.id,
+            worker_id,
+            progress_buffers,
+        )
+    )
+    return progress_buffers.get(job.id)
+
+
 async def _run_terminal_path(  # pyright: ignore[reportUnusedFunction]  # Why: called by _dispatch_exception in _handlers.py via lazy import
     *,
     job: JobRow,
@@ -256,22 +290,8 @@ async def _run_terminal_path(  # pyright: ignore[reportUnusedFunction]  # Why: c
     The job row stays ``running``; it is disowned into *disowned_jobs* so
     the heartbeat stops renewing it and lock-lease expiry reclaims it.
     """
-    if progress_buffers is not None and worker_pool is not None and settings is not None:
-        await shield_with_retrieval(
-            _flush_buffer_immediate(
-                worker_pool,
-                settings.schema_name,
-                job.id,
-                worker_id,
-                progress_buffers,
-            )
-        )
-        _pbuf = progress_buffers.get(job.id)
-        _pseq, _pstate = _seq_and_state_after_flush_attempt(_pbuf)
-    else:
-        _pseq, _pstate = _seq_and_state_after_flush_attempt(
-            progress_buffers.get(job.id) if progress_buffers is not None else None
-        )
+    _pbuf = await _pre_terminal_flush(job, worker_id, progress_buffers, worker_pool, settings)
+    _pseq, _pstate = _seq_and_state_after_flush_attempt(_pbuf)
     try:
         handler_result: AttemptOutcome = await handler(
             *handler_args,
@@ -1335,21 +1355,8 @@ async def _consume_autonomous(
     # same race the same way (a job that returns after its soft-stop
     # completes; vendor/river/internal/jobexecutor/job_executor.go).
 
-    if progress_buffers is not None and _auto_pool is not None and _auto_settings is not None:
-        await shield_with_retrieval(
-            _flush_buffer_immediate(
-                _auto_pool,
-                _auto_settings.schema_name,
-                job.id,
-                worker_id,
-                progress_buffers,
-            )
-        )
-        _pbuf = progress_buffers.get(job.id)
-        _pseq, _pstate = _seq_and_state_after_flush_attempt(_pbuf)
-    else:
-        _pbuf = progress_buffers.get(job.id) if progress_buffers is not None else None
-        _pseq, _pstate = _seq_and_state_after_flush_attempt(_pbuf)
+    _pbuf = await _pre_terminal_flush(job, worker_id, progress_buffers, _auto_pool, _auto_settings)
+    _pseq, _pstate = _seq_and_state_after_flush_attempt(_pbuf)
 
     result_bytes = _encode_result(
         result,
