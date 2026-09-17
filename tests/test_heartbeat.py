@@ -1,6 +1,7 @@
 """Unit tests for heartbeat_loop — pure-Python, no PG required."""
 
 import asyncio
+import time
 from collections.abc import AsyncGenerator, Callable
 from contextlib import asynccontextmanager
 from datetime import UTC, timedelta
@@ -29,23 +30,44 @@ class FakeConn:
 
     def __init__(self) -> None:
         self.execute_calls: list[tuple[str, tuple[object, ...]]] = []
+        self.closed = False
+        self.terminated = False
 
     async def execute(self, sql: str, *args: object) -> str:
         self.execute_calls.append((sql, args))
         return f"UPDATE {len(sql) % 10}"
+
+    async def fetch(self, sql: str, *args: object) -> list[dict[str, object]]:
+        return []
+
+    async def close(self) -> None:
+        self.closed = True
+
+    def terminate(self) -> None:
+        self.terminated = True
 
     def transaction(self) -> "_FakeTransaction":
         return _FakeTransaction()
 
 
 class _FakeTransaction:
-    """Trivial no-op transaction context manager."""
+    """Explicit-API transaction stand-in (start/commit/rollback — the
+    heartbeat tick drives the transaction explicitly since the #227 fix
+    round's command budget)."""
 
-    async def __aenter__(self) -> None:
-        return None
+    def __init__(self) -> None:
+        self.started = False
+        self.committed = False
+        self.rolled_back = False
 
-    async def __aexit__(self, *args: object) -> None:
-        return None
+    async def start(self) -> None:
+        self.started = True
+
+    async def commit(self) -> None:
+        self.committed = True
+
+    async def rollback(self) -> None:
+        self.rolled_back = True
 
 
 class FakePool:
@@ -133,6 +155,7 @@ def _make_deps(
     heartbeat_interval: float = 0.5,
     lock_lease: float = 2.0,
     max_heartbeat_failures: int = 3,
+    heartbeat_command_timeout: float = 2.0,
 ) -> WorkerDeps:
     settings = _worker_settings(
         "postgresql://x:x@localhost/x",
@@ -146,6 +169,7 @@ def _make_deps(
         MAX_HEARTBEAT_FAILURES=str(max_heartbeat_failures),
         CANCELLATION_GRACE_PERIOD="0.0",
         CLEANUP_GRACE_PERIOD="0.0",
+        HEARTBEAT_COMMAND_TIMEOUT=str(heartbeat_command_timeout),
     )
     deps = WorkerDeps(
         settings=settings,
@@ -1165,10 +1189,14 @@ def test_build_heartbeat_sql_liveness_shape_pins_the_merge() -> None:
 
 def test_lease_renewal_threshold_default_config() -> None:
     """Defaults (lease 60s, interval 10s, 3 failures, 2s command timeout):
-    the floor (F+1) * (interval + command_timeout) = 48s binds, so a
-    healthy worker renews on every second beat (the beat after a renewal
-    carries 50s of lease — above 48 — and skips; the next carries 40s
-    and renews): half the non-HOT renewal writes."""
+    the enforced-bound floor (F+1) * (interval + 2 * command_timeout) =
+    4 * 14 = 56s sits at/above the harvestable slack (lease - interval
+    = 50s), so the gate renews every beat at the default lease — the
+    unconditional cadence, no lapse window — and the savings begin from
+    lease ≈ 70s (see the sibling tests). The floor's terms are all
+    ENFORCED by the tick's command budget (interval: the acquire's own
+    timeout; one command timeout: the sequence budget; one more: the
+    bounded rollback-or-close teardown)."""
     from taskq.worker.heartbeat import _lease_renewal_threshold
 
     threshold = _lease_renewal_threshold(
@@ -1177,7 +1205,87 @@ def test_lease_renewal_threshold_default_config() -> None:
         max_heartbeat_failures=3,
         heartbeat_command_timeout=2.0,
     )
-    assert threshold == timedelta(seconds=48.0)
+    assert threshold == timedelta(seconds=56.0)
+    # 56 >= 50 = lease - interval: the beat after a renewal carries 50s
+    # (still at/under the threshold), so nothing is ever skipped.
+    assert threshold >= timedelta(seconds=50.0)
+
+
+@pytest.mark.parametrize(
+    ("lock_lease", "interval", "failures", "command_timeout"),
+    [
+        # The 4x invariant's minimum: no slack to harvest.
+        (40.0, 10.0, 3, 2.0),
+        # Fast heartbeats with a command timeout larger than the tick.
+        (2.0, 0.5, 3, 2.0),
+        # A failure-tolerant fleet (F=10) with a default lease.
+        (60.0, 10.0, 10, 2.0),
+        # The DEFAULT lease: the enforced-bound floor (56) meets the
+        # harvestable slack (50) — the fix-round finding that closed the
+        # reproduced default-settings lapse window.
+        (60.0, 10.0, 3, 2.0),
+    ],
+)
+def test_lease_renewal_threshold_degenerate_configs_renew_every_beat(
+    lock_lease: float,
+    interval: float,
+    failures: int,
+    command_timeout: float,
+) -> None:
+    """Whenever the safety floor meets or exceeds the harvestable slack
+    (lease - interval), the threshold sits at/above it and the gated
+    statement renews every held row on every beat — exactly the
+    unconditional behaviour, because those configs have no slack that is
+    safe to harvest."""
+    from taskq.worker.heartbeat import _lease_renewal_threshold
+
+    threshold = _lease_renewal_threshold(
+        lock_lease=timedelta(seconds=lock_lease),
+        heartbeat_interval=interval,
+        max_heartbeat_failures=failures,
+        heartbeat_command_timeout=command_timeout,
+    )
+    assert threshold >= timedelta(seconds=lock_lease - interval)
+
+
+@pytest.mark.parametrize(
+    ("lock_lease", "expected_saving"),
+    [
+        # The enforced-bound floor 56 binds: the beat after a renewal
+        # carries 60 (skip), 50 <= 56 (renew) — a 20s cadence, 2x.
+        (70.0, 2),
+        # 80 > 56 skip, 70 > 56 skip, 60 > 56 skip, 50 <= 56 renew — a
+        # 40s cadence, 4x.
+        (90.0, 4),
+        # Beyond ~112 the half-lease arm dominates: renew at remaining
+        # <= 60 — a 60s cadence, 6x.
+        (120.0, 6),
+    ],
+)
+def test_lease_renewal_threshold_savings_resume_above_the_default_lease(
+    lock_lease: float,
+    expected_saving: int,
+) -> None:
+    """The gate's savings resume from lease ≈ 70s: the floor (56s at the
+    default timing knobs) must sit strictly under the harvestable slack
+    (lease - interval) for the beat after a renewal to skip, and the
+    renewal cadence is (lease - threshold) + interval."""
+    from taskq.worker.heartbeat import _lease_renewal_threshold
+
+    threshold = _lease_renewal_threshold(
+        lock_lease=timedelta(seconds=lock_lease),
+        heartbeat_interval=10.0,
+        max_heartbeat_failures=3,
+        heartbeat_command_timeout=2.0,
+    ).total_seconds()
+    assert threshold < lock_lease - 10.0, "the first post-renewal beat must skip"
+    # The renewal fires at the FIRST beat whose remaining lease is at or
+    # under the threshold: ceil((lease - threshold) / interval) beats
+    # after the previous renewal.
+    import math
+
+    cadence = 10.0 * math.ceil((lock_lease - threshold) / 10.0)
+    assert cadence == pytest.approx(expected_saving * 10.0)
 
 
 def test_lease_renewal_threshold_generous_lease_uses_half() -> None:
@@ -1194,41 +1302,6 @@ def test_lease_renewal_threshold_generous_lease_uses_half() -> None:
         heartbeat_command_timeout=2.0,
     )
     assert threshold == timedelta(seconds=150.0)
-
-
-@pytest.mark.parametrize(
-    ("lock_lease", "interval", "failures", "command_timeout"),
-    [
-        # The 4x invariant's minimum: no slack to harvest — the floor
-        # meets the lease and the gate renews every beat.
-        (40.0, 10.0, 3, 2.0),
-        # Fast heartbeats with a command timeout larger than the tick:
-        # the floor dwarfs the lease — renew every beat.
-        (2.0, 0.5, 3, 2.0),
-        # A failure-tolerant fleet (F=10) with a default lease: the
-        # cascade bound exceeds the lease — renew every beat.
-        (60.0, 10.0, 10, 2.0),
-    ],
-)
-def test_lease_renewal_threshold_degenerate_configs_renew_every_beat(
-    lock_lease: float,
-    interval: float,
-    failures: int,
-    command_timeout: float,
-) -> None:
-    """Whenever the safety floor meets or exceeds the lease, the
-    threshold sits at/above the lease and the gated statement renews
-    every held row on every beat — exactly the unconditional behaviour,
-    because those configs have no slack that is safe to harvest."""
-    from taskq.worker.heartbeat import _lease_renewal_threshold
-
-    threshold = _lease_renewal_threshold(
-        lock_lease=timedelta(seconds=lock_lease),
-        heartbeat_interval=interval,
-        max_heartbeat_failures=failures,
-        heartbeat_command_timeout=command_timeout,
-    )
-    assert threshold >= timedelta(seconds=lock_lease)
 
 
 def test_naive_half_lease_threshold_lapses_before_isolation_at_defaults() -> None:
@@ -1252,7 +1325,11 @@ def test_naive_half_lease_threshold_lapses_before_isolation_at_defaults() -> Non
     command_timeout = 2.0
     failures = 3
     naive_threshold = lease / 2
-    gap = interval + command_timeout  # worst coherent beat gap
+    # Worst coherent beat gap under the ENFORCED tick bound (#227 fix
+    # round): acquire <= interval, the command sequence <= one command
+    # timeout (the tick's single budget), the bounded
+    # rollback-or-close teardown <= one more.
+    gap = interval + 2 * command_timeout
 
     remaining = naive_threshold + 1e-6  # the last successful beat skipped here
     for _ in range(failures + 1):  # the failure cascade to the isolate decision
@@ -1281,14 +1358,20 @@ def test_naive_half_lease_threshold_lapses_before_isolation_at_defaults() -> Non
     assert remaining > gap  # recovering after F failures still holds margin
 
 
-@settings(max_examples=300, deadline=timedelta(seconds=10))
+@settings(max_examples=400, deadline=timedelta(seconds=10))
 @given(
     interval=st.floats(min_value=0.5, max_value=30.0),
     command_timeout=st.floats(min_value=0.01, max_value=10.0),
     failures=st.integers(min_value=1, max_value=10),
     lease_beats=st.floats(min_value=4.0, max_value=30.0),
-    healthy_gap_scale=st.lists(st.floats(min_value=0.01, max_value=0.999), min_size=3, max_size=8),
-    cascade_gap_scale=st.lists(st.floats(min_value=0.01, max_value=0.999), min_size=1, max_size=11),
+    acquire_scale=st.lists(st.floats(min_value=0.01, max_value=0.999), min_size=4, max_size=12),
+    statement_count=st.lists(st.integers(min_value=3, max_value=6), min_size=4, max_size=12),
+    statement_scale=st.lists(
+        st.lists(st.floats(min_value=0.05, max_value=0.999), min_size=3, max_size=6),
+        min_size=4,
+        max_size=12,
+    ),
+    teardown_scale=st.lists(st.floats(min_value=0.01, max_value=0.999), min_size=4, max_size=12),
     recover_after=st.integers(min_value=0, max_value=10),
 )
 def test_gated_renewal_never_lets_a_live_lease_lapse(
@@ -1296,30 +1379,39 @@ def test_gated_renewal_never_lets_a_live_lease_lapse(
     command_timeout: float,
     failures: int,
     lease_beats: float,
-    healthy_gap_scale: list[float],
-    cascade_gap_scale: list[float],
+    acquire_scale: list[float],
+    statement_count: list[int],
+    statement_scale: list[list[float]],
+    teardown_scale: list[float],
     recover_after: int,
 ) -> None:
-    """Property: under the shipped threshold, a worker that keeps beating
-    — or that fails at most max_heartbeat_failures consecutive beats and
-    then recovers — never lets a lease lapse, and the lease outlives the
-    isolate decision by staying valid through F+1 failed beats.
+    """Property: under the shipped threshold and the tick's ENFORCED
+    command budget, a worker that keeps beating — or that fails at most
+    max_heartbeat_failures consecutive beats and then recovers — never
+    lets a lease lapse, and the lease outlives the isolate decision.
 
-    The gap model is the system's own documented worst case (the
-    heartbeat loop's cadence comment and the lock_lease >= 4 x
-    heartbeat_interval invariant's rationale): one beat gap is at most
-    heartbeat_interval + heartbeat_command_timeout — a pool acquire
-    bounded at the interval plus one command bounded at the command
-    timeout — and failed beats are bounded by the same sum. Gaps are
-    drawn strictly under that bound (a tick that consumed its full
-    acquire budget waits zero, so the sum is not reachable exactly); the
-    epsilon-boundary itself is pinned deterministically by
-    test_naive_half_lease_threshold_lapses_before_isolation_at_defaults.
+    The per-tick model is the one the heartbeat loop now enforces
+    (heartbeat.py's tick block), so every falsifying shape the fix-round
+    attack found is expressible here:
 
-    The lease respects the enforced invariant (>= 4 x interval). The
-    cascade is sized to the loop's actual behaviour: the loop isolates
-    on the (F+1)-th consecutive failure; a worker that recovers at or
-    before F failures keeps beating.
+    * a CONTENDED ACQUIRE — drawn up to (strictly under) the interval,
+      the pool acquire's own timeout;
+    * a MULTI-COMMAND tick — 3..6 statements, each drawn up to (strictly
+      under) one command timeout, whose SEQUENCE the single budget cuts
+      at one command timeout total (the round-1 model hard-capped the
+      whole tick at interval + ONE command timeout, which could not
+      express the attack's shape: two just-under-timeout statements
+      succeeding, then a timeout);
+    * a bounded teardown — a rollback that fits the budget's remainder,
+      or the bounded close (server-side rollback on disconnect), drawn
+      up to (strictly under) one command timeout.
+
+    The beat-to-beat gap is ``max(interval, tick_duration)`` — the loop
+    anchors its wait to the tick's START — so a fast failed tick gaps at
+    exactly the interval and only a tick LONGER than the interval
+    stretches the gap. The lease respects the enforced invariant (>= 4 x
+    interval); the cascade is sized to the loop's actual behaviour (the
+    loop isolates on the F+1-th consecutive failure).
     """
     from taskq.worker.heartbeat import _lease_renewal_threshold
 
@@ -1327,51 +1419,75 @@ def test_gated_renewal_never_lets_a_live_lease_lapse(
     threshold = _lease_renewal_threshold(
         timedelta(seconds=lease), interval, failures, command_timeout
     ).total_seconds()
-    worst_gap = interval + command_timeout
-    # The worst failure-cascade consumption the CONFIG allows: F+1
-    # failed beats (the loop isolates on the F+1-th), each costing up to
-    # one worst gap (a pool acquire bounded at the interval plus one
-    # command bounded at the command timeout).
+    worst_gap = interval + 2 * command_timeout  # acquire + budget + teardown
     cascade_bound = (failures + 1) * worst_gap
+
+    def _tick(i: int, *, healthy: bool) -> tuple[float, bool]:
+        """One tick's (gap, renewed) under the enforced budget.
+
+        Returns the beat-to-beat gap and whether the tick's renewal
+        landed. A healthy tick completes its statement sequence within
+        the budget and commits (the renewal landed); an unhealthy one is
+        cut at the budget and pays the bounded teardown instead.
+        """
+        acquire = interval * acquire_scale[i % len(acquire_scale)]
+        scales = statement_scale[i % len(statement_scale)]
+        k = statement_count[i % len(statement_count)]
+        if healthy:
+            # The whole sequence (BEGIN + writes + probes + COMMIT,
+            # modelled as the k statements' aggregate) fits the single
+            # budget: the mean of the k per-statement draws is strictly
+            # under one command timeout.
+            seq = command_timeout * (sum(scales[:k]) / k)
+            renewed = True
+            teardown = 0.0
+        else:
+            # The sequence wants more than the budget; the budget cuts
+            # it at one command timeout.
+            seq = command_timeout
+            renewed = False
+            teardown = command_timeout * teardown_scale[i % len(teardown_scale)]
+        duration = acquire + seq + teardown
+        return max(interval, duration), renewed
 
     if cascade_bound >= lease:
         # A config whose worst cascade can outlive the lease: NO renewal
         # policy operating at beat boundaries can keep it — the
-        # unconditional renewal main ships today has exactly the same
-        # exposure (this is the 4x invariant's own blind spot: it sizes
-        # the cascade as (F+1) * interval, but a failed beat can cost
-        # interval + command_timeout). What the gate must guarantee
-        # there is that it does not make things WORSE: the threshold's
-        # safety floor IS the cascade bound, so it meets or exceeds the
-        # lease and the gate renews on every beat — exactly the
-        # unconditional behaviour. That degenerate equivalence is what
-        # this branch pins; the lapse-free properties below are asserted
-        # only in the regime where survival is possible at all.
-        assert threshold >= lease, (
-            "a config whose worst cascade can outlive the lease must fall "
-            "back to renewing every beat (the safety floor meets the "
-            f"lease); threshold={threshold} < lease={lease} would be a "
-            "regression against the unconditional renewal"
+        # unconditional renewal has exactly the same exposure (this is
+        # the 4x invariant's own blind spot: it sizes the cascade as
+        # (F+1) * interval, but a failed beat costs up to interval + 2 x
+        # command_timeout even under the enforced budget). What the gate
+        # must guarantee there is that it does not make things WORSE:
+        # the threshold's safety floor IS the cascade bound, so the gate
+        # renews on every beat — exactly the unconditional behaviour.
+        assert threshold >= lease - interval, (
+            "a config whose worst cascade can outlive the harvestable "
+            "slack must fall back to renewing every beat (the safety "
+            f"floor meets the slack); threshold={threshold} < "
+            f"lease-interval={lease - interval} would be a regression "
+            "against the unconditional renewal"
         )
         return
 
     remaining = lease  # a freshly claimed row
 
-    # Phase 1 — healthy beats with adversarial (sub-worst) gaps: the
-    # lease never lapses while the worker keeps beating, and every
-    # renewal resets it to the full lease.
-    for scale in healthy_gap_scale:
-        remaining -= worst_gap * scale
+    # Phase 1 — healthy beats: the lease never lapses while the worker
+    # keeps beating, and every renewal resets it to the full lease.
+    for i in range(len(acquire_scale)):
+        gap, renewed = _tick(i, healthy=True)
+        remaining -= gap
         assert remaining > 0, "a healthy beat sequence let the lease lapse"
-        if remaining <= threshold:
+        if renewed and remaining <= threshold:
             remaining = lease
 
-    # Phase 2 — the failure cascade: up to F failures, then either the
-    # isolate decision (recover_after > F: the worker is gone by design,
-    # the lease may do what leases do) or a recovering beat.
+    # Phase 2 — the failure cascade: up to F failed ticks (renewal never
+    # lands), then either the isolate decision (recover_after > F: the
+    # worker is gone by design, the lease may do what leases do) or a
+    # recovering tick.
     cascade_len = min(recover_after, failures + 1)
     for i in range(cascade_len):
-        remaining -= worst_gap * cascade_gap_scale[i % len(cascade_gap_scale)]
+        gap, _renewed = _tick(i, healthy=False)
+        remaining -= gap
         if i == failures:
             # The isolate decision itself: the lease is still valid —
             # the sweep must not be able to steal a row from a worker
@@ -1379,10 +1495,57 @@ def test_gated_renewal_never_lets_a_live_lease_lapse(
             assert remaining > 0, "the lease lapsed before the isolate decision"
             return
         assert remaining > 0, "the lease lapsed mid-cascade"
-    # The recovering beat: the lease is still valid (the renew-or-skip
-    # decision is the policy's, and either way the sweep never saw the
-    # row expired), and the worker keeps its row.
+    # The recovering beat: the lease is still valid, and the worker
+    # keeps its row without the sweep ever seeing it expired.
     assert remaining > 0, "a recovering worker found its lease already expired"
+
+
+def test_the_round1_floor_was_under_sized_for_multi_command_ticks() -> None:
+    """Regression guard for the fix-round finding: the round-1 floor
+    (F+1) * (interval + ONE command timeout) does NOT cover a failed
+    multi-command tick bounded only per-statement — the exact shape the
+    attack reproduced at the default settings (a legal skip at 49.5s of
+    a 60s lease, then four brownout ticks of acquire + three
+    just-under-timeout statements, expiring the lease 3.2-9.2s before
+    the isolate decision while the unconditional renewal survived).
+
+    This pins WHY the floor's second command-timeout term (the teardown)
+    and the tick's single command budget are load-bearing: with either
+    removed, the default-config cascade is under-sized again.
+    """
+    interval, command_timeout, failures, lease = 10.0, 2.0, 3, 60.0
+    round1_floor = (failures + 1) * (interval + command_timeout)
+
+    # A brownout failed tick under per-statement bounds only: a
+    # contended acquire plus three statements each just under one
+    # command timeout (two succeed, the third times out) plus the
+    # transaction rollback's round trip.
+    brownout_tick = 7.0 + 3 * (command_timeout * 0.95) + command_timeout * 0.95
+    assert brownout_tick > interval + 2 * command_timeout, (
+        "the brownout shape must exceed the ENFORCED bound — that is "
+        "the point of the budget: the tick is cut at one command "
+        "timeout instead of running its statements out"
+    )
+    remaining = 49.5  # a legal round-1 skip: just above the round-1 floor
+    for _ in range(failures + 1):
+        remaining -= brownout_tick
+    assert remaining < -3.0, (
+        f"the round-1 floor ({round1_floor}) let the lease lapse "
+        f"{abs(remaining):.1f}s before the isolate decision — the "
+        "reproduced window; the shipped floor must cover this shape"
+    )
+
+    from taskq.worker.heartbeat import _lease_renewal_threshold
+
+    shipped = _lease_renewal_threshold(
+        timedelta(seconds=lease), interval, failures, command_timeout
+    )
+    # At the default lease the shipped floor meets the harvestable
+    # slack: the gate never skips, so no cascade can start from a skip.
+    assert shipped.total_seconds() >= lease - interval
+    # And the enforced bound itself keeps the every-beat cascade inside
+    # the lease: 4 gaps at the enforced worst vs the 60s lease.
+    assert (failures + 1) * (interval + 2 * command_timeout) < lease
 
 
 def test_build_heartbeat_sql_threshold_selects_the_gated_statement() -> None:
@@ -1436,3 +1599,194 @@ async def test_heartbeat_loop_binds_the_renewal_threshold() -> None:
         deps.settings.heartbeat_command_timeout,
     )
     assert args[3] == expected
+
+
+# ── The tick's single command budget (#227 fix round) ───────────────
+
+
+class _SlowConn(FakeConn):
+    """FakeConn whose statements each take ``per_statement`` seconds.
+
+    The call is recorded when it STARTS (a statement the budget cuts
+    mid-flight never completes, and the tick must not reach the
+    statements after it). ``fail_on`` makes the n-th statement raise a
+    non-transient PG error before sleeping."""
+
+    def __init__(self, per_statement: float, *, fail_on: int | None = None) -> None:
+        super().__init__()
+        self._per_statement = per_statement
+        self._fail_on = fail_on
+
+    async def execute(self, sql: str, *args: object) -> str:
+        self.execute_calls.append((sql, args))
+        if self._fail_on is not None and len(self.execute_calls) == self._fail_on:
+            raise asyncpg.PostgresSyntaxError("boom")
+        await asyncio.sleep(self._per_statement)
+        return f"UPDATE {len(sql) % 10}"
+
+
+class _SharedConnPool(FakePool):
+    """FakePool yielding one shared conn (the tick's close/rollback state
+    must be observable after the tick)."""
+
+    def __init__(self, conn: FakeConn) -> None:
+        super().__init__()
+        self._shared = conn
+
+    @asynccontextmanager
+    async def acquire(self, *, timeout: float | None = None) -> AsyncGenerator[FakeConn, None]:  # noqa: ASYNC109 # Why: mirrors asyncpg.Pool.acquire's signature, as FakePool does.
+        self.acquire_count += 1
+        self._conn = self._shared
+        yield self._shared
+
+
+class _DrainController(_RecordingController):
+    """Cancel controller whose post-tx drain takes ``drain`` seconds;
+    records whether the drain started."""
+
+    def __init__(self, drain: float) -> None:
+        super().__init__()
+        self._drain = drain
+        self.post_tx_calls: list[float] = []
+
+    async def run_post_tx(self) -> None:
+        self.post_tx_calls.append(time.monotonic())
+        await asyncio.sleep(self._drain)
+
+
+async def _run_budget_tick(
+    pool: FakePool,
+    *,
+    heartbeat_command_timeout: float,
+    cancel_controller: object | None = None,
+) -> tuple[WorkerDeps, float]:
+    """One heartbeat tick with a configurable command budget.
+
+    Returns (deps, the tick's own recorded duration — the histogram
+    value, not wall clock around the loop's post-tick wait)."""
+    import taskq.worker.heartbeat as hb_mod
+
+    deps = _make_deps(
+        heartbeat_pool=pool,
+        heartbeat_interval=0.5,
+        lock_lease=2.0,
+        max_heartbeat_failures=3,
+        heartbeat_command_timeout=heartbeat_command_timeout,
+    )
+    tick_done = asyncio.Event()
+    recorded: list[float] = []
+    prev_record = hb_mod._tick_duration.record  # type: ignore[reportPrivateUsage]
+
+    def _record_and_signal(value: float, *args: object, **kwargs: object) -> None:
+        prev_record(value, *args, **kwargs)
+        recorded.append(value)
+        tick_done.set()
+
+    hb_mod._tick_duration.record = _record_and_signal  # type: ignore[method-assign,reportPrivateUsage]
+    shutdown = asyncio.Event()
+    task = asyncio.create_task(
+        heartbeat_loop(deps, new_uuid(), shutdown, cancel_controller=cancel_controller)
+    )
+    await wait_for(tick_done, timeout=10.0)
+    shutdown.set()
+    await task
+    return deps, recorded[0]
+
+
+async def test_the_tick_command_budget_cuts_a_brownout_tick() -> None:
+    """The reproduced attack shape, at unit speed: a tick whose
+    statements each take just under the per-query timeout would, under
+    the OLD per-statement accounting, run two of them and cut on the
+    third — ~3x the command timeout in total, the gap the round-1 floor
+    assumed away. Under the single budget the tick is CUT at one command
+    timeout: the third statement never starts, the teardown CLOSES the
+    connection (no rollback round trip — the budget was exhausted), and
+    the tick counts as exactly ONE transient failure."""
+    budget = 0.06
+    # Three statements at 0.8x the budget each: per-statement, all three
+    # are legal (2.4x the budget in total before the tick is done).
+    conn = _SlowConn(per_statement=budget * 0.8)
+    pool = _SharedConnPool(conn)
+    deps, tick_duration = await _run_budget_tick(pool, heartbeat_command_timeout=budget)
+
+    assert deps.heartbeat_failures == 1, "the cut tick must count as exactly one failure"
+    # The budget cut the tick inside its SECOND statement (the first
+    # took 0.8x the budget; the second was cut 0.2x in): the third —
+    # and the still-held probe and hook after it — never started.
+    assert len(conn.execute_calls) == 2, (
+        f"the tick issued {len(conn.execute_calls)} statements — the "
+        "budget must cut the sequence before it outlives one command "
+        "timeout"
+    )
+    # The teardown took the CLOSE path (the budget was exhausted), not a
+    # rollback round trip.
+    assert conn.closed, "the budget-exhausted teardown must close, not roll back"
+    # And the whole tick stayed inside the model's bound: acquire (~0
+    # here) + one budget + the bounded close.
+    assert tick_duration < 3 * budget, (
+        f"the brownout tick took {tick_duration:.3f}s — more than the "
+        "budget plus the bounded close; the per-statement shape (2.4x "
+        "the budget before even reaching the third statement) escaped "
+        "again"
+    )
+
+
+async def test_an_ordinary_statement_failure_rolls_back_within_the_budget() -> None:
+    """A statement that fails on its own (a PG error, not the budget)
+    takes the rollback path — bounded by the budget's REMAINDER — and
+    the connection stays pooled (not closed)."""
+    budget = 0.06
+    conn = _SlowConn(per_statement=0.001, fail_on=2)
+    pool = _SharedConnPool(conn)
+    deps, _tick = await _run_budget_tick(pool, heartbeat_command_timeout=budget)
+
+    # asyncpg.PostgresSyntaxError is NOT transient: the unexpected-error
+    # handler logs it without counting a heartbeat failure.
+    assert deps.heartbeat_failures == 0
+    assert not conn.closed, "an ordinary failure must roll back and pool the conn"
+    assert len(conn.execute_calls) == 2
+
+
+async def test_post_tx_is_deferred_when_the_budget_is_exhausted() -> None:
+    """When the tick's budget is spent, the post-tx drain is DEFERRED to
+    the next tick (the controller's deque persists) rather than running
+    unbudgeted — an expired asyncio.timeout does not re-cancel an await
+    that starts after expiry (measured), so the remainder is enforced by
+    SKIPPING the drain, not by hoping the expired scope cancels it."""
+    budget = 0.06
+    conn = _SlowConn(per_statement=budget * 0.8)  # the tx is cut mid-statement
+    pool = _SharedConnPool(conn)
+    ctrl = _DrainController(drain=0.2)
+    deps, _tick = await _run_budget_tick(
+        pool, heartbeat_command_timeout=budget, cancel_controller=ctrl
+    )
+
+    assert deps.heartbeat_failures == 1
+    # The cut landed before the tick even reached the hook (it runs
+    # after the three writes) — and the drain is deferred rather than
+    # run unbudgeted: the controller's deque keeps the entry for the
+    # next tick.
+    assert ctrl.post_tx_calls == [], (
+        "the drain must not start when nothing is left of the tick's "
+        "command budget — it is deferred to the next tick"
+    )
+
+
+async def test_a_post_tx_cut_is_one_conservative_failure_after_a_committed_tx() -> None:
+    """A healthy transaction whose post-tx drain outruns the budget's
+    remainder counts the tick as ONE failure (conservative: the failure
+    counter moves even though the committed transaction's renewals have
+    landed) — never zero and never two."""
+    budget = 0.2
+    conn = _SlowConn(per_statement=0.001)  # the tx commits almost instantly
+    pool = _SharedConnPool(conn)
+    ctrl = _DrainController(drain=5.0)  # the drain outruns the remainder
+    deps, _tick = await _run_budget_tick(
+        pool, heartbeat_command_timeout=budget, cancel_controller=ctrl
+    )
+
+    assert ctrl.post_tx_calls, "the drain started (the budget had remainder)"
+    assert deps.heartbeat_failures == 1, (
+        "a post-tx budget cut is one transient failure (the TimeoutError "
+        "propagates on the healthy-tick path), not zero and not two"
+    )
