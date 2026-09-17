@@ -35,6 +35,7 @@ from taskq.obs import (
     record_sweep_timeout,
     update_actor_backlog_cache,
     update_actor_oldest_pending_age_cache,
+    update_actor_oldest_running_age_cache,
     update_jobs_by_status_cache,
     update_jobs_running_cache,
     update_oldest_due_age_cache,
@@ -1442,14 +1443,21 @@ _QUERY_RUNNING_LEASE_EXPIRED_SQL_TEMPLATE = (
     'SELECT count(*) FROM "{schema}".jobs '
     "WHERE status = 'running' AND lock_expires_at < statement_timestamp()"
 )
-# Running jobs per actor. The running population is bounded by the fleet's
-# total concurrency, never by history, so an exact grouped count is cheap;
-# jobs_running_lock_expires_idx (partial on status='running') serves it.
-# Per actor, not (actor, queue): a running row's queue label is not what
-# dispatched it (re-pended rows route by the actor's assignment), and the
-# capacity question is which actors hold the slots.
+# Running jobs per actor, and the age of the oldest running attempt per
+# actor, from ONE grouped read so count and age never describe two moments.
+# The running population is bounded by the fleet's total concurrency, never
+# by history, so an exact grouped read is cheap; jobs_running_lock_expires_idx
+# (partial on status='running') serves it. Per actor, not (actor, queue): a
+# running row's queue label is not what dispatched it (re-pended rows route
+# by the actor's assignment), and the capacity question is which actors hold
+# the slots. started_at is the attempt clock: an attempt older than the
+# actor's normal runtime with taskq.jobs.timeouts flat is an actor with no
+# start_to_close, which nothing else can show. The age is a measured value
+# and stays on clock_timestamp().
 _QUERY_RUNNING_BY_ACTOR_SQL_TEMPLATE = (
-    'SELECT actor, count(*) AS running FROM "{schema}".jobs '
+    "SELECT actor, count(*) AS running, "
+    "EXTRACT(EPOCH FROM (clock_timestamp() - MIN(started_at)))::float8 AS oldest_age "
+    'FROM "{schema}".jobs '
     "WHERE status = 'running' GROUP BY actor"
 )
 #: Per-pair sample cap for the actor-backlog sampler (rows read per
@@ -1604,10 +1612,10 @@ async def _backlog_detection_loop(ctx: SweepContext, shutdown: asyncio.Event) ->
                 # clears the running series rather than freezing it; the
                 # rows are shaped here so a malformed row is contained too.
                 try:
-                    running_by_actor = {
-                        str(row["actor"]): int(row["running"])
+                    running_snapshot = [
+                        (str(row["actor"]), int(row["running"]), row["oldest_age"])
                         for row in await conn.fetch(running_by_actor_sql)
-                    }
+                    ]
                 except Exception as exc:
                     log.warning(
                         "running-by-actor-sampling-failed",
@@ -1615,7 +1623,7 @@ async def _backlog_detection_loop(ctx: SweepContext, shutdown: asyncio.Event) ->
                         worker_id=str(ctx.worker_id),
                         error=repr(exc),
                     )
-                    running_by_actor = {}
+                    running_snapshot = []
                 # This read is isolated from the fleet-wide ones above: a
                 # grouped read over every pending (actor, queue) pair is
                 # the widest-shaped statement in the tick and the first
@@ -1656,8 +1664,17 @@ async def _backlog_detection_loop(ctx: SweepContext, shutdown: asyncio.Event) ->
                 int(expired_lease) if expired_lease is not None else 0
             )
             # Rebuilt whole from the snapshot: an actor that finished its
-            # last running job vanishes from the series instead of freezing.
-            update_jobs_running_cache(running_by_actor)
+            # last running job vanishes from both series instead of freezing.
+            # MIN(started_at) is NULL only when every running row of the
+            # actor has no started_at (a raced write); 0.0 says "no measured
+            # age", never a missing sample.
+            update_jobs_running_cache({actor: running for actor, running, _age in running_snapshot})
+            update_actor_oldest_running_age_cache(
+                {
+                    actor: float(age) if age is not None else 0.0
+                    for actor, _running, age in running_snapshot
+                }
+            )
             # Per-actor attribution is isolated end to end from the
             # fleet-wide detectors above, which are already written by this
             # point: a failed fetch substituted the empty snapshot (logged on

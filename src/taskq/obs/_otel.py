@@ -2208,6 +2208,42 @@ get_meter().create_observable_gauge(
 )
 
 
+def update_actor_oldest_running_age_cache(data: Mapping[str, float]) -> None:
+    """Replace the per-actor oldest-running-age cache with fresh data.
+
+    Fed by the backlog sampler from the same grouped read as
+    :func:`update_jobs_running_cache`, so count and age describe one
+    moment. An attempt older than the actor's normal runtime while
+    ``taskq.jobs.timeouts`` stays flat is an actor with no
+    ``start_to_close``: nothing will end the attempt, and no other gauge
+    can show it (``running_lease_expired`` reads 0 while the heartbeat
+    keeps renewing). An actor with nothing running vanishes from the
+    series.
+    """
+    global _actor_oldest_running_age_cache
+    _actor_oldest_running_age_cache = dict(data)
+
+
+def _observe_actor_oldest_running_age(options: CallbackOptions) -> Iterable[Observation]:
+    for actor, age in _actor_oldest_running_age_cache.items():
+        yield Observation(age, {"actor": actor})
+
+
+_actor_oldest_running_age_cache: dict[str, float] = {}
+
+get_meter().create_observable_gauge(
+    name="taskq.jobs.oldest_running_age_seconds",
+    description=(
+        "Seconds since the oldest running attempt of each actor started, "
+        "sampled by every worker with taskq.jobs.running. Past the actor's "
+        "usual p99 with taskq.jobs.timeouts flat, it is an actor with no "
+        "start_to_close."
+    ),
+    unit="s",
+    callbacks=[_observe_actor_oldest_running_age],
+)
+
+
 def update_actor_oldest_pending_age_cache(data: dict[tuple[str, str], float]) -> None:
     """Replace the per-(actor, queue) oldest-pending-age cache with fresh data."""
     global _actor_oldest_pending_age_cache

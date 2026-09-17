@@ -499,29 +499,39 @@ async def _seed_running_job(
     return job_id
 
 
-async def _drive_one_running_sample(ctx: SweepContext) -> dict[str, int] | None:
-    """Run the loop until the per-actor running gauge is fed once."""
-    observed: list[dict[str, int]] = []
-    original = _leader_sweeps.update_jobs_running_cache
+async def _drive_one_running_sample(
+    ctx: SweepContext,
+) -> tuple[dict[str, int] | None, dict[str, float] | None]:
+    """Run the loop until the per-actor running gauges (count, oldest age)
+    are fed once; both come from one statement, so one tick feeds both."""
+    counts: list[dict[str, int]] = []
+    ages: list[dict[str, float]] = []
+    original_count = _leader_sweeps.update_jobs_running_cache
+    original_age = _leader_sweeps.update_actor_oldest_running_age_cache
 
-    def _spy(data: Mapping[str, int]) -> None:
-        observed.append(dict(data))
+    def _spy_count(data: Mapping[str, int]) -> None:
+        counts.append(dict(data))
 
-    _leader_sweeps.update_jobs_running_cache = _spy  # type: ignore[assignment]  # Why: test-only instrumentation of the module's imported name, the file's established seam.
+    def _spy_age(data: Mapping[str, float]) -> None:
+        ages.append(dict(data))
+
+    _leader_sweeps.update_jobs_running_cache = _spy_count  # type: ignore[assignment]  # Why: test-only instrumentation of the module's imported name, the file's established seam.
+    _leader_sweeps.update_actor_oldest_running_age_cache = _spy_age  # type: ignore[assignment]  # Why: see above.
     shutdown = asyncio.Event()
     task = asyncio.create_task(_backlog_detection_loop(ctx, shutdown))
     try:
         for _ in range(400):
-            if observed:
+            if counts and ages:
                 break
             await asyncio.sleep(0.01)
     finally:
-        _leader_sweeps.update_jobs_running_cache = original  # type: ignore[assignment]  # Why: restoring the spied module attribute.
+        _leader_sweeps.update_jobs_running_cache = original_count  # type: ignore[assignment]  # Why: restoring the spied module attribute.
+        _leader_sweeps.update_actor_oldest_running_age_cache = original_age  # type: ignore[assignment]  # Why: see above.
         shutdown.set()
         task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await task
-    return observed[0] if observed else None
+    return (counts[0] if counts else None), (ages[0] if ages else None)
 
 
 def _pg_ctx(
@@ -693,6 +703,46 @@ async def test_running_jobs_are_counted_per_actor(
     await _seed_job(clean_pg_conn, schema, status="pending", scheduled_at=now)
 
     ctx = _pg_ctx(clean_pg_conn, schema=schema, is_leader=False)
-    running = await _drive_one_running_sample(ctx)
+    running, _ages = await _drive_one_running_sample(ctx)
 
     assert running == {"resize_image": 2, "send_email": 1}
+
+
+async def test_oldest_running_age_is_per_actor_from_started_at(
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_schema: ModulePgSchema,
+) -> None:
+    """taskq.jobs.oldest_running_age_seconds is the age of each actor's
+    oldest running attempt, measured from started_at by the server clock —
+    the series that shows an attempt outliving what the actor normally
+    takes when nothing (no start_to_close) will end it. An actor with a
+    fresh attempt reads near 0; an actor whose oldest attempt started 90 s
+    ago reads about 90 even though it also has a fresh one."""
+    schema = module_pg_schema.schema_name
+    now = datetime.now(UTC)
+    worker = new_uuid()
+    for started in (now - timedelta(seconds=90), now):
+        await _seed_running_job(
+            clean_pg_conn,
+            schema,
+            locked_by_worker=worker,
+            lock_expires_at=now + timedelta(seconds=60),
+            actor="resize_image",
+            started_at=started,
+        )
+    await _seed_running_job(
+        clean_pg_conn,
+        schema,
+        locked_by_worker=worker,
+        lock_expires_at=now + timedelta(seconds=60),
+        actor="send_email",
+        started_at=now,
+    )
+
+    ctx = _pg_ctx(clean_pg_conn, schema=schema, is_leader=False)
+    running, ages = await _drive_one_running_sample(ctx)
+
+    assert running == {"resize_image": 2, "send_email": 1}
+    assert ages is not None and set(ages) == {"resize_image", "send_email"}
+    assert 85.0 <= ages["resize_image"] <= 100.0, ages
+    assert 0.0 <= ages["send_email"] <= 10.0, ages

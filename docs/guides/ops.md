@@ -1014,6 +1014,7 @@ Every job emits an `enqueue` PRODUCER span, a `process` CONSUMER span (linked, w
 | `taskq.queue.live_workers` (by queue, same tick as depth) | a queue with work and no live worker — `TaskQQueueUnserved` joins it against `taskq.queue.depth` |
 | `taskq.jobs.stranded` (by actor and `reason`) | jobs that can never dispatch: `no_actor_config` (no `actor_config` row) or `unserved_queue` (no live worker on the routing queue) |
 | `taskq.dispatch.duration` | dispatch contention (PgBouncer/pool trouble) |
+| `taskq.jobs.oldest_running_age_seconds` (by actor) | an attempt that outlived what the actor normally takes with `taskq.jobs.timeouts` flat — an actor with no `start_to_close` |
 | `taskq.worker.active_jobs` / `taskq.worker.max_concurrency` (one series per process) and `taskq.jobs.running` (by actor) | slot saturation — utilisation ≥ 0.9 with `oldest_pending_age` rising is "add workers"; which actor holds the slots (see [§3 — When to add workers](#when-to-add-workers-saturation-not-depth)) |
 | `taskq.worker.slot_pool.acquire_failures` / `taskq.worker.slot_pool.connections_in_use` | per-slot pool exhaustion and saturation — an acquire failure is infrastructure (the job is left for lock-lease reclaim, not failed); the gauge pinned at the pool maximum with zero acquire failures is saturation, visible below the acquire-failure cliff |
 | `messaging.process.duration` | actor latency, slow chunks |

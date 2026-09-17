@@ -264,6 +264,7 @@ def reset_otel_gauge_caches() -> None:
     otel_mod._slot_pool_occupancy_source = None  # pyright: ignore[reportPrivateUsage]  # Why: same seam as above.
     otel_mod._worker_capacity_source = None  # pyright: ignore[reportPrivateUsage]  # Why: same seam as above.
     otel_mod._jobs_running_cache = {}  # pyright: ignore[reportPrivateUsage]  # Why: same seam as above.
+    otel_mod._actor_oldest_running_age_cache = {}  # pyright: ignore[reportPrivateUsage]  # Why: same seam as above.
     otel_mod._queue_label_values.clear()  # pyright: ignore[reportPrivateUsage]  # Why: same seam as above — the set is iterated only on the emitter thread, so in-place clear is the copy-on-write exemption's exact case.
     otel_mod._cron_actor_label_values.clear()  # pyright: ignore[reportPrivateUsage]  # Why: same seam and same exemption as above.
     otel_mod._cron_failure_levels.clear()  # pyright: ignore[reportPrivateUsage]  # Why: same seam as above.
