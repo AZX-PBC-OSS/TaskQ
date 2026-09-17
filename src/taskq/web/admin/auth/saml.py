@@ -61,6 +61,16 @@ class SAMLAuthConfig(BaseModel):
         default_factory=frozenset,
         description="Allowlist checked against the group attribute when set.",
     )
+    allow_cookieless_fallback: bool = Field(
+        default=False,
+        description="Opt in to accepting an ACS callback whose correlation "
+        "cookie is missing, when its validated InResponseTo names an "
+        "AuthnRequest this process issued and has not spent. Needed only for "
+        "browsers that block the cross-site correlation cookie; nothing ties "
+        "the response to the browser posting it, so a captured signed "
+        "response can be planted on a cookie-less victim (login CSRF) -- the "
+        "operator opts in and accepts that tradeoff. Default off.",
+    )
 
 
 def _build_settings(config: SAMLAuthConfig) -> dict[str, Any]:
@@ -218,6 +228,17 @@ class _AssertionReplayCache:
     A SAML assertion is single-use: once one has minted a session, a second
     presentation of the same ID is a replay. Entries expire with their
     assertion's NotOnOrAfter.
+
+    Process-local, like every store in this module: a second presentation of
+    the same response to a *sibling* process or replica is not seen here.
+    On the cookie-less fallback path that replay is still refused by the
+    pending-set spend; on the cookie path the browser's copy of the
+    single-use cookie is cleared on first use, so what remains exposed is a
+    network-level attacker who captured both the cookie and the response
+    body re-POSTing them to a sibling within the cookie's 300 s TTL.
+    Closing that needs a replay record in a store every replica shares
+    (Postgres/Redis) -- a deliberate follow-up, not something this
+    stateless auth layer can grow on its own.
     """
 
     def __init__(self) -> None:
@@ -237,22 +258,25 @@ class _PendingAuthnRequests:
     """Record of AuthnRequest IDs this process issued and has not yet answered.
 
     The correlation cookie binds an accepted assertion to the very browser
-    that started the login, which is the stronger property and stays the
-    preferred path. It cannot be the only path: the cookie rides a cross-site
-    POST from a hosted IdP, and a browser may withhold it however the cookie
-    is marked (third-party cookie blocking, a privacy mode, a redirect chain
-    that drops it). Without a second binding those deployments cannot log in
-    at all.
+    that started the login, is verifiable by every process sharing
+    ``session_secret``, and is the only binding the default policy needs.
+    It cannot serve one deployment shape on its own: the cookie rides a
+    cross-site POST from a hosted IdP, and a browser may withhold it
+    however the cookie is marked (third-party cookie blocking, a privacy
+    mode, a redirect chain that drops it).
 
-    So an assertion arriving with no usable cookie is accepted only if, after
-    full signature and timestamp validation, its InResponseTo names an
-    AuthnRequest this process issued and has not yet spent. That keeps the
-    property the cookie gate was protecting -- no assertion answering a login
-    this deployment never started can mint a session, so a captured or
-    IdP-initiated response is still refused -- while losing only the
-    narrower binding to one browser. IDs expire with the AuthnRequest's own
-    lifetime and are spent on first use, so the window is a single login
-    attempt wide.
+    ``allow_cookieless_fallback`` opts a deployment into the weaker second
+    binding for exactly that shape: an assertion arriving with no usable
+    cookie is accepted only if, after full signature and timestamp
+    validation, its InResponseTo names an AuthnRequest this process issued
+    and has not yet spent. That keeps the property the cookie gate was
+    protecting -- no assertion answering a login this deployment never
+    started can mint a session, so a captured or IdP-initiated response is
+    still refused -- while losing the narrower binding to one browser: the
+    posting browser need not be the one that started the login, which is
+    the login-CSRF tradeoff the flag's documentation states plainly. IDs
+    expire with the AuthnRequest's own lifetime and are spent on first use,
+    so the window is a single login attempt wide.
     """
 
     def __init__(self) -> None:
@@ -267,6 +291,15 @@ class _PendingAuthnRequests:
             return False
         self._issued.discard(request_id)
         return True
+
+    def discard(self, request_id: str) -> None:
+        """Drop *request_id* without requiring that this process issued it.
+
+        The cookie-valid callback path spends the ID best-effort: the login
+        may have been issued by a sibling process, so the ID's absence here
+        is not an error on that path -- the signed cookie is the binding.
+        """
+        self._issued.discard(request_id)
 
 
 def create_saml_auth(config: SAMLAuthConfig, *, base_path: str = "") -> AuthBundle:
@@ -311,9 +344,10 @@ def create_saml_auth(config: SAMLAuthConfig, *, base_path: str = "") -> AuthBund
             response = RedirectResponse(url=sso_url, status_code=302)
             # The callback accepts only an assertion answering an AuthnRequest
             # this login minted. The ID is recorded twice: in a signed cookie,
-            # which binds the answer to this very browser, and in the pending
-            # set, which still holds when the browser withholds that cookie on
-            # the IdP's cross-site POST.
+            # which binds the answer to this very browser and is verifiable by
+            # every process sharing session_secret, and in the pending set,
+            # which backs the opt-in cookie-less fallback (the only path that
+            # still needs it, since the set is process-local).
             pending_requests.issue(request_id, now=time.time())
             _issue_request_cookie(
                 response,
@@ -337,12 +371,16 @@ def create_saml_auth(config: SAMLAuthConfig, *, base_path: str = "") -> AuthBund
     async def callback(request: Request) -> Response:  # pyright: ignore[reportUnusedFunction]  # Why: registered via FastAPI decorator.
         try:
             # Every accepted assertion answers an AuthnRequest this deployment
-            # issued. The correlation cookie carries that ID when the browser
-            # sent it, and is then the binding python3-saml itself enforces.
-            # When it is absent the response is still validated in full first,
-            # and only its VALIDATED InResponseTo is then looked up in the
-            # pending set -- so the unsigned parts of an attacker's POST never
-            # decide which AuthnRequest it is allowed to answer.
+            # issued, and which gate enforces that depends on what the browser
+            # brought. With a usable correlation cookie, the cookie IS the
+            # binding: python3-saml itself compares the response's
+            # InResponseTo against the cookie's request_id inside
+            # process_response, and the cookie is signed with session_secret
+            # (verifiable by every replica sharing it), single-use (cleared
+            # below), and 300 s old at most. Without one, the validated
+            # InResponseTo is looked up in the pending set -- but only when
+            # the deployment opted into that fallback, because nothing about
+            # it ties the response to the browser posting it.
             request_cookie = request.cookies.get(_REQUEST_COOKIE_NAME)
             request_id = (
                 _read_request_cookie(request_cookie, config.session_secret)
@@ -369,12 +407,38 @@ def create_saml_auth(config: SAMLAuthConfig, *, base_path: str = "") -> AuthBund
             in_response_to = auth.get_last_response_in_response_to()
             if not isinstance(in_response_to, str) or not in_response_to:
                 raise ValueError("SAML response answers no AuthnRequest")
-            if request_id is not None and in_response_to != request_id:
-                raise ValueError("SAML response does not answer this browser's AuthnRequest")
-            # Spent whichever gate admitted it: the ID is single-use either
-            # way, so a second POST of the same response finds nothing pending.
-            if not pending_requests.spend(in_response_to, now=time.time()):
-                raise ValueError("SAML response answers no pending AuthnRequest")
+            if request_id is not None:
+                # Cookie path: the signed, single-use, 300 s cookie is the
+                # binding. The pending set is process-local, so requiring a
+                # successful spend here would reject any callback served by a
+                # sibling replica or worker process that never saw the login
+                # (#239) -- and an unauthenticated /login flood evicting the
+                # ID would break a legitimate login the same way. Discard
+                # instead of requiring: the ID is still spent in the process
+                # that issued it, and the replay cache below refuses the
+                # second presentation of the same assertion.
+                if in_response_to != request_id:
+                    raise ValueError("SAML response does not answer this browser's AuthnRequest")
+                pending_requests.discard(in_response_to)
+            elif config.allow_cookieless_fallback:
+                # Opt-in fallback: the validated InResponseTo must name an
+                # AuthnRequest this process issued and has not spent. Nothing
+                # binds the response to the browser posting it (login CSRF,
+                # #240) -- the flag's documentation says so, and the default
+                # is off.
+                if not pending_requests.spend(in_response_to, now=time.time()):
+                    raise ValueError("SAML response answers no pending AuthnRequest")
+            else:
+                raise ValueError(
+                    "SAML callback refused: no usable taskq_saml_request "
+                    "correlation cookie and the cookie-less fallback is "
+                    "disabled. The browser must send the correlation cookie "
+                    "(started by /login on this browser, SameSite=None + "
+                    "Secure); operators serving browsers that block it can "
+                    "opt in with allow_cookieless_fallback "
+                    "(TASKQ_SAML_ALLOW_COOKIELESS_FALLBACK=true) and accept "
+                    "the login-CSRF tradeoff documented in docs/guides/sso.md"
+                )
 
             # An assertion whose InResponseTo is absent (or otherwise valid but
             # captured) can be re-POSTed while its window is live; only a
