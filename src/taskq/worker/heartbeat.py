@@ -273,6 +273,12 @@ _SELECT_RUNNING_JOBS_SQL_TEMPLATE = (
 # co-monotonicity motivation for clock_timestamp() does not apply — it is
 # kept anyway so the two templates stay structurally identical.
 #
+# The re-pend arm wakes nobody: an UPDATE never fires the INSERT-only
+# wake trigger and this worker is on its way out, so the fleet claims
+# the handed-back row within the producer's poll floor
+# (notify_poll_interval / poll_interval) — the same wake source every
+# release arm in backend/_sql_templates.py relies on.
+#
 #: The statement is built as ONE constant: the literal with the sweep's
 #: shared fragments substituted by name (``str.replace``, not ``format``,
 #: so ``{schema}`` stays the only placeholder the caller renders).

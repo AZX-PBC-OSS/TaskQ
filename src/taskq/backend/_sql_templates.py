@@ -142,6 +142,16 @@ _MIN_DEFERRAL_INTERVAL_SQL: Final[str] = (
 # graphile-worker-rs ``GREATEST(0, attempts - 1)``.
 # The reference is alias-qualified (``j.``): every consumer of the fragment
 # aliases its target table ``j``.
+#
+# None of these release arms wakes the fleet. A row they land as
+# 'pending' is re-pended by UPDATE, which the INSERT-only wake trigger
+# never sees, and no arm issues a pg_notify of its own: the producer's
+# poll floor (WorkerSettings.notify_poll_interval with NOTIFY on,
+# poll_interval without) is the wake source for a released row, the same
+# trade the sweeps' UPDATE re-pends would make were they not batched
+# behind their own single notify. A release is the worker giving a row
+# back (a snooze, a retry-after, a shutdown interrupt), never new work,
+# so a claim within the poll floor is the intended latency.
 _ATTEMPT_REFUND_SQL: Final[str] = "GREATEST(j.attempt - 1, 0)"
 
 
