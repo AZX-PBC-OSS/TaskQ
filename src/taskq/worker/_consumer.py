@@ -448,7 +448,17 @@ def _actor_exit_wait_budget(
     Deadline-anchored when the shutdown started and the watchdog enforces
     the deadline: the remaining termination budget minus *reserve* (the
     release write's own bounded budget — parking to the last second would
-    leave the release itself racing the watchdog trip). Without an anchor or a guaranteed exit (watchdog
+    leave the release itself racing the watchdog trip), then CAPPED by the
+    lease: the heartbeat — the row's only lease renewer — stops at
+    ``shutdown_event``, so a park that outlived the lease would let the
+    reclaim sweep re-pend a row whose actor thread is still executing (a
+    single infra-failed RELEASING write away from the double-run). The cap
+    (``lock_lease - heartbeat - reserve``, see
+    ``WorkerSettings.release_park_lease_cap``) is the exact bound that
+    makes the parked consumer's release write land before the earliest
+    reclaim for ANY loadable config — safety by construction rather than
+    by a cross-field rejection, which is why no validator enforces the
+    lease/budget pair. Without an anchor or a guaranteed exit (watchdog
     disabled, a bare call, a shutdown that never stamped its start) the
     bound is the orchestrator's own post-cancel patience — the cleanup
     grace, after which RELEASING releases the row regardless, so parking
@@ -460,7 +470,7 @@ def _actor_exit_wait_budget(
     if started_at is None:
         return settings.cleanup_grace_period
     remaining = settings.termination_grace_period - (loop.time() - started_at) - reserve
-    return max(0.0, remaining)
+    return max(0.0, min(remaining, settings.release_park_lease_cap))
 
 
 async def consume_one_job(

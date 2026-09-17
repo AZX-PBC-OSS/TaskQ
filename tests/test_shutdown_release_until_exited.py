@@ -52,7 +52,13 @@ from taskq.testing.jobs import make_job_row
 from taskq.worker import (
     _handlers as _handlers_mod,  # pyright: ignore[reportPrivateUsage]  # Why: the retry backoff is monkeypatched to keep the infra-failure test inside the unit lane's time budget.
 )
-from taskq.worker._consumer import consume_one_job
+from taskq.worker._consumer import (
+    _actor_exit_wait_budget,  # pyright: ignore[reportPrivateUsage]  # Why: the park-budget function under test — the anchored shape had no unit pin (F7).
+    consume_one_job,
+)
+from taskq.worker._handlers import (  # pyright: ignore[reportPrivateUsage]  # Why: the release write's own budget — the park's reserve term, pinned against the canonical constant.
+    _TERMINAL_WRITE_BUDGET,
+)
 from taskq.worker.cancel import ActiveJobRegistry
 from taskq.worker.deps import WorkerDeps
 from taskq.worker.dispatch import (  # pyright: ignore[reportPrivateUsage]  # Why: the production sync-actor dispatch helper — the tracking under test is exactly what dispatch_one_job calls for a sync actor.
@@ -679,7 +685,58 @@ async def test_infra_failed_release_write_propagates_the_cancellation_not_the_er
     )
 
 
-# ── The dispatch→registry seam ────────────────────────────────────────
+# ── F7: the anchored park budget and the dispatch→registry seam ────────
+
+
+async def test_the_anchored_park_budget_is_the_remaining_share_capped_by_the_lease() -> None:
+    """The anchored park is min(remaining - write budget, lease cap) — both
+    orders pinned (F7: every unit park shape was unanchored before this;
+    only the integration run exercised the anchored branch).
+
+    The remaining-share term is the endorsed bound (park to the budget,
+    reserving the release write's own budget). The lease cap is what makes
+    the single-RELEASING-write-failure exposure structurally impossible:
+    the heartbeat stops at shutdown_event, so a park that outlived the
+    lease would hand the row to the reclaim sweep while its actor thread
+    still executes. Whichever binds first is the park.
+    """
+    from taskq.worker._watchdog import (
+        live_tracked_actor_handles,  # pyright: ignore[reportPrivateUsage]  # Why: asserting the registry stayed empty — the budget function itself must not touch it.
+    )
+
+    loop = asyncio.get_running_loop()
+    assert live_tracked_actor_handles() == []
+
+    # A generous lease: the budget bound binds (60 - 10 elapsed - 5 = 45
+    # remaining-share vs 100 - 10 - 5 = 85 cap).
+    settings = _settings(termination_grace=60.0)
+    assert settings.lock_lease == 60.0 and settings.heartbeat_interval == 10.0
+    deps = _deps_with(settings)
+    deps.shutdown_started_at = loop.time() - 10.0
+    budget = _actor_exit_wait_budget(
+        deps, settings, loop, reserve=_TERMINAL_WRITE_BUDGET.total_seconds()
+    )
+    assert budget == pytest.approx(60.0 - 10.0 - 5.0, abs=0.5), (
+        "with the lease out of the way the anchored park is the remaining "
+        "termination budget minus the release write's own budget"
+    )
+
+    # A tight lease: the cap binds (same remaining share, lease cap
+    # 2 - 0.5 - 5 < 0 → the park is gone entirely and the release write
+    # happens immediately — still ahead of any lease reclaim).
+    tight = _settings(termination_grace=60.0, cleanup_grace=0.1)
+    tight.lock_lease = 2.0
+    tight.heartbeat_interval = 0.5
+    tight_deps = _deps_with(tight)
+    tight_deps.shutdown_started_at = loop.time() - 10.0
+    tight_budget = _actor_exit_wait_budget(
+        tight_deps, tight, loop, reserve=_TERMINAL_WRITE_BUDGET.total_seconds()
+    )
+    assert tight_budget == 0.0, (
+        "a lease that cannot cover the park plus the write floors the park "
+        "at zero — the consumer releases immediately with the full hold "
+        "rather than parking into the reclaim sweep's window"
+    )
 
 
 async def test_a_running_sync_actor_is_registered_until_its_thread_returns() -> None:
