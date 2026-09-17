@@ -536,11 +536,13 @@ SIGTERM (or SIGINT) triggers `orchestrate_shutdown`. A second signal fast-advanc
 | DRAINING | 1 | Sets `producer_stop_event`; calls `drain_local_queue_to_pending` to re-pend locked-but-not-started rows (the claim's attempt increment is refunded) |
 | CANCELLING | 2 | Sets `cancel_event` on all in-flight jobs and stamps their cancel origin as the shutdown; waits up to `cancellation_grace_period` for cooperative exit |
 | FORCING | 3 | Calls `task.cancel()` on remaining jobs; issues `write_cancel_escalation(phase=2)` per job, which lands only on rows already carrying an operator's cancel request (the row says who asked) |
-| RELEASING | 4 | Releases still-running jobs back to the fleet via `mark_interrupted` — attempt refunded, one `interrupted` event, held `scheduled` behind the remaining `termination_grace_period` budget (or `lock_lease` when the shutdown watchdog is disabled); jobs under an operator cancel reach `abandoned` here instead; closes `leader_conn` (releasing the advisory lock) |
+| RELEASING | 4 | Releases still-running jobs back to the fleet via `mark_interrupted` — attempt refunded, one `interrupted` event, held `scheduled` behind the remaining `termination_grace_period` budget **plus the watchdog's exit tail** (the dump-interval lag before the deadline trip is observed, and the bounded metrics flush before `os._exit`) — or `lock_lease` when the shutdown watchdog is disabled; jobs under an operator cancel reach `abandoned` here instead; closes `leader_conn` (releasing the advisory lock) |
 
 **DRAINING phase detail.** `drain_local_queue_to_pending` re-pends DB-level rows where `status='running' AND locked_by_worker` is this worker, excluding jobs with a live consumer. The claim stamps `started_at` at claim time, so the predicate cannot distinguish "claimed but unstarted" from "executing" — only this process's active-jobs registry can, which is what the exclusion reads. The producer loop repeats the same hand-back on its own exit, so a claim round that was in flight when the stop event landed is caught too. Rows the consumer loops took off the local queue before the stop signal are never dispatched past it.
 
 **RELEASING phase detail.** The RELEASING phase releases rows whose actors never unwound, externally (not from the job's own task) via `mark_interrupted`: the row goes back to the fleet with the claim's attempt increment refunded, held unclaimable until this process is provably gone — so the fleet never has two live runners for one row. A job under an operator cancel is the exception: the release's `cancel_phase = 0` fence declines it and the operator ladder's terminal (`mark_abandoned`) still runs for it. The job's asyncio task was already cancelled at FORCING; any pending shield calls in the consumer may or may not succeed.
+
+The exit tail exists because the deadline trip is not instantaneous: the watchdog checks the deadline once per `watchdog_dump_interval` and then dumps stacks and joins a bounded (~2s) metrics flush before `os._exit`, so the process can be alive a few seconds past the deadline. A hold that ended at the bare deadline would leave exactly that window in which the released row is claimable while the dying process could still touch it.
 
 After RELEASING completes, `shutdown_event` is set and all TaskGroup siblings return.
 
@@ -551,7 +553,7 @@ cancellation_grace_period + cleanup_grace_period < termination_grace_period - 5.
 cancellation_grace_period + cleanup_grace_period < lock_lease
 ```
 
-Defaults: `cancellation_grace_period=30.0`, `cleanup_grace_period=10.0`, `termination_grace_period=60.0`, `lock_lease=60.0`.
+Defaults: `cancellation_grace_period=30.0`, `cleanup_grace_period=10.0`, `termination_grace_period=85.0`, `lock_lease=60.0`. The releasing hold additionally covers the watchdog's exit tail past the deadline (`watchdog_dump_interval` + ~2s flush + ~1s render slack ≈ 8s at the defaults) — size the platform grace (`terminationGracePeriodSeconds` / `stop_grace_period`) from the same worst case, not from the hold.
 
 ---
 
