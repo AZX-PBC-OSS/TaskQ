@@ -160,7 +160,14 @@ the remaining budget, so hung batches still cannot sum past the whole-tick deadl
 the floor only shrinks the set of granted waits. Under a tight
 `TASKQ_CRON_PAYLOAD_FACTORY_TIMEOUT` (below a quarter of the funded budget) the rule
 reads "call a factory only with its full declared budget" — no partial grants below what
-the operator declared adequate.
+the operator declared adequate. The floor also cannot make every granted call succeed:
+a leftover in the band between the floor and a peer's actual factory time still grants a
+partial call that can time out and strike — inherent to any floor below the funded
+budget. That band is only reachable when the peer's factory needs more than a quarter of
+the tick's funded budget, which this guide already classes as mis-scaled (work slower
+than a fraction of a tick belongs in the job the schedule enqueues); the remedy is the
+lever below — tighten `TASKQ_CRON_PAYLOAD_FACTORY_TIMEOUT` below the funded budget, and
+such a factory's timeouts become the strike-and-drain path.
 
 A deferred schedule advances `next_fire_at` by one leader tick (~1 second) — a retry,
 NOT a skip to the next cron slot, because the owed slot is still perfectly landable;
