@@ -41,6 +41,7 @@ Mechanics live in the canonical guides (linked throughout); this page is about *
 9. [Porting workers from other queue systems](#9-porting-workers-from-other-queue-systems)
 10. [The footgun index](#10-the-footgun-index)
 11. [Adoption checklist](#11-adoption-checklist)
+12. [Scaling playbook: from signal to knob](#12-scaling-playbook-from-signal-to-knob)
 
 ---
 
@@ -1279,6 +1280,33 @@ mechanics of each item: [deployment.md — Production Checklist](deployment.md#p
       built-in dead-letter queue)
 - [ ] **Idempotency of actor bodies** audited — delivery is at-least-once, including crash-reclaim
       re-dispatch
+
+---
+
+## 12. Scaling playbook: from signal to knob
+
+Symptom-first: what the operator actually sees (an alert, an admin UI view, a metric series),
+the knob(s) that address it, and how to confirm the knob worked. This table only *routes*:
+the arithmetic behind each row is in the section it links; do not re-derive it here. Incident
+*response* (what to do while it burns) lives in [runbooks.md](runbooks.md); this section is
+about which knob to reach for once the fire is out. Admin routes referenced below are in
+[admin-ui.md](admin-ui.md).
+
+| You see | First knob(s) | Confirm it worked | Failure mode of over-tuning |
+|---|---|---|---|
+| **Actor saturated**: `taskq_worker_active_jobs / taskq_worker_max_concurrency > 0.9` sustained while `taskq.jobs.oldest_pending_age_seconds` climbs; `/admin/actors` shows the actor pinned at its cap. No shipped alert: this one is a dashboard check. | `taskq actor-config set ACTOR --max-concurrent N` (live; the stored row wins over the code literal; see [§3 seed-only trap](#capacity-ownership-the-seed-only-trap)); `TASKQ_MAX_CONCURRENCY` or more replicas when no per-actor cap binds (the math: [§3 when to add workers](#when-to-add-workers-saturation-not-depth), [§4 throughput](#4-sizing-workers-and-postgres-connections)) | Utilisation drops below 0.9 and `oldest_pending_age` flattens on the *other* actors first | Pushing `max_concurrent` high "to use the fleet" removes the damper that was protecting a downstream dependency; adding replicas when a strict queue cap or `ConcurrencyReservation` is the real bound buys idle pods |
+| **Worker CPU / event-loop lag**: watchdog tier-1 `loop-lag` warnings with faulthandler dumps; `/admin/workers` shows beats arriving late. No shipped alert. | More worker processes (asyncio is one thread per process; CPU-bound actors block the loop, [§3](#3-concurrency-process-actor-queue-fleet)); lower `TASKQ_MAX_CONCURRENCY` per process. `TASKQ_WATCHDOG_LOOP_LAG_WARN_BUDGET` / `TASKQ_WATCHDOG_LOOP_LAG_BUDGET` only after the host is provably not loaded | Lag warnings stop *without* having touched the budgets | Raising the lag budgets converts a designed trip-and-restart into a wedged worker that keeps serving slowly; the terminal detector exists so the supervisor restarts you |
+| **Queue depth growing, live workers idle**: `TaskQQueueDepthHigh` fires while utilisation stays low; `taskq.jobs.queue_wait_seconds` p99 rises with flat depth; `/admin/queues/{queue}` shows depth sitting on one queue | Queue mode + fairness: `taskq queues set-mode <queue> round_robin` and `fairness_key` on the hot producers ([§3 starvation](#starvation-priority-and-fairness)); the actor's `max_concurrent` damper or a reservation holding slots; `TASKQ_DISPATCH_OVERSAMPLE` when identity collisions or many dispatchers poll the same actor+queue | `queue_wait_seconds` flattens while depth stays flat, then drains | `oversample` above the number of dispatchers that routinely poll the same actor+queue enlarges every candidate window for nothing; `round_robin` set without `fairness_key` collapses to FIFO with zero signal |
+| **Pending backlog with `stranded > 0`**: `TaskQStrandedJobs`; `taskq.jobs.stranded` carries the `reason` (`no_actor_config` / `unserved_queue`); `/admin/actors` misses the actor | No worker knob fixes the rows: register the actor on a worker consuming that queue (`TASKQ_QUEUES` / `--queues`), or `taskq actor-config move-queue` ([§3 capacity ownership](#capacity-ownership-the-seed-only-trap)). `TASKQ_STRANDED_JOBS_INTERVAL` is detection cadence only | The stranded gauge returns to 0 per actor | Shortening the interval polls Postgres more often and recovers nothing; it is a detector period, not a repair loop |
+| **Rate-limit denials**: `taskq_reservation_denials_total` climbing; `/admin/rate-limits` and `/admin/reservations` show saturated buckets; `TaskQRateLimitDependencyOutage` when the PG fallback path is the one struggling | Limiter rates and reservation capacity (application config, not env; see [§7](#7-waiting-politely-rate-limits-snooze-retryafter-retry-after)); `TASKQ_MAX_KEYED_RESERVATIONS` / `TASKQ_MAX_KEYED_RATE_LIMITS` when denials are cardinality-driven; `TASKQ_TOKEN_BUCKET_LOCK_TIMEOUT_MS` / `TASKQ_SLIDING_WINDOW_LOCK_TIMEOUT_MS` when fallback row locks are the bottleneck | The denials counter flattens and `queue_wait_seconds` resumes | Widening the lock budgets makes a saturated bucket *wait* longer instead of denying: latency replaces refusals; adding workers changes nothing because admission sits upstream of the worker |
+| **Cron piling up at tick**: `TaskQScheduledBacklogGrowing` / `TaskQPromotionStalled` with `scheduled` depth growing; `/admin/schedules` shows the fire history; `TaskQCronLockContention` on the lock | Spread cron expressions across minutes rather than aligning every schedule at `* * * * *`; `TASKQ_CRON_TICK_LIMIT` for a catch-up burst larger than one tick plans ([§5 cron](#cron-and-scheduled-workloads), [§8 watch](#watch-large-scheduled-backlogs)); `TASKQ_CRON_CATCH_UP_WINDOW` bounds what a restart replays | Scheduled depth drains one bounded batch per tick and `taskq.jobs.oldest_due_age_seconds` falls | The tick limit is consumed by the single leader; raising it moves the pile downstream into dispatch instead of clearing it faster; only one process pays the knob no matter how many replicas run |
+| **`terminal-write-failed` logs / disowned jobs**: the worker fails every attempt of a terminal write, disowns the row (lease stops renewing), and `TaskQRunningLeaseExpired` catches the reclaim; usually beside `TaskQHeartbeatMisses` or `TaskQLockExpiringSoon` | Not actor config: database health. PgBouncer saturation, `max_connections` exhaustion, a failover ([§4 connection budget](#the-connection-budget)). Fix the budget (`TASKQ_MAX_CONCURRENCY` down, a pooled DSN for `worker_pool`), never the actor | `terminal-write-failed` stops and no rows sit `running` past their lease | Raising `TASKQ_MAX_CONCURRENCY` grows the derived `worker_pool` and makes the exact connection pressure that caused the writes to fail worse |
+| **p95 duration far above p50**: `messaging.process.duration{outcome="succeeded"}` tail; `/admin/history` sorted by `started_at` shows the long-running jobs | Review the outlier actors' `start_to_close` ([§2](#2-timeouts-start_to_close-and-schedule_to_close)) and chunk sizes ([§5](#5-fan-out-at-scale-chunks-cursors-idempotency)); `TASKQ_DEFAULT_START_TO_CLOSE` as the fleet-wide safety net; `fairness_key` when one cohort causes the tail | p95 tracks p50 and `taskq.jobs.timeouts` stays flat | A fleet-wide `start_to_close` sized above everyone's p95 silently kills legitimately slow attempts (and sync actors keep running past it anyway; only the slot is freed) |
+
+Two rows in this table are deliberately "no knob": stranded rows and terminal-write failures
+are *routing* and *infrastructure* conditions, and both failure modes above where an operator
+reached for a per-process number to fix a fleet-wide condition are the ones §3 and §4 exist to
+prevent.
 
 ---
 
