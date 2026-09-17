@@ -43,6 +43,7 @@ from opentelemetry.metrics import CallbackOptions, Observation
 
 from taskq._close import CLOSE_TIMEOUT_SECS, close_conn_bounded
 from taskq.backend._protocol import Backend
+from taskq.backend._sql import WAKE_NOTIFY_SQL
 from taskq.backend.clock import Clock
 from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining
@@ -142,8 +143,8 @@ _PRE_LEASE_STALE_HEARTBEATS: Final[int] = 4
 #: the conflict predicate against the winner's fresh expiry and gets zero rows.
 #:
 #: The insert side is deliberately unguarded: an absent row IS the unclaimed
-#: role, and claiming it must never consult anything a session can hold
-#: (River's LeaderAttemptElect grain — INSERT, no lock gate). A candidate
+#: role, and claiming it must never consult anything a session can hold,
+#: so the claim is a bare INSERT with no lock gate. A candidate
 #: that dies between the courtesy lock attempt and this write, or a leader
 #: whose resign lands while its session outlives the delete, leaves the lock
 #: held with no row behind it; gating the insert on the lock would leave the
@@ -170,7 +171,7 @@ _PRE_LEASE_STALE_HEARTBEATS: Final[int] = 4
 #: for a holder that stepped down without its row lapsing — a credential
 #: reload that dropped leader_conn, a transient renewal failure that spent
 #: the trust window — which would otherwise pay a whole lease's lapse per
-#: occurrence (Oban's upsert refreshes the node's own row the same way).
+#: occurrence.
 _LEADER_ELECT_SQL_TEMPLATE: Final[str] = (
     'INSERT INTO "{schema}".maintenance_leader '
     "(singleton, worker_id, elected_at, last_seen_at, expires_at) "
@@ -1088,7 +1089,7 @@ class MaintenanceLeader:
                             async with self._deps.dispatcher_pool.acquire(
                                 timeout=self._deps.settings.dispatcher_command_timeout
                             ) as conn:
-                                await conn.execute("SELECT pg_notify($1, '')", channel)
+                                await conn.execute(WAKE_NOTIFY_SQL, channel)
                     guard.ok()
                 except NotImplementedError as exc:
                     if not warned:

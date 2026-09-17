@@ -3,7 +3,7 @@
 Usage::
 
     taskq migrate status
-    taskq migrate up [--phase pre|post] [--target VERSION] [--max-steps N]
+    taskq migrate up [--phase pre|post] [--target VERSION] [--max-steps N] [--ddl-lock-timeout SECS]
     taskq worker --actors myapp.actors:registry
     taskq job show JOB_ID
 
@@ -62,6 +62,7 @@ from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex for defence-in-depth schema validation at this SQL interpolation site, the queue_ops convention.
 )
 from taskq.exceptions import ActorConfigDriftList, ActorDeregistrationError, ActorNotFoundError
+from taskq.obs import OtelExporterConfigurationError, configure_exporters, setup_logging
 from taskq.settings import TaskQSettings, WorkerSettings
 from taskq.worker.dev import dev_watch_loop
 from taskq.worker.queue_ops import (
@@ -493,6 +494,18 @@ def worker(
         _resolved_ref(redis_credential_provider, settings.redis_credential_provider),
     )
 
+    # Exporters are wired here, before worker_main records anything:
+    # measurements a proxy instrument takes before an SDK provider exists
+    # are dropped, not replayed. Logging is configured first (the same
+    # idempotent setup worker_main repeats) so the wiring's startup line
+    # renders in the operator's configured format.
+    setup_logging(level=settings.log_level, log_format=settings.log_format)
+    try:
+        configure_exporters(settings)
+    except OtelExporterConfigurationError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from None
+
     try:
         code = _worker_main(
             settings,
@@ -595,6 +608,14 @@ def migrate_up(
         None, "--target", help="Stop after this version (inclusive). E.g. 01.00.00_01"
     ),
     max_steps: int | None = typer.Option(None, "--max-steps", help="Cap number of applies."),
+    ddl_lock_timeout: float = typer.Option(
+        migrate_mod.DEFAULT_MIGRATION_DDL_LOCK_TIMEOUT,
+        "--ddl-lock-timeout",
+        min=0.0,
+        help="Seconds a transactional migration waits for a table lock before it "
+        "fails and rolls back (SET LOCAL lock_timeout). 0 waits indefinitely, "
+        "parking every statement on the table behind the queued DDL.",
+    ),
     pg_credential_provider: str | None = typer.Option(
         None,
         "--pg-credential-provider",
@@ -616,6 +637,7 @@ def migrate_up(
             phase=phase,
             target=target,
             max_steps=max_steps,
+            ddl_lock_timeout=ddl_lock_timeout,
             conn_factory=conn_factory,
         )
     )
@@ -658,6 +680,7 @@ async def _up(
     phase: migrate_mod.Phase | None,
     target: str | None,
     max_steps: int | None,
+    ddl_lock_timeout: float = migrate_mod.DEFAULT_MIGRATION_DDL_LOCK_TIMEOUT,
     conn_factory: ConnFactory | None = None,
 ) -> None:
     # Why locked: the README names `taskq migrate up` as THE deploy step, and a
@@ -687,6 +710,7 @@ async def _up(
                 phase=phase,
                 target=target,
                 max_steps=max_steps,
+                ddl_lock_timeout=ddl_lock_timeout,
             )
     except SystemExit as exc:
         # Lock contention. Already a precise message; reporting it through
@@ -2107,8 +2131,8 @@ def _ensure_cwd_on_sys_path() -> None:
     ``taskq worker --actors myapp.actors:registry`` could not resolve the
     application's modules when run from its own project directory.
     ``python -m taskq`` prepends the cwd itself; inserting it here gives
-    the console script the same import semantics (the ``python -m celery
-    -A myapp worker`` shape) before any ``module:attr`` resolution runs.
+    the console script the same import semantics any ``python -m``
+    invocation gets before any ``module:attr`` resolution runs.
     """
     cwd = os.getcwd()
     if cwd not in sys.path:

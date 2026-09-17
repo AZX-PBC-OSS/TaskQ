@@ -246,3 +246,38 @@ print("LOGGED:" + str("prometheus-metrics-otel-disabled" in events))
     assert out["OUTCOME"] == "otel_disabled"
     assert out["PROVIDER_IS_SDK"] == "False"
     assert out["LOGGED"] == "True"
+
+
+def test_bridge_detection_reads_slots_the_pinned_client_still_has() -> None:
+    """``_registry_has_otel_bridge`` enumerates collectors through two
+    private ``CollectorRegistry`` slots because prometheus_client has no
+    public listing. A client release that renames either would make the
+    detection see an empty registry, register a second bridge, and turn
+    every scrape into duplicated exposition — so the slots are pinned
+    against the installed client, and a bump that drops one fails here
+    rather than at the scrape."""
+    from prometheus_client import CollectorRegistry
+
+    from taskq.contrib.prometheus._metrics import (
+        _registry_has_otel_bridge,  # pyright: ignore[reportPrivateUsage]  # Why: the pin is about this helper's private-slot reads.
+    )
+
+    registry = CollectorRegistry()
+    for slot in ("_collector_to_names", "_collectors_without_names"):
+        assert hasattr(registry, slot), (
+            f"prometheus_client's CollectorRegistry no longer has {slot!r}; the "
+            "bridge detection in taskq.contrib.prometheus._metrics reads it"
+        )
+    assert not _registry_has_otel_bridge(registry)
+
+    class _CustomCollector:
+        """The bridge's collector, by module and name — what the helper matches."""
+
+        def collect(self) -> list[object]:
+            return []
+
+    _CustomCollector.__module__ = "opentelemetry.exporter.prometheus"
+    registry.register(_CustomCollector())  # pyright: ignore[reportArgumentType]  # Why: the registry only needs a collect(); the stub is the bridge collector's shape.
+    assert _registry_has_otel_bridge(registry), (
+        "a registered bridge collector must be visible through the pinned slots"
+    )

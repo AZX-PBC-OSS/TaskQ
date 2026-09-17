@@ -47,6 +47,7 @@ from taskq.exceptions import (
     UnencodableValue,
     WorkerOwnershipMismatch,
 )
+from taskq.obs import record_job_abandoned
 from taskq.testing._reads import _read_copy
 
 if TYPE_CHECKING:
@@ -631,6 +632,7 @@ async def _mark_abandoned(
         to_state="abandoned",
         job_id=str(job_id),
     )
+    record_job_abandoned(row.actor)
     return True
 
 
@@ -1102,8 +1104,9 @@ async def _mark_interrupted(
     row = self._jobs.get(job_id)
     # The fence mirrors the SQL arm conjunct-for-conjunct: running, owned
     # by this worker, at the presented attempt epoch, and outside any
-    # operator cancel (cancel_phase = 0 — an operator cancel in flight wins
-    # and reads back as "noop", River's cancel_attempted_at precedence).
+    # operator cancel (cancel_phase = 0: an operator cancel in flight wins
+    # and reads back as "noop", since a row with a cancel timestamp set is
+    # cancelled, never re-available).
     if (
         row is None
         or row.status != "running"

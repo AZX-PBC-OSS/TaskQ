@@ -97,7 +97,7 @@ def test_reset_otel_gauge_caches_restores_construction_state() -> None:
     resurfacing as the next order-dependent flake.
     """
     obs_mod.update_queue_depth_cache({"default": 5})
-    obs_mod.update_stranded_jobs_cache({"orphan_actor": 3})
+    obs_mod.update_stranded_jobs_cache({("orphan_actor", "no_actor_config"): 3})
     obs_mod.update_reservation_slots_cache({"bucket_a": 2})
     obs_mod.update_keyed_reclaim_pending(7)
     obs_mod.record_sweep_success("expired_locks")

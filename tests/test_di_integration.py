@@ -20,11 +20,11 @@ from pydantic import BaseModel
 
 from taskq._di.registry import ProviderRegistry
 from taskq._di.scope import Scope
-from taskq._di.scopes import LoopScope, ProcessScope, ThreadScope, make_resolver
 from taskq.actor import ActorRef
 from taskq.settings import WorkerSettings
 from taskq.testing.fixtures import ModulePgSchema
 from taskq.testing.health import unique_health_sock_path
+from tests._di_scopes import bootstrap_scopes, make_scopes
 
 pytestmark = pytest.mark.integration
 
@@ -41,34 +41,6 @@ def _settings(pg_dsn: str) -> WorkerSettings:
             "heartbeat_interval": "10",
         },
     )
-
-
-def _make_scopes(
-    registry: ProviderRegistry,
-) -> tuple[ProcessScope, ThreadScope, LoopScope]:
-    scope_containers: dict[Scope, Any] = {}
-    resolver = make_resolver(registry, scope_containers)
-
-    process_scope = ProcessScope(resolver=resolver)
-    scope_containers[Scope.PROCESS] = process_scope
-    thread_scope = ThreadScope(resolver=resolver)
-    scope_containers[Scope.THREAD] = thread_scope
-    loop_scope = LoopScope(resolver=resolver)
-    scope_containers[Scope.LOOP] = loop_scope
-
-    return process_scope, thread_scope, loop_scope
-
-
-async def _bootstrap_scopes(
-    registry: ProviderRegistry,
-    process_scope: ProcessScope,
-    thread_scope: ThreadScope,
-    loop_scope: LoopScope,
-    settings: WorkerSettings,
-) -> None:
-    await process_scope.bootstrap(registry, settings)
-    await thread_scope.bootstrap(registry, process_scope)
-    await loop_scope.bootstrap(registry, process_scope, thread_scope)
 
 
 # ── Full scope bootstrap with real PG ───────────────────────
@@ -98,8 +70,8 @@ async def test_full_scope_bootstrap_with_real_pg(pg_dsn: str) -> None:
     registry.register_factory(asyncpg.Pool, Scope.LOOP, make_pool)
     registry.validate()
 
-    process_scope, thread_scope, loop_scope = _make_scopes(registry)
-    await _bootstrap_scopes(registry, process_scope, thread_scope, loop_scope, settings)
+    process_scope, thread_scope, loop_scope = make_scopes(registry)
+    await bootstrap_scopes(registry, process_scope, thread_scope, loop_scope, settings)
 
     assert process_scope.get(WorkerSettings) is settings
     assert pool_ref is not None
@@ -219,8 +191,8 @@ async def test_acm_at_loop_scope(pg_dsn: str) -> None:
     registry.register_class(_Neo4jClientACM, Scope.LOOP)
     registry.validate()
 
-    process_scope, thread_scope, loop_scope = _make_scopes(registry)
-    await _bootstrap_scopes(registry, process_scope, thread_scope, loop_scope, settings)
+    process_scope, thread_scope, loop_scope = make_scopes(registry)
+    await bootstrap_scopes(registry, process_scope, thread_scope, loop_scope, settings)
 
     first = loop_scope.get(_Neo4jClientACM)
     assert first is not None
@@ -270,8 +242,8 @@ async def test_db_session_provider_with_real_pool(pg_dsn: str) -> None:
     registry.register_factory(asyncpg.Connection, Scope.LOOP, _db_session_provider)
     registry.validate()
 
-    process_scope, thread_scope, loop_scope = _make_scopes(registry)
-    await _bootstrap_scopes(registry, process_scope, thread_scope, loop_scope, settings)
+    process_scope, thread_scope, loop_scope = make_scopes(registry)
+    await bootstrap_scopes(registry, process_scope, thread_scope, loop_scope, settings)
 
     conn_val = loop_scope.get(asyncpg.Connection)
     assert conn_val is not None
@@ -338,8 +310,8 @@ async def test_mixed_scope_lifecycle(pg_dsn: str) -> None:
     registry.register_factory(asyncpg.Connection, Scope.LOOP, tracked_session)
     registry.validate()
 
-    process_scope, thread_scope, loop_scope = _make_scopes(registry)
-    await _bootstrap_scopes(registry, process_scope, thread_scope, loop_scope, settings)
+    process_scope, thread_scope, loop_scope = make_scopes(registry)
+    await bootstrap_scopes(registry, process_scope, thread_scope, loop_scope, settings)
 
     acm_inst = loop_scope.get(_TrackedACM)
     assert acm_inst is not None

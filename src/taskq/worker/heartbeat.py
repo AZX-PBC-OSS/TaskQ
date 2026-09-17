@@ -49,16 +49,6 @@ logger: structlog.stdlib.BoundLogger = get_logger(__name__)
 
 _meter = get_meter()
 
-# The renewal statements come from backend._sql with the worker-and-status
-# predicate every other reader of them shares (the backend's own
-# heartbeat_jobs, the PG fixtures); the disowned exclusion is this loop's
-# concern alone, so it is appended here rather than widening the shared
-# template's parameter list. Both templates end in their WHERE clause, so
-# a conjunct appends cleanly; the reservation template's subquery is
-# closed before the conjunct, so it filters the slot rows by job_id.
-_DISOWNED_JOBS_EXCLUSION_SQL = " AND NOT (id = ANY($3::uuid[]))"
-_DISOWNED_SLOTS_EXCLUSION_SQL = " AND NOT (job_id = ANY($3::uuid[]))"
-
 # Which disowned ids still name a running row locked to this worker: the
 # rest have been reclaimed (re-pended, or claimed by another worker) and
 # leave the set. Only issued on a tick whose set is non-empty.
@@ -89,10 +79,12 @@ async def heartbeat_loop(
         update_jobs_lock_sql,
         update_reservation_leases_sql,
     ) = build_heartbeat_sql(schema)
-    update_jobs_lock_sql += _DISOWNED_JOBS_EXCLUSION_SQL
-    update_reservation_leases_sql += _DISOWNED_SLOTS_EXCLUSION_SQL
     select_still_held_sql = _SELECT_STILL_HELD_SQL_TEMPLATE.format(schema=schema)
 
+    # Monotonic stamp of the last jobs-lock renewal that landed: the
+    # reference the next tick measures its remaining lease against. None
+    # until the first renewal — there is nothing to measure before it.
+    last_renewal_at: float | None = None
     while not shutdown.is_set():
         deps.liveness.tick("heartbeat", period=interval)
         _in_tx_failed = False
@@ -110,6 +102,7 @@ async def heartbeat_loop(
                     # not read it as "still held" and drop it.
                     disowned = list(deps.disowned_jobs)
                     await conn.execute(update_worker_liveness_sql, worker_id)
+                    renewal_at = time.monotonic()
                     jobs_tag = await conn.execute(
                         update_jobs_lock_sql, worker_id, lock_lease, disowned
                     )
@@ -170,7 +163,19 @@ async def heartbeat_loop(
             update_heartbeat_consecutive_failures(str(worker_id), 0)
             tick_duration_s = time.monotonic() - tick_start
             _tick_duration.record(tick_duration_s)
-            record_lock_expires_in_seconds(str(worker_id), lock_lease.total_seconds())
+            # The lease the previous renewal stamped had this much left when
+            # this one landed: lease minus the gap between the two UPDATEs
+            # (both measured at the same point, so network latency cancels).
+            # A failed or late tick widens the gap and lowers the sample,
+            # which is the signal the lock-expiry alert reads; the config
+            # constant would never move. Clamped at 0: a renewal that lands
+            # after expiry renews an already-expired lease.
+            if last_renewal_at is not None:
+                record_lock_expires_in_seconds(
+                    str(worker_id),
+                    max(0.0, lock_lease.total_seconds() - (renewal_at - last_renewal_at)),
+                )
+            last_renewal_at = renewal_at
             logger.debug(
                 "heartbeat-tick-success",
                 worker_id=str(worker_id),
@@ -272,6 +277,12 @@ _SELECT_RUNNING_JOBS_SQL_TEMPLATE = (
 # shutdown is not a crash-reclaim), so the visibility-delay
 # co-monotonicity motivation for clock_timestamp() does not apply — it is
 # kept anyway so the two templates stay structurally identical.
+#
+# The re-pend arm wakes nobody: an UPDATE never fires the INSERT-only
+# wake trigger and this worker is on its way out, so the fleet claims
+# the handed-back row within the producer's poll floor
+# (notify_poll_interval / poll_interval) — the same wake source every
+# release arm in backend/_sql_templates.py relies on.
 #
 #: The statement is built as ONE constant: the literal with the sweep's
 #: shared fragments substituted by name (``str.replace``, not ``format``,

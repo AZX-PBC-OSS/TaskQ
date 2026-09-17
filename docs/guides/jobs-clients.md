@@ -295,7 +295,11 @@ remaining steps. Later steps only execute when earlier ones did not match or rai
   the existing job id, with nothing enqueued. In `enqueue_batch` the refusal
   is all-or-nothing: the whole batch is withdrawn, like a singleton
   collision, so it can be resubmitted after fixing the key without
-  duplicating its other items. (River folds the job kind into its unique
+  duplicating its other items. `enqueue_batch_fast` classifies its COPY
+  abort the same way: a pair held by another actor raises the mismatch error
+  (with `existing_job_id=None` when the holder was an earlier item of the
+  same batch, whose row never persisted) and only a same-actor pair raises
+  `DuplicateIdempotencyKeyError`. (River folds the job kind into its unique
   key and Oban's default unique fields include the worker, so neither can
   return another worker's job; TaskQ's index cannot include the actor
   without a migration, so the hit is checked instead.) The same-actor case
@@ -565,7 +569,7 @@ Enqueues jobs via the PG `COPY FROM` protocol for maximum throughput. Returns th
 
 ### Limitations
 
-- **No idempotency-key collision handling.** A duplicate `(idempotency_scope, idempotency_key)` pair — repeated within the batch or already stored — aborts the entire batch with `DuplicateIdempotencyKeyError` (nothing is written; the abort itself is deliberate bulk-import semantics). Callers must pre-deduplicate. One carve-out: during the `01.00.03` pre→post migration window, a key reused across *different* scopes raises `ScopedIdempotencyMigrationPendingError` instead, matching the other enqueue paths.
+- **No idempotency-key collision handling.** A duplicate `(idempotency_scope, idempotency_key)` pair — repeated within the batch or already stored — aborts the entire batch with `DuplicateIdempotencyKeyError` (nothing is written; the abort itself is deliberate bulk-import semantics), or with `IdempotencyKeyActorMismatchError` when the pair's holder belongs to a different actor (see [idempotency_key](#idempotency_key)). Callers must pre-deduplicate. One carve-out: during the `01.00.03` pre→post migration window, a key reused across *different* scopes raises `ScopedIdempotencyMigrationPendingError` instead, matching the other enqueue paths.
 - **`max_pending` is enforced with the same per-actor partition as `enqueue_batch()`**: within-cap actors' rows are written, an over-cap actor's items are refused, and `BatchMaxPendingExceededError` raises after the COPY commits — retry only the refused items (indices on the error), or rely on idempotency keys.
 - **No JobHandle instances.** Only the inserted count is returned. Use `batch_id` to query rows post-insert.
 - **All-or-nothing on constraint violations.** The COPY fails entirely on any constraint violation — singleton, unique index, or CHECK constraint. Only cap admission partitions.

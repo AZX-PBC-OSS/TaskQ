@@ -148,7 +148,7 @@ async def test_leader_only_gauges_are_absent_after_demotion(
 
     obs_mod.update_queue_depth_cache({"default": 7})
     obs_mod.update_reservation_slots_cache({"bucket_a": 3})
-    obs_mod.update_stranded_jobs_cache({"ghost_actor": 2})
+    obs_mod.update_stranded_jobs_cache({("ghost_actor", "no_actor_config"): 2})
     obs_mod.record_leader_lease_expires_in_seconds("w1", 30.0)
 
     # Sanity: while leading, the values ARE exported.

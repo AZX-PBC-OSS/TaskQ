@@ -16,6 +16,7 @@ from taskq.progress._publish import (
     _publish_state_change_event,
 )
 from taskq.testing.otel import counter_data_points, counter_value, setup_meter
+from tests._progress_context import make_progress_context
 
 _JOB_ID = UUID("aaaaaaaa-bbbb-cccc-dddd-000000000001")
 _SCHEMA_LABEL = "taskq_test"
@@ -110,22 +111,16 @@ async def test_terminal_flush_before_mark_succeeded_drains_buffer() -> None:
     """Actor calls ctx.progress(step=1) then succeeds. After the job completes
     (in-memory backend), progress_seq >= 1 in the row AND pending_seq_delta == 0
     (buffer was drained before mark_succeeded)."""
-    import asyncio
     from collections.abc import AsyncGenerator
     from contextlib import asynccontextmanager
     from datetime import UTC, datetime
 
-    import structlog
-
     from taskq._ids import new_job_id, new_uuid
     from taskq.backend._protocol import EnqueueArgs
-    from taskq.client._enqueuer import SubJobEnqueuer
-    from taskq.context import JobContext
-    from taskq.obs import bind_job_context
     from taskq.progress._flush import _flush_buffer_immediate
     from taskq.settings import WorkerSettings
     from taskq.testing.clock import FakeClock
-    from taskq.testing.in_memory import InMemoryBackend, PassthroughPayload
+    from taskq.testing.in_memory import InMemoryBackend
 
     clock = FakeClock(datetime(2025, 1, 1, tzinfo=UTC))
     backend = InMemoryBackend(clock=clock)
@@ -188,26 +183,8 @@ async def test_terminal_flush_before_mark_succeeded_drains_buffer() -> None:
         }
     )
 
-    ctx: JobContext[PassthroughPayload] = JobContext(
-        job_id=job_id,
-        actor="test_actor",
-        queue="default",
-        attempt=1,
-        worker_id=worker_id,
-        payload=PassthroughPayload(),
-        cancel_event=asyncio.Event(),
-        jobs=SubJobEnqueuer(loop_scope_resolved=None, worker_pool=None, backend=backend),
-        log=bind_job_context(
-            structlog.get_logger("test"),
-            job_id=job_id,
-            actor="test_actor",
-            queue="default",
-            attempt=1,
-            identity_key=None,
-            trace_id="",
-        ),
-        _progress_buffers=buffers,
-        _worker_settings=settings,
+    ctx = make_progress_context(
+        buffers, job_id, worker_id=worker_id, backend=backend, settings=settings
     )
 
     # Actor body: call ctx.progress then succeed
@@ -235,18 +212,12 @@ async def test_terminal_flush_before_mark_succeeded_drains_buffer() -> None:
 async def test_ctx_progress_publishes_to_schema_scoped_channel() -> None:
     """Mock Redis; two ctx.progress() calls; redis.publish called exactly twice
     with the correct schema-scoped per-job channel."""
-    import asyncio
     from datetime import UTC, datetime
 
-    import structlog
-
-    from taskq.client._enqueuer import SubJobEnqueuer
-    from taskq.context import JobContext
-    from taskq.obs import bind_job_context
     from taskq.progress._buffer import _ProgressBuffer
     from taskq.settings import WorkerSettings
     from taskq.testing.clock import FakeClock
-    from taskq.testing.in_memory import InMemoryBackend, PassthroughPayload
+    from taskq.testing.in_memory import InMemoryBackend
 
     redis_client = _make_redis_mock()
     settings = WorkerSettings.load_from_dict(
@@ -261,27 +232,8 @@ async def test_ctx_progress_publishes_to_schema_scoped_channel() -> None:
     buf = _ProgressBuffer(job_id=_JOB_ID, base_seq=0)
     buffers = {_JOB_ID: buf}
 
-    ctx: JobContext[PassthroughPayload] = JobContext(
-        job_id=_JOB_ID,
-        actor="test_actor",
-        queue="default",
-        attempt=1,
-        worker_id=backend._worker_id,  # type: ignore[reportPrivateUsage] # Why: fixture helper accesses private field for test setup.
-        payload=PassthroughPayload(),
-        cancel_event=asyncio.Event(),
-        jobs=SubJobEnqueuer(loop_scope_resolved=None, worker_pool=None, backend=backend),
-        log=bind_job_context(
-            structlog.get_logger("test"),
-            job_id=_JOB_ID,
-            actor="test_actor",
-            queue="default",
-            attempt=1,
-            identity_key=None,
-            trace_id="",
-        ),
-        _progress_buffers=buffers,
-        _redis_client=redis_client,  # type: ignore[arg-type]
-        _worker_settings=settings,
+    ctx = make_progress_context(
+        buffers, _JOB_ID, backend=backend, settings=settings, redis_client=redis_client
     )
 
     await ctx.progress(step=1)
@@ -336,17 +288,11 @@ async def test_publish_failure_increments_otel_counter_with_labels(
 async def test_ctx_progress_no_publish_when_redis_client_none() -> None:
     """When _redis_client is None, ctx.progress() does NOT attempt Redis publish
     and the buffer is still marked dirty."""
-    import asyncio
     from datetime import UTC, datetime
 
-    import structlog
-
-    from taskq.client._enqueuer import SubJobEnqueuer
-    from taskq.context import JobContext
-    from taskq.obs import bind_job_context
     from taskq.settings import WorkerSettings
     from taskq.testing.clock import FakeClock
-    from taskq.testing.in_memory import InMemoryBackend, PassthroughPayload
+    from taskq.testing.in_memory import InMemoryBackend
 
     settings = WorkerSettings.load_from_dict({"TASKQ_SCHEMA_NAME": "taskq_test"})
     clock = FakeClock(datetime(2025, 1, 1, tzinfo=UTC))
@@ -354,28 +300,7 @@ async def test_ctx_progress_no_publish_when_redis_client_none() -> None:
     buf = _ProgressBuffer(job_id=_JOB_ID, base_seq=0)
     buffers = {_JOB_ID: buf}
 
-    ctx: JobContext[PassthroughPayload] = JobContext(
-        job_id=_JOB_ID,
-        actor="test_actor",
-        queue="default",
-        attempt=1,
-        worker_id=backend._worker_id,  # type: ignore[reportPrivateUsage] # Why: fixture helper accesses private field for test setup.
-        payload=PassthroughPayload(),
-        cancel_event=asyncio.Event(),
-        jobs=SubJobEnqueuer(loop_scope_resolved=None, worker_pool=None, backend=backend),
-        log=bind_job_context(
-            structlog.get_logger("test"),
-            job_id=_JOB_ID,
-            actor="test_actor",
-            queue="default",
-            attempt=1,
-            identity_key=None,
-            trace_id="",
-        ),
-        _progress_buffers=buffers,
-        _redis_client=None,
-        _worker_settings=settings,
-    )
+    ctx = make_progress_context(buffers, _JOB_ID, backend=backend, settings=settings)
 
     await ctx.progress(step=1)
 
@@ -692,17 +617,11 @@ async def test_state_change_event_for_all_mark_methods(status: str, terminal: bo
 async def test_ctx_progress_event_has_kind_progress_and_status_running() -> None:
     """The event published by ctx.progress() has kind='progress' and
     status='running'."""
-    import asyncio
     from datetime import UTC, datetime
 
-    import structlog
-
-    from taskq.client._enqueuer import SubJobEnqueuer
-    from taskq.context import JobContext
-    from taskq.obs import bind_job_context
     from taskq.settings import WorkerSettings
     from taskq.testing.clock import FakeClock
-    from taskq.testing.in_memory import InMemoryBackend, PassthroughPayload
+    from taskq.testing.in_memory import InMemoryBackend
 
     captured: list[dict[str, object]] = []
     redis_client = AsyncMock()
@@ -724,27 +643,8 @@ async def test_ctx_progress_event_has_kind_progress_and_status_running() -> None
     buf = _ProgressBuffer(job_id=_JOB_ID, base_seq=0)
     buffers = {_JOB_ID: buf}
 
-    ctx: JobContext[PassthroughPayload] = JobContext(
-        job_id=_JOB_ID,
-        actor="test_actor",
-        queue="default",
-        attempt=1,
-        worker_id=backend._worker_id,  # type: ignore[reportPrivateUsage] # Why: fixture helper accesses private field for test setup.
-        payload=PassthroughPayload(),
-        cancel_event=asyncio.Event(),
-        jobs=SubJobEnqueuer(loop_scope_resolved=None, worker_pool=None, backend=backend),
-        log=bind_job_context(
-            structlog.get_logger("test"),
-            job_id=_JOB_ID,
-            actor="test_actor",
-            queue="default",
-            attempt=1,
-            identity_key=None,
-            trace_id="",
-        ),
-        _progress_buffers=buffers,
-        _redis_client=redis_client,  # type: ignore[arg-type]
-        _worker_settings=settings,
+    ctx = make_progress_context(
+        buffers, _JOB_ID, backend=backend, settings=settings, redis_client=redis_client
     )
 
     await ctx.progress(step=1)

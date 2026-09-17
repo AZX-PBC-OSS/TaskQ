@@ -13,8 +13,6 @@ The cap is now a bound on the jitter BAND, not on the drawn value: the band
 ``[raw·(1-j), raw·(1+j)]`` is clipped to the cap before the draw, so a
 saturated row draws uniformly over ``[cap·(1-j), cap]``. The documented
 bounds (``0 ≤ delay ≤ cap``) are unchanged; ``jitter=0`` stays the identity.
-Dramatiq re-jitters at the cap (``backoff = max_backoff * uniform(0.5, 1)``)
-and Oban clamps before jittering for the same reason.
 """
 
 import random

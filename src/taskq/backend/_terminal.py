@@ -144,6 +144,7 @@ from taskq.obs import (
     get_logger,
     log_cancel_phase_change,
     log_state_change,
+    record_job_abandoned,
     record_job_interrupted,
     record_job_interrupted_noop,
 )
@@ -738,6 +739,7 @@ async def _mark_abandoned(
         worker_id=str(locked_by_worker) if locked_by_worker is not None else None,
         attempt=rec["attempt"],
     )
+    record_job_abandoned(rec["actor"])
     return True
 
 
@@ -906,9 +908,9 @@ async def _mark_interrupted(
     away): refund the claim's attempt increment, count the interruption on
     the row, write one ``reason='interrupted'`` event. Fenced on ownership,
     attempt epoch and ``cancel_phase = 0`` — an operator cancel in flight
-    wins and reads back as ``"noop"`` (River: a row whose
-    ``cancel_attempted_at`` is set is cancelled, never re-available —
-    river_job.sql ``JobSetStateIfRunningMany``). A hold that would outlive
+    wins and reads back as ``"noop"`` (a row whose
+    ``cancel_attempted_at`` is set is cancelled, never re-available).
+    A hold that would outlive
     ``schedule_to_close`` fails the row on the deadline instead.
     """
     branch: str

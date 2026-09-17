@@ -17,6 +17,7 @@ from taskq.backend._protocol import (
     EnqueueArgs,
     JobRow,
     batch_cap_groups,
+    duplicate_pair_actor_mismatch,
     first_duplicate_idempotency_pair,
     first_singleton_collision_actor,
 )
@@ -612,6 +613,27 @@ async def _enqueue_batch_fast(
     # refused items never aborts it.
     duplicate_pair = first_duplicate_idempotency_pair(admitted_args, self._idempotency_index.keys())
     if duplicate_pair is not None:
+        # A pair held by ANOTHER actor is the cross-actor misuse the single
+        # and batch tiers refuse, classified by the same shared rule the
+        # COPY tier applies (duplicate_pair_actor_mismatch) so both
+        # backends name the same actors for the same batch.
+        from taskq.backend._enqueue import _raise_batch_fast_actor_mismatch
+
+        stored_id = self._idempotency_index.get(duplicate_pair)
+        stored_row = self._jobs.get(stored_id) if stored_id is not None else None
+        mismatch = duplicate_pair_actor_mismatch(
+            admitted_args,
+            duplicate_pair,
+            stored_row.actor if stored_row is not None else None,
+        )
+        if mismatch is not None:
+            _raise_batch_fast_actor_mismatch(
+                mismatch,
+                idempotency_scope=duplicate_pair[0],
+                idempotency_key=duplicate_pair[1],
+                existing_job_id=stored_row.id if stored_row is not None else None,
+                batch_size=len(args_list),
+            )
         logger.info(
             "batch-fast-duplicate-idempotency-key",
             batch_size=len(args_list),

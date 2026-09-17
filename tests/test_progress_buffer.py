@@ -1,6 +1,5 @@
 """Unit tests for _ProgressBuffer state management and ctx.progress() buffer logic."""
 
-import asyncio
 import json
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
@@ -9,12 +8,8 @@ from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID
 
 import pytest
-import structlog
 
-from taskq.client._enqueuer import SubJobEnqueuer
-from taskq.context import JobContext
 from taskq.exceptions import ProgressTooLarge
-from taskq.obs import bind_job_context
 from taskq.progress._buffer import (
     _ProgressBuffer,
     _seq_and_state_after_flush_attempt,
@@ -22,7 +17,8 @@ from taskq.progress._buffer import (
 )
 from taskq.settings import WorkerSettings
 from taskq.testing.clock import FakeClock
-from taskq.testing.in_memory import InMemoryBackend, PassthroughPayload
+from taskq.testing.in_memory import InMemoryBackend
+from tests._progress_context import make_progress_context
 
 _JOB_ID = UUID("00000000-0000-0000-0000-000000000001")
 _JOB_ID_B = UUID("00000000-0000-0000-0000-000000000002")
@@ -45,38 +41,6 @@ def _make_pool_mock(*, returning_row: dict[str, object] | None = None) -> MagicM
     return pool
 
 
-def _make_ctx(
-    backend: InMemoryBackend,
-    job_id: UUID,
-    progress_buffers: dict[UUID, _ProgressBuffer] | None,
-    *,
-    worker_settings: WorkerSettings | None = None,
-    redis_client: object = None,
-) -> "JobContext[PassthroughPayload]":
-    return JobContext(
-        job_id=job_id,
-        actor="test_actor",
-        queue="default",
-        attempt=1,
-        worker_id=backend._worker_id,  # type: ignore[reportPrivateUsage] # Why: fixture helper; _worker_id is private to InMemoryBackend but readable here for JobContext construction.
-        payload=PassthroughPayload(),
-        cancel_event=asyncio.Event(),
-        jobs=SubJobEnqueuer(loop_scope_resolved=None, worker_pool=None, backend=backend),
-        log=bind_job_context(
-            structlog.get_logger("test"),
-            job_id=job_id,
-            actor="test_actor",
-            queue="default",
-            attempt=1,
-            identity_key=None,
-            trace_id="",
-        ),
-        _progress_buffers=progress_buffers,
-        _redis_client=redis_client,  # type: ignore[arg-type]
-        _worker_settings=worker_settings,
-    )
-
-
 # ── ctx.progress() marks buffer dirty with all four fields ─────────
 
 
@@ -86,7 +50,7 @@ async def test_ctx_progress_marks_dirty_with_all_fields() -> None:
     backend = _make_backend()
     buf = _ProgressBuffer(job_id=_JOB_ID, base_seq=0)
     buffers: dict[UUID, _ProgressBuffer] = {_JOB_ID: buf}
-    ctx = _make_ctx(backend, _JOB_ID, buffers)
+    ctx = make_progress_context(buffers, _JOB_ID, backend=backend)
 
     await ctx.progress(step=1, percent=10.0, detail="start", data={"rows": 0})
 
@@ -123,7 +87,9 @@ async def test_ctx_progress_seq_sequence_and_flush_drains_delta() -> None:
     backend = _make_backend()
     buf = _ProgressBuffer(job_id=_JOB_ID, base_seq=0)
     buffers: dict[UUID, _ProgressBuffer] = {_JOB_ID: buf}
-    ctx = _make_ctx(backend, _JOB_ID, buffers, worker_settings=settings, redis_client=redis_client)
+    ctx = make_progress_context(
+        buffers, _JOB_ID, backend=backend, settings=settings, redis_client=redis_client
+    )
 
     await ctx.progress(step=1)
     await ctx.progress(step=2)
@@ -153,7 +119,7 @@ async def test_ctx_progress_too_large_does_not_update_buffer() -> None:
     backend = _make_backend()
     buf = _ProgressBuffer(job_id=_JOB_ID, base_seq=0)
     buffers: dict[UUID, _ProgressBuffer] = {_JOB_ID: buf}
-    ctx = _make_ctx(backend, _JOB_ID, buffers, worker_settings=settings)
+    ctx = make_progress_context(buffers, _JOB_ID, backend=backend, settings=settings)
 
     with pytest.raises(ProgressTooLarge) as exc_info:
         await ctx.progress(data={"x": "a" * 17000})
@@ -172,7 +138,9 @@ async def test_ctx_progress_too_large_no_redis_publish() -> None:
     backend = _make_backend()
     buf = _ProgressBuffer(job_id=_JOB_ID, base_seq=0)
     buffers: dict[UUID, _ProgressBuffer] = {_JOB_ID: buf}
-    ctx = _make_ctx(backend, _JOB_ID, buffers, worker_settings=settings, redis_client=redis_client)
+    ctx = make_progress_context(
+        buffers, _JOB_ID, backend=backend, settings=settings, redis_client=redis_client
+    )
 
     with pytest.raises(ProgressTooLarge):
         await ctx.progress(data={"x": "a" * 17000})
@@ -193,7 +161,7 @@ async def test_ctx_progress_coalesced_merge_last_writer_wins() -> None:
     backend = _make_backend()
     buf = _ProgressBuffer(job_id=_JOB_ID, base_seq=0)
     buffers: dict[UUID, _ProgressBuffer] = {_JOB_ID: buf}
-    ctx = _make_ctx(backend, _JOB_ID, buffers)
+    ctx = make_progress_context(buffers, _JOB_ID, backend=backend)
 
     await ctx.progress(step=1, percent=10.0)
     await ctx.progress(step=2, percent=50.0, detail="mid")
@@ -257,7 +225,7 @@ async def test_ctx_progress_snooze_preserves_seq_and_redispatch_continues() -> N
 
     buf = _ProgressBuffer(job_id=job_id, base_seq=0)
     buffers: dict[UUID, _ProgressBuffer] = {job_id: buf}
-    ctx = _make_ctx(backend, job_id, buffers)
+    ctx = make_progress_context(buffers, job_id, backend=backend)
 
     await ctx.progress(step=1)
     await ctx.progress(step=2)
@@ -304,7 +272,9 @@ async def test_ctx_progress_snooze_preserves_seq_and_redispatch_continues() -> N
 
     buf2 = _ProgressBuffer(job_id=job_id, base_seq=row.progress_seq)
     buffers2: dict[UUID, _ProgressBuffer] = {job_id: buf2}
-    ctx2 = _make_ctx(backend, job_id, buffers2, worker_settings=settings, redis_client=redis_client)
+    ctx2 = make_progress_context(
+        buffers2, job_id, backend=backend, settings=settings, redis_client=redis_client
+    )
     await ctx2.progress(step=4)
     assert published_seqs == [4]
 
@@ -338,11 +308,11 @@ async def test_ctx_progress_seq_isolated_per_job_id() -> None:
     buf_b = _ProgressBuffer(job_id=_JOB_ID_B, base_seq=0)
     buffers: dict[UUID, _ProgressBuffer] = {_JOB_ID: buf_a, _JOB_ID_B: buf_b}
 
-    ctx_a = _make_ctx(
-        backend, _JOB_ID, buffers, worker_settings=settings, redis_client=redis_client
+    ctx_a = make_progress_context(
+        buffers, _JOB_ID, backend=backend, settings=settings, redis_client=redis_client
     )
-    ctx_b = _make_ctx(
-        backend, _JOB_ID_B, buffers, worker_settings=settings, redis_client=redis_client
+    ctx_b = make_progress_context(
+        buffers, _JOB_ID_B, backend=backend, settings=settings, redis_client=redis_client
     )
 
     await ctx_a.progress(step=1)

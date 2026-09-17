@@ -12,7 +12,7 @@ from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import TYPE_CHECKING, Any, Final
+from typing import TYPE_CHECKING, Any, Final, NoReturn
 from uuid import UUID
 
 import structlog
@@ -31,6 +31,7 @@ from taskq.backend._protocol import (
     EnqueueArgs,
     JobRow,
     batch_cap_groups,
+    duplicate_pair_actor_mismatch,
     first_duplicate_idempotency_pair,
     first_singleton_collision_actor,
 )
@@ -40,7 +41,7 @@ from taskq.backend._records import (
     item_tags_jsonb_param,
     jsonb_param,
 )
-from taskq.backend._sql_templates import SqlTemplates
+from taskq.backend._sql_templates import COPY_ENQUEUE_STATUS, SqlTemplates
 from taskq.backend.clock import Clock
 from taskq.backend.statemachine import TERMINAL_STATUSES
 from taskq.connections import (
@@ -48,6 +49,7 @@ from taskq.connections import (
 )
 from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: the canonical identifier regex, shared with every schema-qualified SQL site — a local copy would drift.
+    wake_channel,
 )
 from taskq.exceptions import (
     BatchMaxPendingExceededError,
@@ -356,14 +358,32 @@ def _attribute_duplicate_pair(
     return (None, None)
 
 
+@dataclass(frozen=True, slots=True)
+class _CopyDuplicate:
+    """The pair a COPY composite-index violation aborted on and, when a
+    committed row holds it, that row's actor and id."""
+
+    scope: str | None
+    key: str | None
+    stored_actor: str | None = None
+    stored_job_id: UUID | None = None
+
+    @property
+    def pair(self) -> tuple[str, str] | None:
+        if self.scope is None or self.key is None:
+            return None
+        return (self.scope, self.key)
+
+
 async def _attribute_copy_duplicate(
     conn: ConnLike,
     sql: SqlTemplates,
     admitted_args: list[EnqueueArgs],
     detail: str | None,
-) -> tuple[str | None, str | None]:
+) -> _CopyDuplicate:
     """Resolve the pair a COPY composite-index violation aborted on —
-    exactly, and independent of the driver's error text.
+    exactly, and independent of the driver's error text — together with
+    the committed row holding it, if any.
 
     Runs on the conflict branch only, after the savepoint wrapping the
     COPY has rolled the statement back, so the caller's transaction scope
@@ -391,20 +411,25 @@ async def _attribute_copy_duplicate(
         for args in admitted_args
         if args.idempotency_key is not None
     ]
-    stored_pairs: set[tuple[str, str]] = set()
+    stored: dict[tuple[str, str], asyncpg.Record] = {}
     if keyed:
         recs = await conn.fetch(
             sql.enqueue_batch_fetch_existing,
             [scope for scope, _ in keyed],
             [key for _, key in keyed],
         )
-        stored_pairs = {
-            (str(rec["idempotency_scope"]), str(rec["idempotency_key"])) for rec in recs
-        }
-    pair = first_duplicate_idempotency_pair(admitted_args, stored_pairs)
-    if pair is not None:
-        return pair
-    return _attribute_duplicate_pair(detail, set(keyed))
+        stored = {(str(rec["idempotency_scope"]), str(rec["idempotency_key"])): rec for rec in recs}
+    pair = first_duplicate_idempotency_pair(admitted_args, stored.keys())
+    if pair is None:
+        scope, key = _attribute_duplicate_pair(detail, set(keyed))
+        return _CopyDuplicate(scope, key)
+    holder = stored.get(pair)
+    return _CopyDuplicate(
+        pair[0],
+        pair[1],
+        stored_actor=str(holder["actor"]) if holder is not None else None,
+        stored_job_id=holder["id"] if holder is not None else None,
+    )
 
 
 async def _attribute_singleton_collision(
@@ -719,7 +744,10 @@ def _refuse_cross_actor_idempotency_hit(args: EnqueueArgs, existing: JobRow) -> 
     job's, indistinguishable from a successful dedup — so the hit is
     refused with the typed error naming both actors and the existing job
     (nothing was inserted: the arbiter skipped the row). Shared by the
-    single and batch tiers and mirrored by the in-memory twin.
+    single and batch tiers, mirrored by the in-memory twin and classified
+    the same way on the batch-fast COPY tier (whose abort is total, so the
+    error is raised in place of the duplicate error, not instead of a
+    returned handle).
     """
     if existing.actor != args.actor:
         logger.warning(
@@ -737,6 +765,44 @@ def _refuse_cross_actor_idempotency_hit(args: EnqueueArgs, existing: JobRow) -> 
             idempotency_key=str(args.idempotency_key),
             idempotency_scope=args.idempotency_scope,
         )
+
+
+def _raise_batch_fast_actor_mismatch(
+    mismatch: tuple[str, str],
+    *,
+    idempotency_scope: str | None,
+    idempotency_key: str | None,
+    existing_job_id: UUID | None,
+    batch_size: int,
+    cause: BaseException | None = None,
+) -> NoReturn:
+    """The batch-fast tier's arm of the cross-actor refusal: the same typed
+    error and log line as :func:`_refuse_cross_actor_idempotency_hit`,
+    raised in place of the duplicate error because the tier's abort is
+    total. ``mismatch`` is :func:`duplicate_pair_actor_mismatch`'s
+    ``(incoming_actor, existing_actor)``; ``existing_job_id`` is ``None``
+    when the holder was an earlier item of the same batch, whose row never
+    persisted. Shared with the in-memory mirror so both backends raise the
+    identical refusal for the identical batch.
+    """
+    incoming_actor, existing_actor = mismatch
+    logger.warning(
+        "idempotency-key-actor-mismatch",
+        actor=incoming_actor,
+        existing_actor=existing_actor,
+        existing_job_id=str(existing_job_id) if existing_job_id is not None else None,
+        idempotency_key=idempotency_key,
+        idempotency_scope=idempotency_scope,
+        batch_size=batch_size,
+        detection_path="batch_fast_unique_violation_catch",
+    )
+    raise IdempotencyKeyActorMismatchError(
+        actor=incoming_actor,
+        existing_actor=existing_actor,
+        existing_job_id=existing_job_id,
+        idempotency_key=idempotency_key or "",
+        idempotency_scope=idempotency_scope,
+    ) from cause
 
 
 async def _enqueue_on_conn(
@@ -1284,7 +1350,7 @@ async def _lock_batch_membership(conn: ConnLike, schema: str, batch_ids: list[UU
     The lock is the append side of the complete-vs-append race: a member
     append transaction holds the batches row FOR UPDATE from before its
     member INSERTs until its commit, and ``complete_batch``'s membership
-    CTE takes the same row FOR UPDATE NOWAIT — the conflict is the only
+    CTE takes the same row FOR UPDATE SKIP LOCKED — the conflict is the only
     thing that can make a READ COMMITTED completion guard aware of an
     uncommitted member INSERT it cannot see, so the completer delays (see
     ``_COMPLETE_BATCH_SQL``'s comment in _batch_sql.py). Rows that do not
@@ -1292,7 +1358,7 @@ async def _lock_batch_membership(conn: ConnLike, schema: str, batch_ids: list[UU
     the bulk-import paths never create one) lock nothing — a batch that
     does not exist cannot be completed, so there is no race to close.
 
-    Blocking (no NOWAIT) is deliberate on this side: appenders serialize
+    Blocking (no SKIP LOCKED) is deliberate on this side: appenders serialize
     per batch, each hold bounded by its own short chunk transaction, and
     the deadlock detector covers the one exotic inversion (an appender
     waiting on a member's idempotency arbiter while that member's hook
@@ -1819,7 +1885,9 @@ async def _enqueue_batch_fast(
     # domain-insensitive columns (sql.copy_enqueue_columns) and the fixup
     # UPDATE below stamps status/scheduled_at/schedule_to_close/
     # result_expires_at from the server clock inside the same transaction —
-    # never from this process's Python clock.
+    # never from this process's Python clock. Every row lands as
+    # COPY_ENQUEUE_STATUS so the INSERT trigger stays silent; the fixup
+    # wakes the fleet itself, once, only if it made any row runnable.
     # Same per-item annotation as _enqueue_batch's build loop (including
     # the index_base shift): the COPY record tuples are serialized here,
     # before any statement is issued, so a NUL-bearing item rejects the
@@ -1845,6 +1913,7 @@ async def _enqueue_batch_fast(
                     args.payload, idx=index_base + idx, field="payload", actor=args.actor
                 ),
                 args.payload_schema_ver,
+                COPY_ENQUEUE_STATUS,
                 args.priority,
                 0,
                 args.max_attempts,
@@ -2007,18 +2076,35 @@ async def _enqueue_batch_fast(
                 # against the legacy index, which the branch above
                 # already converts -- that carve-out is pre-existing
                 # documented behavior for this path, unchanged here.
-                dup_scope, dup_key = await _attribute_copy_duplicate(
-                    conn, sql, admitted_args, exc.detail
+                duplicate = await _attribute_copy_duplicate(conn, sql, admitted_args, exc.detail)
+                # A pair the resolution cannot see a holder for (a
+                # concurrent commit-and-delete racer) stays unclassified
+                # and reports the typed duplicate.
+                mismatch = (
+                    duplicate_pair_actor_mismatch(
+                        admitted_args, duplicate.pair, duplicate.stored_actor
+                    )
+                    if duplicate.pair is not None
+                    else None
                 )
+                if mismatch is not None:
+                    _raise_batch_fast_actor_mismatch(
+                        mismatch,
+                        idempotency_scope=duplicate.scope,
+                        idempotency_key=duplicate.key,
+                        existing_job_id=duplicate.stored_job_id,
+                        batch_size=len(args_list),
+                        cause=exc,
+                    )
                 logger.info(
                     "batch-fast-duplicate-idempotency-key",
                     batch_size=len(args_list),
-                    idempotency_key=dup_key,
-                    idempotency_scope=dup_scope,
+                    idempotency_key=duplicate.key,
+                    idempotency_scope=duplicate.scope,
                 )
                 raise DuplicateIdempotencyKeyError(
-                    idempotency_key=dup_key,
-                    idempotency_scope=dup_scope,
+                    idempotency_key=duplicate.key,
+                    idempotency_scope=duplicate.scope,
                     detail=exc.detail,
                 ) from exc
             if exc.constraint_name == _SINGLETON_CONSTRAINT_NAME:
@@ -2048,6 +2134,7 @@ async def _enqueue_batch_fast(
         await conn.execute(
             sql.enqueue_batch_fast_fixup,
             *fixup_cols,
+            wake_channel(schema),
         )
         return count, refusals, refused_indices
 

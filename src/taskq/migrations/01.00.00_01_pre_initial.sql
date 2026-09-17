@@ -178,13 +178,14 @@ CREATE INDEX jobs_cancel_requested_idx
     WHERE cancel_requested_at IS NOT NULL AND status = 'running';
 
 -- Hot-path: heartbeat tick extends lock_expires_at for every running job owned by
--- this worker (heartbeat.py:42).  Without this index, PG scans all running rows.
+-- this worker (heartbeat.py:42).  Without this, PG scans all running rows.
+-- Vendor parallel: pgqueuer (queue_manager_id) WHERE queue_manager_id IS NOT NULL.
 CREATE INDEX jobs_locked_by_worker_running_idx
     ON "{schema}".jobs (locked_by_worker)
     WHERE status = 'running';
 
 -- Leader sweep: clear expired results (postgres.py:197).
--- This index supports efficient lookup of jobs with non-null results by expiry time.
+-- Vendor parallel: River (state, finalized_at) WHERE finalized_at IS NOT NULL.
 CREATE INDEX jobs_result_expires_at_idx
     ON "{schema}".jobs (result_expires_at)
     WHERE result IS NOT NULL;

@@ -101,6 +101,12 @@ SELECT e.job_id,
        $3, e.detail
 FROM unnest($1::uuid[], $2::jsonb[]) WITH ORDINALITY AS e(job_id, detail, ord)"""
 
+# The one wake statement: $1 is the channel (taskq.constants.wake_channel),
+# the payload is empty by contract (listeners never parse it). Rendered
+# templates expose it as SqlTemplates.wake_notify; the sweeps and the
+# leader, which carry no rendered templates, execute it directly.
+WAKE_NOTIFY_SQL = "SELECT pg_notify($1, '')"
+
 POLL_CANCEL_FLAGS_SQL = """\
 SELECT id, cancel_phase
 FROM "{schema}".jobs
@@ -132,10 +138,18 @@ def parse_rowcount(tag: str) -> int:
 UPDATE_WORKER_LIVENESS_SQL_TEMPLATE = (
     'UPDATE "{schema}".workers SET last_seen_at = clock_timestamp() WHERE id = $1'
 )
+# $3 is the worker's disowned set (WorkerDeps.disowned_jobs): rows this
+# worker holds but could not record an outcome for, whose leases must
+# lapse so the reclaim sweep can hand them back. The exclusion lives in
+# the template so every renewal — the heartbeat loop's and the backend's
+# own heartbeat_jobs / extend_reservation_leases — carries it; a renewal
+# without it would keep a disowned row's lease alive for as long as the
+# process lived. An empty array excludes nothing.
 UPDATE_JOBS_LOCK_SQL_TEMPLATE = (
     'UPDATE "{schema}".jobs '
     "SET last_heartbeat_at = clock_timestamp(), lock_expires_at = clock_timestamp() + $2 "
     "WHERE locked_by_worker = $1 AND status = 'running'"
+    " AND NOT (id = ANY($3::uuid[]))"
 )
 UPDATE_RESERVATION_LEASES_SQL_TEMPLATE = (
     'UPDATE "{schema}".reservation_slots '
@@ -143,6 +157,7 @@ UPDATE_RESERVATION_LEASES_SQL_TEMPLATE = (
     "WHERE job_id IN ("
     "SELECT id FROM \"{schema}\".jobs WHERE locked_by_worker = $1 AND status = 'running'"
     ")"
+    " AND NOT (job_id = ANY($3::uuid[]))"
 )
 
 
@@ -150,7 +165,8 @@ def build_heartbeat_sql(schema: str) -> tuple[str, str, str]:
     """Render the three heartbeat SQL templates for *schema*.
 
     Validates *schema* against the canonical identifier regex before
-    formatting.
+    formatting. The two renewal statements bind ``(worker_id, lease,
+    disowned_ids)``.
 
     ``maintenance_leader`` is deliberately absent: that row carries the
     maintenance lease and is written only by the election loop, under the

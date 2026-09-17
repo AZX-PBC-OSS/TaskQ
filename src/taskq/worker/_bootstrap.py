@@ -51,13 +51,15 @@ from taskq.cron import (
     CronScheduleSpec,
     compute_next_fire_after,
 )
-from taskq.exceptions import MissingProvider
+from taskq.exceptions import DIError, MissingProvider
 from taskq.obs import (
+    ErrorReporter,
     get_meter,
     set_exception_message_max_chars,
     set_exception_redaction_enabled,
     set_otel_enabled,
     set_slot_pool_occupancy_source,
+    set_worker_capacity_source,
     setup_logging,
 )
 from taskq.progress._flush import progress_flush_loop
@@ -103,9 +105,9 @@ _sibling_crashes = get_meter().create_counter(
 def _redis_extra_installed() -> bool:
     """Whether the ``[redis]`` extra is importable in this environment.
 
-    Probes by importing — the idiom vendored procrastinate's
-    ``import_or_wrapper`` (utils.py) uses for exactly this "is the optional
-    extra installed" check. The parent package is imported first because
+    Probes by importing: an "is the optional extra installed" check can
+    only be answered reliably by the import itself. The parent package is
+    imported first because
     both cheap alternatives lie: ``find_spec`` on a dotted name raises
     ``ModuleNotFoundError`` when the parent is absent (the very state this
     check exists to detect), and a ``redis.asyncio`` entry lingering in
@@ -118,6 +120,29 @@ def _redis_extra_installed() -> bool:
     except ImportError:
         return False
     return True
+
+
+def _validate_error_reporter_scope(registry: ProviderRegistry) -> None:
+    """Refuse an ErrorReporter registered at a scope the hook cannot outlive.
+
+    A terminal-failure hook runs after the actor's invocation scope has
+    closed, so a TRANSIENT registration can never resolve. The per-dispatch
+    guard degrades that shape to a skipped hook behind a window-gated
+    WARNING; if the guard were the only check, a misregistered reporter
+    would surface as a fleet that reports nothing while looking configured.
+    Failing worker startup names the registration before any job exists,
+    where fixing it costs nothing.
+    """
+    if not registry.has_provider(ErrorReporter):
+        return
+    entry = registry.get(ErrorReporter)
+    if entry.scope in (Scope.PROCESS, Scope.THREAD, Scope.LOOP):
+        return
+    # A DI misregistration, typed like the ones registry.validate raises.
+    raise DIError(
+        f"ErrorReporter is registered at {entry.scope.name} scope; a terminal-failure "
+        "hook outlives the actor invocation and must be PROCESS, THREAD or LOOP scoped"
+    )
 
 
 def _redis_configured(settings: WorkerSettings, registry: ProviderRegistry) -> bool:
@@ -927,6 +952,23 @@ def _emit_startup_warnings(settings: WorkerSettings) -> None:
             ),
         )
 
+    # Why: the dispatch probe-narrowing this flag applied no longer exists
+    # (dispatch is assignment-routed; the routing decision rides the jobs
+    # row), so the field is a deprecated no-op kept only so configurations
+    # that set it keep loading. Silent acceptance would hide the flag's
+    # retirement from the one operator who opted in; the warning names the
+    # removal so the env var gets deleted instead of accumulating.
+    if settings.dispatch_scope_by_home_queue:
+        _startup_log.warning(
+            "deprecated-setting-ignored",
+            setting="TASKQ_DISPATCH_SCOPE_BY_HOME_QUEUE",
+            reason=(
+                "dispatch is assignment-routed; the per-actor-capacity "
+                "scoping this flag applied no longer exists"
+            ),
+            remedy="remove TASKQ_DISPATCH_SCOPE_BY_HOME_QUEUE from the environment",
+        )
+
     # Why: this is the one setting that deliberately widens what leaves the
     # trust boundary, and its effect is invisible in normal operation -- an
     # operator who flips it during an incident gets no other signal that raw
@@ -1219,6 +1261,10 @@ async def _main(
     _emit_startup_warnings(settings)
 
     async with open_worker_deps(settings, connections=connections) as deps:
+        # The capacity gauges read the registry the consumers fill; pointed
+        # here, before the TaskGroup opens, so the first scrape after boot
+        # already reports 0 of max_concurrency rather than nothing.
+        set_worker_capacity_source(deps.active_jobs, settings.max_concurrency)
         # ── until_idle override resolution ──────────────────────────────
         settle: float = settings.idle_settle_window
         poll: float = settings.idle_poll_interval
@@ -1312,6 +1358,7 @@ async def _main(
             # unconditionally would crash workers that don't use Redis.
             register_redis_pool(registry)
         registry.validate(actors=actors_list, rate_limit_registry=resolved_rl_registry)
+        _validate_error_reporter_scope(registry)
 
         from taskq.ratelimit import sync_rate_limit_buckets, sync_slots
 

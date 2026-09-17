@@ -22,8 +22,6 @@ import pytest
 from pydantic import BaseModel
 
 from taskq._di.registry import ProviderRegistry
-from taskq._di.scope import Scope
-from taskq._di.scopes import LoopScope, ProcessScope, ThreadScope
 from taskq._ids import new_uuid
 from taskq.actor import ActorRef
 from taskq.backend._protocol import EnqueueArgs, JobId
@@ -32,13 +30,13 @@ from taskq.backend.postgres import PostgresBackend
 from taskq.client._enqueuer import SubJobEnqueuer
 from taskq.context import JobContext
 from taskq.retry import RetryPolicy
-from taskq.settings import WorkerSettings
 from taskq.testing.actor import StubActorConfig
 from taskq.testing.fixtures import JobsApp
 from taskq.testing.pg import create_worker
 from taskq.worker.deps import WorkerDeps
 from taskq.worker.dispatch import dispatch_one_job
 from taskq.worker.shutdown import drain_local_queue_to_pending
+from tests._di_scopes import BootstrappedScopes
 
 pytestmark = pytest.mark.integration
 
@@ -264,63 +262,16 @@ async def test_a_job_that_never_ran_cannot_reach_a_terminal_state(
 # ── DI scaffolding ──────────────────────────────────────────────────────
 
 
-class _Scopes:
+def _scopes() -> BootstrappedScopes:
     """The three DI scopes ``dispatch_one_job`` resolves an actor through."""
-
-    def __init__(self) -> None:
-        self.registry = ProviderRegistry()
-
-    async def __aenter__(self) -> "_Scopes":
-        self.registry.validate()
-        containers: dict[Scope, Any] = {}
-
-        def resolver(func: object) -> Any:
-            async def resolve() -> dict[str, object]:
-                from taskq._di.solver import solve_dependencies
-
-                return await solve_dependencies(
-                    func=func, registry=self.registry, scope_containers=containers
-                )
-
-            return resolve()
-
-        self.process_scope = ProcessScope(resolver=resolver)
-        self.thread_scope = ThreadScope(resolver=resolver)
-        self.loop_scope = LoopScope(resolver=resolver)
-        containers.update(
-            {
-                Scope.PROCESS: self.process_scope,
-                Scope.THREAD: self.thread_scope,
-                Scope.LOOP: self.loop_scope,
-            }
-        )
-        settings = WorkerSettings.load_from_dict(
-            {
-                "PG_DSN": "postgres://u:p@localhost:5432/db",
-                "LOCK_LEASE": 60,
-                "HEARTBEAT_INTERVAL": 10,
-            },
-        )
-        await self.process_scope.bootstrap(self.registry, settings)
-        await self.thread_scope.bootstrap(self.registry, self.process_scope)
-        await self.loop_scope.bootstrap(self.registry, self.process_scope, self.thread_scope)
-        return self
-
-    async def __aexit__(self, *exc_info: object) -> None:
-        await self.loop_scope.shutdown()
-        await self.thread_scope.shutdown()
-        await self.process_scope.shutdown()
-
-
-def _scopes() -> _Scopes:
-    return _Scopes()
+    return BootstrappedScopes(ProviderRegistry())
 
 
 async def _run_once(
     backend: PostgresBackend,
     deps: WorkerDeps,
     schema: str,
-    scopes: _Scopes,
+    scopes: BootstrappedScopes,
     actor_ref: Any,
     job_id: JobId,
 ) -> str:

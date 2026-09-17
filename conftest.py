@@ -27,14 +27,44 @@ def pytest_addoption(parser: pytest.Parser) -> None:
             "requires the e2e dependency group (uv sync --group e2e) and Docker."
         ),
     )
+    parser.addoption(
+        "--otel-validation",
+        action="store_true",
+        default=False,
+        help=(
+            "Collect the OTLP validation lane (tests/otel_validation). Off by "
+            "default; requires Docker and a collector container image."
+        ),
+    )
 
 
-def _is_e2e_path(path: Path) -> bool:
-    return path.name == "e2e" and path.parent.name == "tests"
+#: Directory names of the opt-in containerized tiers, each gated the way the
+#: e2e tier is (collection ignored unless the tier's flag is passed).
+_OPT_IN_TIERS: tuple[tuple[str, str], ...] = (
+    ("e2e", "--e2e"),
+    ("otel_validation", "--otel-validation"),
+)
+
+
+def _opt_in_tier_dir(path: Path) -> str | None:
+    """The flag that gates *path* when it IS a tier directory, else None."""
+    for dirname, flag in _OPT_IN_TIERS:
+        if path.name == dirname and path.parent.name == "tests":
+            return flag
+    return None
+
+
+def _opt_in_tier_file(path: Path) -> str | None:
+    """The flag that gates *path* when it is a file inside a tier, else None."""
+    for dirname, flag in _OPT_IN_TIERS:
+        if path.parent.name == dirname and path.parent.parent.name == "tests":
+            return flag
+    return None
 
 
 def pytest_ignore_collect(collection_path: Path, config: pytest.Config) -> bool | None:
-    """Keep the e2e tier out of directory recursion unless ``--e2e`` is passed.
+    """Keep the opt-in container tiers out of directory recursion unless their
+    flag is passed.
 
     A command-line ``-m`` REPLACES the addopts marker expression instead of
     combining with it, so a marker-only gate (``-m "not e2e"`` in addopts)
@@ -42,30 +72,36 @@ def pytest_ignore_collect(collection_path: Path, config: pytest.Config) -> bool 
     ``-m "not redis"`` run. Ignoring the directory at collection is
     independent of ``-m``.
     """
-    if config.getoption("--e2e"):
+    # The directory only, never the files inside it: an explicitly passed
+    # tier directory (``pytest tests/e2e``) must reach the backstop below,
+    # which REPORTS what it strips through pytest_deselected — ignoring the
+    # files at collection would hide the stripped tier from the summary.
+    tier_flag = _opt_in_tier_dir(collection_path)
+    if tier_flag is None:
         return None
-    if _is_e2e_path(collection_path):
-        return True
-    return None
+    if config.getoption(tier_flag.lstrip("-").replace("-", "_")):
+        return None
+    return True
 
 
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
-    """Explicit-arg backstop for the e2e gate.
+    """Explicit-arg backstop for the opt-in tier gates.
 
     ``pytest_ignore_collect`` is not consulted for paths passed explicitly
     on the command line (``pytest tests/e2e``), so an explicit-arg run
-    without ``--e2e`` still collects the tier. Drop those items here.
+    without the tier's flag still collects it. Drop those items here.
     """
-    if config.getoption("--e2e"):
-        return
+    gated_flags = {
+        flag for _dir, flag in _OPT_IN_TIERS if config.getoption(flag.lstrip("-").replace("-", "_"))
+    }
     deselected = [
         item
         for item in items
-        if item.path.parent.name == "e2e" and item.path.parent.parent.name == "tests"
+        if (tier_flag := _opt_in_tier_file(item.path)) is not None and tier_flag not in gated_flags
     ]
     if deselected:
         config.hook.pytest_deselected(items=deselected)
-    items[:] = [item for item in items if item not in deselected]
+        items[:] = [item for item in items if item not in deselected]
 
 
 # ── Outbound-network guard ──────────────────────────────────────────────

@@ -174,9 +174,9 @@ class Migration:
 #: queue is FIFO, so once the DDL is queued every later statement on that
 #: table (dispatch, enqueue, heartbeat) queues behind IT. Unbounded, that
 #: wait outlives the workers' heartbeat budget: the fleet self-terminates
-#: while the migration is still waiting. Thirty seconds is the wait pg-boss
-#: applies to every migration; it exceeds any healthy lock hold by orders of
-#: magnitude and is short enough that a fleet parked behind it survives.
+#: while the migration is still waiting. Thirty seconds exceeds any healthy
+#: lock hold by orders of magnitude and is short enough that a fleet parked
+#: behind it survives.
 #: Bounds the WAIT only: a statement that already holds its lock (an index
 #: build) is never interrupted by ``lock_timeout``. Override per call with
 #: ``apply_pending(..., ddl_lock_timeout=...)``; ``0`` waits indefinitely.
@@ -184,28 +184,57 @@ DEFAULT_MIGRATION_DDL_LOCK_TIMEOUT: float = 30.0
 
 
 class MigrationLockTimeoutError(RuntimeError):
-    """A transactional migration waited ``ddl_lock_timeout`` for a table lock
-    and gave up; its transaction rolled back and nothing was applied.
+    """A migration run's DDL waited ``ddl_lock_timeout`` for a table lock and
+    gave up; its transaction rolled back and nothing was applied.
 
-    Raised in place of the driver's ``LockNotAvailableError`` (kept as the
-    cause) so the report names the migration, the bound that expired, and
-    the remedy — the holder must be found and ended, or the bound raised —
-    rather than the bare ``canceling statement due to lock timeout``.
+    ``migration`` is the transactional migration whose DDL timed out, or
+    ``None`` when the wait was the runner's own upgrade of the
+    ``schema_migrations`` ledger (an ``ALTER TABLE`` that runs before the
+    first migration of a run, or after a ``-- taskq:no-transaction`` file's
+    statements). Raised in place of the driver's ``LockNotAvailableError``
+    (kept as the cause) so the report names what waited, the bound that
+    expired, and the remedy — the holder must be found and ended, or the
+    bound raised — rather than the bare ``canceling statement due to lock
+    timeout``.
     """
 
-    def __init__(self, migration: Migration, timeout: float) -> None:
+    def __init__(self, migration: Migration | None, timeout: float) -> None:
         self.migration = migration
         self.timeout = timeout
+        if migration is not None:
+            subject = f"migration {migration.filename}"
+            what = "a lock on a table it alters"
+            outcome = "The migration rolled back and nothing was applied."
+        else:
+            subject = "the schema_migrations ledger upgrade"
+            what = "a lock on the ledger table"
+            outcome = "It rolled back; no migration was applied or recorded."
         super().__init__(
-            f"migration {migration.filename} waited {timeout}s for a lock on a table it "
-            "alters and gave up (ddl_lock_timeout): another session holds a conflicting "
-            "lock on it — a long-running or idle-in-transaction connection, pg_dump, or an "
-            "admin query. The migration rolled back and nothing was applied. Find the "
-            "holder in pg_stat_activity / pg_locks and end it or wait for it, then re-run; "
-            "to wait longer, raise ddl_lock_timeout (apply_pending / apply_pending_locked) "
-            "— 0 waits indefinitely, at the cost of parking every statement on the table "
-            "behind the queued DDL."
+            f"{subject} waited {timeout}s for {what} and gave up (ddl_lock_timeout): "
+            "another session holds a conflicting lock on it — a long-running or "
+            "idle-in-transaction connection, pg_dump, or an admin query. "
+            f"{outcome} Find the holder in pg_stat_activity / pg_locks and end it or "
+            "wait for it, then re-run; to wait longer, raise ddl_lock_timeout "
+            "(apply_pending / apply_pending_locked) — 0 waits indefinitely, at the cost "
+            "of parking every statement on the table behind the queued DDL."
         )
+
+
+@contextlib.asynccontextmanager
+async def _lock_bounded_transaction(
+    conn: asyncpg.Connection, ddl_lock_timeout: float
+) -> AsyncGenerator[None]:
+    """One transaction whose lock waits are bounded by ``ddl_lock_timeout``.
+
+    ``SET LOCAL`` scopes the bound to this transaction, so the session's
+    own ``lock_timeout`` (reset to unlimited by
+    :func:`migration_advisory_lock` for the no-transaction files) is
+    untouched; ``0`` sets no bound and waits indefinitely.
+    """
+    async with conn.transaction():
+        if ddl_lock_timeout > 0:
+            await conn.execute(f"SET LOCAL lock_timeout = {int(ddl_lock_timeout * 1000)}")
+        yield
 
 
 def discover() -> list[Migration]:
@@ -590,6 +619,14 @@ async def apply_pending(
     """
     if ddl_lock_timeout < 0:
         raise ValueError(f"ddl_lock_timeout must be >= 0, got {ddl_lock_timeout}")
+    if 0 < ddl_lock_timeout < 0.001:
+        # A wait below one millisecond truncates to lock_timeout = 0, which
+        # Postgres reads as "wait indefinitely": the opposite of the bound
+        # the caller asked for, silently. Refuse it instead.
+        raise ValueError(
+            f"ddl_lock_timeout must be 0 (wait indefinitely) or at least one "
+            f"millisecond, got {ddl_lock_timeout}s"
+        )
     if not _IDENT_RE.match(schema):
         raise ValueError(f"invalid schema name {schema!r}")
 
@@ -678,27 +715,21 @@ async def apply_pending(
     # lazily on the first record instead.
     ledger_ready = False
     if exists and pending:
-        await _ensure_ledger_use_transaction_column(conn, schema)
+        await _upgrade_ledger_bounded(conn, schema, ddl_lock_timeout)
         ledger_ready = True
 
     applied_now: list[Migration] = []
     for migration in effective:
         try:
             if migration.use_transaction:
-                async with conn.transaction():
-                    if ddl_lock_timeout > 0:
-                        # SET LOCAL: scoped to this migration's transaction,
-                        # so the session's own lock_timeout (reset to
-                        # unlimited by migration_advisory_lock for the
-                        # no-transaction files) is untouched.
-                        await conn.execute(
-                            f"SET LOCAL lock_timeout = {int(ddl_lock_timeout * 1000)}"
-                        )
+                async with _lock_bounded_transaction(conn, ddl_lock_timeout):
                     try:
                         await conn.execute(migration.render(schema))
                     except asyncpg.LockNotAvailableError as exc:
                         raise MigrationLockTimeoutError(migration, ddl_lock_timeout) from exc
                     if not ledger_ready:
+                        # Inside the migration's own transaction: the bound
+                        # above already covers the ledger ALTER.
                         await _ensure_ledger_use_transaction_column(conn, schema)
                         ledger_ready = True
                     await _record_applied(conn, schema, migration)
@@ -717,7 +748,7 @@ async def apply_pending(
                 for statement in statements:
                     await conn.execute(statement)
                 if not ledger_ready:
-                    await _ensure_ledger_use_transaction_column(conn, schema)
+                    await _upgrade_ledger_bounded(conn, schema, ddl_lock_timeout)
                     ledger_ready = True
                 await _record_applied(conn, schema, migration)
         except Exception as exc:
@@ -746,6 +777,25 @@ async def _ensure_ledger_use_transaction_column(conn: asyncpg.Connection, schema
         f'ALTER TABLE "{schema}".schema_migrations '
         "ADD COLUMN IF NOT EXISTS use_transaction boolean NOT NULL DEFAULT true"
     )
+
+
+async def _upgrade_ledger_bounded(
+    conn: asyncpg.Connection, schema: str, ddl_lock_timeout: float
+) -> None:
+    """:func:`_ensure_ledger_use_transaction_column` outside any migration
+    transaction, in a transaction of its own so its lock wait is bounded.
+
+    The ``ALTER TABLE`` takes ACCESS EXCLUSIVE on the ledger even when the
+    column already exists, so it queues behind any reader of the table —
+    a worker's boot-time currency check, ``pg_dump``, an admin query — and
+    every later ledger statement queues behind it. The same bound a
+    migration's DDL gets applies here, for the same reason.
+    """
+    try:
+        async with _lock_bounded_transaction(conn, ddl_lock_timeout):
+            await _ensure_ledger_use_transaction_column(conn, schema)
+    except asyncpg.LockNotAvailableError as exc:
+        raise MigrationLockTimeoutError(None, ddl_lock_timeout) from exc
 
 
 async def _record_applied(conn: asyncpg.Connection, schema: str, migration: Migration) -> None:

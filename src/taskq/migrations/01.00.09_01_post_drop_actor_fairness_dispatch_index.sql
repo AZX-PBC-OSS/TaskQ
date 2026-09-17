@@ -15,7 +15,7 @@
 -- that contract). Dropping the index under the old code does not break
 -- correctness (the window sorts its input either way) but removes the
 -- pre-sorted plan from a query that is already O(backlog depth) per
--- round — the defect that motivated this replacement — so an old-generation worker
+-- round — the defect issue #130 filed — so an old-generation worker
 -- would pay the depth cost AND a full sort on top during the overlap
 -- window. The migration runner additionally refuses to apply a post
 -- migration before its same-version pre counterpart (see apply_pending

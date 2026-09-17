@@ -37,6 +37,7 @@ from taskq.progress._flush import (
 from taskq.settings import WorkerSettings
 from taskq.testing.clock import FakeClock
 from taskq.testing.in_memory import InMemoryBackend, PassthroughPayload
+from tests._progress_context import make_progress_context
 
 _JOB_ID = UUID("aaaaaaaa-bbbb-cccc-dddd-000000000001")
 _JOB_ID_B = UUID("aaaaaaaa-bbbb-cccc-dddd-000000000002")
@@ -130,18 +131,12 @@ async def test_progress_too_large_at_exactly_max_plus_one_byte() -> None:
     """ctx.progress(data=...) where serialised data is exactly 16385 bytes
     raises ProgressTooLarge(limit=16384, actual=16385)."""
     import asyncio
-    from datetime import UTC, datetime
 
     import structlog
 
     from taskq._json import dumps
-    from taskq.client._enqueuer import SubJobEnqueuer
-    from taskq.context import JobContext
     from taskq.exceptions import ProgressTooLarge
-    from taskq.obs import bind_job_context
     from taskq.settings import WorkerSettings
-    from taskq.testing.clock import FakeClock
-    from taskq.testing.in_memory import InMemoryBackend, PassthroughPayload
 
     settings = WorkerSettings.load_from_dict({"TASKQ_PROGRESS_DATA_MAX_BYTES": "16384"})
     backend = InMemoryBackend(clock=FakeClock(datetime(2025, 1, 1, tzinfo=UTC)))
@@ -200,15 +195,8 @@ async def test_ctx_progress_out_of_range_percent_not_rejected() -> None:
     """ctx.progress(percent=150.0) succeeds — no range validation on percent.
     pending_state["percent"] == 150.0."""
     import asyncio
-    from datetime import UTC, datetime
 
     import structlog
-
-    from taskq.client._enqueuer import SubJobEnqueuer
-    from taskq.context import JobContext
-    from taskq.obs import bind_job_context
-    from taskq.testing.clock import FakeClock
-    from taskq.testing.in_memory import InMemoryBackend, PassthroughPayload
 
     backend = InMemoryBackend(clock=FakeClock(datetime(2025, 1, 1, tzinfo=UTC)))
     job_id = UUID("00000000-0000-0000-0000-aabbccddee01")
@@ -250,16 +238,10 @@ async def test_ctx_progress_unserializable_data_raises_type_error() -> None:
     serialisation) before the ProgressTooLarge check. The buffer is not
     updated."""
     import asyncio
-    from datetime import UTC, datetime
 
     import structlog
 
-    from taskq.client._enqueuer import SubJobEnqueuer
-    from taskq.context import JobContext
-    from taskq.obs import bind_job_context
     from taskq.settings import WorkerSettings
-    from taskq.testing.clock import FakeClock
-    from taskq.testing.in_memory import InMemoryBackend, PassthroughPayload
 
     settings = WorkerSettings.load_from_dict({"TASKQ_PROGRESS_DATA_MAX_BYTES": "16384"})
     backend = InMemoryBackend(clock=FakeClock(datetime(2025, 1, 1, tzinfo=UTC)))
@@ -321,34 +303,6 @@ async def test_flush_buffer_rejects_nul_before_touching_connection() -> None:
 # ── The flush binds the data bytes ctx.progress already encoded ────
 
 
-def _make_progress_context(
-    buffers: dict[UUID, _ProgressBuffer], job_id: UUID
-) -> "JobContext[PassthroughPayload]":
-    """A JobContext wired to *buffers* with worker settings, no Redis client."""
-    backend = InMemoryBackend(clock=FakeClock(datetime(2025, 1, 1, tzinfo=UTC)))
-    return JobContext(
-        job_id=job_id,
-        actor="test_actor",
-        queue="default",
-        attempt=1,
-        worker_id=backend._worker_id,  # type: ignore[reportPrivateUsage] # Why: fixture helper accesses private field for test setup.
-        payload=PassthroughPayload(),
-        cancel_event=asyncio.Event(),
-        jobs=SubJobEnqueuer(loop_scope_resolved=None, worker_pool=None, backend=backend),
-        log=bind_job_context(
-            structlog.get_logger("test"),
-            job_id=job_id,
-            actor="test_actor",
-            queue="default",
-            attempt=1,
-            identity_key=None,
-            trace_id="",
-        ),
-        _progress_buffers=buffers,
-        _worker_settings=WorkerSettings.load_from_dict({}),
-    )
-
-
 def _encodes_of(data: dict[str, object], encoded: list[object]) -> int:
     """How many orjson encodes walked *data*, at top level or as a value."""
     return sum(
@@ -398,7 +352,7 @@ async def test_flush_binds_the_data_bytes_ctx_progress_already_encoded(
     job_id = UUID("00000000-0000-0000-0000-aabbccddee02")
     buf = _ProgressBuffer(job_id=job_id, base_seq=0)
     buffers: dict[UUID, _ProgressBuffer] = {job_id: buf}
-    ctx = _make_progress_context(buffers, job_id)
+    ctx = make_progress_context(buffers, job_id, settings=WorkerSettings.load_from_dict({}))
     data: dict[str, object] = {
         "rows": [{"id": i, "name": f"item-{i}", "u": "é\n"} for i in range(50)]
     }
@@ -443,7 +397,7 @@ async def test_flush_rejects_a_nul_inside_pre_encoded_data(surface: str) -> None
     job_id = UUID("00000000-0000-0000-0000-aabbccddee03")
     buf = _ProgressBuffer(job_id=job_id, base_seq=0)
     buffers: dict[UUID, _ProgressBuffer] = {job_id: buf}
-    ctx = _make_progress_context(buffers, job_id)
+    ctx = make_progress_context(buffers, job_id, settings=WorkerSettings.load_from_dict({}))
 
     await ctx.progress(data={"path": "bad\x00value"})
     pool, conn = _make_pool_with_conn(returning_row={"progress_seq": 1})
@@ -1094,7 +1048,6 @@ async def test_flush_loop_pool_acquire_failure_keeps_buffers_dirty_with_pool_kin
     the same taxonomy the loop's pool_getter handler uses.
     """
     import asyncpg
-    import structlog
 
     bad_id = UUID("bad00000-0000-0000-0000-000000000000")
     good_id = UUID("600d0000-0000-0000-0000-000000000000")

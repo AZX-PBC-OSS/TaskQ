@@ -58,7 +58,8 @@ This is a deliberate tradeoff, not a missing feature:
 
    The command is idempotent — migrations already recorded in
    `{schema}.schema_migrations` are skipped. See [cli.md](cli.md#taskq-migrate-up)
-   for the full option reference (`--phase`, `--target`, `--max-steps`).
+   for the full option reference (`--phase`, `--target`, `--max-steps`,
+   `--ddl-lock-timeout`).
 
    `TASKQ_MIGRATE_ON_START=true` is **not** a substitute here: it is honoured
    only by `taskq ui serve`, which runs as a single process. The worker
@@ -148,11 +149,15 @@ its own transaction) and then fails with `MigrationLockTimeoutError`; the
 report names the migration, the bound, and this remedy. The migration rolled
 back and nothing was applied: find the holder in `pg_stat_activity` /
 `pg_locks`, end it or wait for it, then re-run `taskq migrate up`. To wait
-longer from your own deploy tooling, pass `ddl_lock_timeout=` to
-`apply_pending` / `apply_pending_locked` (`0` waits indefinitely, at the
-cost of parking every statement on the table behind the queued DDL). The
+longer, pass `taskq migrate up --ddl-lock-timeout SECS`, or
+`ddl_lock_timeout=` to `apply_pending` / `apply_pending_locked` from your
+own deploy tooling (`0` waits indefinitely, at the cost of parking every
+statement on the table behind the queued DDL). The
 bound governs the *wait* only — a statement that already holds its lock,
-such as an index build, is never interrupted by it. `-- taskq:no-transaction`
+such as an index build, is never interrupted by it. The runner's own upgrade
+of the `schema_migrations` ledger (an `ALTER TABLE` before the first
+migration of a run) waits under the same bound and reports the same error,
+naming the ledger instead of a migration. `-- taskq:no-transaction`
 migrations are not bounded: their `CONCURRENTLY` phases wait on heavyweight
 locks by design.
 
@@ -675,6 +680,19 @@ raises, so nothing points you at the call site — audit for them explicitly.
   now records one event per distinct holder a pod finds in its way.
   Dashboards that graphed the old always-rising counter will go flat.
 
+* **`dispatch_scope_by_home_queue` is a deprecated no-op.** The setting
+  (removed from the docs of the old probe-narrowing shape it applied to) is
+  accepted again so configurations that set it keep loading, but dispatch is
+  assignment-routed now and the flag has nothing left to apply. The worker
+  logs a `deprecated-setting-ignored` WARNING at startup when it is set;
+  delete `TASKQ_DISPATCH_SCOPE_BY_HOME_QUEUE` from the environment.
+
+* **Scrubbed exception messages on the `job_exception` / `job_timeout` log
+  lines are bounded at 2000 characters.** The durable `ErrorInfo` row keeps
+  the full text (the admin UI reads it there); only the log line truncates,
+  and it reports the dropped remainder count. The bound follows
+  `TASKQ_EXCEPTION_MESSAGE_MAX_CHARS` when raised.
+
 ### `unique_for`'s default `unique_states` now includes `succeeded`
 
 > **Unreleased.** Breaking for actors using `unique_for` without an
@@ -813,10 +831,15 @@ existing job **of a different actor** used to return that job's handle with
 logged at INFO as an ordinary dedup. It now raises
 `IdempotencyKeyActorMismatchError` (naming both actors, the key, the scope
 and the existing job id) with nothing enqueued; in `enqueue_batch` the whole
-batch is withdrawn. Same-actor hits are unchanged. Keys were always
-documented as unique per scope across actors; namespace them per actor
-(`"send_receipt:order_123"`) or use per-actor `idempotency_scope` values.
-See [jobs-clients.md](jobs-clients.md#idempotency_key).
+batch is withdrawn. `enqueue_batch_fast` aborts the whole COPY either way
+(all-or-nothing bulk-import semantics are unchanged) and now classifies the
+abort the same way: a cross-actor pair raises
+`IdempotencyKeyActorMismatchError`, a same-actor pair keeps
+`DuplicateIdempotencyKeyError`. Same-actor hits on the single and batch
+tiers are unchanged. Keys were always documented as unique per scope across
+actors; namespace them per actor (`"send_receipt:order_123"`) or use
+per-actor `idempotency_scope` values. See
+[jobs-clients.md](jobs-clients.md#idempotency_key).
 
 ### NOTIFY channels embed a hash of the schema: adopt by restart
 
@@ -850,6 +873,43 @@ Anything outside TaskQ that issued `SELECT pg_notify('taskq_wake_<schema>',
 '')` must switch to the derived name; see
 [workers.md](workers.md#internal-components) for the SQL expression.
 
+### Retries at the backoff cap spread over `[cap × (1 − jitter), cap]`
+
+> **Unreleased.** Silent; only the distribution of capped retry delays
+> changes. The documented bounds are unchanged and `jitter=0` remains the
+> identity.
+
+Jitter was applied to the saturated curve value and the draw clipped at the
+effective cap, so the upper half of the band collapsed onto the cap exactly
+and about half of a cohort retrying at the cap came due at the same instant —
+the herd jitter exists to spread, on the retries most likely to follow a
+fleet-wide event. The band is now fitted under the cap before the draw: a
+capped retry (the default exponential policy from attempt 11, any
+`fixed`/`linear` policy whose base reaches the cap, any curve above
+`max_retry_backoff`, every reclaimed cohort at the ceiling) is drawn
+uniformly from `[cap × (1 − jitter), cap]` — `[48 min, 60 min]` for the
+default policy. The RNG path and the row-derived reclaim path (Python and
+SQL) evaluate the same expressions, so they remain bit-for-bit equal. See
+[retries.md](retries.md#jitter).
+
+### Transactional migrations give up waiting for a table lock after 30 s
+
+> **Unreleased.** A migration that previously parked indefinitely behind a
+> lock holder now fails with a typed error; nothing else changes.
+
+Each transactional migration runs under `SET LOCAL lock_timeout` of
+`DEFAULT_MIGRATION_DDL_LOCK_TIMEOUT` (30 s) and raises
+`MigrationLockTimeoutError` — naming the migration (or the runner's own
+ledger upgrade), the bound and the remedy, with the driver's
+`LockNotAvailableError` as its cause — instead of waiting forever with
+every `jobs` statement queued behind it until the fleet's heartbeats gave
+out. Nothing is applied on a timeout; re-run after ending the holder. The
+bound is settable with `taskq migrate up --ddl-lock-timeout` or
+`ddl_lock_timeout=` on `apply_pending` / `apply_pending_locked` (`0`
+restores the unbounded wait). `-- taskq:no-transaction` migrations are
+unaffected. See
+[the migration gave up waiting for a table lock](#the-migration-gave-up-waiting-for-a-table-lock).
+
 ### Migration `01.00.06_01` takes write-blocking index locks
 
 > **Unreleased.** Operational note for the `jobs` / `job_attempts` index
@@ -867,6 +927,11 @@ table the apply can stall the worker fleet's writes for a noticeable window.
   (e.g. right after a prune sweep), on any deployment where `jobs` is large.
   Most deployments see momentary builds — the bounded maintenance sweeps keep
   steady-state `jobs` small.
+- The wait *for* the lock is bounded (`ddl_lock_timeout`, 30 s by default —
+  see [the migration gave up waiting for a table lock](#the-migration-gave-up-waiting-for-a-table-lock)):
+  a session holding `jobs` open fails the migration cleanly instead of parking
+  the fleet behind it. The bound never interrupts a build that already holds
+  its lock.
 - It is transactional *deliberately*: the `CREATE INDEX CONCURRENTLY` form
   deadlocks under the migration runner's own serialized-migrator advisory
   lock (the concurrent build waits on every transaction that started before
@@ -893,7 +958,9 @@ without it (only the cost bound is lost). Like every sibling index
 migration it is a plain `CREATE INDEX` — the build takes a write-blocking
 lock on `jobs`, so on a large `jobs` table build it `CONCURRENTLY` by hand
 first (the statement is in the migration file) and let the migration
-no-op.
+no-op. As with `01.00.06_01`, the wait for the lock is bounded by
+`ddl_lock_timeout` and a held `jobs` fails the migration cleanly rather
+than stalling the fleet; the build itself, once it holds the lock, is not.
 
 ### Bulk cancel and force-deregistration now make bounded committed progress
 
@@ -997,7 +1064,10 @@ handlers emits exactly one `job_failed` ERROR event (`job_id`, `actor`,
 `attempt`, `cause`, `error_class`, plus handler context such as
 `snooze_count` / `consume_budget` / `bucket_name`) — one alertable event per
 dead job, and per-attempt diagnostics at WARNING so retryable attempts
-produce zero ERROR noise. Tracebacks are formatted from the explicit
+produce zero ERROR noise. A retry the row's `schedule_to_close` deadline
+refuses at the write (the job lands `failed` with `cause=DeadlineExceeded`)
+is a terminal failure like any other: it emits the same `job_failed` event
+and fires `on_retry_exhausted` and the `ErrorReporter` once. Tracebacks are formatted from the explicit
 exception object rather than the ambient `sys.exception()`, so handler
 invocations outside an `except` block no longer record `'NoneType: None'`.
 The `terminal-write-failed` event now includes `job_error_traceback` and
@@ -1477,6 +1547,15 @@ changelog becomes the authoritative record and these notes age out.
   `taskq.error_reporter.failures` OTel counter. `report()` takes
   `(job, exception)` — the same argument order as `on_retry_exhausted` —
   and is guarded by the `error_reporter_timeout` setting (default 3 s).
+  The registration's scope is validated at worker startup: a reporter
+  registered at `TRANSIENT` scope (which the hook, running after the
+  actor's scope closed, could never resolve) fails the boot with a
+  `DIError` naming the scope and the allowed ones, where dispatch time
+  previously raised per job. A dispatch that never bootstrapped
+  (in-process runners)
+  degrades instead: the hook is skipped behind a window-gated
+  `error-reporter-defect` WARNING, and a provider resolving to a value
+  without the reporter protocol warns the same way.
 - **`retry_classifier` hook on `@actor`** for exception-instance-level
   retry classification (inspect attributes like HTTP status codes, return
   `RetryOverride` to refine kind/delay per occurrence). Non-`RetryOverride`

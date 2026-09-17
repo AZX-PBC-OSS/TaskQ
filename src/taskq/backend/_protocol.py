@@ -12,7 +12,7 @@ creating a circular dependency through the re-export boundary in
 
 import asyncio
 import re
-from collections.abc import Container, Iterable, Sequence
+from collections.abc import Collection, Container, Iterable, Sequence
 from contextlib import AbstractAsyncContextManager as AsyncContextManager
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -752,6 +752,37 @@ def first_duplicate_idempotency_pair(
         if pair in seen or pair in stored_pairs:
             return pair
         seen.add(pair)
+    return None
+
+
+def duplicate_pair_actor_mismatch(
+    args_list: Iterable[EnqueueArgs],
+    pair: tuple[str, str],
+    stored_actor: str | None,
+) -> tuple[str, str] | None:
+    """``(incoming_actor, existing_actor)`` when the batch write's abort on
+    *pair* spans two actors, else ``None`` (a same-actor duplicate).
+
+    The write aborts at the first item holding *pair* when a committed row
+    (*stored_actor*) already holds it, and otherwise at the second item
+    holding it, whose predecessor in batch order is the holder. The same
+    pure rule serves the COPY tier and the in-memory mirror, so the two
+    backends name the same actors for the same batch — a cross-actor hit
+    is the misuse the single and batch tiers refuse with the typed
+    mismatch error, not a same-actor duplicate.
+    """
+    holders = [
+        args.actor
+        for args in args_list
+        if args.idempotency_key is not None
+        and (args.idempotency_scope, str(args.idempotency_key)) == pair
+    ]
+    if not holders:
+        return None
+    if stored_actor is not None:
+        return (holders[0], stored_actor) if holders[0] != stored_actor else None
+    if len(holders) > 1 and holders[1] != holders[0]:
+        return (holders[1], holders[0])
     return None
 
 
@@ -1659,13 +1690,26 @@ class Backend(Protocol):
         self,
         worker_id: UUID,
         lock_lease: timedelta,
-    ) -> int: ...
+        *,
+        disowned: Collection[UUID] = (),
+    ) -> int:
+        """Renew the lock lease of every running job *worker_id* holds,
+        except the *disowned* ids — rows the worker could not record an
+        outcome for, whose leases must lapse for the reclaim sweep. Returns
+        the number of rows renewed."""
+        ...
 
     async def extend_reservation_leases(
         self,
         worker_id: UUID,
         lock_lease: timedelta,
-    ) -> int: ...
+        *,
+        disowned: Collection[UUID] = (),
+    ) -> int:
+        """Renew the reservation-slot leases of every running job
+        *worker_id* holds, with the same *disowned* exclusion as
+        :meth:`heartbeat_jobs`. Returns the number of slots renewed."""
+        ...
 
     # ── Terminal writes ─────────────────────────────────────────────────
     async def mark_succeeded(
@@ -1896,12 +1940,11 @@ class Backend(Protocol):
         (``GREATEST(attempt - 1, 0)``), no ``job_attempts`` row is written
         (an interruption is not an execution outcome), one ``job_events``
         state_change with ``detail.reason = 'interrupted'`` records the
-        transition, and the row's ``interrupt_count`` is bumped. This is
-        River's soft-stop shape transplanted: the attempt is handed back
-        with its budget untouched
-        (``vendor/river/internal/jobexecutor/job_executor.go``'s
-        ``softStopped`` branch calling ``JobSetStateInterrupted`` with
-        ``max(attempt-1, 0)``).
+        transition, and the row's ``interrupt_count`` is bumped. The
+        hand-back is non-consuming: the attempt is returned with its
+        budget untouched, the ``GREATEST(attempt - 1, 0)`` refund flooring
+        the claim's increment so an interrupted job restarts with the
+        attempts it had not spent.
 
         *hold* > 0 parks the row ``scheduled`` until the releasing process
         is provably gone (a job released while its coroutine may still be
@@ -1916,10 +1959,9 @@ class Backend(Protocol):
         Fenced on ownership, the attempt epoch, and ``cancel_phase = 0``:
         an operator cancel in flight wins and the call returns ``"noop"``
         so the caller routes to the cancel ladder (the row carries the
-        operator's request; the deploy must not launder it into a release —
-        River's ``JobSetStateIfRunningMany`` resolves the same collision
-        the same way, cancelling rather than releasing a row whose
-        ``cancel_attempted_at`` is set).
+        operator's request; the deploy must not launder it into a release:
+        a row whose ``cancel_attempted_at`` is set terminalises as
+        cancelled, never as available).
 
         *attempt* is the attempt-identity epoch — see
         :meth:`mark_succeeded`. Here it is required, not optional: a

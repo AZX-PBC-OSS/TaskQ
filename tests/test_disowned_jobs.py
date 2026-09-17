@@ -5,8 +5,7 @@ the row is left ``running`` and the documented recovery is lock-lease
 expiry. That recovery only works if this worker's heartbeat stops
 extending the row's lease: the renewal is keyed by ``locked_by_worker``,
 so without a per-worker disowned set the row would be renewed for as long
-as the process lived. pgqueuer and pg-boss renew by explicit job-id set
-for the same reason; these tests pin the disowned set at both ends —
+as the process lived. These tests pin the disowned set at both ends —
 the consumer records it, the heartbeat honours and prunes it, and the
 producer clears it when the fleet hands the row back to this worker.
 """
@@ -440,6 +439,70 @@ async def test_heartbeat_skips_the_prune_probe_when_nothing_is_disowned() -> Non
     assert list(cast(list[UUID], args[2])) == []
 
 
+# ── The backend's own renewal methods carry the same exclusion ──────────
+
+
+async def _two_running_jobs(backend: Backend) -> tuple[UUID, list[UUID]]:
+    """Two running rows locked to one worker on *backend*, whichever twin
+    (``actor_a`` is seeded on both by the fixture)."""
+    worker_id = new_uuid()
+    ids: list[UUID] = []
+    for _ in range(2):
+        args = EnqueueArgs(
+            id=new_job_id(),
+            actor="actor_a",
+            queue="default",
+            payload={},
+            max_attempts=1,
+            retry_kind="transient",
+            scheduled_at=None,
+        )
+        await backend.enqueue(args)
+        ids.append(args.id)
+    dispatched = await backend.dispatch_batch(
+        worker_id, ["default"], limit=2, lock_lease=timedelta(seconds=60)
+    )
+    assert {j.id for j in dispatched} == set(ids), "fixture broken: claim"
+    return worker_id, ids
+
+
+async def _leases(backend: Backend, ids: list[UUID]) -> dict[UUID, datetime]:
+    leases: dict[UUID, datetime] = {}
+    for job_id in ids:
+        row = await backend.get(job_id)
+        assert row is not None and row.lock_expires_at is not None, "fixture broken: not running"
+        leases[job_id] = row.lock_expires_at
+    return leases
+
+
+@pytest.mark.integration
+async def test_backend_heartbeat_jobs_skips_the_disowned_rows(backend_pair: Backend) -> None:
+    """The renewal the backend exposes is the one the worker's heartbeat
+    issues: a disowned id is excluded from it on both twins, so a caller
+    of the protocol cannot renew a lease the worker has given up."""
+    worker_id, (disowned, sibling) = await _two_running_jobs(backend_pair)
+    before = await _leases(backend_pair, [disowned, sibling])
+
+    renewed = await backend_pair.heartbeat_jobs(
+        worker_id, timedelta(seconds=120), disowned=[disowned]
+    )
+
+    assert renewed == 1
+    after = await _leases(backend_pair, [disowned, sibling])
+    assert after[disowned] == before[disowned]
+    assert after[sibling] > before[sibling]
+
+
+@pytest.mark.integration
+async def test_backend_heartbeat_jobs_with_nothing_disowned_renews_every_row(
+    backend_pair: Backend,
+) -> None:
+    worker_id, ids = await _two_running_jobs(backend_pair)
+    assert await backend_pair.heartbeat_jobs(worker_id, timedelta(seconds=120)) == 2
+    assert await backend_pair.heartbeat_jobs(worker_id, timedelta(seconds=120), disowned=[]) == 2
+    assert await backend_pair.heartbeat_jobs(worker_id, timedelta(seconds=120), disowned=ids) == 0
+
+
 # ── Producer side: a row handed back to this worker is owned again ──────
 
 
@@ -559,6 +622,12 @@ async def test_disowned_row_lease_lapses_and_the_sweep_reclaims_it(
 
     await _one_tick(deps, worker_id)
     assert deps.disowned_jobs == set()
+
+    # The common tick binds an empty disowned array against live Postgres
+    # and still renews everything this worker holds.
+    sibling_lease = await _lease(sibling_id)
+    await _one_tick(deps, worker_id)
+    assert await _lease(sibling_id) > sibling_lease
 
 
 # ── The consumer loop's own release: an unregistered actor's row ────────

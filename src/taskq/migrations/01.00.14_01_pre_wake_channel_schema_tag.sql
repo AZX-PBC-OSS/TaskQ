@@ -19,13 +19,16 @@
 -- exact (case-preserved) name, the same text the application hashes.
 --
 -- ── The trigger is the sole wake source for inserts ────────────────────
--- Every enqueue path (single INSERT, batch INSERT, COPY) relies on this
--- trigger to wake dispatchers; the application issues no pg_notify of its
--- own after an INSERT. The WHEN clause is what keeps a future-dated row
--- from waking the fleet: every insert path decides status server-side
--- (scheduled_at in the future => 'scheduled'), so 'pending' means
--- dispatchable now. Postgres coalesces identical (channel, payload)
--- notifications within one transaction, so a batch costs one delivery.
+-- The single and batch INSERT paths rely on this trigger to wake
+-- dispatchers and issue no pg_notify of their own. The WHEN clause is
+-- what keeps a future-dated row from waking the fleet: those paths decide
+-- status server-side in the INSERT (scheduled_at in the future =>
+-- 'scheduled'), so 'pending' means dispatchable now. The COPY path cannot
+-- decide status in its write, so its rows land 'scheduled' (the trigger
+-- stays silent) and its fixup UPDATE, which flips the runnable rows to
+-- 'pending', issues the one wake itself only when it flipped any.
+-- Postgres coalesces identical (channel, payload) notifications within
+-- one transaction, so a batch costs one delivery.
 --
 -- ROLLING DEPLOY: the previous release's workers LISTEN on the old
 -- 'taskq_wake_' || schema name and stop receiving wakes once this applies;

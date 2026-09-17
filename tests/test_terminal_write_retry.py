@@ -3,8 +3,7 @@
 A sub-second Postgres blip during the one statement that records a job's
 outcome must not cost the fleet a full at-least-once re-execution (or,
 before the lease is disowned, a stranded row). The consumer retries the
-pool-path terminal writes a bounded number of times with backoff — the
-shape River's job completer and Oban's executor use — and only then
+pool-path terminal writes a bounded number of times with backoff, and only then
 reports the write as failed. Fence outcomes are not retried: a write that
 matched nothing is an answer, not an outage.
 """
@@ -186,9 +185,11 @@ async def test_success_write_lands_after_two_blips() -> None:
 
 
 async def test_write_that_keeps_failing_is_reported_after_the_budget() -> None:
-    """Three failures exhaust the budget: the write is reported as failed
-    exactly once (the existing terminal-write-failed contract), the row
-    stays running for lease reclaim, and no fourth attempt is made."""
+    """Four failures exhaust the attempt budget: the write is reported as
+    failed exactly once (the existing terminal-write-failed contract), the
+    row stays running for lease reclaim, and no fifth attempt is made. The
+    third wait (800 ms) is the one that turns a blip of a few hundred
+    milliseconds into a landed write instead of an at-least-once re-run."""
     backend = _BlippingBackend(failures=10, clock=FakeClock(start=_START))
     job, worker_id = await _running_job(backend)
 
@@ -198,12 +199,60 @@ async def test_write_that_keeps_failing_is_reported_after_the_budget() -> None:
     row = await backend.get(job.id)
     assert row is not None
     assert row.status == "running"
-    assert backend.write_calls == 3
-    assert [e["attempt"] for e in _events(captured, "terminal-write-retry")] == [1, 2]
+    assert backend.write_calls == 4
+    retries = _events(captured, "terminal-write-retry")
+    assert [e["attempt"] for e in retries] == [1, 2, 3]
+    assert [e["retry_in_ms"] for e in retries] == pytest.approx([50, 200, 800], rel=0.25)
     failed = _events(captured, "terminal-write-failed")
     assert len(failed) == 1
     assert failed[0]["infra_error_class"] == "OSError"
     assert failed[0]["job_error_class"] == "ValueError"
+
+
+async def test_slow_failures_are_bounded_by_wall_time_not_only_by_attempts() -> None:
+    """Each attempt against a black-holed Postgres costs a full statement
+    timeout, so counting attempts alone would hold a consumer slot for
+    attempts times the timeout. The budget is wall time from the first attempt: a
+    retry whose wait would end past it is not made, and the exhausted
+    budget is reported the same way."""
+    from taskq.testing.jobs import make_job_row
+    from taskq.worker._handlers import (
+        _TERMINAL_WRITE_BUDGET,
+        _terminal_write_with_retry,
+    )
+
+    now = 0.0
+    attempt_cost = _TERMINAL_WRITE_BUDGET.total_seconds() * 0.6
+
+    def monotonic() -> float:
+        return now
+
+    calls = 0
+
+    async def slow_failing_write() -> bool:
+        nonlocal now, calls
+        calls += 1
+        now += attempt_cost
+        raise TimeoutError("statement timed out")
+
+    with structlog.testing.capture_logs() as captured, pytest.raises(TimeoutError):
+        await _terminal_write_with_retry(
+            slow_failing_write,
+            log=structlog.get_logger("test"),
+            job=make_job_row(),
+            write_name="mark_succeeded",
+            monotonic=monotonic,
+        )
+
+    # Attempt 1 ends at 0.6 of the budget; the 50 ms wait fits, attempt 2 ends
+    # at 1.2 of the budget, and no wait fits after that.
+    assert calls == 2
+    retries = _events(captured, "terminal-write-retry")
+    assert [e["attempt"] for e in retries] == [1]
+    exhausted = _events(captured, "terminal-write-retry-budget-exhausted")
+    assert len(exhausted) == 1
+    assert exhausted[0]["attempt"] == 2
+    assert exhausted[0]["budget_ms"] == int(_TERMINAL_WRITE_BUDGET.total_seconds() * 1000)
 
 
 # ── What the retry never touches: fences and defects ────────────────────
@@ -258,3 +307,156 @@ async def test_a_defect_in_the_write_stays_loud_on_the_first_raise() -> None:
         )
 
     assert calls == 1
+
+
+# ── The cancel path retries too ─────────────────────────────────────────
+
+
+class _ConsumerDeps:
+    def __init__(self) -> None:
+        self.disowned_jobs: set[UUID] = set()
+        self.progress_buffers: dict[UUID, object] = {}
+        self.redis_client = None
+        self.worker_pool = None
+        self.settings = None
+
+
+async def _cancelled_consume(
+    backend: InMemoryBackend, job: JobRow, worker_id: UUID, deps: _ConsumerDeps
+) -> list[EventDict]:
+    """Run the consumer with a cooperative actor and cancel it once the
+    actor is inside its body; returns the captured log events."""
+    import asyncio
+    from typing import Any, cast
+
+    from taskq.worker.cancel import ActiveJobRegistry
+    from taskq.worker.deps import WorkerDeps
+
+    actor_entered = asyncio.Event()
+
+    async def blocking_actor(_job: object, ctx: Any) -> object:
+        actor_entered.set()
+        await ctx.cancel_event.wait()
+
+    with structlog.testing.capture_logs() as captured:
+        task = asyncio.create_task(
+            consume_one_job(
+                backend,
+                job,
+                worker_id,
+                deps=cast(WorkerDeps, deps),
+                run_actor=blocking_actor,
+                actor_config=StubActorConfig(retry=RetryPolicy(jitter=0.0)),
+                payload_type=EmptyPayload,
+                clock=FakeClock(start=_START),
+                active_jobs=ActiveJobRegistry(),
+            )
+        )
+        await asyncio.wait_for(actor_entered.wait(), timeout=5.0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    return captured
+
+
+class _BlippingCancelBackend(_BlippingBackend):
+    async def mark_cancelled(
+        self,
+        job_id: JobId,
+        worker_id: UUID,
+        progress_seq: int = 0,
+        progress_state: dict[str, object] | None = None,
+        *,
+        attempt: int | None = None,
+    ) -> bool:
+        self._maybe_blip()
+        return await super().mark_cancelled(
+            job_id, worker_id, progress_seq, progress_state, attempt=attempt
+        )
+
+
+async def test_cancel_write_lands_after_two_blips() -> None:
+    """An operator cancel's terminal write is a state write like any
+    other: a blip is retried inside the cancellation handler, the row
+    ends cancelled, nothing is disowned, and the cancellation still
+    propagates."""
+    backend = _BlippingCancelBackend(failures=2, clock=FakeClock(start=_START))
+    job, worker_id = await _running_job(backend)
+    deps = _ConsumerDeps()
+
+    captured = await _cancelled_consume(backend, job, worker_id, deps)
+
+    row = await backend.get(job.id)
+    assert row is not None and row.status == "cancelled"
+    assert backend.write_calls == 3
+    assert [e["attempt"] for e in _events(captured, "terminal-write-retry")] == [1, 2]
+    assert _events(captured, "terminal-write-failed") == []
+    assert deps.disowned_jobs == set()
+
+
+async def test_cancel_write_that_keeps_failing_is_disowned_after_the_budget() -> None:
+    backend = _BlippingCancelBackend(failures=10, clock=FakeClock(start=_START))
+    job, worker_id = await _running_job(backend)
+    deps = _ConsumerDeps()
+
+    captured = await _cancelled_consume(backend, job, worker_id, deps)
+
+    row = await backend.get(job.id)
+    assert row is not None and row.status == "running"
+    assert backend.write_calls == 4
+    assert len(_events(captured, "terminal-write-failed")) == 1
+    assert deps.disowned_jobs == {job.id}
+
+
+async def test_a_second_cancel_during_a_cancel_write_retry_wait_disowns_the_job() -> None:
+    """A forced escalation (or the shutdown's FORCING phase) cancels the
+    task again while the handler is waiting to retry: no write is in
+    flight and the row is still this worker's, so it is disowned before
+    the cancellation propagates — a retry the escalation cut short must
+    not leave the lease renewed for a row nothing will move."""
+    import asyncio
+    from typing import Any, cast
+
+    from taskq.worker.cancel import ActiveJobRegistry
+    from taskq.worker.deps import WorkerDeps
+
+    backend = _BlippingCancelBackend(failures=10, clock=FakeClock(start=_START))
+    job, worker_id = await _running_job(backend)
+    deps = _ConsumerDeps()
+    actor_entered = asyncio.Event()
+    first_blip = asyncio.Event()
+
+    async def blocking_actor(_job: object, ctx: Any) -> object:
+        actor_entered.set()
+        await ctx.cancel_event.wait()
+
+    original_blip = backend._maybe_blip  # pyright: ignore[reportPrivateUsage]  # Why: the test signals on the first failed write to time the second cancel into the retry wait.
+
+    def _blip_and_signal() -> None:
+        first_blip.set()
+        original_blip()
+
+    backend._maybe_blip = _blip_and_signal  # type: ignore[method-assign]  # Why: as above.
+
+    task = asyncio.create_task(
+        consume_one_job(
+            backend,
+            job,
+            worker_id,
+            deps=cast(WorkerDeps, deps),
+            run_actor=blocking_actor,
+            actor_config=StubActorConfig(retry=RetryPolicy(jitter=0.0)),
+            payload_type=EmptyPayload,
+            clock=FakeClock(start=_START),
+            active_jobs=ActiveJobRegistry(),
+        )
+    )
+    await asyncio.wait_for(actor_entered.wait(), timeout=5.0)
+    task.cancel()
+    await asyncio.wait_for(first_blip.wait(), timeout=5.0)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert backend.write_calls == 1, "the second cancel must cut the retry short"
+    assert deps.disowned_jobs == {job.id}

@@ -37,7 +37,6 @@ from taskq.batch import apply_batch_terminal_outcome
 from taskq.client._enqueuer import SubJobEnqueuer
 from taskq.constants import DEFAULT_MAX_RETRY_BACKOFF
 from taskq.context import JobContext
-from taskq.exceptions import DIError
 from taskq.obs import (
     ConsumedOutcome,
     ErrorReporter,
@@ -45,6 +44,7 @@ from taskq.obs import (
     get_logger,
     record_consumed_message,
     record_process_duration,
+    record_queue_wait,
     record_slot_pool_acquire_failure,
     safe_start_span,
 )
@@ -128,22 +128,21 @@ class SlotPoolAcquireError(Exception):
 _SLOT_CONN_INIT_APPLIED_ATTR: Final[str] = "taskq_slot_conn_init_applied"
 
 
-def _to_consumed_outcome(attempt_outcome: str) -> ConsumedOutcome:
-    """Map an AttemptOutcome to the semconv-valid ConsumedOutcome label set.
+def _to_consumed_outcome(attempt_outcome: AttemptOutcome) -> ConsumedOutcome:
+    """Map an AttemptOutcome onto the consumed-messages ``outcome`` label.
 
-    ``AttemptOutcome`` includes ``"scheduled"`` for snooze/retry/reservation-denial
-    and ``"noop"`` for a terminal write that matched nothing (the job moved
-    underneath this worker), neither of which is in the instrument 2 valid set
-    ``{succeeded, failed, cancelled, abandoned}``.  ``"noop`` outcomes never
-    reach the consumed-message recorder — ``dispatch_one_job``'s finally
-    block skips both job-outcome metrics for them (nothing was consumed;
-    the re-dispatch records the real message and duration) — so this
-    mapping exists for ``"scheduled"`` and as a defensive total map should
-    any other caller pass a noop through.
+    The two sets differ by one value: ``"noop"``, a terminal write that
+    matched nothing because the job moved underneath this worker. A noop
+    consumed nothing — the re-dispatch records the real message and
+    duration — so ``dispatch_one_job``'s finally block skips both
+    job-outcome metrics for it, and a noop reaching this map is a caller
+    defect, refused rather than relabelled. Every other value, ``scheduled``
+    included, is recorded as itself: a snooze or retry released the row
+    back to the queue, which is not abandonment.
     """
-    if attempt_outcome in ("scheduled", "noop"):
-        return "abandoned"
-    return attempt_outcome  # type: ignore[return-value]  # Why: AttemptOutcome is Literal["succeeded","failed","cancelled","scheduled","noop"]; after the released-back-to-queue branch the remaining values are exactly the ConsumedOutcome union but pyright cannot narrow across the return-site coercion
+    if attempt_outcome == "noop":
+        raise ValueError("a noop attempt consumed nothing and has no consumed-message outcome")
+    return attempt_outcome
 
 
 def _effective_reservations(
@@ -192,10 +191,16 @@ async def _resolve_error_reporter(
     through the same resolved-cache seam the rate-limit registry and the
     transaction connection use.
 
-    A TRANSIENT registration is refused here rather than silently
-    ignored: nothing per-invocation is reachable for a hook that runs
-    after the actor's scope has closed, and a reporter that never fires
-    is indistinguishable from a healthy fleet with no failures.
+    A TRANSIENT registration is degraded here rather than failing the job:
+    a per-job raise turned one misregistration into every job of every
+    actor dying before payload validation, each burning its retry budget,
+    which is an outage with a config-error root cause. Worker startup is
+    the loud gate for the same shape (it refuses the registration before
+    any job exists); this per-job guard only backstops paths that never
+    bootstrapped, so it proceeds without a reporter behind a window-gated
+    WARNING. A reporter that never fires is indistinguishable from a
+    healthy fleet with no failures, which is why the degradation is
+    logged at all.
     """
     if not registry.has_provider(ErrorReporter):
         return None
@@ -209,11 +214,46 @@ async def _resolve_error_reporter(
         case Scope.LOOP:
             raw = loop_scope.resolved_cache().get(ErrorReporter)
         case _:
-            raise DIError(
-                f"ErrorReporter is registered at {entry.scope.name} scope; a terminal-failure "
-                "hook outlives the actor invocation and must be PROCESS, THREAD or LOOP scoped"
-            )
-    return raw if isinstance(raw, ErrorReporter) else None
+            _warn_reporter_defect("scope", entry.scope.name)
+            return None
+    if isinstance(raw, ErrorReporter):
+        return raw
+    _warn_reporter_defect("type", type(raw).__name__ if raw is not None else "None")
+    return None
+
+
+_REPORTER_DEFECT_LOG_WINDOW_S: Final[float] = 60.0
+"""Minimum seconds between two ``error-reporter-defect`` WARNINGs, keyed by
+defect kind (bounded: the two-element vocabulary). A misregistered reporter
+resolves on every job, so one line per occurrence is a log flood, not a
+signal."""
+
+_reporter_defect_warned: dict[str, float] = {}
+"""Monotonic stamp of the last emitted reporter-defect WARNING, keyed by
+defect kind."""
+
+
+def _warn_reporter_defect(kind: str, detail: str) -> None:
+    """Emit the ``error-reporter-defect`` WARNING at most once per window.
+
+    *kind* is ``scope`` (a registration at a scope the hook cannot outlive,
+    with the registered scope name as *detail*) or ``type`` (a provider that
+    resolved to a value without the reporter protocol, with the runtime type
+    as *detail*). The hook is skipped either way: a broken reporter is a
+    misconfiguration, not a job outcome, so the job's own failure handling
+    proceeds untouched.
+    """
+    now = time.monotonic()
+    last = _reporter_defect_warned.get(kind)
+    if last is not None and now - last < _REPORTER_DEFECT_LOG_WINDOW_S:
+        return
+    _reporter_defect_warned[kind] = now
+    logger.warning(
+        "error-reporter-defect",
+        kind="error_reporter_defect",
+        defect=kind,
+        detail=detail,
+    )
 
 
 async def _ensure_registered_init_on_slot_conn(
@@ -530,6 +570,15 @@ async def dispatch_one_job(
             raw_conn = loop_scope.resolved_cache().get(asyncpg.Connection)
             if raw_conn is not None:
                 transaction_conn = cast(asyncpg.Connection, raw_conn)  # pyright: ignore[reportUnknownVariableType,reportAssignmentType]  # Why: resolved_cache returns Mapping[type, object]; the DI resolver guarantees the value registered under asyncpg.Connection is one, matching bootstrap's and the enqueuer's trust of the same key.
+        # Queue wait from the claimed row's own server-clock stamps, outside
+        # the span for sampling independence; a row a test left unstamped
+        # records nothing rather than a guess.
+        if job.started_at is not None:
+            record_queue_wait(
+                job.actor,
+                job.queue,
+                max(0.0, (job.started_at - job.scheduled_at).total_seconds()),
+            )
         t0 = time.monotonic()
         outcome: AttemptOutcome = "failed"
 
@@ -764,7 +813,8 @@ async def dispatch_one_job(
             # would double-count the message and stretch the histogram
             # with a phantom process.
             if outcome != "noop":
-                record_consumed_message(job.actor, job.queue, outcome=_to_consumed_outcome(outcome))
-                record_process_duration(job.actor, job.queue, elapsed)
+                consumed = _to_consumed_outcome(outcome)
+                record_consumed_message(job.actor, job.queue, outcome=consumed)
+                record_process_duration(job.actor, job.queue, elapsed, outcome=consumed)
 
     return outcome

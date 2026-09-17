@@ -148,12 +148,20 @@ CRON_TICK_SQL_TEMPLATE: Final = (
 """The tick's one opening statement: the cron try-lock ($1 = the lock
 name), the planning clock, and the due read ($2 = the batch limit).
 
-Formatted with ``schema``; the plan-shape audit
-(``tests/test_index_audit.py``) explains this same text, so the
+Rendered by :func:`cron_tick_sql`; the plan-shape audit
+(``tests/test_index_audit.py``) explains the same rendering, so the
 index-servable due bound cannot drift there unnoticed. See
 :func:`tick_cron` for why the three ride one statement and why the due
 bound is ``statement_timestamp()``.
 """
+
+
+def cron_tick_sql(schema: str) -> str:
+    """The tick statement for *schema* — token replacement, like every
+    other schema interpolation, so a literal brace in the template can
+    never turn a tick into a ``KeyError``."""
+    return CRON_TICK_SQL_TEMPLATE.replace("{schema}", schema)
+
 
 # The commit-gate channel — ``cron_commit_gate_channel(schema)`` in
 # ``taskq.constants`` — is the self-addressed channel the tick uses to
@@ -996,8 +1004,8 @@ async def tick_cron(
 
     tick_started = time.monotonic()
     lock_name = schema_lock_name("cron", schema)
-    # One statement for the try-lock, the planning clock and the due read
-    # (pg-boss folds its cron lock into the read the same way): the leader
+    # One statement for the try-lock, the planning clock and the due read:
+    # the leader
     # ticks once a second and is idle almost always, so the idle tick's
     # cost is the round-trip count. The lock sits in a MATERIALIZED CTE
     # so it is taken exactly once and before the read; the LATERAL read is
@@ -1017,7 +1025,7 @@ async def tick_cron(
     # every croniter seed and the due bound come from one server-side
     # reading, so a due row is never "in the future" of its own seed.
     tick_rows: list[asyncpg.Record] = await conn.fetch(
-        CRON_TICK_SQL_TEMPLATE.format(schema=schema),
+        cron_tick_sql(schema),
         lock_name,
         limit,
     )

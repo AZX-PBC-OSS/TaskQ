@@ -3,7 +3,7 @@
 Inspects a callable's signature, resolves each parameter through the
 provider registry and scope containers, and returns a kwargs dict
 suitable for ``**kwargs`` injection. The engine never calls factories
-directly and never touches an AsyncExitStack — that is the container's
+directly and never registers a teardown — that is the container's
 responsibility.
 """
 

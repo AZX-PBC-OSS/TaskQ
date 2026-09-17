@@ -30,22 +30,14 @@ from __future__ import annotations
 import asyncio
 from uuid import UUID
 
-import structlog
-from pydantic import BaseModel
-
 from taskq._ids import new_uuid
-from taskq.backend.clock import SystemClock
-from taskq.client._enqueuer import SubJobEnqueuer
 from taskq.context import JobContext
 from taskq.progress._buffer import _ProgressBuffer
 from taskq.settings import WorkerSettings
-from taskq.testing.in_memory import InMemoryBackend
+from taskq.testing.in_memory import PassthroughPayload
+from tests._progress_context import make_progress_context
 
 _DSN = "postgresql://u:p@h:5432/db"
-
-
-class _Payload(BaseModel):
-    n: int = 0
 
 
 class _FakePipeline:
@@ -106,21 +98,16 @@ def _ctx(
     pending: set[asyncio.Task[None]],
     buffers: dict[UUID, _ProgressBuffer],
     job_id: UUID,
-) -> JobContext[_Payload]:
+) -> JobContext[PassthroughPayload]:
     buffers[job_id] = _ProgressBuffer(job_id=job_id, base_seq=0)
-    return JobContext(
-        job_id=job_id,
+    return make_progress_context(
+        buffers,
+        job_id,
         actor="progress_actor",
-        queue="default",
-        attempt=1,
         worker_id=new_uuid(),
-        payload=_Payload(),
-        jobs=SubJobEnqueuer(None, None, InMemoryBackend(SystemClock())),
-        log=structlog.get_logger("test_rt_pools_publish_task_lifecycle"),
-        _progress_buffers=buffers,
-        _redis_client=redis,
-        _worker_settings=settings,
-        _pending_publish_tasks=pending,
+        settings=settings,
+        redis_client=redis,
+        pending_publish_tasks=pending,
     )
 
 

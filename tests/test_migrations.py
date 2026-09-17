@@ -124,13 +124,15 @@ async def test_copy_enqueue_columns_are_copy_from_minus_server_stamped(
     from COPY: nullable or carrying a DDL default — a NOT NULL column
     without a default would make the COPY insert fail outright.  Order is
     positional (the record tuples are built by hand), so it must be a
-    order-preserving subsequence of COPY_FROM_COLUMNS."""
-    from taskq.backend._sql_templates import COPY_ENQUEUE_COLUMNS
+    order-preserving subsequence of COPY_FROM_COLUMNS.  ``status`` is
+    written explicitly, as a status the INSERT trigger's gate ignores."""
+    from taskq.backend._sql_templates import COPY_ENQUEUE_COLUMNS, COPY_ENQUEUE_STATUS
 
     await migrate_mod.apply_pending(pg_conn, schema=settings.schema_name)
 
+    assert "status" in COPY_ENQUEUE_COLUMNS
+    assert COPY_ENQUEUE_STATUS != "pending"
     omitted = {
-        "status",
         "created_at",
         "scheduled_at",
         "schedule_to_close",

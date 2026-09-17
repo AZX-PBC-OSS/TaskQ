@@ -159,7 +159,10 @@ def _assert_member_access_is_open_members_index_only(plan: str, name: str) -> No
         for line in jobs_nodes
         if "Seq Scan" in line or ("using " in line and _OPEN_MEMBERS_INDEX not in line)
     ]
-    bitmap_indexes = [line for line in lines if "Bitmap Index Scan on" in line]
+    # Every index on jobs is jobs_-prefixed (the migrations' naming), so a
+    # bitmap index scan on another table's index (the sweep's batches
+    # window) is not member access.
+    bitmap_indexes = [line for line in lines if "Bitmap Index Scan on jobs_" in line]
     other_access += [line for line in bitmap_indexes if _OPEN_MEMBERS_INDEX not in line]
     assert not other_access, (
         f"{name} reaches member jobs other than through {_OPEN_MEMBERS_INDEX}:\n{plan}"
@@ -189,6 +192,34 @@ async def test_counter_writes_count_members_only_through_the_open_members_index(
     ):
         plan = await _explain(conn, statement, bid, str(bid))
         _assert_member_access_is_open_members_index_only(plan, name)
+
+
+async def test_counter_writes_skip_the_member_probe_when_the_batch_row_did_not_update(
+    seeded_schema: Any,
+) -> None:
+    """A missing or inactive batch row updates nothing, and the member
+    probe hangs off the UPDATE's returned rows as a LATERAL: with none, the
+    probe's index scan is never executed. An unconditional probe would pay
+    the seek for a batch the hook has nothing to count for."""
+    conn, schema, _bid = seeded_schema
+    sql = render_batch_sql(schema)
+    missing = new_uuid()
+
+    for name, statement in (
+        ("increment_batch_failures", sql.increment_batch_failures),
+        ("reset_batch_failures", sql.reset_batch_failures),
+    ):
+        rows = await conn.fetch(
+            f"EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) {statement}",
+            missing,
+            str(missing),
+        )
+        plan = "\n".join(r["QUERY PLAN"] for r in rows)
+        probe_nodes = [line for line in plan.splitlines() if " on jobs" in line]
+        assert probe_nodes, f"{name}: the member probe is missing from the plan:\n{plan}"
+        assert all("(never executed)" in line for line in probe_nodes), (
+            f"{name} probed members of a batch row it did not update:\n{plan}"
+        )
 
 
 async def test_counter_writes_return_the_index_served_open_member_count(
@@ -227,6 +258,22 @@ async def test_complete_batch_probe_is_served_by_the_open_members_index(
     plan = await _explain(conn, sql.complete_batch, bid, str(bid))
 
     _assert_member_access_is_open_members_index_only(plan, "complete_batch")
+
+
+async def test_stale_batch_sweep_probes_members_through_the_open_members_index(
+    seeded_schema: Any,
+) -> None:
+    """The leader's complete_stale_batches asks the same question per
+    active batch — any member still open? — and is served by the same
+    index, so a fleet with large batches does not pay a member walk per
+    batch on every sweep tick."""
+    from taskq.worker._leader_shared import complete_stale_batches_sql
+
+    conn, schema, _bid = seeded_schema
+
+    plan = await _explain(conn, complete_stale_batches_sql(schema), 100)
+
+    _assert_member_access_is_open_members_index_only(plan, "complete_stale_batches")
 
 
 async def test_count_batch_non_terminal_matches_the_containment_predicate(

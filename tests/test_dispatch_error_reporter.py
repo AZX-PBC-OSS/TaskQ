@@ -16,11 +16,11 @@ from uuid import UUID
 
 import asyncpg
 import pytest
+import structlog
 from pydantic import BaseModel, ConfigDict
 
 from taskq._di.registry import ProviderRegistry
 from taskq._di.scope import Scope
-from taskq._di.scopes import LoopScope, ProcessScope, ThreadScope, make_resolver
 from taskq._ids import new_job_id
 from taskq.actor import ActorRef
 from taskq.backend._protocol import EnqueueArgs, JobRow, RetryKind
@@ -34,6 +34,7 @@ from taskq.testing.clock import FakeClock
 from taskq.testing.in_memory import InMemoryBackend
 from taskq.worker.cancel import ActiveJobRegistry
 from taskq.worker.dispatch import dispatch_one_job
+from tests._di_scopes import BootstrappedScopes
 
 _START = datetime(2026, 1, 1, tzinfo=UTC)
 _ACTOR = "reporting_actor"
@@ -76,36 +77,6 @@ class _FakeWorkerDeps:
         self.disowned_jobs: set[UUID] = set()
 
 
-class _Scopes:
-    """A bootstrapped PROCESS/THREAD/LOOP scope chain over *registry*."""
-
-    def __init__(self, registry: ProviderRegistry) -> None:
-        self.registry = registry
-
-    async def __aenter__(self) -> _Scopes:
-        self.registry.validate()
-        containers: dict[Scope, Any] = {}
-        resolver = make_resolver(self.registry, containers)
-        self.process_scope = ProcessScope(resolver=resolver)
-        self.thread_scope = ThreadScope(resolver=resolver)
-        self.loop_scope = LoopScope(resolver=resolver)
-        containers[Scope.PROCESS] = self.process_scope
-        containers[Scope.THREAD] = self.thread_scope
-        containers[Scope.LOOP] = self.loop_scope
-        settings = WorkerSettings.load_from_dict(
-            {"PG_DSN": "postgres://u:p@localhost:5432/db"},
-        )
-        await self.process_scope.bootstrap(self.registry, settings)
-        await self.thread_scope.bootstrap(self.registry, self.process_scope)
-        await self.loop_scope.bootstrap(self.registry, self.process_scope, self.thread_scope)
-        return self
-
-    async def __aexit__(self, *exc: object) -> None:
-        await self.loop_scope.shutdown()
-        await self.thread_scope.shutdown()
-        await self.process_scope.shutdown()
-
-
 async def _running_job(
     backend: InMemoryBackend,
     *,
@@ -132,7 +103,9 @@ async def _running_job(
     return dispatched[0], worker_id
 
 
-async def _dispatch(scopes: _Scopes, backend: InMemoryBackend, job: JobRow, worker_id: Any) -> str:
+async def _dispatch(
+    scopes: BootstrappedScopes, backend: InMemoryBackend, job: JobRow, worker_id: Any
+) -> str:
     actor_ref: ActorRef[_Payload, None] = ActorRef(
         name=_ACTOR,
         queue="default",
@@ -171,7 +144,7 @@ async def test_process_scoped_reporter_receives_the_terminal_failure() -> None:
     backend = InMemoryBackend(clock=FakeClock(start=_START))
     job, worker_id = await _running_job(backend, retry_kind="non_retryable", max_attempts=1)
 
-    async with _Scopes(registry) as scopes:
+    async with BootstrappedScopes(registry) as scopes:
         outcome = await _dispatch(scopes, backend, job, worker_id)
 
     assert outcome == "failed"
@@ -196,7 +169,7 @@ async def test_other_long_lived_scopes_resolve_the_reporter_the_same_way(scope: 
     backend = InMemoryBackend(clock=FakeClock(start=_START))
     job, worker_id = await _running_job(backend, retry_kind="non_retryable", max_attempts=1)
 
-    async with _Scopes(registry) as scopes:
+    async with BootstrappedScopes(registry) as scopes:
         outcome = await _dispatch(scopes, backend, job, worker_id)
 
     assert outcome == "failed"
@@ -213,7 +186,7 @@ async def test_reporter_is_silent_while_retries_remain() -> None:
     backend = InMemoryBackend(clock=FakeClock(start=_START))
     job, worker_id = await _running_job(backend, retry_kind="transient", max_attempts=3)
 
-    async with _Scopes(registry) as scopes:
+    async with BootstrappedScopes(registry) as scopes:
         outcome = await _dispatch(scopes, backend, job, worker_id)
 
     assert outcome == "scheduled"
@@ -226,7 +199,7 @@ async def test_no_registered_reporter_dispatches_normally() -> None:
     backend = InMemoryBackend(clock=FakeClock(start=_START))
     job, worker_id = await _running_job(backend, retry_kind="non_retryable", max_attempts=1)
 
-    async with _Scopes(ProviderRegistry()) as scopes:
+    async with BootstrappedScopes(ProviderRegistry()) as scopes:
         outcome = await _dispatch(scopes, backend, job, worker_id)
 
     assert outcome == "failed"
@@ -246,7 +219,7 @@ async def test_pre_actor_failure_reports_through_the_same_hook() -> None:
         backend, retry_kind="transient", max_attempts=3, payload={"unexpected": 1}
     )
 
-    async with _Scopes(registry) as scopes:
+    async with BootstrappedScopes(registry) as scopes:
         outcome = await _dispatch(scopes, backend, job, worker_id)
 
     assert outcome == "failed"
@@ -255,21 +228,69 @@ async def test_pre_actor_failure_reports_through_the_same_hook() -> None:
     ]
 
 
-async def test_transient_scoped_reporter_is_refused_on_the_job() -> None:
+async def test_transient_scoped_reporter_degrades_with_a_window_gated_warning() -> None:
     """A terminal-failure hook outlives the actor invocation, so a
-    TRANSIENT registration has nothing to resolve from; it is refused
-    loudly on the job — like any broken actor dependency — rather than
-    silently reporting nothing."""
+    TRANSIENT registration has nothing to resolve from; the job cannot
+    depend on it, so the dispatch degrades to reporting nothing behind a
+    window-gated WARNING and the job's own failure handling proceeds
+    untouched. Worker startup is the loud gate for the same shape: it
+    refuses the registration before any job exists."""
     registry = ProviderRegistry()
     registry.register_factory(ErrorReporter, Scope.TRANSIENT, lambda: _SpyReporter())
     backend = InMemoryBackend(clock=FakeClock(start=_START))
     job, worker_id = await _running_job(backend, retry_kind="non_retryable", max_attempts=1)
 
-    async with _Scopes(registry) as scopes:
+    async with BootstrappedScopes(registry) as scopes:
         outcome = await _dispatch(scopes, backend, job, worker_id)
 
     assert outcome == "failed"
     row = await backend.get(job.id)
     assert row is not None
-    assert row.error_class == DIError.__name__
-    assert row.error_message is not None and "TRANSIENT" in row.error_message
+    # The job failed for its OWN reason (the non-retryable outcome the test
+    # staged), not for the reporter misconfiguration: a config error must
+    # never consume a job's outcome or retry budget.
+    assert row.error_class != DIError.__name__
+
+
+async def test_transient_scoped_reporter_warning_is_window_gated() -> None:
+    """The per-job degradation warns once per window, not once per job: a
+    misregistered reporter resolves on every failure, so an error-storm
+    must not turn the warning into the flood it exists to bound."""
+    registry = ProviderRegistry()
+    registry.register_factory(ErrorReporter, Scope.TRANSIENT, lambda: _SpyReporter())
+    backend = InMemoryBackend(clock=FakeClock(start=_START))
+    job, worker_id = await _running_job(backend, retry_kind="non_retryable", max_attempts=1)
+
+    async with BootstrappedScopes(registry) as scopes:
+        await _dispatch(scopes, backend, job, worker_id)
+        with structlog.testing.capture_logs() as logs:
+            second_job, second_worker = await _running_job(
+                backend, retry_kind="non_retryable", max_attempts=1
+            )
+            await _dispatch(scopes, backend, second_job, second_worker)
+
+    assert not [e for e in logs if e.get("event") == "error-reporter-defect"]
+
+
+async def test_non_reporter_provider_value_degrades_with_a_warning() -> None:
+    """A provider that resolves to a value without the reporter protocol is
+    silently dropped into ``None`` on main's shape; the degradation keeps
+    the dispatch alive but names the defect, so a reporter that never
+    fires is no longer indistinguishable from a healthy fleet."""
+    registry = ProviderRegistry()
+    registry.register_factory(
+        ErrorReporter,
+        Scope.PROCESS,
+        lambda: object(),  # type: ignore[arg-type,return-value]
+    )
+    backend = InMemoryBackend(clock=FakeClock(start=_START))
+    job, worker_id = await _running_job(backend, retry_kind="non_retryable", max_attempts=1)
+
+    async with BootstrappedScopes(registry) as scopes:
+        with structlog.testing.capture_logs() as logs:
+            outcome = await _dispatch(scopes, backend, job, worker_id)
+
+    assert outcome == "failed"
+    defects = [e for e in logs if e.get("event") == "error-reporter-defect"]
+    assert len(defects) == 1
+    assert defects[0]["defect"] == "type"

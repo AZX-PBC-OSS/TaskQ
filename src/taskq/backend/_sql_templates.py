@@ -21,6 +21,7 @@ from taskq.backend._sql import (
     CANCEL_ESCALATION_SQL,
     INSERT_EVENT_SQL,
     POLL_CANCEL_FLAGS_SQL,
+    WAKE_NOTIFY_SQL,
 )
 from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining
@@ -86,15 +87,16 @@ COPY_FROM_COLUMNS: Final[tuple[str, ...]] = (
 # Column list for the enqueue COPY path only.  Every omitted column is
 # either stamped/decided by the post-COPY fixup UPDATE
 # (enqueue_batch_fast_fixup) from the server clock — never the caller's
-# Python clock — or carries a DDL default the COPY lets apply (status
-# 'pending', created_at/scheduled_at now(), NULL schedule_to_close /
+# Python clock — or carries a DDL default the COPY lets apply
+# (created_at/scheduled_at now(), NULL schedule_to_close /
 # result_expires_at, and the zero-defaulted denial counters, which an
-# enqueued job has no reason to pre-set).  COPY_FROM_COLUMNS stays
-# intact: it is shared by the archive CTE column lists in
-# worker/_leader_shared.py.
+# enqueued job has no reason to pre-set).  ``status`` is NOT omitted: the
+# COPY writes COPY_ENQUEUE_STATUS explicitly so the INSERT trigger never
+# fires for a row whose runnability the fixup has not yet decided (see
+# enqueue_batch_fast_fixup).  COPY_FROM_COLUMNS stays intact: it is
+# shared by the archive CTE column lists in worker/_leader_shared.py.
 _COPY_ENQUEUE_OMITTED: Final[frozenset[str]] = frozenset(
     {
-        "status",
         "created_at",
         "scheduled_at",
         "schedule_to_close",
@@ -107,6 +109,15 @@ _COPY_ENQUEUE_OMITTED: Final[frozenset[str]] = frozenset(
 COPY_ENQUEUE_COLUMNS: Final[tuple[str, ...]] = tuple(
     c for c in COPY_FROM_COLUMNS if c not in _COPY_ENQUEUE_OMITTED
 )
+
+# The status every COPY row lands with. The fixup UPDATE decides each
+# row's real status from the server clock afterwards, inside the same
+# transaction; landing as 'scheduled' (never dispatchable, never woken)
+# keeps tr_notify_job_insert — WHEN (NEW.status = 'pending'), INSERT only
+# — from waking the fleet for rows the fixup then defers, the invariant
+# migration 01.00.14_01 documents. The wake for the rows the fixup makes
+# runnable is the fixup's own, issued once and only when it made any.
+COPY_ENQUEUE_STATUS: Final[str] = "scheduled"
 
 # The non-consuming deferral floor, pre-rendered for the two arms that
 # carry it (mark_snoozed's snoozed arm and mark_retry_after's
@@ -126,12 +137,19 @@ _MIN_DEFERRAL_INTERVAL_SQL: Final[str] = (
 # increment, floored at 0. The refund revisits an attempt number, which is
 # collision-safe: a non-terminal release writes no job_attempts row, so the
 # PK (job_id, attempt) is never revisited by a writer (see the mark_snoozed
-# comment block below for the full argument). Vendor precedent for the
-# shape: Oban ``inc: [attempt: -1]``, River ``max(attempt-1, 0)``
-# (vendor/river/internal/jobexecutor/job_executor.go's softStopped branch),
-# graphile-worker-rs ``GREATEST(0, attempts - 1)``.
+# comment block below for the full argument).
 # The reference is alias-qualified (``j.``): every consumer of the fragment
 # aliases its target table ``j``.
+#
+# None of these release arms wakes the fleet. A row they land as
+# 'pending' is re-pended by UPDATE, which the INSERT-only wake trigger
+# never sees, and no arm issues a pg_notify of its own: the producer's
+# poll floor (WorkerSettings.notify_poll_interval with NOTIFY on,
+# poll_interval without) is the wake source for a released row, the same
+# trade the sweeps' UPDATE re-pends would make were they not batched
+# behind their own single notify. A release is the worker giving a row
+# back (a snooze, a retry-after, a shutdown interrupt), never new work,
+# so a claim within the poll floor is the intended latency.
 _ATTEMPT_REFUND_SQL: Final[str] = "GREATEST(j.attempt - 1, 0)"
 
 
@@ -1079,14 +1097,11 @@ UNION ALL SELECT * FROM deadline_failed""",
         # the snooze/denial arms above), one job_events state_change with
         # reason 'interrupted' records the transition, and interrupt_count
         # bumps on the row (the same row-counter doctrine as
-        # snooze_count / rate_limit_blocked_count, 01.00.08_01). Vendor
-        # shape: River's soft-stop branch —
-        # vendor/river/internal/jobexecutor/job_executor.go
-        # (`isSoftStopCancelError` distinguishes the stop by the context's
-        # cause, not the error type; the softStopped branch calls
-        # JobSetStateInterrupted with `max(attempt-1, 0)`) and
-        # vendor/river/riverdriver/river_driver_interface.go
-        # (`JobSetStateInterrupted`: state available, reason interrupted).
+        # snooze_count / rate_limit_blocked_count, 01.00.08_01). The
+        # release is a soft stop: the stop is recognised by the context's
+        # cancellation cause rather than by the error type, and the
+        # interrupted row lands back 'available' with reason 'interrupted'
+        # and its attempt refunded.
         #
         # Two arms, exhaustive over every fenced row:
         #   released        — the release itself. hold > 0 parks the row
@@ -1098,8 +1113,8 @@ UNION ALL SELECT * FROM deadline_failed""",
         #                     order — the row is genuinely free and the
         #                     actor is gone, so the non-consuming deferral
         #                     floor applies only to a real hold, never to
-        #                     the zero case (River's interrupted job is
-        #                     available immediately).
+        #                     the zero case (an interrupted job is
+        #                     claimable immediately).
         #   deadline_failed — the hold would push the row past its
         #                     schedule_to_close: the job fails on the
         #                     deadline like every deferral arm's deadline
@@ -1109,10 +1124,10 @@ UNION ALL SELECT * FROM deadline_failed""",
         # The fence carries `cancel_phase = 0` beside the ownership and
         # attempt-epoch conjuncts: an operator cancel in flight WINS over
         # the infrastructure interruption (the call returns no row and the
-        # caller routes to the cancel ladder). River resolves the same
-        # collision the same way — river_job.sql's JobSetStateIfRunningMany
-        # terminalises as 'cancelled', never 'available', when the row
-        # carries cancel_attempted_at. The cancel columns are reset on
+        # caller routes to the cancel ladder). A row carrying
+        # cancel_attempted_at terminalises as 'cancelled', never
+        # 'available'; the fence is what keeps the infrastructure release
+        # from laundering the operator's request. The cancel columns are reset on
         # release exactly as mark_retry's arm does (the next attempt must
         # not inherit a phase); the fence guarantees they were already 0,
         # so an operator's audit columns are never wiped.
@@ -1313,7 +1328,7 @@ SELECT * FROM "{s}".jobs WHERE idempotency_scope = $1 AND idempotency_key = $2""
         # The wake for paths that re-pend a row by UPDATE (admin retry):
         # the jobs INSERT trigger covers every insert path, so no enqueue
         # path issues this.
-        wake_notify="SELECT pg_notify($1, '')",
+        wake_notify=WAKE_NOTIFY_SQL,
         enqueue_batch=f"""\
 INSERT INTO "{s}".jobs (
     id, actor, queue, identity_key, fairness_key,
@@ -1397,28 +1412,38 @@ WHERE actor = ANY($1::text[])
   AND metadata @> '{{"singleton": true}}'::jsonb""",
         # Post-COPY corrective UPDATE for enqueue_batch_fast.  COPY cannot
         # compute/decide anything, so it writes only domain-insensitive
-        # columns (COPY_ENQUEUE_COLUMNS) and this UPDATE — executed inside
-        # the same transaction, before the notify — stamps status,
-        # scheduled_at, schedule_to_close and result_expires_at from the
-        # server clock.  The status CASE is byte-for-byte the INSERT arms'
-        # semantics (enqueue / enqueue_batch above), which is what makes a
-        # NULL ("immediate") scheduled_at safe on this path too.
+        # columns (COPY_ENQUEUE_COLUMNS, status landing as
+        # COPY_ENQUEUE_STATUS) and this UPDATE — executed inside the same
+        # transaction — stamps status, scheduled_at, schedule_to_close and
+        # result_expires_at from the server clock.  The status CASE is
+        # byte-for-byte the INSERT arms' semantics (enqueue / enqueue_batch
+        # above), which is what makes a NULL ("immediate") scheduled_at
+        # safe on this path too.  An UPDATE never fires the INSERT trigger,
+        # so the wake for the rows this statement makes runnable is its
+        # own: one pg_notify on $6 (the wake channel), issued only when at
+        # least one row landed 'pending' — the notify folded into the write
+        # and gated on the row being due.
         enqueue_batch_fast_fixup=f"""\
 WITH params AS (
     SELECT * FROM unnest(
         $1::uuid[], $2::timestamptz[], $3::interval[], $4::timestamptz[], $5::interval[]
     ) AS t(id, scheduled_at, stc_interval, stc_raw, result_ttl)
+),
+fixed AS (
+    UPDATE "{s}".jobs j
+    SET status            = CASE WHEN COALESCE(p.scheduled_at, clock_timestamp()) > clock_timestamp()
+                                 THEN 'scheduled'::"{s}".job_status
+                                 ELSE 'pending'::"{s}".job_status END,
+        scheduled_at      = COALESCE(p.scheduled_at, clock_timestamp()),
+        schedule_to_close = COALESCE(clock_timestamp() + p.stc_interval, p.stc_raw),
+        result_expires_at = CASE WHEN p.result_ttl IS NULL THEN NULL
+                                 ELSE clock_timestamp() + p.result_ttl END
+    FROM params p
+    WHERE j.id = p.id
+    RETURNING j.status
 )
-UPDATE "{s}".jobs j
-SET status            = CASE WHEN COALESCE(p.scheduled_at, clock_timestamp()) > clock_timestamp()
-                             THEN 'scheduled'::"{s}".job_status
-                             ELSE 'pending'::"{s}".job_status END,
-    scheduled_at      = COALESCE(p.scheduled_at, clock_timestamp()),
-    schedule_to_close = COALESCE(clock_timestamp() + p.stc_interval, p.stc_raw),
-    result_expires_at = CASE WHEN p.result_ttl IS NULL THEN NULL
-                             ELSE clock_timestamp() + p.result_ttl END
-FROM params p
-WHERE j.id = p.id""",
+SELECT pg_notify($6, '')
+WHERE EXISTS (SELECT 1 FROM fixed WHERE status = 'pending')""",
         # ── Read SQL templates ─────────────────────────────────────
         get_job=f"""\
 SELECT * FROM "{s}".jobs WHERE id = $1""",

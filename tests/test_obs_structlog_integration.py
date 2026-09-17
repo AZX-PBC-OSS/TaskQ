@@ -29,7 +29,6 @@ import sys
 from collections.abc import Iterator
 from contextlib import AsyncExitStack
 from datetime import timedelta
-from typing import Any
 from uuid import UUID
 
 import asyncpg
@@ -44,7 +43,7 @@ import taskq.obs as obs_mod
 import taskq.obs._structlog as structlog_mod
 from taskq._di.registry import ProviderRegistry
 from taskq._di.scope import Scope
-from taskq._di.scopes import LoopScope, ProcessScope, ThreadScope, make_resolver
+from taskq._di.scopes import LoopScope, ProcessScope, ThreadScope
 from taskq._ids import new_base62, new_job_id, new_uuid
 from taskq.actor import actor
 from taskq.backend.clock import SystemClock
@@ -63,6 +62,7 @@ from taskq.worker.cancel import CancelController, make_cancel_controller
 from taskq.worker.deps import WorkerDeps, open_worker_deps
 from taskq.worker.dispatch import dispatch_one_job
 from taskq.worker.heartbeat import heartbeat_loop
+from tests._di_scopes import bootstrap_scopes, make_scopes
 
 pytestmark = pytest.mark.integration
 
@@ -204,31 +204,11 @@ async def _setup_worker(
 
 def _make_scopes(
     settings: WorkerSettings,
-) -> tuple[ProviderRegistry, ProcessScope, ThreadScope, LoopScope, dict[Scope, Any]]:
+) -> tuple[ProviderRegistry, ProcessScope, ThreadScope, LoopScope]:
     registry = ProviderRegistry()
     registry.register_value(WorkerSettings, Scope.PROCESS, settings)
     registry.register_value(SystemClock, Scope.PROCESS, SystemClock())
-    scope_containers: dict[Scope, Any] = {}
-    resolver = make_resolver(registry, scope_containers)
-    process_scope = ProcessScope(resolver=resolver)
-    scope_containers[Scope.PROCESS] = process_scope
-    thread_scope = ThreadScope(resolver=resolver)
-    scope_containers[Scope.THREAD] = thread_scope
-    loop_scope = LoopScope(resolver=resolver)
-    scope_containers[Scope.LOOP] = loop_scope
-    return registry, process_scope, thread_scope, loop_scope, scope_containers
-
-
-async def _bootstrap_scopes(
-    registry: ProviderRegistry,
-    settings: WorkerSettings,
-    process_scope: ProcessScope,
-    thread_scope: ThreadScope,
-    loop_scope: LoopScope,
-) -> None:
-    await process_scope.bootstrap(registry, settings)
-    await thread_scope.bootstrap(registry, process_scope)
-    await loop_scope.bootstrap(registry, process_scope, thread_scope)
+    return registry, *make_scopes(registry)
 
 
 async def _enqueue_job(
@@ -335,8 +315,8 @@ async def test_end_to_end_lifecycle_log_lines(
 
         job_row = rows[0]
 
-        registry, process_scope, thread_scope, loop_scope, _ = _make_scopes(deps.settings)
-        await _bootstrap_scopes(registry, deps.settings, process_scope, thread_scope, loop_scope)
+        registry, process_scope, thread_scope, loop_scope = _make_scopes(deps.settings)
+        await bootstrap_scopes(registry, process_scope, thread_scope, loop_scope, deps.settings)
 
         enqueuer = SubJobEnqueuer(
             loop_scope_resolved=loop_scope.resolved_cache(),

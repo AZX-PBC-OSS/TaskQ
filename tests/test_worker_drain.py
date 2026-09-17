@@ -14,7 +14,6 @@ from pydantic import BaseModel
 
 from taskq._di.registry import ProviderRegistry
 from taskq._di.scope import Scope
-from taskq._di.scopes import LoopScope, ProcessScope, ThreadScope, make_resolver
 from taskq._ids import new_job_id, new_uuid
 from taskq.actor import actor
 from taskq.backend._protocol import Backend, CancelPhase, JobRow
@@ -28,6 +27,7 @@ from taskq.worker._watchdog import LoopLiveness
 from taskq.worker.deps import WorkerDeps
 from taskq.worker.drain import drain_monitor_loop
 from taskq.worker.shutdown import ShutdownPhase
+from tests._di_scopes import bootstrap_scopes, make_scopes
 from tests.conftest import _FakePool, unique_health_sock_path
 
 # ── Helpers ────────────────────────────────────────────────────────
@@ -42,34 +42,6 @@ def _settings() -> WorkerSettings:
             "TASKQ_HEALTH_SOCKET_PATH": unique_health_sock_path("worker_drain"),
         }
     )
-
-
-def _make_scopes(
-    registry: ProviderRegistry,
-) -> tuple[ProcessScope, ThreadScope, LoopScope]:
-    scope_containers: dict[Scope, Any] = {}
-    resolver = make_resolver(registry, scope_containers)
-
-    process_scope = ProcessScope(resolver=resolver)
-    scope_containers[Scope.PROCESS] = process_scope
-    thread_scope = ThreadScope(resolver=resolver)
-    scope_containers[Scope.THREAD] = thread_scope
-    loop_scope = LoopScope(resolver=resolver)
-    scope_containers[Scope.LOOP] = loop_scope
-
-    return process_scope, thread_scope, loop_scope
-
-
-async def _bootstrap_scopes(
-    registry: ProviderRegistry,
-    process_scope: ProcessScope,
-    thread_scope: ThreadScope,
-    loop_scope: LoopScope,
-) -> None:
-    settings = _settings()
-    await process_scope.bootstrap(registry, settings)
-    await thread_scope.bootstrap(registry, process_scope)
-    await loop_scope.bootstrap(registry, process_scope, thread_scope)
 
 
 def _backend_stub() -> Backend:
@@ -190,8 +162,8 @@ async def _run_one_job_with_fake_dispatch(
     registry.register_value(Clock, Scope.PROCESS, fake_clock)
     registry.validate()
 
-    process_scope, thread_scope, loop_scope = _make_scopes(registry)
-    await _bootstrap_scopes(registry, process_scope, thread_scope, loop_scope)
+    process_scope, thread_scope, loop_scope = make_scopes(registry)
+    await bootstrap_scopes(registry, process_scope, thread_scope, loop_scope, _settings())
 
     @actor(name=actor_name)
     async def _default_actor(payload: BaseModel, ctx: JobContext[BaseModel]) -> None: ...
@@ -450,8 +422,8 @@ async def test_di_consumer_loop_forwards_max_retry_backoff() -> None:
     registry.register_value(Clock, Scope.PROCESS, fake_clock)
     registry.validate()
 
-    process_scope, thread_scope, loop_scope = _make_scopes(registry)
-    await _bootstrap_scopes(registry, process_scope, thread_scope, loop_scope)
+    process_scope, thread_scope, loop_scope = make_scopes(registry)
+    await bootstrap_scopes(registry, process_scope, thread_scope, loop_scope, _settings())
 
     actor_name = "test_drain_max_retry_backoff"
 
