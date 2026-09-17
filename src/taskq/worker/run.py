@@ -153,15 +153,17 @@ _PRODUCER_RNG = random.Random(secrets.randbits(128))  # noqa: S311  # Why: rando
 
 
 def _jittered_poll_interval(interval: float, rng: random.Random) -> float:
-    """The fallback poll interval with ±_POLL_JITTER_FRACTION jitter.
+    """A producer wait — the fallback poll interval, or the claim cooldown —
+    with ±_POLL_JITTER_FRACTION jitter.
 
     Every producer in an idle fleet otherwise sleeps the same interval
     in phase, and any transient event (a GC pause, a network blip, a
-    coordinated restart) re-synchronizes them into periodic DB load
-    spikes. Jittering the poll interval breaks that synchronization and
-    spreads requests across time. The jitter is multiplicative-symmetric,
-    the repo's jitter convention (retry.compute_backoff), so the mean
-    wait stays the configured interval; the band is ±_POLL_JITTER_FRACTION.
+    coordinated restart — or one NOTIFY waking the whole fleet into the
+    same cooldown) re-synchronizes them into periodic DB load spikes.
+    Jittering the wait breaks that synchronization and spreads requests
+    across time. The jitter is multiplicative-symmetric, the repo's
+    jitter convention (retry.compute_backoff), so the mean wait stays the
+    configured interval; the band is ±_POLL_JITTER_FRACTION.
     """
     return interval * rng.uniform(1.0 - _POLL_JITTER_FRACTION, 1.0 + _POLL_JITTER_FRACTION)
 
