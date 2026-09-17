@@ -1818,3 +1818,34 @@ register a LOOP-scope connection, add
 `ignore_startup_parameters=search_path,role` (or whichever parameters
 you actually inherit) to the pooler's config.
 
+### The TaskQ client reads the `.env` cascade for its lock budgets and schema default
+
+> **Unreleased.** Silent widening; a constructor failure class is gone.
+
+The `TaskQ` client's lock-budget probe (`TASKQ_MAX_PENDING_LOCK_TIMEOUT_MS`
+and its two siblings) previously read the process environment only, so a
+widening set in `.env` reached the worker's server-side budgets but not
+the client pool's derived `command_timeout` — the two sides silently
+disagreed (issue #251). The probe now resolves through the same layers
+the worker's `TaskQSettings.load()` reads (process environment, then the
+`.env` cascade, honoring `DOTENV_OVERRIDE` / `DOTENV_READ_DOTFILES` /
+`DOTENV_READ_ENVIRON`), never writing into `os.environ`.
+
+`TaskQ(...)`'s default schema resolution also changed twice, once when
+this release's connection stack landed and once now:
+
+- **Previously (≤ v0.2.2):** the default was the literal `"taskq"`; no
+  environment or `.env` value was read at all.
+- **At this release's first connection-stack landings:** the constructor
+  ran a full validating `TaskQSettings.load()` — so `TASKQ_SCHEMA_NAME`
+  was honored (process env and `.env`), but any OTHER malformed
+  `TASKQ_*` value (e.g. `TASKQ_ADMIN_PORT=not-a-port`, a setting the
+  client never reads) raised in an embedder's constructor.
+- **Now:** the value resolves through the same cascade, then validates
+  ALONE — a malformed `TASKQ_SCHEMA_NAME` still raises (it is the
+  client's own field, reaching raw SQL; the worker's load fails the same
+  value), and an unrelated malformed setting cannot break `TaskQ()`
+  construction.
+
+An explicit `schema=` argument keeps winning over every layer, so
+embedders that pass their loaded schema explicitly are unaffected.
