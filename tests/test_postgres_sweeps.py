@@ -529,11 +529,11 @@ class TestSweepExpiredLocks:
 
         # The loop-guard half, kept from the test this replaces: a
         # PHASE-0 reclaim re-pends, and the re-pended row must carry a
-        # clean cancellation slate — the next worker's cancel-poll must
+        # clean cancellation slate: the next worker's cancel-poll must
         # not return it, or the fleet re-cancels and re-reclaims
         # forever. On a re-pend that left the columns set (the shape
         # the old reset-on-re-pend spelling guarded against) the
-        # cancel-poll returns the job and the worker re-cancels it —
+        # cancel-poll returns the job and the worker re-cancels it:
         # the infinite cancel/reclaim/retry loop.
         second_worker_id = new_uuid()
         async with deps.worker_pool.acquire() as conn:
@@ -638,7 +638,7 @@ class TestSweepExpiredLocks:
         assert row["status"] == "cancelled"
         # The audit trail of the honored request survives the terminal
         # write (#238): the sweep's cancelled arm keeps both cancel
-        # columns, the same doctrine mark_cancelled carries — the
+        # columns, the same doctrine mark_cancelled carries: the
         # pre-fix statement wiped them here too.
         assert row["cancel_phase"] == 1
         assert row["cancel_requested_at"] is not None

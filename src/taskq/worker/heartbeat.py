@@ -281,9 +281,9 @@ _SELECT_RUNNING_JOBS_SQL_TEMPLATE = (
 # preservation on the cancel arm, clock_timestamp() for terminal
 # timestamps) must be mirrored here. The mirror covers the SET
 # clause's SHAPE; the crashed arm's error_class/error_message VALUES
-# are deliberately distinct — 'HeartbeatLost' plus this module's own
+# are deliberately distinct: 'HeartbeatLost' plus this module's own
 # message, where the sweep stamps 'WorkerCrashed' plus the
-# deadline-naming message from _ATTEMPT_MESSAGES — for the same
+# deadline-naming message from _ATTEMPT_MESSAGES, for the same
 # reason the attempt rows differ: the sweep's reclaim means the
 # LEADER declared the holder dead, isolate means the worker itself
 # declared PG unreachable and is walking away. The job row must
@@ -306,14 +306,14 @@ _SELECT_RUNNING_JOBS_SQL_TEMPLATE = (
 # (notify_poll_interval / poll_interval) — the same wake source every
 # release arm in backend/_sql_templates.py relies on.
 #
-#: The job-row error message the isolate's crashed arm stamps — the
+#: The job-row error message the isolate's crashed arm stamps, the
 #: isolate-path twin of ``_sweeps._ATTEMPT_MESSAGES``' deadline-naming
 #: messages ("lock expired before worker reported terminal state" /
 #: "heartbeat timeout passed before worker reported terminal state").
 #: Isolate has no per-arm deadline to name (it is a whole-worker event,
 #: not a row-level one), so the message names what actually fired: the
 #: worker lost its heartbeat connection and never reported a terminal
-#: state. One constant, not a map — the template renders it by name
+#: state. One constant, not a map: the template renders it by name
 #: (``str.replace``) so ``{schema}`` stays the only ``format``
 #: placeholder the caller renders, the same discipline
 #: ``_SWEEP_1_SQL``'s message fragments follow.
@@ -371,7 +371,7 @@ SET status = CASE
     END,
     -- The crashed arm self-describes on the row, mirroring the sweep's
     -- crashed arm in shape: 'HeartbeatLost' plus this module's own
-    -- message, not the sweep's 'WorkerCrashed' — the same distinction
+    -- message, not the sweep's 'WorkerCrashed': the same distinction
     -- the attempt rows have always carried (documented above); the
     -- pre-fix template stamped nothing here while claiming the
     -- branch-for-branch mirror. The re-pend and cancelled arms keep
@@ -470,9 +470,9 @@ async def isolate_self(
                             )
                         )
                         # The classification mirrors the UPDATE's CASE
-                        # ORDER exactly: operator cancel first — a
+                        # ORDER exactly: operator cancel first, a
                         # cancel-in-flight row terminalises 'cancelled'
-                        # whatever its budget — then the re-pend arm, then
+                        # whatever its budget, then the re-pend arm, then
                         # crashed.
                         if row["cancel_phase"] != 0:
                             cancelled += 1

@@ -106,22 +106,22 @@ _UUID_MIN = UUID(int=0)
 #: The hard bound on the two-arm fixpoint rounds `_cancel_where` runs
 #: (see the module docstring). Round 1 is the drain itself; every later
 #: round exists to catch rows a concurrent re-pend moved BEHIND a
-#: previous round's keyset cursor — a denial snooze, a shutdown
-#: interrupt, a crash reclaim, a consumer retry — which no single
-#: forward-only pass can see, because the pending arm has already
+#: previous round's keyset cursor: a denial snooze, a shutdown
+#: interrupt, a crash reclaim, a consumer retry. No single
+#: forward-only pass can see them, because the pending arm has already
 #: windowed past their ids and the running arm matches only
 #: ``status='running' AND cancel_phase=0`` (#237).
 #:
 #: Why a hard cap rather than "loop while progress": each round can only
 #: match rows a concurrent writer re-fed into the pending/scheduled (or
-#: freshly claimable running) population DURING the previous round —
+#: freshly claimable running) population DURING the previous round:
 #: a claim/fail/retry cycle on matching rows under live dispatch is a
 #: steady feed, so an uncapped fixpoint is an unbounded loop under
 #: exactly the production churn bulk cancel exists for. The cap keeps
 #: one call's total work a constant multiple of one two-arm drain
-#: (at most 3 rounds) while every per-batch cost bound — the keyset window, the
-#: ``= ANY`` restriction clause, the per-batch custom-plan pin, the
-#: statement_timeout — is unchanged. Rows still being re-fed when the
+#: (at most 3 rounds) while every per-batch cost bound is unchanged:
+#: the keyset window, the ``= ANY`` restriction clause, the per-batch
+#: custom-plan pin, the statement_timeout. Rows still being re-fed when the
 #: cap is reached are left for a re-run, the same non-atomic contract
 #: the drain already documents for concurrent enqueues: EPQ predicates
 #: skip everything earlier rounds cancelled, so a re-run is resumable,
@@ -133,7 +133,7 @@ _UUID_MIN = UUID(int=0)
 #: (vendor/river/riverdriver/riverpgxv5/internal/dbsqlc/
 #: river_job.sql:177-198) is one ``LIMIT``-ed, ``FOR UPDATE SKIP
 #: LOCKED`` predicate window whose callers re-invoke until the
-#: predicate stops matching — the rescuer's loop
+#: predicate stops matching: the rescuer's loop
 #: (vendor/river/internal/maintenance/job_rescuer.go:195-259) is the
 #: in-repo instance of the shape: keep fetching batches, break when one
 #: comes back under the limit. The rounds adopt that
@@ -141,7 +141,7 @@ _UUID_MIN = UUID(int=0)
 #: pass the pre-#237 drain made. Two deliberate divergences: every arm
 #: pages on a keyset cursor inside its drain (no batch re-walks rows an
 #: earlier batch of the same arm already handled, where a bare
-#: predicate window re-evaluates them), and the loop is hard-capped —
+#: predicate window re-evaluates them), and the loop is hard-capped:
 #: river's loop belongs to a maintenance daemon and legitimately runs
 #: as long as the feed does, but for a single API call that shape is an
 #: unbounded loop under sustained churn; the cap is what keeps one call
@@ -540,8 +540,8 @@ async def _cancel_where(
     # pair of passes loses matching rows that a concurrent re-pend
     # moves BEHIND the pending arm's keyset cursor mid-drain: the row
     # was 'running' (or phase!=0) when the pending arm windowed past
-    # its id, so no window ever held it, and the running arm — strictly
-    # after the pending arm, matching only running+phase-0 — cannot
+    # its id, so no window ever held it, and the running arm, strictly
+    # after the pending arm, matching only running+phase-0, cannot
     # see the re-pended row either. The call used to return normally
     # with such a row uncancelled, contradicting the "cancels EVERY
     # matching job" contract. Each subsequent round re-walks from the
@@ -550,7 +550,7 @@ async def _cancel_where(
     #
     # Termination and cost: a round stops the loop when NEITHER arm
     # committed a single row (progress measured on the committed id
-    # lists the handlers append to — windowed-but-EPQ-dropped rows are
+    # lists the handlers append to: windowed-but-EPQ-dropped rows are
     # deliberately not progress, they belong to the other arm), and
     # `_MAX_CANCEL_DRAIN_ROUNDS` bounds the loop outright, because a
     # live claim/fail/retry churn on matching rows re-feeds the match

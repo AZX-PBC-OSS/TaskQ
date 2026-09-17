@@ -267,7 +267,7 @@ async def test_isolate_self_honours_fr12_case_shape() -> None:
         )
         assert "WHERE j.id = $1" in runner
         assert "j.locked_by_worker = $2" in runner
-        # #238 pins: operator intent outranks retry budget — the cancel
+        # #238 pins: operator intent outranks retry budget. The cancel
         # arm is evaluated BEFORE the budget arm; the cancel columns are
         # preserved on the arm that honours them; the crashed arm
         # self-describes on the job row (shape-mirror of the sweep's
