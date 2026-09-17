@@ -525,3 +525,23 @@ def test_every_documented_exception_is_still_in_use() -> None:
     stale = [str(key) for key in _UV_RUN_EXCEPTIONS if key not in live_run]
     stale += [str(key) for key in _UV_SYNC_EXCEPTIONS if key not in live_sync]
     assert not stale, f"unused entries in the uv allowlist; delete them: {stale}"
+
+
+def test_every_job_that_runs_the_admin_js_tests_installs_node() -> None:
+    """The admin.js tests skip without Node on a developer machine and fail under
+    ``CI=true``; a job that runs the web_admin tests without a setup-node step would
+    therefore fail outright, and one that ran them before that guard existed was
+    silently skipping them. Every job whose pytest invocation can reach
+    tests/web_admin must install Node first."""
+    offenders: list[str] = []
+    for path in _WORKFLOWS:
+        for job_name, job in _jobs(path).items():
+            scripts = _run_scripts(job)
+            if "pytest" not in scripts or "tests/e2e" in scripts or '-m "slow"' in scripts:
+                continue
+            if not any("actions/setup-node" in str(step.get("uses", "")) for step in _steps(job)):
+                offenders.append(f"{path.name}:{job_name}")
+    assert not offenders, (
+        f"these jobs run the fast test suite without installing Node, so the admin.js "
+        f"tests would fail under CI=true: {offenders}"
+    )

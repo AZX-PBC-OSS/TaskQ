@@ -136,6 +136,16 @@ jobs:
           python-version: ${{ matrix.python-version }}
           sync-args: ${{ matrix.extras }} --group dev
 
+      # The admin UI's page component (src/taskq/web/static/admin.js) is
+      # tested by driving it under Node (tests/web_admin/test_admin_js_*).
+      # Those tests skip on a machine without Node and FAIL under CI=true,
+      # so this step is what keeps them from becoming silent coverage loss.
+      # The version is pinned rather than trusting whatever the runner image
+      # ships, so the behaviour under test does not move with the image.
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+
       # A leg must fail loudly if it is ever running an interpreter other than
       # the one it advertises. That failure mode is otherwise invisible for as
       # long as the imports happen to resolve, which is what would let it
@@ -199,6 +209,12 @@ jobs:
           fetch-depth: 0
 
       - uses: ./.github/actions/setup-uv-env
+
+      # Same reason as the test matrix: the admin.js tests run under Node
+      # and fail rather than skip when it is absent under CI=true.
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
 
       # Deliberately NO mark filter: the coverage gate's 90% floor counts the
       # slow family's lines, so this job — one leg, not twelve — remains the
