@@ -755,6 +755,37 @@ def first_duplicate_idempotency_pair(
     return None
 
 
+def duplicate_pair_actor_mismatch(
+    args_list: Iterable[EnqueueArgs],
+    pair: tuple[str, str],
+    stored_actor: str | None,
+) -> tuple[str, str] | None:
+    """``(incoming_actor, existing_actor)`` when the batch write's abort on
+    *pair* spans two actors, else ``None`` (a same-actor duplicate).
+
+    The write aborts at the first item holding *pair* when a committed row
+    (*stored_actor*) already holds it, and otherwise at the second item
+    holding it, whose predecessor in batch order is the holder. The same
+    pure rule serves the COPY tier and the in-memory mirror, so the two
+    backends name the same actors for the same batch — a cross-actor hit
+    is the misuse the single and batch tiers refuse with the typed
+    mismatch error, not a same-actor duplicate.
+    """
+    holders = [
+        args.actor
+        for args in args_list
+        if args.idempotency_key is not None
+        and (args.idempotency_scope, str(args.idempotency_key)) == pair
+    ]
+    if not holders:
+        return None
+    if stored_actor is not None:
+        return (holders[0], stored_actor) if holders[0] != stored_actor else None
+    if len(holders) > 1 and holders[1] != holders[0]:
+        return (holders[1], holders[0])
+    return None
+
+
 def first_singleton_collision_actor(
     args_list: Iterable[EnqueueArgs],
     stored_actors: Container[str],

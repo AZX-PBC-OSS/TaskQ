@@ -105,3 +105,60 @@ async def test_cross_actor_hit_on_a_bare_caller_connection_admits_nothing(
 
     rows = await backend_pair.list_jobs(JobFilter(actor="actor_b", limit=100))
     assert all(r.id != fresh.id for r in rows), "the refused batch must leave no rows behind"
+
+
+async def test_cross_actor_hit_on_the_fast_tier_raises_the_mismatch_error(
+    backend_pair: Backend,
+) -> None:
+    """The COPY tier has no arbiter — any duplicate pair aborts the whole
+    batch — but a pair held by ANOTHER actor is the same misuse the single
+    and batch tiers refuse with the typed mismatch, not a same-actor
+    duplicate, and is classified the same way on both backends."""
+    key = f"k-{new_uuid()}"
+    existing = await backend_pair.enqueue(_args("actor_a", key))
+    fresh = _args("actor_b", f"{key}-fresh")
+
+    with pytest.raises(IdempotencyKeyActorMismatchError) as excinfo:
+        await backend_pair.enqueue_batch_fast([fresh, _args("actor_b", key)])
+
+    err = excinfo.value
+    assert err.actor == "actor_b"
+    assert err.existing_actor == "actor_a"
+    assert err.existing_job_id == existing.id
+    assert err.idempotency_key == key
+    rows = await backend_pair.list_jobs(JobFilter(actor="actor_b", limit=100))
+    assert all(r.id != fresh.id for r in rows), "the refused batch must leave no rows behind"
+
+
+async def test_cross_actor_pair_inside_one_fast_batch_names_the_two_actors(
+    backend_pair: Backend,
+) -> None:
+    """Two items of one COPY batch sharing a pair across actors: the abort
+    lands on the second item, so it is the incoming actor and the first
+    item's actor the existing one; no row persisted, so no existing id."""
+    key = f"k-{new_uuid()}"
+
+    with pytest.raises(IdempotencyKeyActorMismatchError) as excinfo:
+        await backend_pair.enqueue_batch_fast(
+            [_args("actor_a", key), _args("actor_b", key), _args("actor_a", key)]
+        )
+
+    err = excinfo.value
+    assert (err.actor, err.existing_actor) == ("actor_b", "actor_a")
+    assert err.existing_job_id is None
+    assert err.idempotency_key == key
+    for actor in ("actor_a", "actor_b"):
+        rows = await backend_pair.list_jobs(JobFilter(actor=actor, limit=100))
+        assert rows == [], "the refused batch must leave no rows behind"
+
+
+async def test_same_actor_duplicate_on_the_fast_tier_stays_the_duplicate_error(
+    backend_pair: Backend,
+) -> None:
+    from taskq.exceptions import DuplicateIdempotencyKeyError
+
+    key = f"k-{new_uuid()}"
+    await backend_pair.enqueue(_args("actor_a", key))
+
+    with pytest.raises(DuplicateIdempotencyKeyError):
+        await backend_pair.enqueue_batch_fast([_args("actor_a", key)])

@@ -641,7 +641,7 @@ that a pure finalizer would wait on forever.
 |---|---|---|---|
 | `enqueue_batch` | ≤ 1,000 | per-item keys honored; same-actor collisions return existing jobs, a collision with another actor's job refuses the whole batch (`IdempotencyKeyActorMismatchError`) | single transaction; `max_pending` enforced per actor — over-cap actors' items refused (typed `BatchMaxPendingExceededError` naming the actor + item indices), everyone else's admitted |
 | `enqueue_batch_streaming` | unbounded (chunks of ≤ 1,000) | per-item keys honored | generator input; `max_pending` enforced per chunk with the same per-actor partition; with no caller connection each chunk is its own committed transaction — a failure leaves the committed prefix durable (retry via idempotency keys or the error's refused indices) |
-| `enqueue_batch_fast` | ≤ 50,000 | **none** — any duplicate key aborts the whole COPY with `DuplicateIdempotencyKeyError` | bulk-import semantics; returns a count only; `max_pending` enforced per actor (same partition; COPY stays all-or-nothing on constraint violations) |
+| `enqueue_batch_fast` | ≤ 50,000 | **none** — any duplicate key aborts the whole COPY with `DuplicateIdempotencyKeyError` (`IdempotencyKeyActorMismatchError` when the holder is another actor's) | bulk-import semantics; returns a count only; `max_pending` enforced per actor (same partition; COPY stays all-or-nothing on constraint violations) |
 
 See [jobs-clients.md](jobs-clients.md) for the full tradeoff table.
 

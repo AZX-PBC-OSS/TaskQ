@@ -12,7 +12,7 @@ from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import TYPE_CHECKING, Any, Final
+from typing import TYPE_CHECKING, Any, Final, NoReturn
 from uuid import UUID
 
 import structlog
@@ -31,6 +31,7 @@ from taskq.backend._protocol import (
     EnqueueArgs,
     JobRow,
     batch_cap_groups,
+    duplicate_pair_actor_mismatch,
     first_duplicate_idempotency_pair,
     first_singleton_collision_actor,
 )
@@ -356,14 +357,32 @@ def _attribute_duplicate_pair(
     return (None, None)
 
 
+@dataclass(frozen=True, slots=True)
+class _CopyDuplicate:
+    """The pair a COPY composite-index violation aborted on and, when a
+    committed row holds it, that row's actor and id."""
+
+    scope: str | None
+    key: str | None
+    stored_actor: str | None = None
+    stored_job_id: UUID | None = None
+
+    @property
+    def pair(self) -> tuple[str, str] | None:
+        if self.scope is None or self.key is None:
+            return None
+        return (self.scope, self.key)
+
+
 async def _attribute_copy_duplicate(
     conn: ConnLike,
     sql: SqlTemplates,
     admitted_args: list[EnqueueArgs],
     detail: str | None,
-) -> tuple[str | None, str | None]:
+) -> _CopyDuplicate:
     """Resolve the pair a COPY composite-index violation aborted on —
-    exactly, and independent of the driver's error text.
+    exactly, and independent of the driver's error text — together with
+    the committed row holding it, if any.
 
     Runs on the conflict branch only, after the savepoint wrapping the
     COPY has rolled the statement back, so the caller's transaction scope
@@ -391,61 +410,25 @@ async def _attribute_copy_duplicate(
         for args in admitted_args
         if args.idempotency_key is not None
     ]
-    stored_pairs: set[tuple[str, str]] = set()
+    stored: dict[tuple[str, str], asyncpg.Record] = {}
     if keyed:
         recs = await conn.fetch(
             sql.enqueue_batch_fetch_existing,
             [scope for scope, _ in keyed],
             [key for _, key in keyed],
         )
-        stored_pairs = {
-            (str(rec["idempotency_scope"]), str(rec["idempotency_key"])) for rec in recs
-        }
-    pair = first_duplicate_idempotency_pair(admitted_args, stored_pairs)
-    if pair is not None:
-        return pair
-    return _attribute_duplicate_pair(detail, set(keyed))
-
-
-async def _classify_copy_idempotency_mismatch(
-    conn: ConnLike,
-    sql: SqlTemplates,
-    admitted_args: list[EnqueueArgs],
-    scope: str | None,
-    key: str | None,
-) -> tuple[str, str, UUID | None] | None:
-    """Tell a cross-actor COPY collision from a same-actor duplicate.
-
-    Returns ``(incoming_actor, existing_actor, existing_job_id)`` when the
-    pair the COPY aborted on spans two actors, and ``None`` when it does
-    not or cannot be resolved. The pair's holder is either a committed
-    table row (fetched fresh: the savepoint has rolled the COPY back, so
-    the caller's scope answers queries again) or an earlier item of this
-    same COPY (rebuilt from ``admitted_args``; its rows never persisted,
-    so the id is unknown and reported as ``None``). A pair the resolution
-    cannot see a holder for (a concurrent commit-and-delete racer) stays
-    unclassified and the caller reports the typed duplicate instead.
-    """
-    if scope is None or key is None:
-        return None
-    items = [
-        args
-        for args in admitted_args
-        if args.idempotency_scope == scope
-        and args.idempotency_key is not None
-        and str(args.idempotency_key) == key
-    ]
-    if not items:
-        return None
-    recs = await conn.fetch(sql.enqueue_batch_fetch_existing, [scope], [key])
-    if recs:
-        stored = recs[0]
-        if stored["actor"] != items[0].actor:
-            return (items[0].actor, str(stored["actor"]), stored["id"])
-        return None
-    if len(items) > 1 and items[0].actor != items[-1].actor:
-        return (items[-1].actor, items[0].actor, None)
-    return None
+        stored = {(str(rec["idempotency_scope"]), str(rec["idempotency_key"])): rec for rec in recs}
+    pair = first_duplicate_idempotency_pair(admitted_args, stored.keys())
+    if pair is None:
+        scope, key = _attribute_duplicate_pair(detail, set(keyed))
+        return _CopyDuplicate(scope, key)
+    holder = stored.get(pair)
+    return _CopyDuplicate(
+        pair[0],
+        pair[1],
+        stored_actor=str(holder["actor"]) if holder is not None else None,
+        stored_job_id=holder["id"] if holder is not None else None,
+    )
 
 
 async def _attribute_singleton_collision(
@@ -781,6 +764,44 @@ def _refuse_cross_actor_idempotency_hit(args: EnqueueArgs, existing: JobRow) -> 
             idempotency_key=str(args.idempotency_key),
             idempotency_scope=args.idempotency_scope,
         )
+
+
+def _raise_batch_fast_actor_mismatch(
+    mismatch: tuple[str, str],
+    *,
+    idempotency_scope: str | None,
+    idempotency_key: str | None,
+    existing_job_id: UUID | None,
+    batch_size: int,
+    cause: BaseException | None = None,
+) -> NoReturn:
+    """The batch-fast tier's arm of the cross-actor refusal: the same typed
+    error and log line as :func:`_refuse_cross_actor_idempotency_hit`,
+    raised in place of the duplicate error because the tier's abort is
+    total. ``mismatch`` is :func:`duplicate_pair_actor_mismatch`'s
+    ``(incoming_actor, existing_actor)``; ``existing_job_id`` is ``None``
+    when the holder was an earlier item of the same batch, whose row never
+    persisted. Shared with the in-memory mirror so both backends raise the
+    identical refusal for the identical batch.
+    """
+    incoming_actor, existing_actor = mismatch
+    logger.warning(
+        "idempotency-key-actor-mismatch",
+        actor=incoming_actor,
+        existing_actor=existing_actor,
+        existing_job_id=str(existing_job_id) if existing_job_id is not None else None,
+        idempotency_key=idempotency_key,
+        idempotency_scope=idempotency_scope,
+        batch_size=batch_size,
+        detection_path="batch_fast_unique_violation_catch",
+    )
+    raise IdempotencyKeyActorMismatchError(
+        actor=incoming_actor,
+        existing_actor=existing_actor,
+        existing_job_id=existing_job_id,
+        idempotency_key=idempotency_key or "",
+        idempotency_scope=idempotency_scope,
+    ) from cause
 
 
 async def _enqueue_on_conn(
@@ -2051,42 +2072,35 @@ async def _enqueue_batch_fast(
                 # against the legacy index, which the branch above
                 # already converts -- that carve-out is pre-existing
                 # documented behavior for this path, unchanged here.
-                dup_scope, dup_key = await _attribute_copy_duplicate(
-                    conn, sql, admitted_args, exc.detail
-                )
-                mismatch = await _classify_copy_idempotency_mismatch(
-                    conn, sql, admitted_args, dup_scope, dup_key
+                duplicate = await _attribute_copy_duplicate(conn, sql, admitted_args, exc.detail)
+                # A pair the resolution cannot see a holder for (a
+                # concurrent commit-and-delete racer) stays unclassified
+                # and reports the typed duplicate.
+                mismatch = (
+                    duplicate_pair_actor_mismatch(
+                        admitted_args, duplicate.pair, duplicate.stored_actor
+                    )
+                    if duplicate.pair is not None
+                    else None
                 )
                 if mismatch is not None:
-                    incoming_actor, existing_actor, existing_job_id = mismatch
-                    logger.warning(
-                        "idempotency-key-actor-mismatch",
-                        actor=incoming_actor,
-                        existing_actor=existing_actor,
-                        existing_job_id=(
-                            str(existing_job_id) if existing_job_id is not None else None
-                        ),
-                        idempotency_key=dup_key,
-                        idempotency_scope=dup_scope,
+                    _raise_batch_fast_actor_mismatch(
+                        mismatch,
+                        idempotency_scope=duplicate.scope,
+                        idempotency_key=duplicate.key,
+                        existing_job_id=duplicate.stored_job_id,
                         batch_size=len(args_list),
-                        detection_path="batch_fast_unique_violation_catch",
+                        cause=exc,
                     )
-                    raise IdempotencyKeyActorMismatchError(
-                        actor=incoming_actor,
-                        existing_actor=existing_actor,
-                        existing_job_id=existing_job_id,
-                        idempotency_key=dup_key or "",
-                        idempotency_scope=dup_scope,
-                    ) from exc
                 logger.info(
                     "batch-fast-duplicate-idempotency-key",
                     batch_size=len(args_list),
-                    idempotency_key=dup_key,
-                    idempotency_scope=dup_scope,
+                    idempotency_key=duplicate.key,
+                    idempotency_scope=duplicate.scope,
                 )
                 raise DuplicateIdempotencyKeyError(
-                    idempotency_key=dup_key,
-                    idempotency_scope=dup_scope,
+                    idempotency_key=duplicate.key,
+                    idempotency_scope=duplicate.scope,
                     detail=exc.detail,
                 ) from exc
             if exc.constraint_name == _SINGLETON_CONSTRAINT_NAME:
