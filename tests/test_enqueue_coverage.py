@@ -928,16 +928,20 @@ async def test_enqueue_batch_committed_transaction_survives_a_failed_release() -
     assert pool.acquire_count == 1
 
 
-async def test_enqueue_batch_post_commit_statement_error_refuses_the_retry() -> None:
-    """The batch arm's ordering-3, at the transaction boundary: the batch's
-    driving statement succeeded but a LATER statement of the same
-    transaction fails locally on the parked connection. The transaction
-    never committed (the server died; everything rolled back server-side),
-    so the retry IS safe -- and it runs, re-executing the batch atomically
-    on a fresh connection."""
+async def test_enqueue_batch_mid_transaction_error_allows_the_safe_retry() -> None:
+    """The batch arm's mid-transaction shape: the batch's driving statement
+    fails locally on a parked/dead connection while the transaction is
+    still OPEN — pre-COMMIT, so the mark has not been set (the flag goes
+    up only at the transaction's COMMIT acknowledgement) and the whole
+    batch rolled back server-side when the server died. The retry is
+    therefore provably safe, and it MUST run: re-executing the batch
+    atomically on a fresh connection is how the drain survives the
+    interruption. (Contrast the refused path: a failure AFTER the COMMIT
+    acknowledgement would propagate — that arm is pinned by the
+    release-failure and post-INSERT tests above.)"""
 
-    # First connection: the multi-row INSERT dedupes... instead model the
-    # simplest in-transaction failure: the driving fetch fails parked.
+    # Model the simplest in-transaction failure: the driving fetch fails
+    # parked, before any row was acknowledged.
     class _ParkedMidTxConn(_FakeEnqueueConn):
         async def fetch(self, sql: str, *args: object) -> list[_Record]:
             raise InternalClientError(
