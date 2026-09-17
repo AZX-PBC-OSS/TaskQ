@@ -142,13 +142,28 @@ def _resolve_last_event_id(
     Per WHATWG SSE spec §9.2.1: the ``Last-Event-ID`` header is sent
     automatically by the browser ``EventSource`` on reconnect; the query
     parameter is a curl/debugging convenience.  Header wins when both present.
+
+    Every id this stream issues is a non-negative integer sequence number,
+    so a header that is not one cannot have come from it - a hand-rolled
+    client or a proxy rewriting headers - and is rejected with a 400
+    naming the header. Reading it as "no cursor" instead would replay the
+    stream from the snapshot and silently shadow a valid query parameter.
     """
     header_val = request.headers.get("Last-Event-ID")
     if header_val is not None:
         try:
-            return int(header_val)
+            resolved = int(header_val)
         except ValueError:
-            return None
+            resolved = -1
+        if resolved < 0:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Last-Event-ID must be a non-negative integer sequence number issued by "
+                    f"this stream, got {header_val[:64]!r}"
+                ),
+            )
+        return resolved
     return query_param
 
 

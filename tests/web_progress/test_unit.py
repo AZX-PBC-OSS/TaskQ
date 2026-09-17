@@ -372,6 +372,33 @@ async def test_header_takes_precedence_over_query_param() -> None:
     assert "event: progress\n" in first_raw
 
 
+def test_malformed_last_event_id_header_is_rejected_with_400() -> None:
+    """The server issues integer event ids, so a Last-Event-ID that is not
+    one cannot have come from this stream: it is rejected at the boundary
+    rather than silently read as 'no cursor' - which would also have
+    shadowed a valid ?last_event_id= query parameter."""
+    request = MagicMock()
+    request.headers.get.return_value = "not-a-sequence"
+    with pytest.raises(HTTPException) as info:
+        _resolve_last_event_id(request, 3)
+    assert info.value.status_code == 400
+    assert "Last-Event-ID" in str(info.value.detail)
+
+
+def test_negative_last_event_id_header_is_rejected_with_400() -> None:
+    request = MagicMock()
+    request.headers.get.return_value = "-1"
+    with pytest.raises(HTTPException) as info:
+        _resolve_last_event_id(request, None)
+    assert info.value.status_code == 400
+
+
+def test_well_formed_last_event_id_header_resolves() -> None:
+    request = MagicMock()
+    request.headers.get.return_value = "12"
+    assert _resolve_last_event_id(request, 3) == 12
+
+
 # ── Query param used when no header ─────────────────────────────
 
 
