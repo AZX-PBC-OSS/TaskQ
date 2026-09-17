@@ -84,6 +84,7 @@ def _patch_db(
     actor_rows: list[ActorConfigRow],
     queue_rows: list[QueueRow],
     stranded_rows: list[dict[str, Any]] | None = None,
+    worker_rows: list[dict[str, Any]] | None = None,
 ) -> list[str]:
     """Fake the doctor's reads at the ``taskq.cli`` boundary.
 
@@ -98,6 +99,7 @@ def _patch_db(
     """
     executed: list[str] = []
     stranded = [] if stranded_rows is None else stranded_rows
+    worker_rows = [] if worker_rows is None else worker_rows
 
     class _FakeConn:
         async def execute(self, query: str, *args: Any) -> str:
@@ -108,6 +110,8 @@ def _patch_db(
             executed.append(query)
             if ".jobs " in query:
                 return list(stranded)
+            if ".workers" in query:
+                return list(worker_rows)
             return []
 
         async def fetchval(self, query: str, *args: Any) -> Any:
@@ -452,3 +456,59 @@ def test_doctor_reports_pending_jobs_whose_actor_has_no_registry_or_config_row(
         "'stranded-jobs-no-actor-config' event in "
         "taskq/worker/_leader_sweeps.py)."
     )
+
+
+# ── Attributed event-loop stalls (the workers metadata tally) ─────────
+
+
+def test_doctor_reports_attributed_stalls_from_worker_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A worker's stall tally rides the workers row metadata the heartbeat
+    already rewrites, so doctor reads it without any new write surface:
+    a non-empty tally becomes a finding naming the actor, the kind and
+    the remedy, pointing back at the warning that carries the file:line."""
+    _patch_db(
+        monkeypatch,
+        actor_rows=[_row("doctor_alpha", queue="default"), _row("doctor_beta", queue="batch")],
+        queue_rows=[],
+        worker_rows=[
+            {
+                "id": "11111111-1111-1111-1111-111111111111",
+                "metadata": {"loop_stalls": {"send_email": {"gil_held": 12, "blocking_call": 3}}},
+            }
+        ],
+    )
+
+    result = _invoke()
+
+    assert "send_email" in result.output
+    assert "gil_held" in result.output
+    assert "worker 11111111-1111-1111-1111-111111111111" in result.output
+    # gil_held dominates (12 against 3), so the finding's remedy is the
+    # GIL one.
+    assert "chunk" in result.output
+    assert "event-loop-stall-attributed" in result.output
+
+
+def test_doctor_is_silent_when_no_worker_attributed_stalls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Clean fleet: no tally in any workers row, no attribution finding
+    and no actor named for one."""
+    _patch_db(
+        monkeypatch,
+        actor_rows=[_row("doctor_alpha", queue="default"), _row("doctor_beta", queue="batch")],
+        queue_rows=[],
+        worker_rows=[
+            {
+                "id": "11111111-1111-1111-1111-111111111111",
+                "metadata": {"notify_enabled": True, "max_concurrency": 4},
+            }
+        ],
+    )
+
+    result = _invoke()
+
+    assert "send_email" not in result.output
+    assert "stalled the event loop" not in result.output
