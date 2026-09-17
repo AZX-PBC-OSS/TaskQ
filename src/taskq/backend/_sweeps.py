@@ -636,7 +636,7 @@ FROM snap
 WHERE j.id = snap.id
 -- j.actor rides the RETURNING for the reclaimed-jobs counter: it is a
 -- plain column of the row this statement already locked and updated, so
--- reading it in RETURNING adds no join and no second visit to jobs —
+-- reading it in RETURNING adds no join and no second visit to jobs:
 -- the snap CTEs' index-driven scans (the measured plans in the module
 -- docstring) are untouched, and the cost class of the statement is
 -- unchanged. The disposition half of the counter's label set is NOT a
