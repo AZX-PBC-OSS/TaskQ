@@ -378,7 +378,9 @@ you *which* jobs absorbed them.
 | Metric name | Unit | Attributes | Description | Conditional? |
 |---|---|---|---|---|
 | `messaging.client.published.messages` | `1` | `actor`, `queue` | Jobs successfully enqueued. | yes |
-| `messaging.client.consumed.messages` | `1` | `actor`, `queue`, `outcome` | Jobs consumed. `outcome` is one of `succeeded`, `failed`, `cancelled`, `abandoned`. A snoozed or rescheduled job maps to `abandoned`. | yes |
+| `messaging.client.consumed.messages` | `1` | `actor`, `queue`, `outcome` | Attempts consumed. `outcome` is one of `succeeded`, `failed` (terminal: a non-retryable class or the retry budget exhausted), `cancelled`, `scheduled` (the row went back to the queue — a retryable failure, a `Snooze`/`RetryAfter`, or an admission denial). Abandonment is never a consumer outcome; it has its own counter below. `taskq.jobs.attempt_failures` separates the failure share of `scheduled`. | yes |
+| `taskq.jobs.attempt_failures` | `1` | `actor`, `error_type`, `retryable` | Attempts that ended in an actor failure, recorded at the failure handler once per handled exception. `retryable="true"` — the classifier rescheduled the attempt for another try (Dramatiq's `message_retries_total`); `"false"` — the failure is terminal. `error_type` is the exception class name. `TaskQRetryRateHigh` reads the `retryable="true"` share. | yes |
+| `taskq.jobs.abandoned` | `1` | `actor` | Jobs abandoned: an operator cancel outlasted both grace periods and the running attempt was taken from the actor. Recorded by `mark_abandoned` itself on both backends; a shutdown interrupts instead and never produces it. `TaskQAbandonedJobs` reads this series. | yes |
 | `taskq.cancellation.requested` | — | — | Incremented once per `JobsClient.cancel()` call regardless of outcome. | unconditional |
 | `taskq.cancellation.phase_transitions` | `1` | — | Cancel phase transitions (0→1, 1→2, etc.). | yes |
 | `taskq.backpressure.errors` | — | `actor`, `kind` | Synchronous refusals raised at enqueue. `kind` is the bounded enum `max_pending` / `max_pending_lock_timeout` (capacity admission) or `unique_for_lock_timeout` / `idempotency_lock_timeout` (identity-serialization refusals, counted beside their typed errors — not capacity signals, so alerting keyed on the capacity kinds is not tripped by them). | unconditional |
@@ -541,7 +543,7 @@ span does not inflate metric counts relative to a partially-sampled trace.
 The repo ships alert rules for the metrics above — import them instead of
 writing from scratch:
 
-- [`src/taskq/contrib/prometheus/rules.yaml`](https://github.com/AZX-PBC-OSS/TaskQ/blob/main/src/taskq/contrib/prometheus/rules.yaml) — 17 rules (queue depth, heartbeat misses, crashed-job rate, abandoned jobs, lock TTL, leader split-brain, dispatch latency, progress failures, disabled cron, scheduled-backlog growth, promotion stall, sweep timeouts, sweep degraded tier, maintenance-lock contention, rate-limit dependency outage, cron lock contention, expired-lease zombies)
+- [`src/taskq/contrib/prometheus/rules.yaml`](https://github.com/AZX-PBC-OSS/TaskQ/blob/main/src/taskq/contrib/prometheus/rules.yaml) — 18 rules (queue depth, heartbeat misses, terminal-failed share, retried-failure share, abandoned jobs, lock TTL, leader split-brain, dispatch latency, progress failures, disabled cron, scheduled-backlog growth, promotion stall, sweep timeouts, sweep degraded tier, maintenance-lock contention, rate-limit dependency outage, cron lock contention, expired-lease zombies)
 - `src/taskq/contrib/kubernetes/prometheus_rule.yaml` — the same rules as a PrometheusRule CRD for Kubernetes
 
 The rules fire on the series above, so they only work where those series are

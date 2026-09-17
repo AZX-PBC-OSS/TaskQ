@@ -997,6 +997,8 @@ Every job emits an `enqueue` PRODUCER span, a `process` CONSUMER span (linked, w
 | `taskq.dispatch.duration` | dispatch contention (PgBouncer/pool trouble) |
 | `taskq.worker.slot_pool.acquire_failures` / `taskq.worker.slot_pool.connections_in_use` | per-slot pool exhaustion and saturation — an acquire failure is infrastructure (the job is left for lock-lease reclaim, not failed); the gauge pinned at the pool maximum with zero acquire failures is saturation, visible below the acquire-failure cliff |
 | `messaging.process.duration` | actor latency, slow chunks |
+| `taskq.jobs.attempt_failures` (by actor, `error_type`, `retryable`) | a dependency failing under retry cover (`retryable="true"` rising while the terminal-failed share stays flat) — the series `TaskQRetryRateHigh` fires on |
+| `taskq.jobs.abandoned` (by actor) | an actor that ignores cancellation — an operator cancel outlasted both graces; never produced by a deploy |
 | `taskq.lock.expires_in_seconds` | heartbeat trouble before it becomes `crashed` jobs |
 | `taskq.deadline_exceeded_sweep.jobs_failed` | `schedule_to_close` too tight |
 | `taskq.backpressure.errors` (filter `kind` to the capacity kinds) | `max_pending` rejections — producer pressure |
@@ -1080,10 +1082,11 @@ and bounded fan-out per job (chunk sizes in the hundreds, not the tens of thousa
 
 Ship-ready alert rules for the metrics above exist in the repo and are ready to import:
 [`src/taskq/contrib/prometheus/rules.yaml`](https://github.com/AZX-PBC-OSS/TaskQ/blob/main/src/taskq/contrib/prometheus/rules.yaml)
-(17 rules: queue depth, heartbeat misses, crashed-job rate, abandoned jobs, lock TTL, leader
-split-brain, dispatch latency, progress failures, disabled cron, scheduled-backlog growth,
-promotion stall, sweep timeouts, sweep degraded tier, maintenance-lock contention, rate-limit
-dependency outage, cron lock contention, expired-lease zombies) and the equivalent PrometheusRule
+(18 rules: queue depth, heartbeat misses, terminal-failed share, retried-failure share, abandoned
+jobs, lock TTL, leader split-brain, dispatch latency, progress failures, disabled cron,
+scheduled-backlog growth, promotion stall, sweep timeouts, sweep degraded tier, maintenance-lock
+contention, rate-limit dependency outage, cron lock contention, expired-lease zombies) and the
+equivalent PrometheusRule
 CRD at `src/taskq/contrib/kubernetes/prometheus_rule.yaml`. Importing them is not enough — make
 sure something **scrapes the workers** (`TASKQ_METRICS_PORT`, every pod; see
 [deployment.md — Prometheus scrape](deployment.md#observability-setup)): the rules read
