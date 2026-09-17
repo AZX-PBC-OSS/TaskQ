@@ -289,6 +289,17 @@ def test_job_filter_negative_limit_raises() -> None:
         JobFilter(limit=-1)
 
 
+def test_limit_above_the_page_ceiling_is_rejected() -> None:
+    """A page is one round trip that materialises every row it returns;
+    the ceiling keeps one call from asking for the whole table by accident.
+    The ceiling itself is accepted; ``cursor`` reaches the rows past it."""
+    from taskq.backend._protocol import MAX_JOB_LIST_LIMIT
+
+    assert JobFilter(limit=MAX_JOB_LIST_LIMIT).limit == MAX_JOB_LIST_LIMIT
+    with pytest.raises(ValueError, match=f"limit must be <= {MAX_JOB_LIST_LIMIT}"):
+        JobFilter(limit=MAX_JOB_LIST_LIMIT + 1)
+
+
 def test_job_filter_zero_limit_is_valid() -> None:
     """limit=0 is well-defined (returns no rows) and consistent across
     backends — it stays allowed."""
