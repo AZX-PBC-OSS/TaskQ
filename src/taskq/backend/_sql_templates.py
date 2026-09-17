@@ -21,6 +21,7 @@ from taskq.backend._sql import (
     CANCEL_ESCALATION_SQL,
     INSERT_EVENT_SQL,
     POLL_CANCEL_FLAGS_SQL,
+    WAKE_NOTIFY_SQL,
 )
 from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining
@@ -1333,7 +1334,7 @@ SELECT * FROM "{s}".jobs WHERE idempotency_scope = $1 AND idempotency_key = $2""
         # The wake for paths that re-pend a row by UPDATE (admin retry):
         # the jobs INSERT trigger covers every insert path, so no enqueue
         # path issues this.
-        wake_notify="SELECT pg_notify($1, '')",
+        wake_notify=WAKE_NOTIFY_SQL,
         enqueue_batch=f"""\
 INSERT INTO "{s}".jobs (
     id, actor, queue, identity_key, fairness_key,

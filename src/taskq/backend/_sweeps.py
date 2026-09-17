@@ -111,7 +111,7 @@ import structlog
 
 from taskq.backend._protocol import ConnLike, JobId
 from taskq.backend._records import compute_duration_ms, jsonb_param, parse_rowcount
-from taskq.backend._sql import INSERT_EVENTS_DETAIL_BATCH_SQL
+from taskq.backend._sql import INSERT_EVENTS_DETAIL_BATCH_SQL, WAKE_NOTIFY_SQL
 from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining
     DEFAULT_EVENT_RETENTION_BATCH_SIZE,
@@ -1274,7 +1274,7 @@ async def sweep_expired_locks(
             )
             await conn.execute(event_sql, job_ids, details, "state_change")
             await conn.execute(
-                "SELECT pg_notify($1, '')",
+                WAKE_NOTIFY_SQL,
                 wake_channel(schema),
             )
         # Success path only: restore the caller's timeout inside the
@@ -1473,7 +1473,7 @@ async def sweep_scheduled_to_pending(
                 promoted.append(_PromotedRow(JobId(rec["id"]), rec["prev_status"]))
 
             await conn.execute(
-                "SELECT pg_notify($1, '')",
+                WAKE_NOTIFY_SQL,
                 wake_channel(schema),
             )
         # Success path only: restore the caller's timeout inside the

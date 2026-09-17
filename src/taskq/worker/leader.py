@@ -43,6 +43,7 @@ from opentelemetry.metrics import CallbackOptions, Observation
 
 from taskq._close import CLOSE_TIMEOUT_SECS, close_conn_bounded
 from taskq.backend._protocol import Backend
+from taskq.backend._sql import WAKE_NOTIFY_SQL
 from taskq.backend.clock import Clock
 from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining
@@ -1088,7 +1089,7 @@ class MaintenanceLeader:
                             async with self._deps.dispatcher_pool.acquire(
                                 timeout=self._deps.settings.dispatcher_command_timeout
                             ) as conn:
-                                await conn.execute("SELECT pg_notify($1, '')", channel)
+                                await conn.execute(WAKE_NOTIFY_SQL, channel)
                     guard.ok()
                 except NotImplementedError as exc:
                     if not warned:

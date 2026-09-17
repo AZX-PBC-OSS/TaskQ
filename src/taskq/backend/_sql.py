@@ -101,6 +101,12 @@ SELECT e.job_id,
        $3, e.detail
 FROM unnest($1::uuid[], $2::jsonb[]) WITH ORDINALITY AS e(job_id, detail, ord)"""
 
+# The one wake statement: $1 is the channel (taskq.constants.wake_channel),
+# the payload is empty by contract (listeners never parse it). Rendered
+# templates expose it as SqlTemplates.wake_notify; the sweeps and the
+# leader, which carry no rendered templates, execute it directly.
+WAKE_NOTIFY_SQL = "SELECT pg_notify($1, '')"
+
 POLL_CANCEL_FLAGS_SQL = """\
 SELECT id, cancel_phase
 FROM "{schema}".jobs
