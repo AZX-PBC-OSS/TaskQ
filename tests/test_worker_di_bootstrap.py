@@ -36,7 +36,7 @@ from taskq.backend._protocol import Backend, CancelPhase, JobRow
 from taskq.backend.clock import Clock, SystemClock
 from taskq.client._enqueuer import SubJobEnqueuer
 from taskq.context import JobContext
-from taskq.exceptions import DependencyCycle, MissingProvider, ScopeViolation
+from taskq.exceptions import DependencyCycle, DIError, MissingProvider, ScopeViolation
 from taskq.obs import ErrorReporter
 from taskq.settings import WorkerSettings
 from taskq.testing.actor import EmptyPayload
@@ -178,7 +178,14 @@ async def _run_main_with_mocked_deps(
     *,
     _registry: ProviderRegistry | None = None,
     actor_registry: dict[str, ActorRef[Any, Any]] | None = None,
+    loops_started: list[str] | None = None,
 ) -> int:
+    """Run ``_main`` with every pool, loop and signal seam faked.
+
+    *loops_started* collects the name of each worker loop the bootstrap
+    reached (``producer``, ``consumer``, ...), so a test can prove a
+    refusal happened before any of them started.
+    """
     fake_backend = _backend_methods_stub()
     worker_id_val = new_uuid()
 
@@ -199,17 +206,24 @@ async def _run_main_with_mocked_deps(
     async def _fake_all(*args: object, **kwargs: object) -> None:
         pass
 
+    def _fake_loop(name: str) -> Any:
+        async def _loop(*args: object, **kwargs: object) -> None:
+            if loops_started is not None:
+                loops_started.append(name)
+
+        return _loop
+
     with (
         patch("taskq.worker._bootstrap.PostgresBackend", return_value=fake_backend),
         patch("taskq.worker._bootstrap.open_worker_deps") as mock_open,
         patch("taskq.worker.run.register_worker", side_effect=_fake_register),
         patch("taskq.worker._bootstrap.install_signal_handlers", side_effect=_fake_install),
-        patch("taskq.worker._bootstrap.heartbeat_loop", side_effect=_fake_all),
-        patch("taskq.worker._bootstrap.notify_listener_loop", side_effect=_fake_all),
+        patch("taskq.worker._bootstrap.heartbeat_loop", side_effect=_fake_loop("heartbeat")),
+        patch("taskq.worker._bootstrap.notify_listener_loop", side_effect=_fake_loop("notify")),
         patch("taskq.worker._bootstrap.MaintenanceLeader") as mock_leader_cls,
-        patch("taskq.worker.run.producer_loop", side_effect=_fake_all),
-        patch("taskq.worker.run.consumer_loop_stub", side_effect=_fake_all),
-        patch("taskq.worker.run.di_consumer_loop", side_effect=_fake_all),
+        patch("taskq.worker.run.producer_loop", side_effect=_fake_loop("producer")),
+        patch("taskq.worker.run.consumer_loop_stub", side_effect=_fake_loop("consumer")),
+        patch("taskq.worker.run.di_consumer_loop", side_effect=_fake_loop("consumer")),
         patch("taskq.worker.run.deregister_worker", new_callable=AsyncMock),
     ):
         mock_leader_instance = MagicMock()
@@ -322,7 +336,7 @@ def test_validate_error_reporter_scope_refuses_transient() -> None:
         Scope.TRANSIENT,
         lambda: object(),  # type: ignore[arg-type,return-value]
     )
-    with pytest.raises(RuntimeError, match="TRANSIENT"):
+    with pytest.raises(DIError, match="TRANSIENT"):
         _validate_error_reporter_scope(registry)
 
 
@@ -511,6 +525,28 @@ async def test_bootstrap_registers_redis_pool_provider() -> None:
 
 
 # ── fail fast when a Redis-backend rate limit lacks TASKQ_REDIS_URL ──
+
+
+async def test_bootstrap_refuses_a_transient_error_reporter_before_any_loop_starts() -> None:
+    """Through the real bootstrap: a TRANSIENT-scoped ErrorReporter fails
+    worker startup with the DI error naming the allowed scopes, and no
+    consumer loop is ever started — the misregistration cannot reach a
+    job."""
+    from taskq.obs import ErrorReporter
+
+    class _Reporter:
+        async def report(self, job: object, exception: BaseException) -> None:
+            return None
+
+    registry = ProviderRegistry()
+    registry.register_factory(ErrorReporter, Scope.TRANSIENT, lambda: _Reporter())
+    loops_started: list[str] = []
+
+    with pytest.raises(DIError, match=r"TRANSIENT.*PROCESS, THREAD or LOOP"):
+        await _run_main_with_mocked_deps(
+            _settings(), _registry=registry, loops_started=loops_started
+        )
+    assert loops_started == []
 
 
 async def test_bootstrap_fails_fast_on_redis_rate_limit_without_redis_url() -> None:

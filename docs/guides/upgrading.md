@@ -1550,8 +1550,9 @@ changelog becomes the authoritative record and these notes age out.
   The registration's scope is validated at worker startup: a reporter
   registered at `TRANSIENT` scope (which the hook, running after the
   actor's scope closed, could never resolve) fails the boot with a
-  `RuntimeError` naming the scope, where dispatch time previously raised
-  per job. A dispatch that never bootstrapped (in-process runners)
+  `DIError` naming the scope and the allowed ones, where dispatch time
+  previously raised per job. A dispatch that never bootstrapped
+  (in-process runners)
   degrades instead: the hook is skipped behind a window-gated
   `error-reporter-defect` WARNING, and a provider resolving to a value
   without the reporter protocol warns the same way.

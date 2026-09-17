@@ -51,7 +51,7 @@ from taskq.cron import (
     CronScheduleSpec,
     compute_next_fire_after,
 )
-from taskq.exceptions import MissingProvider
+from taskq.exceptions import DIError, MissingProvider
 from taskq.obs import (
     ErrorReporter,
     get_meter,
@@ -138,7 +138,8 @@ def _validate_error_reporter_scope(registry: ProviderRegistry) -> None:
     entry = registry.get(ErrorReporter)
     if entry.scope in (Scope.PROCESS, Scope.THREAD, Scope.LOOP):
         return
-    raise RuntimeError(
+    # A DI misregistration, typed like the ones registry.validate raises.
+    raise DIError(
         f"ErrorReporter is registered at {entry.scope.name} scope; a terminal-failure "
         "hook outlives the actor invocation and must be PROCESS, THREAD or LOOP scoped"
     )
