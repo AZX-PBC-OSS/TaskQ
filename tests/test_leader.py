@@ -168,7 +168,7 @@ class FakeConn:
             self._on_execute()
         # Why a DELETE tag for the resign: the command tag is the delete
         # COUNT, and resign() now reads it to decide whether the row was
-        # actually handed back — a double answering "UPDATE 1" here would
+        # actually handed back: a double answering "UPDATE 1" here would
         # report every resign as a no-op (the same class of lie as the
         # fetchval doubles answering lease statements with a bool: the
         # shape the caller reads must be the shape the real driver sends).
@@ -3543,7 +3543,7 @@ class _ElectRecordingConn(FakeConn):
     The elect statement's return IS the term's ``elected_at``, and the
     leader conn is rebuilt every failed cycle, so proving the resign
     fences on the CURRENT win needs the answers in call order across
-    every conn the cycles opened — a single interleaved timeline of
+    every conn the cycles opened: a single interleaved timeline of
     ``("elect", term)`` / ``("resign", fence)`` events, not per-conn
     lists a racing loop keeps appending to.
     """
@@ -3582,7 +3582,7 @@ async def test_persistent_dedicated_conn_failure_hands_the_won_lease_back(
 ) -> None:
     """#234: a pod that keeps WINNING the row but can never open its
     dedicated conns must resign the row once its episode's trust budget
-    is spent — and keep resigning on every later re-win, because the
+    is spent, and keep resigning on every later re-win, because the
     anchor survives the resign (a still-broken pod buying a fresh window
     per re-win is exactly the unbounded hold being fixed).
 
@@ -3646,7 +3646,7 @@ async def test_persistent_dedicated_conn_failure_hands_the_won_lease_back(
         "leader-elected is the successful-assume record; this pod never assumed"
     )
     # The fence invariant: every resign fences on the term of the win it
-    # is handing back — the most recent elect before it in the timeline —
+    # is handing back (the most recent elect before it in the timeline),
     # never a stale term from an earlier cycle of the episode.
     last_elect: datetime | None = None
     resigned = 0
@@ -3658,7 +3658,7 @@ async def test_persistent_dedicated_conn_failure_hands_the_won_lease_back(
             assert last_elect is not None
             assert term == last_elect, (
                 f"a resign fenced on {term!r} while the row it was handing back "
-                f"was won at {last_elect!r} — the fence must carry the CURRENT term"
+                f"was won at {last_elect!r}: the fence must carry the CURRENT term"
             )
     assert resigned >= 2, "the persistently-broken pod must keep handing re-won rows back"
     for _sql, args in _resign_deletes([*opened, first_conn]):
@@ -3669,7 +3669,7 @@ async def test_transient_dedicated_conn_failure_keeps_the_lease_and_recovers(
     monkeypatch: Any,  # type: ignore[reportUnknownParameterType]
 ) -> None:
     """The blip half of the #234 budget: ONE failed conn open inside the
-    episode's trust window must not resign — the own-row arm's cheap
+    episode's trust window must not resign: the own-row arm's cheap
     route back (the #218 case: a credential reload, a momentary
     ``TooManyConnections``) is exactly the re-win this window preserves,
     and resigning per blip would thrash leadership on every flake.
@@ -3714,7 +3714,7 @@ async def test_transient_dedicated_conn_failure_keeps_the_lease_and_recovers(
     assert deps.is_leader.is_set(), "the blip must recover through the own-row arm's cheap re-win"
     assert _resign_deletes([*opened, first_conn]) == [], (
         "a single failed conn open inside the trust window resigned the "
-        "won lease — the blip budget is what keeps leadership from "
+        "won lease: the blip budget is what keeps leadership from "
         "thrashing on every flake"
     )
     assert not any(e.get("kind") == "leader_resigned_unassumable" for e in captured)
@@ -3759,7 +3759,7 @@ async def test_escaped_assume_failure_also_hands_the_won_lease_back(
     async def _probe_conn_dying_mid_courtesy_lock() -> bool:
         raise asyncpg.PostgresConnectionError("courtesy-lock probe conn died")
 
-    monkeypatch.setattr(  # pyright: ignore[reportAttributeAccessIssue]  # Why: instance-attribute seam — the double stands in for the courtesy probe the election loop calls after a won elect.
+    monkeypatch.setattr(  # pyright: ignore[reportAttributeAccessIssue]  # Why: instance-attribute seam; the double stands in for the courtesy probe the election loop calls after a won elect.
         leader,
         "_try_election_lock",
         _probe_conn_dying_mid_courtesy_lock,
@@ -3802,8 +3802,8 @@ async def test_escaped_assume_failure_also_hands_the_won_lease_back(
 class _SteerableConn(_ElectRecordingConn):
     """A double whose elect answers follow a shared mutable flag, per call.
 
-    The R1 attack shape needs the election to flip mid-run — a peer takes
-    the row, so this pod's elects start LOSING — while ``FakeConn`` binds
+    The R1 review shape needs the election to flip mid-run (a peer takes
+    the row, so this pod's elects start LOSING), while ``FakeConn`` binds
     its lease-statement answer at construction and the leader conn is
     rebuilt every failed cycle. The flag is therefore read at call time:
     ``win`` truthy answers the elect with a fresh term (recorded in the
@@ -3824,20 +3824,20 @@ class _SteerableConn(_ElectRecordingConn):
 async def test_a_blip_after_a_peer_takeover_gets_a_fresh_trust_window(
     monkeypatch: Any,  # type: ignore[reportUnknownParameterType]
 ) -> None:
-    """F1, the R1 attack shape: an OLD episode's spent anchor must not
+    """F1, the R1 review shape: an OLD episode's spent anchor must not
     resign a NEW term's first conn-open blip.
 
     Sequence: a broken episode hands the lease back at its trust horizon;
     a peer takes the row; this pod later wins again (the peer's lease
-    ended) and hits ONE failed dedicated-conn open. The stale anchor —
-    cleared only by a successful assume in the code under attack — is
+    ended) and hits ONE failed dedicated-conn open. The stale anchor,
+    cleared only by a successful assume in the code under review, is
     long spent, so that single blip resigned the fresh term immediately:
     the per-blip leadership thrash the #234 design explicitly rejected,
     arriving through the back door for exactly the pods that once had an
     unassumable episode.
 
     A lost election is the observable end of an episode (a peer holds the
-    row now), so the anchor must clear there — while the sibling pin
+    row now), so the anchor must clear there, while the sibling pin
     (``test_persistent_dedicated_conn_failure_hands_the_won_lease_back``)
     keeps the other rule: a re-win while still broken, with NO peer
     having taken the row in between, hands it straight back.
@@ -3862,7 +3862,7 @@ async def test_a_blip_after_a_peer_takeover_gets_a_fresh_trust_window(
             state["fail_opens"] or state["blips_left"] > 0
         ):
             # The one-shot blip decrements only when the persistent
-            # failure is over — phase 3's single refusal.
+            # failure is over: phase 3's single refusal.
             if state["blips_left"] > 0 and not state["fail_opens"]:
                 state["blips_left"] -= 1
             raise asyncpg.TooManyConnectionsError("remaining connection slots reserved")
@@ -3884,14 +3884,14 @@ async def test_a_blip_after_a_peer_takeover_gets_a_fresh_trust_window(
             def _warn_count() -> int:
                 return sum(1 for e in captured if e.get("kind") == "leader_resigned_unassumable")
 
-            # Phase 1 — the broken episode: wins, failed opens, the
+            # Phase 1, the broken episode: wins, failed opens, the
             # trust-spent hand-back (and its re-win churn).
             await wait_for_condition(
                 _warn_count,
                 description="phase 1 never produced the trust-spent hand-back",
             )
 
-            # Phase 2 — the peer takes the row: this pod's elects lose.
+            # Phase 2, the peer takes the row: this pod's elects lose.
             state["win"] = 0
             await wait_for_condition(
                 lambda: any(e.get("kind") == "leader_retry" for e in captured),
@@ -3899,7 +3899,7 @@ async def test_a_blip_after_a_peer_takeover_gets_a_fresh_trust_window(
             )
             warns_after_loss = _warn_count()
 
-            # Phase 3 — the pod wins a NEW term (the peer's lease ended)
+            # Phase 3, the pod wins a NEW term (the peer's lease ended)
             # and hits exactly one conn-open blip on it: the persistent
             # failure is over, one open still refuses.
             state["win"] = 1
@@ -3929,13 +3929,13 @@ async def test_a_blip_after_a_peer_takeover_gets_a_fresh_trust_window(
 async def test_the_hand_back_warn_does_not_fire_when_the_resign_did_not_land(
     monkeypatch: Any,  # type: ignore[reportUnknownParameterType]
 ) -> None:
-    """F2: ``leader-resigned-unassumable`` is the policy record — "this
-    pod handed the lease back because it cannot assume it" — so it must
+    """F2: ``leader-resigned-unassumable`` is the policy record ("this
+    pod handed the lease back because it cannot assume it"), so it must
     fire only when the resign actually DELETED the row.
 
-    The attack run logged 20 of those WARNs against zero successful
+    The review run logged 20 of those WARNs against zero successful
     resigns: the WARN used to follow the best-effort ``resign()``
-    unconditionally, and a resign with no live conn returns silently —
+    unconditionally, and a resign with no live conn returns silently,
     so the runbook's "the fleet is leading from elsewhere" advice was
     pointed at a row nobody had resigned. The gate is ``resign()``'s own
     return: the delete count from the command tag, not the absence of
@@ -3952,7 +3952,7 @@ async def test_the_hand_back_warn_does_not_fire_when_the_resign_did_not_land(
     leader._resign_fence = spent  # pyright: ignore[reportPrivateUsage]  # Why: the fence the resign would carry.
 
     # No live conn anywhere: resign() has nothing to ride and returns
-    # False silently — the hand-back must not claim a hand-back.
+    # False silently; the hand-back must not claim a hand-back.
     deps.leader_conn = None
     assert leader._leader_monitor_conn is None
     with structlog.testing.capture_logs() as silent:
@@ -3963,7 +3963,7 @@ async def test_the_hand_back_warn_does_not_fire_when_the_resign_did_not_land(
         "the WARN claimed a handed-back lease while no resign could even be issued"
     )
 
-    # A live conn whose DELETE lands: the WARN fires — the record is
+    # A live conn whose DELETE lands: the WARN fires, and the record is
     # true exactly when the row is gone.
     deps.leader_conn = FakeConn(fetchval_result=True)  # type: ignore[assignment]  # Why: FakeConn is a drop-in for asyncpg.Connection in unit tests; the harness in this file assigns it the same way.
     with structlog.testing.capture_logs() as landed:
