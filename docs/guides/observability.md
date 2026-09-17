@@ -44,14 +44,59 @@ TaskGroup opens. No application code needs to call this directly.
 
 ### Exporter configuration
 
-Configure the exporter with standard OTel environment variables. TaskQ does
-not override them.
+TaskQ emits through the OpenTelemetry **API**; the SDK and its exporters
+are what turn that into data at a backend. Configure them with the standard
+OTel environment variables — TaskQ does not override them:
 
 | Variable | Example |
 |---|---|
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | `http://localhost:4317` |
+| `OTEL_EXPORTER_OTLP_PROTOCOL` | `grpc` (default) or `http/protobuf` |
+| `OTEL_TRACES_EXPORTER` / `OTEL_METRICS_EXPORTER` / `OTEL_LOGS_EXPORTER` | `otlp` (the default for traces and metrics once an endpoint is set), `console`, `prometheus`, `none` |
 | `OTEL_SERVICE_NAME` | `my-app-worker` |
 | `OTEL_RESOURCE_ATTRIBUTES` | `deployment.environment=production,k8s.pod.name=worker-0` |
+
+**Under `taskq worker` the variables are enough.** With the `[otel]` extra
+installed, the CLI installs SDK tracer and meter providers from them at
+startup — through the SDK's own configurator, the same machinery
+`opentelemetry-instrument` uses — whenever any of
+`OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_TRACES_EXPORTER`,
+`OTEL_METRICS_EXPORTER` or `OTEL_LOGS_EXPORTER` is set. A bare endpoint
+selects `otlp` for traces and metrics (the specification's default; logs
+stay off unless `OTEL_LOGS_EXPORTER` names an exporter, because TaskQ logs
+through structlog). Startup logs one line saying what was wired:
+
+```
+otel-exporter-configured  traces=otlp  metrics=otlp  logs=  source=env
+```
+
+and `source=none` when nothing asked for an exporter. Two other startup
+lines matter:
+
+- `otel-exporter-unavailable` (WARNING, with `extra=otel` or
+  `extra=prometheus`) — the variables are set but the package that
+  provides the exporter is not installed. Nothing is exported; install the
+  named extra.
+- `otel-exporter-preconfigured` (INFO) — a provider was already installed
+  before the worker started (an embedding application, a vendor distro
+  such as `configure_azure_monitor(...)`, or `opentelemetry-instrument`).
+  The worker never replaces it.
+
+An exporter the SDK cannot build (a misspelled name, a protocol no
+installed exporter speaks) fails startup with the reason, so the mistake
+is visible at deploy time rather than as a pipeline that looks configured
+and exports nothing. `OTEL_SDK_DISABLED=true` is honoured, and
+`TASKQ_OTEL_AUTOCONFIGURE=false` opts out entirely — set it when your
+application configures the SDK itself.
+
+The alternative is the SDK's own launcher, which reads the identical
+variables: `opentelemetry-instrument taskq worker --actors ...` (the
+`[otel]` extra installs it). The worker detects the providers it set and
+changes nothing. Embedding applications that run `worker_main` without
+the CLI call `taskq.obs.configure_exporters(settings)` at process start,
+or configure the SDK directly — either way, before the worker records
+anything, because measurements taken before a provider exists are dropped,
+not replayed.
 
 Common receiver addresses:
 
@@ -262,36 +307,43 @@ recorded. The `taskq ui serve` process records only its own activity
 (admin-triggered enqueues and cancels), so leader-sampled gauges
 (`taskq.jobs.by_status`, `taskq.jobs.stranded`, `taskq.queue.depth`, the
 sweep gauges) and worker-path counters (dispatch duration, consumed
-messages) are **not in its scrape** — they live in the worker processes.
-Scrape the workers for them:
+messages, attempt failures) are **not in its scrape** — they live in the
+worker processes. Scrape the workers for them, every pod: series are
+per-process, so a scrape of one pod says nothing about another.
 
-- The worker's own health socket serves three hand-rendered process gauges —
-  `taskq_active_jobs`, `taskq_is_leader`, `taskq_shutdown_phase` — via
-  `taskq health metrics` (or `GET /metrics` on the optional TCP health
-  listener). Those three are independent of OTel and need no extra.
-- The full worker series require a Prometheus bridge **in the worker
-  process**. Today the `taskq worker` CLI does not mount one itself; run the
-  worker embedded and mount the router (it wires the provider at startup,
-  before `worker_main` records anything):
+**The worker's scrape listener: `TASKQ_METRICS_PORT`.** With the
+`[prometheus]` extra installed, setting a port makes `taskq worker` add a
+Prometheus pull reader to the meter provider it installs (see
+[Exporter configuration](#exporter-configuration)) and serve every series
+this process records at `http://<TASKQ_HEALTH_HOST>:<port>/metrics`:
 
-  ```python
-  # your_app/worker_service.py — one process, worker + scrape endpoint
-  from fastapi import FastAPI
-  from taskq.contrib.prometheus import create_metrics_router
+```bash
+pip install "taskq-py[prometheus]"
+TASKQ_METRICS_PORT=9464 taskq worker --actors myapp.actors:registry
+# scrape target: http://<pod>:9464/metrics
+```
 
-  app = FastAPI()
-  app.include_router(create_metrics_router(None), prefix="/jobs/health")  # wires the provider
+The startup line reads `otel-exporter-configured metrics=prometheus
+source=prometheus prometheus_port=9464`; with an OTLP endpoint set as well,
+`metrics=otlp,prometheus source=env,prometheus` — both exporters share one
+provider. `OTEL_METRICS_EXPORTER=prometheus` with
+`OTEL_EXPORTER_PROMETHEUS_PORT`/`_HOST` is the SDK's own spelling of the
+same thing and works identically; `TASKQ_METRICS_PORT` is authoritative
+for the port when both are set. Unset, no listener is bound.
 
-  # then run worker_main(settings=..., actor_registry=...) in this process
-  # and serve `app` (uvicorn) alongside it.
-  ```
-
-  If you already serve your own scrape endpoint, call
+- The worker's health socket separately serves three hand-rendered process
+  gauges — `taskq_active_jobs`, `taskq_is_leader`, `taskq_shutdown_phase` —
+  via `taskq health metrics` (or `GET /metrics` on the optional TCP health
+  listener). Those three are independent of OTel and need no extra; the
+  OTel twins `taskq.worker.active_jobs` and `taskq.worker.max_concurrency`
+  are on the real scrape.
+- Embedding applications that run `worker_main` themselves and already
+  serve a scrape endpoint call
   `taskq.contrib.prometheus.ensure_prometheus_meter_provider()` once at
-  process start instead of mounting the router, and serve the default
-  registry as you do today. Either way, point Prometheus at every worker
-  pod: series are per-process, so a scrape of one pod says nothing about
-  another.
+  process start (before the worker records anything) and serve the default
+  registry as they do today; the FastAPI router
+  (`taskq.contrib.prometheus.create_metrics_router`) is the same wiring
+  mounted as a route.
 
 ### A saturated rate limit is not a promotion stall
 
@@ -814,12 +866,15 @@ services:
       - "4318:4318"   # OTLP HTTP
 ```
 
-Point the worker at the collector:
+Point the worker at the collector (the `[otel]` extra installed; the
+worker wires the OTLP exporters from the endpoint at startup — see
+[Exporter configuration](#exporter-configuration)):
 
 ```bash
 OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317 \
 OTEL_SERVICE_NAME=taskq-worker \
 taskq worker --actors myapp.actors:registry
+# startup log: otel-exporter-configured traces=otlp metrics=otlp logs= source=env
 ```
 
 ---

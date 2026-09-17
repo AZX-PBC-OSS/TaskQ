@@ -633,15 +633,16 @@ TaskQ instruments itself with OpenTelemetry (vendor-neutral) and structlog. No v
 
 | Variable | Example | Description |
 |---|---|---|
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | `http://otel-collector:4317` | OTLP gRPC endpoint (`:4318` for HTTP) |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | `http://otel-collector:4317` | OTLP gRPC endpoint (`:4318` with `OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf`) |
+| `OTEL_TRACES_EXPORTER` / `OTEL_METRICS_EXPORTER` | `otlp` | Exporter per signal; defaults to `otlp` once an endpoint is set |
 | `OTEL_SERVICE_NAME` | `taskq-worker` | Service name for all spans/metrics |
 | `OTEL_RESOURCE_ATTRIBUTES` | `deployment.environment=production,k8s.pod.name=worker-0` | Resource attributes on all telemetry |
 
-TaskQ does not override standard OTel variables. All spans and metrics use instrumentation name `"taskq"` and OTel messaging semconv attributes for dashboard compatibility.
+With the `[otel]` extra installed, `taskq worker` installs SDK tracer and meter providers from these variables at startup (through the SDK's own configurator — the same as `opentelemetry-instrument taskq worker`) and logs `otel-exporter-configured traces=... metrics=... source=env`. Verify that line in the worker's startup log: `otel-exporter-unavailable` means the variables are set but the extra is missing, and nothing is exported. `TASKQ_OTEL_AUTOCONFIGURE=false` opts out when the embedding application configures the SDK itself. TaskQ does not override standard OTel variables. All spans and metrics use instrumentation name `"taskq"` and OTel messaging semconv attributes for dashboard compatibility.
 
 ### Prometheus scrape
 
-The worker exposes Prometheus metrics on its Unix socket at `GET /metrics`. For HTTP scraping, use the admin UI's `/jobs/health/metrics` endpoint (requires `taskq[prometheus]`): point a scrape job at `admin:8080` with `metrics_path: /jobs/health/metrics`.
+The worker series — leader-sampled gauges, dispatch/consume counters, attempt failures, the watchdog family — exist only in the **worker** processes; the admin UI's `/jobs/health/metrics` serves the admin process's own activity and none of them. Scrape every worker pod: install `taskq[prometheus]`, set `TASKQ_METRICS_PORT=9464`, and point a scrape job at each worker on that port with `metrics_path: /metrics` (a pod-role discovery with a `taskq-worker` selector, or a headless Service). The worker's health socket additionally serves three process gauges at `GET /metrics` without any extra. See [observability.md — Serving the metrics](observability.md#serving-the-metrics-the-prometheus-endpoint).
 
 ### Structured logging
 
