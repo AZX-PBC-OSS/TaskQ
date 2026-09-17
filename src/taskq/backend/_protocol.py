@@ -954,9 +954,9 @@ MAX_JOB_LIST_LIMIT: Final[int] = 10_000
 A page is one round trip that materialises every row it returns, on the
 server and in the client; ``cursor`` is what reaches the rows past it. An
 unbounded limit let one call ask for the whole table, which is a query
-plan and a memory spike no caller can want by accident. The same ceiling
-River applies to its job list (``JobListParams.First`` panics above
-10,000). Enforced by the client's list entry, not by :class:`JobFilter`
+plan and a memory spike no caller can want by accident; ten thousand is
+the ceiling peer job queues put on a listed page. Enforced by the
+client's list entry, not by :class:`JobFilter`
 itself: the same filter drives ``cancel_where``, which ignores ``limit``
 and whose in-process implementation lists with no page at all."""
 

@@ -363,8 +363,8 @@ LEASE_RELOAD_FRACTION: Final[float] = 0.5
 Half the TTL leaves a full half-life for the rebuild to fail and be retried
 before the issuer revokes the pair: a rebuild that fails at ``T + TTL/2``
 still has until ``T + TTL`` before every reconnect on the old pool starts
-failing authentication. Mirrors the renew-at-half-life rule Vault's own
-agent applies to its leases."""
+failing authentication - the renew-at-half-life rule lease-issuing
+secret stores apply to their own renewals."""
 
 _RELOAD_SCHEDULE_ATTR: Final[str] = "taskq_reload_schedule"
 
