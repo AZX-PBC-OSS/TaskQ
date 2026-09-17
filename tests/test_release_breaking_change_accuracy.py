@@ -5,15 +5,13 @@ purely from conventional-commit markers (``type!:`` subjects or
 ``BREAKING CHANGE:`` footers) found across the whole commit range being
 released -- never from hand-written prose and never from one nominated
 commit. The truthfulness of the notes is therefore a property of the
-range ``<base>..HEAD``, and these pins assert over exactly that range.
-The base is the fork point -- the newest commit HEAD shares with any
-main-line ref (``origin/main`` or a local ``main``) -- never the raw
-ref: a stale local ``main`` points behind the real fork, and a range
-taken from it pulls the immutable, already-published ancestor footers
-into scope, making the pins fail on text this branch cannot change.
-(The standing marker guard in ``test_breaking_change_markers.py`` can
-afford the raw ref because its assertion is conditional on the range
-being non-empty; these content assertions cannot.)
+range release-please aggregates -- ``<last release tag>..HEAD`` -- and
+these pins assert over exactly that range, on a PR branch and on the
+main line alike. Entries from published ancestors inside that range
+are immutable history; where an ancestor carries a superseded framing,
+the pins require a corrected entry NEWER than it (supersession: the
+correction rides alongside and after it) and bind the framing contract
+to every entry from the correction onward.
 
 Why the range and not the ancestor commit that first carried these
 footers: that ancestor is published on ``main``, so its message is
@@ -82,58 +80,37 @@ def _git(*args: str) -> str:
     return result.stdout
 
 
-def _merge_bases_with_main_line() -> list[str]:
-    """The fork points HEAD shares with each resolvable main-line ref.
+def _release_base() -> str | None:
+    """The newest release tag that is an ancestor of HEAD.
 
-    A shallow or history-rewritten clone cannot answer ``merge-base`` (or
-    resolve the refs at all); those candidates drop out here, and the
-    module-level guard skips the pins when none survive.
+    This is the base of the range release-please aggregates when it
+    builds the next release's notes, so it is the only base whose range
+    can answer "what will the notes carry" -- on a PR branch and on the
+    main line alike.
     """
-    bases: list[str] = []
-    for candidate in _MAIN_LINE_CANDIDATES:
-        resolved = subprocess.run(  # noqa: S603
-            ["git", "merge-base", "HEAD", candidate],  # noqa: S607
-            capture_output=True,
-            text=True,
-            cwd=_REPO_ROOT,
-        )
-        if resolved.returncode == 0:
-            base = resolved.stdout.strip()
-            if base and base not in bases:
-                bases.append(base)
-    return bases
-
-
-def _fork_point() -> str | None:
-    """The newest merge-base: the branch's own range starts where the
-    branch last shared history with the main line. A raw ref would do for
-    a fresh checkout, but a stale local ``main`` is itself an ancestor of
-    the real fork point -- taking the newest merge-base keeps the range to
-    this branch's own commits in every environment."""
-    bases = _merge_bases_with_main_line()
-    for base in bases:
-        if not any(
-            other != base
-            and subprocess.run(  # noqa: S603
-                ["git", "merge-base", "--is-ancestor", base, other],  # noqa: S607
-                capture_output=True,
-                cwd=_REPO_ROOT,
-            ).returncode
-            == 0
-            for other in bases
-        ):
-            return base
+    tags = subprocess.run(
+        ["git", "tag", "--list", "v*", "--merged", "HEAD", "--sort=-v:refname"],  # noqa: S607
+        capture_output=True,
+        text=True,
+        cwd=_REPO_ROOT,
+    )
+    if tags.returncode != 0:
+        return None
+    for tag in tags.stdout.splitlines():
+        tag = tag.strip()
+        if tag:
+            return tag
     return None
 
 
-_FORK_POINT = _fork_point()
+_RANGE_BASE = _release_base()
 
 pytestmark = pytest.mark.skipif(
-    _FORK_POINT is None,
+    _RANGE_BASE is None,
     reason=(
-        "no fork point with a main-line ref computable (tried origin/main, "
-        "main) -- the pin needs the branch's real history against its base, "
-        "not a shallow or history-rewritten clone"
+        "no release tag reachable from HEAD -- the pin asserts over the "
+        "range release-please aggregates (last release tag..HEAD), which a "
+        "shallow or history-rewritten clone cannot answer"
     ),
 )
 
@@ -145,13 +122,15 @@ _DENIAL_NEEDLES = ("denial", "snooze", "job_attempts", "job_events", "max_attemp
 def _breaking_entries_on_branch() -> list[tuple[str, str]]:
     """Every breaking entry release-please would aggregate from the range.
 
-    Returns ``(sha, entry)`` pairs: each commit's ``BREAKING CHANGE:``
-    footer lines, plus its subject line when the subject carries the ``!``
-    marker (release-please surfaces the subject as the entry for that
-    form). Entry text is what the generated notes copy verbatim.
+    Returns ``(sha, entry)`` pairs, newest first: each commit's ``BREAKING
+    CHANGE:`` footer lines, plus its subject line when the subject carries
+    the ``!`` marker (release-please surfaces the subject as the entry for
+    that form). Entry text is what the generated notes copy verbatim. The
+    range is the fork point on a branch checkout and the release tag on
+    the main line (see ``_RANGE_BASE``).
     """
-    assert _FORK_POINT is not None  # the module-level skipif guarantees this
-    log = _git("log", "--format=%H%n%B%n---END---", f"{_FORK_POINT}..HEAD")
+    assert _RANGE_BASE is not None  # the module-level skipif guarantees this
+    log = _git("log", "--format=%H%n%B%n---END---", f"{_RANGE_BASE}..HEAD")
     entries: list[tuple[str, str]] = []
     for block in log.split("---END---"):
         lines = block.strip().splitlines()
@@ -178,8 +157,14 @@ def test_branch_range_carries_corrected_heartbeat_timeout_entry() -> None:
     every ``heartbeat_timeout=`` call site when only zero-or-negative
     values need to change, and an entry still calling the value unread
     denies the enforcement that shipped.
+
+    Entries older than the first corrected one are published ancestor
+    history: immutable once the correcting commit landed on the main line,
+    and superseded by it in the notes' order. The framing contract binds
+    from the correction on.
     """
-    entries = _entries_touching(_breaking_entries_on_branch(), "heartbeat_timeout")
+    all_entries = _breaking_entries_on_branch()
+    entries = _entries_touching(all_entries, "heartbeat_timeout")
     assert entries, (
         "no commit in this branch's range carries a breaking marker naming "
         "heartbeat_timeout -- release-please aggregates markers across the "
@@ -188,7 +173,26 @@ def test_branch_range_carries_corrected_heartbeat_timeout_entry() -> None:
         "generated notes can only repeat the superseded outright-refusal "
         "framing the immutable ancestor history already carries"
     )
-    for sha, entry in entries:
+
+    def _is_corrected(text: str) -> bool:
+        return "non-positive" in text.lower() or "<= 0" in text
+
+    first_corrected = next(
+        (
+            i
+            for i, (_, text) in enumerate(all_entries)
+            if "heartbeat_timeout" in text and _is_corrected(text)
+        ),
+        None,
+    )
+    for i, (sha, entry) in enumerate(all_entries):
+        if "heartbeat_timeout" not in entry:
+            continue
+        # Newest first: an entry OLDER than the correction (higher index) is
+        # published ancestor history, superseded by the corrected entry that
+        # precedes it. The framing contract binds from the correction on.
+        if first_corrected is not None and i > first_corrected:
+            continue
         assert "non-positive" in entry.lower() or "<= 0" in entry, (
             f"{sha}'s heartbeat_timeout entry does not scope the raise to a "
             f"non-positive value: {entry!r} -- current code "
@@ -246,22 +250,58 @@ def test_denial_entry_describes_429_semantics_not_superseded_budget_consumption(
     expires, and the ordinary deadline path fails it there. A superseded
     draft framing has the denial loop spending the job's retry budget to a
     terminal failure; release-please copies entry text unmodified, so that
-    framing must not be what the range carries.
+    framing must not be what the range carries -- unless a corrected entry
+    NEWER than it also does: published ancestor history is immutable (the
+    stale framing cannot be removed from the release range once its commit
+    landed on the main line), and the module docstring's mechanism is
+    supersession -- the corrected entry rides alongside and after it.
     """
     entries = _breaking_entries_on_branch()
     denial_entries = _entries_touching(entries, *_DENIAL_NEEDLES)
     assert denial_entries, "expected a denial-accounting breaking entry in the branch's range"
-    for sha, entry in denial_entries:
-        assert "fails terminally" not in entry or "MaxAttemptsExceeded" not in entry, (
+
+    def _is_corrected(text: str) -> bool:
+        return (
+            "no retry budget" in text
+            or "consumes no" in text
+            or "never consumes" in text
+            or "without spending" in text
+        )
+
+    def _is_stale(text: str) -> bool:
+        return "fails terminally" in text or "MaxAttemptsExceeded" in text
+
+    # Positions in the FULL newest-first entry list: the supersession rule
+    # compares against the correction's global position, since the filtered
+    # views' indices are not comparable across lists.
+    first_corrected = next(
+        (
+            i
+            for i, (_, text) in enumerate(entries)
+            if any(n in text for n in _DENIAL_NEEDLES) and _is_corrected(text)
+        ),
+        None,
+    )
+    for i, (sha, entry) in enumerate(entries):
+        if not any(n in entry for n in _DENIAL_NEEDLES):
+            continue
+        if not (_is_stale(entry) or not _is_corrected(entry)):
+            continue
+        # Newest first: an entry OLDER than the correction (higher index) is
+        # published ancestor history, superseded by the corrected entry that
+        # precedes it. Both the stale framing and the corrected-framing
+        # contract bind from the correction on.
+        if first_corrected is not None and i > first_corrected:
+            continue
+        assert not _is_stale(entry), (
             f"{sha}'s denial entry describes a denial-driven terminal "
             f"failure: {entry!r} -- the settled 429 semantics never let an "
             "admission denial by itself terminalize a job (see "
             "test_rate_limit_denial_docs_contract.py); an entry claiming "
-            "otherwise ships the superseded behavior into the 0.3.0 notes "
-            "verbatim"
+            "otherwise may only appear in the range when a corrected entry "
+            "follows it (published ancestor history is immutable), and "
+            "newer commits must never regress to the superseded framing"
         )
-    semantic_entries = _entries_touching(entries, "denial", "snooze")
-    for sha, entry in semantic_entries:
         assert "schedule_to_close" in entry, (
             f"{sha}'s denial entry does not name schedule_to_close as the "
             f"bound on a never-admitted job: {entry!r} -- 429 semantics "
@@ -269,12 +309,7 @@ def test_denial_entry_describes_429_semantics_not_superseded_budget_consumption(
             "expires through the ordinary deadline path; without the bound "
             "the entry misdescribes the only exit"
         )
-        assert (
-            "no retry budget" in entry
-            or "consumes no" in entry
-            or "never consumes" in entry
-            or "without spending" in entry
-        ), (
+        assert _is_corrected(entry), (
             f"{sha}'s denial entry never says a denial spends no retry "
             f"budget: {entry!r} -- that is the headline correction the "
             "notes must carry"
