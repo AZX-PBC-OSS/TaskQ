@@ -144,6 +144,7 @@ from taskq.obs import (
     get_logger,
     log_cancel_phase_change,
     log_state_change,
+    record_job_abandoned,
     record_job_interrupted,
     record_job_interrupted_noop,
 )
@@ -738,6 +739,7 @@ async def _mark_abandoned(
         worker_id=str(locked_by_worker) if locked_by_worker is not None else None,
         attempt=rec["attempt"],
     )
+    record_job_abandoned(rec["actor"])
     return True
 
 

@@ -53,9 +53,24 @@ _OUTAGE_SEVERITIES = {
     "TaskQRunningLeaseExpired": "critical",
 }
 
+#: The job-outcome family: terminal-failed share, retried-failure share,
+#: and real abandonment. Abandonment is critical (an operator cancel the
+#: actor never yielded to); the two shares are degradation signals.
+_JOB_OUTCOME_ALERTS = (
+    "TaskQFailedJobRateHigh",
+    "TaskQRetryRateHigh",
+    "TaskQAbandonedJobs",
+)
+
+_JOB_OUTCOME_SEVERITIES = {
+    "TaskQFailedJobRateHigh": "warning",
+    "TaskQRetryRateHigh": "warning",
+    "TaskQAbandonedJobs": "critical",
+}
+
 #: Every runbook-carrying alert, for the checks that apply to both
 #: generations alike.
-_ALL_RUNBOOKED_ALERTS = _NEW_ALERTS + _OUTAGE_ALERTS
+_ALL_RUNBOOKED_ALERTS = _NEW_ALERTS + _OUTAGE_ALERTS + _JOB_OUTCOME_ALERTS
 
 
 def _rules_from(path: Path) -> list[dict[str, Any]]:
@@ -109,10 +124,10 @@ def test_new_alert_annotations_point_at_existing_runbook_anchors() -> None:
 
 
 def test_new_alert_exprs_reference_series_the_bridge_emits() -> None:
-    """Every taskq_* series name in the runbooked alerts' exprs must be a
-    Prometheus name the bridge actually emits (per the authoritative
-    _NAME_MAP the scrape tests verify). A typo'd series name is not a
-    Prometheus error — the alert just silently never fires."""
+    """Every taskq_* / messaging_* series name in the runbooked alerts'
+    exprs must be a Prometheus name the bridge actually emits (per the
+    authoritative _NAME_MAP the scrape tests verify). A typo'd series name
+    is not a Prometheus error — the alert just silently never fires."""
     from tests.test_prometheus_metrics import _NAME_MAP
 
     emitted = {prom_name for _, prom_name in _NAME_MAP}
@@ -123,10 +138,10 @@ def test_new_alert_exprs_reference_series_the_bridge_emits() -> None:
             if rule.get("alert") not in _ALL_RUNBOOKED_ALERTS:
                 continue
             expr = str(rule["expr"])
-            referenced = set(re.findall(r"\btaskq_[a-z0-9_]+", expr))
+            referenced = set(re.findall(r"\b(?:taskq|messaging)_[a-z0-9_]+", expr))
             assert referenced, (
                 f"{rules_path.name}: alert {rule['alert']!r} references no "
-                "taskq series at all — the expr is wrong"
+                "taskq or messaging series at all — the expr is wrong"
             )
             unknown = referenced - emitted
             assert not unknown, (
@@ -246,6 +261,31 @@ def test_both_rule_files_carry_the_outage_alerts_at_their_severities() -> None:
             assert by_name[alert]["labels"]["severity"] == severity, (
                 f"{rules_path.name}: {alert!r} must be {severity!r}"
             )
+
+
+def test_job_outcome_alerts_read_the_series_that_mean_what_they_say() -> None:
+    """The abandoned pager must read the abandonment counter, never the
+    consumed-messages outcome (retries and snoozes used to be relabelled
+    "abandoned" there, so every retry paged critical); the retry-rate alert
+    reads the retried share of attempt failures; and the terminal-failed
+    alert is named for what it measures. All at their severities, in both
+    files."""
+    for rules_path in (_RULES_YAML, _K8S_RULES_YAML):
+        by_name = {r["alert"]: r for r in _rules_from(rules_path)}
+        assert "TaskQCrashedJobRateHigh" not in by_name, (
+            f"{rules_path.name}: the terminal-failed alert measures outcome=failed, "
+            "not crashes — it is TaskQFailedJobRateHigh"
+        )
+        for alert, severity in _JOB_OUTCOME_SEVERITIES.items():
+            assert alert in by_name, f"{rules_path.name} is missing {alert!r}"
+            assert by_name[alert]["labels"]["severity"] == severity
+        abandoned = " ".join(str(by_name["TaskQAbandonedJobs"]["expr"]).split())
+        assert "taskq_jobs_abandoned_total" in abandoned
+        assert 'outcome="abandoned"' not in abandoned
+        retry = " ".join(str(by_name["TaskQRetryRateHigh"]["expr"]).split())
+        assert 'taskq_jobs_attempt_failures_total{retryable="true"}' in retry
+        failed = " ".join(str(by_name["TaskQFailedJobRateHigh"]["expr"]).split())
+        assert 'messaging_client_consumed_messages_total{outcome="failed"}' in failed
 
 
 def test_dimensionless_series_annotations_carry_no_label_references() -> None:

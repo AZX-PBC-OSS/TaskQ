@@ -44,14 +44,59 @@ TaskGroup opens. No application code needs to call this directly.
 
 ### Exporter configuration
 
-Configure the exporter with standard OTel environment variables. TaskQ does
-not override them.
+TaskQ emits through the OpenTelemetry **API**; the SDK and its exporters
+are what turn that into data at a backend. Configure them with the standard
+OTel environment variables — TaskQ does not override them:
 
 | Variable | Example |
 |---|---|
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | `http://localhost:4317` |
+| `OTEL_EXPORTER_OTLP_PROTOCOL` | `grpc` (default) or `http/protobuf` |
+| `OTEL_TRACES_EXPORTER` / `OTEL_METRICS_EXPORTER` / `OTEL_LOGS_EXPORTER` | `otlp` (the default for traces and metrics once an endpoint is set), `console`, `prometheus`, `none` |
 | `OTEL_SERVICE_NAME` | `my-app-worker` |
 | `OTEL_RESOURCE_ATTRIBUTES` | `deployment.environment=production,k8s.pod.name=worker-0` |
+
+**Under `taskq worker` the variables are enough.** With the `[otel]` extra
+installed, the CLI installs SDK tracer and meter providers from them at
+startup — through the SDK's own configurator, the same machinery
+`opentelemetry-instrument` uses — whenever any of
+`OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_TRACES_EXPORTER`,
+`OTEL_METRICS_EXPORTER` or `OTEL_LOGS_EXPORTER` is set. A bare endpoint
+selects `otlp` for traces and metrics (the specification's default; logs
+stay off unless `OTEL_LOGS_EXPORTER` names an exporter, because TaskQ logs
+through structlog). Startup logs one line saying what was wired:
+
+```
+otel-exporter-configured  traces=otlp  metrics=otlp  logs=  source=env
+```
+
+and `source=none` when nothing asked for an exporter. Two other startup
+lines matter:
+
+- `otel-exporter-unavailable` (WARNING, with `extra=otel` or
+  `extra=prometheus`) — the variables are set but the package that
+  provides the exporter is not installed. Nothing is exported; install the
+  named extra.
+- `otel-exporter-preconfigured` (INFO) — a provider was already installed
+  before the worker started (an embedding application, a vendor distro
+  such as `configure_azure_monitor(...)`, or `opentelemetry-instrument`).
+  The worker never replaces it.
+
+An exporter the SDK cannot build (a misspelled name, a protocol no
+installed exporter speaks) fails startup with the reason, so the mistake
+is visible at deploy time rather than as a pipeline that looks configured
+and exports nothing. `OTEL_SDK_DISABLED=true` is honoured, and
+`TASKQ_OTEL_AUTOCONFIGURE=false` opts out entirely — set it when your
+application configures the SDK itself.
+
+The alternative is the SDK's own launcher, which reads the identical
+variables: `opentelemetry-instrument taskq worker --actors ...` (the
+`[otel]` extra installs it). The worker detects the providers it set and
+changes nothing. Embedding applications that run `worker_main` without
+the CLI call `taskq.obs.configure_exporters(settings)` at process start,
+or configure the SDK directly — either way, before the worker records
+anything, because measurements taken before a provider exists are dropped,
+not replayed.
 
 Common receiver addresses:
 
@@ -262,36 +307,43 @@ recorded. The `taskq ui serve` process records only its own activity
 (admin-triggered enqueues and cancels), so leader-sampled gauges
 (`taskq.jobs.by_status`, `taskq.jobs.stranded`, `taskq.queue.depth`, the
 sweep gauges) and worker-path counters (dispatch duration, consumed
-messages) are **not in its scrape** — they live in the worker processes.
-Scrape the workers for them:
+messages, attempt failures) are **not in its scrape** — they live in the
+worker processes. Scrape the workers for them, every pod: series are
+per-process, so a scrape of one pod says nothing about another.
 
-- The worker's own health socket serves three hand-rendered process gauges —
-  `taskq_active_jobs`, `taskq_is_leader`, `taskq_shutdown_phase` — via
-  `taskq health metrics` (or `GET /metrics` on the optional TCP health
-  listener). Those three are independent of OTel and need no extra.
-- The full worker series require a Prometheus bridge **in the worker
-  process**. Today the `taskq worker` CLI does not mount one itself; run the
-  worker embedded and mount the router (it wires the provider at startup,
-  before `worker_main` records anything):
+**The worker's scrape listener: `TASKQ_METRICS_PORT`.** With the
+`[prometheus]` extra installed, setting a port makes `taskq worker` add a
+Prometheus pull reader to the meter provider it installs (see
+[Exporter configuration](#exporter-configuration)) and serve every series
+this process records at `http://<TASKQ_HEALTH_HOST>:<port>/metrics`:
 
-  ```python
-  # your_app/worker_service.py — one process, worker + scrape endpoint
-  from fastapi import FastAPI
-  from taskq.contrib.prometheus import create_metrics_router
+```bash
+pip install "taskq-py[prometheus]"
+TASKQ_METRICS_PORT=9464 taskq worker --actors myapp.actors:registry
+# scrape target: http://<pod>:9464/metrics
+```
 
-  app = FastAPI()
-  app.include_router(create_metrics_router(None), prefix="/jobs/health")  # wires the provider
+The startup line reads `otel-exporter-configured metrics=prometheus
+source=prometheus prometheus_port=9464`; with an OTLP endpoint set as well,
+`metrics=otlp,prometheus source=env,prometheus` — both exporters share one
+provider. `OTEL_METRICS_EXPORTER=prometheus` with
+`OTEL_EXPORTER_PROMETHEUS_PORT`/`_HOST` is the SDK's own spelling of the
+same thing and works identically; `TASKQ_METRICS_PORT` is authoritative
+for the port when both are set. Unset, no listener is bound.
 
-  # then run worker_main(settings=..., actor_registry=...) in this process
-  # and serve `app` (uvicorn) alongside it.
-  ```
-
-  If you already serve your own scrape endpoint, call
+- The worker's health socket separately serves three hand-rendered process
+  gauges — `taskq_active_jobs`, `taskq_is_leader`, `taskq_shutdown_phase` —
+  via `taskq health metrics` (or `GET /metrics` on the optional TCP health
+  listener). Those three are independent of OTel and need no extra; the
+  OTel twins `taskq.worker.active_jobs` and `taskq.worker.max_concurrency`
+  are on the real scrape.
+- Embedding applications that run `worker_main` themselves and already
+  serve a scrape endpoint call
   `taskq.contrib.prometheus.ensure_prometheus_meter_provider()` once at
-  process start instead of mounting the router, and serve the default
-  registry as you do today. Either way, point Prometheus at every worker
-  pod: series are per-process, so a scrape of one pod says nothing about
-  another.
+  process start (before the worker records anything) and serve the default
+  registry as they do today; the FastAPI router
+  (`taskq.contrib.prometheus.create_metrics_router`) is the same wiring
+  mounted as a route.
 
 ### A saturated rate limit is not a promotion stall
 
@@ -326,7 +378,9 @@ you *which* jobs absorbed them.
 | Metric name | Unit | Attributes | Description | Conditional? |
 |---|---|---|---|---|
 | `messaging.client.published.messages` | `1` | `actor`, `queue` | Jobs successfully enqueued. | yes |
-| `messaging.client.consumed.messages` | `1` | `actor`, `queue`, `outcome` | Jobs consumed. `outcome` is one of `succeeded`, `failed`, `cancelled`, `abandoned`. A snoozed or rescheduled job maps to `abandoned`. | yes |
+| `messaging.client.consumed.messages` | `1` | `actor`, `queue`, `outcome` | Attempts consumed. `outcome` is one of `succeeded`, `failed` (terminal: a non-retryable class or the retry budget exhausted), `cancelled`, `scheduled` (the row went back to the queue — a retryable failure, a `Snooze`/`RetryAfter`, or an admission denial). Abandonment is never a consumer outcome; it has its own counter below. `taskq.jobs.attempt_failures` separates the failure share of `scheduled`. | yes |
+| `taskq.jobs.attempt_failures` | `1` | `actor`, `error_type`, `retryable` | Attempts that ended in an actor failure, recorded at the failure handler once per handled exception. `retryable="true"` — the classifier rescheduled the attempt for another try (Dramatiq's `message_retries_total`); `"false"` — the failure is terminal. `error_type` is the exception class name. `TaskQRetryRateHigh` reads the `retryable="true"` share. | yes |
+| `taskq.jobs.abandoned` | `1` | `actor` | Jobs abandoned: an operator cancel outlasted both grace periods and the running attempt was taken from the actor. Recorded by `mark_abandoned` itself on both backends; a shutdown interrupts instead and never produces it. `TaskQAbandonedJobs` reads this series. | yes |
 | `taskq.cancellation.requested` | — | — | Incremented once per `JobsClient.cancel()` call regardless of outcome. | unconditional |
 | `taskq.cancellation.phase_transitions` | `1` | — | Cancel phase transitions (0→1, 1→2, etc.). | yes |
 | `taskq.backpressure.errors` | — | `actor`, `kind` | Synchronous refusals raised at enqueue. `kind` is the bounded enum `max_pending` / `max_pending_lock_timeout` (capacity admission) or `unique_for_lock_timeout` / `idempotency_lock_timeout` (identity-serialization refusals, counted beside their typed errors — not capacity signals, so alerting keyed on the capacity kinds is not tripped by them). | unconditional |
@@ -376,7 +430,7 @@ you *which* jobs absorbed them.
 |---|---|---|---|
 | `messaging.process.duration` | `s` | `actor`, `queue` | End-to-end job execution duration from dispatch to terminal state. |
 | `taskq.dispatch.duration` | `s` | `queue` | Batch dispatch SQL query latency (SQL execution only). |
-| `taskq.lock.expires_in_seconds` | `s` | — | Remaining lock TTL at each heartbeat renewal. Buckets: 0, 5, 10, 15, 20, 30, 45, 60 s. |
+| `taskq.lock.expires_in_seconds` | `s` | — | Lease remaining on this worker's job locks at the moment the heartbeat renewed them: `lock_lease` minus the measured gap since the previous renewal (nothing on the first), so a late or failed tick lowers the sample and `TaskQLockExpiringSoon` can fire; 0 when the renewal landed after expiry. A healthy worker reads `lock_lease − heartbeat_interval`. Buckets: 0, 5, 10, 15, 20, 30, 45, 60 s. |
 | `taskq.heartbeat.tick_duration_seconds` | `s` | — | Wall-clock seconds per heartbeat tick. |
 | `taskq.maintenance_leader.sweep_duration_ms` | `ms` | — | Per-sweep-tick wall-clock duration. |
 
@@ -489,7 +543,7 @@ span does not inflate metric counts relative to a partially-sampled trace.
 The repo ships alert rules for the metrics above — import them instead of
 writing from scratch:
 
-- [`src/taskq/contrib/prometheus/rules.yaml`](https://github.com/AZX-PBC-OSS/TaskQ/blob/main/src/taskq/contrib/prometheus/rules.yaml) — 17 rules (queue depth, heartbeat misses, crashed-job rate, abandoned jobs, lock TTL, leader split-brain, dispatch latency, progress failures, disabled cron, scheduled-backlog growth, promotion stall, sweep timeouts, sweep degraded tier, maintenance-lock contention, rate-limit dependency outage, cron lock contention, expired-lease zombies)
+- [`src/taskq/contrib/prometheus/rules.yaml`](https://github.com/AZX-PBC-OSS/TaskQ/blob/main/src/taskq/contrib/prometheus/rules.yaml) — 18 rules (queue depth, heartbeat misses, terminal-failed share, retried-failure share, abandoned jobs, lock TTL, leader split-brain, dispatch latency, progress failures, disabled cron, scheduled-backlog growth, promotion stall, sweep timeouts, sweep degraded tier, maintenance-lock contention, rate-limit dependency outage, cron lock contention, expired-lease zombies)
 - `src/taskq/contrib/kubernetes/prometheus_rule.yaml` — the same rules as a PrometheusRule CRD for Kubernetes
 
 The rules fire on the series above, so they only work where those series are
@@ -816,12 +870,15 @@ services:
       - "4318:4318"   # OTLP HTTP
 ```
 
-Point the worker at the collector:
+Point the worker at the collector (the `[otel]` extra installed; the
+worker wires the OTLP exporters from the endpoint at startup — see
+[Exporter configuration](#exporter-configuration)):
 
 ```bash
 OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317 \
 OTEL_SERVICE_NAME=taskq-worker \
 taskq worker --actors myapp.actors:registry
+# startup log: otel-exporter-configured traces=otlp metrics=otlp logs= source=env
 ```
 
 ---

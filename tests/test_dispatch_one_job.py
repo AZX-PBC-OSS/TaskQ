@@ -1151,13 +1151,15 @@ async def test_dispatch_one_job_records_consumed_metric(
         assert dp.attributes.get("outcome") == "succeeded"
 
 
-# ── Regression: snooze/retry maps "scheduled" outcome to "abandoned" metric ─
+# ── A released row is outcome="scheduled", never "abandoned" ──────────────
 
 
-async def test_dispatch_one_job_records_abandoned_on_snooze(
+async def test_dispatch_one_job_records_scheduled_on_snooze(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """When actor raises Snooze, consumed metric records outcome="abandoned"."""
+    """When the actor raises Snooze the row goes back to the queue: the
+    consumed metric says outcome="scheduled". "abandoned" is the
+    operator-cancel outcome and must never describe a snooze."""
 
     from taskq.exceptions import Snooze
 
@@ -1200,7 +1202,70 @@ async def test_dispatch_one_job_records_abandoned_on_snooze(
         assert len(dps) >= 1
         dp = dps[0]
         assert dp.attributes is not None
-        assert dp.attributes.get("outcome") == "abandoned"
+        assert dp.attributes.get("outcome") == "scheduled"
+        # A snooze is not a failure: the failure counter stays untouched.
+        assert counter_data_points(reader, "taskq.jobs.attempt_failures") == []
+
+
+async def test_dispatch_one_job_counts_a_retried_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One retryable raise → one taskq.jobs.attempt_failures sample labelled
+    by actor, exception class and retryable="true", and the consumed
+    outcome is "scheduled" (the retry went back to the queue) — not
+    "abandoned", which is what TaskQAbandonedJobs used to page on."""
+
+    class _FlakyError(RuntimeError):
+        pass
+
+    async def flaky_actor(payload: _Payload, ctx: JobContext[_Payload]) -> None:
+        raise _FlakyError("upstream 503")
+
+    from taskq.testing.otel import (
+        counter_data_points,
+        setup_meter,
+        setup_tracer,
+    )
+
+    setup_tracer(monkeypatch)
+    reader = setup_meter(monkeypatch)
+
+    async with _ScopeStack() as scopes:
+        fake_backend = FakeBackend()
+        fake_deps = _FakeWorkerDeps()
+        actor_ref = _make_actor_ref(flaky_actor)
+        job = make_job_row(payload={"value": 42})
+
+        outcome = await dispatch_one_job(
+            backend=as_backend(fake_backend),
+            deps=_as_deps(fake_deps),
+            job=job,
+            worker_id=_WORKER_ID,
+            registry=scopes.registry,
+            process_scope=scopes.process_scope,
+            thread_scope=scopes.thread_scope,
+            loop_scope=scopes.loop_scope,
+            actor_ref=actor_ref,  # type: ignore[arg-type]  # Why: ActorRef[Any, Any] is not ActorRef[BaseModel, BaseModel | None]; pyright cannot widen the generic parameters, but the runtime contract is sound
+            actor_config=StubActorConfig(retry=RetryPolicy()),
+            clock=FakeClock(_NOW),
+            enqueuer=SubJobEnqueuer(
+                backend=as_backend(fake_backend), loop_scope_resolved=None, worker_pool=None
+            ),
+        )
+        assert outcome == "scheduled"
+
+        failures = counter_data_points(reader, "taskq.jobs.attempt_failures")
+        assert len(failures) == 1
+        assert failures[0].value == 1
+        assert failures[0].attributes is not None
+        assert dict(failures[0].attributes) == {
+            "actor": "test_actor",
+            "error_type": "_FlakyError",
+            "retryable": "true",
+        }
+
+        consumed = counter_data_points(reader, "messaging.client.consumed.messages")
+        assert [dp.attributes.get("outcome") for dp in consumed if dp.attributes] == ["scheduled"]
 
 
 # ── CONSUMER span link integration ────────────────────────────────────

@@ -955,20 +955,26 @@ success. The job queue is your timer, and dedup makes the pattern crash-safe.
 
 ### Wiring an exporter
 
-TaskQ emits via the OpenTelemetry **API** and never overrides standard OTel vars; the SDK and
-exporter are your boilerplate. Two supported shapes:
+TaskQ emits via the OpenTelemetry **API** and never overrides standard OTel vars. Two
+supported shapes:
 
-- **OTLP** (collector, Jaeger, Tempo, Datadog, Sentry, PostHog): set
-  `OTEL_EXPORTER_OTLP_ENDPOINT` (`:4317` gRPC / `:4318` HTTP), `OTEL_SERVICE_NAME`,
-  `OTEL_RESOURCE_ATTRIBUTES` — or initialize the SDK in-process
-  (`examples/otel_setup.py`).
+- **OTLP** (collector, Jaeger, Tempo, Datadog, Sentry, PostHog): install `taskq-py[otel]`
+  and set `OTEL_EXPORTER_OTLP_ENDPOINT` (`:4317` gRPC / `:4318` HTTP), `OTEL_SERVICE_NAME`,
+  `OTEL_RESOURCE_ATTRIBUTES`. `taskq worker` installs the SDK providers from those variables
+  at startup and logs `otel-exporter-configured traces=otlp metrics=otlp source=env`
+  (`opentelemetry-instrument taskq worker` is the equivalent launcher; an embedded worker
+  calls `taskq.obs.configure_exporters(settings)` or initializes the SDK in-process —
+  `examples/otel_setup.py`).
 - **Vendor SDK in-process** (e.g. Azure Monitor / App Insights): call the vendor's
-  `configure_azure_monitor(...)` **inside the worker process** before it starts.
+  `configure_azure_monitor(...)` **inside the worker process** before it starts; the worker
+  logs `otel-exporter-preconfigured` and leaves the vendor's providers alone.
 
-!!! warning "An exporter env var set on the container does nothing by itself"
+!!! warning "A vendor connection string on the container does nothing by itself"
     `APPLICATIONINSIGHTS_CONNECTION_STRING` on a worker container exports nothing unless the
-    worker process itself configures the exporter; with no exporter configured, OTel drops
-    spans and metrics **silently** — health stays green while nothing is collected. Verify
+    worker process itself calls the vendor's configure function — it is not one of the
+    standard `OTEL_*` variables the worker wires from. The standard variables set without
+    the `[otel]` extra export nothing either; the worker says so at startup
+    (`otel-exporter-unavailable`, naming the extra). Verify the startup line and that
     telemetry actually arrives (one trace, one metric series) before trusting the pipeline.
 
 Every job emits an `enqueue` PRODUCER span, a `process` CONSUMER span (linked, with
@@ -991,6 +997,8 @@ Every job emits an `enqueue` PRODUCER span, a `process` CONSUMER span (linked, w
 | `taskq.dispatch.duration` | dispatch contention (PgBouncer/pool trouble) |
 | `taskq.worker.slot_pool.acquire_failures` / `taskq.worker.slot_pool.connections_in_use` | per-slot pool exhaustion and saturation — an acquire failure is infrastructure (the job is left for lock-lease reclaim, not failed); the gauge pinned at the pool maximum with zero acquire failures is saturation, visible below the acquire-failure cliff |
 | `messaging.process.duration` | actor latency, slow chunks |
+| `taskq.jobs.attempt_failures` (by actor, `error_type`, `retryable`) | a dependency failing under retry cover (`retryable="true"` rising while the terminal-failed share stays flat) — the series `TaskQRetryRateHigh` fires on |
+| `taskq.jobs.abandoned` (by actor) | an actor that ignores cancellation — an operator cancel outlasted both graces; never produced by a deploy |
 | `taskq.lock.expires_in_seconds` | heartbeat trouble before it becomes `crashed` jobs |
 | `taskq.deadline_exceeded_sweep.jobs_failed` | `schedule_to_close` too tight |
 | `taskq.backpressure.errors` (filter `kind` to the capacity kinds) | `max_pending` rejections — producer pressure |
@@ -1074,13 +1082,15 @@ and bounded fan-out per job (chunk sizes in the hundreds, not the tens of thousa
 
 Ship-ready alert rules for the metrics above exist in the repo and are ready to import:
 [`src/taskq/contrib/prometheus/rules.yaml`](https://github.com/AZX-PBC-OSS/TaskQ/blob/main/src/taskq/contrib/prometheus/rules.yaml)
-(17 rules: queue depth, heartbeat misses, crashed-job rate, abandoned jobs, lock TTL, leader
-split-brain, dispatch latency, progress failures, disabled cron, scheduled-backlog growth,
-promotion stall, sweep timeouts, sweep degraded tier, maintenance-lock contention, rate-limit
-dependency outage, cron lock contention, expired-lease zombies) and the equivalent PrometheusRule
+(18 rules: queue depth, heartbeat misses, terminal-failed share, retried-failure share, abandoned
+jobs, lock TTL, leader split-brain, dispatch latency, progress failures, disabled cron,
+scheduled-backlog growth, promotion stall, sweep timeouts, sweep degraded tier, maintenance-lock
+contention, rate-limit dependency outage, cron lock contention, expired-lease zombies) and the
+equivalent PrometheusRule
 CRD at `src/taskq/contrib/kubernetes/prometheus_rule.yaml`. Importing them is not enough — make
-sure something **scrapes** `/jobs/health/metrics` (see
-[deployment.md — Prometheus scrape](deployment.md#observability-setup)).
+sure something **scrapes the workers** (`TASKQ_METRICS_PORT`, every pod; see
+[deployment.md — Prometheus scrape](deployment.md#observability-setup)): the rules read
+worker-side series the admin process's `/jobs/health/metrics` never carries.
 
 ---
 

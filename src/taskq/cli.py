@@ -62,6 +62,7 @@ from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex for defence-in-depth schema validation at this SQL interpolation site, the queue_ops convention.
 )
 from taskq.exceptions import ActorConfigDriftList, ActorDeregistrationError, ActorNotFoundError
+from taskq.obs import OtelExporterConfigurationError, configure_exporters, setup_logging
 from taskq.settings import TaskQSettings, WorkerSettings
 from taskq.worker.dev import dev_watch_loop
 from taskq.worker.queue_ops import (
@@ -492,6 +493,18 @@ def worker(
         _resolved_ref(pg_credential_provider, settings.pg_credential_provider),
         _resolved_ref(redis_credential_provider, settings.redis_credential_provider),
     )
+
+    # Exporters are wired here, before worker_main records anything:
+    # measurements a proxy instrument takes before an SDK provider exists
+    # are dropped, not replayed. Logging is configured first (the same
+    # idempotent setup worker_main repeats) so the wiring's startup line
+    # renders in the operator's configured format.
+    setup_logging(level=settings.log_level, log_format=settings.log_format)
+    try:
+        configure_exporters(settings)
+    except OtelExporterConfigurationError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from None
 
     try:
         code = _worker_main(

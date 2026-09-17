@@ -49,32 +49,63 @@ spec:
               worker will self-isolate. Investigate PG connectivity
               and lock lease configuration.
 
-        - alert: TaskQCrashedJobRateHigh
+        - alert: TaskQFailedJobRateHigh
           expr: |
-            rate(messaging_client_consumed_messages_total{outcome="failed"}[5m])
-            / rate(messaging_client_consumed_messages_total[5m]) > 0.01
+            sum(rate(messaging_client_consumed_messages_total{outcome="failed"}[5m]))
+            / sum(rate(messaging_client_consumed_messages_total[5m])) > 0.01
           for: 5m
           labels:
             severity: warning
           annotations:
-            summary: "TaskQ failed job rate > 1%"
+            summary: "TaskQ terminal-failed job share > 1%"
             description: >-
-              Terminal failures exceed 1% of completions in the last 5 minutes.
-              Inspect job_attempts.error_class for root cause.
+              Attempts ending in a TERMINAL failure (outcome="failed": a
+              non-retryable class, or the retry budget exhausted) exceed 1% of
+              consumed attempts over the last 5 minutes. Retried failures are
+              not in this share — they end as outcome="scheduled" and are
+              counted by taskq_jobs_attempt_failures_total{retryable="true"}
+              (TaskQRetryRateHigh). Both sides are summed to fleet-wide
+              scalars so the ratio never silently empties on a label mismatch.
+              Inspect job_attempts.error_class for the root cause. Runbook:
+              docs/guides/runbooks.md#taskqfailedjobratehigh.
+
+        - alert: TaskQRetryRateHigh
+          expr: |
+            sum(rate(taskq_jobs_attempt_failures_total{retryable="true"}[5m]))
+            / sum(rate(messaging_client_consumed_messages_total[5m])) > 0.1
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "TaskQ retried-failure share > 10%"
+            description: >-
+              More than 10% of consumed attempts over the last 5 minutes ended
+              in a failure that was rescheduled for another try, sustained for
+              10 minutes. Each retry burns an attempt, a backoff delay and a
+              worker slot, so a sustained rate is a dependency that is failing
+              under retry cover — invisible on the terminal-failure share
+              until budgets run out. Split by actor and error_type on
+              taskq_jobs_attempt_failures_total to find it. Runbook:
+              docs/guides/runbooks.md#taskqretryratehigh.
 
         - alert: TaskQAbandonedJobs
-          expr: rate(messaging_client_consumed_messages_total{outcome="abandoned"}[5m]) > 0
+          expr: rate(taskq_jobs_abandoned_total[5m]) > 0
           for: 5m
           labels:
             severity: critical
           annotations:
-            summary: "TaskQ abandoned jobs detected"
+            summary: "TaskQ abandoned jobs detected (actor {{ $labels.actor }})"
             description: >-
-              Any abandoned job is concerning — it means an operator-requested
-              cancel outlasted the grace periods (the actor never exited).
-              Shutdowns never produce abandoned: a deploy releases
-              (interrupts) in-flight jobs back to the fleet instead. Inspect
-              job_attempts with outcome=abandoned.
+              A job was abandoned: an operator-requested cancel outlasted both
+              grace periods (the actor was asked to stop, then forced, and
+              never exited), so the running attempt was taken from it.
+              Shutdowns never produce this — a deploy releases (interrupts)
+              in-flight jobs back to the fleet instead — so any rate is worth
+              a page. Recorded by mark_abandoned itself, on the row write;
+              a retry or snooze is outcome="scheduled" on the consumed-messages
+              counter and never reaches this series. Inspect job_attempts rows
+              with outcome='cancelled' and error_class='CancelAbandoned'. Runbook:
+              docs/guides/runbooks.md#taskqabandonedjobs.
 
         - alert: TaskQLockExpiringSoon
           expr: histogram_quantile(0.99, rate(taskq_lock_expires_in_seconds_bucket[5m])) < 30
@@ -84,10 +115,13 @@ spec:
           annotations:
             summary: "TaskQ lock p99 remaining time < 30s"
             description: >-
-              Lock remaining-time-to-expiry p99 is below 30s. Locks are
-              dangerously close to expiry, indicating the heartbeat loop is
-              not renewing fast enough. Investigate PG latency or heartbeat
-              interval configuration.
+              The lease left on job locks when the heartbeat renewed them
+              (lock_lease minus the measured gap since the previous renewal)
+              has a p99 below 30s: renewals are landing late — a slow
+              heartbeat pool, failed ticks (taskq_heartbeat_misses_total) or a
+              blocked event loop (taskq_worker_event_loop_lag_seconds) — and
+              the reclaim sweep will take the jobs if the gap reaches the
+              lease. Investigate PG latency or heartbeat interval configuration.
 
         - alert: TaskQLeaderSplitBrainOrNoLeader
           expr: sum(taskq_maintenance_leader_is_leader) != 1

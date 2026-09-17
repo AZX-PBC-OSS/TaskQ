@@ -129,6 +129,29 @@ class TestTerminalWritesUpdateRow:
         assert attempts[0]["outcome"] == "cancelled"
         assert_has_event(events, "state_change")
 
+    async def test_mark_abandoned_counts_on_the_abandoned_series(
+        self, clean_jobs_app: JobsApp, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The applied abandon write records taskq.jobs.abandoned{actor}
+        once — the series TaskQAbandonedJobs pages on — and a predicate
+        miss (second call, row already terminal) records nothing more."""
+        from taskq.testing.otel import counter_data_points, setup_meter
+
+        reader = setup_meter(monkeypatch)
+        deps = clean_jobs_app.deps
+        backend = clean_jobs_app.backend
+        schema = deps.settings.schema_name
+
+        async with deps.worker_pool.acquire() as conn:
+            _, job_id = await setup_running_job(conn, schema, cancel_phase=2)
+            actor = await conn.fetchval(f'SELECT actor FROM "{schema}".jobs WHERE id = $1', job_id)
+
+        assert await backend.mark_abandoned(job_id) is True
+        assert await backend.mark_abandoned(job_id) is False
+
+        points = counter_data_points(reader, "taskq.jobs.abandoned")
+        assert [(p.value, dict(p.attributes or {})) for p in points] == [(1, {"actor": actor})]
+
     async def test_mark_failed_terminal(self, clean_jobs_app: JobsApp) -> None:
         deps = clean_jobs_app.deps
         backend = clean_jobs_app.backend
