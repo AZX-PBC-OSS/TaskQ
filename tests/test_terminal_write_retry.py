@@ -205,10 +205,28 @@ async def test_write_that_keeps_failing_is_reported_after_the_budget() -> None:
     # The event records the COMPUTED wait truncated to an int:
     # base * uniform(1 - _TERMINAL_WRITE_JITTER, 1 + _TERMINAL_WRITE_JITTER),
     # so the shipped band is [0.75*base, 1.25*base] and the int() truncation
-    # shaves up to a millisecond off the low edge (a 0.749 draw on the 50 ms
-    # base records 37, 0.5 ms below the naive rel=0.25 floor — CI rolled
-    # exactly that once). abs=1 re-admits only the truncated millisecond.
-    assert [e["retry_in_ms"] for e in retries] == pytest.approx([50, 200, 800], rel=0.25, abs=1)
+    # shaves up to a millisecond off the low edge (a 0.75 draw on the 50 ms
+    # base records 37, 0.5 ms below the naive rel=0.25 floor; CI rolled
+    # exactly that twice). approx(rel=0.25, abs=1) was the wrong tool for
+    # that edge: its tolerance is max(rel*expected, abs), so with expected=50
+    # the abs=1 never applies and the truncated 37 flaked the run. So assert
+    # the band the recorder can actually produce instead of approximating
+    # against the untruncated base: each wait lies in its own rung's band
+    # with the truncated floor included, [37, 62], [150, 250] and
+    # [600, 1000] here. The bands are disjoint, so a flattened or shifted
+    # ladder still fails; the only slack is the shipped band itself plus the
+    # single truncated millisecond at each low edge.
+    from taskq.worker._handlers import _TERMINAL_WRITE_BACKOFF, _TERMINAL_WRITE_JITTER
+
+    for event, base in zip(retries, _TERMINAL_WRITE_BACKOFF, strict=True):
+        base_ms = base.total_seconds() * 1000
+        band_floor = int(base_ms * (1 - _TERMINAL_WRITE_JITTER))
+        band_ceiling = base_ms * (1 + _TERMINAL_WRITE_JITTER)
+        assert band_floor <= event["retry_in_ms"] <= band_ceiling, (
+            f"retry {event['attempt']} waited {event['retry_in_ms']} ms, outside the "
+            f"band [{band_floor}, {band_ceiling}] that the {base_ms:.0f} ms rung's "
+            "jitter spread plus int truncation can produce"
+        )
     failed = _events(captured, "terminal-write-failed")
     assert len(failed) == 1
     assert failed[0]["infra_error_class"] == "OSError"
