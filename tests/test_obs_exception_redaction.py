@@ -1452,3 +1452,192 @@ def test_no_nested_quantifier_regexes_in_taskq_obs() -> None:
         "the audit found fewer compiled regexes than the obs package is known "
         "to carry -- the walker is probably reading the wrong modules"
     )
+
+
+# ── the repr channel: marker parity and a terminator that cannot cross lines ──
+#
+# The fix-round attack on #248 (PR #269) found the repr channel -- the
+# ``error=repr(exc)`` majority log idiom, scrubbed by
+# _PG_DETAIL_ESCAPED_RE -- half-updated: the line-anchored _PG_DETAIL_RE had
+# gained the ``[ \t|+]*`` ExceptionGroup marker class, the escaped companion
+# had kept ``[ \t]*``, so a marker-prefixed DETAIL line inside an exception
+# message shipped verbatim once repr() flattened its newline. That is the
+# branch's own named poison vector -- adversarial text echoed into an
+# exception message -- so the parity gap was a leak on exactly the threat
+# model the perf fix had closed the stall for. The same attack also found
+# the escaped scrub's closers terminator ending in ``\s*``: ``\s`` crosses
+# newlines, so on CR-bearing text a DETAIL value carrying quote + closers +
+# a CR/LF boundary satisfied the repr-tail leg by peering PAST the line end,
+# and the scrub stopped at the mid-value quote, keeping closers the
+# no-closers control scrubbed. The pins below cover both, red-for-old.
+
+
+def test_repr_channel_scrubs_marker_prefixed_detail_lines() -> None:
+    """The repr channel must see through the same marker prefixes the line
+    channel does: ``repr()`` flattens the newline before DETAIL into the
+    literal ``\\n`` two-char sequence, and any markers the message carries
+    ride right after it.
+
+    Red for the pre-fix escaped anchor (``[ \\t]*``): every shape below
+    shipped its row value verbatim, including the group shape where repr
+    renders the member inline -- and the embedded-traceback shape the
+    escaped pattern's MULTILINE leg exists for.
+    """
+    from taskq.obs._redact_exc import scrub_exception_field
+
+    def _marker_detail_message() -> str:
+        return "some failure\n| | DETAIL:  Key (identity_key)=(" + "tenant-secret-88" + ") exists."
+
+    # (1) A plain exception whose message carries a marker-prefixed DETAIL
+    # line: repr flattens the newline, the markers ride the escaped anchor.
+    safe = scrub_exception_field("error", repr(RuntimeError(_marker_detail_message())))
+    assert isinstance(safe, str)  # Why: narrows the object return for the membership asserts.
+    assert "tenant-secret-88" not in safe
+    assert "some failure" in safe  # the diagnostic template survives
+
+    # (2) The same exception inline in an ExceptionGroup's list: repr
+    # renders the member inline (no marker lines of its own), so the
+    # markers can only come from the message text -- and the closers run
+    # the scrub must stop at is the GROUP's, not the value's.
+    group = ExceptionGroup("group", [RuntimeError(_marker_detail_message())])
+    safe = scrub_exception_field("error", repr(group))
+    assert isinstance(safe, str)  # Why: see above.
+    assert "tenant-secret-88" not in safe
+    # The group structure and its closers survive (the repr-tail leg).
+    assert safe.endswith("ExceptionGroup('group', [RuntimeError('some failure')])")
+
+    # (3) Dense markers, no whitespace between them: the class must not
+    # assume the ``| `` spaced rendering.
+    dense = RuntimeError("some failure\n||DETAIL:  Key (k)=(" + "tenant-secret-88" + ") exists.")
+    safe = scrub_exception_field("error", repr(dense))
+    assert isinstance(safe, str)  # Why: see above.
+    assert "tenant-secret-88" not in safe
+
+    # (4) A repr line embedded in a rendered traceback (real newlines
+    # around it) -- the documented MULTILINE case, now with markers: the
+    # escaped anchor must see through them there too.
+    embedded = (
+        "Traceback (most recent call last):\n"
+        "  File \"app.py\", line 3, in run\n"
+        "RuntimeError('some failure\\n| | DETAIL:  Key (k)=(" + "tenant-secret-88" + ") exists.')\n"
+        "during handling, another exception occurred"
+    )
+    safe = scrub_exception_field("error_traceback", embedded)
+    assert isinstance(safe, str)  # Why: see above.
+    assert "tenant-secret-88" not in safe
+    assert "Traceback (most recent call last):" in safe
+    assert "another exception occurred" in safe
+
+
+def test_repr_channel_boundary_is_line_shaped_detail_only() -> None:
+    """The deliberate boundary both channels share: a DETAIL that is not
+    line-initial -- no real newline, no escaped newline, no marker prefix
+    BEFORE it on the line -- is not a DETAIL *line*, and neither channel
+    scrubs it.
+
+    This is the redactor's standing shape law (true at ``bd30c1b`` and on
+    main before the marker work, for ``boom DETAIL:`` exactly as for
+    ``boom | | DETAIL:``): Postgres renders DETAIL at the start of its own
+    line, and every carve-out since (markers, repr flattening) widens what
+    counts as the START of that line -- never where on the line the anchor
+    may sit. Covering a mid-line anchor would mean unanchored ``DETAIL``
+    matching, which scrubs non-value text (any message quoting the word)
+    and is its own over-redaction bug. Pinned so the next reader sees the
+    boundary is a decision, not an oversight.
+    """
+    from taskq.obs._redact_exc import scrub_exception_field
+
+    midline = repr(RuntimeError("boom | | DETAIL:  Key (k)=(" + "subject-1" + ") exists."))
+    safe = scrub_exception_field("error", midline)
+    assert isinstance(safe, str)  # Why: narrows the object return for the membership asserts.
+    assert "subject-1" in safe, (
+        "if this ever scrubs, an unanchored DETAIL matcher crept in -- "
+        "check what else it now deletes"
+    )
+    # ...while the same text WITH a newline before the markers is a
+    # marker-prefixed DETAIL line and must be scrubbed (the parity case).
+    lined = repr(RuntimeError("boom\n| | DETAIL:  Key (k)=(" + "subject-2" + ") exists."))
+    safe = scrub_exception_field("error", lined)
+    assert isinstance(safe, str)  # Why: see above.
+    assert "subject-2" not in safe
+
+
+def test_repr_escaped_terminator_cannot_cross_a_line_boundary() -> None:
+    """The closers leg of the escaped scrub's terminator ends in
+    ``[ \\t]*`` — same-line trailing whitespace only, never ``\\s*``.
+
+    ``\\s`` crosses newlines, so a DETAIL value carrying a quote, closers
+    and a CR/LF boundary satisfied the repr-tail leg by peering PAST the
+    line end (on CR-bearing text it fires for real), and the scrub stopped
+    at the mid-value quote -- keeping closers the no-closers control
+    scrubs, less deletion than the control, against the module's law. The
+    fix-round shape below was red for ``\\s*``: the closers survived as a
+    fake repr tail.
+    """
+    from taskq.obs._redact_exc import scrub_exception_field
+
+    # The attacker's shape, CR-rendered blank line: the value carries
+    # quote + closers + a CR/LF boundary. The scrub must NOT accept the
+    # closers as a repr tail across that boundary -- it fails closed and
+    # the closers ride the scrub (more deletion, never less).
+    crlf = (
+        "RuntimeError('some failure\\nDETAIL:  Key (k)=('"
+        + "PART1-SECRET-VALUE"
+        + "')]\r\n\r\nPART2-SECRET-TAIL more')"
+    )
+    safe = scrub_exception_field("error", crlf)
+    assert isinstance(safe, str)  # Why: narrows the object return for the membership asserts.
+    assert "PART1-SECRET-VALUE" not in safe
+    assert "')]" not in safe, (
+        "the closers run after a mid-value quote must not be kept as a repr "
+        "tail by a terminator that peers across the CR/LF boundary -- the "
+        "scrub must fail closed there and delete more, never less"
+    )
+    # The line-wise boundary, stated honestly: text on the NEXT physical
+    # line is outside this line-bounded scrub's reach (``.`` never crosses
+    # a real newline) -- identically for the shape and its no-closers
+    # control below. Covering the next line is the line-channel's job on
+    # real-newline text, not the repr channel's.
+    assert "PART2-SECRET-TAIL" in safe
+
+    # The control -- same structure, no quote+closers in the value -- scrubs
+    # its DETAIL line and leaves the next line alone: the shape above must
+    # not scrub LESS of its own line than the control does.
+    control = (
+        "RuntimeError('some failure\\nDETAIL:  Key (k)=(PART1-PLAIN-VALUE)\r\n\r\nPART2-CONTROL more')"
+    )
+    safe_control = scrub_exception_field("error", control)
+    assert isinstance(safe_control, str)  # Why: see above.
+    assert "PART1-PLAIN-VALUE" not in safe_control
+    assert "PART2-CONTROL" in safe_control
+
+
+def test_repr_line_embedded_in_a_traceback_keeps_its_closers() -> None:
+    """The documented case the closers leg EXISTS for, pinned explicitly:
+    a repr line inside a rendered traceback ends with its ``')`` (or
+    ``')])``) closers at end of line, and the scrub keeps them while
+    dropping the DETAIL payload -- no-newline-crossing must not cost the
+    repr tail its terminator.
+
+    This is the fixture the F5 fix had to stay green against: a
+    terminator narrowed to end-of-string would eat these closers (more
+    deletion, permitted by the law, but pointless diagnostic loss the leg
+    exists to avoid); ``[ \\t]*$`` keeps them.
+    """
+    from taskq.obs._redact_exc import scrub_exception_field
+
+    embedded = (
+        "Traceback (most recent call last):\n"
+        "  File \"app.py\", line 3, in run\n"
+        "RuntimeError('some failure\\nDETAIL:  Key (k)=(" + "subject-424242" + ") already exists.')\n"
+        "during handling, another exception occurred"
+    )
+    safe = scrub_exception_field("error_traceback", embedded)
+    assert isinstance(safe, str)  # Why: narrows the object return for the membership asserts.
+    assert "subject-424242" not in safe
+    # The closers are kept: the scrub stopped at the repr tail, not at the
+    # line end (which would have amputated `')`).
+    assert "RuntimeError('some failure')" in safe
+    # The real traceback lines around the repr line are untouched.
+    assert "Traceback (most recent call last):" in safe
+    assert "another exception occurred" in safe
