@@ -801,6 +801,23 @@ itself, not the steady state. See
 [runbooks.md](runbooks.md#taskqleaderlockcontention) for the alert whose
 remediation carries this note.
 
+### A cross-actor `idempotency_key` hit now raises
+
+> **Unreleased.** Breaking only for callers that share one idempotency key
+> across actors and relied on the second enqueue returning the first
+> actor's job.
+
+`enqueue` / `enqueue_batch` with an `idempotency_key` that matches an
+existing job **of a different actor** used to return that job's handle with
+`was_existing=True` — a handle whose `.result()` belongs to another actor,
+logged at INFO as an ordinary dedup. It now raises
+`IdempotencyKeyActorMismatchError` (naming both actors, the key, the scope
+and the existing job id) with nothing enqueued; in `enqueue_batch` the whole
+batch is withdrawn. Same-actor hits are unchanged. Keys were always
+documented as unique per scope across actors; namespace them per actor
+(`"send_receipt:order_123"`) or use per-actor `idempotency_scope` values.
+See [jobs-clients.md](jobs-clients.md#idempotency_key).
+
 ### NOTIFY channels embed a hash of the schema: adopt by restart
 
 > **Unreleased.** Silent for correctly-deployed fleets; a rolling deploy

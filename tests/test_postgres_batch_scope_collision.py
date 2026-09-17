@@ -112,9 +112,10 @@ class TestSameKeySameScopeCollidesInBatch:
         pre_batch = await backend.enqueue_batch([pre_args])
         pre_row = pre_batch[0]
 
-        # Batch with same key+scope → collision
+        # Batch with same key+scope from the same actor → collision (a
+        # different actor is a refused cross-actor hit, not a dedup)
         collision_args = _make_args(
-            actor="collision_actor",
+            actor="pre_actor",
             idempotency_key="batch-scope-collision",
             idempotency_scope="run-A",
             payload={"should_be_ignored": True},
@@ -169,7 +170,7 @@ class TestMixedScopeBatch:
 
         # Batch: [collision in scope-A, new in scope-B with same key]
         args_collision = _make_args(
-            actor="collision_actor",
+            actor="pre_actor",
             idempotency_key="mixed-key",
             idempotency_scope="scope-A",
             payload={"should_be_ignored": True},
