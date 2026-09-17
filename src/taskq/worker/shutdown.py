@@ -392,6 +392,17 @@ async def orchestrate_shutdown(
                     job_id=str(active.job_id),
                     error=str(e),
                 )
+                # The local cancel is delivered even when the row-side
+                # write failed: skipping it let a cancellable actor run
+                # untouched into RELEASING and be released-with-hold
+                # while still alive — the exact overlap the hold exists
+                # to prevent (#233). The escalation probe is the row-side
+                # half of FORCING; task.cancel() is the process-side
+                # half, and only both together advance the entry. The
+                # phase stamp mirrors the success path below so the
+                # registry's local ladder stays truthful either way.
+                active.task.cancel()
+                active.cancel_phase = CancelPhase.FORCED
                 continue
             if escalated and active.cancel_origin is CancelOrigin.SHUTDOWN:
                 active.cancel_origin = CancelOrigin.OPERATOR

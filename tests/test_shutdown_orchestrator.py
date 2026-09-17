@@ -1,7 +1,9 @@
 """Unit tests for orchestrate_shutdown four-phase orchestrator."""
 
 import asyncio
+import contextlib
 from datetime import timedelta
+from typing import cast
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
 from uuid import UUID
 
@@ -426,7 +428,16 @@ async def test_forcing_pg_write_before_cancel_phase_advances(
 
 
 async def test_forcing_failure_isolation(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Single PG write failure isolates that job; others proceed."""
+    """Single PG write failure isolates that job; others proceed.
+
+    The job whose escalation write failed is still force-cancelled locally
+    (#233): the row-side probe failing must not keep the process-side
+    ``task.cancel()`` from being delivered — a cancellable actor that never
+    gets the cancel runs untouched into RELEASING and is released-with-hold
+    while still alive. Its registry phase advances to FORCED like every
+    other job's; only the row-side escalation is missing, and the ladder's
+    row-side arms recover it (or the lease sweep does).
+    """
     import taskq.worker.shutdown as shutdown_mod
 
     job1 = _make_fake_active_job(job_id=UUID("11111111-1111-1111-1111-111111111111"))
@@ -467,9 +478,94 @@ async def test_forcing_failure_isolation(monkeypatch: pytest.MonkeyPatch) -> Non
         backend=backend,
     )
 
-    assert job1.cancel_phase == CancelPhase.COOPERATIVE
+    assert job1.cancel_phase == CancelPhase.FORCED, (
+        "a failed escalation write must not keep the local force-cancel "
+        "from advancing the entry — the process-side half of FORCING is "
+        "delivered regardless of the row-side probe's outcome (#233)"
+    )
+    job1_task = cast(
+        MagicMock, job1.task
+    )  # Why: _make_fake_active_job registered a MagicMock task; the dataclass field is typed asyncio.Task, so the mock's call record needs the cast.
+    assert job1_task.cancel.called, (
+        "the entry whose escalation write failed must still have its task "
+        "cancelled — skipping it let a cancellable actor run into RELEASING "
+        "untouched (#233)"
+    )
     assert job2.cancel_phase == CancelPhase.FORCED
     assert job3.cancel_phase == CancelPhase.FORCED
+    cast(MagicMock, job2.task).cancel.assert_called()
+    cast(MagicMock, job3.task).cancel.assert_called()
+
+
+async def test_forcing_write_failure_still_cancels_a_real_task(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A REAL consumer task is cancelled when its escalation write fails.
+
+    The isolation test above pins the registry fields with a MagicMock
+    task; this one pins the actual delivery: a cancellable asyncio task
+    registered in-flight must END cancelled when FORCING's row-side write
+    raises, not keep running into RELEASING. That is the overlap #233
+    names — an actor alive past both graces because the one cancel that
+    could reach it was skipped after a PG blip.
+    """
+    import taskq.worker.shutdown as shutdown_mod
+
+    actor_running = asyncio.Event()
+    actor_cancelled = asyncio.Event()
+
+    async def _cancellable_actor() -> None:
+        actor_running.set()
+        try:
+            await asyncio.sleep(3600)
+        except asyncio.CancelledError:
+            actor_cancelled.set()
+            raise
+
+    actor_task = asyncio.ensure_future(_cancellable_actor())
+    await actor_running.wait()
+
+    job = _make_fake_active_job()
+    # The real task replaces the MagicMock so task.cancel() lands on
+    # something that can actually be cancelled.
+    job.task = actor_task  # type: ignore[assignment]  # Why: _ActiveJob is a plain (non-frozen) dataclass; the test swaps the mock for a real cancellable task.
+    registry = FakeActiveJobRegistry([job])
+    settings = _worker_settings(cancellation_grace=0.1, cleanup_grace=0.1)
+    deps = _make_deps(registry=registry, settings=settings)
+
+    async def _failing_escalation(*args: object, **kwargs: object) -> bool:
+        raise asyncpg.PostgresConnectionError("escalation write failed")
+
+    backend = AsyncMock(spec=Backend)
+    backend.write_cancel_escalation = AsyncMock(side_effect=_failing_escalation)
+    backend.mark_interrupted = AsyncMock(return_value="scheduled")
+    backend.mark_abandoned = AsyncMock(return_value=True)
+
+    mock_drain = AsyncMock(return_value=0)
+    monkeypatch.setattr(shutdown_mod, "drain_local_queue_to_pending", mock_drain)
+
+    clock = FakeClock()
+    fake_loop = Mock()
+    _patch_clock(monkeypatch, clock, fake_loop)
+
+    shut_event = asyncio.Event()
+    await orchestrate_shutdown(
+        deps,
+        deps.settings,
+        new_uuid(),
+        shut_event,
+        None,
+        backend=backend,
+    )
+
+    assert actor_cancelled.is_set(), (
+        "the forced cancel must be delivered to a cancellable actor even "
+        "when the escalation PG write fails — the actor running into "
+        "RELEASING untouched is the double-execution overlap the shutdown "
+        "contract forbids (#233)"
+    )
+    with contextlib.suppress(asyncio.CancelledError):
+        await actor_task
 
 
 # ── The releasing hold covers the watchdog's exit tail ────────────
