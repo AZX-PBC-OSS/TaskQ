@@ -524,7 +524,10 @@ Key features:
   by submitting the filter form with `tab` parameter.
 - **Polling** — the Live Jobs tab always polls on `poll_interval_ms` via
   `setInterval`; the poll is the source of truth for the table in both toggle
-  states.
+  states. The poll refetches the page the operator is on: the keyset cursor
+  synced from the last pagination click rides along, so live mode never yanks
+  a reader back to page one, and the SSE refresh-forward is skipped while a
+  cursor is active (the poll already refreshes that page in place).
 - **Live refresh toggle** — when enabled, additionally connects to SSE so a
   state-change event brings a refresh forward; when paused, the SSE connection is
   closed and only the poll runs.
