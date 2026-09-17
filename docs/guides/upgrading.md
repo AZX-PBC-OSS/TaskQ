@@ -1949,9 +1949,16 @@ The retry guard behind the enqueue paths and the bulk-cancel drain
 acquire-run-release cycle. A pooled connection whose server died between
 the op's last acknowledged statement and the pool's release-time reset
 raised asyncpg's `InternalClientError` from the RELEASE — the old wrapper
-read that as dead-on-acquire and re-ran the op: an un-keyed enqueue
-committed twice and the job ran twice (issue #236). Two mechanisms now
-split the concern:
+read that as dead-on-acquire and re-ran the op with the same arguments
+(issue #236). Because the enqueue table's `id` is the primary key and the
+op carries its id, that re-run could not land a second row: it raised
+`UniqueViolationError` for an enqueue that had already committed and
+would run (observed live under an old-contract emulation: 11
+UniqueViolations across 400 jittered kills). The harm was that error
+returned for work that SUCCEEDED — and the invitation it created: a
+caller that retried on the error issued a fresh-id enqueue, and THAT row
+landed, which is the route that actually runs the job twice. Two
+mechanisms now split the concern:
 
 - The guard's checkout bounds the release (`pool.release(conn,
   timeout=...)`, 5 s) and never raises a release failure — an op whose
@@ -1966,9 +1973,11 @@ split the concern:
   acknowledgement on the autocommit arms, the transaction COMMIT's on the
   batch/COPY/cancel arms). A connection that dies between the write and
   a LATER statement of the same attempt surfaces its error instead of
-  re-issuing the write. A connection poisoned BEFORE the first statement
-  still costs exactly one transparent retry — nothing was sent, so
-  nothing can duplicate.
+  re-issuing the write — the ambiguous outcome is handed to the caller
+  rather than papered over with a re-run that conflicts with the
+  committed row. A connection poisoned BEFORE the first statement still
+  costs exactly one transparent retry — nothing was sent, so the retry
+  cannot conflict with anything.
 
 A mid-QUERY kill is unchanged: it raises
 `ConnectionDoesNotExistError` (a Postgres error, not retried by this

@@ -551,13 +551,18 @@ async def test_fresh_connection_retry_logs_the_retry_with_the_operation_name() -
 
 
 async def test_fresh_connection_retry_refuses_the_retry_once_a_write_is_acknowledged() -> None:
-    """#236's duplication half: an ``InternalClientError`` raised AFTER the
+    """#236's refusal half: an ``InternalClientError`` raised AFTER the
     op marked its write durable (the connection died between the INSERT's
     acknowledgement and a LATER statement of the same attempt — a
     post-INSERT read, a savepoint RELEASE) must NOT re-run the op. The
     unguarded wrapper read every ``InternalClientError`` as
-    dead-on-acquire and re-issued the write: an autocommit INSERT ran
-    twice and two rows committed for one enqueue."""
+    dead-on-acquire and re-issued the write with the same identity —
+    against the enqueue table's ``uuid PRIMARY KEY`` that cannot land a
+    second row; it raised ``UniqueViolationError`` for an enqueue that
+    had committed and would run (observed live under old-contract
+    emulation: 11 UniqueViolations in 400 jittered kills), and that
+    error-for-committed-work is precisely what invites the caller's
+    fresh-id retry that DOES run the job twice."""
     calls = 0
 
     async def op(guard: _RetryGuard) -> str:
@@ -573,7 +578,11 @@ async def test_fresh_connection_retry_refuses_the_retry_once_a_write_is_acknowle
     with pytest.raises(InternalClientError, match="died between the INSERT's ack"):
         await _with_fresh_connection_retry(_FakePool(), op, operation="enqueue")
 
-    assert calls == 1, "a retry after an acknowledged write would commit it twice (#236)"
+    assert calls == 1, (
+        "a retry after an acknowledged write re-issues it with the same id: "
+        "a UniqueViolationError for work that succeeded, and the invitation "
+        "for the caller's fresh-id re-enqueue that runs the job twice (#236)"
+    )
 
 
 async def test_fresh_connection_retry_retry_starts_a_clean_guard() -> None:
