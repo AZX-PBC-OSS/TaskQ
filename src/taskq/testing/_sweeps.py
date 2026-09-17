@@ -27,12 +27,13 @@ from typing import TYPE_CHECKING
 import structlog
 
 from taskq.backend._protocol import AttemptRow, CancelPhase, JobId, JobRow
-from taskq.backend._sweeps import (  # pyright: ignore[reportPrivateUsage]  # Why: the twins must enforce the identical contract the Postgres sweeps enforce — one validator, one message map, one seam, no drift.
+from taskq.backend._sweeps import (  # pyright: ignore[reportPrivateUsage]  # Why: the twins must enforce the identical contract the Postgres sweeps enforce — one validator, one message map, one disposition map, one seam, no drift.
     _ATTEMPT_MESSAGES,
+    _RECLAIM_DISPOSITIONS,
     _validate_positive,
 )
 from taskq.constants import DEFAULT_EVENT_WRITER_BATCH_SIZE
-from taskq.obs import record_deadline_exceeded_swept
+from taskq.obs import record_deadline_exceeded_swept, record_reclaimed_jobs
 from taskq.retry import (  # pyright: ignore[reportPrivateUsage]  # Why: the twin must compute the identical reclaim delay the SQL fragment computes — one curve twin, one hash fraction, no drift surface.
     RetryPolicy,
     _compute_reclaim_backoff,
@@ -198,10 +199,23 @@ async def _reclaim_expired_locks(
     # * outbox channel — both arms' events carry reason='lock_expired'
     #   (the slice poll_reclaim_events tails) with a cause key naming
     #   which deadline fired.
+    # * reclaimed-jobs counter — both backends aggregate (actor,
+    #   disposition) pairs over the reclaimed rows and record
+    #   taskq.jobs.reclaimed after the transition loop, the disposition
+    #   derived from the written status through the one shared
+    #   _RECLAIM_DISPOSITIONS map, so the metric's label set cannot drift
+    #   between backends.
     _validate_positive("batch_size", batch_size)
     now = self._clock.now()
     deep_expiry_margin = cancel_grace + cleanup_grace + timedelta(seconds=60)
     arm_counts: dict[str, int] = {"lock_expired": 0, "heartbeat_timeout": 0}
+    # (actor, disposition) -> rows reclaimed, for the same
+    # taskq.jobs.reclaimed counter the PG sweep emits from its RETURNING.
+    # Aggregated on the loop and recorded after it, mirroring the PG
+    # side's after-the-transaction placement, so per-row metric calls
+    # never sit on the row-transition path and the two backends emit the
+    # identical label set.
+    reclaim_counts: dict[tuple[str, str], int] = {}
     count = 0
     for job_id, row in list(self._jobs.items()):
         if all(c >= batch_size for c in arm_counts.values()):
@@ -415,7 +429,16 @@ async def _reclaim_expired_locks(
                 to_state=new_status,
                 job_id=str(job_id),
             )
+        # The disposition derives from the row's own post-transition
+        # status — the same one-map doctrine the PG sweep follows with the
+        # status its RETURNING carries — so the twin's counter labels can
+        # never disagree with the state it just wrote.
+        updated_status = self._jobs[job_id].status
+        reclaim_key = (row.actor, _RECLAIM_DISPOSITIONS[updated_status])
+        reclaim_counts[reclaim_key] = reclaim_counts.get(reclaim_key, 0) + 1
         for event in self._wake_subscribers:
             event.set()
         count += 1
+    for (actor, disposition), reclaimed_n in reclaim_counts.items():
+        record_reclaimed_jobs(actor=actor, disposition=disposition, count=reclaimed_n)
     return count
