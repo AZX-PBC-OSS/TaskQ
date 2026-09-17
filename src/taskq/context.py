@@ -102,6 +102,8 @@ class JobContext[P: BaseModel]:
     _worker_settings: WorkerSettings | None = None
     _pending_publish_tasks: set[asyncio.Task[None]] | None = None
     _progress_dropped_notice: threading.Event = field(default_factory=threading.Event)
+    _sync_actor_task: asyncio.Task[object] | None = None
+    _tx_unwind_task: asyncio.Task[object] | None = None
 
     @property
     def cancellation_requested(self) -> bool:
@@ -133,6 +135,38 @@ class JobContext[P: BaseModel]:
         fields mutate through their own methods rather than assignment.
         """
         object.__setattr__(self, "_cancel_origin", origin)
+
+    def _set_sync_actor_task(self, task: asyncio.Task[object]) -> None:
+        """Record the sync actor's executor-thread task. Called by the
+        dispatch layer when a sync actor's body starts, never by actor code.
+
+        A shutdown's ``task.cancel()`` cancels the *await* on the thread,
+        never the thread itself, so the consumer's shutdown arm needs this
+        handle to tell "the await was cancelled" (always true for a sync
+        actor; the thread is unreachable from the loop) from "the actor
+        body exited" (true only once the thread finished): it parks on the
+        handle, bounded by the remaining termination budget, before
+        releasing the row, and holds the release back when the body never
+        exits (#232). ``object.__setattr__`` because the dataclass is
+        frozen; the handle is dispatch state that arrives after
+        construction, exactly as the origin stamp does.
+        """
+        object.__setattr__(self, "_sync_actor_task", task)
+
+    def _set_tx_unwind_task(self, task: asyncio.Task[object]) -> None:
+        """Record the transactional path's tx task while it unwinds a
+        cancellation. Called by the transactional consumer on the cancel
+        path, never by actor code.
+
+        The tx task unwinds asynchronously after ``tx_task.cancel()`` —
+        savepoint rollback, the enclosing transaction's rollback — and the
+        release write must not land while that unwind is still in flight
+        (#232): the consumer's shutdown arm parks on this handle, bounded,
+        before releasing the row. ``object.__setattr__`` because the
+        dataclass is frozen; the handle is consumer state that arrives
+        after construction.
+        """
+        object.__setattr__(self, "_tx_unwind_task", task)
 
     def check_cancelled(self) -> None:
         if self.cancel_event.is_set():

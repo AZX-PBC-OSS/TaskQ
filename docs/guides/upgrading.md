@@ -638,10 +638,15 @@ re-pending a live row races its own terminal write.
 
 When a deploy's grace windows expire with a job still running, the worker
 no longer writes a terminal state for it. The job is *interrupted*:
-released back to the fleet as `pending` (actor unwound on the cancel) or
+released back to the fleet as `pending` (the actor **provably exited** — an
+async actor unwound on the cancel, a sync actor's thread finished, the
+transactional unwind completed; the consumer parks on the tracked exit
+handles, bounded by the remaining termination budget, before writing) or
 `scheduled` behind the remaining `TASKQ_TERMINATION_GRACE_PERIOD` budget
-(actor never unwound — the row stays unclaimable until the exiting process
-is provably gone; with `TASKQ_WATCHDOG_ENABLED=false` the hold is
+plus the watchdog's exit tail — the dump-interval lag before the deadline
+trip is observed and the ~2s bounded flush before `os._exit` — when the
+actor never provably exits (the row stays unclaimable until the exiting
+process is provably gone; with `TASKQ_WATCHDOG_ENABLED=false` the hold is
 `TASKQ_LOCK_LEASE`). The claim's `attempt` increment is refunded — the
 same idiom the snooze/denial arms use — so a deploy no longer spends a
 job's retry budget, and a job interrupted on every deploy is rescheduled
@@ -650,6 +655,19 @@ until it finishes or its `schedule_to_close` fails it with
 `reason = 'interrupted'` and bumps the new `interrupt_count` column on the
 row; `taskq.jobs.interrupted{actor,hold}` and
 `taskq.jobs.interrupted_noop` are the OTEL counters.
+
+What to audit:
+
+* **Sync actors are no longer assumed gone at the cancel.** A plain `def`
+  actor's thread cannot be interrupted: before this change its row went
+  straight back to `pending` while the body was still executing, and a
+  second worker could claim it — two live runners for one row across every
+  deploy that caught a sync actor mid-body. The release now waits (bounded
+  by the remaining termination budget) for the thread and holds the row
+  behind the process's exit window when the thread outlives the wait. A
+  fleet of sync actors should teach long loops to poll
+  `ctx.should_abort()` so they exit inside the cancellation grace and get
+  the immediate `pending` release instead of the held one.
 
 What to audit:
 
