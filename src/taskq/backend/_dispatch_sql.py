@@ -204,7 +204,7 @@ from taskq.obs import (
     record_dispatch_failure,
     safe_start_span,
 )
-from taskq.obs._redact_exc import record_exception_safe, safe_exception_message
+from taskq.obs._redact_exc import record_exception_text, render_exception
 
 __all__ = [
     "DISPATCH_CLAIMABLE_PROBE_SQL",
@@ -1443,8 +1443,7 @@ async def dispatch_batch(
             # PostgresError appends the server's DETAIL line, which quotes the
             # offending row values -- idempotency_key / identity_key /
             # fairness_key are all caller-supplied.
-            span.set_status(StatusCode.ERROR, safe_exception_message(exc))
-            record_exception_safe(span, exc)
+            record_exception_text(span, render_exception(exc))
             raise
         elapsed = time.monotonic() - t0
         returned_count = len(rows)

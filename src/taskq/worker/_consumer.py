@@ -65,11 +65,14 @@ from taskq.exceptions import (
 )
 from taskq.obs import (
     ErrorReporter,
+    ExceptionText,
     bind_job_context,
     get_logger,
     log_state_change,
+    record_exception_text,
     record_ratelimit_acquire_dependency_failure,
     record_sub_enqueue_failure,
+    render_exception,
     safe_start_span,
 )
 from taskq.progress._buffer import (
@@ -629,67 +632,84 @@ async def consume_one_job(
                 terminal=False,
             )
 
+        # The attempt span's rendering of the failure, carried across the
+        # re-raise to the terminal handler below so the traceback is rendered
+        # and scrubbed once, not once per sink.
+        attempt_text: ExceptionText | None = None
         try:
             with safe_start_span(
                 f"attempt.{job.attempt}",
                 kind=SpanKind.INTERNAL,
-            ):
-                if transaction_conn is not None:
-                    tx_outcome = await _consume_transactional(
-                        backend,
-                        job,
-                        worker_id,
-                        ctx,
-                        live_enqueuer,
-                        transaction_conn,
-                        run_actor,
-                        actor_config,
-                        timeout,
-                        max_retry_backoff,
-                        active_jobs,
-                        consumer_span,
-                        job_log,
-                        progress_buffers=_progress_buffers,
-                        redis_client=_effective_redis,
-                        settings=_effective_settings,
-                        worker_pool=_effective_pool,
-                        error_reporter=error_reporter,
-                        fallback_result_ttl=fallback_result_ttl,
-                    )
-                    _completion = _OK if tx_outcome == "succeeded" else None
-                    if tx_outcome == "succeeded":
-                        consumer_span.add_event(
-                            "lifecycle.succeeded",
-                            attributes={"from_state": "running", "to_state": "succeeded"},
+            ) as attempt_span:
+                try:
+                    if transaction_conn is not None:
+                        tx_outcome = await _consume_transactional(
+                            backend,
+                            job,
+                            worker_id,
+                            ctx,
+                            live_enqueuer,
+                            transaction_conn,
+                            run_actor,
+                            actor_config,
+                            timeout,
+                            max_retry_backoff,
+                            active_jobs,
+                            consumer_span,
+                            job_log,
+                            progress_buffers=_progress_buffers,
+                            redis_client=_effective_redis,
+                            settings=_effective_settings,
+                            worker_pool=_effective_pool,
+                            error_reporter=error_reporter,
+                            fallback_result_ttl=fallback_result_ttl,
                         )
-                        log_state_change(ctx.log, from_state="running", to_state="succeeded")
-                        return "succeeded"
-                    return tx_outcome
-                else:
-                    _auto_outcome = await _consume_autonomous(
-                        backend,
-                        job,
-                        worker_id,
-                        ctx,
-                        run_actor,
-                        timeout,
-                        active_jobs,
-                        job_log,
-                        actor_config,
-                        deps=deps,
-                        progress_buffers=_progress_buffers,
-                        redis_client=_effective_redis,
-                        settings=_effective_settings,
-                        worker_pool=_effective_pool,
-                        fallback_result_ttl=fallback_result_ttl,
-                    )
-                    if _auto_outcome == "succeeded":
-                        consumer_span.add_event(
-                            "lifecycle.succeeded",
-                            attributes={"from_state": "running", "to_state": "succeeded"},
+                        _completion = _OK if tx_outcome == "succeeded" else None
+                        if tx_outcome == "succeeded":
+                            consumer_span.add_event(
+                                "lifecycle.succeeded",
+                                attributes={"from_state": "running", "to_state": "succeeded"},
+                            )
+                            log_state_change(ctx.log, from_state="running", to_state="succeeded")
+                            return "succeeded"
+                        return tx_outcome
+                    else:
+                        _auto_outcome = await _consume_autonomous(
+                            backend,
+                            job,
+                            worker_id,
+                            ctx,
+                            run_actor,
+                            timeout,
+                            active_jobs,
+                            job_log,
+                            actor_config,
+                            deps=deps,
+                            progress_buffers=_progress_buffers,
+                            redis_client=_effective_redis,
+                            settings=_effective_settings,
+                            worker_pool=_effective_pool,
+                            fallback_result_ttl=fallback_result_ttl,
                         )
-                        log_state_change(ctx.log, from_state="running", to_state="succeeded")
-                    return _auto_outcome
+                        if _auto_outcome == "succeeded":
+                            consumer_span.add_event(
+                                "lifecycle.succeeded",
+                                attributes={"from_state": "running", "to_state": "succeeded"},
+                            )
+                            log_state_change(ctx.log, from_state="running", to_state="succeeded")
+                        return _auto_outcome
+                except Exception as exc:
+                    # Recorded here rather than by safe_start_span's fallback
+                    # (which renders afresh) so the handler can share the text.
+                    # Only a recording span is worth a rendering: with tracing
+                    # off, a Snooze must not pay for a traceback nobody reads,
+                    # and the handlers that need one render it themselves.
+                    # ``Exception``, not ``BaseException``: cancellation and
+                    # the terminal-write sentinels are not attempt failures.
+                    if attempt_span.is_recording():
+                        attempt_text = render_exception(exc)
+                        record_exception_text(attempt_span, attempt_text)
+                    raise
 
         except asyncio.CancelledError:
             if _completion is _OK:
@@ -861,6 +881,7 @@ async def consume_one_job(
                 settings=_effective_settings,
                 redis_client=_effective_redis,
                 error_reporter=error_reporter,
+                text=attempt_text,
             )
 
         finally:

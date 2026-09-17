@@ -52,7 +52,7 @@ from opentelemetry.metrics import CallbackOptions, Counter, Histogram, Meter, Ob
 from opentelemetry.trace import Span, StatusCode, Tracer
 from opentelemetry.util.types import Attributes
 
-from taskq.obs._redact_exc import record_exception_safe, safe_exception_message
+from taskq.obs._redact_exc import add_exception_event, render_exception
 
 INSTRUMENTATION_NAME: str = "taskq"
 
@@ -205,18 +205,29 @@ def _record_scrubbed_error(span: Span, exc: BaseException) -> None:
     leak must not cost the signal.
 
     Each half is supplied only when missing, so the call sites that already
-    scrub (``dispatch_batch``, ``cron fire``) do not get a duplicate event or
-    have their description rewritten, while ``enqueue_span`` -- which marks the
-    span ERROR but records no event -- still gets the scrubbed exception text
-    it needs to stay diagnostic.
+    scrub (``dispatch_batch``, ``cron fire``, the consumer's ``attempt.N``
+    span) do not get a duplicate event or have their description rewritten,
+    while ``enqueue_span`` -- which marks the span ERROR but records no event
+    -- still gets the scrubbed exception text it needs to stay diagnostic.
+
+    A span that is not recording takes neither half: the text would be
+    rendered and scrubbed only to be dropped, and rendering is the dominant
+    cost of a failed job.
     """
     try:
+        if not span.is_recording():
+            return
         status_code = getattr(getattr(span, "status", None), "status_code", None)
-        if status_code is not StatusCode.ERROR:
-            span.set_status(StatusCode.ERROR, safe_exception_message(exc))
+        needs_status = status_code is not StatusCode.ERROR
         events: Iterable[object] = getattr(span, "events", ())
-        if not any(getattr(event, "name", None) == "exception" for event in events):
-            record_exception_safe(span, exc)
+        needs_event = not any(getattr(event, "name", None) == "exception" for event in events)
+        if not (needs_status or needs_event):
+            return
+        text = render_exception(exc)
+        if needs_status:
+            span.set_status(StatusCode.ERROR, text.message)
+        if needs_event:
+            add_exception_event(span, text)
     except Exception:
         _log.warning("otel-span-error-record-failed", span_name=getattr(span, "name", ""))
 

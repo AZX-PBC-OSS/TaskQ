@@ -42,8 +42,13 @@ it.
 import re
 import sys
 import traceback
+from dataclasses import dataclass
 from types import TracebackType
 from typing import TYPE_CHECKING
+
+from opentelemetry.trace import StatusCode
+
+from taskq._json import sanitize_nul_str
 
 if TYPE_CHECKING:
     from opentelemetry.trace import Span
@@ -51,7 +56,12 @@ if TYPE_CHECKING:
 __all__ = [
     "EXCEPTION_MESSAGE_FIELDS",
     "EXCEPTION_TRACEBACK_FIELDS",
+    "ExceptionText",
+    "ScrubbedText",
+    "add_exception_event",
     "record_exception_safe",
+    "record_exception_text",
+    "render_exception",
     "safe_exception_message",
     "safe_exception_parts",
     "scrub_exception_field",
@@ -279,19 +289,64 @@ def _bound_message(text: str) -> str:
     return text[:_max_message_chars] + f"... ({remaining} more characters)"
 
 
-def safe_exception_message(exc: BaseException) -> str:
-    """Exception text with the Postgres DETAIL dropped and URI creds masked.
+class ScrubbedText(str):
+    """Exception text that has been through :func:`_scrub_text`.
 
-    The primary Postgres message is kept: it is a static template naming the
-    constraint or relation, which is the part that is actually diagnostic.
-    ``HINT`` and ``CONTEXT`` are kept for the same reason -- neither carries
-    row values, and both are what an operator reads next.
+    A ``str`` in every other respect, so every renderer and serializer treats
+    it as plain text. The type is the invariant: the log processor
+    (``_scrub_exception_fields``) passes a ``ScrubbedText`` field through
+    untouched, which is what lets a handler scrub a traceback once and emit it
+    on several log lines. Only this module constructs one from freshly
+    rendered text; a caller that needs one holds a value that already is one.
     """
-    return _bound_message(_scrub_text(str(exc)))
+
+    __slots__ = ()
+
+    def nul_escaped(self) -> "ScrubbedText":
+        """The same text with NUL codepoints rewritten to the visible ``\\x00``.
+
+        Scrubbing must run BEFORE the escape, never after: the credential
+        mask's keyword boundary is a lookbehind for a non-word character, and
+        the escape's trailing ``0`` satisfies it in the wrong direction, so
+        ``\\x00password=…`` escaped first ships the password. The escape
+        itself introduces only backslash, ``x`` and ``0`` -- it cannot
+        reassemble a DETAIL line or a credential the scrub removed, so the
+        result keeps its scrubbed standing.
+        """
+        return ScrubbedText(sanitize_nul_str(self))
 
 
-def _safe_stacktrace(exc: BaseException) -> str:
-    """Formatted traceback, scrubbed the same way.
+@dataclass(frozen=True, slots=True)
+class ExceptionText:
+    """One rendering of an exception, shared by every sink that reports it.
+
+    A failed attempt is reported on the ``attempt.N`` span, on the
+    ``job_exception`` and ``job-failed`` log lines and in the durable
+    ``ErrorInfo``. Rendering the traceback and scrubbing it are the dominant
+    CPU cost of a failed job (a 27-frame traceback is ~0.8 ms to render and
+    ~0.4-0.8 ms to scrub, GIL-held), so :func:`render_exception` does each
+    once and the sinks are handed this value rather than the exception.
+
+    ``raw_stacktrace`` is unscrubbed: the durable row lives inside the trust
+    boundary and keeps the DETAIL row values the operator needs; only the
+    telemetry-bound text is scrubbed.
+    """
+
+    type_name: str
+    """``__qualname__`` of the exception class, as OTel's ``exception.type``."""
+
+    raw_stacktrace: str
+    """``traceback.format_exception`` output, verbatim."""
+
+    message: ScrubbedText
+    """``str(exc)`` scrubbed and length-bounded -- see :func:`safe_exception_message`."""
+
+    stacktrace: ScrubbedText
+    """``raw_stacktrace`` scrubbed line-wise, never length-bounded, so it stays diagnostic."""
+
+
+def render_exception(exc: BaseException) -> ExceptionText:
+    """Render and scrub *exc* once, for every sink that reports it.
 
     A traceback's final line is the exception repr, so the same DETAIL text
     reappears there if it is not stripped. Chained causes are included, so each
@@ -303,7 +358,24 @@ def _safe_stacktrace(exc: BaseException) -> str:
     row values -- but a secret written as a literal in application code would
     appear. Do not put credentials in source.
     """
-    return _scrub_text("".join(traceback.format_exception(type(exc), exc, exc.__traceback__)))
+    raw_stacktrace = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+    return ExceptionText(
+        type_name=type(exc).__qualname__,
+        raw_stacktrace=raw_stacktrace,
+        message=ScrubbedText(_bound_message(_scrub_text(str(exc)))),
+        stacktrace=ScrubbedText(_scrub_text(raw_stacktrace)),
+    )
+
+
+def safe_exception_message(exc: BaseException) -> str:
+    """Exception text with the Postgres DETAIL dropped and URI creds masked.
+
+    The primary Postgres message is kept: it is a static template naming the
+    constraint or relation, which is the part that is actually diagnostic.
+    ``HINT`` and ``CONTEXT`` are kept for the same reason -- neither carries
+    row values, and both are what an operator reads next.
+    """
+    return _bound_message(_scrub_text(str(exc)))
 
 
 #: A validated ``(cls, exc, tb)`` triple ready for ``traceback.format_exception``.
@@ -365,20 +437,35 @@ def safe_exception_parts(exc_info: _ExcInfoInput) -> dict[str, str] | None:
     }
 
 
-def record_exception_safe(span: "Span", exc: BaseException) -> None:
-    """Record *exc* on *span* without leaking row values or credentials.
+def add_exception_event(span: "Span", text: ExceptionText) -> None:
+    """Attach *text* to *span* as the OTel semantic-convention ``exception`` event.
 
-    Emits the same ``exception`` event shape the OTel semantic conventions
-    define, so backends that special-case it still render an exception.
+    The event shape is the one the conventions define, so backends that
+    special-case it still render an exception.
     """
     span.add_event(
         "exception",
         attributes={
-            "exception.type": type(exc).__qualname__,
-            "exception.message": safe_exception_message(exc),
-            "exception.stacktrace": _safe_stacktrace(exc),
+            "exception.type": text.type_name,
+            "exception.message": text.message,
+            "exception.stacktrace": text.stacktrace,
         },
     )
+
+
+def record_exception_text(span: "Span", text: ExceptionText) -> None:
+    """Mark *span* failed by *text*: ERROR status described by the message, plus the event."""
+    span.set_status(StatusCode.ERROR, text.message)
+    add_exception_event(span, text)
+
+
+def record_exception_safe(span: "Span", exc: BaseException) -> None:
+    """Record *exc* on *span* without leaking row values or credentials.
+
+    The event-only form of :func:`record_exception_text`, for a call site that
+    sets the span status itself.
+    """
+    add_exception_event(span, render_exception(exc))
 
 
 #: Event-dict field names that conventionally carry exception MESSAGE text on
@@ -399,7 +486,7 @@ EXCEPTION_MESSAGE_FIELDS = frozenset(
 )
 
 #: Event-dict field names that conventionally carry rendered TRACEBACK text —
-#: scrubbed line-wise like :func:`_safe_stacktrace`, without the message-length
+#: scrubbed line-wise like :func:`render_exception`, without the message-length
 #: bound, so the traceback stays diagnostic. Same derivation and guard
 #: contract as :data:`EXCEPTION_MESSAGE_FIELDS`.
 EXCEPTION_TRACEBACK_FIELDS = frozenset(
@@ -413,12 +500,13 @@ def scrub_exception_field(field: str, value: object) -> object:
     Exception objects render as the scrubbed safe message (they previously
     reached the orjson fallback and dropped the whole log line). Strings in
     message-style fields get the message scrub; strings in traceback-style
-    fields get the line-wise stacktrace scrub. Non-string, non-exception
-    values (ints, bools, None) are returned unchanged.
+    fields get the line-wise stacktrace scrub. A :class:`ScrubbedText` has
+    already had the treatment its type promises and passes through, as do
+    non-string, non-exception values (ints, bools, None).
     """
     if isinstance(value, BaseException):
         return safe_exception_message(value)
-    if not isinstance(value, str):
+    if not isinstance(value, str) or isinstance(value, ScrubbedText):
         return value
     if field in EXCEPTION_TRACEBACK_FIELDS:
         return _scrub_text(value)

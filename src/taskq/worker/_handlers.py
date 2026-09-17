@@ -58,9 +58,11 @@ from taskq.exceptions import (
 )
 from taskq.obs import (
     ErrorReporter,
+    ExceptionText,
     invoke_error_reporter,
     log_state_change,
     record_reservation_denial,
+    render_exception,
 )
 from taskq.retry import (
     ActorConfigLike,
@@ -296,24 +298,37 @@ async def _handle_timeout(
     progress_state: dict[str, object] | None = None,
     *,
     error_reporter: ErrorReporter | None = None,
+    text: ExceptionText | None = None,
 ) -> AttemptOutcome:
+    """Route a ``start_to_close`` timeout to its retry decision and terminal write.
+
+    *text* is the rendering the ``attempt.N`` span already made of *exc* when
+    the exception escaped the span; rendered here when the caller has none.
+    """
+    if text is None:
+        text = render_exception(exc)
     # The message and traceback are derived from an uncontrolled exception:
     # rejecting them (the ErrorInfo guard's job for caller-supplied text)
     # would strand the very job the text describes — the terminal write
     # must land with the defect visible as an escape sequence.
+    raw_message = str(exc)
     error_info = ErrorInfo(
         error_class=type(exc).__name__,
-        error_message=sanitize_nul_str(str(exc) or "start_to_close"),
-        error_traceback=sanitize_nul_str(_format_exc(exc)),
+        error_message=sanitize_nul_str(raw_message or "start_to_close"),
+        error_traceback=sanitize_nul_str(text.raw_stacktrace),
     )
+    # The log channel leaves the trust boundary and carries the scrubbed text;
+    # the fallback name is a constant, not exception text, so it needs neither.
+    log_message = text.message.nul_escaped() if raw_message else "start_to_close"
+    log_traceback = text.stacktrace.nul_escaped()
     log.warning(
         "job_timeout",
         job_id=str(job.id),
         actor=job.actor,
         attempt=job.attempt,
         error_class=error_info.error_class,
-        error_message=error_info.error_message,
-        error_traceback=error_info.error_traceback,
+        error_message=log_message,
+        error_traceback=log_traceback,
     )
     job_state = JobRetryState(
         attempt=job.attempt,
@@ -413,8 +428,8 @@ async def _handle_timeout(
             job,
             cause=decision.error_class,
             error_class=error_info.error_class,
-            error_message=error_info.error_message,
-            error_traceback=error_info.error_traceback,
+            error_message=log_message,
+            error_traceback=log_traceback,
         )
         await invoke_on_retry_exhausted(
             actor_config.on_retry_exhausted,
@@ -743,7 +758,15 @@ async def _handle_generic_exception(
     progress_state: dict[str, object] | None = None,
     *,
     error_reporter: ErrorReporter | None = None,
+    text: ExceptionText | None = None,
 ) -> AttemptOutcome:
+    """Route an actor exception to its retry decision and terminal write.
+
+    *text* is the rendering the ``attempt.N`` span already made of *e* when
+    the exception escaped the span; rendered here when the caller has none.
+    """
+    if text is None:
+        text = render_exception(e)
     # The message and traceback are derived from an uncontrolled exception:
     # rejecting them (the ErrorInfo guard's job for caller-supplied text)
     # would strand the very job the text describes — the terminal write
@@ -751,16 +774,19 @@ async def _handle_generic_exception(
     error_info = ErrorInfo(
         error_class=type(e).__name__,
         error_message=sanitize_nul_str(str(e)),
-        error_traceback=sanitize_nul_str(_format_exc(e)),
+        error_traceback=sanitize_nul_str(text.raw_stacktrace),
     )
+    # The log channel leaves the trust boundary and carries the scrubbed text.
+    log_message = text.message.nul_escaped()
+    log_traceback = text.stacktrace.nul_escaped()
     log.warning(
         "job_exception",
         job_id=str(job.id),
         actor=job.actor,
         attempt=job.attempt,
         error_class=error_info.error_class,
-        error_message=error_info.error_message,
-        error_traceback=error_info.error_traceback,
+        error_message=log_message,
+        error_traceback=log_traceback,
     )
     job_state = JobRetryState(
         attempt=job.attempt,
@@ -859,8 +885,8 @@ async def _handle_generic_exception(
             job,
             cause=decision.error_class,
             error_class=error_info.error_class,
-            error_message=error_info.error_message,
-            error_traceback=error_info.error_traceback,
+            error_message=log_message,
+            error_traceback=log_traceback,
         )
         await invoke_on_retry_exhausted(
             actor_config.on_retry_exhausted,
@@ -889,6 +915,7 @@ async def _dispatch_exception(
     redis_client: "redis_async.Redis | None",
     pre_handler: Callable[[], None] | None = None,
     error_reporter: ErrorReporter | None = None,
+    text: ExceptionText | None = None,
 ) -> AttemptOutcome:
     """Route *exc* to the appropriate terminal handler via ``_run_terminal_path``.
 
@@ -901,6 +928,12 @@ async def _dispatch_exception(
     :func:`~taskq.obs.invoke_error_reporter` alongside
     :func:`~taskq.retry.invoke_on_retry_exhausted` when a job reaches a
     terminal failure state.
+
+    *text* is the rendering the ``attempt.N`` span already made of *exc*
+    when the exception escaped it (the autonomous path); the handlers that
+    report a traceback reuse it rather than rendering a second time. The
+    transactional path catches inside the span and passes none, and only
+    those handlers render — a snooze never pays for a traceback.
     """
     from taskq.worker._consumer import _run_terminal_path
 
@@ -926,7 +959,7 @@ async def _dispatch_exception(
                 consumer_span,
                 log,
             ),
-            handler_kwargs={"error_reporter": error_reporter},
+            handler_kwargs={"error_reporter": error_reporter, "text": text},
             status="failed",
             terminal=True,
             outcome="failed",
@@ -1007,7 +1040,7 @@ async def _dispatch_exception(
             consumer_span,
             log,
         ),
-        handler_kwargs={"error_reporter": error_reporter},
+        handler_kwargs={"error_reporter": error_reporter, "text": text},
         status="failed",
         terminal=True,
         outcome="failed",
