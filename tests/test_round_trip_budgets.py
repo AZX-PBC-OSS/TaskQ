@@ -22,8 +22,8 @@ from taskq.backend._protocol import EnqueueArgs, JobRow
 from taskq.backend._sql_templates import render as render_sql
 from taskq.testing.clock import FakeClock
 
-_SCHEMA = "taskq"
-_SQL = render_sql(_SCHEMA)
+_SCHEMA_LABEL = "taskq"
+_SQL = render_sql(_SCHEMA_LABEL)
 _NOW = datetime(2025, 1, 1, tzinfo=UTC)
 _QUEUE = "default"
 _LEASE = timedelta(seconds=30)
@@ -200,7 +200,7 @@ async def _dispatch(conn: _RecordingConn) -> Any:
         _SQL,
         2,
         5.0,
-        _SCHEMA,
+        _SCHEMA_LABEL,
         new_uuid(),
         [_QUEUE],
         10,
@@ -249,7 +249,7 @@ async def _enqueue_on_pool(conn: _RecordingConn, args: EnqueueArgs) -> JobRow:
     return await _enqueue(
         _RecordingPool(conn),  # type: ignore[arg-type]  # Why: duck-typed recording pool.
         _SQL,
-        _SCHEMA,
+        _SCHEMA_LABEL,
         FakeClock(_NOW),
         args,
     )
@@ -297,7 +297,7 @@ async def test_a_keyed_enqueue_in_a_callers_transaction_keeps_the_restore_discip
         }
     )
     async with conn.transaction():
-        await _enqueue_with_conn(conn, _SQL, _SCHEMA, FakeClock(_NOW), args)  # type: ignore[arg-type]  # Why: duck-typed recording connection.
+        await _enqueue_with_conn(conn, _SQL, _SCHEMA_LABEL, FakeClock(_NOW), args)  # type: ignore[arg-type]  # Why: duck-typed recording connection.
     assert _shape(conn.wire) == [
         "BEGIN",
         "SAVEPOINT",
@@ -320,7 +320,7 @@ async def test_a_batch_enqueue_is_one_insert_inside_its_transaction() -> None:
     rows = await _enqueue_batch(
         _RecordingPool(conn),  # type: ignore[arg-type]  # Why: duck-typed recording pool.
         _SQL,
-        _SCHEMA,
+        _SCHEMA_LABEL,
         items,
     )
     assert [r.id for r in rows] == [a.id for a in items]
@@ -346,7 +346,7 @@ async def test_an_idle_cron_tick_is_one_statement() -> None:
         conn,  # type: ignore[arg-type]  # Why: duck-typed recording connection.
         WorkerSettings(),
         as_backend(FakeBackend()),
-        _SCHEMA,
+        _SCHEMA_LABEL,
         new_uuid(),
     )
     assert fired == 0
@@ -369,7 +369,7 @@ async def test_a_contended_cron_tick_reads_no_schedules() -> None:
         conn,  # type: ignore[arg-type]  # Why: duck-typed recording connection.
         WorkerSettings(),
         as_backend(FakeBackend()),
-        _SCHEMA,
+        _SCHEMA_LABEL,
         new_uuid(),
     )
     assert fired == 0
