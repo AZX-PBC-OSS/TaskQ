@@ -144,6 +144,11 @@ _NAME_MAP: list[tuple[str, str, str]] = [
     ),
     ("taskq.leader.lock_contention", "taskq_leader_lock_contention_total", "counter"),
     ("taskq.cron.lock_contention", "taskq_cron_lock_contention_total", "counter"),
+    (
+        "taskq.cron.budget_deferrals",
+        "taskq_cron_budget_deferrals_total",
+        "counter",
+    ),
     ("taskq.jobs.by_status", "taskq_jobs_by_status", "gauge"),
     ("taskq.jobs.scheduled_count", "taskq_jobs_scheduled_count", "gauge"),
     (
@@ -297,6 +302,7 @@ def _populate_all_instruments(meter: Any) -> None:
     )
     meter.create_counter("taskq.leader.lock_contention", unit="1").add(1, {"lock": "maintenance"})
     meter.create_counter("taskq.cron.lock_contention", unit="1").add(1)
+    meter.create_counter("taskq.cron.budget_deferrals", unit="1").add(1, {"actor": "a"})
     meter.create_observable_gauge(
         "taskq.jobs.by_status",
         unit="1",
