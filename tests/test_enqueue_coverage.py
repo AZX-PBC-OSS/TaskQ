@@ -626,7 +626,7 @@ class _FakePool:
     def __init__(self, conn: _FakeEnqueueConn) -> None:
         self._conn = conn
         self.acquire_count = 0
-        # (conn, timeout) per release — pins that the enqueue paths route
+        # (conn, timeout) per release: pins that the enqueue paths route
         # their releases through the retry guard's bounded channel.
         self.releases: list[tuple[_FakeEnqueueConn, float | None]] = []
 
@@ -772,7 +772,7 @@ async def test_enqueue_with_conn_legacy_violation_converts_without_retry() -> No
 #
 # What a refused-path regression would actually do (jobs.id is
 # ``uuid PRIMARY KEY`` and the op re-runs with the SAME args): the re-issued
-# INSERT raises UniqueViolationError for an enqueue that already committed —
+# INSERT raises UniqueViolationError for an enqueue that already committed,
 # an error returned for work that succeeded, whose caller-side retry (a
 # fresh enqueue call, a fresh id) is the route that runs the job twice. The
 # unit pins below hold the deterministic refusal; the fleet interruption pin

@@ -396,7 +396,7 @@ async def test_with_connection_init_closes_the_connection_when_the_hook_fails() 
 # Postgres in tests/test_fleet_pg_transient_failure.py, which is
 # intermittent by nature; these unit pins hold the wrapper's own contract
 # so the coverage does not rest on that race reproducing: when the retry
-# runs, when it is REFUSED (a write already acknowledged — #236's
+# runs, when it is REFUSED (a write already acknowledged, #236's
 # duplication half), and what the guard's bounded checkout does with a
 # release that fails or hangs after the op's work is done (#236's
 # release/hang half).
@@ -640,7 +640,7 @@ async def test_retry_guard_checkout_bounds_a_parked_release_and_frees_the_pool(
 
     shrunk_bound = 0.2
     monkeypatch.setattr(connections_mod, "_POOL_RELEASE_RESET_TIMEOUT_SECS", shrunk_bound)
-    # The parked reset would answer in 10 s (it never answers at all — the
+    # The parked reset would answer in 10 s (it never answers at all, the
     # park is the point); the unbounded release shape waits all of it.
     pool = _FakePool(release_park_secs=10.0)
     guard = _RetryGuard(pool, "enqueue")

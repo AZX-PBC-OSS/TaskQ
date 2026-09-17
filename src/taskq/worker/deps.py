@@ -95,6 +95,7 @@ _TCP_KEEPIDLE = 30
 _TCP_KEEPINTVL = 5
 _TCP_KEEPCNT = 3
 
+<<<<<<< HEAD
 _DISPATCHER_SERVER_SETTINGS: Final[dict[str, str]] = {"jit": "off"}
 """Per-connection GUCs every TaskQ-built dispatcher pool connection carries.
 
@@ -144,6 +145,29 @@ threshold, so they carry no entry.
 # DSN reaches Postgres directly - the tuned cache is the better default
 # there, and 26000 stays a loud bug.
 
+=======
+# No ``server_settings=`` on any TaskQ-built pool, deliberately. asyncpg
+# rides every ``server_settings`` entry in the STARTUP PACKET, and a pooler
+# that rejects unknown startup parameters (PgBouncer: "unsupported startup
+# parameter: jit") fails the connect: with a single TASKQ_PG_DSN pointed
+# at the pooler, every TaskQ-built boot connection dies there (#247). The
+# dispatcher pool previously carried ``jit = off`` this way; the guard it
+# provided is available server-side without the pooler hazard:
+# ``ALTER ROLE ... SET jit = off`` or ``?options=-c jit=off`` on the DSN
+# (docs/guides/ops.md §"Database performance knobs"), and a per-claim
+# ``SET LOCAL jit = off`` is structurally unavailable: the claim runs in
+# autocommit (one atomic UPDATE ... RETURNING), so there is no transaction
+# for a SET LOCAL to scope to. The measured win never needed the guard
+# anyway: the dispatch statement's estimate cascade is fixed at the source
+# (perf-evidence-dispatch.md: the depth oracle passes with JIT enabled on
+# a plain connection), and that oracle
+# (tests/test_dispatch_backlog_depth_bound.py) keeps re-proving it. The
+# slot pool's inherited ``search_path``/``role`` (worker/_bootstrap.py) are
+# the one deliberate exception: they are session state a LOOP-scope
+# connection declared, must survive the release-time ``RESET ALL`` (which
+# startup-packet values do; a post-connect ``SET`` does not), and ride the
+# direct DSN only.
+>>>>>>> df25aac (docs(comments): the fix-round comments adopt comma-and-colon punctuation, and one evidence-doc idiom is reworded (#236, #247, #251))
 
 _ADMISSION_LOCK_BUDGET_FIELDS: Final[tuple[str, ...]] = (
     "token_bucket_lock_timeout_ms",

@@ -572,11 +572,11 @@ class TaskQ:
         self._pool: "asyncpg.Pool | None" = pool  # noqa: UP037  # Why: asyncpg imported under TYPE_CHECKING; quotes required for runtime resolution.
         # Schema resolution keeps one source of truth with the worker and
         # CLI (the ``ui_serve`` idiom): an explicit argument wins, otherwise
-        # the shared configuration cascade decides — process environment,
+        # the shared configuration cascade decides: process environment,
         # then the .env cascade, then the model default, the same layers
         # WorkerSettings.load() reads (see _resolve_default_schema_name:
         # the value is validated ALONE, so an unrelated malformed TASKQ_*
-        # var cannot break an embedder's constructor — #251). Hardcoding
+        # var cannot break an embedder's constructor, #251). Hardcoding
         # the default here splits that truth: TASKQ_SCHEMA_NAME honored by
         # the worker fleet but not by the client is a silent job-loss
         # vector (the enqueue succeeds into a schema no worker reads;
@@ -675,8 +675,8 @@ class TaskQ:
         # client hands the backend — one settings flow, not two (and
         # validation failure now fails fast, before a pool is opened). The
         # lock-budget overlay folds the operator's TASKQ_*_LOCK_TIMEOUT_MS
-        # values — resolved through the SAME env/.env cascade the worker's
-        # load() reads (see _lock_budget_env_overlay) — into the dict load:
+        # values, resolved through the SAME env/.env cascade the worker's
+        # load() reads (see _lock_budget_env_overlay), into the dict load:
         # that loader reads only the dict, and the constructor's own
         # arguments stay authoritative (they are written last).
         load_data: dict[str, str] = _lock_budget_env_overlay()
