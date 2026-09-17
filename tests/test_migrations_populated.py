@@ -225,9 +225,9 @@ def _job_row(
         "retry_cap_seconds": 3600.0 + (i % 10),
         "retry_backoff": ("exponential", "linear", "fixed")[i % 3],
         "retry_jitter": (i % 5) / 10.0,
-        # Routing marker (01.00.12_05): both populations seeded so the
-        # column proves it round-trips through COPY, not just that the
-        # DDL accepts it.
+        # Routing marker (01.00.12_05 adds the columns; 01.00.12_07
+        # backfills them): both populations seeded so the column proves
+        # it round-trips through COPY, not just that the DDL accepts it.
         "assignment_routed": i % 4 == 0,
     }
 
@@ -918,8 +918,9 @@ def test_bundled_migrations_apply_stepwise_onto_populated_database(
 async def test_assignment_routed_backfill_marks_exactly_the_repend_population(
     pg_dsn: str,
 ) -> None:
-    """The marker migration's backfill paints exactly the rows the old
-    started_at-proxy arm was serving — nothing more, nothing less.
+    """The marker round's backfill (its own migration since the lock-scope
+    split, 01.00.12_07) paints exactly the rows the old started_at-proxy
+    arm was serving — nothing more, nothing less.
 
     The proxy probed ``pending`` rows with ``started_at IS NOT NULL``, and a
     re-pended row still sleeping off a deferral (``scheduled`` with
@@ -949,9 +950,12 @@ async def test_assignment_routed_backfill_marks_exactly_the_repend_population(
     ids = {name: new_uuid() for name in seeded}
     try:
         await _drop_schema(conn, schema)
-        # The pre-upgrade world: every migration up to the release that
-        # still routed re-pends by the started_at proxy.
-        await migrate_mod.apply_pending(conn, schema=schema, target="01.00.11_01")
+        # The pre-upgrade world: every migration up to the last one before
+        # the marker round — the release that still routed re-pends by the
+        # started_at proxy (the marker column, its backfill, and the
+        # probe indexes are 01.00.12_05/07/08/09, so 01.00.12_04 is the
+        # last pre-marker schema).
+        await migrate_mod.apply_pending(conn, schema=schema, target="01.00.12_04")
         for name, (status, _expected) in seeded.items():
             claimed = name in (
                 "pending_repended",
@@ -977,7 +981,10 @@ async def test_assignment_routed_backfill_marks_exactly_the_repend_population(
         applied = await migrate_mod.apply_pending(conn, schema=schema)
 
         assert "01.00.12_05:pre" in [m.key for m in applied], (
-            f"the marker migration must apply over the pre-upgrade data; applied {[m.key for m in applied]}"
+            f"the marker-columns migration must apply over the pre-upgrade data; applied {[m.key for m in applied]}"
+        )
+        assert "01.00.12_07:pre" in [m.key for m in applied], (
+            f"the marker-backfill migration must apply over the pre-upgrade data; applied {[m.key for m in applied]}"
         )
         for name, (status, expected) in seeded.items():
             actual = await conn.fetchval(
