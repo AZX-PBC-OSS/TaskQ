@@ -188,9 +188,9 @@ class _ExpiringIdSet:
     """Process-local set of SAML correlation IDs, each with its own expiry.
 
     Every SAML ID gate needs the same store: a bounded set of IDs that ages
-    out on its own. Entries past their expiry are dropped on every touch — an
+    out on its own. Entries past their expiry are dropped on every touch (an
     ID past its window is already refused on the assertion's own timestamps,
-    so pruning it loses nothing — and the set is capped, evicting the
+    so pruning it loses nothing), and the set is capped, evicting the
     soonest-to-expire entry, so a flood of IDs cannot grow it without bound.
 
     Process-local: a multi-process deployment runs one set per process, so a
@@ -235,7 +235,7 @@ class _AssertionReplayCache:
     On the cookie-less fallback path that replay is still refused by the
     pending-set spend; on the cookie path the browser's copy of the
     single-use cookie is cleared on first use, so what remains exposed is a
-    network-level attacker who captured both the cookie and the response
+    network-level party who captured both the cookie and the response
     body re-POSTing them to a sibling within the cookie's 300 s TTL.
     Closing that needs a replay record in a store every replica shares
     (Postgres/Redis) -- a deliberate follow-up, not something this
@@ -275,7 +275,7 @@ class _PendingAuthnRequests:
     started can mint a session, so a captured or IdP-initiated response is
     still refused -- while losing the narrower binding to one browser: the
     posting browser need not be the one that started the login, which is
-    the login-CSRF tradeoff the flag's documentation states plainly. On that
+    the login-CSRF tradeoff the flag's documentation states directly. On that
     fallback path the spend is a real gate: the ID is consumed by the first
     assertion that answers it, so the window is a single login attempt wide.
     The cookie path does not consult this set for admission -- the login may
@@ -319,7 +319,7 @@ class _AnsweredAuthnRequests:
     and on the issuing process the pending-set drop is deliberately not a
     gate. This record refuses a second DISTINCT assertion answering the same
     request ID -- the shape the replay cache cannot refuse, because the
-    attacker's second response carries a fresh assertion ID.
+    replaying party's second response carries a fresh assertion ID.
 
     Entries live for the correlation cookie's own window (``_REQUEST_MAX_AGE``):
     after that the cookie can no longer authenticate a presentation on the

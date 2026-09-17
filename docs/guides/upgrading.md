@@ -743,8 +743,8 @@ The SAML ACS callback previously accepted a response with no usable
 `taskq_saml_request` correlation cookie whenever its validated
 `InResponseTo` named a pending AuthnRequest the process had issued — the
 #180 fallback for browsers that block the cross-site cookie. Two problems
-came with it: nothing tied that response to the browser posting it, so an
-attacker who starts a login and captures the signed response for their own
+came with it: nothing tied that response to the browser posting it, so a
+party who starts a login and captures the signed response for their own
 account could plant it on a cookie-less victim (login CSRF, #240); and the
 same process-local pending-set requirement rejected every SAML login whose
 callback landed on a different admin replica or `uvicorn --workers N`
@@ -763,7 +763,7 @@ fallback moved behind `TASKQ_SAML_ALLOW_COOKIELESS_FALLBACK`, **default
   to opt in.
 - **Deployments that must serve cookie-blocking browsers:** set
   `TASKQ_SAML_ALLOW_COOKIELESS_FALLBACK=true` and accept the login-CSRF
-  tradeoff — it is stated plainly in
+  tradeoff — it is stated directly in
   [sso.md](sso.md#the-cookie-less-fallback-opt-in-default-off). With the
   flag on, put the SSO routes behind sticky sessions: the fallback's
   pending-request record is per process, so a cookie-less callback must

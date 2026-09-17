@@ -168,12 +168,12 @@ def test_login_succeeds_when_idp_acs_post_is_genuinely_cross_site() -> None:
     ``allow_cookieless_fallback``: the callback then completes login with
     no usable cookie when a fully validated assertion's ``InResponseTo``
     names an AuthnRequest this process issued and has not yet spent. The
-    tradeoff is stated as plainly as it can be: nothing ties that response
-    to the browser posting it, so an attacker who starts a login,
+    tradeoff is stated as directly as it can be: nothing ties that response
+    to the browser posting it, so a party who starts a login,
     authenticates as themselves, and captures the signed response without
     posting it can have a cookie-less victim's browser post it within the
-    5-minute window and receive a session for the attacker's NameID
-    (login CSRF). That is why the flag defaults to off — a deployment that
+    5-minute window and receive a session for that party's NameID
+    (login CSRF). That is why the flag defaults to off: a deployment that
     accepts the tradeoff opts in deliberately.
 
     FastAPI's TestClient does not enforce SameSite cookie semantics itself,
@@ -476,10 +476,10 @@ def test_cookieless_acs_post_without_a_pending_login_is_still_rejected() -> None
 
     The cross-site fallback relaxes *where the AuthnRequest binding is
     stored*, not *whether it is checked*. Accepting any well-signed
-    assertion would let a captured or IdP-initiated response log an
-    attacker's browser in, so the binding must still refuse a response that
-    answers no AuthnRequest this deployment actually issued — the property
-    the cookie gate was protecting.
+    assertion would let a captured or IdP-initiated response log the
+    posting party's browser in, so the binding must still refuse a response
+    that answers no AuthnRequest this deployment actually issued: the
+    property the cookie gate was protecting.
 
     Runs with the fallback opted in, so the refusal exercised here is the
     fallback's own pending-set gate, not the off-by-default flag.
@@ -513,19 +513,19 @@ def test_callback_on_a_sibling_replica_sharing_session_secret_succeeds() -> None
     """A callback served by a different process than the one that issued the
     login must succeed when the correlation cookie is present and valid.
 
-    Two admin replicas behind one load balancer — or a single host running
-    ``uvicorn --workers N`` — are separate processes: the pending-AuthnRequest
+    Two admin replicas behind one load balancer, or a single host running
+    ``uvicorn --workers N``, are separate processes: the pending-AuthnRequest
     set of the process that served ``/login`` is invisible to the process that
     serves the ACS POST. The signed correlation cookie is the binding that
     crosses processes: every replica sharing ``session_secret`` can verify
     it, python3-saml compares the response's ``InResponseTo`` against it, and
     it is single-use with a 300 s TTL. Requiring the process-local pending
     set on top of a valid cookie rejected every cross-process callback with
-    "SAML response answers no pending AuthnRequest" (#239) — the failure
+    "SAML response answers no pending AuthnRequest" (#239): the failure
     this test pins as fixed.
     """
     config = _config()
-    # Two bundles from one config: same session_secret, same SP/IdP pair —
+    # Two bundles from one config (same session_secret, same SP/IdP pair):
     # the deployment shape of two replicas (or two worker processes) of one
     # admin mount.
     replica_a = _make_app(config)
@@ -534,7 +534,7 @@ def test_callback_on_a_sibling_replica_sharing_session_secret_succeeds() -> None
 
     request_id = _do_login(client_a)
     # The browser carries replica A's cookie to whichever replica receives
-    # the IdP's ACS POST — here replica B, which never saw the login.
+    # the IdP's ACS POST (here replica B, which never saw the login).
     correlation_cookie = _correlation_cookie(client_a)
     saml_response = build_saml_response(nameid="user-saml-1", in_response_to=request_id)
 
@@ -575,13 +575,14 @@ def test_pending_set_flood_eviction_cannot_break_the_cookie_bound_login(
     push a real login's pending ID out before its callback arrives (#239's
     flood half). The cookie-valid path must not depend on that set: the
     signed, single-use cookie alone completes the login. The opt-in
-    cookie-less fallback still does depend on it — pinned here too, so the
-    eviction is proven to have happened rather than assumed.
+    cookie-less fallback still does depend on it; that dependence is
+    pinned here too, so the eviction is proven to have happened rather
+    than assumed.
     """
     import taskq.web.admin.auth.saml as saml_module
 
-    # Shrink the cap so a handful of /login calls forces eviction — the
-    # same soonest-to-expire policy the production 10k cap applies.
+    # Shrink the cap so a handful of /login calls forces eviction, with
+    # the same soonest-to-expire policy the production 10k cap applies.
     monkeypatch.setattr(saml_module, "_PENDING_REQUEST_MAX_ENTRIES", 2)
     config = _config(allow_cookieless_fallback=True)
     app = _make_app(config)
@@ -606,7 +607,7 @@ def test_pending_set_flood_eviction_cannot_break_the_cookie_bound_login(
         follow_redirects=False,
     )
     assert "error=authentication+failed" in resp.headers.get("location", ""), (
-        "expected the flood to evict the real login's pending ID — if the "
+        "expected the flood to evict the real login's pending ID; if the "
         "fallback still accepts it, the eviction premise of this test is wrong"
     )
     assert "taskq_session=" not in resp.headers.get("set-cookie", "")
@@ -637,9 +638,10 @@ def test_second_presentation_of_the_same_response_is_refused_on_the_issuing_proc
     """The same signed response never mints a second session on the process
     that accepted it.
 
-    The attacker re-supplies the still-valid correlation cookie explicitly
-    (the browser's copy was cleared on first use), so the cookie binding
-    still passes. On the issuing process that presentation is now refused
+    The replaying party re-supplies the still-valid correlation cookie
+    explicitly (the browser's copy was cleared on first use), so the
+    cookie binding still passes. On the issuing process that presentation
+    is now refused
     twice over: the answered-request record refuses the request ID first,
     and the replay cache remains the backstop for shapes where the
     request-ID gates cannot fire (a fresh pending ID, or record eviction
@@ -657,7 +659,7 @@ def test_second_presentation_of_the_same_response_is_refused_on_the_issuing_proc
 
     # The success response cleared the browser's cookie; a replaying party
     # who captured the POST re-supplies it. The cookie still verifies and
-    # still matches InResponseTo — the gates below must refuse it.
+    # still matches InResponseTo, so the gates below must refuse it.
     replay_client = TestClient(app, base_url=_TEST_BASE_URL)
     replay_client.cookies.set("taskq_saml_request", correlation_cookie)
     resp = replay_client.post(
@@ -675,12 +677,13 @@ def test_second_presentation_of_the_same_response_is_refused_on_the_issuing_proc
 def test_a_second_distinct_assertion_answering_the_same_request_id_is_refused() -> None:
     """The AuthnRequest ID is single-use server-side, not just cookie-side.
 
-    The second-round attack this pins: after a successful cookie-path login,
-    re-POST on the SAME (issuing) process with the captured correlation
-    cookie re-supplied and a FRESH assertion ID answering the same request
-    ID. Signature, timestamps and the cookie↔InResponseTo binding all still
-    pass, and the replay cache cannot fire — the assertion ID is new — so
-    before the answered-request record this minted a second session.
+    The follow-up review's demonstration this pins: after a successful
+    cookie-path login, re-POST on the SAME (issuing) process with the
+    captured correlation cookie re-supplied and a FRESH assertion ID
+    answering the same request ID. Signature, timestamps and the
+    cookie↔InResponseTo binding all still pass, and the replay cache
+    cannot fire (the assertion ID is new), so before the answered-request
+    record this minted a second session.
     """
     config = _config()
     app = _make_app(config)
@@ -694,7 +697,7 @@ def test_a_second_distinct_assertion_answering_the_same_request_id_is_refused() 
 
     second = build_saml_response(nameid="user-saml-1", in_response_to=request_id)
     assert _assertion_id(second) != _assertion_id(first), (
-        "the replayed response must carry a fresh assertion ID — otherwise "
+        "the replayed response must carry a fresh assertion ID; otherwise "
         "the replay cache, not the answered-request record, is the rejector"
     )
 
@@ -708,7 +711,7 @@ def test_a_second_distinct_assertion_answering_the_same_request_id_is_refused() 
     assert resp.status_code == 302
     assert "error=authentication+failed" in resp.headers.get("location", ""), (
         "a second distinct assertion answering an already-answered "
-        "AuthnRequest must not mint a session — this is the captured-cookie "
+        "AuthnRequest must not mint a session: this is the captured-cookie "
         "replay the answered-request record exists to refuse"
     )
     assert "taskq_session=" not in resp.headers.get("set-cookie", "")
@@ -719,23 +722,24 @@ def test_answered_request_id_record_covers_the_opt_in_fallback_path() -> None:
     acceptances too, closing the cross-path replay.
 
     The fallback path's own single-use gate is the pending-set spend (pinned
-    by test_cookieless_fallback_spends_the_pending_id_single_use) — a second
-    cookie-less presentation of the same request ID is refused there, and so
-    is a cookie-path re-presentation after a *cookie-path* acceptance (the
-    spend/drop removes the ID from pending). What the spend cannot see is
-    the reverse order: a cookie-less acceptance, then an attacker replaying
-    a fresh assertion through the cookie path with the correlation cookie
-    captured from the browser that started the login. The answered-request
-    record — written on both acceptance paths — refuses it.
+    by test_cookieless_fallback_spends_the_pending_id_single_use): a second
+    cookie-less presentation of the same request ID is refused there, and
+    so is a cookie-path re-presentation after a *cookie-path* acceptance
+    (the spend/drop removes the ID from pending). What the spend cannot
+    see is the reverse order: a cookie-less acceptance, then a party
+    replaying a fresh assertion through the cookie path with the
+    correlation cookie captured from the browser that started the login.
+    The answered-request record, written on both acceptance paths,
+    refuses it.
     """
     config = _config(allow_cookieless_fallback=True)
     app = _make_app(config)
     client = _client(app)
 
     request_id = _do_login(client)
-    # The cookie exists in the login browser's jar; the attacker captures it
-    # while the IdP response is instead POSTed cookie-less (the shape the
-    # fallback exists to serve).
+    # The cookie exists in the login browser's jar; the replaying party
+    # captures it while the IdP response is instead POSTed cookie-less
+    # (the shape the fallback exists to serve).
     correlation_cookie = _correlation_cookie(client)
     first = build_saml_response(nameid="user-saml-1", in_response_to=request_id)
     cookieless_client = TestClient(app, base_url=_TEST_BASE_URL)
@@ -768,7 +772,7 @@ def test_cookieless_fallback_spends_the_pending_id_single_use() -> None:
     assertion (fresh assertion ID) so the refusal can only come from the
     pending-set spend, not the replay cache.
 
-    This is the fallback path's own single-use gate — the spend IS the
+    This is the fallback path's own single-use gate: the spend IS the
     enforcement there, so no answered-request record is needed for
     same-process fallback replays; the record's job on that path is the
     cross-path replay pinned by
@@ -803,10 +807,10 @@ def test_cookieless_callback_is_refused_when_the_fallback_is_not_opted_in() -> N
     """A cookie-less callback is refused cleanly unless the operator opted in.
 
     With no usable correlation cookie, nothing ties a validated response to
-    the browser posting it: an attacker who starts a login and captures the
+    the browser posting it: a party who starts a login and captures the
     signed response for their own account can have a cookie-less victim's
-    browser post it and end up with a session for the attacker's NameID
-    (login CSRF, #240). Default policy therefore refuses the callback — a
+    browser post it and end up with a session for that party's NameID
+    (login CSRF, #240). Default policy therefore refuses the callback: a
     clean redirect, not a 500, with the remedy (the opt-in flag) in the
     server-side log.
     """
@@ -814,8 +818,8 @@ def test_cookieless_callback_is_refused_when_the_fallback_is_not_opted_in() -> N
     app = _make_app(config)
     client = _client(app)
 
-    # The attacker's login: a pending ID exists on this very process, so
-    # the old always-on fallback would have accepted the victim's POST.
+    # The posting party's login: a pending ID exists on this very process,
+    # so the old always-on fallback would have accepted the victim's POST.
     request_id = _do_login(client)
     saml_response = build_saml_response(nameid="attacker-nameid", in_response_to=request_id)
 
@@ -830,5 +834,5 @@ def test_cookieless_callback_is_refused_when_the_fallback_is_not_opted_in() -> N
     assert "error=authentication+failed" in resp.headers.get("location", "")
     assert "taskq_session=" not in resp.headers.get("set-cookie", ""), (
         "a cookie-less callback on a default (fallback-off) deployment must "
-        "not mint a session — this is the #240 login-CSRF shape"
+        "not mint a session: this is the #240 login-CSRF shape"
     )
