@@ -96,6 +96,7 @@ __all__ = [
     "record_progress_publish_failure",
     "record_pruned_jobs",
     "record_published_message",
+    "record_queue_wait",
     "record_ratelimit_denial",
     "record_ratelimit_refund_failure",
     "record_reservation_denial",
@@ -708,6 +709,31 @@ def record_process_duration(
     _process_duration.record(
         elapsed, {"actor": actor, "queue": _bounded_queue(queue), "outcome": outcome}
     )
+
+
+def record_queue_wait(actor: str, queue: str, waited_seconds: float) -> None:
+    """Record how long a job waited from eligibility to claim.
+
+    Called once per dispatch from the claimed row's own server-clock
+    stamps: ``started_at - scheduled_at`` (Oban's ``queue_time``). The
+    per-job companion of the sampled ``oldest_pending_age_seconds``: the
+    gauge shows the head of the line, this histogram shows what every
+    dispatched job actually waited, retries and re-pends included. Labels
+    are the job-side pair (actor, queue capped as everywhere).
+    Respects ``_otel_enabled`` — no-op when False.
+    """
+    if not _otel_enabled:
+        return
+    _lazy_histogram(
+        "taskq.jobs.queue_wait_seconds",
+        description=(
+            "Seconds a job waited between becoming eligible (scheduled_at) "
+            "and being claimed (started_at), both server-clock stamps on the "
+            "dispatched row. Attributes: actor, queue (capped — see "
+            "_bounded_queue)."
+        ),
+        unit="s",
+    ).record(waited_seconds, {"actor": actor, "queue": _bounded_queue(queue)})
 
 
 type TimeoutKind = Literal["start_to_close", "schedule_to_close"]

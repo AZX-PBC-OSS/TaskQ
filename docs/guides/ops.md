@@ -1007,6 +1007,7 @@ Every job emits an `enqueue` PRODUCER span, a `process` CONSUMER span (linked, w
 | `taskq.queue.depth` (by queue — counts `pending` **and** `scheduled`) | backlog growth, starved queues, fan-out storms |
 | `taskq.jobs.by_status` (by status — `pending` and `scheduled` reported separately) | which side of promotion the backlog sits on |
 | `taskq.jobs.actor_backlog` (by actor **and** queue — `pending` only; exact below the sampler's 1000-row per-pair cap, reading 1000 at/above it) | the unconsumed actor: one actor's series rises while its queue-mates stay flat — invisible in any queue-summed view |
+| `taskq.jobs.queue_wait_seconds` (histogram by actor and queue) | what dispatched jobs actually waited — a rising p99 with flat depth is dispatch starvation (priority/fairness, admission caps), not backlog |
 | `taskq.jobs.oldest_pending_age_seconds` (by actor and queue) | the same condition as a head-of-line age growing with wall clock — the series `TaskQQueueDepthHigh` fires on |
 | `taskq.jobs.oldest_due_age_seconds` | how long the oldest due `scheduled` job has waited for promotion |
 | `taskq_maintenance_leader_sweep_last_success_seconds` (by sweep) | per-sweep stalls — a sweep that stops completing |
