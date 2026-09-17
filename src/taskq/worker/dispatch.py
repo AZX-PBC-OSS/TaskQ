@@ -37,7 +37,6 @@ from taskq.batch import apply_batch_terminal_outcome
 from taskq.client._enqueuer import SubJobEnqueuer
 from taskq.constants import DEFAULT_MAX_RETRY_BACKOFF
 from taskq.context import JobContext
-from taskq.exceptions import DIError
 from taskq.obs import (
     ConsumedOutcome,
     ErrorReporter,
@@ -192,10 +191,16 @@ async def _resolve_error_reporter(
     through the same resolved-cache seam the rate-limit registry and the
     transaction connection use.
 
-    A TRANSIENT registration is refused here rather than silently
-    ignored: nothing per-invocation is reachable for a hook that runs
-    after the actor's scope has closed, and a reporter that never fires
-    is indistinguishable from a healthy fleet with no failures.
+    A TRANSIENT registration is degraded here rather than failing the job:
+    a per-job raise turned one misregistration into every job of every
+    actor dying before payload validation, each burning its retry budget,
+    which is an outage with a config-error root cause. Worker startup is
+    the loud gate for the same shape (it refuses the registration before
+    any job exists); this per-job guard only backstops paths that never
+    bootstrapped, so it proceeds without a reporter behind a window-gated
+    WARNING. A reporter that never fires is indistinguishable from a
+    healthy fleet with no failures, which is why the degradation is
+    logged at all.
     """
     if not registry.has_provider(ErrorReporter):
         return None
@@ -209,11 +214,46 @@ async def _resolve_error_reporter(
         case Scope.LOOP:
             raw = loop_scope.resolved_cache().get(ErrorReporter)
         case _:
-            raise DIError(
-                f"ErrorReporter is registered at {entry.scope.name} scope; a terminal-failure "
-                "hook outlives the actor invocation and must be PROCESS, THREAD or LOOP scoped"
-            )
-    return raw if isinstance(raw, ErrorReporter) else None
+            _warn_reporter_defect("scope", entry.scope.name)
+            return None
+    if isinstance(raw, ErrorReporter):
+        return raw
+    _warn_reporter_defect("type", type(raw).__name__ if raw is not None else "None")
+    return None
+
+
+_REPORTER_DEFECT_LOG_WINDOW_S: Final[float] = 60.0
+"""Minimum seconds between two ``error-reporter-defect`` WARNINGs, keyed by
+defect kind (bounded: the two-element vocabulary). A misregistered reporter
+resolves on every job, so one line per occurrence is a log flood, not a
+signal."""
+
+_reporter_defect_warned: dict[str, float] = {}
+"""Monotonic stamp of the last emitted reporter-defect WARNING, keyed by
+defect kind."""
+
+
+def _warn_reporter_defect(kind: str, detail: str) -> None:
+    """Emit the ``error-reporter-defect`` WARNING at most once per window.
+
+    *kind* is ``scope`` (a registration at a scope the hook cannot outlive,
+    with the registered scope name as *detail*) or ``type`` (a provider that
+    resolved to a value without the reporter protocol, with the runtime type
+    as *detail*). The hook is skipped either way: a broken reporter is a
+    misconfiguration, not a job outcome, so the job's own failure handling
+    proceeds untouched.
+    """
+    now = time.monotonic()
+    last = _reporter_defect_warned.get(kind)
+    if last is not None and now - last < _REPORTER_DEFECT_LOG_WINDOW_S:
+        return
+    _reporter_defect_warned[kind] = now
+    logger.warning(
+        "error-reporter-defect",
+        kind="error_reporter_defect",
+        defect=kind,
+        detail=detail,
+    )
 
 
 async def _ensure_registered_init_on_slot_conn(

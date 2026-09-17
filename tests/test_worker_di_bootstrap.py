@@ -37,6 +37,7 @@ from taskq.backend.clock import Clock, SystemClock
 from taskq.client._enqueuer import SubJobEnqueuer
 from taskq.context import JobContext
 from taskq.exceptions import DependencyCycle, MissingProvider, ScopeViolation
+from taskq.obs import ErrorReporter
 from taskq.settings import WorkerSettings
 from taskq.testing.actor import EmptyPayload
 from taskq.testing.clock import FakeClock
@@ -322,6 +323,43 @@ async def test_missing_provider_raises_before_taskgroup() -> None:
         registry.validate(actors=actors_list)
 
 
+# ── Bootstrap refuses an ErrorReporter the hook's scope cannot support ──
+
+
+def test_validate_error_reporter_scope_accepts_hook_lifetimes() -> None:
+    """PROCESS, THREAD and LOOP registrations outlive the actor invocation,
+    so bootstrap accepts them and the per-dispatch resolution serves them."""
+    from taskq.worker._bootstrap import _validate_error_reporter_scope
+
+    for scope in (Scope.PROCESS, Scope.THREAD, Scope.LOOP):
+        registry = ProviderRegistry()
+        registry.register_factory(ErrorReporter, scope, lambda: object())
+        _validate_error_reporter_scope(registry)
+
+
+def test_validate_error_reporter_scope_refuses_transient() -> None:
+    """A TRANSIENT registration can never resolve (the hook runs after the
+    actor's scope closed), so worker startup refuses it loudly instead of
+    the per-dispatch guard quietly skipping the hook for the fleet's life."""
+    from taskq.worker._bootstrap import _validate_error_reporter_scope
+
+    registry = ProviderRegistry()
+    registry.register_factory(
+        ErrorReporter,
+        Scope.TRANSIENT,
+        lambda: object(),  # type: ignore[arg-type,return-value]
+    )
+    with pytest.raises(RuntimeError, match="TRANSIENT"):
+        _validate_error_reporter_scope(registry)
+
+
+def test_validate_error_reporter_scope_noop_without_registration() -> None:
+    """No reporter registered: nothing to validate, no error."""
+    from taskq.worker._bootstrap import _validate_error_reporter_scope
+
+    _validate_error_reporter_scope(ProviderRegistry())
+
+
 # ── Validate-time DependencyCycle raises before TaskGroup starts ──
 
 
@@ -555,11 +593,9 @@ async def test_worker_boots_without_redis_extra_installed_and_no_redis_url(
     ``ModuleNotFoundError`` instead of returning ``None`` — this is
     documented stdlib behavior for ``importlib.util.find_spec``, not a
     platform quirk. The bug is a bare ``find_spec`` call where the standard
-    idiom is ``try: importlib.import_module(name) except ImportError``, as
-    used for exactly this "is the optional extra installed" check in
-    vendor/procrastinate/procrastinate/utils.py's ``import_or_wrapper``
-    (``except ImportError`` around ``importlib.import_module``, wrapping
-    unavailability instead of letting it propagate). The result: every
+    idiom is ``try: importlib.import_module(name) except ImportError``:
+    an ``except ImportError`` around ``importlib.import_module``, wrapping
+    unavailability instead of letting it propagate. The result: every
     worker boot without the optional [redis] extra crashes with an
     unhandled ``ModuleNotFoundError: No module named 'redis'`` before
     reaching the intended graceful-degradation branch in
