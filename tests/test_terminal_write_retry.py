@@ -14,6 +14,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
+import pytest
 import structlog.testing
 from structlog.typing import EventDict
 
@@ -203,3 +204,57 @@ async def test_write_that_keeps_failing_is_reported_after_the_budget() -> None:
     assert len(failed) == 1
     assert failed[0]["infra_error_class"] == "OSError"
     assert failed[0]["job_error_class"] == "ValueError"
+
+
+# ── What the retry never touches: fences and defects ────────────────────
+
+
+async def test_a_fence_outcome_is_an_answer_not_an_outage() -> None:
+    """A write that matched nothing reports that once; re-issuing it could
+    only match nothing again (or, worse, land on a row a newer attempt now
+    owns)."""
+    from taskq.testing.jobs import make_job_row
+    from taskq.worker._handlers import _terminal_write_with_retry
+
+    calls = 0
+
+    async def fenced_write() -> bool:
+        nonlocal calls
+        calls += 1
+        return False
+
+    with structlog.testing.capture_logs() as captured:
+        landed = await _terminal_write_with_retry(
+            fenced_write,
+            log=structlog.get_logger("test"),
+            job=make_job_row(),
+            write_name="mark_succeeded",
+        )
+
+    assert landed is False
+    assert calls == 1
+    assert _events(captured, "terminal-write-retry") == []
+
+
+async def test_a_defect_in_the_write_stays_loud_on_the_first_raise() -> None:
+    """Only the infrastructure family is retried: anything else is a
+    programming error whose first raise is the signal."""
+    from taskq.testing.jobs import make_job_row
+    from taskq.worker._handlers import _terminal_write_with_retry
+
+    calls = 0
+
+    async def broken_write() -> bool:
+        nonlocal calls
+        calls += 1
+        raise TypeError("unencodable result")
+
+    with pytest.raises(TypeError):
+        await _terminal_write_with_retry(
+            broken_write,
+            log=structlog.get_logger("test"),
+            job=make_job_row(),
+            write_name="mark_succeeded",
+        )
+
+    assert calls == 1

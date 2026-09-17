@@ -35,6 +35,7 @@ from taskq.testing.in_memory import InMemoryBackend
 from taskq.testing.jobs import make_job_row
 from taskq.testing.pg import create_running_job, create_worker
 from taskq.worker._consumer import consume_one_job
+from taskq.worker.cancel import ActiveJobRegistry
 from taskq.worker.deps import WorkerDeps
 from taskq.worker.heartbeat import heartbeat_loop
 from taskq.worker.run import producer_loop
@@ -149,6 +150,106 @@ async def test_exhausted_terminal_write_disowns_the_job(actor: object) -> None:
         "was not disowned — the heartbeat will keep renewing its lease and the "
         "sweep can never reclaim it while this worker lives"
     )
+
+
+class _TxConn:
+    """asyncpg.Connection stand-in for the transactional path."""
+
+    class _Transaction:
+        async def __aenter__(self) -> None:
+            return None
+
+        async def __aexit__(self, *args: object) -> None:
+            return None
+
+    def transaction(self) -> _TxConn._Transaction:
+        return self._Transaction()
+
+    async def execute(self, query: str, *args: object) -> str:
+        return ""
+
+
+class _DeadTxWriteBackend(_DeadWriteBackend):
+    supports_transactional_simulation = True
+
+    async def mark_succeeded_with_conn(
+        self,
+        conn: object,
+        job_id: JobId,
+        worker_id: UUID,
+        result: dict[str, object] | None = None,
+        progress_seq: int = 0,
+        progress_state: dict[str, object] | None = None,
+        fallback_result_ttl: timedelta | None = None,
+        *,
+        result_bytes: bytes | None = None,
+        attempt: int | None = None,
+    ) -> bool:
+        raise OSError("connection reset by peer")
+
+
+async def test_exhausted_transactional_success_write_disowns_the_job() -> None:
+    """The transactional success write runs on the job's own connection
+    and is not retried (its transaction is already aborted), so a single
+    infra failure there is the exhausted case: the row stays running and
+    the job is disowned."""
+    backend = _DeadTxWriteBackend(clock=FakeClock(start=_START))
+    job, worker_id = await _running_job(backend)
+    deps = _ConsumerDeps()
+
+    outcome = await consume_one_job(
+        backend,
+        job,
+        worker_id,
+        deps=cast(WorkerDeps, deps),
+        run_actor=_succeeding_actor,
+        actor_config=StubActorConfig(retry=RetryPolicy(jitter=0.0)),
+        payload_type=EmptyPayload,
+        clock=FakeClock(start=_START),
+        transaction_conn=cast(Any, _TxConn()),
+    )
+
+    assert outcome == "failed"
+    assert job.id in deps.disowned_jobs
+
+
+async def test_exhausted_cancel_write_disowns_the_job() -> None:
+    """An operator cancel whose terminal write fails leaves the row running
+    with no owner left to move it: it is disowned, and the cancellation
+    still propagates."""
+    backend = _DeadWriteBackend(clock=FakeClock(start=_START))
+    job, worker_id = await _running_job(backend)
+    deps = _ConsumerDeps()
+    actor_entered = asyncio.Event()
+
+    async def blocking_actor(_job: object, ctx: Any) -> object:
+        actor_entered.set()
+        await ctx.cancel_event.wait()
+
+    async def _dead_mark_cancelled(*args: object, **kwargs: object) -> bool:
+        raise OSError("connection reset by peer")
+
+    backend.mark_cancelled = _dead_mark_cancelled  # type: ignore[method-assign]  # Why: force the shielded cancel write onto the infra-failure path.
+    active = ActiveJobRegistry()
+    task = asyncio.create_task(
+        consume_one_job(
+            backend,
+            job,
+            worker_id,
+            deps=cast(WorkerDeps, deps),
+            run_actor=blocking_actor,
+            actor_config=StubActorConfig(retry=RetryPolicy(jitter=0.0)),
+            payload_type=EmptyPayload,
+            clock=FakeClock(start=_START),
+            active_jobs=active,
+        )
+    )
+    await asyncio.wait_for(actor_entered.wait(), timeout=5.0)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert job.id in deps.disowned_jobs
 
 
 async def test_landed_terminal_write_does_not_disown() -> None:
@@ -458,3 +559,157 @@ async def test_disowned_row_lease_lapses_and_the_sweep_reclaims_it(
 
     await _one_tick(deps, worker_id)
     assert deps.disowned_jobs == set()
+
+
+# ── The consumer loop's own release: an unregistered actor's row ────────
+
+
+async def test_failed_actor_not_found_release_disowns_the_job() -> None:
+    """A row whose actor this worker does not know is released with a
+    snooze write; when that write fails the row is still locked to this
+    worker with nothing left to move it, so it is disowned like any other
+    exhausted terminal write."""
+    from datetime import datetime as _dt
+    from unittest.mock import Mock
+
+    from taskq.backend.clock import Clock
+    from taskq.worker.run import di_consumer_loop
+
+    clock = FakeClock(_dt(2025, 1, 1, tzinfo=UTC))
+    process_scope = SimpleNamespace(get=lambda t: clock if t is Clock else None)
+    shutdown_event = asyncio.Event()
+
+    class _DeadSnoozeBackend:
+        async def mark_snoozed(
+            self,
+            job_id: JobId,
+            worker_id: object,
+            delay: object,
+            *,
+            metadata_update: dict[str, object] | None = None,
+            attempt: int | None = None,
+        ) -> str:
+            shutdown_event.set()
+            raise OSError("connection reset by peer")
+
+    job = make_job_row(status="pending")
+    local_queue: asyncio.Queue[JobRow] = asyncio.Queue(maxsize=1)
+    await local_queue.put(job)
+    disowned: set[UUID] = set()
+
+    await asyncio.wait_for(
+        di_consumer_loop(
+            SimpleNamespace(producer_stop_event=asyncio.Event(), disowned_jobs=disowned),  # type: ignore[arg-type]  # Why: the fields the loop reads on this path; the signature still requires the full WorkerDeps.
+            local_queue,
+            shutdown_event,
+            backend=cast(Backend, _DeadSnoozeBackend()),  # type: ignore[arg-type]  # Why: structural stand-in satisfying the one call the loop makes.
+            worker_id=new_uuid(),
+            registry=cast(Any, SimpleNamespace()),
+            process_scope=cast(Any, process_scope),
+            thread_scope=cast(Any, SimpleNamespace()),
+            loop_scope=cast(Any, SimpleNamespace()),
+            actor_registry={},
+            enqueuer=cast(Any, Mock()),
+        ),
+        timeout=2.0,
+    )
+
+    assert disowned == {job.id}
+
+
+# ── The dispatch path's own failure handler: a pre-actor failure ────────
+
+
+async def test_exhausted_pre_actor_failure_write_disowns_the_job() -> None:
+    """A job that fails before its actor runs (a payload the actor's model
+    rejects) is terminalised by the dispatch path's own handler; when that
+    write's budget is spent the row is disowned there too."""
+    from pydantic import BaseModel, ConfigDict
+
+    from taskq._di.registry import ProviderRegistry
+    from taskq._di.scope import Scope
+    from taskq._di.scopes import LoopScope, ProcessScope, ThreadScope, make_resolver
+    from taskq.actor import ActorRef
+    from taskq.backend._protocol import EnqueueArgs
+    from taskq.client._enqueuer import SubJobEnqueuer
+    from taskq.worker.dispatch import dispatch_one_job
+
+    class _Strict(BaseModel):
+        model_config = ConfigDict(extra="forbid")
+
+    async def _never_runs(payload: _Strict, ctx: object) -> None:
+        raise AssertionError("the actor must not run on a rejected payload")
+
+    backend = _DeadWriteBackend(clock=FakeClock(start=_START))
+    backend.register_actor_config(actor=_ACTOR)
+    args = EnqueueArgs(
+        id=new_job_id(),
+        actor=_ACTOR,
+        queue="default",
+        payload={"unexpected": 1},
+        max_attempts=1,
+        retry_kind="non_retryable",
+        scheduled_at=_START,
+    )
+    await backend.enqueue(args)
+    worker_id = backend._worker_id  # type: ignore[reportPrivateUsage]  # Why: test-only; the runner's own dispatch uses the same worker id.
+    (job,) = await backend.dispatch_batch(
+        worker_id, ["default"], limit=1, lock_lease=timedelta(seconds=60)
+    )
+
+    registry = ProviderRegistry()
+    registry.validate()
+    containers: dict[Scope, Any] = {}
+    resolver = make_resolver(registry, containers)
+    process_scope, thread_scope, loop_scope = (
+        ProcessScope(resolver=resolver),
+        ThreadScope(resolver=resolver),
+        LoopScope(resolver=resolver),
+    )
+    containers.update(
+        {Scope.PROCESS: process_scope, Scope.THREAD: thread_scope, Scope.LOOP: loop_scope}
+    )
+    deps = _ConsumerDeps()
+    deps_view = SimpleNamespace(
+        active_jobs=ActiveJobRegistry(),
+        slot_pool=None,
+        slot_pool_connection_init=None,
+        settings=deps.settings,
+        worker_pool=None,
+        redis_client=None,
+        progress_buffers=deps.progress_buffers,
+        disowned_jobs=deps.disowned_jobs,
+    )
+    deps_view.settings.worker_group = "default"
+    actor_ref: ActorRef[_Strict, None] = ActorRef(
+        name=_ACTOR,
+        queue="default",
+        fn=_never_runs,
+        wants_ctx=True,
+        dependencies={},
+        payload_type=_Strict,
+        result_adapter=None,  # type: ignore[arg-type]  # Why: test-only; never read on the failure path.
+        retry=RetryPolicy(jitter=0.0),
+        result_ttl=None,
+    )
+
+    outcome = await dispatch_one_job(
+        backend=backend,
+        deps=cast(WorkerDeps, deps_view),
+        job=job,
+        worker_id=worker_id,
+        registry=registry,
+        process_scope=process_scope,
+        thread_scope=thread_scope,
+        loop_scope=loop_scope,
+        actor_ref=actor_ref,  # type: ignore[arg-type]  # Why: pyright cannot widen the generic parameters; the runtime shape is the one dispatch reads.
+        actor_config=actor_ref.config,
+        clock=FakeClock(start=_START),
+        active_jobs=deps_view.active_jobs,
+        enqueuer=SubJobEnqueuer(backend=backend, loop_scope_resolved=None, worker_pool=None),
+    )
+
+    assert outcome == "failed"
+    row = await backend.get(job.id)
+    assert row is not None and row.status == "running"
+    assert job.id in deps.disowned_jobs

@@ -15,6 +15,7 @@ from typing import Any
 from uuid import UUID
 
 import asyncpg
+import pytest
 from pydantic import BaseModel, ConfigDict
 
 from taskq._di.registry import ProviderRegistry
@@ -25,7 +26,7 @@ from taskq.actor import ActorRef
 from taskq.backend._protocol import EnqueueArgs, JobRow, RetryKind
 from taskq.client._enqueuer import SubJobEnqueuer
 from taskq.context import JobContext
-from taskq.exceptions import PayloadValidationError
+from taskq.exceptions import DIError, PayloadValidationError
 from taskq.obs import ErrorReporter
 from taskq.retry import RetryPolicy
 from taskq.settings import WorkerSettings
@@ -184,12 +185,14 @@ async def test_process_scoped_reporter_receives_the_terminal_failure() -> None:
     assert isinstance(reported_exc, _ActorBoomError)
 
 
-async def test_loop_scoped_reporter_receives_the_terminal_failure() -> None:
+@pytest.mark.parametrize("scope", [Scope.THREAD, Scope.LOOP], ids=["thread", "loop"])
+async def test_other_long_lived_scopes_resolve_the_reporter_the_same_way(scope: Scope) -> None:
     """The LOOP scope is the documented alternative for a reporter holding
-    a loop-lifetime connection; it resolves the same way."""
+    a loop-lifetime connection, and THREAD is the remaining long-lived
+    container; both resolve the same way."""
     reporter = _SpyReporter()
     registry = ProviderRegistry()
-    registry.register_value(ErrorReporter, Scope.LOOP, reporter)
+    registry.register_value(ErrorReporter, scope, reporter)
     backend = InMemoryBackend(clock=FakeClock(start=_START))
     job, worker_id = await _running_job(backend, retry_kind="non_retryable", max_attempts=1)
 
@@ -250,3 +253,23 @@ async def test_pre_actor_failure_reports_through_the_same_hook() -> None:
     assert [(row.id, type(exc)) for row, exc in reporter.calls] == [
         (job.id, PayloadValidationError)
     ]
+
+
+async def test_transient_scoped_reporter_is_refused_on_the_job() -> None:
+    """A terminal-failure hook outlives the actor invocation, so a
+    TRANSIENT registration has nothing to resolve from; it is refused
+    loudly on the job — like any broken actor dependency — rather than
+    silently reporting nothing."""
+    registry = ProviderRegistry()
+    registry.register_factory(ErrorReporter, Scope.TRANSIENT, lambda: _SpyReporter())
+    backend = InMemoryBackend(clock=FakeClock(start=_START))
+    job, worker_id = await _running_job(backend, retry_kind="non_retryable", max_attempts=1)
+
+    async with _Scopes(registry) as scopes:
+        outcome = await _dispatch(scopes, backend, job, worker_id)
+
+    assert outcome == "failed"
+    row = await backend.get(job.id)
+    assert row is not None
+    assert row.error_class == DIError.__name__
+    assert row.error_message is not None and "TRANSIENT" in row.error_message

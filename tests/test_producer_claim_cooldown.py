@@ -222,3 +222,52 @@ async def test_a_full_round_re_claims_without_a_cooldown() -> None:
     assert second_started - freed_at < _COOLDOWN_MIN_S, (
         "a full round was followed by a cooldown — backlog drain must stay immediate"
     )
+
+
+async def test_a_poll_timed_round_owes_no_cooldown(monkeypatch: object) -> None:
+    """The fallback poll is its own jittered cadence: the round it times
+    never adds the cooldown on top, or an idle poll-only worker would
+    claim at poll + cooldown instead of the interval the operator set."""
+    import pytest
+
+    assert isinstance(monkeypatch, pytest.MonkeyPatch)
+    poll_interval = 0.2
+    backend = _WakeBackend()
+    stop_event = asyncio.Event()
+    sleeps: list[float] = []
+    real_sleep = asyncio.sleep
+
+    async def _recording_sleep(delay: float, result: object = None) -> object:
+        # Signature mirrors asyncio.sleep(delay, result); records and yields
+        # once without waiting, so the producer cycles through many polls
+        # and every timer wait it takes — poll or cooldown — lands here.
+        sleeps.append(delay)
+        await real_sleep(0)
+        if len(sleeps) >= 6:
+            stop_event.set()
+        return result
+
+    monkeypatch.setattr(asyncio, "sleep", _recording_sleep)
+    deps = _deps(maxsize=4, notify_enabled=False)
+    deps.settings.poll_interval = poll_interval
+    local_queue: asyncio.Queue[JobRow] = asyncio.Queue(maxsize=4)
+
+    await asyncio.wait_for(
+        producer_loop(
+            deps,  # type: ignore[arg-type]  # Why: the established producer-loop unit pattern.
+            local_queue,
+            asyncio.Event(),
+            stop_event,
+            backend=cast(Backend, backend),
+            worker_id=new_uuid(),
+            rng=random.Random(11),  # noqa: S311  # Why: a fixed seed keeps the jitter deterministic; nothing cryptographic.
+        ),
+        timeout=5.0,
+    )
+
+    poll_floor = poll_interval * (1.0 - _POLL_JITTER_FRACTION) - 1e-9
+    assert len(sleeps) >= 6
+    assert all(d >= poll_floor for d in sleeps), (
+        f"a cooldown-sized wait {[d for d in sleeps if d < poll_floor]} was added to "
+        "poll-timed rounds"
+    )
