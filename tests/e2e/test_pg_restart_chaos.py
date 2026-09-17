@@ -315,6 +315,7 @@ def _worker_env(
     }
 
 
+@pytest_asyncio.fixture
 async def chaos_worker(
     request: pytest.FixtureRequest,
     e2e_network: Network,

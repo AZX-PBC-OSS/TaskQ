@@ -138,6 +138,7 @@ async def drain_worker(
         pg_pool=e2e_pg_pool,
         image=e2e_worker_image,
         alias=f"worker-drain-{e2e_schema.schema_name}-{new_uuid().hex[:6]}",
+        env=e2e_schema.worker_env,
         label="drain e2e worker",
     ) as worker:
         yield worker
@@ -249,6 +250,7 @@ async def test_sigterm_drains_inflight_job(
         pg_pool=e2e_pg_pool,
         image=e2e_worker_image,
         alias=f"worker-repl-{e2e_schema.schema_name}",
+        env=e2e_schema.worker_env,
         label="replacement e2e worker",
     ):
         run_id_2 = new_uuid().hex
