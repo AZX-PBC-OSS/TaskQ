@@ -41,6 +41,14 @@ __all__ = [
 # only fires for an ordinary role. Cluster-wide (roles are not
 # schema-scoped) and reused across tests; the policy and sequence that
 # actually isolate one test from another are per schema.
+#
+# The role is created, never dropped. A teardown that dropped it would
+# break any concurrent worker sitting between a ``SET ROLE`` and the
+# matching ``RESET ROLE``, and the suite's xdist workers share one
+# cluster. Creation itself is safe under that concurrency:
+# :func:`install_row_visit_counter` serialises it with a
+# transaction-scoped advisory lock, because a check-then-create inside a
+# single DO block is atomic per statement but not across connections.
 ROW_VISIT_COUNTER_ROLE = "taskq_row_visit_probe"
 
 
@@ -412,6 +420,11 @@ async def install_row_visit_counter(conn: _Conn, schema: str, table: str = "jobs
     The policy is permissive and always true, so it changes visibility not
     at all. Statements must run as :data:`ROW_VISIT_COUNTER_ROLE` for it
     to fire; :class:`RowVisitCounter` arranges that.
+
+    Safe to call from concurrent processes against one cluster (the
+    suite's xdist workers do exactly that): role creation is serialised
+    by a transaction-scoped advisory lock, so whichever caller loses the
+    race re-reads the role after the winner creates it and reuses it.
     """
     if not _IDENT_RE.match(schema):  # pragma: no cover - guards a test-only helper
         raise ValueError(f"invalid schema identifier: {schema!r}")
@@ -431,12 +444,25 @@ async def install_row_visit_counter(conn: _Conn, schema: str, table: str = "jobs
         f'CREATE POLICY taskq_count_row_visits ON "{schema}".{table} '
         f'USING ("{schema}".taskq_count_row_visit())'
     )
-    await conn.execute(
-        "DO $$ BEGIN "  # noqa: S608  # Why: CREATE ROLE takes no parameters, so the role name must be interpolated; it is this module's own constant, never caller input.
-        f"  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '{ROW_VISIT_COUNTER_ROLE}') "
-        f"  THEN CREATE ROLE {ROW_VISIT_COUNTER_ROLE} NOLOGIN; END IF; "
-        "END $$"
-    )
+    # Creating the role is the one cluster-level statement here, and the
+    # suite's xdist workers share one Postgres cluster. A check-then-create
+    # inside a single DO block is atomic per statement but not across
+    # connections: a worker that takes its snapshot before another worker's
+    # CREATE ROLE commits then fails on pg_authid_rolname_index with
+    # UniqueViolationError. The transaction-scoped advisory lock serialises
+    # the check and the create, so the loser of the race waits, re-reads the
+    # role after the winner commits, and reuses it.
+    async with conn.transaction():
+        await conn.execute(
+            # Why: the lock key derives from this module's own role-name constant, never caller input.
+            f"SELECT pg_advisory_xact_lock(hashtext('{ROW_VISIT_COUNTER_ROLE}'), 0)"
+        )
+        await conn.execute(
+            "DO $$ BEGIN "  # noqa: S608  # Why: CREATE ROLE takes no parameters, so the role name must be interpolated; it is this module's own constant, never caller input.
+            f"  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '{ROW_VISIT_COUNTER_ROLE}') "
+            f"  THEN CREATE ROLE {ROW_VISIT_COUNTER_ROLE} NOLOGIN; END IF; "
+            "END $$"
+        )
     await conn.execute(f'GRANT USAGE ON SCHEMA "{schema}" TO {ROW_VISIT_COUNTER_ROLE}')
     await conn.execute(f'GRANT ALL ON ALL TABLES IN SCHEMA "{schema}" TO {ROW_VISIT_COUNTER_ROLE}')
     await conn.execute(
