@@ -11,6 +11,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from jinja2 import Environment
 
 from taskq.client._taskq import orjson_response_class
+from taskq.web.admin._actor_stats import fetch_actor_stats
 from taskq.web.admin._constants import (
     _ALL_STATUSES,  # pyright: ignore[reportPrivateUsage]  # Why: shared constants published by the admin constants module; private prefix scopes them within the admin package.
     _FETCH_SIZE,  # pyright: ignore[reportPrivateUsage]  # Why: shared constants published by the admin constants module; private prefix scopes them within the admin package.
@@ -22,7 +23,6 @@ from taskq.web.admin._factory import get_pg_pool, get_realtime_ctx, get_schema, 
 
 logger = structlog.get_logger("taskq.web.admin.history")
 
-_STATS_LIMIT: int = 200
 _COUNT_CAP: int = 1001  # fetch one over 1000 so we can display "1000+"
 _CURSOR_NULL_SENTINEL: str = "__NULL__"
 _CURSOR_FAR_FUTURE: datetime = datetime(9999, 12, 31, 23, 59, 59, tzinfo=UTC)
@@ -107,25 +107,8 @@ _SUMMARY_SQL = (
 )
 
 # ── Stats SQL ───────────────────────────────────────────────────────────
-
-_STATS_SQL = f"""\
-SELECT
-    j.actor,
-    j.queue,
-    count(*) AS total,
-    count(*) FILTER (WHERE j.status = 'succeeded') AS succeeded,
-    count(*) FILTER (WHERE j.status = 'failed') AS failed,
-    count(*) FILTER (WHERE j.status = 'cancelled') AS cancelled,
-    count(*) FILTER (WHERE j.status = 'crashed') AS crashed,
-    count(*) FILTER (WHERE j.status = 'abandoned') AS abandoned,
-    round(avg(a.duration_ms))::bigint AS avg_duration_ms,
-    percentile_cont(0.5) WITHIN GROUP (ORDER BY a.duration_ms)::bigint AS p50_duration_ms,
-    percentile_cont(0.95) WITHIN GROUP (ORDER BY a.duration_ms)::bigint AS p95_duration_ms
-FROM "{{schema}}".jobs_archive j
-LEFT JOIN "{{schema}}".job_attempts_archive a ON a.job_id = j.id
-GROUP BY j.actor, j.queue
-ORDER BY total DESC
-LIMIT {_STATS_LIMIT}"""
+# The per-actor aggregate lives in _actor_stats.py, shared with the
+# actors page; the endpoint below is a thin wrapper over it.
 
 
 def _compute_success_rate(summary: dict[str, int]) -> float | None:
@@ -258,8 +241,8 @@ def register(router: APIRouter) -> None:
         pool: asyncpg.Pool = Depends(get_pg_pool),
         schema: str = Depends(get_schema),
     ) -> JSONResponse:
-        stats_sql = _STATS_SQL.format(schema=schema)
         async with pool.acquire() as conn:
-            rows = await conn.fetch(stats_sql)
-        data: list[dict[str, Any]] = [dict(r) for r in rows]
+            data: list[dict[str, Any]] = await fetch_actor_stats(
+                conn, schema=schema, per_queue=True
+            )
         return _OrjsonJSONResponse(content={"actors": data})
