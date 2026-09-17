@@ -7,7 +7,8 @@ extra is not installed.
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
+import asyncio
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -175,3 +176,30 @@ def test_aws_missing_extra_raises_importerror(monkeypatch: pytest.MonkeyPatch) -
 
     with pytest.raises(ImportError, match=r"taskq\[aws\]"):
         fetch_rds_iam_token(hostname="host", port=5432, username="user")
+
+
+async def test_rds_iam_provider_builds_its_boto3_client_once() -> None:
+    """With no ``client=`` the provider builds one ``boto3.client('rds')`` on
+    first use and reuses it: a token is fetched for every physical
+    connection the pool opens, and building a client per fetch reloads the
+    service model each time and races the default-session setup when pool
+    growth fetches concurrently."""
+    import sys
+    from types import ModuleType
+
+    fake_boto3 = ModuleType("boto3")
+    built: list[dict[str, object]] = []
+
+    def _client(service: str, **kwargs: object) -> MagicMock:
+        built.append({"service": service, **kwargs})
+        client = MagicMock()
+        client.generate_db_auth_token.return_value = f"tok-{len(built)}"
+        return client
+
+    fake_boto3.client = _client  # type: ignore[attr-defined]  # Why: stand-in module for the optional extra.
+    with patch.dict(sys.modules, {"boto3": fake_boto3}):
+        provider = RdsIamProvider("postgresql://user@host:5432/db", region="eu-west-1")
+        tokens = await asyncio.gather(*(provider.get_pg_credential() for _ in range(4)))
+
+    assert [t.password for t in tokens] == ["tok-1"] * 4
+    assert built == [{"service": "rds", "region_name": "eu-west-1"}]

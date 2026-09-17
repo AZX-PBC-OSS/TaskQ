@@ -513,9 +513,12 @@ AWS IAM RDS auth tokens are valid for **15 minutes**.
 `generate_db_auth_token` itself is local SigV4 signing, but resolving the
 ambient AWS credential chain can block on STS/IMDS HTTPS refreshes — so
 the provider offloads the boto call to a thread rather than stalling the
-event loop. Pass `region=None` (the default) to let botocore fall back
-to the ambient client region. Reload on a schedule shorter than 15
-minutes for long-lived workers (e.g. `TASKQ_RELOAD_INTERVAL=720`).
+event loop, and builds its `boto3.client('rds')` once on first use (pass
+`client=` to supply your own). Pass `region=None` (the default) to let
+botocore fall back to the ambient client region. No reload schedule is
+needed for token freshness: every physical connection the pool opens
+signs a fresh token through the `password=` callable (see
+[Token refresh for long-lived pools](#token-refresh-for-long-lived-pools)).
 
 **Prerequisites**: enable IAM database authentication on the RDS instance;
 create an IAM-mapped DB user (`GRANT rds_iam TO myuser`); grant
