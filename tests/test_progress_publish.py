@@ -310,16 +310,15 @@ async def test_publish_failure_increments_otel_counter_with_labels(
     monkeypatch.setattr(otel_mod, "_progress_publish_failures", new_counter)
     otel_mod.set_otel_enabled(True)
 
-    import structlog
-
     redis_client = _make_redis_mock(raise_on_publish=ConnectionError("redis down"))
 
     await _publish_event(
         redis_client,
         progress_channel(_SCHEMA_LABEL, _JOB_ID),
         '{"v": 1}',
+        job_id=_JOB_ID,
+        actor="my_actor",
         seq=1,
-        log=structlog.get_logger("test"),
         channel_label="per_job",
     )
 
@@ -1017,3 +1016,132 @@ async def test_cancel_clean_buffer_passes_base_seq_not_zero() -> None:
     assert parsed["status"] == "cancelled"
     assert parsed["terminal"] is True
     assert parsed["seq"] == 5
+
+
+# ── Failure WARNING carries the job fields; success binds nothing ───
+
+
+@pytest.fixture
+def _fresh_publish_failure_window(monkeypatch: pytest.MonkeyPatch) -> None:  # pyright: ignore[reportUnusedFunction]  # Why: fixture consumed by the test runner through usefixtures; pyright does not track fixture usage.
+    """The failure WARNING is window-gated per channel across the process;
+    start each test outside every window so its first failure emits."""
+    from taskq.progress import _publish as publish_mod
+
+    monkeypatch.setattr(publish_mod, "_publish_failure_warned", {})
+
+
+@pytest.mark.usefixtures("_fresh_publish_failure_window")
+async def test_progress_publish_failure_warning_carries_job_fields() -> None:
+    import structlog
+
+    from taskq.settings import WorkerSettings
+
+    s = WorkerSettings.load_from_dict(
+        {"TASKQ_SCHEMA_NAME": _SCHEMA_LABEL, "TASKQ_PROGRESS_PUBLISH_GLOBAL": "false"}
+    )
+    redis_client = _make_redis_mock(raise_on_publish=ConnectionError("redis down"))
+
+    with structlog.testing.capture_logs() as captured:
+        await _publish_progress_event(
+            redis_client,
+            s,
+            actor="my_actor",
+            job_id=_JOB_ID,
+            step=1,
+            percent=None,
+            detail=None,
+            data=None,
+            seq=7,
+        )
+
+    [warning] = [e for e in captured if e["event"] == "progress-publish-failure"]
+    assert warning["log_level"] == "warning"
+    assert warning["job_id"] == str(_JOB_ID)
+    assert warning["actor"] == "my_actor"
+    assert warning["seq"] == 7
+    assert warning["channel"] == progress_channel(_SCHEMA_LABEL, _JOB_ID)
+    assert warning["error_type"] == "ConnectionError"
+
+
+@pytest.mark.usefixtures("_fresh_publish_failure_window")
+async def test_state_change_publish_failure_warning_carries_job_fields() -> None:
+    import structlog
+
+    from taskq.settings import WorkerSettings
+
+    s = WorkerSettings.load_from_dict(
+        {"TASKQ_SCHEMA_NAME": _SCHEMA_LABEL, "TASKQ_PROGRESS_PUBLISH_GLOBAL": "true"}
+    )
+    client = _RecordingRedisClient()
+    client.execute_error = ConnectionError("redis down")
+    buf = _ProgressBuffer(job_id=_JOB_ID, base_seq=3)
+    buf.pending_state["step"] = 2
+
+    with structlog.testing.capture_logs() as captured:
+        await _publish_state_change_event(
+            client,  # type: ignore[arg-type]  # Why: pipeline-shape double standing in for redis.asyncio.Redis; only the failure path is exercised.
+            s,
+            _JOB_ID,
+            "my_actor",
+            {_JOB_ID: buf},
+            status="succeeded",
+            terminal=True,
+        )
+
+    [warning] = [e for e in captured if e["event"] == "progress-publish-failure"]
+    assert warning["log_level"] == "warning"
+    assert warning["job_id"] == str(_JOB_ID)
+    assert warning["actor"] == "my_actor"
+    assert warning["seq"] == 3
+    assert warning["status"] == "succeeded"
+    assert warning["channels"] == [
+        progress_channel(_SCHEMA_LABEL, _JOB_ID),
+        progress_global_channel(_SCHEMA_LABEL),
+    ]
+    assert warning["error_type"] == "ConnectionError"
+
+
+async def test_successful_publish_binds_no_logger(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The job fields are read only by the failure WARNING; a publish that
+    succeeds must not pay to bind them onto a logger first."""
+    from taskq.progress import _publish as publish_mod
+    from taskq.settings import WorkerSettings
+
+    binds: list[dict[str, object]] = []
+    real_log = publish_mod._log  # type: ignore[reportPrivateUsage]  # Why: the spy wraps the module logger the publish path writes through.
+
+    class _BindSpy:
+        def bind(self, **fields: object) -> object:
+            binds.append(fields)
+            return real_log.bind(**fields)
+
+        def __getattr__(self, name: str) -> object:
+            return getattr(real_log, name)
+
+    monkeypatch.setattr(publish_mod, "_log", _BindSpy())
+
+    s = WorkerSettings.load_from_dict(
+        {"TASKQ_SCHEMA_NAME": _SCHEMA_LABEL, "TASKQ_PROGRESS_PUBLISH_GLOBAL": "false"}
+    )
+    await _publish_progress_event(
+        _make_redis_mock(),
+        s,
+        actor="my_actor",
+        job_id=_JOB_ID,
+        step=1,
+        percent=None,
+        detail=None,
+        data=None,
+        seq=1,
+    )
+    await _publish_state_change_event(
+        _make_redis_mock(),
+        s,
+        _JOB_ID,
+        "my_actor",
+        {_JOB_ID: _ProgressBuffer(job_id=_JOB_ID, base_seq=0)},
+        status="succeeded",
+        terminal=True,
+    )
+
+    assert binds == []
