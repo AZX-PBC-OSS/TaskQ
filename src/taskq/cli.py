@@ -18,7 +18,7 @@ import importlib
 import os
 import signal
 import sys
-from collections.abc import AsyncGenerator, Mapping
+from collections.abc import AsyncGenerator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
@@ -35,6 +35,7 @@ from taskq._close import (
     CLOSE_TIMEOUT_SECS,
     close_conn_bounded,
     close_pool_bounded,
+    close_provider_bounded,
     close_redis_bounded,
 )
 from taskq.actor import ActorRef
@@ -1817,7 +1818,15 @@ def _ui_serve(
     pool_factory: PoolFactory | None = None,
     conn_factory: ConnFactory | None = None,
     redis_factory: RedisFactory | None = None,
+    providers: Sequence[object] = (),
 ) -> None:
+    """Serve the admin UI.
+
+    *providers* are the credential providers behind the factories - loaded
+    by this process, so this process releases what they hold (an Entra ID
+    provider's lazily created credential keeps an aiohttp session open)
+    at lifespan exit, bounded like every other teardown close.
+    """
     from contextlib import asynccontextmanager
 
     from fastapi import APIRouter, Depends, FastAPI, Response
@@ -1871,6 +1880,12 @@ def _ui_serve(
                 await migrate_mod.apply_pending_locked(pg_dsn, schema=schema, phase="pre")
 
         async with AsyncExitStack() as stack:
+            # Pushed first so they unwind last: the pool and Redis client
+            # built through them close before the credential they used.
+            for provider in providers:
+                stack.push_async_callback(
+                    close_provider_bounded, provider, "ui-admin", CLOSE_TIMEOUT_SECS
+                )
             # A credential-provider pool passes password= as an async
             # callable, so every physical connection this long-lived UI
             # process opens re-authenticates with a fresh token; the DSN
@@ -2162,10 +2177,12 @@ def ui_serve(
 
     pool_factory: PoolFactory | None = None
     conn_factory: ConnFactory | None = None
+    providers: list[object] = []
     if resolved_pg_provider_ref is not None:
         pg_provider = _load_pg_credential_provider(
             resolved_pg_provider_ref, option="--pg-credential-provider"
         )
+        providers.append(pg_provider)
         # Why command_timeout: this factory builds the UI's admin pool —
         # the factory-path twin of the create_pool bound in the lifespan,
         # or the credential-provider deployment would be the one unbounded
@@ -2195,12 +2212,11 @@ def ui_serve(
                 err=True,
             )
             raise typer.Exit(code=1)
-        redis_factory = make_redis_client_factory(
-            resolved_redis,
-            _load_redis_credential_provider(
-                resolved_redis_provider_ref, option="--redis-credential-provider"
-            ),
+        redis_provider = _load_redis_credential_provider(
+            resolved_redis_provider_ref, option="--redis-credential-provider"
         )
+        providers.append(redis_provider)
+        redis_factory = make_redis_client_factory(resolved_redis, redis_provider)
 
     _ui_serve(
         resolved_dsn,
@@ -2213,6 +2229,8 @@ def ui_serve(
         pool_factory=pool_factory,
         conn_factory=conn_factory,
         redis_factory=redis_factory,
+        # One instance may serve both roles (EntraIdProvider); closed once.
+        providers=list(dict.fromkeys(providers)),
     )
 
 

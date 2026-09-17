@@ -7,6 +7,7 @@ and without a deps↔shutdown module cycle.
 """
 
 import asyncio
+from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from typing import TYPE_CHECKING, Protocol
 
@@ -22,6 +23,7 @@ __all__ = [
     "PUBLISH_DRAIN_TIMEOUT_SECS",
     "close_conn_bounded",
     "close_pool_bounded",
+    "close_provider_bounded",
     "close_redis_bounded",
     "worst_case_teardown_tail",
 ]
@@ -192,3 +194,24 @@ async def close_redis_bounded(client: _AsyncCloseable, label: str, close_timeout
         logger.warning("redis-teardown-close-timeout", label=label, close_timeout=close_timeout)
     except Exception as exc:
         logger.warning("redis-teardown-close-error", label=label, error=repr(exc))
+
+
+async def close_provider_bounded(provider: object, label: str, close_timeout: float) -> None:
+    """Close a credential provider during teardown, bounded by ``close_timeout``.
+
+    A provider that owns a resource - the Entra ID providers' lazily created
+    ``DefaultAzureCredential`` holds an aiohttp session - releases it through
+    an async ``aclose()``; a provider without one (a token signer, a Vault
+    client the caller owns) has nothing to release and is left alone. Same
+    log-and-continue contract as :func:`close_redis_bounded`: never raises,
+    a hung close is reported and teardown keeps unwinding.
+    """
+    aclose: Callable[[], Awaitable[None]] | None = getattr(provider, "aclose", None)
+    if not callable(aclose):
+        return
+    try:
+        await asyncio.wait_for(aclose(), timeout=close_timeout)
+    except TimeoutError:
+        logger.warning("provider-teardown-close-timeout", label=label, close_timeout=close_timeout)
+    except Exception as exc:
+        logger.warning("provider-teardown-close-error", label=label, error=repr(exc))

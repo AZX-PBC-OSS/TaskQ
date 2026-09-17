@@ -483,6 +483,32 @@ async def test_ui_serve_uses_credential_provider(
     assert PROVIDER.pg_calls > 0
     token = await pool.kwargs["password"]()
     assert token == f"pg-token-{PROVIDER.pg_calls}"
+    # The provider this process loaded is handed to the lifespan to be
+    # released at shutdown.
+    assert captured.get("providers") == [PROVIDER]
+
+
+def test_ui_serve_closes_one_provider_serving_both_roles_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One instance behind both --pg- and --redis-credential-provider is
+    handed to the lifespan once, so its aclose() runs once."""
+    captured: dict[str, Any] = {}
+    monkeypatch.setattr("taskq.cli._ui_serve", lambda *a, **kw: captured.update(kw))
+    monkeypatch.setenv("TASKQ_REDIS_URL", "redis://localhost:6379/0")
+    result = runner.invoke(
+        app,
+        [
+            "ui",
+            "serve",
+            "--pg-credential-provider",
+            f"{_MODULE}:PROVIDER",
+            "--redis-credential-provider",
+            f"{_MODULE}:PROVIDER",
+        ],
+    )
+    assert result.exit_code == 0, f"stderr: {result.stderr}"
+    assert captured.get("providers") == [PROVIDER]
 
 
 def test_ui_serve_redis_provider_without_url_is_fatal(monkeypatch: pytest.MonkeyPatch) -> None:

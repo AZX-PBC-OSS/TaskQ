@@ -198,3 +198,65 @@ async def test_a_failed_rebuild_leaves_the_live_pool_serving(
     entry = next(e for e in logs if e["event"] == "credentials-reload-failed")
     assert entry["error_type"] == "RuntimeError"
     assert entry["cause"] == "trigger"
+
+
+# ── Provider lifecycle ────────────────────────────────────────────────
+
+
+class _ClosingProvider(_LeaseProvider):
+    def __init__(self) -> None:
+        super().__init__(lease_duration=None)
+        self.closed = 0
+
+    async def aclose(self) -> None:
+        self.closed += 1
+
+
+async def test_ui_serve_closes_its_providers_after_the_pool(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The providers this process loaded are released at lifespan exit,
+    after the pool built through them has closed."""
+    import uvicorn
+
+    provider = _ClosingProvider()
+    factory = _lease_factory(provider, configured=3600.0)
+    _built, create_pool = _pools()
+    order: list[str] = []
+    original_close = _FakePool.close
+
+    async def _recording_close(self: _FakePool) -> None:
+        order.append("pool")
+        await original_close(self)
+
+    monkeypatch.setattr(_FakePool, "close", _recording_close)
+
+    async def _recording_aclose() -> None:
+        order.append("provider")
+        provider.closed += 1
+
+    provider.aclose = _recording_aclose  # type: ignore[method-assign]  # Why: recording seam on the test's own fake.
+
+    captured: dict[str, Any] = {}
+    monkeypatch.setattr(uvicorn, "run", lambda app, **kw: captured.setdefault("app", app))
+    monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
+    from taskq.cli import _ui_serve
+
+    _ui_serve(
+        "postgresql://u:p@h:5432/db",
+        "taskq",
+        None,
+        "127.0.0.1",
+        9999,
+        False,
+        TaskQSettings.load(),
+        pool_factory=factory,
+        providers=[provider],
+    )
+    app = captured["app"]
+    with patch("asyncpg.create_pool", new=create_pool):
+        async with asyncio.timeout(10):
+            async with app.router.lifespan_context(app):
+                assert provider.closed == 0
+    assert provider.closed == 1
+    assert order == ["pool", "provider"]
