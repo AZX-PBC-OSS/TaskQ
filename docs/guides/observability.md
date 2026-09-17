@@ -622,8 +622,8 @@ Per-worker and per-schedule attribution is on the channels where cardinality is
 free:
 
 - **Logs** — `worker_id` is bound via contextvars onto every log line;
-  `schedule_id` is on the `cron fired`, `cron schedule auto-disabled` and
-  `cron-tick-lock-contended` lines.
+  `schedule_id` is on the `cron fired`, `cron schedule auto-disabled`,
+  `cron-tick-lock-contended` and `cron-fire-budget-deferred` lines.
 - **Spans** — `taskq.worker_id` and `taskq.cron_schedule_id` are attributes
   of the `cron fire` span.
 

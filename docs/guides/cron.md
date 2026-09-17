@@ -100,8 +100,9 @@ Both phases are bounded by `TASKQ_CRON_PAYLOAD_FACTORY_TIMEOUT` (default 5 secon
 clamped to stay inside what remains of the tick's own deadline so a hung factory takes a
 named per-schedule failure rather than cancelling the whole tick. Factory waits are
 funded from the tick's remaining budget, so a batch of simultaneously-due hung factories
-cannot overrun it: once the budget is spent, a factory-backed schedule fails immediately
-with a "tick budget exhausted" error (counting toward auto-disable) instead of waiting:
+cannot overrun it: once the budget is spent, a factory-backed schedule is **deferred**
+rather than struck — see [Tick budget and deferral](#tick-budget-and-deferral) below for
+the boundary and the retry semantics.
 
 ```python
 # myapp/payloads.py
@@ -124,6 +125,47 @@ cron("0 * * * *", "hourly_sync", payload_factory="myapp.payloads.make_sync_paylo
 
 The factory may return a `dict` (used as-is) or a `BaseModel` (converted via `.model_dump()`).
 Any other return type raises `TypeError`.
+
+### Tick budget and deferral
+
+One cron tick plans its due batch inside a single deadline — the leader's
+`asyncio.timeout(TASKQ_DISPATCHER_COMMAND_TIMEOUT)` (default 5 seconds). The last 10% of
+that deadline is a write reserve the factory path may not spend, so the **funded factory
+budget** is 90% of the whole-tick deadline (4.5 seconds at defaults). Each factory's
+granted deadline is `min(TASKQ_CRON_PAYLOAD_FACTORY_TIMEOUT, what remains of the funded
+budget)`, tracked by actual elapsed time — so a batch's factory waits can never sum past
+the whole-tick deadline, however many schedules are due.
+
+When the remaining funded budget reaches zero, the factory-backed schedules still
+unplanned are **deferred**, and the boundary is deliberate and crisp:
+
+- a factory that **ran** and outlived its granted deadline takes a strike
+  (`last_fire_error` names the factory and the effective deadline) — its own evidence,
+  the path to auto-disable;
+- a factory the tick **could not fund** is deferred with no strike — the factory never
+  ran, so there is no evidence against the schedule. Striking it anyway let one hung
+  factory march every healthy factory-backed schedule behind it to auto-disable in
+  lockstep (#235): the failure path never advances `next_fire_at`, so the identical
+  batch returned in the identical order every tick.
+
+A deferred schedule advances `next_fire_at` by one leader tick (~1 second) — a retry,
+NOT a skip to the next cron slot, because the owed slot is still perfectly landable;
+only its funding was missing. The deferral is bounded by the monopolizer's own drain:
+the schedule that consumed the budget stays un-advanced at the front of the
+`next_fire_at` order and strikes on every tick, so after
+`TASKQ_CRON_AUTO_DISABLE_THRESHOLD` ticks (3 by default) it is auto-disabled and the
+budget frees — every deferred schedule then fires, its owed slot still inside the
+catch-up window. Watch for the `cron-fire-budget-deferred` log event (INFO, with
+`schedule_id`): seeing it every tick means a neighbour is eating the tick's factory
+budget.
+
+The per-factory grant is intentionally NOT capped at a fixed fraction of the tick
+deadline: any ceiling below `TASKQ_CRON_PAYLOAD_FACTORY_TIMEOUT` would strike factories
+that legitimately need more than the ceiling (a timeout on a factory that *ran* must
+stay a strike, or genuinely-hung factories would never reach auto-disable), silently
+re-imposing #235's harm on slow-but-healthy schedules and making the timeout knob
+unable to grant what it promises. First-come funding with deferral keeps every
+never-funded schedule strike-free instead.
 
 ---
 
@@ -344,12 +386,17 @@ manually update or delete and recreate the schedule.
 
 ## Failure handling
 
-When a schedule's payload factory raises an exception (import error, `TypeError`, timeout),
-the cron loop:
+When a schedule's payload factory raises an exception (import error, `TypeError`, timeout
+on its granted deadline — the factory **ran**), the cron loop:
 
 1. Increments `consecutive_failures` on the schedule row.
 2. Records `last_fire_error` with the exception class and message.
 3. Computes `next_fire_at` as usual and continues.
+
+A factory the tick's budget could not fund never ran, so it is **deferred**, not failed —
+no strike, no error text, `next_fire_at` advances one leader tick (see
+[Tick budget and deferral](#tick-budget-and-deferral)). The failure path stays reserved
+for genuine defects: evidence a schedule's own factory gave.
 
 After a configurable number of consecutive failures, the schedule is auto-disabled. The
 `taskq.cron.consecutive_failures` up-down counter reports the outstanding failure count
@@ -399,6 +446,15 @@ schedule, and three consecutive collisions (the default
 `TASKQ_CRON_AUTO_DISABLE_THRESHOLD`) would permanently auto-disable a healthy, busy
 actor's own schedule. The failure path stays reserved for genuine defects — payload
 factory errors, missing `actor_config` rows, and the like.
+
+A budget-deferred slot (see [Tick budget and deferral](#tick-budget-and-deferral))
+shares this bucket and this accounting — its factory was never called, so there is
+nothing to punish it for — but advances differently: one leader tick of retry instead
+of the next cron slot. A policy-suppressed slot is genuinely unlandable while the
+blocker holds, so retrying it would hot-loop against the blocker; a budget-deferred
+slot is perfectly landable, only its funding was missing, so it retries on the very
+next tick and never loses the owed slot. The `cron-fire-budget-deferred` log event
+(same `schedule_id`/`worker_id` attribution, INFO level) is its observability trail.
 
 Suppression is re-evaluated on every tick and is never sticky: once the blocker goes
 terminal or pending capacity frees up, the next due tick fires normally, and the fire
