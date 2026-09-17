@@ -207,6 +207,13 @@ _EXEMPT: dict[str, tuple[str, str]] = {
         "one worker's running jobs (heartbeat lease renew); bounded by "
         "that worker's concurrency, not the backlog",
     ),
+    "UPDATE_JOBS_LOCK_RENEWAL_SQL_TEMPLATE": (
+        "WHERE locked_by_worker = $1 AND status = 'running'",
+        "one worker's running jobs (the heartbeat loop's threshold-gated "
+        "lease renewal, #227 — the same worker-scoped set as "
+        "UPDATE_JOBS_LOCK_SQL_TEMPLATE with a narrower predicate, so the "
+        "bound is at most that statement's)",
+    ),
     "UPDATE_RESERVATION_LEASES_SQL_TEMPLATE": (
         "locked_by_worker = $1",
         "reservation leases for one worker's running jobs; same bound as "

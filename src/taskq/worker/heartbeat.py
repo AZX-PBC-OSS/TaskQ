@@ -5,7 +5,13 @@ transaction, and atomically extends workers.last_seen_at, jobs lock /
 heartbeat columns, and reservation_slots leases for jobs locked by this
 worker — except the jobs the worker has disowned (``WorkerDeps.disowned_jobs``:
 finished with, outcome unrecordable), whose leases must lapse so the
-reclaim sweep can hand them back. After max_heartbeat_failures
+reclaim sweep can hand them back. The jobs-lock renewal is
+threshold-gated (:func:`_lease_renewal_threshold`): a row whose lease is
+still comfortably fresh is left alone so a healthy beat stops paying a
+non-HOT update per running row per tick (#227), while rows carrying a
+per-job ``heartbeat_timeout`` (the reclaim sweep's heartbeat arm needs
+their beats fresh) and rows at/under the threshold renew every tick.
+After max_heartbeat_failures
 consecutive connection failures, isolate_self proactively transitions
 running jobs and signals shutdown.
 """
@@ -50,6 +56,73 @@ logger: structlog.stdlib.BoundLogger = get_logger(__name__)
 
 _meter = get_meter()
 
+
+def _lease_renewal_threshold(
+    lock_lease: timedelta,
+    heartbeat_interval: float,
+    max_heartbeat_failures: int,
+    heartbeat_command_timeout: float,
+) -> timedelta:
+    """The remaining-lease floor below which the heartbeat renews a row.
+
+    Renewing every held row on every beat rewrites ``lock_expires_at`` —
+    the key of ``jobs_running_lock_expires_idx`` — so every beat is a
+    non-HOT update per running row (new index entries in every index a
+    running row satisfies, fleet-wide, forever; #227). Renewing only
+    rows whose remaining lease is at or under this threshold keeps the
+    renewal cadence at roughly ``lock_lease - threshold`` beats instead
+    of every beat.
+
+    Sizing — the threshold must keep the lease valid through every
+    state the ``lock_lease >= 4 * heartbeat_interval`` invariant
+    (settings.py) exists to bound, measured against the worst beat gap
+    the loop's own cadence can produce: one pool-acquire bounded at the
+    interval plus one command bounded at the heartbeat command timeout,
+    i.e. a gap of at most ``heartbeat_interval +
+    heartbeat_command_timeout`` seconds (the documented "a tick may
+    legitimately run for nearly a whole interval" plus the command
+    bound; failed ticks are bounded by the same sum — acquire-block
+    then a timed-out command — because the inter-tick wait anchors to
+    the tick's START, so a tick that consumed its whole budget waits
+    zero).
+
+    * Healthy beats: a skip happens only while remaining > threshold,
+      so the next beat's remaining is > ``threshold - (interval +
+      command_timeout)``; at the floor below that is ``(F-1) * (interval
+      + command_timeout)`` >= one full worst gap — a healthy-but-slow
+      worker never lets a lease lapse.
+    * The failure cascade: the worst case is a skip at remaining
+      ``threshold + eps`` followed by ``max_heartbeat_failures + 1``
+      consecutive failed beats (the loop isolates on the F+1-th). The
+      lease at the isolate decision is then > 0 by construction: the
+      floor is exactly ``(F+1) * (interval + command_timeout)``, and the
+      cascading gaps are each STRICTLY under one worst gap (a tick that
+      acquired at just under its timeout then timed out a command spent
+      less than the whole sum). A worker that recovers after F failures
+      still holds more than one worst gap of lease and renews it.
+    * The floor is the SAFETY term; ``lock_lease / 2`` keeps more
+      margin still whenever the lease is generously sized (>=
+      ``2 * (F+1) * (interval + command_timeout)``), matching the
+      issue's half-lease intuition in the regime where it is free.
+    * Whenever the floor meets or exceeds the lease itself (the
+      minimum-lease configs the 4x invariant permits, or fast
+      heartbeats with a large command timeout), the gate renews every
+      row on every beat — zero savings, exactly today's behaviour,
+      because there is no slack to harvest. The degenerate minimum
+      (``lock_lease = 4 * interval``) has always had zero cascade
+      margin; this sizing refuses to make it negative.
+
+    The comparison itself is server-side (``lock_expires_at <=
+    clock_timestamp() + $4`` in the gated statement), so worker-clock
+    skew cannot move the threshold: the same clock that stamped the
+    lease judges it.
+    """
+    safety_floor = timedelta(
+        seconds=(max_heartbeat_failures + 1) * (heartbeat_interval + heartbeat_command_timeout)
+    )
+    return max(safety_floor, lock_lease / 2)
+
+
 # Which disowned ids still name a running row locked to this worker: the
 # rest have been reclaimed (re-pended, or claimed by another worker) and
 # leave the set. Only issued on a tick whose set is non-empty.
@@ -75,11 +148,21 @@ async def heartbeat_loop(
     interval = deps.settings.heartbeat_interval
     lock_lease = timedelta(seconds=deps.settings.lock_lease)
     schema = deps.settings.schema_name
+    # The renewal threshold (#227): a healthy beat only rewrites leases
+    # whose remaining time is at or under this. See
+    # _lease_renewal_threshold for the sizing derivation and the
+    # failure-cascade margin proof.
+    renewal_threshold = _lease_renewal_threshold(
+        lock_lease,
+        interval,
+        deps.settings.max_heartbeat_failures,
+        deps.settings.heartbeat_command_timeout,
+    )
     (
         update_worker_liveness_sql,
         update_jobs_lock_sql,
         update_reservation_leases_sql,
-    ) = build_heartbeat_sql(schema)
+    ) = build_heartbeat_sql(schema, renewal_threshold=renewal_threshold)
     select_still_held_sql = _SELECT_STILL_HELD_SQL_TEMPLATE.format(schema=schema)
 
     # Monotonic stamp of the last jobs-lock renewal that landed: the
@@ -113,8 +196,19 @@ async def heartbeat_loop(
                         jsonb_param(deps.stall_tally.metadata_value()),
                     )
                     renewal_at = time.monotonic()
+                    # The gated renewal (#227): binds the threshold as
+                    # $4. Rows with a per-job heartbeat_timeout, rows
+                    # with no lease stamp, and rows at/under the
+                    # threshold renew; fresh leases are left alone so a
+                    # healthy beat stops paying a non-HOT update per
+                    # running row per tick. parse_rowcount on the tag
+                    # now counts rows RENEWED this tick, not rows held.
                     jobs_tag = await conn.execute(
-                        update_jobs_lock_sql, worker_id, lock_lease, disowned
+                        update_jobs_lock_sql,
+                        worker_id,
+                        lock_lease,
+                        disowned,
+                        renewal_threshold,
                     )
                     await conn.execute(
                         update_reservation_leases_sql, worker_id, lock_lease, disowned
@@ -173,13 +267,26 @@ async def heartbeat_loop(
             update_heartbeat_consecutive_failures(str(worker_id), 0)
             tick_duration_s = time.monotonic() - tick_start
             _tick_duration.record(tick_duration_s)
-            # The lease the previous renewal stamped had this much left when
-            # this one landed: lease minus the gap between the two UPDATEs
-            # (both measured at the same point, so network latency cancels).
-            # A failed or late tick widens the gap and lowers the sample,
-            # which is the signal the lock-expiry alert reads; the config
-            # constant would never move. Clamped at 0: a renewal that lands
-            # after expiry renews an already-expired lease.
+            # The lease the previous beat's UPDATE stamped had this much
+            # left when this one landed: lease minus the gap between the
+            # two UPDATEs (both measured at the same point, so network
+            # latency cancels). A failed or late tick widens the gap and
+            # lowers the sample, which is the signal the lock-expiry
+            # alert reads; the config constant would never move. Clamped
+            # at 0: a renewal that lands after expiry renews an
+            # already-expired lease.
+            # Under threshold-gated renewal (#227) the sample keeps this
+            # beat-cadence meaning deliberately: it is stamped on every
+            # successful tick, whether or not the gate renewed any rows,
+            # so a late or failing beat lowers it exactly as before and
+            # alert thresholds calibrated to the old per-tick cadence
+            # keep their semantics. For rows the gate skipped (still
+            # above the threshold) the true remaining is anywhere up to
+            # the full lease — the sample is the "if this beat renewed
+            # everything" floor, never an overstatement of a RENEWED
+            # row's remaining, and the threshold's own sizing is pinned
+            # by the _lease_renewal_threshold unit and property tests
+            # rather than by this histogram.
             if last_renewal_at is not None:
                 record_lock_expires_in_seconds(
                     str(worker_id),
