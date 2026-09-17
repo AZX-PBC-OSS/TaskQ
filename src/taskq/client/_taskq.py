@@ -115,6 +115,13 @@ silent process wedge; a hung token endpoint fails the open (or the
 reload, leaving the live pool serving) loudly instead. Module-level so
 tests shrink it as a seam (the ``CLOSE_TIMEOUT_SECS`` convention)."""
 
+_PG_STREAM_POLL_INTERVAL_S: Final[float] = 0.5
+"""Poll cadence of :meth:`TaskQ.stream` on Postgres alone - the transport's
+observation latency, since nothing announces a job's progress or terminal
+write over NOTIFY (see ``_stream_pg``). ``poll_timeout`` lowers it, never
+raises it: a client that asked for a 30 s safety net on Redis must not get
+a 30 s blind spot on Postgres."""
+
 _CLIENT_POOL_COMMAND_TIMEOUT_SECS: Final[float] = 10.0
 """Per-query bound on every pool TaskQ itself builds for the client — the
 DSN pool at :meth:`TaskQ.open` and the ``pg_provider`` sugar's factory
@@ -427,11 +434,11 @@ class TaskQ:
         ``redis_url``.
     pg_conn_factory:
         A zero-arg async factory returning an ``asyncpg.Connection`` for the
-        LISTEN/NOTIFY transport used by :meth:`stream`. Mutually exclusive
-        with ``listen_conn``. Takes precedence over ``dsn`` when set. Use
-        this when you have no DSN (e.g. AAD-managed-identity auth) but still
-        want streaming. TaskQ owns and closes the connection produced by
-        the factory per ``stream()`` call.
+        LISTEN/NOTIFY transport used by :meth:`watch_reclaims`. Mutually
+        exclusive with ``listen_conn``. Takes precedence over ``dsn`` when
+        set. Use this when you have no DSN (e.g. AAD-managed-identity auth)
+        but still want the reclaim wake-up. TaskQ owns and closes the
+        connection produced by the factory per ``watch_reclaims()`` call.
     listen_conn:
         A pre-constructed ``asyncpg.Connection`` for the LISTEN transport.
         Caller-owned; TaskQ does not close it. Mutually exclusive with
@@ -439,7 +446,8 @@ class TaskQ:
         this to share a dedicated LISTEN conn across callers.
     poll_timeout:
         Maximum seconds to wait between transport wakeups before re-fetching
-        job state. Defaults to ``30.0``.
+        job state. Defaults to ``30.0``. :meth:`stream` on Postgres alone
+        has no wakeups and polls every ``min(poll_timeout, 0.5)`` seconds.
     """
 
     def __init__(
@@ -709,7 +717,7 @@ class TaskQ:
         factory (which fetches a fresh credential), atomically points every
         subsystem that holds a pool - the backend deps behind
         ``enqueue``/``get``/``list``/``cancel``, the :attr:`actors` client, and
-        the ``stream()`` LISTEN fallback - at the new pool, then closes the old
+        the ``stream()`` poll - at the new pool, then closes the old
         one with the same bounded drain used at ``close()``.
 
         Call this on a schedule shorter than your credential's lifetime (an
@@ -1048,6 +1056,23 @@ class TaskQ:
         progress update), terminating automatically when the job reaches a
         terminal state. The final event always has ``terminal=True``.
 
+        Latency contract
+        ----------------
+        The first event is the row as it stands when ``stream()`` is
+        called. After that:
+
+        * **Redis configured** - the worker publishes every progress and
+          state-change event to the job's Redis channel, so a transition
+          is delivered as it happens; the row is re-read from Postgres
+          every ``poll_timeout`` seconds (default 30) as the safety net.
+        * **Postgres only** - nothing announces a job's transitions over
+          NOTIFY, so the row is re-read through the client's pool every
+          ``min(poll_timeout, 0.5)`` seconds: a terminal write is observed
+          within half a second, at the cost of one primary-key read per
+          stream per half second. Lower ``poll_timeout`` to tighten it.
+          No connection is held per stream, so this works on a pool-only
+          client as well.
+
         Usage::
 
             async for event in tq.stream(job_id):
@@ -1065,9 +1090,6 @@ class TaskQ:
             Called before ``tq.open()`` or outside an ``async with`` block.
         KeyError
             The job does not exist.
-        RuntimeError
-            PG LISTEN transport requested but ``dsn`` was not provided at
-            construction (pool-only mode).
         """
         client = self._require_open()
         row = await client.backend.get(job_id)
@@ -1091,15 +1113,11 @@ class TaskQ:
             )
             if self._redis_client is not None
             else _stream_pg(
-                self._dsn,
-                self._schema,
                 job_id,
                 client,
                 self._poll_timeout,
                 last_seq=row.progress_seq,
                 last_status=row.status,
-                pg_conn_factory=self._pg_conn_factory,
-                listen_conn=self._listen_conn,
             )
         )
         async with contextlib.aclosing(gen) as agen:
@@ -1233,112 +1251,47 @@ class TaskQ:
 
 
 async def _stream_pg(
-    dsn: str | None,
-    schema: str,
     job_id: JobId,
     client: JobsClient,
     poll_timeout: float,
     *,
     last_seq: int = -1,
     last_status: JobStatus | None = None,
-    pg_conn_factory: "ConnFactory | None" = None,
-    listen_conn: "asyncpg.Connection | None" = None,
 ) -> AsyncGenerator[JobEvent, None]:
-    """PG LISTEN/NOTIFY transport for :meth:`TaskQ.stream`.
+    """Postgres poll transport for :meth:`TaskQ.stream`.
 
-    Opens a dedicated asyncpg connection, registers a LISTEN callback on
-    ``wake_channel(schema)``, and yields :class:`JobEvent` on each detected
-    state change. Terminates on terminal state.
+    Re-reads the job row through the client's pool every
+    ``min(poll_timeout, _PG_STREAM_POLL_INTERVAL_S)`` seconds and yields a
+    :class:`JobEvent` whenever ``status`` or ``progress_seq`` moved on from
+    ``last_status`` / ``last_seq`` (the snapshot the caller already
+    yielded, so the first read here happens after the first wait, never
+    back-to-back with it). Terminates on a terminal status.
 
-    Connection sources, in priority order:
-    * ``listen_conn`` — pre-constructed, caller-owned; NOT closed here.
-    * ``pg_conn_factory`` — zero-arg async factory; closed in ``finally``.
-    * ``dsn`` — ``asyncpg.connect(dsn=...)``; closed in ``finally``.
-
-    Raises :class:`RuntimeError` if none of the three is provided.
-
-    If the LISTEN connection is killed mid-stream (e.g. by
-    ``pg_terminate_backend``), the ``InterfaceError`` / ``OSError`` is
-    caught and the stream falls back to poll-based re-fetch using
-    ``asyncio.sleep(poll_timeout)``.  This provides single-recovery
-    resilience without a full reconnect loop (out of scope for M5).
+    Why a poll and not LISTEN: nothing on Postgres announces a job's
+    progress or terminal write - the progress channels are Redis pub/sub,
+    and the wake channel is the enqueue signal for workers (every enqueue
+    in the schema fires it, none of this job's transitions do). Listening
+    there gave each stream a dedicated session and a full row re-read per
+    enqueue in the schema, while the writes being streamed for still
+    surfaced only at the poll bound. A primary-key read at a fixed cadence
+    is what pg-boss's ``fetch`` and River's poll fallback do; River's
+    ``Subscribe`` is in-process and cannot see other workers' completions
+    either. Holds no connection of its own, so pool-only clients stream
+    like any other.
     """
-    if listen_conn is None and pg_conn_factory is None and dsn is None:
-        raise RuntimeError(
-            "TaskQ.stream() requires a LISTEN transport source: pass 'dsn=', "
-            "'pg_conn_factory=', or 'listen_conn=' to TaskQ. See "
-            "docs/guides/managed-identities.md for AAD / pool-only setups."
-        )
-
-    import asyncpg
-
-    wake = asyncio.Event()
-    channel = wake_channel(schema)
-    listen_alive = True
-    owns_conn = listen_conn is None  # factory/DSN → we close; caller-owned → we don't
-
-    def _on_notify(
-        conn: asyncpg.Connection,
-        pid: int,
-        ch: str,
-        payload: str,
-    ) -> None:
-        wake.set()
-
-    if listen_conn is not None:
-        conn = listen_conn
-    elif pg_conn_factory is not None:
-        conn = await pg_conn_factory()
-    else:
-        conn = await asyncpg.connect(dsn=str(dsn))
-    try:
-        await conn.add_listener(channel, _on_notify)  # pyright: ignore[reportArgumentType]  # Why: asyncpg stubs over-narrow the callback type — same pattern as worker/notify.py
-        while True:
-            wake.clear()
-            row = await client.backend.get(job_id)
-            if row is None:
-                raise KeyError(job_id)
-            if row.progress_seq != last_seq or row.status != last_status:
-                last_seq = row.progress_seq
-                last_status = row.status
-                event = _row_to_event(row)
-                yield event
-                if event.terminal:
-                    return
-            try:
-                with contextlib.suppress(TimeoutError):
-                    await asyncio.wait_for(wake.wait(), timeout=poll_timeout)
-            except (asyncpg.InterfaceError, OSError):
-                if not listen_alive:
-                    raise
-                listen_alive = False
-                logger.warning(
-                    "stream-listen-connection-lost",
-                    job_id=str(job_id),
-                    error_type="InterfaceError/OSError",
-                )
-                while True:
-                    await asyncio.sleep(poll_timeout)
-                    row = await client.backend.get(job_id)
-                    if row is None:
-                        raise KeyError(job_id) from None
-                    if row.progress_seq != last_seq or row.status != last_status:
-                        last_seq = row.progress_seq
-                        last_status = row.status
-                        event = _row_to_event(row)
-                        yield event
-                        if event.terminal:
-                            return
-    finally:
-        with contextlib.suppress(Exception):
-            await conn.remove_listener(channel, _on_notify)  # pyright: ignore[reportArgumentType]  # Why: asyncpg stubs over-narrow the callback type — same pattern as worker/notify.py
-        if owns_conn:
-            # Why bounded: suppress(Exception) catches errors but not hangs —
-            # asyncpg's close() passes no timeout underneath, so a dead PG
-            # would wedge stream teardown. The helper bounds the wait,
-            # terminates on timeout, and never raises — subsuming the old
-            # suppress.
-            await close_conn_bounded(conn, "stream-pg", CLOSE_TIMEOUT_SECS)
+    interval = min(poll_timeout, _PG_STREAM_POLL_INTERVAL_S)
+    while True:
+        await asyncio.sleep(interval)
+        row = await client.backend.get(job_id)
+        if row is None:
+            raise KeyError(job_id)
+        if row.progress_seq != last_seq or row.status != last_status:
+            last_seq = row.progress_seq
+            last_status = row.status
+            event = _row_to_event(row)
+            yield event
+            if event.terminal:
+                return
 
 
 async def _stream_redis(

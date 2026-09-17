@@ -46,7 +46,7 @@ implementations available as extras:
 | A password passed as a fixed string is reused for every connection the pool opens later. | The factory builders pass `password=` as an **async callable**, which asyncpg awaits once per physical connection - pool growth and idle-recycle replacements each authenticate with a freshly fetched credential. |
 | Azure Redis requires a `CredentialProvider` returning `(username, token)` per reconnect. | You own the `redis.asyncio.Redis` client → pass a `CredentialProvider`. |
 | You already run an app-wide pool (FastAPI lifespan) and want to share it. | Pass the pool directly — TaskQ will **not** close a caller-owned resource. |
-| Migrations / `TaskQ.stream()` open their own `asyncpg.connect(dsn)`. | `apply_pending_locked` and the client accept a `conn` / `conn_factory` so LISTEN/migrate work without a DSN. |
+| Migrations / `TaskQ.watch_reclaims()` open their own `asyncpg.connect(dsn)`. | `apply_pending_locked` and the client accept a `conn` / `conn_factory` so LISTEN/migrate work without a DSN. |
 
 ### Ownership rule (read this carefully)
 
@@ -85,7 +85,7 @@ Three consequences worth knowing:
 | Worker — Redis | `WorkerConnections.redis_client` | `redis_client_factory` | |
 | Client — main pool | `TaskQ(pool=...)` (caller-owned) | `TaskQ(pool_factory=...)` or `TaskQ(dsn=..., pg_provider=...)` | TaskQ-owned; rotate with `await tq.reload_credentials()` |
 | Client — Redis | `TaskQ(redis_client=...)` ✓ existing | — | |
-| Client — stream LISTEN conn | `TaskQ(listen_conn=...)` | `TaskQ(pg_conn_factory=...)` | Replaces the DSN-only LISTEN transport |
+| Client — `watch_reclaims` LISTEN conn | `TaskQ(listen_conn=...)` | `TaskQ(pg_conn_factory=...)` | Replaces the DSN-only LISTEN transport; `stream()` polls through the main pool and needs neither |
 | Migrate — locked apply | `apply_pending_locked(conn=...)` | `apply_pending_locked(conn_factory=...)` | `list_applied` / `apply_pending` take an open conn only — no factory |
 | Admin UI | `create_router(pg_pool=..., redis_client=...)` ✓ existing | — | Or `taskq ui serve --pg-credential-provider` / `--redis-credential-provider` |
 | CLI — `taskq worker` | — | `--pg-credential-provider` / `--redis-credential-provider` (env: `TASKQ_PG_CREDENTIAL_PROVIDER` / `TASKQ_REDIS_CREDENTIAL_PROVIDER`) | Builds **every** worker role: all four pools (dispatcher, heartbeat, worker, and the conditional per-slot transaction pool), `notify_conn`, `leader_conn`, Redis |
@@ -799,7 +799,7 @@ top-level.
 takes per role. TaskQ invokes it at `open()` and **owns** the result, and
 `await tq.reload_credentials()` re-invokes it to swap the pool in place: the
 backend behind `enqueue`/`get`/`list`/`cancel`, the `tq.actors` client and the
-`stream()` LISTEN fallback all move to the new pool, and the old one is closed
+`stream()` poll all move to the new pool, and the old one is closed
 with a bounded drain. Nothing needs to reach into the client's internals, and
 no restart is required when a token expires.
 
@@ -845,7 +845,7 @@ the pair it was built with).
 
 `TaskQ` accepts `pool=` and `redis_client=` (caller-owned). Two additions
 close the remaining DSN-only gaps for the LISTEN/NOTIFY transport in
-`stream()`:
+`watch_reclaims()`:
 
 ```python
 from taskq import make_dedicated_conn_factory
@@ -853,14 +853,17 @@ from taskq import make_dedicated_conn_factory
 tq = TaskQ(
     pool=app_state.pg_pool,  # caller-owned
     redis_client=app_state.redis,  # caller-owned
-    # LISTEN transport for tq.stream() without a DSN:
+    # LISTEN transport for tq.watch_reclaims() without a DSN:
     pg_conn_factory=make_dedicated_conn_factory(settings.pg_dsn_direct, provider),  # OR
     listen_conn=app_state.listen_conn,  # pre-constructed, caller-owned
 )
 ```
 
-Without one of Redis / `pg_conn_factory` / `listen_conn`, `tq.stream()`
-raises a documented `RuntimeError` in pool-only mode.
+`tq.stream()` needs neither: on Postgres alone it re-reads the job row
+through the main pool every `min(poll_timeout, 0.5)` seconds (nothing
+announces a job's transitions over NOTIFY), so it works in pool-only mode
+and holds no connection per stream. With `redis_client=` it subscribes to
+the job's progress channel instead.
 
 ---
 
