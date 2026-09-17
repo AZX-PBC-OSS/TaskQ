@@ -641,11 +641,20 @@ two dispatch SQL variants selected per-queue at dispatch time:
 Each queue has a `mode` column in the `queues` table: `strict_fifo` (default) or
 `round_robin`. The dispatch batch method selects the SQL variant via
 `_resolve_queue_modes()`, served from a per-worker TTL cache (5 s): a cache hit
-adds no query to the batch's transaction, the miss path runs the one indexed
+adds no query to the round, the miss path runs the one indexed
 `queues` read and refills the cache, and `taskq queues set-mode` invalidates the
 caches of the process it runs in — so a mode flip reaches every worker within
 the TTL.
 Queues absent from the table default to `strict_fifo`.
+
+A dispatch round runs in autocommit — no `BEGIN`/`COMMIT` around the claim.
+The claim is one atomic `UPDATE … RETURNING` whose row locks end with the
+statement, the mode resolve and the claimable probe are read-only, and an
+empty round holds no locks between window expansions, so a transaction added
+two round trips per round and nothing else (asyncpg sends `BEGIN` and `COMMIT`
+as separate statements). A cache-hit round that claims is exactly one
+statement; an empty round is the claim plus one probe (pinned by
+`tests/test_round_trip_budgets.py`).
 
 | Mode | Ordering | Use case |
 |---|---|---|
