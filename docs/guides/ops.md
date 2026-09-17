@@ -455,7 +455,13 @@ ALTER ROLE taskq SET jit = off;
 
 or per-pool, with no role-level access, by appending
 `?options=-c%20jit%3Doff` (URL-encoded `-c jit=off`) to the DSN's query string. The repo's
-`docker-compose.yml` carries the equivalent commented block.
+`docker-compose.yml` carries the equivalent commented block. TaskQ itself sets nothing
+client-side: an asyncpg `server_settings=` entry rides the connection's **startup packet**,
+which a pooler that rejects unknown startup parameters (PgBouncer) refuses before
+authentication — so the worker's pools deliberately carry no per-pool GUCs at all, and the
+role default / DSN options above are the supported channels. A startup-packet value does
+survive the pool's release-time `RESET ALL` (unlike a post-connect `SET`), so if you prefer
+a pooler-safe variant of a session GUC, the role default is the one to reach for.
 
 **Statement-cache sizing — set for you.** asyncpg caches prepared statements per connection in an
 LRU of `statement_cache_size` entries (asyncpg default: 100, evicted after

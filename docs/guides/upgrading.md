@@ -1746,3 +1746,38 @@ due work rather than stranding residue, and the value returns to zero
 once no schedule is failing. `cron_schedules.consecutive_failures` and
 the logs remain the authoritative per-schedule record; alert on
 `taskq.cron.disabled_schedules > 0` for the auto-disabled condition.
+### Worker pools send no per-connection GUCs in the startup packet
+
+> **Unreleased.** Breaking only in the sense that a worker that failed to
+> boot behind a strict pooler now boots, and a client-side `jit = off`
+> that silently rode every dispatcher connection is gone — set it
+> server-side if you want it.
+
+Every pool the worker builds opens with no `server_settings=`. asyncpg
+rides each entry in the Postgres startup packet, and a pooler that
+rejects unknown startup parameters (PgBouncer: `unsupported startup
+parameter: jit`) refuses the connect before authentication — with a
+single `TASKQ_PG_DSN` pointing at the pooler, the eagerly-opened boot
+pools never came up and the error named neither the parameter nor the
+pool (issue #247). The dispatcher pool's `jit = off` entry was a guard
+whose measured win had already moved into the dispatch statement itself
+(the depth oracle passes with JIT enabled on a plain connection); a
+per-claim `SET LOCAL jit = off` is not a replacement — the claim runs in
+autocommit, so there is no transaction to scope it to. Operators who
+want the guard should set it where no startup packet is involved:
+
+```sql
+ALTER ROLE taskq SET jit = off;
+```
+
+or append `?options=-c%20jit%3Doff` to the DSN — see
+[ops.md](ops.md#database-performance-knobs). The per-slot transaction
+pool's inherited `search_path`/`role` remain startup parameters by
+design: they are session state a LOOP-scope connection declared, they
+must survive the pool's release-time `RESET ALL` (startup-packet values
+do; a post-connect `SET` does not), and the slot pool always rides the
+direct DSN. If your direct DSN itself routes through a pooler and you
+register a LOOP-scope connection, add
+`ignore_startup_parameters=search_path,role` (or whichever parameters
+you actually inherit) to the pooler's config.
+

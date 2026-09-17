@@ -154,7 +154,13 @@ id-array bitmap driven by the round's own pending-rows population, and the
 candidate probes' scan bounds are foldable parameter expressions with the
 exact `residual * oversample` admission window re-imposed as a rank cut over
 the bounded probe output. Plus the operational guard: TaskQ-built dispatcher
-pools now carry `server_settings={"jit": "off"}` (worker/deps.py).
+pools now carry `server_settings={"jit": "off"}` (worker/deps.py). *(Follow-up,
+#247: that guard was later REMOVED — the startup-packet parameter broke worker
+boot behind poolers that reject unknown startup parameters, and the guard was
+never the mechanism of this fix. The JIT protection now lives server-side
+(`ALTER ROLE ... SET jit = off`, DSN `?options=` — docs/guides/ops.md
+§"Database performance knobs"); the measurements and verdicts on this page are
+unchanged and remain the evidence that the statement itself carries the win.)*
 
 ## Method
 
@@ -229,7 +235,13 @@ both pin the NEW numbers.
   cardinalities), not suppressed — the depth oracle's JIT assertion passes
   with JIT *enabled* on a plain connection. The `jit = off` server_settings
   entry on TaskQ-built dispatcher pools is a guard against future estimate
-  surprises, not the mechanism of this fix.
+  surprises, not the mechanism of this fix. *(Follow-up, #247: the
+  server_settings entry was later removed — it rode the startup packet and
+  broke worker boot behind poolers rejecting unknown startup parameters.
+  The oracle above is the guard that remains: it fails loudly if an
+  estimate surprise ever returns the compile-per-round tax, with JIT
+  enabled, on a plain connection. Operators who want belt-and-suspenders
+  set the role default server-side; see docs/guides/ops.md.)*
 - Dispatch cost is now independent of the registered-actor count: the round
   reads actor_config by primary key for its own actors only.
 - No regression on the shallow shapes: 1k execution is flat (1.77-1.97 ms
