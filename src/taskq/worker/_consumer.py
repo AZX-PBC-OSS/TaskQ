@@ -787,16 +787,23 @@ async def consume_one_job(
                 # row is the final arbiter: a "noop" means an operator
                 # cancel raced the deploy onto the row, and the attempt
                 # falls through to the ordinary cancel write below.
+                # Retried like every other state write (the bounded
+                # budget of _terminal_write_with_retry) — see the
+                # mark_cancelled arm below for why a retry is safe inside
+                # this handler and what a second cancel does to it.
                 try:
-                    interrupt_outcome = await shield_with_retrieval(
-                        backend.mark_interrupted(
+                    interrupt_outcome = await _terminal_write_with_retry(
+                        lambda: backend.mark_interrupted(
                             job.id,
                             worker_id,
                             attempt=job.attempt,
                             hold=timedelta(0),
                             progress_seq=_cancel_seq,
                             progress_state=_cancel_state_for_write,
-                        )
+                        ),
+                        log=job_log,
+                        job=job,
+                        write_name="mark_interrupted",
                     )
                 except _TERMINAL_WRITE_INFRA_EXCEPTIONS as infra_exc:
                     # Best-effort, exactly like the cancel write below: the
@@ -805,6 +812,9 @@ async def consume_one_job(
                     # the row carries no operator cancel, so a cancel write
                     # here would terminalise an infrastructure interruption.
                     _log_terminal_write_failed(job_log, job, None, infra_exc)
+                    _disown_job(_disowned_jobs, job)
+                    raise
+                except asyncio.CancelledError:
                     _disown_job(_disowned_jobs, job)
                     raise
                 if interrupt_outcome != "noop":
@@ -844,15 +854,31 @@ async def consume_one_job(
                 attributes={"from_state": "running", "to_state": "cancelled"},
             )
             cancel_landed: bool | None
+            # The write is retried inside the cancellation handler on the
+            # same bounded budget as every other terminal write: the
+            # task's cancellation has already been delivered, so awaiting
+            # the retry waits here is ordinary, and the whole window
+            # (about a second of waits, five seconds of wall time at most)
+            # sits inside the cleanup grace the forcing phase allows
+            # before the shutdown's own release write competes — a fenced
+            # write, so at most one of the two lands and the other reads
+            # a fence outcome. A second cancel (a forced escalation, the
+            # shutdown's FORCING phase) interrupts a retry wait as a
+            # CancelledError: no write is in flight then (each attempt is
+            # shielded to completion) and the row is still this worker's,
+            # so it is disowned before the cancellation propagates.
             try:
-                cancel_landed = await shield_with_retrieval(
-                    backend.mark_cancelled(
+                cancel_landed = await _terminal_write_with_retry(
+                    lambda: backend.mark_cancelled(
                         job.id,
                         worker_id,
                         progress_seq=_cancel_seq,
                         progress_state=_cancel_state_for_write,
                         attempt=job.attempt,
-                    )
+                    ),
+                    log=job_log,
+                    job=job,
+                    write_name="mark_cancelled",
                 )
             except _TERMINAL_WRITE_INFRA_EXCEPTIONS as infra_exc:
                 # Why: the terminal write is best-effort on this path — the
@@ -864,6 +890,9 @@ async def consume_one_job(
                 cancel_landed = None
                 _log_terminal_write_failed(job_log, job, None, infra_exc)
                 _disown_job(_disowned_jobs, job)
+            except asyncio.CancelledError:
+                _disown_job(_disowned_jobs, job)
+                raise
             # Announce only a transition the row actually took: on a
             # fenced-out write (the row moved to another owner mid-cancel)
             # or an infra-failed one (the row is still 'running'), a
