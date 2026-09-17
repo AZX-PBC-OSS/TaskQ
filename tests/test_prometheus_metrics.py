@@ -176,6 +176,11 @@ _NAME_MAP: list[tuple[str, str, str]] = [
     ("taskq.jobs.queue_wait_seconds", "taskq_jobs_queue_wait_seconds", "histogram"),  # ends in unit
     ("taskq.jobs.stranded", "taskq_jobs_stranded", "gauge"),
     ("taskq.queue.live_workers", "taskq_queue_live_workers", "gauge"),
+    (
+        "taskq.worker.loop_stall_attributions",
+        "taskq_worker_loop_stall_attributions_total",
+        "counter",
+    ),
 ]
 
 _RULES_YAML = (
@@ -327,6 +332,9 @@ def _populate_all_instruments(meter: Any) -> None:
     meter.create_counter("taskq.jobs.abandoned", unit="1").add(1, {"actor": "a"})
     meter.create_counter("taskq.jobs.timeouts", unit="1").add(
         1, {"actor": "a", "kind": "start_to_close"}
+    )
+    meter.create_counter("taskq.worker.loop_stall_attributions", unit="1").add(
+        1, {"actor": "a", "kind": "blocking_call"}
     )
     meter.create_histogram("taskq.worker.event_loop_lag_seconds", unit="s").record(0.001)
     meter.create_histogram("taskq.jobs.queue_wait_seconds", unit="s").record(
