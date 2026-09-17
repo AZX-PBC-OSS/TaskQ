@@ -181,7 +181,7 @@ likewise unusable (the snooze/refund arms give the claim's increment
 back, flooring to 0).  The two populations are probed by disjoint arms
 with disjoint partial indexes (``jobs_unrouted_actor_dispatch_idx`` /
 ``jobs_unrouted_round_robin_probe_idx`` for producer-placed rows,
-``jobs_assignment_routed_probe_idx`` for re-pended rows — each partial
+``jobs_assignment_routed_probe_idx`` for re-pended rows, each partial
 on its own population's half of the marker, so neither arm's probe ever
 walks the other's rows),
 each arm keeping its own ORDER BY + LIMIT probe so the depth contract
@@ -981,7 +981,7 @@ pa_keys AS (
 # row-selection bounds in the candidates laterals use statement_timestamp()
 # (STABLE) so the planner can serve them as index-level conditions on
 # jobs_unrouted_actor_dispatch_idx /
-# jobs_unrouted_round_robin_probe_idx — a VOLATILE
+# jobs_unrouted_round_robin_probe_idx. A VOLATILE
 # clock_timestamp() bound is only ever a post-scan Filter, and a Filter
 # walks every not-yet-due pending row at the head of the index order
 # before it can collect LIMIT due rows: measured on a 20k-row

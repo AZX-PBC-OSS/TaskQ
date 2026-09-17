@@ -15,13 +15,13 @@
 -- so a move's left-behind tails are not stranded on a queue the operator
 -- was told to stop consuming.
 --
--- started_at answered that question only by proxy — "was claimed at least
--- once" — and the proxy is wrong in one direction that matters: an
+-- started_at answered that question only by proxy, "was claimed at least
+-- once", and the proxy is wrong in one direction that matters: an
 -- operator retry of a job that was terminalized BEFORE it was ever
 -- claimed is a re-pend (an operator hands the row back deliberately) but
 -- has started_at IS NULL, so it routed by its stale label and stranded
 -- permanently: pending, due, and invisible to every running consumer.
--- Widening the arm to all pending rows is not the fix — that would route
+-- Widening the arm to all pending rows is not the fix: that would route
 -- producer-placed strays by the assignment too, collapsing the stray
 -- contract the never-claimed arm exists to hold. The marker names the
 -- distinction directly instead of inferring it, so each population is
@@ -33,7 +33,7 @@
 -- ── Why the ALTERs live alone in this file ────────────────────────────
 -- ADD COLUMN takes ACCESS EXCLUSIVE on the table: readers and writers
 -- alike queue behind it, and every lock a transaction takes is held to
--- its COMMIT — so the lock's cost is the cost of everything else the
+-- its COMMIT, so the lock's cost is the cost of everything else the
 -- same transaction runs after the ALTER, not of the ALTER itself. On
 -- this Postgres generation the ALTER is metadata-only (a non-volatile
 -- DEFAULT is stored in the catalog rather than rewriting the table, so
@@ -42,12 +42,12 @@
 -- NOTHING else: the backfill UPDATE and the probe-index builds this
 -- round originally shared the ALTER's transaction, holding ACCESS
 -- EXCLUSIVE on jobs across a backlog-sized UPDATE and two full-table
--- index builds — long enough for every read, heartbeat and claim on the
+-- index builds, long enough for every read, heartbeat and claim on the
 -- table to queue behind it, outliving the workers' heartbeat budget and
 -- self-terminating a live fleet mid-upgrade (issue #250). They now run
 -- as their own migrations, each with the narrowest lock its work allows:
--- the backfill as 01.00.12_07 (ROW EXCLUSIVE — blocks neither readers
--- nor other writers) and the index builds as 01.00.12_08 (SHARE —
+-- the backfill as 01.00.12_07 (ROW EXCLUSIVE: blocks neither readers
+-- nor other writers) and the index builds as 01.00.12_08 (SHARE:
 -- blocks writes, never reads; that file's builds share its ONE
 -- transaction, so its write-block window is the sum of both builds and
 -- the writes queued behind them drain when the FILE commits, before

@@ -136,7 +136,7 @@ class TestDispatchStrictFifoSql:
         # Why statement_timestamp (STABLE), not clock_timestamp (VOLATILE):
         # a volatile bound is never an Index Cond, so the candidates lateral
         # post-scan-filters the pending backlog instead of terminating at
-        # the range boundary on jobs_unrouted_actor_dispatch_idx — pinned
+        # the range boundary on jobs_unrouted_actor_dispatch_idx, pinned
         # by plan in tests/test_sweepaudit_dispatch_bound.py.
         assert "schedule_to_close > statement_timestamp()" in candidates_body
 
