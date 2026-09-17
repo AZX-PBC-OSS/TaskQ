@@ -4,9 +4,12 @@ The drain's contract, per its docstring and the bounded-sweep design: up
 to ``sweep_drain_batches - 1`` further committed batches after the parent
 call, the bound READ FROM SETTINGS (not hardcoded), liveness ticked
 between batches so the watchdog cannot age the loop out mid-drain,
-cooperative shutdown between batches, and per-call telemetry — a mid-drain
-abort keeps the already-committed batches' row samples and records the
-failed call as a timeout, NOT as zero rows.
+cooperative shutdown AND mid-drain demotion between batches (the gate
+re-consults ``deps.leading()`` per batch — a leader whose role ended
+stops at the same batch boundary shutdown uses, the split-brain guard
+for a process that resumed after its lease was taken over), and per-call
+telemetry — a mid-drain abort keeps the already-committed batches' row
+samples and records the failed call as a timeout, NOT as zero rows.
 """
 
 from __future__ import annotations
@@ -126,6 +129,19 @@ def _drain_ctx(
         notify_conn=None,
         leader_conn=None,
         liveness=recorder,  # pyright: ignore[reportArgumentType]
+    )
+    # The drain re-consults the production leadership predicate between
+    # batches, so the fixture must model a process that holds the role —
+    # never bypass the gate. The event set with no term is the state
+    # ``WorkerDeps.leading`` documents as led (an embedder driving the
+    # event itself), the same state tests/_leader_stub_deps.py's
+    # ``term=None`` default binds for the namespace stubs and
+    # tests/test_leader_sweeps_coverage.py's real-deps seam sets by hand.
+    deps.is_leader.set()
+    assert deps.leading(), (
+        "the drain's between-batches gate consults leading() — the fixture "
+        "must model a process holding the role, or every pin below stops "
+        "before the drain's first call"
     )
     ctx = SweepContext(
         deps=deps,
@@ -316,6 +332,36 @@ async def test_drain_stops_promptly_when_shutdown_set_midway() -> None:
     assert call.calls == 3, (
         "shutdown set on batch 3's return must stop the drain there — batch 4 "
         "would only run if the between-batches check were missing"
+    )
+
+
+async def test_drain_stops_at_the_batch_boundary_when_demoted_midway() -> None:
+    """Losing the leader role mid-drain stops the drain before the next
+    batch: the gate re-consults ``leading()`` between batches, so a
+    process demoted mid-drain (its lease taken over by a peer) stops at
+    the same boundary a shutdown pause uses — every batch already
+    committed keeps its progress for the successor to resume from, and
+    the demoted process runs no further leader work."""
+    ctx, _ = _drain_ctx(sweep_drain_batches=8)
+
+    def _demote_and_return_five(_idx: int) -> int:
+        ctx.deps.stop_leading()
+        return 5
+
+    call = _ScriptedCall([5, 5, _demote_and_return_five, 5, 5])
+    clean = await _drain_bounded(
+        ctx,
+        asyncio.Event(),
+        sweep_name="expired_locks",
+        call=cast("Callable[[], Awaitable[int]]", call),
+        warn_event="sweep-expired-locks-failed",
+        warn_kind="sweep_expired_locks_failed",
+    )
+
+    assert clean is True, "a demote-paused drain is a clean stop, not a failure"
+    assert call.calls == 3, (
+        "demotion on batch 3's return must stop the drain there — batch 4 "
+        "would only run if the between-batches leadership check were missing"
     )
 
 

@@ -93,12 +93,12 @@ class ProviderRegistry(Protocol):
 
 @runtime_checkable
 class ScopeContainer(Protocol):
-    """One scope-lifetime container; owns its own AsyncExitStack.
+    """One scope-lifetime container; owns its cache and its teardown list.
 
     The container is responsible for ALL factory invocation, caching,
     and teardown registration. The solver engine NEVER calls a factory
-    directly and NEVER touches an AsyncExitStack — every resolution
-    goes through ``get_or_create``.
+    directly and NEVER registers a teardown — every resolution goes
+    through ``get_or_create``.
     """
 
     async def get_or_create(
@@ -115,7 +115,8 @@ class ScopeContainer(Protocol):
         ...
 
     async def aclose(self) -> None:
-        """Close the container's internal AsyncExitStack with the
-        log-and-continue policy.
+        """Run the container's teardowns, last registered first, with the
+        log-and-continue policy: a failing teardown is logged and the
+        rest still run.
         """
         ...

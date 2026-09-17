@@ -49,7 +49,7 @@ def _make_notify_callback(
 
 
 async def listen_with_reconnect(
-    pool: asyncpg.Pool,
+    resolve_pool: Callable[[], asyncpg.Pool],
     channel: str,
     *,
     keepalive_interval: float = 30.0,
@@ -63,13 +63,24 @@ async def listen_with_reconnect(
     signal when no payload arrives within *keepalive_interval*.  The caller
     should break out of the loop (e.g. on client disconnect) to stop
     listening; the generator cleans up the connection in its ``finally``.
+
+    *resolve_pool* is called on every (re)connect rather than a pool being
+    captured once: the admin pool is replaced by a credential rotation
+    (``taskq ui serve``), and a stream that kept reconnecting to the pool
+    it started on would be reconnecting to a closed one for the rest of
+    its life. The rotation terminates the old pool's connections, which
+    is why a closed session is checked for on every keepalive - a
+    terminated LISTEN connection raises nothing on its own; the queue
+    just goes quiet.
     """
     backoff = backoff_initial
     while True:
         queue: asyncio.Queue[str | None] = asyncio.Queue(maxsize=_QUEUE_MAXSIZE)
         conn: _Conn | None = None
+        pool: asyncpg.Pool | None = None
         cb = _make_notify_callback(queue, channel)
         try:
+            pool = resolve_pool()
             conn = await asyncio.wait_for(pool.acquire(), timeout=acquire_timeout)
             await conn.execute(f'LISTEN "{channel}"')
             await conn.add_listener(channel, cb)  # pyright: ignore[reportArgumentType]  # Why: stubs over-narrow callback type; runtime asyncpg accepts sync callbacks
@@ -81,24 +92,29 @@ async def listen_with_reconnect(
                         return
                     yield payload
                 except TimeoutError:
+                    if conn.is_closed():
+                        raise ConnectionError(
+                            "LISTEN connection was closed underneath the stream"
+                        ) from None
                     yield None
-        except (
-            asyncpg.PostgresConnectionError,
-            asyncpg.InterfaceError,
-            asyncpg.AdminShutdownError,
-            OSError,
-        ):
-            _log.debug("listen-connection-lost", channel=channel)
-            yield None
-            await asyncio.sleep(backoff)
-            backoff = min(backoff * 2, backoff_max)
-        except Exception:
-            _log.debug("listen-reconnect", channel=channel, exc_info=True)
+        except Exception as exc:
+            # Every failure here - a lost session, a pool that cannot
+            # connect, a bouncer rejecting the session-scoped LISTEN - leaves
+            # the feed on keepalives only until a reconnect succeeds. The
+            # consumer sees a healthy-looking stream that never delivers, so
+            # the reconnect is what carries the cause to the operator.
+            _log.warning(
+                "listen-reconnect",
+                channel=channel,
+                error_type=type(exc).__name__,
+                error=str(exc),
+                backoff=backoff,
+            )
             yield None
             await asyncio.sleep(backoff)
             backoff = min(backoff * 2, backoff_max)
         finally:
-            if conn is not None:
+            if conn is not None and pool is not None:
                 with suppress(Exception):
                     await conn.remove_listener(channel, cb)  # pyright: ignore[reportArgumentType]  # Why: stubs over-narrow callback type; runtime accepts sync callbacks
                 with suppress(Exception):

@@ -1,38 +1,48 @@
 """``taskq`` CLI entry point.
 
-The CLI is intentionally thin today — only the commands needed to bootstrap
-a database. Worker and client commands will be added as those subsystems
-land.
-
 Usage::
 
     taskq migrate status
-    taskq migrate up [--phase pre|post] [--target VERSION] [--max-steps N]
+    taskq migrate up [--phase pre|post] [--target VERSION] [--max-steps N] [--ddl-lock-timeout SECS]
+    taskq worker --actors myapp.actors:registry
+    taskq job show JOB_ID
+
+The console script puts the current working directory on ``sys.path``
+(see :func:`main`), so ``module:attr`` options resolve application modules
+from the directory the operator ran the command in.
 """
 
 import asyncio
 import contextlib
 import importlib
-from collections.abc import AsyncGenerator, Mapping
+import os
+import signal
+import sys
+from collections.abc import AsyncGenerator, Mapping, Sequence
+from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
 from typing import Annotated, Any, Final, cast
+from uuid import UUID
 
 import asyncpg
 import structlog
 import typer
 
 from taskq import migrate as migrate_mod
+from taskq._advisory import DEADLINE_ERRORS
 from taskq._close import (
     CLOSE_TIMEOUT_SECS,
     close_conn_bounded,
     close_pool_bounded,
+    close_provider_bounded,
     close_redis_bounded,
 )
 from taskq.actor import ActorRef
 from taskq.actor_config_ops import (
     UNSET,
     ActorConfigRow,
+    ActorQueueMoveResult,
     Unset,
     deregister_actor,
     get_actor_config,
@@ -43,14 +53,22 @@ from taskq.actor_config_ops import (
 from taskq.auth import (
     PgCredentialProvider,
     RedisCredentialProvider,
+    ReloadSchedule,
     build_worker_connections,
     make_dedicated_conn_factory,
     make_pg_pool_factory,
     make_redis_client_factory,
+    reload_schedule_of,
 )
+from taskq.backend._protocol import parse_retry_kind
 from taskq.connections import ConnFactory, PoolFactory, RedisFactory, WorkerConnections
+from taskq.constants import (
+    _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex for defence-in-depth schema validation at this SQL interpolation site, the queue_ops convention.
+)
 from taskq.exceptions import ActorConfigDriftList, ActorDeregistrationError, ActorNotFoundError
+from taskq.obs import OtelExporterConfigurationError, configure_exporters, setup_logging
 from taskq.settings import TaskQSettings, WorkerSettings
+from taskq.worker._stall_tally import remedy_for_kind
 from taskq.worker.dev import dev_watch_loop
 from taskq.worker.queue_ops import (
     QUEUE_MODES,
@@ -128,6 +146,22 @@ queues_app = typer.Typer(
     help="Inspect and configure queue dispatch mode and per-queue concurrency caps.",
 )
 app.add_typer(queues_app, name="queues")
+
+# Queue-lifecycle operations. An operator moving an actor between queues is
+# thinking about queues, not about the actor_config table the assignment
+# happens to live in, so the move is reachable under this noun as well as
+# under `actor-config`.
+queue_app = typer.Typer(
+    no_args_is_help=True,
+    help="Queue lifecycle operations.",
+)
+app.add_typer(queue_app, name="queue")
+
+job_app = typer.Typer(
+    no_args_is_help=True,
+    help="Inspect individual jobs.",
+)
+app.add_typer(job_app, name="job")
 
 
 def _import_ref(ref: str, *, example: str) -> Any:
@@ -465,6 +499,18 @@ def worker(
         _resolved_ref(redis_credential_provider, settings.redis_credential_provider),
     )
 
+    # Exporters are wired here, before worker_main records anything:
+    # measurements a proxy instrument takes before an SDK provider exists
+    # are dropped, not replayed. Logging is configured first (the same
+    # idempotent setup worker_main repeats) so the wiring's startup line
+    # renders in the operator's configured format.
+    setup_logging(level=settings.log_level, log_format=settings.log_format)
+    try:
+        configure_exporters(settings)
+    except OtelExporterConfigurationError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from None
+
     try:
         code = _worker_main(
             settings,
@@ -567,6 +613,14 @@ def migrate_up(
         None, "--target", help="Stop after this version (inclusive). E.g. 01.00.00_01"
     ),
     max_steps: int | None = typer.Option(None, "--max-steps", help="Cap number of applies."),
+    ddl_lock_timeout: float = typer.Option(
+        migrate_mod.DEFAULT_MIGRATION_DDL_LOCK_TIMEOUT,
+        "--ddl-lock-timeout",
+        min=0.0,
+        help="Seconds a transactional migration waits for a table lock before it "
+        "fails and rolls back (SET LOCAL lock_timeout). 0 waits indefinitely, "
+        "parking every statement on the table behind the queued DDL.",
+    ),
     pg_credential_provider: str | None = typer.Option(
         None,
         "--pg-credential-provider",
@@ -588,6 +642,7 @@ def migrate_up(
             phase=phase,
             target=target,
             max_steps=max_steps,
+            ddl_lock_timeout=ddl_lock_timeout,
             conn_factory=conn_factory,
         )
     )
@@ -612,7 +667,7 @@ async def _status(settings: TaskQSettings, *, conn_factory: ConnFactory | None =
         applied = await migrate_mod.list_applied(conn, settings.schema_name)
     finally:
         # Why bounded: a dead PG can block close() indefinitely, wedging even
-        # this one-shot command before process exit (#38 follow-up). The
+        # this one-shot command before process exit. The
         # helper terminates on timeout and never raises, so a close error can
         # no longer mask an in-flight exception from list_applied.
         await close_conn_bounded(conn, "migrate-status", CLOSE_TIMEOUT_SECS)
@@ -630,6 +685,7 @@ async def _up(
     phase: migrate_mod.Phase | None,
     target: str | None,
     max_steps: int | None,
+    ddl_lock_timeout: float = migrate_mod.DEFAULT_MIGRATION_DDL_LOCK_TIMEOUT,
     conn_factory: ConnFactory | None = None,
 ) -> None:
     # Why locked: the README names `taskq migrate up` as THE deploy step, and a
@@ -659,6 +715,7 @@ async def _up(
                 phase=phase,
                 target=target,
                 max_steps=max_steps,
+                ddl_lock_timeout=ddl_lock_timeout,
             )
     except SystemExit as exc:
         # Lock contention. Already a precise message; reporting it through
@@ -675,8 +732,8 @@ async def _up(
         raise typer.Exit(code=1) from None
     finally:
         if conn is not None:
-            # Why bounded: same dead-PG wedge risk as _status above (#38
-            # follow-up); terminate-on-timeout, never raises.
+            # Why bounded: same dead-PG wedge risk as _status above;
+            # terminate-on-timeout, never raises.
             await close_conn_bounded(conn, "migrate-up", CLOSE_TIMEOUT_SECS)
     if not applied:
         typer.echo("no pending migrations")
@@ -955,8 +1012,13 @@ def actor_config_move_queue(
     max_concurrent to the target when the target has no row of its own, and
     moves the actor's pending/scheduled backlog onto the target (bounded
     batches, then one final transaction for the flip) so old-queue strays
-    drain through the target's consumers. Running jobs finish where they
-    were claimed. Cron fires follow the moved assignment from the flip on.
+    drain through the target's consumers. Running jobs finish on the
+    workers that claimed them; any that re-pend instead (failure retry,
+    crash reclaim, operator retry) keep their old queue label as an audit
+    trail but are ROUTED at dispatch by the actor's current assignment —
+    the tail drains through the target queue's consumers, never stranded
+    on the retired source queue. Cron fires follow the moved assignment
+    from the flip on.
 
     Workers boot on either side of the matching code deploy, in any order:
     a stale `@actor(queue=...)` literal logs `actor-config-queue-override`
@@ -989,20 +1051,108 @@ async def _actor_config_move_queue(
     except ValueError as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=2) from None
+    except DEADLINE_ERRORS:
+        # A drain batch ran out of its deadline — server-side
+        # (statement_timeout) or client-side (dropped connection, cancelled
+        # await). Both are the same fact to an operator: this batch did not
+        # land. Catching the named family rather than spelling the pair here
+        # is what keeps the client half from escaping as an untyped error.
+        # The batches that
+        # committed before it are real progress and the drain's queue
+        # predicate skips rows already moved, so the only action is to run
+        # the command again — which is a refusal to report, not a crash.
+        # The error text is not echoed: the server appends DETAIL quoting
+        # row values, which must not cross this boundary.
+        typer.echo(
+            f"move-queue of actor {actor!r} onto {new_queue!r} aborted: a drain batch "
+            "exceeded its statement timeout. Batches committed before the abort are "
+            "kept, so the move is incomplete and safe to re-run — re-run the same "
+            "command to continue from where it stopped.",
+            err=True,
+        )
+        raise typer.Exit(code=2) from None
     finally:
         await close_conn_bounded(conn, "actor-config-move-queue", CLOSE_TIMEOUT_SECS)
 
+    _report_queue_move(result)
+
+
+@queue_app.command("migrate")
+def queue_migrate(
+    actor: Annotated[str, typer.Argument(help="Actor name to move.")],
+    to: Annotated[
+        str,
+        typer.Option(
+            "--to",
+            help="Target queue name. Required — the target is never defaulted.",
+        ),
+    ],
+) -> None:
+    """Move an actor onto a different queue, and report the residual.
+
+    Applies the coordinated writes of a move — the stored assignment and
+    the target `queues` row carrying the source's mode and cap — in one
+    transaction, so a failure leaves the deployment exactly where it
+    started rather than half-moved. The actor's pending/scheduled backlog
+    is rewritten onto the target first, as bounded committed batches.
+
+    The target is named by `--to` rather than positionally: the two
+    arguments of a move are an actor and a queue, both plain strings, and
+    two bare positionals are the shape an operator transposes under
+    pressure — with the consequence that the backlog drains onto a queue
+    that was never the target.
+
+    Reports how many pending jobs still carry the source queue label.
+    Producers still running the old literal keep placing jobs there, and
+    those stay served by the source queue's consumers, so that count is
+    what tells the operator when the retired queue can stop being consumed.
+
+    Exit codes: 0 moved, 2 refusal (invalid queue name, the actor is
+    already on that queue, the assignment changed concurrently, or a drain
+    batch timed out and the move is re-runnable), 3 no stored row.
+    """
+    settings = TaskQSettings.load()
+    asyncio.run(_actor_config_move_queue(settings, actor, to))
+
+
+def _report_queue_move(result: ActorQueueMoveResult) -> None:
+    """Print one completed move, and its residual to stderr.
+
+    The residual goes to stderr because it drives the operator's next
+    action while it is non-zero (keep the source queue's consumers up
+    until it drains), not part of the move's result record — the move
+    itself succeeded.
+    """
     typer.echo(
         f"Moved actor {result.actor!r}: {result.from_queue!r} -> {result.to_queue!r}"
         f" jobs_moved={result.jobs_moved}"
         f" running_jobs_left={result.running_jobs_left}"
         f" queues_row_carried={result.queues_row_carried}"
     )
+    residual = result.pending_jobs_on_old_queue
+    residual_line = (
+        f"{residual} pending/scheduled job(s) still carry queue {result.from_queue!r} "
+        "(placed there by producers still running the old literal)."
+    )
+    if residual > 0:
+        # The operator's next action is only advice while there is a
+        # residual to drain — at zero the condition is already met and
+        # repeating it reads as an outstanding action.
+        residual_line += (
+            " Keep that queue's consumers running until every producer carries "
+            "the new literal and this count reaches zero."
+        )
+    typer.echo(residual_line, err=True)
     typer.echo(
         f"NOTE: ensure workers consume {result.to_queue!r} now, and keep "
         f"consuming {result.from_queue!r} until every producer runs the "
         f"matching literal — stale producers keep enqueueing to "
-        f"{result.from_queue!r}.",
+        f"{result.from_queue!r}, and those strays stay served by "
+        f"{result.from_queue!r}'s consumers. Left-behind running jobs "
+        f"(running_jobs_left={result.running_jobs_left}) finish on their "
+        f"claiming workers; any that re-pend route to {result.to_queue!r}'s "
+        f"consumers via the assignment, so they drain even after "
+        f"{result.from_queue!r} is retired.",
         err=True,
     )
 
@@ -1175,6 +1325,360 @@ async def _actor_config_diff(
         raise typer.Exit(code=1)
 
 
+def _describe_actor_capacity(row: ActorConfigRow) -> str:
+    """One actor's stored capacity, with every special value named.
+
+    A bare ``0`` and a bare blank are the two values an operator most
+    often misreads: zero looks like a broken row rather than the drain it
+    is, and NULL looks like half-written data rather than the "no
+    actor-level cap" it actually configures. Both get a word.
+    """
+    if row.max_concurrent is None:
+        concurrent = "uncapped (stored NULL — no actor-level cap)"
+    elif row.max_concurrent == 0:
+        concurrent = "0 — DRAIN MODE (deliberately stopped; jobs enqueue and never run)"
+    else:
+        concurrent = str(row.max_concurrent)
+    pending = "unlimited (stored NULL)" if row.max_pending is None else str(row.max_pending)
+    return f"max_concurrent={concurrent}  max_pending={pending}"
+
+
+@dataclass(frozen=True, slots=True)
+class _StrandedActorJobs:
+    """One actor's stranded pending/scheduled rows, by strand shape.
+
+    Mirrors the two shapes the leader's stranded-jobs sweep computes
+    (``_stranded_jobs_loop`` in ``taskq/worker/_leader_sweeps.py``):
+    ``no_actor_config`` rows can never become dispatch candidates, and
+    ``unserved_queue`` rows route to a queue no live worker serves.
+    """
+
+    actor: str
+    no_actor_config: int
+    unserved_queue: int
+    unserved_queues: tuple[str, ...]
+
+
+async def _list_stranded_pending_jobs(
+    conn: asyncpg.Connection, *, schema: str
+) -> list[_StrandedActorJobs]:
+    """Pending/scheduled jobs grouped by the actor nothing alive consumes.
+
+    The same computation the leader's stranded-jobs sweep runs every
+    minute, issued here on demand: ``doctor`` is the surface an operator
+    reaches for mid-incident, and it cannot wait on a leader tick.  The
+    routing-queue discriminator (a re-pended row routes by its actor's
+    stored assignment, not its label) is dispatch's own contract, mirrored
+    from the sweep so both surfaces answer the same question the same way.
+    The result is per ACTOR — bounded by the distinct-actor count, never
+    by backlog depth.
+    """
+    if not _IDENT_RE.match(schema):
+        # Defence in depth: TaskQSettings validates schema_name at load;
+        # re-check at the SQL interpolation site (the queue_ops convention).
+        raise ValueError(f"invalid schema identifier: {schema!r}")
+    rows = await conn.fetch(
+        f"""\
+SELECT s.actor,
+       count(*) FILTER (WHERE s.no_actor_config)::int AS no_actor_config_cnt,
+       count(*) FILTER (WHERE s.unserved_queue)::int AS unserved_queue_cnt,
+       coalesce(
+         array_agg(DISTINCT s.routing_queue) FILTER (WHERE s.unserved_queue),
+         ARRAY[]::text[]
+       ) AS unserved_queues
+FROM (
+    SELECT r.actor,
+           r.routing_queue,
+           r.no_actor_config,
+           NOT r.no_actor_config
+             AND NOT EXISTS (
+               SELECT 1 FROM "{schema}".workers w
+               WHERE r.routing_queue = ANY(w.queues)
+             ) AS unserved_queue
+    FROM (
+        SELECT j.actor,
+               CASE WHEN j.assignment_routed THEN ac.queue ELSE j.queue END
+                 AS routing_queue,
+               NOT EXISTS (
+                 SELECT 1 FROM "{schema}".actor_config ac2 WHERE ac2.actor = j.actor
+               ) AS no_actor_config
+        FROM "{schema}".jobs j
+        LEFT JOIN "{schema}".actor_config ac ON ac.actor = j.actor
+        WHERE j.status IN ('pending', 'scheduled')
+    ) r
+) s
+WHERE s.no_actor_config OR s.unserved_queue
+GROUP BY s.actor"""  # noqa: S608  # Why: schema is identifier-validated above and double-quoted; no user values are interpolated.
+    )
+    return [
+        _StrandedActorJobs(
+            actor=str(r["actor"]),
+            no_actor_config=int(r["no_actor_config_cnt"]),
+            unserved_queue=int(r["unserved_queue_cnt"]),
+            unserved_queues=tuple(str(q) for q in r["unserved_queues"]),
+        )
+        for r in rows
+    ]
+
+
+async def _list_worker_stall_tallies(
+    conn: asyncpg.Connection,
+    *,
+    schema: str,
+) -> list[tuple[str, dict[str, object]]]:
+    """Read each live worker's attributed-stall tally from its row metadata.
+
+    The heartbeat merges the tally (``loop_stalls``: actor -> kind ->
+    count) into the metadata the worker registered with; a worker that
+    has attributed nothing carries no key and contributes nothing here.
+    Malformed metadata (a non-dict tally, or non-dict kind counts) is
+    skipped rather than raised: a hand-edited or stale row must not stop
+    the whole report. Read-only, like every doctor read.
+    """
+    if not _IDENT_RE.match(schema):
+        raise ValueError(f"invalid schema identifier: {schema!r}")
+    rows = await conn.fetch(
+        f'SELECT id, metadata FROM "{schema}".workers'  # noqa: S608  # Why: schema is identifier-validated above and double-quoted; no user values are interpolated.
+    )
+    tallies: list[tuple[str, dict[str, object]]] = []
+    for row in rows:
+        metadata: object = row["metadata"]
+        if not isinstance(metadata, dict):
+            continue
+        metadata_map = cast("dict[str, object]", metadata)
+        tally = metadata_map.get("loop_stalls")
+        if isinstance(tally, dict) and tally:
+            tallies.append((str(row["id"]), cast("dict[str, object]", tally)))
+    return tallies
+
+
+def _doctor_findings(
+    registry: Mapping[str, ActorRef[Any, Any]],
+    rows: list[ActorConfigRow],
+    queues: list[QueueRow],
+    stranded: list[_StrandedActorJobs],
+    worker_stalls: list[tuple[str, dict[str, object]]] | None = None,
+) -> list[str]:
+    """Every condition worth an operator's attention, as report lines.
+
+    Every family is a condition TaskQ has decided a worker keeps
+    running through, which is why they surface here rather than at boot:
+    each one produces no error anywhere, and its only symptom is work
+    that quietly does not happen.
+
+    ``worker_stalls`` carries each live worker's stall tally as read from
+    its ``workers`` row metadata (``(worker_id, loop_stalls)``): the
+    attributed event-loop stalls that worker's lag watchdog recorded.
+    """
+    stored_by_actor = {row.actor: row for row in rows}
+    findings: list[str] = []
+
+    # The dispatch capacity gate joins actor_config, so a registered actor
+    # with no row is not merely uncapped — it is never a candidate.
+    for name in sorted(set(registry) - set(stored_by_actor)):
+        findings.append(
+            f"{name}: no stored actor_config row — NEVER DISPATCHES. The dispatch "
+            "capacity gate reads only stored rows, so jobs accumulate pending "
+            "with no error anywhere. A worker startup seeds the row."
+        )
+
+    # The same gate seen from the jobs side: rows already pending/scheduled
+    # whose actor has no stored config row (a renamed or removed actor that
+    # old producers or old rows still reference) never dispatch either, and
+    # no registry walk can name them — the registry no longer knows the name.
+    # The unserved-queue arm is the fleet-liveness twin: the row's routing
+    # queue (its actor's stored assignment once re-pended) has no live
+    # worker subscribed, so every dispatch round annihilates the pair.
+    for entry in sorted(stranded, key=lambda e: e.actor):
+        if entry.no_actor_config:
+            registry_note = (
+                " and no entry in the loaded registry" if entry.actor not in registry else ""
+            )
+            findings.append(
+                f"{entry.actor}: {entry.no_actor_config} pending/scheduled job(s) whose "
+                f"actor has no stored actor_config row{registry_note} — NEVER DISPATCHES. "
+                "The dispatch capacity gate reads only stored rows, so these jobs wait "
+                "forever with no error anywhere. Re-register the actor and seed its row "
+                "(a worker startup does this), or purge the jobs if the actor was retired."
+            )
+        if entry.unserved_queue:
+            queue_names = ", ".join(repr(q) for q in entry.unserved_queues)
+            findings.append(
+                f"{entry.actor}: {entry.unserved_queue} pending/scheduled job(s) routed to "
+                f"queue(s) {queue_names} that no live worker serves — they wait while "
+                "nothing consumes them. Start a worker subscribed to the queue or move "
+                "the actor onto a served one."
+            )
+
+    # A queues row whose queue no actor is assigned to is inert until an
+    # actor is moved onto that name and silently inherits its cap.
+    assigned = {row.queue for row in stored_by_actor.values()}
+    for queue in sorted(
+        (q for q in queues if q.name not in assigned and q.max_concurrent is not None),
+        key=lambda q: q.name,
+    ):
+        findings.append(
+            f"queue {queue.name!r}: STALE queues row — max_concurrent="
+            f"{queue.max_concurrent} but no actor is assigned to it. The cap is "
+            "inert now and silently applies to the next actor moved onto this queue."
+        )
+
+    queue_caps = {q.name: q.max_concurrent for q in queues}
+    for name in sorted(stored_by_actor):
+        row = stored_by_actor[name]
+        # Neither value is invalid alone: only the combination is
+        # unsatisfiable, so only a combination check can catch it.
+        if (
+            row.max_concurrent is not None
+            and row.max_pending is not None
+            and row.max_pending < row.max_concurrent
+        ):
+            findings.append(
+                f"{name}: INCOHERENT — max_pending={row.max_pending} is below "
+                f"max_concurrent={row.max_concurrent}, so the actor may queue fewer "
+                "jobs than it may run at once and its concurrency cap is unreachable."
+            )
+        queue_cap = queue_caps.get(row.queue)
+        if (
+            row.max_concurrent is not None
+            and queue_cap is not None
+            and queue_cap < row.max_concurrent
+        ):
+            findings.append(
+                f"{name}: INCOHERENT — max_concurrent={row.max_concurrent} exceeds "
+                f"queue {row.queue!r}'s max_concurrent={queue_cap}, which binds first; "
+                "raising the actor cap alone changes nothing."
+            )
+    for worker_id, tally in sorted(worker_stalls or [], key=lambda w: w[0]):
+        for actor_name, kinds in sorted(tally.items(), key=lambda kv: str(kv[0])):
+            if not isinstance(kinds, dict) or not kinds:
+                continue
+            kind_map = cast("dict[str, object]", kinds)
+            kind_counts: dict[str, int] = {}
+            for kind, count in kind_map.items():
+                if isinstance(count, (int, float)) and not isinstance(count, bool):
+                    kind_counts[str(kind)] = int(count)
+            if not kind_counts:
+                continue
+            total = sum(kind_counts.values())
+            dominant = max(kind_counts, key=lambda k: (kind_counts[k], k))
+            kind_desc = ", ".join(
+                f"{kind} x{count}"
+                for kind, count in sorted(kind_counts.items(), key=lambda kv: (-kv[1], kv[0]))
+            )
+            findings.append(
+                f"worker {worker_id}: actor {actor_name} has stalled the event loop "
+                f"{total} time(s) ({kind_desc}; {dominant} dominates) — "
+                f"{remedy_for_kind(dominant)}. The worker's "
+                "`event-loop-stall-attributed` warnings name the file:line."
+            )
+    return findings
+
+
+@app.command("doctor")
+def doctor(
+    actors: Annotated[
+        str,
+        typer.Option(
+            "--actors",
+            help="Module:attr reference to the actor registry (e.g. myapp.actors:registry). "
+            "Stored rows are read against these registered actors.",
+        ),
+    ],
+    platform_grace_seconds: Annotated[
+        float | None,
+        typer.Option(
+            "--platform-grace-seconds",
+            help="The orchestrator's stop grace for this deployment (Kubernetes "
+            "terminationGracePeriodSeconds, ACA/ECS stop timeout, compose "
+            "stop_grace_period, systemd TimeoutStopSec). When given, doctor compares "
+            "it against the worker's modelled worst-case shutdown and reports the "
+            "shortfall: a platform grace below it SIGKILLs the worker mid-teardown "
+            "and in-flight work re-runs.",
+        ),
+    ] = None,
+) -> None:
+    """Report capacity and configuration conditions that fail silently.
+
+    TaskQ refuses boot only on structural stored-config drift, so a whole
+    family of misconfigurations produces no error at all: an actor with no
+    stored row never dispatches, a leftover `queues` row caps an actor
+    nobody thinks is capped, a stored `max_concurrent=0` drains an
+    actor that looks configured, and a job already pending for an actor
+    nothing consumes waits forever. Each one's only symptom is work that
+    does not happen. This is the one command that names them together.
+
+    Read-only: it issues no writing statement, so it is safe to run
+    against production mid-incident.
+
+    Exit code: always 0. Every condition reported here is one a worker
+    keeps running through, and a diagnostic that fails the shell gets
+    wrapped in `|| true` and then ignored. Gating CI on drift is
+    `taskq actor-config diff`, which exits non-zero by design.
+    """
+    registry = _load_actor_registry(actors)
+    settings = WorkerSettings.load()
+    asyncio.run(_doctor(settings, registry, platform_grace_seconds))
+
+
+async def _doctor(
+    settings: WorkerSettings,
+    registry: Mapping[str, ActorRef[Any, Any]],
+    platform_grace_seconds: float | None = None,
+) -> None:
+    conn = await asyncpg.connect(str(settings.pg_dsn))
+    try:
+        rows = await list_actor_configs(conn, schema=settings.schema_name)
+        queues = await list_queues(conn, schema=settings.schema_name)
+        stranded = await _list_stranded_pending_jobs(conn, schema=settings.schema_name)
+        worker_stalls = await _list_worker_stall_tallies(conn, schema=settings.schema_name)
+    finally:
+        await close_conn_bounded(conn, "doctor", CLOSE_TIMEOUT_SECS)
+
+    typer.echo("stored actor capacity:")
+    for row in sorted(rows, key=lambda r: r.actor):
+        typer.echo(f"  {row.actor:<20} queue={row.queue:<16} {_describe_actor_capacity(row)}")
+    if not rows:
+        typer.echo("  (no stored actor_config rows)")
+
+    findings = _doctor_findings(registry, rows, queues, stranded, worker_stalls)
+
+    # The one finding that needs an operator-supplied number: the platform's
+    # stop grace (Kubernetes terminationGracePeriodSeconds, ACA/ECS stop
+    # timeout, compose stop_grace_period, systemd TimeoutStopSec) is
+    # invisible to the running worker, and when it sits below the worker's
+    # own modelled worst case the orchestrator SIGKILLs the teardown
+    # mid-flight — the shutdown degrades to crash reclaim (leases expire,
+    # work re-runs) exactly when a deploy is already in progress. The
+    # comparison runs here, where the worst case is computed from the same
+    # settings the fleet boots with.
+    worst_case = settings.worst_case_shutdown_seconds
+    if platform_grace_seconds is not None:
+        if platform_grace_seconds < worst_case:
+            findings.append(
+                f"platform stop grace ({platform_grace_seconds:g}s) is below the worker's "
+                f"modelled worst-case shutdown ({worst_case:.0f}s): the orchestrator "
+                "SIGKILLs the worker mid-teardown and shutdown degrades to crash reclaim "
+                "(leases expire, in-flight work re-runs). Raise the platform grace above "
+                "the worst case, or lower the shutdown budgets the worst case is computed "
+                "from (docs/guides/upgrading.md carries the arithmetic)."
+            )
+        else:
+            typer.echo(
+                f"platform stop grace: {platform_grace_seconds:g}s covers the worker's "
+                f"modelled worst-case shutdown ({worst_case:.0f}s)."
+            )
+
+    typer.echo("")
+    if not findings:
+        typer.echo("no findings — every registered actor has a stored row and every")
+        typer.echo("queue row backs a live assignment.")
+        return
+    typer.echo(f"findings ({len(findings)}):")
+    for finding in findings:
+        typer.echo(f"  - {finding}")
+
+
 async def _report_up_failure(conn: asyncpg.Connection | None, schema: str, exc: Exception) -> None:
     """Print a self-diagnosing ``migrate up`` failure report to stderr.
 
@@ -1320,6 +1824,114 @@ def _build_sso_bundle(settings: TaskQSettings, base_path: str) -> Any | None:
     return None
 
 
+async def _build_ui_pool(pool_factory: PoolFactory) -> asyncpg.Pool:
+    """Invoke *pool_factory* under the UI's first-use bound.
+
+    Why bounded: UI startup arms no watchdog — a hung token endpoint inside
+    the factory would park `taskq ui serve` forever before any request is
+    served, and a hung rotation would park the reload loop with the old
+    pool still serving and nothing reporting it. _UI_FACTORY_TIMEOUT_SECS
+    is the SAME bound the worker applies to its bootstrap and reload
+    factory calls (worker/deps.py).
+    """
+    try:
+        pool = await asyncio.wait_for(pool_factory(), timeout=_UI_FACTORY_TIMEOUT_SECS)
+    except TimeoutError as exc:
+        raise TimeoutError(
+            f"taskq ui serve: pool_factory did not return within "
+            f"{_UI_FACTORY_TIMEOUT_SECS}s — the credential "
+            "provider behind it (e.g. a token endpoint) is "
+            "black-holed. UI startup fails loudly instead of "
+            "parking forever."
+        ) from exc
+    assert pool is not None, "pool_factory returned None"
+    return pool
+
+
+def _ui_live_pool(application: Any) -> asyncpg.Pool:
+    """The admin pool currently serving requests.
+
+    ``app.state.pg_pool`` is the single live reference: admin routes
+    resolve it per request through ``get_pg_pool`` and a credential
+    rotation replaces it there, so anything that runs across a rotation
+    (the readiness probe, the shutdown close) reads it here instead of
+    capturing the pool it started with.
+    """
+    pool: asyncpg.Pool = application.state.pg_pool
+    return pool
+
+
+@contextlib.asynccontextmanager
+async def _ui_credential_rotation(
+    application: Any, pool_factory: PoolFactory, settings: TaskQSettings
+) -> AsyncGenerator[None]:
+    """Rebuild the admin pool on SIGHUP and on its :class:`ReloadSchedule`.
+
+    The UI's counterpart of the worker's reload coordinator. A provider
+    that issues a username-bearing pair (Vault dynamic credentials) pins
+    the pool to that pair for its life - the ``password=`` callable can
+    refresh a token per connection but never a username - so without a
+    rebuild every connection recycled after the lease expires fails
+    authentication and the admin UI dies quietly one lease after deploy.
+    The cadence is the operator's ``TASKQ_RELOAD_INTERVAL`` when set,
+    otherwise derived from the lease the factory was granted (half the
+    TTL, see :class:`taskq.auth.ReloadSchedule`); a factory whose schedule
+    can derive nothing only rotates on SIGHUP, and has already warned.
+
+    A rebuild builds the new pool first and swaps it into
+    ``app.state.pg_pool`` only once it exists, so a failed factory call
+    leaves the live pool serving; the old pool is then closed with the
+    same bounded drain the shutdown uses. SIGHUP is registered on the
+    running loop where the platform allows it (not Windows, not a
+    non-main thread); elsewhere the schedule alone drives rotation and the
+    absence is logged once.
+    """
+    from taskq._reload_loop import run_reload_schedule
+
+    declared = reload_schedule_of(pool_factory)
+    schedule = ReloadSchedule(
+        configured=settings.reload_interval,
+        sources=(declared,) if declared is not None else (),
+    )
+    trigger = asyncio.Event()
+
+    async def _rebuild() -> None:
+        new_pool = await _build_ui_pool(pool_factory)
+        old_pool = _ui_live_pool(application)
+        application.state.pg_pool = new_pool
+        await close_pool_bounded(old_pool, "ui-admin-reload", CLOSE_TIMEOUT_SECS)
+
+    loop = asyncio.get_running_loop()
+    sighup_registered = False
+    if hasattr(signal, "SIGHUP"):
+        try:
+            loop.add_signal_handler(signal.SIGHUP, trigger.set)
+            sighup_registered = True
+        except (NotImplementedError, RuntimeError, ValueError):
+            # Not the main thread (a test client's portal) or a platform
+            # without loop signal handlers: the schedule still rotates.
+            logger.warning("sighup-handler-unavailable", role="ui-admin", os_name=os.name)
+    logger.info(
+        "ui-credential-rotation-armed",
+        reload_interval=schedule.interval,
+        derived_from_lease=schedule.derived,
+        lease_duration=schedule.lease_duration,
+        sighup=sighup_registered,
+    )
+    task = asyncio.create_task(
+        run_reload_schedule(schedule, _rebuild, trigger=trigger, role="ui-admin"),
+        name="ui.credential_rotation",
+    )
+    try:
+        yield
+    finally:
+        if sighup_registered:
+            loop.remove_signal_handler(signal.SIGHUP)
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+
 def _ui_serve(
     pg_dsn: str,
     schema: str,
@@ -1331,7 +1943,15 @@ def _ui_serve(
     pool_factory: PoolFactory | None = None,
     conn_factory: ConnFactory | None = None,
     redis_factory: RedisFactory | None = None,
+    providers: Sequence[object] = (),
 ) -> None:
+    """Serve the admin UI.
+
+    *providers* are the credential providers behind the factories - loaded
+    by this process, so this process releases what they hold (an Entra ID
+    provider's lazily created credential keeps an aiohttp session open)
+    at lifespan exit, bounded like every other teardown close.
+    """
     from contextlib import asynccontextmanager
 
     from fastapi import APIRouter, Depends, FastAPI, Response
@@ -1370,34 +1990,33 @@ def _ui_serve(
         )
 
         if run_migrate:
+            # Pre phase only. This path fires on process lifecycle events
+            # nobody sequences — a pod restart, a rollout, an autoscale
+            # event — not on an operator's decision. Post-phase migrations
+            # exist to be withheld until the whole fleet is confirmed
+            # upgraded, so applying them here would let an unrelated
+            # restart close a rolling-deploy overlap window mid-rollout.
+            # They stay behind an explicit `taskq migrate up --phase post`.
             if conn_factory is not None:
-                await migrate_mod.apply_pending_locked(conn_factory=conn_factory, schema=schema)
+                await migrate_mod.apply_pending_locked(
+                    conn_factory=conn_factory, schema=schema, phase="pre"
+                )
             else:
-                await migrate_mod.apply_pending_locked(pg_dsn, schema=schema)
+                await migrate_mod.apply_pending_locked(pg_dsn, schema=schema, phase="pre")
 
         async with AsyncExitStack() as stack:
+            # Pushed first so they unwind last: the pool and Redis client
+            # built through them close before the credential they used.
+            for provider in providers:
+                stack.push_async_callback(
+                    close_provider_bounded, provider, "ui-admin", CLOSE_TIMEOUT_SECS
+                )
             # A credential-provider pool passes password= as an async
             # callable, so every physical connection this long-lived UI
             # process opens re-authenticates with a fresh token; the DSN
             # path is unchanged.
             if pool_factory is not None:
-                # Why bounded: UI startup arms no watchdog — a hung token
-                # endpoint inside the factory would park `taskq ui serve`
-                # forever before any request is served.
-                # _UI_FACTORY_TIMEOUT_SECS is the SAME bound the worker
-                # applies to its bootstrap factory calls (worker/deps.py).
-                try:
-                    pg_pool = await asyncio.wait_for(
-                        pool_factory(), timeout=_UI_FACTORY_TIMEOUT_SECS
-                    )
-                except TimeoutError as exc:
-                    raise TimeoutError(
-                        f"taskq ui serve: pool_factory did not return within "
-                        f"{_UI_FACTORY_TIMEOUT_SECS}s — the credential "
-                        "provider behind it (e.g. a token endpoint) is "
-                        "black-holed. UI startup fails loudly instead of "
-                        "parking forever."
-                    ) from exc
+                pg_pool = await _build_ui_pool(pool_factory)
             else:
                 # settings (the TaskQSettings this UI was launched with) is
                 # in scope, so the pair resolves through statement_cache_kwargs;
@@ -1419,18 +2038,22 @@ def _ui_serve(
                     max_cached_statement_lifetime=stmt_kwargs["max_cached_statement_lifetime"],
                 )
             assert pg_pool is not None, "asyncpg.create_pool returned None"
-            pool = pg_pool
+            # application.state.pg_pool is the one live pool: every admin
+            # route resolves it per request (get_pg_pool), so a credential
+            # rotation swaps it there and nothing holds a stale reference.
+            application.state.pg_pool = pg_pool
 
             async def _close_ui_pool() -> None:
                 # Why module-global reads at call time: tests monkeypatch
                 # close_pool_bounded / CLOSE_TIMEOUT_SECS as
                 # observation and timeout-shrink seams (same convention as
-                # taskq.worker.deps).
-                await close_pool_bounded(pool, "ui-admin", CLOSE_TIMEOUT_SECS)
+                # taskq.worker.deps). Read off app.state, not the local: a
+                # rotation may have replaced the pool built above.
+                await close_pool_bounded(application.state.pg_pool, "ui-admin", CLOSE_TIMEOUT_SECS)
 
             # Why a pushed callback instead of stack.enter_async_context(pool):
             # Pool.__aexit__ closes UNBOUNDED — a dead PG would wedge UI
-            # shutdown (#38). The bounded helper terminates the pool on
+            # shutdown. The bounded helper terminates the pool on
             # timeout and never raises.
             stack.push_async_callback(_close_ui_pool)
 
@@ -1466,7 +2089,7 @@ def _ui_serve(
 
                 # Why not stack.enter_async_context(client): Redis.__aexit__
                 # calls aclose() UNBOUNDED (and shielded) — a hung broker
-                # would wedge UI shutdown (#38 follow-up). initialize()
+                # would wedge UI shutdown. initialize()
                 # preserves __aenter__'s eager-setup semantics; the pushed
                 # callback bounds the close instead (taskq._close
                 # pattern; redis has no terminate(), so it is
@@ -1502,7 +2125,7 @@ def _ui_serve(
                 redis_client = client
 
             bundle = create_router(
-                pool,
+                application.state.pg_pool,
                 schema=schema,
                 redis_client=redis_client,
                 auth_dependency=auth_dependency,
@@ -1510,6 +2133,13 @@ def _ui_serve(
             )
 
             setup_admin_state(application, bundle)
+            # Armed only now: setup_admin_state copies the bundle's pool onto
+            # app.state, so a rotation running before this point could be
+            # undone by that copy.
+            if pool_factory is not None:
+                await stack.enter_async_context(
+                    _ui_credential_rotation(application, pool_factory, settings)
+                )
             application.include_router(bundle.router, prefix="/admin")
             if sso_bundle is not None:
                 application.include_router(sso_bundle.router, prefix="/admin")
@@ -1538,7 +2168,9 @@ def _ui_serve(
                     # identical probe (acquire + SELECT 1) with
                     # health_pg_ping_timeout (worker/health.py); an
                     # unbounded probe turns a wedged pool or a black-holed
-                    # PG into a wedged prober.
+                    # PG into a wedged prober. Resolved per probe: the pool
+                    # is replaced by a credential rotation.
+                    pool = _ui_live_pool(application)
                     async with pool.acquire(timeout=_UI_PG_PING_TIMEOUT_SECS) as conn:
                         await asyncio.wait_for(
                             conn.execute("SELECT 1"),
@@ -1668,10 +2300,12 @@ def ui_serve(
 
     pool_factory: PoolFactory | None = None
     conn_factory: ConnFactory | None = None
+    providers: list[object] = []
     if resolved_pg_provider_ref is not None:
         pg_provider = _load_pg_credential_provider(
             resolved_pg_provider_ref, option="--pg-credential-provider"
         )
+        providers.append(pg_provider)
         # Why command_timeout: this factory builds the UI's admin pool —
         # the factory-path twin of the create_pool bound in the lifespan,
         # or the credential-provider deployment would be the one unbounded
@@ -1683,7 +2317,13 @@ def ui_serve(
             pg_provider,
             max_size=4,
             command_timeout=_UI_POOL_COMMAND_TIMEOUT_SECS,
+            # The cadence the lifespan's rotation loop rebuilds this pool
+            # on: TASKQ_RELOAD_INTERVAL when set, else derived from the
+            # lease the provider grants (see ReloadSchedule).
+            reload_schedule=ReloadSchedule(configured=settings.reload_interval),
         )
+        # One-shot: the migration connection is opened, used and closed at
+        # startup, so it declares no long-lived schedule.
         conn_factory = make_dedicated_conn_factory(resolved_dsn, pg_provider)
 
     redis_factory: RedisFactory | None = None
@@ -1695,12 +2335,11 @@ def ui_serve(
                 err=True,
             )
             raise typer.Exit(code=1)
-        redis_factory = make_redis_client_factory(
-            resolved_redis,
-            _load_redis_credential_provider(
-                resolved_redis_provider_ref, option="--redis-credential-provider"
-            ),
+        redis_provider = _load_redis_credential_provider(
+            resolved_redis_provider_ref, option="--redis-credential-provider"
         )
+        providers.append(redis_provider)
+        redis_factory = make_redis_client_factory(resolved_redis, redis_provider)
 
     _ui_serve(
         resolved_dsn,
@@ -1713,11 +2352,29 @@ def ui_serve(
         pool_factory=pool_factory,
         conn_factory=conn_factory,
         redis_factory=redis_factory,
+        # One instance may serve both roles (EntraIdProvider); closed once.
+        providers=list(dict.fromkeys(providers)),
     )
+
+
+def _ensure_cwd_on_sys_path() -> None:
+    """Put the current working directory on ``sys.path`` if it is absent.
+
+    A console script starts with a ``sys.path`` that excludes the cwd, so
+    ``taskq worker --actors myapp.actors:registry`` could not resolve the
+    application's modules when run from its own project directory.
+    ``python -m taskq`` prepends the cwd itself; inserting it here gives
+    the console script the same import semantics any ``python -m``
+    invocation gets before any ``module:attr`` resolution runs.
+    """
+    cwd = os.getcwd()
+    if cwd not in sys.path:
+        sys.path.insert(0, cwd)
 
 
 def main() -> None:
     """Console-script entry point."""
+    _ensure_cwd_on_sys_path()
     app()
 
 
@@ -1919,3 +2576,109 @@ async def _queues_set_max_concurrent(
     finally:
         await close_conn_bounded(conn, "queues-set-max-concurrent", CLOSE_TIMEOUT_SECS)
     _print_queue_row(row)
+
+
+# ── job ────────────────────────────────────────────────────────────────
+
+_JOB_SHOW_COLUMNS: Final = (
+    "id",
+    "actor",
+    "queue",
+    "status",
+    "priority",
+    "attempt",
+    "max_attempts",
+    "retry_kind",
+    "created_at",
+    "scheduled_at",
+    "started_at",
+    "finished_at",
+    "error_class",
+    "error_message",
+    "idempotency_key",
+)
+"""The operator-facing columns ``taskq job show`` prints.
+
+Explicit, not ``SELECT *``: the printed set is the contract, and leaving
+``payload``/``result``/``progress_state``/``error_traceback`` out keeps a
+terminal-friendly read from dragging arbitrarily large blobs onto the
+wire. Both ``jobs`` and ``jobs_archive`` carry every column listed.
+"""
+
+
+def _format_max_attempts(max_attempts: int, retry_kind: str) -> str:
+    """The ``max_attempts`` display for a job row.
+
+    Under ``retry_kind='indefinite'`` the stored ceiling is inert — the
+    retry path never consults it — so printing the number would claim a
+    budget the job does not carry. Render the inertness instead, the same
+    framing the retries guide gives the field on an indefinite job.
+    """
+    if parse_retry_kind(retry_kind) == "indefinite":
+        return "— (indefinite)"
+    return str(max_attempts)
+
+
+@job_app.command("show")
+def job_show(
+    job_id: Annotated[str, typer.Argument(help="Job id (UUID).")],
+) -> None:
+    """Show one job's stored row, from `jobs` or `jobs_archive`."""
+    settings = TaskQSettings.load()
+    asyncio.run(_job_show(settings, job_id))
+
+
+async def _job_show(settings: TaskQSettings, job_id: str) -> None:
+    try:
+        parsed = UUID(job_id)
+    except ValueError:
+        typer.echo(f"invalid job id (expected a UUID): {job_id!r}", err=True)
+        raise typer.Exit(code=1) from None
+    if not _IDENT_RE.match(settings.schema_name):
+        # Defence in depth: TaskQSettings validates schema_name at load;
+        # re-check at the SQL interpolation site (the queue_ops convention).
+        typer.echo(f"invalid schema name: {settings.schema_name!r}", err=True)
+        raise typer.Exit(code=1)
+    columns = ", ".join(_JOB_SHOW_COLUMNS)
+    conn = await asyncpg.connect(str(settings.pg_dsn))
+    archived = False
+    try:
+        row = await conn.fetchrow(
+            f'SELECT {columns} FROM "{settings.schema_name}".jobs WHERE id = $1',  # noqa: S608  # Why: schema is identifier-validated above; asyncpg cannot bind identifiers.
+            parsed,
+        )
+        if row is None:
+            row = await conn.fetchrow(
+                f'SELECT {columns} FROM "{settings.schema_name}".jobs_archive WHERE id = $1',  # noqa: S608  # Why: schema is identifier-validated above; asyncpg cannot bind identifiers.
+                parsed,
+            )
+            archived = row is not None
+    finally:
+        await close_conn_bounded(conn, "job-show", CLOSE_TIMEOUT_SECS)
+    if row is None:
+        typer.echo(
+            f"no job {parsed} in {settings.schema_name}.jobs or "
+            f"{settings.schema_name}.jobs_archive",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+
+    typer.echo(f"id: {row['id']}")
+    typer.echo(f"actor: {row['actor']}")
+    typer.echo(f"queue: {row['queue']}")
+    typer.echo(f"status: {row['status']}")
+    typer.echo(f"priority: {row['priority']}")
+    typer.echo(f"attempt: {row['attempt']}")
+    typer.echo(f"max_attempts: {_format_max_attempts(row['max_attempts'], row['retry_kind'])}")
+    typer.echo(f"retry_kind: {row['retry_kind']}")
+    typer.echo(f"created_at: {row['created_at']}")
+    typer.echo(f"scheduled_at: {row['scheduled_at']}")
+    typer.echo(f"started_at: {row['started_at']}")
+    typer.echo(f"finished_at: {row['finished_at']}")
+    if row["error_class"] is not None:
+        typer.echo(f"error_class: {row['error_class']}")
+        typer.echo(f"error_message: {row['error_message']}")
+    if row["idempotency_key"] is not None:
+        typer.echo(f"idempotency_key: {row['idempotency_key']}")
+    if archived:
+        typer.echo("archived: yes")

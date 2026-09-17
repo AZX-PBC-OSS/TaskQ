@@ -14,14 +14,24 @@ import pytest
 
 from taskq._ids import new_base62, new_uuid
 from taskq.ratelimit import SlidingWindow
+from taskq.ratelimit._sliding_window_pg import DEFAULT_SLIDING_WINDOW_LOCK_TIMEOUT_MS
 from taskq.ratelimit.decision import RateLimitDecision
+from taskq.ratelimit.token_bucket import DEFAULT_TOKEN_BUCKET_LOCK_TIMEOUT_MS
 from taskq.testing.clock import FakeClock
 
 _START = datetime(2025, 1, 1, tzinfo=UTC)
 
 
 class _FakeSettings:
+    """Settings stub for the PG dispatch arms: carries the fields the PG
+    acquire/refund paths read — ``schema_name`` plus the lock budgets,
+    mirrored at WorkerSettings' shipped defaults. The budget resolution
+    seam reads them without a fallback, so a double lacking one fails
+    loud instead of silently pinning the wait."""
+
     schema_name: str = "taskq_test"
+    token_bucket_lock_timeout_ms: float = DEFAULT_TOKEN_BUCKET_LOCK_TIMEOUT_MS
+    sliding_window_lock_timeout_ms: float = DEFAULT_SLIDING_WINDOW_LOCK_TIMEOUT_MS
 
 
 def _sw_log(limit: int = 2, window: timedelta = timedelta(seconds=60)) -> SlidingWindow:

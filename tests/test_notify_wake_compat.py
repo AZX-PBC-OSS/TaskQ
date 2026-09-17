@@ -1,14 +1,13 @@
 """Integration tests for the enqueue → NOTIFY → wake path.
 
 Verifies the end-to-end low-latency dispatch path: ``JobsClient.enqueue()``
-→ ``PostgresBackend.enqueue`` ``pg_notify`` at
-``src/taskq/backend/postgres.py:717-727`` → listener callback → subscriber
-event, plus the polling-fallback path when the listener is killed.
+→ ``PostgresBackend.enqueue`` INSERT → the ``tr_notify_job_insert`` trigger's
+``pg_notify`` at commit → listener callback → subscriber event, plus the
+polling-fallback path when the listener is killed.
 """
 
 import asyncio
 import time
-from collections.abc import Iterator
 from datetime import timedelta
 
 import asyncpg
@@ -22,7 +21,6 @@ from taskq.migrate import apply_pending
 from taskq.testing.jobs import make_enqueue_args
 from taskq.testing.settings import make_integration_settings
 from taskq.worker.notify import (
-    _active_listeners,
     _connected_lookup,
     _notify_reconnects_counter,
     notify_listener_loop,
@@ -33,18 +31,13 @@ pytestmark = pytest.mark.integration
 _GRACE = timedelta(seconds=30)
 _WORKER_ID = new_uuid()
 
-# ── Module-state cleanup fixture ─────────────────────────────────────────
-
-
-@pytest.fixture(autouse=True)
-def _restore_notify_module_globals() -> Iterator[None]:  # pyright: ignore[reportUnusedFunction] # Why: pytest autouse fixture; pyright does not track fixture usage
-    _active_listeners.clear()
-    _connected_lookup.clear()
-    try:
-        yield
-    finally:
-        _active_listeners.clear()
-        _connected_lookup.clear()
+# ── Module-state cleanup ──────────────────────────────────────────────────
+#
+# The module-global listener bookkeeping (_active_listeners /
+# _connected_lookup) is reset around every test by the conftest-level
+# _reset_notify_module_globals autouse fixture — this file's former
+# file-local copy of that reset was promoted there (with the four other
+# identical copies across the notify suites) so every test gets it.
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────
@@ -111,8 +104,8 @@ async def test_enqueue_wakes_subscriber_with_listener(pg_dsn: str) -> None:
 
     Demonstrates that a ``PostgresBackend.enqueue(...)`` call wakes a subscriber
     holding a ``subscribe_wake()`` event within a bounded wall-clock window.
-    The pg_notify fires at commit from ``src/taskq/backend/postgres.py:717-727``
-    and the callback from ``src/taskq/worker/notify.py`` delivers to the
+    The pg_notify is the jobs INSERT trigger's, delivered at commit, and
+    the callback from ``src/taskq/worker/notify.py`` delivers to the
     per-backend subscriber registry.
     """
     worker_settings = make_integration_settings(pg_dsn)

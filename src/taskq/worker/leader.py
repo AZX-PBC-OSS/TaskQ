@@ -6,8 +6,23 @@ worker cleanup, queue depth, reservation slots, and backlog detection.
 Non-leader pods retry election periodically and skip the gated work —
 the backlog detector is the deliberate exception (every worker samples;
 see ``_backlog_detection_loop``).
+Leadership is a row lease in ``maintenance_leader``: the holder writes an
+``expires_at`` it chose from ``leader_lease`` and renews it every heartbeat
+interval, and any pod may take the row over once that instant has passed.
+The row alone decides the election in every state — held, lapsed, or
+absent — so nothing about the role depends on the liveness of a
+connection: a holder that dies without a FIN is replaced on a horizon
+TaskQ controls rather than the server's connection-reaping schedule, and
+the replacement needs no privilege beyond UPDATE on that row. The
+schema-qualified advisory lock is still taken after winning, as a courtesy
+to pods from releases that only understand the lock; it is never required,
+never waited on, and its absence never gates or costs the role.
+
 Failover SLA:
-  Worker killed      ≤ heartbeat_interval + 1 s
+  Graceful stop      ≤ heartbeat_interval + one round trip (the resign
+                       deletes the row; the next election wins it)
+  Worker killed      ≤ leader_lease + heartbeat_interval + one round trip
+  Silent leader      ≤ leader_lease + heartbeat_interval + one round trip
   Partition detect   ≤ watchdog_interval + heartbeat_interval + 2 s
   PG failover        ≤ heartbeat_interval
   Watchdog detect    ≤ watchdog_interval + heartbeat_interval
@@ -18,6 +33,7 @@ import contextlib
 import threading
 import time
 from collections.abc import Iterable, Mapping
+from datetime import datetime
 from typing import Final
 from uuid import UUID
 
@@ -27,6 +43,7 @@ from opentelemetry.metrics import CallbackOptions, Observation
 
 from taskq._close import CLOSE_TIMEOUT_SECS, close_conn_bounded
 from taskq.backend._protocol import Backend
+from taskq.backend._sql import WAKE_NOTIFY_SQL
 from taskq.backend.clock import Clock
 from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining
@@ -38,6 +55,7 @@ from taskq.obs import (  # pyright: ignore[reportPrivateUsage]  # Why: the sweep
     get_logger,
     get_meter,
     record_election_attempt,
+    record_leader_lease_expires_in_seconds,
     record_lock_contention,
     record_sweep_success,
     record_sweep_timeout,
@@ -73,9 +91,14 @@ from taskq.worker._leader_sweeps import (
     _stranded_jobs_loop,
     _sweep_loop,
 )
-from taskq.worker._transient import TRANSIENT_PG_ERRORS, UnexpectedLoopErrorGuard
+from taskq.worker._transient import (
+    PERMANENT_PG_REFUSALS,
+    TRANSIENT_PG_ERRORS,
+    UnexpectedLoopErrorGuard,
+)
 from taskq.worker.cron_loop import ActorFirePolicy, tick_cron
 from taskq.worker.deps import (
+    LeaderTerm,
     WorkerDeps,
     apply_keepalive_to_conn,
     open_dedicated_conn,
@@ -97,19 +120,120 @@ __all__ = [
 log: structlog.stdlib.BoundLogger = get_logger(__name__)
 _WATCHDOG_INTERVAL_SECS: float = 5.0
 
-#: How many heartbeat intervals the election holder's lease ping may be
-#: silent before a waiting pod reclaims its backend. The election lock is
-#: session-scoped with no unlock and no TTL, so a holder that dies without
-#: a FIN (power loss, SIGSTOP, black-holed partition) keeps its backend —
-#: and with it the lock — until the server's tcp_keepalives reap the
-#: session (stock default ~2 h 11 m), while a merely idle session holds it
-#: indefinitely; every other pod's election then silently retries false
-#: and the whole maintenance plane is down for the reaping horizon. The
-#: holder's ``maintenance_leader.last_seen_at`` ping rides the heartbeat
-#: tick, so four missed beats is the same slack the jobs' lock leases
-#: carry (the ``lock_lease >= 4 * heartbeat_interval`` invariant) — past
-#: it, the holder is treated as gone silent rather than merely behind.
-_LEADER_STALE_HEARTBEATS: Final[int] = 4
+#: How much earlier than the server's ``expires_at`` this process stops
+#: trusting its own term. The local window opens at the instant the renewal
+#: attempt STARTS while the server's expiry is written after the round trip,
+#: so this margin plus that round trip is the gap in which no process acts as
+#: leader — the gap that makes the two windows unable to overlap.
+_LEADER_TRUST_MARGIN_SECS: Final[float] = 1.0
+
+#: How many heartbeat intervals the recorded holder's ``last_seen_at`` ping may
+#: be silent before its row is takeable. This is the horizon for a holder from
+#: a release that does not lease, whose ping is the only liveness signal it
+#: writes; a holder that does lease is additionally held by its own expiry,
+#: which is never shorter (``resolved_leader_lease``), so this slack never
+#: decides a leasing holder's fate. Four missed beats is the same slack the
+#: jobs' lock leases carry (the ``lock_lease >= 4 * heartbeat_interval``
+#: invariant).
+_PRE_LEASE_STALE_HEARTBEATS: Final[int] = 4
+
+#: Claim or take over the lease. Zero rows returned means the role is not
+#: this pod's to take, which is the ordinary follower state and not an error.
+#: Concurrent takers serialise on the singleton row, so the loser re-evaluates
+#: the conflict predicate against the winner's fresh expiry and gets zero rows.
+#:
+#: The insert side is deliberately unguarded: an absent row IS the unclaimed
+#: role, and claiming it must never consult anything a session can hold,
+#: so the claim is a bare INSERT with no lock gate. A candidate
+#: that dies between the courtesy lock attempt and this write, or a leader
+#: whose resign lands while its session outlives the delete, leaves the lock
+#: held with no row behind it; gating the insert on the lock would leave the
+#: whole fleet unelectable until the server reaps that session. The conflict
+#: predicate below is the only gate, and it alone protects a live holder.
+#:
+#: The recorded holder is displaced only once BOTH of the liveness signals it
+#: could have written have lapsed: the lease it chose (``$2``-derived
+#: ``expires_at``) and its heartbeat ping (``last_seen_at``, within the
+#: ``$3`` pre-lease slack). Either alone is insufficient, because the row can
+#: be written by two protocols at once during a roll. A pod from a release
+#: that does not lease names only four columns in its upsert, so its takeover
+#: leaves the PREVIOUS holder's ``expires_at`` in place: judging that row on
+#: the expiry alone would declare a pod that is actively pinging the row
+#: lapsed, and two processes would lead. Requiring the ping to have stopped
+#: too costs nothing against the failover bound — the lease is never shorter
+#: than the slack (``resolved_leader_lease``), so the expiry is always the
+#: later of the two horizons for a pod that leases.
+#:
+#: The first arm lets the recorded holder refresh its OWN row (a new term,
+#: not a renewal — the renewal fence is narrower). While the row names this
+#: worker with a live lease no peer could legally have taken it, so the arm
+#: cannot put a second leader on the row; what it buys is a cheap route back
+#: for a holder that stepped down without its row lapsing — a credential
+#: reload that dropped leader_conn, a transient renewal failure that spent
+#: the trust window — which would otherwise pay a whole lease's lapse per
+#: occurrence.
+_LEADER_ELECT_SQL_TEMPLATE: Final[str] = (
+    'INSERT INTO "{schema}".maintenance_leader '
+    "(singleton, worker_id, elected_at, last_seen_at, expires_at) "
+    "VALUES (true, $1, clock_timestamp(), clock_timestamp(), "
+    "clock_timestamp() + make_interval(secs => $2)) "
+    "ON CONFLICT (singleton) DO UPDATE SET "
+    "worker_id = EXCLUDED.worker_id, elected_at = EXCLUDED.elected_at, "
+    "last_seen_at = EXCLUDED.last_seen_at, expires_at = EXCLUDED.expires_at "
+    "WHERE maintenance_leader.worker_id = $1 "
+    "OR ("
+    "(maintenance_leader.expires_at IS NULL "
+    "OR maintenance_leader.expires_at < clock_timestamp()) "
+    "AND maintenance_leader.last_seen_at < clock_timestamp() - make_interval(secs => $3)"
+    ") "
+    "RETURNING elected_at"
+)
+
+#: Renew, fenced on the term. Zero rows means the term is gone — taken over,
+#: or lapsed at the server. A lapsed-but-untaken lease is deliberately not
+#: renewable: the holder must re-elect through the same statement every peer
+#: runs, so being the previous holder confers no advantage.
+_LEADER_RENEW_SQL_TEMPLATE: Final[str] = (
+    'UPDATE "{schema}".maintenance_leader '
+    "SET last_seen_at = clock_timestamp(), "
+    "expires_at = clock_timestamp() + make_interval(secs => $3) "
+    "WHERE singleton = true AND worker_id = $1 AND elected_at = $2 "
+    "AND expires_at >= clock_timestamp() "
+    "RETURNING expires_at"
+)
+
+#: Step-down reasons that mean this pod's link to PG is what failed, mapped to
+#: the default description of that failure. They carry the ``leader_conn_died``
+#: kind alongside ``leadership_lost`` so a network or pool fault stays
+#: distinguishable from an ordinary handover to a peer.
+_LEADER_CONN_DEATH_REASONS: Final[Mapping[str, str]] = {
+    "conn_lost": "leader_conn is unavailable while is_leader is set",
+    "renew_failed": "the lease could not be renewed before the term lapsed",
+    "probe_failed": "the leader monitor probe could not reach PG",
+}
+
+#: Hand the lease back at shutdown, fenced so a resign issued late (after a
+#: takeover) cannot delete the successor's row.
+_LEADER_RESIGN_SQL_TEMPLATE: Final[str] = (
+    'DELETE FROM "{schema}".maintenance_leader '
+    "WHERE singleton = true AND worker_id = $1 AND elected_at = $2"
+)
+
+
+def build_leader_lease_sql(schema: str) -> tuple[str, str, str]:
+    """Render the elect / renew / resign statements for *schema*.
+
+    Validates *schema* against the canonical identifier regex before
+    formatting; asyncpg cannot bind identifiers as parameters.
+    """
+    if not _IDENT_RE.match(schema):
+        raise ValueError(f"invalid schema identifier: {schema!r}")
+    return (
+        _LEADER_ELECT_SQL_TEMPLATE.format(schema=schema),
+        _LEADER_RENEW_SQL_TEMPLATE.format(schema=schema),
+        _LEADER_RESIGN_SQL_TEMPLATE.format(schema=schema),
+    )
+
 
 _meter = get_meter()
 
@@ -168,21 +292,42 @@ class MaintenanceLeader:
         )
         self._leader_monitor_conn: asyncpg.Connection | None = None
         self._cron_conn: asyncpg.Connection | None = None
+        # The (worker_id, elected_at) term this pod last found holding the
+        # role while it lost an election, so contention distinguishes a
+        # transition from the steady state of following one live peer.
+        self._observed_holder: tuple[UUID, datetime] | None = None
+        # The last election this pod WON, kept past every demotion for
+        # resign()'s fence.  ``stop_leading`` nulls ``deps.leader_term`` on
+        # every mid-run step-down, so without this copy a leader that
+        # demoted itself (the cron/monitor conn-death paths) and is then
+        # torn down cannot fence its resign: the row it left behind lapses
+        # only after a whole ``leader_lease``, stalling every successor by
+        # exactly the wait resign exists to remove.  The fence stays sound
+        # because the resign DELETE matches ``(worker_id, elected_at)``
+        # exactly — a successor's takeover rewrites both, so a stale fence
+        # deletes nothing.
+        self._resign_fence: LeaderTerm | None = None
+        # Log-once latch for a refused courtesy advisory-lock probe: a
+        # managed Postgres refusing ``pg_try_advisory_lock`` refuses it on
+        # every election win for the life of the grants, so the WARN is
+        # emitted on the first refusal and re-armed only when a probe
+        # succeeds again (the grant appearing IS a new operational fact).
+        self._advisory_lock_refused = False
 
-    async def _close_leader_owned_conns(self, *, mid_run: bool = True) -> None:
-        """Close the leader-owned dedicated conns (cron, monitor), bounded.
+    def _demote(self) -> None:
+        """Stop being the leader, synchronously and before anything can await.
 
-        Two call contexts: mid-run demotion (watchdog/election/cron
-        conn-died paths - the default ``mid_run=True``, the ``conn-close-*``
-        alert family) and ``run()``'s finally (final teardown - passes
-        ``mid_run=False`` for the ``conn-teardown-close-*`` family), so an
-        ordinary shutdown never pages as an unexpected mid-run close
-        timeout.
+        Every path that gives up the role calls this FIRST. It must not be
+        an ``async def`` and must not follow an await on any of them: the
+        steps that make demotion real at the server — closing the conn that
+        carries the courtesy lock, closing the leader-owned conns — park for
+        up to a bounded close on a dead PG, and a peer that wins the lock
+        during that suspension may take the row legitimately. Anything still
+        reading ``leading()`` as true meanwhile would be a second leader.
         """
-        # Why first: demotion must be observable immediately - the bounded
-        # closes below can park for seconds on a dead PG, and this flag
-        # backs the leader gauge, /metrics, and the health report.
-        self._deps.is_leader.clear()
+        # The flag backs the leader gauge, /metrics, and the health report;
+        # the term is what every leader-gated loop consults per iteration.
+        self._deps.stop_leading()
         # Why here, and why empty rather than zero: queue depth, reservation
         # slots and stranded jobs are sampled ONLY by the leader's sweep
         # loops, so a demoted process that keeps its last sample keeps
@@ -192,10 +337,10 @@ class MaintenanceLeader:
         # point, so the series goes stale and the new leader's is the only
         # one answering; exporting a 0 would instead be an active claim that
         # the queue is empty, silencing depth alerts and corrupting any
-        # cross-pod sum/min. Cleared before the bounded closes below because
-        # those can park for seconds on a dead PG (same reason is_leader is
-        # cleared first); if the election loop re-elects during that
-        # suspension the sweep loops repopulate on their next tick.
+        # cross-pod sum/min. Cleared with the flag rather than after the
+        # bounded closes that follow demotion, which can park for seconds on
+        # a dead PG; if the election loop re-elects during that suspension
+        # the sweep loops repopulate on their next tick.
         # The backlog gauges (jobs-by-status, oldest due age) are deliberately
         # NOT in this list: _backlog_detection_loop samples them on every
         # worker, so a demoted process keeps full authority over its own
@@ -209,15 +354,29 @@ class MaintenanceLeader:
         # exporting frozen stamps reports a degraded maintenance view forever
         # after an ordinary failover, and its frozen sweep_last_success
         # series pages promotion-stalled while the new leader promotes fine.
-        # Re-election during the bounded closes below repopulates them on the
-        # sweep loops' next tick, same as the three clears above.
         _otel.clear_sweep_health_caches()
+        # Same authority loss for the lease-TTL gauge: the stamp claims a
+        # lease this process no longer holds, and a frozen one masks the
+        # failover the gauge exists to make visible.
+        _otel.clear_leader_lease_expires_in_seconds()
+
+    async def _close_leader_owned_conns(self, *, mid_run: bool = True) -> None:
+        """Demote, then close the leader-owned dedicated conns, bounded.
+
+        Two call contexts: mid-run demotion (watchdog/election/cron
+        conn-died paths - the default ``mid_run=True``, the ``conn-close-*``
+        alert family) and ``run()``'s finally (final teardown - passes
+        ``mid_run=False`` for the ``conn-teardown-close-*`` family), so an
+        ordinary shutdown never pages as an unexpected mid-run close
+        timeout.
+        """
+        self._demote()
         for attr in ("_cron_conn", "_leader_monitor_conn"):
             conn = getattr(self, attr)
             if conn is not None and not conn.is_closed():
                 # Why bounded: a dead PG can block conn.close() indefinitely,
                 # which stalled the election/watchdog/cron paths that call
-                # this (#38). The helper never raises - a superset of the
+                # this. The helper never raises - a superset of the
                 # previous suppress(PostgresConnectionError, OSError) - and
                 # terminates the conn on timeout. Labels match the keepalive
                 # labels ("cron_conn" / "leader_monitor_conn").
@@ -252,7 +411,7 @@ class MaintenanceLeader:
         if self._deps.owns_leader_conn:
             if not conn.is_closed():
                 # Why bounded: same dead-PG stall risk on the watchdog/
-                # election drop path (#38). The helper never raises, so
+                # election drop path. The helper never raises, so
                 # leader_conn is always nulled below and the loop can
                 # rebuild - previously a close error propagated out of the
                 # drop path and skipped the nulling.
@@ -367,6 +526,12 @@ class MaintenanceLeader:
                 tg.create_task(self._stranded_jobs_loop(shutdown), name="leader.stranded_jobs")
                 await shutdown.wait()
         finally:
+            # Hand the lease back before the conns go: a replacement pod then
+            # elects on its next cycle instead of waiting out the lease this
+            # one would otherwise leave behind. Best-effort — the lease lapses
+            # on its own, so a resign that cannot reach the database costs at
+            # most that wait.
+            await self.resign()
             # Final teardown, not a mid-run demotion: close with the
             # conn-teardown-close-* family so an ordinary shutdown never
             # pages as an unexpected mid-run close timeout.
@@ -374,133 +539,189 @@ class MaintenanceLeader:
             with _active_leaders_lock:
                 _active_leaders.discard(self)
 
-    async def _reclaim_silent_election_holder(self, lock_name: str) -> None:
-        """Reclaim the election lock's holder once its lease has gone silent.
+    async def _try_election_lock(self) -> bool:
+        """Try the schema's advisory lock as a courtesy; report whether held.
 
-        The holder's liveness signal is ``maintenance_leader.last_seen_at``
-        — written at election and pinged every heartbeat tick by the
-        leader's heartbeat loop — and it is the one signal that survives a
-        missing FIN, because it lives in the database rather than on the
-        holder's session. Staleness is measured by Postgres against
-        ``clock_timestamp()`` (never this process's clock — same doctrine
-        as the admin UI's liveness verdicts). Once the recorded holder is
-        silent past the lease-slack horizon (see
-        ``_LEADER_STALE_HEARTBEATS``), the session holding the lock is
-        identified by the lock key itself — ``pg_locks`` carries the
-        single-bigint advisory key split into its 32-bit halves — and its
-        backend is terminated, which frees the session-scoped lock with
-        the session and lets the next election cycle promote.
-
-        Everything here is best-effort and loud: a holder that released
-        between the probes reads as no pid (nothing to reclaim), a
-        deployment that restricts ``pg_terminate_backend`` keeps the
-        retry-forever behaviour but with the refusal logged instead of a
-        silent stall, and the stale-but-healthy window (a leader whose
-        heartbeat tick is merely behind) never reaches this path at all —
-        the horizon is the same four-beat slack the jobs' lock leases
-        carry.
+        The lease row is what confers the role; this lock is taken by the
+        winner only so a pod from a release that knows only the lock cannot
+        lead beside a lease holder during a roll. It is never required and
+        never waited on: a miss — or a transient failure asking, or a
+        refused privilege — is logged and leadership proceeds, because a
+        lock that outlives the row behind it (a candidate dead between the
+        lock attempt and the election write, a departed leader's lingering
+        session) must never again gate the election it used to decide.
         """
-        schema_name = self._deps.settings.schema_name
-        if not _IDENT_RE.match(schema_name):
-            raise ValueError(f"invalid schema identifier: {schema_name!r}")
-        stale_after_secs = _LEADER_STALE_HEARTBEATS * self._deps.settings.heartbeat_interval
         conn = self._deps.leader_conn
         if conn is None or conn.is_closed():
-            return
-        holder = await conn.fetchrow(
-            f"SELECT worker_id, last_seen_at, "  # noqa: S608  # Why: schema_name validated against _IDENT_RE above; asyncpg cannot bind identifiers as parameters.
-            "(last_seen_at < clock_timestamp() - make_interval(secs => $1)) AS stale "
-            f'FROM "{schema_name}".maintenance_leader WHERE singleton = true',
-            stale_after_secs,
-        )
-        if holder is None or not holder["stale"]:
-            return
-        # The session currently holding this lock key: pg_locks splits the
-        # single-bigint advisory key into classid (upper 32 bits) and
-        # objid (lower 32 bits), objsubid 1 marking the one-argument form;
-        # the mask keeps the halves unsigned for the oid casts. The own-pid
-        # guard makes terminating this pod's own backend unrepresentable.
-        holder_pid = await conn.fetchval(
-            "SELECT l.pid FROM pg_locks l "
-            "WHERE l.locktype = 'advisory' AND l.granted AND l.objsubid = 1 "
-            "AND l.classid = ((hashtextextended($1, 0) >> 32) & 4294967295)::oid "
-            "AND l.objid = (hashtextextended($1, 0) & 4294967295)::oid "
-            "AND l.pid <> pg_backend_pid()",
-            lock_name,
-        )
-        if holder_pid is None:
-            log.info(
-                "leader-holder-vanished",
-                kind="leader_holder_vanished",
+            return False
+        lock_name = schema_lock_name("maintenance_leader", self._deps.settings.schema_name)
+        try:
+            got = await conn.fetchval(
+                "SELECT pg_try_advisory_lock(hashtextextended($1, 0))", lock_name
+            )
+        except TRANSIENT_PG_ERRORS:
+            # The probe rides the conn the win just arrived on; if that conn
+            # is dying, the next renewal's own failure path stands the pod
+            # down. A courtesy probe must not cost a lease the row already
+            # granted.
+            return False
+        except PERMANENT_PG_REFUSALS as exc:
+            # A managed Postgres restricting advisory-lock functions to
+            # admin/superuser roles refuses this probe on every win, for as
+            # long as the grants stand — permanent, not transient (see
+            # PERMANENT_PG_REFUSALS). Degrade to a lock miss exactly as a
+            # False return would: the lease row is the authority, and a
+            # courtesy probe must never cost the leadership the row already
+            # granted. Logged once per refusal streak so a refused
+            # deployment does not WARN-spam on every re-election.
+            if not self._advisory_lock_refused:
+                self._advisory_lock_refused = True
+                log.warning(
+                    "leader-advisory-lock-refused",
+                    kind="leader_advisory_lock_refused",
+                    worker_id=str(self._worker_id),
+                    function="pg_try_advisory_lock",
+                    error=repr(exc),
+                    error_type=type(exc).__name__,
+                )
+            return False
+        self._advisory_lock_refused = False
+        return got is True
+
+    async def _step_down(self, reason: str, *, error: str | None = None) -> None:
+        """Give up leadership and stop acting on it, for *reason*.
+
+        Demotion lands before either await: releasing the courtesy lock is
+        what lets a peer elect, so this process must already have stopped
+        reading ``leading()`` as true by the time the lock can go.
+
+        Dropping ``leader_conn`` rather than unlocking explicitly releases
+        the courtesy lock with the session: an explicit unlock would have to
+        succeed on a connection that may be exactly what failed, while a
+        close is certain and bounded. The next cycle rebuilds the conn and
+        re-enters the election as an ordinary candidate.
+        """
+        self._demote()
+        # A leadership loss the connection caused keeps its own kind: an
+        # operator triaging a failover needs to tell "this pod's link to PG
+        # went away" from "a peer holds the row now", because only the first
+        # is a network or pool fault to chase.
+        died = _LEADER_CONN_DEATH_REASONS.get(reason)
+        await self._drop_leader_conn(reason=reason)
+        await self._close_leader_owned_conns()
+        if died is not None:
+            log.warning(
+                "leader-conn-died",
+                kind="leader_conn_died",
                 worker_id=str(self._worker_id),
-                holder_worker_id=str(holder["worker_id"]),
-                lock=lock_name,
-                stale_after_secs=stale_after_secs,
+                reason=reason,
+                error=error if error is not None else died,
+            )
+        log.warning(
+            "leadership-lost",
+            kind="leadership_lost",
+            worker_id=str(self._worker_id),
+            reason=reason,
+        )
+
+    async def _renew_lease(self, term: LeaderTerm, renew_sql: str) -> LeaderTerm | None:
+        """Renew *term*, returning the new term or ``None`` if it is gone.
+
+        Raises on a connection failure so the caller can decide whether the
+        remaining trust allows another attempt; a returned ``None`` is the
+        settled answer that some other pod now holds the row.
+        """
+        conn = self._deps.leader_conn
+        if conn is None or conn.is_closed():
+            raise ConnectionError("leader_conn is unavailable for lease renewal")
+        attempt_started = asyncio.get_running_loop().time()
+        # Never outlive the trust window: a renewal still in flight when this
+        # process stops trusting its term is a renewal whose answer can no
+        # longer be acted on, and the statement's own deadline must not push
+        # the decision past the instant a peer may take over.
+        budget = min(
+            max(term.trusted_until - attempt_started, 0.0),
+            float(self._deps.settings.dispatcher_command_timeout),
+        )
+        async with asyncio.timeout(budget):
+            expires_at = await conn.fetchval(
+                renew_sql,
+                self._worker_id,
+                term.elected_at,
+                self._deps.settings.resolved_leader_lease,
+            )
+        if expires_at is None:
+            return None
+        return LeaderTerm(
+            elected_at=term.elected_at,
+            trusted_until=attempt_started
+            + self._deps.settings.resolved_leader_lease
+            - _LEADER_TRUST_MARGIN_SECS,
+        )
+
+    async def resign(self) -> None:
+        """Hand the lease back so a peer elects on its next cycle.
+
+        Fenced on the term, so a resign issued after a takeover cannot delete
+        the successor's row. Best-effort by design: the lease lapses on its
+        own, so a resign that cannot reach the database costs a replacement
+        pod at most one lease rather than correctness.
+
+        Runs at ``run()`` teardown, AFTER the shutdown orchestrator has
+        already closed and nulled a TaskQ-owned ``leader_conn`` — so the
+        write rides the leader-owned monitor conn when the primary is gone.
+        Both conns are idle by then (the loops that used them have exited),
+        and the monitor conn is never the orchestrator's to close.
+
+        The fence prefers the live term and falls back to the last election
+        this pod won: a mid-run demotion clears ``deps.leader_term`` long
+        before teardown, and without the fallback this pod's own row — never
+        taken over, or the DELETE would fence it out — would sit until the
+        lease lapses while a replacement pod waits on it.
+        """
+        term = self._deps.leader_term or self._resign_fence
+        if term is None:
+            return
+        conn = self._deps.leader_conn
+        if conn is None or conn.is_closed():
+            conn = self._leader_monitor_conn
+        if conn is None or conn.is_closed():
+            return
+        _elect, _renew, resign_sql = build_leader_lease_sql(self._deps.settings.schema_name)
+        try:
+            async with asyncio.timeout(CLOSE_TIMEOUT_SECS):
+                await conn.execute(resign_sql, self._worker_id, term.elected_at)
+        except Exception as exc:
+            log.warning(
+                "leader-resign-failed",
+                kind="leader_resign_failed",
+                worker_id=str(self._worker_id),
+                error=repr(exc),
             )
             return
-        terminated = await conn.fetchval("SELECT pg_terminate_backend($1)", holder_pid)
-        log.warning(
-            "leader-holder-reclaimed",
-            kind="leader_holder_reclaimed",
+        log.info(
+            "leader-resigned",
+            kind="leader_resigned",
             worker_id=str(self._worker_id),
-            holder_worker_id=str(holder["worker_id"]),
-            holder_pid=holder_pid,
-            terminated=terminated is True,
-            lock=lock_name,
-            stale_after_secs=stale_after_secs,
         )
 
     async def _election_loop(self, shutdown: asyncio.Event) -> None:
         guard = UnexpectedLoopErrorGuard("leader.election")
+        elect_sql, renew_sql, _ = build_leader_lease_sql(self._deps.settings.schema_name)
+        pre_lease_slack = _PRE_LEASE_STALE_HEARTBEATS * self._deps.settings.heartbeat_interval
         while not shutdown.is_set():
             self._deps.liveness.tick(
                 "leader.election", period=self._deps.settings.heartbeat_interval
             )
+            term = self._deps.leader_term
+            if self._deps.is_leader.is_set() and term is not None:
+                if await self._renew_term(term, renew_sql, guard):
+                    await asyncio.sleep(self._deps.settings.heartbeat_interval)
+                continue
             if self._deps.is_leader.is_set():
-                if self._deps.leader_conn is None or self._deps.leader_conn.is_closed():
-                    conn_state = "None" if self._deps.leader_conn is None else "closed"
-                    log.warning(
-                        "leader-conn-died",
-                        kind="leader_conn_died",
-                        worker_id=str(self._worker_id),
-                        error=f"leader_conn is {conn_state} while is_leader is set",
-                    )
-                    self._deps.leader_conn = None
-                    await self._close_leader_owned_conns()
-                else:
-                    try:
-                        await self._deps.leader_conn.execute("SELECT 1")
-                        guard.ok()
-                        await asyncio.sleep(self._deps.settings.heartbeat_interval)
-                        continue
-                    except TRANSIENT_PG_ERRORS as exc:
-                        await self._drop_leader_conn(reason="probe_failed")
-                        await self._close_leader_owned_conns()
-                        log.warning(
-                            "leader-conn-died",
-                            kind="leader_conn_died",
-                            worker_id=str(self._worker_id),
-                            error=repr(exc),
-                        )
-                    except Exception as exc:
-                        # Backstop (see _transient.py): tolerated + logged a
-                        # few times, then deliberately fatal; cleanup mirrors
-                        # the transient path since conn state is unknown.
-                        # Cleanup runs BEFORE guard.unexpected so the fatal
-                        # iteration still drops the conn and clears
-                        # is_leader — otherwise the dead leader gauge and
-                        # leader_conn reference stay stale until run()'s
-                        # finally.
-                        await self._drop_leader_conn(reason="probe_failed")
-                        await self._close_leader_owned_conns()
-                        log.warning(
-                            "leader-conn-died",
-                            kind="leader_conn_died",
-                            worker_id=str(self._worker_id),
-                            error=repr(exc),
-                        )
-                        guard.unexpected(exc)
-                        continue
+                # The flag without a term is not a state this loop can renew
+                # from; stand down and re-enter as an ordinary candidate.
+                await self._step_down("term_missing")
             if self._deps.leader_conn is None or self._deps.leader_conn.is_closed():
                 try:
                     self._deps.leader_conn = await self._open_leader_conn()
@@ -524,184 +745,271 @@ class MaintenanceLeader:
                     )
                     await asyncio.sleep(self._deps.settings.heartbeat_interval)
                     continue
+            attempt_started = asyncio.get_running_loop().time()
             try:
-                got_lock = await self._deps.leader_conn.fetchval(
-                    "SELECT pg_try_advisory_lock(hashtextextended($1, 0))",
-                    schema_lock_name("maintenance_leader", self._deps.settings.schema_name),
+                elected_at = await self._deps.leader_conn.fetchval(
+                    elect_sql,
+                    self._worker_id,
+                    self._deps.settings.resolved_leader_lease,
+                    pre_lease_slack,
                 )
-            except TRANSIENT_PG_ERRORS as exc:
-                await self._drop_leader_conn(reason="lock_attempt_failed")
-                await self._close_leader_owned_conns()
-                record_election_attempt(str(self._worker_id), won=False)
-                log.warning(
-                    "election-lock-attempt-failed",
-                    kind="election_lock_attempt_failed",
+            except asyncpg.ForeignKeyViolationError as exc:
+                log.error(
+                    "leader-upsert-fk-violation",
+                    kind="leader_upsert_fk_violation",
                     worker_id=str(self._worker_id),
                     error=repr(exc),
                 )
+                shutdown.set()
+                return
+            except TRANSIENT_PG_ERRORS as exc:
+                await self._election_attempt_failed(exc)
                 await asyncio.sleep(self._deps.settings.heartbeat_interval)
                 continue
             except Exception as exc:
                 # Backstop (see _transient.py): tolerated + logged a few
                 # times, then deliberately fatal; cleanup mirrors the
                 # transient path since conn state is unknown.
-                await self._drop_leader_conn(reason="lock_attempt_failed")
-                await self._close_leader_owned_conns()
-                record_election_attempt(str(self._worker_id), won=False)
-                log.warning(
-                    "election-lock-attempt-failed",
-                    kind="election_lock_attempt_failed",
-                    worker_id=str(self._worker_id),
-                    error=repr(exc),
-                )
+                await self._election_attempt_failed(exc)
                 guard.unexpected(exc)
                 await asyncio.sleep(self._deps.settings.heartbeat_interval)
                 continue
-            if got_lock:
-                schema_name = self._deps.settings.schema_name
-                if not _IDENT_RE.match(schema_name):
-                    raise ValueError(f"invalid schema identifier: {schema_name!r}")
-                upsert_sql = (
-                    f'INSERT INTO "{schema_name}".maintenance_leader (singleton, worker_id, elected_at, last_seen_at) '  # noqa: S608  # Why: schema_name validated against _IDENT_RE before interpolation; asyncpg cannot bind identifiers as parameters.
-                    "VALUES (true, $1, clock_timestamp(), clock_timestamp()) "
-                    "ON CONFLICT (singleton) DO UPDATE SET "
-                    "worker_id = EXCLUDED.worker_id, "
-                    "elected_at = EXCLUDED.elected_at, "
-                    "last_seen_at = EXCLUDED.last_seen_at"
-                )
+            if isinstance(elected_at, datetime):
+                # The assume path (courtesy lock probe, dedicated-conn
+                # opens) runs inside the same error boundary as the
+                # election statement: nothing it raises may escape into
+                # the TaskGroup — one election cycle's failure is a retry
+                # next tick, never a cancelled maintenance plane.
                 try:
-                    await self._deps.leader_conn.execute(upsert_sql, self._worker_id)
-                except asyncpg.ForeignKeyViolationError as exc:
-                    log.error(
-                        "leader-upsert-fk-violation",
-                        kind="leader_upsert_fk_violation",
-                        worker_id=str(self._worker_id),
-                        error=repr(exc),
-                    )
-                    shutdown.set()
-                    return
+                    assumed = await self._assume_leadership(elected_at, attempt_started)
                 except TRANSIENT_PG_ERRORS as exc:
-                    # The advisory lock was won but the conn died before the
-                    # UPSERT landed: transient, and mirrors the lock-attempt
-                    # guard above. Unguarded it escapes into the worker's
-                    # TaskGroup, cancelling every sibling WITHOUT setting
-                    # shutdown_event. is_leader stays clear, so the leader-only
-                    # loops keep gating until a later attempt succeeds.
-                    await self._drop_leader_conn(reason="leader_upsert_failed")
-                    await self._close_leader_owned_conns()
-                    record_election_attempt(str(self._worker_id), won=False)
-                    log.warning(
-                        "leader-upsert-failed",
-                        kind="leader_upsert_failed",
-                        worker_id=str(self._worker_id),
-                        error=repr(exc),
-                    )
+                    await self._election_attempt_failed(exc)
                     await asyncio.sleep(self._deps.settings.heartbeat_interval)
                     continue
                 except Exception as exc:
-                    # Backstop (see _transient.py): tolerated + logged a few
-                    # times, then deliberately fatal; cleanup mirrors the
-                    # transient path since conn state is unknown.
-                    await self._drop_leader_conn(reason="leader_upsert_failed")
-                    await self._close_leader_owned_conns()
-                    record_election_attempt(str(self._worker_id), won=False)
-                    log.warning(
-                        "leader-upsert-failed",
-                        kind="leader_upsert_failed",
-                        worker_id=str(self._worker_id),
-                        error=repr(exc),
-                    )
+                    await self._election_attempt_failed(exc)
                     guard.unexpected(exc)
                     await asyncio.sleep(self._deps.settings.heartbeat_interval)
                     continue
-                try:
-                    self._leader_monitor_conn = await self._open_dedicated_conn(
-                        "leader_monitor_conn"
-                    )
-                    self._cron_conn = await self._open_dedicated_conn("cron_conn")
-                except Exception as exc:
-                    # Why: ``except Exception`` is deliberate here for the
-                    # same reason as the leader_conn reopen path above —
-                    # factory-built conns surface provider (azure/hvac/
-                    # botocore) and asyncpg.InvalidPasswordError failures,
-                    # which are transient and must retry, not escape into
-                    # the worker TaskGroup. CancelledError (BaseException)
-                    # is unaffected.
-                    await self._drop_leader_conn(reason="dedicated_conn_open_failed")
-                    await self._close_leader_owned_conns()
-                    log.warning(
-                        "leader-dedicated-conn-failed",
-                        kind="leader_dedicated_conn_failed",
-                        worker_id=str(self._worker_id),
-                        error=repr(exc),
-                        error_type=type(exc).__name__,
-                    )
+                if not assumed:
                     await asyncio.sleep(self._deps.settings.heartbeat_interval)
                     continue
-                self._deps.is_leader.set()
-                record_election_attempt(str(self._worker_id), won=True)
-                log.info(
-                    "leader-elected",
-                    kind="leader_elected",
-                    worker_id=str(self._worker_id),
-                )
             else:
-                # The losing side is the detector: contention here is what
-                # makes two schemas silently sharing one lock (or a stuck
-                # holder) observable instead of a healthy-looking fleet with
-                # no leader.
-                lost_lock_name = schema_lock_name(
-                    "maintenance_leader", self._deps.settings.schema_name
-                )
                 record_election_attempt(str(self._worker_id), won=False)
-                record_lock_contention(lost_lock_name)
-                try:
-                    # A lost election is also the only vantage point that
-                    # can free a dead-without-FIN holder: the winner's
-                    # session keeps the session-scoped lock until the
-                    # server reaps it, so the loser probes the holder's
-                    # lease and reclaims its backend once the lease has
-                    # gone silent past the slack horizon.
-                    await self._reclaim_silent_election_holder(lost_lock_name)
-                except TRANSIENT_PG_ERRORS as exc:
-                    await self._drop_leader_conn(reason="reclaim_probe_failed")
-                    await self._close_leader_owned_conns()
-                    log.warning(
-                        "leader-reclaim-probe-failed",
-                        kind="leader_reclaim_probe_failed",
-                        worker_id=str(self._worker_id),
-                        error=repr(exc),
-                    )
-                    await asyncio.sleep(self._deps.settings.heartbeat_interval)
-                    continue
-                except Exception as exc:
-                    # Backstop (see _transient.py): tolerated + logged a
-                    # few times, then deliberately fatal; cleanup mirrors
-                    # the transient path since conn state is unknown.
-                    await self._drop_leader_conn(reason="reclaim_probe_failed")
-                    await self._close_leader_owned_conns()
-                    log.warning(
-                        "leader-reclaim-probe-failed",
-                        kind="leader_reclaim_probe_failed",
-                        worker_id=str(self._worker_id),
-                        error=repr(exc),
-                    )
-                    guard.unexpected(exc)
-                    await asyncio.sleep(self._deps.settings.heartbeat_interval)
-                    continue
-                log.info(
-                    "leader-retry",
-                    kind="leader_retry",
-                    worker_id=str(self._worker_id),
-                    lock=lost_lock_name,
-                    next_retry_secs=self._deps.settings.heartbeat_interval,
-                )
-            # Reaching here means a full election cycle completed (lock won,
-            # lost, or not attempted) without an unexpected error, so the
-            # backstop streak resets. (The failure paths above continue
-            # earlier, deliberately without resetting.)
+                await self._record_lost_election()
+            # Reaching here means a full election cycle completed (won, lost,
+            # or not attempted) without an unexpected error, so the backstop
+            # streak resets. (The failure paths above continue earlier,
+            # deliberately without resetting.)
             guard.ok()
             await asyncio.sleep(self._deps.settings.heartbeat_interval)
+
+    async def _election_attempt_failed(self, exc: BaseException) -> None:
+        """Shared cleanup for one failed election cycle.
+
+        Applies to the election statement and the assume-leadership path
+        alike: the leader conn's state is unknown after either failure, so
+        it (and every leader-owned conn) is dropped and the lost attempt
+        recorded. The caller decides what the error class buys the loop —
+        a transient failure just retries next tick; an unexpected one is
+        budgeted by the :class:`UnexpectedLoopErrorGuard` first.
+        """
+        await self._drop_leader_conn(reason="election_attempt_failed")
+        await self._close_leader_owned_conns()
+        record_election_attempt(str(self._worker_id), won=False)
+        log.warning(
+            "election-attempt-failed",
+            kind="election_attempt_failed",
+            worker_id=str(self._worker_id),
+            error=repr(exc),
+        )
+
+    async def _record_lost_election(self) -> None:
+        """Account for a lost election, recording contention only when it is real.
+
+        Contention is a signal about transitions, and the runbook reads it as
+        one: brief and intermittent during a handover, sustained only when
+        the observed holder keeps changing hands or the row cannot be read
+        at all. Losing to the same live holder every heartbeat is neither —
+        it is what every pod in a fleet larger than one does for its whole
+        life, and recording it made the sustained-rate alert fire
+        permanently wherever the fleet was doing exactly what it should.
+
+        So this records once per *distinct* holder this pod finds in its
+        way: the term it observes changing is the transition, and a term
+        that keeps answering is the steady state. A lost election with no
+        row to observe at all — the holder resigned between this pod's
+        attempt and this probe — is a handover in flight, a transition too,
+        and is recorded once the same way.
+        """
+        conn = self._deps.leader_conn
+        schema_name = self._deps.settings.schema_name
+        if not _IDENT_RE.match(schema_name):
+            raise ValueError(f"invalid schema identifier: {schema_name!r}")
+        holder: asyncpg.Record | None = None
+        if conn is not None and not conn.is_closed():
+            with contextlib.suppress(Exception):
+                holder = await conn.fetchrow(
+                    f'SELECT worker_id, elected_at FROM "{schema_name}".maintenance_leader '  # noqa: S608  # Why: schema_name validated against _IDENT_RE above; asyncpg cannot bind identifiers as parameters.
+                    "WHERE singleton = true"
+                )
+        observed = None if holder is None else (holder["worker_id"], holder["elected_at"])
+        if observed is None or observed != self._observed_holder:
+            record_lock_contention(schema_lock_name("maintenance_leader", schema_name))
+        self._observed_holder = observed
+        log.debug(
+            "leader-retry",
+            kind="leader_retry",
+            worker_id=str(self._worker_id),
+            holder_worker_id=None if holder is None else str(holder["worker_id"]),
+            next_retry_secs=self._deps.settings.heartbeat_interval,
+        )
+
+    async def _assume_leadership(self, elected_at: datetime, attempt_started: float) -> bool:
+        """Finish a won election, or stand back down if the conns will not open."""
+        term = LeaderTerm(
+            elected_at=elected_at,
+            trusted_until=attempt_started
+            + self._deps.settings.resolved_leader_lease
+            - _LEADER_TRUST_MARGIN_SECS,
+        )
+        # Captured the moment the row is won, BEFORE the conn opens that
+        # complete the assume: even a won-then-unassumable election leaves
+        # this pod's name on the row, and resign() at teardown hands exactly
+        # that row back.  Renewals never change ``elected_at``, so the fence
+        # stays valid for the life of the term.
+        self._resign_fence = term
+        # Courtesy only, and only ever attempted by the winner: an
+        # old-release pod understands the lock and not the lease, so the
+        # lease holder takes it to keep such a pod from electing itself
+        # beside this one during a roll. A miss changes nothing about this
+        # pod's leadership — the lease is the authority — but the miss must
+        # be visible, because during a roll it is the difference between
+        # "old pods are excluded" and "they are not".
+        if not await self._try_election_lock():
+            log.info(
+                "leader-advisory-lock-unavailable",
+                kind="leader_advisory_lock_unavailable",
+                worker_id=str(self._worker_id),
+            )
+        try:
+            self._leader_monitor_conn = await self._open_dedicated_conn("leader_monitor_conn")
+            self._cron_conn = await self._open_dedicated_conn("cron_conn")
+        except Exception as exc:
+            # Why: ``except Exception`` is deliberate here for the same reason
+            # as the leader_conn reopen path above — factory-built conns
+            # surface provider (azure/hvac/botocore) and
+            # asyncpg.InvalidPasswordError failures, which are transient and
+            # must retry, not escape into the worker TaskGroup. CancelledError
+            # (BaseException) is unaffected.
+            await self._drop_leader_conn(reason="dedicated_conn_open_failed")
+            await self._close_leader_owned_conns()
+            log.warning(
+                "leader-dedicated-conn-failed",
+                kind="leader_dedicated_conn_failed",
+                worker_id=str(self._worker_id),
+                error=repr(exc),
+                error_type=type(exc).__name__,
+            )
+            return False
+        self._deps.lead(term)
+        # Whatever this pod was following is gone; the next peer it finds in
+        # its way is a fresh transition, not a continuation.
+        self._observed_holder = None
+        record_election_attempt(str(self._worker_id), won=True)
+        # The lease gauge's elect arm: the server just stamped
+        # expires_at = now + leader_lease, so the TTL as of this win is the
+        # full lease. Mirror-armed on every successful renewal below.
+        record_leader_lease_expires_in_seconds(
+            str(self._worker_id), self._deps.settings.resolved_leader_lease
+        )
+        log.info(
+            "leader-elected",
+            kind="leader_elected",
+            worker_id=str(self._worker_id),
+            elected_at=str(elected_at),
+            leader_lease=self._deps.settings.resolved_leader_lease,
+        )
+        return True
+
+    async def _renew_term(
+        self, term: LeaderTerm, renew_sql: str, guard: UnexpectedLoopErrorGuard
+    ) -> bool:
+        """Hold leadership for another lease, or stand down.
+
+        Returns whether the caller should sleep a full heartbeat interval; a
+        false return means the loop should re-enter immediately, either
+        because a retry still fits inside the remaining trust or because the
+        pod has just become a candidate again.
+        """
+        if asyncio.get_running_loop().time() >= term.trusted_until:
+            # Stepping down on this process's own clock, without asking the
+            # database: past this instant the server may already have let a
+            # peer take the row, and acting further would be the split-brain
+            # the trust window exists to prevent.
+            await self._step_down("trust_expired")
+            return False
+        conn = self._deps.leader_conn
+        if conn is None or conn.is_closed():
+            # Nothing to renew on. Standing down now rather than waiting out
+            # the trust window lets this cycle rebuild the conn and re-enter
+            # the election, which is the fastest route back to leading.
+            await self._step_down("conn_lost")
+            return False
+        try:
+            renewed = await self._renew_lease(term, renew_sql)
+        except TRANSIENT_PG_ERRORS as exc:
+            return await self._renew_failed(term, exc, guard=guard, unexpected=False)
+        except Exception as exc:
+            # Backstop (see _transient.py): tolerated + logged a few times,
+            # then deliberately fatal; the conn state is unknown either way.
+            return await self._renew_failed(term, exc, guard=guard, unexpected=True)
+        if renewed is None:
+            # The fence did not match or the server had already let the lease
+            # lapse: a successor holds the row.
+            await self._step_down("term_lost")
+            return False
+        self._deps.leader_term = renewed
+        guard.ok()
+        # The renewal re-stamped expires_at = now + leader_lease on the
+        # server; the gauge's renew arm keeps the series moving so a
+        # leader that stops renewing is visible as a stale/absent series.
+        record_leader_lease_expires_in_seconds(
+            str(self._worker_id), self._deps.settings.resolved_leader_lease
+        )
+        log.debug(
+            "leader-lease-renewed",
+            kind="leader_lease_renewed",
+            worker_id=str(self._worker_id),
+        )
+        return True
+
+    async def _renew_failed(
+        self,
+        term: LeaderTerm,
+        exc: BaseException,
+        *,
+        guard: UnexpectedLoopErrorGuard,
+        unexpected: bool,
+    ) -> bool:
+        """Back off inside the remaining trust, or stand down once it is spent."""
+        log.warning(
+            "leader-lease-renew-failed",
+            kind="leader_lease_renew_failed",
+            worker_id=str(self._worker_id),
+            error=repr(exc),
+        )
+        if unexpected:
+            guard.unexpected(exc)
+        remaining = term.trusted_until - asyncio.get_running_loop().time()
+        if remaining <= 0:
+            await self._step_down("renew_failed", error=repr(exc))
+            return False
+        # Retry sooner than the heartbeat cadence while trust remains: the
+        # renewal is what keeps this pod leading, and the window to recover a
+        # transient failure is only as long as the trust left.
+        await asyncio.sleep(min(1.0, remaining))
+        return False
 
     async def _watchdog_loop(self, shutdown: asyncio.Event) -> None:
         guard = UnexpectedLoopErrorGuard("leader.watchdog")
@@ -734,27 +1042,13 @@ class MaintenanceLeader:
                     await conn.fetchval("SELECT 1")
                     guard.ok()
                 except TRANSIENT_PG_ERRORS as exc:
-                    await self._drop_leader_conn(reason="watchdog_probe_failed")
-                    await self._close_leader_owned_conns()
-                    log.warning(
-                        "leadership-lost",
-                        kind="leadership_lost",
-                        worker_id=str(self._worker_id),
-                        error=repr(exc),
-                    )
+                    await self._step_down("probe_failed", error=repr(exc))
                     break
                 except Exception as exc:
                     # Backstop (see _transient.py): tolerated + logged a few
                     # times, then deliberately fatal; cleanup mirrors the
                     # transient path since conn state is unknown.
-                    await self._drop_leader_conn(reason="watchdog_probe_failed")
-                    await self._close_leader_owned_conns()
-                    log.warning(
-                        "leadership-lost",
-                        kind="leadership_lost",
-                        worker_id=str(self._worker_id),
-                        error=repr(exc),
-                    )
+                    await self._step_down("probe_failed", error=repr(exc))
                     guard.unexpected(exc)
                     break
                 await asyncio.sleep(_WATCHDOG_INTERVAL_SECS)
@@ -774,7 +1068,7 @@ class MaintenanceLeader:
         guard = UnexpectedLoopErrorGuard("leader.scheduled_wake")
         while not shutdown.is_set():
             self._deps.liveness.tick("leader.scheduled_wake", period=1.0)
-            if self._deps.is_leader.is_set():
+            if self._deps.leading():
                 start = time.monotonic()
                 rows: int | None = None
                 try:
@@ -795,7 +1089,7 @@ class MaintenanceLeader:
                             async with self._deps.dispatcher_pool.acquire(
                                 timeout=self._deps.settings.dispatcher_command_timeout
                             ) as conn:
-                                await conn.execute("SELECT pg_notify($1, '')", channel)
+                                await conn.execute(WAKE_NOTIFY_SQL, channel)
                     guard.ok()
                 except NotImplementedError as exc:
                     if not warned:
@@ -853,7 +1147,7 @@ class MaintenanceLeader:
         guard = UnexpectedLoopErrorGuard("leader.cron")
         while not shutdown.is_set():
             self._deps.liveness.tick("leader.cron", period=1.0)
-            if not self._deps.is_leader.is_set():
+            if not self._deps.leading():
                 await asyncio.sleep(1)
                 continue
             conn = self._cron_conn

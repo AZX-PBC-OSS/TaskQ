@@ -9,7 +9,9 @@ downstream modules (schedule CRUD, cron loop, admin ops).
 import asyncio
 import importlib
 import inspect
+import threading
 from collections.abc import Awaitable, Callable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any, Final, cast
@@ -27,6 +29,7 @@ from taskq.backend._protocol import (
     ScheduleRecord,
     ScheduleUpdateArgs,
 )
+from taskq.obs import get_logger
 
 __all__ = [
     "DST_STRATEGIES",
@@ -38,6 +41,8 @@ __all__ = [
     "cron",
     "resolve_payload",
 ]
+
+_log = get_logger(__name__)
 
 _factory_cache: dict[str, Callable[[], Any]] = {}
 # Why: factory return type is erased here; resolve_payload re-types the result
@@ -63,6 +68,143 @@ def _resolve_factory(dotted_path: str) -> Callable[[], Any]:
     return factory
 
 
+_FACTORY_POOL_SIZE: Final = 4
+"""Worker cap on the payload-factory executor.
+
+The per-factory deadline bounds how long a tick WAITS, not how long a
+sync factory runs: a cut-off call stays parked on its thread until the
+factory itself returns, which a truly hung one never does.  Cron ticks
+forever, so a permanently hung schedule strands one thread per fire.
+A private, capped pool turns that unbounded leak into a bounded one and
+keeps it off the loop's default executor, where sync actor bodies run —
+sharing that pool would let one stuck schedule consume the worker's own
+execution capacity until unrelated actors have no thread left, and would
+let a busy fleet of sync actors starve an instantaneous factory past its
+deadline while the tick holds the cron advisory lock.
+
+The cap alone is not the whole defence: a stdlib pool cannot recall a
+parked thread, so enough concurrently-hung schedules (or one hung
+schedule whose ``cron_auto_disable_threshold`` an operator raised past
+the pool size) strand every worker and would starve healthy factories
+for the process's life. The submit path therefore retires a pool whose
+every thread is stranded on work its waiter already abandoned — see
+:func:`_payload_factory_pool` — which is also why no upper-bound
+validation on the threshold is needed: saturation self-heals regardless
+of how it was reached.
+"""
+
+
+class _FactoryCall:
+    """Lifecycle flags for one submitted factory call, shared between the
+    submitting loop and the pool thread (always under ``_factory_pool_lock``).
+
+    ``on_thread`` is true while a pool thread is inside the call.
+    ``waiter_gone`` flips when the awaiting side stops waiting (deadline
+    cut, caller cancelled, factory raised) — a call that is both
+    ``on_thread`` and ``waiter_gone`` is pool residue: a parked thread
+    nobody will ever collect.
+    """
+
+    __slots__ = ("abandoned", "on_thread", "waiter_gone")
+
+    def __init__(self) -> None:
+        self.on_thread = False
+        self.waiter_gone = False
+        self.abandoned = False
+
+
+class _FactoryPoolState:
+    """One generation of the payload-factory executor plus its residue count.
+
+    ``abandoned`` counts calls parked on a thread whose waiter has already
+    given up. When it reaches :data:`_FACTORY_POOL_SIZE`, every thread the
+    pool will ever have is stranded on work nobody waits for: a new call
+    submitted to this pool would queue behind the parked ones forever.
+    """
+
+    __slots__ = ("abandoned", "executor", "occupied")
+
+    def __init__(self) -> None:
+        self.executor: ThreadPoolExecutor = ThreadPoolExecutor(
+            max_workers=_FACTORY_POOL_SIZE,
+            thread_name_prefix="taskq-cron-factory",
+        )
+        self.occupied = 0
+        self.abandoned = 0
+
+
+_factory_pool: _FactoryPoolState | None = None
+_factory_pool_lock = threading.Lock()
+
+
+def _run_factory_call(
+    pool: _FactoryPoolState,
+    call: _FactoryCall,
+    factory: Callable[[], Any],
+) -> Any:
+    """Run *factory* on a pool thread, maintaining the residue accounting.
+
+    Runs inside the pool thread, so ``on_thread`` going true is the proof
+    the call holds a thread; a call that starts only after its waiter gave
+    up (queued behind parked threads, then released into one) is residue
+    from its first instruction and is counted then.
+    """
+    with _factory_pool_lock:
+        pool.occupied += 1
+        call.on_thread = True
+        if call.waiter_gone and not call.abandoned:
+            call.abandoned = True
+            pool.abandoned += 1
+    try:
+        return factory()
+    finally:
+        with _factory_pool_lock:
+            call.on_thread = False
+            pool.occupied -= 1
+            if call.abandoned:
+                pool.abandoned -= 1
+
+
+def _payload_factory_pool() -> _FactoryPoolState:
+    """The live payload-factory pool, retiring a fully-stranded one first.
+
+    Lazy so a process that registers no factory-backed schedule — the
+    common case — never pays for the threads.
+
+    Retirement fires when every thread of the current pool is stranded on
+    a call its waiter abandoned: that pool can never serve new work, so
+    new work gets a fresh pool instead of queueing behind residue for the
+    rest of the process's life. The retired pool is shut down WITHOUT
+    waiting — waiting is exactly what cannot be done, its threads are
+    parked in unkillable user code; they finish (and the pool drains its
+    queue) whenever the factories return. Queued calls are deliberately
+    NOT cancelled: their waiters hold their own per-factory deadlines and
+    time out on them, so retirement injects no new exception shape into a
+    tick.
+    """
+    global _factory_pool
+    retired: _FactoryPoolState | None = None
+    with _factory_pool_lock:
+        if _factory_pool is None:
+            _factory_pool = _FactoryPoolState()
+        elif _factory_pool.abandoned >= _FACTORY_POOL_SIZE:
+            retired = _factory_pool
+            _factory_pool = _FactoryPoolState()
+        state = _factory_pool
+    if retired is not None:
+        # Outside the lock: the lock guards bookkeeping only, and even a
+        # non-blocking shutdown is no work to hold it across.
+        retired.executor.shutdown(wait=False)
+        _log.warning(
+            "cron-factory-pool-saturated-retired",
+            kind="cron_factory_pool_saturated_retired",
+            pool_size=_FACTORY_POOL_SIZE,
+            occupied=retired.occupied,
+            abandoned=retired.abandoned,
+        )
+    return state
+
+
 _FACTORY_TIMEOUT_S: Final = 5.0
 """The per-factory deadline ``resolve_payload`` enforces on both phases of
 a factory: the call itself (run off the event loop) and, for a factory that
@@ -77,11 +219,11 @@ async def _await_factory_bounded(
     """Await one phase of a payload factory under the factory deadline.
 
     *timeout_s* overrides :data:`_FACTORY_TIMEOUT_S` for this call — the
-    cron tick passes its ``cron_payload_factory_timeout`` setting so an
-    operator who tunes the whole-tick deadline below the factory default
-    cannot leave a per-factory budget that silently exceeds it (the
-    leader's whole-tick ``asyncio.timeout`` would then cancel mid-factory,
-    losing the named per-schedule failure this path exists to record).
+    cron tick passes its ``cron_payload_factory_timeout`` setting already
+    clamped to what is left of its whole-tick budget, so a per-factory
+    budget can never silently exceed it (the leader's whole-tick
+    ``asyncio.timeout`` would then cancel mid-factory, losing the named
+    per-schedule failure this path exists to record).
 
     A timeout raises ``TimeoutError`` naming the factory's dotted path: the
     schedule's error text is the only place an operator sees WHICH factory
@@ -111,21 +253,24 @@ async def resolve_payload(
     """Resolve payload from a factory dotted path or static metadata.
 
     If *payload_factory* is set, resolves the dotted path via
-    :func:`_resolve_factory` and calls it.  The call itself runs OFF the
-    event loop — :func:`asyncio.to_thread`, the standard-library mechanism
-    for a callable that may block and the same one sync actors run under —
-    bounded by the 5 s per-factory ``wait_for``, so a sync factory that
-    blocks is cut at the deadline instead of freezing every timer on the
-    loop (this bound and the caller's whole-tick deadline alike) while the
-    tick holds the cron advisory lock.  A factory that RETURNS a coroutine
-    keeps loop affinity: the coroutine is awaited back on the loop under
-    the same ``wait_for``.  ``BaseModel`` results are converted via
+    :func:`_resolve_factory` and calls it.  A coroutine FUNCTION is called
+    directly on the loop: the call only constructs a coroutine object and
+    cannot block, so routing it through a thread buys nothing.  Any other
+    callable may block, so the call runs on cron's own bounded executor
+    (:func:`_payload_factory_pool`) — never the loop's default pool,
+    which sync actor bodies also check out of — bounded by the per-factory
+    ``wait_for``, so a sync factory that blocks is cut at the deadline
+    instead of freezing every timer on the loop (this bound and the
+    caller's whole-tick deadline alike) while the tick holds the cron
+    advisory lock.  A factory that RETURNS a coroutine keeps loop
+    affinity: the coroutine is awaited back on the loop under the same
+    ``wait_for``.  ``BaseModel`` results are converted via
     ``.model_dump()``; ``dict`` results are returned as-is.  Raises
     ``TypeError`` for unexpected return types.
 
-    Thread-safety contract: a sync payload factory may run on a worker
+    Thread-safety contract: a sync payload factory runs on a worker
     thread — it must be thread-safe and must not require the event loop;
-    a coroutine-returning factory keeps loop affinity.
+    a coroutine factory keeps loop affinity.
 
     If no *payload_factory*, extracts ``static_payload`` from
     *raw_metadata*.  Returns ``{}`` if neither is set.
@@ -140,15 +285,43 @@ async def resolve_payload(
     """
     if payload_factory is not None:
         factory = _resolve_factory(payload_factory)
-        # The call runs off the loop: called inline, a sync factory that
-        # blocks freezes every timer on the loop — this deadline and the
-        # caller's whole-tick asyncio.timeout alike — so the tick holds
-        # the cron advisory lock for as long as the factory blocks.
-        # asyncio.to_thread is the standard-library off-loop mechanism,
-        # the same one sync actors run under.
-        result: object = await _await_factory_bounded(
-            payload_factory, asyncio.to_thread(factory), timeout_s=timeout_s
-        )
+        result: object
+        if inspect.iscoroutinefunction(factory):
+            # Calling a coroutine function builds a coroutine object and
+            # runs no user code, so the loop is never at risk and the
+            # call needs no thread at all.
+            result = factory()
+        else:
+            # Called inline, a sync factory that blocks freezes every
+            # timer on the loop — this deadline and the caller's
+            # whole-tick asyncio.timeout alike — so the tick would hold
+            # the cron advisory lock for as long as the factory blocks.
+            loop = asyncio.get_running_loop()
+            pool = _payload_factory_pool()
+            call = _FactoryCall()
+            try:
+                result = await _await_factory_bounded(
+                    payload_factory,
+                    loop.run_in_executor(pool.executor, _run_factory_call, pool, call, factory),
+                    timeout_s=timeout_s,
+                )
+            except (Exception, asyncio.CancelledError):
+                # The waiter is leaving (the per-factory deadline cut the
+                # call, the caller's own deadline cancelled it, or the
+                # factory raised). If the call is parked on its thread —
+                # a factory that never returns — that thread is now pool
+                # residue the stdlib cannot recall: count it so the submit
+                # path recognizes a fully-stranded pool and retires it.
+                # ``waiter_gone`` also arms the start path in
+                # ``_run_factory_call`` for the queued-then-started race:
+                # a call that only reaches a thread after its waiter left
+                # is residue from its first instruction.
+                with _factory_pool_lock:
+                    call.waiter_gone = True
+                    if call.on_thread and not call.abandoned:
+                        call.abandoned = True
+                        pool.abandoned += 1
+                raise
         if inspect.iscoroutine(result):
             # A coroutine-returning factory keeps loop affinity: its body
             # runs here, on the loop, under the same deadline.

@@ -310,21 +310,22 @@ async def test_oversample_window_skip_is_round_bounded_not_cross_round_starvatio
                     "actor_rank <= max_concurrent - in_flight (1) admits only rank 1"
                 )
                 d2 = await _dispatch(conn2, schema, limit_n=2, oversample=2)
-                assert d2 == [], (
-                    "PIN (current shape): D2's candidates lateral window "
-                    "(residual 1 * oversample 2) is the SAME top-2 rows D1 holds FOR "
-                    "UPDATE; SKIP LOCKED skips both and the window does not expand past "
-                    "them, so D2 admits zero this round. If D2 came back non-empty the "
-                    "window/skip reasoning changed and this pin must be re-derived."
-                )
                 deeper_pending: Any = await conn2.fetchval(
                     f'SELECT count(*) FROM "{schema}".jobs '
                     "WHERE id = ANY($1::uuid[]) AND status::text = 'pending'",
                     [third, fourth],
                 )
                 assert deeper_pending == 2, (
-                    "fixture broken: the deeper unlocked rows must still be pending — "
-                    "they are the work the window failed to reach"
+                    "fixture broken: the deeper rows must still be unlocked and pending, "
+                    "since they are the capacity D2 is entitled to reach"
+                )
+                assert d2 == [], (
+                    "this actor's cap is saturated: D1 holds the single in-flight slot "
+                    f"max_concurrent = 1 allows, so D2 correctly admits nothing. Got {d2!r}. "
+                    "The empty result here is cap arithmetic, NOT the candidate window "
+                    "failing to widen past locked rows -- an uncapped actor with free rows "
+                    "deeper in the backlog must never come back empty, which "
+                    "test_fleet_throughput_grows_when_a_second_dispatcher_is_added pins"
                 )
             except BaseException:
                 await tx1.rollback()
@@ -356,3 +357,265 @@ async def test_oversample_window_skip_is_round_bounded_not_cross_round_starvatio
             await deps.worker_pool.release(conn2)
     finally:
         await _test_teardown(stack, pg_dsn, schema)
+
+
+async def test_second_dispatcher_claims_deeper_unlocked_rows(pg_dsn: str) -> None:
+    """A dispatcher whose leading candidates are all held by a peer claims
+    from the unlocked rows behind them, rather than coming back empty.
+
+    This is what makes a fleet scale: throughput must grow with worker
+    count. A dispatcher that returns nothing while claimable work sits
+    unlocked in the backlog contributes no throughput, so an operator who
+    adds pods pays for capacity that stays idle while one pod saturates.
+
+    The shape here is one large single-actor backlog with ``limit_n`` far
+    smaller than the backlog, and a high ``oversample``. The actor is
+    uncapped, so there is no concurrency arithmetic that could justify an
+    empty result: every row the first dispatcher does not hold is work the
+    second is entitled to claim. Contrast
+    ``test_oversample_window_skip_is_round_bounded_not_cross_round_starvation``,
+    where an empty second result IS correct because the actor's cap is
+    saturated.
+    """
+    schema = f"tqr_{new_base62()}".lower()
+    stack, deps, backend = await _open_pg_backend(pg_dsn, schema_name=schema)
+    try:
+        actor = "tqr_oversample_actor"
+        limit_n = 10
+        backlog = 200
+        async with deps.worker_pool.acquire() as conn:
+            # No max_concurrent cap: this isolates the top_ids/SKIP LOCKED
+            # ordering defect from the actor_rank <= residual admission cap
+            # exercised by the slide test above.
+            await _seed_actor(conn, schema, actor, max_concurrent=None)
+            args_list = [_ident_args(actor, priority=backlog - i) for i in range(backlog)]
+            rows: list[JobRow] = await backend.enqueue_batch(args_list, connection=conn)
+        assert len(rows) == backlog, "fixture broken: seeding"
+
+        conn1 = await deps.worker_pool.acquire()
+        conn2 = await deps.worker_pool.acquire()
+        try:
+            tx1 = conn1.transaction()
+            await tx1.start()
+            try:
+                d1 = await _dispatch(conn1, schema, limit_n=limit_n, oversample=10)
+                assert len(d1) == limit_n, (
+                    "fixture broken: D1 must claim exactly limit_n rows from the "
+                    "uncontended backlog"
+                )
+                d1_ids = {r["id"] for r in d1}
+
+                d2 = await _dispatch(conn2, schema, limit_n=limit_n, oversample=10)
+
+                # conn2 runs in its own transaction/snapshot and cannot see D1's
+                # uncommitted status UPDATE, so the row-lock (not a status change)
+                # is what makes these rows unreachable to D2 -- exactly the
+                # SKIP LOCKED behavior under test. The unlocked remainder behind
+                # D1's held window is every backlog row D2 did NOT just claim.
+                remaining_due = backlog - len(d1_ids | {r["id"] for r in d2})
+                assert remaining_due > 0, (
+                    "fixture broken: the unlocked remainder of the backlog must still "
+                    "be pending and due — this is the work oversample is documented to "
+                    "let a second dispatcher reach"
+                )
+
+                assert len(d2) > 0, (
+                    f"the second dispatcher claimed {len(d2)} rows while "
+                    f"{remaining_due} due rows sat unlocked behind the window the "
+                    "first dispatcher holds. An uncapped actor imposes no concurrency "
+                    "arithmetic that could justify an empty result, so every one of "
+                    "those rows was claimable. A dispatcher that comes back empty here "
+                    "adds no throughput to the fleet: adding workers cannot increase "
+                    "the rate at which the backlog drains"
+                )
+                assert d1_ids.isdisjoint({r["id"] for r in d2}), (
+                    "fixture broken: D1 and D2 must never double-claim the same row"
+                )
+            except BaseException:
+                await tx1.rollback()
+                raise
+            else:
+                await tx1.commit()
+        finally:
+            await deps.worker_pool.release(conn1)
+            await deps.worker_pool.release(conn2)
+    finally:
+        await _test_teardown(stack, pg_dsn, schema)
+
+
+# ── Fleet throughput across several actors ─────────────────────────────
+
+
+async def _seed_multi_actor_backlog(
+    deps: Any,
+    backend: Any,
+    schema: str,
+    actors: Sequence[str],
+    depth: int,
+) -> None:
+    """Register each actor uncapped on the round's queue and give it *depth*
+    due, equal-priority pending jobs, through the production enqueue path.
+
+    Uncapped throughout: no actor's own configuration limits how much of it
+    may run, so anything a round leaves unclaimed was left by selection.
+    """
+    async with deps.worker_pool.acquire() as conn:
+        for actor in actors:
+            await _seed_actor(conn, schema, actor, max_concurrent=None)
+        args_list = [_ident_args(actor) for actor in actors for _ in range(depth)]
+        rows: list[JobRow] = await backend.enqueue_batch(args_list, connection=conn)
+    assert len(rows) == len(actors) * depth, "fixture broken: seeding"
+
+
+async def _complete(conn: asyncpg.Connection, schema: str, ids: Sequence[Any]) -> None:
+    """Take the round's claims terminal, as workers that keep up would."""
+    await conn.execute(
+        f"UPDATE \"{schema}\".jobs SET status = 'succeeded', "
+        "finished_at = clock_timestamp() WHERE id = ANY($1::uuid[])",
+        list(ids),
+    )
+
+
+async def test_second_dispatcher_claims_work_from_other_actors(pg_dsn: str) -> None:
+    """A second pod must be able to claim work belonging to actors whose jobs
+    the first pod is not holding.
+
+    Operator shape: several actors share a queue, all with deep backlogs, and
+    a second worker is added to drain it faster. Whatever rows the first
+    worker holds for the duration of its round, the other actors' jobs are
+    untouched and unlocked. If the second worker comes back with nothing, the
+    pod costs money and moves no work -- and because dispatch reports a
+    successful round of zero rows, nothing distinguishes it from an empty
+    queue.
+    """
+    schema = f"tqr_{new_base62()}".lower()
+    stack, deps, backend = await _open_pg_backend(pg_dsn, schema_name=schema)
+    try:
+        actors = [f"tqr_fleet_{i}" for i in range(4)]
+        depth = 40
+        await _seed_multi_actor_backlog(deps, backend, schema, actors, depth)
+
+        conn1 = await deps.worker_pool.acquire()
+        conn2 = await deps.worker_pool.acquire()
+        try:
+            tx1 = conn1.transaction()
+            await tx1.start()
+            try:
+                d1 = await _dispatch(conn1, schema, limit_n=8)
+                assert len(d1) > 0, "fixture broken: the first dispatcher claimed nothing"
+                held_actors = {r["actor"] for r in d1}
+                untouched = [a for a in actors if a not in held_actors]
+
+                d2 = await _dispatch(conn2, schema, limit_n=8)
+
+                still_pending: Any = await conn2.fetchval(
+                    f"SELECT count(*) FROM \"{schema}\".jobs WHERE status::text = 'pending'"
+                )
+                assert still_pending >= len(actors) * depth - len(d1), (
+                    "fixture broken: the backlog must still be deep and pending"
+                )
+                assert len(d2) > 0, (
+                    f"a second concurrent dispatcher claimed nothing while "
+                    f"{still_pending} jobs were pending across {len(actors)} uncapped "
+                    f"actors and the first dispatcher held only {len(d1)} rows "
+                    f"(actors {sorted(held_actors)}; actors {sorted(untouched)} were not "
+                    f"touched at all). Adding a worker adds no throughput, and the idle "
+                    f"worker's dispatch rounds are indistinguishable from an empty queue."
+                )
+                assert {r["id"] for r in d1}.isdisjoint({r["id"] for r in d2}), (
+                    "fixture broken: two dispatchers must never claim the same row"
+                )
+            except BaseException:
+                await tx1.rollback()
+                raise
+            else:
+                await tx1.commit()
+        finally:
+            await deps.worker_pool.release(conn1)
+            await deps.worker_pool.release(conn2)
+    finally:
+        await _test_teardown(stack, pg_dsn, schema)
+
+
+async def test_fleet_throughput_grows_when_a_second_dispatcher_is_added(
+    pg_dsn: str,
+) -> None:
+    """Two dispatchers against a deep multi-actor backlog must drain it
+    substantially faster than one.
+
+    This is the capacity question an operator actually asks before scaling:
+    if I double the workers, do I drain roughly twice as fast? Both runs get
+    the same backlog, the same per-round limit and the same number of rounds,
+    and every round's claims are completed so no run is held back by its own
+    in-flight jobs. The single-dispatcher run is the baseline; the two-
+    dispatcher run must beat it by a clear margin. Throughput that does not
+    move with worker count means the queue cannot be scaled out at all, and
+    the only remaining lever is a bigger per-worker batch.
+    """
+    actors = [f"tqr_scale_{i}" for i in range(4)]
+    depth = 60
+    limit_n = 5
+    rounds = 10
+
+    async def _drain_with_one(schema: str) -> int:
+        stack, deps, backend = await _open_pg_backend(pg_dsn, schema_name=schema)
+        try:
+            await _seed_multi_actor_backlog(deps, backend, schema, actors, depth)
+            conn = await deps.worker_pool.acquire()
+            try:
+                total = 0
+                for _ in range(rounds):
+                    async with conn.transaction():
+                        claimed = await _dispatch(conn, schema, limit_n=limit_n)
+                    total += len(claimed)
+                    await _complete(conn, schema, [r["id"] for r in claimed])
+                return total
+            finally:
+                await deps.worker_pool.release(conn)
+        finally:
+            await _test_teardown(stack, pg_dsn, schema)
+
+    async def _drain_with_two(schema: str) -> int:
+        stack, deps, backend = await _open_pg_backend(pg_dsn, schema_name=schema)
+        try:
+            await _seed_multi_actor_backlog(deps, backend, schema, actors, depth)
+            conn1 = await deps.worker_pool.acquire()
+            conn2 = await deps.worker_pool.acquire()
+            try:
+
+                async def _round(conn: asyncpg.Connection) -> list[asyncpg.Record]:
+                    async with conn.transaction():
+                        return await _dispatch(conn, schema, limit_n=limit_n)
+
+                total = 0
+                for _ in range(rounds):
+                    r1, r2 = await asyncio.wait_for(
+                        asyncio.gather(_round(conn1), _round(conn2)),
+                        timeout=_BOUNDED_WAIT_SECS,
+                    )
+                    claimed_ids = {r["id"] for r in r1} | {r["id"] for r in r2}
+                    total += len(claimed_ids)
+                    await _complete(conn1, schema, list(claimed_ids))
+                return total
+            finally:
+                await deps.worker_pool.release(conn1)
+                await deps.worker_pool.release(conn2)
+        finally:
+            await _test_teardown(stack, pg_dsn, schema)
+
+    one = await _drain_with_one(f"tqr_{new_base62()}".lower())
+    two = await _drain_with_two(f"tqr_{new_base62()}".lower())
+
+    assert one > 0, "fixture broken: the single-dispatcher baseline drained nothing"
+    assert one < len(actors) * depth, (
+        "fixture broken: the backlog must outlast the round budget, or there is no "
+        "headroom for a second dispatcher to use"
+    )
+    assert two >= one * 3 // 2, (
+        f"doubling the dispatchers barely moved throughput: one dispatcher drained "
+        f"{one} jobs in {rounds} rounds at limit {limit_n}; two dispatchers drained "
+        f"{two} over the same {rounds} rounds against an identical "
+        f"{len(actors) * depth}-job backlog across {len(actors)} uncapped actors. "
+        f"The second worker is paid for and idle, and the backlog clears at very "
+        f"nearly the single-worker rate."
+    )

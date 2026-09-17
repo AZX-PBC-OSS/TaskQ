@@ -215,9 +215,9 @@ class TestRuntimeCheckable:
 
 
 class TestMethodCount:
-    def test_exactly_forty_eight_public_members(self) -> None:
+    def test_exactly_forty_nine_public_members(self) -> None:
         public = [m for m in dir(Backend) if not m.startswith("_")]
-        assert len(public) == 48, f"Expected 48 public members, got {len(public)}: {public}"
+        assert len(public) == 49, f"Expected 49 public members, got {len(public)}: {public}"
 
     def test_all_member_names_present(self) -> None:
         expected = {
@@ -237,6 +237,7 @@ class TestMethodCount:
             "mark_abandoned",
             "mark_snoozed",
             "mark_retry_after",
+            "mark_interrupted",
             "retry_job",
             "write_attempt",
             "get_attempts",
@@ -327,10 +328,13 @@ class TestReturnAnnotations:
 
         hints = get_type_hints(Backend.mark_snoozed)
         ret = hints.get("return")
-        expected = {"scheduled", "failed", "failed:MaxAttemptsExceeded", "noop"}
+        # Non-consuming deferrals/denials refund the claim's attempt
+        # increment unconditionally, so the statement has no
+        # max-attempts arm: 'failed' is the schedule_to_close deadline
+        # exit only.
+        expected = {"scheduled", "failed", "noop"}
         assert ret is not None and set(get_args(ret)) == expected, (
-            f"mark_snoozed should return Literal['scheduled', 'failed', "
-            f"'failed:MaxAttemptsExceeded', 'noop'], got {ret}"
+            f"mark_snoozed should return Literal['scheduled', 'failed', 'noop'], got {ret}"
         )
 
     def test_mark_snoozed_outcome_parameter_is_snooze_outcome(self) -> None:
@@ -497,7 +501,10 @@ class TestEnqueueArgsRoundTrip:
         assert flds["scheduled_at"].default_factory is MISSING
 
     def test_field_count(self) -> None:
-        expected = 25
+        # +4 retry-curve scalars (retry_base/retry_cap/retry_backoff/
+        # retry_jitter): stamped onto the jobs row at enqueue so the
+        # reclaim sweep can reschedule on the job's own policy.
+        expected = 29
         assert len(fields(EnqueueArgs)) == expected
 
     def test_frozen(self) -> None:
@@ -543,7 +550,13 @@ class TestJobRowRoundTrip:
         assert flds["status"].type is JobStatus
 
     def test_field_count(self) -> None:
-        expected = 40  # field list + tags + the two denial/snooze counters
+        # field list + tags + the two denial/snooze counters
+        # (snooze_count, rate_limit_blocked_count) + the interrupt counter
+        # (interrupt_count) + the four retry-curve scalars read back off
+        # the jobs row (retry_base/retry_cap/retry_backoff/retry_jitter —
+        # the reclaim sweep's policy source) + the assignment-routed
+        # marker (re-pend routing by the actor's stored assignment).
+        expected = 46
         assert len(fields(JobRow)) == expected
 
     def test_frozen(self) -> None:

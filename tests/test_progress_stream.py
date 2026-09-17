@@ -176,14 +176,21 @@ async def test_pg_fallback_stops_on_terminal() -> None:
 
 
 async def test_pg_fallback_returns_when_job_disappears() -> None:
+    """A row that vanishes mid-stream ends the stream without a terminal
+    event - and says so: the operator sees which job went missing rather
+    than a stream that quietly stopped."""
     backend = _stub_backend(rows=[])
     handle = _handle_from_backend(backend, row=_row(status="running", job_id=_JOB_ID))
 
     events: list[ProgressEvent] = []
-    async for event in handle.progress_stream():
-        events.append(event)
+    with structlog.testing.capture_logs() as logs:
+        async for event in handle.progress_stream():
+            events.append(event)
 
     assert len(events) == 0
+    entry = next(log for log in logs if log["event"] == "progress-stream-job-missing")
+    assert entry["job_id"] == str(_JOB_ID)
+    assert entry["log_level"] == "warning"
 
 
 # ── Redis pub/sub path ──────────────────────────────────────────────────
@@ -337,10 +344,24 @@ async def test_redis_discards_malformed_messages() -> None:
     handle = _handle_from_backend(backend, row=row, redis_client=redis_client, settings=settings)
 
     events: list[ProgressEvent] = []
-    async for event in handle.progress_stream():
-        events.append(event)
+    with structlog.testing.capture_logs() as logs:
+        async for event in handle.progress_stream():
+            events.append(event)
 
     assert len(events) == 2
+    # Discarded, never silently: a publisher emitting garbage on the job's
+    # channel is a defect an operator has to be able to see.
+    entry = next(log for log in logs if log["event"] == "stream-event-deserialise-error")
+    assert entry["job_id"] == str(_JOB_ID)
+    assert entry["log_level"] == "warning"
+    # The failing locations and their count are enough to trace a bad
+    # publisher; the payload itself (pydantic's input_value) never
+    # reaches the log, as it is the user's own progress data.
+    assert entry["error_type"] == "ValidationError"
+    assert entry["error_count"] >= 1
+    assert isinstance(entry["locations"], list) and entry["locations"]
+    assert "error" not in entry
+    assert "input_value" not in repr(entry)
 
 
 async def test_redis_deduplicates_by_seq() -> None:

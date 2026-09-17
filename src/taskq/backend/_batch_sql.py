@@ -12,16 +12,20 @@ data.  The schema identifier is validated against ``_IDENT_RE`` before
 formatting (defence-in-depth).
 """
 
-from collections.abc import Iterable
+from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, replace
 from datetime import datetime
 from itertools import islice
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Final, cast
 from uuid import UUID
 
 import structlog
 from asyncpg.exceptions import LockNotAvailableError, UniqueViolationError
 
+from taskq._advisory import (
+    _LOCK_TIMEOUT_READ_SQL,  # pyright: ignore[reportPrivateUsage]  # Why: the one implementation of the lock_timeout GUC statements, shared with the advisory and bounded-wait machinery — a local copy would drift from the discipline it mirrors.
+    _LOCK_TIMEOUT_SET_SQL,  # pyright: ignore[reportPrivateUsage]
+)
 from taskq._json import dumps_str
 from taskq.backend._cursor import decode_batch_cursor
 from taskq.backend._enqueue import _enqueue_batch
@@ -35,7 +39,7 @@ from taskq.backend._protocol import (
 )
 from taskq.backend._records import _batch_row_from_record
 from taskq.backend._sql_templates import SqlTemplates
-from taskq.backend.statemachine import TERMINAL_STATUSES
+from taskq.backend.statemachine import ACTIVE_STATUSES, TERMINAL_STATUSES
 from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining
     DEFAULT_CHUNK_SIZE,
@@ -72,6 +76,28 @@ __all__ = [
 # added to the state machine.
 _TERMINAL_NOT_IN = "NOT IN (" + ",".join(f"'{s}'" for s in TERMINAL_STATUSES) + ")"
 
+_ACTIVE_IN = "IN (" + ", ".join(f"'{s}'" for s in sorted(ACTIVE_STATUSES)) + ")"
+
+
+def open_member_where(batch_id: str) -> str:
+    """The open-member probe: "a member of the batch whose id (as text)
+    is *batch_id* that is not terminal". *batch_id* is a SQL expression —
+    a bound parameter (``"$2"``) or a correlated column
+    (``"b.id::text"``).
+
+    Spelled so jobs_batch_open_members_idx (01.00.13_03) serves it: the
+    batch id is the index's expression key, and the positive, sorted
+    status list is the index predicate's exact text, which is what lets
+    the planner prove the partial index applies. Every question about
+    open members — the per-terminal-write probes here and the leader's
+    stale-batch sweep — goes through this one predicate; the
+    ``metadata @>`` containment form stays only for the statements that
+    must touch terminal members too (abort's cancel, list counts, prune,
+    the wait-for-batch poll and completion status in taskq.batch).
+    """
+    return f"(metadata->>'batch_id') = {batch_id}\n      AND status {_ACTIVE_IN}"
+
+
 _CREATE_BATCH_SQL = """\
 INSERT INTO "{schema}".batches
 (id, queue, expected_size, failure_threshold, finalizer_job_id, originating_actor)
@@ -84,21 +110,46 @@ SELECT id, queue, status, expected_size, consecutive_failures,
 FROM "{schema}".batches
 WHERE id = $1"""
 
+# Both counter writes run on every batched job's terminal write, so the
+# member count they return must not walk the batch: the LATERAL probe is
+# the open-member predicate, which jobs_batch_open_members_idx serves as
+# one index range over the members still open — never the terminal
+# history — so its cost tracks what remains, not what the batch was.
+# The LATERAL only executes for the rows the UPDATE returned: a batch
+# that is missing or no longer active costs one empty-scan of `updated`,
+# never the member probe.
+#
+# The batches row these UPDATEs take is contended from two sides: other
+# members' terminal-write tails (short, milliseconds) and a streaming
+# append's membership lock (_lock_batch_membership in _enqueue.py: a
+# whole-stream atomic append holds the row from its first chunk to its
+# commit, unbounded). The bare UPDATE parks behind either for as long
+# as the holder pleases, on the terminal-write path. The wait is
+# bounded instead: the callers run these statements through
+# _bounded_batches_row_wait, which scopes a savepoint plus a
+# transaction-local lock_timeout around the UPDATE and skips the count
+# when the budget expires. A short holder (another terminal-write tail,
+# a per-chunk append transaction) releases well within the budget, so
+# benign contention still counts; the skip fires for the unbounded
+# holder, and there the skipped increment is the documented best-effort
+# loss (M7). The failure stays recorded on the job row by the terminal
+# write, the streak is frozen rather than reset, the next uncontended
+# terminal write resumes counting, and the stale-batch sweep remains
+# the safety net for batch status.
 _INCREMENT_BATCH_FAILURES_SQL = """\
 WITH updated AS (
     UPDATE "{schema}".batches
     SET consecutive_failures = consecutive_failures + 1
     WHERE id = $1 AND status = 'active'
     RETURNING consecutive_failures, failure_threshold
-),
-counts AS (
-    SELECT count(*)::int AS remaining
-    FROM "{schema}".jobs
-    WHERE metadata @> $2::jsonb
-      AND status {terminal_not_in}
 )
 SELECT u.consecutive_failures, u.failure_threshold, c.remaining
-FROM updated u CROSS JOIN counts c"""
+FROM updated u
+LEFT JOIN LATERAL (
+    SELECT count(*)::int AS remaining
+    FROM "{schema}".jobs
+    WHERE {open_member}
+) c ON true"""
 
 _RESET_BATCH_FAILURES_SQL = """\
 WITH updated AS (
@@ -106,14 +157,13 @@ WITH updated AS (
     SET consecutive_failures = 0
     WHERE id = $1 AND status = 'active'
     RETURNING 1
-),
-counts AS (
+)
+SELECT c.remaining FROM updated u
+LEFT JOIN LATERAL (
     SELECT count(*)::int AS remaining
     FROM "{schema}".jobs
-    WHERE metadata @> $2::jsonb
-      AND status {terminal_not_in}
-)
-SELECT c.remaining FROM updated u CROSS JOIN counts c"""
+    WHERE {open_member}
+) c ON true"""
 
 _ABORT_BATCH_JOBS_SQL = """\
 UPDATE "{schema}".jobs
@@ -136,10 +186,12 @@ WHERE id = $1 AND status = 'active'"""
 # statement's own snapshot: the increment/reset counts CTE runs in ITS
 # statement's READ COMMITTED snapshot, which after a batches-row lock
 # wait can predate a concurrent member's terminal write, so a count of
-# zero from the caller is never the completion decision. The guard shape
-# is the one complete_stale_batches already uses (worker/
-# _leader_shared.py); the status = 'active' sibling condition keeps
-# abort-wins-over-complete intact.
+# zero from the caller is never the completion decision. The guard shape is
+# the one complete_stale_batches already uses (worker/_leader_shared.py);
+# the status = 'active' sibling condition keeps abort-wins-over-complete
+# intact. The probe itself is the open-member predicate served by
+# jobs_batch_open_members_idx, so the guard costs one index seek per
+# terminal write however many members the batch has.
 #
 # The membership CTE closes the append-race window the guard alone cannot
 # see: a READ COMMITTED snapshot cannot see another transaction's
@@ -149,40 +201,49 @@ WHERE id = $1 AND status = 'active'"""
 # before its INSERTs to its commit -- see _enqueue.py's
 # _lock_batch_membership), so the guard alone would complete the batch
 # and the append would then commit a pending member onto a terminal row.
-# FOR UPDATE NOWAIT makes the conflict itself the signal: an in-flight
-# append holds the row, this statement raises LockNotAvailableError
-# (SQLSTATE 55P03), and complete_batch() treats that as a DELAY -- the
-# docstring's own "can delay completion but never complete prematurely"
-# contract -- leaving the row 'active' for the append to commit and the
-# next hook or the stale-batch sweep to re-arbitrate. NOWAIT, not a
-# blocking wait, is load-bearing: the completer runs on the worker's
-# terminal connection inside the caller's open transaction, and blocking
-# here would park a terminal write behind an appender of unbounded
-# duration. The lock is held to this statement's commit, so an appender
-# arriving after it serializes behind the completion instead of racing
-# it. A batch row that does not exist locks nothing: EXISTS fails and
-# the UPDATE no-ops exactly as it did before the CTE.
+# FOR UPDATE SKIP LOCKED makes the conflict itself the signal: an
+# in-flight append holds the row, the CTE yields nothing, and the UPDATE
+# no-ops -- a DELAY, the docstring's own "can delay completion but never
+# complete prematurely" contract -- leaving the row 'active' for the
+# append to commit and the next hook or the stale-batch sweep to
+# re-arbitrate. Skipping, not a blocking wait, is load-bearing: the
+# completer may run inside a caller's open transaction (the
+# ``connection=`` arm, the shape the terminal-outcome hook uses), and
+# blocking here would park a terminal write behind an appender of
+# unbounded duration. Skipping rather than NOWAIT is equally
+# load-bearing: a NOWAIT refusal is an error (SQLSTATE 55P03) that
+# leaves the enclosing transaction aborted even once caught, so the
+# terminal write committed alongside the probe would roll back with it.
+# The lock is held to this statement's commit, so an appender arriving
+# after it serializes behind the completion instead of racing it. The
+# statement reports which of the three outcomes it took -- completed,
+# delayed on the lock, or nothing to do (no row, not active, or a member
+# still open) -- so a delay stays traceable without an exception.
 _COMPLETE_BATCH_SQL = """\
 WITH membership AS (
     SELECT id
     FROM "{schema}".batches
     WHERE id = $1
-    FOR UPDATE NOWAIT
+    FOR UPDATE SKIP LOCKED
+),
+completed AS (
+    UPDATE "{schema}".batches
+    SET status = 'complete', completed_at = clock_timestamp()
+    WHERE id = $1 AND status = 'active'
+      AND EXISTS (SELECT 1 FROM membership)
+      AND NOT EXISTS (
+        SELECT 1 FROM "{schema}".jobs
+        WHERE {open_member}
+      )
+    RETURNING id
 )
-UPDATE "{schema}".batches
-SET status = 'complete', completed_at = clock_timestamp()
-WHERE id = $1 AND status = 'active'
-  AND EXISTS (SELECT 1 FROM membership)
-  AND NOT EXISTS (
-    SELECT 1 FROM "{schema}".jobs
-    WHERE metadata @> $2::jsonb
-      AND status {terminal_not_in}
-  )"""
+SELECT EXISTS (SELECT 1 FROM completed) AS completed,
+       EXISTS (SELECT 1 FROM "{schema}".batches WHERE id = $1)
+         AND NOT EXISTS (SELECT 1 FROM membership) AS delayed_on_membership_lock"""
 
 _COUNT_BATCH_NON_TERMINAL_SQL = """\
 SELECT count(*)::int FROM "{schema}".jobs
-WHERE metadata @> $1::jsonb
-  AND status {terminal_not_in}"""
+WHERE {open_member}"""
 
 _LIST_BATCHES_BASE_SQL = """\
 SELECT b.id, b.queue, b.status, b.expected_size, b.consecutive_failures,
@@ -266,16 +327,18 @@ def render_batch_sql(schema: str) -> BatchSql:
         create_batch=_CREATE_BATCH_SQL.format(schema=schema),
         get_batch=_GET_BATCH_SQL.format(schema=schema),
         increment_batch_failures=_INCREMENT_BATCH_FAILURES_SQL.format(
-            schema=schema, terminal_not_in=_TERMINAL_NOT_IN
+            schema=schema, open_member=open_member_where("$2")
         ),
         reset_batch_failures=_RESET_BATCH_FAILURES_SQL.format(
-            schema=schema, terminal_not_in=_TERMINAL_NOT_IN
+            schema=schema, open_member=open_member_where("$2")
         ),
         abort_batch_jobs=_ABORT_BATCH_JOBS_SQL.format(schema=schema),
         abort_batch_row=_ABORT_BATCH_ROW_SQL.format(schema=schema),
-        complete_batch=_COMPLETE_BATCH_SQL.format(schema=schema, terminal_not_in=_TERMINAL_NOT_IN),
+        complete_batch=_COMPLETE_BATCH_SQL.format(
+            schema=schema, open_member=open_member_where("$2")
+        ),
         count_batch_non_terminal=_COUNT_BATCH_NON_TERMINAL_SQL.format(
-            schema=schema, terminal_not_in=_TERMINAL_NOT_IN
+            schema=schema, open_member=open_member_where("$1")
         ),
         list_batches_base=_LIST_BATCHES_BASE_SQL.format(
             schema=schema, terminal_not_in=_TERMINAL_NOT_IN
@@ -285,6 +348,48 @@ def render_batch_sql(schema: str) -> BatchSql:
 
 
 # ── Record conversion helpers ───────────────────────────────────────
+
+#: The batches-row lock wait budget for the counter writes, in
+#: milliseconds. Same order as the enqueue lock budgets' five-second
+#: convention, but tighter: these run on the terminal-write path, where
+#: a parked write holds a worker slot. A holder outliving the budget is
+#: a streaming append (see the counter statements' comment), and the
+#: skip it buys is M7's best-effort loss class.
+_BATCH_COUNTER_LOCK_TIMEOUT_MS: Final[float] = 2000.0
+
+
+async def _bounded_batches_row_wait[T](
+    conn: ConnLike,
+    write: Callable[[], Awaitable[T]],
+) -> T:
+    """Run one counter write under a bounded wait for the batches row.
+
+    A savepoint scopes a transaction-local ``lock_timeout`` around
+    *write*: on a bare connection it is a real short transaction (the
+    GUC span must own a transaction for ``SET LOCAL`` to apply), inside
+    a caller's transaction it is a savepoint. On expiry the statement
+    raises :class:`asyncpg.exceptions.LockNotAvailableError`; the
+    savepoint's rollback has already restored the caller's scope to
+    usable (a raw 55P03 leaves a transaction aborted even when caught),
+    and the exception propagates for the caller to convert to its skip
+    shape. On success the prior ``lock_timeout`` is restored before the
+    savepoint's RELEASE: ``SET LOCAL`` persists through it, so skipping
+    the restore would leak the wait bound onto every later statement of
+    the caller's transaction and clobber a caller-set bound. The
+    restore must not run on the timeout path (the scope is aborted; any
+    statement in it would fail), which the linear structure below gives
+    for free.
+    """
+    nested = conn.is_in_transaction()
+    async with conn.transaction():
+        prior_lock_timeout: str | None = None
+        if nested:
+            prior_lock_timeout = await conn.fetchval(_LOCK_TIMEOUT_READ_SQL)
+        await conn.execute(_LOCK_TIMEOUT_SET_SQL, f"{round(_BATCH_COUNTER_LOCK_TIMEOUT_MS)}ms")
+        result = await write()
+        if nested:
+            await conn.execute(_LOCK_TIMEOUT_SET_SQL, str(prior_lock_timeout))
+        return result
 
 
 def _batch_counts_from_record(rec: "asyncpg.Record") -> BatchCounts:
@@ -366,13 +471,35 @@ async def increment_batch_failures(
     """Atomically increment consecutive_failures and return the new count,
     the batch's failure_threshold, and the number of non-terminal member jobs.
 
-    Returns ``(0, None, 0)`` if the batch row does not exist.
+    Returns ``(0, None, 0)`` if the batch row does not exist. The member
+    count is the same index-served probe as :func:`count_batch_non_terminal`.
+
+    The batches-row wait is bounded (see :func:`_bounded_batches_row_wait`
+    and the counter statements' comment): when the budget expires against
+    a long-held row, the increment is SKIPPED and ``(0, None, 0)`` is
+    returned, the same shape as a missing row. The hook reads a ``None``
+    threshold and makes no decision on it, the failure stays recorded on
+    the job row by the terminal write, and the streak resumes with the
+    next uncontended terminal write. It is a skip and not a bare NOWAIT
+    because a raw 55P03 aborts the enclosing transaction even when
+    caught, and not SKIP LOCKED because a zero-wait refusal would drop
+    the count under the short benign contention (another member's
+    terminal-write tail) that the threshold contract has to keep
+    counting.
     """
-    rec = await conn.fetchrow(
-        sql.increment_batch_failures,
-        batch_id,
-        _batch_filter_json(batch_id),
-    )
+    try:
+        rec = await _bounded_batches_row_wait(
+            conn,
+            lambda: conn.fetchrow(sql.increment_batch_failures, batch_id, str(batch_id)),
+        )
+    except LockNotAvailableError:
+        logger.debug(
+            "batch-counter-lock-timeout",
+            kind="batch",
+            batch_id=str(batch_id),
+            write="increment",
+        )
+        return (0, None, 0)
     if rec is None:
         return (0, None, 0)
     return (rec["consecutive_failures"], rec["failure_threshold"], rec["remaining"])
@@ -386,13 +513,27 @@ async def reset_batch_failures(
     """Reset consecutive_failures to 0 and return the number of non-terminal
     member jobs.
 
-    Returns ``0`` if the batch row does not exist.
+    Returns ``0`` if the batch row does not exist. The member count is the
+    same index-served probe as :func:`count_batch_non_terminal`.
+
+    The bounded-wait semantics are :func:`increment_batch_failures`':
+    when the batches row is held past the budget, the reset is SKIPPED
+    and ``0`` returned, so the streak is frozen rather than zeroed and
+    the caller's terminal write is never parked behind a long holder.
     """
-    rec = await conn.fetchrow(
-        sql.reset_batch_failures,
-        batch_id,
-        _batch_filter_json(batch_id),
-    )
+    try:
+        rec = await _bounded_batches_row_wait(
+            conn,
+            lambda: conn.fetchrow(sql.reset_batch_failures, batch_id, str(batch_id)),
+        )
+    except LockNotAvailableError:
+        logger.debug(
+            "batch-counter-lock-timeout",
+            kind="batch",
+            batch_id=str(batch_id),
+            write="reset",
+        )
+        return 0
     if rec is None:
         return 0
     return rec["remaining"]
@@ -436,27 +577,27 @@ async def complete_batch(
     was vetoed lands once the last member turns terminal.
 
     Delay also covers the member-append window: the statement's
-    membership CTE takes the batches row ``FOR UPDATE NOWAIT``, and a
-    concurrent append transaction holding that lock (the streaming chunk
-    path — see ``_COMPLETE_BATCH_SQL``'s comment) makes the statement
-    raise :class:`asyncpg.exceptions.LockNotAvailableError`. That is a
-    DELAY, not an error: a READ COMMITTED snapshot cannot see the
-    appender's uncommitted member INSERT, so completing now would be
-    precisely the premature completion the guard exists to prevent. The
-    row stays ``'active'``, the append commits, and the next terminal
-    hook or the leader's ``complete_stale_batches`` sweep re-arbitrates
-    against the now-visible membership.
+    membership CTE takes the batches row ``FOR UPDATE SKIP LOCKED``, and
+    a concurrent append transaction holding that lock (the streaming
+    chunk path — see ``_COMPLETE_BATCH_SQL``'s comment) makes the CTE
+    yield nothing, so the UPDATE no-ops. That is a DELAY, not an error: a
+    READ COMMITTED snapshot cannot see the appender's uncommitted member
+    INSERT, so completing now would be precisely the premature completion
+    the guard exists to prevent. The row stays ``'active'``, the append
+    commits, and the next terminal hook or the leader's
+    ``complete_stale_batches`` sweep re-arbitrates against the
+    now-visible membership. Nothing raises, so the probe is safe inside a
+    caller's open transaction: a lock refusal that raised would leave that
+    transaction aborted and roll back the terminal write beside it.
     """
-    try:
-        await conn.execute(sql.complete_batch, batch_id, _batch_filter_json(batch_id))
-    except LockNotAvailableError:
-        # Delayed on the membership lock — see the docstring. Debug, not
-        # warning: this is the same optimistic-CAS miss class as the
-        # guard's own veto (a concurrent writer won the arbitration), an
-        # expected outcome under concurrency that reconciliation already
-        # covers; the log line exists so a delayed completion is
-        # traceable to its cause when someone asks why a batch with all
-        # terminal members is still 'active'.
+    outcome = await conn.fetchrow(sql.complete_batch, batch_id, str(batch_id))
+    if outcome is not None and outcome["delayed_on_membership_lock"]:
+        # Debug, not warning: this is the same optimistic-CAS miss class
+        # as the guard's own veto (a concurrent writer won the
+        # arbitration), an expected outcome under concurrency that
+        # reconciliation already covers; the log line exists so a delayed
+        # completion is traceable to its cause when someone asks why a
+        # batch with all terminal members is still 'active'.
         logger.debug(
             "complete_batch_delayed_membership_lock",
             kind="batch",
@@ -470,7 +611,7 @@ async def count_batch_non_terminal(
     batch_id: UUID,
 ) -> int:
     """Count non-terminal member jobs for a batch."""
-    return await conn.fetchval(sql.count_batch_non_terminal, _batch_filter_json(batch_id))
+    return await conn.fetchval(sql.count_batch_non_terminal, str(batch_id))
 
 
 async def list_batches(

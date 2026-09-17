@@ -11,6 +11,7 @@ import sys
 import threading
 import time
 from collections.abc import Callable, Iterator
+from datetime import UTC, datetime
 from pathlib import Path
 
 import asyncpg
@@ -21,6 +22,7 @@ from taskq.worker._watchdog import (
     ShutdownWatchdog,
 )
 from taskq.worker.deps import WorkerDeps
+from tests._leader_stub_deps import stub_deps
 
 
 class _ExitSentinelError(Exception):
@@ -327,7 +329,7 @@ async def test_trip_flush_is_bounded_against_a_hung_exporter(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """force_flush has no usable timeout against a hung OTLP collector (the
-    gRPC exporter ignores timeout_millis, opentelemetry#2663), so an
+    gRPC exporter ignores timeout_millis), so an
     unbounded flush would stall the force-exit it precedes, exactly when
     the process is already known to be wedged. The flush must run on a
     thread with a hard join deadline so trip() still exits promptly."""
@@ -575,12 +577,10 @@ async def test_health_socket_secured_when_tasks_enabled(tmp_path: Path) -> None:
 
 def _spawner_deps(*, watchdog_enabled: bool) -> WorkerDeps:
     from types import SimpleNamespace
-    from typing import cast
 
     from taskq.worker.shutdown import ShutdownPhase
 
-    return cast(
-        WorkerDeps,
+    return stub_deps(
         SimpleNamespace(
             shutdown_phase=ShutdownPhase.NONE,
             producer_stop_event=asyncio.Event(),
@@ -693,7 +693,6 @@ class _PingPool:
 
 def _health_deps(liveness: LoopLiveness, *, watchdog_enabled: bool) -> WorkerDeps:
     from types import SimpleNamespace
-    from typing import cast
 
     from taskq.settings import WorkerSettings
     from taskq.worker.shutdown import ShutdownPhase
@@ -710,8 +709,7 @@ def _health_deps(liveness: LoopLiveness, *, watchdog_enabled: bool) -> WorkerDep
     settings.redis_url = None
     settings.health_pg_ping_timeout = 0.2  # _PingPool answers instantly
 
-    return cast(
-        WorkerDeps,
+    return stub_deps(
         SimpleNamespace(
             shutdown_phase=ShutdownPhase.NONE,
             dispatcher_pool=_PingPool(),
@@ -1014,8 +1012,7 @@ async def test_demoted_leader_loops_still_tick_liveness() -> None:
         async def scheduled_to_pending(self) -> int:
             raise AssertionError("demoted leader must not run scheduled_to_pending")
 
-    deps = cast(
-        WorkerDeps,
+    deps = stub_deps(
         SimpleNamespace(
             liveness=liveness,
             is_leader=asyncio.Event(),  # never set: this worker is not the leader
@@ -1125,8 +1122,7 @@ async def test_leader_dedicated_conn_uses_dispatcher_command_timeout(
 
     monkeypatch.setattr(leader_mod, "open_dedicated_conn", _fake_open)
 
-    deps = cast(
-        WorkerDeps,
+    deps = stub_deps(
         SimpleNamespace(
             leader_conn_factory=None,
             settings=SimpleNamespace(
@@ -1178,8 +1174,7 @@ async def test_open_leader_conn_dsn_fallback_applies_command_timeout(
 
     monkeypatch.setattr(leader_mod, "open_dedicated_conn", _fake_open)
 
-    deps = cast(
-        WorkerDeps,
+    deps = stub_deps(
         SimpleNamespace(
             leader_conn_factory=None,
             settings=SimpleNamespace(
@@ -1380,8 +1375,7 @@ async def _wake_loop_under_watchdog(
     liveness = LoopLiveness(grace_factor=grace_factor, stale_floor=stale_floor)
     is_leader = asyncio.Event()
     is_leader.set()
-    deps = cast(
-        WorkerDeps,
+    deps = stub_deps(
         SimpleNamespace(
             liveness=liveness,
             is_leader=is_leader,
@@ -1494,7 +1488,6 @@ class _QueryCanceledConn:
 
 def _leader_deps(**settings_overrides: object) -> WorkerDeps:
     from types import SimpleNamespace
-    from typing import cast
 
     settings = SimpleNamespace(
         schema_name="taskq",
@@ -1502,8 +1495,7 @@ def _leader_deps(**settings_overrides: object) -> WorkerDeps:
         dispatcher_command_timeout=2.5,
         **settings_overrides,
     )
-    return cast(
-        WorkerDeps,
+    return stub_deps(
         SimpleNamespace(
             liveness=LoopLiveness(),
             is_leader=asyncio.Event(),
@@ -1576,8 +1568,7 @@ async def test_scheduled_wake_survives_query_canceled(
     liveness = LoopLiveness(grace_factor=3.0, stale_floor=1.0)
     is_leader = asyncio.Event()
     is_leader.set()
-    deps = cast(
-        WorkerDeps,
+    deps = stub_deps(
         SimpleNamespace(
             liveness=liveness,
             is_leader=is_leader,
@@ -1659,8 +1650,7 @@ async def test_scheduled_wake_notify_path_gap_stays_within_budget(
     liveness = LoopLiveness(grace_factor=4.0, stale_floor=1.0)  # budget 4.0s
     is_leader = asyncio.Event()
     is_leader.set()
-    deps = cast(
-        WorkerDeps,
+    deps = stub_deps(
         SimpleNamespace(
             liveness=liveness,
             is_leader=is_leader,
@@ -1735,8 +1725,7 @@ async def test_cron_multi_statement_tick_gap_stays_within_budget(
     liveness = LoopLiveness(grace_factor=4.0, stale_floor=1.0)  # budget 4.0s
     is_leader = asyncio.Event()
     is_leader.set()
-    deps = cast(
-        WorkerDeps,
+    deps = stub_deps(
         SimpleNamespace(
             liveness=liveness,
             is_leader=is_leader,
@@ -1846,8 +1835,7 @@ async def test_scheduled_wake_backstop_tolerates_then_goes_fatal(
     liveness = LoopLiveness()
     is_leader = asyncio.Event()
     is_leader.set()
-    deps = cast(
-        WorkerDeps,
+    deps = stub_deps(
         SimpleNamespace(
             liveness=liveness,
             is_leader=is_leader,
@@ -1981,8 +1969,7 @@ async def test_scheduled_wake_rides_out_every_transient_shape(
     liveness = LoopLiveness()
     is_leader = asyncio.Event()
     is_leader.set()
-    deps = cast(
-        WorkerDeps,
+    deps = stub_deps(
         SimpleNamespace(
             liveness=liveness,
             is_leader=is_leader,
@@ -2078,8 +2065,7 @@ async def test_cron_loop_treats_transient_error_as_retry_not_fatal(
     liveness = LoopLiveness()
     is_leader = asyncio.Event()
     is_leader.set()
-    deps = cast(
-        WorkerDeps,
+    deps = stub_deps(
         SimpleNamespace(
             liveness=liveness,
             is_leader=is_leader,
@@ -2147,8 +2133,7 @@ async def test_election_probe_cleanup_runs_before_guard_raises(
     liveness = LoopLiveness()
     is_leader = asyncio.Event()
     is_leader.set()
-    deps = cast(
-        WorkerDeps,
+    deps = stub_deps(
         SimpleNamespace(
             liveness=liveness,
             is_leader=is_leader,
@@ -2158,6 +2143,7 @@ async def test_election_probe_cleanup_runs_before_guard_raises(
             settings=SimpleNamespace(
                 schema_name="taskq",
                 heartbeat_interval=0.01,
+                resolved_leader_lease=40.0,
                 dispatcher_command_timeout=2.5,
                 pg_dsn_direct=None,
             ),
@@ -2198,7 +2184,7 @@ async def test_election_probe_cleanup_runs_before_guard_raises(
 async def test_election_probe_unexpected_continues_not_falls_through(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The probe's unexpected branch must continue so it doesn't fall through
+    """The renewal's unexpected branch must continue so it doesn't fall through
     to re-election and guard.ok(), which would reset the streak."""
     from types import SimpleNamespace
     from typing import cast
@@ -2206,6 +2192,7 @@ async def test_election_probe_unexpected_continues_not_falls_through(
     from taskq._ids import new_uuid
     from taskq.backend._protocol import Backend
     from taskq.backend.clock import SystemClock
+    from taskq.worker.deps import LeaderTerm
     from taskq.worker.leader import MaintenanceLeader
 
     monkeypatch.setattr("taskq.worker._transient.DEFAULT_MAX_CONSECUTIVE_UNEXPECTED", 3)
@@ -2215,18 +2202,18 @@ async def test_election_probe_unexpected_continues_not_falls_through(
 
     class _ProbeFailsConn:
         async def execute(self, sql: str, *a: object) -> str:
-            nonlocal probe_calls
-            if "SELECT 1" in sql:
-                probe_calls += 1
-                raise ValueError("probe bug")
             return "UPDATE 1"
 
         async def fetchval(self, sql: str, *a: object) -> object:
-            nonlocal lock_attempts
+            nonlocal lock_attempts, probe_calls
             if "pg_try_advisory_lock" in sql:
                 lock_attempts += 1
                 return True
-            return None
+            # The renewal is this pod's own liveness check now: it is what
+            # keeps the term, and a bug in it must not fall through to a
+            # fresh election.
+            probe_calls += 1
+            raise ValueError("probe bug")
 
         def is_closed(self) -> bool:
             return False
@@ -2240,8 +2227,7 @@ async def test_election_probe_unexpected_continues_not_falls_through(
     liveness = LoopLiveness()
     is_leader = asyncio.Event()
     is_leader.set()
-    deps = cast(
-        WorkerDeps,
+    deps = stub_deps(
         SimpleNamespace(
             liveness=liveness,
             is_leader=is_leader,
@@ -2251,10 +2237,17 @@ async def test_election_probe_unexpected_continues_not_falls_through(
             settings=SimpleNamespace(
                 schema_name="taskq",
                 heartbeat_interval=0.01,
+                resolved_leader_lease=40.0,
                 dispatcher_command_timeout=2.5,
                 pg_dsn_direct=None,
             ),
             dispatcher_pool=None,
+        ),
+        # A term with trust left, so the loop renews rather than re-electing:
+        # renewal is the path whose unexpected branch this test pins.
+        term=LeaderTerm(
+            elected_at=datetime.now(UTC),
+            trusted_until=asyncio.get_running_loop().time() + 60.0,
         ),
     )
     leader = MaintenanceLeader(
@@ -2329,8 +2322,7 @@ async def test_cron_timeout_branch_sleeps_before_next_tick(
     liveness = LoopLiveness()
     is_leader = asyncio.Event()
     is_leader.set()
-    deps = cast(
-        WorkerDeps,
+    deps = stub_deps(
         SimpleNamespace(
             liveness=liveness,
             is_leader=is_leader,
@@ -2566,8 +2558,7 @@ async def test_transient_pg_errors_doc_describes_query_canceled_correctly(
     liveness = LoopLiveness()
     is_leader = asyncio.Event()
     is_leader.set()
-    deps = cast(
-        WorkerDeps,
+    deps = stub_deps(
         SimpleNamespace(
             liveness=liveness,
             is_leader=is_leader,

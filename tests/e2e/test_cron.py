@@ -13,23 +13,20 @@ job in every e2e worker would break the other modules' idle gates.
 
 from __future__ import annotations
 
-import asyncio
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING
 
 import pytest
 import pytest_asyncio
 
-from taskq.testing._shared_containers import creator_labels
-
-from ._assertions import poll_until, wait_for_effects, wait_for_worker_ready
-from .conftest import E2EWorker, _container_logs, _stop_container
+from ._assertions import poll_until, wait_for_effects
+from .conftest import E2EWorker, running_worker
 
 if TYPE_CHECKING:
     import asyncpg
-    from containerspec import BuiltImage
     from testcontainers.core.network import Network
 
+    from ._types import BuiltImage
     from .conftest import E2ESchema
 
 pytestmark = [pytest.mark.e2e, pytest.mark.timeout(900)]
@@ -44,32 +41,17 @@ async def cron_worker(
     e2e_worker_image: BuiltImage,
 ) -> AsyncIterator[E2EWorker]:
     """Dedicated worker container carrying the cron registration."""
-    from testcontainers.core.container import DockerContainer
-
-    container = DockerContainer(image=e2e_worker_image.tag)
-    container.with_kwargs(
-        labels=creator_labels()
-    )  # Ownership labels: sweepable under disabled Ryuk (see e2e_network's sweep).
-    container.with_network(e2e_network).with_network_aliases(
-        f"worker-cron-{e2e_schema.schema_name}"
-    )
-    for key, value in e2e_schema.worker_env.items():
-        container.with_env(key, value)
-    container.with_env("TASKQ_E2E_CRON", "1")
-
-    await asyncio.to_thread(container.start)
-    try:
-        try:
-            await wait_for_worker_ready(e2e_pg_pool, e2e_schema.schema_name, timeout=30.0)
-        except TimeoutError:
-            logs = _container_logs(container)
-            msg = f"cron e2e worker failed readiness gate\n{logs}"
-            raise RuntimeError(msg) from None
-        yield E2EWorker(container=container, schema=e2e_schema.schema_name)
-    finally:
-        if request.config.option.verbose >= 2:
-            print(_container_logs(container))
-        await asyncio.to_thread(_stop_container, container)
+    async with running_worker(
+        request,
+        network=e2e_network,
+        schema=e2e_schema,
+        pg_pool=e2e_pg_pool,
+        image=e2e_worker_image,
+        alias=f"worker-cron-{e2e_schema.schema_name}",
+        env={**e2e_schema.worker_env, "TASKQ_E2E_CRON": "1"},
+        label="cron e2e worker",
+    ) as worker:
+        yield worker
 
 
 async def test_cron_schedule_registers_fires_and_completes(

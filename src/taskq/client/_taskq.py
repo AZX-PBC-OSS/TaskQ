@@ -35,6 +35,7 @@ Passing an existing pool (e.g. shared with the rest of the application)::
 
 import asyncio
 import contextlib
+import os
 from collections.abc import AsyncGenerator, AsyncIterator, Iterable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -52,8 +53,9 @@ if TYPE_CHECKING:
     import redis.asyncio as redis_async
     from starlette.responses import JSONResponse
 
-    from taskq.auth import PgCredentialProvider
+    from taskq.auth import PgCredentialProvider, ReloadSchedule
     from taskq.connections import ConnFactory, PoolFactory
+    from taskq.settings import TaskQSettings
 
 from taskq._close import CLOSE_TIMEOUT_SECS, close_conn_bounded, close_pool_bounded
 from taskq.actor import ActorRef
@@ -78,17 +80,22 @@ from taskq.batch_policy import BatchFailurePolicy
 from taskq.client._actors import ActorsClient
 from taskq.client._handle import JobHandle
 from taskq.client._jobs import JobsClient
+from taskq.connections import (
+    bounded_lock_budget_ms,
+    lock_budget_command_timeout_secs,
+    statement_cache_kwargs,
+)
 from taskq.constants import (
     DEFAULT_CHUNK_SIZE,
     DEFAULT_EVENT_WRITER_BATCH_SIZE,
     DEFAULT_EVENT_WRITER_STATEMENT_TIMEOUT_MS,
+    DEFAULT_MAX_RETRY_BACKOFF,
     MAX_RESULT_BYTES,
     RECLAIM_EVENT_VISIBILITY_DELAY,
     progress_channel,
     wake_channel,
 )
 from taskq.cron import ScheduleHandle
-from taskq.progress._events import ProgressEvent
 from taskq.types import BulkCancelResult, CancelResult
 
 __all__ = ["ActorsClient", "EventRow", "JobEvent", "TaskQ", "orjson_response_class"]
@@ -107,17 +114,106 @@ silent process wedge; a hung token endpoint fails the open (or the
 reload, leaving the live pool serving) loudly instead. Module-level so
 tests shrink it as a seam (the ``CLOSE_TIMEOUT_SECS`` convention)."""
 
-_CLIENT_POOL_COMMAND_TIMEOUT_SECS: Final[float] = 5.0
+_PG_STREAM_POLL_INTERVAL_S: Final[float] = 0.5
+"""Poll cadence of :meth:`TaskQ.stream` on Postgres alone - the transport's
+observation latency, since nothing announces a job's progress or terminal
+write over NOTIFY (see ``_stream_pg``). ``poll_timeout`` lowers it, never
+raises it: a client that asked for a 30 s safety net on Redis must not get
+a 30 s blind spot on Postgres. The transport floors it at
+``taskq.client._transport.POLL_INTERVAL_FLOOR_SECS`` and jitters each
+wait, so a tiny ``poll_timeout`` cannot hammer the database."""
+
+_CLIENT_POOL_COMMAND_TIMEOUT_SECS: Final[float] = 10.0
 """Per-query bound on every pool TaskQ itself builds for the client — the
 DSN pool at :meth:`TaskQ.open` and the ``pg_provider`` sugar's factory
-pools. Mirrors ``WorkerSettings.dispatcher_command_timeout``'s default
-(5.0), the bound every worker-side pool TaskQ builds already carries: a
-black-holed Postgres parks the client's first enqueue/get/cancel forever
-without it, and client processes arm no watchdogs to convert the hang
-into a crash. Caller-supplied ``pool_factory``/``pool`` instances stay
-caller-owned (their timeouts are their choice), the same doctrine the
-worker applies to caller-supplied pools. Module-level so tests shrink it
-as a seam."""
+pools. A black-holed Postgres parks the client's first enqueue/get/cancel
+forever without it, and client processes arm no watchdogs to convert the
+hang into a crash. Caller-supplied ``pool_factory``/``pool`` instances
+stay caller-owned (their timeouts are their choice), the same doctrine
+the worker applies to caller-supplied pools. Module-level so tests
+shrink it as a seam.
+
+Deliberately larger than ``WorkerSettings.dispatcher_command_timeout``'s
+default (5.0) and every enqueue-path server-side lock timeout
+(``DEFAULT_MAX_PENDING_LOCK_TIMEOUT_MS``,
+``DEFAULT_UNIQUE_FOR_LOCK_TIMEOUT_MS``,
+``DEFAULT_IDEMPOTENCY_LOCK_TIMEOUT_MS`` — all 5000.0,
+``backend/_enqueue.py``): asyncpg's client-side ``command_timeout`` races
+the server-side ``SET LOCAL lock_timeout`` on the same connection, and an
+equal budget lets the client-side cancellation fire first, surfacing a
+bare ``TimeoutError`` where a caller should see the typed
+``MaxPendingLockTimeoutError`` / ``UniqueForLockTimeoutError`` /
+``IdempotencyKeyLockTimeoutError``. The margin guarantees the server-side
+55P03 always wins the race at every enqueue-path lock timeout's default,
+without changing any lock timeout's own default value.
+
+The value here is the FLOOR the bound takes at the shipped lock-budget
+defaults; :func:`_client_pool_command_timeout_secs` re-derives it upward
+when an operator widens an enqueue lock budget past its default, so the
+widened server-side wait still fires before this client-side timer."""
+
+_ENQUEUE_LOCK_BUDGET_FIELDS: Final[tuple[str, ...]] = (
+    "max_pending_lock_timeout_ms",
+    "unique_for_lock_timeout_ms",
+    "idempotency_lock_timeout_ms",
+)
+"""The ``TaskQSettings`` field names of the three enqueue advisory-lock
+budgets — listed once so the env overlay, the pool-bound derivation, and
+the clamp below cannot drift onto different spellings."""
+
+
+def _lock_budget_env_overlay() -> dict[str, str]:
+    """The operator's ``TASKQ_*_LOCK_TIMEOUT_MS`` env values, as a
+    ``load_from_dict`` overlay.
+
+    ``TaskQ.open()`` resolves its settings through ``load_from_dict`` so
+    the constructor's own arguments stay authoritative; that loader reads
+    the dict and nothing else, so the budget knobs' documented env
+    channel is probed here and folded in — without it a producer process
+    could never reach the knobs the client pool's per-query bound is
+    derived from. The env names come from the model's own field metadata
+    rather than restated literals, so a field rename moves both sides at
+    once.
+    """
+    from dotenvmodel.loading import get_env_var_name
+
+    from taskq.settings import TaskQSettings
+
+    overlay: dict[str, str] = {}
+    fields = TaskQSettings.get_fields()
+    for field_name in _ENQUEUE_LOCK_BUDGET_FIELDS:
+        _field_type, field_info = fields[field_name]
+        env_name = get_env_var_name(field_name, field_info.alias, TaskQSettings.env_prefix)
+        value = os.environ.get(env_name)
+        if value is not None:
+            overlay[env_name] = value
+    return overlay
+
+
+def _lock_budget_pairs(settings: "TaskQSettings") -> list[tuple[float, float]]:
+    """``(configured, shipped default)`` per lock-budget knob — the input
+    :func:`taskq.connections.lock_budget_command_timeout_secs` derives the
+    pool bound from. The defaults are read off the model's field metadata,
+    never restated."""
+    pairs: list[tuple[float, float]] = []
+    fields = type(settings).get_fields()
+    for field_name in _ENQUEUE_LOCK_BUDGET_FIELDS:
+        _field_type, field_info = fields[field_name]
+        pairs.append((float(getattr(settings, field_name)), float(field_info.default)))
+    return pairs
+
+
+def _client_pool_command_timeout_secs() -> float:
+    """The per-query bound every client-built pool carries: the floor at
+    the shipped defaults, re-derived upward when the operator's env widens
+    an enqueue lock budget past its default (see
+    :func:`taskq.connections.lock_budget_command_timeout_secs`)."""
+    from taskq.settings import TaskQSettings
+
+    return lock_budget_command_timeout_secs(
+        _lock_budget_pairs(TaskQSettings.load_from_dict(_lock_budget_env_overlay())),
+        floor_secs=_CLIENT_POOL_COMMAND_TIMEOUT_SECS,
+    )
 
 
 @lru_cache(maxsize=1)
@@ -264,12 +360,19 @@ class _ClientSettings:
     # backend's enqueue wrappers read them at the lock use sites
     # (PostgresBackend._enqueue_lock_budgets — its defensive getattr
     # fallbacks stay for settings objects that predate the fields).
-    # Defaults mirror WorkerSettings' (5000.0 each — the module constants
-    # the fallbacks supply), so a client-built backend behaves exactly as
-    # before the contract was declared.
+    # Carried from the loaded TaskQSettings rather than fixed here: the
+    # client is the side that TAKES these locks, so an operator's
+    # TASKQ_*_LOCK_TIMEOUT_MS must reach the backend it builds. The
+    # literals are the same field defaults, for the construction sites
+    # that pass no settings.
     max_pending_lock_timeout_ms: float = 5000.0
     unique_for_lock_timeout_ms: float = 5000.0
     idempotency_lock_timeout_ms: float = 5000.0
+    # The reclaim sweep's backoff ceiling, declared on BackendSettings: a
+    # client-built backend that runs the sweep binds this as the delay
+    # clamp's $N. The default mirrors WorkerSettings' (24 h), so a
+    # client-built backend behaves exactly as an unconfigured worker would.
+    max_retry_backoff: timedelta = DEFAULT_MAX_RETRY_BACKOFF
 
 
 @dataclass(slots=True)
@@ -313,7 +416,11 @@ class TaskQ:
         factory's other hooks (``init``, ``server_settings``,
         ``command_timeout``).
     schema:
-        TaskQ schema name. Defaults to ``"taskq"``.
+        TaskQ schema name. When omitted, resolved the way the worker and
+        CLI resolve it — ``TASKQ_SCHEMA_NAME`` from the process environment
+        or the ``.env`` cascade, with ``"taskq"`` as the final default — so
+        a client constructed with no opinion lands in the schema its worker
+        fleet is listening on. An explicit value always wins.
     min_pool_size:
         Minimum pool connections. Only used when ``dsn`` is provided.
     max_pool_size:
@@ -328,11 +435,11 @@ class TaskQ:
         ``redis_url``.
     pg_conn_factory:
         A zero-arg async factory returning an ``asyncpg.Connection`` for the
-        LISTEN/NOTIFY transport used by :meth:`stream`. Mutually exclusive
-        with ``listen_conn``. Takes precedence over ``dsn`` when set. Use
-        this when you have no DSN (e.g. AAD-managed-identity auth) but still
-        want streaming. TaskQ owns and closes the connection produced by
-        the factory per ``stream()`` call.
+        LISTEN/NOTIFY transport used by :meth:`watch_reclaims`. Mutually
+        exclusive with ``listen_conn``. Takes precedence over ``dsn`` when
+        set. Use this when you have no DSN (e.g. AAD-managed-identity auth)
+        but still want the reclaim wake-up. TaskQ owns and closes the
+        connection produced by the factory per ``watch_reclaims()`` call.
     listen_conn:
         A pre-constructed ``asyncpg.Connection`` for the LISTEN transport.
         Caller-owned; TaskQ does not close it. Mutually exclusive with
@@ -340,7 +447,22 @@ class TaskQ:
         this to share a dedicated LISTEN conn across callers.
     poll_timeout:
         Maximum seconds to wait between transport wakeups before re-fetching
-        job state. Defaults to ``30.0``.
+        job state. Defaults to ``30.0``. :meth:`stream` on Postgres alone
+        has no wakeups and polls every ``min(poll_timeout, 0.5)`` seconds
+        (never below 0.1 s, jittered ±20%).
+    reload_interval:
+        Seconds between automatic :meth:`reload_credentials` rebuilds of a
+        factory-built pool (``pool_factory`` / ``pg_provider``); the
+        client-side ``TASKQ_RELOAD_INTERVAL``. When ``None`` (the default)
+        the cadence is derived from the lease the provider grants - a
+        Vault dynamic credential is rebuilt at half its lease TTL (see
+        :class:`taskq.auth.ReloadSchedule`) - and a factory whose
+        credential carries no lease is never rebuilt automatically
+        (token providers refresh per connection and need no rebuild).
+        The rotation runs as a background task for the life of the client;
+        a rebuild that fails leaves the live pool serving and is retried
+        on the next tick. Ignored for ``dsn=`` and ``pool=``, which have
+        nothing to rebuild from.
     """
 
     def __init__(
@@ -350,7 +472,7 @@ class TaskQ:
         pool: "asyncpg.Pool | None" = None,
         pool_factory: "PoolFactory | None" = None,
         pg_provider: "PgCredentialProvider | None" = None,
-        schema: str = "taskq",
+        schema: str | None = None,
         min_pool_size: int = 1,
         max_pool_size: int = 5,
         redis_url: str | None = None,
@@ -359,7 +481,13 @@ class TaskQ:
         listen_conn: "asyncpg.Connection | None" = None,
         poll_timeout: float = 30.0,
         reclaim_event_visibility_delay: timedelta | None = None,
+        reload_interval: float | None = None,
     ) -> None:
+        # True when every connection the client will use came from a pool
+        # TaskQ built itself, so its per-query bound is known here. A
+        # caller-supplied pool or factory is caller-owned — its timeouts
+        # are its choice, the same doctrine the worker applies.
+        self._pool_bound_is_ours = pool is None and pool_factory is None
         if pg_provider is not None:
             if dsn is None:
                 raise ValueError(
@@ -372,14 +500,18 @@ class TaskQ:
             # (taskq.auth.make_pg_pool_factory, the same builder
             # build_worker_connections uses); pg_provider is sugar that
             # collapses into it, so everything downstream sees one code path.
-            from taskq.auth import make_pg_pool_factory
+            from taskq.auth import ReloadSchedule, make_pg_pool_factory
 
             pool_factory = make_pg_pool_factory(
                 dsn,
                 pg_provider,
                 min_size=min_pool_size,
                 max_size=max_pool_size,
-                command_timeout=_CLIENT_POOL_COMMAND_TIMEOUT_SECS,
+                # Derived from the operator's lock budgets, not the bare
+                # floor: the budgets are env-configured, so the derivation
+                # reads the same values open()'s settings load will see.
+                command_timeout=_client_pool_command_timeout_secs(),
+                reload_schedule=ReloadSchedule(configured=reload_interval),
             )
             dsn = None
 
@@ -404,6 +536,18 @@ class TaskQ:
 
         self._dsn = dsn
         self._pool: "asyncpg.Pool | None" = pool  # noqa: UP037  # Why: asyncpg imported under TYPE_CHECKING; quotes required for runtime resolution.
+        # Schema resolution keeps one source of truth with the worker and
+        # CLI (the ``ui_serve`` idiom): an explicit argument wins, otherwise
+        # the shared configuration load decides — process environment, then
+        # the .env cascade, then the model default. Hardcoding the default
+        # here splits that truth: TASKQ_SCHEMA_NAME honored by the worker
+        # fleet but not by the client is a silent job-loss vector (the
+        # enqueue succeeds into a schema no worker reads; wait() reports
+        # only a bare timeout).
+        if schema is None:
+            from taskq.settings import TaskQSettings
+
+            schema = TaskQSettings.load().schema_name
         self._schema = schema
         self._min_pool_size = min_pool_size
         self._max_pool_size = max_pool_size
@@ -428,6 +572,45 @@ class TaskQ:
         # Held so reload_credentials can swap the pool into the live backend
         # without reaching through the JobsClient into PostgresBackend._deps.
         self._deps: _ClientDeps | None = None
+        if reload_interval is not None and reload_interval <= 0:
+            raise ValueError(
+                f"TaskQ 'reload_interval' must be a positive number of seconds, "
+                f"got {reload_interval!r}"
+            )
+        if reload_interval is not None and pool_factory is None:
+            raise ValueError(
+                "TaskQ 'reload_interval' requires 'pool_factory' (or 'pg_provider'): a "
+                "pool built from 'dsn' or passed as 'pool=' has no factory to rebuild from"
+            )
+        self._reload_schedule = self._make_reload_schedule(pool_factory, reload_interval)
+        self._reload_task: asyncio.Task[None] | None = None
+        # Serializes reload_credentials: the scheduled rotation and an
+        # explicit call racing each other would each build a pool and one
+        # would close the other's fresh one.
+        self._reload_lock = asyncio.Lock()
+
+    @staticmethod
+    def _make_reload_schedule(
+        pool_factory: "PoolFactory | None", reload_interval: float | None
+    ) -> "ReloadSchedule | None":
+        """The cadence the factory-built pool is rebuilt on, or ``None``
+        when there is no factory to rebuild from.
+
+        An explicit ``reload_interval`` wins; otherwise the factory's own
+        declared schedule (:func:`taskq.auth.reload_schedule_of`) supplies
+        the lease it was granted, so an opaque ``pool_factory=`` built with
+        :func:`taskq.auth.make_pg_pool_factory` rotates on its lease too.
+        """
+        if pool_factory is None:
+            return None
+        from taskq.auth import ReloadSchedule, reload_schedule_of
+
+        declared = reload_schedule_of(pool_factory)
+        if declared is not None and reload_interval is None:
+            return declared
+        return ReloadSchedule(
+            configured=reload_interval, sources=(declared,) if declared is not None else ()
+        )
 
     # ── Lifecycle ──────────────────────────────────────────────────────────
 
@@ -447,7 +630,6 @@ class TaskQ:
 
         from taskq.backend.clock import SystemClock
         from taskq.backend.postgres import PostgresBackend
-        from taskq.connections import statement_cache_kwargs
         from taskq.settings import TaskQSettings
 
         # Route the Redis URL through load_from_dict so it is coerced and
@@ -456,11 +638,35 @@ class TaskQ:
         # before pool creation so the DSN-built pool resolves its
         # statement-cache kwargs through the same settings instance the
         # client hands the backend — one settings flow, not two (and
-        # validation failure now fails fast, before a pool is opened).
-        load_data: dict[str, str] = {"TASKQ_SCHEMA_NAME": self._schema}
+        # validation failure now fails fast, before a pool is opened). The
+        # lock-budget overlay folds the operator's TASKQ_*_LOCK_TIMEOUT_MS
+        # env values into the dict load: that loader reads only the dict,
+        # and the constructor's own arguments stay authoritative (they are
+        # written last).
+        load_data: dict[str, str] = _lock_budget_env_overlay()
+        load_data["TASKQ_SCHEMA_NAME"] = self._schema
         if self._redis_url is not None:
             load_data["TASKQ_REDIS_URL"] = self._redis_url
         settings = TaskQSettings.load_from_dict(load_data)
+
+        # The per-query bound the enqueue lock budgets must fit inside,
+        # derived BEFORE the pool is built: at the shipped defaults it is
+        # exactly _CLIENT_POOL_COMMAND_TIMEOUT_SECS (the floor), and a
+        # budget widened past its default re-derives the bound upward so
+        # the widened server-side lock_timeout still fires first — the
+        # clamp below then never silently caps an operator's widening.
+        # Known only for pools TaskQ builds itself (the DSN pool below and
+        # the pg_provider sugar's factory, which __init__ derived the same
+        # way); a caller-supplied pool or factory is caller-owned, its
+        # timeouts are its choice, and guessing one would clamp a budget
+        # against a bound that is not there.
+        pool_command_timeout = (
+            lock_budget_command_timeout_secs(
+                _lock_budget_pairs(settings), floor_secs=_CLIENT_POOL_COMMAND_TIMEOUT_SECS
+            )
+            if self._pool_bound_is_ours
+            else None
+        )
 
         if self._pool is None:
             if self._pool_factory is not None:
@@ -489,7 +695,7 @@ class TaskQ:
                     dsn=self._dsn,
                     min_size=self._min_pool_size,
                     max_size=self._max_pool_size,
-                    command_timeout=_CLIENT_POOL_COMMAND_TIMEOUT_SECS,
+                    command_timeout=pool_command_timeout,
                     statement_cache_size=stmt_kwargs["statement_cache_size"],
                     max_cached_statement_lifetime=stmt_kwargs["max_cached_statement_lifetime"],
                 )
@@ -499,7 +705,26 @@ class TaskQ:
         pool = self._pool
         assert pool is not None
         deps = _ClientDeps(
-            settings=_ClientSettings(schema_name=self._schema),
+            settings=_ClientSettings(
+                schema_name=self._schema,
+                # Clamped against the pool's own per-query bound: a budget
+                # the connection will not wait out cannot produce the typed
+                # refusal it exists for (see bounded_lock_budget_ms). The
+                # bound above was derived from these same budgets, so the
+                # clamp is the safety net that keeps the server-side
+                # lock_timeout first, not a silent cap on a widened budget.
+                # Pools the caller supplies keep their own timeouts, so
+                # their budgets stand as configured.
+                max_pending_lock_timeout_ms=bounded_lock_budget_ms(
+                    settings.max_pending_lock_timeout_ms, pool_command_timeout
+                ),
+                unique_for_lock_timeout_ms=bounded_lock_budget_ms(
+                    settings.unique_for_lock_timeout_ms, pool_command_timeout
+                ),
+                idempotency_lock_timeout_ms=bounded_lock_budget_ms(
+                    settings.idempotency_lock_timeout_ms, pool_command_timeout
+                ),
+            ),
             worker_pool=pool,
             heartbeat_pool=pool,
         )
@@ -521,6 +746,35 @@ class TaskQ:
             self._client._redis_client = self._redis_client  # pyright: ignore[reportPrivateUsage]  # Why: TaskQ owns the JobsClient lifecycle; assigning the caller-owned redis_client directly bypasses _open_redis so the client is NOT entered on the exit stack — TaskQ.close() must not close a caller-owned client.
         elif self._redis_url is not None:
             await self._client._open_redis(settings)  # pyright: ignore[reportPrivateUsage]  # Why: TaskQ owns the JobsClient lifecycle; _open_redis is the canonical hook for the owner to call after construction.
+        self._start_credential_rotation()
+
+    def _start_credential_rotation(self) -> None:
+        """Run :meth:`reload_credentials` on the pool's :class:`ReloadSchedule`.
+
+        Started only when there is a cadence to run: a factory-built pool
+        whose schedule has an interval - configured, or derived from the
+        lease the factory was just granted in :meth:`open`. A token
+        provider's pool has neither and rotates only when
+        :meth:`reload_credentials` is called. The task is owned by the
+        client and cancelled in :meth:`close`.
+        """
+        schedule = self._reload_schedule
+        if schedule is None or schedule.interval is None:
+            return
+        from taskq._reload_loop import run_reload_schedule
+
+        logger.info(
+            "client-credential-rotation-armed",
+            reload_interval=schedule.interval,
+            derived_from_lease=schedule.derived,
+            lease_duration=schedule.lease_duration,
+        )
+        self._reload_task = asyncio.create_task(
+            run_reload_schedule(
+                schedule, self.reload_credentials, trigger=asyncio.Event(), role="client"
+            ),
+            name="taskq.client.credential_rotation",
+        )
 
     async def close(self) -> None:
         """Close the client and release the pool if owned.
@@ -528,6 +782,11 @@ class TaskQ:
         Called automatically by ``__aexit__``. Safe to call explicitly.
         No-op if already closed.
         """
+        if self._reload_task is not None:
+            self._reload_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._reload_task
+            self._reload_task = None
         if self._client is not None:
             await self._client.close()
             self._client = None
@@ -548,16 +807,17 @@ class TaskQ:
         factory (which fetches a fresh credential), atomically points every
         subsystem that holds a pool - the backend deps behind
         ``enqueue``/``get``/``list``/``cancel``, the :attr:`actors` client, and
-        the ``stream()`` LISTEN fallback - at the new pool, then closes the old
+        the ``stream()`` poll - at the new pool, then closes the old
         one with the same bounded drain used at ``close()``.
 
-        Call this on a schedule shorter than your credential's lifetime (an
-        Entra access token is typically ~60 min), or on any signal your issuer
-        gives you. It is not needed for the ordinary token refresh that
-        :func:`taskq.auth.make_pg_pool_factory` already does per physical
-        connection; it is how you drop sessions opened under a revoked
-        credential, and the only way to pick up a **changed username**, which
-        asyncpg resolves once per pool.
+        A username-bearing pair (a Vault lease) is rotated automatically on
+        the client's :class:`~taskq.auth.ReloadSchedule` - ``reload_interval``
+        when given, otherwise half the granted lease TTL - so this is the
+        on-demand path: call it on any signal your issuer gives you, or to
+        drop sessions opened under a revoked token. It is not needed for
+        the ordinary token refresh that :func:`taskq.auth.make_pg_pool_factory`
+        already does per physical connection. Concurrent calls (the
+        scheduled rotation and an explicit one) are serialized.
 
         Raises :class:`RuntimeError` if the client is not open, or if the pool
         is caller-owned (``pool=``) - TaskQ must never close a pool it does not
@@ -575,35 +835,36 @@ class TaskQ:
                 "a pool passed as 'pool=' is caller-owned and must be rotated by its owner."
             )
 
-        old_pool = self._pool
-        # Built before anything is swapped, so a factory failure leaves the
-        # live pool in place — see the docstring. Why bounded: a hung token
-        # endpoint must fail the rotation loudly (the live pool keeps
-        # serving), never wedge the client — the SAME bound the worker's
-        # reload_credentials applies to its identical factory calls.
-        try:
-            new_pool = await asyncio.wait_for(
-                self._pool_factory(), timeout=_RELOAD_FACTORY_TIMEOUT_SECS
-            )
-        except TimeoutError as exc:
-            raise TimeoutError(
-                f"TaskQ.reload_credentials(): pool_factory did not return "
-                f"within {_RELOAD_FACTORY_TIMEOUT_SECS}s — the live pool is "
-                "untouched and still serving. Check the credential provider "
-                "behind TaskQ 'pool_factory'."
-            ) from exc
+        async with self._reload_lock:
+            old_pool = self._pool
+            # Built before anything is swapped, so a factory failure leaves the
+            # live pool in place — see the docstring. Why bounded: a hung token
+            # endpoint must fail the rotation loudly (the live pool keeps
+            # serving), never wedge the client — the SAME bound the worker's
+            # reload_credentials applies to its identical factory calls.
+            try:
+                new_pool = await asyncio.wait_for(
+                    self._pool_factory(), timeout=_RELOAD_FACTORY_TIMEOUT_SECS
+                )
+            except TimeoutError as exc:
+                raise TimeoutError(
+                    f"TaskQ.reload_credentials(): pool_factory did not return "
+                    f"within {_RELOAD_FACTORY_TIMEOUT_SECS}s — the live pool is "
+                    "untouched and still serving. Check the credential provider "
+                    "behind TaskQ 'pool_factory'."
+                ) from exc
 
-        self._pool = new_pool
-        self._deps.worker_pool = new_pool
-        self._deps.heartbeat_pool = new_pool
-        # Rebuilt rather than mutated: ActorsClient takes its pool at
-        # construction and is a cheap, stateless facade over it.
-        self._actors_client = ActorsClient(new_pool, schema=self._schema)
+            self._pool = new_pool
+            self._deps.worker_pool = new_pool
+            self._deps.heartbeat_pool = new_pool
+            # Rebuilt rather than mutated: ActorsClient takes its pool at
+            # construction and is a cheap, stateless facade over it.
+            self._actors_client = ActorsClient(new_pool, schema=self._schema)
 
-        if old_pool is not None:
-            # Why bounded: an enqueue in flight on the old pool can stall
-            # Pool.close() indefinitely against a dead PG.
-            await close_pool_bounded(old_pool, "client-reload", CLOSE_TIMEOUT_SECS)
+            if old_pool is not None:
+                # Why bounded: an enqueue in flight on the old pool can stall
+                # Pool.close() indefinitely against a dead PG.
+                await close_pool_bounded(old_pool, "client-reload", CLOSE_TIMEOUT_SECS)
 
     async def __aenter__(self) -> "TaskQ":
         await self.open()
@@ -788,8 +1049,8 @@ class TaskQ:
         """List jobs matching *filter*, returning a :class:`JobPage`.
 
         Delegates to :meth:`JobsClient.list` — note ``filter.active``
-        is not Celery's 'active' ('currently executing'); it selects by
-        terminality ('not yet finished').  See :class:`JobFilter`.
+        selects by terminality ('not yet finished'), not by execution
+        status ('currently executing').  See :class:`JobFilter`.
         """
         return await self._require_open().list(filter)
 
@@ -887,6 +1148,27 @@ class TaskQ:
         progress update), terminating automatically when the job reaches a
         terminal state. The final event always has ``terminal=True``.
 
+        Latency contract
+        ----------------
+        The first event is the row as it stands when ``stream()`` is
+        called. After that:
+
+        * **Redis configured** - the worker publishes every progress and
+          state-change event to the job's Redis channel, so a transition
+          is delivered as it happens; the row is re-read from Postgres
+          every ``poll_timeout`` seconds (default 30) as the safety net.
+        * **Postgres only** - nothing announces a job's transitions over
+          NOTIFY, so the row is re-read through the client's pool every
+          ``min(poll_timeout, 0.5)`` seconds: a terminal write is observed
+          within half a second, at the cost of one primary-key read per
+          stream per half second. Lower ``poll_timeout`` to tighten it, to
+          a floor of 0.1 s; each wait is jittered ±20% so streams opened
+          together do not poll in lockstep. No connection is held per
+          stream, so this works on a pool-only client as well. A pool or
+          connection error on a read is retried on the next poll; reads
+          failing for 30 s straight end the stream with
+          :class:`~taskq.exceptions.StreamUnavailable`.
+
         Usage::
 
             async for event in tq.stream(job_id):
@@ -904,9 +1186,8 @@ class TaskQ:
             Called before ``tq.open()`` or outside an ``async with`` block.
         KeyError
             The job does not exist.
-        RuntimeError
-            PG LISTEN transport requested but ``dsn`` was not provided at
-            construction (pool-only mode).
+        StreamUnavailable
+            The Postgres poll could not re-read the row for 30 s straight.
         """
         client = self._require_open()
         row = await client.backend.get(job_id)
@@ -930,15 +1211,11 @@ class TaskQ:
             )
             if self._redis_client is not None
             else _stream_pg(
-                self._dsn,
-                self._schema,
                 job_id,
                 client,
                 self._poll_timeout,
                 last_seq=row.progress_seq,
                 last_status=row.status,
-                pg_conn_factory=self._pg_conn_factory,
-                listen_conn=self._listen_conn,
             )
         )
         async with contextlib.aclosing(gen) as agen:
@@ -995,6 +1272,17 @@ class TaskQ:
         than your slowest consumer's cursor.  A cursor far behind after
         a long outage drains at query speed (full batches are re-polled
         immediately, not one batch per *poll_timeout*).
+
+        Your own pruning is not the only deleter.  The built-in event
+        retention sweep deletes these rows by age alone, cursor position
+        irrelevant: the ``lock_expired`` slice is carved out of the
+        ordinary ``event_retention_period`` window but only up to
+        :data:`~taskq.constants.RECLAIM_OUTBOX_RETENTION_MULTIPLIER`
+        times it (100x), after which it is deleted like any other event.
+        A consumer lagging past that age loses events silently — no
+        error on either side — so a deployment with a short retention
+        period must size it against its slowest consumer's worst
+        outage, not only against event volume.
 
         Shutdown and backpressure
         -------------------------
@@ -1061,112 +1349,54 @@ class TaskQ:
 
 
 async def _stream_pg(
-    dsn: str | None,
-    schema: str,
     job_id: JobId,
     client: JobsClient,
     poll_timeout: float,
     *,
     last_seq: int = -1,
     last_status: JobStatus | None = None,
-    pg_conn_factory: "ConnFactory | None" = None,
-    listen_conn: "asyncpg.Connection | None" = None,
 ) -> AsyncGenerator[JobEvent, None]:
-    """PG LISTEN/NOTIFY transport for :meth:`TaskQ.stream`.
+    """Postgres poll transport for :meth:`TaskQ.stream`.
 
-    Opens a dedicated asyncpg connection, registers a LISTEN callback on
-    ``wake_channel(schema)``, and yields :class:`JobEvent` on each detected
-    state change. Terminates on terminal state.
+    Re-reads the job row through the client's pool every
+    ``min(poll_timeout, _PG_STREAM_POLL_INTERVAL_S)`` seconds and yields a
+    :class:`JobEvent` whenever ``status`` or ``progress_seq`` moved on from
+    ``last_status`` / ``last_seq`` (the snapshot the caller already
+    yielded, so the first read here happens after the first wait, never
+    back-to-back with it). Terminates on a terminal status.
 
-    Connection sources, in priority order:
-    * ``listen_conn`` — pre-constructed, caller-owned; NOT closed here.
-    * ``pg_conn_factory`` — zero-arg async factory; closed in ``finally``.
-    * ``dsn`` — ``asyncpg.connect(dsn=...)``; closed in ``finally``.
-
-    Raises :class:`RuntimeError` if none of the three is provided.
-
-    If the LISTEN connection is killed mid-stream (e.g. by
-    ``pg_terminate_backend``), the ``InterfaceError`` / ``OSError`` is
-    caught and the stream falls back to poll-based re-fetch using
-    ``asyncio.sleep(poll_timeout)``.  This provides single-recovery
-    resilience without a full reconnect loop (out of scope for M5).
+    Why a poll and not LISTEN: nothing on Postgres announces a job's
+    progress or terminal write - the progress channels are Redis pub/sub,
+    and the wake channel is the enqueue signal for workers (every enqueue
+    in the schema fires it, none of this job's transitions do). Listening
+    there gave each stream a dedicated session and a full row re-read per
+    enqueue in the schema, while the writes being streamed for still
+    surfaced only at the poll bound. A primary-key read at a fixed cadence
+    is the only mechanism that works across processes here: no database
+    object announces this job's terminal write to the polling session, and
+    an in-process subscription cannot see other workers' completions.
+    Holds no connection of its own, so pool-only clients stream
+    like any other.
     """
-    if listen_conn is None and pg_conn_factory is None and dsn is None:
-        raise RuntimeError(
-            "TaskQ.stream() requires a LISTEN transport source: pass 'dsn=', "
-            "'pg_conn_factory=', or 'listen_conn=' to TaskQ. See "
-            "docs/guides/managed-identities.md for AAD / pool-only setups."
-        )
+    from taskq.client._transport import pg_poll_event_stream
 
-    import asyncpg
+    async def _fetch_row() -> JobRow:
+        row = await client.backend.get(job_id)
+        if row is None:
+            # stream() promised a terminal event; a row that vanished cannot
+            # deliver one, and that is the caller's KeyError, not a quiet end.
+            raise KeyError(job_id)
+        return row
 
-    wake = asyncio.Event()
-    channel = wake_channel(schema)
-    listen_alive = True
-    owns_conn = listen_conn is None  # factory/DSN → we close; caller-owned → we don't
-
-    def _on_notify(
-        conn: asyncpg.Connection,
-        pid: int,
-        ch: str,
-        payload: str,
-    ) -> None:
-        wake.set()
-
-    if listen_conn is not None:
-        conn = listen_conn
-    elif pg_conn_factory is not None:
-        conn = await pg_conn_factory()
-    else:
-        conn = await asyncpg.connect(dsn=str(dsn))
-    try:
-        await conn.add_listener(channel, _on_notify)  # pyright: ignore[reportArgumentType]  # Why: asyncpg stubs over-narrow the callback type — same pattern as worker/notify.py
-        while True:
-            wake.clear()
-            row = await client.backend.get(job_id)
-            if row is None:
-                raise KeyError(job_id)
-            if row.progress_seq != last_seq or row.status != last_status:
-                last_seq = row.progress_seq
-                last_status = row.status
-                event = _row_to_event(row)
-                yield event
-                if event.terminal:
-                    return
-            try:
-                with contextlib.suppress(TimeoutError):
-                    await asyncio.wait_for(wake.wait(), timeout=poll_timeout)
-            except (asyncpg.InterfaceError, OSError):
-                if not listen_alive:
-                    raise
-                listen_alive = False
-                logger.warning(
-                    "stream-listen-connection-lost",
-                    job_id=str(job_id),
-                    error_type="InterfaceError/OSError",
-                )
-                while True:
-                    await asyncio.sleep(poll_timeout)
-                    row = await client.backend.get(job_id)
-                    if row is None:
-                        raise KeyError(job_id) from None
-                    if row.progress_seq != last_seq or row.status != last_status:
-                        last_seq = row.progress_seq
-                        last_status = row.status
-                        event = _row_to_event(row)
-                        yield event
-                        if event.terminal:
-                            return
-    finally:
-        with contextlib.suppress(Exception):
-            await conn.remove_listener(channel, _on_notify)  # pyright: ignore[reportArgumentType]  # Why: asyncpg stubs over-narrow the callback type — same pattern as worker/notify.py
-        if owns_conn:
-            # Why bounded: suppress(Exception) catches errors but not hangs —
-            # asyncpg's close() passes no timeout underneath, so a dead PG
-            # would wedge stream teardown (#37). The helper bounds the wait,
-            # terminates on timeout, and never raises — subsuming the old
-            # suppress.
-            await close_conn_bounded(conn, "stream-pg", CLOSE_TIMEOUT_SECS)
+    async for event in pg_poll_event_stream(
+        _fetch_row,
+        lambda row, _status_changed: _row_to_event(row),
+        job_id=job_id,
+        poll_interval=min(poll_timeout, _PG_STREAM_POLL_INTERVAL_S),
+        last_seq=last_seq,
+        last_status=last_status,
+    ):
+        yield event
 
 
 async def _stream_redis(
@@ -1187,7 +1417,7 @@ async def _stream_redis(
     on each message the authoritative row is re-fetched via
     ``backend.get(job_id)`` to produce a ``JobEvent``.
     """
-    from taskq.client._transport import redis_event_stream
+    from taskq.client._transport import parse_progress_event, redis_event_stream
 
     channel = progress_channel(schema, job_id)
     state = {"last_seq": last_seq, "last_status": last_status}
@@ -1203,14 +1433,7 @@ async def _stream_redis(
         return None
 
     async def decode(raw_str: str) -> JobEvent | None:
-        try:
-            ProgressEvent.model_validate_json(raw_str)
-        except Exception as exc:
-            logger.warning(
-                "stream-event-deserialise-error",
-                job_id=str(job_id),
-                error=repr(exc),
-            )
+        if parse_progress_event(raw_str, job_id=job_id) is None:
             return None
         return await _refetch()
 
@@ -1626,5 +1849,5 @@ async def _watch_reclaims_pg(
             await conn.remove_listener(channel, _on_notify)  # pyright: ignore[reportArgumentType]  # Why: same pattern as _stream_pg
         if owns_conn:
             # Why bounded: same dead-PG close()-hang class as _stream_pg
-            # above (#37) — suppress cannot stop a close that never returns.
+            # above — suppress cannot stop a close that never returns.
             await close_conn_bounded(conn, "watch-reclaims", CLOSE_TIMEOUT_SECS)

@@ -57,7 +57,7 @@ def test_feb29_found_across_non_leap_years() -> None:
     Hand-computed oracle: 2028 is divisible by 4 and not a century year, so
     2028-02-29 exists and is the first Feb-29 strictly after the seed. A
     Feb-28 or Mar-01 answer would be calendar drift; an exception would be
-    a leap-year outage (pg_cron #365 class).
+    a leap-year outage (the pg_cron leap-day class).
     """
     seed = datetime(2027, 2, 27, 12, 0, tzinfo=_TZ)
     out = compute_next_fire_after("0 0 29 2 *", _UTC, seed)
@@ -98,7 +98,7 @@ def test_dom_vs_dow_uses_standard_cron_or_rule() -> None:
     Saturday, so the next fire is Monday 2024-06-17 (DOW matches, DOM does
     not). Under an AND rule the answer would instead be 2024-07-01 (the
     next date that is both the 1st and a Monday — verified: 2024-07-01 is
-    a Monday). pg_cron #421 class.
+    a Monday). The pg_cron AND-rule class.
     """
     seed = datetime(2024, 6, 15, 12, 0, tzinfo=_TZ)
     out = compute_next_fire_after("0 0 1 * 1", _UTC, seed)
@@ -155,7 +155,7 @@ def test_31st_skips_short_months_without_drift() -> None:
     Hand-computed oracle: April has 30 days, so there is no April-31 fire;
     the next 31st strictly after 2024-04-15 (and after 2024-04-30, past
     April's end) is 2024-05-31 00:00 UTC. Firing on April 30 would be the
-    pg_cron #292 off-by-one class (clamping to month end instead of
+    pg_cron off-by-one class (clamping to month end instead of
     skipping).
     """
     for seed in (

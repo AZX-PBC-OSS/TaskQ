@@ -2,7 +2,7 @@
 
 Covers all unit tests:
   rules.yaml parses correctly
-  all 24 Prometheus metric names present in scrape output
+  all mapped Prometheus metric names present in scrape output
   metric name mapping correctness (OTel → Prometheus)
   outcome label present, not status
   create_metrics_router adds GET /metrics route
@@ -10,8 +10,8 @@ Covers all unit tests:
   cardinality bounded response time (< 50ms for 100 actors)
   missing [prometheus] extra raises ImportError at import time
   ImportError at import time without extra (alias of)
-  rules.yaml contains exactly 14 alerts
-  every instrument from the 24-row map appears in scrape output
+  rules.yaml contains exactly the expected alert set
+  every instrument from the _NAME_MAP rows appears in scrape output
   plain rules.yaml and kubernetes PrometheusRule carry identical alerts
 """
 
@@ -81,48 +81,106 @@ def env() -> Generator[_PromEnv, None, None]:  # pyright: ignore[reportReturnTyp
 # - Histograms with unit="s" get _seconds suffix (bridge appends unit name)
 # - Histograms whose name already ends in a unit word do NOT get a double suffix
 
-_NAME_MAP: list[tuple[str, str]] = [
-    ("messaging.client.published.messages", "messaging_client_published_messages_total"),
-    ("messaging.client.consumed.messages", "messaging_client_consumed_messages_total"),
-    ("messaging.process.duration", "messaging_process_duration_seconds"),  # unit="s"
-    ("taskq.dispatch.duration", "taskq_dispatch_duration_seconds"),  # unit="s"
-    ("taskq.queue.depth", "taskq_queue_depth"),
-    ("taskq.lock.expires_in_seconds", "taskq_lock_expires_in_seconds"),  # name already ends in unit
-    ("taskq.heartbeat.misses", "taskq_heartbeat_misses_total"),
-    ("taskq.reservation.slots_used", "taskq_reservation_slots_used"),
-    ("taskq.maintenance_leader.is_leader", "taskq_maintenance_leader_is_leader"),
-    ("taskq.cancellation.phase_transitions", "taskq_cancellation_phase_transitions_total"),
-    ("taskq.error_reporter.failures", "taskq_error_reporter_failures_total"),
-    ("taskq.progress.publish_failures", "taskq_progress_publish_failures_total"),
-    ("taskq.ratelimit.refund_failures", "taskq_ratelimit_refund_failures_total"),
-    ("taskq.leader.election_attempts", "taskq_leader_election_attempts_total"),
-    ("taskq.leader.election_failures", "taskq_leader_election_failures_total"),
-    ("taskq.cron.consecutive_failures", "taskq_cron_consecutive_failures"),
-    ("taskq.cron.disabled_schedules", "taskq_cron_disabled_schedules"),
-    ("taskq.pruned.jobs", "taskq_pruned_jobs_total"),
-    ("taskq.maintenance_leader.sweep_timeouts", "taskq_maintenance_leader_sweep_timeouts_total"),
+_NAME_MAP: list[tuple[str, str, str]] = [
+    # (otel instrument name, prometheus rendering, kind). The kind is what
+    # the scrape renders for that instrument shape: counters also serve a
+    # _total series, histograms also serve _bucket/_sum/_count, gauges and
+    # up-down counters serve the bare name only (an up-down counter can go
+    # down, so the scrape does not render it as a monotonically-rising
+    # _total sum). Verified by the scrape assertions against
+    # _populate_all_instruments, not by source shape.
+    ("messaging.client.published.messages", "messaging_client_published_messages_total", "counter"),
+    ("messaging.client.consumed.messages", "messaging_client_consumed_messages_total", "counter"),
+    ("messaging.process.duration", "messaging_process_duration_seconds", "histogram"),  # unit="s"
+    ("taskq.dispatch.duration", "taskq_dispatch_duration_seconds", "histogram"),  # unit="s"
+    ("taskq.queue.depth", "taskq_queue_depth", "gauge"),
+    (
+        "taskq.lock.expires_in_seconds",
+        "taskq_lock_expires_in_seconds",
+        "histogram",
+    ),  # name already ends in unit
+    ("taskq.heartbeat.misses", "taskq_heartbeat_misses_total", "counter"),
+    ("taskq.reservation.slots_used", "taskq_reservation_slots_used", "gauge"),
+    ("taskq.maintenance_leader.is_leader", "taskq_maintenance_leader_is_leader", "gauge"),
+    (
+        "taskq.cancellation.phase_transitions",
+        "taskq_cancellation_phase_transitions_total",
+        "counter",
+    ),
+    ("taskq.error_reporter.failures", "taskq_error_reporter_failures_total", "counter"),
+    ("taskq.progress.publish_failures", "taskq_progress_publish_failures_total", "counter"),
+    ("taskq.ratelimit.refund_failures", "taskq_ratelimit_refund_failures_total", "counter"),
+    ("taskq.leader.election_attempts", "taskq_leader_election_attempts_total", "counter"),
+    ("taskq.leader.election_failures", "taskq_leader_election_failures_total", "counter"),
+    ("taskq.cron.consecutive_failures", "taskq_cron_consecutive_failures", "up_down"),
+    ("taskq.cron.disabled_schedules", "taskq_cron_disabled_schedules", "gauge"),
+    ("taskq.pruned.jobs", "taskq_pruned_jobs_total", "counter"),
+    (
+        "taskq.maintenance_leader.sweep_timeouts",
+        "taskq_maintenance_leader_sweep_timeouts_total",
+        "counter",
+    ),
     # Name already ends in the unit word "seconds" — the no-double-suffix rule.
     (
         "taskq.maintenance_leader.sweep_last_success_seconds",
         "taskq_maintenance_leader_sweep_last_success_seconds",
+        "gauge",
     ),
-    ("taskq.maintenance_leader.sweep_batch_size", "taskq_maintenance_leader_sweep_batch_size"),
+    (
+        "taskq.maintenance_leader.sweep_batch_size",
+        "taskq_maintenance_leader_sweep_batch_size",
+        "gauge",
+    ),
     (
         "taskq.maintenance_leader.sweep_batch_size_configured",
         "taskq_maintenance_leader_sweep_batch_size_configured",
+        "gauge",
     ),
-    ("taskq.leader.lock_contention", "taskq_leader_lock_contention_total"),
-    ("taskq.cron.lock_contention", "taskq_cron_lock_contention_total"),
-    ("taskq.jobs.by_status", "taskq_jobs_by_status"),
-    ("taskq.jobs.oldest_due_age_seconds", "taskq_jobs_oldest_due_age_seconds"),  # ends in unit word
-    ("taskq.jobs.running_lease_expired", "taskq_jobs_running_lease_expired"),
-    ("taskq.enqueue.dedups", "taskq_enqueue_dedups_total"),
+    # Name already ends in the unit word "seconds" — the no-double-suffix rule.
+    (
+        "taskq.maintenance_leader.lease_expires_in_seconds",
+        "taskq_maintenance_leader_lease_expires_in_seconds",
+        "gauge",
+    ),
+    ("taskq.leader.lock_contention", "taskq_leader_lock_contention_total", "counter"),
+    ("taskq.cron.lock_contention", "taskq_cron_lock_contention_total", "counter"),
+    ("taskq.jobs.by_status", "taskq_jobs_by_status", "gauge"),
+    ("taskq.jobs.scheduled_count", "taskq_jobs_scheduled_count", "gauge"),
+    (
+        "taskq.jobs.oldest_due_age_seconds",
+        "taskq_jobs_oldest_due_age_seconds",
+        "gauge",
+    ),  # ends in unit word
+    (
+        "taskq.jobs.oldest_pending_age_seconds",
+        "taskq_jobs_oldest_pending_age_seconds",
+        "gauge",
+    ),  # ends in unit word
+    ("taskq.jobs.running_lease_expired", "taskq_jobs_running_lease_expired", "gauge"),
+    ("taskq.enqueue.dedups", "taskq_enqueue_dedups_total", "counter"),
     (
         "taskq.ratelimit.acquire_dependency_failures",
         "taskq_ratelimit_acquire_dependency_failures_total",
+        "counter",
     ),
-    ("taskq.ratelimit.denials", "taskq_ratelimit_denials_total"),
-    ("taskq.reservation.denials", "taskq_reservation_denials_total"),
+    ("taskq.ratelimit.denials", "taskq_ratelimit_denials_total", "counter"),
+    ("taskq.reservation.denials", "taskq_reservation_denials_total", "counter"),
+    ("taskq.jobs.attempt_failures", "taskq_jobs_attempt_failures_total", "counter"),
+    ("taskq.jobs.abandoned", "taskq_jobs_abandoned_total", "counter"),
+    ("taskq.jobs.timeouts", "taskq_jobs_timeouts_total", "counter"),
+    (
+        "taskq.worker.event_loop_lag_seconds",
+        "taskq_worker_event_loop_lag_seconds",
+        "histogram",
+    ),  # ends in unit
+    ("taskq.jobs.queue_wait_seconds", "taskq_jobs_queue_wait_seconds", "histogram"),  # ends in unit
+    ("taskq.jobs.stranded", "taskq_jobs_stranded", "gauge"),
+    ("taskq.queue.live_workers", "taskq_queue_live_workers", "gauge"),
+    (
+        "taskq.worker.loop_stall_attributions",
+        "taskq_worker_loop_stall_attributions_total",
+        "counter",
+    ),
 ]
 
 _RULES_YAML = (
@@ -141,7 +199,8 @@ _K8S_RULES_YAML = (
 _EXPECTED_ALERT_NAMES = {
     "TaskQQueueDepthHigh",
     "TaskQHeartbeatMisses",
-    "TaskQCrashedJobRateHigh",
+    "TaskQFailedJobRateHigh",
+    "TaskQRetryRateHigh",
     "TaskQAbandonedJobs",
     "TaskQLockExpiringSoon",
     "TaskQLeaderSplitBrainOrNoLeader",
@@ -156,6 +215,8 @@ _EXPECTED_ALERT_NAMES = {
     "TaskQRateLimitDependencyOutage",
     "TaskQCronLockContention",
     "TaskQRunningLeaseExpired",
+    "TaskQQueueUnserved",
+    "TaskQStrandedJobs",
 }
 
 
@@ -200,7 +261,7 @@ def _populate_all_instruments(meter: Any) -> None:
     )
     meter.create_counter("taskq.progress.publish_failures", unit="1").add(1)
     meter.create_counter("taskq.ratelimit.refund_failures", unit="1").add(
-        1, {"bucket": "b", "backend": "redis"}
+        1, {"bucket": "b", "backend": "redis", "error_type": "ConnectionError"}
     )
     meter.create_counter("taskq.leader.election_attempts", unit="1").add(1, {"worker_id": "w1"})
     meter.create_counter("taskq.leader.election_failures", unit="1").add(1, {"worker_id": "w1"})
@@ -229,6 +290,11 @@ def _populate_all_instruments(meter: Any) -> None:
         unit="1",
         callbacks=[lambda _: [Observation(100, {"sweep_name": "scheduled_to_pending"})]],
     )
+    meter.create_observable_gauge(
+        "taskq.maintenance_leader.lease_expires_in_seconds",
+        unit="s",
+        callbacks=[lambda _: [Observation(30.0)]],
+    )
     meter.create_counter("taskq.leader.lock_contention", unit="1").add(1, {"lock": "maintenance"})
     meter.create_counter("taskq.cron.lock_contention", unit="1").add(1)
     meter.create_observable_gauge(
@@ -237,7 +303,15 @@ def _populate_all_instruments(meter: Any) -> None:
         callbacks=[lambda _: [Observation(3, {"status": "scheduled"})]],
     )
     meter.create_observable_gauge(
+        "taskq.jobs.scheduled_count", unit="1", callbacks=[lambda _: [Observation(3)]]
+    )
+    meter.create_observable_gauge(
         "taskq.jobs.oldest_due_age_seconds", unit="s", callbacks=[lambda _: [Observation(0.0)]]
+    )
+    meter.create_observable_gauge(
+        "taskq.jobs.oldest_pending_age_seconds",
+        unit="s",
+        callbacks=[lambda _: [Observation(1.0, {"actor": "a", "queue": "q"})]],
     )
     meter.create_observable_gauge(
         "taskq.jobs.running_lease_expired",
@@ -252,19 +326,43 @@ def _populate_all_instruments(meter: Any) -> None:
     )
     meter.create_counter("taskq.ratelimit.denials", unit="1").add(1, {"backend": "redis"})
     meter.create_counter("taskq.reservation.denials", unit="1").add(1, {"source": "reservation"})
+    meter.create_counter("taskq.jobs.attempt_failures", unit="1").add(
+        1, {"actor": "a", "error_type": "RuntimeError", "retryable": "true"}
+    )
+    meter.create_counter("taskq.jobs.abandoned", unit="1").add(1, {"actor": "a"})
+    meter.create_counter("taskq.jobs.timeouts", unit="1").add(
+        1, {"actor": "a", "kind": "start_to_close"}
+    )
+    meter.create_counter("taskq.worker.loop_stall_attributions", unit="1").add(
+        1, {"actor": "a", "kind": "blocking_call"}
+    )
+    meter.create_histogram("taskq.worker.event_loop_lag_seconds", unit="s").record(0.001)
+    meter.create_histogram("taskq.jobs.queue_wait_seconds", unit="s").record(
+        0.5, {"actor": "a", "queue": "q"}
+    )
+    meter.create_observable_gauge(
+        "taskq.jobs.stranded",
+        unit="1",
+        callbacks=[lambda _: [Observation(1, {"actor": "a", "reason": "unserved_queue"})]],
+    )
+    meter.create_observable_gauge(
+        "taskq.queue.live_workers",
+        unit="1",
+        callbacks=[lambda _: [Observation(1, {"queue": "q"})]],
+    )
 
 
 # ── rules.yaml parses correctly ────────────────────────────────────
 
 
 def test_rules_yaml_parses_correctly() -> None:
-    """rules.yaml has no YAML errors; single group; 17 rules with required fields."""
+    """rules.yaml has no YAML errors; single group; 20 rules with required fields."""
     assert _RULES_YAML.exists(), f"rules.yaml not found at {_RULES_YAML}"
     data = yaml.safe_load(_RULES_YAML.read_text())
     groups = data["groups"]
     assert len(groups) == 1
     rules = groups[0]["rules"]
-    assert len(rules) == 17
+    assert len(rules) == 20
     for rule in rules:
         assert "alert" in rule
         assert "expr" in rule
@@ -273,14 +371,14 @@ def test_rules_yaml_parses_correctly() -> None:
         assert "summary" in rule.get("annotations", {})
 
 
-# ── rules.yaml has exactly 17 alerts ───────────────────────────────
+# ── rules.yaml has exactly 20 alerts ───────────────────────────────
 
 
-def test_rules_yaml_exactly_17_alerts() -> None:
-    """rules.yaml contains exactly 17 alerts with the names."""
+def test_rules_yaml_exactly_20_alerts() -> None:
+    """rules.yaml contains exactly 20 alerts with the names."""
     data = yaml.safe_load(_RULES_YAML.read_text())
     rules = data["groups"][0]["rules"]
-    assert len(rules) == 17
+    assert len(rules) == 20
     assert {r["alert"] for r in rules} == _EXPECTED_ALERT_NAMES
 
 
@@ -335,7 +433,7 @@ def test_metric_name_mapping(env: _PromEnv) -> None:
     """Each OTel instrument name maps to the expected Prometheus name."""
     _populate_all_instruments(env.meter())
     text = env.scrape()
-    for _, prom_name in _NAME_MAP:
+    for _, prom_name, _kind in _NAME_MAP:
         assert prom_name in text, f"Expected Prometheus name {prom_name!r} not found in scrape"
 
 
@@ -346,7 +444,7 @@ def test_all_metric_names_present(env: _PromEnv) -> None:
     """Every instrument in _NAME_MAP appears with # TYPE and # HELP comments."""
     _populate_all_instruments(env.meter())
     text = env.scrape()
-    for _, prom_name in _NAME_MAP:
+    for _, prom_name, _kind in _NAME_MAP:
         assert f"# TYPE {prom_name}" in text, f"Missing # TYPE for {prom_name}"
         assert f"# HELP {prom_name}" in text, f"Missing # HELP for {prom_name}"
 
@@ -381,7 +479,7 @@ def test_create_metrics_router_adds_metrics_route(env: _PromEnv) -> None:
 
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/plain; version=0.0.4")
-    for _, prom_name in _NAME_MAP:
+    for _, prom_name, _kind in _NAME_MAP:
         assert prom_name in response.text, f"Missing {prom_name!r} in /metrics response"
 
 
@@ -452,6 +550,192 @@ def test_rules_yaml_histogram_bucket_names_match_bridge(env: _PromEnv) -> None:
                 f"Rule {rule['alert']!r} references {bucket_name!r} "
                 f"but the bridge emits: {sorted(emitted_buckets)}"
             )
+
+
+# ── TaskQScheduledBacklogGrowing `and` joins mismatched labels ──
+
+
+def _extract_and_operand_metric_names(expr: str) -> list[str]:
+    """Pull the two bare metric-family names joined by a top-level ` and ` in a
+    simple `<vector> and <vector>` PromQL expression (no `on`/`ignoring`)."""
+    import re
+
+    left, sep, right = expr.partition(" and ")
+    assert sep, f"expected an unqualified ' and ' in expr: {expr!r}"
+    # Each side looks like: deriv(NAME{...}[15m]) > 0   or   NAME > 300
+    names = []
+    for side in (left, right):
+        m = re.search(r"([A-Za-z_:][A-Za-z0-9_:]*)\s*(?:\{|[<>=!]|$)", side.strip())
+        assert m, f"could not find a metric name in and-operand: {side!r}"
+        names.append(m.group(1))
+    return names
+
+
+def test_scheduled_backlog_growing_and_operands_have_compatible_labels(
+    env: _PromEnv,
+) -> None:
+    """TaskQScheduledBacklogGrowing's `and` must join operands whose label
+    sets are identical, or PromQL vector `and` (with no `on`/`ignoring`
+    modifier) can never pair a result, regardless of how bad the real
+    backlog stall is — a `status`-labeled series never matches a
+    label-less one.
+
+    The alert compares `taskq_jobs_oldest_due_age_seconds` (no labels;
+    `_observe_oldest_due_age` in obs/_otel.py yields a bare `Observation`)
+    against `taskq_jobs_scheduled_count` — the label-less twin of
+    `taskq_jobs_by_status{status="scheduled"}` that `update_scheduled_
+    count_cache` maintains in step with it specifically so this join has
+    matching operands, rather than joining the `status`-labeled series
+    directly.
+
+    This test drives the real OTel->Prometheus bridge with the production
+    gauge shapes, scrapes actual exposition text, and asserts the label
+    sets on both sides of the `and` in the shipped rules.yaml expression
+    are compatible (equal).
+    """
+    import re
+
+    # Populate the gauges the way the real callbacks do: `by_status` is
+    # per-status labeled; `scheduled_count` and `oldest_due_age_seconds`
+    # are both emitted bare.
+    meter = env.meter()
+    meter.create_observable_gauge(
+        "taskq.jobs.by_status",
+        unit="1",
+        callbacks=[lambda _: [Observation(7, {"status": "scheduled"})]],
+    )
+    meter.create_observable_gauge(
+        "taskq.jobs.scheduled_count",
+        unit="1",
+        callbacks=[lambda _: [Observation(7)]],
+    )
+    meter.create_observable_gauge(
+        "taskq.jobs.oldest_due_age_seconds",
+        unit="s",
+        callbacks=[lambda _: [Observation(600.0)]],
+    )
+    text = env.scrape()
+
+    data = yaml.safe_load(_RULES_YAML.read_text())
+    rule = next(
+        r for r in data["groups"][0]["rules"] if r.get("alert") == "TaskQScheduledBacklogGrowing"
+    )
+    left_name, right_name = _extract_and_operand_metric_names(rule["expr"])
+
+    def _label_keys_for(metric_name: str) -> set[str]:
+        for line in text.splitlines():
+            if line.startswith(f"{metric_name}{{") or line.startswith(f"{metric_name} "):
+                m = re.match(rf"^{re.escape(metric_name)}(\{{([^}}]*)\}})?", line)
+                assert m
+                labels_blob = m.group(2) or ""
+                return {kv.split("=", 1)[0] for kv in labels_blob.split(",") if kv}
+        raise AssertionError(f"metric {metric_name!r} not found in scrape output:\n{text}")
+
+    left_labels = _label_keys_for(left_name)
+    right_labels = _label_keys_for(right_name)
+
+    assert left_labels == right_labels, (
+        f"TaskQScheduledBacklogGrowing joins {left_name!r} (labels={left_labels}) "
+        f"and {right_name!r} (labels={right_labels}) with an unqualified `and`; "
+        "PromQL vector `and` requires identical label sets to pair series, so "
+        "with these mismatched label sets the alert can never fire."
+    )
+
+
+def _eval_scheduled_backlog_growing_expr(
+    oldest_due_age_seconds: list[float],
+    scheduled_count: list[float],
+    *,
+    step_seconds: int = 60,
+    offset_seconds: int = 300,
+    age_threshold_seconds: float = 300.0,
+) -> list[bool]:
+    """Evaluate `TaskQScheduledBacklogGrowing`'s exact shipped expression --
+    ``taskq_jobs_oldest_due_age_seconds > 300 and
+    (taskq_jobs_scheduled_count > (taskq_jobs_scheduled_count offset 5m)
+    or changes(taskq_jobs_scheduled_count[5m]) == 0)`` -- over two
+    same-length, evenly-spaced synthetic series, mirroring PromQL
+    `and`/`or`/`offset`/range-selector semantics without requiring
+    promtool or a live Prometheus.
+
+    Returns, for each timestamp, whether the (pre-`for:`) instant condition
+    holds. This does not model the rule's `for: 5m` hold requirement --
+    callers reason about the raw instant series.
+    """
+    n = len(oldest_due_age_seconds)
+    assert len(scheduled_count) == n
+    offset_steps = offset_seconds // step_seconds
+    results = []
+    for i in range(n):
+        age_ok = oldest_due_age_seconds[i] > age_threshold_seconds
+        j = i - offset_steps
+        # PromQL offset: no sample at/ before series start -> operand
+        # missing -> that arm produces no result for this timestamp.
+        growing = j >= 0 and scheduled_count[i] > scheduled_count[j]
+        # changes(count[5m]) == 0: every sample in the (t-5m, t] window
+        # carries the same value -- the count never moved. The window is
+        # clamped at series start, where fewer samples say the same thing.
+        window = scheduled_count[max(0, j + 1) : i + 1]
+        stalled = len(set(window)) == 1
+        results.append(age_ok and (growing or stalled))
+    return results
+
+
+def test_scheduled_backlog_growing_silent_on_healthy_draining_straggler() -> None:
+    """A steadily DRAINING backlog whose single oldest-due job just hasn't
+    had its turn yet must not trip the alert, even once that job's age
+    clears the 300s threshold and keeps climbing.
+
+    This is the exact false-positive shape the fix's own description calls
+    out for the *old* self-join expression. It must not regress.
+    """
+    # Age climbs past 300s and keeps climbing (one straggler, still not
+    # promoted); count falls monotonically the whole time (everything
+    # behind the straggler is draining normally).
+    age = [0, 60, 120, 180, 240, 300, 360, 420, 480, 540, 600, 600, 600, 600, 600, 600, 600]
+    count = [50, 48, 46, 44, 42, 40, 38, 36, 34, 32, 30, 28, 26, 24, 22, 20, 18]
+    results = _eval_scheduled_backlog_growing_expr(age, count)
+    assert not any(results), (
+        "TaskQScheduledBacklogGrowing's instant condition fired on a healthy "
+        f"draining backlog (per-step results={results}); a falling scheduled "
+        "count must never satisfy the growth predicate regardless of how old "
+        "the current straggler is."
+    )
+
+
+def test_scheduled_backlog_growing_fires_on_genuine_growth() -> None:
+    """A genuinely growing backlog -- count rising while the oldest due job
+    also ages past the threshold -- must satisfy the instant condition."""
+    age = [0, 60, 120, 180, 240, 300, 360, 420, 480, 540, 600, 600, 600, 600, 600, 600, 600]
+    count = [10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30, 32, 34, 36, 38, 40, 42]
+    results = _eval_scheduled_backlog_growing_expr(age, count)
+    assert any(results), (
+        "TaskQScheduledBacklogGrowing's instant condition never fired on a "
+        f"genuinely growing backlog (per-step results={results})."
+    )
+
+
+def test_scheduled_backlog_growing_silent_on_stalled_plateau() -> None:
+    """A promotion stall where the scheduled count plateaus (nothing
+    drains, nothing new arrives net) rather than rising is a genuine
+    promotion-stall shape -- the oldest-due job's age climbs past the
+    threshold and keeps climbing forever. The growth arm
+    (``count > count offset 5m``, strictly GREATER than 5 minutes ago) is
+    never satisfied by a flat plateau, so the stall arm must catch it:
+    ``changes(count[5m]) == 0`` holds whenever the count has not moved at
+    all across the window, which with a due job aging past the threshold
+    means promotion has stopped and arrivals are absent or throttled -- a
+    real stall, not a healthy steady state. This pins that the alert fires
+    in that case."""
+    age = [0, 60, 120, 180, 240, 300, 360, 420, 480, 540, 600, 600, 600, 600, 600, 600, 600]
+    count = [30] * len(age)
+    results = _eval_scheduled_backlog_growing_expr(age, count)
+    assert any(results), (
+        "TaskQScheduledBacklogGrowing never fires on a stalled plateau "
+        f"(count flat, age climbing past threshold; per-step results={results}) "
+        "-- promotion has stopped completely but the alert stays silent because "
+        "a flat count never satisfies 'count > count 5m ago'."
+    )
 
 
 # ── ImportError without [prometheus] extra ─────────────────

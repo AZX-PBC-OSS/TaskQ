@@ -723,8 +723,8 @@ async def test_consumer_passes_validated_model_to_key_fn() -> None:
     assert received.tenant_id == "acme"
     assert len(reg.release_calls) == 1
 
-    # The consumer itself hands the validated BaseModel to acquire_for_actor
-    # (restored PR #64 semantics) — the registry's isinstance fast path then
+    # The consumer itself hands the validated BaseModel to acquire_for_actor;
+    # the registry's isinstance fast path then
     # applies, and key_fn never sees the raw wire dict.
     assert len(reg.acquire_calls) == 1
     acquire_payload = reg.acquire_calls[0]["payload"]
@@ -1776,6 +1776,7 @@ async def test_pre_terminal_flush_before_mark_succeeded() -> None:
     deps.worker_pool = pool
     deps.settings = settings
     deps.redis_client = None
+    deps.disowned_jobs = set()
 
     async def actor(_job: object, ctx: JobContext[BaseModel]) -> dict[str, object]:
         assert isinstance(ctx, JobContext)
@@ -1853,6 +1854,7 @@ async def test_cancel_clean_buffer_passes_base_seq_not_zero() -> None:
     deps.worker_pool = None
     deps.settings = settings
     deps.redis_client = None
+    deps.disowned_jobs = set()
 
     async def actor(_job: object, _ctx: JobContext[BaseModel]) -> object:
         raise asyncio.CancelledError
@@ -1916,6 +1918,7 @@ async def test_deps_parameter_enables_buffer_registration() -> None:
     deps.worker_pool = pool
     deps.settings = settings
     deps.redis_client = None
+    deps.disowned_jobs = set()
 
     progress_called = False
 
@@ -1965,6 +1968,7 @@ async def test_autonomous_explicit_params_override_deps() -> None:
     deps.worker_pool = None
     deps.settings = settings
     deps.redis_client = None
+    deps.disowned_jobs = set()
 
     progress_called = False
 
@@ -2408,3 +2412,124 @@ async def test_cancelled_consumer_reraises_when_terminal_write_fails() -> None:
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
+
+
+async def test_denial_on_budget_exhausted_job_never_reaches_a_terminal_write() -> None:
+    """An admission denial routes to the deferral seam no matter how spent
+    the job's retry budget is.
+
+    The consumer is where a denial could most easily be mistaken for a
+    failure: it is fielded in the same region of code that handles actor
+    exceptions, and the job in hand already carries an incremented attempt
+    from the claim. Pinning the routing at its worst case -- a
+    ``non_retryable`` job already at its ceiling, the shape for which every
+    failure path leads straight to a terminal write -- proves the branch is
+    chosen by what happened (nothing ran) rather than by the job's budget
+    state.
+
+    Operationally this is the guarantee that a saturated bucket or a
+    mis-sized rate limit cannot kill work. A denial says the fleet had no
+    slot; it says nothing about the job, so the terminal-write seam must
+    stay untouched and the job must leave the consumer rescheduled.
+    """
+    rl_reg = _StubRateLimitRegistry(
+        acquire_side_effect=ReservationUnavailable(
+            bucket_name="gpu_pool",
+            retry_after=timedelta(seconds=5),
+            source="reservation",
+        ),
+    )
+    backend = _FakeBackend()
+    clk: Clock = FakeClock(_NOW)
+    cfg = StubActorConfig(retry=RetryPolicy(kind="non_retryable", max_attempts=1, jitter=0.0))
+    # Already at the ceiling, and with no schedule_to_close there is no
+    # deadline arm that could legitimately end this job either.
+    job = make_job_row(
+        attempt=1,
+        max_attempts=1,
+        retry_kind="non_retryable",
+        schedule_to_close=None,
+    )
+
+    async def never_called_actor(_job: object, _ctx: JobContext[BaseModel]) -> object:
+        raise AssertionError("actor body should not run on denial")
+
+    result = await consume_one_job(
+        as_backend(backend),
+        job,
+        _WORKER_ID,
+        run_actor=never_called_actor,
+        actor_config=cfg,
+        payload_type=EmptyPayload,
+        clock=clk,
+        rate_limit_registry=rl_reg,
+        rate_limits=[],
+        reservations=["gpu_pool"],
+    )
+
+    assert result == "scheduled", (
+        f"a denied job left the consumer as {result!r}. An admission denial "
+        "is 'come back later': the job must be rescheduled until capacity "
+        "frees or its schedule-to-close expires, whatever its retry budget."
+    )
+    assert len(backend.mark_failed_or_retry_calls) == 0, (
+        "the consumer routed an admission denial through the terminal-write "
+        "seam because the job's budget was spent. The budget bounds failed "
+        "EXECUTIONS, and a denied job never executed -- routing on budget "
+        "state lets a queue misconfiguration terminally fail work that "
+        "merely never got a slot."
+    )
+    assert len(backend.mark_snoozed_calls) == 1, (
+        "an admission denial must be expressed as a deferral on the snooze "
+        "seam -- the one write that reschedules without spending budget and "
+        "without minting a per-denial attempt or event row."
+    )
+    snooze_call = backend.mark_snoozed_calls[0]
+    assert snooze_call["outcome"] == "reservation_denied", (
+        f"the deferral carried outcome {snooze_call['outcome']!r}; the "
+        "outcome keys the aggregated denial counter on the job row, which "
+        "is the only durable record of contention now that denials write no "
+        "job_events and no job_attempts rows."
+    )
+
+
+async def test_consume_one_job_uses_the_caller_bound_job_log() -> None:
+    """A caller that already bound the job's logger (the dispatch path
+    binds one for the interim context) hands it in as ``job_log`` and the
+    actor's ctx logs through that very logger — no second binding."""
+    import structlog
+
+    from taskq.obs import bind_job_context
+    from taskq.testing.actor import FakeBackend, StubActorConfig, as_backend
+    from taskq.testing.clock import FakeClock
+    from taskq.testing.jobs import make_job_row
+
+    job = make_job_row()
+    caller_log = bind_job_context(
+        structlog.get_logger("test.caller"),
+        job_id=job.id,
+        actor=job.actor,
+        queue=job.queue,
+        attempt=job.attempt,
+        identity_key=None,
+        trace_id="",
+    )
+    seen: list[structlog.stdlib.BoundLogger] = []
+
+    async def actor(_job: object, ctx: JobContext[BaseModel]) -> dict[str, object]:
+        seen.append(ctx.log)
+        return {}
+
+    outcome = await consume_one_job(
+        as_backend(FakeBackend()),
+        job,
+        job.locked_by_worker or _WORKER_ID,
+        run_actor=actor,
+        actor_config=StubActorConfig(retry=RetryPolicy()),
+        payload_type=EmptyPayload,
+        clock=FakeClock(_NOW),
+        job_log=caller_log,
+    )
+
+    assert outcome == "succeeded"
+    assert seen == [caller_log]

@@ -13,17 +13,22 @@ from dataclasses import dataclass
 from typing import Final
 
 from taskq.backend._dispatch_sql import (
+    DISPATCH_CLAIMABLE_PROBE_SQL,
     DISPATCH_ROUND_ROBIN_SQL,
     DISPATCH_STRICT_FIFO_SQL,
 )
 from taskq.backend._sql import (
     CANCEL_ESCALATION_SQL,
     INSERT_EVENT_SQL,
-    INSERT_EVENTS_BATCH_SQL,
     POLL_CANCEL_FLAGS_SQL,
+    WAKE_NOTIFY_SQL,
 )
 from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining
+    CANCEL_ORIGIN_ABANDONED,
+    CANCEL_ORIGIN_COOPERATIVE,
+    CANCEL_ORIGIN_FORCED,
+    CANCEL_ORIGIN_PENDING,
     MIN_DEFERRAL_INTERVAL,
 )
 
@@ -71,31 +76,48 @@ COPY_FROM_COLUMNS: Final[tuple[str, ...]] = (
     "tags",
     "snooze_count",
     "rate_limit_blocked_count",
+    "interrupt_count",
+    "retry_base_seconds",
+    "retry_cap_seconds",
+    "retry_backoff",
+    "retry_jitter",
+    "assignment_routed",
 )
 
 # Column list for the enqueue COPY path only.  Every omitted column is
 # either stamped/decided by the post-COPY fixup UPDATE
 # (enqueue_batch_fast_fixup) from the server clock — never the caller's
-# Python clock — or carries a DDL default the COPY lets apply (status
-# 'pending', created_at/scheduled_at now(), NULL schedule_to_close /
+# Python clock — or carries a DDL default the COPY lets apply
+# (created_at/scheduled_at now(), NULL schedule_to_close /
 # result_expires_at, and the zero-defaulted denial counters, which an
-# enqueued job has no reason to pre-set).  COPY_FROM_COLUMNS stays
-# intact: it is shared by the archive CTE column lists in
-# worker/_leader_shared.py.
+# enqueued job has no reason to pre-set).  ``status`` is NOT omitted: the
+# COPY writes COPY_ENQUEUE_STATUS explicitly so the INSERT trigger never
+# fires for a row whose runnability the fixup has not yet decided (see
+# enqueue_batch_fast_fixup).  COPY_FROM_COLUMNS stays intact: it is
+# shared by the archive CTE column lists in worker/_leader_shared.py.
 _COPY_ENQUEUE_OMITTED: Final[frozenset[str]] = frozenset(
     {
-        "status",
         "created_at",
         "scheduled_at",
         "schedule_to_close",
         "result_expires_at",
         "snooze_count",
         "rate_limit_blocked_count",
+        "interrupt_count",
     }
 )
 COPY_ENQUEUE_COLUMNS: Final[tuple[str, ...]] = tuple(
     c for c in COPY_FROM_COLUMNS if c not in _COPY_ENQUEUE_OMITTED
 )
+
+# The status every COPY row lands with. The fixup UPDATE decides each
+# row's real status from the server clock afterwards, inside the same
+# transaction; landing as 'scheduled' (never dispatchable, never woken)
+# keeps tr_notify_job_insert — WHEN (NEW.status = 'pending'), INSERT only
+# — from waking the fleet for rows the fixup then defers, the invariant
+# migration 01.00.14_01 documents. The wake for the rows the fixup makes
+# runnable is the fixup's own, issued once and only when it made any.
+COPY_ENQUEUE_STATUS: Final[str] = "scheduled"
 
 # The non-consuming deferral floor, pre-rendered for the two arms that
 # carry it (mark_snoozed's snoozed arm and mark_retry_after's
@@ -104,6 +126,31 @@ COPY_ENQUEUE_COLUMNS: Final[tuple[str, ...]] = tuple(
 _MIN_DEFERRAL_INTERVAL_SQL: Final[str] = (
     f"interval '{MIN_DEFERRAL_INTERVAL.total_seconds()} seconds'"
 )
+
+# The non-consuming release's attempt refund, ONE fragment shared by every
+# release arm that hands back an attempt the actor did not finish on its
+# own terms: mark_snoozed's 'snoozed'/'unavailable' arm,
+# mark_retry_after_consume_false's snoozed arm, mark_interrupted's release
+# arm, and the shutdown drain's hand-back (worker/shutdown.py imports this
+# constant). Dispatch stamps ``attempt = j.attempt + 1`` at claim
+# (backend/_dispatch_sql.py); a release that executed nothing returns the
+# increment, floored at 0. The refund revisits an attempt number, which is
+# collision-safe: a non-terminal release writes no job_attempts row, so the
+# PK (job_id, attempt) is never revisited by a writer (see the mark_snoozed
+# comment block below for the full argument).
+# The reference is alias-qualified (``j.``): every consumer of the fragment
+# aliases its target table ``j``.
+#
+# None of these release arms wakes the fleet. A row they land as
+# 'pending' is re-pended by UPDATE, which the INSERT-only wake trigger
+# never sees, and no arm issues a pg_notify of its own: the producer's
+# poll floor (WorkerSettings.notify_poll_interval with NOTIFY on,
+# poll_interval without) is the wake source for a released row, the same
+# trade the sweeps' UPDATE re-pends would make were they not batched
+# behind their own single notify. A release is the worker giving a row
+# back (a snooze, a retry-after, a shutdown interrupt), never new work,
+# so a claim within the poll floor is the intended latency.
+_ATTEMPT_REFUND_SQL: Final[str] = "GREATEST(j.attempt - 1, 0)"
 
 
 @dataclass(frozen=True, slots=True)
@@ -119,11 +166,11 @@ class SqlTemplates:
     mark_snoozed: str
     mark_retry_after_consume_true: str
     mark_retry_after_consume_false: str
+    mark_interrupted: str
 
     # ── Shared INSERT templates ────────────────────────────────────
     insert_attempt_explicit: str
     insert_event: str
-    insert_events_batch: str
 
     # ── Owner check ────────────────────────────────────────────────
     select_owner: str
@@ -139,10 +186,10 @@ class SqlTemplates:
     singleton_preflight: str
     enqueue_max_pending_count: str
     enqueue_select_by_key: str
-    enqueue_notify: str
+    wake_notify: str
     enqueue_batch: str
     enqueue_batch_fetch_existing: str
-    enqueue_batch_fetch_by_ids: str
+    enqueue_batch_fetch_singleton_blockers: str
     enqueue_batch_fast_fixup: str
 
     # ── Read SQL templates ─────────────────────────────────────────
@@ -153,6 +200,7 @@ class SqlTemplates:
     # ── Dispatch SQL templates ─────────────────────────────────────
     dispatch_strict_fifo: str
     dispatch_round_robin: str
+    dispatch_claimable_probe: str
 
     # ── Static read SQL ────────────────────────────────────────────
     get_events: str
@@ -221,13 +269,13 @@ def render(schema: str) -> SqlTemplates:
         # N's stale handler from attempt N+1's live one on the SAME
         # worker after a stall → sweep reclaim → same-worker redispatch:
         # the stale handler's write matches (id, running, worker) and
-        # falsely terminalises the redispatched attempt. Oban fences
-        # exactly this with an attempt-identity epoch on every terminal
-        # write (ack_query: ``attempted_at == ^job.attempted_at`` —
-        # vendor/oban/lib/oban/engines/basic.ex). The epoch is the
-        # handler's dispatch-time job-row attempt snapshot, threaded from
-        # every call site; a mismatched epoch — a stale handler, or a
-        # caller that cannot present one ($k IS NULL never satisfies the
+        # falsely terminalises the redispatched attempt. Fence the
+        # redispatched attempt with an attempt-identity epoch on every
+        # terminal write so a stale attempt's terminal write cannot land
+        # on the row it no longer owns. The epoch is the handler's
+        # dispatch-time job-row attempt snapshot, threaded from every
+        # call site; a mismatched epoch — a stale handler, or a caller
+        # that cannot present one ($k IS NULL never satisfies the
         # equality) — makes the UPDATE match no row and the write no-ops
         # through the same machinery as the worker fence (rowcount 0 →
         # False / WorkerOwnershipMismatch / "noop", no publish).
@@ -273,6 +321,11 @@ WITH upd AS (
            trunc(EXTRACT(EPOCH FROM (upd.finished_at - upd.started_at)) * 1000)::int,
            (SELECT id FROM holder), '{{}}'::jsonb
     FROM upd
+    -- A claim-clamped attempt number repeats at the smallint ceiling
+    -- (dispatch saturates its increment there): keep the first record of
+    -- the number, never roll the terminal transition back on a PK
+    -- collision (the deadline sweep's insert carries the same doctrine).
+    ON CONFLICT (job_id, attempt) DO NOTHING
 ), evt AS (
     INSERT INTO "{s}".job_events
     (job_id, occurred_at, kind, detail)
@@ -307,6 +360,11 @@ WITH upd AS (
            trunc(EXTRACT(EPOCH FROM (upd.finished_at - upd.started_at)) * 1000)::int,
            (SELECT id FROM holder), '{{}}'::jsonb
     FROM upd
+    -- A claim-clamped attempt number repeats at the smallint ceiling
+    -- (dispatch saturates its increment there): keep the first record of
+    -- the number, never roll the terminal transition back on a PK
+    -- collision (the deadline sweep's insert carries the same doctrine).
+    ON CONFLICT (job_id, attempt) DO NOTHING
 ), evt AS (
     INSERT INTO "{s}".job_events
     (job_id, occurred_at, kind, detail)
@@ -372,6 +430,10 @@ retried AS (
         last_heartbeat_at = NULL,
         cancel_phase = 0,
         cancel_requested_at = NULL,
+        -- A failure retry returns a claimed row to the pending pool, so
+        -- it routes by the actor's current assignment from here on (the
+        -- routing contract in taskq/backend/_dispatch_sql.py).
+        assignment_routed = true,
         error_class = $4,
         error_message = $5,
         error_traceback = $6,
@@ -425,6 +487,10 @@ retried_att AS (
            trunc(EXTRACT(EPOCH FROM (r.now_ts - r.started_at)) * 1000)::int,
            (SELECT id FROM holder), '{{}}'::jsonb
     FROM retried r
+    -- A claim-clamped attempt number repeats at the smallint ceiling:
+    -- keep the first record, never roll the transition back (see the
+    -- mark_succeeded insert's comment).
+    ON CONFLICT (job_id, attempt) DO NOTHING
 ),
 retried_evt AS (
     INSERT INTO "{s}".job_events
@@ -445,6 +511,10 @@ deadline_att AS (
            trunc(EXTRACT(EPOCH FROM (d.finished_at - d.started_at)) * 1000)::int,
            (SELECT id FROM holder), '{{}}'::jsonb
     FROM deadline_failed d
+    -- A claim-clamped attempt number repeats at the smallint ceiling:
+    -- keep the first record, never roll the transition back (see the
+    -- mark_succeeded insert's comment).
+    ON CONFLICT (job_id, attempt) DO NOTHING
 ),
 deadline_evt AS (
     INSERT INTO "{s}".job_events
@@ -456,6 +526,19 @@ deadline_evt AS (
     FROM deadline_failed d
 )
 SELECT * FROM retried UNION ALL SELECT * FROM deadline_failed""",
+        # Every terminal cancel path records its origin the way every
+        # terminal failure path records its reason: error_class on the
+        # row, on the attempt, and in the state_change detail. Three
+        # cancelled rows read side by side then say which actor yielded,
+        # which had to be taken away and which never ran — a distinction
+        # worker logs carry today and lose the moment they roll off.
+        # mark_cancelled splits its marker on the phase the row was at:
+        # an actor that stopped while still only ASKED (phase 1) stopped
+        # cooperatively; one that had to be interrupted at phase 2 was
+        # forced. mark_abandoned and cancel_pending_scheduled stamp their
+        # own origins. The SET clause owns the choice; the attempt row
+        # and event detail read it back off upd so the three writes can
+        # never disagree.
         mark_cancelled=f"""\
 WITH upd AS (
     UPDATE "{s}".jobs
@@ -463,6 +546,8 @@ WITH upd AS (
         finished_at = clock_timestamp(),
         locked_by_worker = NULL,
         lock_expires_at = NULL,
+        error_class = CASE WHEN cancel_phase = 2 THEN '{CANCEL_ORIGIN_FORCED}'
+                           ELSE '{CANCEL_ORIGIN_COOPERATIVE}' END,
         progress_seq = $3,
         progress_state = CASE WHEN $4::jsonb IS NOT NULL THEN COALESCE(progress_state, '{{}}'::jsonb) || $4::jsonb ELSE progress_state END
     WHERE id = $1 AND status = 'running' AND locked_by_worker = $2 AND attempt = $5
@@ -474,15 +559,21 @@ WITH upd AS (
     (job_id, attempt, started_at, finished_at, outcome,
      error_class, error_message, error_traceback, duration_ms, worker_id, metadata)
     SELECT upd.id, upd.attempt, upd.started_at, clock_timestamp(), 'cancelled',
-           NULL, NULL, NULL,
+           upd.error_class, NULL, NULL,
            trunc(EXTRACT(EPOCH FROM (upd.finished_at - upd.started_at)) * 1000)::int,
            (SELECT id FROM holder), '{{}}'::jsonb
     FROM upd
+    -- A claim-clamped attempt number repeats at the smallint ceiling
+    -- (dispatch saturates its increment there): keep the first record of
+    -- the number, never roll the terminal transition back on a PK
+    -- collision (the deadline sweep's insert carries the same doctrine).
+    ON CONFLICT (job_id, attempt) DO NOTHING
 ), evt AS (
     INSERT INTO "{s}".job_events
     (job_id, occurred_at, kind, detail)
     SELECT upd.id, clock_timestamp(), 'state_change',
            jsonb_build_object('from_state', 'running', 'to_state', 'cancelled',
+                              'error_class', upd.error_class,
                               'worker_id', $2::text)
     FROM upd
 )
@@ -492,6 +583,7 @@ WITH upd AS (
     UPDATE "{s}".jobs
     SET status = 'abandoned',
         finished_at = clock_timestamp(),
+        error_class = '{CANCEL_ORIGIN_ABANDONED}',
         progress_seq = $2,
         progress_state = CASE WHEN $3::jsonb IS NOT NULL THEN COALESCE(progress_state, '{{}}'::jsonb) || $3::jsonb ELSE progress_state END
     -- The NULL-lease arm is defense-in-depth for the no-exit cell
@@ -524,116 +616,103 @@ WITH upd AS (
     (job_id, attempt, started_at, finished_at, outcome,
      error_class, error_message, error_traceback, duration_ms, worker_id, metadata)
     SELECT upd.id, upd.attempt, upd.started_at, clock_timestamp(), 'cancelled',
-           NULL, NULL, NULL,
+           '{CANCEL_ORIGIN_ABANDONED}', NULL, NULL,
            trunc(EXTRACT(EPOCH FROM (upd.finished_at - upd.started_at)) * 1000)::int,
            (SELECT id FROM holder), '{{}}'::jsonb
     FROM upd
+    -- A claim-clamped attempt number repeats at the smallint ceiling
+    -- (dispatch saturates its increment there): keep the first record of
+    -- the number, never roll the terminal transition back on a PK
+    -- collision (the deadline sweep's insert carries the same doctrine).
+    ON CONFLICT (job_id, attempt) DO NOTHING
 ), evt AS (
     INSERT INTO "{s}".job_events
     (job_id, occurred_at, kind, detail)
     SELECT upd.id, clock_timestamp(), 'state_change',
            jsonb_strip_nulls(jsonb_build_object('from_state', 'running', 'to_state', 'abandoned',
+                                                'error_class', '{CANCEL_ORIGIN_ABANDONED}',
                                                 'worker_id', upd.locked_by_worker::text))
     FROM upd
 )
 SELECT * FROM upd""",
         # A non-consuming deferral never spends retry budget, and the
         # ceiling is never a counter — no arm here raises max_attempts.
-        # HOW the budget is preserved differs by who asked for the
-        # deferral:
+        # Every deferral shape REFUNDS the claim's attempt increment:
+        # attempt - 1, floored at 0.  Dispatch stamped attempt = attempt
+        # + 1 when it claimed the row; no actor ran, so the increment is
+        # returned and the gap `max_attempts - attempt` is exactly what
+        # it was before the claim.  A job can therefore defer
+        # indefinitely: attempt oscillates between N and N+1 and never
+        # walks toward the smallint ceiling.  The ceiling itself is
+        # immutable here — a deferral restores the attempt it borrowed
+        # rather than widening `max_attempts`, so the budget an operator
+        # configured is the budget the job gets, and only an explicit
+        # admin retry raises the ceiling.
         #
-        #   * An actor-requested deferral ($7 = 'snoozed' — the Snooze
-        #     exception, or a server Retry-After honoured without budget)
-        #     REFUNDS the claim's attempt increment: attempt - 1, floored
-        #     at 0.  Dispatch stamped attempt = attempt + 1 when it
-        #     claimed the row; the actor never ran, so the increment is
-        #     returned and the gap `max_attempts - attempt` is exactly
-        #     what it was before the claim.  A job can honour downstream
-        #     429s indefinitely: attempt oscillates between N and N+1 and
-        #     never walks toward the smallint ceiling.  This is the
-        #     convention the vendored corpus is unanimous on — Oban's
-        #     snooze rolls back the attempt and preserves "the original
-        #     max_attempts... no matter how many times a job snoozes"
-        #     while counting snoozes in the job's meta
-        #     (vendor/oban/lib/oban/worker.ex:273-278,
-        #     engines/basic.ex:274-285 `inc: [attempt: -1]`); River's
-        #     snooze/interrupt pass `attempt-1` with a `snoozes` metadata
-        #     counter (vendor/river/internal/jobexecutor/job_executor.go:396-420);
-        #     graphile-worker-rs refunds on recovery
-        #     (`attempts = GREATEST(0, attempts - 1)`).  The only ceiling
-        #     raises anywhere in the corpus are explicit admin retry
-        #     actions (River's JobRetry
-        #     riverdriver/riverdatabasesql/internal/dbsqlc/river_job.sql.go:1263,
-        #     Oban's retry_job engines/basic.ex:370) — no system widens
-        #     the budget automatically.
-        #   * An admission denial ($7 = 'reservation_denied' /
-        #     'rate_limit_denied') leaves the claim's increment standing:
-        #     the system's own backpressure is budget-bounded, so a
-        #     saturated bucket fails the job out at attempt >=
-        #     max_attempts instead of re-queueing it forever (measured in
-        #     production under the unbounded shape: one job denied 1,014
-        #     times, 6.5M job_events rows).  Jobs that must wait out a
-        #     saturation express it explicitly: retry_kind 'indefinite',
-        #     or a schedule_to_close deadline.
+        # This covers the admission denials ($7 = 'reservation_denied' /
+        # 'rate_limit_denied') exactly as it covers the actor-requested
+        # deferral ($7 = 'snoozed').  A denial carries the semantics of
+        # an HTTP 429 with Retry-After: it reports that the fleet had no
+        # slot, which is a statement about capacity and never about the
+        # work.  So it may neither spend the budget nor decide the
+        # outcome.  Charging it would make how many real retries a job
+        # gets depend on how saturated a bucket happened to be while the
+        # job waited — a load-dependent, unreproducible retry policy —
+        # and would let a queue or rate-limit misconfiguration terminate
+        # work that never ran.  A denied job reschedules until capacity
+        # frees; its ONLY terminal exit is its own schedule_to_close,
+        # reached through the ordinary deadline arm below.  Unbounded
+        # rescheduling stays affordable precisely because a deferral
+        # mints no per-occurrence rows: contention is carried by the
+        # aggregated counters on the row (snooze_count /
+        # rate_limit_blocked_count, keyed by $7) and by OTEL, so
+        # sustained saturation costs one counter bump per cycle instead
+        # of a table's worth of history (measured under an earlier
+        # per-denial shape: one job denied 1,014 times, 6.5M job_events
+        # rows).
         #
-        # Both paths are counted on the job row (snooze_count /
-        # rate_limit_blocked_count, keyed by $7) instead of minting
-        # per-occurrence rows.
+        # Two arms, exhaustive and mutually exclusive over every fenced
+        # row:
+        #   snoozed         — the reschedule point still fits inside
+        #                     schedule_to_close, or there is none;
+        #   deadline_failed — the reschedule point passes
+        #                     schedule_to_close.
+        # denial_reason never reaches this statement: 'capacity' (the
+        # store answered "full") and 'unavailable' (the store could not
+        # answer) are both admission backpressure about a job whose actor
+        # never ran, and take the identical non-consuming shape. The
+        # reason is validated at the Python boundary for the caller's own
+        # observability, not branched on here.
         #
-        # Three arms, exhaustive and mutually exclusive over every
-        # fenced row:
-        #   snoozed            — an actor-requested deferral (always,
-        #                        while the deadline allows), OR an
-        #                        admission denial while budget remains
-        #                        (attempt < max_attempts, any kind), OR
-        #                        the kind is indefinite, OR the job
-        #                        carries schedule_to_close (its own
-        #                        terminal exit — the deadline, not the
-        #                        budget, ends that job);
-        #   max_attempts_failed — the complement, admission denials
-        #                        only: a non-indefinite job at
-        #                        attempt >= max_attempts with no close
-        #                        deadline;
-        #   deadline_failed     — the reschedule point passes
-        #                        schedule_to_close.
-        # $9 (denial_reason) splits the denial rows across those arms:
-        # 'capacity' (a saturation denial — the store answered "full")
-        # keeps the bounded budget-consuming loop above; 'unavailable'
-        # (the store could not answer — infra backpressure about a job
-        # whose actor never ran) takes the NON-CONSUMING shape of the
-        # 'snoozed' arm — the claim's attempt increment is refunded and
-        # the max_attempts arm is unreachable, so a sustained outage
-        # keeps the job retryable with its original budget intact. The
-        # refund revisits attempt numbers, which is collision-safe here
-        # for the same reason the 'snoozed' arm's refund is: a
-        # non-terminal snooze/denial writes no job_attempts rows, so no
-        # writer ever lands on the revisited keys.
-        # A non-terminal snooze/denial writes NO job_attempts/job_events
-        # rows — it is admission control, not an execution; the outcome
-        # counters on the row and OTEL carry it.  Terminal arms write
-        # their rows uniformly with every other terminal transition.
+        # The refund revisits attempt numbers, which is collision-safe:
+        # a non-terminal snooze/denial writes NO job_attempts/job_events
+        # rows — it is admission control, not an execution — so no writer
+        # ever lands on a revisited PK (job_id, attempt).  The deadline
+        # arm writes its rows uniformly with every other terminal
+        # transition, at the attempt number dispatch stamped and no
+        # refund has returned.  There is deliberately no budget arm: the
+        # retry ceiling has exactly one enforcement point — a real
+        # execution's terminal write — because only an execution spends
+        # budget; admission control never does.
         #
-        # job_attempts PK hazard for the max_attempts_failed arm: the arm
-        # inserts at (job_id, attempt) WITHOUT dispatch having advanced
-        # attempt, so the insert is safe only if no row at that key can
-        # already exist.  The fence (status='running' AND
-        # locked_by_worker=$2 AND attempt=$8) guarantees the job has been
-        # running-owned by this worker at this attempt epoch since
-        # dispatch stamped attempt=N.  Every writer at (job, N) ends that running window
-        # first: the terminal mark_* writes transition the row out of
-        # 'running', and sweep-1's reclaim — the only writer that acts on
-        # a running row this worker no longer owns — either terminalises
-        # (exhausted branch) or requires attempt < max_attempts (retry
-        # branch), whose row at N is followed by a dispatch increment to
+        # job_attempts PK hazard for the deadline arm: it inserts at
+        # (job_id, attempt) WITHOUT dispatch having advanced attempt, so
+        # the insert is safe only if no row at that key can already
+        # exist.  The fence (status='running' AND locked_by_worker=$2 AND
+        # attempt=$8) guarantees the job has been running-owned by this
+        # worker at this attempt epoch since dispatch stamped attempt=N.
+        # Every writer at (job, N) ends that running window first: the
+        # terminal mark_* writes transition the row out of 'running', and
+        # sweep-1's reclaim — the only writer that acts on a running row
+        # this worker no longer owns — either terminalises or hands the
+        # job back, whose row at N is followed by a dispatch increment to
         # N+1 before any snooze caller can run again.  Two statements
         # racing on the same running row serialise on the row lock and
         # the loser's fence re-check finds status no longer 'running', so
-        # exactly one writer per (job, N) can ever commit.  The collision
-        # was attempted in a test and is unconstructible within a job's
-        # single attempt-number epoch, and the one cross-epoch revisitor
-        # is gone: retry_job keeps attempt monotonic (it raises the
-        # max_attempts ceiling instead of resetting the counter — see the
-        # retry_job template's comment).
+        # exactly one writer per (job, N) can ever commit.  The one
+        # cross-epoch revisitor is gone: retry_job keeps attempt
+        # monotonic (it raises the max_attempts ceiling instead of
+        # resetting the counter — see the retry_job template's comment).
         mark_snoozed=f"""\
 WITH params AS (
     SELECT $1::uuid AS job_id,
@@ -643,14 +722,14 @@ WITH params AS (
            -- delay would park the job 'pending' at clock_timestamp() at
            -- the head of the dispatch order (ORDER BY scheduled_at),
            -- instantly re-claimable — one claim/refund round trip per
-           -- cycle monopolising a worker slot. River rejects a
-           -- non-future snooze; Oban requires a positive delay. The
-           -- consuming arms keep the raw delay: an immediate consuming
-           -- retry is a real execution, bounded by the budget it
-           -- spends. effective_delay is the arm's SINGLE delay —
-           -- status, scheduled_at and every deadline comparison read
-           -- it, so the snoozed and deadline arms partition exactly
-           -- (a row can never match neither).
+           -- cycle monopolising a worker slot. A non-future snooze must
+           -- be rejected: a zero delay would cause immediate re-claim and
+           -- burn worker slots. The consuming arms keep the raw delay: an
+           -- immediate consuming retry is a real execution, bounded by the
+           -- budget it spends. effective_delay is the arm's SINGLE delay —
+           -- status, scheduled_at and every deadline comparison read it,
+           -- so the snoozed and deadline arms partition exactly (a row can
+           -- never match neither).
             GREATEST($3::interval, {_MIN_DEFERRAL_INTERVAL_SQL}) AS effective_delay,
             $4::jsonb AS metadata_update,
             $5::int AS progress_seq,
@@ -667,11 +746,19 @@ snoozed AS (
         last_heartbeat_at = NULL,
         cancel_phase = 0,
         cancel_requested_at = NULL,
-        -- 'unavailable' rides the 'snoozed' refund: the store's failure
-        -- to answer is not an execution, so the claim's attempt
-        -- increment is returned exactly as an actor-requested deferral
-        -- returns it.
-        attempt = CASE WHEN $7::text = 'snoozed' OR $9::text = 'unavailable' THEN GREATEST(j.attempt - 1, 0) ELSE j.attempt END,
+        -- A deferral returns a claimed row to the pending pool, so it
+        -- routes by the actor's current assignment from here on (the
+        -- routing contract in taskq/backend/_dispatch_sql.py).
+        assignment_routed = true,
+        -- Every arm of this statement refunds the claim's attempt
+        -- increment. An actor-requested deferral did not execute, and
+        -- neither did an admission denial: no handler ran, so nothing
+        -- may be charged to the budget the operator sized for real
+        -- runs. Charging denials would make how many real retries a job
+        -- gets depend on how saturated the bucket was while it waited.
+        -- The refund expression is the shared _ATTEMPT_REFUND_SQL
+        -- fragment (module header).
+        attempt = {_ATTEMPT_REFUND_SQL},
         snooze_count = CASE WHEN $7::text = 'snoozed' THEN j.snooze_count + 1 ELSE j.snooze_count END,
         rate_limit_blocked_count = CASE WHEN $7::text IN ('reservation_denied', 'rate_limit_denied') THEN j.rate_limit_blocked_count + 1 ELSE j.rate_limit_blocked_count END,
         metadata = j.metadata || COALESCE((SELECT metadata_update FROM params), '{{}}'::jsonb),
@@ -681,41 +768,12 @@ snoozed AS (
       AND j.status = 'running'
       AND j.locked_by_worker = (SELECT worker_id FROM params)
       AND j.attempt = (SELECT attempt FROM params)
+      -- The reschedule point is the ONLY admission condition: a deferral
+      -- that never ran spends nothing, so nothing but the job's own
+      -- deadline can refuse it.
       AND (j.schedule_to_close IS NULL
            OR clock_timestamp() + (SELECT effective_delay FROM params) <= j.schedule_to_close)
-      AND ($7::text = 'snoozed'
-           OR $9::text = 'unavailable'
-           OR j.retry_kind = 'indefinite'
-           OR j.attempt < j.max_attempts
-           OR j.schedule_to_close IS NOT NULL)
     RETURNING j.*, 'snoozed'::text AS outcome_branch, clock_timestamp() AS now_ts
-),
-max_attempts_failed AS (
-    UPDATE "{s}".jobs j
-    SET status = 'failed',
-        finished_at = clock_timestamp(),
-        error_class = 'MaxAttemptsExceeded',
-        error_message = 'retry budget exhausted',
-        error_traceback = NULL,
-        locked_by_worker = NULL,
-        lock_expires_at = NULL,
-        last_heartbeat_at = NULL,
-        progress_seq = (SELECT progress_seq FROM params),
-        progress_state = CASE WHEN (SELECT progress_state FROM params) IS NOT NULL THEN COALESCE(j.progress_state, '{{}}'::jsonb) || (SELECT progress_state FROM params) ELSE j.progress_state END
-    WHERE j.id = (SELECT job_id FROM params)
-      AND j.status = 'running'
-      AND j.locked_by_worker = (SELECT worker_id FROM params)
-      AND j.attempt = (SELECT attempt FROM params)
-      AND $7::text IN ('reservation_denied', 'rate_limit_denied')
-      -- An infra denial can never terminalise: the store's failure to
-      -- answer says nothing about the job, and MaxAttemptsExceeded
-      -- asserts the actor ran and failed max_attempts times.
-      AND $9::text <> 'unavailable'
-      AND j.retry_kind <> 'indefinite'
-      AND j.attempt >= j.max_attempts
-      AND j.schedule_to_close IS NULL
-      AND NOT EXISTS (SELECT 1 FROM snoozed)
-    RETURNING j.*, 'max_attempts_failed'::text AS outcome_branch, clock_timestamp() AS now_ts
 ),
 deadline_failed AS (
     UPDATE "{s}".jobs j
@@ -727,6 +785,14 @@ deadline_failed AS (
         locked_by_worker = NULL,
         lock_expires_at = NULL,
         last_heartbeat_at = NULL,
+        -- The denial that ran the job out of road still happened to it,
+        -- and with no per-occurrence rows the aggregate is its only
+        -- record: counting it here makes the terminal row show that the
+        -- deadline was reached WHILE the job was starving for admission,
+        -- rather than making that last denial vanish.  An actor-requested
+        -- deferral is NOT counted here — snooze_count tallies deferrals
+        -- the job actually took, and this one was rejected outright.
+        rate_limit_blocked_count = CASE WHEN $7::text IN ('reservation_denied', 'rate_limit_denied') THEN j.rate_limit_blocked_count + 1 ELSE j.rate_limit_blocked_count END,
         progress_seq = (SELECT progress_seq FROM params),
         progress_state = CASE WHEN (SELECT progress_state FROM params) IS NOT NULL THEN COALESCE(j.progress_state, '{{}}'::jsonb) || (SELECT progress_state FROM params) ELSE j.progress_state END
     WHERE j.id = (SELECT job_id FROM params)
@@ -736,30 +802,10 @@ deadline_failed AS (
       AND j.schedule_to_close IS NOT NULL
       AND clock_timestamp() + (SELECT effective_delay FROM params) > j.schedule_to_close
       AND NOT EXISTS (SELECT 1 FROM snoozed)
-      AND NOT EXISTS (SELECT 1 FROM max_attempts_failed)
     RETURNING j.*, 'failed'::text AS outcome_branch, clock_timestamp() AS now_ts
 ),
 holder AS (
     SELECT id FROM "{s}".workers WHERE id = $2 FOR KEY SHARE
-),
-max_attempts_att AS (
-    INSERT INTO "{s}".job_attempts
-    (job_id, attempt, started_at, finished_at, outcome,
-     error_class, error_message, error_traceback, duration_ms, worker_id, metadata)
-    SELECT m.id, m.attempt, m.started_at, clock_timestamp(), 'failed',
-           'MaxAttemptsExceeded', 'retry budget exhausted', NULL,
-           trunc(EXTRACT(EPOCH FROM (m.finished_at - m.started_at)) * 1000)::int,
-           (SELECT id FROM holder), '{{}}'::jsonb
-    FROM max_attempts_failed m
-),
-max_attempts_evt AS (
-    INSERT INTO "{s}".job_events
-    (job_id, occurred_at, kind, detail)
-    SELECT m.id, clock_timestamp(), 'state_change',
-           jsonb_build_object('from_state', 'running', 'to_state', 'failed',
-                              'error_class', 'MaxAttemptsExceeded',
-                              'worker_id', $2::text)
-    FROM max_attempts_failed m
 ),
 deadline_att AS (
     INSERT INTO "{s}".job_attempts
@@ -770,6 +816,10 @@ deadline_att AS (
            trunc(EXTRACT(EPOCH FROM (d.finished_at - d.started_at)) * 1000)::int,
            (SELECT id FROM holder), '{{}}'::jsonb
     FROM deadline_failed d
+    -- A claim-clamped attempt number repeats at the smallint ceiling:
+    -- keep the first record, never roll the transition back (see the
+    -- mark_succeeded insert's comment).
+    ON CONFLICT (job_id, attempt) DO NOTHING
 ),
 deadline_evt AS (
     INSERT INTO "{s}".job_events
@@ -781,7 +831,6 @@ deadline_evt AS (
     FROM deadline_failed d
 )
 SELECT * FROM snoozed
-UNION ALL SELECT * FROM max_attempts_failed
 UNION ALL SELECT * FROM deadline_failed""",
         mark_retry_after_consume_true=f"""\
 WITH params AS (
@@ -802,6 +851,10 @@ WITH params AS (
         last_heartbeat_at = NULL,
         cancel_phase = 0,
         cancel_requested_at = NULL,
+        -- A deferral returns a claimed row to the pending pool, so it
+        -- routes by the actor's current assignment from here on (the
+        -- routing contract in taskq/backend/_dispatch_sql.py).
+        assignment_routed = true,
         progress_seq = (SELECT progress_seq FROM params),
         progress_state = CASE WHEN (SELECT progress_state FROM params) IS NOT NULL THEN COALESCE(j.progress_state, '{{}}'::jsonb) || (SELECT progress_state FROM params) ELSE j.progress_state END
     WHERE j.id = (SELECT job_id FROM params)
@@ -875,6 +928,10 @@ snoozed_att AS (
            trunc(EXTRACT(EPOCH FROM (sn.now_ts - sn.started_at)) * 1000)::int,
            (SELECT id FROM holder), '{{}}'::jsonb
     FROM snoozed sn
+    -- A claim-clamped attempt number repeats at the smallint ceiling:
+    -- keep the first record, never roll the transition back (see the
+    -- mark_succeeded insert's comment).
+    ON CONFLICT (job_id, attempt) DO NOTHING
 ),
 snoozed_evt AS (
     INSERT INTO "{s}".job_events
@@ -893,6 +950,10 @@ max_attempts_att AS (
            trunc(EXTRACT(EPOCH FROM (m.finished_at - m.started_at)) * 1000)::int,
            (SELECT id FROM holder), '{{}}'::jsonb
     FROM max_attempts_failed m
+    -- A claim-clamped attempt number repeats at the smallint ceiling:
+    -- keep the first record, never roll the transition back (see the
+    -- mark_succeeded insert's comment).
+    ON CONFLICT (job_id, attempt) DO NOTHING
 ),
 max_attempts_evt AS (
     INSERT INTO "{s}".job_events
@@ -912,6 +973,10 @@ deadline_att AS (
            trunc(EXTRACT(EPOCH FROM (d.finished_at - d.started_at)) * 1000)::int,
            (SELECT id FROM holder), '{{}}'::jsonb
     FROM deadline_failed d
+    -- A claim-clamped attempt number repeats at the smallint ceiling:
+    -- keep the first record, never roll the transition back (see the
+    -- mark_succeeded insert's comment).
+    ON CONFLICT (job_id, attempt) DO NOTHING
 ),
 deadline_evt AS (
     INSERT INTO "{s}".job_events
@@ -958,7 +1023,11 @@ snoozed AS (
         last_heartbeat_at = NULL,
         cancel_phase = 0,
         cancel_requested_at = NULL,
-        attempt = GREATEST(j.attempt - 1, 0),
+        -- A deferral returns a claimed row to the pending pool, so it
+        -- routes by the actor's current assignment from here on (the
+        -- routing contract in taskq/backend/_dispatch_sql.py).
+        assignment_routed = true,
+        attempt = {_ATTEMPT_REFUND_SQL},
         snooze_count = j.snooze_count + 1,
         progress_seq = (SELECT progress_seq FROM params),
         progress_state = CASE WHEN (SELECT progress_state FROM params) IS NOT NULL THEN COALESCE(j.progress_state, '{{}}'::jsonb) || (SELECT progress_state FROM params) ELSE j.progress_state END
@@ -1003,6 +1072,10 @@ deadline_att AS (
            trunc(EXTRACT(EPOCH FROM (d.finished_at - d.started_at)) * 1000)::int,
            (SELECT id FROM holder), '{{}}'::jsonb
     FROM deadline_failed d
+    -- A claim-clamped attempt number repeats at the smallint ceiling:
+    -- keep the first record, never roll the transition back (see the
+    -- mark_succeeded insert's comment).
+    ON CONFLICT (job_id, attempt) DO NOTHING
 ),
 deadline_evt AS (
     INSERT INTO "{s}".job_events
@@ -1014,6 +1087,162 @@ deadline_evt AS (
     FROM deadline_failed d
 )
 SELECT * FROM snoozed
+UNION ALL SELECT * FROM deadline_failed""",
+        # mark_interrupted releases a RUNNING attempt the worker cannot
+        # finish because the process is going away (graceful shutdown past
+        # its graces). It is the non-consuming release of a *started*
+        # attempt: the claim's increment is refunded through the shared
+        # _ATTEMPT_REFUND_SQL fragment, no job_attempts row is written (an
+        # interruption is not an execution outcome — the same reasoning as
+        # the snooze/denial arms above), one job_events state_change with
+        # reason 'interrupted' records the transition, and interrupt_count
+        # bumps on the row (the same row-counter doctrine as
+        # snooze_count / rate_limit_blocked_count, 01.00.08_01). The
+        # release is a soft stop: the stop is recognised by the context's
+        # cancellation cause rather than by the error type, and the
+        # interrupted row lands back 'available' with reason 'interrupted'
+        # and its attempt refunded.
+        #
+        # Two arms, exhaustive over every fenced row:
+        #   released        — the release itself. hold > 0 parks the row
+        #                     'scheduled' until the releasing process is
+        #                     provably gone (a row released while its
+        #                     coroutine may still be alive in this process
+        #                     must not be claimable elsewhere until then);
+        #                     hold = 0 lands 'pending' at the head of the
+        #                     order — the row is genuinely free and the
+        #                     actor is gone, so the non-consuming deferral
+        #                     floor applies only to a real hold, never to
+        #                     the zero case (an interrupted job is
+        #                     claimable immediately).
+        #   deadline_failed — the hold would push the row past its
+        #                     schedule_to_close: the job fails on the
+        #                     deadline like every deferral arm's deadline
+        #                     exit, never parked past it into a state
+        #                     nothing terminalises.
+        #
+        # The fence carries `cancel_phase = 0` beside the ownership and
+        # attempt-epoch conjuncts: an operator cancel in flight WINS over
+        # the infrastructure interruption (the call returns no row and the
+        # caller routes to the cancel ladder). A row carrying
+        # cancel_attempted_at terminalises as 'cancelled', never
+        # 'available'; the fence is what keeps the infrastructure release
+        # from laundering the operator's request. The cancel columns are reset on
+        # release exactly as mark_retry's arm does (the next attempt must
+        # not inherit a phase); the fence guarantees they were already 0,
+        # so an operator's audit columns are never wiped.
+        #
+        # progress_seq is GREATEST-merged, not assigned: the release can
+        # race the still-running actor's last flush, and a caller without
+        # the coalesced buffer (the shutdown orchestrator passes 0) must
+        # never regress the row's progress epoch.
+        mark_interrupted=f"""\
+WITH params AS (
+    SELECT $1::uuid AS job_id,
+           $2::uuid AS worker_id,
+           $3::int AS attempt,
+           -- A positive hold is floored at the non-consuming deferral
+           -- floor (the mark_snoozed params comment names the
+           -- slot-monopolisation hazard); a zero hold stays zero so the
+           -- release lands pending immediately.
+           CASE WHEN $4::interval > interval '0'
+                THEN GREATEST($4::interval, {_MIN_DEFERRAL_INTERVAL_SQL})
+                ELSE interval '0' END AS effective_hold,
+           $5::int AS progress_seq,
+           $6::jsonb AS progress_state
+),
+released AS (
+    UPDATE "{s}".jobs j
+    SET status = CASE WHEN (SELECT effective_hold FROM params) > interval '0'
+                      THEN 'scheduled'::"{s}".job_status ELSE 'pending'::"{s}".job_status END,
+        scheduled_at = clock_timestamp() + (SELECT effective_hold FROM params),
+        finished_at = NULL,
+        locked_by_worker = NULL,
+        lock_expires_at = NULL,
+        last_heartbeat_at = NULL,
+        cancel_phase = 0,
+        cancel_requested_at = NULL,
+        -- An interruption hands the row back to the fleet, so it routes
+        -- by the actor's current assignment from here on (the routing
+        -- contract in taskq/backend/_dispatch_sql.py) — the same
+        -- re-pend class as the snooze/refund arms and the sweep.
+        assignment_routed = true,
+        attempt = {_ATTEMPT_REFUND_SQL},
+        interrupt_count = j.interrupt_count + 1,
+        progress_seq = GREATEST(j.progress_seq, (SELECT progress_seq FROM params)),
+        progress_state = CASE WHEN (SELECT progress_state FROM params) IS NOT NULL
+                              THEN COALESCE(j.progress_state, '{{}}'::jsonb) || (SELECT progress_state FROM params)
+                              ELSE j.progress_state END
+    WHERE j.id = (SELECT job_id FROM params)
+      AND j.status = 'running'
+      AND j.locked_by_worker = (SELECT worker_id FROM params)
+      AND j.attempt = (SELECT attempt FROM params)
+      AND j.cancel_phase = 0
+      AND (j.schedule_to_close IS NULL
+           OR clock_timestamp() + (SELECT effective_hold FROM params) <= j.schedule_to_close)
+    RETURNING j.*, 'released'::text AS outcome_branch, clock_timestamp() AS now_ts
+),
+deadline_failed AS (
+    UPDATE "{s}".jobs j
+    SET status = 'failed',
+        finished_at = clock_timestamp(),
+        error_class = 'DeadlineExceeded',
+        error_message = 'schedule_to_close reached before next dispatch',
+        error_traceback = NULL,
+        locked_by_worker = NULL,
+        lock_expires_at = NULL,
+        last_heartbeat_at = NULL,
+        progress_seq = GREATEST(j.progress_seq, (SELECT progress_seq FROM params)),
+        progress_state = CASE WHEN (SELECT progress_state FROM params) IS NOT NULL
+                              THEN COALESCE(j.progress_state, '{{}}'::jsonb) || (SELECT progress_state FROM params)
+                              ELSE j.progress_state END
+    WHERE j.id = (SELECT job_id FROM params)
+      AND j.status = 'running'
+      AND j.locked_by_worker = (SELECT worker_id FROM params)
+      AND j.attempt = (SELECT attempt FROM params)
+      AND j.cancel_phase = 0
+      AND j.schedule_to_close IS NOT NULL
+      AND clock_timestamp() + (SELECT effective_hold FROM params) > j.schedule_to_close
+      AND NOT EXISTS (SELECT 1 FROM released)
+    RETURNING j.*, 'deadline_failed'::text AS outcome_branch, clock_timestamp() AS now_ts
+),
+holder AS (
+    SELECT id FROM "{s}".workers WHERE id = $2 FOR KEY SHARE
+),
+released_evt AS (
+    INSERT INTO "{s}".job_events
+    (job_id, occurred_at, kind, detail)
+    SELECT r.id, clock_timestamp(), 'state_change',
+           jsonb_build_object('from_state', 'running', 'to_state', r.status::text,
+                              'reason', 'interrupted',
+                              'worker_id', $2::text,
+                              'hold_seconds', EXTRACT(EPOCH FROM (SELECT effective_hold FROM params)))
+    FROM released r
+),
+deadline_att AS (
+    INSERT INTO "{s}".job_attempts
+    (job_id, attempt, started_at, finished_at, outcome,
+     error_class, error_message, error_traceback, duration_ms, worker_id, metadata)
+    SELECT d.id, d.attempt, d.started_at, clock_timestamp(), 'failed',
+           'DeadlineExceeded', 'schedule_to_close reached before next dispatch', NULL,
+           trunc(EXTRACT(EPOCH FROM (d.finished_at - d.started_at)) * 1000)::int,
+           (SELECT id FROM holder), '{{}}'::jsonb
+    FROM deadline_failed d
+    -- A claim-clamped attempt number repeats at the smallint ceiling:
+    -- keep the first record, never roll the transition back (see the
+    -- mark_succeeded insert's comment).
+    ON CONFLICT (job_id, attempt) DO NOTHING
+),
+deadline_evt AS (
+    INSERT INTO "{s}".job_events
+    (job_id, occurred_at, kind, detail)
+    SELECT d.id, clock_timestamp(), 'state_change',
+           jsonb_build_object('from_state', 'running', 'to_state', 'failed',
+                              'error_class', 'DeadlineExceeded',
+                              'worker_id', $2::text)
+    FROM deadline_failed d
+)
+SELECT * FROM released
 UNION ALL SELECT * FROM deadline_failed""",
         # ── Shared INSERT templates ────────────────────────────────
         # Same holder-CTE idiom as INSERT_ATTEMPT_SQL (see _sql.py for the
@@ -1027,9 +1256,12 @@ INSERT INTO "{s}".job_attempts
 (job_id, attempt, started_at, finished_at, outcome,
  error_class, error_message, error_traceback, duration_ms, worker_id, metadata)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9,
-        (SELECT id FROM holder), $11::jsonb)""",
+        (SELECT id FROM holder), $11::jsonb)
+-- A claim-clamped attempt number repeats at the smallint ceiling: keep
+-- the first record, never raise a PK collision (see the mark_succeeded
+-- insert's comment).
+ON CONFLICT (job_id, attempt) DO NOTHING""",
         insert_event=INSERT_EVENT_SQL.format(schema=s),
-        insert_events_batch=INSERT_EVENTS_BATCH_SQL.format(schema=s),
         # ── Owner check ────────────────────────────────────────────
         select_owner=f"""\
 SELECT locked_by_worker FROM "{s}".jobs WHERE id = $1""",
@@ -1039,7 +1271,12 @@ WITH prev AS (
     SELECT status AS prev_status FROM "{s}".jobs WHERE id = $1 FOR UPDATE
 )
 UPDATE "{s}".jobs
-SET status = 'cancelled', finished_at = clock_timestamp()
+-- The cancel-origin marker goes on the ROW only: the pending→cancelled
+-- state_change event detail keeps its {{from_state, to_state}} shape —
+-- a from_state of pending/scheduled already says the job never ran, and
+-- the differential suite pins that detail exactly.
+SET status = 'cancelled', finished_at = clock_timestamp(),
+    error_class = '{CANCEL_ORIGIN_PENDING}'
 FROM prev
 WHERE "{s}".jobs.id = $1 AND "{s}".jobs.status IN ('pending', 'scheduled')
 RETURNING prev.prev_status""",
@@ -1064,8 +1301,9 @@ INSERT INTO "{s}".jobs
  max_attempts, retry_kind,
  schedule_to_close, start_to_close, heartbeat_timeout,
  scheduled_at,
- idempotency_scope, idempotency_key, trace_id, span_id, metadata, result_expires_at, tags)
-VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, CASE WHEN COALESCE($14, clock_timestamp()) > clock_timestamp() THEN 'scheduled'::"{s}".job_status ELSE 'pending'::"{s}".job_status END, $8, $9, $10, COALESCE(clock_timestamp() + $11::interval, $22), $12, $13, COALESCE($14, clock_timestamp()), $15, $16, $17, $18, $19::jsonb, clock_timestamp() + $20::interval, $21::text[])
+ idempotency_scope, idempotency_key, trace_id, span_id, metadata, result_expires_at, tags,
+ retry_base_seconds, retry_cap_seconds, retry_backoff, retry_jitter)
+VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, CASE WHEN COALESCE($14, clock_timestamp()) > clock_timestamp() THEN 'scheduled'::"{s}".job_status ELSE 'pending'::"{s}".job_status END, $8, $9, $10, COALESCE(clock_timestamp() + $11::interval, $22), $12, $13, COALESCE($14, clock_timestamp()), $15, $16, $17, $18, $19::jsonb, clock_timestamp() + $20::interval, $21::text[], $23, $24, $25, $26)
 ON CONFLICT (idempotency_scope, idempotency_key) WHERE idempotency_key IS NOT NULL
 DO NOTHING
 RETURNING *""",
@@ -1087,7 +1325,10 @@ SELECT count(*) FROM "{s}".jobs
 WHERE actor = $1 AND status IN ('pending', 'scheduled')""",
         enqueue_select_by_key=f"""\
 SELECT * FROM "{s}".jobs WHERE idempotency_scope = $1 AND idempotency_key = $2""",
-        enqueue_notify="SELECT pg_notify($1, '')",
+        # The wake for paths that re-pend a row by UPDATE (admin retry):
+        # the jobs INSERT trigger covers every insert path, so no enqueue
+        # path issues this.
+        wake_notify=WAKE_NOTIFY_SQL,
         enqueue_batch=f"""\
 INSERT INTO "{s}".jobs (
     id, actor, queue, identity_key, fairness_key,
@@ -1095,7 +1336,8 @@ INSERT INTO "{s}".jobs (
     status, priority, attempt, max_attempts, retry_kind,
     schedule_to_close, start_to_close, heartbeat_timeout,
     scheduled_at, metadata, idempotency_scope, idempotency_key, trace_id, span_id,
-    result_expires_at, tags
+    result_expires_at, tags,
+    retry_base_seconds, retry_cap_seconds, retry_backoff, retry_jitter
 )
 SELECT
     t.id,
@@ -1134,52 +1376,74 @@ SELECT
     -- Pg text[][] does not support jagged arrays (empty sub-array () has different
     -- dimensionality from ('a','b')).  We pass tags via jsonb[] transit ($21::jsonb[])
     -- and unpack each element into text[] with jsonb_array_elements_text(…)::text[].
-    (SELECT COALESCE(array_agg(elem::text), '{{}}'::text[]) FROM jsonb_array_elements_text(t.tags_jsonb) AS elem)
+    (SELECT COALESCE(array_agg(elem::text), '{{}}'::text[]) FROM jsonb_array_elements_text(t.tags_jsonb) AS elem),
+    t.retry_base,
+    t.retry_cap,
+    t.retry_backoff,
+    t.retry_jitter
 FROM unnest(
     $1::uuid[], $2::text[], $3::text[], $4::text[], $5::text[],
     $6::jsonb[], $7::int[],
     $8::int[], $9::int[], $10::text[],
     $11::interval[], $12::interval[], $13::interval[],
     $14::timestamptz[], $15::jsonb[], $16::text[], $17::text[], $18::text[], $19::text[],
-    $20::interval[], $21::jsonb[], $22::timestamptz[]
+    $20::interval[], $21::jsonb[], $22::timestamptz[],
+    $23::float[], $24::float[], $25::text[], $26::float[]
 ) AS t(id, actor, queue, identity_key, fairness_key,
     payload, payload_schema_ver,
     priority, max_attempts, retry_kind,
     stc_interval, start_to_close, heartbeat_timeout,
     scheduled_at, metadata, idempotency_scope, idempotency_key, trace_id, span_id,
-    result_ttl, tags_jsonb, stc_raw)
+    result_ttl, tags_jsonb, stc_raw,
+    retry_base, retry_cap, retry_backoff, retry_jitter)
 ON CONFLICT (idempotency_scope, idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING
-RETURNING id, actor, queue, identity_key, status, idempotency_key, idempotency_scope""",
+RETURNING *""",
         enqueue_batch_fetch_existing=f"""\
 SELECT j.* FROM "{s}".jobs j
 JOIN unnest($1::text[], $2::text[]) AS pairs(scope, key)
   ON j.idempotency_scope = pairs.scope AND j.idempotency_key = pairs.key""",
-        enqueue_batch_fetch_by_ids=f"""\
-SELECT * FROM "{s}".jobs WHERE id = ANY($1::uuid[])""",
+        # The singleton_preflight predicate over an ANY-array: the post-abort
+        # lookup the batch tiers' jobs_singleton_uniq conversion uses to name
+        # the colliding actor (see _attribute_singleton_collision).
+        enqueue_batch_fetch_singleton_blockers=f"""\
+SELECT actor FROM "{s}".jobs
+WHERE actor = ANY($1::text[])
+  AND status IN ('pending', 'scheduled', 'running')
+  AND metadata @> '{{"singleton": true}}'::jsonb""",
         # Post-COPY corrective UPDATE for enqueue_batch_fast.  COPY cannot
         # compute/decide anything, so it writes only domain-insensitive
-        # columns (COPY_ENQUEUE_COLUMNS) and this UPDATE — executed inside
-        # the same transaction, before the notify — stamps status,
-        # scheduled_at, schedule_to_close and result_expires_at from the
-        # server clock.  The status CASE is byte-for-byte the INSERT arms'
-        # semantics (enqueue / enqueue_batch above), which is what makes a
-        # NULL ("immediate") scheduled_at safe on this path too.
+        # columns (COPY_ENQUEUE_COLUMNS, status landing as
+        # COPY_ENQUEUE_STATUS) and this UPDATE — executed inside the same
+        # transaction — stamps status, scheduled_at, schedule_to_close and
+        # result_expires_at from the server clock.  The status CASE is
+        # byte-for-byte the INSERT arms' semantics (enqueue / enqueue_batch
+        # above), which is what makes a NULL ("immediate") scheduled_at
+        # safe on this path too.  An UPDATE never fires the INSERT trigger,
+        # so the wake for the rows this statement makes runnable is its
+        # own: one pg_notify on $6 (the wake channel), issued only when at
+        # least one row landed 'pending' — the notify folded into the write
+        # and gated on the row being due.
         enqueue_batch_fast_fixup=f"""\
 WITH params AS (
     SELECT * FROM unnest(
         $1::uuid[], $2::timestamptz[], $3::interval[], $4::timestamptz[], $5::interval[]
     ) AS t(id, scheduled_at, stc_interval, stc_raw, result_ttl)
+),
+fixed AS (
+    UPDATE "{s}".jobs j
+    SET status            = CASE WHEN COALESCE(p.scheduled_at, clock_timestamp()) > clock_timestamp()
+                                 THEN 'scheduled'::"{s}".job_status
+                                 ELSE 'pending'::"{s}".job_status END,
+        scheduled_at      = COALESCE(p.scheduled_at, clock_timestamp()),
+        schedule_to_close = COALESCE(clock_timestamp() + p.stc_interval, p.stc_raw),
+        result_expires_at = CASE WHEN p.result_ttl IS NULL THEN NULL
+                                 ELSE clock_timestamp() + p.result_ttl END
+    FROM params p
+    WHERE j.id = p.id
+    RETURNING j.status
 )
-UPDATE "{s}".jobs j
-SET status            = CASE WHEN COALESCE(p.scheduled_at, clock_timestamp()) > clock_timestamp()
-                             THEN 'scheduled'::"{s}".job_status
-                             ELSE 'pending'::"{s}".job_status END,
-    scheduled_at      = COALESCE(p.scheduled_at, clock_timestamp()),
-    schedule_to_close = COALESCE(clock_timestamp() + p.stc_interval, p.stc_raw),
-    result_expires_at = CASE WHEN p.result_ttl IS NULL THEN NULL
-                             ELSE clock_timestamp() + p.result_ttl END
-FROM params p
-WHERE j.id = p.id""",
+SELECT pg_notify($6, '')
+WHERE EXISTS (SELECT 1 FROM fixed WHERE status = 'pending')""",
         # ── Read SQL templates ─────────────────────────────────────
         get_job=f"""\
 SELECT * FROM "{s}".jobs WHERE id = $1""",
@@ -1189,6 +1453,7 @@ SELECT * FROM "{s}".job_attempts WHERE job_id = $1 ORDER BY attempt""",
         # ── Dispatch SQL templates ─────────────────────────────────
         dispatch_strict_fifo=DISPATCH_STRICT_FIFO_SQL.format(schema=s),
         dispatch_round_robin=DISPATCH_ROUND_ROBIN_SQL.format(schema=s),
+        dispatch_claimable_probe=DISPATCH_CLAIMABLE_PROBE_SQL.format(schema=s),
         # ── Static read SQL ────────────────────────────────────────
         get_events=f"""\
 SELECT id AS event_id, job_id, occurred_at, kind, detail
@@ -1263,23 +1528,17 @@ WHERE l.relation = '"{s}".job_events'::regclass
         # whole table at most once per TTL window per process.
         list_actor_max_pending=f'SELECT actor, max_pending FROM "{s}".actor_config',
         # ── Admin operations ───────────────────────────────────────
-        # Monotonic attempt, per the vendored admin-retry precedent:
-        # Oban's retry_job leaves the counter at its spent value and
-        # raises the ceiling (GREATEST(max_attempts, attempt + 1),
-        # vendor/oban/lib/oban/engines/basic.ex:366-372); River's
-        # JobRetry likewise never touches attempt and bumps max_attempts
-        # only when the budget is exhausted (CASE WHEN attempt =
-        # max_attempts, vendor/river/riverdriver/riverpgxv5/internal/
-        # dbsqlc/river_job.sql:514-516). A reset to 0 made the
-        # re-dispatch revisit the spent epoch's numbers (dispatch claims
-        # at attempt + 1, so a reset row climbs back through every spent
-        # number), and the next attempt-row INSERT collided on
+        # Monotonic attempt: admin-retry must leave the attempt counter at
+        # its spent value and raise the ceiling instead. Resetting to 0
+        # made the re-dispatch revisit the spent epoch's numbers (dispatch
+        # claims at attempt + 1, so a reset row climbs back through every
+        # spent number), and the next attempt-row INSERT collided on
         # job_attempts_pkey (job_id, attempt) — a data defect the
-        # consumer's terminal-write infra family misclassified as
-        # transient, stranding the row running with every reclaim cycle
-        # dying on the same spent key. attempt is therefore NOT assigned
-        # here: the re-run climbs to fresh numbers and every
-        # attempt-row write lands on a fresh key. The ceiling raise
+        # consumer's terminal-write infra family misclassified as transient,
+        # stranding the row running with every reclaim cycle dying on the
+        # same spent key. attempt is therefore NOT assigned here: the re-run
+        # climbs to fresh numbers and every attempt-row write lands on a
+        # fresh key. The ceiling raise
         # opens the budget gates (the reclaim sweep's re-pend branch,
         # the terminal arms) for at least one fresh execution, while a
         # mid-budget re-run keeps its remaining budget (GREATEST is a
@@ -1315,18 +1574,57 @@ WITH retried AS (
     UPDATE "{s}".jobs
     SET status = 'pending',
         max_attempts = LEAST(GREATEST(max_attempts, attempt + 1), 32767),
+        -- An operator hand-back routes by the actor's current
+        -- assignment, not by the label the row was first placed under
+        -- (the routing contract in taskq/backend/_dispatch_sql.py).
+        -- This holds for a row terminalized before it was ever claimed
+        -- too: the retry is the deliberate re-pend, so a job cancelled
+        -- while pending and retried after its actor moved reaches the
+        -- target queue's consumers instead of stranding on the retired
+        -- source queue.
+        assignment_routed = true,
         cancel_phase = 0,
         cancel_requested_at = NULL,
         error_class = NULL,
         error_message = NULL,
         error_traceback = NULL,
         scheduled_at = clock_timestamp(),
+        -- An already-elapsed schedule_to_close is a spent epoch's
+        -- artifact, the same class as finished_at/result: dispatch's own
+        -- claim predicate refuses any row whose deadline has passed
+        -- (_dispatch_sql.py admits only schedule_to_close IS NULL OR
+        -- schedule_to_close > now), so re-pending with the stale deadline
+        -- intact hands back a row no worker can ever claim — the
+        -- operator's Retry reports success and the next deadline-sweep
+        -- tick silently re-fails the job. Clear the deadline only when it
+        -- has already elapsed; a still-future one survives, preserving
+        -- the operator's original budget intent for an in-window retry.
+        -- (NULL <= clock_timestamp() is NULL, so an unset deadline falls
+        -- through to the ELSE and stays unset.)
+        schedule_to_close = CASE
+            WHEN schedule_to_close <= clock_timestamp() THEN NULL
+            ELSE schedule_to_close
+        END,
         finished_at = NULL,
         result = NULL,
         result_size_bytes = NULL,
         result_expires_at = NULL
     WHERE id = $1
-      AND status IN ('failed', 'crashed', 'cancelled')
+      -- An operator re-run is "run this again", so every state a job can
+      -- come to rest in is a valid source, including 'succeeded' (the
+      -- replay path after a bad deploy: the status records that the actor
+      -- returned without raising, never that the result was right) and
+      -- 'abandoned' (a deploy interrupted the job; it did not fail, and
+      -- it is the state most likely to need a manual re-run).
+      --
+      -- 'running' is the one exclusion, and it is a correctness
+      -- constraint rather than a policy choice: re-pending a row while
+      -- an attempt is live races that attempt's terminal write, and the
+      -- job can execute twice concurrently. The pending/scheduled states
+      -- are excluded because the job is already queued to run — there is
+      -- nothing to put back, and re-pending would discard its place in
+      -- the dispatch order and its remaining budget.
+      AND status NOT IN ('running', 'pending', 'scheduled')
       -- The retry must leave the row budget-eligible: the raised ceiling
       -- has to exceed the spent attempt. It always does except at the
       -- smallint bound (attempt = 32767), where raising is impossible --

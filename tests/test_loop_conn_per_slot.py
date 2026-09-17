@@ -23,8 +23,10 @@ handling and Postgres savepoint semantics.
 """
 
 import asyncio
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any
+from uuid import UUID
 
 import asyncpg
 import pytest
@@ -329,12 +331,19 @@ async def test_sibling_failure_does_not_discard_pending_sub_jobs(
                 self.active_jobs = ActiveJobRegistry()
                 self.worker_pool: asyncpg.Pool | None = None
                 self.slot_pool: asyncpg.Pool | None = None
+                # Mirrors WorkerDeps.slot_pool_connection_init: None = the
+                # pool's connections are not known to carry the
+                # registration's declared init hook.
+                self.slot_pool_connection_init: (
+                    Callable[[asyncpg.Connection], Awaitable[None]] | None
+                ) = None
                 self.settings = WorkerSettings.load_from_dict(
                     {"TASKQ_PG_DSN": "postgresql://taskq:taskq@127.0.0.1:1/taskq"}
                 )
                 self.settings.worker_group = "default"
                 self.redis_client: Any | None = None
                 self.progress_buffers: dict[Any, Any] = {}
+                self.disowned_jobs: set[UUID] = set()
 
         deps = _Deps()
         deps.slot_pool = slot_pool
@@ -670,7 +679,7 @@ async def test_concurrent_transactional_slots_each_hold_their_own_di_connection(
 ) -> None:
     """Two concurrent transactional slots whose actors inject the LOOP-scope
     ``asyncpg.Connection`` must each receive the connection their own slot's
-    transaction runs on — never the ONE registered connection (issue #116).
+    transaction runs on — never the ONE registered connection.
 
     The per-slot pool already carries TaskQ's own transactional writes (the
     terminal write, transactional sub-enqueues — pinned above); this pin

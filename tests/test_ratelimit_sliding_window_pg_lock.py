@@ -17,10 +17,10 @@ module pins three properties:
 3. The window stays EXACT under concurrency — the lock serialises the
    racers, and bounding the wait never loosens the limit.
 
-The acquire is TWO-TIER (``acquire_advisory_xact_lock_bounded``, the
-module-local mirror of the enqueue branch's ``taskq._advisory`` helper —
-same name and shape so the integration pass can dedupe the copy with an
-import swap): one ``pg_try_advisory_xact_lock`` statement when
+The acquire is TWO-TIER (``acquire_advisory_xact_lock_bounded``, imported
+from ``taskq._advisory`` — the one helper shared with the enqueue
+branch's bounded locks, so every bounded lock wait has the same
+mechanics): one ``pg_try_advisory_xact_lock`` statement when
 uncontended, a savepoint-scoped server-side bounded blocking acquire
 (``set_config('lock_timeout', ..., true)`` + ``pg_advisory_xact_lock`` +
 restore) when contended, and a client-side ``asyncio.wait_for`` backstop
@@ -248,6 +248,54 @@ class TestSlidingWindowLockBoundedWaitUnit:
         assert entries[0].get("bucket_name") == "sw_lock_unit_log"
         assert entries[0].get("backend") == "postgres"
         assert entries[0].get("lock_timeout_ms") == 250.0
+
+    async def test_settings_lock_timeout_is_honored_by_default_call_shape(self) -> None:
+        """The settings object is the only budget wire under the
+        production call shape: ``SlidingWindow.acquire`` calls
+        ``_acquire_pg_log(self, pg_pool, settings, request_id)`` with NO
+        ``lock_timeout_ms`` kwarg, so the operator-configured budget on
+        ``WorkerSettings.sliding_window_lock_timeout_ms`` must govern the
+        server-side ``lock_timeout`` GUC and the denial's retry hint —
+        not the 5000 ms module default
+        (``DEFAULT_SLIDING_WINDOW_LOCK_TIMEOUT_MS``), which applies only
+        when no settings object is in hand.
+        """
+        sw = _sw("sw_lock_settings_budget")
+        conn = _ContendedFakeConn(try_lock_result=False, blocking_times_out=True)
+        settings = WorkerSettings.load_from_dict(
+            {
+                "pg_dsn": "postgresql://u:p@h/d",
+                "schema_name": "taskq_fake",
+                # A short budget far from the 5000 ms module default, so a
+                # wiring that ignores the knob fails the assertions below
+                # instead of passing by coincidence.
+                "sliding_window_lock_timeout_ms": 150.0,
+            },
+        )
+        start = time.monotonic()
+        decision = await _acquire_pg_log(
+            sw,
+            _FakePgPool(conn),  # type: ignore[arg-type]  # Why: duck-typed pool stand-in
+            settings,
+            new_uuid(),
+            # No lock_timeout_ms override: this is the exact call shape
+            # SlidingWindow.acquire uses in production.
+        )
+        elapsed = time.monotonic() - start
+        assert decision.allowed is False
+        assert decision.retry_after == timedelta(milliseconds=150.0), (
+            "the operator-configured 150ms budget on settings should have "
+            "governed the wait, not the 5000ms module default"
+        )
+        assert conn.set_config_values == ["150ms"], (
+            "the server-side lock_timeout GUC should reflect the "
+            "settings-provided budget, not DEFAULT_SLIDING_WINDOW_LOCK_TIMEOUT_MS"
+        )
+        assert elapsed < 2.0, (
+            f"budget should have been 150ms (from settings) but the wait "
+            f"took {elapsed:.3f}s, consistent with the 5000ms module default "
+            f"still governing"
+        )
 
     async def test_lock_acquired_after_contention_enforces_window(self) -> None:
         """Contended racers queue server-side: once the holder releases
@@ -491,7 +539,7 @@ class TestSlidingWindowLockBoundedWait:
         transaction, so the helper is the level at which two acquires
         share one): the second acquire waits LONGER than the first
         acquire's whole budget and must still succeed."""
-        from taskq.ratelimit._sliding_window_pg import acquire_advisory_xact_lock_bounded
+        from taskq._advisory import acquire_advisory_xact_lock_bounded
 
         schema = module_pg_schema.schema_name
         key_a = f"taskq:{schema}:sw:guc_a_{new_base62()}"

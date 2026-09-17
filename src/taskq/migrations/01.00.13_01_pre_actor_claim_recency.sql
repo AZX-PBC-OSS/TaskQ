@@ -1,0 +1,42 @@
+-- The claim-recency stamp: the durable per-actor signal the dispatch
+-- round's cross-actor tiebreak rotates on. Forward-only; there is no down
+-- migration. To revert, restore from backup. The literal "{schema}" token
+-- is substituted at apply time by the migration runner.
+--
+-- ── Why this column exists ────────────────────────────────────────────
+-- A dispatch round cuts its admitted set at the round's limit over
+-- ``ORDER BY pending_rank, priority DESC, scheduled_at, id``
+-- (backend/_dispatch_sql.py). ``pending_rank`` is a per-actor row number,
+-- so every actor holding due work offers its head job at rank 1, and once
+-- the fleet holds more such actors than the round's limit the tie among
+-- the rank-1 rows falls through to ``priority DESC, scheduled_at, id`` —
+-- a STABLE total order: each round's winners immediately refill their own
+-- rank-1 slot from their own backlog with the same relative key, so the
+-- same prefix of actors wins every round and the rest are never claimed
+-- at all (no cap, no denial, no failure — just pending forever, pinned by
+-- tests/test_dispatch_actor_cohort_rotation.py and
+-- tests/test_fleet_fairness_starvation.py).
+--
+-- No function of the candidate rows alone can break that tie differently
+-- across rounds: the starved actor's head row is static, and the served
+-- actor's refill is indistinguishable from the row it replaces. Rotation
+-- therefore needs durable cross-round state, and this column is it: the
+-- claim stamps every actor it admitted (statement_timestamp of the stamp
+-- statement), and the next round's cut orders equal-priority rank-1 rows
+-- by ``last_claimed_at ASC NULLS FIRST`` — never-claimed actors first,
+-- then least-recently-claimed — which is round-robin over actors within a
+-- priority tier. Priority still dominates the stamp, so an operator's
+-- priority bias keeps its meaning; the stamp only removes the ACCIDENTAL
+-- starvation the stable order produced among peers.
+--
+-- ── Shape ─────────────────────────────────────────────────────────────
+-- Nullable, no default: NULL means "never claimed", which is exactly the
+-- state of every pre-existing row and every freshly registered actor, and
+-- NULLS FIRST puts those actors at the front of their first round. The
+-- ALTER is metadata-only (no table rewrite) on this Postgres generation.
+-- Old-release code never names the column, and every actor_config writer
+-- in the tree writes explicit column lists, so the additive discipline
+-- holds for the rolling-deploy window in both directions that the window
+-- supports.
+ALTER TABLE "{schema}".actor_config
+    ADD COLUMN IF NOT EXISTS last_claimed_at timestamptz;

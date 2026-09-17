@@ -1,0 +1,61 @@
+{% extends "_base.html" %}
+{% set active_page = "batches" %}
+{% from "_partials/table.html" import styled_table, table_header, table_body, table_row %}
+
+{% block title %}Batches — TaskQ Admin{% endblock %}
+
+{% block content %}
+<h2 class="text-xl font-semibold tracking-tight mb-4">Batches</h2>
+
+{% if not batches_installed %}
+<div class="bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 rounded-lg p-3 text-sm text-yellow-700 dark:text-yellow-300">{{ notice_text }}</div>
+{% elif batches %}
+{% call styled_table() %}
+    {{ table_header(["Batch", "Queue", "Status", "Expected Size", "Failures", "Originating Actor", "Finalizer", "Created", "Completed"]) }}
+    {% call table_body() %}
+    {% for b in batches %}
+        {% call table_row() %}
+            <td class="px-4 py-2.5 font-mono text-xs">
+                <a href="{{ base_path }}/jobs/{{ b.id }}" class="text-blue-600 dark:text-blue-400 hover:underline" title="{{ b.id }}">{{ b.id[:8] }}…</a>
+            </td>
+            <td class="px-4 py-2.5 text-sm">{{ b.queue }}</td>
+            <td class="px-4 py-2.5">
+                {% if b.status == 'active' %}
+                <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-300">
+                    <span class="w-1.5 h-1.5 rounded-full bg-blue-500"></span> active
+                </span>
+                {% elif b.status == 'complete' %}
+                <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-300">
+                    <span class="w-1.5 h-1.5 rounded-full bg-green-500"></span> complete
+                </span>
+                {% else %}
+                <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-700 dark:bg-red-900 dark:text-red-300">
+                    <span class="w-1.5 h-1.5 rounded-full bg-red-500"></span> aborted
+                </span>
+                {% endif %}
+            </td>
+            <td class="px-4 py-2.5 text-sm text-slate-500 dark:text-slate-400">{{ b.expected_size }}</td>
+            <td class="px-4 py-2.5 text-sm text-slate-500 dark:text-slate-400">
+                {{ b.consecutive_failures }}{% if b.failure_threshold is not none %} / {{ b.failure_threshold }}{% endif %}
+            </td>
+            <td class="px-4 py-2.5 text-sm">{{ b.originating_actor or '—' }}</td>
+            <td class="px-4 py-2.5 font-mono text-xs">
+                {% if b.finalizer_job_id %}
+                <a href="{{ base_path }}/jobs/{{ b.finalizer_job_id }}" class="text-blue-600 dark:text-blue-400 hover:underline" title="{{ b.finalizer_job_id }}">{{ b.finalizer_job_id[:8] }}…</a>
+                {% else %}—{% endif %}
+            </td>
+            <td class="px-4 py-2.5 text-xs text-slate-500 dark:text-slate-400 whitespace-nowrap">{{ b.created_at }}</td>
+            <td class="px-4 py-2.5 text-xs text-slate-500 dark:text-slate-400 whitespace-nowrap">{{ b.completed_at or '—' }}</td>
+        {% endcall %}
+    {% endfor %}
+    {% endcall %}
+{% endcall %}
+{% if truncated %}
+<p class="text-xs text-slate-500 dark:text-slate-400 mt-2">Showing the {{ page_size }} most recent batches; active batches sort first. Older batches are visible in the batches table directly.</p>
+{% endif %}
+{% else %}
+<div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg p-12 text-center">
+    <p class="text-slate-500 dark:text-slate-400 text-sm">No batches recorded.</p>
+</div>
+{% endif %}
+{% endblock %}

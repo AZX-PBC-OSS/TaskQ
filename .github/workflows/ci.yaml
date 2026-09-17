@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, wave2-integration, perf/production-readiness-sweep]
   pull_request:
-    branches: [main]
+    branches: [main, wave2-integration]
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -136,6 +136,16 @@ jobs:
           python-version: ${{ matrix.python-version }}
           sync-args: ${{ matrix.extras }} --group dev
 
+      # The admin UI's page component (src/taskq/web/static/admin.js) is
+      # tested by driving it under Node (tests/web_admin/test_admin_js_*).
+      # Those tests skip on a machine without Node and FAIL under CI=true,
+      # so this step is what keeps them from becoming silent coverage loss.
+      # The version is pinned rather than trusting whatever the runner image
+      # ships, so the behaviour under test does not move with the image.
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+
       # A leg must fail loudly if it is ever running an interpreter other than
       # the one it advertises. That failure mode is otherwise invisible for as
       # long as the imports happen to resolve, which is what would let it
@@ -144,13 +154,47 @@ jobs:
         run: |
           uv run --no-sync python -c "import sys; want='${{ matrix.python-version }}'; got='.'.join(map(str, sys.version_info[:2])); assert got == want, f'matrix leg {want} is running {got}'"
 
+      # Lane split: this matrix job is the FAST unit lane — the slow-marked
+      # family (the fleet/chaos tier; 43 wall-clock-bound tests that boot the
+      # shared container pair and wait real lease expiries) runs once in the
+      # `slow-suite` job below instead of on every one of this job's 12 legs.
+      # Rerun economics, not coverage loss: the slow family still runs on
+      # every push and PR (its own required lane), and the `coverage` job
+      # still executes the full suite — markers included — because the
+      # 90% gate counts the slow family's lines.
       - name: Run tests (with redis)
         if: matrix.extras == '--all-extras'
-        run: uv run --no-sync pytest -n 2
+        run: uv run --no-sync pytest -n 2 -m "not slow"
 
       - name: Run tests (without redis)
         if: matrix.extras != '--all-extras'
-        run: uv run --no-sync pytest -n 2 -m "not redis"
+        run: uv run --no-sync pytest -n 2 -m "not slow and not redis"
+
+  slow-suite:
+    # The slow-marked family's own lane: the fleet/chaos tier whose tests are
+    # wall-clock-bound (lease expirations, failover windows, subprocess-timed
+    # chaos) and boot the shared Postgres + Dragonfly pair. Split out of the
+    # 12-leg `test` matrix so a slow-tier failure reruns THIS lane only,
+    # instead of re-running the fast matrix twelve times to reach the one
+    # slow test that flaked. Required, never skipped: it runs on every push
+    # and PR exactly like the e2e lane, and the fast lane's `-m "not slow"`
+    # is only sound because this lane runs what it deselects. Ubuntu provides
+    # Docker (testcontainers); one leg on the default interpreter, because
+    # interpreter coverage is the fast matrix's job and the slow tier's value
+    # is behaviour, not runtime parity.
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      # Defaults are exactly this family's environment: --all-extras --group
+      # dev (redis included — the fleet and chaos tests are redis-marked, and
+      # a leg that silently skipped them would be coverage loss wearing a
+      # green checkmark).
+      - uses: ./.github/actions/setup-uv-env
+
+      - name: Run the slow suite
+        run: uv run --no-sync pytest -n 2 -m "slow"
 
   coverage:
     runs-on: ubuntu-latest
@@ -166,6 +210,16 @@ jobs:
 
       - uses: ./.github/actions/setup-uv-env
 
+      # Same reason as the test matrix: the admin.js tests run under Node
+      # and fail rather than skip when it is absent under CI=true.
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+
+      # Deliberately NO mark filter: the coverage gate's 90% floor counts the
+      # slow family's lines, so this job — one leg, not twelve — remains the
+      # one place the whole suite runs in full. The fast/slow lane split above
+      # moves rerun economics, not coverage.
       - name: Run tests with coverage gate
         run: uv run --no-sync pytest -n 2 --cov=taskq --cov-report=term-missing --cov-fail-under=90
 

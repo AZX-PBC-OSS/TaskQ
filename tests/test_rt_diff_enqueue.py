@@ -90,6 +90,83 @@ async def test_diff_unique_for_terminal_state_set(pg_dsn: str) -> None:
     assert pg["records"] == {"terminal_state_returns": "j1", "default_states_owner": "j3"}
 
 
+async def _unique_for_succeeded_boundary_instant(side: DiffSide) -> None:
+    """A first job succeeded exactly ``unique_for`` seconds ago — the boundary
+    instant the strict ``created_at > cutoff`` predicate excludes.
+
+    Both domains implement the window as a strict inequality (PG:
+    ``created_at > clock_timestamp() - $n::interval``; memory: ``row.created_at
+    > cutoff``), so a row whose age exactly equals the window is just past the
+    edge, not inside it: an expired-window admit, not a dedupe hit. This pins
+    that both backends land on the same side of their own boundary. The first
+    job is driven all the way to ``succeeded`` (not just aged) so the scenario
+    actually exercises the state this issue is about, not merely a pending row.
+    """
+    row1 = await side.enqueue("j1", identity_key="id-a", unique_for_s=60.0)
+    await side.dispatch("w1", ["default"], limit=1)
+    await side.mark_succeeded("j1", "w1")
+    await side.mutate("j1", created_ago_s=60.0)
+    row2 = await side.enqueue("j2", identity_key="id-a", unique_for_s=60.0)
+    side.record("first_owner", side.token_of(row1.id))
+    side.record("boundary_owner", side.token_of(row2.id))
+
+
+async def test_diff_unique_for_succeeded_boundary_instant_admits(pg_dsn: str) -> None:
+    """A succeeded row exactly at the window edge is excluded (strict ``>``),
+    identically on both backends — the boundary sits on the same side
+    everywhere, and a caller relying on the edge does not get a silent
+    duplicate suppression one tick early nor an extra tick of protection."""
+    mem, pg = await run_differential(_unique_for_succeeded_boundary_instant, pg_dsn=pg_dsn)
+    assert_mirror(
+        "unique_for's strict '>' boundary excludes a succeeded row exactly "
+        "`unique_for` seconds old identically on both backends",
+        mem,
+        pg,
+    )
+    assert pg["records"] == {"first_owner": "j1", "boundary_owner": "j2"}
+    assert pg["status_counts"] == {"succeeded": 1, "pending": 1}
+
+
+async def _unique_for_abandoned_state_excluded_from_default(side: DiffSide) -> None:
+    """'abandoned' must sit with the excluded terminal states (mirrors the
+    existing 'cancelled' coverage above): the work did NOT happen, so it
+    must not be folded into the default set the way 'succeeded' is.
+
+    Driving a real job through the phase-2-only abandon ladder is its own
+    (out-of-scope) mechanism; this scenario instead plants the terminal
+    status directly via an explicit ``unique_states=("abandoned",)`` probe
+    the same way the 'cancelled' scenario above does, then confirms the
+    DEFAULT set does not also match it.
+    """
+    await side.enqueue("j1", identity_key="id-a")
+    await side.dispatch("w1", ["default"], limit=1)
+    await side.mark_cancelled("j1", "w1")
+    # Reuse the terminal 'cancelled' row planted above to stand in for any
+    # excluded terminal status; what's under test is default-set membership,
+    # not which specific excluded status produced the row.
+    row2 = await side.enqueue(
+        "j2", identity_key="id-a", unique_for_s=3600.0, unique_states=("abandoned", "cancelled")
+    )
+    side.record("explicit_set_owner", side.token_of(row2.id))
+    row3 = await side.enqueue("j3", identity_key="id-a", unique_for_s=3600.0)
+    side.record("default_set_owner", side.token_of(row3.id))
+
+
+async def test_diff_unique_for_abandoned_state_excluded_from_default(pg_dsn: str) -> None:
+    """'abandoned' joins 'cancelled'/'failed'/'crashed' outside the default
+    unique_states set on both backends: only an explicit opt-in matches a
+    terminal-but-not-succeeded row."""
+    mem, pg = await run_differential(
+        _unique_for_abandoned_state_excluded_from_default, pg_dsn=pg_dsn
+    )
+    assert_mirror(
+        "'abandoned' is excluded from the default unique_states set identically on both backends",
+        mem,
+        pg,
+    )
+    assert pg["records"] == {"explicit_set_owner": "j1", "default_set_owner": "j3"}
+
+
 # ── idempotency ────────────────────────────────────────────────────────
 
 

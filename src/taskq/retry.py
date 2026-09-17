@@ -4,12 +4,14 @@ consumer-loop adapter wiring.
 The data-model layer (RetryPolicy, Retry, Fail, RetryDecision,
 JobRetryState, compute_backoff, RetryClassifier) is pure: no I/O, no
 clock reads, no backend imports. The adapter layer (OnRetryExhausted,
-ActorConfigLike, decide_after_failure, invoke_on_retry_exhausted,
+OnSuccess, OnCancel, ActorConfigLike, decide_after_failure,
+invoke_on_retry_exhausted, invoke_on_success, invoke_on_cancel,
 safe_mark_failed_or_retry) wires the classifier to the consumer loop
 and is permitted backend imports
 """
 
 import asyncio
+import hashlib
 import inspect
 import random
 import secrets
@@ -19,10 +21,23 @@ from typing import Final, Literal, NamedTuple, Protocol, Self
 from uuid import UUID
 
 import structlog
-from pydantic import BaseModel, ConfigDict, ValidationError, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
 from taskq.backend._protocol import Backend, ErrorInfo, JobId, JobRow, RetryKind
-from taskq.constants import DEFAULT_MAX_RETRY_BACKOFF, MIN_DEFERRAL_INTERVAL
+from taskq.constants import (
+    DEFAULT_MAX_RETRY_BACKOFF,
+    MAX_ATTEMPTS_SMALLINT_CEILING,
+    MAX_ENQUEUABLE_MAX_ATTEMPTS,
+    MIN_DEFERRAL_INTERVAL,
+    check_max_attempts_domain,
+)
 from taskq.exceptions import (
     PayloadValidationError,
     ResultTooLarge,
@@ -32,9 +47,11 @@ from taskq.exceptions import (
 
 __all__ = [
     "MAX_ATTEMPTS_SMALLINT_CEILING",
+    "MAX_ENQUEUABLE_MAX_ATTEMPTS",
     "ActorConfigLike",
     "Fail",
     "JobRetryState",
+    "OnCancel",
     "OnRetryExhausted",
     "OnSuccess",
     "Retry",
@@ -47,31 +64,12 @@ __all__ = [
     "apply_jitter",
     "compute_backoff",
     "decide_after_failure",
+    "invoke_on_cancel",
     "invoke_on_retry_exhausted",
     "invoke_on_success",
     "safe_mark_failed_or_retry",
     "time_budget_as_interval",
 ]
-
-MAX_ATTEMPTS_SMALLINT_CEILING: Final[int] = 32767
-"""The ``jobs.max_attempts`` column's smallint domain ceiling.
-
-The column is ``smallint`` (migrations/01.00.00_01_pre_initial.sql), so
-32767 is the largest value any row can hold. Shared here because the
-validation below, the in-memory mirror and any future writer must not
-drift on what the ceiling is."""
-
-MAX_ENQUEUABLE_MAX_ATTEMPTS: Final[int] = MAX_ATTEMPTS_SMALLINT_CEILING - 1
-"""Largest ``RetryPolicy.max_attempts`` a fresh policy may carry.
-
-One below the column ceiling, retained as a defensive margin: a row
-parked at exactly 32767 has no headroom for any future statement that
-needs to add one to a max_attempts-derived value, so the policy guard
-refuses the value the way it refuses values past the column entirely
-(:func:`RetryPolicy._validate_max_attempts`). Rows can still legally
-REACH the ceiling — earlier releases' snooze arms parked a snoozed
-32766-job there — which is why :func:`decide_after_failure` clamps
-row-stored values back into this bound before reconstructing a policy."""
 
 
 class RetryPolicy(BaseModel):
@@ -90,20 +88,7 @@ class RetryPolicy(BaseModel):
     @field_validator("max_attempts")
     @classmethod
     def _validate_max_attempts(cls, v: int) -> int:
-        if v < 1:
-            raise ValueError("max_attempts must be >= 1")
-        # Why: max_attempts lands in the smallint jobs.max_attempts column
-        # (migrations/01.00.00_01_pre_initial.sql), and the policy layer is
-        # the boundary that refuses values the column cannot hold — the
-        # same treatment the other client-accepted smallint (priority)
-        # gets at client/_args.py and actor.py. One of defensive headroom
-        # is retained (see MAX_ENQUEUABLE_MAX_ATTEMPTS).
-        if v > MAX_ENQUEUABLE_MAX_ATTEMPTS:
-            raise ValueError(
-                f"max_attempts must fit the smallint jobs.max_attempts column "
-                f"with one of defensive headroom (<= {MAX_ENQUEUABLE_MAX_ATTEMPTS}), "
-                f"got {v}"
-            )
+        check_max_attempts_domain(v)
         return v
 
     @model_validator(mode="after")
@@ -175,16 +160,100 @@ class JobRetryState(NamedTuple):
 _production_rng = random.Random(secrets.randbits(128))  # noqa: S311  Why: random.Random is for timing jitter, not cryptography; seeded via secrets.randbits(128) by design
 
 # Why: an ``indefinite`` policy has no attempt ceiling, so ``attempt`` is
-# unbounded.  ``base_s * 2 ** (attempt - 1)`` builds an exact Python int and
-# raises OverflowError as soon as it stops being convertible to float
-# (attempt >= 1025), which would escape compute_backoff → classify →
-# _dispatch_exception and crash the failure path instead of retrying.
-# Clamping the exponent cannot change the curve: 2.0 ** 1023 is the largest
-# power of two a float holds, and timedelta's microsecond resolution puts the
-# smallest positive ``base`` at 1e-6 s, so ``base * 2 ** 1023 >= 8.9e301``
-# already dwarfs every timedelta-representable ``cap`` — min(cap_s, ...)
-# saturates at cap_s either way (and base == 0 yields 0 either way).
-_MAX_BACKOFF_EXPONENT: Final[int] = 1023
+# unbounded and the exponential arm's exponent must be clamped somewhere
+# (the pre-clamp shape, ``base_s * 2 ** (attempt - 1)`` over Python ints,
+# built an exact int that raised OverflowError at float conversion once
+# attempt >= 1025 — escaping compute_backoff → classify →
+# _dispatch_exception and crashing the failure path instead of retrying).
+# The bound is 67 because it is the smallest clamp that cannot change any
+# timedelta-representable curve AND cannot overflow on either evaluator:
+#
+# * Curve preservation: timedelta's microsecond resolution puts the
+#   smallest positive ``base`` at 1e-6 s and the largest representable
+#   ``cap`` at ~8.6e13 s (999999999 days), so every representable
+#   (base, cap) curve reaches its cap by exponent 66 at the latest
+#   (1e-6 * 2**67 >= 1.4e14 >= 8.6e13) — min(cap_s, ...) saturates at
+#   cap_s with or without the clamp, and base == 0 yields 0 either way.
+# * Overflow: the SQL twin (_RECLAIM_RAW_BACKOFF_SQL) evaluates
+#   ``base * power(2.0, e)`` in float8, and Postgres RAISES
+#   "value out of range: overflow" (SQLSTATE 22003 — a data error the
+#   leader's transient classification deliberately excludes) where this
+#   module's float multiply saturates to inf and lets min() land on the
+#   cap.  A clamp at the float ceiling (the historical 1023) kept
+#   power() itself in range but let the multiply overflow for any
+#   base > ~2 once the attempt passed ~1021 — a non-transient error in
+#   the leader sweep's failure path AND a parity break against this
+#   twin.  base * 2**67 <= ~1.3e34 for any timedelta-representable base,
+#   ~274 orders of magnitude below the float8 ceiling (~1.8e308).
+_MAX_BACKOFF_EXPONENT: Final[int] = 67
+
+#: The denominator of the deterministic reclaim-jitter fraction: 2**32, the
+#: count of values the fraction's 8-hex-digit hash prefix can take.  A float
+#: literal so the division in :func:`_reclaim_jitter_fraction` is an IEEE-754
+#: float8 true-division — the same operation the SQL twin's
+#: ``::float8 / 4294967296.0::float8`` performs — and both are correctly
+#: rounded, so the two sides agree bit for bit.
+_RECLAIM_JITTER_MODULUS: Final[float] = 4294967296.0
+
+
+def _reclaim_jitter_fraction(job_id: UUID, attempt: int) -> float:
+    """The reclaim curve's jitter fraction for one (job, attempt): a
+    deterministic value in [0, 1) derived from the row's own identity.
+
+    ``md5('<job_id>:<attempt>')`` → first 8 hex digits → uint32 → / 2**32.
+    The SQL twin ``_RECLAIM_JITTER_FRACTION_SQL`` (see
+    ``taskq.backend._sweeps``) computes the identical value in the database:
+    same md5 over the same ASCII text (``j.id::text`` is the lowercase
+    dashed uuid form ``str(job_id)`` produces, ``j.attempt::text`` the plain
+    decimal — both pure ASCII, so the database encoding cannot change the
+    hashed bytes), same uint32 interpretation of the prefix, same float8
+    division.  The leader's sweep, a partitioned worker's isolate_self, and
+    the in-memory mirror therefore all draw the SAME fraction for the same
+    row instead of three independent ``random()`` draws.
+
+    Why derived rather than random: a row's reclaim delay is computed by
+    more than one statement (isolate_self and the leader sweep can each
+    transition the same row within one outage window) and is replayed by
+    every later sweep of the same row.  A per-statement ``random()`` makes
+    those paths disagree about one row's hand-back instant and makes a
+    replay stamp a different instant than the first pass; deriving the draw
+    from the row makes reclaim replay-idempotent — same row, same delay,
+    every path.  The fleet spread random jitter buys is preserved:
+    distinct ids hash to distinct fractions, so a mass-expired cohort
+    still arrives across the jitter band instead of at one synchronised
+    instant.  (A per-evaluation random draw needs exactly one process ever
+    to compute a given row's retry delay; the row-derived hash here is the
+    dual-statement, dual-implementation parity requirement, not a
+    different spreading goal.)
+
+    md5 is a hash here, not a cipher: the input is a row identity, and
+    32 bits of it become scheduling noise.
+    """
+    digest = hashlib.md5(f"{job_id}:{attempt}".encode(), usedforsecurity=False).hexdigest()
+    return int(digest[:8], 16) / _RECLAIM_JITTER_MODULUS
+
+
+def _raw_backoff_seconds(
+    base_s: float,
+    cap_s: float,
+    backoff: Literal["exponential", "linear", "fixed"],
+    attempt: int,
+) -> float:
+    """The unjittered curve value for *attempt* — the single Python
+    implementation of ``_RECLAIM_RAW_BACKOFF_SQL``'s three-way branch,
+    shared by :func:`compute_backoff` and :func:`_compute_reclaim_backoff`.
+
+    The exponent floor ``max(attempt - 1, 0)`` mirrors the SQL fragment's
+    ``GREATEST(j.attempt - 1, 0)``: the SQL cannot raise on a
+    direct-construction ``attempt = 0`` row, so the floor lives here rather
+    than at a call site.  On :func:`compute_backoff`'s domain
+    (``attempt >= 1``, enforced by its own guard) the floor is the identity.
+    """
+    if backoff == "exponential":
+        return min(cap_s, base_s * 2.0 ** min(max(attempt - 1, 0), _MAX_BACKOFF_EXPONENT))
+    if backoff == "linear":
+        return min(cap_s, base_s * attempt)
+    return base_s
 
 
 def _jittered_seconds(raw_s: float, jitter: float, source: random.Random) -> float:
@@ -194,6 +263,42 @@ def _jittered_seconds(raw_s: float, jitter: float, source: random.Random) -> flo
     ``raw * source.uniform(1 - jitter, 1 + jitter)``, floored at zero.
     """
     return max(0.0, raw_s * source.uniform(1.0 - jitter, 1.0 + jitter))
+
+
+def _capped_jitter_band(raw_s: float, cap_s: float, jitter: float) -> tuple[float, float]:
+    """The jitter band ``[raw·(1-j), raw·(1+j)]`` fitted under *cap_s*.
+
+    The cap bounds the BAND, not the drawn value. Clipping the drawn value
+    (``min(cap, raw·U(1-j, 1+j))``) collapses the upper half of a saturated
+    row's band onto ``cap`` exactly, so about half of any cohort at the cap
+    — the default exponential policy from attempt 11, every ``fixed`` or
+    ``linear`` policy whose base meets the cap, every reclaimed cohort at
+    the ceiling — comes due at the same instant: the thundering herd
+    jitter exists to prevent, on the retries most likely to be fleet-wide.
+    Fitting the band first (``raw`` clamped to the cap, then the band's
+    upper edge clamped to it) keeps the draw uniform over what remains —
+    ``[cap·(1-j), cap]`` for a saturated row — with the documented bounds
+    ``0 ≤ delay ≤ cap`` intact and ``jitter=0`` still the identity.
+
+    Shared by :func:`compute_backoff` (RNG draw) and
+    :func:`_compute_reclaim_backoff` (row-derived fraction); the SQL twin
+    ``_RECLAIM_DELAY_SQL`` evaluates the same expressions in the same
+    operand order, so the reclaim delays agree bit for bit.
+    """
+    capped_raw = min(cap_s, raw_s)
+    lower = capped_raw * (1.0 - jitter)
+    upper = min(capped_raw * (1.0 + jitter), cap_s)
+    return lower, upper
+
+
+def _draw_in_band(lower: float, upper: float, fraction: float, cap_s: float) -> float:
+    """``lower + (upper - lower)·fraction``, ``fraction`` in ``[0, 1)``.
+
+    The band already lies inside ``[0, cap]``; the closing ``min`` only
+    absorbs float rounding at the top edge and cannot pile draws onto the
+    cap the way the old value-clamp did. Operand order is the SQL twin's.
+    """
+    return min(cap_s, lower + (upper - lower) * fraction)
 
 
 def apply_jitter(
@@ -233,17 +338,19 @@ def compute_backoff(
 
     formula: multiplicative-symmetric jitter —
       delay = raw * rng.uniform(1 - jitter, 1 + jitter)
+    with the band fitted under the cap before the draw (see
+    :func:`_capped_jitter_band`), so a saturated row spreads over
+    ``[cap·(1-j), cap]`` instead of stacking on the cap.
     This is NOT Full Jitter (uniform(0, raw)) because Full Jitter
     collapses toward zero on attempt 1, causing thundering-herd
     retries. See Marc Brooker, "Exponential Backoff And Jitter",
-    AWS Architecture Blog; and AWS .NET SDK Issue #4341.
+    AWS Architecture Blog, and the AWS SDKs' published jitter debate.
 
     ``max_retry_backoff`` is the global ceiling applied *after*
     ``policy.cap`` — i.e. ``effective_cap = min(policy.cap, max_retry_backoff)``.
-    This matches Dramatiq's ``min(max_backoff, DEFAULT_MAX_BACKOFF)`` pattern
-    and prevents a
-    misconfigured per-actor ``RetryPolicy(cap=timedelta(days=365))`` from
-    stranding jobs for a year with no operator visibility.
+    The global cap prevents a misconfigured per-actor
+    ``RetryPolicy(cap=timedelta(days=365))`` from stranding jobs for a year
+    with no operator visibility — a defensive layer beyond the policy's own cap.
     Callers that hold ``WorkerSettings`` should pass
     ``settings.max_retry_backoff``; the default 24 h matches
     ``WorkerSettings.max_retry_backoff``.
@@ -257,15 +364,50 @@ def compute_backoff(
     # Apply the global ceiling before using cap_s anywhere else.
     cap_s = min(policy.cap.total_seconds(), max_retry_backoff.total_seconds())
 
-    if policy.backoff == "exponential":
-        raw = min(cap_s, base_s * 2.0 ** min(attempt - 1, _MAX_BACKOFF_EXPONENT))
-    elif policy.backoff == "linear":
-        raw = min(cap_s, base_s * attempt)
-    else:
-        raw = base_s
-
-    delay = min(cap_s, _jittered_seconds(raw, policy.jitter, source))
+    raw = _raw_backoff_seconds(base_s, cap_s, policy.backoff, attempt)
+    lower, upper = _capped_jitter_band(raw, cap_s, policy.jitter)
+    # One draw, as uniform(a, b) is a + (b - a) * random(): identical RNG
+    # consumption to the symmetric multiplication below the cap.
+    delay = _draw_in_band(lower, upper, source.random(), cap_s)
     return timedelta(seconds=delay)
+
+
+def _compute_reclaim_backoff(  # pyright: ignore[reportUnusedFunction]  # Why: consumed cross-module by taskq.testing._sweeps (the in-memory reclaim twin) and the parity pin; pyright's unused-function analysis for private names does not follow cross-module references.
+    policy: RetryPolicy,
+    attempt: int,
+    *,
+    job_id: UUID,
+    max_retry_backoff: timedelta = DEFAULT_MAX_RETRY_BACKOFF,
+) -> timedelta:
+    """The crash/heartbeat reclaim hand-back delay: :func:`compute_backoff`'s
+    exact curve, jittered by the deterministic per-(job, attempt)
+    :func:`_reclaim_jitter_fraction` instead of an RNG draw.
+
+    The Python twin of ``_RECLAIM_DELAY_SQL`` (``taskq.backend._sweeps``):
+    same three-way raw branch (shared through :func:`_raw_backoff_seconds`),
+    same ``min(policy.cap, max_retry_backoff)`` effective ceiling, same
+    band fitted under that ceiling (:func:`_capped_jitter_band`) and the
+    same ``lower + (upper - lower) * f`` draw evaluated in the SQL's operand
+    order, so the two agree bit for bit — pinned by
+    ``tests/test_reclaim_backoff_policy_parity.py``.  The jitter is derived
+    from the row, never drawn: the leader's sweep and a partitioned worker's
+    isolate_self can each transition the same row within one outage window,
+    and both must stamp the same delay (replay idempotence — see
+    :func:`_reclaim_jitter_fraction` for the full rationale).
+
+    Unlike :func:`compute_backoff` this never raises on ``attempt < 1``: the
+    sweep must not crash on a direct-construction row — the SQL floors the
+    exponent (``GREATEST(j.attempt - 1, 0)``, mirrored by
+    :func:`_raw_backoff_seconds`) and hashes the row's raw stamped attempt
+    (``j.attempt::text``), so this function does the same rather than
+    rejecting the input.
+    """
+    fraction = _reclaim_jitter_fraction(job_id, attempt)
+    base_s = policy.base.total_seconds()
+    cap_s = min(policy.cap.total_seconds(), max_retry_backoff.total_seconds())
+    raw = _raw_backoff_seconds(base_s, cap_s, policy.backoff, attempt)
+    lower, upper = _capped_jitter_band(raw, cap_s, policy.jitter)
+    return timedelta(seconds=_draw_in_band(lower, upper, fraction, cap_s))
 
 
 class RetryOverride(BaseModel):
@@ -281,12 +423,38 @@ class RetryOverride(BaseModel):
     duration instead of the policy's computed exponential/linear
     backoff, while ``max_retry_backoff`` still applies as a safety
     ceiling so a malicious or malformed header cannot strand a job.
+
+    A ``delay`` schedules the next attempt; it does not extend the job's
+    budget, in either dimension. It does not spare the attempt — the
+    retry still counts against ``max_attempts`` unless ``kind`` is also
+    set, or the actor raises ``RetryAfter(consume_budget=False)``. And it
+    does not move the job's ``schedule_to_close``: an upstream under
+    pressure will happily hand back an hour, and if the delay puts the
+    next attempt past that deadline the deadline sweep fails the job
+    terminally before any worker looks at it. ``max_retry_backoff`` does
+    not protect against this — the two bounds mean different things, one
+    stopping a single absurd delay and the other stating how long the
+    caller still wants the result — and where they disagree
+    schedule-to-close wins.
     """
 
     model_config = ConfigDict(frozen=True)
 
     kind: RetryKind | None = None
-    delay: timedelta | None = None
+    delay: timedelta | None = Field(
+        default=None,
+        description=(
+            "When to retry, not whether the attempt is charged: a delay alone "
+            "still spends one attempt of the job's budget, so a classifier "
+            "returning only a delay against a sustained outage exhausts "
+            "max_attempts on schedule. Pair it with kind='indefinite' to keep "
+            "retrying, or raise RetryAfter(delay, consume_budget=False) from "
+            "the actor body for a known-duration wait that spends no budget. "
+            "Clamped by max_retry_backoff, but NOT reconciled with "
+            "schedule_to_close — a delay landing past that deadline fails "
+            "the job terminally through the deadline path."
+        ),
+    )
 
     @field_validator("delay")
     @classmethod
@@ -460,6 +628,20 @@ that need a typed result re-validate via the actor's
 """
 
 
+type OnCancel = Callable[[JobRow], Awaitable[None] | None]
+"""Hook fired when a job ends cancelled. Receives the terminal ``JobRow``.
+
+No result argument, unlike :data:`OnSuccess`: an actor that abandoned
+its unit of work produced none. The row is the terminal one, so a hook
+reading ``status`` sees ``cancelled``.
+
+The hook fires only for a job that reached a worker and was cancelled
+while running. A job cancelled while still ``pending`` or ``scheduled``
+never enters a worker, so no hook of any kind can run for it — that
+bookkeeping stays with whoever issued the cancel.
+"""
+
+
 class ActorConfigLike(Protocol):
     """Structural shape the adapter needs from the per-actor registration
     record. The eventual concrete ActorConfig class will
@@ -490,6 +672,12 @@ class ActorConfigLike(Protocol):
 
     @property
     def on_success_timeout(self) -> float: ...  # seconds; default 3.0
+
+    @property
+    def on_cancel(self) -> OnCancel | None: ...
+
+    @property
+    def on_cancel_timeout(self) -> float: ...  # seconds; default 3.0
 
 
 def decide_after_failure(
@@ -605,6 +793,65 @@ def decide_after_failure(
     )
 
 
+async def _invoke_hook(
+    call: Callable[[], Awaitable[None] | None],
+    job_row: JobRow,
+    timeout: float,  # noqa: ASYNC109  Why: parameter name matches the hook contracts; asyncio.wait_for requires a timeout value, not asyncio.timeout() context manager
+    *,
+    name: str,
+    log: structlog.stdlib.BoundLogger | None,
+) -> None:
+    """Run one actor-supplied lifecycle hook, best-effort and bounded.
+
+    Every hook in this module shares one contract: user code runs beside
+    a terminal write that has already been decided, so neither a raising
+    hook nor a hanging one may change what the job does. Failures are
+    logged at WARNING under a name-keyed event and never propagate; a
+    hook that returns an awaitable is bounded by *timeout*.
+
+    *call* is a thunk rather than the hook plus its arguments because the
+    argument lists differ per hook and a signature union would erase
+    them; the thunk keeps each caller's types exact.
+    """
+    logger: structlog.stdlib.BoundLogger = (
+        log if log is not None else structlog.get_logger("taskq.retry")
+    )
+
+    try:
+        hook_result = call()
+    except Exception as exc:
+        logger.warning(
+            f"{name.replace('_', '-')}-hook-failed",
+            job_id=str(job_row.id),
+            actor=job_row.actor,
+            hook=name,
+            error=repr(exc),
+        )
+        return
+
+    if hook_result is None or not inspect.isawaitable(hook_result):
+        return
+
+    try:
+        await asyncio.wait_for(hook_result, timeout=timeout)
+    except TimeoutError:
+        logger.warning(
+            f"{name.replace('_', '-')}-hook-timeout",
+            job_id=str(job_row.id),
+            actor=job_row.actor,
+            hook=name,
+            timeout_seconds=timeout,
+        )
+    except Exception as exc:
+        logger.warning(
+            f"{name.replace('_', '-')}-hook-failed",
+            job_id=str(job_row.id),
+            actor=job_row.actor,
+            hook=name,
+            error=repr(exc),
+        )
+
+
 async def invoke_on_retry_exhausted(
     hook: OnRetryExhausted | None,
     job_row: JobRow,
@@ -613,7 +860,7 @@ async def invoke_on_retry_exhausted(
     *,
     log: structlog.stdlib.BoundLogger | None = None,
 ) -> None:
-    """Invoke the on_retry_exhausted hook with timeout guard .
+    """Invoke the on_retry_exhausted hook, best-effort and timeout-bounded.
 
     If the hook is None, returns immediately. If the hook returns a
     coroutine, wraps the await in asyncio.wait_for with the given
@@ -622,42 +869,13 @@ async def invoke_on_retry_exhausted(
     """
     if hook is None:
         return
-
-    logger: structlog.stdlib.BoundLogger = (
-        log if log is not None else structlog.get_logger("taskq.retry")
+    await _invoke_hook(
+        lambda: hook(job_row, exception),
+        job_row,
+        timeout,
+        name="on_retry_exhausted",
+        log=log,
     )
-
-    try:
-        result = hook(job_row, exception)
-    except Exception as exc:
-        logger.warning(
-            "on-retry-exhausted-hook-failed",
-            job_id=str(job_row.id),
-            actor=job_row.actor,
-            hook="on_retry_exhausted",
-            error=repr(exc),
-        )
-        return
-
-    if result is not None and inspect.isawaitable(result):
-        try:
-            await asyncio.wait_for(result, timeout=timeout)
-        except TimeoutError:
-            logger.warning(
-                "on-retry-exhausted-hook-timeout",
-                job_id=str(job_row.id),
-                actor=job_row.actor,
-                hook="on_retry_exhausted",
-                timeout_seconds=timeout,
-            )
-        except Exception as exc:
-            logger.warning(
-                "on-retry-exhausted-hook-failed",
-                job_id=str(job_row.id),
-                actor=job_row.actor,
-                hook="on_retry_exhausted",
-                error=repr(exc),
-            )
 
 
 async def invoke_on_success(
@@ -668,7 +886,7 @@ async def invoke_on_success(
     *,
     log: structlog.stdlib.BoundLogger | None = None,
 ) -> None:
-    """Invoke the on_success hook with timeout guard.
+    """Invoke the on_success hook, best-effort and timeout-bounded.
 
     If the hook is None, returns immediately. If the hook returns an
     awaitable, wraps the await in asyncio.wait_for with the given
@@ -677,42 +895,33 @@ async def invoke_on_success(
     """
     if hook is None:
         return
-
-    logger: structlog.stdlib.BoundLogger = (
-        log if log is not None else structlog.get_logger("taskq.retry")
+    await _invoke_hook(
+        lambda: hook(job_row, result),
+        job_row,
+        timeout,
+        name="on_success",
+        log=log,
     )
 
-    try:
-        hook_result = hook(job_row, result)
-    except Exception as exc:
-        logger.warning(
-            "on-success-hook-failed",
-            job_id=str(job_row.id),
-            actor=job_row.actor,
-            hook="on_success",
-            error=repr(exc),
-        )
-        return
 
-    if hook_result is not None and inspect.isawaitable(hook_result):
-        try:
-            await asyncio.wait_for(hook_result, timeout=timeout)
-        except TimeoutError:
-            logger.warning(
-                "on-success-hook-timeout",
-                job_id=str(job_row.id),
-                actor=job_row.actor,
-                hook="on_success",
-                timeout_seconds=timeout,
-            )
-        except Exception as exc:
-            logger.warning(
-                "on-success-hook-failed",
-                job_id=str(job_row.id),
-                actor=job_row.actor,
-                hook="on_success",
-                error=repr(exc),
-            )
+async def invoke_on_cancel(
+    hook: OnCancel | None,
+    job_row: JobRow,
+    timeout: float,  # noqa: ASYNC109  Why: parameter name matches the on_cancel contract; asyncio.wait_for requires a timeout value, not asyncio.timeout() context manager
+    *,
+    log: structlog.stdlib.BoundLogger | None = None,
+) -> None:
+    """Invoke the on_cancel hook, best-effort and timeout-bounded.
+
+    Runs beside the terminal write that moved the job to ``cancelled``,
+    so it can neither block that write nor undo it: work cut short still
+    has to release whatever it held, and a hook that could raise into
+    this path would leave the row ``running`` behind a lease only the
+    reclaim sweep clears.
+    """
+    if hook is None:
+        return
+    await _invoke_hook(lambda: hook(job_row), job_row, timeout, name="on_cancel", log=log)
 
 
 async def safe_mark_failed_or_retry(

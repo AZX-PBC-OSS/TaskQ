@@ -17,7 +17,8 @@ Covers:
 """
 
 import asyncio
-from collections.abc import AsyncIterator, Coroutine, Generator
+from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Generator
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any
 from unittest.mock import MagicMock
@@ -32,14 +33,13 @@ import taskq.obs as obs_mod
 from taskq._di.registry import ProviderRegistry
 from taskq._di.scope import Scope
 from taskq._di.scopes import (
-    LoopScope,
-    ProcessScope,
-    ThreadScope,
+    build_actor_scope,
 )
 from taskq._ids import new_uuid
 from taskq.actor import ActorRef
 from taskq.backend._protocol import JobRow
 from taskq.client._enqueuer import SubJobEnqueuer
+from taskq.connections import with_connection_init
 from taskq.context import JobContext
 from taskq.exceptions import Snooze
 from taskq.retry import RetryPolicy
@@ -50,9 +50,9 @@ from taskq.testing.jobs import make_job_row
 from taskq.worker.cancel import ActiveJobRegistry
 from taskq.worker.dispatch import (
     SlotPoolAcquireError,
-    build_actor_scope,
     dispatch_one_job,
 )
+from tests._di_scopes import bootstrap_scopes, make_scopes
 
 _NOW = datetime(2026, 1, 1, tzinfo=UTC)
 _WORKER_ID = new_uuid()
@@ -82,6 +82,12 @@ class _FakeWorkerDeps:
         self.active_jobs = ActiveJobRegistry()
         self.worker_pool: asyncpg.Pool | None = None
         self.slot_pool: asyncpg.Pool | None = None
+        # Mirrors WorkerDeps.slot_pool_connection_init: None = this pool's
+        # connections are not known to carry the registration's hook (the
+        # injected-pool shape every slot-pool test in this file drives).
+        self.slot_pool_connection_init: Callable[[asyncpg.Connection], Awaitable[None]] | None = (
+            None
+        )
         # Why load_from_dict, not WorkerSettings(): the bare constructor
         # skips post_load, leaving every field None — including the ones
         # the consumer reads on the success path (result_max_bytes).
@@ -91,76 +97,11 @@ class _FakeWorkerDeps:
         self.settings.worker_group = "default"
         self.redis_client: Any | None = None
         self.progress_buffers: dict[Any, Any] = {}
+        self.disowned_jobs: set[UUID] = set()
 
 
 def _as_deps(fd: _FakeWorkerDeps) -> Any:
     return fd
-
-
-def _make_scopes(
-    registry: ProviderRegistry,
-) -> tuple[ProcessScope, ThreadScope, LoopScope]:
-    scope_containers: dict[Scope, Any] = {}
-
-    def _resolver(func: object) -> Any:
-        async def _resolve() -> dict[str, object]:
-            from taskq._di.solver import solve_dependencies
-
-            return await solve_dependencies(
-                func=func,
-                registry=registry,
-                scope_containers=scope_containers,
-            )
-
-        return _resolve()
-
-    process_scope = ProcessScope(resolver=_resolver)
-    thread_scope = ThreadScope(resolver=_resolver)
-    loop_scope = LoopScope(resolver=_resolver)
-
-    scope_containers = {
-        Scope.PROCESS: process_scope,
-        Scope.THREAD: thread_scope,
-        Scope.LOOP: loop_scope,
-    }
-
-    def _resolver_full(func: object) -> Any:
-        async def _resolve() -> dict[str, object]:
-            from taskq._di.solver import solve_dependencies
-
-            return await solve_dependencies(
-                func=func,
-                registry=registry,
-                scope_containers=scope_containers,
-            )
-
-        return _resolve()
-
-    process_scope._resolver = _resolver_full  # pyright: ignore[reportPrivateUsage]  # Why: test helper mirrors production make_resolver pattern
-    thread_scope._resolver = _resolver_full  # pyright: ignore[reportPrivateUsage]  # Why: same pattern — updates resolver closure to see full scope_containers dict
-    loop_scope._resolver = _resolver_full  # pyright: ignore[reportPrivateUsage]  # Why: same pattern — updates resolver closure to see full scope_containers dict
-
-    return process_scope, thread_scope, loop_scope
-
-
-async def _bootstrap_scopes(
-    registry: ProviderRegistry,
-    process_scope: ProcessScope,
-    thread_scope: ThreadScope,
-    loop_scope: LoopScope,
-) -> None:
-    from taskq.settings import WorkerSettings
-
-    settings = WorkerSettings.load_from_dict(
-        {
-            "PG_DSN": "postgres://u:p@localhost:5432/db",
-            "LOCK_LEASE": 60,
-            "HEARTBEAT_INTERVAL": 10,
-        },
-    )
-    await process_scope.bootstrap(registry, settings)
-    await thread_scope.bootstrap(registry, process_scope)
-    await loop_scope.bootstrap(registry, process_scope, thread_scope)
 
 
 class _ScopeStack:
@@ -169,8 +110,8 @@ class _ScopeStack:
 
     async def __aenter__(self) -> "_ScopeStack":
         self.registry.validate()
-        self.process_scope, self.thread_scope, self.loop_scope = _make_scopes(self.registry)
-        await _bootstrap_scopes(
+        self.process_scope, self.thread_scope, self.loop_scope = make_scopes(self.registry)
+        await bootstrap_scopes(
             self.registry, self.process_scope, self.thread_scope, self.loop_scope
         )
         return self
@@ -599,6 +540,86 @@ async def test_payload_validation_failure_before_scope() -> None:
         )
 
 
+async def test_dispatch_threads_the_rows_stored_schema_ver(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """dispatch_one_job's pre-scope validation threads the ROW's stored
+    ``payload_schema_ver`` into the ``PayloadValidationError`` — the
+    worker path's half of the schema-drift diagnostic.
+
+    The dispatch path routes the failure into the terminal write (the
+    exception itself does not propagate), so the wiring is pinned with a
+    delegate spy on ``taskq.worker.dispatch.validate_actor_payload``: the
+    real helper still runs (the terminal write below proves the failure
+    path is unchanged), and the spy records the version the call site
+    passed. The row carries 0 — older than the current schema — so a
+    threaded row version is distinguishable from the helper's
+    current-version default.
+    """
+    import taskq.worker.dispatch as dispatch_mod
+
+    real_validate = dispatch_mod.validate_actor_payload  # pyright: ignore[reportPrivateImportUsage]  # Why: the spy must read and replace the dispatch module's own binding, the seam the dispatch call site resolves; the helper's home module is private, so the re-export is not declared.
+    seen_versions: list[str | None] = []
+
+    def spy_validate(
+        payload_type: type[BaseModel],
+        raw_payload: dict[str, object] | BaseModel,
+        actor: str | None = None,
+        *,
+        payload_schema_ver: str | None = None,
+    ) -> BaseModel:
+        seen_versions.append(payload_schema_ver)
+        return real_validate(
+            payload_type, raw_payload, actor, payload_schema_ver=payload_schema_ver
+        )
+
+    monkeypatch.setattr(dispatch_mod, "validate_actor_payload", spy_validate)
+
+    async def my_actor(payload: _Payload, ctx: JobContext[_Payload]) -> dict[str, object]:
+        return {}
+
+    async with _ScopeStack() as scopes:
+        fake_backend = FakeBackend()
+        fake_deps = _FakeWorkerDeps()
+        actor_ref = _make_actor_ref(my_actor)
+        pre_migration_row = replace(
+            make_job_row(payload={"not_a_valid_field": "oops"}),
+            payload_schema_ver=0,
+        )
+
+        await dispatch_one_job(
+            backend=as_backend(fake_backend),
+            deps=_as_deps(fake_deps),
+            job=pre_migration_row,
+            worker_id=_WORKER_ID,
+            registry=scopes.registry,
+            process_scope=scopes.process_scope,
+            thread_scope=scopes.thread_scope,
+            loop_scope=scopes.loop_scope,
+            actor_ref=actor_ref,  # type: ignore[arg-type]  # Why: ActorRef[Any, Any] is not ActorRef[BaseModel, BaseModel | None]; pyright cannot widen the generic parameters, but the runtime contract is sound
+            actor_config=StubActorConfig(retry=RetryPolicy()),
+            clock=FakeClock(_NOW),
+            active_jobs=fake_deps.active_jobs,
+            enqueuer=SubJobEnqueuer(
+                backend=as_backend(fake_backend), loop_scope_resolved=None, worker_pool=None
+            ),
+        )
+
+        assert seen_versions == ["0"], (
+            "dispatch_one_job validated the payload without threading the "
+            "row's stored payload_schema_ver — a pre-migration row is then "
+            "indistinguishable from caller garbage on the worker path"
+        )
+        # The failure path itself is unchanged: the real helper raised
+        # and the terminal write classified it as the documented
+        # non-retryable validation failure.
+        assert len(fake_backend.mark_failed_or_retry_calls) == 1
+        assert (
+            fake_backend.mark_failed_or_retry_calls[0]["error_info"].error_class  # pyright: ignore[reportAttributeAccessIssue]  # Why: mark_failed_or_retry_calls stores untyped objects from mock; error_class exists at runtime.
+            == "PayloadValidationError"
+        )
+
+
 # ── No payload/ctx double-pass ────────────────────────────────────────
 
 
@@ -756,6 +777,10 @@ async def test_interim_ctx_not_actor_ctx() -> None:
         assert actor_ctx is not None
         assert interim_ctx_ref is not None
         assert actor_ctx is not interim_ctx_ref
+        # The two contexts are one job: the DI factories' ctx and the
+        # actor's ctx log through the same bound logger, so a job's lines
+        # carry one set of fields from one logger, bound once.
+        assert actor_ctx.log is interim_ctx_ref.log
 
 
 # ── Actor sees live ctx whose cancel_event can be signalled ────────────
@@ -804,12 +829,11 @@ async def test_cooperative_cancel_escape_applies_batch_hook() -> None:
     the batch policy hook: dispatch's CancelledError handler applies
     :func:`apply_batch_terminal_outcome` with ``cancelled`` best-effort
     before its re-raise — a batch completes on any terminal member,
-    discarded included (GoodJob's finish check fires for every finished
-    job), so the finalizer runs immediately instead of a sweep-interval
-    late. The recorder stands in for the hook (the FakeBackend carries
-    no batch stores), pinning the call and its outcome; a dispatch that
-    re-raises past the hook leaves the recorder empty and turns this
-    pin red."""
+    discarded included, so the finalizer runs immediately instead of
+    waiting for a sweep interval. The recorder stands in for the hook
+    (the FakeBackend carries no batch stores), pinning the call and its
+    outcome; a dispatch that re-raises past the hook leaves the
+    recorder empty and turns this pin red."""
     hook_calls: list[tuple[UUID, str]] = []
 
     async def my_actor(payload: _Payload, ctx: JobContext[_Payload]) -> dict[str, object]:
@@ -857,7 +881,7 @@ async def test_cooperative_cancel_escape_applies_batch_hook() -> None:
             "the CancelledError escape must apply the batch hook with the "
             "cancelled outcome before its re-raise — a batch whose last "
             "member ends through the escape completes immediately, "
-            f"GoodJob-aligned; got {hook_calls}"
+            f"not waiting for the sweep interval; got {hook_calls}"
         )
 
 
@@ -919,7 +943,7 @@ async def test_payload_validation_escape_applies_batch_hook() -> None:
             "the payload-validation escape must apply the batch hook with "
             "the handler's terminal outcome — a batch whose last member "
             "ends through the escape completes immediately, "
-            f"GoodJob-aligned; got {hook_calls}"
+            f"not waiting for the sweep interval; got {hook_calls}"
         )
 
 
@@ -1059,13 +1083,15 @@ async def test_dispatch_one_job_records_consumed_metric(
         assert dp.attributes.get("outcome") == "succeeded"
 
 
-# ── Regression: snooze/retry maps "scheduled" outcome to "abandoned" metric ─
+# ── A released row is outcome="scheduled", never "abandoned" ──────────────
 
 
-async def test_dispatch_one_job_records_abandoned_on_snooze(
+async def test_dispatch_one_job_records_scheduled_on_snooze(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """When actor raises Snooze, consumed metric records outcome="abandoned"."""
+    """When the actor raises Snooze the row goes back to the queue: the
+    consumed metric says outcome="scheduled". "abandoned" is the
+    operator-cancel outcome and must never describe a snooze."""
 
     from taskq.exceptions import Snooze
 
@@ -1108,7 +1134,241 @@ async def test_dispatch_one_job_records_abandoned_on_snooze(
         assert len(dps) >= 1
         dp = dps[0]
         assert dp.attributes is not None
-        assert dp.attributes.get("outcome") == "abandoned"
+        assert dp.attributes.get("outcome") == "scheduled"
+        # A snooze is not a failure: the failure counter stays untouched.
+        assert counter_data_points(reader, "taskq.jobs.attempt_failures") == []
+
+
+async def _dispatch_with(
+    monkeypatch: pytest.MonkeyPatch,
+    actor_fn: Callable[..., Coroutine[Any, Any, object]],
+    *,
+    backend: FakeBackend | None = None,
+    job: JobRow | None = None,
+) -> tuple[Any, str]:
+    """Dispatch one job through the real dispatch path against a FakeBackend
+    with a per-test isolated meter; return (reader, outcome)."""
+    from taskq.testing.otel import setup_meter, setup_tracer
+
+    setup_tracer(monkeypatch)
+    reader = setup_meter(monkeypatch)
+    fake_backend = backend if backend is not None else FakeBackend()
+    async with _ScopeStack() as scopes:
+        outcome = await dispatch_one_job(
+            backend=as_backend(fake_backend),
+            deps=_as_deps(_FakeWorkerDeps()),
+            job=job if job is not None else make_job_row(payload={"value": 42}),
+            worker_id=_WORKER_ID,
+            registry=scopes.registry,
+            process_scope=scopes.process_scope,
+            thread_scope=scopes.thread_scope,
+            loop_scope=scopes.loop_scope,
+            actor_ref=_make_actor_ref(actor_fn),  # type: ignore[arg-type]  # Why: ActorRef[Any, Any] is not ActorRef[BaseModel, BaseModel | None]; pyright cannot widen the generic parameters, but the runtime contract is sound
+            actor_config=StubActorConfig(retry=RetryPolicy()),
+            clock=FakeClock(_NOW),
+            enqueuer=SubJobEnqueuer(
+                backend=as_backend(fake_backend), loop_scope_resolved=None, worker_pool=None
+            ),
+        )
+    return reader, outcome
+
+
+def _timeouts(reader: Any) -> dict[tuple[str, str], int]:
+    from taskq.testing.otel import counter_data_points
+
+    return {
+        (str(p.attributes["actor"]), str(p.attributes["kind"])): int(p.value)
+        for p in counter_data_points(reader, "taskq.jobs.timeouts")
+        if p.attributes
+    }
+
+
+async def test_start_to_close_timeout_is_counted_and_its_duration_labelled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A per-attempt timeout records taskq.jobs.timeouts{kind="start_to_close"}
+    once, and the process-duration sample carries the attempt's outcome so
+    a budget-length timeout is not folded into the success distribution."""
+    from taskq.testing.otel import histogram_points
+
+    async def slow_actor(payload: _Payload, ctx: JobContext[_Payload]) -> None:
+        raise TimeoutError("start_to_close")
+
+    reader, outcome = await _dispatch_with(monkeypatch, slow_actor)
+
+    assert outcome == "scheduled"
+    assert _timeouts(reader) == {("test_actor", "start_to_close"): 1}
+    durations = histogram_points(reader, "messaging.process.duration")
+    assert [dict(p.attributes or {}) for p in durations] == [
+        {"actor": "test_actor", "queue": "default", "outcome": "scheduled"}
+    ]
+
+
+async def test_queue_wait_is_the_rows_own_eligible_to_claimed_interval(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """taskq.jobs.queue_wait_seconds is started_at - scheduled_at from the
+    claimed row's server-clock stamps (eligibility to claim), per (actor,
+    queue) — what every dispatched job actually waited, where the sampled
+    oldest_pending_age gauge only shows the head of the line."""
+    from taskq.testing.otel import histogram_points
+
+    async def ok_actor(payload: _Payload, ctx: JobContext[_Payload]) -> None:
+        return None
+
+    job = replace(
+        make_job_row(payload={"value": 42}),
+        scheduled_at=_NOW,
+        started_at=_NOW + timedelta(seconds=2.5),
+    )
+    reader, outcome = await _dispatch_with(monkeypatch, ok_actor, job=job)
+    assert outcome == "succeeded"
+    points = histogram_points(reader, "taskq.jobs.queue_wait_seconds")
+    assert len(points) == 1
+    assert dict(points[0].attributes or {}) == {"actor": "test_actor", "queue": "default"}
+    assert points[0].count == 1
+    assert points[0].sum == pytest.approx(2.5)
+
+
+async def test_success_duration_is_labelled_succeeded(monkeypatch: pytest.MonkeyPatch) -> None:
+    from taskq.testing.otel import histogram_points
+
+    async def ok_actor(payload: _Payload, ctx: JobContext[_Payload]) -> dict[str, object]:
+        return {"ok": True}
+
+    reader, outcome = await _dispatch_with(monkeypatch, ok_actor)
+    assert outcome == "succeeded"
+    assert [
+        p.attributes.get("outcome")
+        for p in histogram_points(reader, "messaging.process.duration")
+        if p.attributes
+    ] == ["succeeded"]
+    assert _timeouts(reader) == {}
+
+
+async def test_schedule_to_close_refusals_count_as_whole_job_timeouts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When the backend's deadline arbitration refuses a snooze or a
+    RetryAfter with DeadlineExceeded, the job ended on its whole-job
+    budget: taskq.jobs.timeouts{kind="schedule_to_close"} counts it. A
+    MaxAttemptsExceeded refusal is not a timeout."""
+    from taskq.exceptions import RetryAfter
+
+    async def snoozy(payload: _Payload, ctx: JobContext[_Payload]) -> None:
+        raise Snooze(delay=timedelta(seconds=30))
+
+    async def retry_later(payload: _Payload, ctx: JobContext[_Payload]) -> None:
+        raise RetryAfter(delay=timedelta(seconds=30))
+
+    reader, outcome = await _dispatch_with(
+        monkeypatch, snoozy, backend=FakeBackend(mark_snoozed_return="failed")
+    )
+    assert outcome == "failed"
+    assert _timeouts(reader) == {("test_actor", "schedule_to_close"): 1}
+
+    reader, outcome = await _dispatch_with(
+        monkeypatch,
+        retry_later,
+        backend=FakeBackend(mark_retry_after_return="failed:DeadlineExceeded"),
+    )
+    assert outcome == "failed"
+    assert _timeouts(reader) == {("test_actor", "schedule_to_close"): 1}
+
+    reader, outcome = await _dispatch_with(
+        monkeypatch,
+        retry_later,
+        backend=FakeBackend(mark_retry_after_return="failed:MaxAttemptsExceeded"),
+    )
+    assert outcome == "failed"
+    assert _timeouts(reader) == {}
+
+
+async def test_retry_refused_by_the_deadline_arm_counts_as_a_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The classifier decided a retry but the backend's deadline arbitration
+    landed the row failed (schedule_to_close reached before the next
+    dispatch): the attempt failure is counted as retryable — that was the
+    decision — and the whole-job timeout is counted beside it."""
+    from taskq.testing.otel import counter_data_points
+
+    class _DeadlineRefusingBackend(FakeBackend):
+        async def mark_failed_or_retry(self, *args: Any, **kwargs: Any) -> JobRow:
+            row = await super().mark_failed_or_retry(*args, **kwargs)
+            return replace(row, status="failed", error_class="DeadlineExceeded")
+
+    async def flaky(payload: _Payload, ctx: JobContext[_Payload]) -> None:
+        raise RuntimeError("upstream 503")
+
+    reader, outcome = await _dispatch_with(monkeypatch, flaky, backend=_DeadlineRefusingBackend())
+    assert outcome == "failed"
+    assert _timeouts(reader) == {("test_actor", "schedule_to_close"): 1}
+    failures = counter_data_points(reader, "taskq.jobs.attempt_failures")
+    assert [dict(p.attributes or {}) for p in failures] == [
+        {"actor": "test_actor", "error_type": "RuntimeError", "retryable": "true"}
+    ]
+
+
+async def test_dispatch_one_job_counts_a_retried_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One retryable raise → one taskq.jobs.attempt_failures sample labelled
+    by actor, exception class and retryable="true", and the consumed
+    outcome is "scheduled" (the retry went back to the queue) — not
+    "abandoned", which is what TaskQAbandonedJobs used to page on."""
+
+    class _FlakyError(RuntimeError):
+        pass
+
+    async def flaky_actor(payload: _Payload, ctx: JobContext[_Payload]) -> None:
+        raise _FlakyError("upstream 503")
+
+    from taskq.testing.otel import (
+        counter_data_points,
+        setup_meter,
+        setup_tracer,
+    )
+
+    setup_tracer(monkeypatch)
+    reader = setup_meter(monkeypatch)
+
+    async with _ScopeStack() as scopes:
+        fake_backend = FakeBackend()
+        fake_deps = _FakeWorkerDeps()
+        actor_ref = _make_actor_ref(flaky_actor)
+        job = make_job_row(payload={"value": 42})
+
+        outcome = await dispatch_one_job(
+            backend=as_backend(fake_backend),
+            deps=_as_deps(fake_deps),
+            job=job,
+            worker_id=_WORKER_ID,
+            registry=scopes.registry,
+            process_scope=scopes.process_scope,
+            thread_scope=scopes.thread_scope,
+            loop_scope=scopes.loop_scope,
+            actor_ref=actor_ref,  # type: ignore[arg-type]  # Why: ActorRef[Any, Any] is not ActorRef[BaseModel, BaseModel | None]; pyright cannot widen the generic parameters, but the runtime contract is sound
+            actor_config=StubActorConfig(retry=RetryPolicy()),
+            clock=FakeClock(_NOW),
+            enqueuer=SubJobEnqueuer(
+                backend=as_backend(fake_backend), loop_scope_resolved=None, worker_pool=None
+            ),
+        )
+        assert outcome == "scheduled"
+
+        failures = counter_data_points(reader, "taskq.jobs.attempt_failures")
+        assert len(failures) == 1
+        assert failures[0].value == 1
+        assert failures[0].attributes is not None
+        assert dict(failures[0].attributes) == {
+            "actor": "test_actor",
+            "error_type": "_FlakyError",
+            "retryable": "true",
+        }
+
+        consumed = counter_data_points(reader, "messaging.client.consumed.messages")
+        assert [dp.attributes.get("outcome") for dp in consumed if dp.attributes] == ["scheduled"]
 
 
 # ── CONSUMER span link integration ────────────────────────────────────
@@ -2041,3 +2301,144 @@ async def test_slot_pool_release_terminates_in_flight_transaction_instead_of_rel
         assert pool.conn.terminated is True
         events = [log.get("event") for log in logs]
         assert "slot-conn-terminated-transaction-in-flight" in events
+
+
+# ── Slot connections must carry the registered connection's setup ─────
+
+
+class _RegisteredConn(asyncpg.Connection):
+    """Stand-in for a user's own fully-configured registered connection.
+
+    Subclassing ``asyncpg.Connection`` mirrors a custom ``connection_class``;
+    the ``has_user_setup`` sentinel stands in for whatever per-connection
+    setup the registration declared -- a ``set_type_codec`` registration, an
+    ``init``/``setup`` callback, session configuration. It is applied by the
+    declared hook (``_registered_conn_setup`` below): ``with_connection_init``
+    applies it to the registered connection itself, and a correct per-slot
+    path replays it onto slot connections.
+    """
+
+    def __new__(cls) -> "_RegisteredConn":
+        # asyncpg.Connection.__init__ requires live protocol machinery that
+        # a unit test has no way to supply; __new__ alone yields an instance
+        # of the right type without running it.
+        return object.__new__(cls)
+
+    def __init__(self) -> None:
+        # Deliberately does not call super().__init__() -- see __new__.
+        # asyncpg.Connection.__del__ reads _aborted; set it so a GC'd
+        # instance built this way does not raise from the finalizer.
+        self._aborted = True
+
+
+async def _registered_conn_setup(conn: asyncpg.Connection) -> None:
+    """The registration's declared per-connection setup hook.
+
+    Setting the attribute is the unit-test-observable stand-in for a codec
+    registration or a session GUC, neither of which a live-free unit test
+    can observe.
+    """
+    setattr(conn, "has_user_setup", True)  # noqa: B010  # Why: pyright strict rejects the attribute assignment on asyncpg.Connection (unknown attribute); setattr is the typed-boundary-safe form for the sentinel.
+
+
+async def _registered_conn_factory() -> asyncpg.Connection:
+    return _RegisteredConn()
+
+
+class _BareSetupPool:
+    """Slot-pool stand-in that hands out a connection opened fresh off the
+    direct DSN: no codecs, no init hook, no connection_class, no
+    server_settings -- what a plain ``asyncpg.create_pool(dsn=direct, ...)``
+    produces.
+    """
+
+    def __init__(self) -> None:
+        self.conn = _FakeSlotConn()
+
+    def acquire(self, timeout: float | None = None) -> Coroutine[Any, Any, _FakeSlotConn]:
+        return self._acquired()
+
+    async def _acquired(self) -> _FakeSlotConn:
+        return self.conn
+
+    async def release(self, conn: object) -> None:
+        return None
+
+
+async def test_slot_connection_carries_registered_connection_setup() -> None:
+    """When a LOOP-scope ``asyncpg.Connection`` registration declares its
+    per-connection setup and the per-slot transaction pool is active, the
+    connection the actor's DI resolves must still carry that setup.
+
+    The per-slot pool exists so concurrent slots never interleave operations
+    on one connection. A pool the worker bootstrap opens inherits the
+    registration's declared init hook at connect time (the pool factory's
+    ``init=``), but the dispatch path also accepts pools bootstrap did not
+    open — injected straight onto the deps, as below. Connections such a
+    pool hands out are bare: any type codec, ``init``/``setup`` callback,
+    custom ``connection_class``, or session configuration the registration
+    declared is absent from them, so an actor silently reads and writes
+    through a connection that decodes values differently than the one the
+    application configured. That is data corruption with no error raised,
+    and it appears at any ``max_concurrency`` above one.
+
+    Per-slot isolation and registered-connection setup are not in tension:
+    dispatch replays the registration's declared hook onto the slot
+    connection — exactly once per physical connection — rather than
+    discarding it. (A raw ``register_value`` connection cannot declare a
+    replayable hook — the driver seals per-connection state — so the
+    registration here declares it through ``with_connection_init``; the raw
+    channel's loudly-warned non-inheritance boundary is pinned in
+    tests/test_slot_pool.py.)
+    """
+    observed_conn: object | None = None
+
+    async def my_actor(
+        payload: _Payload,
+        ctx: JobContext[_Payload],
+        conn: asyncpg.Connection,
+    ) -> dict[str, object]:
+        nonlocal observed_conn
+        observed_conn = conn
+        return {}
+
+    registry = ProviderRegistry()
+    registry.register_factory(
+        asyncpg.Connection,
+        Scope.LOOP,
+        with_connection_init(_registered_conn_factory, _registered_conn_setup),
+    )
+
+    async with _ScopeStack(registry) as scopes:
+        fake_backend = FakeBackend()
+        fake_deps = _FakeWorkerDeps()
+        # Activate the per-slot path, the shape bootstrap opens whenever a
+        # LOOP-scope Connection is registered and max_concurrency > 1.
+        fake_deps.slot_pool = _BareSetupPool()  # type: ignore[assignment]  # Why: duck-typed pool stand-in, same as the release tests above.
+        actor_ref = _make_actor_ref(my_actor)
+        job = make_job_row(payload={"value": 42})
+
+        await dispatch_one_job(
+            backend=as_backend(fake_backend),
+            deps=_as_deps(fake_deps),
+            job=job,
+            worker_id=_WORKER_ID,
+            registry=scopes.registry,
+            process_scope=scopes.process_scope,
+            thread_scope=scopes.thread_scope,
+            loop_scope=scopes.loop_scope,
+            actor_ref=actor_ref,  # type: ignore[arg-type]  # Why: same ActorRef generic-widening pattern as the tests above.
+            actor_config=StubActorConfig(retry=RetryPolicy()),
+            clock=FakeClock(_NOW),
+            active_jobs=fake_deps.active_jobs,
+            enqueuer=SubJobEnqueuer(
+                backend=as_backend(fake_backend), loop_scope_resolved=None, worker_pool=None
+            ),
+        )
+
+    assert observed_conn is not None
+    assert getattr(observed_conn, "has_user_setup", False) is True, (
+        "the actor received a slot connection that dropped the registered "
+        "connection's setup (codecs, init hook, connection_class, "
+        "server_settings, role)"
+    )

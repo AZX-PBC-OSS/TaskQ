@@ -171,7 +171,7 @@ def test_next_release_version_is_hand_pinned_above_the_last_released_minor() -> 
         "pin: the next release's version is whatever the merged history's "
         "markers compute, and a squash-merge that drops the stack's "
         "breaking markers would cut the breaks as a patch release. Hand-set "
-        "the floor (the #160 resolution)."
+        "the floor."
     )
     pinned = tuple(int(part) for part in str(package["release-as"]).split("."))
     manifest = json.loads(_RELEASE_MANIFEST.read_text())
@@ -180,5 +180,5 @@ def test_next_release_version_is_hand_pinned_above_the_last_released_minor() -> 
         f"the hand-pinned release version {package['release-as']} is not a "
         f"minor-or-greater bump above the last released version "
         f"{manifest['.']} — a patch-level floor ships the stack's breaking "
-        "changes as a patch release, the exact adopter harm #160 records."
+        "changes as a patch release."
     )

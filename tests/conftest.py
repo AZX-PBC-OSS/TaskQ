@@ -26,6 +26,7 @@ The fixtures are imported from :mod:`taskq.testing.fixtures`
 and re-registered here so they are available to all test modules.
 """
 
+import asyncio
 import contextlib
 import glob
 import os
@@ -89,7 +90,11 @@ from taskq.testing.jobs import (
     make_enqueue_args,
     make_job_row,
 )
-from taskq.testing.otel import _logging_configured_guard, _otel_enabled_guard
+from taskq.testing.otel import (
+    _logging_configured_guard,
+    _otel_enabled_guard,
+    _otel_gauge_cache_guard,
+)
 from taskq.testing.pg import (
     DEFAULT_ACTORS,
     create_pending_job,
@@ -197,6 +202,166 @@ def _reset_oidc_saml_cached() -> Iterator[None]:  # pyright: ignore[reportUnused
     SAMLSettings.reset_cached()
 
 
+@pytest.fixture(autouse=True)
+def _reset_web_admin_caches(request: pytest.FixtureRequest) -> Iterator[None]:  # pyright: ignore[reportUnusedFunction]  # Why: autouse fixture consumed implicitly by the test runner.
+    """Reset the admin package's module-global TTL caches around every test.
+
+    ``taskq.web.admin._factory`` keeps two process-wide caches keyed off the
+    monotonic clock with no built-in per-test seam: the Redis health probe
+    (``_redis_health_cache``, 5 s TTL) and the app-to-database clock offset
+    (``_db_clock_offset``, 30 s TTL); ``taskq.web.admin.ops`` adds the run-now
+    cooldown (``_last_schedule_run``, 10 s). A test that drives the degraded
+    path (a failing ``ping``) leaves ``ok=False`` cached for up to five
+    seconds; under xdist the next badge test scheduled on the same worker
+    inside that window reads the poisoned entry and renders
+    "polling-degraded" for a healthy client (the
+    ``test_real_time_badge_with_redis`` flake). Production caching behavior is
+    unchanged — this restores construction state between tests, the reset
+    ``tests/web_admin/test_realtime_badge.py`` applies file-locally, promoted
+    here so every admin test (including ``tests/test_web_admin.py``, which
+    lives outside that package's conftest) is covered. The singletons are
+    mutated in place, never rebound: importers hold direct references.
+    """
+    # Why: e2e runs the admin UI in containers — the in-process caches are irrelevant.
+    if "e2e" in request.node.keywords:
+        yield
+        return
+    try:
+        from taskq.web.admin import _factory as admin_factory
+        from taskq.web.admin import ops as admin_ops
+    except ImportError:
+        # The fastapi extra is not installed — nothing to reset.
+        yield
+        return
+
+    def _reset() -> None:
+        cache = admin_factory._redis_health_cache  # pyright: ignore[reportPrivateUsage]  # Why: test isolation seam for module-global TTL caches with no other reset surface.
+        cache.ok = False
+        cache.expires_at = 0.0
+        offset = admin_factory._db_clock_offset  # pyright: ignore[reportPrivateUsage]  # Why: same seam as above.
+        offset.seconds = 0.0
+        offset.expires_at = 0.0
+        # The run-now cooldown (10 s, keyed on the loop clock) is the same
+        # shape: module-global, TTL'd, no reset. Fresh schedule UUIDs per test
+        # already keep it from colliding across tests; clearing it here keeps
+        # the whole class uniformly closed rather than leaning on key-space
+        # luck.
+        admin_ops._last_schedule_run.clear()  # pyright: ignore[reportPrivateUsage]  # Why: same seam as above.
+
+    _reset()
+    try:
+        yield
+    finally:
+        _reset()
+
+
+@pytest.fixture(autouse=True)
+def _reset_notify_module_globals() -> Iterator[None]:  # pyright: ignore[reportUnusedFunction]  # Why: autouse fixture consumed implicitly by the test runner; pyright does not track fixture usage.
+    """Reset the notify module's process-global listener bookkeeping around
+    every test.
+
+    ``taskq.worker.notify`` keeps two module-level registries — the active
+    listener set and the per-backend connected lookup — that production
+    code writes whenever a real notify listener runs, and that five test
+    files read directly.  Each of those files carried an identical
+    file-local copy of this reset; the copies are promoted here as ONE
+    shared fixture (the same promotion ``_reset_web_admin_caches`` made
+    from tests/web_admin) so the globals are isolated for every test —
+    including any future file that drives the real listener machinery
+    without knowing about the bookkeeping.
+
+    Cleared IN PLACE, never rebound: the test files import the two
+    objects by value (``from taskq.worker.notify import _active_listeners``),
+    so they hold direct references — a rebind would leave their held
+    objects stale while the module moved on.
+    """
+    from taskq.worker.notify import _active_listeners, _connected_lookup
+
+    _active_listeners.clear()  # pyright: ignore[reportPrivateUsage]  # Why: test isolation seam for module-global registries with no other reset surface.
+    _connected_lookup.clear()  # pyright: ignore[reportPrivateUsage]  # Why: same seam as above.
+    try:
+        yield
+    finally:
+        _active_listeners.clear()  # pyright: ignore[reportPrivateUsage]  # Why: same seam as above.
+        _connected_lookup.clear()  # pyright: ignore[reportPrivateUsage]  # Why: same seam as above.
+
+
+def _leaked_pending_task_report(
+    before: set[asyncio.Task[object]], after: set[asyncio.Task[object]]
+) -> str | None:
+    """The loud failure text for tasks a test left pending on its event
+    loop, or ``None`` when nothing leaked.
+
+    Module-level (not fixture-local) so the suite-hygiene pin can exercise
+    the classification directly — the report is the guard's whole
+    contract: a leak must be named, never silently tolerated.
+    """
+    leaked = sorted(
+        (t for t in after - before if not t.done()),
+        key=lambda t: t.get_name(),
+    )
+    if not leaked:
+        return None
+    lines = [
+        f"  - task {t.get_name()!r} still pending; coroutine: {t.get_coro()!r}" for t in leaked
+    ]
+    return "\n".join(lines)
+
+
+@pytest.fixture(autouse=True)
+async def _fail_on_leaked_asyncio_tasks(request: pytest.FixtureRequest) -> AsyncIterator[None]:  # pyright: ignore[reportUnusedFunction]  # Why: autouse fixture consumed implicitly by the test runner; pyright does not track fixture usage.
+    """Fail loudly when a test leaves an asyncio task still pending.
+
+    The suite's event loops are MODULE-scoped (``asyncio_default_test_loop_scope
+    = "module"``), so a loop task a test leaves uncancelled — or cancels
+    without awaiting — stays alive on the module's loop and advances at
+    every later test's await points, exactly the window in which it can
+    write process-global state (the obs gauge caches, registries, caches)
+    into a test that never asked for it.  The leak is a defect at the
+    test that created the task, so the failure lands there, naming the
+    task: cancel-and-await on every path is the suite's own loop-teardown
+    doctrine (``_stop_loop`` in test_leader_sweeps_coverage.py, the
+    leader_task finally blocks in test_otel_integration.py).
+
+    Baseline-snapshot diff, not an absolute check: tasks that were already
+    pending when the test started (a module-scoped fixture's long-lived
+    worker) are this test's inheritance, not its leak, and stay exempt;
+    only tasks THIS test minted and left unfinished fail.  Sync tests and
+    loop-less contexts are a vacuous pass (no loop to leak onto in this
+    thread); the fixture runs on the module loop for async items, which
+    is where every loop task in the suite lives.
+    """
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        # No running loop in this thread (a sync test, or a fixture
+        # evaluated outside asyncio): nothing this test could have
+        # scheduled on a loop is alive to leak.
+        yield
+        return
+    before = asyncio.all_tasks(loop)
+    try:
+        yield
+    finally:
+        after = asyncio.all_tasks(loop)
+        # This fixture is itself an async generator, so the task currently
+        # executing this finally block is pytest-asyncio's per-fixture
+        # ``async_finalizer`` driver (created at teardown, after the
+        # baseline snapshot — plugin.py's ``_wrap_asyncgen_fixture``).
+        # It is the guard's own machinery, never a leak.
+        current = asyncio.current_task()
+        if current is not None:
+            after.discard(current)
+        report = _leaked_pending_task_report(before, after)
+        if report is not None:
+            pytest.fail(
+                "test left asyncio task(s) still pending on the module event loop — "
+                "a live loop keeps writing shared state into later tests. "
+                "Cancel and await every task the test created:\n" + report,
+                pytrace=False,
+            )
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _no_developer_dotfiles(  # pyright: ignore[reportUnusedFunction]  # Why: autouse fixture consumed implicitly by the test runner; pyright does not track fixture usage.
     tmp_path_factory: pytest.TempPathFactory,
@@ -232,6 +397,38 @@ def _no_developer_dotfiles(  # pyright: ignore[reportUnusedFunction]  # Why: aut
     empty_dir = tmp_path_factory.mktemp("no-dotfiles")
     mp = pytest.MonkeyPatch()
     mp.setenv("DOTENV_DIR", str(empty_dir))
+    try:
+        yield
+    finally:
+        mp.undo()
+
+
+#: The variables that ask the worker CLI to install SDK exporter providers
+#: (``taskq.obs.configure_exporters``). Stripped for the whole suite: the
+#: process-global providers are set-once, so a developer's ambient
+#: ``OTEL_EXPORTER_OTLP_ENDPOINT`` would otherwise let the first CLI test
+#: install real exporters into the test process and shadow every later
+#: test's meter isolation.
+_OTEL_EXPORTER_TRIGGER_ENVS: tuple[str, ...] = (
+    "OTEL_EXPORTER_OTLP_ENDPOINT",
+    "OTEL_TRACES_EXPORTER",
+    "OTEL_METRICS_EXPORTER",
+    "OTEL_LOGS_EXPORTER",
+    "OTEL_SDK_DISABLED",
+    "TASKQ_OTEL_AUTOCONFIGURE",
+    "TASKQ_METRICS_PORT",
+)
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _no_ambient_otel_exporter_env() -> Iterator[None]:  # pyright: ignore[reportUnusedFunction]  # Why: autouse fixture consumed implicitly by the test runner; pyright does not track fixture usage.
+    """Make the suite hermetic w.r.t. the developer's ambient OTel exporter
+    variables — see ``_OTEL_EXPORTER_TRIGGER_ENVS``. Tests that exercise
+    the wiring set the variables they need explicitly (and run the
+    set-once provider scenarios in subprocesses)."""
+    mp = pytest.MonkeyPatch()
+    for var in _OTEL_EXPORTER_TRIGGER_ENVS:
+        mp.delenv(var, raising=False)
     try:
         yield
     finally:
@@ -402,6 +599,7 @@ __all__ = [
     "_FakePool",
     "_logging_configured_guard",
     "_otel_enabled_guard",
+    "_otel_gauge_cache_guard",
     "actor_runner",
     "as_backend",
     "assert_attempt",
@@ -489,7 +687,7 @@ def pg_container(
         if abs(delta) > 0.25:
             print(
                 f"[TaskQ] application and database clocks diverge by {delta:+.3f}s "
-                "(positive = app ahead). While this persists, wall-clock comparisons "
+                "(positive = database ahead). While this persists, wall-clock comparisons "
                 "across the two domains are unreliable — VM pause/resume and NTP drift "
                 "are common causes. Same-statement single-domain comparisons (this "
                 "suite's timing tests) are unaffected."

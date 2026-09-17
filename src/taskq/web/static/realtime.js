@@ -187,15 +187,15 @@
     // ---------------------------------------------------------------------------
 
     function checkRedisHealth() {
-        fetch(`${BASE}/jobs/health/ready`)
+        fetch(`${BASE}/sse/mode`)
             .then(function (res) {
                 return res.json();
             })
             .then(function (body) {
+                const wantRealtime = Boolean(body.realtime);
                 const mode = currentMode();
-                const redisOk = Boolean(body.redis_configured);
 
-                if (mode === "realtime" && !redisOk) {
+                if (mode === "realtime" && !wantRealtime) {
                     setModeBadge("polling-degraded");
                     if (eventSource) {
                         eventSource.close();
@@ -205,7 +205,7 @@
                     return;
                 }
 
-                if (mode === "polling-degraded" && redisOk) {
+                if (mode !== "realtime" && wantRealtime) {
                     setModeBadge("realtime");
                     stopPolling();
                     const section = getProgressSection();

@@ -3,6 +3,18 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    {# Applied before first paint: without it the server-rendered document is
+       light until Alpine boots, so dark-mode users get a white flash on every
+       navigation. Reads the same localStorage/matchMedia key the toggle below
+       persists to. #}
+    <script>
+        (function () {
+            var t = localStorage.theme;
+            if (t === "dark" || (!t && window.matchMedia("(prefers-color-scheme: dark)").matches)) {
+                document.documentElement.classList.add("dark");
+            }
+        })();
+    </script>
     {% if realtime_mode | default("polling") != "realtime" and not suppress_refresh | default(false) %}
     <meta http-equiv="refresh" content="{{ poll_interval_ms // 1000 }}">
     {% endif %}
@@ -48,12 +60,18 @@
             <a href="{{ base_path }}/jobs"
                class="px-4 py-2.5 text-sm font-medium whitespace-nowrap border-b-2 transition-colors
                       {% if active_page in ('jobs', 'job_detail') %}text-white border-blue-400{% else %}text-slate-400 border-transparent hover:text-slate-200 hover:border-slate-500{% endif %}">Jobs</a>
+            <a href="{{ base_path }}/history"
+               class="px-4 py-2.5 text-sm font-medium whitespace-nowrap border-b-2 transition-colors
+                      {% if active_page == 'history' %}text-white border-blue-400{% else %}text-slate-400 border-transparent hover:text-slate-200 hover:border-slate-500{% endif %}">History</a>
             <a href="{{ base_path }}/workers"
                class="px-4 py-2.5 text-sm font-medium whitespace-nowrap border-b-2 transition-colors
                       {% if active_page == 'workers' %}text-white border-blue-400{% else %}text-slate-400 border-transparent hover:text-slate-200 hover:border-slate-500{% endif %}">Workers</a>
             <a href="{{ base_path }}/actors"
                class="px-4 py-2.5 text-sm font-medium whitespace-nowrap border-b-2 transition-colors
                       {% if active_page == 'actors' %}text-white border-blue-400{% else %}text-slate-400 border-transparent hover:text-slate-200 hover:border-slate-500{% endif %}">Actors</a>
+            <a href="{{ base_path }}/batches"
+               class="px-4 py-2.5 text-sm font-medium whitespace-nowrap border-b-2 transition-colors
+                      {% if active_page == 'batches' %}text-white border-blue-400{% else %}text-slate-400 border-transparent hover:text-slate-200 hover:border-slate-500{% endif %}">Batches</a>
             <a href="{{ base_path }}/schedules"
                class="px-4 py-2.5 text-sm font-medium whitespace-nowrap border-b-2 transition-colors
                       {% if active_page == 'schedules' %}text-white border-blue-400{% else %}text-slate-400 border-transparent hover:text-slate-200 hover:border-slate-500{% endif %}">Schedules</a>
@@ -71,7 +89,7 @@
     <main class="max-w-7xl mx-auto px-4 py-6">
 {% block content %}{% endblock %}
     </main>
-    <footer class="border-t border-slate-200 dark:border-slate-800 py-4 text-center text-xs text-slate-400">
+    <footer class="border-t border-slate-200 dark:border-slate-800 py-4 text-center text-xs text-slate-500 dark:text-slate-400">
         <p>TaskQ Admin</p>
     </footer>
 </body>

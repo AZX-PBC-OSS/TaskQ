@@ -1,4 +1,4 @@
-"""The /history admin panel is registered on the router (#110).
+"""The /history admin panel is registered on the router.
 
 The history module shipped as ``_history.py`` — a leading underscore that
 ``_factory._discover_and_register`` skips — so the fully-implemented panel

@@ -332,8 +332,8 @@ def _unlink_stale_socket(path: str) -> None:
     being cleaned up. Blindly unlinking on every start is what causes the
     shutdown-race in :meth:`HealthServer.stop`, so this same "is it dead"
     check is applied at bind time too: if something is actually listening,
-    leave the path alone and let ``start_unix_server`` fail loudly instead
-    of silently stealing the socket out from under a live process.
+    leave the path alone so the bind fails loudly instead of silently
+    stealing the socket out from under a live process.
 
     ``ENOTSOCK`` means *path* exists but is a regular file, not a socket
     at all (e.g. leftover from a crash before the socket was ever bound,
@@ -351,6 +351,35 @@ def _unlink_stale_socket(path: str) -> None:
         probe.close()
     finally:
         probe.close()
+
+
+def _bind_unix_socket(path: str) -> socket.socket:
+    """Bind a listening unix socket at *path*, refusing a live peer's path.
+
+    The bind is done here rather than by handing the path to
+    ``asyncio.start_unix_server``, which removes any existing socket file
+    before binding and therefore always succeeds — replacing a live
+    server's socket instead of colliding with it. The liveness check in
+    :func:`_unlink_stale_socket` is only meaningful if the bind that
+    follows it cannot itself clear the path: with the path left in place,
+    ``bind`` raises ``EADDRINUSE`` and the collision reaches the operator
+    at boot instead of through probes that quietly answer for the wrong
+    process.
+    """
+    _unlink_stale_socket(path)
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        sock.bind(path)
+    except OSError as exc:
+        sock.close()
+        if exc.errno == errno.EADDRINUSE:
+            raise OSError(errno.EADDRINUSE, f"Address {path!r} is already in use") from None
+        raise
+    except BaseException:
+        sock.close()
+        raise
+    sock.setblocking(False)
+    return sock
 
 
 async def _read_request_head(
@@ -393,6 +422,29 @@ async def _read_request_head(
     return request_line
 
 
+class HealthTcpBindError(RuntimeError):
+    """The TCP probe listener the deployment routed here could not bind.
+
+    Raised by :meth:`HealthServer.start` when ``health_port`` is set and
+    the address cannot be served. Distinct from a bare bind ``OSError`` on
+    the Unix-socket arm: a socket-path collision means a live peer worker
+    owns that path (boot continues, the collision is a WARNING), while an
+    unservable probe port means the orchestrator routes health checks to
+    this replica and nothing answers them — the worker refuses to start
+    rather than run with probes silently dead.
+    """
+
+    def __init__(self, host: str, port: int, cause: OSError) -> None:
+        self.host = host
+        self.port = port
+        super().__init__(
+            f"health TCP listener could not bind {host}:{port} ({cause}); "
+            "the deployment's probes target this port, so refusing to start "
+            "is the honest outcome — free the port or change "
+            "TASKQ_HEALTH_PORT / TASKQ_HEALTH_HOST"
+        )
+
+
 class HealthServer:
     """HTTP health server for orchestrator probes, over a Unix socket and optionally TCP."""
 
@@ -419,20 +471,19 @@ class HealthServer:
         self._deps = deps
         self._socket_path = deps.settings.health_socket_path
 
-        _unlink_stale_socket(self._socket_path)
-
         if deps.settings.health_tasks_enabled:
             old_umask = os.umask(0o077)
             try:
-                self._server = await asyncio.start_unix_server(
-                    self._handle_unix, path=self._socket_path
-                )
+                sock = _bind_unix_socket(self._socket_path)
             finally:
                 os.umask(old_umask)
         else:
-            self._server = await asyncio.start_unix_server(
-                self._handle_unix, path=self._socket_path
-            )
+            sock = _bind_unix_socket(self._socket_path)
+        try:
+            self._server = await asyncio.start_unix_server(self._handle_unix, sock=sock)
+        except BaseException:
+            sock.close()
+            raise
         # Capture the inode we just bound so `stop()` can later verify it
         # still owns this path before unlinking — a slow-shutting-down
         # worker must never delete a *replacement* worker's fresh socket
@@ -464,7 +515,7 @@ class HealthServer:
             # nobody is actually checking. Refusing to start is the only honest outcome.
             logger.error("health-http-bind-failed", host=host, port=port, error=str(exc))
             await self.stop()
-            raise
+            raise HealthTcpBindError(host, port, exc) from exc
         logger.info("health-http-server-started", host=host, port=self.bound_port)
 
     async def stop(self) -> None:
@@ -478,11 +529,17 @@ class HealthServer:
             await self._server.wait_closed()
 
         if self._socket_path is not None:
+            # Unlink only when the inode captured at bind time still names
+            # the file now sitting at the path. A server that never bound —
+            # the collision path, where boot continued while a live peer
+            # kept the file — has no inode, so it can never prove ownership
+            # and never unlinks; deleting the peer's serving surface is
+            # exactly the shutdown-race this guard exists to prevent.
             current_inode: int | None = None
             with contextlib.suppress(OSError):
                 current_inode = os.stat(self._socket_path).st_ino
 
-            if self._socket_inode is None or current_inode == self._socket_inode:
+            if self._socket_inode is not None and current_inode == self._socket_inode:
                 with contextlib.suppress(FileNotFoundError):
                     os.unlink(self._socket_path)
                 logger.info("health-server-stopped", socket_path=self._socket_path)
@@ -490,7 +547,7 @@ class HealthServer:
                 logger.warning(
                     "health-server-stop-skipped-unlink",
                     socket_path=self._socket_path,
-                    reason="socket inode changed since bind; a replacement worker owns this path now",
+                    reason="the socket file at this path is not the one this worker bound",
                 )
 
     async def _handle_unix(

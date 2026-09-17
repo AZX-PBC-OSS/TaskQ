@@ -46,10 +46,12 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import importlib
 import signal
 import sys
 import time
 import tomllib
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import timedelta
 from pathlib import Path
@@ -84,7 +86,7 @@ is truncated and reported (see :func:`_read_line`), never fatal.
 """
 
 _HEALTH_QUERY_TIMEOUT_SECS: float = 2.0
-"""Client-side deadline on the health-check query itself (#155).
+"""Client-side deadline on the health-check query itself.
 
 Why a bound: the pool acquire beside it is already bounded (2.0 s), but
 the query was not — a server that accepts the query and never answers
@@ -310,7 +312,99 @@ def _optional_str(cfg: dict[str, Any], key: str, fallback: str | None) -> str | 
 
 def load_workgroup_config(path: Path) -> WorkgroupConfig:
     """Load a workgroup configuration from a TOML file."""
-    return WorkgroupConfig.from_toml(path)
+    cfg = WorkgroupConfig.from_toml(path)
+    _warn_on_actor_queues_no_child_consumes(cfg, _resolve_actor_registry(cfg.actors))
+    return cfg
+
+
+def _resolve_actor_registry(ref: str) -> Mapping[str, Any]:
+    """Import ``module:attr`` and return the actor registry it names.
+
+    Resolved once here, by the supervisor, because the alternative is
+    silent: every child imports the same reference the moment it is
+    spawned, so an unresolvable one crashes each of them at import. The
+    supervisor sees only a run of child exits and restarts them on
+    backoff until the burst budget is spent, burying the single real
+    cause under a cascade of respawns. This is a structural error the
+    supervisor can decide locally, so it refuses at load with a message
+    naming the reference.
+    """
+    module_name, _, attr_name = ref.partition(":")
+    try:
+        # Why no bound on this call: importing the actors module is not an
+        # I/O wait on an external party but in-process execution of the
+        # application's own module top-level — the same code every child
+        # runs at spawn and the worker CLI runs at startup. Python has no
+        # safe preemption for module execution: a thread-based deadline
+        # cannot interrupt it and would leak a thread still holding the
+        # import lock, a strictly worse failure than a hung load. A module
+        # whose top-level hangs breaks the application's own startup
+        # identically, so this is the explicit exception to the
+        # bounded-wait rule.
+        module = importlib.import_module(module_name)
+    except Exception as exc:
+        raise ValueError(
+            f"actors reference {ref!r} is unresolvable: cannot import "
+            f"{module_name!r} ({exc}). Every child would crash on import at "
+            "spawn; fix the reference or the module's own import errors."
+        ) from exc
+    try:
+        registry: Any = getattr(module, attr_name)
+    except AttributeError as exc:
+        raise ValueError(
+            f"actors reference {ref!r} is unresolvable: module "
+            f"{module_name!r} has no attribute {attr_name!r}. Every child "
+            "would crash on import at spawn."
+        ) from exc
+    if not isinstance(registry, Mapping):
+        raise ValueError(
+            f"actors reference {ref!r} must name a mapping of actor name to "
+            f"actor, got {type(registry).__name__}"
+        )
+    return cast(Mapping[str, Any], registry)
+
+
+def _warn_on_actor_queues_no_child_consumes(
+    cfg: WorkgroupConfig, registry: Mapping[str, Any]
+) -> None:
+    """Warn — loudly, once — about actors no child of this workgroup serves.
+
+    Never refuses. A workgroup is not the whole fleet: another workgroup,
+    another deployment, or a worker started by hand may consume the
+    queue, so this supervisor can prove only that *it* does not serve it.
+    Refusing would stop a set of children that can do real work over a
+    condition the process cannot decide, and a worker able to do work
+    never fails to start.
+
+    That makes the log line the only diagnosis there is, which is why it
+    names each affected actor and its queue: without it, jobs for that
+    actor enqueue successfully and pend forever with no signal anywhere.
+    One aggregated event rather than one per actor — the whole registry
+    is imported by every child, so per-actor lines would storm exactly
+    the split-queue deployments this blesses.
+    """
+    consumed = {queue for worker in cfg.workers for queue in worker.queues}
+    stranded = {
+        name: queue
+        for name, actor_ref in sorted(registry.items())
+        if isinstance(queue := getattr(actor_ref, "queue", None), str) and queue not in consumed
+    }
+    if not stranded:
+        return
+    logger.warning(
+        "actor-queues-no-child-consumes",
+        actors=stranded,
+        queues=sorted(set(stranded.values())),
+        child_queues=sorted(consumed),
+        note=(
+            "no child in this workgroup consumes these actors' queues, so "
+            "their jobs enqueue and stay pending here. Intended when another "
+            "workgroup or deployment consumes the queue — no single supervisor "
+            "can know the whole fleet, which is why this never refuses to "
+            "start. If nothing consumes it, those jobs never run: add the "
+            "queue to some [[workers]] entry's queues."
+        ),
+    )
 
 
 def _validate_config(cfg: WorkgroupConfig) -> None:
@@ -472,8 +566,8 @@ async def _child_health_check(
         async with pg_pool.acquire(timeout=2.0) as conn:
             # Why wait_for: the query must carry the deadline the acquire
             # already has — without it a black-holed server holds the
-            # caller's restart_lock past every other bound in the file
-            # (#155). A timeout lands in the except below like any other
+            # caller's restart_lock past every other bound in the file.
+            # A timeout lands in the except below like any other
             # transient DB failure: logged, counted, healthy until the
             # limit.
             row = await asyncio.wait_for(
@@ -1071,7 +1165,7 @@ async def run_forever(config_path: Path) -> None:
 
     if pg_pool:
         # Why bounded: the supervisor's health-pool close is the same
-        # dead-PG hang class as worker teardown (#38) — an unbounded close
+        # dead-PG hang class as worker teardown — an unbounded close
         # would wedge the supervisor between workgroup-shutdown-begin and
         # workgroup-shutdown-complete. The helper never raises and terminates the
         # pool on timeout.

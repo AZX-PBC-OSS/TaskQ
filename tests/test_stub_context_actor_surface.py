@@ -9,7 +9,8 @@
   span, or ``None`` when OTel is disabled"). The in-memory runner is
   uninstrumented, so the parity-correct reading is ``None`` — exactly
   what a production worker without a tracer hands the actor — and the
-  read itself must not fail. This is the runner half of issue #172;
+  read itself must not fail. This is the runner half of the stub-context
+  parity contract;
   the mirror half is guarded by
   ``tests/test_job_context_mirror_field_parity.py``, which excludes
   ``_StubContext`` from its field walk (declared minimal subset), so
@@ -23,7 +24,7 @@
   check sync actors poll). Production carries all four actor-facing
   members (``cancellation_requested``, ``check_cancelled``,
   ``should_abort``, ``progress`` — ``src/taskq/context.py:82-103``),
-  and the runner's stub context now carries them too (issue #172's
+  and the runner's stub context now carries them too (the mirrored
   method surface): cancellation checks read the runner's cancel event,
   and progress reports land observably on the context's
   ``progress_reports`` with a strictly monotone ``seq`` — the runner
@@ -45,7 +46,7 @@ _START = datetime(2025, 1, 1, tzinfo=UTC)
 async def test_stub_context_span_read_matches_the_documented_disabled_value() -> None:
     """An actor reading ``ctx.span`` through ``run_until_drained``
     observes ``None`` — the documented OTel-disabled value — and the job
-    succeeds. A failing read would be the issue-#171/#172 drift class on
+    succeeds. A failing read would be the stub-context drift class on
     the runner path: an actor written to the documented contract
     breaking only under the test backend."""
     clock = FakeClock(start=_START)

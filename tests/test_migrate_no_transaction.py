@@ -39,6 +39,7 @@ import structlog.testing
 from typer.testing import CliRunner
 
 from taskq import migrate as migrate_mod
+from taskq._close import close_conn_bounded
 from taskq._ids import new_base62
 from taskq.cli import app
 from taskq.migrate import Migration
@@ -132,14 +133,22 @@ async def test_no_transaction_migration_runs_create_index_concurrently(
         assert all(ledger[x.key] is True for x in real)
     finally:
         await _drop_schema(conn, schema)
-        await conn.close()
+        await close_conn_bounded(conn, "migrate-no-tx", 5.0)
 
 
 async def test_apply_pending_locked_applies_no_transaction_migration(
     pg_dsn: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The startup path (--migrate / TASKQ_MIGRATE_ON_START) holds a session
-    advisory lock — not a transaction — so CONCURRENTLY still works."""
+    advisory lock — not a transaction — so CONCURRENTLY still works.
+
+    The synthetic is a ``pre``-phase migration on purpose:
+    ``apply_pending_locked`` deliberately defaults to ``phase="pre"`` — the
+    post phase stays behind the operator's explicit ``taskq migrate up
+    --phase post`` because a startup event is nobody's decision to close the
+    rolling-deploy overlap window — so the startup path's no-transaction
+    mechanics are driven exactly as production reaches them.
+    """
     schema = f"mig_nt_lock_{new_base62()}".lower()
     conn = await asyncpg.connect(pg_dsn)
     try:
@@ -147,7 +156,7 @@ async def test_apply_pending_locked_applies_no_transaction_migration(
         real = await _bootstrap(conn, schema)
         m = _fake_migration(
             "90.02.00_01",
-            "post",
+            "pre",
             "-- taskq:no-transaction\n"
             "CREATE INDEX CONCURRENTLY IF NOT EXISTS nt_locked_idx "
             'ON "{schema}".jobs (status);\n',
@@ -155,7 +164,7 @@ async def test_apply_pending_locked_applies_no_transaction_migration(
         )
         monkeypatch.setattr(migrate_mod, "discover", lambda: [*real, m])
     finally:
-        await conn.close()
+        await close_conn_bounded(conn, "migrate-no-tx", 5.0)
 
     async def _factory() -> asyncpg.Connection:
         return await asyncpg.connect(pg_dsn)
@@ -170,13 +179,13 @@ async def test_apply_pending_locked_applies_no_transaction_migration(
             ledger = await _ledger_transactions(conn, schema)
             assert ledger[m.key] is False
         finally:
-            await conn.close()
+            await close_conn_bounded(conn, "migrate-no-tx", 5.0)
     finally:
         conn = await asyncpg.connect(pg_dsn)
         try:
             await _drop_schema(conn, schema)
         finally:
-            await conn.close()
+            await close_conn_bounded(conn, "migrate-no-tx", 5.0)
 
 
 # ── Directive parsing end-to-end (REAL discover()) ─────────────────────────
@@ -212,7 +221,11 @@ async def test_discover_directive_parsing_applies_end_to_end(
         # Bootstrap via the REAL package dir; only then patch, so the
         # synthetic file is applied from the patched discovery below.
         await _bootstrap(conn, schema)
-        monkeypatch.setattr(migrate_mod.resources, "files", lambda _pkg: tmp_path)
+        # Patch the importlib.resources module the discover() implementation
+        # reads (migrate_mod.resources IS this same module object) — reached
+        # via this file's own import rather than through taskq.migrate,
+        # which does not export it.
+        monkeypatch.setattr(resources, "files", lambda _pkg: tmp_path)
 
         applied = await migrate_mod.apply_pending(conn, schema=schema)
 
@@ -227,7 +240,7 @@ async def test_discover_directive_parsing_applies_end_to_end(
         assert ledger[m.key] is False
     finally:
         await _drop_schema(conn, schema)
-        await conn.close()
+        await close_conn_bounded(conn, "migrate-no-tx", 5.0)
 
 
 # ── Default path: still transactional ───────────────────────────────────────
@@ -258,7 +271,7 @@ async def test_transactional_migration_rejects_concurrently(
         assert m.key not in await migrate_mod.list_applied(conn, schema)
     finally:
         await _drop_schema(conn, schema)
-        await conn.close()
+        await close_conn_bounded(conn, "migrate-no-tx", 5.0)
 
 
 async def test_transactional_migration_rolls_back_on_failure(
@@ -294,7 +307,7 @@ async def test_transactional_migration_rolls_back_on_failure(
         assert m.key not in await migrate_mod.list_applied(conn, schema)
     finally:
         await _drop_schema(conn, schema)
-        await conn.close()
+        await close_conn_bounded(conn, "migrate-no-tx", 5.0)
 
 
 # ── Non-transactional failure modes ─────────────────────────────────────────
@@ -341,7 +354,7 @@ async def test_failed_no_transaction_migration_is_not_recorded_but_effects_persi
         )
     finally:
         await _drop_schema(conn, schema)
-        await conn.close()
+        await close_conn_bounded(conn, "migrate-no-tx", 5.0)
 
 
 async def test_rerun_of_failed_no_transaction_migration_is_safe(
@@ -388,7 +401,7 @@ async def test_rerun_of_failed_no_transaction_migration_is_safe(
         )
     finally:
         await _drop_schema(conn, schema)
-        await conn.close()
+        await close_conn_bounded(conn, "migrate-no-tx", 5.0)
 
 
 async def test_interrupted_concurrent_build_remedy_drop_and_rebuild(
@@ -452,7 +465,7 @@ async def test_interrupted_concurrent_build_remedy_drop_and_rebuild(
         assert ledger[m.key] is False
     finally:
         await _drop_schema(conn, schema)
-        await conn.close()
+        await close_conn_bounded(conn, "migrate-no-tx", 5.0)
 
 
 async def test_list_invalid_indexes_reports_then_clears_staged_debris(pg_dsn: str) -> None:
@@ -496,7 +509,7 @@ async def test_list_invalid_indexes_reports_then_clears_staged_debris(pg_dsn: st
         assert await migrate_mod.list_invalid_indexes(conn, schema) == []
     finally:
         await _drop_schema(conn, schema)
-        await conn.close()
+        await close_conn_bounded(conn, "migrate-no-tx", 5.0)
 
 
 async def test_no_transaction_migration_rejects_transaction_control_statements(
@@ -533,7 +546,7 @@ async def test_no_transaction_migration_rejects_transaction_control_statements(
         assert await conn.fetchval("SELECT 1") == 1
     finally:
         await _drop_schema(conn, schema)
-        await conn.close()
+        await close_conn_bounded(conn, "migrate-no-tx", 5.0)
 
 
 # ── Ledger surfacing / upgrade path ─────────────────────────────────────────
@@ -587,7 +600,7 @@ async def test_runner_self_heals_ledger_column_and_backfills_default(
         }
     finally:
         await _drop_schema(conn, schema)
-        await conn.close()
+        await close_conn_bounded(conn, "migrate-no-tx", 5.0)
 
 
 # ── CLI failure report (end-to-end) ─────────────────────────────────────────
@@ -609,7 +622,7 @@ def test_migrate_up_cli_reports_failed_no_transaction_migration(
             await _drop_schema(conn, schema)
             return await _bootstrap(conn, schema)
         finally:
-            await conn.close()
+            await close_conn_bounded(conn, "migrate-no-tx", 5.0)
 
     real = asyncio.run(_setup())
     m = _fake_migration(
@@ -646,14 +659,14 @@ def test_migrate_up_cli_reports_failed_no_transaction_migration(
                 )
             )
         finally:
-            await conn.close()
+            await close_conn_bounded(conn, "migrate-no-tx", 5.0)
 
     async def _cleanup() -> None:
         conn = await asyncpg.connect(pg_dsn)
         try:
             await _drop_schema(conn, schema)
         finally:
-            await conn.close()
+            await close_conn_bounded(conn, "migrate-no-tx", 5.0)
 
     try:
         assert result.exit_code == 1
@@ -680,7 +693,14 @@ async def test_apply_pending_locked_failure_self_diagnoses(
     ``apply_pending_locked`` (worker/UI startup) must abort with the SAME
     self-diagnosis the CLI prints — which migration failed, the partial
     state it left, the INVALID indexes it found, and the single action —
-    joined into ONE greppable SystemExit line, never a raw traceback."""
+    joined into ONE greppable SystemExit line, never a raw traceback.
+
+    The failing synthetic is ``pre``-phase on purpose:
+    ``apply_pending_locked`` deliberately defaults to ``phase="pre"`` (the
+    post phase stays behind the operator's explicit ``taskq migrate up
+    --phase post``), so the startup failure path is driven exactly as
+    production reaches it.
+    """
     schema = f"mig_nt_se_{new_base62()}".lower()
     conn = await asyncpg.connect(pg_dsn)
     try:
@@ -712,7 +732,7 @@ async def test_apply_pending_locked_failure_self_diagnoses(
 
         m = _fake_migration(
             "90.11.00_01",
-            "post",
+            "pre",
             "-- taskq:no-transaction\n"
             'CREATE TABLE "{schema}".se_persist (id int);\n'
             "THIS IS NOT VALID SQL;\n",
@@ -736,4 +756,4 @@ async def test_apply_pending_locked_failure_self_diagnoses(
         assert "Traceback" not in message
     finally:
         await _drop_schema(conn, schema)
-        await conn.close()
+        await close_conn_bounded(conn, "migrate-no-tx", 5.0)

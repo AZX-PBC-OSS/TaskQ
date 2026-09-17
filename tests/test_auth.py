@@ -26,14 +26,17 @@ from asyncpg.connect_utils import (
 )
 
 from taskq.auth import (
+    LEASE_RELOAD_FRACTION,
     PgCredential,
     PgCredentialProvider,
     RedisCredential,
     RedisCredentialProvider,
+    ReloadSchedule,
     enrich_pg_dsn,
     make_dedicated_conn_factory,
     make_pg_pool_factory,
     make_redis_client_factory,
+    reload_schedule_of,
 )
 from taskq.connections import (
     DEFAULT_MAX_CACHED_STATEMENT_LIFETIME,
@@ -85,14 +88,22 @@ async def _pw(value: Any) -> Any:
 class _FakePgProvider:
     """Fake PgCredentialProvider returning a canned credential."""
 
-    def __init__(self, password: str = "tok-123", username: str | None = None) -> None:  # noqa: S107  # Why: test fixture password, not a real credential.
+    def __init__(
+        self,
+        password: str = "tok-123",  # noqa: S107  # Why: test fixture password, not a real credential.
+        username: str | None = None,
+        lease_duration: float | None = None,
+    ) -> None:
         self._password = password
         self._username = username
+        self._lease_duration = lease_duration
         self.calls = 0
 
     async def get_pg_credential(self) -> PgCredential:
         self.calls += 1
-        return PgCredential(password=self._password, username=self._username)
+        return PgCredential(
+            password=self._password, username=self._username, lease_duration=self._lease_duration
+        )
 
 
 class _FakeRedisProvider:
@@ -505,6 +516,227 @@ async def test_make_pg_pool_factory_omits_new_params_when_not_provided() -> None
     assert "setup" not in call_kwargs
 
 
+# ---- ReloadSchedule ------------------------------------------------------------------------------------------------
+
+
+def test_pg_credential_rejects_a_non_positive_lease() -> None:
+    """A lease of zero or negative seconds is not a TTL a rebuild can be
+    scheduled from; it is rejected where the credential is made."""
+    with pytest.raises(ValueError, match="lease_duration"):
+        PgCredential(password="pw", username="u", lease_duration=0)
+
+
+def test_reload_schedule_is_empty_until_something_is_configured_or_issued() -> None:
+    schedule = ReloadSchedule()
+    assert schedule.interval is None
+    assert schedule.lease_duration is None
+    assert schedule.pins_pair is False
+    assert schedule.derived is False
+
+
+def test_reload_schedule_rejects_a_non_positive_configured_interval() -> None:
+    with pytest.raises(ValueError, match="configured reload interval"):
+        ReloadSchedule(configured=0)
+
+
+def test_reload_schedule_derives_the_interval_from_the_granted_lease() -> None:
+    """With no explicit interval, a pinned pair is rebuilt at half its lease
+    TTL: a full half-life is left for a failed rebuild to be retried before
+    the issuer revokes the pair."""
+    schedule = ReloadSchedule()
+    schedule.record(PgCredential(password="pw", username="v-lease-1", lease_duration=3600))
+    assert schedule.interval == 3600 * LEASE_RELOAD_FRACTION == 1800.0
+    assert schedule.derived is True
+    assert schedule.pins_pair is True
+
+
+def test_reload_schedule_configured_interval_always_wins() -> None:
+    schedule = ReloadSchedule(configured=600.0)
+    schedule.record(PgCredential(password="pw", username="v-lease-1", lease_duration=3600))
+    assert schedule.interval == 600.0
+    assert schedule.derived is False
+
+
+def test_reload_schedule_keeps_the_shortest_lease_it_has_seen() -> None:
+    """Vault caps a lease at the issuing token's remaining TTL, so a lease
+    can come back shorter than the last one; the cadence follows the
+    shortest, never a later, longer grant."""
+    schedule = ReloadSchedule()
+    schedule.record(PgCredential(password="pw", username="a", lease_duration=3600))
+    schedule.record(PgCredential(password="pw", username="b", lease_duration=600))
+    schedule.record(PgCredential(password="pw", username="c", lease_duration=7200))
+    assert schedule.lease_duration == 600
+    assert schedule.interval == 300.0
+
+
+def test_reload_schedule_composes_its_sources_live() -> None:
+    """A consumer rebuilding several factories reads one schedule whose lease
+    is the shortest across them and whose configured interval is its own;
+    a lease recorded on a source after composition is seen through it."""
+    pool_schedule = ReloadSchedule()
+    conn_schedule = ReloadSchedule()
+    composite = ReloadSchedule(sources=(pool_schedule, conn_schedule))
+    assert composite.interval is None
+    pool_schedule.record(PgCredential(password="pw", username="a", lease_duration=3600))
+    assert composite.lease_duration == 3600
+    assert composite.pins_pair is True
+    conn_schedule.record(PgCredential(password="pw", username="b", lease_duration=1200))
+    assert composite.interval == 600.0
+    explicit = ReloadSchedule(configured=90.0, sources=(pool_schedule,))
+    assert explicit.interval == 90.0
+
+
+def test_token_credentials_never_pin_and_never_schedule() -> None:
+    """A token credential refreshes per physical connection, so it neither
+    pins a pair nor contributes a lease to the cadence."""
+    schedule = ReloadSchedule()
+    schedule.record(PgCredential(password="tok"))
+    assert schedule.pins_pair is False
+    assert schedule.interval is None
+
+
+# ---- make_pg_pool_factory - the lease it is issued and the pinned-pair warning ----------------------------------
+
+
+def _lease_events(captured: list[Any]) -> tuple[list[Any], list[Any]]:
+    warnings = [e for e in captured if e["event"] == "pg-lease-pair-pinned-without-reload"]
+    derived = [e for e in captured if e["event"] == "pg-lease-reload-derived"]
+    return warnings, derived
+
+
+async def _run_pool_factory(
+    provider: _FakePgProvider, **kwargs: Any
+) -> tuple[list[Any], list[Any]]:
+    factory = make_pg_pool_factory("postgresql://user@host:5432/db", provider, **kwargs)
+    with (
+        structlog.testing.capture_logs() as captured,
+        patch("asyncpg.create_pool", new=AsyncMock(return_value=MagicMock())),
+    ):
+        await factory()
+    return _lease_events(captured)
+
+
+async def test_pool_factory_records_the_granted_lease_on_its_schedule() -> None:
+    """Each build records the credential it was issued on the factory's
+    schedule, so a consumer with no explicit interval rebuilds at half the
+    granted TTL - and reports the derived cadence so an operator can see
+    when the next rebuild is due and what it was derived from."""
+    schedule = ReloadSchedule()
+    provider = _FakePgProvider(password="pw", username="v-lease", lease_duration=3600)
+    factory = make_pg_pool_factory(
+        "postgresql://user@host:5432/db", provider, reload_schedule=schedule
+    )
+    assert reload_schedule_of(factory) is schedule
+    with (
+        structlog.testing.capture_logs() as captured,
+        patch("asyncpg.create_pool", new=AsyncMock(return_value=MagicMock())),
+    ):
+        await factory()
+    warnings, derived = _lease_events(captured)
+    assert schedule.interval == 1800.0
+    assert warnings == []
+    assert len(derived) == 1
+    assert derived[0]["lease_duration"] == 3600
+    assert derived[0]["reload_interval"] == 1800.0
+    assert derived[0]["role"] == "pool"
+
+
+async def test_pool_factory_built_without_a_schedule_declares_one() -> None:
+    """A consumer handed an opaque factory can still adopt the cadence the
+    factory derives: the factory declares a schedule of its own."""
+    provider = _FakePgProvider(password="pw", username="v-lease", lease_duration=600)
+    factory = make_pg_pool_factory("postgresql://user@host:5432/db", provider)
+    schedule = reload_schedule_of(factory)
+    assert schedule is not None
+    assert schedule.interval is None
+    with patch("asyncpg.create_pool", new=AsyncMock(return_value=MagicMock())):
+        await factory()
+    assert schedule.interval == 300.0
+
+
+async def test_pool_factory_warns_when_a_lease_pair_has_no_ttl_and_no_reload() -> None:
+    """A username-bearing credential is one lease pair pinned to the pool's
+    life. With no reload configured and no TTL reported there is nothing to
+    derive a rebuild from, so building the pool warns that reconnects fail
+    authentication once the lease expires, naming TASKQ_RELOAD_INTERVAL."""
+    warnings, derived = await _run_pool_factory(
+        _FakePgProvider(password="pw", username="lease-user")
+    )
+    assert len(warnings) == 1
+    assert warnings[0]["role"] == "pool"
+    assert warnings[0]["lease_ttl"] is None
+    # And the pool was still built (factory() returned above): a warning,
+    # never a refusal.
+    assert "TASKQ_RELOAD_INTERVAL" in warnings[0]["remedy"]
+    assert derived == []
+
+
+async def test_pool_factory_stays_silent_when_a_reload_is_configured() -> None:
+    """A username-bearing credential with an explicit reload interval is the
+    operator's own cadence: neither the warning nor the derived line."""
+    warnings, derived = await _run_pool_factory(
+        _FakePgProvider(password="pw", username="lease-user", lease_duration=3600),
+        reload_schedule=ReloadSchedule(configured=300.0),
+    )
+    assert warnings == []
+    assert derived == []
+
+
+async def test_pool_factory_stays_silent_for_a_token_only_provider() -> None:
+    """A token credential (username None) re-fetches per physical
+    connection, so no reload schedule is required and nothing is logged."""
+    warnings, derived = await _run_pool_factory(_FakePgProvider(password="tok-123"))
+    assert warnings == []
+    assert derived == []
+
+
+async def test_dedicated_conn_factory_on_a_shared_schedule_counts_and_warns_like_a_pool() -> None:
+    """A long-lived dedicated connection (the worker's notify/leader conns)
+    is pinned to its pair exactly as a pool is: on the consumer's shared
+    schedule its lease counts toward the cadence, and with nothing to
+    derive from it warns."""
+    schedule = ReloadSchedule()
+    with_ttl = make_dedicated_conn_factory(
+        "postgresql://user@host:5432/db",
+        _FakePgProvider(password="pw", username="v", lease_duration=1000),
+        reload_schedule=schedule,
+    )
+    no_ttl = make_dedicated_conn_factory(
+        "postgresql://user@host:5432/db",
+        _FakePgProvider(password="pw", username="v"),
+        reload_schedule=ReloadSchedule(),
+    )
+    with (
+        structlog.testing.capture_logs() as captured,
+        patch("asyncpg.connect", new=AsyncMock(return_value=MagicMock())),
+    ):
+        await with_ttl()
+        await no_ttl()
+    warnings, derived = _lease_events(captured)
+    assert schedule.interval == 500.0
+    assert [e["role"] for e in derived] == ["dedicated_conn"]
+    assert [e["role"] for e in warnings] == ["dedicated_conn"]
+
+
+async def test_one_shot_dedicated_conn_factory_records_but_never_warns() -> None:
+    """A dedicated-connection factory built without a schedule is a one-shot
+    connection its caller opens and closes (a migration); there is no
+    long-lived connection to rotate, so no pinned-pair warning - but the
+    lease is still recorded on the schedule it declares."""
+    factory = make_dedicated_conn_factory(
+        "postgresql://user@host:5432/db", _FakePgProvider(password="pw", username="v")
+    )
+    with (
+        structlog.testing.capture_logs() as captured,
+        patch("asyncpg.connect", new=AsyncMock(return_value=MagicMock())),
+    ):
+        await factory()
+    warnings, _derived = _lease_events(captured)
+    assert warnings == []
+    declared = reload_schedule_of(factory)
+    assert declared is not None and declared.pins_pair is True
+
+
 # ---- make_dedicated_conn_factory ------------------------------------------------------------------------------
 
 
@@ -611,6 +843,27 @@ async def test_make_dedicated_conn_factory_omits_new_params_when_not_provided() 
     assert "setup" not in call_kwargs
 
 
+async def test_make_dedicated_conn_factory_declares_setup_as_the_inheritable_init_hook() -> None:
+    """A dedicated connection's ``setup`` is its per-connection setup, so
+    the factory DECLARES it: a worker building a shadow connection
+    family (the per-slot pool, when this factory provides the LOOP-scope
+    registration) reads the hook back off the factory and replays it.
+    Without a ``setup`` the factory declares nothing — the worker then
+    warns rather than guessing."""
+    from taskq.connections import connection_init_hook
+
+    provider = _FakePgProvider(password="tok")
+
+    async def setup(conn: Any) -> None:
+        await conn.execute("SET search_path TO app")
+
+    with_hook = make_dedicated_conn_factory("postgresql://user@host:5432/db", provider, setup=setup)
+    without_hook = make_dedicated_conn_factory("postgresql://user@host:5432/db", provider)
+
+    assert connection_init_hook(with_hook) is setup
+    assert connection_init_hook(without_hook) is None
+
+
 # ---- Per-connection credential refresh ----
 #
 # The regression these cover: the factories used to resolve the credential
@@ -680,6 +933,24 @@ async def test_dedicated_conn_password_is_callable_refetched_per_connection() ->
     assert await _pw(password_arg) == "conn-2"
 
 
+async def test_dedicated_conn_password_pins_a_username_bearing_pair() -> None:
+    """A LISTEN / advisory-lock connection built on a Vault lease re-opens
+    with that lease's password: asyncpg re-invokes the callable on a
+    re-open, and the pinned username has no other valid password."""
+    provider = _RotatingPgProvider(password="lease-pw-1", username="v-lease-1")
+    factory = make_dedicated_conn_factory("postgresql://user@host/db", provider)
+
+    with patch("asyncpg.connect", new=AsyncMock(return_value=MagicMock())) as mock_connect:
+        await factory()
+
+    kwargs = mock_connect.call_args.kwargs
+    assert kwargs["user"] == "v-lease-1"
+    provider.username = "v-lease-2"
+    provider.password = "lease-pw-2"
+    assert await _pw(kwargs["password"]) == "lease-pw-1"
+    assert provider.calls == 1
+
+
 async def test_password_callable_propagates_provider_failure() -> None:
     """A failing token fetch surfaces as a connection error, never a silent
     hang or an unauthenticated fallback - and the provider's own exception
@@ -733,11 +1004,12 @@ async def test_password_callable_logs_provider_failure() -> None:
     assert entry["log_level"] == "error"
 
 
-async def test_password_callable_rejects_changed_username() -> None:
-    """asyncpg resolves `user=` once per pool and only `password=` per
-    connection, so a provider that rotates its USERNAME cannot be honoured in
-    place. That must fail loudly rather than pair a fresh password with the
-    stale username (which would authenticate as the wrong role)."""
+async def test_password_callable_pins_a_username_bearing_pair() -> None:
+    """A credential that carries a username is one issued pair (Vault dynamic
+    database credentials). asyncpg resolves `user=` once per pool, so every
+    physical connection must authenticate with THAT pair's password - never
+    with a re-fetched password belonging to a different username - and the
+    provider is not consulted again until the pool is rebuilt."""
     provider = _RotatingPgProvider(password="pw-1", username="vault-user-a")
     factory = make_pg_pool_factory("postgresql://old@host/db", provider)
 
@@ -749,11 +1021,20 @@ async def test_password_callable_rejects_changed_username() -> None:
     password_arg = call_kwargs["password"]
     assert await _pw(password_arg) == "pw-1"
 
-    # Vault issues a brand-new username/password pair on rotation.
+    # Vault issues a brand-new username/password pair on the next fetch; the
+    # live pool is still pinned to vault-user-a and keeps that pair's password.
     provider.username = "vault-user-b"
     provider.password = "pw-2"
-    with pytest.raises(RuntimeError, match="changed the username"):
-        await _pw(password_arg)
+    assert await _pw(password_arg) == "pw-1"
+    assert await _pw(password_arg) == "pw-1"
+    assert provider.calls == 1
+
+    # The pool rebuild (SIGHUP / reload_credentials) is where the pair rotates.
+    with patch("asyncpg.create_pool", new=AsyncMock(return_value=MagicMock())) as mock_rebuild:
+        await factory()
+    rebuilt = mock_rebuild.call_args.kwargs
+    assert rebuilt["user"] == "vault-user-b"
+    assert await _pw(rebuilt["password"]) == "pw-2"
 
 
 async def test_password_callable_allows_username_none_providers() -> None:

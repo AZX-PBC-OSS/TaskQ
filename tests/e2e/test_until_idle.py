@@ -38,12 +38,12 @@ from .conftest import _DELETE_ORDER, _flushdb, _stop_container
 
 if TYPE_CHECKING:
     import asyncpg
-    from containerspec import BuiltImage
     from testcontainers.core.container import DockerContainer
     from testcontainers.core.network import Network
 
     from taskq import TaskQ
 
+    from ._types import BuiltImage
     from .conftest import E2EDragonfly, E2ESchema
 
 pytestmark = [pytest.mark.e2e, pytest.mark.timeout(900)]

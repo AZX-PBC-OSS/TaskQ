@@ -17,7 +17,11 @@ from taskq import actor
 from taskq._ids import new_uuid
 from taskq.batch import EnqueueItem
 from taskq.client._jobs import JobsClient
-from taskq.exceptions import DuplicateIdempotencyKeyError, PayloadValidationError
+from taskq.exceptions import (
+    DuplicateIdempotencyKeyError,
+    PayloadValidationError,
+    SingletonCollisionError,
+)
 from taskq.testing.clock import FakeClock
 from taskq.testing.in_memory import InMemoryBackend
 
@@ -42,6 +46,11 @@ async def _test_actor(_payload: _Payload) -> None:
     unique_states=("pending", "scheduled", "running"),
 )
 async def _unique_for_actor(_payload: _Payload) -> None:  # pyright: ignore[reportUnusedFunction] # Why: actor decorator registers the function; it is accessed via the registry at test time.
+    pass
+
+
+@actor(name="batch_fast_bystander_actor")
+async def _bystander_actor(_payload: _Payload) -> None:  # pyright: ignore[reportUnusedFunction] # Why: actor decorator registers the function; it is accessed via the registry at test time.
     pass
 
 
@@ -285,6 +294,90 @@ class TestTU11DuplicateKeyTypedError:
                 [EnqueueItem(actor_ref=_test_actor, payload=_Payload(value=2), idempotency_key=key)]
             )
 
+    async def test_ambiguous_shape_batch_names_the_repeating_pair(self) -> None:
+        """The in-memory analog of the ambiguous-detail integration pins:
+        two distinct pairs that would render to the SAME server violation
+        text (``("a, b", "c")`` and ``("a", "b, c")`` both render
+        ``(a, b, c)``), only one of them repeated. The mirror names the
+        repeating pair exactly — the same answer the PG path gives, from
+        the same shared rule, so the attribution can never drift between
+        backends on the shapes where the driver's text is useless."""
+        backend = _make_backend()
+        client = _make_client(backend)
+        items = [
+            EnqueueItem(
+                actor_ref=_test_actor,
+                payload=_Payload(value=1),
+                idempotency_key="c",
+                idempotency_scope="a, b",
+            ),
+            EnqueueItem(
+                actor_ref=_test_actor,
+                payload=_Payload(value=2),
+                idempotency_key="c",
+                idempotency_scope="a, b",
+            ),
+            # The foil: a distinct pair whose rendered violation detail is
+            # indistinguishable from the repeating pair's. Appears once.
+            EnqueueItem(
+                actor_ref=_test_actor,
+                payload=_Payload(value=3),
+                idempotency_key="b, c",
+                idempotency_scope="a",
+            ),
+        ]
+
+        with pytest.raises(DuplicateIdempotencyKeyError) as exc_info:
+            await client.enqueue_batch_fast(items)
+
+        assert exc_info.value.idempotency_scope == "a, b"
+        assert exc_info.value.idempotency_key == "c"
+        assert len(backend._jobs) == 0  # type: ignore[reportPrivateUsage]  # Why: test-only admission check
+
+    async def test_two_distinct_duplicate_pairs_name_the_first_repeat(self) -> None:
+        """Two DIFFERENT pairs each repeat in one batch. The statement
+        aborts on the pair whose repeat it reaches first in batch order —
+        the attribution must name that pair and never the later one, so a
+        second duplicate cannot mask which collision actually fired."""
+        backend = _make_backend()
+        client = _make_client(backend)
+        items = [
+            EnqueueItem(
+                actor_ref=_test_actor,
+                payload=_Payload(value=1),
+                idempotency_key="k1",
+                idempotency_scope="s1",
+            ),
+            # The later duplicate: present but its repeat comes last, so
+            # the statement never reaches it.
+            EnqueueItem(
+                actor_ref=_test_actor,
+                payload=_Payload(value=2),
+                idempotency_key="k2",
+                idempotency_scope="s2",
+            ),
+            # The first repeat in batch order — the actual violator.
+            EnqueueItem(
+                actor_ref=_test_actor,
+                payload=_Payload(value=3),
+                idempotency_key="k1",
+                idempotency_scope="s1",
+            ),
+            EnqueueItem(
+                actor_ref=_test_actor,
+                payload=_Payload(value=4),
+                idempotency_key="k2",
+                idempotency_scope="s2",
+            ),
+        ]
+
+        with pytest.raises(DuplicateIdempotencyKeyError) as exc_info:
+            await client.enqueue_batch_fast(items)
+
+        assert exc_info.value.idempotency_scope == "s1"
+        assert exc_info.value.idempotency_key == "k1"
+        assert len(backend._jobs) == 0  # type: ignore[reportPrivateUsage]  # Why: test-only admission check
+
 
 class TestTUBatchTierUniqueForParity:
     """Actor-declared ``unique_for`` is not applied on the batch tiers —
@@ -304,10 +397,10 @@ class TestTUBatchTierUniqueForParity:
     the worst kind this project ships.
 
     Whether the batch tier SHOULD honor ``unique_for`` is an open owner
-    decision (River enforces batch uniqueness with a partial unique
-    index + ON CONFLICT —
-    vendor/river/riverdriver/riverpgxv5/internal/dbsqlc/river_job.sql);
-    these pins hold the parity with current production behavior, not an
+    decision; TaskQ's current implementation trades batch-path dedup
+    completeness for throughput: a per-item advisory lock round trip
+    per item in a bulk insert would defeat the optimization entirely.
+    These pins hold the parity with current production behavior, not an
     endorsement of it.
     """
 
@@ -394,6 +487,39 @@ class TestTUBatchTierUniqueForParity:
         )
         assert second.was_existing is True
         assert len(backend._jobs) == 1  # type: ignore[reportPrivateUsage]  # Why: admission check against the mirror's store
+
+
+class TestTU12SingletonCollisionTypedError:
+    """The fast tier refuses a singleton collision with the TYPED error.
+
+    The PG COPY path converts a ``jobs_singleton_uniq`` violation into the
+    typed ``SingletonCollisionError`` — the same refusal class the
+    single-enqueue path raises. The mirror's fast tier must raise the same
+    typed error and store nothing: a suite validated against
+    ``InMemoryBackend`` must see the refusal shape production produces.
+    """
+
+    async def test_intra_batch_singleton_duplicate_raises_typed_error(self) -> None:
+        backend = _make_backend()
+        client = _make_client(backend)
+        items = [
+            EnqueueItem(
+                actor_ref=_test_actor,
+                payload=_Payload(value=1),
+                metadata={"singleton": True},
+            ),
+            EnqueueItem(
+                actor_ref=_test_actor,
+                payload=_Payload(value=2),
+                metadata={"singleton": True},
+            ),
+        ]
+
+        with pytest.raises(SingletonCollisionError) as exc_info:
+            await client.enqueue_batch_fast(items)
+
+        assert exc_info.value.actor == "batch_fast_test_actor"
+        assert len(backend._jobs) == 0  # type: ignore[reportPrivateUsage]  # Why: test-only admission check
 
 
 # ── Integration tests ─────────────────────────────────────────────────────
@@ -944,21 +1070,22 @@ class TestTI9PayloadValidationFailureIntegration:
 
 @pytest.mark.integration
 class TestTIScopeAttributionVerification:
-    """The COPY duplicate classification's attribution is verified against
-    the batch's own (scope, key) candidates before it is trusted.
+    """The COPY duplicate classification's attribution never parses the
+    server's violation detail.
 
     Postgres renders the composite-index violation detail with RAW,
     unquoted values — a scope containing ``, `` makes the detail ambiguous
     under positional parsing: scope ``run,A`` key ``k`` reports
     ``Key (idempotency_scope, idempotency_key)=(run,A, k) already exists.``,
     which a left-to-right split mis-reads as scope ``run`` key ``A, k``.
-    The attribution therefore MATCHES the rendered detail against each
-    candidate pair instead of parsing it: the unique candidate whose
-    rendered detail equals the server's detail is attributed exactly, and
-    genuinely ambiguous renderings (two distinct candidate pairs producing
-    the same detail text) degrade to unattributed-but-typed — never a
-    wrong pair (the in-memory mirror attributes exactly by construction;
-    PG parity is best-effort with a verified fallback)."""
+    The attribution is instead resolved from the batch's own contents plus
+    a targeted post-abort lookup of the stored pairs: the first item in
+    batch order whose pair repeats an earlier item or is already stored
+    is named, exactly, whether or not the detail text was usable (the
+    in-memory mirror names it by the same shared rule). The detail-text
+    match survives only as the residual fallback for a conflicting row
+    that vanished between the abort and the lookup — and even there it
+    degrades to unattributed rather than guessing."""
 
     async def test_comma_space_scope_duplicate_attributed_exactly(self, pg_dsn: str) -> None:
         import asyncpg
@@ -999,11 +1126,16 @@ class TestTIScopeAttributionVerification:
         assert exc_info.value.idempotency_scope == "run,A"
         assert exc_info.value.idempotency_key == key
 
-    async def test_ambiguous_comma_space_pairs_degrade_to_unattributed(self, pg_dsn: str) -> None:
+    async def test_ambiguous_comma_space_pairs_attribute_exactly(self, pg_dsn: str) -> None:
         """Two DISTINCT candidate pairs render to the same detail text —
-        ``(a, b, c)`` is both ``("a, b", "c")`` and ``("a", "b, c")`` — so
-        the detail cannot name one pair honestly: the attribution fields
-        degrade to None (typed error, no attribution) instead of guessing."""
+        ``(a, b, c)`` is both ``("a, b", "c")`` and ``("a", "b, c")`` — but
+        only one of them repeats inside the batch, and the batch's own
+        contents say which: the refusal names the repeating pair exactly.
+
+        This pin previously asserted the degrade (both fields None on an
+        ambiguous rendering); exact in-batch attribution superseded it —
+        the answer never came from the detail text, so the text's
+        ambiguity no longer costs the operator the pair."""
         import asyncpg
 
         from taskq import TaskQ
@@ -1045,9 +1177,9 @@ class TestTIScopeAttributionVerification:
             with pytest.raises(DuplicateIdempotencyKeyError) as exc_info:
                 await tq.enqueue_batch_fast(items)
         assert not isinstance(exc_info.value, asyncpg.UniqueViolationError)
-        # Ambiguous rendering: neither pair is named — never a guess.
-        assert exc_info.value.idempotency_scope is None
-        assert exc_info.value.idempotency_key is None
+        # The repeating pair is named exactly; the foil is not implicated.
+        assert exc_info.value.idempotency_scope == "a, b"
+        assert exc_info.value.idempotency_key == "c"
 
         conn = await asyncpg.connect(pg_dsn)
         try:
@@ -1055,6 +1187,281 @@ class TestTIScopeAttributionVerification:
             assert count == 0
         finally:
             await conn.close()
+
+
+@pytest.mark.integration
+class TestInBatchDuplicateAttributionIsExact:
+    """An in-batch duplicate names its own pair, always, on both backends.
+
+    An in-batch duplicate is knowable from the batch's own contents before
+    a single byte reaches the server: two items carrying the same
+    ``(idempotency_scope, idempotency_key)`` cannot both be written, and
+    which pair repeats is a fact about the caller's list, not about what
+    the database chose to say afterwards. Attribution derived from the
+    server's violation text instead inherits every property of that text —
+    it is rendered with raw unquoted values, it is localized by the
+    server's locale, and it is truncated by the protocol's message limits —
+    so the one case an operator most needs named is exactly the case where
+    a comma-bearing scope, a non-English server or a long key makes the
+    text unusable. The in-memory backend already names the pair by
+    construction; the parity obligation runs the other way, toward exact,
+    and an operator holding a hundred-thousand-item batch and an
+    unattributed refusal has to bisect the batch by hand to learn what a
+    pre-send scan could have told them for free.
+
+    Stored-pair collisions (an item racing a committed row) are a different
+    condition and keep their own best-effort attribution: that pair is not
+    determined by the batch alone.
+    """
+
+    async def test_in_batch_duplicate_named_despite_ambiguous_violation_text(
+        self, pg_dsn: str
+    ) -> None:
+        """Two distinct candidate pairs render to the same violation detail —
+        ``(a, b, c)`` reads as both ``("a, b", "c")`` and ``("a", "b, c")`` —
+        yet only one of them actually repeats inside the batch. The refusal
+        must name that repeating pair, because the batch says which it is
+        without the detail text having to.
+        """
+        import asyncpg
+
+        from taskq import TaskQ
+        from taskq.migrate import apply_pending
+
+        schema = "taskq_test_batch_fast_inbatch_exact"
+        conn = await asyncpg.connect(pg_dsn)
+        try:
+            await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+            await apply_pending(conn, schema=schema)
+        finally:
+            await conn.close()
+
+        items = [
+            # The in-batch duplicate — the actual violator, repeated.
+            EnqueueItem(
+                actor_ref=_test_actor,
+                payload=_Payload(value=1),
+                idempotency_key="c",
+                idempotency_scope="a, b",
+            ),
+            EnqueueItem(
+                actor_ref=_test_actor,
+                payload=_Payload(value=2),
+                idempotency_key="c",
+                idempotency_scope="a, b",
+            ),
+            # A distinct pair whose rendered detail is indistinguishable
+            # from the violator's. Appears once, so it violates nothing.
+            EnqueueItem(
+                actor_ref=_test_actor,
+                payload=_Payload(value=3),
+                idempotency_key="b, c",
+                idempotency_scope="a",
+            ),
+        ]
+
+        async with TaskQ(dsn=pg_dsn, schema=schema) as tq:
+            with pytest.raises(DuplicateIdempotencyKeyError) as exc_info:
+                await tq.enqueue_batch_fast(items)
+
+        assert exc_info.value.idempotency_scope == "a, b", (
+            "the repeating pair is determined by the batch's own contents; "
+            "an ambiguous violation detail must not cost the operator the "
+            f"attribution, got scope {exc_info.value.idempotency_scope!r}"
+        )
+        assert exc_info.value.idempotency_key == "c", (
+            "the repeating pair's key must be named exactly, not degraded "
+            f"to None, got {exc_info.value.idempotency_key!r}"
+        )
+
+        conn = await asyncpg.connect(pg_dsn)
+        try:
+            count = await conn.fetchval(f'SELECT count(*) FROM "{schema}".jobs')  # noqa: S608
+            assert count == 0, "the refusal is all-or-nothing; no row may survive it"
+        finally:
+            await conn.close()
+
+    async def test_in_batch_duplicate_named_when_the_key_is_too_long_to_render(
+        self, pg_dsn: str
+    ) -> None:
+        """A key long enough that the server's violation detail cannot carry
+        it verbatim still yields exact attribution: the pair comes from the
+        batch, so the detail's length is irrelevant to naming it.
+        """
+        import asyncpg
+
+        from taskq import TaskQ
+        from taskq.migrate import apply_pending
+
+        schema = "taskq_test_batch_fast_inbatch_longkey"
+        conn = await asyncpg.connect(pg_dsn)
+        try:
+            await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+            await apply_pending(conn, schema=schema)
+        finally:
+            await conn.close()
+
+        # Long enough to dominate the server's violation detail, still inside
+        # the documented idempotency-key byte bound.
+        long_key = f"{'k' * 900}-{new_uuid()}"
+        items = [
+            EnqueueItem(
+                actor_ref=_test_actor,
+                payload=_Payload(value=1),
+                idempotency_key=long_key,
+                idempotency_scope="long-scope",
+            ),
+            EnqueueItem(
+                actor_ref=_test_actor,
+                payload=_Payload(value=2),
+                idempotency_key=long_key,
+                idempotency_scope="long-scope",
+            ),
+        ]
+
+        async with TaskQ(dsn=pg_dsn, schema=schema) as tq:
+            with pytest.raises(DuplicateIdempotencyKeyError) as exc_info:
+                await tq.enqueue_batch_fast(items)
+
+        assert exc_info.value.idempotency_scope == "long-scope"
+        assert exc_info.value.idempotency_key == long_key, (
+            "attribution must survive a key the server's violation detail cannot reproduce in full"
+        )
+
+    async def test_two_distinct_duplicate_pairs_name_the_first_repeat(self, pg_dsn: str) -> None:
+        """Two DIFFERENT pairs each repeat in one COPY batch. Postgres
+        aborts on the pair whose repeat the statement reaches first in
+        batch order; the attribution must name that pair — the same
+        answer the in-memory mirror gives by the shared rule — and never
+        the later duplicate."""
+        import asyncpg
+
+        from taskq import TaskQ
+        from taskq.migrate import apply_pending
+
+        schema = "taskq_test_batch_fast_inbatch_two_dups"
+        conn = await asyncpg.connect(pg_dsn)
+        try:
+            await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+            await apply_pending(conn, schema=schema)
+        finally:
+            await conn.close()
+
+        items = [
+            EnqueueItem(
+                actor_ref=_test_actor,
+                payload=_Payload(value=1),
+                idempotency_key="k1",
+                idempotency_scope="s1",
+            ),
+            # The later duplicate: present but its repeat comes last, so
+            # the statement never reaches it.
+            EnqueueItem(
+                actor_ref=_test_actor,
+                payload=_Payload(value=2),
+                idempotency_key="k2",
+                idempotency_scope="s2",
+            ),
+            # The first repeat in batch order — the actual violator.
+            EnqueueItem(
+                actor_ref=_test_actor,
+                payload=_Payload(value=3),
+                idempotency_key="k1",
+                idempotency_scope="s1",
+            ),
+            EnqueueItem(
+                actor_ref=_test_actor,
+                payload=_Payload(value=4),
+                idempotency_key="k2",
+                idempotency_scope="s2",
+            ),
+        ]
+
+        async with TaskQ(dsn=pg_dsn, schema=schema) as tq:
+            with pytest.raises(DuplicateIdempotencyKeyError) as exc_info:
+                await tq.enqueue_batch_fast(items)
+
+        assert exc_info.value.idempotency_scope == "s1"
+        assert exc_info.value.idempotency_key == "k1"
+
+        conn = await asyncpg.connect(pg_dsn)
+        try:
+            count = await conn.fetchval(f'SELECT count(*) FROM "{schema}".jobs')  # noqa: S608
+            assert count == 0, "the refusal is all-or-nothing; no row may survive it"
+        finally:
+            await conn.close()
+
+    async def test_large_batch_duplicate_attributed_exactly_pg_and_memory_agree(
+        self, pg_dsn: str
+    ) -> None:
+        """A 10K-item batch with a single in-batch duplicate pair buried near
+        the end must be attributed exactly on PG, and the in-memory twin must
+        name the identical pair for the identical batch.
+
+        This pins two things the small (2-3 item) attribution tests do not
+        reach: that the pre-scan's O(n) pass over ``args_list`` still finds
+        the correct pair at scale (not just in a 3-item toy list), and that
+        PG and the in-memory backend agree on the SAME pair for the SAME
+        large batch -- the backend-parity obligation the spec calls out,
+        exercised at a size close to what an operator would actually submit.
+        """
+        import asyncpg
+
+        from taskq import TaskQ
+        from taskq.migrate import apply_pending
+
+        schema = "taskq_test_batch_fast_inbatch_large"
+        conn = await asyncpg.connect(pg_dsn)
+        try:
+            await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+            await apply_pending(conn, schema=schema)
+        finally:
+            await conn.close()
+
+        n = 10_000
+        dup_key = f"large-batch-dup-{new_uuid()}"
+        dup_scope = "large-batch-scope"
+
+        def _build_items() -> list[EnqueueItem]:
+            items = [_make_item(i) for i in range(n)]
+            # First occurrence near the start, well clear of any chunk-sized
+            # boundary a future chunked COPY caller might introduce.
+            items[3] = EnqueueItem(
+                actor_ref=_test_actor,
+                payload=_Payload(value=3),
+                idempotency_key=dup_key,
+                idempotency_scope=dup_scope,
+            )
+            # Second occurrence deep in the tail, one item from the end.
+            items[n - 2] = EnqueueItem(
+                actor_ref=_test_actor,
+                payload=_Payload(value=n - 2),
+                idempotency_key=dup_key,
+                idempotency_scope=dup_scope,
+            )
+            return items
+
+        async with TaskQ(dsn=pg_dsn, schema=schema) as tq:
+            with pytest.raises(DuplicateIdempotencyKeyError) as pg_exc:
+                await tq.enqueue_batch_fast(_build_items())
+
+        assert pg_exc.value.idempotency_scope == dup_scope
+        assert pg_exc.value.idempotency_key == dup_key
+
+        conn = await asyncpg.connect(pg_dsn)
+        try:
+            count = await conn.fetchval(f'SELECT count(*) FROM "{schema}".jobs')  # noqa: S608
+            assert count == 0, "the refusal is all-or-nothing; no row may survive it"
+        finally:
+            await conn.close()
+
+        backend = _make_backend()
+        client = _make_client(backend)
+        with pytest.raises(DuplicateIdempotencyKeyError) as mem_exc:
+            await client.enqueue_batch_fast(_build_items())
+
+        assert mem_exc.value.idempotency_scope == pg_exc.value.idempotency_scope
+        assert mem_exc.value.idempotency_key == pg_exc.value.idempotency_key
 
 
 @pytest.mark.integration
@@ -1108,5 +1515,116 @@ class TestTIPastScheduledAtNormalized:
             # INSERT arms' semantics.
             assert rec["status"] == "pending"
             assert rec["scheduled_at"] == past
+        finally:
+            await conn.close()
+
+
+@pytest.mark.integration
+class TestTISingletonCollisionTypedError:
+    """The COPY tier converts a ``jobs_singleton_uniq`` violation into the
+    typed ``SingletonCollisionError`` — the same refusal class the
+    single-enqueue path raises — never a raw driver ``UniqueViolationError``.
+
+    COPY has no ON CONFLICT arbiter, so the violation aborts the whole
+    statement: the refusal is all-or-nothing, and no row from the batch —
+    including an unrelated actor's item — may survive it.
+    """
+
+    async def test_in_batch_singleton_duplicate_raises_typed_error(self, pg_dsn: str) -> None:
+        import asyncpg
+
+        from taskq import TaskQ
+        from taskq.migrate import apply_pending
+
+        schema = "taskq_test_batch_fast_singleton_dup"
+        conn = await asyncpg.connect(pg_dsn)
+        try:
+            await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+            await apply_pending(conn, schema=schema)
+        finally:
+            await conn.close()
+
+        items = [
+            EnqueueItem(
+                actor_ref=_test_actor,
+                payload=_Payload(value=1),
+                metadata={"singleton": True},
+            ),
+            EnqueueItem(
+                actor_ref=_test_actor,
+                payload=_Payload(value=2),
+                metadata={"singleton": True},
+            ),
+        ]
+
+        async with TaskQ(dsn=pg_dsn, schema=schema) as tq:
+            with pytest.raises(SingletonCollisionError) as exc_info:
+                await tq.enqueue_batch_fast(items)
+        assert not isinstance(exc_info.value, asyncpg.UniqueViolationError)
+        # The in-batch repeat is knowable from the batch's own contents;
+        # the attribution names the colliding actor exactly.
+        assert exc_info.value.actor == "batch_fast_test_actor"
+
+        conn = await asyncpg.connect(pg_dsn)
+        try:
+            count = await conn.fetchval(f'SELECT count(*) FROM "{schema}".jobs')  # noqa: S608
+            assert count == 0, "the refusal is all-or-nothing; no row may survive it"
+        finally:
+            await conn.close()
+
+    async def test_stored_singleton_collision_aborts_whole_copy(self, pg_dsn: str) -> None:
+        """The collision can equally be against a job committed by an
+        earlier call: a batch carrying one singleton item for an actor that
+        already holds a live singleton job raises the typed refusal and
+        admits none of its other, unrelated items either."""
+        import asyncpg
+
+        from taskq import TaskQ
+        from taskq.migrate import apply_pending
+
+        schema = "taskq_test_batch_fast_singleton_stored"
+        conn = await asyncpg.connect(pg_dsn)
+        try:
+            await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+            await apply_pending(conn, schema=schema)
+        finally:
+            await conn.close()
+
+        async with TaskQ(dsn=pg_dsn, schema=schema) as tq:
+            await tq.enqueue_batch_fast(
+                [
+                    EnqueueItem(
+                        actor_ref=_test_actor,
+                        payload=_Payload(value=1),
+                        metadata={"singleton": True},
+                    )
+                ]
+            )
+            with pytest.raises(SingletonCollisionError) as exc_info:
+                await tq.enqueue_batch_fast(
+                    [
+                        EnqueueItem(
+                            actor_ref=_bystander_actor,
+                            payload=_Payload(value=2),
+                        ),
+                        EnqueueItem(
+                            actor_ref=_test_actor,
+                            payload=_Payload(value=3),
+                            metadata={"singleton": True},
+                        ),
+                    ]
+                )
+        assert not isinstance(exc_info.value, asyncpg.UniqueViolationError)
+        # The post-abort lookup of the stored live singleton rows names
+        # the colliding actor exactly (no in-batch repeat exists here).
+        assert exc_info.value.actor == "batch_fast_test_actor"
+
+        conn = await asyncpg.connect(pg_dsn)
+        try:
+            rows = await conn.fetch(f'SELECT actor FROM "{schema}".jobs')  # noqa: S608
+            assert [r["actor"] for r in rows] == ["batch_fast_test_actor"], (
+                "the aborted COPY admitted the unrelated actor's item; "
+                "the single-statement COPY aborts with nothing written"
+            )
         finally:
             await conn.close()

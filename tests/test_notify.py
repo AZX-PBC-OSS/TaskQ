@@ -16,7 +16,7 @@ import asyncio
 import contextlib
 import inspect
 import uuid
-from collections.abc import Callable, Iterator
+from collections.abc import Callable
 from datetime import timedelta
 from pathlib import Path
 from unittest.mock import AsyncMock, Mock
@@ -26,6 +26,7 @@ import pytest
 
 from taskq.backend.clock import Clock
 from taskq.backend.postgres import PostgresBackend
+from taskq.constants import events_channel, wake_channel, worker_channel
 from taskq.testing.assertions import wait_for, wait_for_condition
 from taskq.worker.notify import (
     _active_listeners,
@@ -130,16 +131,11 @@ def _make_channels(
 # ---- Module-state cleanup fixture ----------------------------------------------------------------------------
 
 
-@pytest.fixture(autouse=True)
-def _restore_notify_module_globals() -> Iterator[None]:  # pyright: ignore[reportUnusedFunction] # Why: pytest autouse fixtures are consumed by the framework; pyright does not track fixture usage
-    """Ensure module-level mutable state is clean between test files."""
-    _active_listeners.clear()
-    _connected_lookup.clear()
-    try:
-        yield
-    finally:
-        _active_listeners.clear()
-        _connected_lookup.clear()
+# The module-global listener bookkeeping (_active_listeners /
+# _connected_lookup) is reset around every test by the conftest-level
+# _reset_notify_module_globals autouse fixture — this file's former
+# file-local copy of that reset was promoted there (with the four other
+# identical copies across the notify suites) so every test gets it.
 
 
 # ---- Listener startup --------------------------------------------------------------------------------------
@@ -163,9 +159,9 @@ class TestListenerStartup:
 
         assert conn.add_listener.call_count == 3
         channels_registered = [c[0][0] for c in conn.add_listener.call_args_list]
-        assert "taskq_wake_taskq_test" in channels_registered
-        assert "taskq_events_taskq_test" in channels_registered
-        assert f"taskq_worker_taskq_test_{_WORKER_ID}" in channels_registered
+        assert wake_channel("taskq_test") in channels_registered
+        assert events_channel("taskq_test") in channels_registered
+        assert worker_channel("taskq_test", str(_WORKER_ID)) in channels_registered
 
 
 # ---- Fan-out (wake channel) ----------------------------------------------------------------------
@@ -197,6 +193,41 @@ class TestWakeFanout:
             mock_conn = _mock_conn()
             cb(mock_conn, 123, "taskq_wake_x", "")
             await asyncio.wait_for(event.wait(), timeout=0.1)
+
+    async def test_callback_makes_no_log_call_when_debug_is_off(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Every enqueue in the schema wakes every listener, and a structlog
+        call runs the whole processor chain before the stdlib level check
+        drops the record: at INFO the callback must ask the level and stop,
+        never build and hand over the record."""
+        import logging
+
+        import taskq.worker.notify as notify_mod
+
+        class _LevelOnlyLogger:
+            def __init__(self) -> None:
+                self.levels_asked: list[int] = []
+                self.calls: list[str] = []
+
+            def is_enabled_for(self, level: int) -> bool:
+                self.levels_asked.append(level)
+                return False
+
+            def debug(self, event: str, **fields: object) -> None:
+                self.calls.append(event)
+
+        fake = _LevelOnlyLogger()
+        monkeypatch.setattr(notify_mod, "logger", fake)
+        backend = _make_backend()
+        cb = _make_callback(backend)
+
+        async with backend.subscribe_wake() as event:
+            cb(_mock_conn(), 123, "taskq_wake_x", "")
+            await asyncio.wait_for(event.wait(), timeout=0.1)
+
+        assert fake.levels_asked == [logging.DEBUG]
+        assert fake.calls == [], "the debug record must not be built when DEBUG is off"
 
 
 # ---- sync callback enforcement ----------------------------------------------------------------
@@ -370,9 +401,9 @@ class TestShutdownPath:
 
         assert conn.remove_listener.call_count == 3
         channels_removed = [c[0][0] for c in conn.remove_listener.call_args_list]
-        assert "taskq_wake_taskq_test" in channels_removed
-        assert "taskq_events_taskq_test" in channels_removed
-        assert f"taskq_worker_taskq_test_{_WORKER_ID}" in channels_removed
+        assert wake_channel("taskq_test") in channels_removed
+        assert events_channel("taskq_test") in channels_removed
+        assert worker_channel("taskq_test", str(_WORKER_ID)) in channels_removed
 
         unlisten_calls = [
             c[0][0]
@@ -387,38 +418,37 @@ class TestShutdownPath:
 
 class TestChannelNameInterpolation:
     def test_wake_channel_name_from_constant(self) -> None:
-        """wake_channel returns correct name."""
-        from taskq.constants import wake_channel
+        """wake_channel is the readable prefix plus the schema's tag."""
+        from taskq.constants import schema_channel_tag
 
         result = wake_channel("myschema")
-        assert result == "taskq_wake_myschema"
-        assert result != "taskq_wake_{schema}"
+        assert result == f"taskq_wake_{schema_channel_tag('myschema')}"
+        assert result != wake_channel("otherschema")
 
     def test_events_channel_name_from_constant(self) -> None:
-        """events_channel returns correct name."""
-        from taskq.constants import events_channel
+        """events_channel is the readable prefix plus the schema's tag."""
+        from taskq.constants import schema_channel_tag
 
         result = events_channel("myschema")
-        assert result == "taskq_events_myschema"
+        assert result == f"taskq_events_{schema_channel_tag('myschema')}"
 
     def test_worker_channel_name_from_constant(self) -> None:
-        """worker_channel returns correct name including worker_id."""
-        from taskq.constants import worker_channel
+        """worker_channel carries the schema tag and the worker id."""
+        from taskq.constants import schema_channel_tag
 
         result = worker_channel("myschema", "abc123")
-        assert result == "taskq_worker_myschema_abc123"
+        assert result == f"taskq_worker_{schema_channel_tag('myschema')}_abc123"
 
     def test_channel_names_used_with_worker_settings(self) -> None:
-        """When WorkerSettings has schema_name='myapp', channels
-        are interpolated correctly.
-        """
-        from taskq.constants import events_channel, wake_channel, worker_channel
-
+        """When WorkerSettings has schema_name='myapp', the channels are
+        derived from that schema and differ from another schema's."""
         deps = _make_mock_deps(schema_name="myapp")
-        assert wake_channel(deps.settings.schema_name) == "taskq_wake_myapp"
-        assert events_channel(deps.settings.schema_name) == "taskq_events_myapp"
-        wch = worker_channel(deps.settings.schema_name, str(_WORKER_ID))
-        assert wch == f"taskq_worker_myapp_{_WORKER_ID}"
+        schema = deps.settings.schema_name
+        assert wake_channel(schema) == wake_channel("myapp") != wake_channel("other")
+        assert events_channel(schema) == events_channel("myapp") != events_channel("other")
+        wch = worker_channel(schema, str(_WORKER_ID))
+        assert wch == worker_channel("myapp", str(_WORKER_ID))
+        assert wch.endswith(f"_{_WORKER_ID}")
 
 
 # ---- Reconnect backoff ----------------------------------------------------------------------------------
@@ -865,7 +895,7 @@ class TestReconnectWidenedCatch:
         ), f"reconnect warning must log type(exc).__name__; got {warning_kwargs}"
 
 
-# ---- Reconnect resilience: a HUNG factory (#156) -----------------------------------------
+# ---- Reconnect resilience: a HUNG factory -----------------------------------------
 #
 # reconnect_notify_conn awaited factory() with no bound, so a hung
 # credential provider or TCP connect parked the health-check retry loop
@@ -1002,11 +1032,12 @@ class TestReconnectFactoryBound:
                     await task
 
 
-# ---- Reconnect resilience: a HUNG post-factory LISTEN execute (#156) ---------------------
+# ---- Reconnect resilience: a HUNG post-factory LISTEN execute ---------------------
 #
-# The factory bound alone does not close #156's threat model: a rebuilt
+# The factory bound alone does not close the threat model: a rebuilt
 # connection can complete the factory handshake and then black-hole on
-# the LISTEN execute — exactly the shape #155 fixed for health queries.
+# the LISTEN execute — exactly the black-hole shape the health-check
+# query bound closes.
 # Pre-fix, that execute was unbounded while the add_listener beside it
 # was bounded, so the reconnect loop parked inside execute() while
 # holding notify_reconnect_lock — poll dispatch kept working, but the
@@ -1375,7 +1406,7 @@ class TestReconnectKeepalive:
         keepalive_mock.assert_called_once_with(new_conn, label="notify")
 
 
-# ---- Bounded closes on reconnect/health-check error paths (#38) ------------------
+# ---- Bounded closes on reconnect/health-check error paths ------------------
 #
 # The reconnect LISTEN-setup-failure cleanup, the post-reconnect old-conn
 # drain, and the health-check error path all closed conns with a bare

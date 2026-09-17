@@ -10,8 +10,10 @@ from fastapi.responses import HTMLResponse
 from jinja2 import Environment
 
 from taskq.settings import TaskQSettings
+from taskq.web._pool import BoundedPool
+from taskq.web.admin._constants import parse_text_filter
 from taskq.web.admin._factory import (
-    get_pg_pool,
+    get_admin_pool,
     get_realtime_ctx,
     get_schema,
     get_settings,
@@ -37,6 +39,61 @@ _QUEUE_OVERVIEW_SQL = (
     "GROUP BY queue ORDER BY queue"
 )
 
+# A read-only page with no filters bounds each roll-up's row count like
+# the batches page: one row per queue, capped.
+_QUEUE_ROW_CAP: int = 200
+
+# Live workers per subscribed queue - the leader's queue-depth sampler
+# read (worker/_leader_sweeps.py, _QUERY_QUEUE_LIVE_WORKERS_SQL_TEMPLATE):
+# statement_timestamp() (STABLE) so the liveness bound stays a btree
+# condition on workers_last_seen_idx, and the admin UI's own liveness
+# window, so this page, the orphan banner and the stranded-jobs detector
+# all agree on which worker counts as alive.
+_QUEUE_LIVE_WORKERS_SQL = (
+    "SELECT q AS queue, count(*) AS worker_count "
+    'FROM "{schema}".workers w, unnest(w.queues) AS q '
+    "WHERE w.last_seen_at > statement_timestamp() - make_interval(secs => $1) "
+    "GROUP BY q "
+    f"LIMIT {_QUEUE_ROW_CAP}"
+)
+
+# Stranded pending/scheduled rows per routing queue - the stranded-jobs
+# detector's SQL shape (worker/_leader_sweeps.py, _stranded_jobs_loop)
+# grouped by the queue dispatch routes on instead of by actor. The
+# routing discriminator (the actor's stored assignment for a re-pended
+# row, the row's own label otherwise) and the mutual exclusion of the two
+# strand shapes are the detector's own: a row whose actor has no
+# actor_config row counts once in the no-config shape and is never tested
+# against the workers table. The pending/scheduled predicate is served
+# index-only by jobs_dispatch_idx / jobs_scheduled_wake_idx (the partial
+# indexes the dispatch CTE uses); the liveness bound by
+# workers_last_seen_idx. No terminal row enters the read.
+_QUEUE_STRANDED_SQL = f"""\
+SELECT r.routing_queue AS queue, count(*) AS stranded_count
+FROM (
+    SELECT j.actor,
+           CASE WHEN j.assignment_routed THEN ac.queue ELSE j.queue END
+             AS routing_queue,
+           NOT EXISTS (
+             SELECT 1 FROM "{{schema}}".actor_config ac2 WHERE ac2.actor = j.actor
+           ) AS no_actor_config
+    FROM "{{schema}}".jobs j
+    LEFT JOIN "{{schema}}".actor_config ac ON ac.actor = j.actor
+    WHERE j.status IN ('pending', 'scheduled')
+) r
+WHERE r.no_actor_config
+   OR (
+       NOT r.no_actor_config
+       AND NOT EXISTS (
+         SELECT 1 FROM "{{schema}}".workers w
+         WHERE r.routing_queue = ANY(w.queues)
+           AND w.last_seen_at > statement_timestamp() - make_interval(secs => $1)
+       )
+   )
+GROUP BY r.routing_queue
+ORDER BY stranded_count DESC
+LIMIT {_QUEUE_ROW_CAP}"""
+
 _ORPHAN_QUEUES_SQL = (
     "SELECT DISTINCT j.queue "
     'FROM "{schema}".jobs j '
@@ -59,6 +116,7 @@ _QUEUE_HAS_ALIVE_WORKER_SQL = (
 
 _QUEUE_DETAIL_SQL_FIRST = (
     "SELECT id, queue, actor, status, scheduled_at, attempt, max_attempts, "
+    "retry_kind, "
     "created_at "
     'FROM "{schema}".jobs '
     "WHERE queue = $1 AND status = $2 "
@@ -67,6 +125,7 @@ _QUEUE_DETAIL_SQL_FIRST = (
 
 _QUEUE_DETAIL_SQL_CURSOR = (
     "SELECT id, queue, actor, status, scheduled_at, attempt, max_attempts, "
+    "retry_kind, "
     "created_at "
     'FROM "{schema}".jobs '
     "WHERE queue = $1 AND status = $2 "
@@ -80,7 +139,7 @@ def register(router: APIRouter) -> None:
 
     @router.get("/queues", response_class=HTMLResponse)
     async def queue_overview(  # pyright: ignore[reportUnusedFunction]  # Why: registered via FastAPI decorator; pyright cannot see the route registration.
-        pool: asyncpg.Pool = Depends(get_pg_pool),
+        pool: BoundedPool = Depends(get_admin_pool),
         schema: str = Depends(get_schema),
         tmpl: Environment = Depends(get_templates),
         realtime_ctx: tuple[str, str] = Depends(get_realtime_ctx),
@@ -90,13 +149,28 @@ def register(router: APIRouter) -> None:
         orphan_sql = _ORPHAN_QUEUES_SQL.format(
             schema=schema, live_secs=settings.admin_worker_liveness_seconds
         )
+        live_workers_sql = _QUEUE_LIVE_WORKERS_SQL.format(schema=schema)
+        stranded_sql = _QUEUE_STRANDED_SQL.format(schema=schema)
         rows: list[asyncpg.Record] = []
         orphan_rows: list[asyncpg.Record] = []
+        worker_rows: list[asyncpg.Record] = []
+        stranded_rows: list[asyncpg.Record] = []
         async with pool.acquire() as conn:
             rows = await conn.fetch(overview_sql)
             orphan_rows = await conn.fetch(orphan_sql)
+            worker_rows = await conn.fetch(live_workers_sql, settings.admin_worker_liveness_seconds)
+            stranded_rows = await conn.fetch(stranded_sql, settings.admin_worker_liveness_seconds)
         queues = [dict(r) for r in rows]
         orphan_queues: frozenset[str] = frozenset(str(r["queue"]) for r in orphan_rows)
+        live_by_queue: dict[str, int] = {
+            str(r["queue"]): int(r["worker_count"]) for r in worker_rows
+        }
+        stranded_by_queue: dict[str, int] = {
+            str(r["queue"]): int(r["stranded_count"]) for r in stranded_rows
+        }
+        for q in queues:
+            q["live_workers"] = live_by_queue.get(str(q["queue"]), 0)
+            q["stranded_count"] = stranded_by_queue.get(str(q["queue"]), 0)
         realtime_mode, mode_label = realtime_ctx
         html = tmpl.get_template("queues.html").render(
             queues=queues,
@@ -109,7 +183,7 @@ def register(router: APIRouter) -> None:
     @router.get("/queues/{queue:path}", response_class=HTMLResponse)
     async def queue_detail(  # pyright: ignore[reportUnusedFunction]  # Why: registered via FastAPI decorator; pyright cannot see the route registration.
         queue: str,
-        pool: asyncpg.Pool = Depends(get_pg_pool),
+        pool: BoundedPool = Depends(get_admin_pool),
         schema: str = Depends(get_schema),
         tmpl: Environment = Depends(get_templates),
         realtime_ctx: tuple[str, str] = Depends(get_realtime_ctx),
@@ -118,6 +192,10 @@ def register(router: APIRouter) -> None:
         cursor_at: str | None = Query(default=None),
         cursor_id: str | None = Query(default=None),
     ) -> HTMLResponse:
+        # The queue name from the path binds as a text parameter in every
+        # query below - the same NUL guard the list filters apply, or a
+        # %00 in the URL is an opaque driver 500.
+        parse_text_filter(queue, "queue")
         if status not in _ALLOWED_STATUSES:
             raise HTTPException(status_code=400, detail=f"invalid status filter: {status!r}")
 

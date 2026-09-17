@@ -1,4 +1,4 @@
-"""Lock-timeout refusals are counted, not just logged — the #137 asymmetry fix.
+"""Lock-timeout refusals are counted, not just logged — closing the counting asymmetry.
 
 The capacity arm of enqueue identity serialization has always counted its
 lock-budget refusals (``record_backpressure_error(actor,

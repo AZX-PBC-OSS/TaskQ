@@ -55,6 +55,7 @@ from taskq.constants import (
     progress_channel,
 )
 from taskq.settings import TaskQSettings
+from taskq.web._pool import BoundedPool
 from taskq.web._sse_limit import acquire_sse_slot
 
 logger = structlog.get_logger("taskq.web.progress")
@@ -142,13 +143,28 @@ def _resolve_last_event_id(
     Per WHATWG SSE spec §9.2.1: the ``Last-Event-ID`` header is sent
     automatically by the browser ``EventSource`` on reconnect; the query
     parameter is a curl/debugging convenience.  Header wins when both present.
+
+    Every id this stream issues is a non-negative integer sequence number,
+    so a header that is not one cannot have come from it - a hand-rolled
+    client or a proxy rewriting headers - and is rejected with a 400
+    naming the header. Reading it as "no cursor" instead would replay the
+    stream from the snapshot and silently shadow a valid query parameter.
     """
     header_val = request.headers.get("Last-Event-ID")
     if header_val is not None:
         try:
-            return int(header_val)
+            resolved = int(header_val)
         except ValueError:
-            return None
+            resolved = -1
+        if resolved < 0:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Last-Event-ID must be a non-negative integer sequence number issued by "
+                    f"this stream, got {header_val[:64]!r}"
+                ),
+            )
+        return resolved
     return query_param
 
 
@@ -326,6 +342,8 @@ def create_router(
     auth_dependency: Callable[..., Any] | None = None,
     sse_heartbeat_interval: timedelta = timedelta(seconds=15),
     max_sse_connections: int | None = None,
+    resolve_pg_pool: Callable[[Request], asyncpg.Pool] | None = None,
+    resolve_redis_client: Callable[[Request], Any] | None = None,
 ) -> APIRouter:
     """Return a FastAPI ``APIRouter`` exposing the SSE progress bridge.
 
@@ -362,6 +380,14 @@ def create_router(
         route exhaust Redis connections, event-loop tasks and file descriptors
         on the app hosting the pipeline. The admin ``/sse/{topic}`` endpoint has
         had such a cap; this one did not.
+    resolve_pg_pool / resolve_redis_client:
+        Per-request resolvers for the pool and the Redis client, used
+        instead of *pg_pool* / *redis_client* when given. A host whose pool
+        is replaced while it runs - ``taskq ui serve`` rebuilds it on a
+        credential rotation - resolves the live one from its own state on
+        every request rather than serving from the pool this router was
+        constructed with, which that rotation has closed. Each is a
+        FastAPI dependency: it may declare ``request: Request``.
     """
     if not _IDENT_RE.match(schema):
         raise ValueError(f"invalid schema identifier: {schema!r}")
@@ -406,9 +432,28 @@ def create_router(
     router = APIRouter(**router_kwargs)
 
     _schema = schema
-    _redis_client = redis_client
-    _pg_pool = pg_pool
     _heartbeat_secs = sse_heartbeat_interval.total_seconds()
+    _acquire_timeout = settings.admin_acquire_timeout
+
+    def _constructed_pool() -> asyncpg.Pool:
+        return pg_pool
+
+    def _constructed_redis() -> Any:
+        return redis_client
+
+    _resolve_pool: Callable[..., Any] = (
+        resolve_pg_pool if resolve_pg_pool is not None else _constructed_pool
+    )
+
+    def _get_pool(pool: asyncpg.Pool = Depends(_resolve_pool)) -> BoundedPool:
+        # Every checkout below is bounded (TASKQ_ADMIN_ACQUIRE_TIMEOUT): a
+        # pool with nothing to give answers 503 instead of hanging the
+        # request and every request behind it.
+        return BoundedPool(pool, acquire_timeout=_acquire_timeout, role="progress")
+
+    _get_redis: Callable[..., Any] = (
+        resolve_redis_client if resolve_redis_client is not None else _constructed_redis
+    )
     if max_sse_connections is None:
         max_sse_connections = settings.progress_max_sse_connections
     _max_sse = max_sse_connections
@@ -426,6 +471,8 @@ def create_router(
         job_id: UUID,
         request: Request,
         last_event_id: int | None = None,
+        pg_pool: BoundedPool = Depends(_get_pool),
+        redis_client: Any = Depends(_get_redis),
     ) -> Response:
         """Stream progress events for a job via SSE.
 
@@ -439,7 +486,7 @@ def create_router(
         HTTP 404 — job not found.
         HTTP 503 — Redis not configured or unavailable.
         """
-        if _redis_client is None:
+        if redis_client is None:
             return _OrjsonJSONResponse(  # pyright: ignore[reportReturnType]  # Why: FastAPI accepts any Response subclass here; the JSON response is returned for the 503 before SSE upgrade.
                 status_code=503,
                 content=_REDIS_503_BODY,
@@ -471,6 +518,8 @@ def create_router(
                 last_event_id=last_event_id,
                 sse_slot_semaphore=sse_slot_semaphore,
                 release_slot=_release_slot,
+                pg_pool=pg_pool,
+                redis_client=redis_client,
             )
         except BaseException:
             _release_slot()
@@ -483,6 +532,8 @@ def create_router(
         last_event_id: int | None,
         sse_slot_semaphore: asyncio.Semaphore,
         release_slot: Callable[[], None],
+        pg_pool: BoundedPool,
+        redis_client: Any,
     ) -> Response:
         resolved_last_event_id = _resolve_last_event_id(request, last_event_id)
         channel = progress_channel(_schema, job_id)
@@ -496,7 +547,7 @@ def create_router(
         # stream after a 200 has already been sent.
         # ------------------------------------------------------------------
 
-        pubsub = _redis_client.pubsub()
+        pubsub = redis_client.pubsub()
         try:
             await pubsub.subscribe(channel)
         except Exception as exc:
@@ -520,7 +571,7 @@ def create_router(
         # short-lived PG connection — released before any SSE
         # byte is written.
         try:
-            async with _pg_pool.acquire() as conn:
+            async with pg_pool.acquire() as conn:
                 row = await conn.fetchrow(_progress_sql, job_id)
         except Exception:
             # Cleanup must not mask the original exception from the PG query.
@@ -582,6 +633,7 @@ def create_router(
     @router.get("/api/job/{job_id}/state")
     async def job_state(  # pyright: ignore[reportUnusedFunction]  # Why: registered via FastAPI decorator.
         job_id: UUID,
+        pg_pool: BoundedPool = Depends(_get_pool),
     ) -> JSONResponse:
         """Return the current progress state for a job (polling fallback).
 
@@ -591,7 +643,7 @@ def create_router(
 
         HTTP 404 — job not found.
         """
-        async with _pg_pool.acquire() as conn:
+        async with pg_pool.acquire() as conn:
             row = await conn.fetchrow(_progress_sql, job_id)
 
         if row is None:

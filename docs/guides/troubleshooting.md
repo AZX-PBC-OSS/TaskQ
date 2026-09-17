@@ -166,9 +166,10 @@ The `scheduled_to_pending` sweep (Sweep 3) runs every 1 second **on the leader o
     UPDATE {schema}.jobs j SET status = 'pending'::{schema}.job_status
     FROM snap WHERE j.id = snap.id;
 
-    -- Then wake the producers (default schema shown; the channel is
-    -- taskq_wake_<schema>).
-    SELECT pg_notify('taskq_wake_taskq', '');
+    -- Then wake the producers. The channel embeds a hash of the schema
+    -- name (default schema shown; substitute yours in the literal, or use
+    -- taskq.constants.wake_channel(schema) from Python).
+    SELECT pg_notify('taskq_wake_' || left(encode(sha224('taskq'::bytea), 'hex'), 10), '');
     ```
 
     `FOR UPDATE SKIP LOCKED` keeps this from contending with the leader's own
@@ -180,7 +181,8 @@ The `scheduled_to_pending` sweep (Sweep 3) runs every 1 second **on the leader o
 ### Diagnosis
 
 ```sql
-SELECT ml.worker_id, w.hostname, w.pid, ml.last_seen_at
+SELECT ml.worker_id, w.hostname, w.pid, ml.last_seen_at, ml.expires_at,
+       ml.expires_at >= clock_timestamp() AS lease_live
 FROM {schema}.maintenance_leader ml
 JOIN {schema}.workers w ON ml.worker_id = w.id;
 
@@ -189,35 +191,20 @@ WHERE status = 'scheduled' AND scheduled_at <= clock_timestamp()
 GROUP BY actor;
 ```
 
-No rows from the first query = no leader. Check the admin UI at `/admin/leader` — a healthy leader shows `last_seen_at` within 30s of now.
+Leadership is a lease on that row: the holder writes an `expires_at` of its
+own choosing and renews it every `heartbeat_interval`, and any pod may take
+the row over once that instant has passed. No rows from the first query = no
+leader. `lease_live` false = the lease has lapsed and the next election cycle
+on any running pod will take it. Check the admin UI at `/admin/leader`, which
+shows the same verdict.
 
 ### Fix
 
-- **No leader:** ensure at least one worker is running. Failover SLA is `heartbeat_interval + 1s`.
+- **No leader:** ensure at least one worker is running. Failover is bounded by `leader_lease + heartbeat_interval` plus one round trip — 50s at defaults — for a leader that went silent, and by `heartbeat_interval + 1s` for one that exited cleanly.
 - **PgBouncer:** set `TASKQ_PG_DSN_DIRECT` to bypass PgBouncer. See [PgBouncer compatibility](workers.md#pgbouncer-compatibility).
-- **Stale leader:** force-release the advisory lock by terminating the backend. The election lock is schema-qualified (`taskq:maintenance_leader:<schema>`, built by `taskq.constants.schema_lock_name`), so the LIKE pattern below matches the shared prefix and any schema suffix:
-
-```sql
-SELECT pg_terminate_backend(pid)
-FROM pg_stat_activity
-WHERE query LIKE '%pg_try_advisory_lock%taskq:maintenance_leader%';
-```
-
-For a session whose query text does not carry the name (the worker binds it as a parameter), match the lock itself instead — the key is a single bigint (`classid = 0`), so compare `objid` against the qualified name's hash for your schema:
-
-```sql
-SELECT pg_terminate_backend(pid)
-FROM pg_stat_activity
-WHERE pid IN (
-    SELECT pid FROM pg_locks
-    WHERE locktype = 'advisory' AND classid = 0
-      AND objid = hashtextextended('taskq:maintenance_leader:<your-schema>', 0)
-      AND granted
-);
-```
-
-!!! warning
-    Only use `pg_terminate_backend` when the leader is confirmed stale (no `last_seen_at` update for > 60s). It forces an election cycle.
+- **Lapsed lease nobody takes:** the surviving pods cannot reach or write `{schema}.maintenance_leader`. Check their logs for `election-attempt-failed`, and check that the application role still holds `INSERT`/`UPDATE`/`DELETE` on that table. Nothing else is needed to recover the role — no privilege over other sessions, and no manual intervention in the database.
+- **`leader-advisory-lock-refused` in the logs:** a managed Postgres that restricts advisory-lock functions to admin/superuser roles refuses the election winner's courtesy `pg_try_advisory_lock` probe. The WARN names the refused function and logs once per refusal streak; leadership proceeds on the lease row alone, and election, watchdog, cron, sweep, and prune all keep running. The one exposure is a version roll alongside a release that predates the lease design and knows only the advisory lock — such a pod could lead beside the lease holder. Grant `EXECUTE` on `pg_try_advisory_lock` to the application role to restore the roll protection, or schedule the cutover so old and new releases never run together.
+- **A lease that never lapses while nothing runs:** the holder is alive and renewing but its leader-gated loops are not progressing. That is a different fault; see [`TaskQPromotionStalled`](runbooks.md).
 
 ---
 
@@ -295,7 +282,24 @@ Check whether the actor suppresses `asyncio.CancelledError` — a `try/except as
 - **Always re-raise `asyncio.CancelledError`:** never swallow it. Let it propagate so the consumer can call `mark_cancelled`.
 - **Check cancellation boundaries:** ensure the actor observes `ctx.cancellation_requested` at natural loop boundaries. For single long `await` calls, use `ctx.cancel_event.wait()`.
 - **Increase grace periods:** if the actor needs more cleanup time, raise `TASKQ_CANCELLATION_GRACE_PERIOD` and `TASKQ_CLEANUP_GRACE_PERIOD`. Constraints: `cancellation + cleanup < lock_lease` and `< termination_grace_period - 5.0`.
-- **Not retryable:** `abandoned` jobs cannot be retried via `backend.retry_job()`. Only `failed`, `crashed`, and `cancelled` can be retried.
+- **Re-running an abandoned job:** `abandoned` jobs — an operator cancel the actor did not honour within the cancellation and cleanup grace periods, so the worker gave up on the attempt (not a worker restart: that releases the job as `pending`/`scheduled`, see below) — can be retried via `backend.retry_job()` or the admin UI's Retry button, the same as `failed`, `crashed`, `cancelled`, and `succeeded` jobs. Only a `running` job (a live attempt) or one already queued as `pending`/`scheduled` is refused.
+
+### Shutdown never lands here — read `interrupt_count` instead
+
+A deploy that interrupts a running job does not produce `abandoned`: the job is released back to
+the fleet (`pending`, or `scheduled` behind the remaining termination budget when the actor never
+unwound) with its attempt refunded. You see it on the row and the timeline, not in a terminal
+state:
+
+```sql
+SELECT id, status, attempt, interrupt_count FROM {schema}.jobs WHERE id = $1;
+-- one state_change event per release carries detail->>'reason' = 'interrupted'
+```
+
+A job whose `interrupt_count` climbs without ever finishing is too long for your deploy cadence:
+it is re-run from scratch on every deploy. Bound it with `schedule_to_close` (the deadline fails
+it terminally instead of releasing it forever), or checkpoint through `ctx.progress()` — the
+released row carries the last checkpoint — and resume on re-claim.
 
 ---
 
@@ -307,7 +311,7 @@ Worker logs `notify-conn-error` and repeated `notify-reconnect-attempt`. Dispatc
 
 ### Cause
 
-The NOTIFY listener holds a dedicated direct connection (`notify_conn`) subscribed to `taskq_wake_{schema}`. A health-check issues `SELECT 1` every `notify_health_check_interval` (default 5s). On failure, it reconnects with bounded exponential backoff (initial 1s, doubling, max 30s, each delay multiplied by a random factor in [0.75, 1.25] so a fleet that lost PG simultaneously does not retry in lockstep). Common triggers: `pg_terminate_backend`, network partition, PgBouncer in transaction mode (LISTEN is session-scoped), or Postgres restart (`AdminShutdownError` is treated as reconnectable).
+The NOTIFY listener holds a dedicated direct connection (`notify_conn`) subscribed to the schema's wake channel (`wake_channel(schema)`). A health-check issues `SELECT 1` every `notify_health_check_interval` (default 5s). On failure, it reconnects with bounded exponential backoff (initial 1s, doubling, max 30s, each delay multiplied by a random factor in [0.75, 1.25] so a fleet that lost PG simultaneously does not retry in lockstep). Common triggers: `pg_terminate_backend`, network partition, PgBouncer in transaction mode (LISTEN is session-scoped), or Postgres restart (`AdminShutdownError` is treated as reconnectable).
 
 ### Diagnosis
 
@@ -413,33 +417,25 @@ No leader is elected, maintenance sweeps do not run, or `/admin/leader` shows no
 
 | Issue | Detail |
 |---|---|
-| No leader elected | `maintenance_leader` table is empty; no worker holds the advisory lock. |
-| Stale leader | Leader died but its advisory lock was not released (TCP keepalive did not detect). |
-| PgBouncer interference | `leader_conn` routes through transaction-mode pooling, silently dropping the session-scoped lock. |
+| No leader elected | `maintenance_leader` table is empty; no worker has won the row's lease. |
+| Lapsed lease nobody takes | The holder went silent and its `expires_at` has passed, but no surviving pod can reach or write the row. |
+| PgBouncer interference | `leader_conn` routes through transaction-mode pooling, which the election, renewal, and resign statements all require a direct session for. |
 
 ### Diagnosis
 
 ```sql
-SELECT * FROM {schema}.maintenance_leader;
-SELECT pid, granted FROM pg_locks
-WHERE locktype = 'advisory' AND mode = 'exclusive';
+SELECT ml.*, ml.expires_at >= clock_timestamp() AS lease_live
+FROM {schema}.maintenance_leader ml;
 ```
 
-Check the admin UI at `/admin/workers` — the `is_leader` column shows which worker holds the lock.
+Check the admin UI at `/admin/workers` — the `is_leader` column and `/admin/leader`'s `watchdog_healthy` reflect the same lease verdict this query computes.
 
 ### Fix
 
 - **No leader:** ensure at least one worker is running with a valid `TASKQ_PG_DSN_DIRECT`. Election is attempted every `heartbeat_interval`.
-- **PgBouncer:** set `TASKQ_PG_DSN_DIRECT` to bypass PgBouncer. Session-level advisory locks are silently released by transaction-mode pooling.
-- **Stale leader:** if the watchdog has not detected it, force-release by terminating the backend:
-
-```sql
-SELECT pg_terminate_backend(pid)
-FROM pg_stat_activity
-WHERE pid IN (SELECT pid FROM pg_locks WHERE locktype = 'advisory' AND mode = 'exclusive');
-```
-
-- **Multiple schemas:** each schema gets its own advisory lock namespace. Verify `TASKQ_SCHEMA_NAME` is consistent across all workers. Failover SLA is `heartbeat_interval + 1s`; if slower, check that `leader_conn` uses a direct DSN and the watchdog health check (every 5s) is not blocked.
+- **PgBouncer:** set `TASKQ_PG_DSN_DIRECT` to bypass PgBouncer. See [PgBouncer compatibility](workers.md#pgbouncer-compatibility).
+- **Lapsed lease nobody takes:** the surviving pods cannot reach or write `{schema}.maintenance_leader`. Check their logs for `election-attempt-failed`, and check that the application role still holds `INSERT`/`UPDATE`/`DELETE` on that table. Recovery needs no privilege over the previous holder's session and no manual intervention in the database — a stuck or dead leader is displaced on the lease alone.
+- **Multiple schemas:** each schema gets its own `maintenance_leader` row. Verify `TASKQ_SCHEMA_NAME` is consistent across all workers. Failover is bounded by `leader_lease + heartbeat_interval` plus one round trip (50s at defaults) for a leader that went silent, and by `heartbeat_interval + 1s` for one that exited cleanly; if slower, check that `leader_conn` uses a direct DSN and the watchdog health check (every 5s) is not blocked.
 
 ---
 
@@ -505,13 +501,26 @@ WHERE status = 'scheduled' AND snooze_count > 0
 GROUP BY actor;
 ```
 
+A denial writes no `job_events` and no `job_attempts` row, so the aggregated
+`rate_limit_blocked_count` on the job row is the per-job record of how much contention a job has
+absorbed. Use it to tell a job that is starving for admission from one that is merely slow:
+
+```sql
+SELECT id, actor, rate_limit_blocked_count, scheduled_at
+FROM {schema}.jobs
+WHERE status = 'scheduled' AND rate_limit_blocked_count > 0
+ORDER BY rate_limit_blocked_count DESC
+LIMIT 50;
+```
+
 ### Fix
 
 - **Redis not available:** verify `TASKQ_REDIS_URL` and connectivity. PG fallback (`TASKQ_RATE_LIMIT_PG_FALLBACK_ENABLED=true`, the default) keeps limits functional but slower.
 - **Missing `[redis]` extra:** `uv add "taskq-py[redis]"`.
 - **In-memory backend:** switch to `backend="redis"` or `backend="postgres"` for multi-worker deployments. Memory is for tests only.
 - **Primitives not registered:** register all primitives on the `registry` singleton before the worker starts. DI validation checks each actor's `rate_limits`/`reservations` names at startup.
-- **Reservation slots out of sync:** call `sync_slots()` after changing slot counts. Sustained rate limiting accumulates jobs as `snoozed` (no retry budget consumed) — monitor queue depth, as there is no built-in backpressure beyond `max_pending`.
+- **Reservation slots out of sync:** call `sync_slots()` after changing slot counts. Sustained rate limiting accumulates jobs as `scheduled` (no retry budget consumed — a denied job is rescheduled until capacity frees or its `schedule_to_close` deadline expires through the ordinary deadline path; no denial terminalises a job on its own) — monitor queue depth, as there is no built-in backpressure beyond `max_pending`.
+- **One job is slow while the fleet looks healthy:** a denial writes no `job_events` and no `job_attempts` row, so the aggregated `rate_limit_blocked_count` column on the job row is the per-job record of how much contention that job absorbed. Order by it to find the starving job; the fleet-wide OTel denial counters only tell you the fleet is shedding admissions.
 
 ```python
 from taskq.ratelimit import sync_slots
@@ -598,7 +607,6 @@ Check dispatch latency via OTel or the `/metrics` endpoint (`taskq health metric
 ### Fix
 
 - **Reduce oversampling:** `TASKQ_DISPATCH_OVERSAMPLE=1` if you do not use `identity_key` and run a single-producer deployment.
-- **Enable scoped dispatch:** `TASKQ_DISPATCH_SCOPE_BY_HOME_QUEUE=true` filters the `per_actor_capacity` CTE to actors whose home queue is in the worker's subscribed list. Lowers probe count but excludes `enqueue(queue=...)` override jobs.
 - **Tune pool sizes:** increase `TASKQ_DISPATCHER_POOL_SIZE` and `TASKQ_HEARTBEAT_POOL_SIZE` if `acquire()` timeouts appear. Keep `worker_pool_size` derived.
 - **Tune `max_concurrent`:** run `taskq actor-config set <actor> --max-concurrent N` to match external resource capacity. Takes effect on the next dispatch cycle, no restart.
 - **Switch to `round_robin`:** for multi-tenant queues where one tenant starves others:

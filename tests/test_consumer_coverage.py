@@ -10,13 +10,12 @@ Exercises branches not covered by ``test_consumer.py`` and
   parent still succeeds, lost child logged.
 - ``CancelledError`` with an ``ABANDON_PENDING`` active-jobs entry
   re-raises without calling ``mark_cancelled``.
-- ``_consume_autonomous`` cooperative-cancel path: actor succeeds but the
-  active-jobs entry has ``cancel_phase >= COOPERATIVE`` → ``mark_cancelled``
-  runs instead of ``mark_succeeded``.
+- ``_consume_autonomous`` cooperative-cancel path: the actor observes a cancel
+  request, degrades and returns a value → the value is stored and the job
+  succeeds, because the actor's outcome decides the terminal state.
 """
 
 import asyncio
-from contextlib import suppress
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
@@ -26,6 +25,7 @@ import structlog
 from pydantic import BaseModel, TypeAdapter
 
 from taskq._ids import new_uuid
+from taskq._json import dumps as _json_dumps
 from taskq.actor import ActorRef
 from taskq.backend._protocol import CancelPhase, EnqueueArgs, JobRow
 from taskq.backend.clock import Clock
@@ -425,10 +425,19 @@ async def test_cancel_with_abandon_pending_re_raises_without_mark_cancelled() ->
 # ── _consume_autonomous cooperative-cancel path ─────────────────────────
 
 
-async def test_autonomous_cooperative_cancel_marks_cancelled_not_succeeded() -> None:
-    """When the actor succeeds but the active-jobs entry has
-    ``cancel_phase >= COOPERATIVE``, ``_consume_autonomous`` calls
-    ``mark_cancelled`` and returns early — ``mark_succeeded`` is NOT called."""
+async def test_autonomous_cooperative_cancel_keeps_the_actors_result() -> None:
+    """An actor that degrades under a cancel request and returns has succeeded.
+
+    ``cancel_phase >= COOPERATIVE`` on the active-jobs entry says a cancel was
+    requested during the attempt; it does not say the actor abandoned its work.
+    An actor that observed the request, wound down and returned a value
+    completed its unit of work, so the value is stored and the job is
+    succeeded — discarding it would destroy completed work on a terminal job
+    that nothing re-runs. Abandonment is signalled by raising, not returning.
+
+    The full contract, including the transactional path and the raising
+    complement, is pinned in ``tests/test_cooperative_cancel_outcome.py``.
+    """
     active_jobs = ActiveJobRegistry()
     backend = _TxBackend()
     clk: Clock = FakeClock(_NOW)
@@ -452,11 +461,19 @@ async def test_autonomous_cooperative_cancel_marks_cancelled_not_succeeded() -> 
         active_jobs=active_jobs,
     )
 
-    # consume_one_job returns "succeeded" after _consume_autonomous returns,
-    # but the terminal write was mark_cancelled, not mark_succeeded.
     assert result == "succeeded"
-    assert len(backend.mark_cancelled_calls) == 1
-    assert len(backend.mark_succeeded_calls) == 0
+    assert len(backend.mark_cancelled_calls) == 0, (
+        "an actor that returned a value under a cancel request was written as "
+        "cancelled, discarding the result it computed"
+    )
+    assert len(backend.mark_succeeded_calls) == 1, (
+        "the actor's returned value must be stored by a success write"
+    )
+    # Slot [3], not [2]: the consumer serializes once and hands the backend
+    # result_bytes (the dict slot stays None on that path).
+    assert backend.mark_succeeded_calls[0][3] == _json_dumps({"ok": True}), (
+        "the stored result must be the value the actor actually returned"
+    )
 
 
 # ── _consume_autonomous: explicit params override deps (no pool) ─────────
@@ -482,6 +499,7 @@ async def test_autonomous_no_pool_pops_buffer_without_flush() -> None:
     deps.worker_pool = None
     deps.settings = settings
     deps.redis_client = None
+    deps.disowned_jobs = set()
 
     async def actor(_job: object, _ctx: JobContext[BaseModel]) -> dict[str, object]:
         return {"ok": True}
@@ -678,11 +696,19 @@ async def test_batch_id_extracted_from_metadata_runs_actor() -> None:
 # ── Transactional cooperative cancel: actor succeeds but cancel observed ─
 
 
-async def test_transactional_cooperative_cancel_marks_cancelled() -> None:
-    """When the actor succeeds inside a LOOP-scope transaction but the
-    active-jobs entry has ``cancel_phase >= COOPERATIVE``, a CancelledError
-    is raised inside the transaction; the outer handler marks the job
-    cancelled and discards the sub-enqueue buffer."""
+async def test_transactional_cooperative_cancel_keeps_the_actors_result() -> None:
+    """The return-under-cancel contract on the LOOP-scope transactional path.
+
+    When the actor observes the cancel request (the active-jobs entry reads
+    ``cancel_phase >= COOPERATIVE``) but completes its unit of work and
+    RETURNS, the attempt is a success: the result commits inside the actor's
+    own transaction and the outcome reports it. A cancel request is not a
+    verdict over completed work — raising through the transaction here
+    instead would roll back writes the actor finished and record
+    ``cancelled`` over a value the worker already holds. The raising
+    complement (an actor that abandons by raising CancelledError IS
+    cancelled) is pinned in ``tests/test_cooperative_cancel_outcome.py``.
+    """
     active_jobs = ActiveJobRegistry()
     backend = _TxBackend()
     clk: Clock = FakeClock(_NOW)
@@ -700,25 +726,24 @@ async def test_transactional_cooperative_cancel_marks_cancelled() -> None:
         entry.cancel_phase = CancelPhase.COOPERATIVE
         return {"ok": True}
 
-    with suppress(asyncio.CancelledError):
-        await consume_one_job(
-            as_backend(backend),
-            job,
-            _WORKER_ID,
-            run_actor=actor,
-            actor_config=cfg,
-            payload_type=EmptyPayload,
-            clock=clk,
-            enqueuer=enqueuer,
-            transaction_conn=_FakeConnection(),
-            active_jobs=active_jobs,
-        )
+    outcome = await consume_one_job(
+        as_backend(backend),
+        job,
+        _WORKER_ID,
+        run_actor=actor,
+        actor_config=cfg,
+        payload_type=EmptyPayload,
+        clock=clk,
+        enqueuer=enqueuer,
+        transaction_conn=_FakeConnection(),
+        active_jobs=active_jobs,
+    )
 
-    # The transaction did not commit (CancelledError rolled it back), so
-    # mark_succeeded_with_conn was NOT called; mark_cancelled was.
-    assert len(backend.mark_succeeded_with_conn_calls) == 0
-    assert len(backend.mark_cancelled_calls) == 1
-    assert enqueuer.pending_count == 0
+    # The actor returned, so the transaction committed and the success write
+    # ran inside it; nothing was routed to the cancel write.
+    assert outcome == "succeeded"
+    assert len(backend.mark_succeeded_with_conn_calls) == 1
+    assert len(backend.mark_cancelled_calls) == 0
 
 
 # ── Transactional Snooze: savepoint rollback failure is warned ───────────

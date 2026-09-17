@@ -3,6 +3,8 @@
 import io
 import json
 import logging
+import sys
+import types
 from collections.abc import Generator
 
 import pytest
@@ -11,6 +13,7 @@ from opentelemetry.sdk.trace import TracerProvider
 
 import taskq.obs as obs_mod
 import taskq.obs._structlog as structlog_mod
+from taskq.testing.otel import _unpin_cached_loggers
 
 
 @pytest.fixture(autouse=True)
@@ -21,6 +24,11 @@ def _reset_structlog_and_logging() -> Generator[None, None, None]:  # pyright: i
     are not intercepted by ``capture_logs()``. Resetting before each test
     ensures fresh configuration. Also removes any ProcessorFormatter handlers
     added by ``setup_logging()`` and resets the ``_logging_configured`` flag.
+
+    Note the config reset alone cannot restore interception for a proxy that
+    already pinned its chain onto the instance while caching was in force —
+    that pin lives on the proxy, not in the config; the suite-wide guard in
+    ``taskq.testing.otel`` sweeps those pins around every test.
     """
     structlog.reset_defaults()
     structlog_mod._logging_configured = False
@@ -55,6 +63,54 @@ def test_setup_logging_idempotent() -> None:
         and isinstance(h.formatter, structlog.stdlib.ProcessorFormatter)
     ]
     assert len(pf_handlers) == 1
+
+
+# ── the suite guard's lazy-proxy pin sweep ────────────────────────
+
+
+def test_unpin_cached_loggers_restores_capture_for_pinned_proxy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A proxy pinned under ``cache_logger_on_first_use`` bypasses
+    ``capture_logs``; the suite guard's sweep must return it to lazy rebinding.
+
+    Regression pin for the order-dependent capture failures: a module-level
+    proxy first bound while the production configuration
+    (``cache_logger_on_first_use=True``) is active keeps its frozen processor
+    chain on the INSTANCE, so later ``capture_logs`` windows — which swap only
+    the CURRENT config's processor list — see none of its events. The guard in
+    ``taskq.testing.otel`` deletes the instance pin around every test; this
+    test drives that sweep directly against a proxy pinned on purpose.
+    """
+    module = types.ModuleType("_taskq_unpin_probe")
+    probe = structlog.get_logger("taskq.test.unpin-probe")
+    vars(module)["probe_log"] = probe
+    monkeypatch.setitem(sys.modules, "_taskq_unpin_probe", module)
+
+    structlog.configure(cache_logger_on_first_use=True)
+    probe.bind()
+    assert "bind" in vars(probe), (
+        "the probe proxy must start pinned for this test to prove anything"
+    )
+
+    # The inter-test reset the suite guard has always performed: it assigns a
+    # FRESH processor list, orphaning the list instance the pinned proxy's
+    # assembled logger still holds by reference — which is exactly why a
+    # config-only reset cannot restore capture for it.
+    structlog.reset_defaults()
+
+    with structlog.testing.capture_logs() as missed:
+        probe.info("pinned-proxy-event")
+    assert missed == [], (
+        "a pinned proxy must bypass capture_logs — otherwise there is no defect to guard against"
+    )
+
+    _unpin_cached_loggers()
+
+    assert "bind" not in vars(probe), "the sweep must delete the instance-level bind"
+    with structlog.testing.capture_logs() as captured:
+        probe.info("unpinned-proxy-event")
+    assert [e["event"] for e in captured] == ["unpinned-proxy-event"]
 
 
 # ── mandatory fields on every log line ────────────────────────────

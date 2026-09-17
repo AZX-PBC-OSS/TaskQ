@@ -20,6 +20,7 @@ and the fallback attempt itself stays visible through the
 
 from datetime import UTC, datetime
 from typing import Any
+from uuid import UUID
 
 import asyncpg
 import redis
@@ -29,7 +30,6 @@ from pydantic import BaseModel, ConfigDict
 
 from taskq._di.registry import ProviderRegistry
 from taskq._di.scope import Scope
-from taskq._di.scopes import LoopScope, ProcessScope, ThreadScope
 from taskq._ids import new_uuid
 from taskq.actor import ActorRef
 from taskq.client._enqueuer import SubJobEnqueuer
@@ -40,6 +40,7 @@ from taskq.testing.actor import FakeBackend, StubActorConfig, as_backend
 from taskq.testing.clock import FakeClock
 from taskq.testing.jobs import make_job_row
 from taskq.worker.dispatch import dispatch_one_job
+from tests._di_scopes import bootstrap_scopes, make_scopes
 
 _NOW = datetime(2026, 1, 1, tzinfo=UTC)
 _WORKER_ID = new_uuid()
@@ -64,52 +65,7 @@ class _FakeWorkerDeps:
         self.settings.worker_group = "default"
         self.redis_client: Any = None
         self.progress_buffers: dict[Any, Any] = {}
-
-
-def _make_scopes(
-    registry: ProviderRegistry,
-) -> tuple[ProcessScope, ThreadScope, LoopScope]:
-    scope_containers: dict[Scope, Any] = {}
-
-    def _resolver(func: object) -> Any:
-        async def _resolve() -> dict[str, object]:
-            from taskq._di.solver import solve_dependencies
-
-            return await solve_dependencies(
-                func=func,
-                registry=registry,
-                scope_containers=scope_containers,
-            )
-
-        return _resolve()
-
-    process_scope = ProcessScope(resolver=_resolver)
-    thread_scope = ThreadScope(resolver=_resolver)
-    loop_scope = LoopScope(resolver=_resolver)
-    scope_containers = {
-        Scope.PROCESS: process_scope,
-        Scope.THREAD: thread_scope,
-        Scope.LOOP: loop_scope,
-    }
-    return process_scope, thread_scope, loop_scope
-
-
-async def _bootstrap_scopes(
-    registry: ProviderRegistry,
-    process_scope: ProcessScope,
-    thread_scope: ThreadScope,
-    loop_scope: LoopScope,
-) -> None:
-    settings = WorkerSettings.load_from_dict(
-        {
-            "PG_DSN": "postgres://u:p@localhost:5432/db",
-            "LOCK_LEASE": 60,
-            "HEARTBEAT_INTERVAL": 10,
-        },
-    )
-    await process_scope.bootstrap(registry, settings)
-    await thread_scope.bootstrap(registry, process_scope)
-    await loop_scope.bootstrap(registry, process_scope, thread_scope)
+        self.disowned_jobs: set[UUID] = set()
 
 
 class _ScopeStack:
@@ -118,9 +74,9 @@ class _ScopeStack:
 
     async def __aenter__(self) -> "_ScopeStack":
         self.registry.validate()
-        scopes = _make_scopes(self.registry)
+        scopes = make_scopes(self.registry)
         self.process_scope, self.thread_scope, self.loop_scope = scopes
-        await _bootstrap_scopes(self.registry, *scopes)
+        await bootstrap_scopes(self.registry, *scopes)
         return self
 
     async def __aexit__(

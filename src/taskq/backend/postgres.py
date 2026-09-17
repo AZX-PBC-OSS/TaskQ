@@ -17,7 +17,7 @@ signals, NOTIFY, and schedule CRUD wiring.
 """
 
 import asyncio
-from collections.abc import Awaitable, Callable, Iterable
+from collections.abc import Awaitable, Callable, Collection, Iterable
 from contextlib import AbstractAsyncContextManager as AsyncContextManager
 from datetime import datetime, timedelta
 from typing import ClassVar, Literal
@@ -26,6 +26,7 @@ from uuid import UUID
 import asyncpg
 import structlog
 
+from taskq._advisory import DEADLINE_ERRORS
 from taskq._json import dumps_str
 from taskq.backend._batch_sql import (
     BatchSql,
@@ -160,6 +161,7 @@ from taskq.backend._terminal import (
     _mark_abandoned,
     _mark_cancelled,
     _mark_failed_or_retry,
+    _mark_interrupted,
     _mark_retry_after,
     _mark_snoozed,
     _mark_succeeded,
@@ -175,6 +177,7 @@ from taskq.constants import (
     DEFAULT_EVENT_WRITER_BATCH_SIZE,
     DEFAULT_EVENT_WRITER_STATEMENT_TIMEOUT_MS,
     DEFAULT_KEYED_ROW_RECLAIM_BATCH_SIZE,
+    DEFAULT_MAX_RETRY_BACKOFF,
     DEFAULT_RECLAIM_POLL_LIMIT,
     RECLAIM_EVENT_VISIBILITY_DELAY,
     events_channel,
@@ -350,13 +353,14 @@ class PostgresBackend:
 
         Why a defensive ``getattr`` with the module-constant fallback rather
         than the direct read every other BackendSettings knob takes: the
-        TaskQ client's settings object (``taskq.client._ClientSettings``)
-        is constructed in client space and predates these fields — a direct
-        read would AttributeError every client-built backend's enqueue. The
-        fallback is the same 5 s constant the module functions defaulted to
-        before the knob existed, so an undeclared settings object behaves
-        exactly as it did yesterday, and the moment it declares the field
-        the operator's value flows through.
+        protocol's settings object is satisfied by structural duck-typing,
+        so a settings implementation written OUTSIDE this repo's settings
+        classes (an embedder's own BackendSettings stand-in) may predate
+        these fields — a direct read would AttributeError that object's
+        every enqueue. The fallback is the same 5 s constant the module
+        functions defaulted to before the knob existed, so an undeclared
+        settings object behaves exactly as it did yesterday, and the moment
+        it declares the field the operator's value flows through.
         """
         settings = self._deps.settings
         return (
@@ -466,20 +470,24 @@ class PostgresBackend:
         self,
         worker_id: UUID,
         lock_lease: timedelta,
+        *,
+        disowned: Collection[UUID] = (),
     ) -> int:
         sql = UPDATE_JOBS_LOCK_SQL_TEMPLATE.format(schema=self._schema_name)
         async with self._heartbeat_pool.acquire() as conn:
-            tag = await conn.execute(sql, worker_id, lock_lease)
+            tag = await conn.execute(sql, worker_id, lock_lease, list(disowned))
         return parse_rowcount(tag)
 
     async def extend_reservation_leases(
         self,
         worker_id: UUID,
         lock_lease: timedelta,
+        *,
+        disowned: Collection[UUID] = (),
     ) -> int:
         sql = UPDATE_RESERVATION_LEASES_SQL_TEMPLATE.format(schema=self._schema_name)
         async with self._heartbeat_pool.acquire() as conn:
-            tag = await conn.execute(sql, worker_id, lock_lease)
+            tag = await conn.execute(sql, worker_id, lock_lease, list(disowned))
         return parse_rowcount(tag)
 
     # ── Terminal writes ─────────────────────────────────────────────────
@@ -645,7 +653,7 @@ class PostgresBackend:
         outcome: SnoozeOutcome = "snoozed",
         attempt: int | None = None,
         denial_reason: DenialReason = "capacity",
-    ) -> Literal["scheduled", "failed", "failed:MaxAttemptsExceeded", "noop"]:
+    ) -> Literal["scheduled", "failed", "noop"]:
         return await _mark_snoozed(
             self._worker_pool,
             self._sql,
@@ -682,6 +690,28 @@ class PostgresBackend:
             progress_seq=progress_seq,
             progress_state=progress_state,
             attempt=attempt,
+            acquire_timeout=self._deps.settings.dispatcher_command_timeout,
+        )
+
+    async def mark_interrupted(
+        self,
+        job_id: JobId,
+        worker_id: UUID,
+        *,
+        attempt: int,
+        hold: timedelta,
+        progress_seq: int = 0,
+        progress_state: dict[str, object] | None = None,
+    ) -> Literal["pending", "scheduled", "failed:DeadlineExceeded", "noop"]:
+        return await _mark_interrupted(
+            self._worker_pool,
+            self._sql,
+            job_id,
+            worker_id,
+            attempt=attempt,
+            hold=hold,
+            progress_seq=progress_seq,
+            progress_state=progress_state,
             acquire_timeout=self._deps.settings.dispatcher_command_timeout,
         )
 
@@ -893,7 +923,7 @@ class PostgresBackend:
                 if rec is None:
                     return False
                 await conn.execute(
-                    self._sql.enqueue_notify,
+                    self._sql.wake_notify,
                     wake_channel(self._schema_name),
                 )
         # The statement's reopened CTE (see retry_job in
@@ -972,7 +1002,7 @@ class PostgresBackend:
         timeout_ms = int(self._deps.settings.event_writer_statement_timeout_ms)
         try:
             count = await run(size, timeout_ms)
-        except (asyncpg.QueryCanceledError, TimeoutError):
+        except DEADLINE_ERRORS:
             sizer.on_timeout()
             raise
         sizer.on_success()
@@ -1040,6 +1070,10 @@ class PostgresBackend:
                     schema=self._schema_name,
                     batch_size=size,
                     statement_timeout_ms=timeout_ms,
+                    # The operator's global backoff ceiling reaches the
+                    # reclaim path here — the same value the consumer's
+                    # failure path hands compute_backoff.
+                    max_retry_backoff=self._deps.settings.max_retry_backoff,
                 ),
             )
 
@@ -1052,6 +1086,7 @@ class PostgresBackend:
         schema: str,
         batch_size: int = DEFAULT_EVENT_WRITER_BATCH_SIZE,
         statement_timeout_ms: int = DEFAULT_EVENT_WRITER_STATEMENT_TIMEOUT_MS,
+        max_retry_backoff: timedelta = DEFAULT_MAX_RETRY_BACKOFF,
     ) -> int:
         return await sweep_expired_locks(
             conn,
@@ -1060,6 +1095,7 @@ class PostgresBackend:
             schema=schema,
             batch_size=batch_size,
             statement_timeout_ms=statement_timeout_ms,
+            max_retry_backoff=max_retry_backoff,
         )
 
     @staticmethod

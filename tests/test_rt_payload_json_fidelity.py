@@ -9,7 +9,7 @@ without data loss; adversarial-but-representable values must fail with a
 TYPED, bounded error at the boundary (never an interpreter crash, never a
 silent non-standard token that ``jsonb`` would reject).
 
-Known and pinned elsewhere (not re-hunted here): the #134 OPT_NON_STR_KEYS
+Known and pinned elsewhere (not re-hunted here): the OPT_NON_STR_KEYS
 compat break (tests/test_json_non_str_keys.py), the NUL guard
 (tests/test_progress_flush.py, tests/test_rt_cancel_nul_guards.py).
 """

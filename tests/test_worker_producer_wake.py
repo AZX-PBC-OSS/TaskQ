@@ -7,13 +7,14 @@ Two dispatch-loop latencies these pins hold:
   consumer loops set at their ``local_queue.get()`` (the point a queue
   slot actually frees — ``qsize`` drops at get, not at job completion),
   bounded by the fallback interval so a never-set event cannot park the
-  producer. River wakes its producer the same way when a job result
-  frees a worker slot (vendor/river/producer.go, jobResultCh).
+  producer. Waking on a slot-release event is the mechanism to remove
+  latency when slots free: the producer claims the next job the instant
+  a slot releases, not after waiting out a poll interval.
 * Fallback poll jitter — an idle fleet polling the same interval in
   phase re-synchronizes after any transient event into periodic DB load
-  spikes; the empty-dispatch wait is jittered ±10% (river's
-  jitteredFetchPollInterval reasoning), seeded per-producer like the
-  retry RNG.
+  spikes; the empty-dispatch wait is jittered ±10% to spread the fleet's
+  polls across the interval rather than ticking in unison, seeded
+  per-producer like the retry RNG.
 
 Timing is deliberately NOT the gate: the wake pin asserts the producer
 needed no poll sleep at all (a sleep recorder — the event wake is
@@ -55,6 +56,29 @@ _PROMPT_WAKE_BOUND_S = 1.0
 _EPS = 1e-9
 
 
+class _NoopPool:
+    """asyncpg.Pool stand-in for the producer's exit hand-back.
+
+    The producer hands its held rows back on the drain path's way out
+    (``drain_local_queue_to_pending``); these tests drive the loop with a
+    namespace deps, so the pool answers the one bounded statement with an
+    empty UPDATE tag.
+    """
+
+    class _Conn:
+        async def __aenter__(self) -> _NoopPool._Conn:
+            return self
+
+        async def __aexit__(self, *exc: object) -> None:
+            return None
+
+        async def execute(self, *_args: object) -> str:
+            return "UPDATE 0"
+
+    def acquire(self, *, timeout: float | None = None) -> _NoopPool._Conn:
+        return self._Conn()
+
+
 def _producer_deps(*, poll_interval: float = 5.0, maxsize: int = 1) -> SimpleNamespace:
     settings = SimpleNamespace(
         queues=["default"],
@@ -63,9 +87,16 @@ def _producer_deps(*, poll_interval: float = 5.0, maxsize: int = 1) -> SimpleNam
         poll_interval=poll_interval,
         notify_poll_interval=poll_interval,
         max_concurrency=maxsize,
+        schema_name="taskq",
     )
     liveness = SimpleNamespace(tick=lambda *args, **kwargs: None, forget=lambda *a, **k: None)
-    return SimpleNamespace(settings=settings, liveness=liveness)
+    return SimpleNamespace(
+        settings=settings,
+        liveness=liveness,
+        active_jobs=SimpleNamespace(all=list),
+        disowned_jobs=set(),
+        dispatcher_pool=_NoopPool(),
+    )
 
 
 class _RecordingBackend:
@@ -248,7 +279,10 @@ async def test_di_consumer_loop_signals_slot_release_when_it_takes_a_job() -> No
 
     await asyncio.wait_for(
         di_consumer_loop(
-            SimpleNamespace(),  # type: ignore[arg-type]  # Why: unused on the actor-not-found path; the signature still requires it.
+            # The loop reads the DRAINING signal off deps on every
+            # iteration (the consumer stop-pulling gate); the rest of deps
+            # is unused on the actor-not-found path.
+            SimpleNamespace(producer_stop_event=asyncio.Event()),  # type: ignore[arg-type]  # Why: minimal stand-in carrying the one field the loop's gate reads; the signature still requires the full WorkerDeps.
             local_queue,
             shutdown_event,
             backend=cast(Backend, _SnoozingBackend()),  # type: ignore[arg-type]  # Why: structural stand-in satisfying the mark_snoozed call the loop makes.

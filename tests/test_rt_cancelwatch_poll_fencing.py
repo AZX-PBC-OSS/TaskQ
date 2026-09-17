@@ -408,7 +408,7 @@ async def test_renewal_noops_after_reclaim_and_spares_new_holder(
             assert before is not None
             # Worker A's next heartbeat renewal, verbatim production SQL.
             tag = await conn.execute(
-                build_heartbeat_sql(schema)[1], worker_a, timedelta(seconds=60)
+                build_heartbeat_sql(schema)[1], worker_a, timedelta(seconds=60), []
             )
             after = await conn.fetchval(
                 f'SELECT lock_expires_at FROM "{schema}".jobs WHERE id = $1', job_id

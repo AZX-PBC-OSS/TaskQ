@@ -15,9 +15,8 @@ from taskq.retry import RetryPolicy, compute_backoff
 def test_global_ceiling_overrides_per_actor_cap() -> None:
     """max_retry_backoff=24h caps a policy with cap=365d at high attempt numbers.
 
-    Verifies the Dramatiq-inspired global ceiling ():
-    ``effective_cap = min(policy.cap, max_retry_backoff)`` so a misconfigured
-    actor cannot strand jobs for an unreasonably long time.
+    Verifies the global ceiling: ``effective_cap = min(policy.cap, max_retry_backoff)``
+    so a misconfigured actor cannot strand jobs for an unreasonably long time.
     """
     policy = RetryPolicy(
         backoff="exponential",

@@ -24,9 +24,9 @@ see [runbooks.md](runbooks.md). For the raw knob rows,
 
 | Sweep | What it does | Loop / cadence | Bound |
 |---|---|---|---|
-| 1 — `reclaim_expired_locks` | Reclaims `running` jobs whose `lock_expires_at` passed: retryable ones → `pending` (5 s backoff), the rest → `crashed` (or `cancelled` if a cancel was in flight). Writes one `job_attempts` and one `job_events` row per job. | leader sweep loop, every `TASKQ_SWEEP_INTERVAL` (default 30 s) | `event_writer_batch_size` per batch, up to `TASKQ_SWEEP_DRAIN_BATCHES` batches per tick |
+| 1 — `reclaim_expired_locks` | Reclaims `running` jobs whose `lock_expires_at` passed: retryable ones → `pending`, rescheduled through the job's own retry policy (the base/cap/backoff-kind/jitter columns stamped at enqueue, capped by `max_retry_backoff`), the rest → `crashed` (or `cancelled` if a cancel was in flight). Writes one `job_attempts` and one `job_events` row per job. | leader sweep loop, every `TASKQ_SWEEP_INTERVAL` (default 30 s) | `event_writer_batch_size` per batch, up to `TASKQ_SWEEP_DRAIN_BATCHES` batches per tick |
 | 2 — `sweep_deadline_exceeded` | Fails overdue `schedule_to_close` jobs with `error_class='DeadlineExceeded'`. Writes one `job_attempts` and one `job_events` row per job. | leader sweep loop, every `sweep_interval` | same |
-| 3 — `scheduled_to_pending` | Promotes due `scheduled` jobs to `pending` and fires a wake NOTIFY. Writes one `job_events` row per job. | scheduled-wake loop, every **1 second** | **one batch per tick** — a larger backlog drains across ticks |
+| 3 — `scheduled_to_pending` | Promotes due `scheduled` jobs to `pending` and fires a wake NOTIFY. Writes no `job_events` rows — promotion is scheduler bookkeeping, and a row per promotion would grow without bound under a sustained admission-denial loop (claim + promote are the cycle's two acts). | scheduled-wake loop, every **1 second** | **one batch per tick** — a larger backlog drains across ticks |
 | 4 — `sweep_leaked_reservation_slots` | Clears reservation slots whose lease expired. Writes no `job_events` rows. | leader sweep loop, every `sweep_interval` | single statement, not batched (no event writes) |
 | Result TTL — `sweep_expired_results` | Nulls expired stored results. Writes no `job_events` rows. | leader sweep loop, every `sweep_interval` | `event_writer_batch_size` per batch, drained |
 | `cleanup_stale_workers` | Deletes workers whose heartbeat went stale; the `ON DELETE SET NULL` fan-out into `job_attempts` is what the batch bound caps. | leader sweep loop, every `sweep_interval` | `event_writer_batch_size` per batch, drained |
@@ -46,8 +46,9 @@ per tick — their backlog drains across ticks by construction.
 
 ## 2. Why every event-writer is bounded
 
-Everything in this initiative writes `job_events` rows — sweeps 1–3, bulk
-cancel, deregistration — and `job_events` is not just an audit trail: it feeds
+Everything in this initiative that writes `job_events` rows — sweeps 1–2,
+bulk cancel, deregistration — shares one discipline, and `job_events` is not
+just an audit trail: it feeds
 `poll_reclaim_events()`, the crash-reclaim feed consumers subscribe to. That
 feed's correctness is what the bounds protect. Two distinct failures motivated
 the design, and they fail in opposite directions:
@@ -298,7 +299,7 @@ the schema name, and it is now enforced on **both** stores.
 | Namespace | Format | Example |
 |---|---|---|
 | Advisory locks | `taskq:{purpose}:{schema}` | `taskq:maintenance_leader:taskq`, `taskq:cron:taskq`, `taskq:prune:taskq`, `taskq:archive_expiry:taskq`, `taskq:migrate:taskq` |
-| NOTIFY channels | `taskq_wake_{schema}`, `taskq_events_{schema}`, `taskq_worker_{schema}_{worker_id}` | `taskq_wake_taskq` |
+| NOTIFY channels | `taskq_wake_{tag}`, `taskq_events_{tag}`, `taskq_worker_{tag}_{worker_id}`, where `{tag}` is the first 10 hex digits of `sha224(schema)` (channels are 63-byte identifiers; the schema name alone may be that long) | `taskq_wake_124a200651` for schema `taskq` |
 | Tables | every table lives inside the schema | `taskq.jobs`, `staging.jobs` |
 | Keyed PG locks | schema-qualified like their Redis twins | `taskq:{schema}:sw:{name}` (sliding-window PG fallback), `taskq:unique_for:{schema}:{actor}:{identity_key}` (enqueue single-flight) |
 

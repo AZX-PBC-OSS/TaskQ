@@ -12,7 +12,7 @@ creating a circular dependency through the re-export boundary in
 
 import asyncio
 import re
-from collections.abc import Iterable, Sequence
+from collections.abc import Collection, Container, Iterable, Sequence
 from contextlib import AbstractAsyncContextManager as AsyncContextManager
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -43,10 +43,16 @@ else:
 from pydantic import AfterValidator, BaseModel, ConfigDict
 
 from taskq._json import check_no_nul_str
-from taskq.constants import DEFAULT_CHUNK_SIZE, DEFAULT_RECLAIM_POLL_LIMIT
+from taskq.constants import (
+    DEFAULT_CHUNK_SIZE,
+    DEFAULT_RECLAIM_POLL_LIMIT,
+    check_max_attempts_domain,
+    check_priority_domain,
+)
 
 __all__ = [
     "BACKEND_PROTOCOL_VERSION",
+    "DEFAULT_UNIQUE_STATES",
     "DST_STRATEGIES",
     "JOB_STATUS_VALUES",
     "SNOOZE_OUTCOME_VALUES",
@@ -158,6 +164,10 @@ __all__ = [
 #     order — a claim/refund hot loop monopolising a worker slot.
 #     consume_budget=True keeps the raw delay (an immediate consuming
 #     retry is a real execution, bounded by the budget it spends).
+#     mark_interrupted added (required) — the shutdown release primitive:
+#     a pre-v3 implementation lacks the method, and the consumer's
+#     shutdown routing would otherwise raise AttributeError mid-cancel
+#     (loud, not silent), so it folds into the unreleased v3.
 BACKEND_PROTOCOL_VERSION: Final[int] = 3
 
 # ── Type aliases (PEP 695) ─────────────────────────────────────────────
@@ -185,6 +195,32 @@ so validation can never drift from the type.  Used by
 reach a backend.
 """
 
+DEFAULT_UNIQUE_STATES: Final[tuple[JobStatus, ...]] = (
+    "pending",
+    "scheduled",
+    "running",
+    "succeeded",
+)
+"""Job statuses a ``unique_for`` window matches unless the caller narrows it.
+
+``unique_for`` reads as "at most one job for this identity in this
+period", and the reason a caller reaches for it is that the work is not
+safe to repeat. ``succeeded`` is therefore in the set: it is the state
+that says the work already happened, which is the precise condition the
+window exists to detect. Leaving it out would free the identity the
+instant the first job completed — so the faster the work succeeds, the
+wider the unguarded remainder of the window, and the failure would be
+likeliest exactly when the system is healthy.
+
+The other terminal states stay out, and for the mirror-image reason:
+``failed``, ``cancelled``, ``crashed`` and ``abandoned`` all mean the
+work did NOT happen, so matching them would let one transient failure
+suppress every later attempt for the rest of the window.
+
+Callers who want the narrower "block only concurrent execution" rule
+spell the three unfinished states explicitly.
+"""
+
 type AttemptOutcome = Literal[
     "succeeded",
     "failed",
@@ -201,8 +237,10 @@ type SnoozeOutcome = Literal["snoozed", "reservation_denied", "rate_limit_denied
 
 Why narrower than :data:`AttemptOutcome`: the snooze statement's arms
 branch on exactly these three values (the snooze arm's refund/counter
-CASE, the denial-keyed counters, the ``max_attempts`` gate's denial
-predicate).  The five execution outcomes key no arm — a caller passing
+CASE, the denial-keyed counters, and the deadline arm's terminal exit —
+a deferral's only way to fail, since a denial never spends budget and
+never terminalises on its own).  The five execution outcomes key no arm
+— a caller passing
 one on a running job left PG firing no arm at all (the row stranded
 ``running`` until the lease sweep, the call returning ``"noop"``) while
 the in-memory twin silently rescheduled the job with no counter
@@ -249,18 +287,21 @@ denial *outcome*) was denied.
 
 ``capacity`` is a real saturation denial — the limiter's store answered
 and the answer was "full".  The denial is legitimate backpressure about
-a job the system chose not to run yet, and the bounded,
-budget-consuming denial loop is the deliberate contract (an operator
-scaling a bucket on denials is the intended response).
+a job the system chose not to run yet; an operator scaling a bucket on
+denial counts is the intended response.
 
 ``unavailable`` is the limiter's store failing to answer at all (Redis
 unreachable, the PG fallback dead or unwired) — infrastructure
-backpressure about a job whose actor never executed.  It is
-non-consuming: the claim's attempt increment is refunded exactly the
-way an actor-requested ``snoozed`` deferral refunds it, and no
-terminal arm may fire — a job whose only fault is its limiter's store
-being down never lands in a terminal exit, and when the store returns
-its original retry budget is still there to spend.
+backpressure about a job whose actor never executed.
+
+Both reasons take the identical non-consuming path: every denial
+carries HTTP-429 semantics, so the claim's attempt increment is
+refunded exactly the way an actor-requested ``snoozed`` deferral
+refunds it, no terminal arm may fire on budget grounds, and the job
+reschedules until capacity frees or its own ``schedule_to_close``
+expires.  The reason's only effect is observability: a store-outage
+denial stays distinguishable from a saturation denial, so an operator
+never answers an outage with more capacity.
 
 Only the consumer's store-failure synthesis site passes ``unavailable``
 (explicitly, never inferred from a bucket name); every other caller
@@ -289,9 +330,10 @@ def validate_denial_reason(reason: str) -> None:
     if reason not in DENIAL_REASON_VALUES:
         raise ValueError(
             f"mark_snoozed denial_reason must be one of {sorted(DENIAL_REASON_VALUES)}; "
-            f"got {reason!r} — 'capacity' is a saturation denial (budget-consuming, "
-            "the bounded loop), 'unavailable' is the store failing to answer "
-            "(non-consuming, never terminal)"
+            f"got {reason!r} — 'capacity' is a saturation denial (the store "
+            "answered 'full'), 'unavailable' is the store failing to answer; "
+            "both are non-consuming and non-terminal — the reason only keeps "
+            "the two causes distinguishable on the row"
         )
 
 
@@ -520,12 +562,11 @@ def parse_batch_status(value: str) -> BatchStatus:
 QueueName = Annotated[str, AfterValidator(_validate_queue_name)]
 """Validator alias for queue names — accepts plain ``str`` literals.
 
-Why ``Annotated`` and not ``NewType``: every studied vendor (river,
-dramatiq, arq, procrastinate) uses raw ``str`` + a separate validator
-for queue names; no nominal type because no other ``str`` field at any
-call site could be confused with ``queue``. ``Annotated`` gives runtime
-validation in Pydantic models without forcing every caller to wrap
-literals in ``QueueName("default")``.
+Why ``Annotated`` and not ``NewType``: queue names are plain strings
+requiring validation — no nominal type because no other ``str`` field
+at any call site could be confused with ``queue``. ``Annotated`` gives
+runtime validation in Pydantic models without forcing every caller to
+wrap literals in ``QueueName("default")``.
 """
 
 # ── Data carriers ──────────────────────────────────────────────────────
@@ -563,9 +604,20 @@ class EnqueueArgs:
     span_id: str | None = None
     result_ttl: timedelta | None = None
     unique_for: timedelta | None = None
-    unique_states: tuple[JobStatus, ...] = ("pending", "scheduled", "running")
+    unique_states: tuple[JobStatus, ...] = DEFAULT_UNIQUE_STATES
     metadata: dict[str, object] = field(default_factory=dict[str, object])
     tags: tuple[str, ...] = ()
+    # RetryPolicy's backoff-curve scalars, stamped from the actor's live
+    # registration at enqueue time (taskq.client._args builds this from
+    # ``ref.retry``). Crash/heartbeat reclaim reads these columns to
+    # reschedule on the job's own curve instead of a hardcoded flat
+    # interval — the reclaim sweep runs on a leader that need not have
+    # the actor registered at all, so the row is the only source it can
+    # reach. Defaults reproduce RetryPolicy's own field defaults.
+    retry_base: timedelta = timedelta(seconds=5)
+    retry_cap: timedelta = timedelta(hours=1)
+    retry_backoff: Literal["exponential", "linear", "fixed"] = "exponential"
+    retry_jitter: float = 0.2
 
     def __post_init__(self) -> None:
         if self.schedule_to_close is not None and self.schedule_to_close_interval is not None:
@@ -574,7 +626,39 @@ class EnqueueArgs:
                 "if both are desired, pass only schedule_to_close (datetime) — "
                 "the interval form is the actor-declaration default."
             )
+        self._check_column_domains()
         self._check_no_nul_text()
+
+    def _check_column_domains(self) -> None:
+        """Reject a value outside the domain of the column it lands in.
+
+        Enforced here, at the struct every enqueue path funnels through
+        (single, batch, the ``COPY``-based fast batch, the atomic batch,
+        and the InMemory mirror), for the same reason the NUL guard below
+        is: a producer building the struct directly, a batch helper and
+        the clients all inherit one refusal, so no later path can
+        reintroduce the gap.
+
+        Without it the two backends disagree at runtime. Postgres refuses
+        an out-of-domain smallint with a raw driver error naming a
+        constraint or a column — a bare exception no caller has a handler
+        for — while the in-memory twin stores the value, so a suite
+        validated in memory certifies an enqueue production rejects. The
+        negative durations are worse than either: both backends store
+        them, and every dispatch of that job is instantly past its own
+        deadline.
+        """
+        check_max_attempts_domain(self.max_attempts)
+        check_priority_domain(self.priority)
+        for value, what in (
+            (self.start_to_close, "start_to_close"),
+            (self.heartbeat_timeout, "heartbeat_timeout"),
+            (self.result_ttl, "result_ttl"),
+            (self.schedule_to_close_interval, "schedule_to_close_interval"),
+            (self.unique_for, "unique_for"),
+        ):
+            if value is not None and value < timedelta(0):
+                raise ValueError(f"{what} must not be negative, got {value}")
 
     def _check_no_nul_text(self) -> None:
         """Reject a NUL (U+0000) in any caller-supplied value bound as text.
@@ -636,6 +720,103 @@ def batch_cap_groups(args_list: list[EnqueueArgs]) -> dict[str, tuple[int, int]]
     return {actor: (counts[actor], caps[actor]) for actor in counts}
 
 
+def first_duplicate_idempotency_pair(
+    args_list: Iterable[EnqueueArgs],
+    stored_pairs: Container[tuple[str, str]],
+) -> tuple[str, str] | None:
+    """The ``(idempotency_scope, idempotency_key)`` pair a batch write
+    aborts on, derived from the batch itself — never from driver text.
+
+    A bulk insert with no ``ON CONFLICT`` arbiter (the COPY fast path)
+    aborts at the FIRST item whose pair the unique index already holds,
+    and items are written in batch order — so the offending pair is the
+    first one that repeats an earlier item or appears among
+    *stored_pairs*. Postgres renders the violation's detail with raw,
+    unquoted values (a scope containing ``", "`` makes it positionally
+    ambiguous, and long values can be truncated), so an attribution that
+    parses the server's text mis-names exactly the pairs an operator most
+    needs named; the batch's own contents carry the answer losslessly.
+    Two different pairs repeated in one batch resolve to the one the
+    statement hits first, deterministically.
+
+    Pure function over the args; lives here (not in the PG bulk path) so
+    the in-memory mirror — which must not import driver-bound modules —
+    attributes the identical pair (its ``stored_pairs`` is its own
+    idempotency index; the PG path's is a targeted post-abort SELECT).
+    """
+    seen: set[tuple[str, str]] = set()
+    for args in args_list:
+        if args.idempotency_key is None:
+            continue
+        pair = (args.idempotency_scope, str(args.idempotency_key))
+        if pair in seen or pair in stored_pairs:
+            return pair
+        seen.add(pair)
+    return None
+
+
+def duplicate_pair_actor_mismatch(
+    args_list: Iterable[EnqueueArgs],
+    pair: tuple[str, str],
+    stored_actor: str | None,
+) -> tuple[str, str] | None:
+    """``(incoming_actor, existing_actor)`` when the batch write's abort on
+    *pair* spans two actors, else ``None`` (a same-actor duplicate).
+
+    The write aborts at the first item holding *pair* when a committed row
+    (*stored_actor*) already holds it, and otherwise at the second item
+    holding it, whose predecessor in batch order is the holder. The same
+    pure rule serves the COPY tier and the in-memory mirror, so the two
+    backends name the same actors for the same batch — a cross-actor hit
+    is the misuse the single and batch tiers refuse with the typed
+    mismatch error, not a same-actor duplicate.
+    """
+    holders = [
+        args.actor
+        for args in args_list
+        if args.idempotency_key is not None
+        and (args.idempotency_scope, str(args.idempotency_key)) == pair
+    ]
+    if not holders:
+        return None
+    if stored_actor is not None:
+        return (holders[0], stored_actor) if holders[0] != stored_actor else None
+    if len(holders) > 1 and holders[1] != holders[0]:
+        return (holders[1], holders[0])
+    return None
+
+
+def first_singleton_collision_actor(
+    args_list: Iterable[EnqueueArgs],
+    stored_actors: Container[str],
+) -> str | None:
+    """The singleton actor a batch write aborts on, derived from the batch
+    itself — never from driver text.
+
+    ``jobs_singleton_uniq`` is keyed on ``(actor)`` over live
+    singleton-flagged rows, and a bulk insert writes items in batch order,
+    so the violating actor is the first singleton item whose actor repeats
+    an earlier singleton item or appears among *stored_actors* (the live
+    singleton rows already committed). Same rule, same reasoning as
+    :func:`first_duplicate_idempotency_pair`: the batch's own contents
+    carry the answer losslessly, where the server's detail text renders
+    values raw and unquoted. The ``is True`` predicate matches the partial
+    index's ``metadata @> '{"singleton": true}'`` exactly — a
+    truthy-but-not-true value never armed the index on either backend.
+    Pure function over the args; lives here (not in the PG bulk path) so
+    the in-memory mirror — which must not import driver-bound modules —
+    attributes the identical actor.
+    """
+    seen: set[str] = set()
+    for args in args_list:
+        if args.metadata.get("singleton") is not True:
+            continue
+        if args.actor in seen or args.actor in stored_actors:
+            return args.actor
+        seen.add(args.actor)
+    return None
+
+
 @dataclass(frozen=True, slots=True)
 class JobRow:
     """Read-model of a ``taskq.jobs`` row.  Every column the dispatch loop,
@@ -647,8 +828,6 @@ class JobRow:
     id: JobId
     actor: str
     queue: str
-    identity_key: IdentityKey | None
-    fairness_key: str | None
     payload: dict[str, object]
     payload_schema_ver: int
     status: JobStatus
@@ -656,32 +835,40 @@ class JobRow:
     attempt: int
     max_attempts: int
     retry_kind: RetryKind
-    schedule_to_close: datetime | None
-    start_to_close: timedelta | None
-    heartbeat_timeout: timedelta | None
     created_at: datetime
     scheduled_at: datetime
-    started_at: datetime | None
-    finished_at: datetime | None
-    last_heartbeat_at: datetime | None
-    locked_by_worker: UUID | None
-    lock_expires_at: datetime | None
-    cancel_requested_at: datetime | None
-    cancel_phase: CancelPhase
-    error_class: str | None
-    error_message: str | None
-    error_traceback: str | None
-    progress_state: dict[str, object]
-    progress_seq: int
-    result: dict[str, object] | None
-    result_size_bytes: int | None
-    result_expires_at: datetime | None
-    idempotency_key: IdempotencyKey | None
-    idempotency_scope: str
-    trace_id: str | None
-    span_id: str | None
-    metadata: dict[str, object]
-    tags: tuple[str, ...]
+    # Every field below reads a column that is nullable, defaulted, or
+    # empty-valued in the schema, so its default here is the value the
+    # row actually carries when nothing has set it. Keeping them
+    # defaulted lets a caller name the columns its case is about (a
+    # terminal row for a hook, a claimed row for a fence) without
+    # restating three dozen NULLs that carry no meaning.
+    identity_key: IdentityKey | None = None
+    fairness_key: str | None = None
+    schedule_to_close: datetime | None = None
+    start_to_close: timedelta | None = None
+    heartbeat_timeout: timedelta | None = None
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    last_heartbeat_at: datetime | None = None
+    locked_by_worker: UUID | None = None
+    lock_expires_at: datetime | None = None
+    cancel_requested_at: datetime | None = None
+    cancel_phase: CancelPhase = CancelPhase.NONE
+    error_class: str | None = None
+    error_message: str | None = None
+    error_traceback: str | None = None
+    progress_state: dict[str, object] = field(default_factory=dict[str, object])
+    progress_seq: int = 0
+    result: dict[str, object] | None = None
+    result_size_bytes: int | None = None
+    result_expires_at: datetime | None = None
+    idempotency_key: IdempotencyKey | None = None
+    idempotency_scope: str = ""
+    trace_id: str | None = None
+    span_id: str | None = None
+    metadata: dict[str, object] = field(default_factory=dict[str, object])
+    tags: tuple[str, ...] = ()
     snooze_count: int = 0
     """Coalesced count of non-consuming deferrals (``Snooze`` and
     ``RetryAfter(consume_budget=False)``) since enqueue — the job-row
@@ -692,6 +879,36 @@ class JobRow:
     """Coalesced count of admission denials (reservation / rate-limit)
     since enqueue.  Trailing default: rows materialised before the
     counters existed read 0.
+    """
+    interrupt_count: int = 0
+    """Coalesced count of infrastructure interruptions (a running attempt
+    released back to the queue by a worker shutdown) since enqueue — the
+    claim's attempt increment was refunded on each, so ``attempt`` alone
+    cannot count them.  Trailing default: rows materialised before the
+    counter existed read 0.
+    """
+    retry_base: timedelta = timedelta(seconds=5)
+    """``RetryPolicy.base`` stamped at enqueue time — the source crash
+    and heartbeat reclaim read to reschedule on this job's own curve.
+    Trailing default: rows materialised before the column existed read
+    ``RetryPolicy``'s own default.
+    """
+    retry_cap: timedelta = timedelta(hours=1)
+    """``RetryPolicy.cap`` stamped at enqueue time."""
+    retry_backoff: Literal["exponential", "linear", "fixed"] = "exponential"
+    """``RetryPolicy.backoff`` stamped at enqueue time."""
+    retry_jitter: float = 0.2
+    """``RetryPolicy.jitter`` stamped at enqueue time."""
+    assignment_routed: bool = False
+    """Whether dispatch routes this row by its actor's stored assignment
+    rather than by its own ``queue`` label.  Producer-placed rows are
+    ``False`` (the label governs, so an explicit ``enqueue(queue=...)``
+    and a stale producer's post-move enqueue both stay where they were
+    put); every re-pend path sets it ``True``, so a row handed back to
+    the fleet follows the actor's current queue instead of stranding on
+    one the operator has retired.  See the routing contract in
+    ``taskq/backend/_dispatch_sql.py``.  Trailing default: rows
+    materialised before the marker existed read producer-placed.
     """
 
 
@@ -762,6 +979,19 @@ class CancelFlag:
     cancel_phase: CancelPhase
 
 
+MAX_JOB_LIST_LIMIT: Final[int] = 10_000
+"""Largest page ``JobsClient.list`` will ask a backend for.
+
+A page is one round trip that materialises every row it returns, on the
+server and in the client; ``cursor`` is what reaches the rows past it. An
+unbounded limit let one call ask for the whole table, which is a query
+plan and a memory spike no caller can want by accident; ten thousand is
+the ceiling peer job queues put on a listed page. Enforced by the
+client's list entry, not by :class:`JobFilter`
+itself: the same filter drives ``cancel_where``, which ignores ``limit``
+and whose in-process implementation lists with no page at all."""
+
+
 @dataclass(frozen=True, slots=True)
 class JobFilter:
     """Filter parameters for :meth:`Backend.list_jobs` and
@@ -776,10 +1006,10 @@ class JobFilter:
     skipped). Use :meth:`has_predicates` to check whether the filter has
     at least one predicate before passing it to ``cancel_where``.
 
-    Heads-up: ``active=True`` is **not** Celery's 'active' — Celery's
-    means 'currently executing' (``running`` only), TaskQ's means 'not
-    yet finished' (``pending`` + ``scheduled`` + ``running``).  Read the
-    ``active`` section below before relying on the name.
+    Heads-up: ``active=True`` means 'not yet finished' — a superset of
+    non-terminal statuses (``pending`` + ``scheduled`` + ``running``),
+    not just 'currently executing'. Read the ``active`` section below
+    before relying on the name.
 
     ``cursor`` is an opaque keyset-pagination token encoding the sort
     columns of ``order_by``'s ordering from the last row of the previous
@@ -808,11 +1038,10 @@ class JobFilter:
     sequence as ``status = ANY($n)``; the in-memory backend performs a
     membership check in both cases.
 
-    ``active`` is a meta-filter that selects statuses by terminality.
-    **This is not Celery's 'active'.**  Celery/Flower use 'active' for
-    tasks currently executing on a worker (``running`` only); here it
-    means 'not yet finished' — a superset that also includes work that
-    has not started yet:
+    ``active`` is a meta-filter that selects statuses by terminality —
+    use it to filter by whether a job is still running or has reached
+    a terminal state. Here, 'not yet finished' means a superset that
+    includes both work currently executing and work not yet started:
 
     - ``active=True`` → non-terminal statuses (pending, scheduled, running)
     - ``active=False`` → terminal statuses (succeeded, failed, cancelled,
@@ -839,12 +1068,14 @@ class JobFilter:
     actor: str | None = None
     identity_key: IdentityKey | None = None
     batch_id: UUID | None = None
+    # One list page (JobsClient.list caps it at MAX_JOB_LIST_LIMIT; cursor
+    # reaches the rest). Ignored by cancel_where.
     limit: int = 100
     cursor: str | None = None
     tags: tuple[str, ...] | None = None
     order_by: JobSortField | None = None
-    # Not Celery's 'active' ('currently executing') — True selects every
-    # non-terminal status, i.e. 'not yet finished'. See the class docstring.
+    # True selects every non-terminal status (still running or pending);
+    # False selects only terminal statuses. See the class docstring.
     active: bool | None = None
 
     def __post_init__(self) -> None:
@@ -1113,13 +1344,12 @@ class ErrorInfo:
         that classification honest.
 
         Oversized values are truncated (not rejected): a failure must
-        still record, just bounded.  Que truncates recorded errors to
-        500/10k chars in SQL with CHECK constraints; the bounds here
-        live at this same construction boundary instead, so every
-        construction site — present and future — inherits them, and the
-        columns stay schemaless for existing rows a CHECK would reject
-        on sight.  A plain slice (no marker): length is the contract
-        the suite pins.
+        still record, just bounded.  The bounds here live at this same
+        construction boundary (Python, not SQL CHECK constraints), so
+        every construction site — present and future — inherits them,
+        and the columns stay schemaless for existing rows a CHECK would
+        reject on sight.  A plain slice (no marker): length is the
+        contract the suite pins.
         """
         check_no_nul_str(self.error_class, what="error_class")
         check_no_nul_str(self.error_message, what="error_message")
@@ -1272,6 +1502,11 @@ class BackendSettings(Protocol):
     # speculative-lock conflict on the single-enqueue path; default
     # DEFAULT_IDEMPOTENCY_LOCK_TIMEOUT_MS (5 s).
     idempotency_lock_timeout_ms: float
+    # Global ceiling on one attempt's backoff, applied by the reclaim
+    # sweep's reschedule (min of the row's stamped cap and this value);
+    # default DEFAULT_MAX_RETRY_BACKOFF (24 h). Read where the sweep's
+    # $4 ceiling parameter is bound.
+    max_retry_backoff: timedelta
 
 
 @runtime_checkable
@@ -1470,13 +1705,26 @@ class Backend(Protocol):
         self,
         worker_id: UUID,
         lock_lease: timedelta,
-    ) -> int: ...
+        *,
+        disowned: Collection[UUID] = (),
+    ) -> int:
+        """Renew the lock lease of every running job *worker_id* holds,
+        except the *disowned* ids — rows the worker could not record an
+        outcome for, whose leases must lapse for the reclaim sweep. Returns
+        the number of rows renewed."""
+        ...
 
     async def extend_reservation_leases(
         self,
         worker_id: UUID,
         lock_lease: timedelta,
-    ) -> int: ...
+        *,
+        disowned: Collection[UUID] = (),
+    ) -> int:
+        """Renew the reservation-slot leases of every running job
+        *worker_id* holds, with the same *disowned* exclusion as
+        :meth:`heartbeat_jobs`. Returns the number of slots renewed."""
+        ...
 
     # ── Terminal writes ─────────────────────────────────────────────────
     async def mark_succeeded(
@@ -1499,11 +1747,9 @@ class Backend(Protocol):
         a row whose current ``attempt`` matches, so a stale handler's
         write after a same-worker reclaim/redispatch (the row re-dispatched
         at ``attempt + 1`` on the same worker) no-ops exactly like a
-        different worker's late write — the contract Oban's ``ack_query``
-        pins with ``attempted_at == ^job.attempted_at``. ``None`` — a
-        caller that cannot present the epoch — also no-ops: a terminal
-        write that cannot prove which attempt it terminates must not
-        terminate any attempt.
+        different worker's late write. ``None`` — a caller that cannot
+        present the epoch — also no-ops: a terminal write that cannot
+        prove which attempt it terminates must not terminate any attempt.
 
         The result reaches the backend in exactly one of two forms:
         ``result`` — the actor's result dict, which the backend serializes
@@ -1635,7 +1881,7 @@ class Backend(Protocol):
         outcome: SnoozeOutcome = "snoozed",
         attempt: int | None = None,
         denial_reason: DenialReason = "capacity",
-    ) -> Literal["scheduled", "failed", "failed:MaxAttemptsExceeded", "noop"]:
+    ) -> Literal["scheduled", "failed", "noop"]:
         """Release a running job back to the queue without consuming retry
         budget.
 
@@ -1658,24 +1904,23 @@ class Backend(Protocol):
         deferral reschedules at least that far out, so a zero delay
         cannot park the job at the head of the dispatch order.
 
-        *denial_reason* discriminates the two causes of a denial-class
-        outcome (:data:`DenialReason`) and binds the non-consuming arm:
-        ``"capacity"`` (the default) is a real saturation denial — the
-        store answered "full" — and the retry budget still bounds the
-        loop below.  ``"unavailable"`` is the store failing to answer —
-        infrastructure backpressure about a job whose actor never ran —
-        so the claim's attempt increment is refunded (exactly the way
-        the ``snoozed`` arm refunds it) and no terminal arm can fire:
-        the job stays retryable across a sustained outage and keeps its
-        original budget when the store returns.
+        Every deferral shape refunds the claim's attempt increment
+        (floored at 0), so no deferral — actor-requested or admission
+        denial — spends retry budget.  An admission denial carries HTTP
+        429 semantics: it reports that the fleet had no slot, which says
+        nothing about the work, so it can neither charge the budget nor
+        decide the outcome.  A denied job reschedules until capacity
+        frees; its only terminal exit is its own ``schedule_to_close``
+        (``"failed"``, ``DeadlineExceeded``), and the counters on the row
+        are how sustained contention stays visible.
 
-        The retry budget still bounds the loop for ``"capacity"``
-        denials: a non-``indefinite`` job at ``attempt >= max_attempts``
-        with no ``schedule_to_close`` fails terminally
-        (``"failed:MaxAttemptsExceeded"``) instead of rescheduling
-        forever; a job carrying ``schedule_to_close`` reschedules until
-        its deadline (``"failed"``, ``DeadlineExceeded``); an
-        ``indefinite`` job reschedules by explicit policy.
+        *denial_reason* names the cause of a denial-class outcome
+        (:data:`DenialReason`) for the caller's own observability —
+        ``"capacity"`` (the default) is a saturation denial, the store
+        answering "full"; ``"unavailable"`` is the store failing to
+        answer.  Both take the identical non-consuming path; the value is
+        validated at the boundary so an undefined reason is refused
+        rather than silently accepted.
         """
         ...
 
@@ -1690,6 +1935,55 @@ class Backend(Protocol):
         progress_state: dict[str, object] | None = None,
         attempt: int | None = None,
     ) -> Literal["scheduled", "failed:DeadlineExceeded", "failed:MaxAttemptsExceeded", "noop"]: ...
+
+    async def mark_interrupted(
+        self,
+        job_id: JobId,
+        worker_id: UUID,
+        *,
+        attempt: int,
+        hold: timedelta,
+        progress_seq: int = 0,
+        progress_state: dict[str, object] | None = None,
+    ) -> Literal["pending", "scheduled", "failed:DeadlineExceeded", "noop"]:
+        """Release a running attempt this worker cannot finish because the
+        process is going away.
+
+        The interruption is a non-consuming release of a *started* attempt:
+        the claim's increment is refunded exactly the way the snooze /
+        ``unavailable`` / actor-not-found arms return it
+        (``GREATEST(attempt - 1, 0)``), no ``job_attempts`` row is written
+        (an interruption is not an execution outcome), one ``job_events``
+        state_change with ``detail.reason = 'interrupted'`` records the
+        transition, and the row's ``interrupt_count`` is bumped. The
+        hand-back is non-consuming: the attempt is returned with its
+        budget untouched, the ``GREATEST(attempt - 1, 0)`` refund flooring
+        the claim's increment so an interrupted job restarts with the
+        attempts it had not spent.
+
+        *hold* > 0 parks the row ``scheduled`` until the releasing process
+        is provably gone (a job released while its coroutine may still be
+        alive in this process must not be claimable elsewhere until then);
+        *hold* = 0 lands the row ``pending`` at the head of the order — the
+        row is genuinely free and the actor is gone, so no deferral floor
+        applies. A hold that would push the row past its
+        ``schedule_to_close`` fails the job on the deadline instead
+        (``"failed:DeadlineExceeded"``), the same terminal exit every
+        deferral arm honours.
+
+        Fenced on ownership, the attempt epoch, and ``cancel_phase = 0``:
+        an operator cancel in flight wins and the call returns ``"noop"``
+        so the caller routes to the cancel ladder (the row carries the
+        operator's request; the deploy must not launder it into a release:
+        a row whose ``cancel_attempted_at`` is set terminalises as
+        cancelled, never as available).
+
+        *attempt* is the attempt-identity epoch — see
+        :meth:`mark_succeeded`. Here it is required, not optional: a
+        release that cannot prove which attempt it is handing back must
+        not touch the row (``"noop"``).
+        """
+        ...
 
     # ── Attempt history ─────────────────────────────────────────────────
     async def write_attempt(self, attempt: AttemptRow) -> None: ...
@@ -1767,11 +2061,23 @@ class Backend(Protocol):
 
     # ── Admin operations ──────────────────────────────────────────────
     async def retry_job(self, job_id: JobId) -> bool:
-        """Re-run a terminal job (failed/crashed/cancelled) by re-pending it.
+        """Re-run a job that has come to rest, by re-pending it.
 
-        The attempt counter is NOT reset — the vendored admin-retry
-        precedent (Oban's ``retry_job``, River's ``JobRetry``) never
-        touches it — so a re-run job climbs to fresh attempt numbers and
+        An operator re-run is "run this again", so every terminal status
+        is a valid source: ``failed``/``crashed``/``cancelled``, and also
+        ``succeeded`` (the replay path after a bad deploy — the status
+        records that the actor returned, never that its side effects were
+        right) and ``abandoned`` (an infrastructure interruption, not a
+        failure). ``running`` is excluded on correctness grounds:
+        re-pending a row while an attempt is live races that attempt's
+        terminal write and the job can execute twice concurrently.
+        ``pending``/``scheduled`` are excluded because the job is already
+        queued — there is nothing to put back, and re-pending would
+        discard its place in the dispatch order.
+
+        The attempt counter is NOT reset: an idempotent admin operation
+        must not restart the counter, so a re-run job climbs to fresh
+        attempt numbers and
         no ``job_attempts`` write can collide on a spent epoch's primary
         key.  ``max_attempts`` rises to ``GREATEST(max_attempts,
         attempt + 1)`` (capped at the smallint bound), which opens the
@@ -1832,8 +2138,8 @@ class Backend(Protocol):
         ``filters.status`` accepts a single :data:`JobStatus` or a
         sequence of statuses; ``filters.active`` is a meta-filter for
         non-terminal (``True``) or terminal (``False``) statuses —
-        'active' here means 'not yet finished', not Celery's 'currently
-        executing'.  See :class:`JobFilter` for details.
+        'active' here means 'not yet finished' (pending, scheduled, or
+        running).  See :class:`JobFilter` for details.
         """
         ...
 

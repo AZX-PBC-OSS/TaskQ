@@ -263,11 +263,16 @@ async def workgroup_supervisor(
         yield WorkgroupSupervisor(process=process, log_lines=log_lines)
     finally:
         if process.returncode is None:
-            process.terminate()
+            # returncode stays None until the loop reaps the exit, so a
+            # child that exited under a loaded runner reaches terminate()
+            # already dead — suppress like _kill_child does.
+            with contextlib.suppress(ProcessLookupError):
+                process.terminate()
             try:
                 await asyncio.wait_for(process.wait(), timeout=_SUPERVISOR_STOP_TIMEOUT_S)
             except TimeoutError:
-                process.kill()
+                with contextlib.suppress(ProcessLookupError):
+                    process.kill()
                 await process.wait()
         drain_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):

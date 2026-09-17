@@ -9,6 +9,7 @@ from uuid import UUID
 import pytest
 
 from taskq.backend._protocol import JobRow, ScheduleCreateArgs
+from taskq.retry import RetryPolicy
 from taskq.testing.in_memory import InMemoryBackend
 
 
@@ -19,7 +20,7 @@ class _FakeConn:
         self._rows = rows
         self.fetch_calls = 0
 
-    async def fetch(self, sql: str) -> list[dict[str, Any]]:
+    async def fetch(self, sql: str, *args: object) -> list[dict[str, Any]]:
         self.fetch_calls += 1
         return self._rows
 
@@ -76,8 +77,8 @@ async def test_stranded_jobs_loop_logs_once_per_actor() -> None:
 
     real_fetch = fake_conn.fetch
 
-    async def _fetch_then_shutdown(sql: str) -> list[dict[str, Any]]:
-        rows = await real_fetch(sql)
+    async def _fetch_then_shutdown(sql: str, *args: object) -> list[dict[str, Any]]:
+        rows = await real_fetch(sql, *args)
         if fake_conn.fetch_calls >= 2:
             shutdown.set()
         return rows
@@ -192,7 +193,11 @@ async def test_max_pending_batch_boundary_uses_ge() -> None:
         dependencies={},
         payload_type=_Payload,
         result_adapter=MagicMock(),
-        retry=MagicMock(),
+        # A real policy, not a MagicMock: the enqueue boundary domain-validates
+        # max_attempts (build_enqueue_args reads ref.retry.max_attempts into
+        # EnqueueArgs, whose __post_init__ refuses a non-int), so a mock's
+        # attribute spill fails the boundary this test drives.
+        retry=RetryPolicy(),
         result_ttl=None,
         max_pending=3,
     )

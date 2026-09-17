@@ -10,7 +10,8 @@ from datetime import timedelta
 from typing import TYPE_CHECKING, Final
 from uuid import UUID
 
-from taskq.backend._protocol import JobRow, QueueMode
+from taskq.backend._protocol import JobId, JobRow, QueueMode
+from taskq.constants import SMALLINT_MAX
 from taskq.testing._reads import _read_copy
 
 if TYPE_CHECKING:
@@ -21,10 +22,19 @@ __all__ = ["_dispatch_batch", "_set_queue_mode"]
 # Mirrors WorkerSettings.dispatch_oversample's default (settings.py): each
 # per-(actor, queue) candidate read is bounded by residual * oversample —
 # the truncation the differential must model, because a dispatchable job
-# sorted behind a deep blocked cohort that fills the truncated read is
-# PG's honest observable (the round dispatches NOTHING, never "past" the
-# truncation).
+# sorted behind a deep blocked cohort that fills the truncated read would
+# dispatch NOTHING on PG if PG stopped at the base window.
 _DISPATCH_OVERSAMPLE: Final[int] = 2
+
+# Mirrors _MAX_DISPATCH_WINDOW_EXPANSIONS (backend/_dispatch.py), written
+# as a literal rather than imported because backend._dispatch binds the
+# asyncpg driver at import time and this module is part of the driver-free
+# testing boundary — the same reason settings.py's lock budgets mirror
+# backend/_enqueue's constants as literals. PG re-runs an empty round with
+# a geometrically widened window while routable rows remain; the twin must
+# reach the same rows or the differential sees past-truncation dispatches
+# PG no longer makes (and vice versa).
+_DISPATCH_MAX_WINDOW_EXPANSIONS: Final[int] = 3
 
 
 async def _dispatch_batch(
@@ -44,6 +54,54 @@ async def _dispatch_batch(
             if row.identity_key is not None:
                 running_identities.add((row.actor, row.identity_key))
 
+    # ── reservation_holdings / reservation_headroom mirror ────────────
+    # PG's claim folds live reservation-slot occupancy into per-actor
+    # admission (backend/_dispatch_sql.py's CTEs of the same names): an
+    # actor whose claimed jobs hold live slots in a bucket with no
+    # acquirable slot left can run no more of its pending rows — every
+    # job of an actor AND-composes the same declared reservations — so
+    # claiming them would only churn shared consumer slots into denied
+    # acquires. The twin derives the same headroom from the same
+    # holder-state signal (slot -> holding job -> actor; like the DB,
+    # the in-memory store has no actor -> bucket declaration mapping, so
+    # static, keyed, and queue-cap buckets all ride it), with the same
+    # acquirability predicate the twin acquire uses: free is
+    # job_id-None or an expired lease, held is its negation. An actor
+    # holding nothing is absent from the map, leaving its residual
+    # untouched — the gate never blocks a first claim (PG: LEAST ignores
+    # the NULL headroom), so capacity can always be taken and a
+    # saturated actor drains the moment a slot frees.
+    reservation_headroom: dict[str, int] = {}
+    slot_table = self._slot_table
+    if slot_table is not None:
+        # The lock is held only for a shallow dict copy (no await, no
+        # callback): the heartbeat path mutates the table from the same
+        # loop, and the copy keeps the read consistent. The slot store
+        # ships no read API; the twin reads the state it mirrors, the
+        # same reach this module already makes into the backend's own
+        # private stores (_jobs, _actor_configs_meta).
+        with slot_table._lock:
+            bucket_snapshot = {name: dict(bucket) for name, bucket in slot_table._buckets.items()}
+        free_by_bucket: dict[str, int] = {}
+        held_buckets_by_actor: dict[str, set[str]] = {}
+        for bucket_name, bucket in bucket_snapshot.items():
+            free = 0
+            for slot in bucket.values():
+                if slot.job_id is None or (
+                    slot.lease_expires_at is not None and slot.lease_expires_at < now
+                ):
+                    free += 1
+                    continue
+                # The PG join keys on jobs.id = reservation_slots.job_id;
+                # the store is keyed by JobId (a UUID NewType), the slot
+                # carries the same UUID value.
+                holder = self._jobs.get(JobId(slot.job_id))
+                if holder is not None:
+                    held_buckets_by_actor.setdefault(holder.actor, set()).add(bucket_name)
+            free_by_bucket[bucket_name] = free
+        for actor, bucket_names in held_buckets_by_actor.items():
+            reservation_headroom[actor] = min(free_by_bucket[name] for name in bucket_names)
+
     # Why: `row.queue in queues` with NO `not queues` escape — PG builds the
     # candidate set with ``CROSS JOIN LATERAL unnest((SELECT queues FROM
     # params))`` (backend/_dispatch_sql.py), and an empty array annihilates
@@ -57,177 +115,286 @@ async def _dispatch_batch(
     # round-robin-ordered; it is only a None guard, never a selection.
     _use_round_robin = any(self._queues.get(q) == "round_robin" for q in (queues or []))
 
-    # ── per_actor_capacity + candidates lateral ─────────────────────────
+    # ── per_actor_capacity + repend_capacity + candidates laterals ────
     # Candidates come FROM the actor_config registry, exactly PG's
-    # per_actor_capacity CTE (backend/_dispatch_sql.py): zero registered
-    # actors means zero capacity rows means zero candidates — "no actors
-    # registered" must never read as "no filter" (the mirror was greener
-    # than production). residual = the round's limit when the actor has no
+    # per_actor_capacity and repend_capacity CTEs
+    # (backend/_dispatch_sql.py): zero registered actors means zero
+    # capacity rows means zero candidates — "no actors registered" must
+    # never read as "no filter" (the mirror was greener than
+    # production). residual = the round's limit when the actor has no
     # max_concurrent, else max(max_concurrent - in_flight, 0).
-    candidates: list[JobRow] = []
-    _fairness_rank: dict[UUID, int] = {}
-    for _actor, _cfg in self._actor_configs_meta.items():
-        _cap = _cfg.max_concurrent
-        _residual = limit if _cap is None else max(_cap - running_per_actor.get(_actor, 0), 0)
-        if _residual <= 0:
-            continue
-        _bound = _residual * _DISPATCH_OVERSAMPLE
-        _by_queue: dict[str, list[JobRow]] = _dd(list)
-        for row in self._jobs.values():
-            if (
-                row.status == "pending"
-                and row.actor == _actor
-                and row.queue in queues
-                and row.scheduled_at <= now
-                and (row.schedule_to_close is None or row.schedule_to_close > now)
-            ):
-                _by_queue[row.queue].append(row)
-        for _queue_rows in _by_queue.values():
-            if _use_round_robin:
-                _fk_groups: dict[str, list[JobRow]] = _dd(list)
-                for r in _queue_rows:
-                    # Why: ONE shared "__null__" partition for every unkeyed
-                    # job, exactly PG's ``PARTITION BY COALESCE(j2.fairness_key,
-                    # '__null__')`` (backend/_dispatch_sql.py). The old
-                    # per-row synthetic partition (f"__null__{r.id}") ranked
-                    # every unkeyed job at fairness_rank 1, so a bounded batch
-                    # was consumed entirely by the unkeyed cohort and the keyed
-                    # cohorts starved — the exact round-robin starvation the
-                    # mode exists to prevent, in the default configuration
-                    # (fairness_key is None by default). Unkeyed jobs rank
-                    # 1, 2, 3… and yield their surplus slots to the keyed
-                    # cohorts.
-                    fk = r.fairness_key if r.fairness_key is not None else "__null__"
-                    _fk_groups[fk].append(r)
-                for _fk_rows in _fk_groups.values():
-                    _fk_rows.sort(key=lambda r: (-r.priority, r.scheduled_at, r.id))
-                    # The oversample bound is per fairness partition (a global
-                    # LIMIT would truncate before partitioning — PG filters
-                    # ``fairness_rank <= residual * oversample`` instead), so
-                    # every cohort contributes candidates up to the bound.
-                    for _rank, _r in enumerate(_fk_rows, 1):
-                        if _rank <= _bound:
-                            _fairness_rank[_r.id] = _rank
-                            candidates.append(_r)
-            else:
-                # Strict-FIFO lateral: ORDER BY priority DESC, scheduled_at,
-                # id LIMIT residual * oversample — the truncation that can
-                # starve a dispatchable job sorting behind the bound.
-                _queue_rows.sort(key=lambda r: (-r.priority, r.scheduled_at, r.id))
-                candidates.extend(_queue_rows[:_bound])
-
-    # ── identity_dedup, BEFORE ranking ──────────────────────────────────
-    # PG dedupes candidates per (actor, identity_key) before pending_rank
-    # is computed (the identity_dedup CTE): the best candidate per identity
-    # (priority DESC, scheduled_at, id), with identities a running job
-    # already holds dropped entirely; identity-less rows pass through.
-    _deduped: list[JobRow] = []
-    _best_by_identity: dict[tuple[str, str], JobRow] = {}
-    for r in candidates:
-        if r.identity_key is None:
-            _deduped.append(r)
-            continue
-        _ident = (r.actor, r.identity_key)
-        if _ident in running_identities:
-            continue
-        _cur = _best_by_identity.get(_ident)
-        if _cur is None or (-r.priority, r.scheduled_at, r.id) < (
-            -_cur.priority,
-            _cur.scheduled_at,
-            _cur.id,
+    #
+    # Routing contract, mirroring PG's two candidate arms: a pending row
+    # routes by its OWN queue label while producer-placed (NOT
+    # assignment_routed — producer placement governs, so post-move
+    # strays and enqueue overrides keep their queue), and by the actor's
+    # Routing contract, mirroring PG's two candidate arms: a pending row
+    # routes by its OWN queue label while producer-placed (NOT
+    # assignment_routed — producer placement governs, so post-move
+    # strays and enqueue overrides keep their queue), and by the actor's
+    # CURRENT stored assignment once a re-pend has handed it back
+    # (assignment_routed — every re-pend path keeps the row's label as
+    # audit trail but follows the assignment, so a move's tails drain
+    # through the target queue's consumers). The marker is written by
+    # the re-pend paths themselves on both backends rather than inferred
+    # from started_at, which would miss an operator retry of a job
+    # terminalized before it was ever claimed.
+    # ── Window-expansion mirror ─────────────────────────────────────
+    # PG re-runs an empty claim with a geometrically widened candidate
+    # window while routable rows remain (backend/_dispatch.py), gated by
+    # its claimable-rows probe; the twin needs no probe — a re-attempt is
+    # a local scan, not a round trip — but the schedule must match
+    # exactly (base oversample, doubling, the same expansion cap) or the
+    # differential sees one backend reach a row the other truncated away.
+    # An empty attempt is side-effect free by the same invariant PG keeps
+    # (zero admissions means nothing was written), so re-attempts start
+    # clean.
+    # One pass groups the round's dispatchable population by actor —
+    # pending, due, and inside its schedule_to_close — in table order, so
+    # the per-actor sorts below see the same rows in the same order a
+    # per-actor scan produced. The actor loop then reads its own group
+    # instead of rescanning every job per registered actor (O(actors x
+    # jobs) per round, and per expansion), which is what made the twin
+    # the slow half of every differential run at fleet-sized registries.
+    # The store is not written between here and the claim writes below.
+    _dispatchable_by_actor: dict[str, list[JobRow]] = _dd(list)
+    for row in self._jobs.values():
+        if (
+            row.status == "pending"
+            and row.scheduled_at <= now
+            and (row.schedule_to_close is None or row.schedule_to_close > now)
         ):
-            _best_by_identity[_ident] = r
-    _deduped.extend(_best_by_identity.values())
+            _dispatchable_by_actor[row.actor].append(row)
 
-    # ── ranked + eligible ordering ──────────────────────────────────────
-    # pending_rank: per-actor row number over the deduped set, per mode
-    # (PG's ranked CTE — strict FIFO: priority DESC, scheduled_at, id;
-    # round_robin: fairness_rank, priority DESC, scheduled_at, id). The
-    # final selection order is PG's eligible ORDER BY: pending_rank, then
-    # fairness_rank (round_robin only; strict-FIFO rows carry none), then
-    # priority DESC, scheduled_at, id — NEVER alphabetical actor order,
-    # which the old per-rank interleave substituted whenever a round's
-    # limit cut inside a rank shared by jobs of different actors.
-    _ranked_by_actor: dict[str, list[JobRow]] = _dd(list)
-    for c in _deduped:
-        _ranked_by_actor[c.actor].append(c)
-    _pending_rank: dict[UUID, int] = {}
-    for _actor_rows in _ranked_by_actor.values():
-        if _use_round_robin:
-            _actor_rows.sort(
-                key=lambda r: (_fairness_rank[r.id], -r.priority, r.scheduled_at, r.id)
+    oversample = _DISPATCH_OVERSAMPLE
+    expansions = 0
+    while True:
+        candidates: list[JobRow] = []
+        _fairness_rank: dict[UUID, int] = {}
+        for _actor, _cfg in self._actor_configs_meta.items():
+            _cap = _cfg.max_concurrent
+            _residual = limit if _cap is None else max(_cap - running_per_actor.get(_actor, 0), 0)
+            # The reservation-headroom fold (PG: LEAST(base.residual,
+            # rh.headroom) in per_actor_capacity / repend_capacity): a
+            # live-held bucket with fewer acquirable slots than the
+            # residual clamps admission to the acquirable count — zero
+            # when full — so a saturated actor's rows are not claimed
+            # into consumer slots that can only deny them.
+            _headroom = reservation_headroom.get(_actor)
+            if _headroom is not None and _headroom < _residual:
+                _residual = _headroom
+            if _residual <= 0:
+                continue
+            _bound = _residual * oversample
+            _by_queue: dict[str, list[JobRow]] = _dd(list)
+            _repended_by_fk: dict[str, list[JobRow]] = _dd(list)
+            for row in _dispatchable_by_actor.get(_actor, ()):
+                if not row.assignment_routed:
+                    # Label-routed arm: PG's per_actor_capacity x
+                    # unnest(queues) probes, queue label against the
+                    # subscription.
+                    if row.queue in queues:
+                        _by_queue[row.queue].append(row)
+                elif _cfg.queue in queues:
+                    # Assignment-routed arm: PG's repend_capacity gate (the
+                    # actor's stored assignment against the subscription) —
+                    # the row's own label is irrelevant once claimed.
+                    _fk = row.fairness_key if row.fairness_key is not None else "__null__"
+                    _repended_by_fk[_fk].append(row)
+            for _queue_rows in _by_queue.values():
+                if _use_round_robin:
+                    _fk_groups: dict[str, list[JobRow]] = _dd(list)
+                    for r in _queue_rows:
+                        # Why: ONE shared "__null__" partition for every unkeyed
+                        # job, exactly PG's ``PARTITION BY COALESCE(j2.fairness_key,
+                        # '__null__')`` (backend/_dispatch_sql.py). The old
+                        # per-row synthetic partition (f"__null__{r.id}") ranked
+                        # every unkeyed job at fairness_rank 1, so a bounded batch
+                        # was consumed entirely by the unkeyed cohort and the keyed
+                        # cohorts starved — the exact round-robin starvation the
+                        # mode exists to prevent, in the default configuration
+                        # (fairness_key is None by default). Unkeyed jobs rank
+                        # 1, 2, 3… and yield their surplus slots to the keyed
+                        # cohorts.
+                        fk = r.fairness_key if r.fairness_key is not None else "__null__"
+                        _fk_groups[fk].append(r)
+                    for _fk_rows in _fk_groups.values():
+                        _fk_rows.sort(key=lambda r: (-r.priority, r.scheduled_at, r.id))
+                        # The oversample bound is per fairness partition (a global
+                        # LIMIT would truncate before partitioning — PG filters
+                        # ``fairness_rank <= residual * oversample`` instead), so
+                        # every cohort contributes candidates up to the bound.
+                        for _rank, _r in enumerate(_fk_rows, 1):
+                            if _rank <= _bound:
+                                _fairness_rank[_r.id] = _rank
+                                candidates.append(_r)
+                else:
+                    # Strict-FIFO lateral: ORDER BY priority DESC, scheduled_at,
+                    # id LIMIT residual * oversample — the truncation that can
+                    # starve a dispatchable job sorting behind the bound.
+                    _queue_rows.sort(key=lambda r: (-r.priority, r.scheduled_at, r.id))
+                    candidates.extend(_queue_rows[:_bound])
+            # Assignment-routed admission, mirroring PG's rr_tail_keys
+            # per-cohort probes: the same per-cohort residual * oversample
+            # bound (a queue-agnostic global bound would truncate before the
+            # cohort partition, exactly the preemption the label-routed arm's
+            # comment above describes), one rank series per cohort. In
+            # round-robin mode the ranks are real, so a re-pended row takes
+            # its cohort turn beside never-claimed rows; a cohort carrying
+            # both populations has two rank series that interleave by
+            # priority downstream, never starving either. In strict-FIFO
+            # mode the rank is inert (that variant ranks by priority alone),
+            # matching PG's NULL::bigint fairness_rank on its arm.
+            for _fk_rows in _repended_by_fk.values():
+                _fk_rows.sort(key=lambda r: (-r.priority, r.scheduled_at, r.id))
+                for _rank, _r in enumerate(_fk_rows[:_bound], 1):
+                    if _use_round_robin:
+                        _fairness_rank[_r.id] = _rank
+                    candidates.append(_r)
+
+        # ── identity_dedup, BEFORE ranking ──────────────────────────────
+        # PG dedupes candidates per (actor, identity_key) before pending_rank
+        # is computed (the identity_dedup CTE): the best candidate per identity
+        # (priority DESC, scheduled_at, id), with identities a running job
+        # already holds dropped entirely; identity-less rows pass through.
+        _deduped: list[JobRow] = []
+        _best_by_identity: dict[tuple[str, str], JobRow] = {}
+        for r in candidates:
+            if r.identity_key is None:
+                _deduped.append(r)
+                continue
+            _ident = (r.actor, r.identity_key)
+            if _ident in running_identities:
+                continue
+            _cur = _best_by_identity.get(_ident)
+            if _cur is None or (-r.priority, r.scheduled_at, r.id) < (
+                -_cur.priority,
+                _cur.scheduled_at,
+                _cur.id,
+            ):
+                _best_by_identity[_ident] = r
+        _deduped.extend(_best_by_identity.values())
+
+        # ── ranked + eligible ordering ──────────────────────────────────
+        # pending_rank: per-actor row number over the deduped set, per mode
+        # (PG's ranked CTE — strict FIFO: priority DESC, scheduled_at, id;
+        # round_robin: fairness_rank, priority DESC, scheduled_at, id). The
+        # final selection order is PG's eligible ORDER BY: pending_rank, then
+        # fairness_rank (round_robin only; strict-FIFO rows carry none), then
+        # priority DESC, then the claim-recency stamp (never-claimed first,
+        # then least-recently-claimed — the cross-round actor rotation), then
+        # scheduled_at, id — NEVER alphabetical actor order,
+        # which the old per-rank interleave substituted whenever a round's
+        # limit cut inside a rank shared by jobs of different actors.
+        _ranked_by_actor: dict[str, list[JobRow]] = _dd(list)
+        for c in _deduped:
+            _ranked_by_actor[c.actor].append(c)
+        _pending_rank: dict[UUID, int] = {}
+        for _actor_rows in _ranked_by_actor.values():
+            if _use_round_robin:
+                _actor_rows.sort(
+                    key=lambda r: (_fairness_rank[r.id], -r.priority, r.scheduled_at, r.id)
+                )
+            else:
+                _actor_rows.sort(key=lambda r: (-r.priority, r.scheduled_at, r.id))
+            for _rank, _r in enumerate(_actor_rows, 1):
+                _pending_rank[_r.id] = _rank
+        candidates = sorted(
+            _deduped,
+            key=lambda r: (
+                _pending_rank[r.id],
+                _fairness_rank[r.id] if _use_round_robin else 0,
+                -r.priority,
+                # PG's cross-round rotation cut: actor_claimed_at ASC
+                # NULLS FIRST (backend/_dispatch_sql.py, top_ids /
+                # sliding_locked / eligible). Never-claimed actors sort
+                # first, then least-recently-claimed; without it the
+                # scheduled_at/id tiebreak below is a stable total order
+                # that re-elects the same prefix of actors every round
+                # once more actors hold due work than the limit admits.
+                r.actor in self._actor_claim_ticks,
+                self._actor_claim_ticks.get(r.actor, 0),
+                r.scheduled_at,
+                r.id,
+            ),
+        )
+
+        dispatched_per_actor: dict[str, int] = {}
+        newly_dispatched_identities: set[tuple[str, str]] = set()
+        dispatched: list[JobRow] = []
+
+        for row in candidates:
+            if len(dispatched) >= limit:
+                break
+
+            # Every candidate's actor carries an actor_config row by
+            # construction (candidates come FROM the registry), exactly as
+            # PG's eligible_candidates LEFT JOIN always finds its row.
+            cap = self._actor_configs_meta[row.actor].max_concurrent
+
+            per_dispatch_cap = cap if cap is not None else limit
+            if dispatched_per_actor.get(row.actor, 0) >= per_dispatch_cap:
+                continue
+
+            if cap is not None:
+                in_flight = running_per_actor.get(row.actor, 0) + dispatched_per_actor.get(
+                    row.actor, 0
+                )
+                if in_flight >= cap:
+                    continue
+
+            if row.identity_key is not None:
+                ident = (row.actor, row.identity_key)
+                if ident in running_identities or ident in newly_dispatched_identities:
+                    continue
+                newly_dispatched_identities.add(ident)
+
+            dispatched_per_actor[row.actor] = dispatched_per_actor.get(row.actor, 0) + 1
+
+            updated = replace(
+                row,
+                status="running",
+                locked_by_worker=worker_id,
+                lock_expires_at=now + lock_lease,
+                started_at=now,
+                finished_at=None,
+                last_heartbeat_at=now,
+                error_class=None,
+                error_message=None,
+                error_traceback=None,
+                result=None,
+                result_size_bytes=None,
+                # Mirrors the claim's LEAST(attempt + 1, 32767) saturation
+                # (backend/_dispatch_sql.py): a row parked at the smallint
+                # ceiling is claimed, not crashed, and the repeat attempt
+                # number is absorbed by _write_attempt's keep-the-first-
+                # record guard, exactly PG's ON CONFLICT doctrine.
+                attempt=min(row.attempt + 1, SMALLINT_MAX),
             )
-        else:
-            _actor_rows.sort(key=lambda r: (-r.priority, r.scheduled_at, r.id))
-        for _rank, _r in enumerate(_actor_rows, 1):
-            _pending_rank[_r.id] = _rank
-    candidates = sorted(
-        _deduped,
-        key=lambda r: (
-            _pending_rank[r.id],
-            _fairness_rank[r.id] if _use_round_robin else 0,
-            -r.priority,
-            r.scheduled_at,
-            r.id,
-        ),
-    )
+            self._jobs[row.id] = updated
+            # Mirrors PG's claim (backend/_dispatch.py): no job_events row —
+            # pending→running is dispatcher bookkeeping, and a claim is the
+            # one act every admission-denial cycle repeats, so a row per
+            # claim is the unbounded-growth vector the row's aggregated
+            # denial counters replaced. The transitions of record are the
+            # terminal writes and the sweep/cancel audit entries.
+            dispatched.append(_read_copy(updated))
 
-    dispatched_per_actor: dict[str, int] = {}
-    newly_dispatched_identities: set[tuple[str, str]] = set()
-    dispatched: list[JobRow] = []
-
-    for row in candidates:
-        if len(dispatched) >= limit:
-            break
-
-        # Every candidate's actor carries an actor_config row by
-        # construction (candidates come FROM the registry), exactly as
-        # PG's eligible_candidates LEFT JOIN always finds its row.
-        cap = self._actor_configs_meta[row.actor].max_concurrent
-
-        per_dispatch_cap = cap if cap is not None else limit
-        if dispatched_per_actor.get(row.actor, 0) >= per_dispatch_cap:
-            continue
-
-        if cap is not None:
-            in_flight = running_per_actor.get(row.actor, 0) + dispatched_per_actor.get(row.actor, 0)
-            if in_flight >= cap:
-                continue
-
-        if row.identity_key is not None:
-            ident = (row.actor, row.identity_key)
-            if ident in running_identities or ident in newly_dispatched_identities:
-                continue
-            newly_dispatched_identities.add(ident)
-
-        dispatched_per_actor[row.actor] = dispatched_per_actor.get(row.actor, 0) + 1
-
-        updated = replace(
-            row,
-            status="running",
-            locked_by_worker=worker_id,
-            lock_expires_at=now + lock_lease,
-            started_at=now,
-            finished_at=None,
-            last_heartbeat_at=now,
-            error_class=None,
-            error_message=None,
-            error_traceback=None,
-            result=None,
-            result_size_bytes=None,
-            attempt=row.attempt + 1,
-        )
-        self._jobs[row.id] = updated
-        self._append_state_change_event(
-            job_id=row.id,
-            from_state="pending",
-            to_state="running",
-            now=now,
-            worker_id=worker_id,
-        )
-        dispatched.append(_read_copy(updated))
-
-    return dispatched
+        if dispatched or expansions >= _DISPATCH_MAX_WINDOW_EXPANSIONS:
+            if dispatched:
+                # Mirror of the claim's stamp CTE (backend/_dispatch_sql.py):
+                # PG stamps every admitted actor with the statement's
+                # statement_timestamp(); the twin stamps with one tick per
+                # claiming round, shared by every actor the round admitted
+                # (the tie shape PG's single timestamp produces), so the
+                # next round's cross-actor cut rotates to the
+                # least-recently-claimed.
+                self._claim_tick += 1
+                for _claimed_actor in dispatched_per_actor:
+                    self._actor_claim_ticks[_claimed_actor] = self._claim_tick
+            return dispatched
+        expansions += 1
+        oversample = _DISPATCH_OVERSAMPLE * (2**expansions)
 
 
 def _set_queue_mode(self: "InMemoryBackend", queue_name: str, mode: QueueMode) -> None:

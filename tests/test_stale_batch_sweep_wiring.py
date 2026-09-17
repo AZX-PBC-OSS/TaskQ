@@ -1,6 +1,6 @@
 """Wiring of the ``complete_stale_batches`` sweep inside ``_sweep_loop``.
 
-Regression (PR #62 merge f60db32): the stale-batch completion block ended
+Regression: the stale-batch completion block ended
 up nested inside ``if rl.has_keyed_rate_limits:`` — a PROCESS-LOCAL
 registry condition — and lost its leader gating. Consequences:
 
@@ -12,14 +12,14 @@ registry condition — and lost its leader gating. Consequences:
   rows) never caught up — unbounded ``batches`` growth.
 - Non-leaders could run it while the actual leader might not.
 
-The intended wiring (PR #62 branch head 4b1e34f, and
+The intended wiring (per
 docs/architecture.md "``complete_stale_batches`` leader sweep" /
 docs/guides/workers.md) is: leader-gated, keyed-registry-independent, and
 gated on a PG-shaped backend (``hasattr`` on ``sweep_leaked_reservation_slots``
 — ``complete_stale_batches`` needs the dispatcher pool, which the
 in-memory backend does not provide).
 
-These tests pin that wiring while preserving PR #42's de-gating of keyed
+These tests pin that wiring while preserving the de-gating of keyed
 eviction: every worker sweeps its OWN registry each tick, leader or not.
 """
 
@@ -293,7 +293,7 @@ async def test_stale_batch_sweep_skipped_when_not_leader() -> None:
 
 
 async def test_keyed_rate_limit_eviction_still_runs_when_not_leader() -> None:
-    """PR #42 semantics pin: keyed eviction is de-gated from leadership — a
+    """Semantics pin: keyed eviction is de-gated from leadership — a
     non-leader worker still evicts idle keyed rate limits from its OWN
     registry each tick. The stale-batch fix must not regress this."""
     registry = RateLimitRegistry()

@@ -20,15 +20,13 @@ the job was reclaimed and re-dispatched **to the same worker**:
    calls ``mark_succeeded`` — the guard matches, and attempt N+1 is
    falsely terminalised with attempt N's result.
 
-Oban fences exactly this with an attempt-identity epoch on every
-terminal write — the ``ack_query`` matches
-``attempted_at == ^job.attempted_at``
-(``vendor/oban/lib/oban/engines/basic.ex``), so a rescued-and-refetched
-job makes the old worker's ack a silent no-op. This pin holds the same
-contract: after a same-worker re-dispatch, a write carrying the stale
-attempt's context must not apply — the job stays running at its new
-attempt. Red today because the terminal-write API cannot express
-attempt identity at all, which is the finding.
+Fence this with an attempt-identity epoch on every terminal write, so
+the guard matches ``attempted_at == job.attempted_at`` and a rescued-
+and-refetched job makes the old worker's terminal call a silent no-op.
+This pin holds the same contract: after a same-worker re-dispatch, a
+write carrying the stale attempt's context must not apply — the job
+stays running at its new attempt. Red today because the terminal-write
+API cannot express attempt identity at all, which is the finding.
 """
 
 from datetime import UTC, datetime, timedelta
@@ -115,8 +113,8 @@ async def test_stale_attempt_write_does_not_apply_after_same_worker_redispatch(
         "attempt 2 of the same job on the same worker — the guard "
         "(id, status, locked_by_worker) cannot distinguish attempts, so a "
         "reclaimed-and-redispatched job is falsely terminalised with the old "
-        "attempt's result. Oban fences this with an attempt-identity epoch on "
-        "every terminal write (ack_query: attempted_at == job.attempted_at)."
+        "attempt's result. Fence this by matching attempted_at == job.attempted_at "
+        "on every terminal write, so the old attempt's call becomes a silent no-op."
     )
 
     async with deps.worker_pool.acquire() as conn:

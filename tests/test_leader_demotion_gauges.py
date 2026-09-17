@@ -2,9 +2,11 @@
 
 ``taskq.queue.depth``, ``taskq.reservation.slots_used`` and
 ``taskq.jobs.stranded`` are populated ONLY by the elected leader's sweep
-loops.  A demoted worker that keeps its last cached values exports numbers
-it no longer has any authority over -- and it exports them during a
-failover, which is precisely when an operator is reading the dashboard.
+loops, and ``taskq.maintenance_leader.lease_expires_in_seconds`` is stamped
+only by the pod holding the leader lease.  A demoted worker that keeps its
+last cached values exports numbers it no longer has any authority over --
+and it exports them during a failover, which is precisely when an operator
+is reading the dashboard.
 
 "Cleared" here means ABSENT, not zero: an observable gauge whose callback
 yields nothing produces no data point, so the collector marks the series
@@ -17,7 +19,7 @@ aggregation across pods.
 import asyncio
 from collections.abc import Iterator
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, cast
+from typing import cast
 
 import pytest
 from opentelemetry.sdk.metrics import MeterProvider
@@ -31,27 +33,29 @@ from taskq.backend.clock import SystemClock
 from taskq.testing.otel import collect_metrics
 from taskq.worker._watchdog import LoopLiveness
 from taskq.worker.leader import MaintenanceLeader
+from tests._leader_stub_deps import stub_deps
 
-if TYPE_CHECKING:
-    from taskq.worker.deps import WorkerDeps
-else:
-    WorkerDeps = object
-
-_LEADER_ONLY_GAUGES: tuple[tuple[str, str], ...] = (
-    ("taskq.queue.depth", "_queue_depth_gauge"),
-    ("taskq.reservation.slots_used", "_reservation_slots_gauge"),
-    ("taskq.jobs.stranded", "_stranded_jobs_gauge"),
+_LEADER_ONLY_GAUGES: tuple[tuple[str, str, str], ...] = (
+    ("taskq.queue.depth", "_queue_depth_gauge", "1"),
+    ("taskq.reservation.slots_used", "_reservation_slots_gauge", "1"),
+    ("taskq.jobs.stranded", "_stranded_jobs_gauge", "1"),
+    (
+        "taskq.maintenance_leader.lease_expires_in_seconds",
+        "_leader_lease_expires_in_seconds_gauge",
+        "s",
+    ),
 )
 
 _CALLBACKS: dict[str, str] = {
     "taskq.queue.depth": "_observe_queue_depth",
     "taskq.reservation.slots_used": "_observe_reservation_slots",
     "taskq.jobs.stranded": "_observe_stranded_jobs",
+    "taskq.maintenance_leader.lease_expires_in_seconds": "_observe_leader_lease_expires_in_seconds",
 }
 
 
 def _isolated_leader_gauges(monkeypatch: pytest.MonkeyPatch) -> InMemoryMetricReader:
-    """Re-create the three leader-only observable gauges on a private reader.
+    """Re-create the leader-only observable gauges on a private reader.
 
     Follows the established pattern in ``tests/test_otel_integration.py``:
     the module-level callbacks are kept (they are what reads the caches) and
@@ -63,13 +67,13 @@ def _isolated_leader_gauges(monkeypatch: pytest.MonkeyPatch) -> InMemoryMetricRe
     meter = provider.get_meter(obs_mod.INSTRUMENTATION_NAME, otel_mod._version())  # pyright: ignore[reportPrivateUsage]  # Why: mirrors _setup_isolated_meter in tests/test_otel_integration.py.
     monkeypatch.setattr(otel_mod, "get_meter", lambda: meter)
     otel_mod.set_otel_enabled(True)
-    for name, attr in _LEADER_ONLY_GAUGES:
+    for name, attr, unit in _LEADER_ONLY_GAUGES:
         monkeypatch.setattr(
             otel_mod,
             attr,
             meter.create_observable_gauge(
                 name=name,
-                unit="1",
+                unit=unit,
                 callbacks=[getattr(otel_mod, _CALLBACKS[name])],
             ),
         )
@@ -112,8 +116,7 @@ class _ObservableLeaderFlag(asyncio.Event):
 
 
 def _leader(is_leader: asyncio.Event) -> MaintenanceLeader:
-    deps = cast(
-        WorkerDeps,
+    deps = stub_deps(
         SimpleNamespace(
             liveness=LoopLiveness(),
             is_leader=is_leader,
@@ -133,6 +136,7 @@ def _reset_leader_caches() -> Iterator[None]:  # pyright: ignore[reportUnusedFun
     obs_mod.update_queue_depth_cache({})
     obs_mod.update_reservation_slots_cache({})
     obs_mod.update_stranded_jobs_cache({})
+    otel_mod.clear_leader_lease_expires_in_seconds()
 
 
 async def test_leader_only_gauges_are_absent_after_demotion(
@@ -144,12 +148,16 @@ async def test_leader_only_gauges_are_absent_after_demotion(
 
     obs_mod.update_queue_depth_cache({"default": 7})
     obs_mod.update_reservation_slots_cache({"bucket_a": 3})
-    obs_mod.update_stranded_jobs_cache({"ghost_actor": 2})
+    obs_mod.update_stranded_jobs_cache({("ghost_actor", "no_actor_config"): 2})
+    obs_mod.record_leader_lease_expires_in_seconds("w1", 30.0)
 
     # Sanity: while leading, the values ARE exported.
     assert [p.value for p in _points(reader, "taskq.queue.depth")] == [7]
     assert [p.value for p in _points(reader, "taskq.reservation.slots_used")] == [3]
     assert [p.value for p in _points(reader, "taskq.jobs.stranded")] == [2]
+    assert [
+        p.value for p in _points(reader, "taskq.maintenance_leader.lease_expires_in_seconds")
+    ] == [30.0]
 
     is_leader = _ObservableLeaderFlag()
     is_leader.set()
@@ -165,7 +173,7 @@ async def test_leader_only_gauges_are_absent_after_demotion(
         is_leader.set()
         await asyncio.wait_for(task, timeout=5.0)
 
-    for name, _attr in _LEADER_ONLY_GAUGES:
+    for name, _attr, _unit in _LEADER_ONLY_GAUGES:
         assert _points(reader, name) == [], (
             f"{name} still exported after demotion: "
             f"{[(p.attributes, p.value) for p in _points(reader, name)]}"

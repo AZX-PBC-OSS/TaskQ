@@ -21,16 +21,14 @@ import structlog.testing
 
 import taskq.progress._publish as publish_mod
 from taskq._ids import new_job_id, new_uuid
-from taskq.client._enqueuer import SubJobEnqueuer
 from taskq.constants import progress_channel, progress_global_channel
-from taskq.context import JobContext
-from taskq.obs import bind_job_context
 from taskq.progress._buffer import _ProgressBuffer
 from taskq.progress._publish import _publish_event, _publish_event_dual
 from taskq.settings import WorkerSettings
 from taskq.testing.assertions import wait_for_condition
 from taskq.testing.clock import FakeClock
-from taskq.testing.in_memory import InMemoryBackend, PassthroughPayload
+from taskq.testing.in_memory import InMemoryBackend
+from tests._progress_context import make_progress_context
 
 _JOB_ID = new_job_id()
 _ATTEMPTS = 25
@@ -78,15 +76,15 @@ def _settings() -> WorkerSettings:
 async def _tick_publishes(client: object) -> None:
     """One sustained-outage window: every progress tick attempts a publish
     and every round trip fails."""
-    log = structlog.get_logger("rt_depfail")
     channel = progress_channel("taskq_rt", _JOB_ID)
     for seq in range(_ATTEMPTS):
         await _publish_event(
             client,  # type: ignore[arg-type]  # Why: duck-typed double standing in for redis.asyncio.Redis at the publish seam
             channel,
             '{"v": 1}',
+            job_id=_JOB_ID,
+            actor="rt_actor",
             seq=seq,
-            log=log,
             channel_label="per_job",
         )
 
@@ -107,7 +105,6 @@ async def test_publish_failure_log_emission_is_bounded_under_sustained_outage(
     """
     error = ConnectionError("redis dead")
     client = _DeadRedisClient(error)
-    log = structlog.get_logger("rt_depfail")
 
     with structlog.testing.capture_logs() as captured:
         if path == "direct":
@@ -119,8 +116,9 @@ async def test_publish_failure_log_emission_is_bounded_under_sustained_outage(
                     progress_channel("taskq_rt", _JOB_ID),
                     progress_global_channel("taskq_rt"),
                     '{"v": 1}',
+                    job_id=_JOB_ID,
+                    actor="rt_actor",
                     seq=seq,
-                    log=log,
                 )
 
     failure_warnings = [
@@ -162,28 +160,14 @@ async def test_publish_task_lifetime_bounded_under_hanging_redis(
     buffers: dict[UUID, _ProgressBuffer] = {_JOB_ID: _ProgressBuffer(job_id=_JOB_ID, base_seq=0)}
     pending: set[asyncio.Task[None]] = set()
 
-    ctx: JobContext[PassthroughPayload] = JobContext(
-        job_id=_JOB_ID,
-        actor="test_actor",
-        queue="default",
-        attempt=1,
+    ctx = make_progress_context(
+        buffers,
+        _JOB_ID,
         worker_id=new_uuid(),
-        payload=PassthroughPayload(),
-        cancel_event=asyncio.Event(),
-        jobs=SubJobEnqueuer(loop_scope_resolved=None, worker_pool=None, backend=backend),
-        log=bind_job_context(
-            structlog.get_logger("test"),
-            job_id=_JOB_ID,
-            actor="test_actor",
-            queue="default",
-            attempt=1,
-            identity_key=None,
-            trace_id="",
-        ),
-        _progress_buffers=buffers,
-        _redis_client=client,
-        _worker_settings=_settings(),
-        _pending_publish_tasks=pending,
+        backend=backend,
+        settings=_settings(),
+        redis_client=client,
+        pending_publish_tasks=pending,
     )
 
     t0 = monotonic()

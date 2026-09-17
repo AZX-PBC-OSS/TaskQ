@@ -183,7 +183,7 @@ def test_ui_serve_lifespan_mounts_admin_router(
             pass
 
     class _CloseablePool:
-        def acquire(self) -> _FakeAcquire:
+        def acquire(self, *, timeout: float | None = None) -> _FakeAcquire:
             return _FakeAcquire()
 
         async def close(self) -> None:
@@ -429,7 +429,7 @@ def test_ui_serve_lifespan_creates_pool_and_redirects_root(
     assert pool.terminated is False
 
 
-# ── Bounded pool close at lifespan exit (#38) ───────────────────────────
+# ── Bounded pool close at lifespan exit ─────────────────────────────────
 #
 # The lifespan entered the pool on the AsyncExitStack (``Pool.__aexit__``
 # → unbounded ``close()``) — a dead PG could wedge UI shutdown. These
@@ -530,7 +530,7 @@ async def test_ui_serve_lifespan_fast_pool_close_not_terminated(
     assert pool.terminated is False
 
 
-# ── Bounded redis close at lifespan exit (#38 follow-up) ────────────────
+# ── Bounded redis close at lifespan exit ────────────────────────────────
 #
 # The lifespan entered the redis client on the AsyncExitStack
 # (``Redis.__aexit__`` → shielded, unbounded ``aclose()``) — a hung broker
@@ -651,7 +651,21 @@ async def test_ui_serve_lifespan_redis_aclose_error_does_not_abort_teardown(
 def test_ui_serve_lifespan_runs_migration_when_requested(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """_ui_serve's lifespan calls migrate_mod.apply_pending_locked when run_migrate=True."""
+    """_ui_serve's lifespan calls migrate_mod.apply_pending_locked when run_migrate=True,
+    restricted to the pre phase.
+
+    An automatic migrate-on-start path (`ui serve --migrate` or
+    TASKQ_MIGRATE_ON_START) fires on process lifecycle events nobody
+    sequences (a pod restart, a rollout, an autoscale event), not on an
+    operator's deliberate decision. Applying every pending migration,
+    post-phase included, would let one of those events close a
+    rolling-deploy overlap window mid-rollout: post-phase migrations exist
+    specifically to be withheld until the whole fleet is confirmed
+    upgraded (see 01.00.03_01_pre_idempotency_scope.sql's PHASE
+    OBLIGATIONS header). This path must restrict itself to phase="pre" so
+    post-phase migrations stay behind the operator's explicit
+    `taskq migrate up --phase post`.
+    """
     from unittest.mock import AsyncMock
 
     import uvicorn
@@ -694,7 +708,7 @@ def test_ui_serve_lifespan_runs_migration_when_requested(
         pass
 
     apply_pending_locked_mock.assert_awaited_once_with(
-        "postgresql://u:p@h:5432/db", schema="custom_schema"
+        "postgresql://u:p@h:5432/db", schema="custom_schema", phase="pre"
     )
 
 
@@ -704,7 +718,7 @@ def test_ui_serve_lifespan_creates_redis_client_when_redis_url_set(
     """_ui_serve's lifespan initializes the redis client eagerly when redis_url is set
     and closes it on shutdown.
 
-    Pins the post-#38 wiring: explicit ``initialize()`` (preserving
+    Pins the wired bounded close: explicit ``initialize()`` (preserving
     ``Redis.__aenter__``'s eager-setup semantics) plus a pushed
     bounded-aclose callback, instead of entering the client as an async
     context manager (whose ``__aexit__`` closes unbounded).

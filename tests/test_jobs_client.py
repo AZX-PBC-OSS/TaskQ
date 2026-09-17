@@ -32,7 +32,7 @@ from pydantic import BaseModel, TypeAdapter
 
 from taskq._ids import new_job_id
 from taskq.actor import actor
-from taskq.backend._protocol import EnqueueArgs, JobFilter, JobSortField, ScheduleRecord
+from taskq.backend._protocol import EnqueueArgs, JobFilter, JobRow, JobSortField, ScheduleRecord
 from taskq.batch import EnqueueItem
 from taskq.batch_policy import AbortBatchAfter
 from taskq.client import CancelResult, JobHandle, JobsClient
@@ -383,6 +383,61 @@ class TestList:
         assert len(page2.jobs) == 2
         assert page2.next_cursor is None
 
+    async def test_list_exact_multiple_last_page_has_no_cursor(self) -> None:
+        """A last page that exactly fills the limit is still the last page:
+        the client looks one row past the limit, so next_cursor is None and
+        a caller paging until the cursor runs out never fetches an empty
+        trailing page."""
+        backend, client = _make_client()
+        for _ in range(4):
+            await backend.enqueue(make_enqueue_args(scheduled_at=_START))
+
+        page1 = await client.list(JobFilter(limit=2))
+        assert len(page1.jobs) == 2
+        assert page1.next_cursor is not None
+        page2 = await client.list(JobFilter(limit=2, cursor=page1.next_cursor))
+        assert len(page2.jobs) == 2
+        assert page2.next_cursor is None
+
+    async def test_list_at_the_page_ceiling_asks_for_exactly_the_ceiling(self) -> None:
+        """At MAX_JOB_LIST_LIMIT there is no room to look one row past the
+        limit: the backend is asked for exactly the ceiling, and a full page
+        carries a cursor (which may lead to one empty page)."""
+        from taskq.backend._protocol import MAX_JOB_LIST_LIMIT
+
+        backend, client = _make_client()
+        await backend.enqueue(make_enqueue_args(scheduled_at=_START))
+        asked: list[int] = []
+        original = backend.list_jobs
+
+        async def _recording(filter: JobFilter) -> list[JobRow]:
+            asked.append(filter.limit)
+            return await original(filter)
+
+        backend.list_jobs = _recording  # type: ignore[method-assign]  # Why: recording seam on the test's own backend instance.
+        page = await client.list(JobFilter(limit=MAX_JOB_LIST_LIMIT))
+        assert asked == [MAX_JOB_LIST_LIMIT]
+        assert len(page.jobs) == 1 and page.next_cursor is None
+
+    async def test_list_rejects_a_limit_above_the_page_ceiling(self) -> None:
+        """A page is one round trip that materialises every row it returns;
+        the ceiling keeps one call from asking for the whole table by
+        accident. The ceiling itself is accepted; cursor reaches the rest.
+        JobFilter itself stays unbounded, since cancel_where ignores limit."""
+        from taskq.backend._protocol import MAX_JOB_LIST_LIMIT
+
+        _backend, client = _make_client()
+        too_big = JobFilter(limit=MAX_JOB_LIST_LIMIT + 1)
+        with pytest.raises(ValueError, match=f"limit must be <= {MAX_JOB_LIST_LIMIT}"):
+            await client.list(too_big)
+
+    async def test_list_limit_zero_yields_an_empty_page_with_no_cursor(self) -> None:
+        backend, client = _make_client()
+        await backend.enqueue(make_enqueue_args(scheduled_at=_START))
+        page = await client.list(JobFilter(limit=0))
+        assert page.jobs == []
+        assert page.next_cursor is None
+
     async def test_list_filters_by_queue(self) -> None:
         backend, client = _make_client()
 
@@ -588,7 +643,14 @@ def test_enqueue_args_unique_for_none_by_default() -> None:
 
 
 def test_enqueue_args_unique_states_default() -> None:
-    """EnqueueArgs() omitting unique_states defaults to ('pending', 'scheduled', 'running')."""
+    """EnqueueArgs() omitting unique_states gets the shipped default.
+
+    The default covers ``succeeded`` (the state that says the work
+    already happened) and excludes the failure states. (This pin
+    previously asserted the narrower three-state default; the window
+    deliberately widened to cover success, and the explicit three-state
+    set remains the opt-out.)
+    """
     args = EnqueueArgs(
         id=new_job_id(),
         actor="test",
@@ -598,7 +660,7 @@ def test_enqueue_args_unique_states_default() -> None:
         retry_kind="transient",
         scheduled_at=_START,
     )
-    assert args.unique_states == ("pending", "scheduled", "running")
+    assert args.unique_states == ("pending", "scheduled", "running", "succeeded")
 
 
 # ── unique_for / unique_states: JobsClient.enqueue wiring ───────────────
@@ -1615,7 +1677,7 @@ class TestDeleteSchedule:
         await client.delete_schedule(handle.schedule_id)
 
 
-# ── Bounded Redis close at client teardown (#38) ────────────────────────
+# ── Bounded Redis close at client teardown ──────────────────────────────
 #
 # _open_redis entered the Redis client on the exit stack
 # (``Redis.__aexit__`` → unbounded ``aclose()``) — a hung broker could

@@ -3,7 +3,7 @@
 import pytest
 
 from taskq.backend._sql import parse_rowcount
-from taskq.constants import WAKE_CHANNEL_FMT, wake_channel
+from taskq.constants import WAKE_CHANNEL_FMT, schema_channel_tag, wake_channel
 
 
 def test_parse_rowcount_update() -> None:
@@ -28,16 +28,16 @@ def test_parse_rowcount_delete_zero() -> None:
 def test_wake_channel_valid_schema(schema: str) -> None:
     """wake_channel returns correctly formatted name for valid schemas."""
     result = wake_channel(schema)
-    assert result == f"taskq_wake_{schema}"
-    assert result == WAKE_CHANNEL_FMT.format(schema=schema)
+    assert result == f"taskq_wake_{schema_channel_tag(schema)}"
+    assert result == WAKE_CHANNEL_FMT.format(schema_tag=schema_channel_tag(schema))
 
 
 # ── WAKE_CHANNEL_FMT constant value ──────────────────────────
 
 
 def test_wake_channel_fmt_constant() -> None:
-    """WAKE_CHANNEL_FMT has the exact expected value."""
-    assert WAKE_CHANNEL_FMT == "taskq_wake_{schema}"
+    """WAKE_CHANNEL_FMT carries the readable prefix and the schema tag slot."""
+    assert WAKE_CHANNEL_FMT == "taskq_wake_{schema_tag}"
 
 
 # ── wake_channel rejects invalid schema identifiers ───────────

@@ -1,5 +1,5 @@
 """Integration tests for the fleet-wide per-queue concurrency cap bootstrap
-(Part 1, issue #24).
+(Part 1).
 
 Mirrors the exact fixture/assertion conventions of
 ``tests/test_worker_bootstrap.py`` — all tests use the real PG container via
@@ -424,7 +424,13 @@ async def test_queue_cap_sync_slots_failure_crashes_bootstrap(
 
     real_sync_slots = ratelimit_mod.sync_slots
 
-    async def _raise_for_queue_caps(reservations: list[Any], pool: Any, *, schema: str) -> Any:
+    async def _raise_for_queue_caps(
+        reservations: list[Any],
+        pool: Any,
+        *,
+        schema: str,
+        timeout: "float | None" = None,  # noqa: ASYNC109  # Why: mirrors the production sync_slots signature this double replaces.
+    ) -> Any:
         if any(r.name.startswith(QUEUE_CONCURRENCY_PREFIX) for r in reservations):
             raise RuntimeError("sync_slots boom")
         return await real_sync_slots(reservations, pool, schema=schema)

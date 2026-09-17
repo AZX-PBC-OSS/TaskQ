@@ -28,11 +28,15 @@ from pydantic import BaseModel, TypeAdapter
 
 from taskq import TaskQ, actor
 from taskq._ids import new_base62, new_job_id
+from taskq.backend._enqueue import _enqueue_on_conn
 from taskq.backend._protocol import Backend, JobFilter, JobId, JobRow
+from taskq.backend._sql_templates import render as render_sql
+from taskq.backend.clock import SystemClock
 from taskq.client._handle import JobHandle
 from taskq.client._taskq import JobEvent, _stream_pg, _stream_redis
+from taskq.exceptions import IdempotencyKeyLockTimeoutError
 from taskq.migrate import apply_pending
-from taskq.testing.assertions import wait_for
+from taskq.testing.jobs import make_enqueue_args
 from taskq.types import CancelResult
 
 pytestmark = pytest.mark.integration
@@ -209,7 +213,74 @@ class TestLifecycle:
 
 
 # ---------------------------------------------------------------------------
-# TestCloseBounded — owned-pool close is bounded (#37 review)
+# TestSchemaResolution — the client and the fleet read one schema truth
+# ---------------------------------------------------------------------------
+
+
+class TestSchemaResolution:
+    """``TaskQ(schema=None)`` resolves the schema the way the worker and CLI
+    resolve it: explicit argument, then ``TASKQ_SCHEMA_NAME``, then the model
+    default. A client hardwired to ``"taskq"`` while the fleet listens on the
+    env-configured schema is a silent job-loss vector — the enqueue succeeds
+    into a schema no worker reads and ``wait()`` reports a bare timeout.
+    """
+
+    def test_schema_from_env_var_when_not_passed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """TASKQ_SCHEMA_NAME set, no constructor arg: the client lands in the
+        fleet's schema. DOTENV_READ_DOTFILES=false keeps the resolution
+        hermetic — a developer's local .env must not decide the outcome."""
+        monkeypatch.setenv("TASKQ_SCHEMA_NAME", "adopter_trial")
+        monkeypatch.setenv("DOTENV_READ_DOTFILES", "false")
+
+        tq = TaskQ(dsn="postgresql://u:p@localhost:5432/db")
+
+        assert tq._schema == "adopter_trial"
+
+    def test_explicit_schema_wins_over_env_var(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The constructor argument is authoritative — same precedence the
+        CLI's ``--schema`` option has over TASKQ_SCHEMA_NAME."""
+        monkeypatch.setenv("TASKQ_SCHEMA_NAME", "adopter_trial")
+
+        tq = TaskQ(dsn="postgresql://u:p@localhost:5432/db", schema="explicit_schema")
+
+        assert tq._schema == "explicit_schema"
+
+    def test_schema_defaults_to_taskq_when_unset(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """No arg and no env var: the documented default holds."""
+        monkeypatch.delenv("TASKQ_SCHEMA_NAME", raising=False)
+        monkeypatch.setenv("DOTENV_READ_DOTFILES", "false")
+
+        tq = TaskQ(dsn="postgresql://u:p@localhost:5432/db")
+
+        assert tq._schema == "taskq"
+
+    async def test_enqueue_lands_in_env_var_schema(
+        self, pg_dsn: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """End to end: a schema-less client enqueues into the env-configured
+        schema its workers migrated — the finding's reproduced divergence
+        (job in `taskq`, worker listening on the adopter's schema) pinned
+        shut at the row level."""
+        schema = f"ttc_env_{new_base62()}".lower()
+        await _migrate(pg_dsn, schema=schema)
+        monkeypatch.setenv("TASKQ_SCHEMA_NAME", schema)
+
+        async with TaskQ(dsn=pg_dsn) as tq:
+            handle = await tq.enqueue(_test_actor, _Payload(value=1))
+
+        conn = await asyncpg.connect(pg_dsn)
+        try:
+            count = await conn.fetchval(
+                f'SELECT COUNT(*) FROM "{schema}".jobs WHERE id = $1',  # noqa: S608 — schema is a per-test generated identifier (new_base62), not user input; the id is $1-bound
+                handle.job_id,
+            )
+        finally:
+            await conn.close()
+        assert count == 1
+
+
+# ---------------------------------------------------------------------------
+# TestCloseBounded — owned-pool close is bounded
 # ---------------------------------------------------------------------------
 
 
@@ -376,6 +447,131 @@ class TestEnqueue:
             )
 
         assert handle2.was_existing is True
+
+    async def test_enqueue_idempotency_key_contention_raises_typed_error_not_bare_timeout(
+        self, pg_dsn: str
+    ) -> None:
+        """A real ``TaskQ(dsn=...)`` client's enqueue with a contended
+        idempotency key must raise the typed
+        ``IdempotencyKeyLockTimeoutError``, not a bare ``builtins.TimeoutError``.
+
+        The client pool ``TaskQ.open()`` builds arms a per-query
+        ``command_timeout`` (``_CLIENT_POOL_COMMAND_TIMEOUT_SECS``, 10.0,
+        ``client/_taskq.py``), and the idempotency arm's lock budget
+        (``DEFAULT_IDEMPOTENCY_LOCK_TIMEOUT_MS``, 5000.0,
+        ``backend/_enqueue.py``) is delivered clamped to a fixed share of
+        that bound (``taskq.connections.bounded_lock_budget_ms``), so the
+        savepoint's ``SET LOCAL lock_timeout`` fires first and the
+        ``except LockNotAvailableError`` handler surfaces the typed error
+        with its ``idempotency-lock-timeout`` warning log and
+        ``idempotency_lock_timeout`` backpressure counter bump. On a REAL
+        pool connection (unlike the fake-conn unit pins in
+        ``test_lock_timeout_refusal_counters.py``, and unlike
+        ``tests/test_rt_locks_actor_tx_enqueue_serialization.py``'s second
+        connection, which deliberately opens with ``command_timeout=30.0``
+        to sidestep the race the other way), an unclamped budget would be
+        preempted by asyncpg's client-side timer, and the caller would
+        only ever see an ``asyncio.CancelledError``-derived
+        ``builtins.TimeoutError``.
+        """
+        await _migrate(pg_dsn)
+        key = f"tq-client-contended-{new_base62()}".lower()
+
+        # Holder: a raw connection with an open, uncommitted transaction
+        # occupying the (idempotency_scope, idempotency_key) speculative
+        # token row via the real enqueue path.
+        holder_conn = await asyncpg.connect(pg_dsn)
+        try:
+            tr = holder_conn.transaction()
+            await tr.start()
+            try:
+                # TaskQ.enqueue() has no connection= param, so the holder's
+                # insert is driven directly via the client's underlying SQL
+                # contract against this held-open transaction — the same
+                # approach tests/test_rt_locks_actor_tx_enqueue_serialization.py
+                # uses for its holder side.
+                sql = render_sql(_SCHEMA_LABEL)
+                await _enqueue_on_conn(
+                    holder_conn,
+                    sql,
+                    _SCHEMA_LABEL,
+                    SystemClock(),
+                    make_enqueue_args(idempotency_key=key),
+                )
+
+                # Victim: the REAL client pool (5.0s command_timeout),
+                # exactly as an application would use it.
+                async with TaskQ(dsn=pg_dsn, schema=_SCHEMA_LABEL) as tq:
+                    with pytest.raises(IdempotencyKeyLockTimeoutError) as excinfo:
+                        await asyncio.wait_for(
+                            tq.enqueue(_test_actor, _Payload(value=1), idempotency_key=key),
+                            timeout=20.0,
+                        )
+                assert "idempotency_key" in repr(excinfo.value), (
+                    "Contract: the client-visible enqueue must surface the typed "
+                    f"IdempotencyKeyLockTimeoutError; got {excinfo.value!r}"
+                )
+            finally:
+                await tr.rollback()
+        finally:
+            await holder_conn.close()
+
+    async def test_enqueue_idempotency_key_contention_raises_typed_error_when_operator_widens_lock_timeout_above_default(
+        self, pg_dsn: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An operator who raises ``TASKQ_IDEMPOTENCY_LOCK_TIMEOUT_MS`` above
+        its shipped default must still see the typed
+        ``IdempotencyKeyLockTimeoutError`` on contention, not a bare
+        ``builtins.TimeoutError``.
+
+        This pins the ordering claim in
+        :func:`taskq.connections.lock_budget_command_timeout_secs`: a
+        widened lock budget must re-derive the client pool's own
+        ``command_timeout`` upward so the server-side ``lock_timeout``
+        still fires first. If an operator could widen the lock-wait budget
+        past the client's (fixed) network timeout, the exact same bare
+        ``TimeoutError`` regression this issue reports would resurface —
+        just at a different, operator-chosen threshold instead of the
+        shipped default.
+        """
+        await _migrate(pg_dsn)
+        key = f"tq-client-contended-wide-{new_base62()}".lower()
+
+        # Operator widens the idempotency lock-wait budget well past its
+        # 5000ms shipped default and past the client pool's shipped
+        # command_timeout floor (10.0s) — the exact scenario the ordering
+        # guarantee exists to cover.
+        monkeypatch.setenv("TASKQ_IDEMPOTENCY_LOCK_TIMEOUT_MS", "15000")
+
+        holder_conn = await asyncpg.connect(pg_dsn)
+        try:
+            tr = holder_conn.transaction()
+            await tr.start()
+            try:
+                sql = render_sql(_SCHEMA_LABEL)
+                await _enqueue_on_conn(
+                    holder_conn,
+                    sql,
+                    _SCHEMA_LABEL,
+                    SystemClock(),
+                    make_enqueue_args(idempotency_key=key),
+                )
+
+                async with TaskQ(dsn=pg_dsn, schema=_SCHEMA_LABEL) as tq:
+                    with pytest.raises(IdempotencyKeyLockTimeoutError) as excinfo:
+                        await asyncio.wait_for(
+                            tq.enqueue(_test_actor, _Payload(value=1), idempotency_key=key),
+                            timeout=30.0,
+                        )
+                assert "idempotency_key" in repr(excinfo.value), (
+                    "Contract: widening the operator lock-wait budget above its "
+                    "default must not reintroduce a bare TimeoutError; got "
+                    f"{excinfo.value!r}"
+                )
+            finally:
+                await tr.rollback()
+        finally:
+            await holder_conn.close()
 
     async def test_enqueue_without_scheduled_at_status_is_pending(self, pg_dsn: str) -> None:
         """Enqueueing without scheduled_at results in a job with status='pending'."""
@@ -667,35 +863,12 @@ async def _delete_job(pool: asyncpg.Pool, schema: str, job_id: UUID) -> None:
         )
 
 
-async def _wait_for_event_bounded(
-    event: asyncio.Event,
-    *,
-    description: str,
-    timeout: float = 5.0,  # noqa: ASYNC109  # Why: bounded wait helper, the same shape as wait_for in taskq.testing.assertions — not an asyncio.timeout scope.
-) -> None:
-    """Bounded event wait that never routes through ``asyncio.wait_for``.
-
-    Why not :func:`taskq.testing.assertions.wait_for`: the tests below
-    monkeypatch ``asyncio.wait_for`` at module scope, so ANY wait_for-
-    based wait from the test side would be hijacked by the fake — and
-    the test's own call would land first, consuming the injected-OSError
-    branch meant for the stream. ``asyncio.timeout`` is a different seam
-    and stays real.
-    """
-    try:
-        async with asyncio.timeout(timeout):
-            await event.wait()
-    except TimeoutError:
-        pytest.fail(f"{description} within {timeout}s")
-
-
 class TestStreamPgInternals:
     """Direct unit tests for :func:`taskq.client._taskq._stream_pg`.
 
     Bypasses ``TaskQ.stream()`` / a live worker to drive multi-event
     transitions deterministically. Uses a small ``poll_timeout`` so the
-    fallback poll loop advances quickly without depending on real
-    LISTEN/NOTIFY timing.
+    poll loop advances quickly.
     """
 
     async def test_stream_pg_yields_on_change_and_returns_on_terminal(self, pg_dsn: str) -> None:
@@ -714,8 +887,6 @@ class TestStreamPgInternals:
 
             async def _consume() -> None:
                 async for evt in _stream_pg(
-                    pg_dsn,
-                    _SCHEMA_LABEL,
                     handle.job_id,
                     client,
                     0.05,
@@ -734,55 +905,6 @@ class TestStreamPgInternals:
         statuses = [e.status for e in events]
         assert "running" in statuses
         assert statuses[-1] == "succeeded"
-        assert events[-1].terminal is True
-
-    async def test_stream_pg_wakes_on_real_notify(self, pg_dsn: str) -> None:
-        """A real ``NOTIFY`` on the wake channel wakes the LISTEN loop
-        (exercises the ``_on_notify`` callback registered via ``add_listener``).
-        """
-        from taskq.constants import wake_channel
-
-        await _migrate(pg_dsn)
-        async with TaskQ(dsn=pg_dsn, schema=_SCHEMA_LABEL) as tq:
-            handle = await tq.enqueue(_test_actor, _Payload(value=103))
-            client = tq._client
-            assert client is not None
-            pool = tq._pool
-            assert pool is not None
-
-            events: list[JobEvent] = []
-            # Wired into the consume double: _stream_pg awaits add_listener
-            # (the server-side LISTEN) strictly before its first fetch and
-            # yield, so the first appended event proves the LISTEN
-            # registration landed — no timed window hoping it did.
-            listen_registered = asyncio.Event()
-
-            async def _consume() -> None:
-                async for evt in _stream_pg(
-                    pg_dsn,
-                    _SCHEMA_LABEL,
-                    handle.job_id,
-                    client,
-                    30.0,  # long timeout — only a real NOTIFY should wake this loop
-                    last_seq=-1,
-                    last_status=None,
-                ):
-                    events.append(evt)
-                    listen_registered.set()
-
-            consumer = asyncio.create_task(_consume())
-            # Event-driven gate instead of a fixed 0.2s sleep: the window
-            # races the dedicated connection's startup under load, and a
-            # NOTIFY sent before the registration lands is missed — the
-            # stream would park on its 30s poll timeout and fail the
-            # bounded wait below.
-            await wait_for(listen_registered, timeout=5.0)
-            await _set_job_status(pool, _SCHEMA_LABEL, handle.job_id, "succeeded")
-            async with pool.acquire() as conn:
-                await conn.execute(f"NOTIFY \"{wake_channel(_SCHEMA_LABEL)}\", 'x'")
-            await asyncio.wait_for(consumer, timeout=5)
-
-        assert events[-1].status == "succeeded"
         assert events[-1].terminal is True
 
     async def test_stream_via_taskq_multiple_pg_events(self, pg_dsn: str) -> None:
@@ -825,8 +947,6 @@ class TestStreamPgInternals:
 
             async def _consume() -> None:
                 async for _ in _stream_pg(
-                    pg_dsn,
-                    _SCHEMA_LABEL,
                     handle.job_id,
                     client,
                     0.05,
@@ -837,136 +957,6 @@ class TestStreamPgInternals:
 
             consumer = asyncio.create_task(_consume())
             await asyncio.sleep(0.2)
-            await _delete_job(pool, _SCHEMA_LABEL, handle.job_id)
-
-            with pytest.raises(KeyError):
-                await asyncio.wait_for(consumer, timeout=5)
-
-    async def test_stream_pg_falls_back_to_polling_after_listen_connection_loss(
-        self, pg_dsn: str, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """When the LISTEN wait raises OSError (simulating a killed connection),
-        _stream_pg logs a warning and falls back to a plain ``asyncio.sleep``
-        poll loop, still detecting the eventual terminal transition.
-        """
-        import taskq.client._taskq as taskq_mod
-
-        await _migrate(pg_dsn)
-        async with TaskQ(dsn=pg_dsn, schema=_SCHEMA_LABEL) as tq:
-            handle = await tq.enqueue(_test_actor, _Payload(value=102))
-            client = tq._client
-            assert client is not None
-            pool = tq._pool
-            assert pool is not None
-
-            real_wait_for = asyncio.wait_for
-            call_count = 0
-            # Wired into the fake exactly where the observable flips: the
-            # event fires at the injected OSError itself, so the wait
-            # below is on the real thing, not a timed window hoping the
-            # consumer reached it under load.
-            os_fired = asyncio.Event()
-
-            async def _fake_wait_for(aw: object, timeout: float | None = None) -> object:  # noqa: ASYNC109 — mirrors asyncio.wait_for's signature to monkeypatch it in a test
-                nonlocal call_count
-                call_count += 1
-                if call_count == 1:
-                    close = getattr(aw, "close", None)
-                    if callable(close):
-                        close()
-                    os_fired.set()
-                    raise OSError("simulated LISTEN connection loss")
-                return await real_wait_for(aw, timeout)  # type: ignore[arg-type]
-
-            monkeypatch.setattr(taskq_mod.asyncio, "wait_for", _fake_wait_for)
-
-            events: list[JobEvent] = []
-
-            async def _consume() -> None:
-                async for evt in _stream_pg(
-                    pg_dsn,
-                    _SCHEMA_LABEL,
-                    handle.job_id,
-                    client,
-                    0.05,
-                    last_seq=-1,
-                    last_status=None,
-                ):
-                    events.append(evt)
-
-            consumer = asyncio.create_task(_consume())
-            await _wait_for_event_bounded(
-                os_fired,
-                description="the injected OSError never fired",
-            )
-            assert call_count >= 1  # the injected OSError has fired
-            # A non-terminal transition inside the fallback poll loop exercises
-            # the loop-back path (as opposed to returning immediately).
-            await _set_job_status(pool, _SCHEMA_LABEL, handle.job_id, "running")
-            await asyncio.sleep(0.2)
-            await _set_job_status(pool, _SCHEMA_LABEL, handle.job_id, "succeeded")
-            await asyncio.wait_for(consumer, timeout=5)
-
-        assert "running" in [e.status for e in events]
-        assert events[-1].status == "succeeded"
-        assert events[-1].terminal is True
-
-    async def test_stream_pg_fallback_raises_key_error_when_job_disappears(
-        self, pg_dsn: str, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """If the job row disappears while the stream is in the post-OSError
-        fallback poll loop, KeyError is still raised (fallback loop's own
-        disappearance check).
-        """
-        import taskq.client._taskq as taskq_mod
-
-        await _migrate(pg_dsn)
-        async with TaskQ(dsn=pg_dsn, schema=_SCHEMA_LABEL) as tq:
-            handle = await tq.enqueue(_test_actor, _Payload(value=105))
-            client = tq._client
-            assert client is not None
-            pool = tq._pool
-            assert pool is not None
-
-            real_wait_for = asyncio.wait_for
-            call_count = 0
-            # Wired into the fake exactly where the observable flips: the
-            # event fires at the injected OSError itself, so the wait
-            # below is on the real thing, not a timed window hoping the
-            # consumer reached it under load.
-            os_fired = asyncio.Event()
-
-            async def _fake_wait_for(aw: object, timeout: float | None = None) -> object:  # noqa: ASYNC109 — mirrors asyncio.wait_for's signature to monkeypatch it in a test
-                nonlocal call_count
-                call_count += 1
-                if call_count == 1:
-                    close = getattr(aw, "close", None)
-                    if callable(close):
-                        close()
-                    os_fired.set()
-                    raise OSError("simulated LISTEN connection loss")
-                return await real_wait_for(aw, timeout)  # type: ignore[arg-type]
-
-            monkeypatch.setattr(taskq_mod.asyncio, "wait_for", _fake_wait_for)
-
-            async def _consume() -> None:
-                async for _ in _stream_pg(
-                    pg_dsn,
-                    _SCHEMA_LABEL,
-                    handle.job_id,
-                    client,
-                    0.05,
-                    last_seq=-1,
-                    last_status=None,
-                ):
-                    pass
-
-            consumer = asyncio.create_task(_consume())
-            await _wait_for_event_bounded(
-                os_fired,
-                description="the injected OSError never fired",
-            )
-            assert call_count >= 1  # now in the fallback poll loop
             await _delete_job(pool, _SCHEMA_LABEL, handle.job_id)
 
             with pytest.raises(KeyError):

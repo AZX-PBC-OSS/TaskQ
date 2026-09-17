@@ -21,7 +21,11 @@ from pydantic import BaseModel, TypeAdapter, ValidationError
 
 from taskq.backend._protocol import AttemptRow, Backend, JobId, JobRow, JobStatus
 from taskq.backend.statemachine import TERMINAL_STATUSES
-from taskq.client._transport import pg_poll_event_stream, redis_event_stream
+from taskq.client._transport import (
+    parse_progress_event,
+    pg_poll_event_stream,
+    redis_event_stream,
+)
 from taskq.constants import progress_channel
 from taskq.exceptions import JobFailed, ResultUnavailable
 from taskq.progress._events import ProgressEvent
@@ -81,6 +85,7 @@ class JobHandle[R: BaseModel | None]:
         self._row = row
         self._result_adapter = result_adapter
         self.was_existing: bool = was_existing
+        self._deduplicated_onto_terminal: bool = was_existing and row.status in TERMINAL_STATUSES
         self._client = client
         self._backend: Backend = backend if backend is not None else client.backend  # pyright: ignore[reportOptionalMemberAccess]  # Why: client is guaranteed non-None when backend is None; the ValueError above ensures at least one is provided
         self._redis_client: "redis_async.Redis | None" = _redis_client  # noqa: UP037  # Why: redis_async is under TYPE_CHECKING; string annotation prevents a runtime import cycle.
@@ -92,6 +97,31 @@ class JobHandle[R: BaseModel | None]:
     def job_id(self) -> JobId:
         """The job's unique id."""
         return self._row.id
+
+    @property
+    def deduplicated_onto_terminal(self) -> bool:
+        """This enqueue deduplicated onto a job that had already finished.
+
+        ``was_existing`` cannot carry this on its own: it is ``True`` for
+        every dedup, and the overwhelmingly common dedup — onto a live
+        pending or running job — is the mechanism working, the whole
+        point of an identity key. The case that needs a signal is the
+        rare one where the match was a job that already reached a
+        terminal state: no worker will pick that work up, and with a long
+        dedup horizon the caller can wait for the rest of the window
+        before anyone notices, because the strand looks exactly like the
+        success until the work was needed.
+
+        Decided from the row the creating call handed back, so learning
+        this costs no second round trip — and frozen there rather than
+        re-read from the live row, because it is a verdict about the
+        enqueue, not about the job's status now: a dedup onto a running
+        job that later finishes was never a strand. It pairs with the
+        ``WARN``-level ``enqueue_deduplicated`` line the backend emits
+        for the same hit: that one is the operator's signal, this one is
+        the caller's.
+        """
+        return self._deduplicated_onto_terminal
 
     @property
     def actor_name(self) -> str:
@@ -313,10 +343,14 @@ class JobHandle[R: BaseModel | None]:
         When Redis is configured, subscribes to the per-job Redis pub/sub
         channel and yields :class:`~taskq.progress.ProgressEvent` objects in
         real time. When Redis is not available, falls back to polling Postgres
-        at 500 ms intervals and synthesising events from row diffs.
+        at 500 ms intervals (jittered ±20%) and synthesising events from row
+        diffs; a pool or connection error on a poll is retried on the next
+        one.
 
         Raises :class:`NotImplementedError` when the in-memory backend is
-        detected — the in-memory backend does not support pub/sub.
+        detected — the in-memory backend does not support pub/sub — and
+        :class:`~taskq.exceptions.StreamUnavailable` when the Postgres poll
+        could not re-read the row for 30 s straight.
 
         Does not advance :attr:`row` — the Redis path fetches no rows,
         and advancing only on the PG fallback would make the semantics
@@ -347,9 +381,8 @@ class JobHandle[R: BaseModel | None]:
 
         async def decode(raw_str: str) -> ProgressEvent | None:
             nonlocal last_seq
-            try:
-                event = ProgressEvent.model_validate_json(raw_str)
-            except Exception:
+            event = parse_progress_event(raw_str, job_id=self.job_id)
+            if event is None:
                 return None
             if event.kind == "progress" and event.seq <= last_seq:
                 return None
@@ -387,6 +420,7 @@ class JobHandle[R: BaseModel | None]:
         async for event in pg_poll_event_stream(
             lambda: self._backend.get(self.job_id),
             row_to_event,
+            job_id=self.job_id,
             poll_interval=_WAIT_POLL_INTERVAL,
         ):
             yield event

@@ -30,6 +30,11 @@ taskq.backend._sweeps / taskq.worker.cron_loop:
    source-shape drift-guard for the two-clock split (selection bound
    STABLE, write stamps VOLATILE) that no plan or behavior pin can
    observe at microsecond granularity.
+4. Move-queue drain pin -- the same Index Cond property for
+   ``move_actor_queue``'s per-batch backlog drain, whose WHERE fixes
+   both actor and queue. Leaving either predicate as a post-scan Filter
+   makes every batch re-walk the rows earlier batches already moved, so
+   drain time grows quadratically in backlog size.
 """
 
 # ruff: noqa: S608  # Why: every f-string SQL below interpolates only this module's own throwaway schema identifier (built from new_base62, validated by the migration runner's _IDENT_RE) or renders a module SQL constant; all values are $n-bound.
@@ -45,17 +50,25 @@ import pytest
 
 from taskq import migrate as migrate_mod
 from taskq._ids import new_base62, new_uuid
+from taskq.actor_config_ops import (
+    _MOVE_BACKLOG_BATCH_SQL,  # pyright: ignore[reportPrivateUsage]  # Why: pinning the exact production drain statement, not a copy that could drift from it.
+)
 from taskq.backend._sweeps import (  # pyright: ignore[reportPrivateUsage]  # Why: pinning the exact production statements is the point of these tests; redefining them here would let the pins drift from the SQL that actually runs.
     _SWEEP_1_SQL,
     _SWEEP_2_SQL,
     _SWEEP_3_SQL,
     _SWEEP_4_SQL,
+    _SWEEP_EVENT_TTL_SQL,
+    _SWEEP_IDLE_KEYED_BUCKETS_SQL,
+    _SWEEP_IDLE_KEYED_SLOTS_SQL,
     _SWEEP_RESULT_TTL_SQL,
 )
 from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining
+    DEFAULT_MAX_RETRY_BACKOFF,
     DEFAULT_PRUNE_BATCH_SIZE,  # pyright: ignore[reportPrivateUsage]  # Why: the production batch/retention the daily prune runs with; the corpus is seeded around them.
     DEFAULT_PRUNE_RETENTION,  # pyright: ignore[reportPrivateUsage]  # Why: same.
+    RECLAIM_OUTBOX_RETENTION_MULTIPLIER,
 )
 from taskq.worker._leader_shared import (
     _ARCHIVE_CTE_ACTOR_SQL,  # pyright: ignore[reportPrivateUsage]  # Why: same as above — pin the production statement, not a copy.
@@ -65,9 +78,11 @@ from taskq.worker._leader_shared import (
     _QUERY_QUEUE_DEPTH_SQL_TEMPLATE,  # pyright: ignore[reportPrivateUsage]  # Why: same — the queue-depth gauge's exact statement.
 )
 from taskq.worker._leader_sweeps import (
+    _QUERY_ACTOR_BACKLOG_SQL_TEMPLATE,  # pyright: ignore[reportPrivateUsage]  # Why: same as above — pin the production statement, not a copy.
     _QUERY_OLDEST_DUE_AGE_SQL_TEMPLATE,  # pyright: ignore[reportPrivateUsage]  # Why: same as above — pin the production statement, not a copy.
     _QUERY_RUNNING_LEASE_EXPIRED_SQL_TEMPLATE,  # pyright: ignore[reportPrivateUsage]  # Why: same — the zombie-running gauge's exact statement.
 )
+from taskq.worker.cron_loop import cron_due_sql
 
 pytestmark = pytest.mark.integration
 
@@ -75,19 +90,6 @@ _AUDIT_INDEXES = (
     "jobs_queue_active_idx",
     "jobs_actor_active_id_idx",
     "job_attempts_worker_id_idx",
-)
-
-# Cron due-select, verbatim from tick_cron (src/taskq/worker/cron_loop.py);
-# it is an f-string inside the function there, so this copy is the pin's
-# reference — keep in sync (the assert on statement_timestamp() below is
-# what catches drift back to the non-index-servable clock_timestamp()).
-_CRON_DUE_SQL_TEMPLATE = (
-    "SELECT id, actor, cron_expr, timezone, dst_strategy, payload_factory, "
-    "metadata, last_fired_at, consecutive_failures, next_fire_at, identity_key "
-    'FROM "{schema}".cron_schedules '
-    "WHERE enabled = true AND next_fire_at <= statement_timestamp() "
-    "ORDER BY next_fire_at "
-    "LIMIT $1"
 )
 
 # cancel_where's pending/scheduled driving statement, rebuilt exactly as
@@ -100,25 +102,33 @@ WITH matching AS MATERIALIZED (
     FROM "{schema}".jobs
     WHERE {conditions}
       AND status IN ('pending', 'scheduled')
+      AND id > ${cursor_ph}::uuid
     ORDER BY id
     LIMIT ${limit_ph}
+),
+batch_ids AS MATERIALIZED (
+    SELECT array_agg(id ORDER BY id) AS ids,
+           (array_agg(id ORDER BY id))[count(*)] AS last_id
+    FROM matching
 ),
 cancelled AS (
     UPDATE "{schema}".jobs AS j
     SET status = 'cancelled', finished_at = clock_timestamp()
-    FROM (
-        SELECT id, status AS prev_status
-        FROM matching
-    ) AS prev
-    WHERE j.id = prev.id
+    WHERE j.id = ANY ((SELECT ids FROM batch_ids)::uuid[])
       AND j.status IN ('pending', 'scheduled')
-    RETURNING j.id, prev.prev_status
+    RETURNING j.id
+),
+cancelled_prev AS (
+    SELECT c.id, m.status AS prev_status
+    FROM cancelled AS c
+    JOIN matching AS m ON m.id = c.id
 )
 SELECT
     (SELECT count(*)::int FROM matching) AS matched_count,
-    (SELECT count(*)::int FROM cancelled) AS cancelled_directly,
-    (SELECT array_agg(id ORDER BY id) FROM cancelled) AS cancelled_ids,
-    (SELECT array_agg(prev_status ORDER BY id) FROM cancelled) AS cancelled_prev_statuses
+    (SELECT last_id FROM batch_ids) AS last_id,
+    (SELECT count(*)::int FROM cancelled_prev) AS cancelled_directly,
+    (SELECT array_agg(id ORDER BY id) FROM cancelled_prev) AS cancelled_ids,
+    (SELECT array_agg(prev_status ORDER BY id) FROM cancelled_prev) AS cancelled_prev_statuses
 """
 
 
@@ -591,6 +601,7 @@ async def test_sweep_1_snap_is_index_bounded(audit_schema: Any, pg_dsn: str) -> 
             timedelta(seconds=30),
             timedelta(seconds=10),
             100,
+            DEFAULT_MAX_RETRY_BACKOFF.total_seconds(),
         )
         _assert_index_cond(
             plan,
@@ -626,6 +637,7 @@ async def test_sweep_1_heartbeat_arm_is_index_bounded(audit_schema: Any, pg_dsn:
             timedelta(seconds=30),
             timedelta(seconds=10),
             100,
+            DEFAULT_MAX_RETRY_BACKOFF.total_seconds(),
         )
         _assert_index_cond(
             plan,
@@ -781,38 +793,71 @@ async def test_backlog_running_lease_expired_sampler_is_index_bounded(
         await conn.close()
 
 
-async def test_queue_depth_gauge_is_served_by_queue_leading_index(
-    audit_schema: Any, pg_dsn: str
-) -> None:
+async def test_backlog_depth_gauge_is_attributable_to_actor_and_queue() -> None:
+    """Backlog depth must be attributable at actor-and-queue granularity,
+    not queue alone. An actor whose queue no worker consumes is the
+    condition operators most need to see, and it is invisible in a
+    queue-only aggregate: a queue carrying healthy traffic for other
+    actors shows an unremarkable total while one actor's jobs pile up
+    inside it forever. Because a worker that can do work never refuses to
+    start over an unconsumed queue, this gauge is the only place that
+    misconfiguration becomes visible, so the emitted series must carry
+    both dimensions."""
+    # The per-(actor, queue) attribution ships as the actor_backlog /
+    # oldest-pending-age series fed by this sampler; the fleet-wide
+    # queue-depth gauge (_QUERY_QUEUE_DEPTH_SQL_TEMPLATE) stays
+    # queue-scoped by design.
+    sql = _QUERY_ACTOR_BACKLOG_SQL_TEMPLATE.format(schema="s")
+    grouped = sql.lower().partition("group by")[2]
+    assert "actor" in grouped and "queue" in grouped, (
+        "the backlog-depth gauge must group by BOTH actor and queue so an "
+        "actor accumulating jobs on a queue nobody consumes is "
+        "distinguishable from healthy load on that queue; a queue-only "
+        f"aggregate hides it entirely: {sql!r}"
+    )
+    selected = sql.lower().partition("select")[2].partition("from")[0]
+    assert "actor" in selected and "queue" in selected, (
+        "both the actor and the queue label must be selected so the emitted "
+        f"series is attributable to the actor that is backing up: {sql!r}"
+    )
+
+
+async def test_backlog_depth_gauge_is_index_bounded(audit_schema: Any, pg_dsn: str) -> None:
     """The every-queue_depth_interval gauge must be served by an index
-    whose key leads on queue over exactly the pending/scheduled
-    predicate. jobs_queue_active_idx (queue, id) partial on
-    ``status IN ('pending', 'scheduled')`` — the 01.00.06 bulk-cancel
-    index — matches the gauge's predicate verbatim and leads on its
-    GROUP BY column, so the sampler's cost is independent of terminal
-    history; the pin holds that property settled so a second queue-keyed
-    index over the same predicate does not get added for this gauge."""
+    over exactly the pending/scheduled predicate, keyed so the grouping
+    columns are read from the index rather than recovered by a walk. The
+    sampler runs on every leader tick, so its cost must stay independent
+    of terminal history no matter how many dimensions the series
+    carries — adding actor attribution must not turn the gauge into a
+    sequential scan."""
     schema, _ = audit_schema
     conn = await asyncpg.connect(pg_dsn)
     try:
         plan = await _explain(conn, _QUERY_QUEUE_DEPTH_SQL_TEMPLATE.format(schema=schema))
-        assert "jobs_queue_active_idx" in plan, (
-            "the queue-depth gauge must be served by jobs_queue_active_idx "
-            "(queue, id) over the pending/scheduled predicate — a plan that "
-            f"walks anything else makes the sampler's cost grow with terminal history:\n{plan}"
+        assert "Seq Scan" not in plan, (
+            "the backlog-depth gauge must not fall back to a sequential scan "
+            "over jobs — its cost has to stay bounded by the active "
+            f"pending/scheduled population, not by terminal history:\n{plan}"
+        )
+        assert "Index" in plan, (
+            "the backlog-depth gauge must be served by an index over the "
+            "pending/scheduled predicate carrying its grouping columns "
+            f"(actor and queue), so the per-tick sampler stays bounded:\n{plan}"
         )
     finally:
         await conn.close()
 
 
 async def test_cron_due_tick_is_index_bounded_without_sort(audit_schema: Any, pg_dsn: str) -> None:
-    """The every-second due tick: cron_schedules_next_fire_idx serves the
-    bound as an Index Cond, and the index's key order satisfies ORDER BY
-    next_fire_at — a Sort node here means the ordered path regressed."""
+    """The every-second tick's due statement (the probe runs first in its
+    own statement; see CRON_LOCK_SQL_TEMPLATE for why the read cannot
+    share it): cron_schedules_next_fire_idx serves the bound as an Index
+    Cond, and the index's key order satisfies ORDER BY next_fire_at — a
+    Sort node here means the ordered path regressed."""
     schema, _ = audit_schema
     conn = await asyncpg.connect(pg_dsn)
     try:
-        plan = await _explain(conn, _CRON_DUE_SQL_TEMPLATE.format(schema=schema), 100)
+        plan = await _explain(conn, cron_due_sql(schema), 100)
         _assert_index_cond(
             plan,
             "cron_schedules_next_fire_idx",
@@ -832,12 +877,13 @@ async def test_cancel_by_queue_cte_is_index_served(audit_schema: Any, pg_dsn: st
     schema, _ = audit_schema
     conn = await asyncpg.connect(pg_dsn)
     try:
-        sql = _CANCEL_PS_CTE_TEMPLATE.format(schema=schema, conditions="queue = $1", limit_ph=2)
-        plan = await _explain(conn, sql, "orders", 100)
-        assert "jobs_queue_active_idx" in plan, f"expected jobs_queue_active_idx:\n{plan}"
-        assert "Index Cond: (queue = $1" in plan or "Index Cond: (queue =" in plan, (
-            f"expected a queue Index Cond seek:\n{plan}"
+        sql = _CANCEL_PS_CTE_TEMPLATE.format(
+            schema=schema, conditions="queue = $1", cursor_ph=2, limit_ph=3
         )
+        plan = await _explain(conn, sql, "orders", UUID(int=0), 100)
+        # The engine folds bound params to literals in EXPLAIN text, so the
+        # Index Cond reads `queue = 'orders'::text`, not `queue = $1`.
+        _assert_index_cond(plan, "jobs_queue_active_idx", "queue =")
     finally:
         await conn.close()
 
@@ -859,9 +905,9 @@ async def test_cancel_and_deregister_by_actor_is_index_served(
     conn = await asyncpg.connect(pg_dsn)
     try:
         cancel_sql = _CANCEL_PS_CTE_TEMPLATE.format(
-            schema=schema, conditions="actor = $1", limit_ph=2
+            schema=schema, conditions="actor = $1", cursor_ph=2, limit_ph=3
         )
-        plan = await _explain(conn, cancel_sql, "sync.inventory", 100)
+        plan = await _explain(conn, cancel_sql, "sync.inventory", UUID(int=0), 100)
         assert "jobs_actor_active_id_idx" in plan or "jobs_actor_pending_idx" in plan, (
             f"cancel(actor) matching CTE must seek an actor-keyed index:\n{plan}"
         )
@@ -1466,3 +1512,470 @@ def test_prune_archive_two_clock_split_is_pinned() -> None:
         "a VOLATILE selection bound degrades to a post-scan Filter over the "
         "whole archive population"
     )
+
+
+# ── 4. move-queue backlog drain plan pin ─────────────────────────────
+
+
+_MQ_ACTOR = "mq_drain.actor"
+_MQ_OLD_QUEUE = "mq_drain_old"
+_MQ_NEW_QUEUE = "mq_drain_new"
+_MQ_BATCH_SIZE = 100
+# Large enough that an O(n) Filter walk over the moved population is
+# visible in the plan's row-count estimate, small enough to seed quickly.
+_MQ_ALREADY_MOVED = 150_000
+
+
+@pytest.fixture(scope="module")
+async def move_drain_schema(pg_dsn: str) -> Any:
+    """A backlog shaped like a move-queue drain three quarters of the way
+    through a big actor backlog: most of the actor's pending/scheduled
+    rows already carry the NEW queue label (a prior batch moved them), a
+    smaller remainder still carries the OLD queue label (what this batch
+    must find), plus unrelated neighbor rows on both queues for other
+    actors sharing the source queue."""
+    schema = f"idx_audit_mq_drain_{new_base62()}".lower()
+    assert _IDENT_RE.match(schema)
+    conn = await asyncpg.connect(pg_dsn)
+    try:
+        await _drop_schema(conn, schema)
+        await migrate_mod.apply_pending(conn, schema=schema)
+        await conn.execute("SET synchronous_commit = on")
+
+        # The actor's own already-moved backlog: same status filter and
+        # same actor as the drain target, but sitting on the NEW queue,
+        # exactly the population a queue-blind actor index walks past.
+        moved = [
+            (new_uuid(), _MQ_ACTOR, _MQ_NEW_QUEUE, '{"v": 1}', "pending", 3, "transient")
+            for _ in range(_MQ_ALREADY_MOVED)
+        ]
+        await conn.copy_records_to_table(
+            "jobs",
+            schema_name=schema,
+            columns=["id", "actor", "queue", "payload", "status", "max_attempts", "retry_kind"],
+            records=moved,
+        )
+        # The remainder still on the source queue: what a correct batch
+        # must find, cheaply, regardless of how large the moved
+        # population above is.
+        remaining = [
+            (new_uuid(), _MQ_ACTOR, _MQ_OLD_QUEUE, '{"v": 1}', "pending", 3, "transient")
+            for _ in range(500)
+        ]
+        await conn.copy_records_to_table(
+            "jobs",
+            schema_name=schema,
+            columns=["id", "actor", "queue", "payload", "status", "max_attempts", "retry_kind"],
+            records=remaining,
+        )
+        # Neighbor actors sharing both queues: must not make the
+        # queue-only index look attractive either, and must not be
+        # touched by the actor-scoped drain.
+        neighbors = [
+            (
+                new_uuid(),
+                f"mq_drain.neighbor{i % 50}",
+                _MQ_OLD_QUEUE if i % 2 == 0 else _MQ_NEW_QUEUE,
+                '{"v": 1}',
+                "pending",
+                3,
+                "transient",
+            )
+            for i in range(20_000)
+        ]
+        await conn.copy_records_to_table(
+            "jobs",
+            schema_name=schema,
+            columns=["id", "actor", "queue", "payload", "status", "max_attempts", "retry_kind"],
+            records=neighbors,
+        )
+
+        await conn.execute("VACUUM ANALYZE " + f'"{schema}".jobs')
+        return schema
+    finally:
+        await conn.close()
+
+
+async def test_move_queue_drain_batch_bounds_cost_on_actor_and_queue_together(
+    move_drain_schema: str, pg_dsn: str
+) -> None:
+    """``move_actor_queue`` rewrites an actor's pending/scheduled backlog
+    onto the target queue in bounded committed batches, each selecting the
+    next ``batch_size`` rows still carrying the source queue. Every batch
+    must cost the same regardless of how many of the actor's rows earlier
+    batches already moved onto the target queue, so the plan has to fix
+    BOTH ``actor`` and ``queue`` in an Index Cond rather than leaving one
+    of them as a post-scan Filter.
+
+    With only single-column partial indexes (actor, id) and (queue, id),
+    whichever one the planner picks leaves the other predicate as a Filter
+    that walks the already-moved population, so each batch pays for every
+    row previously moved and total drain time grows quadratically in the
+    backlog size. On a large backlog that turns a routine operator action
+    into a per-batch statement timeout.
+    """
+    conn = await asyncpg.connect(pg_dsn)
+    try:
+        plan = await _explain(
+            conn,
+            _MOVE_BACKLOG_BATCH_SQL.format(schema=move_drain_schema),
+            _MQ_ACTOR,
+            _MQ_OLD_QUEUE,
+            _MQ_NEW_QUEUE,
+            _MQ_BATCH_SIZE,
+        )
+
+        index_cond_lines = [line for line in plan.splitlines() if "Index Cond:" in line]
+        combined = [line for line in index_cond_lines if "actor" in line and "queue" in line]
+        assert combined, (
+            "expected an Index Cond that fixes BOTH actor and queue for the "
+            "drain batch's matching-rows scan (e.g. a composite index on "
+            "(actor, queue, id) or (queue, actor, id) under the pending/"
+            "scheduled predicate) so a batch's cost is independent of how "
+            "much of the actor's backlog already moved to the target "
+            f"queue; got Index Cond lines: {index_cond_lines!r}\nplan:\n{plan}"
+        )
+
+        # The Rows Removed by Filter on the matching-rows scan should be
+        # small (bounded roughly by the batch/neighbor shape), never on
+        # the order of the already-moved population. That gap is exactly
+        # the quadratic-drain mechanism.
+        filter_removed_lines = [
+            line for line in plan.splitlines() if "Rows Removed by Filter" in line
+        ]
+        for line in filter_removed_lines:
+            digits = "".join(ch for ch in line if ch.isdigit())
+            removed = int(digits) if digits else 0
+            assert removed < _MQ_ALREADY_MOVED // 10, (
+                "the matching-rows scan filtered out a large share of the "
+                "already-moved backlog instead of having it excluded by an "
+                f"Index Cond, which is the quadratic-drain mechanism: {line!r}\n"
+                f"plan:\n{plan}"
+            )
+    finally:
+        await conn.close()
+
+
+# ── 5. job_events retention sweep plan + cost pins ────────────────────
+#
+# The event-retention sweep ticks on the leader forever, and its ordinary
+# arm must never pay for the crash-reclaim outbox slice it deliberately
+# exempts. That slice is immortal at ordinary retention age (it drains
+# only at RECLAIM_OUTBOX_RETENTION_MULTIPLIER x retention), so in a fleet
+# whose reclaim consumer lags it accumulates without bound. If the age
+# bound or the carve-out is not index-served, every tick re-walks that
+# accumulating population: the drained steady-state tick — the one that
+# runs every cycle and deletes nothing — grows more expensive the longer
+# the deployment lives, until it trips its statement timeout and event
+# retention stops working silently.
+
+_EV_RETENTION = timedelta(days=30)
+_EV_BATCH = 100
+# Ordinary (deletable-kind) events, all NEWER than the retention age: the
+# drained steady-state shape every sibling plan pin seeds to.
+_EV_LIVE_ORDINARY = 40_000
+# Events spread over many jobs, as a fleet's are.
+_EV_JOBS = 2_000
+
+
+def _event_ttl_sql(schema: str) -> str:
+    return _SWEEP_EVENT_TTL_SQL.format(
+        schema=schema, outbox_multiplier=RECLAIM_OUTBOX_RETENTION_MULTIPLIER
+    )
+
+
+async def _make_event_schema(conn: asyncpg.Connection, schema: str, *, outbox_rows: int) -> None:
+    """Migrated schema holding a realistic event corpus: a live
+    ordinary-event population inside the retention window, and
+    *outbox_rows* unconsumed crash-reclaim outbox events far older than
+    ordinary retention but still inside the outbox age cap — i.e. rows
+    the sweep must never delete and must never pay to look at.
+
+    Events are spread across many jobs, as a real fleet's are: piling a
+    whole corpus onto one job_id makes the per-job index the cheapest
+    path to everything and the plan stops resembling production."""
+    await _drop_schema(conn, schema)
+    await migrate_mod.apply_pending(conn, schema=schema)
+
+    job_ids = [new_uuid() for _ in range(_EV_JOBS)]
+    await conn.copy_records_to_table(
+        "jobs",
+        schema_name=schema,
+        columns=["id", "actor", "queue", "payload", "status", "max_attempts", "retry_kind"],
+        records=[
+            (job_id, "ev.actor", "default", '{"v": 1}', "running", 3, "transient")
+            for job_id in job_ids
+        ],
+    )
+
+    now = datetime.now(UTC)
+    await conn.copy_records_to_table(
+        "job_events",
+        schema_name=schema,
+        columns=["job_id", "occurred_at", "kind", "detail"],
+        records=[
+            (job_ids[i % _EV_JOBS], now - timedelta(minutes=5), "progress", "{}")
+            for i in range(_EV_LIVE_ORDINARY)
+        ],
+    )
+    if outbox_rows:
+        await conn.copy_records_to_table(
+            "job_events",
+            schema_name=schema,
+            columns=["job_id", "occurred_at", "kind", "detail"],
+            records=[
+                (
+                    job_ids[i % _EV_JOBS],
+                    # Older than ordinary retention, far inside the outbox
+                    # cap — exempt at this age, so the sweep deletes none.
+                    now - _EV_RETENTION * 2,
+                    "state_change",
+                    '{"reason": "lock_expired"}',
+                )
+                for i in range(outbox_rows)
+            ],
+        )
+    await conn.execute(f'VACUUM (ANALYZE) "{schema}".job_events')
+
+
+@pytest.fixture(scope="module")
+async def event_ttl_schema(pg_dsn: str) -> Any:
+    schema = f"idx_audit_ev_ttl_{new_base62()}".lower()
+    assert _IDENT_RE.match(schema)
+    conn = await asyncpg.connect(pg_dsn)
+    try:
+        await _make_event_schema(conn, schema, outbox_rows=60_000)
+        yield schema
+    finally:
+        await _drop_schema(conn, schema)
+        await conn.close()
+
+
+async def test_event_retention_window_is_index_bounded(event_ttl_schema: str, pg_dsn: str) -> None:
+    """The retention sweep's ordinary-events window must seek
+    ``job_events_occurred_at_idx`` with the age bound as an Index Cond.
+
+    A bound that survives only as a post-scan Filter makes every tick
+    walk the whole event table — including the exempt crash-reclaim
+    outbox slice, which is immortal at this age and grows for the life of
+    the deployment. The tick then gets slower forever and eventually
+    times out, at which point event retention stops draining and the
+    table grows without bound, with nothing but the sweep's timeout
+    counter to say so."""
+    conn = await asyncpg.connect(pg_dsn)
+    try:
+        plan = await _explain(conn, _event_ttl_sql(event_ttl_schema), _EV_RETENTION, _EV_BATCH)
+        _assert_index_cond(
+            plan,
+            "job_events_occurred_at_idx",
+            "occurred_at <",
+        )
+    finally:
+        await conn.close()
+
+
+async def test_event_retention_outbox_arm_is_index_bounded(
+    event_ttl_schema: str, pg_dsn: str
+) -> None:
+    """The outbox age-cap arm's own age bound must be an Index Cond, not a
+    post-scan Filter.
+
+    Confining the arm to the outbox partial index is not enough: that
+    index is keyed on ``id`` alone, so an age bound left as a Filter makes
+    the arm walk every unconsumed outbox row on every tick and discard
+    them all. That population is exempt from ordinary retention by
+    design, and in a fleet whose ``watch_reclaims`` consumer lags or is
+    absent it grows for the life of the deployment — so the tick that is
+    supposed to bound the outbox is itself unbounded in the outbox's
+    size, which is the whole-population-walk class this audit family
+    exists to prevent."""
+    conn = await asyncpg.connect(pg_dsn)
+    try:
+        plan = await _explain(conn, _event_ttl_sql(event_ttl_schema), _EV_RETENTION, _EV_BATCH)
+        # The outbox arm's bound is retention x the multiplier; the server
+        # folds that to a single interval literal, so the arm's Index Cond
+        # is distinguished from the ordinary arm's by the folded value.
+        outbox_bound = _EV_RETENTION * RECLAIM_OUTBOX_RETENTION_MULTIPLIER
+        outbox_cond = [
+            line
+            for line in plan.splitlines()
+            if "Index Cond:" in line
+            and "occurred_at <" in line
+            and f"{outbox_bound.days} days" in line
+        ]
+        assert outbox_cond, (
+            "the outbox age-cap arm's occurred_at bound must appear as an Index "
+            "Cond so the scan stops at the age boundary; as a Filter it walks "
+            f"the entire unconsumed outbox population every tick:\n{plan}"
+        )
+    finally:
+        await conn.close()
+
+
+async def test_event_retention_drained_tick_cost_is_flat_in_exempt_population(
+    pg_dsn: str,
+) -> None:
+    """A drained steady-state tick — nothing eligible, nothing deleted —
+    must cost the same whether the fleet holds a handful of unconsumed
+    crash-reclaim outbox events or tens of thousands of them.
+
+    This is the operator-visible property: the leader's event-retention
+    tick runs forever, and the outbox slice it exempts accumulates
+    whenever a fleet's reclaim consumer lags or is absent. If the tick's
+    cost tracks that population, a long-lived deployment's maintenance
+    loop degrades on its own, with no change in job throughput to explain
+    it, until the statement timeout fires and retention silently stops.
+    Cost is measured as buffers actually touched by the executed
+    statement, which is what turns into I/O on a table too large to
+    cache."""
+    small_schema = f"idx_audit_ev_flat_s_{new_base62()}".lower()
+    large_schema = f"idx_audit_ev_flat_l_{new_base62()}".lower()
+    conn = await asyncpg.connect(pg_dsn)
+    try:
+        await _make_event_schema(conn, small_schema, outbox_rows=200)
+        await _make_event_schema(conn, large_schema, outbox_rows=60_000)
+
+        async def _buffers(schema: str) -> int:
+            # ANALYZE so the measured cost is what the tick really pays,
+            # not an estimate; the sweep deletes nothing here, so the
+            # measurement is repeatable and leaves no state behind.
+            rows = await conn.fetch(
+                f"EXPLAIN (ANALYZE, BUFFERS) {_event_ttl_sql(schema)}",
+                _EV_RETENTION,
+                _EV_BATCH,
+            )
+            plan = "\n".join(r["QUERY PLAN"] for r in rows)
+            total = 0
+            for line in plan.splitlines():
+                if "shared hit=" in line or "shared read=" in line:
+                    for token in line.replace("shared", "").split():
+                        if token.startswith(("hit=", "read=")):
+                            total += int(token.split("=")[1])
+            assert total > 0, f"no buffer accounting in plan:\n{plan}"
+            return total
+
+        small_cost = await _buffers(small_schema)
+        large_cost = await _buffers(large_schema)
+
+        # A 300x larger exempt population must not move the tick's cost
+        # materially. The allowance covers planner/visibility noise, not
+        # a scan whose length tracks the population.
+        assert large_cost <= small_cost * 3 + 50, (
+            "the drained event-retention tick's cost grows with the exempt "
+            f"crash-reclaim outbox population: {small_cost} buffers at 200 "
+            f"outbox rows vs {large_cost} buffers at 60,000 — the tick is "
+            "walking the rows it is required to skip, so maintenance cost "
+            "degrades over the life of the deployment"
+        )
+    finally:
+        await _drop_schema(conn, small_schema)
+        await _drop_schema(conn, large_schema)
+        await conn.close()
+
+
+# ── 6. keyed-row fleet reclaim plan pins ──────────────────────────────
+#
+# The keyed-row sweeps tick on the leader against tables whose population
+# is the fleet's live tenant/key cardinality — the one maintenance target
+# that grows with customers rather than with backlog. Almost every row is
+# fresh (in use), so the every-tick shape is the drained one: nothing
+# eligible, nothing deleted. That tick must cost a seek to the age
+# boundary, not a walk of every keyed row; a bound left as a post-scan
+# Filter means onboarding tenants silently makes the maintenance loop
+# slower until it trips its statement timeout and keyed rows stop being
+# reclaimed at all.
+
+_KEYED_HORIZON = timedelta(hours=1)
+_KEYED_BATCH = 100
+# Fresh keyed rows for distinct keys — the steady state a multi-tenant
+# fleet sits in, at a volume where the planner's index choice is the one
+# a deployment would get rather than a small table's seq-scan default.
+_KEYED_LIVE_ROWS = 30_000
+
+
+@pytest.fixture(scope="module")
+async def keyed_reclaim_schema(pg_dsn: str) -> Any:
+    schema = f"idx_audit_keyed_{new_base62()}".lower()
+    assert _IDENT_RE.match(schema)
+    conn = await asyncpg.connect(pg_dsn)
+    try:
+        await _drop_schema(conn, schema)
+        await migrate_mod.apply_pending(conn, schema=schema)
+        now = datetime.now(UTC)
+        await conn.copy_records_to_table(
+            "rate_limit_buckets",
+            schema_name=schema,
+            columns=["bucket_name", "kind", "state", "keyed", "last_used_at"],
+            records=[
+                (f"tenant.{i}", "token_bucket", "{}", True, now - timedelta(seconds=i % 60))
+                for i in range(_KEYED_LIVE_ROWS)
+            ],
+        )
+        await conn.copy_records_to_table(
+            "reservation_slots",
+            schema_name=schema,
+            columns=["bucket_name", "slot_index", "keyed", "last_used_at"],
+            records=[
+                (f"tenant.{i}", 0, True, now - timedelta(seconds=i % 60))
+                for i in range(_KEYED_LIVE_ROWS)
+            ],
+        )
+        for table in ("rate_limit_buckets", "reservation_slots"):
+            await conn.execute(f'ANALYZE "{schema}".{table}')
+        yield schema
+    finally:
+        await _drop_schema(conn, schema)
+        await conn.close()
+
+
+async def test_keyed_bucket_reclaim_window_is_index_bounded(
+    keyed_reclaim_schema: str, pg_dsn: str
+) -> None:
+    """The idle keyed rate-limit-bucket sweep's candidate window must seek
+    ``rate_limit_buckets_keyed_last_used_idx`` with the idle horizon as an
+    Index Cond.
+
+    Keyed buckets are created per rate-limit key, so their count is the
+    fleet's live key cardinality. A horizon that survives only as a Filter
+    makes every leader tick re-read every in-use bucket to find the
+    handful that went idle — cost that grows with tenant count and shows
+    up as a maintenance loop that gets slower as the product succeeds."""
+    conn = await asyncpg.connect(pg_dsn)
+    try:
+        plan = await _explain(
+            conn,
+            _SWEEP_IDLE_KEYED_BUCKETS_SQL.format(schema=keyed_reclaim_schema),
+            _KEYED_HORIZON,
+            _KEYED_BATCH,
+        )
+        _assert_index_cond(
+            plan,
+            "rate_limit_buckets_keyed_last_used_idx",
+            "last_used_at <",
+        )
+    finally:
+        await conn.close()
+
+
+async def test_keyed_slot_reclaim_window_is_index_bounded(
+    keyed_reclaim_schema: str, pg_dsn: str
+) -> None:
+    """The idle keyed reservation-slot sweep's candidate window must seek
+    ``reservation_slots_keyed_last_used_idx`` with the idle horizon as an
+    Index Cond — the same property as its bucket sibling, over a table
+    that carries one row per slot per key and so grows faster still."""
+    conn = await asyncpg.connect(pg_dsn)
+    try:
+        plan = await _explain(
+            conn,
+            _SWEEP_IDLE_KEYED_SLOTS_SQL.format(schema=keyed_reclaim_schema),
+            _KEYED_HORIZON,
+            _KEYED_BATCH,
+        )
+        _assert_index_cond(
+            plan,
+            "reservation_slots_keyed_last_used_idx",
+            "last_used_at <",
+        )
+    finally:
+        await conn.close()

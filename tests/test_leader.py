@@ -32,7 +32,7 @@ from taskq.testing.in_memory import InMemoryBackend
 from taskq.worker._leader_shared import (
     _DB_NOW_SQL,  # pyright: ignore[reportPrivateUsage]  # Why: the fake must answer the exact DB-clock query the prune/expiry code issues; importing it keeps the two from drifting apart.
 )
-from taskq.worker.deps import WorkerDeps
+from taskq.worker.deps import LeaderTerm, WorkerDeps
 from taskq.worker.leader import (
     MaintenanceLeader,
     _build_retention_per_status,
@@ -88,7 +88,7 @@ class _FakeTransaction:
 
 
 def _is_server_clock_read(sql: str) -> bool:
-    """Whether *sql* asks Postgres for its own clock.
+    """Whether *sql* asks Postgres for its own clock, and nothing else.
 
     Postgres answers such a statement with a timestamp unconditionally, so a
     double that hands back its generic ``fetchval_result`` here is lying about
@@ -96,8 +96,23 @@ def _is_server_clock_read(sql: str) -> bool:
     connection they take the advisory lock on, and a double configured with
     ``fetchval_result=True`` for the lock was returning that bool where the
     real database returns a datetime.
+
+    Statements that merely STAMP the server clock into a column are not clock
+    reads: the election statement writes ``clock_timestamp()`` into the lease
+    row and returns its ``elected_at`` only when it actually won. Answering
+    those with an unconditional timestamp would make the double report a win
+    to every caller, including the pod that lost.
     """
-    return "clock_timestamp()" in sql
+    return sql.lstrip().upper().startswith("SELECT CLOCK_TIMESTAMP()")
+
+
+def _is_lease_statement(sql: str) -> bool:
+    """Whether *sql* is one of the maintenance-lease statements.
+
+    The elect and renew statements return a timestamp column, so a double
+    must answer them with one — see :meth:`FakeConn.fetchval`.
+    """
+    return "maintenance_leader" in sql
 
 
 class FakeConn:
@@ -139,6 +154,12 @@ class FakeConn:
             self._on_fetchval()
         if _is_server_clock_read(sql):
             return datetime.now(UTC)
+        if _is_lease_statement(sql):
+            # The election and renewal statements answer with the term's
+            # timestamp when this pod holds the row and with no row at all
+            # when it does not. A double that handed back its generic bool
+            # here would report the same outcome to the winner and the loser.
+            return datetime.now(UTC) if self._fetchval_result else None
         return self._fetchval_result
 
     async def execute(self, sql: str, *args: object) -> str:
@@ -334,8 +355,8 @@ async def _make_leader(
 
 
 async def test_election_win_sets_is_leader(monkeypatch: Any) -> None:  # type: ignore[reportUnknownParameterType]  # Why: pytest monkeypatch fixture type is only available with pytest-stub; using Any for test ergonomics.
-    """Election win: fetchval returns True → is_leader set, monitor opened,
-    UPSERT runs, counter incremented, INFO log emitted."""
+    """Election win: the lease statement returns a term → is_leader set,
+    monitor opened, the lease row written, counter incremented, INFO log."""
     leader_conn = FakeConn(fetchval_result=True)
     leader, deps, _backend, _, _, shutdown = await _make_leader(
         leader_conn=leader_conn,
@@ -358,16 +379,233 @@ async def test_election_win_sets_is_leader(monkeypatch: Any) -> None:  # type: i
 
     assert deps.is_leader.is_set()
     assert leader._leader_monitor_conn is not None
-    assert any("maintenance_leader" in sql for sql, _ in leader_conn.execute_calls)
+    assert any("maintenance_leader" in sql for sql, _ in leader_conn.fetchval_calls)
     assert counter_calls == [(1, {})]
+
+
+# ── Election loop must degrade, not crash, when the courtesy lock is refused ──
+
+
+async def test_election_loop_degrades_when_advisory_lock_privilege_is_refused(
+    monkeypatch: Any,  # type: ignore[reportUnknownParameterType]
+) -> None:
+    """A winning election whose courtesy ``pg_try_advisory_lock`` probe hits a
+    refused privilege (``InsufficientPrivilegeError``, as a managed Postgres
+    deployment that restricts advisory-lock functions would raise) must not
+    crash the election loop.
+
+    ``_try_election_lock`` only catches ``TRANSIENT_PG_ERRORS`` (see
+    ``leader.py``): a privilege error is not in that tuple, so it propagates
+    out of ``_try_election_lock``, through ``_assume_leadership`` (called at
+    line ~745, OUTSIDE the try/except that guards the election statement
+    itself), and out of ``_election_loop`` entirely unhandled. In production
+    that loop runs inside ``MaintenanceLeader.run()``'s ``TaskGroup``
+    alongside the watchdog, cron, sweep, prune, and every other leader-gated
+    loop — one task raising cancels every sibling and tears down the whole
+    maintenance plane, exactly the failure this project's own docstring
+    on ``_try_election_lock`` says a courtesy probe must never cause
+    ("a miss ... must never again gate the election it used to decide").
+
+    This is the same defect shape reported for the retired
+    ``pg_terminate_backend`` recovery path (a refused privilege escaping as
+    a raw driver error instead of degrading to follower) — it has resurfaced
+    at the new call site the row-lease redesign introduced.
+    """
+
+    class _PrivilegeRefusedConn(FakeConn):
+        async def fetchval(self, sql: str, *args: object) -> object:
+            if "pg_try_advisory_lock" in sql:
+                self.fetchval_calls.append((sql, args))
+                raise asyncpg.InsufficientPrivilegeError(
+                    "permission denied for function pg_try_advisory_lock"
+                )
+            return await super().fetchval(sql, *args)
+
+    refusing_conn = _PrivilegeRefusedConn(fetchval_result=True)
+    leader, deps, _backend, _, _, shutdown = await _make_leader(
+        leader_conn=refusing_conn,
+        monkeypatch=monkeypatch,
+    )
+
+    task = asyncio.create_task(leader._election_loop(shutdown))  # pyright: ignore[reportPrivateUsage]  # Why: the election loop IS the degradation path under test.
+
+    crashed: BaseException | None = None
+    try:
+        # A short bounded wait: a healthy loop wins the election (the lease
+        # statement returns a term) and keeps looping as a leader that never
+        # acquired the courtesy lock. A crashing loop instead raises out of
+        # the task almost immediately.
+        await asyncio.wait_for(asyncio.shield(task), timeout=1.0)
+    except TimeoutError:
+        pass
+    except BaseException as exc:  # Why: capturing the crash IS the assertion below, not letting pytest report it as an unhandled task exception.
+        crashed = exc
+    finally:
+        shutdown.set()
+        if not task.done():
+            with contextlib.suppress(asyncio.CancelledError):
+                await asyncio.wait_for(task, timeout=2.0)
+        elif task.cancelled():
+            pass
+        elif task.exception() is not None:
+            crashed = task.exception()
+
+    assert crashed is None, (
+        "the election loop must degrade to follower (log once, skip the "
+        "courtesy lock, keep competing by the lease) when the advisory-lock "
+        f"privilege is refused, not crash: raised {type(crashed).__name__ if crashed else None}"
+    )
+    assert deps.is_leader.is_set(), (
+        "the lease statement won the election; losing the courtesy lock "
+        "afterward must not cost the pod its leadership"
+    )
+
+
+async def test_election_loop_degrades_when_advisory_lock_probe_fails_transiently(
+    monkeypatch: Any,  # type: ignore[reportUnknownParameterType]
+) -> None:
+    """The transient sibling of the privilege-refusal pin: a probe that
+    raises a TRANSIENT_PG_ERRORS member (the conn dying under the probe)
+    must also degrade to a lock miss — the lease row already granted the
+    role, and a courtesy probe riding a dying conn must not cost it."""
+
+    class _TransientFailingConn(FakeConn):
+        async def fetchval(self, sql: str, *args: object) -> object:
+            if "pg_try_advisory_lock" in sql:
+                self.fetchval_calls.append((sql, args))
+                raise asyncpg.PostgresConnectionError("conn dropped mid-probe")
+            return await super().fetchval(sql, *args)
+
+    failing_conn = _TransientFailingConn(fetchval_result=True)
+    leader, deps, _backend, _, _, shutdown = await _make_leader(
+        leader_conn=failing_conn,
+        monkeypatch=monkeypatch,
+    )
+
+    task = asyncio.create_task(leader._election_loop(shutdown))  # pyright: ignore[reportPrivateUsage]  # Why: the election loop IS the degradation path under test.
+    try:
+        await wait_for_leader(deps)
+    finally:
+        shutdown.set()
+        await task
+
+    assert deps.is_leader.is_set(), (
+        "the lease statement won the election; a transient courtesy-probe "
+        "failure must not cost the pod its leadership"
+    )
+
+
+async def test_advisory_lock_refusal_logs_once_per_refusal_streak(
+    monkeypatch: Any,  # type: ignore[reportUnknownParameterType]
+) -> None:
+    """A refused deployment refuses every probe for as long as the grants
+    stand: the WARN naming the refused function must fire on the first
+    refusal of a streak, not on every one — a fleet re-electing on every
+    lease lapse must not WARN-spam — and must re-arm once a probe succeeds
+    again (the grant appearing is a new operational fact)."""
+
+    class _RefusingConn(FakeConn):
+        def __init__(self, **kwargs: object) -> None:
+            super().__init__(**kwargs)  # type: ignore[arg-type]  # Why: FakeConn kwargs are keyword-only; forwarding keeps this double a drop-in.
+            self.refuse = True
+
+        async def fetchval(self, sql: str, *args: object) -> object:
+            if "pg_try_advisory_lock" in sql and self.refuse:
+                self.fetchval_calls.append((sql, args))
+                raise asyncpg.InsufficientPrivilegeError(
+                    "permission denied for function pg_try_advisory_lock"
+                )
+            return await super().fetchval(sql, *args)
+
+    refusing_conn = _RefusingConn(fetchval_result=True)
+    leader, _deps, _backend, _, _, _shutdown = await _make_leader(
+        leader_conn=refusing_conn,
+        monkeypatch=monkeypatch,
+    )
+
+    with structlog.testing.capture_logs() as captured:
+        assert await leader._try_election_lock() is False  # pyright: ignore[reportPrivateUsage]  # Why: the courtesy probe IS the unit under test.
+        assert await leader._try_election_lock() is False  # pyright: ignore[reportPrivateUsage]
+
+    refusals = [e for e in captured if e["event"] == "leader-advisory-lock-refused"]
+    assert len(refusals) == 1, (
+        f"two consecutive refusals produced {len(refusals)} WARN events — the "
+        "refusal is permanent until the grants change, so one WARN per streak "
+        "is the whole signal"
+    )
+    assert refusals[0]["log_level"] == "warning"
+    assert refusals[0]["function"] == "pg_try_advisory_lock"
+
+    # Grant restored: the probe answers again, which re-arms the latch...
+    refusing_conn.refuse = False
+    assert await leader._try_election_lock() is True  # pyright: ignore[reportPrivateUsage]  # Why: same as above.
+
+    # ...so a LATER refusal is news and logs again.
+    refusing_conn.refuse = True
+    with structlog.testing.capture_logs() as captured_after_rearm:
+        assert await leader._try_election_lock() is False  # pyright: ignore[reportPrivateUsage]  # Why: same as above.
+    refusals_after = [
+        e for e in captured_after_rearm if e["event"] == "leader-advisory-lock-refused"
+    ]
+    assert len(refusals_after) == 1
+
+
+# ── Leader lease gauge: stamped on elect/renew ───────────────────────
+
+
+async def test_lease_gauge_is_stamped_on_election_and_each_renewal(
+    monkeypatch: Any,  # type: ignore[reportUnknownParameterType]
+) -> None:
+    """``taskq.maintenance_leader.lease_expires_in_seconds`` is the
+    lease's freshness signal: stamped with the full TTL at election win
+    and re-stamped at every successful renewal, so a leader that stops
+    renewing is a series that stops moving. Both arms are pinned here —
+    a dropped call site leaves the gauge frozen on a live leader, which
+    is exactly the lie the gauge exists to refute."""
+    import taskq.obs._otel as otel_mod
+
+    monkeypatch.setattr(otel_mod, "_otel_enabled", True)
+    monkeypatch.setattr(otel_mod, "_leader_lease_expires_in_seconds_cache", None)
+
+    leader_conn = FakeConn(fetchval_result=True)
+    leader, deps, _backend, _, _, shutdown = await _make_leader(
+        leader_conn=leader_conn,
+        monkeypatch=monkeypatch,
+    )
+    lease = deps.settings.resolved_leader_lease
+
+    task = asyncio.create_task(leader._election_loop(shutdown))  # pyright: ignore[reportPrivateUsage]  # Why: the election loop IS the elect arm under test.
+    await wait_for_leader(deps)
+
+    # Elect arm.
+    assert otel_mod._leader_lease_expires_in_seconds_cache == lease  # pyright: ignore[reportPrivateUsage]  # Why: the pin is the gauge's cached value, not an SDK round trip.
+
+    # Renew arm: poison the stamp, then drive one renewal through the
+    # loop's own method (the trust-spent test's seam — deterministic, no
+    # polling) and the stamp must be restored.
+    otel_mod._leader_lease_expires_in_seconds_cache = -1.0  # pyright: ignore[reportPrivateUsage]
+    term = deps.leader_term
+    assert term is not None, "the election win must have installed a term"
+
+    from taskq.worker._transient import UnexpectedLoopErrorGuard
+
+    should_sleep = await leader._renew_term(  # pyright: ignore[reportPrivateUsage]  # Why: driving the renew arm directly IS the test.
+        term, "renew-sql", UnexpectedLoopErrorGuard("test")
+    )
+
+    assert should_sleep is True, "a healthy renewal keeps leading"
+    assert otel_mod._leader_lease_expires_in_seconds_cache == lease  # pyright: ignore[reportPrivateUsage]
+    shutdown.set()
+    await task
 
 
 # ── Election loss does not set is_leader ───────────────────────────
 
 
 async def test_election_loss_does_not_set_is_leader(monkeypatch: Any) -> None:  # type: ignore[reportUnknownParameterType]
-    """Election loss: fetchval returns False → is_leader stays clear,
-    no monitor opened, INFO log with kind='leader_retry', counter incremented."""
+    """Election loss: the lease statement returns no row → is_leader stays
+    clear, no monitor opened, INFO log with kind='leader_retry', counter
+    incremented."""
     # Additive event on the double: set exactly where the election's lock
     # probe is entered, so the test waits for the attempt instead of
     # sleeping and hoping the loop reached it.
@@ -2766,7 +3004,7 @@ async def test_watchdog_closes_taskq_owned_leader_conn() -> None:
 
 # ── Bounded closes: hung close is terminated, fast close is not ─────────
 #
-# Issue #38: the election/watchdog/cron paths closed leader-owned dedicated
+# The election/watchdog/cron paths closed leader-owned dedicated
 # conns with a bare ``await conn.close()`` — a dead PG can block that
 # indefinitely, stalling the watchdog. These tests pin the bounded-close
 # discipline (asyncio.wait_for + terminate on timeout) applied via
@@ -3125,15 +3363,177 @@ async def test_open_dedicated_conn_fails_fast_without_factory_or_dsn(monkeypatch
         await leader._open_dedicated_conn("leader_monitor_conn")
 
 
+# ── Demotion precedes the lock release ────────────────────────────────
+
+
+async def test_step_down_stops_leading_before_the_lock_can_be_released(
+    monkeypatch: Any,  # type: ignore[reportUnknownParameterType]
+) -> None:
+    """``leading()`` answers false from before the courtesy lock can go.
+
+    Releasing the lock is what lets a peer win the election and take the
+    row, and the close that releases it can park for up to the bounded
+    close on a dead PG. Anything still reading ``leading()`` as true across
+    that suspension would be a second leader acting beside the successor.
+    """
+    leading_during_close: list[bool] = []
+
+    class _ObservingConn(FakeConn):
+        async def close(self) -> None:
+            leading_during_close.append(deps.leading())
+            await super().close()
+
+    leader_conn = _ObservingConn(fetchval_result=True)
+    leader, deps, _backend, _, _, shutdown = await _make_leader(
+        leader_conn=leader_conn,
+        monkeypatch=monkeypatch,
+    )
+
+    # TaskQ-owned, so standing down CLOSES the conn (releasing the courtesy
+    # lock) rather than abandoning a caller's handle.
+    deps.owns_leader_conn = True
+
+    task = asyncio.create_task(leader._election_loop(shutdown))
+    await wait_for_leader(deps)
+    assert deps.leading(), "the elected pod must be leading before it stands down"
+
+    await leader._step_down("term_lost")
+    shutdown.set()
+    await task
+
+    assert leading_during_close == [False], (
+        "the leader conn was closed — releasing the courtesy lock — while this "
+        "pod still reported leading()"
+    )
+    assert not deps.is_leader.is_set()
+    assert deps.leader_term is None
+
+
+# ── The trust window narrows leading() on this process's own clock ───────
+
+
+async def test_leading_narrows_false_once_the_trust_window_closes() -> None:
+    """``leading()`` answers by the monotonic deadline, not the event.
+
+    The event can still be set — the election loop has not noticed yet —
+    but past ``trusted_until`` a peer may legally hold the row, so every
+    leader-gated loop must already read the role as gone.
+    """
+    deps = _make_deps(is_leader=False)
+    loop = asyncio.get_running_loop()
+
+    deps.lead(LeaderTerm(elected_at=datetime.now(UTC), trusted_until=loop.time() + 60))
+    assert deps.leading(), "a term inside its trust window leads"
+
+    deps.lead(LeaderTerm(elected_at=datetime.now(UTC), trusted_until=loop.time() - 0.01))
+    assert deps.is_leader.is_set(), "test setup: the event outlives the trust window"
+    assert not deps.leading(), (
+        "past trusted_until the role must read as gone even before the "
+        "election loop's step-down clears the event"
+    )
+
+
+async def test_renew_term_with_spent_trust_steps_down_without_touching_the_database(
+    monkeypatch: Any,  # type: ignore[reportUnknownParameterType]
+) -> None:
+    """A loop that wakes with its trust window already spent stands down
+    locally — the step-down is the split-brain guard, and issuing a renewal
+    against a row a peer may already hold would defeat it."""
+    leader_conn = FakeConn(fetchval_result=True)
+    leader, deps, _backend, _, _, shutdown = await _make_leader(
+        leader_conn=leader_conn,
+        monkeypatch=monkeypatch,
+    )
+    _ = shutdown
+
+    loop = asyncio.get_running_loop()
+    term = LeaderTerm(elected_at=datetime.now(UTC), trusted_until=loop.time() - 0.01)
+    deps.lead(term)
+
+    from taskq.worker._transient import UnexpectedLoopErrorGuard
+
+    with structlog.testing.capture_logs() as captured:
+        should_sleep = await leader._renew_term(  # pyright: ignore[reportPrivateUsage]  # Why: driving the exact trust-spent branch IS the test.
+            term, "renew-sql", UnexpectedLoopErrorGuard("test")
+        )
+
+    assert should_sleep is False, "a spent trust window ends the term, not the loop"
+    assert not deps.is_leader.is_set()
+    assert deps.leader_term is None
+    assert leader_conn.fetchval_calls == [] and leader_conn.execute_calls == [], (
+        "the trust-spent step-down must not touch the database — a peer may already hold the row"
+    )
+    assert any(
+        e.get("kind") == "leadership_lost" and e.get("reason") == "trust_expired" for e in captured
+    )
+
+
+# ── Resign rides a surviving conn ─────────────────────────────────────────
+
+
+async def test_resign_falls_back_to_the_monitor_conn_when_leader_conn_is_gone(
+    monkeypatch: Any,  # type: ignore[reportUnknownParameterType]
+) -> None:
+    """The shutdown orchestrator closes a TaskQ-owned leader_conn before the
+    leader's teardown runs; the resign must still land — fenced on the term —
+    through the leader-owned monitor conn, which nothing else closes first."""
+    leader, deps, _backend, leader_conn, _, shutdown = await _make_leader(
+        monkeypatch=monkeypatch,
+    )
+    _ = shutdown
+    monitor = FakeConn()
+    leader._leader_monitor_conn = monitor  # type: ignore[reportAttributeAccessIssue]  # Why: the harness assigns the test double to the leader-owned conn slot directly.
+
+    elected = datetime.now(UTC)
+    deps.lead(LeaderTerm(elected_at=elected, trusted_until=60.0))
+    deps.leader_conn = None  # what the orchestrator leaves behind
+
+    await leader.resign()
+
+    deletes = [
+        (sql, args)
+        for sql, args in monitor.execute_calls
+        if sql.lstrip().upper().startswith("DELETE FROM")
+    ]
+    assert len(deletes) == 1, f"the resign must land exactly once, got {monitor.execute_calls!r}"
+    _sql, args = deletes[0]
+    assert args[1] == elected, "the resign carries the term fence"
+    assert leader_conn.execute_calls == [], "the gone conn is not used"
+
+
+async def test_resign_without_a_term_or_a_live_conn_is_a_noop(
+    monkeypatch: Any,  # type: ignore[reportUnknownParameterType]
+) -> None:
+    """A follower, or a leader whose conns are all gone, has nothing to
+    resign and nothing to resign it through — the lapse covers it."""
+    leader, deps, _backend, leader_conn, _, shutdown = await _make_leader(
+        monkeypatch=monkeypatch,
+    )
+    _ = shutdown
+
+    # No term (a follower): nothing is written.
+    await leader.resign()
+    assert leader_conn.execute_calls == []
+
+    # A term with no live conn anywhere: same — the lease lapses on its own.
+    deps.leader_conn = None
+    deps.lead(LeaderTerm(elected_at=datetime.now(UTC), trusted_until=60.0))
+    await leader.resign()
+    assert leader_conn.execute_calls == []
+
+
 # ── Leadership gap-window after reload ──────────────────────────────────
 
 
-async def test_reelection_survives_advisory_lock_gap_window(monkeypatch: Any) -> None:  # type: ignore[reportUnknownParameterType]
-    """After reload closes leader_conn, the first pg_try_advisory_lock on the
-    rebuilt conn can return False — the old session's lock release is still
-    propagating. The election loop must treat it as an ordinary lost
-    election (clear is_leader, retry with the SAME rebuilt conn), not
-    crash, and win on the next attempt."""
+async def test_reelection_after_conn_loss_never_waits_on_the_courtesy_lock(
+    monkeypatch: Any,  # type: ignore[reportUnknownParameterType]
+) -> None:
+    """After reload closes leader_conn, the rebuilt conn's
+    pg_try_advisory_lock can return False — the old session's lock release
+    is still propagating, or a stranger session holds it. The lease row is
+    the authority, so the election must WIN anyway: the courtesy miss is
+    logged, leadership is taken, and the loop does not retry the election
+    over the lock."""
     original = FakeConn(fetchval_result=True)
     leader, deps, _backend, _, _, shutdown = await _make_leader(
         leader_conn=original,
@@ -3144,18 +3544,21 @@ async def test_reelection_survives_advisory_lock_gap_window(monkeypatch: Any) ->
     await wait_for_leader(deps)
     assert deps.is_leader.is_set()
 
-    # Gap-window conn: first lock attempt loses, subsequent attempts win.
+    # The lease statement on the rebuilt conn wins immediately — the
+    # departed session's row is this pod's own to re-elect — while the
+    # courtesy lock refuses every attempt: the shape of a stale lock that
+    # outlives the row behind it.
     lock_attempts = 0
 
-    class GapWindowConn(FakeConn):
+    class RefusingLockConn(FakeConn):
         async def fetchval(self, sql: str, *args: object) -> object:
             nonlocal lock_attempts
             if "pg_try_advisory_lock" in sql:
                 lock_attempts += 1
-                return lock_attempts > 1
+                return False
             return await super().fetchval(sql, *args)
 
-    gap_conn = GapWindowConn()
+    gap_conn = RefusingLockConn(fetchval_result=True)
     factory_calls = 0
 
     async def factory() -> FakeConn:
@@ -3182,17 +3585,29 @@ async def test_reelection_survives_advisory_lock_gap_window(monkeypatch: Any) ->
             lambda: any(e.get("kind") == "leader_conn_died" for e in captured),
             description="election loop never took the leader-conn-died demotion path after the null",
         )
+        # ...and the re-election must not wait for the courtesy lock at all.
+        await wait_for_condition(
+            lambda: deps.is_leader.is_set(),
+            description="re-election waited on the courtesy lock — the lease row alone decides",
+        )
 
-    # ...then re-sets once the old session's lock release has propagated.
-    await wait_for_leader(deps)
     shutdown.set()
     await task
 
-    assert deps.is_leader.is_set()
+    assert deps.is_leader.is_set(), (
+        "a courtesy-lock refusal must never cost an election the lease row won"
+    )
     assert deps.leader_conn is gap_conn
-    assert lock_attempts >= 2  # first False (gap window), then True
-    # The rebuilt conn is reused across lock attempts — the factory runs
-    # once per conn ROLE (leader + monitor + cron), not per attempt.
+    assert any(e.get("event") == "leader-advisory-lock-unavailable" for e in captured), (
+        "the courtesy miss must be logged — during a roll it is the difference "
+        "between old-release pods being excluded and not"
+    )
+    assert lock_attempts == 1, (
+        "the lock is attempted once, after the win — never consulted to decide "
+        "the election, never retried over"
+    )
+    # The rebuilt conn is reused — the factory runs once per conn ROLE
+    # (leader + monitor + cron), not per attempt.
     assert factory_calls == 3
 
 
@@ -3327,24 +3742,31 @@ async def test_scheduled_wake_loop_survives_notify_connection_loss() -> None:
 
 
 async def test_election_upsert_survives_connection_loss(monkeypatch: Any) -> None:
-    """A dead PG in the maintenance_leader UPSERT must not escape the election loop."""
+    """A dead PG in the maintenance_leader lease write must not escape the election loop."""
 
     def _dead_pg() -> None:
         raise asyncpg.InterfaceError("connection is closed")
 
-    leader_conn = FakeConn(fetchval_result=True, on_execute=_dead_pg)
+    class _DeadOnLeaseWrite(FakeConn):
+        async def fetchval(self, sql: str, *args: object) -> object:
+            if _is_lease_statement(sql):
+                self.fetchval_calls.append((sql, args))
+                _dead_pg()
+            return await super().fetchval(sql, *args)
+
+    leader_conn = _DeadOnLeaseWrite(fetchval_result=True)
     leader, deps, _backend, _conn, _pool, shutdown = await _make_leader(
         leader_conn=leader_conn,
         monkeypatch=monkeypatch,
     )
 
     task = asyncio.create_task(leader._election_loop(shutdown))
-    # FakeConn records every execute before the failure hook fires, so
-    # execute_calls is the proof the loop reached (and lost) the
-    # maintenance_leader UPSERT — the failure this test exists for.
+    # The double records the statement before the failure hook fires, so the
+    # recording is the proof the loop reached (and lost) the lease write —
+    # the failure this test exists for.
     await wait_for_condition(
-        lambda: len(leader_conn.execute_calls) >= 1,
-        description="the election loop never attempted the maintenance_leader UPSERT against the dead PG",
+        lambda: any("maintenance_leader" in sql for sql, _ in leader_conn.fetchval_calls),
+        description="the election loop never attempted the maintenance_leader lease write against the dead PG",
     )
     assert not task.done(), f"election loop died: {task.exception() if task.done() else None!r}"
     assert not deps.is_leader.is_set(), "leadership must not be claimed when the UPSERT failed"

@@ -11,14 +11,16 @@ from __future__ import annotations
 
 import asyncio
 from typing import Any, cast
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import asyncpg
 import pytest
+import structlog.testing
 
 from taskq._di.registry import ProviderRegistry
 from taskq._di.scope import Scope
 from taskq._di.scopes import LoopScope, ProcessScope
+from taskq.auth import PgCredential
 from taskq.connections import WorkerConnections
 from taskq.settings import WorkerSettings
 from taskq.testing.assertions import wait_for
@@ -84,10 +86,14 @@ class _FakeConn:
 
 
 def _make_pool_factory(fakes: list[_FakePool]) -> Any:
-    """Build a factory that returns successive _FakePool instances."""
+    """Build a factory that returns successive _FakePool instances.
+
+    Accepts and ignores keyword arguments so it also stands in for
+    ``asyncpg.create_pool`` under a provider-backed factory.
+    """
     idx = 0
 
-    async def factory() -> asyncpg.Pool:
+    async def factory(**_kwargs: Any) -> asyncpg.Pool:
         nonlocal idx
         pool = fakes[idx]
         idx += 1
@@ -305,6 +311,86 @@ async def test_coordinator_interval_triggers_reload_without_signal(
         mock_reload.assert_awaited()
 
         await _stop(task, shutdown)
+
+
+class _LeaseProvider:
+    """A provider issuing a fresh username-bearing pair per call, with the
+    lease TTL a Vault dynamic role would report."""
+
+    def __init__(self, lease_duration: float | None) -> None:
+        self.calls = 0
+        self.lease_duration = lease_duration
+
+    async def get_pg_credential(self) -> PgCredential:
+        self.calls += 1
+        return PgCredential(
+            password=f"pw-{self.calls}",
+            username=f"v-{self.calls}",
+            lease_duration=self.lease_duration,
+        )
+
+
+async def test_coordinator_derives_its_timer_from_the_granted_lease(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With no TASKQ_RELOAD_INTERVAL, a worker pool built through a
+    provider that reports a lease is rebuilt at half that lease's TTL: the
+    provider is asked once at bootstrap and again on the derived tick, with
+    no signal sent."""
+    from taskq.auth import ReloadSchedule, make_pg_pool_factory
+
+    settings = _make_settings()
+    provider = _LeaseProvider(lease_duration=0.2)
+    fakes = [_FakePool("wk-1"), _FakePool("wk-2"), _FakePool("wk-3")]
+    monkeypatch.setattr(asyncpg, "create_pool", _make_pool_factory(fakes))
+    factory = make_pg_pool_factory(
+        "postgresql://fake:fake@fake:5432/fake",
+        provider,
+        reload_schedule=ReloadSchedule(configured=settings.reload_interval),
+    )
+    conns = _basic_conns(worker_pool_factory=factory)
+    with structlog.testing.capture_logs() as logs:
+        async with open_worker_deps(settings, connections=conns) as deps:
+            assert provider.calls == 1
+            shutdown = asyncio.Event()
+            task = await _run_coordinator(deps, shutdown)
+            await wait_for(fakes[0].closed_event, timeout=5.0)
+            assert provider.calls >= 2
+            assert deps.worker_pool is not cast(object, fakes[0])
+            await _stop(task, shutdown)
+    derived = [e for e in logs if e["event"] == "reload-interval-derived-from-lease"]
+    assert len(derived) == 1
+    assert derived[0]["reload_interval"] == pytest.approx(0.1)
+    assert derived[0]["lease_duration"] == pytest.approx(0.2)
+
+
+async def test_coordinator_has_no_timer_when_no_lease_and_no_interval() -> None:
+    """A username-bearing provider that reports no lease, with no
+    TASKQ_RELOAD_INTERVAL, leaves the coordinator waiting on SIGHUP alone:
+    the pool build warned, and nothing rebuilds by itself."""
+    from taskq.auth import ReloadSchedule, make_pg_pool_factory
+
+    settings = _make_settings()
+    provider = _LeaseProvider(lease_duration=None)
+    fakes = [_FakePool("wk-1"), _FakePool("wk-2")]
+    with patch.object(asyncpg, "create_pool", _make_pool_factory(fakes)):
+        factory = make_pg_pool_factory(
+            "postgresql://fake:fake@fake:5432/fake",
+            provider,
+            reload_schedule=ReloadSchedule(configured=settings.reload_interval),
+        )
+        with structlog.testing.capture_logs() as logs:
+            async with open_worker_deps(
+                settings, connections=_basic_conns(worker_pool_factory=factory)
+            ) as deps:
+                shutdown = asyncio.Event()
+                task = await _run_coordinator(deps, shutdown)
+                await asyncio.sleep(0.1)
+                assert provider.calls == 1
+                assert not fakes[0].closed
+                await _stop(task, shutdown)
+    assert any(e["event"] == "pg-lease-pair-pinned-without-reload" for e in logs)
+    assert not any(e["event"] == "reload-interval-derived-from-lease" for e in logs)
 
 
 async def test_request_reload_sets_the_event() -> None:

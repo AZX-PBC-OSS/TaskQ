@@ -2,16 +2,16 @@
 
 Implements the log-and-continue teardown policy: each teardown callback
 runs in its own try/except; failures are logged at ERROR; remaining
-teardowns always fire. A parallel ``_teardowns`` list replaces
-``AsyncExitStack.aclose()`` which re-raises the first exception and
-swallows the rest (research line 743-758).
+teardowns always fire. Teardowns are kept in the container's own LIFO
+list rather than an ``AsyncExitStack``, whose ``aclose()`` re-raises the
+first exception and swallows the rest.
 """
 
 import asyncio
 import contextlib
 from collections.abc import AsyncGenerator, Awaitable, Callable, Generator, Mapping
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import AsyncExitStack, asynccontextmanager
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any, assert_never, cast
@@ -62,11 +62,11 @@ def make_resolver(
 
 
 class ScopeContainer:
-    """Concrete scope-lifetime container owning a cache, teardown list, and AsyncExitStack.
+    """Concrete scope-lifetime container owning a cache and a teardown list.
 
     The container is responsible for ALL factory invocation, caching, and
     teardown registration. The solver engine NEVER calls a factory directly
-    and NEVER touches an AsyncExitStack.
+    and NEVER registers a teardown.
     """
 
     def __init__(
@@ -74,14 +74,52 @@ class ScopeContainer:
         *,
         scope: Scope,
         resolver: _Resolver,
+        factory_timeout: float | None = None,
     ) -> None:
         self._scope: Scope = scope
         self._cache: dict[type, object] = {}
-        self._stack: AsyncExitStack = AsyncExitStack()
         self._teardowns: list[Callable[[], Any]] = []
         self._resolver: _Resolver = resolver
         self._sync_gen_executor: ThreadPoolExecutor | None = None
         self._last_cache_hit: bool = False
+        self._factory_timeout: float | None = factory_timeout
+
+    async def _await_factory[T](self, coro: Awaitable[T], *, type_: type) -> T:
+        """Await a user-registered factory's first-use open, bounded.
+
+        ``factory_timeout`` is the bounded-open discipline applied at the DI
+        registry's own factory seam: a user factory that accepts the
+        call and never returns (the black-holed credential endpoint —
+        the documented "database pools, HTTP clients" shape) must fail
+        the operation that awaited it within the configured bound, not
+        park it forever. The worker's bootstrap passes
+        ``reload_factory_timeout`` here for every scope it opens — the
+        pre-watchdog window where no other bound exists — and the
+        timeout's ``TimeoutError`` propagates to fail that boot loudly;
+        ``None`` (the default) keeps the unbounded await for containers
+        whose callers supply their own bounds (the per-job TRANSIENT
+        scope, whose factories run under the consumer's deadline and
+        the armed watchdogs).
+        """
+        if self._factory_timeout is None:
+            return await coro
+        bound = asyncio.timeout(self._factory_timeout)
+        try:
+            async with bound:
+                return await coro
+        except TimeoutError:
+            if not bound.expired():
+                # The factory's own TimeoutError, not this bound —
+                # re-raise unlabeled so the caller sees its real cause.
+                raise
+            logger.error(
+                "di-factory-first-use-timeout",
+                kind="di_factory_first_use_timeout",
+                provider_type=type_.__qualname__,
+                scope=self._scope.name,
+                timeout=self._factory_timeout,
+            )
+            raise
 
     @property
     def last_cache_hit(self) -> bool:
@@ -105,7 +143,8 @@ class ScopeContainer:
                 result = cast(Callable[..., Any], entry.impl)(**kwargs)
             case FactoryShape.ASYNC_CALLABLE:
                 kwargs = await self._resolver(entry.impl)
-                result = await cast(Callable[..., Any], entry.impl)(**kwargs)
+                factory_coro = cast(Callable[..., Any], entry.impl)(**kwargs)
+                result = await self._await_factory(factory_coro, type_=type_)
             case FactoryShape.SYNC_GENERATOR:
                 result = await self._resolve_sync_generator(entry)
             case FactoryShape.ASYNC_GENERATOR:
@@ -115,7 +154,8 @@ class ScopeContainer:
                 instance = cast(type[Any], entry.impl)(**kwargs)
                 match entry.lifecycle:
                     case ProviderLifecycle.AsyncContextManager:
-                        value = await instance.__aenter__()
+                        enter_coro = instance.__aenter__()
+                        value = await self._await_factory(enter_coro, type_=type_)
 
                         async def _acm_teardown() -> None:
                             await instance.__aexit__(None, None, None)
@@ -152,16 +192,48 @@ class ScopeContainer:
         if self._sync_gen_executor is None:
             self._sync_gen_executor = ThreadPoolExecutor(max_workers=1)
             logger.info("sync-generator-executor-created", scope=self._scope.name)
+        # Capture the executor for the teardown closure: aclose() nulls the
+        # attribute after the teardown pass, and the callback must keep
+        # working on the executor this provider's enter ran on regardless.
+        executor = self._sync_gen_executor
 
         kwargs = await self._resolver(entry.impl)
         factory = cast(Callable[..., Generator[Any, None, None]], entry.impl)
         cm = contextlib.contextmanager(factory)(**kwargs)
 
         loop = asyncio.get_running_loop()
-        value = await loop.run_in_executor(self._sync_gen_executor, cm.__enter__)
+        enter_future = loop.run_in_executor(executor, cm.__enter__)
+        value = await self._await_factory(enter_future, type_=entry.type_)
 
-        def _teardown() -> Any:
-            return loop.run_in_executor(self._sync_gen_executor, cm.__exit__, None, None, None)
+        async def _teardown() -> None:
+            exit_future = loop.run_in_executor(executor, cm.__exit__, None, None, None)
+            if self._factory_timeout is None:
+                # Same policy as _await_factory: the caller (the per-job
+                # TRANSIENT scope's consumer) owns the bound.
+                await exit_future
+                return
+            bound = asyncio.timeout(self._factory_timeout)
+            try:
+                async with bound:
+                    await exit_future
+            except TimeoutError:
+                if not bound.expired():
+                    # The generator's own __exit__ raised TimeoutError —
+                    # surface it as the teardown failure it is, not as the
+                    # bound firing.
+                    raise
+                # The __exit__ is parked in unkillable user code on the
+                # executor's thread. Log-and-continue like every teardown
+                # failure: the residue is that one thread until the code
+                # returns, and what scope teardown must never do is park
+                # every teardown after it on the wait.
+                logger.error(
+                    "sync-generator-teardown-timeout",
+                    kind="sync_generator_teardown_timeout",
+                    scope=self._scope.name,
+                    provider_type=entry.type_.__qualname__,
+                    timeout=self._factory_timeout,
+                )
 
         self._teardowns.append(_teardown)
         return value
@@ -171,13 +243,25 @@ class ScopeContainer:
         kwargs = await self._resolver(entry.impl)
         factory = cast(Callable[..., AsyncGenerator[Any]], entry.impl)
         cm = asynccontextmanager(factory)(**kwargs)
-        value = await cm.__aenter__()
+        enter_coro = cm.__aenter__()
+        value = await self._await_factory(enter_coro, type_=entry.type_)
 
         async def _teardown() -> None:
             await cm.__aexit__(None, None, None)
 
         self._teardowns.append(_teardown)
         return value
+
+    @property
+    def has_teardown_work(self) -> bool:
+        """Whether :meth:`aclose` has anything left to run.
+
+        False once every registered teardown has run and the pinned
+        SYNC_GENERATOR executor (if one was ever opened) is shut down —
+        i.e. exactly when ``aclose()`` would return without awaiting
+        anything, which lets a per-job caller skip scheduling it.
+        """
+        return bool(self._teardowns) or self._sync_gen_executor is not None
 
     async def aclose(self) -> None:
         """Close the container with the log-and-continue teardown policy."""
@@ -201,11 +285,32 @@ class ScopeContainer:
         # Why: shut down the pinned SYNC_GENERATOR executor AFTER all
         # per-provider teardown callbacks have run. shutdown(wait=True) is
         # blocking; running it inline would block the loop .
+        #
+        # The wait itself is bounded by ``factory_timeout`` when the
+        # container has one: a sync-gen ``__enter__``/``__exit__`` parked
+        # in unkillable user code would otherwise park scope teardown for
+        # as long as the user code hangs. The bound trips loudly and lets
+        # the close complete — the shutdown already initiated finishes in
+        # the background whenever the user code returns, and the residue
+        # is that one thread per hung container until then (a leak the
+        # stdlib makes unrecoverable by construction; what teardown owns
+        # is never parking the REST of the close on it).
         if self._sync_gen_executor is not None:
             executor = self._sync_gen_executor
             self._sync_gen_executor = None
             try:
-                await asyncio.to_thread(executor.shutdown, True)
+                if self._factory_timeout is None:
+                    await asyncio.to_thread(executor.shutdown, True)
+                else:
+                    async with asyncio.timeout(self._factory_timeout):
+                        await asyncio.to_thread(executor.shutdown, True)
+            except TimeoutError:
+                logger.error(
+                    "sync-generator-executor-shutdown-timeout",
+                    kind="sync_generator_executor_shutdown_timeout",
+                    scope=self._scope.name,
+                    timeout=self._factory_timeout,
+                )
             except BaseException as exc:
                 # Why: parallels the per-callback BaseException pattern above.
                 logger.error(
@@ -230,8 +335,13 @@ class ScopeContainer:
 class ProcessScope(ScopeContainer):
     """PROCESS-lifetime scope — worker process startup → exit."""
 
-    def __init__(self, *, resolver: _Resolver) -> None:
-        super().__init__(scope=Scope.PROCESS, resolver=resolver)
+    def __init__(
+        self,
+        *,
+        resolver: _Resolver,
+        factory_timeout: float | None = None,
+    ) -> None:
+        super().__init__(scope=Scope.PROCESS, resolver=resolver, factory_timeout=factory_timeout)
 
     async def bootstrap(
         self,
@@ -242,9 +352,8 @@ class ProcessScope(ScopeContainer):
 
         Why: no try/except around get_or_create — earlier providers'
         teardowns are already registered on self._teardowns; the
-        caller's AsyncExitStack runs aclose() on unwind, which
-        iterates whatever teardowns were registered before the
-        failure. Partial-bootstrap leaks are not possible: every
+        caller runs aclose() on unwind, which iterates whatever
+        teardowns were registered before the failure. Partial-bootstrap leaks are not possible: every
         successful get_or_create has its teardown queued before
         the next get_or_create starts.
         """
@@ -267,8 +376,13 @@ class ProcessScope(ScopeContainer):
 class ThreadScope(ScopeContainer):
     """THREAD-lifetime scope — placeholder for multi-thread workers (trivially empty in M3)."""
 
-    def __init__(self, *, resolver: _Resolver) -> None:
-        super().__init__(scope=Scope.THREAD, resolver=resolver)
+    def __init__(
+        self,
+        *,
+        resolver: _Resolver,
+        factory_timeout: float | None = None,
+    ) -> None:
+        super().__init__(scope=Scope.THREAD, resolver=resolver, factory_timeout=factory_timeout)
 
     async def bootstrap(
         self,
@@ -295,8 +409,13 @@ class ThreadScope(ScopeContainer):
 class LoopScope(ScopeContainer):
     """LOOP-lifetime scope — worker loop start → loop close."""
 
-    def __init__(self, *, resolver: _Resolver) -> None:
-        super().__init__(scope=Scope.LOOP, resolver=resolver)
+    def __init__(
+        self,
+        *,
+        resolver: _Resolver,
+        factory_timeout: float | None = None,
+    ) -> None:
+        super().__init__(scope=Scope.LOOP, resolver=resolver, factory_timeout=factory_timeout)
         self._loop: asyncio.AbstractEventLoop = asyncio.get_running_loop()
 
     async def bootstrap(
@@ -398,27 +517,55 @@ class LoopScopeSlotView:
     permits one operation per connection, so healthy actors raised
     ``InterfaceError`` (misattributed to the actor, retry budget burned),
     and the actor's own writes sat outside its slot's transaction
-    (issue #116 — the same one-session-per-transaction rule every
-    vendored prior art holds: procrastinate runs each job with its own
-    connector state, river runs one JobExecutor per active job, oban
-    wraps each job-stage query in its own transaction).
+    (each job's work must run in isolation within its
+    transaction; sharing a connection across concurrent jobs violates
+    that isolation and causes writes to land outside any job's boundary).
 
-    The view is a pure read-through: it never caches, never invokes a
-    factory, and never registers a teardown — a mapped instance's
-    lifecycle belongs to the wiring that supplied it (the dispatch
-    acquire/release exit stack that owns the slot connection). Every type
-    NOT in the mapping resolves through the real LOOP container
-    unchanged, and nothing outside this actor invocation can observe the
-    shadow: the LOOP cache itself is never touched.
+    The shadow reaches one level further than the mapping itself: a
+    LOOP-scoped FACTORY whose dependency closure reaches a shadowed type
+    (a helper that injects the connection — "any object derived from a
+    shared connection is shared the same way", the same rule one level
+    removed) is re-resolved PER INVOCATION through the invocation's
+    TRANSIENT runner instead of the LOOP cache. The scope's bootstrap
+    eagerly resolved that factory through the REAL containers, so the
+    cached singleton holds the ONE registered connection; handing it to
+    concurrent slots' actors would rebuild the exact sharing the view
+    exists to prevent. Re-resolution runs the factory's own parameters
+    through the same shadowed scope-containers map (nested LOOP-scoped
+    dependencies included), produces an instance this invocation alone
+    owns, and lands any lifecycle teardown on the invocation's TRANSIENT
+    teardown — the derived object lives and dies with the actor call.
+    Providers whose closure never touches a shadowed type keep the LOOP
+    singleton: the view does not per-invocation-ize unrelated
+    loop-lifetime resources.
+
+    The view is a pure read-through otherwise: it never caches, never
+    invokes a factory on its own account, and never registers a
+    teardown — a mapped instance's lifecycle belongs to the wiring that
+    supplied it (the dispatch acquire/release exit stack that owns the
+    slot connection), and a re-resolved instance's to the invocation
+    runner. Every type NOT in the mapping and NOT shadow-derived
+    resolves through the real LOOP container unchanged, and nothing
+    outside this actor invocation can observe the shadow: the LOOP
+    cache itself is never touched.
 
     Mapped values must be live instances; ``None`` is not a meaningful
     mapping (it is treated as absent, exactly like the LOOP cache's own
     miss shape).
     """
 
-    def __init__(self, inner: LoopScope, slot_values: Mapping[type, object]) -> None:
+    def __init__(
+        self,
+        inner: LoopScope,
+        slot_values: Mapping[type, object],
+        *,
+        invocation_runner: ScopeContainer,
+        shadow_derived: frozenset[type],
+    ) -> None:
         self._inner = inner
         self._slot_values = slot_values
+        self._invocation_runner = invocation_runner
+        self._shadow_derived = shadow_derived
         self._last_cache_hit = False
 
     async def get_or_create[T](self, type_: type[T], entry: ProviderEntry[T]) -> T:
@@ -426,6 +573,15 @@ class LoopScopeSlotView:
         if value is not None:
             self._last_cache_hit = True
             return cast("T", value)  # pyright: ignore[reportReturnType]  # Why: the DI erasure boundary — the mapping's value is the live instance the caller's wiring owns for type_ (dispatch maps the slot connection under asyncpg.Connection); the same value-shape trust ScopeContainer's cache-hit branch applies.
+        if type_ in self._shadow_derived:
+            # A LOOP-scoped factory derived (transitively) from a
+            # shadowed type: the LOOP cache's bootstrap singleton baked
+            # in the registered instance, so resolve this invocation's
+            # own through the TRANSIENT runner — fresh parameters off
+            # the shadowed containers map, no caching, teardown owned
+            # by the invocation.
+            self._last_cache_hit = False
+            return await self._invocation_runner.get_or_create(type_, entry)  # pyright: ignore[reportReturnType]  # Why: same erasure boundary as the mapped branch — the runner's ProviderEntry[T] is the caller's entry; ScopeContainer's return-site coercion covers T.
         self._last_cache_hit = False
         return await self._inner.get_or_create(type_, entry)
 
@@ -488,9 +644,12 @@ async def build_actor_scope(
     :class:`LoopScopeSlotView` that shadows the LOOP cache for this
     invocation only, actor parameters and nested LOOP-scoped
     dependencies alike — so a LOOP-registered connection never reaches
-    two concurrent slots' actors (issue #116). ``None``/empty keeps the
-    plain LOOP container: the single-slot worker, whose transaction
-    connection IS the registered connection.
+    two concurrent slots' actors, and a LOOP-scoped
+    factory DERIVED from a shadowed type (a helper holding the
+    connection) resolves per invocation instead of serving the
+    bootstrap singleton that baked the registered connection in. ``None``
+    /empty keeps the plain LOOP container: the single-slot worker, whose
+    transaction connection IS the registered connection.
     """
     scope_containers: dict[Scope, ScopeContainerProtocol] = {}
 
@@ -511,10 +670,21 @@ async def build_actor_scope(
     # sibling dispatches and leak the slot's connection to later jobs.
     # The view is visible only to the solves that run inside THIS
     # build_actor_scope body, which is exactly the audience the slot's
-    # connection is safe for.
+    # connection is safe for. The invocation runner is the body's own
+    # TRANSIENT container: a shadow-derived LOOP factory resolves its
+    # parameters through the same containers map (LOOP is this view, so
+    # its connection-typed parameters see the slot's instance) and its
+    # lifecycle teardowns land on the invocation's teardown — the
+    # derived object lives and dies with this one actor call, never
+    # cached where a sibling slot could reach it.
     loop_container: LoopScope | LoopScopeSlotView = loop_scope
     if loop_slot_values:
-        loop_container = LoopScopeSlotView(loop_scope, loop_slot_values)
+        loop_container = LoopScopeSlotView(
+            loop_scope,
+            loop_slot_values,
+            invocation_runner=transient_scope,
+            shadow_derived=registry.shadow_derived_providers(frozenset(loop_slot_values)),
+        )
 
     scope_containers = {
         Scope.PROCESS: process_scope,
@@ -537,7 +707,10 @@ async def build_actor_scope(
 
     transient_scope._resolver = _resolver_with_all  # pyright: ignore[reportPrivateUsage]  # Why: build_actor_scope constructs the TRANSIENT container and must wire its resolver to see all four scope containers; the resolver is a closure detail owned by this call site
 
-    logger.info("transient-scope-opened", actor_name=actor_name)
+    # DEBUG, not INFO: this pair fires once per job carrying only the
+    # actor name, so at the default level it is a per-job rendering cost
+    # for a line nothing consumes.
+    logger.debug("transient-scope-opened", actor_name=actor_name)
     try:
         di_kwargs = await solve_dependencies(
             func=actor_func,
@@ -569,8 +742,12 @@ async def build_actor_scope(
             # shield_with_retrieval, not plain asyncio.shield: a detached
             # teardown that fails under a double cancel must have its
             # outcome retrieved and logged, not lost (see taskq._shield).
-            await shield_with_retrieval(transient_scope.aclose())
+            # Skipped outright when the container has nothing to close:
+            # most jobs resolve no teardown-bearing provider, and the
+            # shield's task creation would be the whole cost.
+            if transient_scope.has_teardown_work:
+                await shield_with_retrieval(transient_scope.aclose())
         except asyncio.CancelledError:
             raise
         finally:
-            logger.info("transient-scope-closed", actor_name=actor_name)
+            logger.debug("transient-scope-closed", actor_name=actor_name)

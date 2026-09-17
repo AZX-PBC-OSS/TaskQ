@@ -13,12 +13,19 @@ from unittest.mock import MagicMock
 
 import asyncpg
 import pytest
+import structlog.testing
+from asyncpg.exceptions import InternalClientError
 
 from taskq.connections import (
     DEFAULT_MAX_CACHED_STATEMENT_LIFETIME,
     DEFAULT_STATEMENT_CACHE_SIZE,
     WorkerConnections,
+    _with_fresh_connection_retry,  # pyright: ignore[reportPrivateUsage]  # Why: the shared dead-on-acquire guard is the unit under test — pinning it directly keeps this contract off the intermittent full-stack race test.
+    bounded_lock_budget_ms,
+    connection_init_hook,
+    lock_budget_command_timeout_secs,
     statement_cache_kwargs,
+    with_connection_init,
 )
 from taskq.settings import TaskQSettings, WorkerSettings
 from taskq.testing.settings import make_integration_settings
@@ -215,3 +222,215 @@ async def test_statement_cache_kwargs_env_round_trip(
         "statement_cache_size": 1024,
         "max_cached_statement_lifetime": 7200,
     }
+
+
+# ── Enqueue lock budgets vs the pool's per-query bound ────────────────
+
+
+def test_bounded_lock_budget_stands_when_the_pool_has_no_bound() -> None:
+    """A caller-owned pool carries no client-side bound TaskQ can know —
+    the budget must stand as configured, never clamped against a guess."""
+    assert bounded_lock_budget_ms(5000.0, None) == 5000.0
+
+
+def test_bounded_lock_budget_stands_for_an_unbounded_budget() -> None:
+    """A non-positive budget is the operator asking for an unbounded
+    server-side wait (the lock_timeout GUC convention) — the clamp never
+    invents a bound for it."""
+    assert bounded_lock_budget_ms(0.0, 5.0) == 0.0
+    assert bounded_lock_budget_ms(-1.0, 5.0) == -1.0
+
+
+def test_bounded_lock_budget_clamps_to_the_share_of_the_bound() -> None:
+    """The delivered budget fits inside the connection's per-query bound
+    with the share of headroom the refusal needs to unwind first — so the
+    server-side lock_timeout (typed error) fires before the client-side
+    timer (bare TimeoutError)."""
+    assert bounded_lock_budget_ms(5000.0, 5.0) == 4000.0
+    # Under the bound already: unchanged.
+    assert bounded_lock_budget_ms(1000.0, 5.0) == 1000.0
+
+
+def test_lock_budget_command_timeout_floor_at_the_shipped_defaults() -> None:
+    """At the shipped defaults the pool bound IS the floor — a deployment
+    that sets nothing keeps the pre-knob 5 s bound exactly."""
+    assert lock_budget_command_timeout_secs([(5000.0, 5000.0)] * 3, floor_secs=5.0) == 5.0
+
+
+def test_lock_budget_command_timeout_follows_a_widened_budget() -> None:
+    """A budget widened past its shipped default re-derives the bound so
+    the budget occupies the same share of it — the widening is delivered
+    end to end instead of being silently clamped back to the floor."""
+    bound = lock_budget_command_timeout_secs(
+        [(5000.0, 5000.0), (30000.0, 5000.0), (0.0, 5000.0)], floor_secs=5.0
+    )
+    assert bound == 30000.0 / 1000.0 / 0.8 == 37.5
+    # ... and the clamp then delivers the widened budget in full.
+    assert bounded_lock_budget_ms(30000.0, bound) == 30000.0
+    # A sibling left at its default now fits the larger bound unclamped.
+    assert bounded_lock_budget_ms(5000.0, bound) == 5000.0
+
+
+def test_lock_budget_command_timeout_ignores_narrowed_and_unbounded_budgets() -> None:
+    """Narrowing a budget, or setting 0 (unbounded server-side wait),
+    never moves the pool bound: the floor already delivers the narrowed
+    value's clamped share, and an unbounded wait cannot fit inside any
+    finite bound."""
+    assert (
+        lock_budget_command_timeout_secs([(1000.0, 5000.0), (0.0, 5000.0)], floor_secs=5.0) == 5.0
+    )
+
+
+# ── Inheritable per-connection init hooks (with_connection_init) ──────
+#
+# The wrapper is the declaring channel for a hand-rolled connection
+# factory: the hook runs on every produced connection AND is exposed for
+# the worker's per-slot transaction pool to inherit (the
+# ``test_slot_pool.py`` integration pair pins the end-to-end contract).
+# These unit pins hold the wrapper's own mechanics.
+
+
+async def test_with_connection_init_applies_the_hook_to_every_produced_connection() -> None:
+    """The hook runs exactly once per produced connection, on the
+    connection itself — the ``setup=`` hook position, so the LOOP-scope
+    connection and the slot connections carry identical setup."""
+    applied: list[Any] = []
+
+    async def init(conn: Any) -> None:
+        applied.append(conn)
+
+    factory = with_connection_init(_fake_conn_factory, init)
+
+    first, second = await factory(), await factory()
+
+    assert applied == [first, second]
+
+
+async def test_with_connection_init_declares_the_hook_for_the_worker_to_read() -> None:
+    """The wrapped factory exposes the very callable it applies — the
+    worker installs THAT hook as the slot pool's ``init``, never a copy
+    or a wrapper, so what the registered connection got is what slot
+    connections get."""
+
+    async def init(conn: Any) -> None: ...
+
+    factory = with_connection_init(_fake_conn_factory, init)
+
+    assert connection_init_hook(factory) is init
+
+
+def test_unwrapped_factories_declare_no_init_hook() -> None:
+    """A bare factory (or anything else) exposes nothing — the read must
+    be a clean None, never a guess, so the worker warns instead of
+    inventing a hook."""
+    assert connection_init_hook(_fake_conn_factory) is None
+    assert connection_init_hook(object()) is None
+    assert connection_init_hook(None) is None
+
+
+async def test_with_connection_init_closes_the_connection_when_the_hook_fails() -> None:
+    """A failed hook means no usable connection: the produced connection
+    is closed (bounded, never raising over the hook's own error) before
+    the error propagates — asyncpg's own hook contract, so a boot-time
+    codec failure fails boot without leaking the connection."""
+    produced = MagicMock(spec=asyncpg.Connection)
+
+    async def factory() -> Any:
+        return produced
+
+    async def init(conn: Any) -> None:
+        raise ValueError("codec registration failed")
+
+    wrapped = with_connection_init(factory, init)
+
+    with pytest.raises(ValueError, match="codec registration failed"):
+        await wrapped()
+
+    assert produced.close.await_count == 1  # type: ignore[attr-defined]  # Why: MagicMock(spec=...) narrows close to an AsyncMock-shaped attribute at runtime.
+
+
+# ── Dead-on-acquire retry (_with_fresh_connection_retry) ──────────────
+#
+# The shared guard behind every "acquire from the pool, use immediately"
+# call site (the enqueue paths and the bulk-cancel drain). The full-stack
+# race it exists for — a server FATAL parking asyncpg's protocol before
+# ``connection_lost`` lands — is pinned against a real interrupted
+# Postgres in tests/test_fleet_pg_transient_failure.py, which is
+# intermittent by nature; these unit pins hold the wrapper's own contract
+# so the coverage does not rest on that race reproducing.
+
+
+async def test_fresh_connection_retry_retries_once_on_a_poisoned_handout() -> None:
+    """A first-statement ``InternalClientError`` (the dead-on-acquire
+    signature) costs the caller one transparent retry: the operation body
+    runs again on the fresh connection and its result is returned."""
+    calls = 0
+
+    async def op() -> str:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise InternalClientError(
+                "cannot switch to state 15; another operation (2) is in progress"
+            )
+        return "done"
+
+    result = await _with_fresh_connection_retry(op, operation="unit-probe")
+
+    assert result == "done"
+    assert calls == 2
+
+
+async def test_fresh_connection_retry_retries_only_once() -> None:
+    """A second ``InternalClientError`` is a real driver state bug, not
+    this race: it propagates rather than looping on a connection the pool
+    keeps poisoning."""
+    calls = 0
+
+    async def op() -> None:
+        nonlocal calls
+        calls += 1
+        raise InternalClientError("still poisoned")
+
+    with pytest.raises(InternalClientError, match="still poisoned"):
+        await _with_fresh_connection_retry(op, operation="unit-probe")
+
+    assert calls == 2
+
+
+async def test_fresh_connection_retry_passes_other_errors_through_untried() -> None:
+    """The catch is deliberately narrow: the database's own error types
+    are the call site's to classify (the drain retries deadlocks itself),
+    so the wrapper neither retries nor rewrites them."""
+    calls = 0
+
+    async def op() -> None:
+        nonlocal calls
+        calls += 1
+        raise asyncpg.DeadlockDetectedError("real deadlock")
+
+    with pytest.raises(asyncpg.DeadlockDetectedError, match="real deadlock"):
+        await _with_fresh_connection_retry(op, operation="unit-probe")
+
+    assert calls == 1
+
+
+async def test_fresh_connection_retry_logs_the_retry_with_the_operation_name() -> None:
+    """The retry is observable: exactly one WARNING naming the operation,
+    so an operator counting these can tell which call site is paying for
+    a failover."""
+    calls = 0
+
+    async def op() -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise InternalClientError("poisoned")
+
+    with structlog.testing.capture_logs() as logs:
+        await _with_fresh_connection_retry(op, operation="unit-probe")
+
+    warnings = [e for e in logs if e.get("event") == "pool-conn-dead-on-acquire"]
+    assert len(warnings) == 1
+    assert warnings[0]["kind"] == "pool_conn_dead_on_acquire"
+    assert warnings[0]["operation"] == "unit-probe"

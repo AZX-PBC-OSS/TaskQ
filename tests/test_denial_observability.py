@@ -13,24 +13,26 @@ database:
    moved) surfaces as ``"noop"`` from the handler — a noop is a noop,
    not a reschedule; the pre-actor denial path propagates it instead of
    hardcoding ``"scheduled"``.
-3. The non-consuming snooze arms enforce the retry budget:
-   ``retry_kind`` is enum-complete in every arm — a ``non_retryable``
-   job at ``attempt >= max_attempts`` with no ``schedule_to_close``
-   must reach a terminal ``MaxAttemptsExceeded`` exit through BOTH
-   ``mark_snoozed`` (the denial path) and
-   ``mark_retry_after(consume_budget=True)`` (whose exhaustion arm
-   previously matched only ``retry_kind = 'transient'`` and left
-   ``non_retryable`` falling through to a reschedule), while a job
-   carrying a future ``schedule_to_close`` keeps rescheduling until its
-   deadline — the close deadline is that job's own terminal exit.
+3. An admission denial carries HTTP-429 semantics: it never consumes
+   the job's retry budget and never by itself fails the job. A denied
+   job is rescheduled indefinitely — whatever its ``retry_kind``,
+   whatever its ``max_attempts`` — until capacity frees or its
+   ``schedule_to_close`` expires, at which point the ordinary deadline
+   path fails it terminally. A rate-limit or reservation
+   misconfiguration must not be able to kill work that merely never
+   got a slot. The budget-consuming exhaustion arm still governs real
+   executions: ``mark_retry_after(consume_budget=True)`` is a retry the
+   job spent an attempt on, so it reaches ``MaxAttemptsExceeded``
+   enum-completely over ``retry_kind``.
 4. A zero-delay non-consuming deferral reschedules at least
    ``MIN_DEFERRAL_INTERVAL`` out, as ``scheduled`` — a deferral can
    never park a job ``pending`` at ``clock_timestamp()`` at the head of
-   the dispatch order (the claim/refund hot loop; River rejects a
-   non-future snooze and Oban requires a positive delay for the same
-   reason). A consuming ``RetryAfter`` keeps its raw delay: an
-   immediate retry is a real execution, bounded by the budget it
-   spends.
+   the dispatch order. If a job sat pending at now, it would monopolise
+   the claim/refund hot loop: every dispatch cycle would re-claim it
+   instantly, and each refund would land it back at the head. A positive
+   delay guards against this saturation edge. A consuming ``RetryAfter``
+   keeps its raw delay: an immediate retry is a real execution, bounded
+   by the budget it spends.
 """
 
 from datetime import UTC, datetime, timedelta
@@ -218,14 +220,23 @@ async def test_denial_handler_noop_returns_noop() -> None:
     assert result == "noop"
 
 
-# ── 3. the non-consuming arms enforce the retry budget ──────────────────
+# ── 3. admission denials carry 429 semantics ────────────────────────────
 
 
-async def test_denial_on_non_retryable_at_budget_fails_max_attempts() -> None:
-    """A ``non_retryable`` job at ``attempt >= max_attempts`` with no
-    ``schedule_to_close`` has no remaining exit except the terminal one:
-    the denial path must fail it with ``MaxAttemptsExceeded`` instead of
-    rescheduling it forever."""
+async def test_denial_on_non_retryable_at_budget_reschedules_and_spends_no_budget() -> None:
+    """An admission denial is "come back later", not a failure: a
+    ``non_retryable`` job at ``attempt >= max_attempts`` with no
+    ``schedule_to_close`` is still rescheduled, and its budget is
+    returned.
+
+    A denial says nothing about the work — the actor never ran. Letting
+    it consume the retry budget or terminalise the job means a saturated
+    reservation pool or a mistuned rate limit can kill a job that merely
+    never got a slot, which is exactly the failure mode operators cannot
+    diagnose from the outside. The attempt increment the claim took is
+    refunded, so the job can be denied indefinitely without walking the
+    attempt column toward its ceiling.
+    """
     backend, job_id, worker_id = await _mem_job(max_attempts=1, retry_kind="non_retryable")
 
     result = await backend.mark_snoozed(
@@ -235,14 +246,99 @@ async def test_denial_on_non_retryable_at_budget_fails_max_attempts() -> None:
         outcome="reservation_denied",
         attempt=1,
     )
-    assert result == "failed:MaxAttemptsExceeded"
+    assert result == "scheduled", (
+        "an admission denial must reschedule the job, never terminalise it"
+    )
+
+    row = await backend.get(job_id)
+    assert row is not None
+    assert row.status == "scheduled"
+    assert row.error_class is None
+    assert row.finished_at is None
+    assert row.attempt == 0, "the claim's attempt increment is refunded: a denial spends no budget"
+    assert row.max_attempts == 1, "the ceiling is a bound, not a counter — a denial never raises it"
+    assert row.rate_limit_blocked_count == 1, (
+        "contention stays visible through the aggregated denial counter on the job row"
+    )
+
+
+async def test_repeated_denials_never_exhaust_the_budget() -> None:
+    """A job denied far more times than its retry budget allows keeps
+    being rescheduled, with its attempt column oscillating around its
+    pre-claim base rather than walking upward.
+
+    Indefinite rescheduling under backpressure is the whole point of 429
+    semantics: capacity frees on its own schedule, and the only clock
+    that may end a denied job is its ``schedule_to_close``. A gate that
+    terminalised after N denials would make the retry budget — a
+    property of how flaky the actor is — silently govern how long a job
+    is willing to wait for a slot.
+    """
+    clock = FakeClock(_NOW)
+    backend, job_id, worker_id = await _mem_job(
+        max_attempts=1,
+        retry_kind="non_retryable",
+        clock=clock,
+    )
+    cycles = 5  # far beyond the 1-attempt budget
+
+    claimed_attempt = 1
+    for _ in range(cycles):
+        result = await backend.mark_snoozed(
+            job_id,
+            worker_id,
+            _DELAY,
+            outcome="rate_limit_denied",
+            attempt=claimed_attempt,
+        )
+        assert result == "scheduled", "no number of denials may terminalise a job"
+        clock.advance(_DELAY + timedelta(seconds=1))
+        await backend.scheduled_to_pending()
+        worker_id = new_uuid()
+        dispatched = await backend.dispatch_batch(worker_id, ["default"], 1, timedelta(seconds=60))
+        assert [r.id for r in dispatched] == [job_id]
+        claimed_attempt = dispatched[0].attempt
+
+    row = await backend.get(job_id)
+    assert row is not None
+    assert row.status == "running"
+    assert row.attempt == 1, "the current claim's increment only — every denial refunded its own"
+    assert row.max_attempts == 1
+    assert row.rate_limit_blocked_count == cycles, (
+        "every denial is counted, so an operator can see the contention the job absorbed"
+    )
+
+
+async def test_denial_past_the_close_deadline_fails_through_the_deadline_path() -> None:
+    """The one terminal exit a denied job has is its own
+    ``schedule_to_close``: once the next deferral would land past the
+    deadline, the job fails as ``DeadlineExceeded``.
+
+    This is the honest terminal reason — the job ran out of time, it did
+    not run out of retries — and it keeps the "denials never kill work"
+    rule from meaning "denied work is never reaped".
+    """
+    backend, job_id, worker_id = await _mem_job(
+        max_attempts=1,
+        retry_kind="non_retryable",
+        schedule_to_close=_NOW + timedelta(seconds=1),
+    )
+
+    result = await backend.mark_snoozed(
+        job_id,
+        worker_id,
+        _DELAY,
+        outcome="reservation_denied",
+        attempt=1,
+    )
+    assert result == "failed"
 
     row = await backend.get(job_id)
     assert row is not None
     assert row.status == "failed"
-    assert row.error_class == "MaxAttemptsExceeded"
-    assert row.error_message == "retry budget exhausted"
-    assert row.finished_at is not None
+    assert row.error_class == "DeadlineExceeded", (
+        "a denied job's terminal exit is its schedule-to-close deadline, never MaxAttemptsExceeded"
+    )
 
 
 async def test_retry_after_consume_true_on_non_retryable_at_budget_fails() -> None:
@@ -296,13 +392,12 @@ async def test_actor_deferral_is_unbounded_and_never_spends_budget() -> None:
     INDEFINITELY — a deferral never spends retry budget, no matter how
     many cycles pass or how small the budget is.
 
-    The budget is preserved by refunding the claim's attempt increment
-    (the Oban/River snooze convention), NOT by raising the ceiling: a
-    transient job with ``max_attempts=1`` and no close deadline, driven
-    through many more deferral cycles than its budget, must still be
-    rescheduled with ``attempt`` back at its pre-claim base and
-    ``max_attempts`` untouched. A budget-gated deferral arm, or a
-    ceiling-raising refund, fails here.
+    The budget is preserved by refunding the claim's attempt increment,
+    NOT by raising the ceiling: a transient job with ``max_attempts=1``
+    and no close deadline, driven through many more deferral cycles than
+    its budget, must still be rescheduled with ``attempt`` back at its
+    pre-claim base and ``max_attempts`` untouched. A budget-gated deferral
+    arm, or a ceiling-raising refund, fails here.
 
     Re-dispatch drives the FakeClock past each deferral and promotes the
     job, exactly as the leader's ``scheduled_to_pending`` sweep does
@@ -374,9 +469,8 @@ async def test_zero_delay_deferrals_reschedule_at_least_min_deferral_interval_ou
     A delay of 0 must not land the job ``pending`` at ``clock_timestamp()``:
     dispatch orders by ``scheduled_at``, so the job would sort first in
     every round and be instantly re-claimable — one claim/refund round
-    trip per cycle monopolising a worker slot. The vendored corpus guards
-    the same edge (River rejects a non-future snooze; Oban requires a
-    positive delay).
+    trip per cycle monopolising a worker slot. A positive delay guards
+    against this saturation edge.
     """
     floor = _NOW + MIN_DEFERRAL_INTERVAL
 
@@ -432,3 +526,99 @@ async def test_consuming_retry_after_keeps_its_raw_zero_delay() -> None:
     assert row is not None
     assert row.status == "pending"
     assert row.scheduled_at == _NOW
+
+
+# ── 5. the denial counter spans the terminal arm ────────────────────────
+
+
+async def test_every_admission_denial_is_counted_including_the_last_before_expiry() -> None:
+    """``jobs.rate_limit_blocked_count`` is the coalesced count of every
+    admission denial since enqueue, and it survives onto the terminal
+    row when the job's schedule-to-close finally expires.
+
+    Because a denial writes no ``job_events`` and no ``job_attempts``
+    rows, this counter is the only durable record an operator has of the
+    contention a job absorbed. If the last denial — the one that ran the
+    job up against its deadline — went uncounted, the job whose history
+    matters most would be the one reported wrong, and an operator sizing
+    a reservation pool from the column would see fewer denials than the
+    job actually took.
+    """
+    clock = FakeClock(_NOW)
+    backend, job_id, worker_id = await _mem_job(
+        max_attempts=1,
+        retry_kind="non_retryable",
+        schedule_to_close=_NOW + _DELAY + timedelta(seconds=5),
+        clock=clock,
+    )
+
+    # A denial that still fits inside the close deadline: rescheduled,
+    # counted, budget untouched.
+    result = await backend.mark_snoozed(
+        job_id,
+        worker_id,
+        _DELAY,
+        outcome="reservation_denied",
+        attempt=1,
+    )
+    assert result == "scheduled"
+    row = await backend.get(job_id)
+    assert row is not None
+    assert row.rate_limit_blocked_count == 1
+
+    # Re-dispatch and deny again; this deferral would land past the
+    # close deadline, so the deadline path terminalises the job.
+    clock.advance(_DELAY + timedelta(seconds=1))
+    await backend.scheduled_to_pending()
+    worker_id = new_uuid()
+    dispatched = await backend.dispatch_batch(worker_id, ["default"], 1, timedelta(seconds=60))
+    assert len(dispatched) == 1
+    result = await backend.mark_snoozed(
+        job_id,
+        worker_id,
+        _DELAY,
+        outcome="reservation_denied",
+        attempt=dispatched[0].attempt,
+    )
+    assert result == "failed"
+
+    row = await backend.get(job_id)
+    assert row is not None
+    assert row.status == "failed"
+    assert row.error_class == "DeadlineExceeded"
+    assert row.rate_limit_blocked_count == 2, (
+        "every admission denial the job received must be counted, including the "
+        "final one, since no per-denial event or attempt row records it"
+    )
+
+
+async def test_admission_denial_writes_no_event_or_attempt_rows() -> None:
+    """A denial leaves no per-denial ``job_events`` or ``job_attempts``
+    row — contention is recorded only by the aggregated counter on the
+    job row.
+
+    Per-denial rows are an unbounded-growth vector: a job parked behind a
+    saturated bucket can be denied thousands of times, and each denial
+    describes nothing about the work, because the actor never ran. The
+    aggregated counter is the deliberate substitute, which is why the
+    counter must be right (above) and these tables must stay clean.
+    """
+    backend, job_id, worker_id = await _mem_job(max_attempts=10, retry_kind="transient")
+    events_before = len(await backend.get_events(job_id))
+
+    result = await backend.mark_snoozed(
+        job_id,
+        worker_id,
+        _DELAY,
+        outcome="rate_limit_denied",
+        attempt=1,
+    )
+    assert result == "scheduled"
+
+    assert await backend.get_attempts(job_id) == [], (
+        "an admission denial writes no job_attempts row: the actor never ran"
+    )
+    assert len(await backend.get_events(job_id)) == events_before, (
+        "an admission denial writes no job_events row; the aggregated denial "
+        "counter on the job row is its whole durable record"
+    )

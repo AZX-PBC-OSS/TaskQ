@@ -83,7 +83,7 @@ async def test_double_value() -> None:
     # The stub receives payload as a dict and ctx as a minimal duck-typed
     # object with job_id, attempt, payload, and cancel_event.
     backend.register_stub(
-        double_value.name,
+        double_value,
         lambda payload, ctx: {"doubled": payload["value"] * 2},
     )
 
@@ -92,6 +92,21 @@ async def test_double_value() -> None:
     result = await handle.wait()
     assert result.doubled == 42
 ```
+
+Pass the `ActorRef` itself (not `double_value.name`) so the runner can see
+the actor's declared contract: when `payload_type` is omitted it is
+auto-resolved from the ref, and `run_until_drained` validates every payload
+against the real model before invoking the stub — the same validation a
+production worker runs on every dispatch. A payload the actor's model would
+reject fails the job in-memory exactly as it would in production, so a
+payload-schema change cannot pass the in-memory suite by accident.
+
+A bare name (`register_stub("double_value", ...)`) carries no declared
+model; the runner falls back to the permissive `PassthroughPayload`
+(`extra="allow"`) and emits a `StubPayloadTypeWarning`, because that default
+accepts payload shapes the actor's real model would reject. Pass
+`payload_type=MyPayload` explicitly, or `payload_type=PassthroughPayload`
+to opt into the permissive behaviour deliberately and silence the warning.
 
 `register_stub` also accepts `retry`, `non_retryable_exceptions`,
 `on_retry_exhausted`, `on_retry_exhausted_timeout`, and `payload_type` to
@@ -195,7 +210,13 @@ await backend.run_until_drained()
 !!! note "Stubs are required"
     `run_until_drained` raises `RuntimeError` if it dispatches a job whose
     actor has no registered stub. Register stubs with `backend.register_stub()`
-    before calling it.
+    before calling it. It also raises `RuntimeError` when the drain would
+    otherwise end beside work that can never be dispatched — a pending or
+    scheduled job whose actor has no registered stub *or* actor config at
+    all gets zero dispatch capacity, so without the raise the job would sit
+    `pending` forever while the drain reported success (and a caller in
+    `handle.wait()` would hang with no diagnostic). The raise detects only;
+    it never rewrites the stranded row.
 
 When the clock is a `FakeClock`, the loop auto-advances through snoozes and
 scheduled jobs so a single call drains the entire queue. With a real clock
@@ -231,6 +252,11 @@ async def test_with_memory_jobs(memory_jobs: InMemoryBackend) -> None:
     memory_jobs.register_stub("my_actor", lambda p, ctx: {"ok": True})
     ...
 ```
+
+(A bare-name stub like this still runs, but emits `StubPayloadTypeWarning`
+because the runner cannot see a declared payload model for it — pass the
+`ActorRef` or `payload_type=` as described in "Registering actor stubs" to
+validate payloads for real.)
 
 ### Integration fixtures (Postgres + Redis containers)
 
@@ -440,9 +466,12 @@ from taskq.testing.assertions import (
 assert_has_event(events, "state_change", from_state="running", to_state="succeeded")
 
 # Assert the (from_state, to_state) sequence from state_change events matches.
+# The sequence holds the transitions of record only: claims and promotion are
+# scheduler bookkeeping and write no event rows, so a plain run to success is
+# exactly its terminal transition.
 assert_transition_sequence(
     events,
-    expected=[("pending", "running"), ("running", "succeeded")],
+    expected=[("running", "succeeded")],
 )
 ```
 

@@ -20,6 +20,7 @@ from taskq.backend._protocol import (
     EnqueueArgs,
     JobRow,
 )
+from taskq.exceptions import SingletonCollisionError
 from taskq.testing.clock import FakeClock
 from taskq.testing.in_memory import InMemoryBackend
 from taskq.testing.jobs import make_enqueue_args, make_job_row
@@ -677,3 +678,111 @@ class TestInMemoryPruneOldBatches:
 
         assert pruned == 0
         assert bid in backend._batches
+
+
+# ── TestInMemoryEnqueueBatchSingletonAtomicity ──────────────────────────
+
+
+def _singleton_args(actor: str) -> EnqueueArgs:
+    return make_enqueue_args(actor=actor, queue="default", metadata={"singleton": True})
+
+
+class TestInMemoryEnqueueBatchSingletonAtomicity:
+    """``enqueue_batch`` is whole-call atomic on a singleton collision.
+
+    The Postgres bulk tier runs one ``unnest`` INSERT inside one
+    transaction, so a constraint violation anywhere in the batch aborts
+    the entire statement and commits nothing. The in-memory mirror must
+    admit nothing on the same collision. A mirror that stores the items
+    preceding the colliding one certifies application code that on
+    Postgres leaves no such rows behind, so behavior validated against
+    the mirror diverges the moment it reaches production.
+    """
+
+    async def test_two_singleton_items_for_same_actor_admit_nothing(self) -> None:
+        """Two same-actor singleton items in one batch collide with each
+        other. Neither may be stored, including the first one, which the
+        per-item loop reaches before the second item's preflight raises.
+        """
+        backend = _make_backend()
+        args_list = [_singleton_args("atomicity-actor"), _singleton_args("atomicity-actor")]
+
+        with pytest.raises(SingletonCollisionError):
+            await backend.enqueue_batch(args_list)
+
+        stored = [row for row in backend._jobs.values() if row.actor == "atomicity-actor"]
+        assert stored == [], (
+            "batch admitted a partial prefix "
+            f"({len(stored)} row(s) stored) after a mid-batch SingletonCollisionError; "
+            "the single-statement batch INSERT aborts with nothing written"
+        )
+
+    async def test_collision_against_live_singleton_admits_no_other_item(self) -> None:
+        """The collision can equally be against a job committed by an
+        earlier call. A batch carrying one singleton item for an actor
+        that already holds a live singleton job must also admit none of
+        its other, unrelated items.
+        """
+        backend = _make_backend()
+        await backend.enqueue(_singleton_args("held-actor"))
+
+        bystander_args = make_enqueue_args(actor="bystander-actor", queue="default")
+        args_list = [bystander_args, _singleton_args("held-actor")]
+
+        with pytest.raises(SingletonCollisionError):
+            await backend.enqueue_batch(args_list)
+
+        bystander_rows = [row for row in backend._jobs.values() if row.actor == "bystander-actor"]
+        assert bystander_rows == [], (
+            "batch admitted an unrelated actor's item before the colliding item's "
+            "SingletonCollisionError aborted the call; the single-statement "
+            "batch INSERT would have rolled back this row too"
+        )
+
+    async def test_aborted_batch_leaves_no_idempotency_index_entry(self) -> None:
+        """The rollback must also unwind the idempotency index, not just
+        the job rows. An entry surviving an aborted batch permanently
+        dedups every later enqueue carrying that key against a job that
+        was never committed, so the work silently never runs.
+        """
+        backend = _make_backend()
+        await backend.enqueue(_singleton_args("held-actor-2"))
+
+        keyed_args = make_enqueue_args(
+            actor="keyed-actor",
+            queue="default",
+            idempotency_key="batch-key",
+        )
+        args_list = [keyed_args, _singleton_args("held-actor-2")]
+
+        with pytest.raises(SingletonCollisionError):
+            await backend.enqueue_batch(args_list)
+
+        assert backend._idempotency_index.get(("", "batch-key")) is None, (
+            "aborted batch left an idempotency index entry pointing at a row "
+            "the call never committed; a later enqueue with the same key would "
+            "dedup against a job that does not exist"
+        )
+
+    async def test_truthy_non_true_singleton_metadata_does_not_block(self) -> None:
+        """A stored row whose metadata carries a truthy-but-not-``True``
+        ``singleton`` value (``1``) is not a live singleton blocker.
+
+        The singleton stamp is a JSON boolean: Postgres' partial unique
+        index matches ``metadata @> '{"singleton": true}'`` exactly, and
+        the single-enqueue preflights on both backends test ``is True``.
+        A batch preflight that matched on truthiness alone would refuse a
+        batch Postgres admits.
+        """
+        backend = _make_backend()
+        await backend.enqueue(
+            make_enqueue_args(actor="lenient-actor", queue="default", metadata={"singleton": 1})
+        )
+
+        rows = await backend.enqueue_batch([_singleton_args("lenient-actor")])
+
+        assert len(rows) == 1, (
+            "a stored metadata singleton value of 1 (truthy, but not the JSON "
+            "boolean true) blocked a batch singleton item — Postgres' partial "
+            "index matches only jsonb true, so the mirror must not refuse here"
+        )

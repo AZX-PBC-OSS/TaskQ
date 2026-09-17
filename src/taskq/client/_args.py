@@ -31,7 +31,7 @@ from taskq.backend._protocol import (
     QueueName,
     _validate_queue_name,  # pyright: ignore[reportPrivateUsage]  # Why: the canonical queue-name validator; redefining it here would let the enqueue and actor chokepoints drift.
 )
-from taskq.constants import MAX_IDEMPOTENCY_KEY_BYTES
+from taskq.constants import MAX_IDEMPOTENCY_KEY_BYTES, check_priority_domain
 from taskq.obs import record_published_message, safe_start_span
 from taskq.retry import time_budget_as_interval
 
@@ -342,10 +342,7 @@ def build_enqueue_args[P: BaseModel, R: BaseModel | None](
         resolved_interval = budget_interval
 
     resolved_priority = priority if priority is not None else ref.priority
-    if resolved_priority < -32768 or resolved_priority > 32767:
-        raise ValueError(
-            f"priority must fit smallint range (-32768..32767), got {resolved_priority}"
-        )
+    check_priority_domain(resolved_priority)
 
     resolved_unique_for = unique_for if unique_for is not None else ref.unique_for
     resolved_unique_states = unique_states if unique_states is not None else ref.unique_states
@@ -366,6 +363,10 @@ def build_enqueue_args[P: BaseModel, R: BaseModel | None](
         payload=payload_dict,
         max_attempts=ref.retry.max_attempts,
         retry_kind=ref.retry.kind,
+        retry_base=ref.retry.base,
+        retry_cap=ref.retry.cap,
+        retry_backoff=ref.retry.backoff,
+        retry_jitter=ref.retry.jitter,
         scheduled_at=scheduled_at,
         priority=resolved_priority,
         max_pending=resolved_max_pending,

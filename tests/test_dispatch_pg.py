@@ -10,20 +10,29 @@ are about PG behaviour.
 """
 
 import asyncio
+import contextlib
+import logging
+from collections.abc import AsyncIterator
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 from uuid import UUID
 
+import asyncpg as _asyncpg
 import pytest
 
+from taskq._close import close_pool_bounded
 from taskq._ids import new_base62, new_uuid
 from taskq.actor_config import ActorConfig
 from taskq.actor_config_ops import set_actor_config_capacity
+from taskq.backend._protocol import JobRow
 from taskq.backend.postgres import PostgresBackend
-from taskq.testing.fixtures import JobsApp, _open_pg_backend
+from taskq.obs import setup_logging
+from taskq.testing.assertions import wait_for_condition
+from taskq.testing.fixtures import JobsApp, ModulePgSchema, _open_pg_backend
 from taskq.testing.jobs import make_enqueue_args
+from taskq.testing.otel import collect_metrics, histogram_points, setup_meter, setup_tracer
 from taskq.testing.pg import create_worker
-from taskq.worker.run import register_worker
+from taskq.worker.run import producer_loop, register_worker
 from taskq.worker.startup import sync_actor_config
 
 if TYPE_CHECKING:
@@ -544,3 +553,437 @@ async def test_lock_expiry_recovery_sweep(jobs_app: JobsApp) -> None:
     assert rd.attempt == 2, f"expected attempt=2 after re-dispatch, got {rd.attempt}"
     assert rd.locked_by_worker == worker_id_b
     assert rd.lock_expires_at is not None
+
+
+# ── Two identical dispatchers share one backlog ─────────────────
+
+
+@pytest.mark.asyncio
+async def test_two_identical_dispatchers_never_claim_the_same_job(
+    jobs_app: JobsApp,
+) -> None:
+    """Two workers running the same config against one queue must never both
+    claim the same job, over repeated concurrent rounds.
+
+    This is the safety half of running a fleet: a job claimed by two
+    dispatchers executes twice, and every side effect it has — a charge, an
+    email, an external call — happens twice with nothing in the job's own
+    state to show it. The row's ``locked_by_worker`` must agree with exactly
+    one dispatcher's returned claim.
+    """
+    deps = jobs_app.deps
+    backend = jobs_app.backend
+    schema = deps.settings.schema_name
+    actor = "shared_backlog_actor"
+
+    worker_a = new_uuid()
+    worker_b = new_uuid()
+    async with deps.worker_pool.acquire() as conn:
+        await create_worker(conn, schema, worker_a)
+        await create_worker(conn, schema, worker_b)
+        await conn.execute(
+            f'INSERT INTO "{schema}".actor_config (actor, max_concurrent, queue, metadata) '
+            "VALUES ($1, NULL, $2, $3::jsonb) ON CONFLICT (actor) DO NOTHING",
+            actor,
+            "default",
+            "{}",
+        )
+
+    backlog = 40
+    for _ in range(backlog):
+        await backend.enqueue(make_enqueue_args(actor=actor))
+
+    claimed_by: dict[UUID, list[UUID]] = {worker_a: [], worker_b: []}
+
+    async def _round(worker_id: UUID, barrier: asyncio.Barrier) -> None:
+        await barrier.wait()
+        rows = await backend.dispatch_batch(
+            worker_id=worker_id,
+            queues=["default"],
+            limit=5,
+            lock_lease=_LEASE,
+        )
+        claimed_by[worker_id].extend(row.id for row in rows)
+
+    for _ in range(4):
+        barrier = asyncio.Barrier(2)
+        await asyncio.gather(_round(worker_a, barrier), _round(worker_b, barrier))
+
+    all_claims = claimed_by[worker_a] + claimed_by[worker_b]
+    assert len(all_claims) == len(set(all_claims)), (
+        "a job was claimed by more than one dispatcher — duplicate execution"
+    )
+
+    async with deps.worker_pool.acquire() as conn:
+        rows = await conn.fetch(
+            f'SELECT id, locked_by_worker FROM "{schema}".jobs '
+            "WHERE status = 'running' AND actor = $1",
+            actor,
+        )
+    assert len(rows) == len(all_claims), (
+        "running rows must match exactly the set of dispatch claims"
+    )
+    assert {row["locked_by_worker"] for row in rows} <= {worker_a, worker_b}, (
+        "no job may be locked by a worker that never claimed it"
+    )
+
+
+@pytest.mark.asyncio
+async def test_concurrent_dispatchers_both_claim_from_a_backlog_deeper_than_their_windows(
+    jobs_app: JobsApp,
+) -> None:
+    """Adding a dispatcher must add claim throughput.
+
+    With an uncapped actor and a backlog many times deeper than what both
+    dispatchers together ask for in one round, there is no capacity reason
+    for either to come back empty: there is plenty of unclaimed, unlocked,
+    due work for both. A round in which one dispatcher takes its full limit
+    and the other takes nothing means the second worker contributed no
+    throughput at all — the fleet ran at single-worker speed while an
+    operator paid for two. That failure is invisible to every single-worker
+    test and, in production, looks like a healthy but permanently idle pod
+    next to a saturated one.
+    """
+    deps = jobs_app.deps
+    backend = jobs_app.backend
+    schema = deps.settings.schema_name
+    actor = "deep_backlog_actor"
+
+    worker_a = new_uuid()
+    worker_b = new_uuid()
+    async with deps.worker_pool.acquire() as conn:
+        await create_worker(conn, schema, worker_a)
+        await create_worker(conn, schema, worker_b)
+        await conn.execute(
+            f'INSERT INTO "{schema}".actor_config (actor, max_concurrent, queue, metadata) '
+            "VALUES ($1, NULL, $2, $3::jsonb) ON CONFLICT (actor) DO NOTHING",
+            actor,
+            "default",
+            "{}",
+        )
+
+    per_round_limit = 5
+    # Far deeper than both dispatchers' combined per-round appetite, so
+    # neither can be starved by a shortage of eligible work.
+    for _ in range(per_round_limit * 8):
+        await backend.enqueue(make_enqueue_args(actor=actor))
+
+    counts: dict[UUID, int] = {}
+
+    async def _round(worker_id: UUID, barrier: asyncio.Barrier) -> None:
+        await barrier.wait()
+        rows = await backend.dispatch_batch(
+            worker_id=worker_id,
+            queues=["default"],
+            limit=per_round_limit,
+            lock_lease=_LEASE,
+        )
+        counts[worker_id] = len(rows)
+
+    barrier = asyncio.Barrier(2)
+    await asyncio.gather(_round(worker_a, barrier), _round(worker_b, barrier))
+
+    assert counts[worker_a] > 0 and counts[worker_b] > 0, (
+        "both dispatchers must claim from a backlog deeper than their combined "
+        f"windows; got A={counts[worker_a]} B={counts[worker_b]} — the empty-handed "
+        "dispatcher added no throughput to the fleet"
+    )
+
+
+# ── Dispatch telemetry on the failure path ─────────────────────────────
+
+
+@pytest.fixture
+async def statement_timeout_dispatcher_pool(
+    module_pg_schema: ModulePgSchema,
+) -> AsyncIterator[_asyncpg.Pool]:
+    """A real dispatcher pool whose server aborts every statement.
+
+    ``statement_timeout`` is a Postgres server setting, so this is the
+    real production failure — the server cancels the dispatch query and
+    the driver raises — reproduced without a double anywhere in the
+    dispatch path. It stands in for every way the dispatch query can
+    fail against a loaded or degraded database: a statement timeout on a
+    slow plan, a lock timeout, a connection reset mid-query.
+    """
+    pool = await _asyncpg.create_pool(
+        module_pg_schema.pg_dsn,
+        min_size=1,
+        max_size=2,
+        server_settings={"statement_timeout": "1ms"},
+    )
+    assert pool is not None
+    try:
+        yield pool
+    finally:
+        # A statement the server aborted can leave the protocol
+        # mid-operation; close() waits for checked-out connections and
+        # hangs on exactly that state — the hang close_pool_bounded
+        # exists to prevent in the production teardown. Same discipline
+        # here, so a forced-failure test can never hang its own fixture.
+        await close_pool_bounded(pool, "statement-timeout-dispatcher-pool", 5.0)
+
+
+@pytest.mark.asyncio
+async def test_dispatch_duration_is_recorded_when_the_dispatch_query_fails(
+    clean_jobs_app: JobsApp,
+    statement_timeout_dispatcher_pool: _asyncpg.Pool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A dispatch round the database aborts must still contribute a
+    duration sample.
+
+    The shipped alert on dispatch health is a p99 over
+    ``taskq.dispatch.duration``. A round the server cancels is the
+    slowest round there is: it burned the full statement budget and
+    returned nothing. If only rounds that returned rows are sampled,
+    that budget-exhausting round leaves the series untouched — so a
+    dispatcher failing every round reads as a dispatcher with a
+    perfectly healthy p99, because the only samples left are the fast
+    successful ones (here, none at all, which renders as a flat line an
+    operator cannot distinguish from an idle queue).
+    """
+    deps = clean_jobs_app.deps
+    backend = clean_jobs_app.backend
+    schema = deps.settings.schema_name
+
+    worker_id = new_uuid()
+    async with deps.worker_pool.acquire() as conn:
+        await create_worker(conn, schema, worker_id)
+    await backend.enqueue(make_enqueue_args(actor="telemetry_actor"))
+
+    setup_tracer(monkeypatch)
+    reader = setup_meter(monkeypatch)
+    monkeypatch.setattr(deps, "dispatcher_pool", statement_timeout_dispatcher_pool)
+
+    with pytest.raises(_asyncpg.PostgresError):
+        await backend.dispatch_batch(
+            worker_id=worker_id,
+            queues=["default"],
+            limit=5,
+            lock_lease=_LEASE,
+        )
+
+    points = histogram_points(reader, "taskq.dispatch.duration")
+    assert points, (
+        "a dispatch round the database aborted recorded no duration sample — "
+        "the histogram the dispatch-latency alert reads only ever sees rounds "
+        "that succeeded, so total dispatch failure and an idle queue emit the "
+        "same thing: nothing"
+    )
+    assert sum(p.count for p in points) >= 1, (
+        f"expected at least one duration observation for the failed round; got {points!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_dispatch_failure_is_visible_in_a_metric_not_only_a_log_line(
+    clean_jobs_app: JobsApp,
+    statement_timeout_dispatcher_pool: _asyncpg.Pool,
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A producer whose every dispatch round fails must move some metric.
+
+    This is the operator's worst case in this area because nothing else
+    reports it. The producer catches the dispatch exception, logs it, and
+    polls again, so the process stays up and its liveness probe stays
+    green; no job changes status, so no job-level counter moves; the
+    pending backlog stays pending, which is exactly what an idle fleet
+    also looks like. Every other failure-prone subsystem in the worker
+    has a failure counter an alert can name — sweep timeouts, election
+    failures, refund failures, slot-pool acquire failures, progress
+    publish failures — and dispatch, the one loop whose failure stops all
+    work, is asserted here to be no exception. A log line is not a
+    substitute: it carries no series to alert on, and an operator who is
+    not already tailing that worker's logs has no way to learn that the
+    queue stopped draining.
+    """
+    deps = clean_jobs_app.deps
+    backend = clean_jobs_app.backend
+    schema = deps.settings.schema_name
+
+    worker_id = new_uuid()
+    async with deps.worker_pool.acquire() as conn:
+        await create_worker(conn, schema, worker_id)
+    for _ in range(5):
+        await backend.enqueue(make_enqueue_args(actor="telemetry_actor"))
+
+    setup_tracer(monkeypatch)
+    reader = setup_meter(monkeypatch)
+    monkeypatch.setattr(deps, "dispatcher_pool", statement_timeout_dispatcher_pool)
+    # Tighten only the loop cadence, so the scenario's several failed
+    # rounds happen promptly. The cadence is not what is under test.
+    monkeypatch.setattr(deps.settings, "poll_interval", 0.01, raising=False)
+    monkeypatch.setattr(deps.settings, "notify_poll_interval", 0.01, raising=False)
+
+    local_queue: asyncio.Queue[JobRow] = asyncio.Queue(maxsize=5)
+    shutdown_event = asyncio.Event()
+    producer_stop_event = asyncio.Event()
+
+    # Read the failure where an operator reads it. setup_logging is the
+    # production configurator and is idempotent, so this pins the routing
+    # rather than depending on an earlier test having configured it.
+    setup_logging(level="INFO", log_format="json")
+    task = asyncio.create_task(
+        producer_loop(
+            deps,
+            local_queue,
+            shutdown_event,
+            producer_stop_event,
+            backend=backend,
+            worker_id=worker_id,
+        )
+    )
+    try:
+        with caplog.at_level(logging.ERROR):
+            # The failed rounds are the observable; waiting on a count of
+            # them is what makes this deterministic rather than timed.
+            await wait_for_condition(
+                lambda: (
+                    sum(
+                        1
+                        for record in caplog.records
+                        if "dispatch-batch-error" in record.getMessage()
+                    )
+                    >= 3
+                ),
+                description="three dispatch rounds to fail against the degraded database",
+            )
+    finally:
+        producer_stop_event.set()
+        shutdown_event.set()
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+    assert local_queue.qsize() == 0, (
+        "no job should have been claimed — the premise is that every round failed"
+    )
+    async with deps.worker_pool.acquire() as conn:
+        still_pending = await conn.fetchval(
+            f"SELECT count(*) FROM \"{schema}\".jobs WHERE status = 'pending'"
+        )
+    assert still_pending == 5, (
+        f"the backlog must be untouched for this scenario to be the one under test; "
+        f"{still_pending} of 5 jobs are still pending"
+    )
+
+    emitted = sorted(metric.name for metric in collect_metrics(reader))
+    assert emitted, (
+        "a producer that failed every dispatch round against a degraded database "
+        "emitted no metric at all — the process stays up, its liveness probe stays "
+        "green, the backlog stays pending exactly as an idle queue would, and the "
+        "only trace of total dispatch failure is an untelemetered log line"
+    )
+
+
+# ── Attempt counter at the column ceiling ───────────────────────
+
+#: The domain ceiling of the ``jobs.attempt`` smallint column. A row
+#: parked here has no headroom for dispatch's ``attempt = attempt + 1``.
+_ATTEMPT_COLUMN_CEILING = 32767
+
+
+async def _park_job_at_attempt_ceiling(
+    conn: _PGConn,
+    schema: str,
+    actor: str,
+) -> UUID:
+    """Seed one claimable pending job whose ``attempt`` is at the ceiling.
+
+    ``retry_kind='indefinite'`` is the kind that reaches this state in
+    production: its retry budget is the ``schedule_to_close`` deadline,
+    not ``max_attempts``, so dispatch keeps incrementing the counter for
+    as long as the job keeps failing.
+    """
+    job_id = new_uuid()
+    await conn.execute(
+        f'INSERT INTO "{schema}".jobs '
+        "(id, actor, queue, payload, status, scheduled_at, attempt, "
+        " max_attempts, retry_kind) "
+        "VALUES ($1, $2, 'default', '{}'::jsonb, 'pending', "
+        "        clock_timestamp() - interval '5 minutes', $3, 3, 'indefinite')",
+        job_id,
+        actor,
+        _ATTEMPT_COLUMN_CEILING,
+    )
+    return job_id
+
+
+async def test_backlog_still_dispatches_with_a_job_at_the_attempt_ceiling(
+    jobs_app: JobsApp,
+) -> None:
+    """One job whose attempt counter has reached the column ceiling must
+    not stop the rest of the backlog from being claimed.
+
+    A dispatch round claims its whole batch in one statement that stamps
+    ``attempt = attempt + 1`` on every claimed row. A job parked at the
+    smallint ceiling makes that single statement fail, which aborts the
+    claim of every healthy job selected alongside it. Because dispatch
+    ranks oldest-scheduled first, the offending row is selected on every
+    subsequent round too, so the queue stops draining permanently: an
+    operator sees a growing backlog, workers reporting healthy and idle,
+    and jobs that are never claimed — with no job in a terminal state to
+    point at.
+
+    ``retry_kind='indefinite'`` is the kind that reaches the ceiling:
+    ``max_attempts`` is documented as ignored for it, so nothing else
+    bounds how far the counter climbs.
+    """
+    deps = jobs_app.deps
+    backend = jobs_app.backend
+    schema = deps.settings.schema_name
+    actor = f"ceiling_{new_base62(6)}"
+    worker_id = new_uuid()
+
+    async with deps.worker_pool.acquire() as conn:
+        await conn.execute(
+            f'INSERT INTO "{schema}".actor_config (actor, queue) VALUES ($1, $2) '
+            "ON CONFLICT (actor) DO NOTHING",
+            actor,
+            "default",
+        )
+        await _park_job_at_attempt_ceiling(conn, schema, actor)
+        for _ in range(3):
+            await conn.execute(
+                f'INSERT INTO "{schema}".jobs '
+                "(id, actor, queue, payload, status, scheduled_at, attempt, "
+                " max_attempts, retry_kind) "
+                "VALUES ($1, $2, 'default', '{}'::jsonb, 'pending', "
+                "        clock_timestamp() - interval '1 minute', 0, 3, 'transient')",
+                new_uuid(),
+                actor,
+            )
+
+    try:
+        dispatched = await backend.dispatch_batch(
+            worker_id=worker_id,
+            queues=["default"],
+            limit=10,
+            lock_lease=_LEASE,
+        )
+    except Exception as exc:
+        # Why catch broadly: the defect is that ANY driver error escapes a
+        # dispatch round because one row cannot be incremented. Naming the
+        # concrete exception class would pin the driver, not the behaviour.
+        pytest.fail(
+            f"a dispatch round against a backlog containing one job at the "
+            f"attempt column ceiling raised {type(exc).__name__}: {exc}. "
+            f"The round claimed nothing, so three healthy backlogged jobs went "
+            f"unclaimed; the same row is re-selected every round, so the queue "
+            f"never drains again."
+        )
+
+    claimed = {row.id for row in dispatched}
+    async with deps.worker_pool.acquire() as conn:
+        unclaimed = await conn.fetchval(
+            f'SELECT count(*) FROM "{schema}".jobs WHERE actor = $1 '
+            "AND retry_kind = 'transient' AND status = 'pending'",
+            actor,
+        )
+    assert unclaimed == 0, (
+        f"{unclaimed} of the 3 healthy backlogged jobs were left pending by a "
+        f"dispatch round that claimed {len(claimed)} rows — a single job at the "
+        f"attempt ceiling must not cost the round its healthy work"
+    )

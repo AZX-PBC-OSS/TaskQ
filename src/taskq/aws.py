@@ -29,11 +29,13 @@ How AWS IAM RDS auth works
 AWS RDS Postgres supports IAM database authentication: instead of a static
 password, you request a SigV4-signed auth token from the RDS API
 (``generate_db_auth_token``) and use it as the Postgres password. The token
-is valid for **15 minutes** (:data:`RDS_TOKEN_LIFETIME_SECONDS`), so each
-call to a factory fetches a fresh token. For long-lived workers, send
-``SIGHUP`` to the worker process on a schedule shorter than 15 minutes —
-the factory is re-invoked automatically to rebuild the pool with a fresh
-token (see ``taskq.worker.deps.reload_credentials``); no restart needed.
+is valid for **15 minutes** (:data:`RDS_TOKEN_LIFETIME_SECONDS`). The
+factory builders hand the token to asyncpg as a ``password=`` callable
+that is invoked per physical connection, so every connection the pool
+opens - at creation, on growth, on idle-recycle replacement - signs a
+fresh token; no reload schedule is needed for token freshness. ``SIGHUP``
+/ ``TASKQ_RELOAD_INTERVAL`` remain the way to force a full pool rebuild
+(see ``taskq.worker.deps.reload_credentials``).
 
 ``boto3`` is synchronous. ``generate_db_auth_token`` itself is local
 SigV4 signing, but resolving the ambient credential chain
@@ -107,6 +109,19 @@ def _parse_dsn(dsn: str) -> tuple[str, int, str]:
     return hostname, port, username
 
 
+def _build_rds_client(region: str | None) -> Any:
+    """Build a ``boto3.client('rds')`` from the ambient credential chain.
+
+    Blocking (service-model load, credential-chain resolution); callers on
+    the event loop offload it to a thread.
+    """
+    boto3 = _require_boto3()
+    client_kwargs: dict[str, Any] = {}
+    if region is not None:
+        client_kwargs["region_name"] = region
+    return boto3.client("rds", **client_kwargs)
+
+
 # ── Token fetcher ──────────────────────────────────────────────────────
 
 
@@ -134,14 +149,7 @@ def fetch_rds_iam_token(
     (STS/IMDS credential refresh); async callers should offload it to a
     thread, as :class:`RdsIamProvider` does.
     """
-    if client is None:
-        boto3 = _require_boto3()
-        client_kwargs: dict[str, Any] = {}
-        if region is not None:
-            client_kwargs["region_name"] = region
-        resolved = boto3.client("rds", **client_kwargs)
-    else:
-        resolved = client
+    resolved = _build_rds_client(region) if client is None else client
     return resolved.generate_db_auth_token(
         DBHostname=hostname,
         Port=port,
@@ -160,8 +168,16 @@ class RdsIamProvider(PgCredentialProvider):
     existing user (the IAM-mapped DB user) is preserved.
 
     ``client`` defaults to a ``boto3.client('rds')`` from the ambient
-    credential chain; pass ``region`` to pin it. ``username`` defaults to
-    the DSN's userinfo user.
+    credential chain, built once on first use and reused for the
+    provider's lifetime; pass ``region`` to pin it. ``username`` defaults
+    to the DSN's userinfo user.
+
+    Why the client is built once: a token is signed for every physical
+    connection the pool opens, and ``boto3.client`` is not a cheap call -
+    it loads the service model each time and runs the default-session
+    setup, which is not safe to race from the threads concurrent pool
+    growth would put it on. The first fetch builds the client under a
+    lock; later fetches sign with it.
     """
 
     def __init__(
@@ -185,8 +201,21 @@ class RdsIamProvider(PgCredentialProvider):
             )
         self._region = region
         self._client = client
+        # Safe to create outside a running loop (the CLI builds the provider
+        # at settings time): asyncio.Lock binds to the loop on first use,
+        # not at construction.
+        self._client_lock = asyncio.Lock()
+
+    async def _resolve_client(self) -> Any:
+        if self._client is not None:
+            return self._client
+        async with self._client_lock:
+            if self._client is None:
+                self._client = await asyncio.to_thread(_build_rds_client, self._region)
+        return self._client
 
     async def get_pg_credential(self) -> PgCredential:
+        client = await self._resolve_client()
         # Offloaded to a thread: although generate_db_auth_token is local
         # SigV4 signing, the ambient credential chain may perform blocking
         # STS/IMDS HTTPS refreshes, which must not stall the event loop.
@@ -196,6 +225,6 @@ class RdsIamProvider(PgCredentialProvider):
             port=self._port,
             username=self._username,
             region=self._region,
-            client=self._client,
+            client=client,
         )
         return PgCredential(password=token)

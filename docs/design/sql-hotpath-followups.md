@@ -178,7 +178,7 @@ executions).
     caller ever needs rank order, sort client-side by the returned
     `pending_rank`-equivalent columns.
 
-### Shipped outcome (issue #130, supersedes the outline above)
+### Shipped outcome (supersedes the outline above)
 
 The fix that shipped keeps this section's diagnosis (the non-folding
 subquery LIMITs, the whole-backlog `locked`/UPDATE joins, v1's
@@ -207,9 +207,9 @@ avoided by structure, not by estimates.
   once as an InitPlan; the ScalarArrayOp is served as a Bitmap Index
   Scan on `jobs_pkey` (deep) or a scan-level filter (shallow) — both
   bounded — where a `FROM eligible` join would re-open the planner's
-  seq-scan option at shallow depths. River ships the parameterized
-  LIMIT form (`LIMIT $5::integer` in `JobGetAvailable`); oban's basic
-  engine is the subset-CTE fence precedent.
+  seq-scan option at shallow depths. The subset-CTE fence approach
+  bounds the terminal UPDATE by materializing the eligible id set
+  before the heap is re-joined (this window's v1b winner).
 - The round-robin variant — a second depth defect this section's
   prototypes did not cover (they measured strict-FIFO only): the
   candidates lateral's `ROW_NUMBER` window ran over EVERY due row of
@@ -269,7 +269,7 @@ independently of it. A 7-day default keeps the steady-state event table at
 shortest job-retention window (30 d) so events never outlive the shortest
 lived observation any operator could reasonably run.
 
-### Sweep SQL (PR-#120 / `_sweeps.py` pattern)
+### Sweep SQL (the `_sweeps.py` pattern)
 
 Batched `DELETE` by `occurred_at`, `MATERIALIZED` window, `statement_timestamp()`
 bound (index-cond eligible, see the two-clock doctrine in `_sweeps.py`),

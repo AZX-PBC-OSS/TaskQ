@@ -1,8 +1,12 @@
 """Tests for taskq workgroup CLI subcommand: start and validate."""
 
+import importlib
+import sys
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
+import pytest
 from typer.testing import CliRunner
 
 from taskq.cli import app
@@ -17,6 +21,42 @@ actors = "myapp.actors:registry"
 name = "api"
 queues = ["default"]
 """
+
+
+@pytest.fixture(autouse=True)
+def _resolvable_actors_module(tmp_path: Path) -> Iterator[None]:  # pyright: ignore[reportUnusedFunction]  # Why: autouse fixture consumed implicitly by the test runner; pyright does not track fixture usage.
+    """Make ``myapp.actors:registry`` genuinely importable for these tests.
+
+    Config loading resolves the ``actors`` reference rather than taking it
+    on trust, because every child of an unresolvable reference would crash
+    on import at spawn. A placeholder that names no real module is
+    therefore an invalid config, not a stand-in for one -- so the minimal
+    *valid* TOML above needs the module it points at to exist.
+
+    Autouse rather than per-test: all three tests share one TOML constant,
+    so the module backing it is a property of the fixture set, not
+    something each test should re-establish.
+
+    Both mutations are undone on teardown. ``sys.path`` and
+    ``sys.modules`` are process-global, and ``tmp_path`` is per-test, so
+    leaving either behind would let a later test import a module out of a
+    deleted directory -- an order-dependent pass that xdist reorders into
+    a failure. The interpreter also caches directory listings for import,
+    so a stale entry is not merely inert.
+    """
+    package = tmp_path / "myapp"
+    package.mkdir()
+    (package / "__init__.py").write_text("")
+    (package / "actors.py").write_text("registry = {}\n")
+    sys.path.insert(0, str(tmp_path))
+    importlib.invalidate_caches()
+    try:
+        yield
+    finally:
+        sys.path.remove(str(tmp_path))
+        for name in ("myapp.actors", "myapp"):
+            sys.modules.pop(name, None)
+        importlib.invalidate_caches()
 
 
 # ── config file not found ─────────────────────────────────────────────────

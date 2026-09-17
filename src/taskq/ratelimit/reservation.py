@@ -12,12 +12,12 @@ stamps the fleet-reclaim bookkeeping on ``reservation_slots``: the
 ``keyed`` mark (set at materialisation by
 :class:`ConcurrencyReservation`'s ``keyed`` flag) and the
 ``last_used_at`` staleness stamp, refreshed by the very UPDATE/INSERT
-that already touches the row — the solid_queue Semaphore shape. The
-maintenance leader's ``sweep_idle_keyed_rows`` deletes keyed rows
-unused past the operator horizon, closing the residual where a keyed
-bucket's rows orphan when the worker that materialised them dies (the
-in-process registry bookkeeping that would otherwise name them dies
-with the process).
+that already touches the row — coupling staleness tracking to the row
+modification that drives progress. The maintenance leader's
+``sweep_idle_keyed_rows`` deletes keyed rows unused past the operator
+horizon, closing the residual where a keyed bucket's rows orphan when
+the worker that materialised them dies (the in-process registry
+bookkeeping that would otherwise name them dies with the process).
 
 The in-memory backend (``_InMemorySlotTable``) is the unit-test substitute for
 PG and mirrors the slot-row model as a ``dict[str, dict[int, _SlotState]]``
@@ -26,6 +26,7 @@ the PG primary key. Thread-safe via ``threading.Lock`` with ``Clock``
 injection for deterministic lease expiry.
 """
 
+import asyncio
 import threading
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -47,10 +48,32 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger("taskq.ratelimit.reservation")
 
+# One statement, one row set, two conflict-arm rules. The stamp rule:
+# re-materialisation over rows that SURVIVED (the registry's re-resolve
+# path after an idle eviction whose rows outlived the pending-reclaim
+# drain, held by another worker's live leases) restarts the horizon —
+# ensure_slots' contract promises the bucket a fresh ``last_used_at``,
+# and a bucket that just came back into a live registry must not read
+# as idle past the horizon on staleness that predates its
+# re-materialisation, or the leader tick between the ensure and the
+# acquire's first stamp deletes the whole bucket out from under the
+# acquiring worker. The mark rule: ``keyed = existing AND EXCLUDED`` —
+# the mark may be born true (the INSERT arm) or driven to false, never
+# resurrected. A keyed=false row is a static claim, and the registry's
+# concrete-name collision guard is process-local: another process's
+# registry can legally hold a static declaration whose concrete name
+# equals this keyed ref's, and flipping those rows true would hand the
+# fleet sweep a STATIC reservation's rows (no keyed lifecycle, no heal,
+# no re-materialisation — every later acquisition on that worker denies
+# forever). The reverse direction stays: a static bootstrap ensure over
+# former keyed rows retires the mark (never-sweep again). The conflict
+# arm never touches the holder/lease columns — held state is untouched.
 _ENSURE_SLOTS_SQL_TEMPLATE = """\
 INSERT INTO "{schema}".reservation_slots (bucket_name, slot_index, keyed, last_used_at)
 SELECT $1, generate_series(0, $2 - 1), $3, clock_timestamp()
-ON CONFLICT (bucket_name, slot_index) DO UPDATE SET keyed = EXCLUDED.keyed"""
+ON CONFLICT (bucket_name, slot_index) DO UPDATE SET
+    keyed = reservation_slots.keyed AND EXCLUDED.keyed,
+    last_used_at = clock_timestamp()"""
 
 # One statement, one row, both outcomes. The acquire branch is the
 # original CTE untouched except for the last_used_at stamp. The denial
@@ -59,6 +82,17 @@ ON CONFLICT (bucket_name, slot_index) DO UPDATE SET keyed = EXCLUDED.keyed"""
 # matches), so the LEFT JOIN yields one row whose acquired fields are
 # NULL when nothing was acquired — the Python side reads the hint off
 # that row instead of issuing a second statement.
+#
+# The acquirability predicate below — ``job_id IS NULL OR
+# lease_expires_at < clock_timestamp()`` — is THE definition of a free
+# slot, and it has a coupled reader: the dispatch claim's
+# reservation-headroom gate (taskq/backend/_dispatch_sql.py's
+# reservation_holdings / reservation_headroom CTEs) clamps an actor's
+# admission to the free count of the buckets its running jobs hold,
+# using this same predicate (on statement_timestamp(), the claim's
+# two-clock doctrine). If this definition ever changes, the gate's copy
+# must change with it or the claim's damper drifts from the acquire's
+# authority.
 #
 # The hint is computed server-side (``clock_timestamp()``, the same
 # clock the leases are stamped with and the free-slot predicate reads)
@@ -69,13 +103,12 @@ ON CONFLICT (bucket_name, slot_index) DO UPDATE SET keyed = EXCLUDED.keyed"""
 # microsecond skew between the WHERE's and the SELECT's own
 # ``clock_timestamp()`` evaluations inside this one statement.
 #
-# The last_used_at stamp rides the acquired arm's UPDATE — the
-# solid_queue Semaphore shape (attempt_decrement refreshes expires_at
-# inside the very UPDATE that takes the slot): the row the acquire
-# touches is the row whose staleness must reset, with no dedicated
-# stamping round trip. Only the acquired row is stamped; the fleet
-# reclaim sweep groups by bucket and decides on max(last_used_at), so
-# one fresh slot row keeps the whole bucket live.
+# The last_used_at stamp rides the acquired arm's UPDATE — the same
+# statement that modifies the row also refreshes its staleness mark,
+# avoiding a dedicated stamping round trip. Only the acquired row is
+# stamped; the fleet reclaim sweep groups by bucket and decides on
+# max(last_used_at), so one fresh slot row keeps the whole bucket
+# live.
 _ACQUIRE_SQL_TEMPLATE = """\
 WITH free_slot AS (
     SELECT slot_index FROM "{schema}".reservation_slots
@@ -578,13 +611,25 @@ class ConcurrencyReservation:
 
         Inserts the bucket's full slot row set with this reservation's
         fleet-reclaimable mark and a fresh ``last_used_at``; the conflict
-        arm flips ONLY the ``keyed`` mark (never the holder/lease
-        columns — held state is untouched), so re-ensuring stays
-        idempotent while the mark always reflects the CURRENT owner:
-        a keyed materialisation (or its heal) claiming a name re-marks
-        its rows fleet-reclaimable, and a later static declaration of
-        the same name (the bootstrap's startup ensure) marks them
-        never-sweep again.
+        arm (rows already present — re-materialisation over survivors,
+        or another process's earlier materialisation) refreshes
+        ``last_used_at`` on every conflicting row and converges the
+        ``keyed`` mark toward immortality without ever touching the
+        holder/lease columns (held state is untouched):
+
+        - a keyed materialisation (or its heal) re-marks rows that are
+          already keyed and refreshes their staleness — re-materialised
+          survivors restart the horizon;
+        - a keyed materialisation over rows marked ``keyed=false``
+          leaves them false: that mark is a STATIC claim (born false,
+          possibly declared in a process whose registry this worker's
+          process-local collision guard cannot see), and a static
+          reservation has no acquire-path heal — swept rows would deny
+          forever;
+        - a later static declaration of the same name (the bootstrap's
+          startup ensure) retires keyed rows to ``keyed=false`` —
+          never-sweep again, the immortality direction a live static
+          declaration owns.
         """
         async with pool.acquire() as conn:
             await conn.execute(self._ensure_sql, self._name, self._slots, self._keyed)
@@ -648,7 +693,11 @@ class ConcurrencyReservation:
             )
             return slot_index
 
-        async with pool.acquire() as conn, conn.transaction():
+        # No explicit transaction: the acquire is one data-modifying-CTE
+        # statement, atomic on its own — its FOR UPDATE SKIP LOCKED row
+        # lock lives exactly as long as the statement — so BEGIN/COMMIT
+        # would be two extra round trips per reserved job.
+        async with pool.acquire() as conn:
             row = await conn.fetchrow(
                 self._acquire_sql,
                 self._name,
@@ -790,12 +839,21 @@ async def sync_slots(
     pool: "asyncpg.Pool",
     *,
     schema: str = "taskq",
+    timeout: "float | None" = None,  # noqa: ASYNC109  # Why: the bound is a per-call deadline the caller passes, not an enclosing asyncio.timeout scope.
 ) -> SyncResult:
     """Synchronise slot rows to match the registered reservation config.
 
     For each reservation: insert missing slots (filling gaps from prior
     held-slot-preserving shrinks), delete excess free slots, and report
     held slots that could not be deleted.
+
+    *timeout* bounds the WHOLE pass — one connection acquire plus a
+    transaction of statements per reservation, so a call costs
+    O(reservations) round trips and a wedged store must not park the
+    caller past the bound. Raises :class:`TimeoutError` when it fires
+    (a reservation whose transaction already committed stays synced;
+    the pass is safe to re-run). ``None`` (the default) keeps the
+    unbounded shape for callers that manage their own deadline.
 
     "Free" / "held" use the same definition as the acquire CTE: a slot row
     with an EXPIRED lease is acquirable, hence deletable; only rows with a
@@ -816,66 +874,71 @@ async def sync_slots(
     """
     _validate_schema(schema)
 
-    all_inserted: list[tuple[str, int]] = []
-    all_deleted: list[tuple[str, int]] = []
-    all_skipped: list[tuple[str, int]] = []
+    async def _sync_all() -> SyncResult:
+        all_inserted: list[tuple[str, int]] = []
+        all_deleted: list[tuple[str, int]] = []
+        all_skipped: list[tuple[str, int]] = []
 
-    for res in reservations:
-        n_inserted = 0
-        n_deleted = 0
-        n_skipped = 0
+        for res in reservations:
+            n_inserted = 0
+            n_deleted = 0
+            n_skipped = 0
 
-        async with pool.acquire() as conn, conn.transaction():
-            existing_sql = _SYNC_EXISTING_SQL_TEMPLATE.format(schema=schema)
-            existing_rows = await conn.fetch(existing_sql, res.name)
-            existing_indices: set[int] = {row["slot_index"] for row in existing_rows}
+            async with pool.acquire() as conn, conn.transaction():
+                existing_sql = _SYNC_EXISTING_SQL_TEMPLATE.format(schema=schema)
+                existing_rows = await conn.fetch(existing_sql, res.name)
+                existing_indices: set[int] = {row["slot_index"] for row in existing_rows}
 
-            desired_set = set(range(res.slots))
-            missing_indices = sorted(desired_set - existing_indices)
-            excess_indices = sorted(existing_indices - desired_set)
+                desired_set = set(range(res.slots))
+                missing_indices = sorted(desired_set - existing_indices)
+                excess_indices = sorted(existing_indices - desired_set)
 
-            if missing_indices:
-                insert_sql = _SYNC_INSERT_SQL_TEMPLATE.format(schema=schema)
-                rows = await conn.fetch(
-                    insert_sql,
-                    res.name,
-                    missing_indices,
-                )
-                for row in rows:
-                    all_inserted.append((res.name, row["slot_index"]))
-                n_inserted = len(rows)
+                if missing_indices:
+                    insert_sql = _SYNC_INSERT_SQL_TEMPLATE.format(schema=schema)
+                    rows = await conn.fetch(
+                        insert_sql,
+                        res.name,
+                        missing_indices,
+                    )
+                    for row in rows:
+                        all_inserted.append((res.name, row["slot_index"]))
+                    n_inserted = len(rows)
 
-            if excess_indices:
-                held_sql = _SYNC_HELD_SQL_TEMPLATE.format(schema=schema)
-                held_rows = await conn.fetch(
-                    held_sql,
-                    res.name,
-                    excess_indices,
-                )
-                for row in held_rows:
-                    all_skipped.append((res.name, row["slot_index"]))
-                n_skipped = len(held_rows)
+                if excess_indices:
+                    held_sql = _SYNC_HELD_SQL_TEMPLATE.format(schema=schema)
+                    held_rows = await conn.fetch(
+                        held_sql,
+                        res.name,
+                        excess_indices,
+                    )
+                    for row in held_rows:
+                        all_skipped.append((res.name, row["slot_index"]))
+                    n_skipped = len(held_rows)
 
-                delete_sql = _SYNC_DELETE_SQL_TEMPLATE.format(schema=schema)
-                deleted_rows = await conn.fetch(
-                    delete_sql,
-                    res.name,
-                    excess_indices,
-                )
-                for row in deleted_rows:
-                    all_deleted.append((res.name, row["slot_index"]))
-                n_deleted = len(deleted_rows)
+                    delete_sql = _SYNC_DELETE_SQL_TEMPLATE.format(schema=schema)
+                    deleted_rows = await conn.fetch(
+                        delete_sql,
+                        res.name,
+                        excess_indices,
+                    )
+                    for row in deleted_rows:
+                        all_deleted.append((res.name, row["slot_index"]))
+                    n_deleted = len(deleted_rows)
 
-        logger.debug(
-            "reservation-sync-slots",
-            bucket_name=res.name,
-            inserted=n_inserted,
-            deleted=n_deleted,
-            skipped=n_skipped,
+            logger.debug(
+                "reservation-sync-slots",
+                bucket_name=res.name,
+                inserted=n_inserted,
+                deleted=n_deleted,
+                skipped=n_skipped,
+            )
+
+        return SyncResult(
+            inserted=all_inserted,
+            deleted=all_deleted,
+            skipped_held=all_skipped,
         )
 
-    return SyncResult(
-        inserted=all_inserted,
-        deleted=all_deleted,
-        skipped_held=all_skipped,
-    )
+    if timeout is not None:
+        return await asyncio.wait_for(_sync_all(), timeout=timeout)
+    return await _sync_all()

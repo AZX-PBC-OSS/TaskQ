@@ -33,6 +33,7 @@ Two attacking interleavings around ``run_post_tx``'s drain of
 """
 
 import asyncio
+import contextlib
 
 import pytest
 import structlog
@@ -129,6 +130,24 @@ def _sleeper() -> asyncio.Task[object]:
     return asyncio.get_running_loop().create_task(asyncio.sleep(3600))
 
 
+async def _reap_sleeper(task: asyncio.Task[object]) -> None:
+    """Cancel and await the sleeper task the test registered as its job.
+
+    The suite's loop-teardown doctrine (``_stop_loop`` in
+    test_leader_sweeps_coverage.py, ``_stop_quietly`` in
+    test_drain_liveness.py): a task minted on the module loop is the
+    minting test's to retrieve. The registry's ``deregister`` only drops
+    bookkeeping — it never touches the task — and the controller cancels
+    the task only on the escalation path, which the poll-ownership
+    contract below deliberately never reaches, so nothing but this
+    reap ever stops the sleeper.
+    """
+    if not task.done():
+        task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+
+
 async def _tick(controller: CancelController, conn: _Recorder) -> None:
     """One heartbeat-tick shape: in-tx hook, then the post-tx drain."""
     await controller.run_in_tx(conn)  # type: ignore[arg-type]
@@ -149,7 +168,8 @@ async def test_abandon_write_failure_does_not_strand_job_at_abandon_pending() ->
     worker_id = new_uuid()
     ws = _ws(CANCELLATION_GRACE_PERIOD="0.0", CLEANUP_GRACE_PERIOD="0.0")
     deps = _make_deps(ws)
-    await deps.active_jobs.register(job_id, _sleeper(), _make_ctx())
+    sleeper = _sleeper()
+    await deps.active_jobs.register(job_id, sleeper, _make_ctx())
     entry = deps.active_jobs.get(job_id)
     assert entry is not None
     entry.cancel_phase = CancelPhase.COOPERATIVE
@@ -171,31 +191,34 @@ async def test_abandon_write_failure_does_not_strand_job_at_abandon_pending() ->
     backend = _OnceFailingBackend()
     controller = make_cancel_controller(deps, worker_id, backend)  # type: ignore[arg-type]
 
-    # Tick 1: escalation applies, both deadlines already satisfied → the job
-    # is queued with the ABANDON_PENDING sentinel, then the drain raises.
-    recorder = _Recorder([_MockRow(id=job_id, cancel_phase=1)])
-    with pytest.raises(TimeoutError, match="worker_pool acquire timed out"):
-        await _tick(controller, recorder)
-    assert backend.calls == [job_id], "fixture broken: first drain attempt must fire"
-    assert INSERT_EVENT_SQL.format(schema=ws.schema_name) in recorder.execute_calls
+    try:
+        # Tick 1: escalation applies, both deadlines already satisfied → the job
+        # is queued with the ABANDON_PENDING sentinel, then the drain raises.
+        recorder = _Recorder([_MockRow(id=job_id, cancel_phase=1)])
+        with pytest.raises(TimeoutError, match="worker_pool acquire timed out"):
+            await _tick(controller, recorder)
+        assert backend.calls == [job_id], "fixture broken: first drain attempt must fire"
+        assert INSERT_EVENT_SQL.format(schema=ws.schema_name) in recorder.execute_calls
 
-    # Tick 2: the same state a production heartbeat reaches on its next
-    # interval — PG healthy again, entry still registered.
-    await _tick(controller, _Recorder([]))
+        # Tick 2: the same state a production heartbeat reaches on its next
+        # interval — PG healthy again, entry still registered.
+        await _tick(controller, _Recorder([]))
 
-    assert len(backend.calls) == 2, (
-        "Contract: an abandon whose write raised (a transient pool-acquire "
-        "TimeoutError) must be re-attempted on a later tick, exactly like the "
-        "not-applied False path is (run_post_tx's documented fallback). Current "
-        "behavior: the entry was left at the in-process ABANDON_PENDING sentinel, "
-        "which no phase arm in run_in_tx matches, so mark_abandoned is never "
-        "called again and the job can never reach a terminal state."
-    )
-    assert deps.active_jobs.get(job_id) is None, (
-        "Contract: once the re-attempted abandon applies, the job must be "
-        "deregistered. Current behavior: the entry is stranded registered at "
-        "ABANDON_PENDING forever."
-    )
+        assert len(backend.calls) == 2, (
+            "Contract: an abandon whose write raised (a transient pool-acquire "
+            "TimeoutError) must be re-attempted on a later tick, exactly like the "
+            "not-applied False path is (run_post_tx's documented fallback). Current "
+            "behavior: the entry was left at the in-process ABANDON_PENDING sentinel, "
+            "which no phase arm in run_in_tx matches, so mark_abandoned is never "
+            "called again and the job can never reach a terminal state."
+        )
+        assert deps.active_jobs.get(job_id) is None, (
+            "Contract: once the re-attempted abandon applies, the job must be "
+            "deregistered. Current behavior: the entry is stranded registered at "
+            "ABANDON_PENDING forever."
+        )
+    finally:
+        await _reap_sleeper(sleeper)
 
 
 async def test_phase3_abandon_not_issued_for_job_absent_from_own_poll() -> None:
@@ -214,7 +237,8 @@ async def test_phase3_abandon_not_issued_for_job_absent_from_own_poll() -> None:
     worker_id = new_uuid()
     ws = _ws(CANCELLATION_GRACE_PERIOD="0.0", CLEANUP_GRACE_PERIOD="0.0")
     deps = _make_deps(ws)
-    await deps.active_jobs.register(job_id, _sleeper(), _make_ctx())
+    sleeper = _sleeper()
+    await deps.active_jobs.register(job_id, sleeper, _make_ctx())
     entry = deps.active_jobs.get(job_id)
     assert entry is not None
     # Stale in-memory state from before the reclaim: already FORCED, both
@@ -234,16 +258,22 @@ async def test_phase3_abandon_not_issued_for_job_absent_from_own_poll() -> None:
     backend = _CountingBackend()
     controller = make_cancel_controller(deps, worker_id, backend)  # type: ignore[arg-type]
 
-    # The poll returns NOTHING for this worker: the job was reclaimed and is
-    # no longer (running, locked-by-this-worker, cancel-flagged).
-    await _tick(controller, _Recorder([]))
+    try:
+        # The poll returns NOTHING for this worker: the job was reclaimed and is
+        # no longer (running, locked-by-this-worker, cancel-flagged).
+        await _tick(controller, _Recorder([]))
 
-    assert backend.calls == [], (
-        "Contract: a cancel-poll tick must not issue mark_abandoned for a job "
-        "its own poll did not return — the poll's predicate (locked_by_worker, "
-        "cancel_requested_at, status='running') is exactly the set of rows this "
-        "worker's abandon may touch; mark_abandoned is worker-unfenced, so an "
-        "abandon issued from stale local state can terminate another worker's "
-        "re-dispatched attempt. Current behavior: the phase-3 arm queues on "
-        "local phase alone and the abandon was issued."
-    )
+        assert backend.calls == [], (
+            "Contract: a cancel-poll tick must not issue mark_abandoned for a job "
+            "its own poll did not return — the poll's predicate (locked_by_worker, "
+            "cancel_requested_at, status='running') is exactly the set of rows this "
+            "worker's abandon may touch; mark_abandoned is worker-unfenced, so an "
+            "abandon issued from stale local state can terminate another worker's "
+            "re-dispatched attempt. Current behavior: the phase-3 arm queues on "
+            "local phase alone and the abandon was issued."
+        )
+    finally:
+        # The asserted contract leaves the job registered and its sleeper
+        # running (no abandon, no escalation): the test stops the sleeper it
+        # minted, or it stays pending on the module loop past teardown.
+        await _reap_sleeper(sleeper)

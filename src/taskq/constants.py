@@ -6,6 +6,7 @@ used by the worker LISTEN consumer and the future
 PostgresBackend enqueue path.
 """
 
+import hashlib
 import re
 from datetime import timedelta
 from typing import Final
@@ -13,6 +14,10 @@ from uuid import UUID
 
 __all__ = [
     "BTREE_MAX_ITEM_BYTES",
+    "CANCEL_ORIGIN_ABANDONED",
+    "CANCEL_ORIGIN_COOPERATIVE",
+    "CANCEL_ORIGIN_FORCED",
+    "CANCEL_ORIGIN_PENDING",
     "DEFAULT_CHUNK_SIZE",
     "DEFAULT_EVENT_RETENTION_BATCH_SIZE",
     "DEFAULT_EVENT_RETENTION_PERIOD",
@@ -29,6 +34,8 @@ __all__ = [
     "DEFAULT_RESERVATION_BACKOFF",
     "EVENTS_CHANNEL_FMT",
     "IDEMPOTENCY_KEY_BYTES_CEILING",
+    "MAX_ATTEMPTS_SMALLINT_CEILING",
+    "MAX_ENQUEUABLE_MAX_ATTEMPTS",
     "MAX_IDEMPOTENCY_KEY_BYTES",
     "MAX_RESULT_BYTES",
     "MIN_DEFERRAL_INTERVAL",
@@ -38,9 +45,13 @@ __all__ = [
     "RECLAIM_EVENT_VISIBILITY_DELAY",
     "RECLAIM_OUTBOX_RETENTION_MULTIPLIER",
     "RESERVATION_RETRY_HINT_MARGIN",
+    "SMALLINT_MAX",
+    "SMALLINT_MIN",
     "WAKE_CHANNEL_FMT",
     "WORKER_CHANNEL_FMT",
     "base_name_collides_with_reserved_prefix",
+    "check_max_attempts_domain",
+    "check_priority_domain",
     "events_channel",
     "progress_channel",
     "progress_global_channel",
@@ -137,6 +148,50 @@ so the margin's real work is on multi-second lease horizons where it is
 noise by design.
 """
 
+CANCEL_ORIGIN_COOPERATIVE: Final[str] = "CancelledCooperatively"
+"""``error_class`` a phase-1 cancel's terminal write stamps.
+
+The actor was running, observed the cancel request while it was still
+being asked (``cancel_phase = 1``) and stopped — the worker's terminal
+write (``mark_cancelled``) is the one that moved the row.
+"""
+
+CANCEL_ORIGIN_FORCED: Final[str] = "CancelledForced"
+"""``error_class`` a phase-2 cancel's terminal write stamps.
+
+The actor did not yield to the request, the heartbeat loop escalated
+(``cancel_phase = 2``) and ``task.cancel()`` interrupted it — the actor
+had to be stopped, which is operationally distinct from a cooperative
+yield: this actor ignored a cancellation request and needs looking at.
+"""
+
+CANCEL_ORIGIN_ABANDONED: Final[str] = "CancelAbandoned"
+"""``error_class`` the abandon write (``mark_abandoned``) stamps.
+
+The actor did not yield within the cancellation graces, so the ladder
+took the row away from it. Operationally distinct from a cooperative
+cancel: this actor needs looking at.
+"""
+
+CANCEL_ORIGIN_PENDING: Final[str] = "CancelledBeforeStart"
+"""``error_class`` a cancel of a not-yet-running job stamps.
+
+The job never reached a worker, so no attempt exists to explain and no
+actor-level hook can have run for it. Covers the single-job request
+(``write_cancel_request``) and the bulk filter (``cancel_where``) alike —
+the same outcome must read the same way whichever path produced it.
+
+Why ``error_class`` rather than a new column or a ``job_status`` value:
+the three origins are one dimension of one terminal state, every terminal
+failure path already self-describes through this column
+(``DeadlineExceeded``, ``WorkerCrashed``, ``ActorDeregistered``), and the
+admin UI, ``taskq doctor`` and the archive all read it already. A status
+enum change would break every consumer of the eight-value union for a
+distinction that is not a different state. The cancel is recorded
+durably on the row itself: a row whose cancel timestamp is set is
+cancelled, never re-available.
+"""
+
 MIN_DEFERRAL_INTERVAL: Final[timedelta] = timedelta(seconds=1)
 """Minimum effective delay a NON-consuming deferral reschedules out.
 
@@ -147,9 +202,9 @@ zero delay parks the job ``pending`` at ``clock_timestamp()`` — first
 in every dispatch round (``ORDER BY scheduled_at``) and instantly
 re-claimable, so one job monopolises a worker slot in a claim/refund
 round trip per cycle.  Both non-consuming arms therefore apply
-``GREATEST(delay, this interval)``; the vendored corpus guards the same
-edge outright (River rejects a non-future snooze; Oban requires a
-positive snooze delay).
+``GREATEST(delay, this interval)`` to guard the same edge: a non-future
+delay is rejected outright because it feeds back into the head of the
+dispatch queue, monopolising a slot.
 
 A consuming ``RetryAfter`` is exempt: an immediate retry is a real
 execution, bounded by the budget it spends, not a deferral competing
@@ -159,8 +214,9 @@ for the head of the dispatch order.
 DEFAULT_MAX_RETRY_BACKOFF: Final[timedelta] = timedelta(hours=24)
 """Default ceiling on a single retry's backoff.
 
-Why 24 h: it is one standard on-call rotation, and it mirrors Dramatiq's
-DEFAULT_MAX_BACKOFF. The effective ceiling is
+Why 24 h: it is one standard on-call rotation, so a job whose backoff has
+reached the ceiling is retried at least once per shift and never waits
+longer than the window in which someone is watching. The effective ceiling is
 ``WorkerSettings.max_retry_backoff``; this is the value that setting
 defaults to, and the fallback every retry-computation signature carries
 so a caller that constructs one directly (tests, the in-memory backend)
@@ -253,13 +309,12 @@ overloaded database then aborts the batch server-side
 (``QueryCanceledError``, SQLSTATE 57014 — the transient family the
 :class:`~taskq.backend._sweeps.SweepBatchSizer` breaker counts), and the
 breaker latches a reduced batch size for the next attempt, instead of the
-client cancelling with no degradation signal. River's job cleaner pairs a
-30 s per-query timeout with a reduced-batch circuit breaker
-(``vendor/river/rivershared/riversharedmaintenance/
-river_shared_maintenance.go``); the dispatcher pool's shared command
-timeout is the tighter ceiling this family must live under, so the
-reduced tier — not a longer timeout — is what makes a loaded database
-drainable. The effective value is derived from the configured
+client cancelling with no degradation signal. A maintenance loop pairs a
+per-query timeout with a reduced-batch circuit breaker so an overloaded
+database can drain under controlled batch sizes; the dispatcher pool's
+shared command timeout is the tighter ceiling this family must live under,
+so the reduced tier — not a longer timeout — is what makes a loaded
+database drainable. The effective value is derived from the configured
 ``dispatcher_command_timeout`` by the prune loops
 (:mod:`taskq.worker._leader_sweeps`); this constant is the signature
 default for direct callers and matches the default deployment shape.
@@ -407,6 +462,88 @@ on ``jobs.result_size_bytes`` and the result is never carried in a Redis
 event payload.
 """
 
+SMALLINT_MIN: Final[int] = -32768
+"""Lower bound of the Postgres ``smallint`` domain."""
+
+SMALLINT_MAX: Final[int] = 32767
+"""Upper bound of the Postgres ``smallint`` domain.
+
+``jobs.priority``, ``jobs.max_attempts`` and ``jobs.attempt`` are all
+``smallint`` (``migrations/01.00.00_01_pre_initial.sql``). Every layer
+that accepts one of those values from a caller refuses out-of-domain
+input against these two constants, so the refusal cannot drift between
+the client, the actor declaration and the backend boundary.
+"""
+
+MAX_ATTEMPTS_SMALLINT_CEILING: Final[int] = SMALLINT_MAX
+"""The ``jobs.max_attempts`` column's domain ceiling."""
+
+MAX_ENQUEUABLE_MAX_ATTEMPTS: Final[int] = MAX_ATTEMPTS_SMALLINT_CEILING - 1
+"""Largest ``max_attempts`` a fresh enqueue or policy may carry.
+
+One below the column ceiling, retained as a defensive margin: a row
+parked at exactly the ceiling has no headroom for any statement that
+needs to add one to a max_attempts-derived value. Rows can still legally
+REACH the ceiling — a snooze arm's saturating increment parks a snoozed
+job there — which is why the retry layer clamps row-stored values back
+into this bound before reconstructing a policy.
+"""
+
+
+def _check_is_int(value: object, what: str) -> None:
+    """Refuse a non-integer before any range comparison runs.
+
+    The range guards below are reached from ``EnqueueArgs``, a plain
+    dataclass with no runtime type enforcement — unlike ``RetryPolicy``,
+    where pydantic coerces first. Without this, ``None`` raises a bare
+    ``TypeError`` from the ``<`` comparison naming neither the field nor
+    the expected type, and a float passes every range check and is stored
+    for the driver to reject later. Both are the untyped-refusal shape the
+    typed errors here exist to prevent.
+
+    ``bool`` is excluded deliberately: it is an ``int`` subclass, so
+    ``True`` would otherwise satisfy a ``>= 1`` bound and silently mean
+    one attempt.
+    """
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"{what} must be an int, got {type(value).__name__}")
+
+
+def check_priority_domain(value: int, *, what: str = "priority") -> None:
+    """Refuse a ``priority`` outside the ``smallint`` column's domain.
+
+    Shared by every layer that accepts a priority so the arithmetic is
+    stated once: the client override, the actor declaration, and the
+    enqueue-boundary struct all raise the same refusal for the same
+    value. ``what`` names the caller's parameter, so the message points
+    at the argument to fix rather than at a column in a driver
+    traceback.
+    """
+    _check_is_int(value, what)
+    if value < SMALLINT_MIN or value > SMALLINT_MAX:
+        raise ValueError(
+            f"{what} must fit smallint range ({SMALLINT_MIN}..{SMALLINT_MAX}), got {value}"
+        )
+
+
+def check_max_attempts_domain(value: int, *, what: str = "max_attempts") -> None:
+    """Refuse a ``max_attempts`` outside the enqueuable range.
+
+    Below one the job is dispatchable but can never complete — the first
+    failure finds no budget left — so the value is refused rather than
+    stored. Above :data:`MAX_ENQUEUABLE_MAX_ATTEMPTS` the column has no
+    headroom left to raise the ceiling on a reclaim.
+    """
+    _check_is_int(value, what)
+    if value < 1:
+        raise ValueError(f"{what} must be >= 1, got {value}")
+    if value > MAX_ENQUEUABLE_MAX_ATTEMPTS:
+        raise ValueError(
+            f"{what} must fit the smallint jobs.max_attempts column with one of "
+            f"defensive headroom (<= {MAX_ENQUEUABLE_MAX_ATTEMPTS}), got {value}"
+        )
+
+
 BTREE_MAX_ITEM_BYTES: Final[int] = 2704
 """Postgres btree v4 maximum index-entry size, in bytes.
 
@@ -463,7 +600,7 @@ def schema_lock_name(purpose: str, schema: str) -> str:
     leader election never runs its sweeps while dispatch (not leader-gated)
     keeps flowing, so the fleet reports healthy while scheduled work stops
     moving. Qualifying with the schema gives each schema its own lock. This
-    is the lock-side twin of the ``taskq_wake_{schema}`` channel naming and
+    is the lock-side twin of the per-schema NOTIFY channel naming and
     follows the same purpose-then-schema ordering as the unique-for lock
     keys built in the enqueue path.
 
@@ -478,10 +615,36 @@ def schema_lock_name(purpose: str, schema: str) -> str:
     return f"taskq:{purpose}:{schema}"
 
 
-WAKE_CHANNEL_FMT: Final[str] = "taskq_wake_{schema}"
-"""Format template for the wake-channel name."""
+PG_MAX_IDENTIFIER_BYTES: Final[int] = 63
+"""NAMEDATALEN - 1: the longest identifier Postgres keeps intact.
 
-EVENTS_CHANNEL_FMT: Final[str] = "taskq_events_{schema}"
+``LISTEN`` takes its channel as an identifier and silently truncates a
+longer one (a NOTICE, not an error), while ``pg_notify`` takes text and
+raises ``22023 channel name too long`` — so an over-long channel name
+splits the two halves of one conversation: the listener subscribes to a
+truncated name and the notifier either errors or addresses the full one.
+"""
+
+SCHEMA_CHANNEL_TAG_HEX_LEN: Final[int] = 10
+"""Hex digits of ``sha224(schema)`` that identify the schema inside every
+NOTIFY channel name (:func:`schema_channel_tag`). Ten digits (40 bits) keep
+the widest channel — the per-worker one, which also carries a 36-char uuid
+— under :data:`PG_MAX_IDENTIFIER_BYTES` with room to spare, while a chance
+collision between two schemas of one database needs on the order of a
+million schemas. The SQL twin in the wake trigger (migration
+``01.00.14_01``) takes the same prefix of the same digest, and the two are
+pinned equal end to end by ``tests/test_notify_channel_length.py``."""
+
+WAKE_CHANNEL_FMT: Final[str] = "taskq_wake_{schema_tag}"
+"""Format template for the wake-channel name.
+
+``{schema_tag}`` is :func:`schema_channel_tag`, never the schema name
+itself: a channel that interpolated the schema overflowed the identifier
+limit for long schemas (see :data:`PG_MAX_IDENTIFIER_BYTES`), and the
+per-worker channel did so from a 14-character schema on.
+"""
+
+EVENTS_CHANNEL_FMT: Final[str] = "taskq_events_{schema_tag}"
 """Format template for the fleet-wide worker-events channel.
 
 All workers in a schema subscribe to this channel.  Each NOTIFY payload
@@ -489,18 +652,25 @@ is a JSON object with a ``"type"`` discriminator field so receivers can
 route to the appropriate handler without dedicated per-event channels.
 """
 
-WORKER_CHANNEL_FMT: Final[str] = "taskq_worker_{schema}_{worker_id}"
+WORKER_CHANNEL_FMT: Final[str] = "taskq_worker_{schema_tag}_{worker_id}"
 """Format template for the per-worker events channel.
 
 Only the target worker subscribes, so no payload filtering is needed.
 Uses the same JSON payload format as EVENTS_CHANNEL_FMT.
 """
 
-PROGRESS_CHANNEL_FMT: Final[str] = "taskq:{schema}:progress:{job_id}"
+PROGRESS_CHANNEL_FMT: Final[str] = "taskq:{schema_tag}:progress:{job_id}"
 """Format template for the per-job progress channel."""
 
-PROGRESS_GLOBAL_CHANNEL_FMT: Final[str] = "taskq:{schema}:progress"
+PROGRESS_GLOBAL_CHANNEL_FMT: Final[str] = "taskq:{schema_tag}:progress"
 """Format template for the schema-wide progress fanout channel."""
+
+CRON_COMMIT_GATE_CHANNEL_FMT: Final[str] = "taskq_cron_commit_{schema_tag}"
+"""Format template for the cron tick's self-addressed commit-gate channel
+(see ``taskq.worker.cron_loop``). Schema-tagged like every other channel:
+channels share one database-wide namespace, so two schemas' cron sessions
+in one database would otherwise hear each other's commit signals.
+"""
 
 _IDENT_RE = re.compile(r"\A[A-Za-z_][A-Za-z0-9_]*\Z")
 r"""SQL identifier validator (schema names, table/column names).
@@ -589,16 +759,55 @@ def quote_ident(identifier: str) -> str:
     return f'"{identifier}"'
 
 
-def wake_channel(schema: str) -> str:
-    """Return the formatted wake-channel name for *schema*.
+def schema_channel_tag(schema: str) -> str:
+    """The fixed-width token that stands for *schema* in every NOTIFY channel.
+
+    The first :data:`SCHEMA_CHANNEL_TAG_HEX_LEN` hex digits of
+    ``sha224(schema)``. A hash rather than the name because channels are
+    identifiers bounded by :data:`PG_MAX_IDENTIFIER_BYTES` while the
+    schema name alone may be that long; a fixed-width tag makes every
+    channel's length independent of the schema, so there is no schema
+    length at which one channel silently stops matching its listener.
+    The tag is computed over the exact text of the name — quoted schema
+    identifiers are case-sensitive, so ``Taskq`` and ``taskq`` are distinct
+    schemas with distinct tags. The wake trigger derives the same tag in
+    SQL from ``TG_TABLE_SCHEMA`` (``left(encode(sha224(...), 'hex'), 10)``).
 
     Validates *schema* against the same identifier regex used by the
-    migration runner so that only safe names reach SQL interpolation.
-    Raises :class:`ValueError` on invalid input.
+    migration runner. Raises :class:`ValueError` on invalid input.
     """
     if not _IDENT_RE.match(schema):
         raise ValueError(f"invalid schema identifier: {schema!r}")
-    return WAKE_CHANNEL_FMT.format(schema=schema)
+    # _IDENT_RE admits ASCII only, so the encoding cannot change the digest.
+    digest = hashlib.sha224(schema.encode("ascii")).hexdigest()
+    return digest[:SCHEMA_CHANNEL_TAG_HEX_LEN]
+
+
+def _bounded_channel(name: str, *, schema: str) -> str:
+    """*name*, or a :class:`ValueError` when it would not survive ``LISTEN``.
+
+    Every derived channel passes through here, so a template edit or an
+    over-long interpolated id fails where the name is built rather than
+    as a listener that silently hears nothing.
+    """
+    if len(name.encode()) > PG_MAX_IDENTIFIER_BYTES:
+        raise ValueError(
+            f"NOTIFY channel {name!r} for schema {schema!r} is "
+            f"{len(name.encode())} bytes; Postgres keeps at most "
+            f"{PG_MAX_IDENTIFIER_BYTES} (LISTEN would truncate it and "
+            "pg_notify would reject it)"
+        )
+    return name
+
+
+def wake_channel(schema: str) -> str:
+    """Return the wake-channel name for *schema*.
+
+    Raises :class:`ValueError` on an invalid schema identifier.
+    """
+    return _bounded_channel(
+        WAKE_CHANNEL_FMT.format(schema_tag=schema_channel_tag(schema)), schema=schema
+    )
 
 
 def events_channel(schema: str) -> str:
@@ -611,9 +820,9 @@ def events_channel(schema: str) -> str:
 
     Raises :class:`ValueError` on invalid schema identifier.
     """
-    if not _IDENT_RE.match(schema):
-        raise ValueError(f"invalid schema identifier: {schema!r}")
-    return EVENTS_CHANNEL_FMT.format(schema=schema)
+    return _bounded_channel(
+        EVENTS_CHANNEL_FMT.format(schema_tag=schema_channel_tag(schema)), schema=schema
+    )
 
 
 def worker_channel(schema: str, worker_id: str) -> str:
@@ -625,9 +834,10 @@ def worker_channel(schema: str, worker_id: str) -> str:
 
     Raises :class:`ValueError` on invalid schema identifier.
     """
-    if not _IDENT_RE.match(schema):
-        raise ValueError(f"invalid schema identifier: {schema!r}")
-    return WORKER_CHANNEL_FMT.format(schema=schema, worker_id=worker_id)
+    return _bounded_channel(
+        WORKER_CHANNEL_FMT.format(schema_tag=schema_channel_tag(schema), worker_id=worker_id),
+        schema=schema,
+    )
 
 
 def progress_channel(schema: str, job_id: UUID | str) -> str:
@@ -638,9 +848,10 @@ def progress_channel(schema: str, job_id: UUID | str) -> str:
 
     Raises :class:`ValueError` on invalid schema identifier.
     """
-    if not _IDENT_RE.match(schema):
-        raise ValueError(f"invalid schema identifier: {schema!r}")
-    return PROGRESS_CHANNEL_FMT.format(schema=schema, job_id=job_id)
+    return _bounded_channel(
+        PROGRESS_CHANNEL_FMT.format(schema_tag=schema_channel_tag(schema), job_id=job_id),
+        schema=schema,
+    )
 
 
 def progress_global_channel(schema: str) -> str:
@@ -651,6 +862,37 @@ def progress_global_channel(schema: str) -> str:
 
     Raises :class:`ValueError` on invalid schema identifier.
     """
-    if not _IDENT_RE.match(schema):
-        raise ValueError(f"invalid schema identifier: {schema!r}")
-    return PROGRESS_GLOBAL_CHANNEL_FMT.format(schema=schema)
+    return _bounded_channel(
+        PROGRESS_GLOBAL_CHANNEL_FMT.format(schema_tag=schema_channel_tag(schema)), schema=schema
+    )
+
+
+def cron_commit_gate_channel(schema: str) -> str:
+    """Return the cron tick's self-addressed commit-gate channel for *schema*.
+
+    Raises :class:`ValueError` on invalid schema identifier.
+    """
+    return _bounded_channel(
+        CRON_COMMIT_GATE_CHANNEL_FMT.format(schema_tag=schema_channel_tag(schema)), schema=schema
+    )
+
+
+#: The widest ``str(uuid.UUID)`` (36 chars) — the probe id
+#: :func:`check_channels_fit` interpolates where a channel carries one.
+_WIDEST_UUID_TEXT: Final[str] = "ffffffff-ffff-ffff-ffff-ffffffffffff"
+
+
+def check_channels_fit(schema: str) -> None:
+    """Derive every channel for *schema* so an over-long one fails at load.
+
+    Called by the settings validator: the channels are fixed-width by
+    construction, so this is the guard that a template edit cannot quietly
+    reintroduce a schema length at which listeners and notifiers disagree.
+    Raises :class:`ValueError` naming the offending channel.
+    """
+    wake_channel(schema)
+    events_channel(schema)
+    worker_channel(schema, _WIDEST_UUID_TEXT)
+    progress_channel(schema, _WIDEST_UUID_TEXT)
+    progress_global_channel(schema)
+    cron_commit_gate_channel(schema)

@@ -1,23 +1,20 @@
-"""Sweep 3 (scheduled → pending) must write its state-change events in one statement.
+"""Sweep 3 (scheduled → pending) writes no durable event rows.
 
-``sweep_scheduled_to_pending`` promotes a bounded batch of due jobs and
-writes the batch's ``state_change`` events as ONE batched ``unnest``
-INSERT inside the same transaction.  The leader's
-``_scheduled_wake_loop`` wraps the sweep in a 5-second
-``asyncio.timeout``: with a per-row event write inside the transaction, a
-backlog large enough that N x RTT exceeds the deadline rolls the whole
-promotion back, the next tick faces a strictly larger backlog, and the
-sweep never commits again — the livelock shape the batching forecloses.
+``sweep_scheduled_to_pending`` promotes a bounded batch of due jobs. A
+promotion is the scheduler's bookkeeping, not an outcome transition, and
+it is one of the two acts every admission-denial cycle repeats (claim +
+promote): under the 429 denial contract a denied job cycles until capacity
+frees or its deadline expires, so a ``job_events`` row per promotion is
+exactly the unbounded-growth vector the aggregated denial counters on the
+job row replaced. The transitions of record are the terminal writes and
+the sweep/cancel audit entries.
 
-The wall-clock threshold is RTT-dependent, so the assertion here counts
-statements, not seconds: the round-trip count is constant in N, in any
-environment.
-
-Every promoted row shares ``kind`` and ``detail`` (``from_state='scheduled'``,
-``to_state='pending'`` -- the sweep CTE's own ``WHERE status = 'scheduled'``
-guarantees it), so only the job ids vary and a single ``unnest`` over a
-``uuid[]`` suffices, exactly as dispatch's ``INSERT_EVENTS_BATCH_SQL``
-does for the identical shape.
+The leader's ``_scheduled_wake_loop`` wraps the sweep in a 5-second
+``asyncio.timeout``: the bounded-batch discipline still governs (one
+statement per batch, a per-batch commit), and the assertion here counts
+statements, not seconds, so it holds in any environment. (Rewritten from
+the superseded promotion-event pins: those pinned one event row per
+promoted job, the shape the denial-events decision abolished.)
 """
 
 from __future__ import annotations
@@ -39,13 +36,10 @@ _PROMOTED = 50
 class _CountingConn:
     """Delegates to a real connection, counting event-INSERT round trips.
 
-    The statement count IS the property under test: correctness never differed
-    between the loop and a batch, only the number of awaited round trips taken
-    inside the sweep's transaction while the deadline clock runs.
-
-    Any INSERT into ``job_events`` counts -- the single-row form and the
-    batched ``unnest`` form alike -- so the assertion pins the invariant (one
-    statement per sweep, not one per row) rather than the spelling of the fix.
+    The statement count IS the property under test: any INSERT into
+    ``job_events`` from the promotion sweep is the per-row bookkeeping the
+    denial contract abolished, whatever its spelling — a loop, a batch,
+    anything.
     """
 
     def __init__(self, conn: Any) -> None:
@@ -62,17 +56,16 @@ class _CountingConn:
         return getattr(self._conn, name)
 
 
-async def test_sweep_writes_one_event_statement_for_the_whole_batch(
+async def test_sweep_promotion_writes_no_event_rows(
     clean_pg_conn: asyncpg.Connection,
     module_pg_schema: ModulePgSchema,
 ) -> None:
-    """Promoting N scheduled jobs issues ONE event INSERT, not N.
+    """Promoting N scheduled jobs writes ZERO event rows, in zero
+    event-insert round trips.
 
-    Driving the real ``sweep_scheduled_to_pending`` and counting round trips,
-    rather than grepping its source for a `for rec in rows:` loop: a
-    reintroduced loop spelled any other way -- enumerate, a comprehension of
-    awaits, a helper -- is the same regression and the regex would not have
-    seen it.
+    Driving the real ``sweep_scheduled_to_pending`` and counting round
+    trips as well as rows: a reintroduced per-promotion write in any
+    spelling — one statement or a loop — fails both counts.
     """
     schema = module_pg_schema.schema_name
     job_ids = [new_uuid() for _ in range(_PROMOTED)]
@@ -92,17 +85,17 @@ async def test_sweep_writes_one_event_statement_for_the_whole_batch(
     )
 
     assert count == _PROMOTED, f"all {_PROMOTED} due jobs must be promoted"
-    assert counting.event_inserts == 1, (
-        f"expected ONE batched event INSERT for {_PROMOTED} promoted jobs, "
-        f"got {counting.event_inserts} — the per-row loop is still there, taking one "
-        "awaited round trip per row inside a transaction the leader's 5-second "
-        "deadline will eventually roll back in full"
+    assert counting.event_inserts == 0, (
+        f"the promotion sweep issued {counting.event_inserts} job_events "
+        "inserts — a row per promotion is the unbounded-growth vector under "
+        "sustained admission denial; the transition of record is the "
+        "terminal write, and contention belongs on the row's counters"
     )
 
     written = await clean_pg_conn.fetchval(
         f"SELECT count(*) FROM \"{schema}\".job_events WHERE kind = 'state_change'"  # noqa: S608  # Why: schema is a test-fixture identifier.
     )
-    assert written == _PROMOTED, "one event per promoted job must still be written"
+    assert written == 0, "promotion is bookkeeping: no durable event rows"
     still_scheduled = await clean_pg_conn.fetchval(
         f"SELECT count(*) FROM \"{schema}\".jobs WHERE status = 'scheduled'"  # noqa: S608  # Why: schema is a test-fixture identifier.
     )

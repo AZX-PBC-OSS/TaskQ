@@ -8,6 +8,7 @@ Covers:
 - RateLimitState dataclass fields
 """
 
+import asyncio
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -805,3 +806,82 @@ async def test_reset_on_sw_log_pg(clean_pg_conn: object, module_pg_schema: objec
         assert state.remaining == 2.0
     finally:
         await pool.close()
+
+
+# ════════════════════════════════════════════════════════════════════
+# Registry peek_all/reset — the caller-supplied timeout bound
+# ════════════════════════════════════════════════════════════════════
+
+
+class _HangingPrimitive:
+    """Duck-typed primitive whose backend reads never answer.
+
+    Stands in for a Redis-backed bucket whose broker is black-holed:
+    every peek/reset parks forever, exactly what the timeout bound exists
+    to survive.
+    """
+
+    def __init__(self, name: str = "hung") -> None:
+        self.name = name
+        self.peek_calls = 0
+        self.reset_calls = 0
+
+    async def peek(self, **_: object) -> RateLimitState:
+        self.peek_calls += 1
+        await asyncio.Event().wait()  # never answers
+        raise AssertionError("unreachable: the wait above never resolves")
+
+    async def reset(self, **_: object) -> None:
+        self.reset_calls += 1
+        await asyncio.Event().wait()  # never answers
+
+
+async def test_peek_all_timeout_bounds_a_hung_bucket_read() -> None:
+    """A bucket whose store never answers must raise TimeoutError at the
+    bound — not park peek_all() (and the page awaiting it) forever."""
+    reg = RateLimitRegistry()
+    reg.register(_tb_memory(capacity=10, refill=1, name="healthy"))
+    reg.register(_HangingPrimitive("hung"))
+
+    with pytest.raises(TimeoutError):
+        await reg.peek_all(clock=FakeClock(_START), timeout=0.05)
+
+
+async def test_peek_all_with_timeout_still_returns_when_the_store_answers() -> None:
+    """The bound is a deadline, not a degradation: a healthy pass under it
+    returns every bucket's state unchanged."""
+    reg = RateLimitRegistry()
+    reg.register(_tb_memory(capacity=10, refill=1, name="tb1"))
+    reg.register(_sw_memory(name="sw1", limit=5))
+
+    results = await reg.peek_all(clock=FakeClock(_START), timeout=5.0)
+
+    assert set(results) == {"tb1", "sw1"}
+
+
+async def test_registry_reset_timeout_bounds_a_hung_backend_write() -> None:
+    """A reset whose backend round trip never completes raises TimeoutError
+    at the bound — the reset route answers 503 instead of parking."""
+    reg = RateLimitRegistry()
+    hanging = _HangingPrimitive("hung")
+    reg.register(hanging)
+
+    with pytest.raises(TimeoutError):
+        await reg.reset("hung", timeout=0.05)
+
+    assert hanging.reset_calls == 1, "the reset was dispatched, then bounded"
+
+
+async def test_registry_reset_with_timeout_succeeds_on_memory_backend() -> None:
+    """The bound is a deadline, not a refusal: a reset that completes under
+    it clears the bucket exactly as before."""
+    reg = RateLimitRegistry()
+    tb = _tb_memory(capacity=10, refill=2)
+    reg.register(tb)
+    clock = FakeClock(_START)
+
+    await tb.acquire(count=8, clock=clock)
+    await reg.reset("test", clock=clock, timeout=5.0)
+
+    state = await reg.peek("test", clock=clock)
+    assert state.tokens_remaining == 10.0

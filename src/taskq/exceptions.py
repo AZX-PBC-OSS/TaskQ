@@ -55,6 +55,37 @@ class ResultUnavailable(TaskQError):
         super().__init__(f"job {row.id} has no stored result")
 
 
+class StreamUnavailable(TaskQError):
+    """A job stream could not re-read its job row for longer than its failure budget.
+
+    Raised by the Postgres poll transport behind :meth:`TaskQ.stream` and
+    :meth:`JobHandle.progress_stream` when every fetch has failed with a
+    pool or connection error for ``elapsed`` seconds (the transport's
+    failure budget). A blip shorter than the budget is retried silently
+    beyond a warning per failed poll; this is the end of the stream, so
+    the caller's ``async for`` cannot wait forever on a database that is
+    not coming back. The last failure is chained as ``__cause__``.
+    """
+
+    def __init__(
+        self,
+        job_id: "JobId",
+        *,
+        consecutive_failures: int,
+        elapsed: float,
+        last_error: BaseException,
+    ) -> None:
+        self.job_id = job_id
+        self.consecutive_failures = consecutive_failures
+        self.elapsed = elapsed
+        self.last_error = last_error
+        super().__init__(
+            f"stream for job {job_id} could not re-read the job row for {elapsed:.1f}s "
+            f"({consecutive_failures} consecutive poll failures); last failure: "
+            f"{type(last_error).__name__}"
+        )
+
+
 class BackpressureError(TaskQError):
     """Base class for synchronous enqueue-time backpressure signals.
 
@@ -112,6 +143,12 @@ class MaxPendingExceededError(BackpressureError):
     The caller decides whether to retry, fail, or wait; the library does
     not block on capacity.
     """
+
+    hint = (
+        "Inside an actor body, prefer `raise Snooze(delay)` over letting this "
+        "reach the retry classifier: a full queue is backpressure, not a "
+        "failure, and a Snooze defers without spending the job's retry budget."
+    )
 
     def __init__(self, actor: str, current_count: int, max_pending: int) -> None:
         self.current_count = current_count
@@ -250,6 +287,57 @@ class IdempotencyKeyLockTimeoutError(TaskQError):
             "uncommitted same-pair token (on a transactional consumer, the actor's "
             "own open transaction). Nothing was inserted; retry the same enqueue — "
             "once the holder's transaction resolves, the retry dedupes or inserts."
+        )
+
+
+class IdempotencyKeyActorMismatchError(TaskQError):
+    """An idempotency hit resolved to a job of a DIFFERENT actor.
+
+    Uniqueness is ``(idempotency_scope, idempotency_key)`` — schema-wide, so
+    two actors sharing a key collide. A same-actor hit is a dedup and returns
+    the existing row; a cross-actor hit cannot be one — the caller asked for
+    THIS actor's job and would receive a handle whose result is another
+    actor's, indistinguishable from a successful dedup — so it is refused.
+    The composite index here cannot include the actor without a migration,
+    so the hit is checked after the fact and refused instead of silently
+    resolved.
+
+    Nothing was inserted (single enqueue: the arbiter skipped the row; batch:
+    the whole batch is rolled back, all-or-nothing like a singleton
+    collision; batch fast: the COPY aborts the whole batch the same way).
+    Namespace keys per actor (``"send_receipt:order_123"``) or
+    give the two actors different ``idempotency_scope`` values.
+
+    ``existing_job_id`` names the stored job the key matched; it is ``None``
+    when the collision is between two items of the same fast-path batch,
+    where no row was stored for either.
+    """
+
+    def __init__(
+        self,
+        *,
+        actor: str,
+        existing_actor: str,
+        existing_job_id: UUID | None,
+        idempotency_key: str,
+        idempotency_scope: str | None,
+    ) -> None:
+        self.actor = actor
+        self.existing_actor = existing_actor
+        self.existing_job_id = existing_job_id
+        self.idempotency_key = idempotency_key
+        self.idempotency_scope = idempotency_scope
+        matched = (
+            f"matched job {existing_job_id} of actor {existing_actor!r}"
+            if existing_job_id is not None
+            else f"collided with an item of the same batch for actor {existing_actor!r}"
+        )
+        super().__init__(
+            f"enqueue for actor {actor!r} with idempotency_key {idempotency_key!r} "
+            f"(scope {idempotency_scope!r}) {matched}: keys are unique per scope "
+            "across actors, and a hit on another actor's job is not a dedup of this "
+            "one. Nothing was enqueued. Namespace the key per actor or use a "
+            "different idempotency_scope."
         )
 
 
@@ -768,9 +856,10 @@ class SchemaNotMigratedError(TaskQError):
     def __init__(self, schema: str) -> None:
         self.schema = schema
         super().__init__(
-            f"TaskQ schema {schema!r} is missing or not migrated. "  # noqa: S608  # Why: human-readable error message, not a SQL query; ruff's SQL-injection heuristic false-positives on the word "schema" near f-string interpolation.
-            f"Run `taskq migrate up` to create/update it, or set "
-            f"TASKQ_MIGRATE_ON_START=true to migrate automatically at worker startup."
+            f"TaskQ schema {schema!r} is missing or not migrated. "
+            "Run `taskq migrate up` from a pre-deploy job or init container to "
+            "create/update it. Workers never self-migrate: "
+            "TASKQ_MIGRATE_ON_START is read only by `taskq ui serve`."
         )
 
 
@@ -882,7 +971,10 @@ class ScopedIdempotencyMigrationPendingError(TaskQError):
 
 class DuplicateIdempotencyKeyError(TaskQError):
     """``enqueue_batch_fast`` aborted: an item's
-    ``(idempotency_scope, idempotency_key)`` pair is already enqueued.
+    ``(idempotency_scope, idempotency_key)`` pair is already enqueued by the
+    SAME actor. A pair spanning two actors raises
+    :class:`IdempotencyKeyActorMismatchError` instead, the same refusal the
+    single and batch tiers apply.
 
     COPY has no ``ON CONFLICT`` arbiter, so a same-pair duplicate —
     repeated within the batch or raced against a row the composite
@@ -891,24 +983,26 @@ class DuplicateIdempotencyKeyError(TaskQError):
     abort is deliberate bulk-import semantics, unchanged by the
     classification this error introduced). The non-fast paths never
     raise for this condition: their ``ON CONFLICT`` arbiter dedupes and
-    RETURNS the existing row, so no pre-existing typed error expressed
-    "this pair is already enqueued" — hence this class, following
-    pgqueuer's ``DuplicateJobError`` precedent (a typed domain error for
-    a deduplication-constraint violation on the enqueue path, raised by
-    their in-memory adapter too). Distinct from
-    :class:`ScopedIdempotencyMigrationPendingError`, which is the
-    rolling-deploy window's cross-scope reuse signal.
+    RETURNS the existing row, so a typed domain error for a
+    deduplication-constraint violation on the enqueue path does not exist
+    there — hence this class, expressing the same idempotency constraint
+    at the bulk-import boundary in both the SQL and in-memory backends.
+    Distinct from :class:`ScopedIdempotencyMigrationPendingError`, which is
+    the rolling-deploy window's cross-scope reuse signal.
 
-    ``idempotency_key`` / ``idempotency_scope`` carry the offending pair
-    when it could be attributed: the InMemory mirror detects it exactly,
-    and the PG path attributes by MATCHING the violation's detail line
-    against the batch's own candidate pairs — exact whenever the detail's
-    rendering is unambiguous (including comma-bearing scopes), and both
-    ``None`` when it is not (two distinct pairs whose values render to
-    the same detail text, or a localized/truncated detail — Postgres can
-    truncate long detail values). Never a wrong pair: ambiguity degrades
-    to unattributed rather than guessing. ``detail`` carries the postgres
-    detail verbatim when present.
+    ``idempotency_key`` / ``idempotency_scope`` carry the offending pair,
+    resolved exactly on both backends by one shared rule
+    (``first_duplicate_idempotency_pair``): the first item in batch order
+    whose pair repeats an earlier item or is already stored. The PG path
+    resolves the stored half with a targeted post-abort lookup inside the
+    caller's transaction scope — never by parsing the violation's detail
+    text, which renders values raw and unquoted (ambiguous under
+    positional reading for comma-bearing scopes, unusable when localized
+    or truncated). Both fields are ``None`` only when the conflicting
+    row could not be resolved at all — a committed-and-instantly-deleted
+    racer — where the detail-text match is the last word and still never
+    guesses. ``detail`` carries the postgres detail verbatim when
+    present.
 
     Resolution: pre-deduplicate the items, or use
     :meth:`~taskq.client.JobsClient.enqueue_batch`, which dedupes and

@@ -5,10 +5,12 @@ identity-like values must never be metric dimensions. The new sweep-health
 and backlog instruments carry single bounded-enum labels — ``sweep_name``
 over the closed set of leader-loop sweeps, ``lock`` over the schema-
 qualified lock names (a fixed purpose enum x the schema), ``status`` over
-the database's status enum — and the oldest-due gauge carries none. The
-pins here assert exactly that: the recorded dimensions are the documented
-enum key and nothing else, so a refactor that sneaks an identity value
-(worker_id, job_id, schedule_id) into any of these instruments fails here.
+the database's status enum — and the oldest-due and scheduled-count gauges
+carry none (the backlog-growing alert joins them on that shared empty
+label set). The pins here assert exactly that: the recorded dimensions are
+the documented enum key and nothing else, so a refactor that sneaks an
+identity value (worker_id, job_id, schedule_id) into any of these
+instruments fails here.
 """
 
 from __future__ import annotations
@@ -138,6 +140,49 @@ def test_oldest_due_age_gauge_is_label_free() -> None:
     assert observations[0].value == 12.5
 
 
+def test_scheduled_count_gauge_is_label_free() -> None:
+    """``taskq.jobs.scheduled_count`` carries NO dimensions either — the
+    backlog-growing alert joins it against the equally label-less
+    oldest-due-age gauge with an unqualified vector ``and``, which pairs
+    series only on identical label sets. Any label added here makes the
+    join silently unmatchable: the alert can never fire, and nothing
+    reports that."""
+    obs_mod.update_scheduled_count_cache(7)
+
+    observations = list(otel_mod._observe_scheduled_count(CallbackOptions()))  # pyright: ignore[reportPrivateUsage]  # Why: same callback-observation pattern as above.
+
+    assert len(observations) == 1
+    assert dict(observations[0].attributes or {}) == {}
+    assert observations[0].value == 7
+
+
+def test_leader_lease_gauge_is_label_free(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``taskq.maintenance_leader.lease_expires_in_seconds`` carries NO
+    dimensions — one series per pod, present only while that pod holds
+    the lease. A ``worker_id`` label here is the exact identity-value
+    cardinality failure the constitution forbids (fresh UUID per
+    process), and any other label multiplies a single-pod signal for no
+    query. The empty-cache state yields NO observation — a demoted
+    leader must go absent, not export a stale or zeroed TTL."""
+    # A fresh cache per test so a stamp left by another test cannot widen
+    # the assertion (the sweep_success precedent above); the writer is
+    # gated on _otel_enabled, so pin that on too.
+    monkeypatch.setattr(otel_mod, "_leader_lease_expires_in_seconds_cache", None)  # pyright: ignore[reportPrivateUsage]  # Why: the pin is the cache's exported shape.
+    monkeypatch.setattr(otel_mod, "_otel_enabled", True)
+    otel_mod.record_leader_lease_expires_in_seconds("w1", 30.0)
+
+    observations = list(otel_mod._observe_leader_lease_expires_in_seconds(CallbackOptions()))  # pyright: ignore[reportPrivateUsage]  # Why: same callback-observation pattern as above.
+
+    assert len(observations) == 1
+    assert dict(observations[0].attributes or {}) == {}
+    assert observations[0].value == 30.0
+
+    otel_mod.clear_leader_lease_expires_in_seconds()
+    assert (
+        list(otel_mod._observe_leader_lease_expires_in_seconds(CallbackOptions())) == []  # pyright: ignore[reportPrivateUsage]
+    )
+
+
 def test_sweep_batch_size_gauge_dimensions_are_the_sweep_name_enum_only() -> None:
     """``taskq.maintenance_leader.sweep_batch_size``: dimension exactly
     {sweep_name}; the value is the batch size, and nothing about the
@@ -198,6 +243,55 @@ def test_sweep_success_gauge_dimensions_are_the_sweep_name_enum_only(
 
     now = time.time()
     assert all(0 < now - float(o.value) < 60 for o in observations)
+
+
+# ── The dispatch failure counter's label contract ────────────────────────
+#
+# ``taskq.dispatch.failures`` names the failure class on ``error_type``
+# beside the capped ``queue`` label: a lock-timeout retry storm and a
+# permanent auth failure are the same series without it. ``error_type``
+# is a closed class set — the exception types the dispatch path can
+# raise, resolved by ``_resolve_error_type``, plus the fixed ``unknown``
+# fallback — never caller-supplied text, so it cannot mint unbounded
+# series the way an identity value would.
+
+
+@pytest.fixture
+def dispatch_failure_reader(monkeypatch: pytest.MonkeyPatch) -> InMemoryMetricReader:
+    """Fresh SDK instrument for the dispatch failure counter, enabled."""
+    reader = InMemoryMetricReader()
+    meter = MeterProvider(metric_readers=[reader]).get_meter("taskq-dispatch-failure-cardinality")
+    monkeypatch.setattr(otel_mod, "_otel_enabled", True)
+    # The admitted-queue set is process-global admission state; a fresh set
+    # per test keeps one test's queues from widening another's assertion.
+    monkeypatch.setattr(otel_mod, "_queue_label_values", set())
+    monkeypatch.setattr(
+        otel_mod,
+        "_dispatch_failures",
+        meter.create_counter("taskq.dispatch.failures", unit="1"),
+    )
+    return reader
+
+
+def test_dispatch_failure_dimensions_are_queue_and_error_type_only(
+    dispatch_failure_reader: InMemoryMetricReader,
+) -> None:
+    """One series per (queue, error_type): the failure class is a
+    dimension — recorded both from an ``except`` block (the production
+    call shape, class derived from the handled exception) and explicitly —
+    and no identity value (worker_id, job_id) ever rides along."""
+    try:
+        raise ConnectionResetError("simulated reset mid dispatch query")
+    except ConnectionResetError:
+        obs_mod.record_dispatch_failure("default")
+    obs_mod.record_dispatch_failure("default", error_type="TimeoutError")
+
+    points = _counter_points(dispatch_failure_reader, "taskq.dispatch.failures")
+    assert {frozenset(attrs) for attrs, _ in points} == {frozenset({"queue", "error_type"})}
+    assert {attrs["error_type"] for attrs, _ in points} == {
+        "ConnectionResetError",
+        "TimeoutError",
+    }
 
 
 # ── The ``queue`` label cap on the job-side instruments ────────────────
@@ -268,7 +362,7 @@ def _emit_all_four(actor: str, queue: str) -> None:
     obs_mod.record_published_message(actor, queue)
     obs_mod.record_dispatch_duration(queue, 0.001)
     obs_mod.record_consumed_message(actor, queue, outcome="succeeded")
-    obs_mod.record_process_duration(actor, queue, 0.001)
+    obs_mod.record_process_duration(actor, queue, 0.001, outcome="succeeded")
 
 
 def test_queue_label_cap_and_overflow_label_are_pinned() -> None:
@@ -354,7 +448,7 @@ def test_queues_within_the_cap_keep_their_real_names(
 # UUID from cron_schedules — as its dimension, the one identity-like label
 # that survived the worker_id campaign.  Schedule rows are runtime-creatable
 # (``create_schedule`` is public client API; every row mints a fresh UUID),
-# so nothing the library ships bounds that value set.  The relabel (#157)
+# so nothing the library ships bounds that value set.  The relabel
 # made the dimension ``actor`` — but the actor on THIS instrument is not
 # the registered set every other actor-labeled instrument enjoys: the
 # failure path emits the raw ``cron_schedules.actor`` string, and schedule

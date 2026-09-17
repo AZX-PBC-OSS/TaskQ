@@ -182,7 +182,7 @@ async def test_handle_generic_exception_propagates_infra_write_failure() -> None
     from taskq.retry import RetryPolicy
     from taskq.testing.actor import StubActorConfig
     from taskq.testing.jobs import make_job_row
-    from taskq.worker._handlers import _handle_generic_exception
+    from taskq.worker._handlers import _TERMINAL_WRITE_ATTEMPTS, _handle_generic_exception
 
     infra_exc = asyncpg.PostgresConnectionError("connection lost")
     backend = _RaisingBackend(infra_exc)
@@ -210,7 +210,10 @@ async def test_handle_generic_exception_propagates_infra_write_failure() -> None
             log,
         )
 
-    assert backend.calls == 1
+    # Every attempt of the bounded retry budget was spent on the write and
+    # nothing else was written: the infra error is neither swallowed nor
+    # re-routed into a second terminal write.
+    assert backend.calls == _TERMINAL_WRITE_ATTEMPTS
 
 
 @pytest.mark.asyncio
@@ -228,7 +231,7 @@ async def test_dispatch_exception_swallows_infra_failure_all_handlers(
     from taskq.retry import RetryPolicy
     from taskq.testing.actor import StubActorConfig
     from taskq.testing.jobs import make_job_row
-    from taskq.worker._handlers import _dispatch_exception
+    from taskq.worker._handlers import _TERMINAL_WRITE_ATTEMPTS, _dispatch_exception
 
     infra_exc = asyncpg.PostgresConnectionError("connection lost")
 
@@ -276,7 +279,7 @@ async def test_dispatch_exception_swallows_infra_failure_all_handlers(
         redis_client=None,
     )
 
-    assert backend.calls == 1
+    assert backend.calls == _TERMINAL_WRITE_ATTEMPTS
     assert outcome in ("failed", "scheduled")
 
 
@@ -341,10 +344,10 @@ def test_worker_fenced_terminal_templates_carry_the_attempt_epoch_conjunct() -> 
     one on the SAME worker after a stall → sweep reclaim → same-worker
     redispatch: the stale handler's terminal write matches the guard and
     falsely terminalises the redispatched attempt with the old attempt's
-    result. Oban fences exactly this with an attempt-identity epoch on
-    every terminal write (``ack_query``:
-    ``attempted_at == ^job.attempted_at``, vendor/oban/lib/oban/engines/
-    basic.ex). The behavioural pin is
+    result. Guard against this with an attempt-identity epoch on every
+    terminal write — a conjunct binding the update to the specific
+    redispatched attempt so a stale handler's late write cannot land on
+    its row. The behavioural pin is
     ``tests/test_rt_terminal_write_fencing.py`` (integration) and
     ``tests/test_in_memory_terminal_writes.py`` (the twin mirror); this
     is the template inventory guard — every arm of every fenced
@@ -369,7 +372,10 @@ def test_worker_fenced_terminal_templates_carry_the_attempt_epoch_conjunct() -> 
         ("mark_failed", "AND attempt = $8", 1),
         ("mark_cancelled", "AND attempt = $5", 1),
         ("mark_retry", "AND j.attempt = (SELECT attempt FROM params)", 2),
-        ("mark_snoozed", "AND j.attempt = (SELECT attempt FROM params)", 3),
+        # mark_snoozed has exactly two arms (snoozed, deadline_failed) —
+        # a deferral's only terminal exit is the job's own deadline, so a
+        # denial/budget arm no longer exists to fence.
+        ("mark_snoozed", "AND j.attempt = (SELECT attempt FROM params)", 2),
         ("mark_retry_after_consume_true", "AND j.attempt = (SELECT attempt FROM params)", 3),
         ("mark_retry_after_consume_false", "AND j.attempt = (SELECT attempt FROM params)", 2),
     )

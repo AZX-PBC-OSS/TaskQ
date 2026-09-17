@@ -175,7 +175,7 @@ class TestStreamingValidation:
             await client.enqueue_batch_streaming(_items_gen(5), chunk_size=1001)
 
 
-# ── #152: no-connection path — per-chunk commits, typed refusal ────────
+# ── No-connection path — per-chunk commits, typed refusal ──────────────
 
 
 @actor(name="batch_streaming_partition_healthy")
@@ -189,9 +189,9 @@ async def _partition_capped(_payload: _Payload) -> None:
 
 
 async def test_no_conn_chunk_failure_commits_prefix_and_raises_typed_error() -> None:
-    """PIN (#152): with no caller connection each chunk is its own pool
+    """PIN: with no caller connection each chunk is its own pool
     transaction, so a cap refusal on chunk N leaves chunks 1..N-1 (plus
-    the refusing chunk's within-cap actors, under #149's per-actor
+    the refusing chunk's within-cap actors, under the per-actor
     partition) durably committed, and the call raises the typed batch
     error with STREAM-GLOBAL item indices — everything a caller needs to
     retry only the refused items instead of duplicating the prefix."""

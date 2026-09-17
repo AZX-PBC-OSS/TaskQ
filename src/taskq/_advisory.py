@@ -31,9 +31,59 @@ import asyncio
 from taskq.backend._protocol import ConnLike
 
 __all__ = [
+    "DEADLINE_ERRORS",
     "DEFAULT_ADVISORY_LOCK_CLIENT_BACKSTOP_SLACK_S",
     "acquire_advisory_xact_lock_bounded",
 ]
+
+
+def __getattr__(name: str) -> tuple[type[BaseException], ...]:
+    """Resolve ``DEADLINE_ERRORS`` on first access (PEP 562).
+
+    The tuple names ``asyncpg.QueryCanceledError``, and this module's own
+    contract (the docstring's "zero-dependency leaf") forbids a
+    module-level driver import: ``taskq.testing`` imports this module
+    transitively (via ``taskq.actor`` → ``ratelimit.sliding_window`` →
+    ``ratelimit._sliding_window_pg``) and must stay importable
+    driver-free. A plain function would do, but the ``except
+    DEADLINE_ERRORS:`` call sites (cli, backend.postgres,
+    worker._leader_shared) already run driver-present — keeping the
+    constant's shape keeps them untouched. First access imports the
+    driver once and caches the tuple in ``globals()``, so later reads are
+    plain attribute lookups. Same lazy-name grain as
+    ``taskq.worker.__init__`` and ``taskq.exceptions``; the annotation-
+    only declaration below keeps the name statically resolvable.
+    """
+    if name == "DEADLINE_ERRORS":
+        import asyncpg
+
+        value: tuple[type[BaseException], ...] = (
+            asyncpg.QueryCanceledError,
+            TimeoutError,
+        )
+        globals()[name] = value
+        return value
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+#: The two ways a bounded statement runs out of its deadline, named once
+#: so a caller cannot catch one half and let the other escape untyped.
+#: ``QueryCanceledError`` is the server cancelling at its own
+#: ``statement_timeout``; ``TimeoutError`` is the client-side deadline — a
+#: dropped connection or a cancelled await — firing first. Which one wins
+#: is a race the caller does not control, and both mean the same thing to
+#: it: this statement did not land, whatever committed before it is real
+#: progress, and the action is to run again. Catching only the server half
+#: is why a client-side deadline used to escape the move-queue CLI as a
+#: raw ``TimeoutError`` instead of its documented exit code.
+#:
+#: Annotation-only declaration: the VALUE materializes lazily through the
+#: module ``__getattr__`` above (a module-level ``import asyncpg`` would
+#: break this module's zero-dependency-leaf contract), while the bare
+#: annotation keeps the name visible to static tools and ``__all__``
+#: checkers. A bare annotation binds no runtime attribute, so access
+#: still falls through to ``__getattr__``.
+DEADLINE_ERRORS: tuple[type[BaseException], ...]
 
 #: Fast-path statement: returns bool (acquired or not) without queueing,
 #: so an uncontended racer pays exactly one round trip. hashtextextended

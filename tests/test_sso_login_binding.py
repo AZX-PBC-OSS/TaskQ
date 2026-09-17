@@ -1,30 +1,28 @@
-"""RED-TEAM: the SSO backends do not bind an IdP response to the login attempt.
+"""The SSO backends bind an IdP response to the login attempt that asked for it.
 
-Two independent defects, both of which let a response that was never solicited
-by *this* browser's login be accepted as a fresh authentication:
+Two independent bindings keep a response that was never solicited by *this*
+browser's login from being accepted as a fresh authentication:
 
-**OIDC — no ``nonce`` (fixed in this branch).**  ``oidc.py`` originally
-built the authorization URL with ``state`` and PKCE but no ``nonce``, and
-the callback passed ``params={"client_id": ...}`` only — authlib's
-``validate_nonce()`` is a no-op unless ``params["nonce"]`` is truthy, so an
-ID token carrying no nonce at all validated cleanly. ``state`` + PKCE bind
-the *code*; only the nonce binds the *ID token* — the credential the
-session is minted from. The fix mints a per-login ``nonce`` into the
-authorization URL and the signed state cookie and threads it into
-``CodeIDToken``'s ``params``; the pins below hold it there.
+**OIDC — the ID token carries a ``nonce``.**  ``state`` + PKCE bind the
+*code*; only the nonce binds the *ID token* — the credential the session
+is minted from. authlib's ``validate_nonce()`` is a no-op unless
+``params["nonce"]`` is truthy, so ``oidc.py`` mints a per-login ``nonce``
+into the authorization URL and the signed state cookie and threads it into
+``CodeIDToken``'s ``params``; an ID token carrying no nonce — or another
+login's nonce — fails validation.
 
-**SAML — the binding must hold for the IdP-initiated shape too.**
+**SAML — the binding holds for the IdP-initiated shape too.**
 ``saml.py`` passes ``request_id`` into ``process_response`` and keeps a
 consumed-assertion-ID cache, but inside python3-saml the comparison is
 guarded by ``if in_response_to is not None and request_id is not None:`` —
-a response carrying no ``InResponseTo`` at all passes untouched, so with a
-live request cookie any IdP-initiated assertion for this SP's audience
-mints a session without answering any AuthnRequest.  The callback
-therefore enforces the equality itself: an accepted response's
-``InResponseTo`` must equal the issued request ID.
+a response carrying no ``InResponseTo`` at all would pass that comparison
+untouched, so with a live request cookie any IdP-initiated assertion for
+this SP's audience could mint a session without answering any
+AuthnRequest.  The callback therefore enforces the equality itself: an
+accepted response's ``InResponseTo`` must equal the issued request ID, and
+the replay cache refuses a second presentation of the same assertion ID.
 
-Every test below asserts the DESIRABLE behaviour, so each goes green once the
-binding is implemented.
+Every test below pins one of those bindings end to end.
 """
 
 from __future__ import annotations
@@ -197,7 +195,8 @@ def test_oidc_rejects_an_id_token_with_no_nonce() -> None:
 
     This is the injection primitive — an ID token obtained through any other
     flow (another RP, an IdP-initiated login, a captured token) has no nonce
-    tying it to this browser, and today it is accepted.
+    tying it to this browser, so the callback must refuse it rather than
+    mint a session.
     """
     client = TestClient(_oidc_app(_oidc_config()))
     with _mock_provider():
@@ -350,9 +349,10 @@ def test_saml_login_stores_the_authn_request_id_for_the_callback(
 ) -> None:
     """The AuthnRequest ID minted at /login must survive to the ACS callback.
 
-    ``auth.get_last_request_id()`` is never called today and nothing persists
-    it, so the callback has no value it could pass. Asserting the round trip:
-    whatever /login generated is what the callback enforces.
+    The callback's InResponseTo equality check needs the very ID ``/login``
+    generated, so the login path persists it (the signed request cookie) for
+    the callback to read. This pins the round trip: whatever /login generated
+    is what the callback enforces.
     """
     pytest.importorskip("onelogin.saml2.auth")
     from onelogin.saml2.auth import OneLogin_Saml2_Auth
@@ -474,11 +474,11 @@ def _assertion_id(response_b64: str) -> str:
 def test_saml_rejects_a_replayed_assertion_id() -> None:
     """The same assertion must not authenticate twice.
 
-    There is no assertion-ID replay cache anywhere in the tree today, so this
-    test asserts that one is consulted: a byte-identical assertion that
+    The consumed-assertion-ID cache (``saml.py``'s ``_AssertionReplayCache``)
+    is consulted on every accepted assertion: a byte-identical assertion that
     succeeded once must be refused on its second presentation. The assertion
     is still inside its NotOnOrAfter window, so signature and time checks both
-    still pass — only a replay cache can reject it.
+    still pass — only the replay cache can reject it.
     """
     pytest.importorskip("onelogin.saml2.auth")
     from tests._sso_saml_crypto import build_saml_response

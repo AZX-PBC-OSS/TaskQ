@@ -25,6 +25,7 @@ from unittest.mock import AsyncMock, MagicMock, create_autospec, patch
 
 import asyncpg
 import pytest
+import structlog
 from pydantic import BaseModel
 
 from taskq._di.registry import ProviderRegistry
@@ -36,13 +37,16 @@ from taskq.backend._protocol import Backend, CancelPhase, JobRow
 from taskq.backend.clock import Clock, SystemClock
 from taskq.client._enqueuer import SubJobEnqueuer
 from taskq.context import JobContext
-from taskq.exceptions import DependencyCycle, MissingProvider, ScopeViolation
+from taskq.exceptions import DependencyCycle, DIError, MissingProvider, ScopeViolation
+from taskq.obs import ErrorReporter
 from taskq.settings import WorkerSettings
 from taskq.testing.actor import EmptyPayload
 from taskq.testing.clock import FakeClock
 from taskq.testing.health import unique_health_sock_path
 from taskq.worker.deps import WorkerDeps
+from taskq.worker.health import HealthTcpBindError
 from taskq.worker.run import _main
+from tests._di_scopes import bootstrap_scopes, make_scopes
 from tests.conftest import _FakePool
 
 # ── Helpers ────────────────────────────────────────────────────────
@@ -85,34 +89,6 @@ def _settings(redis_url: str | None = None, **overrides: object) -> WorkerSettin
     for key, value in overrides.items():
         config[key] = value
     return WorkerSettings.load_from_dict(config)
-
-
-def _make_scopes_and_bootstrap(
-    registry: ProviderRegistry,
-) -> tuple[ProcessScope, ThreadScope, LoopScope]:
-    scope_containers: dict[Scope, Any] = {}
-    resolver = make_resolver(registry, scope_containers)
-
-    process_scope = ProcessScope(resolver=resolver)
-    scope_containers[Scope.PROCESS] = process_scope
-    thread_scope = ThreadScope(resolver=resolver)
-    scope_containers[Scope.THREAD] = thread_scope
-    loop_scope = LoopScope(resolver=resolver)
-    scope_containers[Scope.LOOP] = loop_scope
-
-    return process_scope, thread_scope, loop_scope
-
-
-async def _bootstrap_scopes(
-    registry: ProviderRegistry,
-    process_scope: ProcessScope,
-    thread_scope: ThreadScope,
-    loop_scope: LoopScope,
-) -> None:
-    settings = _settings()
-    await process_scope.bootstrap(registry, settings)
-    await thread_scope.bootstrap(registry, process_scope)
-    await loop_scope.bootstrap(registry, process_scope, thread_scope)
 
 
 def _backend_methods_stub() -> Backend:
@@ -204,7 +180,14 @@ async def _run_main_with_mocked_deps(
     *,
     _registry: ProviderRegistry | None = None,
     actor_registry: dict[str, ActorRef[Any, Any]] | None = None,
+    loops_started: list[str] | None = None,
 ) -> int:
+    """Run ``_main`` with every pool, loop and signal seam faked.
+
+    *loops_started* collects the name of each worker loop the bootstrap
+    reached (``producer``, ``consumer``, ...), so a test can prove a
+    refusal happened before any of them started.
+    """
     fake_backend = _backend_methods_stub()
     worker_id_val = new_uuid()
 
@@ -225,17 +208,24 @@ async def _run_main_with_mocked_deps(
     async def _fake_all(*args: object, **kwargs: object) -> None:
         pass
 
+    def _fake_loop(name: str) -> Any:
+        async def _loop(*args: object, **kwargs: object) -> None:
+            if loops_started is not None:
+                loops_started.append(name)
+
+        return _loop
+
     with (
         patch("taskq.worker._bootstrap.PostgresBackend", return_value=fake_backend),
         patch("taskq.worker._bootstrap.open_worker_deps") as mock_open,
         patch("taskq.worker.run.register_worker", side_effect=_fake_register),
         patch("taskq.worker._bootstrap.install_signal_handlers", side_effect=_fake_install),
-        patch("taskq.worker._bootstrap.heartbeat_loop", side_effect=_fake_all),
-        patch("taskq.worker._bootstrap.notify_listener_loop", side_effect=_fake_all),
+        patch("taskq.worker._bootstrap.heartbeat_loop", side_effect=_fake_loop("heartbeat")),
+        patch("taskq.worker._bootstrap.notify_listener_loop", side_effect=_fake_loop("notify")),
         patch("taskq.worker._bootstrap.MaintenanceLeader") as mock_leader_cls,
-        patch("taskq.worker.run.producer_loop", side_effect=_fake_all),
-        patch("taskq.worker.run.consumer_loop_stub", side_effect=_fake_all),
-        patch("taskq.worker.run.di_consumer_loop", side_effect=_fake_all),
+        patch("taskq.worker.run.producer_loop", side_effect=_fake_loop("producer")),
+        patch("taskq.worker.run.consumer_loop_stub", side_effect=_fake_loop("consumer")),
+        patch("taskq.worker.run.di_consumer_loop", side_effect=_fake_loop("consumer")),
         patch("taskq.worker.run.deregister_worker", new_callable=AsyncMock),
     ):
         mock_leader_instance = MagicMock()
@@ -260,8 +250,8 @@ async def test_bootstrap_happy_path() -> None:
     registry.register_factory(_LoopDep, Scope.LOOP, lambda: _LoopDep())
     registry.validate()
 
-    process_scope, thread_scope, loop_scope = _make_scopes_and_bootstrap(registry)
-    await _bootstrap_scopes(registry, process_scope, thread_scope, loop_scope)
+    process_scope, thread_scope, loop_scope = make_scopes(registry)
+    await bootstrap_scopes(registry, process_scope, thread_scope, loop_scope, _settings())
 
     assert process_scope.get(WorkerSettings) is settings
     assert isinstance(process_scope.get(_ProcessDep), _ProcessDep)
@@ -320,6 +310,43 @@ async def test_missing_provider_raises_before_taskgroup() -> None:
 
     with pytest.raises(MissingProvider):
         registry.validate(actors=actors_list)
+
+
+# ── Bootstrap refuses an ErrorReporter the hook's scope cannot support ──
+
+
+def test_validate_error_reporter_scope_accepts_hook_lifetimes() -> None:
+    """PROCESS, THREAD and LOOP registrations outlive the actor invocation,
+    so bootstrap accepts them and the per-dispatch resolution serves them."""
+    from taskq.worker._bootstrap import _validate_error_reporter_scope
+
+    for scope in (Scope.PROCESS, Scope.THREAD, Scope.LOOP):
+        registry = ProviderRegistry()
+        registry.register_factory(ErrorReporter, scope, lambda: object())
+        _validate_error_reporter_scope(registry)
+
+
+def test_validate_error_reporter_scope_refuses_transient() -> None:
+    """A TRANSIENT registration can never resolve (the hook runs after the
+    actor's scope closed), so worker startup refuses it loudly instead of
+    the per-dispatch guard quietly skipping the hook for the fleet's life."""
+    from taskq.worker._bootstrap import _validate_error_reporter_scope
+
+    registry = ProviderRegistry()
+    registry.register_factory(
+        ErrorReporter,
+        Scope.TRANSIENT,
+        lambda: object(),  # type: ignore[arg-type,return-value]
+    )
+    with pytest.raises(DIError, match="TRANSIENT"):
+        _validate_error_reporter_scope(registry)
+
+
+def test_validate_error_reporter_scope_noop_without_registration() -> None:
+    """No reporter registered: nothing to validate, no error."""
+    from taskq.worker._bootstrap import _validate_error_reporter_scope
+
+    _validate_error_reporter_scope(ProviderRegistry())
 
 
 # ── Validate-time DependencyCycle raises before TaskGroup starts ──
@@ -382,8 +409,8 @@ async def test_scope_teardown_lifo() -> None:
     registry.register_factory(_LoopDep, Scope.LOOP, make_loop)
     registry.validate()
 
-    process_scope, thread_scope, loop_scope = _make_scopes_and_bootstrap(registry)
-    await _bootstrap_scopes(registry, process_scope, thread_scope, loop_scope)
+    process_scope, thread_scope, loop_scope = make_scopes(registry)
+    await bootstrap_scopes(registry, process_scope, thread_scope, loop_scope, _settings())
 
     async with contextlib.AsyncExitStack() as stack:
         stack.push_async_callback(process_scope.shutdown)
@@ -410,8 +437,8 @@ async def test_scope_teardown_on_exception() -> None:
     registry.register_factory(_LoopDep, Scope.LOOP, make_loop)
     registry.validate()
 
-    process_scope, thread_scope, loop_scope = _make_scopes_and_bootstrap(registry)
-    await _bootstrap_scopes(registry, process_scope, thread_scope, loop_scope)
+    process_scope, thread_scope, loop_scope = make_scopes(registry)
+    await bootstrap_scopes(registry, process_scope, thread_scope, loop_scope, _settings())
 
     with pytest.raises(RuntimeError, match="boom"):
         async with contextlib.AsyncExitStack() as stack:
@@ -502,6 +529,28 @@ async def test_bootstrap_registers_redis_pool_provider() -> None:
 # ── fail fast when a Redis-backend rate limit lacks TASKQ_REDIS_URL ──
 
 
+async def test_bootstrap_refuses_a_transient_error_reporter_before_any_loop_starts() -> None:
+    """Through the real bootstrap: a TRANSIENT-scoped ErrorReporter fails
+    worker startup with the DI error naming the allowed scopes, and no
+    consumer loop is ever started — the misregistration cannot reach a
+    job."""
+    from taskq.obs import ErrorReporter
+
+    class _Reporter:
+        async def report(self, job: object, exception: BaseException) -> None:
+            return None
+
+    registry = ProviderRegistry()
+    registry.register_factory(ErrorReporter, Scope.TRANSIENT, lambda: _Reporter())
+    loops_started: list[str] = []
+
+    with pytest.raises(DIError, match=r"TRANSIENT.*PROCESS, THREAD or LOOP"):
+        await _run_main_with_mocked_deps(
+            _settings(), _registry=registry, loops_started=loops_started
+        )
+    assert loops_started == []
+
+
 async def test_bootstrap_fails_fast_on_redis_rate_limit_without_redis_url() -> None:
     """_main raises at bootstrap when a backend="redis" rate limit is
     registered but redis_url is None.
@@ -533,6 +582,55 @@ async def test_bootstrap_fails_fast_on_redis_rate_limit_without_redis_url() -> N
             _settings(),
             actor_registry={served_actor.name: served_actor},
         )
+
+
+async def test_worker_boots_without_redis_extra_installed_and_no_redis_url(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A worker with no [redis] extra and no TASKQ_REDIS_URL must boot cleanly.
+
+    This is the documented core-only install path: docs/getting-started/
+    quick-start.md and docs/index.md both say ``pip install taskq-py`` (no
+    extras) is sufficient to run a worker, and docs/getting-started/
+    installation.md's feature-degradation table says progress/rate-limiting
+    "degrade gracefully" without [redis] — it does not say the worker fails
+    to start.
+
+    Root cause: ``_redis_extra_installed()`` (src/taskq/worker/_bootstrap.py)
+    calls ``importlib.util.find_spec("redis.asyncio")`` to probe for the
+    extra. When the *parent* package ``redis`` is not installed at all (the
+    real core-only state — not merely ``redis.asyncio`` missing under an
+    installed ``redis``), ``find_spec`` on a dotted submodule name raises
+    ``ModuleNotFoundError`` instead of returning ``None`` — this is
+    documented stdlib behavior for ``importlib.util.find_spec``, not a
+    platform quirk. The bug is a bare ``find_spec`` call where the standard
+    idiom is ``try: importlib.import_module(name) except ImportError``:
+    an ``except ImportError`` around ``importlib.import_module``, wrapping
+    unavailability instead of letting it propagate. The result: every
+    worker boot without the optional [redis] extra crashes with an
+    unhandled ``ModuleNotFoundError: No module named 'redis'`` before
+    reaching the intended graceful-degradation branch in
+    ``_redis_configured`` (which the surrounding code comments describe as
+    "fail fast at bootstrap, naming the offending limiter(s)" — i.e. the
+    author's intent was a clean, actor-naming RuntimeError, not a raw
+    ModuleNotFoundError with no actors declared at all).
+
+    Test seam: ``sys.modules["redis"] = None`` forces the next import of
+    ``redis`` (and any submodule) to raise ModuleNotFoundError, faithfully
+    reproducing "redis is not installed" without needing a separate venv.
+    This is the same poisoning idiom already used in
+    tests/test_cli_ui.py::test_ui_serve_lifespan_redis_import_error_wrapped_with_install_hint,
+    except here the *parent* module is poisoned (matching a truly absent
+    package) rather than only ``redis.asyncio``.
+    """
+    import sys
+
+    monkeypatch.setitem(sys.modules, "redis", None)
+
+    # No actors, no rate limits, no TASKQ_REDIS_URL: this is the exact
+    # docs/getting-started/quick-start.md happy path with zero extras.
+    result = await _run_main_with_mocked_deps(_settings())
+    assert result == 0
 
 
 async def test_bootstrap_allows_redis_rate_limit_with_user_redis_provider() -> None:
@@ -633,14 +731,26 @@ async def test_bootstrap_ignores_redis_rate_limit_of_unserved_actor() -> None:
     assert result == 0
 
 
-async def test_bootstrap_clear_error_when_redis_extra_missing() -> None:
+async def test_bootstrap_clear_error_when_redis_extra_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """TASKQ_REDIS_URL set + served redis limits + [redis] extra missing
     raises an actionable bootstrap error naming the extra and the limits.
 
     Regression: this configuration previously surfaced as a bare
     ``MissingProvider`` at DI validate, with no hint that the fix is
     installing the extra.
+
+    The absent-extra state is driven through the REAL
+    ``_redis_extra_installed`` — poisoning ``sys.modules["redis"]`` is
+    byte-identical to the package never having been installed (the import
+    machinery raises ``ModuleNotFoundError`` on the parent, exactly the
+    state the probe exists to detect). Mocking the probe itself is how the
+    dotted-``find_spec`` crash shipped with zero coverage of the one line
+    that was wrong.
     """
+    import sys
+
     from taskq.ratelimit.registry import registry as rl_registry
     from taskq.ratelimit.token_bucket import TokenBucket
 
@@ -657,23 +767,69 @@ async def test_bootstrap_clear_error_when_redis_extra_missing() -> None:
     async def served_actor(payload: EmptyPayload) -> None:
         pass
 
-    with (
-        patch("taskq.worker._bootstrap._redis_extra_installed", lambda: False),
-        pytest.raises(RuntimeError, match=r"taskq\[redis\]"),
-    ):
+    monkeypatch.setitem(sys.modules, "redis", None)
+
+    with pytest.raises(RuntimeError, match=r"taskq\[redis\]"):
         await _run_main_with_mocked_deps(
             _settings(redis_url="redis://localhost:6379/0"),
             actor_registry={served_actor.name: served_actor},
         )
 
 
-async def test_bootstrap_redis_url_without_extra_and_no_redis_limits_boots() -> None:
+async def test_bootstrap_redis_url_without_extra_and_no_redis_limits_boots(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """TASKQ_REDIS_URL set with the extra missing but no served redis-backed
     limits is harmless: the worker boots (register_redis_pool silently skips
-    and nothing requires the provider)."""
-    with patch("taskq.worker._bootstrap._redis_extra_installed", lambda: False):
-        result = await _run_main_with_mocked_deps(_settings(redis_url="redis://localhost:6379/0"))
+    and nothing requires the provider).
+
+    The absent-extra state is real (``sys.modules`` poisoning), not a mock
+    of the probe under test — see the sibling test above.
+    """
+    import sys
+
+    monkeypatch.setitem(sys.modules, "redis", None)
+
+    result = await _run_main_with_mocked_deps(_settings(redis_url="redis://localhost:6379/0"))
     assert result == 0
+
+
+# ── the extra probe itself, against genuinely absent/present packages ──
+#
+# ``_redis_extra_installed`` answers one question — is the [redis] extra
+# importable HERE — and both answers are pinned against the real function:
+# a probe that always answered one way would leave half the bootstrap
+# guards above untestable.
+
+
+async def test_redis_extra_probe_false_when_redis_package_absent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No ``redis`` package at all → False, and never a raised
+    ModuleNotFoundError (the dotted-``find_spec`` defect this pins).
+
+    Only the parent is poisoned: that is the genuinely-absent state, and
+    the one under which ``find_spec("redis.asyncio")`` raises instead of
+    returning ``None`` (poisoning ``redis.asyncio`` itself would let
+    ``find_spec`` answer ``None`` without ever walking to the parent —
+    the probe's defect would survive the test).
+    """
+    import sys
+
+    from taskq.worker._bootstrap import _redis_extra_installed
+
+    monkeypatch.setitem(sys.modules, "redis", None)
+
+    assert _redis_extra_installed() is False
+
+
+async def test_redis_extra_probe_true_when_redis_installed() -> None:
+    """The dev suite installs the extra (sibling tests import redis.asyncio
+    unconditionally), so the probe must answer True — a probe hardwired to
+    False would silently disable every Redis-backed limiter."""
+    from taskq.worker._bootstrap import _redis_extra_installed
+
+    assert _redis_extra_installed() is True
 
 
 # ── _served_redis_rate_limits uses the injected registry, not the singleton ──
@@ -682,7 +838,7 @@ async def test_bootstrap_redis_url_without_extra_and_no_redis_limits_boots() -> 
 async def test_served_redis_rate_limits_uses_injected_registry() -> None:
     """_served_redis_rate_limits scans the injected registry, not the module singleton.
 
-    Regression (PR #39 / #42): ``_served_redis_rate_limits`` read the
+    Regression: ``_served_redis_rate_limits`` read the
     module-level ``rl_registry`` singleton instead of the resolved
     registry from ``_resolve_rl_registry``. With a custom
     ``RateLimitRegistry``:
@@ -946,8 +1102,8 @@ async def test_di_consumer_loop_uses_process_scope_clock() -> None:
     registry.register_value(Clock, Scope.PROCESS, fake_clock)
     registry.validate()
 
-    process_scope, thread_scope, loop_scope = _make_scopes_and_bootstrap(registry)
-    await _bootstrap_scopes(registry, process_scope, thread_scope, loop_scope)
+    process_scope, thread_scope, loop_scope = make_scopes(registry)
+    await bootstrap_scopes(registry, process_scope, thread_scope, loop_scope, _settings())
 
     captured_clock: Clock | None = None
     dispatch_event = asyncio.Event()
@@ -1052,8 +1208,8 @@ async def test_di_consumer_loop_raises_missing_provider_no_clock() -> None:
     registry.register_value(WorkerSettings, Scope.PROCESS, settings)
     registry.validate()
 
-    process_scope, thread_scope, loop_scope = _make_scopes_and_bootstrap(registry)
-    await _bootstrap_scopes(registry, process_scope, thread_scope, loop_scope)
+    process_scope, thread_scope, loop_scope = make_scopes(registry)
+    await bootstrap_scopes(registry, process_scope, thread_scope, loop_scope, _settings())
 
     local_queue: asyncio.Queue[JobRow] = asyncio.Queue()
     shutdown_event = asyncio.Event()
@@ -1100,8 +1256,8 @@ async def test_di_consumer_loop_releases_job_for_unknown_actor() -> None:
     registry.register_value(Clock, Scope.PROCESS, fake_clock)
     registry.validate()
 
-    process_scope, thread_scope, loop_scope = _make_scopes_and_bootstrap(registry)
-    await _bootstrap_scopes(registry, process_scope, thread_scope, loop_scope)
+    process_scope, thread_scope, loop_scope = make_scopes(registry)
+    await bootstrap_scopes(registry, process_scope, thread_scope, loop_scope, _settings())
 
     backend = _backend_methods_stub()
     released = asyncio.Event()
@@ -1212,3 +1368,54 @@ async def test_bootstrap_with_watchdog_disabled_does_not_spawn_or_fail() -> None
     path that must never fail."""
     result = await _run_main_with_mocked_deps(_settings(TASKQ_WATCHDOG_ENABLED="false"))
     assert result == 0
+
+
+# ── Health listener bind failures: fail-closed on the probe port ──
+
+
+async def test_health_tcp_bind_failure_refuses_startup() -> None:
+    """The probe port the deployment manifest routed to this replica cannot
+    be served: the worker refuses to start. A booting worker with dead
+    probes is the silent kind of down, and a tcpSocket probe on a port some
+    other process holds would pass while checking nothing."""
+    import socket as socket_mod
+
+    with socket_mod.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        probe.listen(1)
+        taken = probe.getsockname()[1]
+        settings = _settings(
+            **{
+                "TASKQ_HEALTH_PORT": taken,
+                "TASKQ_HEALTH_HOST": "127.0.0.1",
+            }
+        )
+        with pytest.raises(HealthTcpBindError):
+            await _run_main_with_mocked_deps(settings)
+
+
+async def test_health_socket_collision_warns_and_boots() -> None:
+    """A unix-socket path collision means a live PEER worker owns the path;
+    refusing to boot would crash-loop a healthy pair during a rolling
+    restart. The boot warns and carries on."""
+
+    async def _peer_serve(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        # A real peer worker answers probes and closes. Closing matters:
+        # without it the accepted transport lingers, and on Python 3.12
+        # ``wait_closed()`` below waits for it forever.
+        writer.close()
+        with contextlib.suppress(ConnectionError):
+            await writer.wait_closed()
+
+    peer_path = unique_health_sock_path("health_collision_peer")
+    peer = await asyncio.start_unix_server(_peer_serve, path=peer_path)
+    try:
+        settings = _settings(**{"TASKQ_HEALTH_SOCKET_PATH": peer_path})
+        with structlog.testing.capture_logs() as logs:
+            await _run_main_with_mocked_deps(settings)
+        unavailable = [e for e in logs if e.get("event") == "health-server-unavailable"]
+        assert len(unavailable) == 1
+        assert unavailable[0]["socket_path"] == peer_path
+    finally:
+        peer.close()
+        await peer.wait_closed()

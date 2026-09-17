@@ -9,9 +9,9 @@ carried on ``EnqueueArgs``/``JobRow``, written to PG, hydrated back — and
 was read by ZERO consumers: no validation, no warning, the call accepted
 and discarded. A ``timedelta`` safety knob that silently does nothing is
 a placeholder that returns a plausible value — the shape the
-constitution's deferred-work rule exists to forbid.
+deferred-work rule exists to forbid.
 
-The settled contract (#117, enforcement direction): ``heartbeat_timeout``
+The settled contract (enforcement direction): ``heartbeat_timeout``
 is ENFORCED. The enqueue boundary accepts a positive value (a non-positive
 one is refused with a boundary error mirroring ``start_to_close``'s), and
 the reclaim sweep's stale-holder classification reads it — a running job

@@ -19,13 +19,12 @@ the tree are ``reset()``-by-name, and the pending-reclaim drain handles
 ever seen — unbounded in the caller-supplied key space, exactly the
 shape the reservation fix closed.
 
-Vendor convention (solid_queue — the closest keyed-PG prior art): one
-row per payload key with a TTL column, reclaimed by exactly one batched
-sweep (``vendor/solid_queue/app/models/solid_queue/semaphore.rb`` —
-``expires_at`` derived from the job; the maintenance sweep deletes
-expired rows in batches). Any of the three shapes — TTL column + sweep,
-pending-reclaim reuse, or publish-on-demand without a persistent row —
-closes this; the pin asserts the observable, not the shape.
+Standard keyed-PG pattern: one row per payload key with a TTL column,
+reclaimed by exactly one batched sweep — the TTL is derived from the
+job, and the maintenance sweep deletes expired rows in batches. Any of
+the three shapes — TTL column + sweep, pending-reclaim reuse, or
+publish-on-demand without a persistent row — closes this; the pin
+asserts the observable, not the shape.
 """
 
 from datetime import UTC, datetime, timedelta

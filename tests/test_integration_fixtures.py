@@ -30,6 +30,29 @@ _MOD_SEEN: set[str] = set()
 _REDIS_DB_SEEN: set[str] = set()
 
 
+@pytest.fixture(scope="module")
+def pg_schema_seen_at_setup(module_pg_schema: ModulePgSchema) -> str:
+    """The module schema, recorded once per (worker, module) at fixture SETUP.
+
+    The recording lives here, not in a test body, because pytest-randomly
+    reshuffles order within each xdist worker: any "a previous test body ran
+    first in this process" premise is an ordering dependence. Setup time is
+    order-invariant — every test that depends on this recorder compares
+    against the instance the module fixture actually handed out.
+    """
+    _MOD_SEEN.add(module_pg_schema.schema_name)
+    return module_pg_schema.schema_name
+
+
+@pytest.fixture(scope="module")
+def redis_url_seen_at_setup(module_redis_url: str) -> str:
+    """The module Redis URL, recorded once per (worker, module) at fixture
+    SETUP — same order-invariant recording as :func:`pg_schema_seen_at_setup`.
+    """
+    _REDIS_DB_SEEN.add(module_redis_url)
+    return module_redis_url
+
+
 # ── module_pg_schema is module-scoped ──────────────────────────
 
 
@@ -37,12 +60,20 @@ _REDIS_DB_SEEN: set[str] = set()
 class TestModulePgSchema:
     """Schema name is stable across tests in the same module."""
 
-    def test_schema_name_is_string(self, module_pg_schema: ModulePgSchema) -> None:
+    def test_schema_name_is_string(
+        self, module_pg_schema: ModulePgSchema, pg_schema_seen_at_setup: str
+    ) -> None:
         assert isinstance(module_pg_schema.schema_name, str)
         assert module_pg_schema.schema_name.startswith("tq_")
-        _MOD_SEEN.add(module_pg_schema.schema_name)
+        assert module_pg_schema.schema_name == pg_schema_seen_at_setup
 
-    def test_same_schema_name_as_previous_test(self, module_pg_schema: ModulePgSchema) -> None:
+    def test_same_schema_name_as_previous_test(
+        self, module_pg_schema: ModulePgSchema, pg_schema_seen_at_setup: str
+    ) -> None:
+        # The membership assert is the module-scope proof: a re-instantiated
+        # fixture would hand this test a different (or re-created) schema, so
+        # the URL/schema this test sees must be the one recorded at setup.
+        assert module_pg_schema.schema_name == pg_schema_seen_at_setup
         assert module_pg_schema.schema_name in _MOD_SEEN
 
     @pytest.mark.asyncio
@@ -66,12 +97,20 @@ class TestModulePgSchema:
 class TestModuleRedisUrl:
     """Redis DB id is stable across tests in the same module."""
 
-    def test_url_is_string(self, module_redis_url: str) -> None:
+    def test_url_is_string(self, module_redis_url: str, redis_url_seen_at_setup: str) -> None:
         assert isinstance(module_redis_url, str)
         assert module_redis_url.startswith("redis://")
-        _REDIS_DB_SEEN.add(module_redis_url)
+        assert module_redis_url == redis_url_seen_at_setup
 
-    def test_same_redis_url_as_previous_test(self, module_redis_url: str) -> None:
+    def test_same_redis_url_as_previous_test(
+        self, module_redis_url: str, redis_url_seen_at_setup: str
+    ) -> None:
+        # The membership assert is the module-scope proof: the fixture
+        # allocates a never-reused DB id per instantiation, so a
+        # re-instantiated fixture would hand this test a different URL. The
+        # recorded value is captured at fixture SETUP (order-invariant under
+        # pytest-randomly's per-worker shuffle), not by a sibling test body.
+        assert module_redis_url == redis_url_seen_at_setup
         assert module_redis_url in _REDIS_DB_SEEN
 
     def test_redis_is_reachable(self, module_redis_url: str) -> None:
@@ -254,4 +293,85 @@ class TestTruncateSchemaMetadata:
             assert before == after
             assert before > 0
         finally:
+            await conn.close()
+
+
+# ── truncate_schema restores the DDL, safely ───────────────────
+#
+# A test that installs a trigger changes the schema's DDL, which no
+# TRUNCATE undoes, so the reset drops any trigger the migrations did not
+# install.  The trigger and table names come from the catalog, and the
+# DROP interpolates them — the project's identifier rule (validate
+# against the canonical identifier regex before any interpolation)
+# applies to catalog-sourced names exactly as to user-sourced ones.
+
+
+class TestTruncateSchemaTriggerReset:
+    async def test_test_added_trigger_is_dropped(self, module_pg_schema: ModulePgSchema) -> None:
+        """A trigger a test installed is gone after the reset — the DDL
+        the next test meets is the migrated one."""
+        conn = await asyncpg.connect(module_pg_schema.pg_dsn)
+        s = module_pg_schema.schema_name
+        try:
+            await truncate_schema(conn, s)
+            await conn.execute(
+                f'CREATE OR REPLACE FUNCTION "{s}".trg_probe() '  # Why: schema is the test-fixture identifier.
+                "RETURNS trigger AS $$ BEGIN RETURN NULL; END; $$ LANGUAGE plpgsql"
+            )
+            await conn.execute(
+                f'CREATE TRIGGER trg_probe AFTER INSERT ON "{s}".jobs '  # Why: schema is the test-fixture identifier; trigger/function names are test-authored literals.
+                f'FOR EACH ROW EXECUTE FUNCTION "{s}".trg_probe()'
+            )
+
+            await truncate_schema(conn, s)
+
+            remaining = await conn.fetchval(
+                "SELECT count(*) FROM pg_trigger t "
+                "JOIN pg_class c ON c.oid = t.tgrelid "
+                "JOIN pg_namespace n ON n.oid = c.relnamespace "
+                "WHERE n.nspname = $1 AND t.tgname = 'trg_probe' AND NOT t.tgisinternal",
+                s,
+            )
+            assert remaining == 0, (
+                "a trigger the migrations did not install must not leak into the next test"
+            )
+        finally:
+            await conn.execute(
+                f'DROP TRIGGER IF EXISTS trg_probe ON "{s}".jobs'
+            )  # Why: schema is the test-fixture identifier; trigger name is a test-authored literal.
+            await conn.execute(
+                f'DROP FUNCTION IF EXISTS "{s}".trg_probe()'
+            )  # Why: schema is the test-fixture identifier; function name is a test-authored literal.
+            await conn.close()
+
+    async def test_trigger_name_failing_identifier_validation_raises(
+        self, module_pg_schema: ModulePgSchema
+    ) -> None:
+        """A catalog-sourced trigger name the identifier rule cannot
+        admit must fail the reset loudly rather than be interpolated raw
+        into the DROP — an unvalidated name breaks out of the quoting."""
+        conn = await asyncpg.connect(module_pg_schema.pg_dsn)
+        s = module_pg_schema.schema_name
+        try:
+            await truncate_schema(conn, s)
+            await conn.execute(
+                f'CREATE OR REPLACE FUNCTION "{s}".trg_probe_unsafe() '  # Why: schema is the test-fixture identifier.
+                "RETURNS trigger AS $$ BEGIN RETURN NULL; END; $$ LANGUAGE plpgsql"
+            )
+            # The quote in the name is the point: interpolated raw it
+            # terminates the quoted identifier in the DROP.
+            await conn.execute(
+                f'CREATE TRIGGER "trg""unsafe" AFTER INSERT ON "{s}".jobs '  # Why: schema is the test-fixture identifier; trigger/function names are test-authored literals.
+                f'FOR EACH ROW EXECUTE FUNCTION "{s}".trg_probe_unsafe()'
+            )
+
+            with pytest.raises(ValueError, match="trg"):
+                await truncate_schema(conn, s)
+        finally:
+            await conn.execute(
+                f'DROP TRIGGER IF EXISTS "trg""unsafe" ON "{s}".jobs'
+            )  # Why: schema is the test-fixture identifier; trigger name is a test-authored literal.
+            await conn.execute(
+                f'DROP FUNCTION IF EXISTS "{s}".trg_probe_unsafe()'
+            )  # Why: schema is the test-fixture identifier; function name is a test-authored literal.
             await conn.close()

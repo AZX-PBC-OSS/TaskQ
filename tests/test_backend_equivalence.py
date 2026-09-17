@@ -253,7 +253,8 @@ def _assert_state_change_event(
 def _assert_no_snooze_event_row(events: list[EventRow]) -> None:
     """A non-terminal snooze/denial writes no event row: the row's status
     transition is real, but its durable record is the row's counters —
-    the only state_change events belong to dispatches and terminal exits."""
+    the only state_change events belong to terminal exits and the
+    sweep/cancel audit entries."""
     state_changes = [e for e in events if e.kind == "state_change"]
     assert not any(
         e.detail.get("from_state") == "running" and e.detail.get("to_state") == "scheduled"
@@ -374,7 +375,7 @@ async def test_mass_enqueue_sort_order(backend_pair: Backend) -> None:
             )
 
 
-# ── batch cap partition parity (#149) ───────────────────────────
+# ── batch cap partition parity ──────────────────────────────────
 
 
 async def test_enqueue_batch_partitions_cap_admission_per_actor(backend_pair: Backend) -> None:
@@ -428,7 +429,7 @@ async def test_enqueue_batch_partitions_cap_admission_per_actor(backend_pair: Ba
 async def test_enqueue_batch_fast_partitions_cap_admission_per_actor(
     backend_pair: Backend,
 ) -> None:
-    """COPY-tier parity with the batch tier's #149 partition: a
+    """COPY-tier parity with the batch tier's partition: a
     mixed-actor ``enqueue_batch_fast`` refuses the over-cap actor's items
     and writes everyone else's — the same refusal shape (per-actor
     indices, admitted count, stored counts) on BOTH backends. Previously
@@ -904,16 +905,21 @@ async def test_retry_after_indefinite_tier_ignores_max_attempts(
 async def test_reservation_unavailable_produces_metadata_annotated_snooze(
     backend_pair: Backend,
 ) -> None:
-    """mark_snoozed with
-    metadata_update={"awaiting": "reservation:gpu_pool"},
-    outcome="reservation_denied" returns "scheduled" → row's
-    metadata['awaiting'] == 'reservation:gpu_pool', attempt row with
-    outcome='reservation_denied'.
+    """An admission denial is "come back later", not a failed execution.
+
+    A reservation denial reschedules the job with its annotation
+    (``metadata['awaiting']``), refunds the claim's attempt increment so
+    the retry budget is untouched, and leaves its whole durable record on
+    the row: the aggregated denial counter, no attempt row and no event
+    row. Both backends must agree — a capacity shortfall that spends
+    budget would let a queue misconfiguration kill work that simply never
+    got a slot.
     """
     job_id, wid = await _enqueue_dispatch_any(backend_pair)
 
     epoch_row = await backend_pair.get(job_id)
     assert epoch_row is not None
+    assert epoch_row.attempt == 1
     result = await backend_pair.mark_snoozed(
         job_id,
         wid,
@@ -928,6 +934,15 @@ async def test_reservation_unavailable_produces_metadata_annotated_snooze(
     assert row is not None
     assert row.metadata.get("awaiting") == "reservation:gpu_pool"
 
+    # The denial never consumes retry budget: the claim's increment is
+    # refunded exactly as an actor-requested deferral refunds it, so a
+    # job denied a slot arbitrarily often still gets its full budget of
+    # real executions once capacity frees.
+    assert row.attempt == 0, "an admission denial consumed the job's retry budget"
+    assert row.max_attempts == epoch_row.max_attempts, (
+        "an admission denial widened the job's retry ceiling"
+    )
+
     attempts = await backend_pair.get_attempts(job_id)
     # The denial is counted on the row's denial counter; no attempt row,
     # no event row.
@@ -937,6 +952,82 @@ async def test_reservation_unavailable_produces_metadata_annotated_snooze(
 
     events = await _get_events(backend_pair, job_id)
     _assert_no_snooze_event_row(events)
+
+
+async def test_admission_denial_at_exhausted_budget_still_reschedules(
+    backend_pair: Backend,
+) -> None:
+    """An admission denial can never by itself terminally fail a job.
+
+    A job sitting at or beyond ``max_attempts`` that is denied a
+    rate-limit slot is rescheduled, not failed: it never ran, so there is
+    no execution to blame and ``MaxAttemptsExceeded`` would be a lie about
+    what happened. Only the schedule-to-close deadline ends such a job.
+    Both backends must agree, or a saturated bucket destroys work on one
+    of them.
+    """
+    job_id, wid = await _enqueue_dispatch_any(backend_pair, max_attempts=3, retry_kind="transient")
+    # No schedule_to_close: budget exhaustion is the only candidate exit,
+    # and it must not be taken.
+    await _force_job_state(backend_pair, job_id, attempt=3, schedule_to_close=None)
+
+    epoch_row = await backend_pair.get(job_id)
+    assert epoch_row is not None
+    result = await backend_pair.mark_snoozed(
+        job_id,
+        wid,
+        timedelta(seconds=30),
+        outcome="rate_limit_denied",
+        attempt=epoch_row.attempt,
+    )
+    assert result == "scheduled", (
+        "an admission denial terminally failed a job that never got a slot"
+    )
+
+    row = await backend_pair.get(job_id)
+    assert row is not None
+    assert row.status == "scheduled"
+    assert row.error_class is None
+    # The claim's increment is refunded: the denial spends no budget.
+    assert row.attempt == 2
+    assert row.rate_limit_blocked_count == 1
+
+    attempts = await backend_pair.get_attempts(job_id)
+    assert len(attempts) == 0
+
+    events = await _get_events(backend_pair, job_id)
+    _assert_no_snooze_event_row(events)
+
+
+async def test_admission_denial_past_schedule_to_close_fails_on_the_deadline(
+    backend_pair: Backend,
+) -> None:
+    """Deadline expiry is the one terminal exit a denied job has.
+
+    When the reschedule point would land past ``schedule_to_close`` the job
+    fails through the normal deadline path — ``DeadlineExceeded``, never
+    ``MaxAttemptsExceeded`` — so an operator reading the row learns the job
+    ran out of time waiting for capacity rather than out of retries.
+    """
+    deadline = _now_for(backend_pair) + timedelta(seconds=5)
+    job_id, wid = await _enqueue_dispatch_any(backend_pair, max_attempts=3, retry_kind="transient")
+    await _force_job_state(backend_pair, job_id, attempt=3, schedule_to_close=deadline)
+
+    epoch_row = await backend_pair.get(job_id)
+    assert epoch_row is not None
+    result = await backend_pair.mark_snoozed(
+        job_id,
+        wid,
+        timedelta(seconds=30),
+        outcome="rate_limit_denied",
+        attempt=epoch_row.attempt,
+    )
+    assert result == "failed"
+
+    row = await backend_pair.get(job_id)
+    assert row is not None
+    assert row.status == "failed"
+    assert row.error_class == "DeadlineExceeded"
 
 
 async def test_mark_snoozed_idempotent_returns_noop(backend_pair: Backend) -> None:
@@ -985,6 +1076,224 @@ async def test_mark_retry_after_idempotent_returns_noop(
 
     attempts = await backend_pair.get_attempts(job_id)
     assert len(attempts) == 1
+
+
+# ── mark_interrupted (shutdown release) equivalence ──────────────────────
+#
+# A worker shutdown releases a running attempt it cannot finish: the
+# claim's attempt increment is refunded, the row goes back to the fleet
+# (pending at hold 0, scheduled behind the hold otherwise), no attempt row
+# is written (an interruption is not an execution outcome), one
+# 'interrupted' event records the transition, and interrupt_count carries
+# the aggregate. An operator cancel in flight wins: the release's
+# cancel_phase = 0 fence declines the row ("noop").
+
+
+async def test_mark_interrupted_releases_pending_at_zero_hold_refunded(
+    backend_pair: Backend,
+) -> None:
+    """hold=0 → 'pending' at the head of the order (no deferral floor — the
+    row is genuinely free and the actor is gone), attempt refunded,
+    interrupt_count = 1, no attempt rows, one interrupted event; the row is
+    immediately re-claimable and re-dispatch re-claims the refunded epoch."""
+    job_id, wid = await _enqueue_dispatch_any(backend_pair)
+
+    row = await backend_pair.get(job_id)
+    assert row is not None
+    assert row.attempt == 1
+
+    outcome = await backend_pair.mark_interrupted(
+        job_id, wid, attempt=row.attempt, hold=timedelta(0)
+    )
+    assert outcome == "pending"
+
+    row = await backend_pair.get(job_id)
+    assert row is not None
+    _assert_job_row(row, status="pending", attempt=0)
+    assert row.interrupt_count == 1
+
+    # No deferral floor on a zero hold: the row is claimable NOW, without
+    # advancing either backend's clock.
+    redispatched = await backend_pair.dispatch_batch(
+        worker_id=wid, queues=["default"], limit=1, lock_lease=_LOCK_LEASE
+    )
+    assert len(redispatched) == 1
+    assert redispatched[0].attempt == 1
+
+    attempts = await backend_pair.get_attempts(job_id)
+    assert attempts == [], "an interruption is not an execution outcome: no attempt row"
+
+    events = await _get_events(backend_pair, job_id)
+    interrupted = [
+        e for e in events if e.kind == "state_change" and e.detail.get("reason") == "interrupted"
+    ]
+    assert len(interrupted) == 1
+    assert interrupted[0].detail.get("to_state") == "pending"
+
+
+async def test_mark_interrupted_holds_the_release_until_the_process_is_gone(
+    backend_pair: Backend,
+) -> None:
+    """hold>0 → 'scheduled' behind the hold (a still-running actor's row must
+    not be claimable until the releasing process is provably gone), attempt
+    refunded; the row promotes and re-dispatches once the hold elapses."""
+    job_id, wid = await _enqueue_dispatch_any(backend_pair)
+
+    row = await backend_pair.get(job_id)
+    assert row is not None
+
+    outcome = await backend_pair.mark_interrupted(
+        job_id, wid, attempt=row.attempt, hold=timedelta(seconds=30)
+    )
+    assert outcome == "scheduled"
+
+    row = await backend_pair.get(job_id)
+    assert row is not None
+    _assert_job_row(row, status="scheduled", attempt=0)
+    assert row.interrupt_count == 1
+    assert row.scheduled_at > _now_for(backend_pair), (
+        "the held row's due time must be in the future — claimable only once "
+        "the releasing process cannot touch it"
+    )
+
+    # While the hold holds, nothing is claimable.
+    skipped = await backend_pair.dispatch_batch(
+        worker_id=wid, queues=["default"], limit=1, lock_lease=_LOCK_LEASE
+    )
+    assert skipped == []
+
+    # The hold elapses; promotion rides the scheduled_to_pending tick like
+    # every deferred row.
+    await _advance_and_promote(backend_pair, _now_for(backend_pair) + timedelta(seconds=31))
+    redispatched = await backend_pair.dispatch_batch(
+        worker_id=wid, queues=["default"], limit=1, lock_lease=_LOCK_LEASE
+    )
+    assert len(redispatched) == 1
+    assert redispatched[0].attempt == 1
+
+    events = await _get_events(backend_pair, job_id)
+    interrupted = [
+        e for e in events if e.kind == "state_change" and e.detail.get("reason") == "interrupted"
+    ]
+    assert len(interrupted) == 1
+    assert interrupted[0].detail.get("to_state") == "scheduled"
+    assert float(interrupted[0].detail["hold_seconds"]) > 0  # type: ignore[arg-type]  # Why: the event carries the release's hold; PG emits numeric, the twin float.
+
+
+async def test_mark_interrupted_operator_cancel_in_flight_wins(
+    backend_pair: Backend,
+) -> None:
+    """A row carrying an operator cancel (cancel_phase >= 1) is declined:
+    'noop', untouched — no refund, no interruption counted, no event. The
+    operator's request owns the row's outcome, never the deploy's."""
+    job_id, wid = await _enqueue_dispatch_any(backend_pair)
+    await _force_job_state(
+        backend_pair, job_id, cancel_phase=1, cancel_requested_at=_now_for(backend_pair)
+    )
+
+    row = await backend_pair.get(job_id)
+    assert row is not None
+
+    outcome = await backend_pair.mark_interrupted(
+        job_id, wid, attempt=row.attempt, hold=timedelta(0)
+    )
+    assert outcome == "noop", (
+        "the interrupt write must decline a row under an operator cancel — "
+        "the deploy must not launder the operator's terminal request into a release"
+    )
+
+    row = await backend_pair.get(job_id)
+    assert row is not None
+    assert row.status == "running", "a declined release leaves the row untouched"
+    assert row.locked_by_worker == wid
+    assert row.attempt == 1, "a declined release refunds nothing"
+    assert row.interrupt_count == 0
+    assert row.cancel_phase == 1, "the operator's audit columns are never wiped"
+
+    events = await _get_events(backend_pair, job_id)
+    assert not any(
+        e.kind == "state_change" and e.detail.get("reason") == "interrupted" for e in events
+    )
+
+
+async def test_mark_interrupted_past_the_jobs_deadline_fails_on_it(
+    backend_pair: Backend,
+) -> None:
+    """A hold that would outlive schedule_to_close fails the job on the
+    deadline instead of parking it past its own terminal exit — the same
+    shape every deferral arm honours."""
+    job_id, wid = await _enqueue_dispatch_any(backend_pair)
+    deadline = _now_for(backend_pair) + timedelta(seconds=5)
+    await _force_job_state(backend_pair, job_id, schedule_to_close=deadline)
+
+    row = await backend_pair.get(job_id)
+    assert row is not None
+
+    outcome = await backend_pair.mark_interrupted(
+        job_id, wid, attempt=row.attempt, hold=timedelta(seconds=30)
+    )
+    assert outcome == "failed:DeadlineExceeded"
+
+    row = await backend_pair.get(job_id)
+    assert row is not None
+    _assert_job_row(
+        row,
+        status="failed",
+        error_class="DeadlineExceeded",
+        error_message="schedule_to_close reached before next dispatch",
+        last_heartbeat_at_none=True,
+    )
+    assert row.interrupt_count == 0, "the release never happened — the deadline arm owns it"
+
+    attempts = await backend_pair.get_attempts(job_id)
+    assert len(attempts) == 1
+    _assert_attempt_row(
+        attempts,
+        0,
+        outcome="failed",
+        error_class="DeadlineExceeded",
+        error_message="schedule_to_close reached before next dispatch",
+    )
+
+
+async def test_mark_interrupted_fenced_out_by_a_stale_epoch_or_wrong_worker(
+    backend_pair: Backend,
+) -> None:
+    """The same fence family as every release arm: a stale attempt epoch or
+    a worker that does not hold the row reads back 'noop' and moves nothing."""
+    job_id, wid = await _enqueue_dispatch_any(backend_pair)
+
+    row = await backend_pair.get(job_id)
+    assert row is not None
+
+    # Stale epoch (the row already moved past it).
+    outcome = await backend_pair.mark_interrupted(
+        job_id, wid, attempt=row.attempt - 1, hold=timedelta(0)
+    )
+    assert outcome == "noop"
+
+    # Wrong worker.
+    outcome = await backend_pair.mark_interrupted(
+        job_id, new_uuid(), attempt=row.attempt, hold=timedelta(0)
+    )
+    assert outcome == "noop"
+
+    row = await backend_pair.get(job_id)
+    assert row is not None
+    assert row.status == "running" and row.locked_by_worker == wid
+    assert row.attempt == 1 and row.interrupt_count == 0
+
+    # And the landed release is itself not replayable at the same epoch.
+    outcome = await backend_pair.mark_interrupted(
+        job_id, wid, attempt=row.attempt, hold=timedelta(0)
+    )
+    assert outcome == "pending"
+    replayed = await backend_pair.mark_interrupted(job_id, wid, attempt=1, hold=timedelta(0))
+    assert replayed == "noop", (
+        "the refunded epoch no longer matches the row — a release cannot be replayed"
+    )
+    row = await backend_pair.get(job_id)
+    assert row is not None and row.interrupt_count == 1
 
 
 # ── PG-compatible terminal-write equivalence tests ──────────────────────
@@ -1273,8 +1582,9 @@ async def test_reclaim_expired_locks_sets_worker_crashed_error_class(
     backend_pair: Backend,
 ) -> None:
     """after reclaim_expired_locks, jobs that can no longer retry
-    have error_class == None on the jobs row and 'WorkerCrashed' on the
-    AttemptRow (fix #4 — PG Sweep 1 SQL does not set error_class on jobs).
+    carry 'WorkerCrashed' and the fired deadline's message on the jobs
+    row AND the AttemptRow — the row self-describes on both backends,
+    so an operator never joins job_attempts to learn why a job crashed.
     """
     # Enqueue a job that has exhausted its retry budget (max_attempts=1)
     job_id, _wid = await _enqueue_dispatch_any(backend_pair, max_attempts=1)
@@ -1293,9 +1603,8 @@ async def test_reclaim_expired_locks_sets_worker_crashed_error_class(
     row_after = await backend_pair.get(job_id)
     assert row_after is not None
     assert row_after.status == "crashed"
-    assert row_after.error_class is None, (
-        f"expected None (error_class lives on AttemptRow), got {row_after.error_class!r}"
-    )
+    assert row_after.error_class == "WorkerCrashed"
+    assert row_after.error_message == "lock expired before worker reported terminal state"
 
     attempts = await backend_pair.get_attempts(job_id)
     assert len(attempts) == 1

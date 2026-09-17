@@ -15,11 +15,10 @@ spans that caller's transaction, and the enqueue path opens nothing.
 These are unit pins: the wrap itself is the observable, recorded by a
 connection stand-in that notes which statements ran with a transaction
 open, so the serialization precondition is verified without a database.
-Oban runs its unique insert inside a transaction
-(vendor/oban/lib/oban/engines/basic.ex:81-83) and GoodJob wraps its
-concurrency check in ``requires_new``
-(vendor/good_job/lib/good_job/active_job_extensions/concurrency.rb:110)
-— the same conclusion reached by the queues that ship this guarantee.
+Transaction-scoped serialization is the standard approach for deduplication
+and concurrency caps: the check and insert must share one advisory-lock
+scope to prevent concurrent dispatchers from racing. This is the guarantee
+TaskQ provides.
 """
 
 from datetime import UTC, datetime, timedelta
@@ -83,6 +82,12 @@ def _full_record(*, job_id: UUID | None = None) -> dict[str, object]:
         "tags": [],
         "snooze_count": 0,
         "rate_limit_blocked_count": 0,
+        "interrupt_count": 0,
+        "retry_base_seconds": 5.0,
+        "retry_cap_seconds": 3600.0,
+        "retry_backoff": "exponential",
+        "retry_jitter": 0.2,
+        "assignment_routed": False,
     }
 
 
@@ -171,7 +176,7 @@ class _ConnStandin:
         return None
 
     async def execute(self, sql: str, *args: object) -> str:
-        self._record("pg_notify" if "pg_notify" in sql else "execute")
+        self._record("execute")
         return "OK"
 
 
@@ -226,7 +231,7 @@ async def test_unique_for_on_bare_caller_conn_runs_lock_preflight_and_insert_in_
     assert isinstance(row, JobRow)
     assert row.id == args.id, "fixture: the preflight found nothing, so this inserted"
     kinds_in_tx = _kinds_in_tx(conn)
-    assert {"advisory_try_lock", "unique_for_preflight", "insert", "pg_notify"} <= kinds_in_tx, (
+    assert {"advisory_try_lock", "unique_for_preflight", "insert"} <= kinds_in_tx, (
         f"the single-flight critical section must run inside one transaction; "
         f"statements={conn.statements}"
     )

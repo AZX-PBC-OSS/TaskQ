@@ -304,7 +304,11 @@ async def test_reservation_denial_metadata_observable(
 
     row2 = await backend.get(job_id)
     assert row2 is not None
-    assert row2.attempt == 2  # dispatch increments from 1 (snooze preserves attempt)
+    # The denial refunded the claim's attempt increment (attempt -> 0), so
+    # this second dispatch's own increment lands back on 1 — a denial never
+    # spends retry budget, so re-dispatch after one never looks different
+    # from a job's first-ever dispatch.
+    assert row2.attempt == 1
 
     async def success_actor(_job: JobRow, _ctx: JobContext[BaseModel]) -> dict[str, object]:
         return {"ok": True}
@@ -314,7 +318,8 @@ async def test_reservation_denial_metadata_observable(
     final = await backend.get(job_id)
     assert final is not None
     assert final.status == "succeeded"
-    assert final.attempt == 2  # snooze did not consume budget; dispatch increment is expected
+    # The denial cost nothing: the job succeeded on its first real attempt.
+    assert final.attempt == 1
 
 
 # ── asyncio.shield on snooze write ──────────────────────────────

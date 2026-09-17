@@ -49,6 +49,22 @@ def _batch_item(side: DiffSide, token: str, *, job_id: UUID | None = None) -> En
     return args
 
 
+def _singleton_args(side: DiffSide, token: str, actor: str) -> EnqueueArgs:
+    """One singleton-guarded batch item in the side's clock domain, token-registered."""
+    args = EnqueueArgs(
+        id=new_job_id(),
+        actor=actor,
+        queue="default",
+        payload={"value": 1},
+        max_attempts=3,
+        retry_kind="transient",
+        scheduled_at=side.ts(-1.0),
+        metadata={"singleton": True},
+    )
+    side.register_job_id(token, args.id)
+    return args
+
+
 def _capped_args(side: DiffSide, token: str, actor: str, *, max_pending: int) -> EnqueueArgs:
     """One capped batch item in the side's clock domain, token-registered."""
     args = EnqueueArgs(
@@ -101,6 +117,59 @@ async def test_diff_enqueue_batch_mid_batch_duplicate_id_aborts_whole_call(pg_ds
     assert pg["records"]["batch"] == "UniqueViolationError"
     assert pg["records"]["stored_from_batch"] == []
     assert pg["status_counts"] == {"pending": 1}
+
+
+async def _mid_batch_singleton_collision_poison(side: DiffSide) -> None:
+    """Two same-actor singleton items in ONE batch call, nothing pre-stored.
+
+    PG's single unnest INSERT hits the jobs_singleton_uniq partial unique
+    index and aborts the WHOLE statement — neither item is stored. The
+    in-memory mirror's batch-level singleton preflight
+    (``_check_batch_singletons`` in src/taskq/testing/_enqueue.py) refuses
+    the whole call before storing its first row, so both backends leave
+    the identical empty stored-row state.
+    """
+    item1 = _singleton_args(side, "item1", "test_actor")
+    item2 = _singleton_args(side, "item2", "test_actor")
+    try:
+        rows = await side.backend.enqueue_batch([item1, item2])
+        side.record("batch", "admitted-all")
+        side.record("returned", [side.token_of(r.id) for r in rows])
+    except Exception as exc:  # Why: the differential records the typed outcome; the exception type IS the observable.
+        side.record("batch", type(exc).__name__)
+    stored_from_batch: list[str] = []
+    for token, args in (("item1", item1), ("item2", item2)):
+        if await side.backend.get(args.id) is not None:
+            stored_from_batch.append(token)
+    side.record("stored_from_batch", stored_from_batch)
+
+
+async def test_diff_enqueue_batch_mid_batch_singleton_collision_aborts_whole_call(
+    pg_dsn: str,
+) -> None:
+    """A batch containing two singleton items for the same actor must abort
+    the WHOLE call on both backends: PG's bulk tier is one INSERT in one
+    transaction (jobs_singleton_uniq aborts it, nothing admitted); the
+    mirror must leave the identical stored-row state — never the good
+    prefix.
+    """
+    mem, pg = await run_differential(_mid_batch_singleton_collision_poison, pg_dsn=pg_dsn)
+    assert_mirror(
+        "a mid-batch singleton constraint violation aborts the entire "
+        "enqueue_batch call: no item from the batch is stored, on either "
+        "backend",
+        mem,
+        pg,
+    )
+    # Why the typed error: a singleton collision is a retryable admission
+    # refusal, so the PG bulk tier converts the jobs_singleton_uniq
+    # violation to the same typed SingletonCollisionError the
+    # single-enqueue path raises — a caller must branch on it without
+    # string-matching a raw driver error (the mirror's batch preflight
+    # already refuses with the same typed error).
+    assert pg["records"]["batch"] == "SingletonCollisionError"
+    assert pg["records"]["stored_from_batch"] == []
+    assert pg["status_counts"] == {}
 
 
 # ── Cap refusal: the error contract and the emitted log contract ────────

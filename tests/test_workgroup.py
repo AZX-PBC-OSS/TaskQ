@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 import signal
 import sys
+import textwrap
 import time
 from collections.abc import Coroutine
 from pathlib import Path
@@ -449,10 +450,36 @@ def _write_toml(tmp_path: Path, content: str) -> Path:
     return p
 
 
-def test_from_toml_valid_config(tmp_path: Path) -> None:
+def test_from_toml_valid_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A well-formed TOML config loads into dataclasses with defaults applied."""
+    monkeypatch.chdir(tmp_path)
+    _write_actors_module(
+        tmp_path,
+        "wg_actors_valid_config",
+        """
+        from pydantic import BaseModel
+        from taskq.actor import actor
+
+        class Payload(BaseModel):
+            pass
+
+        @actor(queue="default")
+        async def default_job(payload: Payload) -> None:
+            pass
+
+        @actor(queue="high")
+        async def high_job(payload: Payload) -> None:
+            pass
+
+        @actor(queue="cron")
+        async def cron_job(payload: Payload) -> None:
+            pass
+
+        registry = {"default_job": default_job, "high_job": high_job, "cron_job": cron_job}
+        """.strip("\n"),
+    )
     toml = """
-actors = "myapp.actors:registry"
+actors = "wg_actors_valid_config:registry"
 
 [defaults]
 poll_interval = 2.0
@@ -477,7 +504,7 @@ check_interval = 10
 stale_after = 30
 """
     cfg = load_workgroup_config(_write_toml(tmp_path, toml))
-    assert cfg.actors == "myapp.actors:registry"
+    assert cfg.actors == "wg_actors_valid_config:registry"
     assert cfg.supervisor.shutdown_grace == 45.0
     assert cfg.supervisor.burst_limit == 5
     assert cfg.supervisor.backoff_initial == 0.5  # default
@@ -872,8 +899,15 @@ async def test_stream_output_keeps_reading_a_real_child_after_a_huge_line() -> N
     assert "after" in lines, f"stream stopped after the huge line: {lines!r}"
 
 
-def test_worker_spec_stream_limit_from_toml_and_validated(tmp_path: Path) -> None:
-    base = 'actors = "mod:attr"\n[[workers]]\nname = "w"\nqueues = ["default"]\nstream_limit = {}\n'
+def test_worker_spec_stream_limit_from_toml_and_validated(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    _write_actors_module(tmp_path, "wg_actors_stream_limit", "registry = {}")
+    base = (
+        'actors = "wg_actors_stream_limit:registry"\n'
+        '[[workers]]\nname = "w"\nqueues = ["default"]\nstream_limit = {}\n'
+    )
     path = tmp_path / "wg.toml"
     path.write_text(base.format(65536))
     assert load_workgroup_config(path).workers[0].stream_limit == 65536
@@ -1130,29 +1164,58 @@ async def test_run_forever_spawn_failure_continues() -> None:
         raise OSError("spawn failed")
 
     config_path = Path("/tmp/fake_spawn_fail.toml")
+    signal_handlers: dict[int, Any] = {}
+    sigterm_registered = asyncio.Event()
+
+    def capture_handler(sig: int, handler: Any) -> None:
+        signal_handlers[sig] = handler
+        if sig == signal.SIGTERM:
+            sigterm_registered.set()
 
     with (
         patch("taskq.worker.workgroup.load_workgroup_config", return_value=config),
         patch("asyncio.create_subprocess_exec", side_effect=failing_exec),
         patch("asyncio.get_running_loop") as mock_loop,
     ):
-        mock_loop.return_value.add_signal_handler = MagicMock()
+        mock_loop.return_value.add_signal_handler = capture_handler
 
         from taskq.worker.workgroup import run_forever
 
         task = asyncio.create_task(run_forever(config_path))
-        # Event-driven wait on the spawn double: fires at the first
-        # attempt — a fixed sleep could observe zero attempts under
-        # startup starvation and fail the completion assert below for a
-        # reason that has nothing to do with the continue-on-failure
-        # behaviour under test.
+        # Event-driven waits on the spawn double and the handler-capture
+        # double — a fixed window races startup under load (fewer than
+        # one spawn attempt, handler missing) and fails the completion
+        # assert below for a reason that has nothing to do with the
+        # continue-on-failure behaviour under test.
         try:
             await asyncio.wait_for(first_attempt.wait(), timeout=5.0)
         except TimeoutError:
             pytest.fail("run_forever did not attempt its first spawn within 5.0s")
-        task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await task
+        # The signal handlers are installed AFTER the initial spawn loop,
+        # so the spawn attempt alone does not yet prove the supervisor is
+        # stoppable — wait for the registration the stop below drives.
+        try:
+            await asyncio.wait_for(sigterm_registered.wait(), timeout=5.0)
+        except TimeoutError:
+            pytest.fail("run_forever did not register its SIGTERM handler within 5.0s")
+
+        # Stop the supervisor the way an operator does: SIGTERM, then let
+        # run_forever complete its own graceful shutdown — the same stop
+        # shape test_run_forever_multiple_children_graceful_shutdown
+        # drives. A bare task.cancel() aborts the supervisor mid-
+        # _delay_then_respawn, whose asyncio.wait() does not cancel its
+        # inner futures when the caller itself is cancelled: the backoff
+        # sleep and the shutdown Event.wait went on running WITHOUT the
+        # supervisor, two tasks orphaned on the module loop. The signal
+        # path is clean in every interleaving — shutting_down set either
+        # skips the restart arm under the restart lock, or wins the
+        # _delay_then_respawn race and cancels-and-awaits its own sleep
+        # before the monitor's loop condition exits.
+        signal_handlers[signal.SIGTERM]()
+        try:
+            await asyncio.wait_for(task, timeout=3.0)
+        except TimeoutError:
+            pytest.fail("run_forever did not complete graceful shutdown within 3.0s")
 
     assert call_count >= 1
 
@@ -1415,7 +1478,7 @@ async def test_run_forever_graceful_shutdown_via_signal() -> None:
     )
 
 
-# ── Bounded health-pool close at supervisor shutdown (#38) ──────────────
+# ── Bounded health-pool close at supervisor shutdown ────────────────────
 #
 # run_forever closed its health-check pool with a bare
 # ``await pg_pool.close()`` — a dead PG can block that indefinitely,
@@ -1720,7 +1783,7 @@ async def test_child_exit_events_carry_workgroup_identity() -> None:
     assert burst[0]["actors"] == "billing,email"
 
 
-# ── Health-check query bound (#155) ─────────────────────────────────────
+# ── Health-check query bound ────────────────────────────────────────────
 #
 # `_child_health_check` bounded only the pool acquire (2.0 s); the
 # fetchrow itself had no deadline. A server that accepts the query and
@@ -1965,7 +2028,7 @@ async def test_run_forever_black_holed_health_query_does_not_stall_the_loop(
 def test_health_query_timeout_constant_is_the_documented_default() -> None:
     """Pin the documented default for _HEALTH_QUERY_TIMEOUT_SECS.
 
-    Every #155 behaviour test monkeypatches the constant (raising=False),
+    Every health-query-bound behaviour test monkeypatches the constant (raising=False),
     so none of them would notice a silent default change — 2.0 -> 30.0
     would pass CI while multiplying the worst-case health-check stall
     fifteenfold. The docstring documents 2.0 (consistent with the
@@ -1976,3 +2039,206 @@ def test_health_query_timeout_constant_is_the_documented_default() -> None:
     import taskq.worker.workgroup as workgroup_mod
 
     assert workgroup_mod._HEALTH_QUERY_TIMEOUT_SECS == 2.0
+
+
+# ── Actor registry reachability at config load ──────────────────────
+
+
+def _write_actors_module(tmp_path: Path, module_name: str, body: str) -> None:
+    """Write an importable actors module under tmp_path and put it on sys.path."""
+    (tmp_path / f"{module_name}.py").write_text(textwrap.dedent(body))
+    if str(tmp_path) not in sys.path:
+        sys.path.insert(0, str(tmp_path))
+
+
+def test_actor_queue_no_child_consumes_warns_loudly_and_still_loads(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An actor on a queue no child consumes warns loudly; the load still succeeds.
+
+    A workgroup is never the whole fleet. Another workgroup, another
+    deployment, or a worker started by hand may consume that queue, so this
+    supervisor cannot prove the queue is stranded -- only that *it* does not
+    serve it. Refusing here would stop a set of children that can do real
+    work over a condition the process cannot actually decide, so the
+    governing rule is that a worker able to do work never fails to start.
+
+    Diagnosability then rests entirely on the log line, which is why it must
+    be loud and must name both the actor and the queue: without it, jobs for
+    that actor enqueue successfully and pend forever with no signal anywhere.
+    Refusal stays reserved for structural drift in stored configuration.
+    """
+    import structlog
+
+    monkeypatch.chdir(tmp_path)
+    _write_actors_module(
+        tmp_path,
+        "wg_actors_stranded",
+        """
+        from pydantic import BaseModel
+        from taskq.actor import actor
+
+        class Payload(BaseModel):
+            pass
+
+        @actor(queue="cron")
+        async def cron_job(payload: Payload) -> None:
+            pass
+
+        @actor(queue="default")
+        async def default_job(payload: Payload) -> None:
+            pass
+
+        registry = {"cron_job": cron_job, "default_job": default_job}
+        """.strip("\n"),
+    )
+
+    toml = textwrap.dedent(
+        """
+        actors = "wg_actors_stranded:registry"
+
+        [[workers]]
+        name = "api"
+        queues = ["default"]
+
+        [[workers]]
+        name = "api2"
+        queues = ["default"]
+        """
+    ).strip()
+
+    with structlog.testing.capture_logs() as captured:
+        cfg = load_workgroup_config(_write_toml(tmp_path, toml))
+
+    # The load succeeds: these two children consume "default" and can work.
+    assert cfg.actors == "wg_actors_stranded:registry"
+    assert [w.name for w in cfg.workers] == ["api", "api2"]
+
+    warnings = [e for e in captured if e.get("log_level") in {"warning", "error", "critical"}]
+    assert warnings, "no loud log entry emitted for the unconsumed actor queue"
+    blob = repr(warnings)
+    assert "cron_job" in blob, f"warning does not name the actor: {warnings!r}"
+    assert "cron" in blob, f"warning does not name the queue: {warnings!r}"
+    # The covered actor is healthy and must not be implicated.
+    assert "default_job" not in blob, f"healthy actor flagged as stranded: {warnings!r}"
+
+
+def test_actor_queues_covered_by_the_child_union_load_clean(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A heterogeneous fleet whose children's queues cover every actor loads clean.
+
+    Different children consuming disjoint queue subsets while sharing one
+    actor registry is the normal split-queue deployment, not a fault. The
+    stranding check keys off the union across all children, so this
+    configuration must load without complaint -- a check that fired here
+    would flag every healthy workgroup and train operators to ignore it.
+    Since a warning is now the only signal the unconsumed-queue condition
+    has, a false one costs the real one its meaning.
+    """
+    import structlog
+
+    monkeypatch.chdir(tmp_path)
+    _write_actors_module(
+        tmp_path,
+        "wg_actors_covered",
+        """
+        from pydantic import BaseModel
+        from taskq.actor import actor
+
+        class Payload(BaseModel):
+            pass
+
+        @actor(queue="cron")
+        async def cron_job(payload: Payload) -> None:
+            pass
+
+        @actor(queue="default")
+        async def default_job(payload: Payload) -> None:
+            pass
+
+        registry = {"cron_job": cron_job, "default_job": default_job}
+        """.strip("\n"),
+    )
+
+    toml = textwrap.dedent(
+        """
+        actors = "wg_actors_covered:registry"
+
+        [[workers]]
+        name = "api"
+        queues = ["default"]
+
+        [[workers]]
+        name = "cron_worker"
+        queues = ["cron"]
+        """
+    ).strip()
+
+    with structlog.testing.capture_logs() as captured:
+        cfg = load_workgroup_config(_write_toml(tmp_path, toml))
+
+    assert cfg.actors == "wg_actors_covered:registry"
+    loud = [e for e in captured if e.get("log_level") in {"warning", "error", "critical"}]
+    assert not loud, f"healthy split-queue workgroup produced a warning: {loud!r}"
+
+
+def test_unresolvable_actors_reference_is_rejected_at_config_load(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An ``actors`` reference that cannot be resolved must fail config load.
+
+    ``module:attr`` shape alone does not mean the module imports or that the
+    attribute exists. When the reference is unresolvable, every child
+    crashes on import the moment it is spawned, and the supervisor reads
+    that as a run of child exits: it restarts each one on backoff until the
+    burst budget is exhausted, so the operator sees a cascade of respawns
+    rather than the single real cause. The supervisor can resolve the
+    reference once, up front, and refuse with a message that names it.
+    """
+    monkeypatch.chdir(tmp_path)
+    toml = textwrap.dedent(
+        """
+        actors = "wg_actors_absent_module:registry"
+
+        [[workers]]
+        name = "api"
+        queues = ["default"]
+        """
+    ).strip()
+
+    with pytest.raises(ValueError, match="wg_actors_absent_module"):
+        load_workgroup_config(_write_toml(tmp_path, toml))
+
+
+def test_missing_actors_attribute_is_rejected_at_config_load(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An ``actors`` module that imports but lacks the named attribute must fail load.
+
+    The importable-module half can succeed while the attribute half fails,
+    which is the easier typo to make and produces exactly the same
+    spawn-crash-respawn cascade. Both halves have to be resolved at load
+    time for the check to be worth anything.
+    """
+    monkeypatch.chdir(tmp_path)
+    _write_actors_module(
+        tmp_path,
+        "wg_actors_no_attr",
+        """
+        other_name = {}
+        """,
+    )
+
+    toml = textwrap.dedent(
+        """
+        actors = "wg_actors_no_attr:registry"
+
+        [[workers]]
+        name = "api"
+        queues = ["default"]
+        """
+    ).strip()
+
+    with pytest.raises(ValueError, match="registry"):
+        load_workgroup_config(_write_toml(tmp_path, toml))

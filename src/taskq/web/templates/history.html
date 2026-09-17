@@ -1,98 +1,122 @@
 {% extends "_base.html" %}
 {% set active_page = "history" %}
-{% from "_partials/job_card.html" import job_row %}
+{% from "_partials/table.html" import styled_table, table_header, table_body, table_row %}
+{% from "_partials/job_card.html" import status_badge, duration_fmt, attempt_budget, timestamp_cell %}
 
 {% block title %}History — TaskQ Admin{% endblock %}
 
 {% block content %}
-<h2>Job History</h2>
+<div class="space-y-4">
+    <div class="flex items-center justify-between">
+        <h2 class="text-xl font-semibold tracking-tight">Job History</h2>
+        <span class="text-xs text-slate-500 dark:text-slate-400">Completed and archived jobs, newest first</span>
+    </div>
 
-<section class="metrics-bar">
-    <dl class="metrics">
-        <div class="metric">
-            <dt>Total</dt>
-            <dd>{{ total_display }}</dd>
+    {# Summary metrics #}
+    <div class="flex flex-wrap gap-3">
+        <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg px-4 py-2.5 min-w-[110px]">
+            <dt class="text-xs text-slate-500 dark:text-slate-400 uppercase tracking-wider">Total</dt>
+            <dd class="text-lg font-semibold tabular-nums">{{ total_display }}</dd>
         </div>
         {% if success_rate is not none %}
-        <div class="metric">
-            <dt>Success Rate</dt>
-            <dd>{{ success_rate }}%</dd>
+        <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg px-4 py-2.5 min-w-[110px]">
+            <dt class="text-xs text-slate-500 dark:text-slate-400 uppercase tracking-wider">Success Rate</dt>
+            <dd class="text-lg font-semibold tabular-nums text-green-600 dark:text-green-400">{{ success_rate }}%</dd>
         </div>
         {% endif %}
         {% for s in all_statuses %}
         {% if summary.get(s, 0) > 0 %}
-        <div class="metric">
-            <dt>{{ s }}</dt>
-            <dd>{{ summary[s] }}</dd>
+        <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg px-4 py-2.5 min-w-[110px]">
+            <dt class="text-xs text-slate-500 dark:text-slate-400 uppercase tracking-wider capitalize">{{ s }}</dt>
+            <dd class="text-lg font-semibold tabular-nums">{{ summary[s] }}</dd>
         </div>
         {% endif %}
         {% endfor %}
-    </dl>
-</section>
+    </div>
 
-<form method="GET" action="" class="filter-form">
-    <fieldset>
-        <legend>Filters</legend>
-        <label>
-            Status
-            <select name="status" multiple size="8">
-            {% for s in all_statuses %}
-                <option value="{{ s }}"{% if s in statuses %} selected{% endif %}>{{ s }}</option>
-            {% endfor %}
-            </select>
-        </label>
-        <label>
-            Actor
-            <input type="text" name="actor" value="{{ actor_filter or '' }}" placeholder="e.g. send_email">
-        </label>
-        <label>
-            Queue
-            <input type="text" name="queue" value="{{ queue_filter or '' }}" placeholder="e.g. default">
-        </label>
-        <button type="submit">Filter</button>
-        <a href="{{ base_path }}/history" class="filter-reset">Reset</a>
-    </fieldset>
-</form>
+    {# Filter bar #}
+    <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg p-3">
+        <form method="GET" action="{{ base_path }}/history" class="flex flex-wrap gap-2 items-end">
+            <div class="min-w-[140px]">
+                <label class="block text-xs font-medium text-slate-500 dark:text-slate-400 mb-1">Status</label>
+                <select name="status" multiple size="{{ 4 if all_statuses | length > 4 else all_statuses | length }}"
+                        class="w-full px-2.5 py-1.5 text-sm border border-slate-300 dark:border-slate-600 rounded-md bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none">
+                    {% for s in all_statuses %}
+                    <option value="{{ s }}"{% if s in statuses %} selected{% endif %}>{{ s }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="flex-1 min-w-[140px]">
+                <label class="block text-xs font-medium text-slate-500 dark:text-slate-400 mb-1">Actor</label>
+                <input type="text" name="actor" value="{{ actor_filter or '' }}" placeholder="e.g. send_email"
+                       class="w-full px-2.5 py-1.5 text-sm border border-slate-300 dark:border-slate-600 rounded-md bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none">
+            </div>
+            <div class="flex-1 min-w-[120px]">
+                <label class="block text-xs font-medium text-slate-500 dark:text-slate-400 mb-1">Queue</label>
+                <input type="text" name="queue" value="{{ queue_filter or '' }}" placeholder="e.g. default"
+                       class="w-full px-2.5 py-1.5 text-sm border border-slate-300 dark:border-slate-600 rounded-md bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none">
+            </div>
+            <div class="flex gap-2">
+                <button type="submit"
+                        class="px-4 py-1.5 text-sm font-medium bg-blue-600 text-white rounded-md hover:bg-blue-700 focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 transition-colors">
+                    Filter
+                </button>
+                <a href="{{ base_path }}/history"
+                   class="px-4 py-1.5 text-sm font-medium border border-slate-300 dark:border-slate-600 rounded-md text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors">
+                    Reset
+                </a>
+            </div>
+        </form>
+    </div>
 
-{% if jobs %}
-<table>
-    <thead>
-        <tr>
-            <th>ID</th>
-            <th>Actor</th>
-            <th>Queue</th>
-            <th>Status</th>
-            <th>Enqueued</th>
-            <th>Started</th>
-            <th>Finished</th>
-            <th>Duration</th>
-            <th>Attempt</th>
-            <th>Source</th>
-        </tr>
-    </thead>
-    <tbody>
-    {% for job in jobs %}
-        <tr>
-            <td><a href="{{ base_path }}/jobs/{{ job.id }}">{{ job.id }}</a></td>
-            <td>{{ job.actor }}</td>
-            <td>{{ job.queue }}</td>
-            <td>{{ job.status }}</td>
-            <td>{{ job.created_at }}</td>
-            <td>{{ job.started_at or '—' }}</td>
-            <td>{{ job.finished_at or '—' }}</td>
-            <td>{% if job.duration_ms is not none %}{{ "%.1f"|format(job.duration_ms / 1000) }}s{% else %}—{% endif %}</td>
-            <td>{{ job.attempt }}/{{ job.max_attempts }}</td>
-            <td>{% if job.is_archived %}<span class="badge badge-grey">archived</span>{% else %}live{% endif %}</td>
-        </tr>
-    {% endfor %}
-    </tbody>
-</table>
+    {% if jobs %}
+    {% call styled_table() %}
+        {{ table_header(["ID", "Actor", "Queue", "Status", "Enqueued", "Started", "Finished", "Duration", "Attempt", "Source"]) }}
+        {% call table_body() %}
+        {% for job in jobs %}
+            {% call table_row() %}
+                <td class="px-4 py-2.5">
+                    {# id arrives as a uuid.UUID from the row decoder; slice its string form #}
+                    <a href="{{ base_path }}/jobs/{{ job.id }}" class="font-mono text-xs text-blue-600 dark:text-blue-400 hover:underline">{{ (job.id | string)[:8] }}</a>
+                </td>
+                <td class="px-4 py-2.5 font-medium max-w-[150px] truncate" title="{{ job.actor }}">{{ job.actor }}</td>
+                <td class="px-4 py-2.5 max-w-[120px] truncate" title="{{ job.queue }}">{{ job.queue }}</td>
+                <td class="px-4 py-2.5">{{ status_badge(job.status) }}</td>
+                <td class="px-4 py-2.5 text-xs whitespace-nowrap">{{ timestamp_cell(job.created_at) }}</td>
+                <td class="px-4 py-2.5 text-xs whitespace-nowrap">{{ timestamp_cell(job.started_at) }}</td>
+                <td class="px-4 py-2.5 text-xs whitespace-nowrap">{{ timestamp_cell(job.finished_at) }}</td>
+                <td class="px-4 py-2.5 text-xs font-mono text-slate-500 dark:text-slate-400">
+                    {% if job.duration_ms is not none %}{{ duration_fmt(job.duration_ms) }}{% else %}—{% endif %}
+                </td>
+                <td class="px-4 py-2.5 text-xs text-slate-500 dark:text-slate-400">{{ attempt_budget(job) }}</td>
+                <td class="px-4 py-2.5">
+                    {% if job.is_archived %}
+                    <span class="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-300">archived</span>
+                    {% else %}
+                    <span class="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-300">live</span>
+                    {% endif %}
+                </td>
+            {% endcall %}
+        {% endfor %}
+        {% endcall %}
+    {% endcall %}
 
-{% if has_next %}
-<a href="{{ base_path }}/history?{% for s in statuses %}status={{ s|urlencode }}&{% endfor %}{% if actor_filter %}actor={{ actor_filter|urlencode }}&{% endif %}{% if queue_filter %}queue={{ queue_filter|urlencode }}&{% endif %}cursor_at={{ next_cursor_at|urlencode }}&cursor_id={{ next_cursor_id|urlencode }}" class="pagination-next">Next page</a>
-{% endif %}
-
-{% else %}
-<p>No completed jobs found matching the current filters.</p>
-{% endif %}
+    {% if has_next %}
+    <div class="flex justify-end">
+        <a href="{{ base_path }}/history?{% for s in statuses %}status={{ s|urlencode }}&{% endfor %}{% if actor_filter %}actor={{ actor_filter|urlencode }}&{% endif %}{% if queue_filter %}queue={{ queue_filter|urlencode }}&{% endif %}cursor_at={{ next_cursor_at|urlencode }}&cursor_id={{ next_cursor_id|urlencode }}"
+           class="inline-flex items-center gap-1 px-3 py-1.5 text-sm font-medium border border-slate-300 dark:border-slate-600 rounded-md text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors">
+            Next page <i data-lucide="chevron-right" class="w-3.5 h-3.5"></i>
+        </a>
+    </div>
+    {% endif %}
+    {% else %}
+    <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg p-12 text-center">
+        <i data-lucide="inbox" class="w-10 h-10 text-slate-300 dark:text-slate-600 mx-auto mb-3"></i>
+        <p class="text-slate-500 dark:text-slate-400 text-sm">
+            No completed jobs found matching the current filters.
+        </p>
+        <a href="{{ base_path }}/history" class="inline-block mt-3 text-sm text-blue-600 dark:text-blue-400 hover:underline">Clear all filters</a>
+    </div>
+    {% endif %}
+</div>
 {% endblock %}

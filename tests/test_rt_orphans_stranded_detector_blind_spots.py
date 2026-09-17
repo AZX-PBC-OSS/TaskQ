@@ -24,7 +24,9 @@ the detector (or an equivalent signal).
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Mapping
 from datetime import timedelta
+from typing import cast
 from unittest.mock import Mock
 from uuid import UUID
 
@@ -32,6 +34,8 @@ import asyncpg
 import pytest
 
 from taskq._ids import new_base62, new_uuid
+from taskq.backend._dispatch_sql import DISPATCH_STRICT_FIFO_SQL
+from taskq.backend._dispatch_sql import dispatch_batch as dispatch_batch_sql
 from taskq.backend.clock import SystemClock
 from taskq.backend.postgres import PostgresBackend
 from taskq.exceptions import SingletonCollisionError
@@ -40,6 +44,7 @@ from taskq.settings import WorkerSettings
 from taskq.testing.jobs import make_enqueue_args
 from taskq.worker._leader_shared import SweepContext
 from taskq.worker._leader_sweeps import _stranded_jobs_loop
+from taskq.worker.deps import WorkerDeps
 
 pytestmark = pytest.mark.integration
 
@@ -86,12 +91,25 @@ class _DetectorDeps:
         self.is_leader = asyncio.Event()
         self.is_leader.set()
         self.liveness = Mock()
+        self.leader_term = None
+
+    def leading(self) -> bool:
+        """The per-iteration gate, answered the way a live worker answers it.
+
+        Bound to the production predicate rather than restated so this fake
+        cannot drift into its own idea of what leading means.
+        """
+        return bool(WorkerDeps.leading(cast(WorkerDeps, self)))
 
 
-async def _run_stranded_detector_once(
+async def _run_detector(
     pg_dsn: str, pool: asyncpg.Pool, schema: str, monkeypatch: pytest.MonkeyPatch
-) -> dict[str, int]:
-    """Run the REAL detector loop for a few fast ticks; return the last gauge."""
+) -> tuple[dict[str, int], list[dict[str, object]]]:
+    """Run the REAL detector loop for a few fast ticks; return the last gauge
+    and every log event the loop emitted (the per-shape warnings are the only
+    surface the per-condition counts and queue names reach)."""
+    import structlog.testing
+
     settings = WorkerSettings.load_from_dict(
         {
             "TASKQ_PG_DSN": pg_dsn,
@@ -107,19 +125,42 @@ async def _run_stranded_detector_once(
         worker_id=new_uuid(),
     )
     published: list[dict[str, int]] = []
+    published_by_reason: list[dict[tuple[str, str], int]] = []
 
-    def _capture(data: dict[str, int]) -> None:
-        published.append(dict(data))
+    def _capture(data: Mapping[tuple[str, str], int]) -> None:
+        # The gauge is keyed (actor, reason); the per-actor total these
+        # attacks assert on is the sum over reasons, and the last
+        # per-reason snapshot is kept for the liveness assertions.
+        published_by_reason.append(dict(data))
+        folded: dict[str, int] = {}
+        for (actor, _reason), count in data.items():
+            folded[actor] = folded.get(actor, 0) + count
+        published.append(folded)
 
     monkeypatch.setattr("taskq.worker._leader_sweeps.update_stranded_jobs_cache", _capture)
 
     shutdown = asyncio.Event()
-    task = asyncio.create_task(_stranded_jobs_loop(ctx, shutdown))
-    await asyncio.sleep(0.25)
-    shutdown.set()
-    await asyncio.wait_for(task, timeout=5.0)
+    with structlog.testing.capture_logs() as captured:
+        task = asyncio.create_task(_stranded_jobs_loop(ctx, shutdown))
+        await asyncio.sleep(0.25)
+        shutdown.set()
+        await asyncio.wait_for(task, timeout=5.0)
     assert published, "detector loop never published a tick"
-    return published[-1]
+    _last_by_reason[0] = published_by_reason[-1]
+    return published[-1], [dict(event) for event in captured]
+
+
+#: The most recent (actor, reason)-keyed gauge snapshot ``_run_detector``
+#: saw, for the tests that assert on the reason label.
+_last_by_reason: list[dict[tuple[str, str], int]] = [{}]
+
+
+async def _run_stranded_detector_once(
+    pg_dsn: str, pool: asyncpg.Pool, schema: str, monkeypatch: pytest.MonkeyPatch
+) -> dict[str, int]:
+    """Run the REAL detector loop for a few fast ticks; return the last gauge."""
+    gauge, _events = await _run_detector(pg_dsn, pool, schema, monkeypatch)
+    return gauge
 
 
 async def _seed_strand_shapes(conn: asyncpg.Connection, schema: str) -> tuple[UUID, UUID]:
@@ -233,5 +274,461 @@ async def test_stranded_singleton_blocker_refuses_every_enqueue_forever(pg_dsn: 
             "every enqueue for this actor is refused forever with no advisory hint."
         )
     finally:
+        await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        await conn.close()
+
+
+# ── The assignment-routed strand shape ───────────────────────────────
+
+
+_ASSIGNMENT_ACTOR = "assignment_routed_actor"
+_SERVED_LABEL_QUEUE = "served-label-queue"
+_UNSERVED_ASSIGNMENT_QUEUE = "unserved-assignment-queue"
+
+
+async def _seed_assignment_routed_strand(conn: asyncpg.Connection, schema: str) -> UUID:
+    """Seed a re-pended row whose routing queue no worker serves.
+
+    A re-pended row (``status='pending'`` with ``started_at`` set) is
+    routed by its actor's stored assignment, not by the queue label it
+    carries — the label survives only as an audit trail of where the row
+    was originally placed. So the row below is claimable by a consumer of
+    ``_UNSERVED_ASSIGNMENT_QUEUE`` and by no one else, while its label
+    still names a queue the fleet does serve.
+    """
+    await conn.execute(
+        f'INSERT INTO "{schema}".actor_config (actor, queue) VALUES ($1, $2)',
+        _ASSIGNMENT_ACTOR,
+        _UNSERVED_ASSIGNMENT_QUEUE,
+    )
+    job_id = new_uuid()
+    await conn.execute(
+        f'INSERT INTO "{schema}".jobs '
+        "(id, actor, queue, payload, max_attempts, retry_kind, status, attempt, "
+        " scheduled_at, started_at, assignment_routed) "
+        "VALUES ($1, $2, $3, '{}'::jsonb, 3, 'transient', 'pending', 1, "
+        " clock_timestamp(), clock_timestamp(), true)",
+        job_id,
+        _ASSIGNMENT_ACTOR,
+        _SERVED_LABEL_QUEUE,
+    )
+    await conn.execute(
+        f'INSERT INTO "{schema}".workers (id, hostname, pid, queues) VALUES ($1, $2, $3, $4)',
+        new_uuid(),
+        "worker-host",
+        4242,
+        [_SERVED_LABEL_QUEUE],
+    )
+    return job_id
+
+
+async def _claims(
+    conn: asyncpg.Connection, schema: str, queues: list[str], *, rounds: int = 3
+) -> set[UUID]:
+    """Run real dispatch rounds for a consumer of *queues*; return claimed ids."""
+    claimed: set[UUID] = set()
+    for _round in range(rounds):
+        rows = await dispatch_batch_sql(
+            conn,
+            sql=DISPATCH_STRICT_FIFO_SQL.format(schema=schema),
+            queues=queues,
+            limit_n=10,
+            worker_id=new_uuid(),
+            lock_lease=timedelta(seconds=30),
+        )
+        claimed.update(row["id"] for row in rows)
+    return claimed
+
+
+async def test_repended_row_routed_to_an_unserved_queue_is_undispatchable(
+    pg_dsn: str,
+) -> None:
+    """A re-pended row whose actor's stored assignment names a queue no
+    worker serves can never be claimed, however many consumers run.
+
+    This is the strand shape a queue move leaves behind when the target
+    queue's consumers were never stood up, and it is the one an operator
+    is least equipped to reason about: the row is pending, due, and
+    carries a queue label the fleet visibly serves, so every surface that
+    reads the label says the work is on a healthy queue. Dispatch does not
+    read the label for such a row — the assignment routes it — so the only
+    consumer that could claim it is the one nobody is running.
+
+    The control half of the pin matters as much as the failure half: a
+    consumer of the assignment queue claims the row immediately, which is
+    what makes "unclaimable" a statement about the fleet's subscriptions
+    rather than about the row being malformed.
+    """
+    schema = f"tarq_{new_base62()}".lower()
+    conn = await asyncpg.connect(pg_dsn)
+    try:
+        await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        await apply_pending(conn, schema=schema)
+        job_id = await _seed_assignment_routed_strand(conn, schema)
+
+        by_label_consumer = await _claims(conn, schema, [_SERVED_LABEL_QUEUE])
+        assert job_id not in by_label_consumer, (
+            "setup expectation: the row's routing queue is the actor's stored "
+            "assignment, so a consumer of the label queue must not claim it"
+        )
+
+        row = await conn.fetchrow(
+            f'SELECT status, queue FROM "{schema}".jobs WHERE id = $1', job_id
+        )
+        assert row is not None
+        assert row["status"] == "pending", (
+            "the row must still be pending and due after the label consumer's "
+            f"rounds; it is {row['status']!r}"
+        )
+        assert row["queue"] == _SERVED_LABEL_QUEUE, (
+            "the row must still carry the label naming a served queue, which is "
+            "what makes the strand invisible to every label-keyed surface"
+        )
+
+        by_assignment_consumer = await _claims(conn, schema, [_UNSERVED_ASSIGNMENT_QUEUE])
+        assert job_id in by_assignment_consumer, (
+            "control: a consumer of the actor's stored assignment queue must "
+            "claim the row, proving it is dispatchable work stranded by the "
+            "fleet's subscriptions rather than an unclaimable row"
+        )
+    finally:
+        await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        await conn.close()
+
+
+async def test_stranded_detector_sees_the_assignment_routed_strand(
+    pg_dsn: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The stranded-jobs gauge must count a re-pended row whose actor's
+    stored assignment names a queue no worker serves.
+
+    The detector is the fleet's only surface that can decide "no worker
+    anywhere serves this" — a single booting worker cannot, which is why
+    it warns instead of refusing. It answers that question by testing the
+    row's queue label against the ``workers`` table. For a re-pended row
+    the label is not the routing queue, so the detector asks its question
+    about the wrong queue: it reports healthy while the row is
+    permanently undispatchable.
+
+    An operator hits this after moving an actor onto a queue whose
+    consumers were never started. Nothing fails: the jobs are pending and
+    due, the queue on their label is served, the gauge is zero, and the
+    retries simply never run.
+    """
+    schema = f"tarq_{new_base62()}".lower()
+    conn = await asyncpg.connect(pg_dsn)
+    pool: asyncpg.Pool | None = None
+    try:
+        await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        await apply_pending(conn, schema=schema)
+        await _seed_assignment_routed_strand(conn, schema)
+
+        pool = await asyncpg.create_pool(pg_dsn, min_size=1, max_size=2)
+        gauge = await _run_stranded_detector_once(pg_dsn, pool, schema, monkeypatch)
+
+        assert gauge.get(_ASSIGNMENT_ACTOR, 0) >= 1, (
+            "the stranded-jobs gauge must count the re-pended row routed to "
+            f"{_UNSERVED_ASSIGNMENT_QUEUE!r}, which no worker serves; the gauge "
+            f"published {gauge!r}. The detector tests the row's queue LABEL "
+            f"({_SERVED_LABEL_QUEUE!r}, which a live worker does serve) against "
+            "the workers table, but a re-pended row is routed by its actor's "
+            "stored assignment — so the one surface that can see a fleet-wide "
+            "strand reports healthy while the work can never be claimed"
+        )
+    finally:
+        if pool is not None:
+            await pool.close()
+        await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        await conn.close()
+
+
+# ── Per-shape attribution: one row, one category, the right queue name ──────
+
+_GHOST_ACTOR = "ghost_repend_actor"
+_GHOST_LABEL_QUEUE = "ghost-served-label-queue"
+_STRAY_ACTOR = "post_move_stray_actor"
+_STRAY_SERVED_ASSIGNMENT = "stray-served-assignment-queue"
+_STRAY_UNSERVED_LABEL = "stray-unserved-label-queue"
+
+
+async def test_repend_with_no_actor_config_reports_only_the_config_shape(
+    pg_dsn: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A re-pended row whose actor has no config row is ONE strand, reported
+    in the config category alone.
+
+    Without a config row there is no assignment to route by, so "is the
+    routing queue served" has no meaning for the row — and the row's own
+    label is never its routing queue once the marker is set. A detector
+    that nonetheless evaluates the unserved-queue arm against the missing
+    assignment (NULL) reports the row twice: once as the config strand it
+    is, and once as an unserved-queue strand naming a label that a live
+    worker provably serves — an operator chasing that event hunts a queue
+    problem that does not exist while the real cause (seed the actor's
+    config row) goes unnamed.
+    """
+    schema = f"tshp_{new_base62()}".lower()
+    conn = await asyncpg.connect(pg_dsn)
+    pool: asyncpg.Pool | None = None
+    try:
+        await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        await apply_pending(conn, schema=schema)
+        await conn.execute(
+            f'INSERT INTO "{schema}".jobs '
+            "(id, actor, queue, payload, max_attempts, retry_kind, status, attempt, "
+            " scheduled_at, started_at, assignment_routed) "
+            "VALUES ($1, $2, $3, '{}'::jsonb, 3, 'transient', 'pending', 1, "
+            " clock_timestamp(), clock_timestamp(), true)",
+            new_uuid(),
+            _GHOST_ACTOR,
+            _GHOST_LABEL_QUEUE,
+        )
+        # A live worker serving the row's LABEL queue: the strongest form of
+        # the contrast — even with the label served, the NULL-assignment arm
+        # must not report an unserved queue.
+        await conn.execute(
+            f'INSERT INTO "{schema}".workers (id, hostname, pid, queues) VALUES ($1, $2, $3, $4)',
+            new_uuid(),
+            "worker-host",
+            4242,
+            [_GHOST_LABEL_QUEUE],
+        )
+
+        pool = await asyncpg.create_pool(pg_dsn, min_size=1, max_size=2)
+        gauge, events = await _run_detector(pg_dsn, pool, schema, monkeypatch)
+
+        assert gauge.get(_GHOST_ACTOR) == 1, (
+            "the config-missing re-pend is one stranded row and must count once "
+            f"in the gauge; published {gauge!r}"
+        )
+        config_events = [e for e in events if e.get("event") == "stranded-jobs-no-actor-config"]
+        assert [e.get("actor") for e in config_events] == [_GHOST_ACTOR], (
+            "the row must be reported as the missing-config strand exactly once; "
+            f"events={config_events!r}"
+        )
+        assert config_events[0].get("pending_count") == 1
+        unserved_events = [
+            e
+            for e in events
+            if e.get("event") == "stranded-jobs-unserved-queue" and e.get("actor") == _GHOST_ACTOR
+        ]
+        assert unserved_events == [], (
+            "a row stranded for a missing config row must not ALSO be reported as "
+            "an unserved-queue strand — with no config row there is no assignment "
+            f"to test, and its label ({_GHOST_LABEL_QUEUE!r}, served by a live "
+            f"worker) is not its routing queue; events={unserved_events!r}"
+        )
+    finally:
+        if pool is not None:
+            await pool.close()
+        await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        await conn.close()
+
+
+async def test_unserved_event_names_the_queue_dispatch_would_route_by(
+    pg_dsn: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The queue an unserved-queue warning names must be the queue dispatch
+    would actually route the row by — the queue the detector TESTED.
+
+    Two rows, one per routing class: a producer-placed stray left on a
+    retired source queue after its actor moved (label-routed: the label is
+    unserved while the actor's current assignment IS served), and a
+    re-pended row whose assignment names a queue nothing serves while its
+    label names a served one. Naming anything but the tested queue sends
+    the operator to subscribe consumers to a queue that is already served
+    — or to retire one that is not the problem.
+    """
+    schema = f"tshp_{new_base62()}".lower()
+    conn = await asyncpg.connect(pg_dsn)
+    pool: asyncpg.Pool | None = None
+    try:
+        await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        await apply_pending(conn, schema=schema)
+        await conn.executemany(
+            f'INSERT INTO "{schema}".actor_config (actor, queue) VALUES ($1, $2)',
+            [(_STRAY_ACTOR, _STRAY_SERVED_ASSIGNMENT)],
+        )
+        # The post-move producer stray: label-routed (never re-pended), so
+        # dispatch serves it by its own label — the retired queue.
+        await conn.execute(
+            f'INSERT INTO "{schema}".jobs '
+            "(id, actor, queue, payload, max_attempts, retry_kind, status, scheduled_at) "
+            "VALUES ($1, $2, $3, '{}'::jsonb, 3, 'transient', 'pending', clock_timestamp())",
+            new_uuid(),
+            _STRAY_ACTOR,
+            _STRAY_UNSERVED_LABEL,
+        )
+        await _seed_assignment_routed_strand(conn, schema)
+        # One worker serving the queues that ARE served in this scenario:
+        # the stray actor's current assignment and the re-pended row's label.
+        await conn.execute(
+            f'INSERT INTO "{schema}".workers (id, hostname, pid, queues) VALUES ($1, $2, $3, $4)',
+            new_uuid(),
+            "worker-host",
+            4242,
+            [_STRAY_SERVED_ASSIGNMENT, _SERVED_LABEL_QUEUE],
+        )
+
+        pool = await asyncpg.create_pool(pg_dsn, min_size=1, max_size=2)
+        _gauge, events = await _run_detector(pg_dsn, pool, schema, monkeypatch)
+
+        unserved = {
+            e.get("actor"): e for e in events if e.get("event") == "stranded-jobs-unserved-queue"
+        }
+        stray_event = unserved.get(_STRAY_ACTOR)
+        assert stray_event is not None and stray_event.get("queues") == [_STRAY_UNSERVED_LABEL], (
+            f"the label-routed stray is dispatched by its own label, so the event "
+            f"must name the unserved label {_STRAY_UNSERVED_LABEL!r} — naming the "
+            f"actor's assignment {_STRAY_SERVED_ASSIGNMENT!r} (which a live worker "
+            f"serves) reports the healthy queue as the problem; event={stray_event!r}"
+        )
+        repend_event = unserved.get(_ASSIGNMENT_ACTOR)
+        assert repend_event is not None and repend_event.get("queues") == [
+            _UNSERVED_ASSIGNMENT_QUEUE
+        ], (
+            f"the re-pended row is dispatched by its actor's assignment, so the "
+            f"event must name the unserved assignment {_UNSERVED_ASSIGNMENT_QUEUE!r} "
+            f"— naming the label {_SERVED_LABEL_QUEUE!r} (served) reports the "
+            f"healthy queue as the problem; event={repend_event!r}"
+        )
+    finally:
+        if pool is not None:
+            await pool.close()
+        await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        await conn.close()
+
+
+# ── Liveness: a dead-but-unswept worker row does not serve a queue ──────
+
+
+async def _seed_unserved_queue_job(conn: asyncpg.Connection, schema: str) -> None:
+    """One pending row WITH actor_config on a queue nobody live serves."""
+    await conn.execute(
+        f'INSERT INTO "{schema}".actor_config (actor, queue) VALUES ($1, $2)',
+        _SHAPE_I_ACTOR,
+        "default",
+    )
+    await conn.execute(
+        f'INSERT INTO "{schema}".jobs '
+        "(id, actor, queue, payload, max_attempts, retry_kind, status, scheduled_at) "
+        "VALUES ($1, $2, $3, '{}'::jsonb, 3, 'transient', 'pending', clock_timestamp())",
+        new_uuid(),
+        _SHAPE_I_ACTOR,
+        _NO_WORKER_QUEUE,
+    )
+
+
+async def _seed_worker(conn: asyncpg.Connection, schema: str, *, seen_ago_secs: float) -> None:
+    await conn.execute(
+        f'INSERT INTO "{schema}".workers (id, hostname, pid, queues, last_seen_at) '
+        "VALUES ($1, 'h', 1, $2, clock_timestamp() - make_interval(secs => $3))",
+        new_uuid(),
+        [_NO_WORKER_QUEUE],
+        seen_ago_secs,
+    )
+
+
+async def test_stale_worker_row_does_not_serve_a_queue(
+    pg_dsn: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A worker row whose last_seen_at is older than the liveness window is
+    not dispatching; until the stale-worker sweep removes it, the row must
+    not hide an unserved queue. The gauge names the reason, and a fresh
+    worker on the same queue clears it."""
+    schema = f"torp_{new_base62()}".lower()
+    conn = await asyncpg.connect(pg_dsn)
+    pool: asyncpg.Pool | None = None
+    try:
+        await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        await apply_pending(conn, schema=schema)
+        await _seed_unserved_queue_job(conn, schema)
+        # admin_worker_liveness_seconds defaults to 30: this row is dead.
+        await _seed_worker(conn, schema, seen_ago_secs=120.0)
+
+        pool = await asyncpg.create_pool(pg_dsn, min_size=1, max_size=2)
+        gauge = await _run_stranded_detector_once(pg_dsn, pool, schema, monkeypatch)
+        assert gauge.get(_SHAPE_I_ACTOR, 0) == 1, (
+            f"a stale worker row must not count as serving {_NO_WORKER_QUEUE!r}; "
+            f"published {gauge!r}"
+        )
+        assert _last_by_reason[0] == {(_SHAPE_I_ACTOR, "unserved_queue"): 1}
+
+        await _seed_worker(conn, schema, seen_ago_secs=1.0)
+        gauge = await _run_stranded_detector_once(pg_dsn, pool, schema, monkeypatch)
+        assert gauge == {}, f"a live worker serves the queue; published {gauge!r}"
+    finally:
+        if pool is not None:
+            await pool.close()
+        await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        await conn.close()
+
+
+async def test_queue_depth_loop_samples_live_workers_per_queue(
+    pg_dsn: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """taskq.queue.live_workers counts only workers inside the liveness
+    window, per subscribed queue, from the same tick as the depth — so a
+    queue with depth and no live worker is joinable on ``queue``."""
+    from taskq.worker._leader_sweeps import _queue_depth_loop
+
+    schema = f"torp_{new_base62()}".lower()
+    conn = await asyncpg.connect(pg_dsn)
+    pool: asyncpg.Pool | None = None
+    try:
+        await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        await apply_pending(conn, schema=schema)
+        await _seed_unserved_queue_job(conn, schema)
+        await _seed_worker(conn, schema, seen_ago_secs=120.0)  # dead: not counted
+        await conn.execute(
+            f'INSERT INTO "{schema}".workers (id, hostname, pid, queues, last_seen_at) '
+            "VALUES ($1, 'h', 1, $2, clock_timestamp())",
+            new_uuid(),
+            ["default", "reports"],
+        )
+        await conn.execute(
+            f'INSERT INTO "{schema}".workers (id, hostname, pid, queues, last_seen_at) '
+            "VALUES ($1, 'h', 2, $2, clock_timestamp())",
+            new_uuid(),
+            ["default"],
+        )
+
+        settings = WorkerSettings.load_from_dict(
+            {
+                "TASKQ_PG_DSN": pg_dsn,
+                "TASKQ_SCHEMA_NAME": schema,
+                "TASKQ_QUEUE_DEPTH_INTERVAL": "0.05",
+            },
+            validate=False,
+        )
+        pool = await asyncpg.create_pool(pg_dsn, min_size=1, max_size=2)
+        ctx = SweepContext(
+            deps=_DetectorDeps(settings, pool),  # type: ignore[arg-type]  # Why: duck-typed WorkerDeps carrying exactly the fields the loop reads.
+            backend=None,  # type: ignore[arg-type]  # Why: the depth loop never touches ctx.backend.
+            clock=SystemClock(),
+            worker_id=new_uuid(),
+        )
+        depths: list[dict[str, int]] = []
+        live: list[dict[str, int]] = []
+        monkeypatch.setattr(
+            "taskq.worker._leader_sweeps.update_queue_depth_cache", lambda d: depths.append(dict(d))
+        )
+        monkeypatch.setattr(
+            "taskq.worker._leader_sweeps.update_queue_live_workers_cache",
+            lambda d: live.append(dict(d)),
+        )
+        shutdown = asyncio.Event()
+        task = asyncio.create_task(_queue_depth_loop(ctx, shutdown))
+        await asyncio.sleep(0.25)
+        shutdown.set()
+        await asyncio.wait_for(task, timeout=5.0)
+
+        assert depths and depths[-1] == {_NO_WORKER_QUEUE: 1}
+        assert live and live[-1] == {"default": 2, "reports": 1}, (
+            f"the dead worker's {_NO_WORKER_QUEUE!r} subscription must not count; got {live[-1]!r}"
+        )
+    finally:
+        if pool is not None:
+            await pool.close()
         await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
         await conn.close()

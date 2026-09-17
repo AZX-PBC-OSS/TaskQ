@@ -47,6 +47,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import functools
 import json
 from collections.abc import AsyncGenerator
 from datetime import timedelta
@@ -371,15 +372,20 @@ async def test_progress_stream_cap_429_and_slot_reuse_after_disconnect() -> None
     streams (client disconnect) frees both slots so a new stream connects.
     """
     pubsub = _PassivePubSub()
+    pool = _StubPool(_pg_row())
+    redis = _StubRedis(pubsub)
     router = create_router(
-        _StubPool(_pg_row()),  # pyright: ignore[reportArgumentType]  # Why: duck-typed stub pool satisfies the asyncpg.Pool surface the route reads.
-        _StubRedis(pubsub),  # pyright: ignore[reportArgumentType]  # Why: duck-typed pubsub satisfies the erased Any redis boundary.
+        pool,  # pyright: ignore[reportArgumentType]  # Why: duck-typed stub pool satisfies the asyncpg.Pool surface the route reads.
+        redis,  # pyright: ignore[reportArgumentType]  # Why: duck-typed pubsub satisfies the erased Any redis boundary.
         schema="taskq",
         sse_heartbeat_interval=timedelta(seconds=15),
         max_sse_connections=2,
     )
+    # The pool and Redis client are dependencies on the endpoint (resolved
+    # per request from the host's state); bound here as the dependency
+    # graph would bind them.
     endpoint = next(
-        route.endpoint
+        functools.partial(route.endpoint, pg_pool=pool, redis_client=redis)
         for route in router.routes
         if isinstance(route, APIRoute) and route.path.endswith("/progress/stream")
     )
@@ -429,24 +435,19 @@ async def test_progress_stream_cap_429_and_slot_reuse_after_disconnect() -> None
 # ── 4. Malformed Last-Event-ID header ─────────────────────────────────────
 
 
-async def test_last_event_id_garbage_header_is_initial_connection() -> None:
-    """A non-integer ``Last-Event-ID`` header must degrade to an initial
-    connection (None), never crash and never blackhole the cursor.
-
-    CONTRACT (safe-unpinned): progress.py:128-133 — an unparseable header
-    value returns None so the stream serves the full PG snapshot; only a
-    parseable integer acts as a resume cursor. No existing test covers the
-    ValueError branch.
+async def test_last_event_id_garbage_header_is_rejected_not_read_as_no_cursor() -> None:
+    """A non-integer ``Last-Event-ID`` cannot have come from this stream (it
+    issues integer sequence ids), so it is a 400 at the boundary - never
+    silently read as an initial connection, which also shadowed a valid
+    ``?last_event_id=`` sent alongside. A stream that does start without a
+    cursor still emits the PG snapshot first.
     """
-    request = _mock_request(header_value="not-an-int")
-    resolved = _resolve_last_event_id(request, 7)
-    assert resolved is None, (
-        "CONTRACT: a malformed Last-Event-ID header (progress.py:131-133) must "
-        "return None — the reconnect cursor degrades to an initial connection "
-        "with the full snapshot, rather than crashing the int() parse or being "
-        "mistaken for a real cursor."
-    )
-    # And via the loop entry point: None cursor => snapshot event is emitted.
+    from fastapi import HTTPException
+
+    with pytest.raises(HTTPException) as info:
+        _resolve_last_event_id(_mock_request(header_value="not-an-int"), 7)
+    assert info.value.status_code == 400
+
     job_id = new_uuid()
     pubsub = _PassivePubSub()
     gen = _event_generator(
@@ -456,13 +457,12 @@ async def test_last_event_id_garbage_header_is_initial_connection() -> None:
         is_terminal=False,
         progress_seq=4,
         progress_data='{"step": 4}',
-        resolved_last_event_id=_resolve_last_event_id(_mock_request("garbage"), None),
+        resolved_last_event_id=_resolve_last_event_id(_mock_request(None), None),
         heartbeat_secs=0.01,
     )
     snapshot = await asyncio.wait_for(_first_event(gen), timeout=2)
     assert snapshot.event == "progress" and snapshot.id == "4", (
-        "CONTRACT: with the malformed header resolved to None, the initial-"
-        "connection path must emit the PG snapshot (progress.py:161-164)."
+        "with no cursor the initial-connection path must emit the PG snapshot"
     )
     await gen.aclose()
     assert pubsub.unsubscribed is True and pubsub.closed is True

@@ -100,7 +100,7 @@ def test_migrate_status_shows_applied_and_pending(monkeypatch: Any) -> None:
 def test_migrate_status_closes_connection(monkeypatch: Any) -> None:
     """migrate status closes the asyncpg connection even when the command succeeds.
 
-    No-regression pin for the bounded close (#38 follow-up): a healthy conn
+    No-regression pin for the bounded close: a healthy conn
     is closed exactly once and never terminated (passes pre- and post-fix).
     """
     fake_conn = _patch_connect(monkeypatch)
@@ -262,6 +262,39 @@ def test_migrate_up_forwards_phase_target_max_steps(monkeypatch: Any) -> None:
     assert kwargs["max_steps"] == 3
 
 
+def test_migrate_up_forwards_the_ddl_lock_timeout(monkeypatch: Any) -> None:
+    """``--ddl-lock-timeout`` reaches apply_pending; unset, the runner's
+    default bound applies."""
+    _patch_connect(monkeypatch)
+    apply_pending_mock = AsyncMock(return_value=[])
+    monkeypatch.setattr(cli_mod.migrate_mod, "apply_pending", apply_pending_mock)
+
+    result = runner.invoke(app, ["migrate", "up", "--ddl-lock-timeout", "2.5"])
+    assert result.exit_code == 0, f"stderr: {result.stderr}"
+    assert apply_pending_mock.await_args is not None
+    assert apply_pending_mock.await_args.kwargs["ddl_lock_timeout"] == 2.5
+
+    apply_pending_mock.reset_mock()
+    result = runner.invoke(app, ["migrate", "up"])
+    assert result.exit_code == 0, f"stderr: {result.stderr}"
+    assert apply_pending_mock.await_args is not None
+    assert (
+        apply_pending_mock.await_args.kwargs["ddl_lock_timeout"]
+        == cli_mod.migrate_mod.DEFAULT_MIGRATION_DDL_LOCK_TIMEOUT
+    )
+
+
+def test_migrate_up_refuses_a_negative_ddl_lock_timeout(monkeypatch: Any) -> None:
+    """A negative bound is refused at the option, before any connection."""
+    connect = AsyncMock(return_value=_FakeConn())
+    monkeypatch.setattr(cli_mod.asyncpg, "connect", connect)
+
+    result = runner.invoke(app, ["migrate", "up", "--ddl-lock-timeout", "-1"])
+    assert result.exit_code != 0
+    assert "--ddl-lock-timeout" in plain_cli_output(result.output)
+    connect.assert_not_awaited()
+
+
 def test_migrate_up_takes_the_advisory_lock(monkeypatch: Any) -> None:
     """`taskq migrate up` must serialize on the migration advisory lock.
 
@@ -318,7 +351,7 @@ def test_migrate_up_lock_contention_exits_with_a_named_reason(monkeypatch: Any) 
 def test_migrate_up_closes_connection(monkeypatch: Any) -> None:
     """migrate up closes the asyncpg connection even when no migrations are pending.
 
-    No-regression pin for the bounded close (#38 follow-up): a healthy conn
+    No-regression pin for the bounded close: a healthy conn
     is closed exactly once and never terminated (passes pre- and post-fix).
     """
     fake_conn = _patch_connect(monkeypatch)

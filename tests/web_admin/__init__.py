@@ -68,7 +68,7 @@ class StubAcquireContext:
 class StubPool:
     """Minimal asyncpg.Pool duck type for testing."""
 
-    def acquire(self) -> StubAcquireContext:
+    def acquire(self, *, timeout: float | None = None) -> StubAcquireContext:
         return StubAcquireContext()
 
 
@@ -129,8 +129,9 @@ def _stub_job_row(
 class StubBackend:
     """Minimal Backend stub that records method calls for assertion."""
 
-    def __init__(self, *, job_row: JobRow | None = None) -> None:
+    def __init__(self, *, job_row: JobRow | None = None, retry_result: bool = True) -> None:
         self._job_row = job_row
+        self._retry_result = retry_result
         self.cancel_calls: list[tuple[UUID, str | None]] = []
         self.retry_calls: list[UUID] = []
         self.enqueue_calls: list[EnqueueArgs] = []
@@ -144,7 +145,7 @@ class StubBackend:
 
     async def retry_job(self, job_id: Any) -> bool:
         self.retry_calls.append(job_id)
-        return True
+        return self._retry_result
 
     async def enqueue(self, args: EnqueueArgs) -> JobRow:
         self.enqueue_calls.append(args)

@@ -26,6 +26,26 @@ When the resolved env is `test` (case-insensitive), `.env.local` and `.env.test.
 
 ---
 
+## The `0` convention
+
+Several fields use `0` as a **sentinel** — a special meaning, not the quantity zero — and the polarity differs **per family**. Learn the families once — every sentinel-`0` field in this reference follows one of them, and each family's own entry links back here:
+
+| Family | Fields | `0` means |
+|---|---|---|
+| Statement cache size | `TASKQ_STATEMENT_CACHE_SIZE` | cache **disabled** |
+| Statement cache lifetime | `TASKQ_MAX_CACHED_STATEMENT_LIFETIME` | cached **indefinitely** |
+| Lock-wait budgets | `TASKQ_MAX_PENDING_LOCK_TIMEOUT_MS`, `TASKQ_UNIQUE_FOR_LOCK_TIMEOUT_MS`, `TASKQ_IDEMPOTENCY_LOCK_TIMEOUT_MS`, `TASKQ_TOKEN_BUCKET_LOCK_TIMEOUT_MS`, `TASKQ_SLIDING_WINDOW_LOCK_TIMEOUT_MS` | **wait indefinitely** server-side (the `lock_timeout` GUC convention). A TaskQ-built pool still applies its per-query `command_timeout`, so an unbounded server wait is still bounded client-side — prefer a large finite value; see [Derived Values](#derived-values) |
+| Time-based deletion sweeps | `TASKQ_EVENT_RETENTION_PERIOD`, `TASKQ_KEYED_ROW_RECLAIM_PERIOD` | sweep **disabled** — for a deletion loop the safe misconfiguration is off |
+| Prune/archive retention | `TASKQ_PRUNE_RETENTION_SUCCEEDED`, `TASKQ_PRUNE_RETENTION_FAILED`, `TASKQ_PRUNE_RETENTION_CANCELLED`, `TASKQ_PRUNE_RETENTION_ABANDONED`, `TASKQ_ARCHIVE_RETENTION_PERIOD` | archive/expire **immediately** at the next sweep — the prune family's polarity is deliberately opposite to the deletion-sweep family's |
+| Health listener | `TASKQ_HEALTH_PORT` | bind an **ephemeral** port (tests only). Note this field's real "off" is *unset*, not `0` |
+
+The trap this table exists for: the first two rows sit two fields apart in
+`WorkerSettings` and mean opposite things, and the lock-budget family's "wait
+indefinitely" is the opposite of "fail fast". Never generalise `0` from one
+family to another — check the table.
+
+---
+
 ## `.env` File Setup
 
 Minimal `.env` for a real deployment:
@@ -56,15 +76,18 @@ Applies to all commands: `worker`, `migrate`, `ui serve`, `health`.
 |---|---|---|---|---|
 | `TASKQ_PG_DSN` | `PostgresDsn` | `postgresql://taskq:taskq@localhost:5432/taskq` | Direct (non-PgBouncer) DSN. LISTEN/NOTIFY and advisory locks require a session-mode connection. | all |
 | `TASKQ_SCHEMA_NAME` | `str` | `taskq` | Postgres schema for all TaskQ tables. Must match `^[A-Za-z_][A-Za-z0-9_]*$`. | all |
-| `TASKQ_STATEMENT_CACHE_SIZE` | `int` | `512` | Size of the per-connection prepared-statement LRU asyncpg keeps on every pool TaskQ builds. asyncpg's default of 100 thrashes on TaskQ's read paths (`list_jobs` alone renders 384+ filter-combination variants). `0` disables the cache. Applies only to pools TaskQ builds — bring-your-own pools must pass the same `create_pool` kwarg themselves. See [ops.md — Database performance knobs](ops.md#database-performance-knobs). | all |
-| `TASKQ_MAX_CACHED_STATEMENT_LIFETIME` | `int` (seconds) | `3600` | How long a prepared statement may stay in asyncpg's per-connection cache on every pool TaskQ builds. asyncpg's default of 300 s re-prepares statements on long-lived workers. `0` caches indefinitely. Same TaskQ-built-pools-only scope as `TASKQ_STATEMENT_CACHE_SIZE`. | all |
+| `TASKQ_STATEMENT_CACHE_SIZE` | `int` | `512` | Size of the per-connection prepared-statement LRU asyncpg keeps on every pool TaskQ builds. asyncpg's default of 100 thrashes on TaskQ's read paths (`list_jobs` alone renders 384+ filter-combination variants). `0` disables the cache (see [The `0` convention](#the-0-convention)). Applies only to pools TaskQ builds — bring-your-own pools must pass the same `create_pool` kwarg themselves. See [ops.md — Database performance knobs](ops.md#database-performance-knobs). | all |
+| `TASKQ_MAX_CACHED_STATEMENT_LIFETIME` | `int` (seconds) | `3600` | How long a prepared statement may stay in asyncpg's per-connection cache on every pool TaskQ builds. asyncpg's default of 300 s re-prepares statements on long-lived workers. `0` caches indefinitely — the *opposite* polarity of `TASKQ_STATEMENT_CACHE_SIZE` two rows up (see [The `0` convention](#the-0-convention)). Same TaskQ-built-pools-only scope as `TASKQ_STATEMENT_CACHE_SIZE`. | all |
 | `TASKQ_REDIS_URL` | `RedisDsn \| None` | `None` | Optional Redis URL. Required for real-time SSE progress fanout in the admin UI. | worker, ui serve |
 | `TASKQ_PG_CREDENTIAL_PROVIDER` | `str \| None` | `None` | `module:attr` reference to a `PgCredentialProvider`. Overridden by `--pg-credential-provider` on `taskq worker` / `migrate` / `ui serve`. See [Managed identities](managed-identities.md). | worker, migrate, ui serve |
 | `TASKQ_REDIS_CREDENTIAL_PROVIDER` | `str \| None` | `None` | `module:attr` reference to a `RedisCredentialProvider`. Requires `TASKQ_REDIS_URL`. Overridden by `--redis-credential-provider`. | worker, ui serve |
+| `TASKQ_RELOAD_INTERVAL` | `float \| None` (seconds) | `None` (derived from the lease) | Cadence of the credential hot-reload (the same path as SIGHUP): every provider-backed pool and connection is rebuilt on a fresh credential with no external signal required — the rotation path for platforms without SIGHUP (e.g. Windows) and for hands-off scheduled rotation (e.g. ~720 s for AWS IAM's 15-minute tokens). Unset, the cadence is derived from the lease the provider grants when it reports one — a Vault dynamic credential is rebuilt at half its lease TTL (`taskq.auth.ReloadSchedule`); a username-bearing provider that reports no lease warns at startup, and only SIGHUP / `deps.request_reload()` rotate it. Only factory-backed resources are rebuilt; DSN/static credentials are unaffected. Must be > 0. | worker, ui serve |
 | `TASKQ_ENVIRONMENT` | `str \| None` | `None` | Deployment label; does not select `.env` files (that is `ENV`'s job). Values `dev` or `development` suppress the unauthenticated-admin warning. Any other value triggers it. | all |
+| `TASKQ_ADMIN_ACQUIRE_TIMEOUT` | `float` (seconds) | `5.0` | Bounds every wait an admin UI or progress request makes for a backend resource before its own query runs: a Postgres pool checkout and a Redis read. A pool with every connection wedged, or a black-holed broker, answers the request with `503` (`Retry-After: 2`) after this long instead of hanging it — and every request behind it — until the client gives up; the query itself is bounded by the pool's `command_timeout`. Must be > 0. | ui serve |
 | `TASKQ_ADMIN_MAX_SSE_CONNECTIONS` | `int` | `50` | Maximum concurrent SSE connections the admin UI will serve. Min: 1. | ui serve |
 | `TASKQ_PROGRESS_MAX_SSE_CONNECTIONS` | `int` | `50` | Maximum concurrent per-job progress SSE streams this process will serve. Each stream holds a Redis pubsub subscription and an asyncio task for as long as the client stays connected, so an uncapped endpoint is a resource-exhaustion surface on the app hosting the pipeline. Min: 1. | ui serve |
-| `TASKQ_ADMIN_WORKER_LIVENESS_SECONDS` | `int` | `30` | How recently a worker must have written `last_seen_at` to count as alive in the admin UI (orphan-queue banner, leader `watchdog_healthy`). Measured by Postgres against `clock_timestamp()`. Must comfortably exceed `TASKQ_HEARTBEAT_INTERVAL`. Min: 1. | ui serve |
+| `TASKQ_PROGRESS_REQUIRE_AUTH` | `bool` | `true` | When `true` (the default), `taskq.web.progress.create_router` raises `RuntimeError` if `auth_dependency` is `None` in a non-dev environment, failing closed. Set to `false` to allow unauthenticated per-job progress/state endpoints in non-dev (not recommended, only for deployments that authenticate at the ingress). | ui serve |
+| `TASKQ_ADMIN_WORKER_LIVENESS_SECONDS` | `int` | `30` | How recently a worker must have written `last_seen_at` to count as alive: the admin UI's orphan-queue banner and leader `watchdog_healthy`, and on the worker side the leader's `taskq.queue.live_workers` gauge and the stranded-jobs detector's unserved-queue arm. Measured by Postgres against the statement clock. Must comfortably exceed `TASKQ_HEARTBEAT_INTERVAL`. Min: 1. | ui serve, worker (leader) |
 | `TASKQ_ADMIN_HOST` | `str` | `0.0.0.0` | Bind address for `taskq ui serve`. | ui serve |
 | `TASKQ_ADMIN_PORT` | `int` | `8080` | Bind port for `taskq ui serve`. Range: 1–65535. | ui serve |
 | `TASKQ_ADMIN_URL` | `str` | `http://localhost:8080` | Public base URL of the admin UI as seen from a browser. Used to construct redirect URLs. Override when admin and app run on different hosts or ports. | ui serve |
@@ -72,6 +95,8 @@ Applies to all commands: `worker`, `migrate`, `ui serve`, `health`.
 | `TASKQ_ADMIN_UI_ALLOW_RATE_LIMIT_RESET` | `bool` | `false` | When `True`, the admin UI shows a reset button on the rate-limits page and serves the `POST /rate-limits/{bucket_name}/reset` endpoint. Default `False` for safety. | ui serve |
 | `TASKQ_ADMIN_UI_REQUIRE_AUTH` | `bool` | `true` | When `true` (the default), `create_router` raises `RuntimeError` if `auth_dependency` is `None` in a non-dev environment, failing closed. Set to `false` to allow an unauthenticated admin UI in non-dev (not recommended — only for air-gapped or localhost-only deployments). | ui serve |
 | `TASKQ_ADMIN_ACTIONS_ENABLED` | `bool` | `false` | When `true`, the admin UI permits destructive actions (run schedule now, retry job, cancel job). Default `false` — prevents on-demand triggering of registered business logic via the admin UI without explicit opt-in. Separate from `auth_dependency`, which controls read access to all admin routes. | ui serve |
+| `TASKQ_ADMIN_UI_FRAME_ANCESTORS` | `str` | `none` | Who may frame admin pages: `none` (the default, nobody) or `self` (the admin UI's own origin, for a host app that embeds the admin UI in its dashboard). Emitted as both `Content-Security-Policy: frame-ancestors ...` and the legacy `X-Frame-Options` (DENY / SAMEORIGIN). Anything else fails at settings load: a typo that silently became "no header" would take the clickjacking defence off in exactly the deployment that believed it had configured it. | ui serve |
+| `TASKQ_ADMIN_UI_SECURE_COOKIES` | `bool` | `true` | Sets the `Secure` flag on the admin UI's CSRF cookie. A configured value, not one inferred from `request.url.scheme`: behind a TLS-terminating edge (Azure Application Gateway, App Service) the app sees plain http, so an inferred flag is silently dropped on a connection the browser reached over HTTPS. Set `false` only for local http dev, where the browser rejects a Secure cookie and the admin UI stops working. | ui serve |
 | `TASKQ_SSO_BACKEND` | `str` | `none` | Selects the SSO backend for the admin UI: `none` (default, unauthenticated/BYO-auth), `oidc` (`taskq[oidc]`), or `saml` (`taskq[saml]`). See [sso.md](sso.md). | ui serve |
 | `TASKQ_HEALTH_TOKEN` | `str` | `""` (empty) | Bearer token for machine-to-machine access to health/metrics endpoints. When set, health and metrics routes require a matching `Authorization: Bearer <token>` header. Leave empty for unauthenticated cluster-internal access — but see `TASKQ_HEALTH_REQUIRE_TOKEN`, which fails closed on an empty token outside dev. | ui serve |
 | `TASKQ_HEALTH_REQUIRE_TOKEN` | `bool` | `true` | When `true` (the default), `taskq ui serve` raises `RuntimeError` if `TASKQ_HEALTH_TOKEN` is empty in a non-dev environment, failing closed. Set to `false` to allow unauthenticated health/metrics endpoints in non-dev (e.g. when relying on network policy instead of a bearer token). | ui serve |
@@ -80,6 +105,17 @@ Applies to all commands: `worker`, `migrate`, `ui serve`, `health`.
 | `TASKQ_EXAMPLE_PORT` | `int` | `8000` | Bind port for the example trigger app. Ignored by worker and admin. | example app |
 
 See [admin-ui.md](admin-ui.md) for admin-specific behaviour driven by these vars.
+
+### SSO sub-settings (`TASKQ_OIDC_*` / `TASKQ_SAML_*`)
+
+Selecting `TASKQ_SSO_BACKEND=oidc` or `saml` activates two dedicated sub-config classes, `OIDCSettings` (loaded from `TASKQ_OIDC_*` env vars) and `SAMLSettings` (loaded from `TASKQ_SAML_*`). Each field carries a full description in `src/taskq/settings.py`; the walkthrough, defaults and per-field tables live in [sso.md](sso.md). Summary:
+
+| Class | Env prefix | Fields |
+|---|---|---|
+| `OIDCSettings` | `TASKQ_OIDC_` | `ISSUER`, `CLIENT_ID`, `CLIENT_SECRET` (secret), `REDIRECT_URI`, `SESSION_SECRET` (secret), `SESSION_MAX_AGE_SECONDS`, `SCOPE`, `GROUP_CLAIM`, `ALLOWED_GROUPS` |
+| `SAMLSettings` | `TASKQ_SAML_` | `ENTITY_ID`, `ACS_URL`, `IDP_ENTITY_ID`, `IDP_SSO_URL`, `IDP_X509_CERT`, `SP_X509_CERT`, `SP_PRIVATE_KEY` (secret), `SESSION_SECRET` (secret), `SESSION_MAX_AGE_SECONDS`, `GROUP_ATTRIBUTE`, `ALLOWED_GROUPS` |
+
+Both `SESSION_SECRET` fields sign session cookies: use at least 32 bytes of random data, and rotate to invalidate all sessions. `ALLOWED_GROUPS` is a comma-separated group allowlist on either backend.
 
 ---
 
@@ -99,12 +135,12 @@ Extends `TaskQSettings`. All fields below apply to the worker process only.
 | Env Var | Type | Default | Description | Constraints |
 |---|---|---|---|---|
 | `TASKQ_DISPATCHER_POOL_SIZE` | `int` | `4` | Max connections for the dispatcher pool. | Min: 1 |
-| `TASKQ_DISPATCHER_COMMAND_TIMEOUT` | `float` (seconds) | `5.0` | Per-query timeout for the dispatcher pool and the TaskQ-built leader connections (election, cron, monitor), and the single deadline wrapped around each period-1 leader-loop iteration (`scheduled_wake`, cron): a stalled PG errors the iteration instead of hanging the loop past its staleness budget. When the watchdog is enabled, load fails unless `timeout + 1.0 < max(1.0 × TASKQ_WATCHDOG_TICK_GRACE_FACTOR, TASKQ_WATCHDOG_STALE_FLOOR)` for the period-1 leader loops (the producer loop is not checked), so a timeout-capped iteration can never false-trip the stale-loop detector. **At defaults this caps the value just under `9.0`** — a larger value fails at settings load and the worker will not start. Raising it requires raising `TASKQ_WATCHDOG_STALE_FLOOR` too; see [Validation Constraints](#validation-constraints). (Default was 10.0 before 1.x: equal to the floor, which produced exactly that false trip.) | Min: 1.0; must be < 9.0 at default watchdog settings; cross-field, see above |
+| `TASKQ_DISPATCHER_COMMAND_TIMEOUT` | `float` (seconds) | `5.0` | Per-query timeout for the dispatcher pool and the TaskQ-built leader connections (election, cron, monitor), and the single deadline wrapped around each period-1 leader-loop iteration (`scheduled_wake`, cron): a stalled PG errors the iteration instead of hanging the loop past its staleness budget. When the watchdog is enabled, load fails unless `timeout + 1.0 < max(1.0 × TASKQ_WATCHDOG_TICK_GRACE_FACTOR, TASKQ_WATCHDOG_STALE_FLOOR)` for the period-1 leader loops (the producer loop is not checked), so a timeout-capped iteration can never false-trip the stale-loop detector. **At defaults this caps the value just under `9.0`** — a larger value fails at settings load and the worker will not start. Raising it requires raising `TASKQ_WATCHDOG_STALE_FLOOR` too; see [Validation Constraints](#validation-constraints). (Default was 10.0 before 1.x: equal to the floor, which produced exactly that false trip.) For the dispatcher **pool** this configured value is the floor of the applied bound, not the bound itself — it is re-derived upward from a widened admission lock budget; see [Derived Values](#derived-values). | Min: 1.0; must be < 9.0 at default watchdog settings; cross-field, see above |
 | `TASKQ_DISPATCH_OVERSAMPLE` | `int` | `2` | Multiplier for per-actor candidate gathering in the dispatch SQL. Each LATERAL reads `residual × oversample` candidates. Higher values absorb more identity-key collisions and multi-producer contention. Default 2 (tolerates 50% dupe identities). Set 1 when no `identity_key` is used and single-producer. Range: 1–1000. | Min: 1; Max: 1000 |
-| `TASKQ_DISPATCH_SCOPE_BY_HOME_QUEUE` | `bool` | `false` | When `true`, restrict `per_actor_capacity` to actors whose home queue (`actor_config.queue`) the worker subscribes to. Lowers per-cycle probe count at the cost of not dispatching `enqueue(queue=...)` override jobs whose actor's home queue is not subscribed. Default `false` (override-safe). | — |
 | `TASKQ_HEARTBEAT_POOL_SIZE` | `int` | `4` | Max connections for the heartbeat pool. | Min: 1 |
 | `TASKQ_HEARTBEAT_COMMAND_TIMEOUT` | `float` (seconds) | `2.0` | Per-query timeout for the heartbeat pool — deliberately tighter than `TASKQ_DISPATCHER_COMMAND_TIMEOUT`, since a beat slower than the tick cannot keep a lock lease alive. Raise it on a loaded or cross-region Postgres: `TASKQ_MAX_HEARTBEAT_FAILURES` consecutive timeouts self-terminate the worker. | > 0 |
 | `TASKQ_MAX_CONCURRENCY` | `int` | `8` | Max concurrent jobs per worker process. `worker_pool` size is derived as `int(max_concurrency * 1.5)`. When a LOOP-scope `asyncpg.Connection` is registered, it also sizes the per-slot transaction pool (`max_concurrency + 1` direct connections, fully warmed at boot) — changes require a worker restart and move the direct-connection budget. | Min: 1 |
+| `TASKQ_DISPATCH_SCOPE_BY_HOME_QUEUE` | `bool` | `false` | Deprecated no-op, accepted so configurations that set it keep loading: dispatch is assignment-routed now, so the flag has nothing left to apply. The worker logs a deprecated-setting warning at startup when it is set; remove it from the environment. | — |
 
 For the fleet-level connection budget these pools feed into (per-worker counts, idle floors, the
 PgBouncer recommendation threshold), see [ops.md — Sizing](ops.md#4-sizing-workers-and-postgres-connections).
@@ -115,6 +151,7 @@ PgBouncer recommendation threshold), see [ops.md — Sizing](ops.md#4-sizing-wor
 |---|---|---|---|---|
 | `TASKQ_HEARTBEAT_INTERVAL` | `float` (seconds) | `10.0` | Period between heartbeat ticks. | Min: 0.5 |
 | `TASKQ_LOCK_LEASE` | `float` (seconds) | `60.0` | Time before an unrenewed job lock is reclaimed by the sweep. Must be >= 4 × `TASKQ_HEARTBEAT_INTERVAL`, and must exceed `TASKQ_WATCHDOG_LOOP_LAG_BUDGET` + `TASKQ_HEARTBEAT_INTERVAL` (a stalled loop dies before its leases expire). | Min: 1.0; see [Validation Constraints](#validation-constraints) |
+| `TASKQ_LEADER_LEASE` | `float` (seconds) | `40.0` | How long the maintenance leader's lease is trusted without a renewal; another pod takes leadership once it lapses, so this plus `TASKQ_HEARTBEAT_INTERVAL` bounds failover from a leader that went silent. Renewed every heartbeat interval, and never honoured at less than 4 of them — raising the heartbeat interval alone raises the effective lease rather than shortening the renewal margin. | Min: 1.0 |
 | `TASKQ_MAX_HEARTBEAT_FAILURES` | `int` | `3` | Consecutive heartbeat failures before the worker self-terminates. | Min: 1 |
 
 ### Leader Sweep Intervals
@@ -126,13 +163,15 @@ The leader runs periodic sweep cycles that reclaim expired locks, expire results
 | `TASKQ_SWEEP_INTERVAL` | `float` (seconds) | `30.0` | Period between leader sweep loop iterations — reclaim expired locks, sweep expired results, clean up stale workers, and evict idle keyed refs. Lower values reduce recovery latency for crashed workers at the cost of more frequent PG queries. | Min: 1.0 |
 | `TASKQ_QUEUE_DEPTH_INTERVAL` | `float` (seconds) | `15.0` | Period between queue-depth metrics sampling iterations. | Min: 1.0 |
 | `TASKQ_RESERVATION_SLOTS_INTERVAL` | `float` (seconds) | `15.0` | Period between reservation-slot metrics sampling iterations. | Min: 1.0 |
-| `TASKQ_STRANDED_JOBS_INTERVAL` | `float` (seconds) | `60.0` | Period between stranded-jobs (pending jobs whose actor has no `actor_config`) warning checks. | Min: 1.0 |
-| `TASKQ_EVENT_WRITER_BATCH_SIZE` | `int` | `100` | Rows per committed batch for every writer of `job_events` rows (the expired-lock, deadline and scheduled-to-pending sweeps, bulk cancel, actor deregistration). Keeps each batch transaction inside the `reclaim_event_visibility_delay` margin; the server-side `statement_timeout` remains the enforcement if a batch exceeds it. The loop drains the remainder across further batches/calls. | Range: 1–10000 |
+| `TASKQ_STRANDED_JOBS_INTERVAL` | `float` (seconds) | `60.0` | Period between stranded-jobs checks (pending/scheduled jobs whose actor has no `actor_config` row, or whose routing queue has no live worker); each check publishes `taskq.jobs.stranded` and warns. | Min: 1.0 |
+| `TASKQ_EVENT_WRITER_BATCH_SIZE` | `int` | `100` | Rows per committed batch for every writer of `job_events` rows (the expired-lock and deadline sweeps, bulk cancel, actor deregistration), and for the scheduled-to-pending promotion batch, which writes no event rows but takes the same per-tick bound. Keeps each batch transaction inside the `reclaim_event_visibility_delay` margin; the server-side `statement_timeout` remains the enforcement if a batch exceeds it. The loop drains the remainder across further batches/calls. | Range: 1–10000 |
 | `TASKQ_EVENT_WRITER_STATEMENT_TIMEOUT_MS` | `float` (milliseconds) | `1750.0` | Server-side `statement_timeout` applied to each event-writer batch transaction via `SET LOCAL`. Defaults to 7/8 of the 2 s `reclaim_event_visibility_delay` margin: a batch that cannot finish inside the watermark margin is aborted by the server rather than silently corrupting reclaim-event delivery. | Min: 50.0 |
 | `TASKQ_EVENT_WRITER_REDUCED_BATCH_DIVISOR` | `int` | `4` | Divisor for the reduced event-writer batch tier: once a worker's sweeps trip the batch-size breaker, batches shrink to `max(1, event_writer_batch_size / this)`. Only a degradation ceiling — raising it makes the degraded tier closer to the normal one. | Range: 2–1000 |
 | `TASKQ_SWEEP_BREAKER_FAILURE_THRESHOLD` | `int` | `3` | Consecutive sweep-batch cancellations (within `TASKQ_SWEEP_BREAKER_WINDOW_SECS`) before the batch-size breaker latches to the reduced tier for the rest of the process lifetime. Any success between failures resets the consecutive count; a latched breaker does not unlatch. | Min: 1 |
 | `TASKQ_SWEEP_BREAKER_WINDOW_SECS` | `float` (seconds) | `600.0` | Rolling window the sweep breaker counts consecutive failures within. | Min: 1.0 |
 | `TASKQ_SWEEP_DRAIN_BATCHES` | `int` | `8` | Maximum event-writer batches the leader's sweep loop executes per sweep per tick before leaving the remainder to the next tick. Bounded so one iteration cannot monopolise the loop; every batch commits, so a stopped drain keeps its progress. | Range: 1–1000 |
+| `TASKQ_EVENT_RETENTION_BATCH_SIZE` | `int` | `10000` | `job_events` rows deleted per leader sweep tick, one committed batch, once `TASKQ_EVENT_RETENTION_PERIOD` has aged them out. | Min: 1 |
+| `TASKQ_KEYED_ROW_RECLAIM_BATCH_SIZE` | `int` | `256` | Rows the fleet keyed-row reclaim sweep deletes per committed batch per tick (`reservation_slots` rows and PG-state-backed keyed `rate_limit_buckets` rows, once `TASKQ_KEYED_ROW_RECLAIM_PERIOD` has aged them idle). The constant-size bound keeps one tick's DELETE independent of the dead-worker backlog it is recovering from. | Min: 1 |
 
 See [maintenance-sweeps.md](maintenance-sweeps.md) for why these bounds exist — the failure modes they prevent, the derivation of each default, the breaker's latching rationale, and the failure semantics of the bounded bulk operations.
 
@@ -140,7 +179,7 @@ See [maintenance-sweeps.md](maintenance-sweeps.md) for why these bounds exist �
 
 | Env Var | Type | Default | Description | Constraints |
 |---|---|---|---|---|
-| `TASKQ_TERMINATION_GRACE_PERIOD` | `float` (seconds) | `75.0` | Total budget from SIGTERM to forced exit (the shutdown watchdog counts it down from the first shutdown signal). Must satisfy: `cancellation_grace + cleanup_grace < termination_grace − 5`, and should cover the modelled worst case `cancellation_grace + cleanup_grace + ~32s` bounded-close teardown tail (six sequential closes, including the conditional per-slot pool) — the default does (`30 + 10 + 32 = 72s`). The ~77s sibling-crash path (seven closes) exceeds the default by 2s on per-slot workers — raise this setting when per-slot workers need a tight crash budget. A value below the worst case still loads but logs `shutdown-budget-exceeds-termination-grace` at startup. | Min: 5.0; see [Validation Constraints](#validation-constraints) |
+| `TASKQ_TERMINATION_GRACE_PERIOD` | `float` (seconds) | `85.0` | Total budget from SIGTERM to forced exit (the shutdown watchdog counts it down from the first shutdown signal). Must satisfy: `cancellation_grace + cleanup_grace < termination_grace − 5`, and should cover the modelled worst case `cancellation_grace + cleanup_grace + ~42s` bounded-close teardown tail (eight sequential closes, including the conditional per-slot pool and the two credential-provider closes) — the default does (`30 + 10 + 42 = 82s`). The ~87s sibling-crash path (nine closes) exceeds the default by 2s on per-slot workers — raise this setting when per-slot workers need a tight crash budget. A value below the worst case still loads but logs `shutdown-budget-exceeds-termination-grace` at startup. | Min: 5.0; see [Validation Constraints](#validation-constraints) |
 | `TASKQ_CANCELLATION_GRACE_PERIOD` | `float` (seconds) | `30.0` | Duration of the cooperative cancel phase before force-cancel. | Min: 0.0 |
 | `TASKQ_CLEANUP_GRACE_PERIOD` | `float` (seconds) | `10.0` | Force-cancel cleanup grace period. | Min: 0.0 |
 | `TASKQ_RECLAIM_EVENT_VISIBILITY_DELAY` | `float` (seconds) | `2.0` | Trailing-watermark margin that `poll_reclaim_events()` / `TaskQ.watch_reclaims()` apply before returning a `job_events` row, so an out-of-commit-order sibling with a lower `event_id` has time to appear first. Correctness assumes every `job_events` writer transaction commits within this margin of its INSERT; raise it if sweeps run under heavy lock contention or against very large batches, lower it if latency matters more and writes are known to be fast. A writer that exceeds the margin can cause a silently missed event. | Min: 0.0 |
@@ -252,8 +291,8 @@ See [rate-limiting.md](rate-limiting.md) for the fallback behaviour.
 |---|---|---|---|---|
 | `TASKQ_HEALTH_ENABLED` | `bool` | `true` | Master switch for the worker health server (both transports). | — |
 | `TASKQ_HEALTH_SOCKET_PATH` | `str` | `/tmp/taskq_health.sock` | Unix socket path for the health server. | — |
-| `TASKQ_HEALTH_PORT` | `int \| None` | unset | TCP port for the HTTP health listener serving `/live` and `/ready`. Unset means **no TCP listener at all** — setting a port is the opt-in. Required on Azure Container Apps, whose probes support only `httpGet`/`tcpSocket` and cannot reach a Unix socket. If the port cannot be bound the worker **fails to start**. `0` binds an ephemeral port (tests only). | 0-65535 |
-| `TASKQ_HEALTH_HOST` | `str` | `0.0.0.0` | Bind address for the TCP listener. Only used when `TASKQ_HEALTH_PORT` is set. Defaults to all interfaces because ACA and Kubernetes probe the replica over the pod network; narrow to `127.0.0.1` when only a local sidecar probes. | — |
+| `TASKQ_HEALTH_PORT` | `int \| None` | unset | TCP port for the HTTP health listener serving `/live` and `/ready`. Unset means **no TCP listener at all**: setting a port is the opt-in. Required on Azure Container Apps, whose probes support only `httpGet`/`tcpSocket` and cannot reach a Unix socket. If the port cannot be bound the worker logs `health-http-bind-failed` at ERROR and **refuses to start** (`HealthTcpBindError`; the probes target this port, and a booting worker with dead probes is the silent kind of down — see [deployment.md — Health probes](deployment.md#health-probes)): give each replica a unique port. The unix socket's collision behavior is deliberately different (a live peer owns the path; the boot warns and continues). `0` binds an ephemeral port (tests only); this family's "off" is *unset*, not `0` (see [The `0` convention](#the-0-convention)). | 0-65535 |
+| `TASKQ_HEALTH_HOST` | `str` | `0.0.0.0` | Bind address for the TCP health listener and the Prometheus scrape listener. Only used when `TASKQ_HEALTH_PORT` or `TASKQ_METRICS_PORT` is set. Defaults to all interfaces because ACA and Kubernetes probe and scrape the replica over the pod network; narrow to `127.0.0.1` when only a local sidecar probes. The scrape listener alone can be pointed elsewhere with `TASKQ_METRICS_HOST`. | — |
 | `TASKQ_HEALTH_PG_PING_TIMEOUT` | `float` (seconds) | `0.2` | Timeout for the readiness PG ping — the role-pool ping, and the per-slot transaction pool's ping when that pool exists (overlapping probes share a single ping). | Min: 0.0 |
 | `TASKQ_HEALTH_REQUEST_TIMEOUT` | `float` (seconds) | `2.0` | Time a probe gets to send its whole request line and headers before the connection is dropped unanswered. Bounds a drip-feed client that would otherwise hold a connection open by staying just inside a per-line timeout. Keep at or below the shortest probe `timeoutSeconds` you configure. | > 0 |
 | `TASKQ_HEALTH_MAX_HEADER_BYTES` | `int` | `16384` | Cap on a probe request's accumulated request line plus headers. Pairs with `TASKQ_HEALTH_REQUEST_TIMEOUT` to bound a peer sending many small lines fast enough to stay inside the deadline. | > 0 |
@@ -294,9 +333,10 @@ instrumentation.
 
 ### Credential Hot-Reload
 
+`TASKQ_RELOAD_INTERVAL` is a `TaskQSettings` field (see above): it drives the worker and `taskq ui serve` alike.
+
 | Env Var | Type | Default | Description | Constraints |
 |---|---|---|---|---|
-| `TASKQ_RELOAD_INTERVAL` | `float \| None` (seconds) | `None` (disabled) | When set, the worker periodically triggers a credential hot-reload (the same path as SIGHUP) with no external signal required — the rotation path for platforms without SIGHUP (e.g. Windows) and for hands-off scheduled rotation (e.g. ~720 s for AWS IAM's 15-minute tokens). `None` disables the timer; SIGHUP and `deps.request_reload()` still work. Only factory-backed resources are rebuilt; DSN/static credentials are unaffected. | Must be > 0 |
 | `TASKQ_RELOAD_FACTORY_TIMEOUT` | `float` (seconds) | `30.0` | Bounds each individual factory call — during a credential hot-reload (`reload_credentials`), at bootstrap when the worker opens its per-slot transaction pool (a fully-warmed open means one connection, and on a managed-identity deployment one credential fetch, per consumer slot), and on the notify listener's health-check reconnect (`reconnect_notify_conn`). A hung token endpoint is marked failed for that resource — or logged as a reconnect attempt and retried — instead of wedging the reload coordinator (and all future SIGHUPs), worker boot, or the reconnect loop. | Must be > 0 |
 
 A hot-reload rebuilds factory-backed resources; it never re-reads settings. `TASKQ_MAX_CONCURRENCY` changes require a worker restart — the setting sizes the per-slot transaction pool (`max_concurrency + 1` connections) — and on the per-slot path (a LOOP-scope `asyncpg.Connection` registered plus `max_concurrency > 1`) that restart is boot-blocking: the worker opens the pool at startup and fails to boot if it cannot.
@@ -319,7 +359,10 @@ A hot-reload rebuilds factory-backed resources; it never re-reads settings. `TAS
 | `TASKQ_WORKER_GROUP` | `str` | `default` | Consumer group name emitted as `messaging.consumer.group.name` on spans. | — |
 | `TASKQ_LOG_FORMAT` | `str` | `json` | Log renderer. `json` for production; `console` for human-readable dev output. Only these two values are valid. | Must be `json` or `console` |
 | `TASKQ_LOG_LEVEL` | `str` | `INFO` | Root logger level. | — |
-| `TASKQ_METRICS_PORT` | `int` | `9090` | Bind port for the standalone Prometheus metrics server. Used by the `prometheus` contrib exporter; the in-process FastAPI health `/metrics` endpoint ignores this field. | Range: 1–65535 |
+| `TASKQ_OTEL_AUTOCONFIGURE` | `bool` | `true` | When `true`, the `taskq worker` CLI installs SDK tracer and meter providers from the standard OTel environment variables (`OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_TRACES_EXPORTER`, `OTEL_METRICS_EXPORTER`, `OTEL_LOGS_EXPORTER`) and from `TASKQ_METRICS_PORT`, through the same configurator `opentelemetry-instrument` uses — only when the `[otel]` extra is installed and no provider is set yet. Set `false` when the embedding application or a vendor distro configures the SDK itself. `OTEL_SDK_DISABLED=true` is honoured either way. See [observability.md — setup](observability.md#1-opentelemetry-setup). | — |
+| `TASKQ_EXCEPTION_MESSAGE_MAX_CHARS` | `int` | `2000` | Bound on exception message text on spans and logs, after scrubbing. Matches the admin UI's traceback bound so there is one number for how much error text is kept, not two. Truncation appends the dropped character count, so an operator can see text was cut and raise this. The stack trace is a separate field and is not bounded by this. | Min: 100 |
+| `TASKQ_METRICS_PORT` | `int \| None` | `None` | TCP port for the worker's standalone Prometheus scrape listener, bound on `TASKQ_METRICS_HOST` (falling back to `TASKQ_HEALTH_HOST`). Unset means no listener, so setting a port is the opt-in (the `TASKQ_HEALTH_PORT` shape). Needs the `[prometheus]` extra and `TASKQ_OTEL_AUTOCONFIGURE=true`; the worker then serves every series it records at `http://<host>:<port>/metrics` (see [observability.md — Serving the metrics](observability.md#serving-the-metrics-the-prometheus-endpoint)). A listener that cannot be configured or bound raises `OtelExporterConfigurationError` and the worker **exits 1** rather than start with its scrape silently dead. | Range: 1–65535 |
+| `TASKQ_METRICS_HOST` | `str \| None` | `None` | Bind address for the Prometheus scrape listener alone, overriding `TASKQ_HEALTH_HOST` for that listener, so the scrape and the probes can sit on different interfaces: the loopback sidecar scraper next to a pod-network prober is the shape that needs this. Unset falls back to `TASKQ_HEALTH_HOST`. Only used when `TASKQ_METRICS_PORT` is set. The scrape endpoint is unauthenticated: SECURITY.md and [observability.md](observability.md#serving-the-metrics-the-prometheus-endpoint) document what it exposes; keep a loopback bind or the pod network. | — |
 
 See [observability.md](observability.md) for OTel configuration.
 
@@ -336,8 +379,19 @@ See [observability.md](observability.md) for OTel configuration.
 | `TASKQ_CRON_CATCH_UP_WINDOW` | `timedelta` | `1h` | Missed firings within this window are caught up sequentially; older misses are skipped. | Must not be negative |
 | `TASKQ_CRON_AUTO_DISABLE_THRESHOLD` | `int` | `3` | Consecutive failures before a schedule is auto-disabled. | Min: 1 |
 | `TASKQ_CRON_TICK_LIMIT` | `int` | `100` | Maximum schedules one cron tick selects, plans and fires. A catch-up burst larger than this drains across successive one-second ticks instead of one oversized transaction; the remainder stays due and untouched until its tick. | Range: 1–10000 |
+| `TASKQ_CRON_PAYLOAD_FACTORY_TIMEOUT` | `float` (seconds) | `5.0` | Per-call deadline for a cron schedule's payload factory (both the off-loop call and the coroutine a factory returns). The tick clamps it to stay strictly inside what is left of the leader's whole-tick deadline (`TASKQ_DISPATCHER_COMMAND_TIMEOUT`), so a value at or above that deadline is an upper bound, not the effective one. | Must be > 0 and finite |
 
 See [cron.md](cron.md) for cron scheduling details.
+
+### Until-idle drain mode
+
+These settings only apply when the worker is started with `--until-idle` (run until the queues drain, then exit):
+
+| Env Var | Type | Default | Description | Constraints |
+|---|---|---|---|---|
+| `TASKQ_IDLE_SETTLE_WINDOW` | `float` (seconds) | `2.0` | Time the drain monitor waits after queues appear empty before declaring drained. | Min: 0.0 |
+| `TASKQ_IDLE_POLL_INTERVAL` | `float` (seconds) | `1.0` | How often the drain monitor checks queue depth. | Min: 0.1 |
+| `TASKQ_IDLE_MAX_RUNTIME` | `float \| None` (seconds) | `None` | Maximum wall-clock time for until-idle mode; when exceeded the worker exits with code 4. `None` means no limit. | Must be > 0 when set |
 
 ### Progress Fanout
 
@@ -383,13 +437,13 @@ The **prune sweep** (Sweep 5) runs once daily and moves terminal jobs from `jobs
 
 #### Per-status retention
 
-These control how long a terminal job stays in the `jobs` table before being moved to `jobs_archive`. Shorter values keep the hot `jobs` table smaller; longer values make recent history available without querying the archive.
+These control how long a terminal job stays in the `jobs` table before being moved to `jobs_archive`. Shorter values keep the hot `jobs` table smaller; longer values make recent history available without querying the archive. For these fields `0` archives the status at the next daily sweep — the prune family's zero-means-now polarity, opposite to the deletion-sweep family's (see [The `0` convention](#the-0-convention)).
 
 | Env Var | Type | Default | Description |
 |---|---|---|---|
-| `TASKQ_PRUNE_RETENTION_PERIOD` | `timedelta` | `30d` | Global fallback retention when no per-status override applies. |
-| `TASKQ_PRUNE_RETENTION_SUCCEEDED` | `timedelta` | `30d` | Retention for `succeeded` jobs. |
-| `TASKQ_PRUNE_RETENTION_FAILED` | `timedelta` | `90d` | Retention for `failed` jobs. |
+| `TASKQ_PRUNE_RETENTION_PERIOD` | `timedelta` | `30d` | Reserved as the global fallback for a terminal status without a per-status knob. **Currently inert**: the four per-status fields below cover every terminal status, so the sweep never falls back here and setting this changes nothing today. Size the per-status fields instead. |
+| `TASKQ_PRUNE_RETENTION_SUCCEEDED` | `timedelta` | `30d` | Retention for `succeeded` jobs — usually the bulk of terminal volume; the first knob to lower when the hot table grows. |
+| `TASKQ_PRUNE_RETENTION_FAILED` | `timedelta` | `90d` | Retention for `failed` jobs — kept hot longer by default because they are the first incident-audit trail. |
 | `TASKQ_PRUNE_RETENTION_CANCELLED` | `timedelta` | `30d` | Retention for `cancelled` jobs. |
 | `TASKQ_PRUNE_RETENTION_ABANDONED` | `timedelta` | `90d` | Retention for `abandoned` and `crashed` jobs. |
 
@@ -399,7 +453,7 @@ Per-actor retention overrides can be set in `actor_config.metadata` as `retentio
 
 | Env Var | Type | Default | Description | Constraints |
 |---|---|---|---|---|
-| `TASKQ_ARCHIVE_RETENTION_PERIOD` | `timedelta` | `365d` | How long a row stays in `jobs_archive` before the expiry sweep hard-deletes it. | Must be positive |
+| `TASKQ_ARCHIVE_RETENTION_PERIOD` | `timedelta` | `365d` | How long a row stays in `jobs_archive` before the expiry sweep hard-deletes it. | Non-negative; `0` hard-deletes at the next expiry sweep (see [The `0` convention](#the-0-convention)) |
 | `TASKQ_ARCHIVE_EXPIRY_SCHEDULE_UTC` | `str` | `04:00` | Daily fire time for the archive expiry sweep in `HH:MM` UTC format. Ignored when `TASKQ_ARCHIVE_EXPIRY_CRON_EXPR` is set. | — |
 | `TASKQ_ARCHIVE_EXPIRY_CRON_EXPR` | `str \| None` | `None` | Full 5-field cron expression for the archive expiry sweep. Takes precedence over `TASKQ_ARCHIVE_EXPIRY_SCHEDULE_UTC`. | — |
 
@@ -520,6 +574,43 @@ TASKQ_PG_DSN_POOLED  →  falls back to TASKQ_PG_DSN when unset
 
 Used exclusively by `worker_pool`. May safely route through PgBouncer in transaction mode because the worker pool does not use session-level features.
 
+### `dispatcher_pool` command timeout
+
+```
+pool command_timeout = max(TASKQ_DISPATCHER_COMMAND_TIMEOUT,
+                           widest widened admission lock budget / 0.8)
+```
+
+The admission-path rate-limit acquires (token bucket / sliding window Postgres
+locks — see [rate-limiting.md](rate-limiting.md)) run on the dispatcher pool
+with **server-side** `lock_timeout` budgets from
+`TASKQ_TOKEN_BUCKET_LOCK_TIMEOUT_MS` / `TASKQ_SLIDING_WINDOW_LOCK_TIMEOUT_MS`.
+asyncpg enforces the pool's `command_timeout` as its own client-side
+per-statement timer, independent of those budgets — so a budget widened past
+the 5.0 s default would be silently truncated by the pool's own 5 s timer
+before the server-side refusal (the typed denial with its retry hint) could
+ever fire. To prevent that, every TaskQ-built dispatcher pool re-derives its
+per-query bound exactly the way the client pool re-derives its own from the
+enqueue lock budgets: the configured value is the floor, and each admission
+budget configured **above** its 5000 ms shipped default raises the bound to
+`budget / 0.8` seconds, so the server-side `lock_timeout` refusal always
+fires before the pool's client-side timer. At the shipped defaults the
+applied bound is exactly `TASKQ_DISPATCHER_COMMAND_TIMEOUT` — no behavior
+change unless you widen a budget, which is the case that needs it.
+
+Two corollaries:
+
+- A **caller-supplied** dispatcher pool (`WorkerConnections.dispatcher_pool` /
+  `..._factory`) keeps its own `command_timeout`; if you widen an admission
+  budget there, size the pool's timeout above the budget yourself.
+- A budget of **0 or less** asks the server for an unbounded wait (the
+  `lock_timeout` GUC convention — the lock-wait budget family's `0` polarity,
+  see [The `0` convention](#the-0-convention)). A TaskQ-built pool still applies its
+  per-query bound to that statement — the black-hole guard every other
+  statement relies on is not dropped for it — so if you truly need an
+  unbounded admission wait, supply your own pool without a client-side bound.
+  Prefer a large finite value.
+
 ---
 
 ## PgBouncer Configuration Pattern
@@ -535,6 +626,34 @@ TASKQ_PG_DSN_POOLED=postgresql://taskq:pass@pgbouncer:5432/taskq
 ```
 
 If neither `TASKQ_PG_DSN_DIRECT` nor `TASKQ_PG_DSN_POOLED` is set, both resolve to `TASKQ_PG_DSN`. In that case `TASKQ_PG_DSN` must point directly at Postgres (not PgBouncer), because the direct-connection pools require session mode.
+
+---
+
+## Starting configurations
+
+Every value below is a **starting point, not a recommendation**: the right
+numbers come from your actors' payload sizes, durations, and arrival rates.
+The derivation is [ops.md §4 — Sizing](ops.md#4-sizing-workers-and-postgres-connections);
+the connection columns here are computed with its fleet formula
+(`direct = M × (dispatcher_pool_size + heartbeat_pool_size + 2) + 2`,
+`pooled = M × int(max_concurrency × 1.5)`, steady state, no per-slot
+transaction pool) — recompute before you scale, and keep the rolling-deploy
+peak (roughly 2× steady, because orchestrators start new pods before
+draining old ones) inside Postgres `max_connections` together with your
+application's own pools.
+
+| Profile | Workers | `TASKQ_MAX_CONCURRENCY` | PG connections (steady) | Rolling-deploy peak | Watch |
+|---|---|---|---|---|---|
+| Small (dev, small managed SKU) | 2 | 4 | 34 (22 direct + 12 pooled) | ~68 | Fits a 100-connection Postgres beside a small app pool. On a ~50-connection SKU, drop to 1 worker or lower concurrency further — two default workers (44–48 connections) already exceed it; see the small-SKU note in ops.md §4. |
+| Medium | 5 | 8 (default) | 112 (52 direct + 60 pooled) | ~224 | Crosses TaskQ's 80-connection `pgbouncer_recommended` threshold (logged at worker startup) — route `TASKQ_PG_DSN_POOLED` through PgBouncer. |
+| Large | 10 | 16 | 342 (102 direct + 240 pooled) | ~684 | The worked example in ops.md §4. PgBouncer on the pooled DSN is mandatory in practice; the direct DSN must stay on session mode (LISTEN/NOTIFY, advisory locks). |
+
+Everything not listed stays at its shipped default — pool sizes,
+heartbeat, sweeps, and the retention family are deliberately non-silent
+defaults (terminal jobs prune to `jobs_archive` daily; nothing accumulates
+forever). Per-slot transactional actors (a LOOP-scope `asyncpg.Connection`
+registered in DI) add `max_concurrency + 1` direct connections per worker —
+budget that path with ops.md §4, not this table.
 
 ---
 

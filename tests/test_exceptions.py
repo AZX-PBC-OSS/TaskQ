@@ -20,6 +20,7 @@ from taskq.exceptions import (
     PayloadValidationError,
     ReservationUnavailable,
     RetryAfter,
+    SchemaNotMigratedError,
     ScopeViolation,
     SingletonCollisionError,
     Snooze,
@@ -336,6 +337,26 @@ def test_max_pending_with_zero_current_count() -> None:
     assert exc.max_pending == 5
 
 
+def test_max_pending_exceeded_error_has_snooze_hint() -> None:
+    """MaxPendingExceededError should expose a `hint` pointing readers at Snooze.
+
+    Raised inside an actor body, this error reaches the generic
+    retry classifier and burns attempts on the actor's static policy, when
+    the correct response is `raise Snooze(delay)` (backpressure, not a
+    failure). The library already has this convention -- ActorConfigDriftError
+    exposes a class-level `hint` (see _ACTOR_CONFIG_DRIFT_HINT in
+    src/taskq/exceptions.py) -- but MaxPendingExceededError does not, so the
+    reader gets no pointer toward the correct primitive.
+    """
+    exc = MaxPendingExceededError("actor", current_count=10, max_pending=10)
+    assert hasattr(exc, "hint"), (
+        "MaxPendingExceededError has no `hint` attribute; readers who catch it "
+        "inside an actor body get no pointer toward `raise Snooze(delay)` "
+        "instead of letting it reach the retry classifier"
+    )
+    assert "snooze" in exc.hint.lower()
+
+
 # ── DIError exception surface ────────────────────────────────────────────────
 
 
@@ -589,3 +610,35 @@ def test_validate_actor_payload_single_sanitized_implementation() -> None:
 
     assert taskq.validate_actor_payload is impl
     assert exceptions_mod.validate_actor_payload is impl
+
+
+# ── SchemaNotMigratedError message vs. actual TASKQ_MIGRATE_ON_START behavior
+
+
+def test_schema_not_migrated_error_does_not_claim_worker_auto_migrates() -> None:
+    """``SchemaNotMigratedError`` is raised on the *client* enqueue/get/list/
+    cancel path (see ``taskq.client._jobs``) when the backend reports
+    ``UndefinedTableError``, i.e. the schema was never migrated.
+
+    Per ``settings.py`` (``migrate_on_start`` is "Consumed ONLY by
+    ``taskq ui serve`` -- the worker ignores it") and the startup warning
+    emitted in ``_bootstrap.py`` (`migrate-on-start-ignored-by-worker`), the
+    worker process does NOT read ``TASKQ_MIGRATE_ON_START`` and will never
+    "automatically migrate at worker startup" because of it.
+
+    The exception message must not tell operators the opposite: that setting
+    ``TASKQ_MIGRATE_ON_START=true`` will cause automatic migration "at worker
+    startup". That remedy is false and, followed literally, leads to a
+    crash-loop at worker boot (see the pending-migrations guard in
+    ``_bootstrap.py``) rather than the silent no-op it used to produce.
+    """
+    exc = SchemaNotMigratedError(schema="taskq")
+    message = str(exc)
+
+    assert "TASKQ_MIGRATE_ON_START" not in message or "worker startup" not in message, (
+        "SchemaNotMigratedError still tells operators that "
+        "TASKQ_MIGRATE_ON_START causes automatic migration 'at worker "
+        "startup' -- but the worker ignores this setting entirely "
+        "(settings.py: 'Consumed ONLY by `taskq ui serve`'). "
+        f"Got message: {message!r}"
+    )

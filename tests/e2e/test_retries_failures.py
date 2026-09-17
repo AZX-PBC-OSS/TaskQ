@@ -16,16 +16,15 @@ Attempt-counter semantics, verified against the library (not guessed):
   the number of consuming dispatches the job went through.
 - A non-consuming deferral (``Snooze`` /
   ``RetryAfter(consume_budget=False)``) REFUNDS the claim's attempt
-  increment (``attempt - 1`` floored at 0; the Oban/River snooze
-  convention) — unbounded and budget-free, ``max_attempts`` is never
-  raised, and the deferral is counted on the row's ``snooze_count``
-  instead. A snooze cycle therefore returns the row to its pre-claim
-  base and the re-dispatch re-claims exactly one increment, so an
-  actor that snoozes N times then succeeds keys the cycle count off
-  ``ctx.snooze_count`` (``ctx.attempt`` stays at 1 across snooze
-  cycles). The snoozed row lands in ``scheduled`` and is re-queued by
-  the leader's ``scheduled_to_pending`` sweep (~1 s cadence,
-  ``worker/leader.py``).
+  increment (``attempt - 1`` floored at 0): the deferral never ran, so
+  the budget is untouched and ``max_attempts`` is never raised. The
+  deferral is counted on the row's ``snooze_count`` instead. A snooze
+  cycle therefore returns the row to its pre-claim base and the
+  re-dispatch re-claims exactly one increment, so an actor that snoozes
+  N times then succeeds keys the cycle count off ``ctx.snooze_count``
+  (``ctx.attempt`` stays at 1 across snooze cycles). The snoozed row
+  lands in ``scheduled`` and is re-queued by the leader's
+  ``scheduled_to_pending`` sweep (~1 s cadence, ``worker/leader.py``).
 - ``non_retryable_exceptions`` classify at the first failure:
   ``RetryClassifier.decide`` returns ``Fail`` on isinstance (``retry.py``),
   and the terminal write records ``error_class = type(exc).__name__``

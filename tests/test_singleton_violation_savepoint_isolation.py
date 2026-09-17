@@ -86,6 +86,12 @@ def _full_record(*, job_id: UUID | None = None) -> dict[str, object]:
         "tags": [],
         "snooze_count": 0,
         "rate_limit_blocked_count": 0,
+        "interrupt_count": 0,
+        "retry_base_seconds": 5.0,
+        "retry_cap_seconds": 3600.0,
+        "retry_backoff": "exponential",
+        "retry_jitter": 0.2,
+        "assignment_routed": False,
     }
 
 
@@ -176,7 +182,7 @@ class _ConnStandin:
         return None
 
     async def execute(self, sql: str, *args: object) -> str:
-        self._note("pg_notify" if "pg_notify" in sql else "execute")
+        self._note("execute")
         return "OK"
 
 
@@ -244,10 +250,11 @@ async def test_singleton_violation_on_caller_tx_rolls_back_to_savepoint() -> Non
     )
 
 
-async def test_singleton_violation_on_bare_conn_ends_not_in_transaction() -> None:
-    """On a bare connection the savepoint tier opens a real short
-    transaction; the rollback must return the connection to bare — a
-    dangling transaction would pin the caller's next use."""
+async def test_singleton_violation_on_bare_conn_opens_no_scope_and_ends_bare() -> None:
+    """On a bare connection there is no caller transaction to keep
+    usable: the INSERT runs plain (a statement error in autocommit poisons
+    nothing), the typed refusal raises, and the connection is bare
+    afterwards — a dangling transaction would pin the caller's next use."""
     conn = _ConnStandin(
         preflight_row=None,
         insert_exc=_singleton_violation(),
@@ -259,12 +266,11 @@ async def test_singleton_violation_on_bare_conn_ends_not_in_transaction() -> Non
             conn, _SQL, _SCHEMA_LABEL, FakeClock(_NOW), _make_args(singleton=True)
         )
 
-    assert conn.tx_depth == 0
-    assert conn.is_in_transaction() is False, (
-        "the short transaction the savepoint tier opened on the bare connection "
-        "must be rolled back fully, not left dangling"
+    assert conn.events == ["stmt:singleton_preflight", "stmt:insert"], (
+        f"a bare connection pays no savepoint round trips; events={conn.events}"
     )
-    assert conn.events[-1] == "savepoint-rollback"
+    assert conn.tx_depth == 0
+    assert conn.is_in_transaction() is False
 
 
 # ── the preflight path: untouched, no savepoint, attributed blocker ────
@@ -307,17 +313,17 @@ async def test_plain_enqueue_insert_runs_without_savepoint() -> None:
     row = await _enqueue_with_conn(conn, _SQL, _SCHEMA_LABEL, FakeClock(_NOW), _make_args())
 
     assert isinstance(row, JobRow)
-    assert conn.events == ["stmt:insert", "stmt:pg_notify"], (
+    assert conn.events == ["stmt:insert"], (
         f"a plain enqueue must open no savepoint; events={conn.events}"
     )
     assert conn.statement_depths["insert"] == 0
 
 
-async def test_singleton_insert_success_releases_savepoint_and_notifies_outside_it() -> None:
-    """The savepoint bounds exactly the INSERT: on success it RELEASEs
-    before the notify, so the wrap never widens into the rest of the
-    enqueue."""
-    conn = _ConnStandin(insert_rec=_Record(_full_record()))
+async def test_singleton_insert_success_releases_savepoint_after_the_insert() -> None:
+    """In a caller-owned transaction the savepoint bounds exactly the
+    INSERT: on success it RELEASEs right after it, so the wrap never
+    widens into the rest of the enqueue."""
+    conn = _ConnStandin(insert_rec=_Record(_full_record()), caller_tx_open=True)
 
     row = await _enqueue_with_conn(
         conn, _SQL, _SCHEMA_LABEL, FakeClock(_NOW), _make_args(singleton=True)
@@ -329,11 +335,9 @@ async def test_singleton_insert_success_releases_savepoint_and_notifies_outside_
         "savepoint-enter",
         "stmt:insert",
         "savepoint-release",
-        "stmt:pg_notify",
     ], f"events={conn.events}"
     assert conn.statement_depths["singleton_preflight"] == 0, (
         "the preflight is a read outside the savepoint"
     )
     assert conn.statement_depths["insert"] == 1, "the INSERT runs inside the savepoint"
-    assert conn.statement_depths["pg_notify"] == 0, "the savepoint closes before the notify"
-    assert conn.tx_depth == 0
+    assert conn.tx_depth == 0, "the caller's transaction depth is exactly as it was given"

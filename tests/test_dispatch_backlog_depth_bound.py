@@ -47,6 +47,7 @@ import pytest
 from taskq import migrate as migrate_mod
 from taskq._ids import new_base62, new_uuid
 from taskq.backend._dispatch_sql import (
+    DISPATCH_CLAIMABLE_PROBE_SQL,
     DISPATCH_ROUND_ROBIN_SQL,
     DISPATCH_STRICT_FIFO_SQL,
 )
@@ -216,6 +217,125 @@ async def test_dispatch_row_work_is_depth_bounded(
             f"depth — {shallow_widest:.0f} rows of work at {_SHALLOW_DEPTH} "
             f"pending vs {deep_widest:.0f} at {_DEEP_DEPTH} "
             f"(ratio bound {_DEPTH_RATIO_BOUND}x)."
+        )
+    finally:
+        await conn.close()
+
+
+async def test_claimable_probe_row_work_is_depth_bounded(pg_dsn: str, depth_schema: str) -> None:
+    """The empty-round claimable-rows probe stays a first-entry index read
+    at every backlog depth.
+
+    The probe gates window expansion on an empty dispatch round, so it runs
+    exactly where the backlog may be deep; a depth-proportional probe would
+    tax every idle round with the walk the claim statement is built to
+    avoid. Its inner probes are LIMIT-1 reads with no ORDER BY — the first
+    matching entry answers — so the widest plan node is the one-row
+    actor_config scan plus one matched probe row at any depth.
+    """
+    rendered = DISPATCH_CLAIMABLE_PROBE_SQL.format(schema=depth_schema)
+    conn = await asyncpg.connect(pg_dsn)
+    try:
+        widest_by_depth: dict[int, float] = {}
+        for depth in (_SHALLOW_DEPTH, _DEEP_DEPTH):
+            await _seed_due_backlog(conn, depth_schema, depth)
+            rows = await conn.fetch(
+                f"EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) {rendered}",
+                [_QUEUE],
+            )
+            raw = rows[0]["QUERY PLAN"]
+            document: Any = json.loads(raw) if isinstance(raw, str) else raw
+            top: dict[str, Any] = document[0]
+            nodes = _plan_node_row_counts(top["Plan"])
+            widest, label = nodes[0]
+            widest_by_depth[depth] = widest
+            assert widest <= 100, (
+                f"claimable probe: at a {depth}-row due backlog the widest plan "
+                f"node ({label}) did {widest:.0f} rows of work — the probe is a "
+                f"LIMIT-1 first-entry read and must stay at a handful of rows "
+                f"whatever the depth. Widest nodes: {nodes[:5]}."
+            )
+        assert widest_by_depth[_DEEP_DEPTH] <= _DEPTH_RATIO_BOUND * max(
+            widest_by_depth[_SHALLOW_DEPTH], 1.0
+        ), (
+            f"claimable probe: row work grows with backlog depth — "
+            f"{widest_by_depth[_SHALLOW_DEPTH]:.0f} at {_SHALLOW_DEPTH} pending vs "
+            f"{widest_by_depth[_DEEP_DEPTH]:.0f} at {_DEEP_DEPTH}."
+        )
+    finally:
+        await conn.close()
+
+
+@pytest.mark.parametrize(("variant", "sql"), _VARIANTS, ids=[v for v, _ in _VARIANTS])
+async def test_dispatch_round_does_not_pay_jit_compilation_at_depth(
+    pg_dsn: str, depth_schema: str, variant: str, sql: str
+) -> None:
+    """A depth-bounded row/buffer plan can still be slow, because the CTE
+    chain's row-*count* bound (pinned above by
+    ``test_dispatch_row_work_is_depth_bounded``) says nothing about the
+    plan's row-*estimate*. The estimate is built before ``top_ids``' LIMIT
+    or ``sliding_locked``'s LIMIT cuts the actual scan, off the candidate
+    chain's uncapped index-range guess — at a 30k+ row backlog it pushes
+    the terminal ``ModifyTable`` node's ``Total Cost`` into the tens of
+    millions (measured ~15.8M at 200k due rows on strict-FIFO), which sits
+    far above Postgres's default ``jit_above_cost`` (100000). Postgres
+    JIT-compiles the plan on every dispatch round once that threshold is
+    crossed — and the plan's own ``JIT`` block in EXPLAIN's JSON output
+    reports that compile time directly, so this asserts on it rather than
+    on wall clock: deterministic for a fixed seed and immune to CI-host
+    timing noise, the same doctrine ``test_dispatch_row_work_is_depth_bounded``
+    uses for row counts.
+
+    Measured on the production statement (strict-FIFO, this module's
+    fixture): ``JIT.Timing.Total`` was 0ms at 1k due rows and ~1000-1150ms
+    at 30k/200k, all in ``Optimization``/``Emission`` — the plan's
+    inflated *estimated* cost triggering compilation whose actual payoff
+    (a bounded ~100-row scan) never justifies it. This is a second,
+    independent instance of the same root defect the depth-bound fix
+    above addresses (row-count estimates divorced from the LIMIT that
+    actually bounds execution) — it produces the identical "queue gets
+    slower the behinder you are" symptom via JIT compile time instead of
+    scan time, and nothing in the production dispatch path
+    (``taskq.backend._dispatch``, ``taskq.connections``, pool
+    ``server_settings``, worker bootstrap) sets ``jit = off`` or raises
+    ``jit_above_cost`` to prevent it — unlike
+    ``benchmarks/pg_dispatch_depth_spike.py``, which disables JIT by
+    default specifically because of this (see its own comment at the
+    ``SET jit = off`` call), which is why the design doc's flat
+    1.4-1.7ms measurement never surfaced this dimension.
+
+    EXPECTED TO FAIL until the estimate cascade is fixed (or the
+    production connection path disables JIT / raises jit_above_cost for
+    this statement) — this pins a live defect, not a regression guard.
+    """
+    rendered = sql.format(schema=depth_schema)
+    worker_id = new_uuid()
+    conn = await asyncpg.connect(pg_dsn)
+    try:
+        await _seed_due_backlog(conn, depth_schema, _DEEP_DEPTH)
+        rows = await conn.fetch(
+            f"EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) {rendered}",
+            [_QUEUE],
+            _LIMIT_N,
+            worker_id,
+            _LOCK_LEASE,
+            _OVERSAMPLE,
+        )
+        raw = rows[0]["QUERY PLAN"]
+        document: Any = json.loads(raw) if isinstance(raw, str) else raw
+        top: dict[str, Any] = document[0]
+        jit = top.get("JIT")
+        jit_total_ms = float(jit["Timing"]["Total"]) if jit and "Timing" in jit else 0.0
+        assert jit_total_ms == 0.0, (
+            f"{variant}: at a {_DEEP_DEPTH}-row due backlog the dispatch "
+            f"statement triggered JIT compilation ({jit_total_ms:.1f} ms, "
+            f"full JIT block: {jit}) despite the plan's actual row/buffer "
+            "work staying bounded — the plan's ESTIMATED cost is still "
+            "depth-proportional (divorced from the LIMIT that bounds "
+            "actual execution), which crosses jit_above_cost and pays "
+            "full JIT compile time on every round. This reproduces the "
+            "original 'gets slower the behinder you are' symptom via "
+            "compile time instead of scan time; see this test's docstring."
         )
     finally:
         await conn.close()

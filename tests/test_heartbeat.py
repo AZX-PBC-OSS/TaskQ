@@ -1,7 +1,7 @@
 """Unit tests for heartbeat_loop — pure-Python, no PG required."""
 
 import asyncio
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Callable
 from contextlib import asynccontextmanager
 from datetime import UTC, timedelta
 from typing import Any
@@ -166,6 +166,7 @@ async def _run_tick(
     is_leader: bool = False,
     cancel_controller: CancelController | None = None,
     max_heartbeat_failures: int = 3,
+    deps_hook: Callable[[WorkerDeps], None] | None = None,
 ) -> tuple[WorkerDeps, asyncio.Event]:
     """Run one heartbeat tick, then set shutdown so the loop exits.
 
@@ -173,6 +174,10 @@ async def _run_tick(
     record hook) rather than a fixed sleep, so this is robust to scheduler
     jitter under parallel test load instead of merely guessing that 0.1s
     is enough wall-clock time for one tick to complete.
+
+    ``deps_hook`` runs after the deps are built but before the loop
+    starts, for tests that need to seed per-process state (the stall
+    tally) the first tick then reads.
     """
     import taskq.worker.heartbeat as hb_mod
 
@@ -181,6 +186,8 @@ async def _run_tick(
         is_leader=is_leader,
         max_heartbeat_failures=max_heartbeat_failures,
     )
+    if deps_hook is not None:
+        deps_hook(deps)
     shutdown = asyncio.Event()
     tick_done = asyncio.Event()
     prev_record = hb_mod._tick_duration.record  # type: ignore[reportPrivateUsage]
@@ -307,8 +314,8 @@ async def _wait_for_heartbeat_failures(
 
 
 async def test_tick_advances_liveness_and_lock_extends() -> None:
-    """Tick advances workers.last_seen_at, jobs, reservation_slots, and
-    (when leader) maintenance_leader, in the correct order."""
+    """Tick advances workers.last_seen_at, jobs and reservation_slots, in
+    the correct order, and leaves maintenance_leader alone even on a leader."""
     record_calls: list[float] = []
     await _patch_tick_duration(record_calls.append)
 
@@ -317,11 +324,10 @@ async def test_tick_advances_liveness_and_lock_extends() -> None:
 
     assert deps.heartbeat_failures == 0
     calls = pool.execute_calls
-    assert len(calls) >= 4
+    assert len(calls) >= 3
     assert "workers" in calls[0][0]
     assert "jobs" in calls[1][0]
     assert "reservation_slots" in calls[2][0]
-    assert "maintenance_leader" in calls[3][0]
     assert pool.acquire_count == 1
     assert len(record_calls) == 1
     assert record_calls[0] > 0
@@ -525,8 +531,10 @@ async def test_cancel_controller_called_when_set() -> None:
 
     calls = pool.execute_calls
     rs_idx = next(i for i, (sql, _) in enumerate(calls) if "reservation_slots" in sql)
-    leader_idx = next(i for i, (sql, _) in enumerate(calls) if "maintenance_leader" in sql)
-    assert rs_idx < leader_idx
+    assert rs_idx == len(calls) - 1, (
+        "the reservation-slots UPDATE is the tick's last statement, so the "
+        "controller runs after it inside the same transaction"
+    )
 
 
 # ── cancel_controller NOT called when None ────────────────────────
@@ -616,28 +624,31 @@ async def test_custom_schema_name_flows_to_sql() -> None:
     _worker_liveness_sql, wl_args = pool.execute_calls[0]
     assert worker_id in wl_args
     assert settings.schema_name not in wl_args
-    # Leader ping fires because is_leader is set (last call)
-    assert any("maintenance_leader" in sql for sql, _ in pool.execute_calls), "leader ping missing"
+    # The configured schema is what the statements name — the defect this
+    # test exists for was a hardcoded default surviving the rendering.
+    assert all(f'"{settings.schema_name}".' in sql for sql, _ in pool.execute_calls)
 
 
-# ── Leader-ping fires only when is_leader ─────────────────────────
+# ── The tick never touches the lease row ──────────────────────────
 
 
-async def test_leader_ping_not_fired_when_not_leader() -> None:
-    """When is_leader is NOT set, maintenance_leader UPDATE is skipped."""
+@pytest.mark.parametrize("is_leader", [False, True])
+async def test_tick_never_writes_the_lease_row(is_leader: bool) -> None:
+    """The heartbeat leaves ``maintenance_leader`` alone, leader or not.
+
+    The lease is renewed by the election loop on its own connection, fenced
+    on the term it holds. An unfenced write from this loop would refresh the
+    row of a leader whose term has already lapsed on its own clock, and
+    because a live ``last_seen_at`` is one of the two signals that keep the
+    row from being taken over, that write would hold leadership open past
+    the horizon the lease exists to impose.
+    """
     await _patch_tick_duration(lambda v: None)
     pool = FakePool()
-    await _run_tick(pool=pool, is_leader=False)
+    await _run_tick(pool=pool, is_leader=is_leader)
+    assert pool.execute_calls
     for sql, _ in pool.execute_calls:
         assert "maintenance_leader" not in sql
-
-
-async def test_leader_ping_fired_when_leader() -> None:
-    """When is_leader IS set, maintenance_leader UPDATE fires."""
-    await _patch_tick_duration(lambda v: None)
-    pool = FakePool()
-    await _run_tick(pool=pool, is_leader=True)
-    assert any("maintenance_leader" in sql for sql, _ in pool.execute_calls)
 
 
 # ── TimeoutError treated as connection failure ────────────────────
@@ -694,6 +705,70 @@ async def test_otel_histogram_recorded_on_success() -> None:
     await _run_tick(pool=pool)
     assert len(recorded) == 1
     assert recorded[0] > 0
+
+
+# ── taskq.lock.expires_in_seconds is a measurement, not the constant ──
+
+
+class _SlowSecondAcquirePool(FakePool):
+    """FakePool whose second acquire stalls, so the second renewal lands
+    late — the shape a slow pool or a blocked loop produces."""
+
+    def __init__(self, stall: float) -> None:
+        super().__init__()
+        self._stall = stall
+
+    @asynccontextmanager
+    async def acquire(self, *, timeout: float | None = None) -> AsyncGenerator[FakeConn, None]:  # noqa: ASYNC109 # Why: mirrors asyncpg.Pool.acquire's signature, as FakePool does.
+        if self.acquire_count == 1:
+            await asyncio.sleep(self._stall)
+        async with super().acquire(timeout=timeout) as conn:
+            yield conn
+
+
+async def test_lock_ttl_sample_is_the_lease_minus_the_gap_between_renewals() -> None:
+    """The histogram used to record ``lock_lease`` on every tick — the
+    configured constant — so a heartbeat running late could never move
+    it. It must record the lease the previous renewal stamped minus the
+    time until this one landed: nothing on the first renewal (no reference
+    yet), and a sample below the lease by at least the delay on a delayed
+    tick."""
+    import taskq.worker.heartbeat as hb_mod
+
+    interval, lease, stall = 0.5, 2.0, 0.3
+    samples: list[float] = []
+    two_samples = asyncio.Event()
+
+    def _capture(worker_id: str, remaining: float) -> None:
+        samples.append(remaining)
+        if len(samples) >= 2:
+            two_samples.set()
+
+    saved = hb_mod.record_lock_expires_in_seconds
+    hb_mod.record_lock_expires_in_seconds = _capture
+    try:
+        pool = _SlowSecondAcquirePool(stall)
+        deps = _make_deps(heartbeat_pool=pool, heartbeat_interval=interval, lock_lease=lease)
+        shutdown = asyncio.Event()
+        task = asyncio.create_task(heartbeat_loop(deps, new_uuid(), shutdown))
+        try:
+            await wait_for(two_samples, timeout=5.0)
+        finally:
+            shutdown.set()
+            await task
+    finally:
+        hb_mod.record_lock_expires_in_seconds = saved
+
+    delayed, recovered = samples[0], samples[1]
+    assert delayed <= lease - (interval + stall) + 0.05, (
+        f"the delayed renewal must report the lease minus its gap, got {delayed}"
+    )
+    assert 0.0 < delayed < lease
+    # Three renewals landed, two samples: the first renewal measures nothing.
+    assert pool.acquire_count >= 3
+    # The cadence is anchored to tick start, so the renewal after a late
+    # one lands early and its sample climbs back toward the lease.
+    assert delayed < recovered < lease
 
 
 # ── OTel consecutive_failures gauge callback wired ──────────────
@@ -991,15 +1066,18 @@ async def test_isolate_self_sweep1_row_state_identical(
                 job_id_b,
             )
             # Third argument is the sweep's batch cap (LIMIT $3), added when
-            # the sweep was bounded; the production default bound is used so
-            # this direct-SQL drive mirrors what the sweep loop executes.
-            from taskq.constants import DEFAULT_EVENT_WRITER_BATCH_SIZE
+            # the sweep was bounded; the fourth is the reclaim delay's
+            # effective-cap ceiling ($4, max_retry_backoff in seconds). The
+            # production defaults are used so this direct-SQL drive mirrors
+            # what the sweep loop executes.
+            from taskq.constants import DEFAULT_EVENT_WRITER_BATCH_SIZE, DEFAULT_MAX_RETRY_BACKOFF
 
             await conn.execute(
                 _SWEEP_1_SQL.format(schema=schema),
                 timedelta(seconds=30),
                 timedelta(seconds=30),
                 DEFAULT_EVENT_WRITER_BATCH_SIZE,
+                DEFAULT_MAX_RETRY_BACKOFF.total_seconds(),
             )
 
             columns = "status, locked_by_worker, lock_expires_at, scheduled_at, finished_at"
@@ -1022,3 +1100,61 @@ async def test_isolate_self_sweep1_row_state_identical(
             assert row_a["scheduled_at"] == row_b["scheduled_at"]
     finally:
         await stack.aclose()
+
+
+# ── The stall-attribution tally rides the liveness statement ──────────
+
+
+async def test_tick_merges_the_stall_tally_into_the_liveness_statement() -> None:
+    """The liveness write carries this process's stall tally as a jsonb
+    MERGE in the same statement (no extra round trip): the watchdog hands
+    the tally to the heartbeat loop via deps, and the loop never reads
+    anything off the watchdog thread itself."""
+    pool = FakePool()
+
+    def _seed(deps: WorkerDeps) -> None:
+        deps.stall_tally.record("send_email", kind="gil_held")
+        deps.stall_tally.record("send_email", kind="gil_held")
+        deps.stall_tally.record("resize_image", kind="blocking_call")
+
+    _deps, _shutdown = await _run_tick(pool=pool, deps_hook=_seed)
+
+    liveness_calls = [
+        (sql, args) for sql, args in pool.execute_calls if "last_seen_at = clock_timestamp()" in sql
+    ]
+    assert len(liveness_calls) == 1
+    sql, args = liveness_calls[0]
+    assert "metadata = metadata || $2::jsonb" in sql
+    assert "WHERE id = $1" in sql
+    assert args[1] is not None
+    assert '"send_email":{"gil_held":2}' in str(args[1])
+    assert '"resize_image":{"blocking_call":1}' in str(args[1])
+
+
+async def test_tick_merges_an_empty_tally_as_a_noop() -> None:
+    """A process that attributed nothing merges an empty object: the jsonb
+    concat leaves the registered metadata keys (max_concurrency,
+    notify_enabled) untouched and writes no loop_stalls key."""
+    pool = FakePool()
+    _deps, _shutdown = await _run_tick(pool=pool)
+
+    liveness_calls = [
+        (sql, args) for sql, args in pool.execute_calls if "last_seen_at = clock_timestamp()" in sql
+    ]
+    assert len(liveness_calls) == 1
+    _sql, args = liveness_calls[0]
+    assert args[1] == "{}"
+
+
+def test_build_heartbeat_sql_liveness_shape_pins_the_merge() -> None:
+    """The liveness template is the merge statement's single source: the
+    jsonb concat must keep the registration keys AND key the tally write
+    to $2, which is what keeps the heartbeat at one statement per tick."""
+    from taskq.backend._sql import build_heartbeat_sql
+
+    liveness_sql, _jobs_sql, _slots_sql = build_heartbeat_sql("taskq")
+    assert liveness_sql == (
+        'UPDATE "taskq".workers '
+        "SET last_seen_at = clock_timestamp(), metadata = metadata || $2::jsonb "
+        "WHERE id = $1"
+    )

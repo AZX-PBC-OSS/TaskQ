@@ -17,7 +17,7 @@ Exercises branches not covered by ``test_leader.py``:
 
 import asyncio
 import contextlib
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Mapping
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -1128,7 +1128,7 @@ async def _run_stranded_loop_collecting(
     rows_sequence: list[list[dict[str, object]]],
     *,
     ticks: int,
-) -> tuple[list[dict[str, object]], list[dict[str, int]]]:
+) -> tuple[list[dict[str, object]], list[dict[tuple[str, str], int]]]:
     """Drive the loop over a scripted sequence of query results.
 
     Row shape mirrors the detector SQL's per-shape breakdown (see
@@ -1153,14 +1153,14 @@ async def _run_stranded_loop_collecting(
     leader = _make_leader(backend=_mem_backend(), deps=deps)
 
     warnings: list[dict[str, object]] = []
-    gauge_updates: list[dict[str, int]] = []
+    gauge_updates: list[dict[tuple[str, str], int]] = []
     original_update = sweeps_mod.update_stranded_jobs_cache
 
     def _spy_warning(event: str, **kwargs: object) -> None:
         if event in ("stranded-jobs-no-actor-config", "stranded-jobs-unserved-queue"):
             warnings.append({"event": event, **kwargs})
 
-    def _spy_update(data: dict[str, int]) -> None:
+    def _spy_update(data: Mapping[tuple[str, str], int]) -> None:
         gauge_updates.append(dict(data))
 
     sweeps_mod.log.warning = _spy_warning  # type: ignore[method-assign]  # Why: test-only instrumentation.
@@ -1205,7 +1205,7 @@ async def test_stranded_jobs_publishes_a_gauge_every_tick() -> None:
         [[_stranded_row("orphan", 7, no_config=7)]], ticks=3
     )
     assert len(gauges) >= 3
-    assert all(g == {"orphan": 7} for g in gauges[:3])
+    assert all(g == {("orphan", "no_actor_config"): 7} for g in gauges[:3])
 
 
 async def test_stranded_jobs_rewarns_when_the_backlog_grows() -> None:
@@ -1262,7 +1262,9 @@ async def test_stranded_jobs_unserved_queue_shape_counts_in_gauge_and_names_queu
         [[_stranded_row("orphan_actor_q", 1, unserved=1, queues=["no-worker-queue"])]],
         ticks=2,
     )
-    assert gauges[0] == {"orphan_actor_q": 1}, "the gauge must carry the unserved-queue shape"
+    assert gauges[0] == {("orphan_actor_q", "unserved_queue"): 1}, (
+        "the gauge must carry the unserved-queue shape under its own reason"
+    )
     unserved_events = [w for w in warnings if w["event"] == "stranded-jobs-unserved-queue"]
     assert unserved_events, "the unserved-queue strand must warn"
     assert unserved_events[0]["queues"] == ["no-worker-queue"], (
@@ -1275,14 +1277,17 @@ async def test_stranded_jobs_unserved_queue_shape_counts_in_gauge_and_names_queu
 
 
 async def test_stranded_jobs_both_shapes_on_one_actor_fire_both_events() -> None:
-    """A row stranded for both reasons (no actor_config AND on an unserved
-    queue) counts ONCE in the gauge and fires BOTH events — each names its
-    own condition and its own count."""
+    """An actor reported under both reasons publishes one gauge series per
+    reason and fires BOTH events — each names its own condition and its
+    own count. (The detector SQL makes the two shapes exclusive per row;
+    per actor they can coexist across rows.)"""
     warnings, gauges = await _run_stranded_loop_collecting(
-        [[_stranded_row("solo_b", 1, no_config=1, unserved=1, queues=["default"])]],
+        [[_stranded_row("solo_b", 2, no_config=1, unserved=1, queues=["default"])]],
         ticks=2,
     )
-    assert gauges[0] == {"solo_b": 1}, "a row stranded for both reasons counts once"
+    assert gauges[0] == {("solo_b", "no_actor_config"): 1, ("solo_b", "unserved_queue"): 1}, (
+        "each reason is its own series"
+    )
     events = {w["event"] for w in warnings}
     assert events == {
         "stranded-jobs-no-actor-config",
@@ -1458,9 +1463,10 @@ def test_bootstrap_dispatcher_pool_acquire_calls_pass_timeout_ast() -> None:
     """Structural backstop: every ``dispatcher_pool.acquire()`` call in
     ``taskq.worker._bootstrap`` must pass a ``timeout=`` keyword argument.
 
-    This invariant has recurred three times: PR #67 fixed 8 sites, a 9th
-    was found during a later merge in ``_leader_sweeps.py``, and two more
-    turned up in ``_bootstrap.py`` -- a file that branch never touched.
+    This invariant has recurred three times: eight sites were fixed in
+    one sweep, a ninth was found during a later merge in
+    ``_leader_sweeps.py``, and two more turned up in ``_bootstrap.py``
+    -- a file that earlier sweep never touched.
     Module-scope rather than restricted to functions named ``*_loop``
     (like the sibling check above): bootstrap's acquire sites live inside
     one large ``_main`` startup function, not per-concern loop functions,

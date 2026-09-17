@@ -17,19 +17,15 @@ implementation — see ``test_falls_back_to_blocking_without_a_tracking_set``.
 """
 
 import asyncio
-from datetime import UTC, datetime
 from unittest.mock import AsyncMock
 
 import pytest
-import structlog
 
-from taskq.client._enqueuer import SubJobEnqueuer
 from taskq.context import JobContext
-from taskq.obs import bind_job_context
 from taskq.progress._buffer import _ProgressBuffer
 from taskq.settings import WorkerSettings
-from taskq.testing.clock import FakeClock
-from taskq.testing.in_memory import InMemoryBackend, PassthroughPayload
+from taskq.testing.in_memory import PassthroughPayload
+from tests._progress_context import make_progress_context
 
 
 def _make_ctx(
@@ -40,9 +36,6 @@ def _make_ctx(
     from taskq._ids import new_job_id, new_uuid
 
     job_id = new_job_id()
-    worker_id = new_uuid()
-    clock = FakeClock(datetime(2025, 1, 1, tzinfo=UTC))
-    backend = InMemoryBackend(clock=clock)
     settings = WorkerSettings.load_from_dict(
         {
             "TASKQ_SCHEMA_NAME": "taskq_test",
@@ -52,28 +45,13 @@ def _make_ctx(
     buf = _ProgressBuffer(job_id=job_id, base_seq=0)
     buffers = {job_id: buf}
 
-    ctx: JobContext[PassthroughPayload] = JobContext(
-        job_id=job_id,
-        actor="test_actor",
-        queue="default",
-        attempt=1,
-        worker_id=worker_id,
-        payload=PassthroughPayload(),
-        cancel_event=asyncio.Event(),
-        jobs=SubJobEnqueuer(loop_scope_resolved=None, worker_pool=None, backend=backend),
-        log=bind_job_context(
-            structlog.get_logger("test"),
-            job_id=job_id,
-            actor="test_actor",
-            queue="default",
-            attempt=1,
-            identity_key=None,
-            trace_id="",
-        ),
-        _progress_buffers=buffers,
-        _redis_client=redis_client,  # type: ignore[arg-type]
-        _worker_settings=settings,
-        _pending_publish_tasks=pending_publish_tasks,
+    ctx = make_progress_context(
+        buffers,
+        job_id,
+        worker_id=new_uuid(),
+        settings=settings,
+        redis_client=redis_client,
+        pending_publish_tasks=pending_publish_tasks,
     )
     return ctx, buf
 

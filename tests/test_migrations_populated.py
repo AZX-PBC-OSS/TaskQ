@@ -212,11 +212,23 @@ def _job_row(
         "span_id": f"{i:016x}" if i % 6 == 0 else None,
         "metadata": metadata,
         "tags": _tags(slice_id, i),
-        # Counter columns (01.00.08_01): deterministic non-zero values so
-        # the seeded rows prove the columns round-trip through COPY, not
-        # just that the DDL accepts them.
+        # Counter columns (01.00.08_01, and the interruption counter added
+        # beside them): deterministic non-zero values so the seeded rows
+        # prove the columns round-trip through COPY, not just that the DDL
+        # accepts them.
         "snooze_count": i % 5,
         "rate_limit_blocked_count": i % 3,
+        "interrupt_count": i % 2,
+        # Retry-curve columns (01.00.12_03): deterministic non-default
+        # values, same round-trip rationale as the counters above.
+        "retry_base_seconds": 1.0 + (i % 10),
+        "retry_cap_seconds": 3600.0 + (i % 10),
+        "retry_backoff": ("exponential", "linear", "fixed")[i % 3],
+        "retry_jitter": (i % 5) / 10.0,
+        # Routing marker (01.00.12_05): both populations seeded so the
+        # column proves it round-trips through COPY, not just that the
+        # DDL accepts it.
+        "assignment_routed": i % 4 == 0,
     }
 
 
@@ -620,7 +632,7 @@ async def _assert_table_counts(
 # ── Migration-specific checks ─────────────────────────────────────────────
 # Generic per-step invariants (runner order, no INVALID indexes, ledger
 # use_transaction) apply to EVERY discovered key — unknown keys get ONLY
-# those, so future migrations (incl. PRs #25/#27's CIC index rebuilds)
+# those, so future migrations (including future CIC index rebuilds)
 # automatically join this harness the day they land. Entries below are for
 # migrations whose populated-DB effect deserves a sharper assertion.
 
@@ -898,3 +910,84 @@ def test_bundled_migrations_apply_stepwise_onto_populated_database(
         assert "no pending migrations" in plain_cli_output(result.output)
     finally:
         asyncio.run(_cleanup())
+
+
+# ── Targeted backfill pins ──────────────────────────────────────────────────
+
+
+async def test_assignment_routed_backfill_marks_exactly_the_repend_population(
+    pg_dsn: str,
+) -> None:
+    """The marker migration's backfill paints exactly the rows the old
+    started_at-proxy arm was serving — nothing more, nothing less.
+
+    The proxy probed ``pending`` rows with ``started_at IS NOT NULL``, and a
+    re-pended row still sleeping off a deferral (``scheduled`` with
+    ``started_at`` set — a snooze, a retry-after, or a reclaim with budget
+    left) joined that probe the moment the promotion sweep flipped it to
+    pending. Both halves of that population must read
+    ``assignment_routed = true`` after the upgrade or they route by their
+    stale queue label and strand on a retired source queue; the promotion
+    sweep itself writes no marker (it re-dates a row, it does not learn its
+    origin), so the backfill is the only place the sleeping half can get
+    the flag. Producer-placed rows — including future-dated scheduled
+    enqueues — always have ``started_at IS NULL`` and must stay false, as
+    must rows the arm can never visit (running, terminal).
+    """
+    schema = f"mig_bf_{new_base62()}".lower()
+    conn = await asyncpg.connect(pg_dsn)
+    now = datetime.now(UTC)
+    seeded: dict[str, tuple[str, bool]] = {
+        # name: (status, expected assignment_routed after the upgrade)
+        "pending_producer": ("pending", False),
+        "pending_repended": ("pending", True),
+        "scheduled_repended": ("scheduled", True),
+        "scheduled_producer": ("scheduled", False),
+        "running_inflight": ("running", False),
+        "terminal_succeeded": ("succeeded", False),
+    }
+    ids = {name: new_uuid() for name in seeded}
+    try:
+        await _drop_schema(conn, schema)
+        # The pre-upgrade world: every migration up to the release that
+        # still routed re-pends by the started_at proxy.
+        await migrate_mod.apply_pending(conn, schema=schema, target="01.00.11_01")
+        for name, (status, _expected) in seeded.items():
+            claimed = name in (
+                "pending_repended",
+                "scheduled_repended",
+                "running_inflight",
+                "terminal_succeeded",
+            )
+            await conn.execute(
+                f'INSERT INTO "{schema}".jobs '
+                "(id, actor, queue, payload, max_attempts, retry_kind, status, "
+                " scheduled_at, started_at, finished_at, locked_by_worker, lock_expires_at) "
+                "VALUES ($1, 'backfill_actor', 'default', '{}'::jsonb, 3, 'transient', "
+                f'        $2::"{schema}".job_status, $3, $4, $5, $6, $7)',
+                ids[name],
+                status,
+                now + timedelta(hours=1) if status == "scheduled" else now - timedelta(hours=1),
+                (now - timedelta(minutes=30)) if claimed else None,
+                now - timedelta(minutes=20) if status == "succeeded" else None,
+                new_uuid() if status == "running" else None,
+                now + timedelta(hours=1) if status == "running" else None,
+            )
+
+        applied = await migrate_mod.apply_pending(conn, schema=schema)
+
+        assert "01.00.12_05:pre" in [m.key for m in applied], (
+            f"the marker migration must apply over the pre-upgrade data; applied {[m.key for m in applied]}"
+        )
+        for name, (status, expected) in seeded.items():
+            actual = await conn.fetchval(
+                f'SELECT assignment_routed FROM "{schema}".jobs WHERE id = $1', ids[name]
+            )
+            assert actual is expected, (
+                f"{name} (status={status}): assignment_routed must be {expected} after the "
+                f"backfill, found {actual} — the backfill's population is exactly "
+                "dispatchable-or-promotable rows claimed at least once"
+            )
+    finally:
+        await _drop_schema(conn, schema)
+        await conn.close()

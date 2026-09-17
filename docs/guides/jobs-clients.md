@@ -27,15 +27,25 @@ running   → scheduled (Snooze or RetryAfter with future scheduled_at)
 | Status | Meaning |
 |---|---|
 | `pending` | Waiting in the queue; eligible for dispatch. |
-| `scheduled` | Enqueued with a future `scheduled_at`; not yet eligible. |
+| `scheduled` | Enqueued with a future `scheduled_at`; not yet eligible. Also the shape of an interrupted job whose hold has not elapsed (see below). |
 | `running` | Claimed by a worker; actor is executing. |
 | `succeeded` | Actor returned successfully; result stored. |
 | `failed` | Actor raised an unhandled exception and retry budget is exhausted, or `DeadlineExceeded`. |
 | `cancelled` | Cancelled before or during execution. |
 | `crashed` | Worker process died mid-execution (SIGKILL, OOM, etc.). |
-| `abandoned` | Heartbeat expired and no worker reclaimed the job within the lock lease window. |
+| `abandoned` | An operator's cancel request escalated and the actor did not exit within `cancellation_grace_period + cleanup_grace_period`. Never produced by a worker shutdown — a deploy releases the job back to the fleet instead. |
 
 Terminal statuses (`succeeded`, `failed`, `cancelled`, `crashed`, `abandoned`) have no further transitions.
+
+**Interruptions.** A graceful shutdown that reaches a still-running job releases it: the row
+returns to `pending` (or `scheduled` behind the remaining termination budget when the actor never
+unwound) with the claim's `attempt` increment refunded — infrastructure events never spend a job's
+budget. The row's `interrupt_count` column counts how often this has happened, and each release
+writes one `job_events` transition with `reason = 'interrupted'`. An operator cancel in flight
+when the deploy lands still wins the row. The mirror image — a crash (SIGKILL, OOM, a lost
+heartbeat) — *does* spend the attempt; see
+[retries.md §12](retries.md#12-crash-vs-shutdown-what-happens-to-the-attempt-count) for the
+crash-vs-shutdown accounting.
 
 **Archival lifecycle.** After a terminal job's per-status retention period elapses (default: 30–90 days depending on status), the maintenance leader's prune sweep moves it from `jobs` to `jobs_archive`. After the archive retention period elapses (default: 1 year), the archive expiry sweep hard-deletes the row. The admin UI job-detail page follows this chain automatically. See [Configuration](configuration.md) for retention settings.
 
@@ -182,8 +192,8 @@ remaining steps. Later steps only execute when earlier ones did not match or rai
     `taskq:unique_for:<schema>:<actor>:<identity_key>`, hashed via `hashtextextended`), so two
     producers racing on the same logical entity cannot both insert — the loser's preflight finds
     the winner's row and returns it as the dedup hit. The lock **wait is bounded** — 5 s by
-    default (`DEFAULT_UNIQUE_FOR_LOCK_TIMEOUT_MS` in `taskq.backend._enqueue`; a module constant
-    tunable only through private kwargs today — settings plumbing is a filed follow-up): the
+    default, tunable with `TASKQ_UNIQUE_FOR_LOCK_TIMEOUT_MS` (see the `max_pending` paragraph
+    below for how pools the `TaskQ` client builds itself deliver a widened budget): the
     acquire is two-tier (`taskq._advisory.acquire_advisory_xact_lock_bounded`). An uncontended
     producer pays exactly one `pg_try_advisory_xact_lock` statement; a contended one queues
     server-side — Postgres' own lock scheduler hands the lock to the next waiter as each holder's
@@ -193,11 +203,15 @@ remaining steps. Later steps only execute when earlier ones did not match or rai
     answers. A producer that exhausts the budget gets `UniqueForLockTimeoutError` (this enqueue
     wrote nothing; on a caller-owned transaction durability is the caller's decision) instead of
     queueing indefinitely behind a same-key stampede or a black-holed holder. That error is
-    deliberately **not** in the `BackpressureError` family and bumps no
-    `taskq.backpressure.errors` counter — nothing about capacity is wrong; the dedup answer for
-    one identity could not be determined in time. The correct response is to **retry the same
-    enqueue**: once the winner's row is visible, the retry typically returns it as a dedup hit
-    (`was_existing=True`). `0` or less disables the bound entirely (the unbounded queueing
+    deliberately **not** in the `BackpressureError` family — nothing about capacity is wrong;
+    the dedup answer for one identity could not be determined in time — but it still records
+    against the `taskq.backpressure.errors` counter under its own
+    `kind='unique_for_lock_timeout'` label, so the refusal shows up on an operator's dashboard
+    without tripping alerts keyed on the capacity kinds — alerting meant for capacity pressure
+    must filter on the `kind` label rather than the raw counter. The correct response is to
+    **retry the same enqueue**: once the winner's row is visible, the retry typically returns it
+    as a dedup hit (`was_existing=True`). `0` or less disables the bound entirely (the unbounded
+    queueing
     behavior), matching Postgres' own `lock_timeout = 0` convention.
 3. **Singleton pre-flight** — if `ref.singleton` is `True`, checks for an existing active job for
    this actor. Raises `SingletonCollisionError` on collision. Cron fires now carry the same
@@ -209,9 +223,9 @@ remaining steps. Later steps only execute when earlier ones did not match or rai
     by a transaction-scoped advisory lock (the same two-tier mechanism `unique_for` uses — one
     try-lock statement when uncontended, a server-side bounded blocking acquire when contended),
     so concurrent producers cannot slip between the check and the insert. The lock wait is
-    bounded — 5 s by default (`DEFAULT_MAX_PENDING_LOCK_TIMEOUT_MS` in
-    `taskq.backend._enqueue`; a module constant tunable only through private kwargs today —
-    settings plumbing is a filed follow-up): a producer that cannot acquire the lock within its
+    bounded — 5 s by default, tunable with `TASKQ_MAX_PENDING_LOCK_TIMEOUT_MS` (its
+    `unique_for` and `idempotency_key` siblings are `TASKQ_UNIQUE_FOR_LOCK_TIMEOUT_MS` and
+    `TASKQ_IDEMPOTENCY_LOCK_TIMEOUT_MS`): a producer that cannot acquire the lock within its
     budget gets `MaxPendingLockTimeoutError` instead of queueing behind every other racer, so
     burst tail latency is capped by the budget rather than growing linearly with the number of
     producers — while contended racers still queue server-side (draining at holder-release rate,
@@ -219,7 +233,22 @@ remaining steps. Later steps only execute when earlier ones did not match or rai
     timeout exactly like a cap rejection: retry later or shed load (both errors sit in the
     `BackpressureError` family and both record against the `taskq.backpressure.errors` counter).
     `0` or less disables the bound entirely, matching Postgres' own `lock_timeout = 0`
-    convention. Bulk paths (`enqueue_batch`,
+    convention.
+
+    On pools the `TaskQ` client builds itself (the `dsn=` and `pg_provider=` constructions),
+    the pool's per-query `command_timeout` is 5 s at these defaults and each lock budget is
+    delivered clamped to 80% of it — 4 s at the defaults. The margin is what lets the
+    server-side `lock_timeout` fire, and the typed error reach you, before the pool's
+    client-side timer would end the wait as a bare `TimeoutError`. Widening a budget past its
+    5 s default re-derives the pool's bound to fit the widened budget at the same margin, so a
+    larger `TASKQ_MAX_PENDING_LOCK_TIMEOUT_MS` (or its siblings) takes effect end to end;
+    budgets at or below the defaults change nothing about the pool. `0` or less asks the
+    server to wait indefinitely, which no client-built pool can honor — its per-query bound
+    still applies — so on that construction set a large finite value instead. Caller-supplied
+    pools (`pool=` / `pool_factory=`) keep their own `command_timeout` and budgets are
+    delivered as configured; keep your pool's per-query bound above any budget you widen.
+
+    Bulk paths (`enqueue_batch`,
     `enqueue_batch_fast`) and cron suppressions deliberately do **not** take the lock: their
     aggregated pre-insert count is exact for the batch it admits but **approximate under
     concurrency** — separate bulk connections can still race the count and the insert, and the
@@ -227,11 +256,25 @@ remaining steps. Later steps only execute when earlier ones did not match or rai
     single-process producers therefore stay exact in practice.
 
    Operational note: the lock exists only for capped actors on the single-enqueue path, is keyed
-   `taskq:max_pending:<schema>:<actor>` (hashed via `hashtextextended`), and is transaction-scoped
-   — it shows in `pg_locks` only for the duration of a contended enqueue. Actors without
-   `max_pending` never touch it.
-5. **`idempotency_key` upsert** — if `idempotency_key` is provided and matches an existing row,
-   returns the existing handle with `was_existing=True`.
+   `taskq:max_pending:<schema>:<actor>` (hashed via `hashtextextended`), and is transaction-scoped.
+   On a connection TaskQ opens and commits itself for the enqueue, it shows in `pg_locks` only for
+   the duration of that contended enqueue. But when the enqueue runs on a **caller-owned, already
+   open transaction** — the shape `ctx.jobs` uses for a transactional actor's sub-enqueue — the
+   lock is held until *that caller's* commit or rollback, not released early. A transactional
+   actor's `start_to_close` is unbounded by default, so a sub-enqueue to a capped actor early in
+   the actor body can hold the lock for the actor's entire run. Any other producer to that same
+   actor queues behind the whole parent transaction and can hit `MaxPendingLockTimeoutError` even
+   though the actor is nowhere near its cap. This is deliberate — releasing the lock before the
+   caller's commit would let the count and the insert drift apart across the caller's own
+   uncommitted work — but it means the lock's true duration is the caller transaction's lifetime,
+   not "one contended enqueue," whenever the caller supplies the connection. Actors without
+   `max_pending` never touch it. **In-memory backend note:** `InMemoryBackend` enforces
+   `max_pending` with a plain in-process count and takes no advisory lock at all, so
+   InMemoryBackend-based tests cannot reproduce or catch a regression of this transactional-holder
+   lock-duration cost — only a Postgres-backed test observes it.
+5. **`idempotency_key` upsert** — if `idempotency_key` is provided and matches an existing row
+   **of the same actor**, returns the existing handle with `was_existing=True`. A match on
+   another actor's row raises `IdempotencyKeyActorMismatchError` (see below).
 6. **Job INSERT** — inserts the new row and returns a handle with `was_existing=False`.
 
 ### `idempotency_key`
@@ -243,15 +286,32 @@ remaining steps. Later steps only execute when earlier ones did not match or rai
   business key in different scopes to both succeed, decoupling the dedupe
   horizon from `prune_retention_*`. Namespace keys to avoid collisions
   between actors: `"send_receipt:order_123"`, not `"order_123"`.
+- **A hit on another actor's job is refused, not returned.** Uniqueness is
+  per scope across *all* actors, so `enqueue(send_receipt, key="order-1")`
+  after `enqueue(refund, key="order-1")` finds the refund's row. That is not a
+  dedup of the receipt job, and handing back the refund's handle (whose
+  `.result()` is the refund's) would be indistinguishable from one — so the
+  enqueue raises `IdempotencyKeyActorMismatchError`, naming both actors and
+  the existing job id, with nothing enqueued. In `enqueue_batch` the refusal
+  is all-or-nothing: the whole batch is withdrawn, like a singleton
+  collision, so it can be resubmitted after fixing the key without
+  duplicating its other items. `enqueue_batch_fast` classifies its COPY
+  abort the same way: a pair held by another actor raises the mismatch error
+  (with `existing_job_id=None` when the holder was an earlier item of the
+  same batch, whose row never persisted) and only a same-actor pair raises
+  `DuplicateIdempotencyKeyError`. (River folds the job kind into its unique
+  key and Oban's default unique fields include the worker, so neither can
+  return another worker's job; TaskQ's index cannot include the actor
+  without a migration, so the hit is checked instead.) The same-actor case
+  is unchanged: the existing handle comes back with `was_existing=True`.
 - Maximum length: **1024 UTF-8 bytes** (`TASKQ_IDEMPOTENCY_KEY_MAX_BYTES`, raisable to 1300). The bound is the composite unique index `jobs_idempotency_scope_key_uniq`: a Postgres btree v4 entry cannot exceed 2704 bytes, counted encoded — so the cap is in bytes, not characters.
 - Empty strings and whitespace-only strings raise `ValueError` before any backend call.
 - **No TTL.** `idempotency_scope` decouples the dedupe horizon by *namespace*, not by *time* —
   there is no `idempotency_ttl` parameter. A key within a scope still dedupes **until pruned**,
   same as before scope existed, just confined to that namespace. This is deliberate: a real
-  sliding-window TTL can't be a single static unique index the way scope can (every mature queue
-  that offers one — Oban, River — trades away the atomic `ON CONFLICT` insert or buckets time
-  into the key itself). Need "dedupe for an hour, not forever"? Encode the window into the scope
-  string yourself for now.
+  sliding-window TTL cannot be enforced by a single static unique index. TaskQ uses scope
+  to decouple the horizon, preserving the atomic `ON CONFLICT` insert. Need "dedupe for an
+  hour, not forever"? Encode the window into the scope string yourself for now.
 - **Rolling-deploy note:** mid-upgrade (the `pre` migration applied, `post` not yet), reusing a
   key under two *different* scopes raises `ScopedIdempotencyMigrationPendingError` instead of
   silently deduping against the wrong scope's job — in either direction, so an unscoped call
@@ -459,7 +519,7 @@ containment filter) and returns aggregated counts:
 | `failed` | `int` | Jobs that exhausted retries. |
 | `cancelled` | `int` | Cancelled jobs. |
 | `crashed` | `int` | Jobs that crashed without a clean failure. |
-| `abandoned` | `int` | Jobs abandoned after heartbeat timeout. |
+| `abandoned` | `int` | Jobs abandoned after an operator cancel outlasted the grace periods. |
 | `is_complete` | `bool` (computed) | `True` when `pending == 0`. |
 
 ```python
@@ -509,7 +569,7 @@ Enqueues jobs via the PG `COPY FROM` protocol for maximum throughput. Returns th
 
 ### Limitations
 
-- **No idempotency-key collision handling.** A duplicate `(idempotency_scope, idempotency_key)` pair — repeated within the batch or already stored — aborts the entire batch with `DuplicateIdempotencyKeyError` (nothing is written; the abort itself is deliberate bulk-import semantics). Callers must pre-deduplicate. One carve-out: during the `01.00.03` pre→post migration window, a key reused across *different* scopes raises `ScopedIdempotencyMigrationPendingError` instead, matching the other enqueue paths.
+- **No idempotency-key collision handling.** A duplicate `(idempotency_scope, idempotency_key)` pair — repeated within the batch or already stored — aborts the entire batch with `DuplicateIdempotencyKeyError` (nothing is written; the abort itself is deliberate bulk-import semantics), or with `IdempotencyKeyActorMismatchError` when the pair's holder belongs to a different actor (see [idempotency_key](#idempotency_key)). Callers must pre-deduplicate. One carve-out: during the `01.00.03` pre→post migration window, a key reused across *different* scopes raises `ScopedIdempotencyMigrationPendingError` instead, matching the other enqueue paths.
 - **`max_pending` is enforced with the same per-actor partition as `enqueue_batch()`**: within-cap actors' rows are written, an over-cap actor's items are refused, and `BatchMaxPendingExceededError` raises after the COPY commits — retry only the refused items (indices on the error), or rely on idempotency keys.
 - **No JobHandle instances.** Only the inserted count is returned. Use `batch_id` to query rows post-insert.
 - **All-or-nothing on constraint violations.** The COPY fails entirely on any constraint violation — singleton, unique index, or CHECK constraint. Only cap admission partitions.
@@ -1171,13 +1231,13 @@ Frozen dataclass. All fields are optional.
 |---|---|---|---|
 | `queue` | `str \| None` | `None` | Filter by queue name. |
 | `status` | `JobStatus \| Sequence[JobStatus] \| None` | `None` | Filter by current status — a single status (`"pending"`) or a sequence (`["pending", "running"]`). An empty sequence matches no jobs; unknown values raise `ValueError`. Mutually exclusive with `active`. |
-| `active` | `bool \| None` | `None` | Meta-filter by terminality: `True` selects non-terminal statuses (pending, scheduled, running), `False` selects terminal ones. **Not Celery's 'active'** (currently-executing only) — here it means 'not yet finished'. Mutually exclusive with `status`. |
+| `active` | `bool \| None` | `None` | Meta-filter by terminality: `True` selects non-terminal statuses (pending, scheduled, running), `False` selects terminal ones. This is broader than just currently-executing jobs — it includes all work not yet finished. Mutually exclusive with `status`. |
 | `actor` | `str \| None` | `None` | Filter by actor name. |
 | `identity_key` | `IdentityKey \| None` | `None` | Filter by identity key. |
 | `batch_id` | `UUID \| None` | `None` | Filter by batch ID. |
 | `tags` | `tuple[str, ...] \| None` | `None` | Filter by tags. Uses `&&` (array overlap) with a GIN index. Returns jobs that match any of the given tags. |
 | `order_by` | `JobSortField \| None` | `None` | Sort order for results. `None` resolves to `JobSortField.SCHEDULED_AT_ASC` — see [JobSortField](#jobsortfield). |
-| `limit` | `int` | `100` | Maximum number of rows to return. |
+| `limit` | `int` | `100` | Maximum number of rows to return: one page. `JobsClient.list()` rejects a limit above `10_000` (`taskq.backend._protocol.MAX_JOB_LIST_LIMIT`; a page materialises every row it returns, so a larger result set is paged with `cursor`). Ignored by `cancel_where`. |
 | `cursor` | `str \| None` | `None` | Opaque keyset-pagination token from `JobPage.next_cursor`. |
 
 ```python
@@ -1260,7 +1320,7 @@ Frozen dataclass.
 | Field | Type | Description |
 |---|---|---|
 | `jobs` | `list[JobRow]` | The matched job rows. |
-| `next_cursor` | `str \| None` | Pagination token for the next page. `None` when no more rows exist. |
+| `next_cursor` | `str \| None` | Pagination token for the next page. `None` exactly when no more rows exist — the client looks one row past `limit`, so a last page that happens to fill the limit still ends the walk without an empty trailing page (at the `10_000` ceiling there is no room to look past it, and a full page there may lead to one empty page). |
 
 ```python
 page = await client.list(JobFilter(queue="payments", status="pending", limit=50))
@@ -1439,8 +1499,8 @@ from taskq.exceptions import (
 | Exception | Raised when |
 |---|---|
 | `MaxPendingExceededError` | `enqueue()` called when `pending + scheduled` count >= `max_pending`. Fields: `actor` (str), `current_count` (int), `max_pending` (int). |
-| `MaxPendingLockTimeoutError` | `enqueue()` on a capped actor could not acquire the per-`(schema, actor)` serialization advisory lock within its budget (default 5 s) — too many concurrent producers, cap check never ran. Same `BackpressureError` family as `MaxPendingExceededError`; same response (retry later or shed load). Fields: `actor` (str), `timeout_ms` (float). |
-| `UniqueForLockTimeoutError` | `enqueue()` with `unique_for` + `identity_key` could not acquire the per-`(schema, actor, identity_key)` single-flight advisory lock within its budget (default 5 s, `DEFAULT_UNIQUE_FOR_LOCK_TIMEOUT_MS`) — the dedup answer for one identity could not be determined in time; nothing was inserted. NOT a `BackpressureError` (no capacity problem) and not counted in `taskq.backpressure.errors`. Response: retry the same enqueue — it typically dedupes against the winner's row (`was_existing=True`). Fields: `actor` (str), `identity_key` (str), `timeout_ms` (float). |
+| `MaxPendingLockTimeoutError` | `enqueue()` on a capped actor could not acquire the per-`(schema, actor)` serialization advisory lock within its budget (default 5 s) — cap check never ran. Two distinct causes: too many concurrent producers racing the same actor, **or** a single long-running caller transaction holding the lock for its own lifetime (e.g. a transactional actor's `ctx.jobs` sub-enqueue to a capped actor, held until that actor's commit/rollback — see the operational note above). Same `BackpressureError` family as `MaxPendingExceededError`; same response (retry later or shed load; for the transactional-holder cause, also check for a long-running actor sub-enqueueing to this capped actor). Fields: `actor` (str), `timeout_ms` (float). |
+| `UniqueForLockTimeoutError` | `enqueue()` with `unique_for` + `identity_key` could not acquire the per-`(schema, actor, identity_key)` single-flight advisory lock within its budget (default 5 s, `DEFAULT_UNIQUE_FOR_LOCK_TIMEOUT_MS`) — the dedup answer for one identity could not be determined in time; nothing was inserted. NOT a `BackpressureError` (no capacity problem), though it is counted in `taskq.backpressure.errors` under `kind="unique_for_lock_timeout"` alongside the capacity kinds. Response: retry the same enqueue — it typically dedupes against the winner's row (`was_existing=True`). Fields: `actor` (str), `identity_key` (str), `timeout_ms` (float). |
 | `BatchMaxPendingExceededError` | A bulk enqueue (`enqueue_batch()` / `enqueue_batch_fast()` / the chunked arm of `enqueue_batch_streaming()`) partitioned admission per actor and refused some: the within-cap actors' items were inserted first, then this raises. Fields: `refusals` (list of `MaxPendingExceededError`, one per over-cap actor), `refused_indices` (actor -> indices into the caller's items), `admitted_count` (int). Not a `MaxPendingExceededError` subclass — part of the batch is already stored; retry only the refused items or rely on idempotency keys. An `except BackpressureError` handler catches this too and must consult `admitted_count` / `refused_indices` before any whole-batch retry. |
 | `SingletonCollisionError` | `enqueue()` called for a singleton actor that already has an active job. Fields: `actor` (str), `blocking_job_id` (UUID or None), `retry_after` (timedelta or None). |
 | `PayloadValidationError` | Pydantic validation of the payload fails at enqueue time or at dispatch time. Non-retryable regardless of retry policy. Fields: `actor`, `payload_schema_ver`, `validation_errors`. |

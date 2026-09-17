@@ -18,12 +18,11 @@ Single-threaded by contract — do not share across threads or event loops.
 """
 
 import asyncio
-import random
-from collections.abc import Iterable
+from collections.abc import Collection, Iterable
 from contextlib import AbstractAsyncContextManager as AsyncContextManager
 from dataclasses import replace
 from datetime import datetime, timedelta
-from typing import TYPE_CHECKING, ClassVar, Literal
+from typing import TYPE_CHECKING, Any, ClassVar, Literal
 from uuid import UUID
 
 import structlog
@@ -48,7 +47,6 @@ from taskq.backend._protocol import (
     BatchRow,
     BulkCancelResult,
     CancelFlag,
-    CancelPhase,
     DenialReason,
     EnqueueArgs,
     ErrorInfo,
@@ -65,12 +63,14 @@ from taskq.backend._protocol import (
 from taskq.backend.clock import Clock
 from taskq.backend.statemachine import ACTIVE_STATUSES
 from taskq.constants import (
+    CANCEL_ORIGIN_PENDING,
     DEFAULT_CHUNK_SIZE,
     DEFAULT_EVENT_WRITER_BATCH_SIZE,
+    DEFAULT_MAX_RETRY_BACKOFF,
     DEFAULT_RECLAIM_POLL_LIMIT,
     MAX_RESULT_BYTES,
 )
-from taskq.retry import OnRetryExhausted, OnSuccess, RetryClassifierHook, RetryPolicy
+from taskq.retry import OnCancel, OnRetryExhausted, OnSuccess, RetryClassifierHook, RetryPolicy
 from taskq.testing._batch import (
     _abort_batch,
     _complete_batch,
@@ -148,15 +148,21 @@ from taskq.testing._terminal import (
     _mark_abandoned,
     _mark_cancelled,
     _mark_failed_or_retry,
+    _mark_interrupted,
     _mark_retry_after,
     _mark_snoozed,
     _mark_succeeded,
     _mark_succeeded_with_conn,
+    _retry_job,
     _write_attempt,
     _write_cancel_escalation,
 )
 
 if TYPE_CHECKING:
+    # TYPE_CHECKING-only: a runtime taskq.actor import would pull asyncpg
+    # into the driver-free testing boundary (pinned by
+    # test_testing_no_transitive_asyncpg).
+    from taskq.actor import ActorRef
     from taskq.worker.leader import ArchiveExpiryResult, PruneResult
 
 __all__ = [
@@ -238,17 +244,21 @@ class InMemoryBackend:
         clock: Clock,
         cancellation_grace_period: timedelta = timedelta(seconds=30),
         cleanup_grace_period: timedelta = timedelta(seconds=30),
-        rng: random.Random | None = None,
         *,
         actor_configs: Iterable[ActorConfig] | None = None,
         result_max_bytes: int = MAX_RESULT_BYTES,
+        max_retry_backoff: timedelta = DEFAULT_MAX_RETRY_BACKOFF,
     ) -> None:
         self._clock = clock
         self._result_max_bytes = result_max_bytes
         self._cancellation_grace = cancellation_grace_period
         self._cleanup_grace = cleanup_grace_period
+        # The WorkerSettings.max_retry_backoff knob, carried the same way
+        # the grace knobs above are: the reclaim sweep twin clamps the
+        # reschedule delay at min(row cap, this ceiling), mirroring the
+        # PG sweep's bound parameter.
+        self._max_retry_backoff = max_retry_backoff
         self._worker_id: UUID = new_uuid()
-        self._rng = rng
 
         self._jobs: _JobStore = _JobStore(clock)
         self._attempts: dict[JobId, list[AttemptRow]] = {}
@@ -270,6 +280,17 @@ class InMemoryBackend:
         self._actor_stubs: dict[str, StubFn] = {}
         self._actor_configs: dict[str, _InMemoryActorConfig] = {}
         self._actor_configs_meta: dict[str, ActorConfig] = {}
+        # Mirror of actor_config.last_claimed_at (the cross-round actor
+        # rotation stamp the dispatch cut orders by):
+        # PG stamps claiming actors with the statement's wall time, which
+        # is strictly increasing across rounds; a frozen FakeClock cannot
+        # supply that, so the twin stamps with a per-backend tick
+        # incremented once per CLAIMING dispatch round. Same-round winners
+        # share one tick and fall through to scheduled_at/id — exactly the
+        # tie shape PG's single statement_timestamp() produces — and an
+        # actor never claimed has no entry, mirroring NULL (sorts first).
+        self._actor_claim_ticks: dict[str, int] = {}
+        self._claim_tick: int = 0
         if actor_configs is not None:
             for cfg in actor_configs:
                 self._actor_configs_meta[cfg.actor] = cfg
@@ -293,7 +314,7 @@ class InMemoryBackend:
 
     def register_stub(
         self,
-        actor_name: str,
+        actor_name: "str | ActorRef[Any, Any]",
         fn: StubFn,
         *,
         retry: RetryPolicy | None = None,
@@ -303,6 +324,8 @@ class InMemoryBackend:
         on_retry_exhausted_timeout: float = 3.0,
         on_success: OnSuccess | None = None,
         on_success_timeout: float = 3.0,
+        on_cancel: OnCancel | None = None,
+        on_cancel_timeout: float = 3.0,
         result_ttl: timedelta | None = None,
         payload_type: type[BaseModel] | None = None,
     ) -> None:
@@ -317,6 +340,8 @@ class InMemoryBackend:
             on_retry_exhausted_timeout=on_retry_exhausted_timeout,
             on_success=on_success,
             on_success_timeout=on_success_timeout,
+            on_cancel=on_cancel,
+            on_cancel_timeout=on_cancel_timeout,
             result_ttl=result_ttl,
             payload_type=payload_type,
         )
@@ -493,11 +518,18 @@ class InMemoryBackend:
         self,
         worker_id: UUID,
         lock_lease: timedelta,
+        *,
+        disowned: Collection[UUID] = (),
     ) -> int:
         now = self._clock.now()
+        excluded = set(disowned)
         count = 0
         for job_id, row in list(self._jobs.items()):
-            if row.status == "running" and row.locked_by_worker == worker_id:
+            if (
+                row.status == "running"
+                and row.locked_by_worker == worker_id
+                and job_id not in excluded
+            ):
                 self._jobs[job_id] = replace(
                     row,
                     lock_expires_at=now + lock_lease,
@@ -510,11 +542,18 @@ class InMemoryBackend:
         self,
         worker_id: UUID,
         lock_lease: timedelta,
+        *,
+        disowned: Collection[UUID] = (),
     ) -> int:
         now = self._clock.now()
+        excluded = set(disowned)
         count = 0
         for job_id, row in list(self._jobs.items()):
-            if row.status == "running" and row.locked_by_worker == worker_id:
+            if (
+                row.status == "running"
+                and row.locked_by_worker == worker_id
+                and job_id not in excluded
+            ):
                 if self._slot_table is not None:
                     count += self._slot_table.extend_leases_for_job(job_id, now, lock_lease)
                 else:
@@ -636,7 +675,7 @@ class InMemoryBackend:
         outcome: SnoozeOutcome = "snoozed",
         attempt: int | None = None,
         denial_reason: DenialReason = "capacity",
-    ) -> Literal["scheduled", "failed", "failed:MaxAttemptsExceeded", "noop"]:
+    ) -> Literal["scheduled", "failed", "noop"]:
         return await _mark_snoozed(
             self,
             job_id,
@@ -670,6 +709,26 @@ class InMemoryBackend:
             progress_seq=progress_seq,
             progress_state=progress_state,
             attempt=attempt,
+        )
+
+    async def mark_interrupted(
+        self,
+        job_id: JobId,
+        worker_id: UUID,
+        *,
+        attempt: int,
+        hold: timedelta,
+        progress_seq: int = 0,
+        progress_state: dict[str, object] | None = None,
+    ) -> Literal["pending", "scheduled", "failed:DeadlineExceeded", "noop"]:
+        return await _mark_interrupted(
+            self,
+            job_id,
+            worker_id,
+            attempt=attempt,
+            hold=hold,
+            progress_seq=progress_seq,
+            progress_state=progress_state,
         )
 
     # ── Attempt history ────────────────────────────────────────────────
@@ -718,6 +777,11 @@ class InMemoryBackend:
                 row,
                 status="cancelled",
                 finished_at=now,
+                # Twin of cancel_pending_scheduled: the before-start origin
+                # marker goes on the ROW only — the state_change event
+                # detail keeps its {from_state, to_state} shape on both
+                # backends (the differential suite pins it exactly).
+                error_class=CANCEL_ORIGIN_PENDING,
             )
             self._append_state_change_event(
                 job_id=job_id,
@@ -759,60 +823,7 @@ class InMemoryBackend:
     # ── Admin operations ──────────────────────────────────────────────
 
     async def retry_job(self, job_id: JobId) -> bool:
-        row = self._jobs.get(job_id)
-        if row is None or row.status not in ("failed", "crashed", "cancelled"):
-            return False
-        # Monotonic attempt with the ceiling raised just enough to open
-        # the budget gates, mirroring the PG statement's
-        # LEAST(GREATEST(max_attempts, attempt + 1), 32767) (the vendored
-        # admin-retry precedent: Oban's retry_job and River's JobRetry
-        # never reset the counter). A re-run climbs to fresh attempt
-        # numbers — the twin's dispatch claim stamps attempt + 1 — so no
-        # attempt-row writer can revisit a spent epoch's key. At the
-        # smallint bound the ceiling cannot rise further and the retry
-        # is refused — the row stays terminal — rather than re-pending
-        # a job the next claim could only overflow.
-        raised_ceiling = min(max(row.max_attempts, row.attempt + 1), 32767)
-        if raised_ceiling <= row.attempt:
-            return False
-        self._jobs[job_id] = replace(
-            row,
-            status="pending",
-            max_attempts=raised_ceiling,
-            cancel_phase=CancelPhase.NONE,
-            # The whole cancel trail goes with the spent epoch, mirroring
-            # the PG SET clause's cancel_requested_at = NULL: the TERMINAL
-            # writes deliberately keep the cancel columns as the audit
-            # trail of why the job ended, and a re-run must not inherit
-            # that trail — the next attempt's cancel protocol starts at
-            # phase 0 with no request stamp.
-            cancel_requested_at=None,
-            error_class=None,
-            error_message=None,
-            error_traceback=None,
-            scheduled_at=self._clock.now(),
-            finished_at=None,
-            result=None,
-            result_size_bytes=None,
-            result_expires_at=None,
-        )
-        # Batch-status reconciliation, the twin of the PG statement's
-        # reopened CTE (_sql_templates.py retry_job): a re-pended member
-        # makes a terminal batch row's claim a lie, and every batch-status
-        # writer guards on 'active', so the reopen happens here, in the
-        # same store mutation as the re-pend. metadata.batch_id marks
-        # membership only (the finalizer is never stamped), and the guard
-        # on the terminal statuses keeps it idempotent.
-        raw_bid = row.metadata.get("batch_id")
-        if raw_bid is not None:
-            batch_row = self._batches.get(UUID(str(raw_bid)))
-            if batch_row is not None and batch_row.status in ("complete", "aborted"):
-                self._batches[UUID(str(raw_bid))] = replace(
-                    batch_row, status="active", completed_at=None
-                )
-        for event in self._wake_subscribers:
-            event.set()
-        return True
+        return await _retry_job(self, job_id)
 
     # ── Scheduling / sweeps ────────────────────────────────────────────
     # No caller-supplied now: the injected Clock is the single arbiter

@@ -55,6 +55,7 @@ Over-acquisition window on rollback failure:
   within 30 seconds at most.
 """
 
+import asyncio
 from collections.abc import AsyncGenerator, Callable, Sequence
 from contextlib import asynccontextmanager
 from datetime import timedelta
@@ -64,6 +65,10 @@ from typing import TYPE_CHECKING, TypeVar
 import structlog
 from pydantic import BaseModel, ValidationError
 
+from taskq._validation import CURRENT_PAYLOAD_SCHEMA_VER
+from taskq.backend._sweeps import (  # pyright: ignore[reportPrivateUsage]  # Why: the eviction drain and the fleet sweep must agree exactly on which rows still hold consumed quota — one predicate, no second hand-maintained copy.
+    _no_consumed_quota_sql,
+)
 from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining
     _KEYED_KEY_RE,  # pyright: ignore[reportPrivateUsage]
@@ -242,14 +247,15 @@ def _same_config(
     return False
 
 
-def _preserves_memory_fixed_quota_state(prim: TokenBucket | SlidingWindow) -> bool:
+def _preserves_fixed_quota_state(prim: TokenBucket | SlidingWindow) -> bool:
     """Eviction-exemption predicate for keyed rate limits.
 
-    Exempts a memory-backed fixed-quota TokenBucket holding consumed quota
-    state (see :meth:`TokenBucket.holds_consumed_memory_quota`) from idle
-    eviction — evicting it would silently reset the drained quota.
+    Exempts a fixed-quota TokenBucket whose state an eviction cycle would
+    discard (see :meth:`TokenBucket.holds_consumed_quota`) — whether that
+    state lives on the instance or in the row the reclaim drain deletes,
+    losing it hands back a budget the tenant already spent.
     """
-    return isinstance(prim, TokenBucket) and prim.holds_consumed_memory_quota()
+    return isinstance(prim, TokenBucket) and prim.holds_consumed_quota()
 
 
 class RateLimitRegistry:
@@ -641,6 +647,10 @@ class RateLimitRegistry:
             raise PayloadValidationError(
                 f"Payload validation failed for {type(ref).__name__}(base_name={ref.base_name!r}): "
                 f"payload_type={ref.payload_type.__name__}, received={type(payload).__name__}. {exc.title}",
+                # No job row exists on this path — the version in scope is
+                # the one ``ref.payload_type`` is being validated against,
+                # i.e. the schema version the system writes today.
+                payload_schema_ver=str(CURRENT_PAYLOAD_SCHEMA_VER),
                 validation_errors=errs,
             ) from exc
 
@@ -1376,25 +1386,45 @@ class RateLimitRegistry:
         pg_pool: "asyncpg.Pool | None" = None,
         clock: "Clock | None" = None,
         settings: "WorkerSettings | None" = None,
+        timeout: "float | None" = None,  # noqa: ASYNC109  # Why: the bound is a per-call deadline the caller passes, not an enclosing asyncio.timeout scope; the registry's other bounded methods (drain_pending_reservation_reclaims) take the same shape.
     ) -> dict[str, RateLimitState]:
-        """Peek all registered rate limits. Returns {name: RateLimitState}."""
+        """Peek all registered rate limits. Returns {name: RateLimitState}.
+
+        Each bucket's read is a separate Redis/PG round trip, so a call
+        costs O(buckets) round trips — and the registry can hold up to
+        ``max_keyed_rate_limits`` keyed-materialised buckets. *timeout*
+        bounds the WHOLE pass: a bucket whose store hangs (a black-holed
+        broker answers no read) must not park the caller past it. Raises
+        :class:`TimeoutError` when the bound fires — per-bucket failures
+        are still caught and logged per bucket, but a read that never
+        RETURNS is indistinguishable from a dead registry at page-render
+        time, so the caller learns of the bound instead of rendering a
+        half-empty live-state map as if it were current. ``None`` (the
+        default) keeps the unbounded shape for callers that manage their
+        own deadline.
+        """
+        if timeout is not None:
+            return await asyncio.wait_for(
+                self._peek_all(redis_client, pg_pool, clock, settings), timeout=timeout
+            )
+        return await self._peek_all(redis_client, pg_pool, clock, settings)
+
+    async def _peek_all(
+        self,
+        redis_client: "redis_async.Redis | None",
+        pg_pool: "asyncpg.Pool | None",
+        clock: "Clock | None",
+        settings: "WorkerSettings | None",
+    ) -> dict[str, RateLimitState]:
         results: dict[str, RateLimitState] = {}
         for name, prim in list(self._rate_limits.items()):
             try:
-                if isinstance(prim, TokenBucket):
-                    results[name] = await prim.peek(
-                        redis_client=redis_client,
-                        pg_pool=pg_pool,
-                        clock=clock,
-                        settings=settings,
-                    )
-                else:
-                    results[name] = await prim.peek(
-                        redis_client=redis_client,
-                        pg_pool=pg_pool,
-                        clock=clock,
-                        settings=settings,
-                    )
+                results[name] = await prim.peek(
+                    redis_client=redis_client,
+                    pg_pool=pg_pool,
+                    clock=clock,
+                    settings=settings,
+                )
             except Exception as exc:
                 logger.warning(
                     "ratelimit-peek-failed",
@@ -1411,8 +1441,16 @@ class RateLimitRegistry:
         pg_pool: "asyncpg.Pool | None" = None,
         clock: "Clock | None" = None,
         settings: "WorkerSettings | None" = None,
+        timeout: "float | None" = None,  # noqa: ASYNC109  # Why: the bound is a per-call deadline the caller passes, not an enclosing asyncio.timeout scope.
     ) -> None:
-        """Reset a rate-limit bucket to full capacity."""
+        """Reset a rate-limit bucket to full capacity.
+
+        *timeout* bounds the reset's backend round trip (a Redis DEL or a
+        PG upsert against a dead store can hang the caller forever);
+        raises :class:`TimeoutError` when it fires. ``None`` (the default)
+        keeps the unbounded shape for callers that manage their own
+        deadline.
+        """
         if name in self._reservations:
             raise TypeError(
                 f"name {name!r} is a ConcurrencyReservation — "
@@ -1422,12 +1460,15 @@ class RateLimitRegistry:
             raise KeyError(name)
 
         primitive = self._rate_limits[name]
-        if isinstance(primitive, TokenBucket):
-            await primitive.reset(
-                redis_client=redis_client,
-                pg_pool=pg_pool,
-                clock=clock,
-                settings=settings,
+        if timeout is not None:
+            await asyncio.wait_for(
+                primitive.reset(
+                    redis_client=redis_client,
+                    pg_pool=pg_pool,
+                    clock=clock,
+                    settings=settings,
+                ),
+                timeout=timeout,
             )
         else:
             await primitive.reset(
@@ -1752,13 +1793,17 @@ class RateLimitRegistry:
         ``registry-keyed-reclaim-pending-cap-veto`` warning are the
         visible signals).
 
-        **Exemption — memory fixed-quota buckets.** A ``backend="memory"``
-        bucket with ``refill_per_second == 0`` that has consumed any of its
-        quota is NOT evicted (see
-        :meth:`TokenBucket.holds_consumed_memory_quota`): its token state
-        lives on the instance, so eviction would silently reset the drained
-        quota to full on next acquire — whereas Redis deliberately retains
-        that same state for 24 h. The exemption applies to both callers of
+        **Exemption — fixed-quota buckets.** A bucket with
+        ``refill_per_second == 0`` whose state an eviction cycle would
+        discard is NOT evicted (see
+        :meth:`TokenBucket.holds_consumed_quota`). For ``backend="memory"``
+        that is a bucket which has consumed part of its quota, held because
+        its token state lives on the instance; for ``backend="postgres"``
+        it is every such bucket, because the state lives in the row the
+        reclaim drain deletes and remaining tokens are not readable on this
+        synchronous path. Either way the next acquire would start again at
+        full capacity against a budget already spent — whereas Redis
+        deliberately retains that same state for 24 h. The exemption applies to both callers of
         this method (the per-worker sweep and the cap-pressure opportunistic
         eviction). Trade-off, deliberately chosen: an exempt bucket counts
         against ``settings.max_keyed_rate_limits`` until its quota returns
@@ -1798,7 +1843,7 @@ class RateLimitRegistry:
             self._rate_limits,
             idle_for,
             "registry-evicted-idle-keyed-rate-limits",
-            preserve=_preserves_memory_fixed_quota_state,
+            preserve=_preserves_fixed_quota_state,
             admit=_admit,
         )
         # The publish-schema capture rides the registration's lifecycle:
@@ -2038,13 +2083,24 @@ class RateLimitRegistry:
 
 # The reclaim drain's rate-limit statement, beside the publish statement
 # whose rows it reclaims (the same locality as the reservation reclaim
-# templates in ratelimit/reservation.py). No lease guard, unlike the
-# reservation twin: a rate_limit_buckets row has no holder, so nothing
-# survives the DELETE and the drain runs no survivor probe.
-_RECLAIM_RATE_LIMIT_SLICE_DELETE_SQL_TEMPLATE = """\
-DELETE FROM "{schema}".rate_limit_buckets
+# templates in ratelimit/reservation.py). A rate_limit_buckets row has no
+# holder, so there is no lease guard like the reservation twin's — but
+# idleness is still not evidence the row is safe to delete. For a
+# PG-backed bucket the row IS the state, so deleting one that still holds
+# consumed fixed quota lets the next acquire re-preseed at full capacity
+# and re-admit a budget the tenant already spent — the exact damage the
+# memory backend's eviction exemption prevents on the instance side.
+# Idle eviction exists to bound registry growth, not to reset quotas, so
+# it must do neither. The guard is shared with the fleet sweep
+# (_no_consumed_quota_sql) so the two cannot disagree about which rows
+# are safe. A vetoed name still leaves the pending set — every sliced
+# name does — and the fleet sweep is its backstop once the quota is no
+# longer consumed.
+_RECLAIM_RATE_LIMIT_SLICE_DELETE_SQL_TEMPLATE = f"""\
+DELETE FROM "{{schema}}".rate_limit_buckets
 WHERE bucket_name = ANY($1)
-RETURNING bucket_name"""
+  AND {_no_consumed_quota_sql()}
+RETURNING bucket_name"""  # noqa: S608  # Why: the only interpolation is this module's own constant predicate; schema is caller-formatted from the _IDENT_RE-validated setting and bucket_name is $1-bound
 
 
 async def _upsert_rate_limit_bucket_row(

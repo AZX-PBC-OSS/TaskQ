@@ -244,11 +244,29 @@ async def test_isolate_self_honours_fr12_case_shape() -> None:
         shutdown = asyncio.Event()
         await isolate_self(deps, new_uuid(), shutdown)
         assert runner is not None
-        assert "attempt < max_attempts AND retry_kind != 'non_retryable'" in runner
-        assert "clock_timestamp() + interval '5 seconds'" in runner
-        assert "NOT (attempt < max_attempts AND retry_kind != 'non_retryable')" in runner
-        assert "WHERE id = $1" in runner
-        assert "locked_by_worker = $2" in runner
+        # The has-budget predicate: 'indefinite' has no attempt ceiling
+        # (its schedule_to_close deadline is its budget), every other
+        # kind is bounded by max_attempts, and 'non_retryable' has no
+        # second attempt at all — see _sweeps._RECLAIM_HAS_BUDGET_SQL,
+        # which this statement shares verbatim.
+        assert "j.retry_kind = 'indefinite'" in runner
+        assert "j.attempt < j.max_attempts AND j.retry_kind != 'non_retryable'" in runner
+        # The reclaim delay is derived from the row's own stamped
+        # RetryPolicy curve (retry_base_seconds/retry_cap_seconds/
+        # retry_backoff/retry_jitter), not a hardcoded flat interval:
+        # a crash/heartbeat reclaim reschedules on the same curve an
+        # application-level failure would.
+        assert "clock_timestamp() +" in runner
+        assert "j.retry_base_seconds" in runner
+        assert "j.retry_cap_seconds" in runner
+        assert "j.retry_backoff" in runner
+        assert "j.retry_jitter" in runner
+        assert "interval '5 seconds'" not in runner, (
+            "isolate_self still stamps a hardcoded flat reclaim delay "
+            "instead of deriving it from the job's own RetryPolicy curve"
+        )
+        assert "WHERE j.id = $1" in runner
+        assert "j.locked_by_worker = $2" in runner
     finally:
         apg.connect = orig_connect  # type: ignore[method-assign]
 
@@ -305,7 +323,7 @@ async def test_isolate_self_shields_terminal_writes() -> None:
         hb_mod.asyncio.shield = _real_shield  # type: ignore[method-assign]
 
 
-# ── Bounded conn close in the finally path (#38) ────────────────────────
+# ── Bounded conn close in the finally path ──────────────────────────────
 #
 # isolate_self only runs when PG is already suspected dead (heartbeat
 # failures exceeded); its ``finally: await conn.close()`` could then block

@@ -9,7 +9,7 @@ Covers:
 - Redis transport: get_message loop yields JobEvent on state change,
   skips malformed messages, terminates on terminal.
 - PG transport: RuntimeError when dsn is None (pool-only construction).
-- Bounded owned-LISTEN-conn closes (#37): _stream_pg/_watch_reclaims_pg
+- Bounded owned-LISTEN-conn closes: _stream_pg/_watch_reclaims_pg
   teardown and watch_reclaims reconnect paths bound close() via
   close_conn_bounded — a dead PG cannot wedge the generator.
 """
@@ -36,6 +36,8 @@ from taskq.client._taskq import (
     _stream_redis,
     _watch_reclaims_pg,
 )
+from taskq.client._transport import pg_poll_event_stream
+from taskq.exceptions import StreamUnavailable
 from taskq.progress._events import ProgressEvent
 from taskq.settings import TaskQSettings
 from taskq.testing.assertions import wait_for
@@ -221,14 +223,24 @@ async def test_stream_before_open_raises_runtime_error() -> None:
 # ── PG transport: dsn is None raises RuntimeError ────────────────────────
 
 
-async def test_stream_pg_raises_when_dsn_none() -> None:
-    """PG LISTEN transport raises RuntimeError when no LISTEN source is
-    provided (pool-only construction with no ``pg_conn_factory`` / ``listen_conn``).
-    """
-    row = _row(status="running", progress_seq=0)
-    backend = _stub_backend(rows=[row])
-    client = _make_client(backend)
+def _timed_stub_backend(rows: list[JobRow]) -> tuple[Backend, list[float]]:
+    """Stub Backend whose ``get`` returns successive rows and records the loop
+    time of every call - the observable for "how often does the client hit
+    the database"."""
+    remaining = list(rows)
+    fetched_at: list[float] = []
+    backend = AsyncMock(spec=Backend)
 
+    async def _get(job_id: JobId) -> JobRow | None:
+        fetched_at.append(asyncio.get_running_loop().time())
+        return remaining.pop(0) if remaining else None
+
+    backend.get = _get
+    return backend, fetched_at
+
+
+def _pool_only_taskq(client: JobsClient, *, poll_timeout: float) -> TaskQ:
+    """A TaskQ built on a caller-owned pool: no DSN, no LISTEN source."""
     tq = TaskQ.__new__(TaskQ)
     tq._client = client
     tq._redis_client = None
@@ -236,84 +248,197 @@ async def test_stream_pg_raises_when_dsn_none() -> None:
     tq._pg_conn_factory = None
     tq._listen_conn = None
     tq._schema = _SCHEMA_LABEL
-    tq._poll_timeout = 30.0
-
-    with pytest.raises(RuntimeError, match="LISTEN transport source"):
-        async for _ in tq.stream(cast(JobId, _JOB_ID)):
-            pass
+    tq._poll_timeout = poll_timeout
+    return tq
 
 
-# ── PG transport: pg_conn_factory / listen_conn hooks ────────────────────
-
-
-class _FakeListenConn:
-    """Fake asyncpg.Connection for the LISTEN transport.
-
-    Yields one state change then a terminal status, so the stream exits.
-    """
-
-    def __init__(self) -> None:
-        self.closed = False
-        self.removed: list[str] = []
-
-    async def add_listener(self, channel: str, callback: object) -> None:
-        pass
-
-    async def remove_listener(self, channel: str, callback: object) -> None:
-        self.removed.append(channel)
-
-    async def close(self) -> None:
-        self.closed = True
-
-
-async def test_stream_pg_with_pg_conn_factory_closes_conn() -> None:
-    """pg_conn_factory produces a TaskQ-owned conn that is closed in finally."""
+async def test_stream_pg_streams_in_pool_only_mode() -> None:
+    """The Postgres transport reads the job row through the client's own
+    pool, so a pool-only TaskQ (no DSN, no ``pg_conn_factory`` /
+    ``listen_conn``) streams like any other."""
     rows = [_row(status="running", progress_seq=0), _row(status="succeeded", progress_seq=1)]
-    backend = _stub_backend(rows=rows)
-    client = _make_client(backend)
+    backend, _ = _timed_stub_backend(rows)
+    tq = _pool_only_taskq(_make_client(backend), poll_timeout=0.05)
 
-    fake_conn = _FakeListenConn()
+    events = [e async for e in tq.stream(cast(JobId, _JOB_ID))]
+
+    assert [e.status for e in events] == ["running", "succeeded"]
+    assert events[-1].terminal is True
+
+
+async def test_stream_pg_gives_up_after_the_failure_budget_with_its_cause() -> None:
+    """Failures that span the budget are not a blip: the stream ends with
+    StreamUnavailable naming the job, the run length and the last error,
+    instead of polling a dead database forever behind warnings."""
+    from taskq.client import _transport
+
+    readings = iter([0.0, 12.0, 24.0, 31.0])
+
+    async def _fetch_row() -> JobRow:
+        raise asyncpg.InterfaceError("connection closed")
+
+    with structlog.testing.capture_logs() as captured, pytest.raises(StreamUnavailable) as info:
+        async for _ in pg_poll_event_stream(
+            _fetch_row,
+            lambda row, _status_changed: _row_to_event(row),
+            job_id=cast(JobId, _JOB_ID),
+            poll_interval=_transport.POLL_INTERVAL_FLOOR_SECS,
+            failure_budget=30.0,
+            clock=lambda: next(readings),
+        ):
+            pytest.fail("no event can be produced by a fetch that always fails")
+
+    exc = info.value
+    assert exc.job_id == _JOB_ID
+    assert exc.consecutive_failures == 4
+    assert exc.elapsed == 31.0
+    assert isinstance(exc.__cause__, asyncpg.InterfaceError)
+    assert "InterfaceError" in str(exc)
+    assert [e["event"] for e in captured] == ["stream-poll-error"] * 3 + ["stream-poll-abandoned"]
+    abandoned = captured[-1]
+    assert abandoned["job_id"] == str(_JOB_ID)
+    assert abandoned["consecutive_failures"] == 4
+    assert abandoned["elapsed_secs"] == 31.0
+    assert "error" not in abandoned
+
+
+async def test_stream_pg_failure_budget_resets_on_a_successful_read() -> None:
+    """A successful read ends the failure run: two runs each shorter than
+    the budget never add up to it, even when their total does."""
+    from taskq.client import _transport
+
+    readings = iter([0.0, 20.0, 100.0, 120.0])
+    calls = {"n": 0}
+    rows = [_row(status="running", progress_seq=1), _row(status="succeeded", progress_seq=2)]
+
+    async def _fetch_row() -> JobRow:
+        calls["n"] += 1
+        if calls["n"] in (1, 2, 4, 5):
+            raise OSError("reset")
+        return rows.pop(0)
+
+    events = [
+        event
+        async for event in pg_poll_event_stream(
+            _fetch_row,
+            lambda row, _status_changed: _row_to_event(row),
+            job_id=cast(JobId, _JOB_ID),
+            poll_interval=_transport.POLL_INTERVAL_FLOOR_SECS,
+            failure_budget=30.0,
+            clock=lambda: next(readings),
+        )
+    ]
+    assert [e.status for e in events] == ["running", "succeeded"]
+
+
+async def test_stream_pg_non_infra_errors_propagate_unchanged() -> None:
+    """Only pool and connection failures are retried; a KeyError from the
+    row fetch (TaskQ.stream's vanished-row contract) or a programming
+    error propagates immediately."""
+
+    async def _fetch_row() -> JobRow:
+        raise KeyError(_JOB_ID)
+
+    with pytest.raises(KeyError):
+        async for _ in pg_poll_event_stream(
+            _fetch_row,
+            lambda row, _status_changed: _row_to_event(row),
+            job_id=cast(JobId, _JOB_ID),
+            poll_interval=0.01,
+        ):
+            pytest.fail("unreachable")
+
+
+async def test_stream_pg_poll_interval_is_floored_and_jittered(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A caller asking for a 1 ms cadence gets the transport's floor, and
+    each wait is spread over ±20% of it so streams do not poll in lockstep."""
+    from taskq.client import _transport
+
+    waits: list[float] = []
+
+    async def _recording_sleep(delay: float, result: object = None) -> object:
+        waits.append(delay)
+        return result
+
+    monkeypatch.setattr(asyncio, "sleep", _recording_sleep)
+    rows = [_row(status="running", progress_seq=n) for n in range(1, 40)]
+    rows.append(_row(status="succeeded", progress_seq=40))
+
+    async def _fetch_row() -> JobRow:
+        return rows.pop(0)
+
+    events = [
+        event
+        async for event in pg_poll_event_stream(
+            _fetch_row,
+            lambda row, _status_changed: _row_to_event(row),
+            job_id=cast(JobId, _JOB_ID),
+            poll_interval=0.001,
+        )
+    ]
+    assert events[-1].terminal is True
+    floor = _transport.POLL_INTERVAL_FLOOR_SECS
+    lo, hi = (
+        floor * (1 - _transport.POLL_JITTER_FRACTION),
+        floor * (1 + _transport.POLL_JITTER_FRACTION),
+    )
+    assert len(waits) == 40
+    assert all(lo <= w <= hi for w in waits), waits
+    assert len(set(waits)) > 1, "every wait was identical: no jitter"
+
+
+async def test_stream_pg_fetches_once_before_the_first_wait() -> None:
+    """The row fetched to produce the initial snapshot is the one the
+    transport starts from: the next read of the database happens only after
+    the first poll interval, never back-to-back with the snapshot."""
+    rows = [_row(status="running", progress_seq=0), _row(status="succeeded", progress_seq=1)]
+    backend, fetched_at = _timed_stub_backend(rows)
+    tq = _pool_only_taskq(_make_client(backend), poll_timeout=0.2)
+
+    events = [e async for e in tq.stream(cast(JobId, _JOB_ID))]
+
+    assert events[-1].terminal is True
+    assert len(fetched_at) == 2
+    assert fetched_at[1] - fetched_at[0] >= 0.15, fetched_at
+
+
+async def test_stream_pg_observes_a_change_within_one_second_by_default() -> None:
+    """Nothing on the Postgres transport announces a job's progress or
+    terminal write, so the poll cadence IS the observation latency: with the
+    default ``poll_timeout`` a change is seen within a second, not thirty."""
+    rows = [_row(status="running", progress_seq=0), _row(status="succeeded", progress_seq=1)]
+    backend, fetched_at = _timed_stub_backend(rows)
+    tq = _pool_only_taskq(_make_client(backend), poll_timeout=30.0)
+
+    async with asyncio.timeout(5):
+        events = [e async for e in tq.stream(cast(JobId, _JOB_ID))]
+
+    assert events[-1].terminal is True
+    assert fetched_at[1] - fetched_at[0] < 1.0, fetched_at
+
+
+async def test_stream_pg_opens_no_dedicated_connection() -> None:
+    """A LISTEN source configured for ``watch_reclaims`` is not consumed by
+    ``stream()``: the transport holds no connection of its own, so a page of
+    streaming viewers costs no Postgres sessions beyond the pool."""
+    rows = [_row(status="running", progress_seq=0), _row(status="succeeded", progress_seq=1)]
+    backend, _ = _timed_stub_backend(rows)
+    factory_calls = 0
 
     async def factory() -> "asyncpg.Connection":
-        return cast("asyncpg.Connection", fake_conn)
+        nonlocal factory_calls
+        factory_calls += 1
+        raise AssertionError("stream() must not open a dedicated connection")
 
-    tq = TaskQ.__new__(TaskQ)
-    tq._client = client
-    tq._redis_client = None
-    tq._dsn = None
+    tq = _pool_only_taskq(_make_client(backend), poll_timeout=0.05)
     tq._pg_conn_factory = factory
-    tq._listen_conn = None
-    tq._schema = _SCHEMA_LABEL
-    tq._poll_timeout = 30.0
 
     events = [e async for e in tq.stream(cast(JobId, _JOB_ID))]
-    assert len(events) == 2
-    assert events[1].terminal is True
-    # Factory-produced → closed
-    assert fake_conn.closed
 
-
-async def test_stream_pg_with_listen_conn_does_not_close() -> None:
-    """listen_conn is caller-owned; it is NOT closed by the stream."""
-    rows = [_row(status="running", progress_seq=0), _row(status="succeeded", progress_seq=1)]
-    backend = _stub_backend(rows=rows)
-    client = _make_client(backend)
-
-    fake_conn = _FakeListenConn()
-
-    tq = TaskQ.__new__(TaskQ)
-    tq._client = client
-    tq._redis_client = None
-    tq._dsn = None
-    tq._pg_conn_factory = None
-    tq._listen_conn = cast("asyncpg.Connection", fake_conn)
-    tq._schema = _SCHEMA_LABEL
-    tq._poll_timeout = 30.0
-
-    events = [e async for e in tq.stream(cast(JobId, _JOB_ID))]
     assert events[-1].terminal is True
-    # Caller-owned → NOT closed
-    assert not fake_conn.closed
+    assert factory_calls == 0
 
 
 async def test_taskq_init_rejects_pg_conn_factory_and_listen_conn() -> None:
@@ -322,84 +447,91 @@ async def test_taskq_init_rejects_pg_conn_factory_and_listen_conn() -> None:
         TaskQ(pool=object(), pg_conn_factory=lambda: None, listen_conn=object())  # type: ignore[arg-type]
 
 
-# ── Bounded owned-LISTEN-conn closes (#37) ───────────────────────────────
+# ── PG transport: transient poll errors ──────────────────────────────────
+#
+# The poll transport re-reads the row through the client's pool, so a pool
+# blip (connection reset, pool-acquire refusal) surfaces as an exception
+# out of the fetch. The stream must survive it the way the LISTEN
+# transport did, not kill the caller's async for.
+
+
+async def test_stream_pg_survives_a_transient_poll_error_and_recovers() -> None:
+    """A pool or connection error on one poll does not end the stream: the
+    failure is logged once, the loop retries after the next interval, and
+    the terminal event still arrives."""
+    rows = [_row(status="succeeded", progress_seq=1)]
+    calls = {"n": 0}
+
+    async def _fetch_row() -> JobRow:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise asyncpg.InterfaceError("connection closed")
+        return rows.pop(0)
+
+    with structlog.testing.capture_logs() as captured:
+        events = [
+            event
+            async for event in pg_poll_event_stream(
+                _fetch_row,
+                lambda row, _status_changed: _row_to_event(row),
+                job_id=cast(JobId, _JOB_ID),
+                poll_interval=0.01,
+            )
+        ]
+
+    assert [e.status for e in events] == ["succeeded"]
+    assert events[-1].terminal is True
+    blips = [e for e in captured if e["event"] == "stream-poll-error"]
+    assert len(blips) == 1
+    assert blips[0]["job_id"] == str(_JOB_ID)
+    assert blips[0]["error_type"] == "InterfaceError"
+    # The exception's message (and the exception object itself) never reach
+    # the log: server error text can quote row data.
+    assert "error" not in blips[0]
+
+
+async def test_stream_pg_poll_errors_never_escape_the_generator() -> None:
+    """Consecutive blips are all survived: no exception escapes to the
+    caller's async for, and events resume once the fetch does."""
+    rows = [_row(status="running", progress_seq=0), _row(status="succeeded", progress_seq=1)]
+    calls = {"n": 0}
+
+    async def _fetch_row() -> JobRow:
+        calls["n"] += 1
+        if calls["n"] <= 3:
+            raise OSError("connection reset by peer")
+        return rows.pop(0)
+
+    events = [
+        event
+        async for event in pg_poll_event_stream(
+            _fetch_row,
+            lambda row, _status_changed: _row_to_event(row),
+            job_id=cast(JobId, _JOB_ID),
+            poll_interval=0.01,
+        )
+    ]
+
+    assert [e.status for e in events] == ["running", "succeeded"]
+    assert events[-1].terminal is True
+
+
+# ── Bounded owned-LISTEN-conn closes ─────────────────────────────────────
 #
 # asyncpg's Connection.close() passes no timeout underneath, so against a
 # dead PG it can hang forever — contextlib.suppress(Exception) catches
 # errors but cannot stop a call that never returns. These tests pin that
-# every TaskQ-owned LISTEN-conn close in _stream_pg / _watch_reclaims_pg
-# (teardown AND the watch_reclaims reconnect error paths) goes through
-# close_conn_bounded: after the bound the conn is terminated and the
-# surrounding flow continues. CLOSE_TIMEOUT_SECS is shrunk via the
-# module-global monkeypatch seam (read at call time).
+# every TaskQ-owned LISTEN-conn close in _watch_reclaims_pg (teardown AND
+# the reconnect error paths) goes through close_conn_bounded: after the
+# bound the conn is terminated and the surrounding flow continues.
+# CLOSE_TIMEOUT_SECS is shrunk via the module-global monkeypatch seam
+# (read at call time).
 
 
-class _FakeHungCloseListenConn(_FakeListenConn):
-    """LISTEN conn whose close() hangs until terminate() releases the gate.
-
-    Mirrors the _FakeHungClosePool convention in tests/test_taskq_client.py:
-    asyncpg is a C extension, so spec-mocks cannot express a hang gate.
-    """
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.close_wait = asyncio.Event()  # starts cleared → close() hangs
-        self.close_calls = 0
-        self.terminated = False
-
-    async def close(self) -> None:
-        self.close_calls += 1
-        await self.close_wait.wait()
-        self.closed = True
-
-    def terminate(self) -> None:
-        self.terminated = True
-        self.close_wait.set()
-
-
-async def test_stream_pg_finally_bounds_hung_owned_conn_close(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """_stream_pg teardown: an owned conn whose close() hangs (dead PG at
-    stream end) must not wedge generator finalization — the close is
-    bounded, then the conn is terminated."""
-    import taskq.client._taskq as taskq_mod
-
-    monkeypatch.setattr(taskq_mod, "CLOSE_TIMEOUT_SECS", 0.05)
-    rows = [_row(status="running", progress_seq=0), _row(status="succeeded", progress_seq=1)]
-    backend = _stub_backend(rows=rows)
-    client = _make_client(backend)
-
-    fake_conn = _FakeHungCloseListenConn()
-
-    async def factory() -> asyncpg.Connection:
-        return cast(asyncpg.Connection, fake_conn)
-
-    tq = TaskQ.__new__(TaskQ)
-    tq._client = client
-    tq._redis_client = None
-    tq._dsn = None
-    tq._pg_conn_factory = factory
-    tq._listen_conn = None
-    tq._schema = _SCHEMA_LABEL
-    tq._poll_timeout = 30.0
-
-    # Why the outer timeout: pre-fix the finally awaits conn.close()
-    # unbounded, so the RED state would hang forever instead of failing fast.
-    async with asyncio.timeout(5):
-        events = [e async for e in tq.stream(cast(JobId, _JOB_ID))]
-
-    assert len(events) == 2
-    assert events[1].terminal is True
-    assert fake_conn.close_calls == 1
-    assert fake_conn.terminated is True
-
-
-# ── watch_reclaims: bounded owned-conn closes (#37) ──────────────────────
+# ── watch_reclaims: bounded owned-conn closes ────────────────────────────
 #
 # The minimal _watch_reclaims_pg harness helpers are replicated from
-# tests/test_watch_reclaims.py — the same convention already used for
-# _FakeListenConn, which is duplicated across both files.
+# tests/test_watch_reclaims.py.
 
 
 class _FakeHungCloseWatchConn:
@@ -1083,3 +1215,35 @@ def test_orjson_response_render_routes_through_taskq_json() -> None:
     assert rendered == _stdlib_json.dumps(
         content, ensure_ascii=False, allow_nan=False, separators=(",", ":")
     ).encode("utf-8")
+
+
+# ── Deserialise errors never carry the payload ──────────────────────────
+
+
+def test_parse_progress_event_logs_locations_and_count_not_the_payload() -> None:
+    """A message that fails validation is reported by the failing field
+    locations and their count. pydantic's ValidationError repr embeds
+    input_value - the message payload, a user's own progress data - and
+    that must never reach the log."""
+    from taskq.client._transport import parse_progress_event
+
+    raw = '{"kind":"progress","seq":"SENTINEL-PAYLOAD","status":"running"}'
+    with structlog.testing.capture_logs() as logs:
+        assert parse_progress_event(raw, job_id=cast(JobId, _JOB_ID)) is None
+    entry = next(log for log in logs if log["event"] == "stream-event-deserialise-error")
+    assert entry["error_type"] == "ValidationError"
+    assert entry["error_count"] == len(entry["locations"])
+    assert "seq" in entry["locations"]
+    assert "job_id" in entry["locations"]
+    assert "SENTINEL-PAYLOAD" not in repr(entry)
+    assert "input_value" not in repr(entry)
+
+
+def test_parse_progress_event_reports_invalid_json_as_one_error() -> None:
+    from taskq.client._transport import parse_progress_event
+
+    with structlog.testing.capture_logs() as logs:
+        assert parse_progress_event("not json {", job_id=cast(JobId, _JOB_ID)) is None
+    entry = next(log for log in logs if log["event"] == "stream-event-deserialise-error")
+    assert entry["error_count"] == 1
+    assert "not json" not in repr(entry)

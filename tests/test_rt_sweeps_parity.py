@@ -32,7 +32,7 @@ import asyncpg
 import pytest
 
 from taskq._ids import new_uuid
-from taskq.backend._protocol import CancelPhase, JobId
+from taskq.backend._protocol import AttemptRow, CancelPhase, JobId
 from taskq.backend.postgres import PostgresBackend
 from taskq.testing.clock import FakeClock
 from taskq.testing.fixtures import ModulePgSchema
@@ -309,6 +309,122 @@ async def test_sweep1_three_way_drain_parity_under_a_cap(
     # Drain progress parity: same corpus size, same cap, same total.
     assert sum(len(v) for v in pg_ids.values()) == len(_BRANCHES) * _PER_BRANCH
     assert sum(len(v) for v in mem_ids.values()) == len(_BRANCHES) * _PER_BRANCH
+
+
+async def test_sweep1_double_reclaim_keeps_one_attempt_row_on_both_backends(
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_schema: ModulePgSchema,
+) -> None:
+    """A reclaim firing on an already-recorded (job_id, attempt) writes ONE
+    attempt row on both backends — and it is the FIRST record.
+
+    PG's batched sweep-1 attempt INSERT carries
+    ``ON CONFLICT (job_id, attempt) DO NOTHING`` (keep-first-record): an
+    attempt number can legitimately already have its row when the reclaim
+    fires — a claim-clamped repeat at the smallint ceiling, or a spent
+    attempt left behind by a re-pend — and the existing row is the
+    truthful record of what the actor actually did, so the synthetic
+    crash row yields to it.  The in-memory twin must apply the same
+    guard: a corpus PG audits with one row must not be audited by the
+    twin with two, or every twin-side assertion built on attempt history
+    certifies a shape PG would never store.
+    """
+    schema = module_pg_schema.schema_name
+    pg_holder = new_uuid()
+    memory_holder = new_uuid()
+    pg_id = new_uuid()
+
+    # ── Postgres: one reclaim-eligible running job + its existing row ──
+    await clean_pg_conn.execute(
+        f'INSERT INTO "{schema}".workers (id, hostname, pid, queues) '  # noqa: S608  # Why: schema is a test-fixture identifier, validated by render() upstream.
+        "VALUES ($1, 'test-host', 12345, ARRAY['default'])",
+        pg_holder,
+    )
+    await clean_pg_conn.execute(
+        f'INSERT INTO "{schema}".jobs '  # noqa: S608  # Why: schema is a test-fixture identifier, validated by render() upstream.
+        "(id, actor, queue, payload, status, max_attempts, retry_kind, attempt, "
+        " scheduled_at, locked_by_worker, lock_expires_at, started_at) "
+        "VALUES ($1, 'test_actor', 'default', '{}'::jsonb, 'running', 3, 'transient', 1, "
+        "clock_timestamp(), $2, clock_timestamp() - interval '10 seconds', "
+        "clock_timestamp() - interval '30 seconds')",
+        pg_id,
+        pg_holder,
+    )
+    await clean_pg_conn.execute(
+        f'INSERT INTO "{schema}".job_attempts '  # noqa: S608  # Why: schema is a test-fixture identifier, validated by render() upstream.
+        "(job_id, attempt, started_at, finished_at, outcome, error_class, "
+        " error_message, metadata) "
+        "VALUES ($1, 1, clock_timestamp(), clock_timestamp(), 'crashed', "
+        "'WorkerCrashed', 'first record', '{}'::jsonb)",
+        pg_id,
+    )
+
+    # ── In-memory: the identical corpus through the public surface ─────
+    memory = _make_memory_backend()
+    args = make_enqueue_args(scheduled_at=_START, max_attempts=3)
+    row = await memory.enqueue(args)
+    memory._jobs[args.id] = replace(  # pyright: ignore[reportPrivateUsage]  # Why: test-only private access to set up the running-row fixture, the established seeding pattern.
+        row,
+        status="running",
+        attempt=1,
+        locked_by_worker=memory_holder,
+        lock_expires_at=_START - _PLAIN_LOCK_EXPIRED_AGO,
+        started_at=_START - _STARTED_AGO,
+    )
+    await memory.write_attempt(
+        AttemptRow(
+            job_id=args.id,
+            attempt=1,
+            started_at=_START - _STARTED_AGO,
+            finished_at=_START - _PLAIN_LOCK_EXPIRED_AGO,
+            outcome="crashed",
+            error_class="WorkerCrashed",
+            error_message="first record",
+            error_traceback=None,
+            duration_ms=None,
+            worker_id=memory_holder,
+            metadata={},
+        )
+    )
+
+    # ── The double-reclaim: the (job, 1) row already exists on both ────
+    pg_n = await PostgresBackend.sweep_expired_locks(
+        clean_pg_conn,  # type: ignore[arg-type]  # Why: asyncpg.Connection satisfies ConnLike.
+        _GRACE,
+        _GRACE,
+        schema=schema,
+    )
+    mem_n = await memory.reclaim_expired_locks(_GRACE, _GRACE)
+    assert pg_n == 1 and mem_n == 1, "both backends must reclaim the expired row"
+
+    pg_attempts = await clean_pg_conn.fetch(
+        f'SELECT error_message FROM "{schema}".job_attempts WHERE job_id = $1',  # noqa: S608  # Why: schema is a test-fixture identifier, validated by render() upstream.
+        pg_id,
+    )
+    mem_attempts = await memory.get_attempts(args.id)
+
+    assert len(pg_attempts) == 1, (
+        f"PG kept {len(pg_attempts)} attempt rows — ON CONFLICT DO NOTHING keeps exactly one"
+    )
+    assert len(mem_attempts) == 1, (
+        f"the twin kept {len(mem_attempts)} attempt rows for one (job_id, attempt) — "
+        "PG's keep-first guard must have a twin-side mirror"
+    )
+    assert pg_attempts[0]["error_message"] == "first record", (
+        "the pre-existing row is the truthful record — the synthetic crash row yields to it"
+    )
+    assert mem_attempts[0].error_message == "first record", (
+        "the twin must keep the same first record PG keeps"
+    )
+
+    # The reclaim itself is unaffected by the skip: retryable job re-pends.
+    pg_status = await clean_pg_conn.fetchval(
+        f'SELECT status FROM "{schema}".jobs WHERE id = $1',  # noqa: S608  # Why: schema is a test-fixture identifier, validated by render() upstream.
+        pg_id,
+    )
+    mem_row = await memory.get(args.id)
+    assert pg_status == "pending"
+    assert mem_row is not None and mem_row.status == "pending"
 
 
 @pytest.mark.parametrize("bad_batch_size", [0, -1])

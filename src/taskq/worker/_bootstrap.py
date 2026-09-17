@@ -12,27 +12,39 @@ LOOP-scope connection resolution and warns about the PgBouncer
 transaction-mode connection footgun.
 ``_emit_unconsumed_queue_startup_warnings`` warns — once, aggregated —
 when served actors declare queues outside the worker's consumed set,
-or distinctly when the worker consumes no queues at all (issue #90).
+or distinctly when the worker consumes no queues at all.
 """
 
 import asyncio
 import contextlib
-import importlib.util
+import importlib
 import math
-from collections.abc import Callable, Coroutine, Mapping
+from collections.abc import Awaitable, Callable, Coroutine, Mapping
 from datetime import datetime, timedelta
 from typing import Any, cast
 
 import asyncpg
 import structlog
 
-from taskq._close import CLOSE_TIMEOUT_SECS, close_pool_bounded, worst_case_teardown_tail
+from taskq._close import (
+    CLOSE_TIMEOUT_SECS,
+    close_pool_bounded,
+    close_provider_bounded,
+    worst_case_teardown_tail,
+)
 from taskq._di import ProviderRegistry, Scope
 from taskq._di.scopes import LoopScope, ProcessScope, ThreadScope, make_resolver
 from taskq._dsn import dsn_host as _dsn_host
 from taskq.actor import ActorRef
 from taskq.actor_config import ActorConfig
-from taskq.auth import PgCredentialProvider, make_pg_pool_factory
+from taskq.actor_config_ops import list_actor_configs
+from taskq.auth import (
+    PgCredentialProvider,
+    ReloadSchedule,
+    credential_provider_of,
+    make_pg_pool_factory,
+    reload_schedule_of,
+)
 from taskq.backend._protocol import Backend, JobRow, ScheduleCreateArgs
 from taskq.backend.clock import Clock, SystemClock
 from taskq.backend.postgres import PostgresBackend
@@ -40,6 +52,7 @@ from taskq.client._enqueuer import SubJobEnqueuer
 from taskq.connections import (
     PoolFactory,
     WorkerConnections,
+    connection_init_hook,
     statement_cache_kwargs,
 )
 from taskq.constants import (
@@ -49,13 +62,15 @@ from taskq.cron import (
     CronScheduleSpec,
     compute_next_fire_after,
 )
-from taskq.exceptions import MissingProvider
+from taskq.exceptions import DIError, MissingProvider
 from taskq.obs import (
+    ErrorReporter,
     get_meter,
     set_exception_message_max_chars,
     set_exception_redaction_enabled,
     set_otel_enabled,
     set_slot_pool_occupancy_source,
+    set_worker_capacity_source,
     setup_logging,
 )
 from taskq.progress._flush import progress_flush_loop
@@ -71,12 +86,13 @@ from taskq.worker._watchdog import LoopLagWatchdog, ShutdownWatchdog, loop_watch
 from taskq.worker.cancel import make_cancel_controller
 from taskq.worker.cron_loop import ActorFirePolicy
 from taskq.worker.deps import WorkerDeps, open_worker_deps
-from taskq.worker.health import HealthServer
+from taskq.worker.health import HealthServer, HealthTcpBindError
 from taskq.worker.heartbeat import heartbeat_loop
 from taskq.worker.leader import MaintenanceLeader
 from taskq.worker.notify import notify_listener_loop
+from taskq.worker.queue_ops import list_queues
 from taskq.worker.shutdown import ShutdownPhase, install_signal_handlers
-from taskq.worker.startup import sync_actor_config
+from taskq.worker.startup import read_stored_queue_assignments, sync_actor_config
 
 __all__ = [
     "_emit_sub_enqueue_startup_warnings",
@@ -98,8 +114,46 @@ _sibling_crashes = get_meter().create_counter(
 
 
 def _redis_extra_installed() -> bool:
-    """Whether the ``[redis]`` extra is importable in this environment."""
-    return importlib.util.find_spec("redis.asyncio") is not None
+    """Whether the ``[redis]`` extra is importable in this environment.
+
+    Probes by importing: an "is the optional extra installed" check can
+    only be answered reliably by the import itself. The parent package is
+    imported first because
+    both cheap alternatives lie: ``find_spec`` on a dotted name raises
+    ``ModuleNotFoundError`` when the parent is absent (the very state this
+    check exists to detect), and a ``redis.asyncio`` entry lingering in
+    ``sys.modules`` answers "present" even when ``redis`` itself is
+    unimportable.
+    """
+    try:
+        importlib.import_module("redis")
+        importlib.import_module("redis.asyncio")
+    except ImportError:
+        return False
+    return True
+
+
+def _validate_error_reporter_scope(registry: ProviderRegistry) -> None:
+    """Refuse an ErrorReporter registered at a scope the hook cannot outlive.
+
+    A terminal-failure hook runs after the actor's invocation scope has
+    closed, so a TRANSIENT registration can never resolve. The per-dispatch
+    guard degrades that shape to a skipped hook behind a window-gated
+    WARNING; if the guard were the only check, a misregistered reporter
+    would surface as a fleet that reports nothing while looking configured.
+    Failing worker startup names the registration before any job exists,
+    where fixing it costs nothing.
+    """
+    if not registry.has_provider(ErrorReporter):
+        return
+    entry = registry.get(ErrorReporter)
+    if entry.scope in (Scope.PROCESS, Scope.THREAD, Scope.LOOP):
+        return
+    # A DI misregistration, typed like the ones registry.validate raises.
+    raise DIError(
+        f"ErrorReporter is registered at {entry.scope.name} scope; a terminal-failure "
+        "hook outlives the actor invocation and must be PROCESS, THREAD or LOOP scoped"
+    )
 
 
 def _redis_configured(settings: WorkerSettings, registry: ProviderRegistry) -> bool:
@@ -240,6 +294,8 @@ def _caller_supplied_pg_pools(conns: WorkerConnections | None) -> bool:
 def _slot_pool_factory(
     settings: WorkerSettings,
     pg_credential_provider: PgCredentialProvider | None,
+    session_settings: Mapping[str, str] | None = None,
+    init: Callable[[asyncpg.Connection], Awaitable[None]] | None = None,
 ) -> PoolFactory:
     """Build the factory for the worker's per-slot transaction pool.
 
@@ -257,9 +313,33 @@ def _slot_pool_factory(
 
     Provider-backed when *pg_credential_provider* is given — the
     documented managed-identity path — so every physical connection
-    authenticates with a freshly fetched credential and a SIGHUP
-    rebuild picks up a changed username. DSN-built otherwise, like the
-    role pools when the caller supplies none.
+    authenticates with a freshly fetched token and a SIGHUP rebuild
+    rotates a username-bearing pair. DSN-built otherwise, like the role
+    pools when the caller supplies none.
+
+    *session_settings* are startup GUCs applied to every connection the
+    pool opens — the registered connection's session state, carried
+    across by :func:`_maybe_open_slot_pool`. They belong at build time
+    rather than as a post-build mutation for two reasons that both
+    matter in production: the pool's warm connections are opened during
+    the build, so settings applied afterwards would only take effect on
+    connections re-established lazily inside ``acquire()`` — putting
+    connection establishment, and a managed-identity credential fetch,
+    back into the dispatch path the warm sizing exists to keep clear;
+    and the factory is what a SIGHUP credential rebuild re-invokes, so a
+    mutation applied to one pool instance is silently lost on the next
+    rotation.
+
+    *init* is the per-connection hook the LOOP-scope connection's
+    registration declared (see
+    :func:`taskq.connections.with_connection_init`), forwarded verbatim
+    to ``asyncpg.create_pool`` / :func:`~taskq.auth.make_pg_pool_factory`
+    so it runs once per physical slot connection — the channel type
+    codecs reach slot connections through. It is build-time state for
+    the same two reasons as *session_settings*, with one more of its
+    own: a codec applied after the build reaches only lazily opened
+    connections, so warm and cold connections would decode the same
+    type DIFFERENTLY within one pool.
     """
     direct = str(settings.resolved_pg_dsn_direct)
     size = settings.max_concurrency + 1
@@ -270,7 +350,31 @@ def _slot_pool_factory(
     # apply. Forwarded as explicit kwargs (not splatted) so pyright can trace
     # types through create_pool / make_pg_pool_factory.
     stmt_kwargs = statement_cache_kwargs(settings)
+    # Absent rather than empty when there is nothing to carry: the driver
+    # treats no mapping and an empty one alike, and a worker with nothing
+    # to inherit builds exactly the pool it always built.
+    inherited = dict(session_settings) if session_settings else None
     if pg_credential_provider is not None:
+        # The slot pool is rebuilt by the same reload coordinator as the
+        # role pools, on the same cadence: the operator's interval, else
+        # the lease it is granted (the coordinator composes every factory's
+        # schedule, see _worker_reload_schedule).
+        schedule = ReloadSchedule(configured=settings.reload_interval)
+        if inherited is None and init is None:
+            return make_pg_pool_factory(
+                direct,
+                pg_credential_provider,
+                min_size=size,
+                max_size=size,
+                max_inactive_connection_lifetime=lifetime,
+                command_timeout=command_timeout,
+                statement_cache_size=stmt_kwargs["statement_cache_size"],
+                max_cached_statement_lifetime=stmt_kwargs["max_cached_statement_lifetime"],
+                reload_schedule=schedule,
+            )
+        # Explicit kwargs, never splatted (pyright traces the types
+        # through); make_pg_pool_factory treats a None hook as absent, so
+        # inheriting only one of the pair needs no third call site.
         return make_pg_pool_factory(
             direct,
             pg_credential_provider,
@@ -280,6 +384,9 @@ def _slot_pool_factory(
             command_timeout=command_timeout,
             statement_cache_size=stmt_kwargs["statement_cache_size"],
             max_cached_statement_lifetime=stmt_kwargs["max_cached_statement_lifetime"],
+            server_settings=inherited,
+            init=init,
+            reload_schedule=schedule,
         )
 
     async def _dsn_slot_pool_factory() -> asyncpg.Pool:
@@ -291,11 +398,117 @@ def _slot_pool_factory(
             command_timeout=command_timeout,
             statement_cache_size=stmt_kwargs["statement_cache_size"],
             max_cached_statement_lifetime=stmt_kwargs["max_cached_statement_lifetime"],
+            server_settings=inherited,
+            init=init,  # pyright: ignore[reportArgumentType]  # Why: asyncpg-stubs types init as CoroutineType-returning (_InitCallback); the codebase-wide hook contract (make_pg_pool_factory, with_connection_init) is Awaitable-returning, and asyncpg awaits the result either way at runtime.
         )
         assert pool is not None
         return pool
 
     return _dsn_slot_pool_factory
+
+
+# The session state a slot connection must match, paired with the query
+# that reads its live value. ``search_path`` decides which schema an
+# actor's unqualified table references resolve against; ``role`` decides
+# which RLS policies apply to every one of its statements. Both are
+# readable back from the server and both are settable as startup GUCs, so
+# both round-trip onto a pool the worker builds. Values are read from the
+# live session rather than the driver's connect-time parameters because
+# an application configures these as often by a post-connect ``SET`` — on
+# an ``init`` hook, or right after ``connect()`` — as by a connect
+# keyword, and a connect-time read sees nothing at all in that case.
+_INHERITED_SESSION_STATE: tuple[tuple[str, str], ...] = (
+    ("search_path", "SHOW search_path"),
+    ("role", "SELECT current_setting('role')"),
+)
+
+
+async def _registered_session_state(
+    registered: object,
+    settings: WorkerSettings,
+    log: structlog.stdlib.BoundLogger,
+) -> dict[str, str]:
+    """Read the live session state a slot connection has to reproduce.
+
+    At ``max_concurrency == 1`` the actor receives the LOOP-registered
+    connection itself, so its ``SET ROLE``, ``search_path`` and any other
+    session state apply by construction. Above that the actor runs on a
+    slot connection instead, and a slot pool built from the bare direct
+    DSN resolves unqualified names against a different ``search_path``
+    and runs under a different role — the actor reads and writes the
+    wrong schema, under the wrong RLS policy, with nothing raising.
+    Carrying this across makes raising the concurrency knob a throughput
+    change and nothing else.
+
+    Every read is bounded and every failure is loud. A silent no-op here
+    would be precisely the failure mode this exists to eliminate: the
+    slot connections would differ from the registered one with no signal
+    anywhere, which is indistinguishable from the bug. A state that
+    cannot be determined is therefore warned about and left uninherited,
+    never skipped quietly.
+    """
+    # Why the callable guard: a LOOP-scope registration is only nominally
+    # an asyncpg.Connection — the boot path's own harnesses register
+    # duck-typed stands-in, and one that cannot answer a query must
+    # degrade to the server defaults rather than break boot.
+    fetchval = cast(object, getattr(registered, "fetchval", None))
+    if not callable(fetchval):
+        log.warning(
+            "slot-pool-registered-session-unreadable",
+            note=(
+                "the registered connection cannot be queried for its session "
+                "state, so the per-slot pool opens its connections with the "
+                "server's defaults. An actor's unqualified table references "
+                "and its role may resolve differently above max_concurrency 1."
+            ),
+        )
+        return {}
+    read = cast(Callable[[str], Coroutine[Any, Any, object]], fetchval)
+    state: dict[str, str] = {}
+    for name, query in _INHERITED_SESSION_STATE:
+        try:
+            value = await asyncio.wait_for(read(query), timeout=settings.dispatcher_command_timeout)
+        except Exception as exc:
+            log.warning(
+                "slot-pool-registered-session-unreadable",
+                setting=name,
+                error=repr(exc),
+                note=(
+                    "this session setting could not be read off the registered "
+                    "connection, so the per-slot pool opens its connections "
+                    "with the server's default for it. An actor's unqualified "
+                    "table references or its role may resolve differently "
+                    "above max_concurrency 1."
+                ),
+            )
+            continue
+        if isinstance(value, str) and value:
+            state[name] = value
+    return state
+
+
+def _registered_connection_init_hook(
+    di_registry: ProviderRegistry | None,
+) -> Callable[[asyncpg.Connection], Awaitable[None]] | None:
+    """The init hook the LOOP-scope connection registration declares, if any.
+
+    Session state is read back off the live connection (see
+    :func:`_registered_session_state`), but a type codec or an init hook
+    cannot be: the driver seals per-connection state the moment
+    ``connect()`` returns. The only registrations whose per-connection
+    setup is recoverable are FACTORY registrations whose factory declares
+    its hook — :func:`taskq.connections.with_connection_init`, or
+    :func:`taskq.auth.make_dedicated_conn_factory` with a ``setup``. A
+    value registration (an already-built connection) and a factory that
+    declares nothing are equally opaque here; the caller warns on both
+    rather than letting a codec diverge silently at max_concurrency > 1.
+    """
+    if di_registry is None or not di_registry.has_provider(asyncpg.Connection):
+        return None
+    entry = di_registry.get(asyncpg.Connection)
+    if entry.kind != "factory":
+        return None
+    return connection_init_hook(entry.impl)
 
 
 async def _maybe_open_slot_pool(
@@ -306,6 +519,7 @@ async def _maybe_open_slot_pool(
     factory: PoolFactory,
     pg_credential_provider: PgCredentialProvider | None,
     caller_supplied_pg_pools: bool,
+    di_registry: ProviderRegistry | None = None,
     log: structlog.stdlib.BoundLogger,
 ) -> bool:
     """Open the per-slot transaction pool when the per-slot path activates.
@@ -318,7 +532,7 @@ async def _maybe_open_slot_pool(
     shared one — and the slot connection shadows the LOOP-registered
     connection for each actor invocation, so an actor's own writes join
     its job's transaction and no two concurrent slots' actors ever
-    interleave operations on one connection (issue #116). Every other
+    interleave operations on one connection. Every other
     shape (no LOOP-scope connection, or the single-slot
     ``max_concurrency == 1`` worker) keeps today's behaviour and this
     function returns ``False`` without touching *deps*.
@@ -330,13 +544,33 @@ async def _maybe_open_slot_pool(
     loudly, naming the pool and the DSN host: the alternative is a
     worker that accepts jobs it cannot transact.
 
+    The registered connection's session state is read first and the
+    supplied *factory* rebuilt around it, so every connection the pool
+    warms at build time already resolves unqualified names and RLS
+    policies the way the application configured them. Applying the state
+    to a pool already built would leave the warm connections carrying
+    the server's defaults instead. Alongside the session state, an init
+    hook DECLARED on the registration's factory (see
+    :func:`_registered_connection_init_hook`) is threaded into the
+    rebuild, so a codec the application installs per-connection decodes
+    identically on every slot connection.
+
+    What cannot be carried is said, not dropped: when the registration
+    exposes no init hook (a raw ``register_value`` connection, or a
+    factory that declares none), per-connection setup applied to the
+    registered connection — ``set_type_codec`` registrations above all —
+    is absent on every slot connection with no error raised anywhere
+    else. One boot-time warning names that boundary and the supported
+    channel, so the divergence can never be silent.
+
     Also announces the mode (info), because the retired warning string
     is what runbooks searched for and the mode must stay confirmable
     from the logs — the mode signal fires exactly when the pool opened,
     never as a predicate guess.
     """
     resolved = loop_scope.resolved_cache()
-    if resolved.get(asyncpg.Connection) is None or settings.max_concurrency <= 1:
+    registered = resolved.get(asyncpg.Connection)
+    if registered is None or settings.max_concurrency <= 1:
         return False
 
     host = _dsn_host(settings.resolved_pg_dsn_direct)
@@ -344,6 +578,38 @@ async def _maybe_open_slot_pool(
     stack = deps._exit_stack  # pyright: ignore[reportPrivateUsage]
     if stack is None:
         raise RuntimeError("slot pool cannot be opened outside of open_worker_deps")
+
+    # Read before the pool is built, never after: the warm connections are
+    # opened by the build, so session state applied afterwards would reach
+    # only connections re-established lazily inside acquire(). The factory
+    # is rebuilt with the state rather than mutated, so the pool a SIGHUP
+    # credential rotation rebuilds carries it too. Same argument, one
+    # notch sharper, for the init hook: a codec applied after the build
+    # would leave warm and cold connections decoding the same type
+    # differently within one pool.
+    session_state = await _registered_session_state(registered, settings, log)
+    inherited_init = _registered_connection_init_hook(di_registry)
+    if session_state or inherited_init is not None:
+        factory = _slot_pool_factory(
+            settings, pg_credential_provider, session_state, init=inherited_init
+        )
+
+    # The slot pool's provider, when it is NOT already tracked on deps (it
+    # usually is: the documented worker path builds every role through the
+    # same provider, which open_worker_deps closes after the role pools).
+    # Pushed BEFORE the pool's teardown guard so LIFO unwinds the slot
+    # pool first and the credential that built it second — and never while
+    # the role pools a shared provider also serves are still open, which
+    # is why a tracked provider is skipped rather than closed here.
+    provider = credential_provider_of(factory)
+    if (
+        pg_credential_provider is not None
+        and provider is not None
+        and not any(p is provider for p in deps._credential_providers)
+    ):
+        stack.push_async_callback(close_provider_bounded, provider, "slot", CLOSE_TIMEOUT_SECS)
+        deps._credential_providers = (*deps._credential_providers, provider)
+
     try:
         pool = await asyncio.wait_for(factory(), timeout=settings.reload_factory_timeout)
     except Exception as exc:
@@ -356,6 +622,43 @@ async def _maybe_open_slot_pool(
             "credentials."
         ) from exc
 
+    if session_state or inherited_init is not None:
+        log.info(
+            "slot_pool_inherits_registered_session",
+            kind="slot_pool_inherits_registered_session",
+            server_settings=sorted(session_state),
+            init_hook=inherited_init is not None,
+            note=(
+                "the per-slot transaction pool opens its connections with the "
+                "session state read off the registered connection (and, when "
+                "init_hook is true, the init hook the registration's factory "
+                "declared), so an actor's unqualified table references, its "
+                "role, and its per-connection type codecs resolve the same way "
+                "at every concurrency."
+            ),
+        )
+    if inherited_init is None:
+        log.warning(
+            "slot_pool_registered_setup_not_inherited",
+            kind="slot_pool_registered_setup_not_inherited",
+            note=(
+                "type codecs or init hooks applied directly to the "
+                "LOOP-registered connection (set_type_codec, or setup run "
+                "after connect) live in the driver's per-connection state, "
+                "which cannot be read back — the per-slot connections do NOT "
+                "have them, and a query relying on one still succeeds while "
+                "returning the driver's default representation, silently "
+                "diverging above max_concurrency 1. Register the connection "
+                "through a factory that declares its init hook — "
+                "taskq.connections.with_connection_init(...), or "
+                "taskq.auth.make_dedicated_conn_factory(..., setup=...) — and "
+                "the worker replays the hook on every slot connection. "
+                "Session state (search_path, role) is read back and inherited "
+                "either way; this warning covers per-connection codecs and "
+                "hooks only."
+            ),
+        )
+
     async def _close_slot_pool(p: asyncpg.Pool = pool) -> None:
         # Why default-arg binding and module-global reads at call time:
         # same loop-safety and monkeypatch seams as _resolve_pool's
@@ -364,6 +667,11 @@ async def _maybe_open_slot_pool(
 
     stack.push_async_callback(_close_slot_pool)
     deps.slot_pool = pool
+    # Why record the carried hook on deps: the pool's warm connections got
+    # inherited_init at connect time (the factory's init=), and dispatch must
+    # never re-apply it — exactly once per physical connection. asyncpg pools
+    # are __slots__-sealed, so the disposition lives on deps next to the pool.
+    deps.slot_pool_connection_init = inherited_init
     deps.slot_pool_factory = factory if pg_credential_provider is not None else None
     set_slot_pool_occupancy_source(pool)
     log.info(
@@ -410,6 +718,7 @@ def _emit_unconsumed_queue_startup_warnings(
     settings: WorkerSettings,
     actor_registry: Mapping[str, ActorRef[Any, Any]],
     log: structlog.stdlib.BoundLogger,
+    stored_queues: Mapping[str, str] | None = None,
 ) -> None:
     """Emit at most one startup warning about served actors on queues this
     worker does not consume.
@@ -418,23 +727,37 @@ def _emit_unconsumed_queue_startup_warnings(
     ``settings.queues`` — and claims only jobs whose queue matches
     (backend/_dispatch_sql.py), so such an actor's jobs enqueue
     successfully and then sit pending forever — no error, no log,
-    anywhere (issue #90). Decoration-time validation checks queue name
-    format only (actor.py), so this bootstrap pass, where the worker
-    holds both each served actor's declared queue and its own consumed
-    queues, is the first place the mismatch is knowable.
+    anywhere. Decoration-time validation checks queue name format only
+    (actor.py), so this bootstrap pass, where the worker holds both each
+    served actor's queue assignment and its own consumed queues, is the
+    first place the mismatch is knowable.
+
+    *stored_queues* maps actor name → the queue assignment recorded in
+    ``actor_config``, and wins over the ``@actor(queue=...)`` literal
+    wherever a row exists. The stored assignment is the operator-owned
+    one: it routes the cron leader's fires and every re-pended row, and
+    it is what a queue move rewrites. Judging coverage on the literal
+    instead makes the signal fire on the healthy rolling-deploy window
+    of a move (literal and stored legitimately disagree there) while
+    staying silent on the one state where routed work provably cannot be
+    claimed — an actor moved onto a queue this worker does not consume,
+    whose literal it still names. Actors with no stored row yet fall
+    back to the literal, which is what the first boot will seed (this
+    pass runs before ``sync_actor_config``, so a first-ever boot has
+    none to read).
 
     Aggregated, not per-actor: one event whose ``actors`` field maps each
-    affected actor name to its declared queue (the shape documented in
-    docs/guides/workers.md), with the distinct unconsumed queue names in
-    ``queues``. Empty ``settings.queues`` is a different, unambiguous
-    failure — a worker that dispatches nothing — and gets its own single
-    event instead.
+    affected actor name to the queue its work routes to (the shape
+    documented in docs/guides/workers.md), with the distinct unconsumed
+    queue names in ``queues``. Empty ``settings.queues`` is a different,
+    unambiguous failure — a worker that dispatches nothing — and gets its
+    own single event instead.
     """
     # Why: warning, never an error — heterogeneous fleets run different
     # workers consuming different queues while all serving the same actor
     # registry, and a sibling worker may legitimately consume any given
     # queue; only "no worker anywhere consumes it" is broken, which this
-    # process cannot know (issue #90). Must never fail or block startup.
+    # process cannot know. Must never fail or block startup.
     if not settings.queues:
         # Why: a distinct event, not the per-actor aggregate — an empty
         # TASKQ_QUEUES means this worker provably dispatches nothing, so
@@ -455,7 +778,12 @@ def _emit_unconsumed_queue_startup_warnings(
         return
 
     consumed = set(settings.queues)
-    offending = [ref for ref in actor_registry.values() if ref.queue not in consumed]
+    routed = stored_queues or {}
+    offending = [
+        (ref.name, routed.get(ref.name, ref.queue))
+        for ref in actor_registry.values()
+        if routed.get(ref.name, ref.queue) not in consumed
+    ]
     if not offending:
         return
     # Why: ONE aggregated event per boot, not one per actor — workgroup
@@ -465,19 +793,19 @@ def _emit_unconsumed_queue_startup_warnings(
     # healthy heterogeneous fleets this warning blesses, training
     # operators to filter it. The per-actor detail survives in the
     # structured fields so alerting on a specific actor still works:
-    # ``actors`` maps name → declared queue (docs/guides/workers.md's
+    # ``actors`` maps name → routed queue (docs/guides/workers.md's
     # documented shape — two parallel name/queue lists could not express
     # who is on which queue), sorted for byte-stable event content.
     log.warning(
         "actors-on-unconsumed-queues",
-        actors={ref.name: ref.queue for ref in sorted(offending, key=lambda r: r.name)},
-        queues=sorted({ref.queue for ref in offending}),
+        actors=dict(sorted(offending)),
+        queues=sorted({queue for _name, queue in offending}),
         worker_queues=list(settings.queues),
         note=(
             "this worker serves these actors but never dispatches their "
             "jobs: the dispatch claim matches only the worker's own queues, "
             "so their jobs sit pending until a worker consuming each "
-            "declared queue appears. Intended when another worker in the "
+            "routed queue appears. Intended when another worker in the "
             "fleet consumes the queue; if none does, those jobs never run "
             "— add the queue to some worker's TASKQ_QUEUES / --queues."
         ),
@@ -635,7 +963,10 @@ def _emit_startup_warnings(settings: WorkerSettings) -> None:
                 f"{settings.worst_case_shutdown_seconds}s (Kubernetes "
                 "terminationGracePeriodSeconds, Azure Container Apps "
                 "terminationGracePeriodSeconds), or lower "
-                "TASKQ_CANCELLATION_GRACE_PERIOD / TASKQ_CLEANUP_GRACE_PERIOD."
+                "TASKQ_CANCELLATION_GRACE_PERIOD / TASKQ_CLEANUP_GRACE_PERIOD. "
+                "If this warning appeared right after an upgrade, see the "
+                "termination-grace default entry in docs/guides/upgrading.md: "
+                "a platform grace pinned to the old 75s default needs raising too."
             ),
         )
 
@@ -656,6 +987,23 @@ def _emit_startup_warnings(settings: WorkerSettings) -> None:
             remedy=(
                 "run `taskq migrate up` from a pre-deploy job or init container before starting workers"
             ),
+        )
+
+    # Why: the dispatch probe-narrowing this flag applied no longer exists
+    # (dispatch is assignment-routed; the routing decision rides the jobs
+    # row), so the field is a deprecated no-op kept only so configurations
+    # that set it keep loading. Silent acceptance would hide the flag's
+    # retirement from the one operator who opted in; the warning names the
+    # removal so the env var gets deleted instead of accumulating.
+    if settings.dispatch_scope_by_home_queue:
+        _startup_log.warning(
+            "deprecated-setting-ignored",
+            setting="TASKQ_DISPATCH_SCOPE_BY_HOME_QUEUE",
+            reason=(
+                "dispatch is assignment-routed; the per-actor-capacity "
+                "scoping this flag applied no longer exists"
+            ),
+            remedy="remove TASKQ_DISPATCH_SCOPE_BY_HOME_QUEUE from the environment",
         )
 
     # Why: this is the one setting that deliberately widens what leaves the
@@ -694,12 +1042,23 @@ async def _refuse_boot_on_pending_migrations(deps: WorkerDeps, settings: WorkerS
     stopped one release behind is a deployment ordering mistake, and the
     boot path's own doctrine ("a deployment mistake that must crash startup
     loudly, not a best-effort condition to warn about" — the queue-cap
-    guard's comment) covers it: ANY pending migration refuses boot, not
-    just the one whose missing column happens to be probed (01.00.04's
-    ``queues.max_concurrent``). A fresh database with no ledger at all is
-    the loudest case of the same mistake — every bundled migration is
-    pending — and refuses identically instead of failing later on raw
-    ``UndefinedTableError`` from the first boot step that writes.
+    guard's comment) covers it: every pending ``pre``-phase migration
+    refuses boot, not just the one whose missing column happens to be
+    probed (01.00.04's ``queues.max_concurrent``). A fresh database with
+    no ledger at all is the loudest case of the same mistake — every
+    bundled pre-phase migration is pending — and refuses identically
+    instead of failing later on raw ``UndefinedTableError`` from the
+    first boot step that writes.
+
+    Only the ``pre`` phase is a currency verdict. The phased rollout the
+    migration headers instruct operators to follow leaves the fleet in a
+    deliberate middle state — pre applied, new release rolling, post
+    withheld until the last old pod is gone — and post-phase migrations
+    only remove structures the old release still needed. Counting a
+    pending post-phase migration as "schema behind code" would refuse
+    boot for exactly the state the procedure requires, deadlocking every
+    rolling deploy: the post phase can never be applied because the roll
+    can never finish.
 
     Why hand-rolled ``fetch``-only queries instead of reusing
     :func:`taskq.migrate.list_applied`: the boot path's established
@@ -743,13 +1102,13 @@ async def _refuse_boot_on_pending_migrations(deps: WorkerDeps, settings: WorkerS
                 f'SELECT version FROM "{settings.schema_name}".schema_migrations',  # noqa: S608  # Why: schema validated against _IDENT_RE at the top of this helper; asyncpg cannot bind identifiers.
             )
             applied = {str(r["version"]) for r in ledger_rows}
-    pending = [m.key for m in discover() if m.key not in applied]
+    pending = [m.key for m in discover() if m.phase == "pre" and m.key not in applied]
     if pending:
         raise RuntimeError(
-            f"schema {settings.schema_name!r} is missing {len(pending)} migration(s) "
-            f"this worker's code requires ({', '.join(pending)}); the worker never "
-            "applies migrations itself. Apply pending migrations before starting "
-            "workers (`taskq migrate up`, or a pre-deploy job/init container)."
+            f"schema {settings.schema_name!r} is missing {len(pending)} pre-phase "
+            f"migration(s) this worker's code requires ({', '.join(pending)}); the "
+            "worker never applies migrations itself. Apply pending migrations before "
+            "starting workers (`taskq migrate up`, or a pre-deploy job/init container)."
         )
 
 
@@ -842,6 +1201,7 @@ async def _main(
     returns 0 on clean shutdown.
     """
     from taskq.worker.run import (
+        _emit_resolved_capacity_startup_lines,
         consumer_loop_stub,
         deregister_worker,
         di_consumer_loop,
@@ -938,6 +1298,10 @@ async def _main(
     _emit_startup_warnings(settings)
 
     async with open_worker_deps(settings, connections=connections) as deps:
+        # The capacity gauges read the registry the consumers fill; pointed
+        # here, before the TaskGroup opens, so the first scrape after boot
+        # already reports 0 of max_concurrency rather than nothing.
+        set_worker_capacity_source(deps.active_jobs, settings.max_concurrency)
         # ── until_idle override resolution ──────────────────────────────
         settle: float = settings.idle_settle_window
         poll: float = settings.idle_poll_interval
@@ -1031,6 +1395,7 @@ async def _main(
             # unconditionally would crash workers that don't use Redis.
             register_redis_pool(registry)
         registry.validate(actors=actors_list, rate_limit_registry=resolved_rl_registry)
+        _validate_error_reporter_scope(registry)
 
         from taskq.ratelimit import sync_rate_limit_buckets, sync_slots
 
@@ -1066,15 +1431,27 @@ async def _main(
                 error=str(exc),
             )
 
-        process_scope = ProcessScope(resolver=resolver)
+        # The scope bootstraps' first use of user-registered factories
+        # runs in the pre-watchdog window (the loop keeps scheduling, so
+        # the lag watchdog never trips; the stale-tick detectors arm
+        # only after bootstrap), so each factory await carries the same
+        # reload_factory_timeout bound every WorkerConnections factory
+        # open carries: a black-holed "database pools, HTTP
+        # clients" DI factory fails boot loudly within the bound instead
+        # of wedging worker startup undetected.
+        process_scope = ProcessScope(
+            resolver=resolver, factory_timeout=settings.reload_factory_timeout
+        )
         scope_containers[Scope.PROCESS] = process_scope
         await process_scope.bootstrap(registry, settings)
 
-        thread_scope = ThreadScope(resolver=resolver)
+        thread_scope = ThreadScope(
+            resolver=resolver, factory_timeout=settings.reload_factory_timeout
+        )
         scope_containers[Scope.THREAD] = thread_scope
         await thread_scope.bootstrap(registry, process_scope)
 
-        loop_scope = LoopScope(resolver=resolver)
+        loop_scope = LoopScope(resolver=resolver, factory_timeout=settings.reload_factory_timeout)
         scope_containers[Scope.LOOP] = loop_scope
         await loop_scope.bootstrap(registry, process_scope, thread_scope)
 
@@ -1110,6 +1487,7 @@ async def _main(
             factory=_slot_pool_factory(settings, pg_credential_provider),
             pg_credential_provider=pg_credential_provider,
             caller_supplied_pg_pools=_caller_supplied_pg_pools(connections),
+            di_registry=registry,
             log=_startup_log,
         )
 
@@ -1140,8 +1518,50 @@ async def _main(
             # correlation with the workers-table row; this block has the
             # correlation and still precedes the sync_actor_config
             # round-trip below, whose drift raise or pool-acquire stall
-            # would swallow a warning placed after it (issue #90).
-            _emit_unconsumed_queue_startup_warnings(settings, actor_registry, _startup_log)
+            # would swallow a warning placed after it.
+            #
+            # The stored assignments are read first because they, not the
+            # decorator literals, decide where an actor's work routes.
+            # Read-only and best effort: a coverage warning must never be
+            # the thing that stops a worker able to do work from booting,
+            # so a failed read degrades to the literals. A pre-sync read is
+            # correct here: an actor with no stored row yet cannot be
+            # judged against a stored assignment it doesn't have, and
+            # falls back to the literal inside the emitter.
+            stored_queues: dict[str, str] = {}
+            try:
+                async with deps.dispatcher_pool.acquire(
+                    timeout=settings.dispatcher_command_timeout
+                ) as conn:
+                    stored_queues = await read_stored_queue_assignments(
+                        conn,
+                        list(actor_registry),
+                        schema=settings.schema_name,
+                    )
+            except Exception as exc:
+                # WARN, never quieter: with the read degraded the coverage
+                # check below runs on decorator literals it cannot trust, so
+                # its warning can fire on an actor the stored config routes
+                # to a queue this worker consumes (or stay silent on one it
+                # does not). A degraded read that looked like a healthy one
+                # would send operators chasing actors instead of the read.
+                _startup_log.warning(
+                    "stored-queue-assignments-unreadable",
+                    error=repr(exc),
+                    note=(
+                        "the stored queue assignments could not be read, so the "
+                        "queue-coverage check falls back to the decorator "
+                        "literals. The stored assignment — not the literal — is "
+                        "what routes re-pended rows and cron fires, so a "
+                        "coverage warning from this boot can be a false positive "
+                        "and a missing one a false negative. Fix the read (the "
+                        "dispatcher pool acquire or the actor_config query) "
+                        "rather than filtering the warning."
+                    ),
+                )
+            _emit_unconsumed_queue_startup_warnings(
+                settings, actor_registry, _startup_log, stored_queues
+            )
             actor_configs = [
                 ActorConfig(
                     actor=ref.name,
@@ -1164,6 +1584,34 @@ async def _main(
                     force=settings.force_update_actor_config,
                     schema=settings.schema_name,
                 )
+                # Read back after the sync, never before: only then is every
+                # registered actor guaranteed a stored row, and a pre-sync
+                # read would label a freshly deployed actor as
+                # never-dispatching on its very first boot.
+                try:
+                    stored_rows = {
+                        row.actor: row
+                        for row in await list_actor_configs(conn, schema=settings.schema_name)
+                    }
+                    queue_rows = {
+                        row.name: row
+                        for row in await list_queues(conn, schema=settings.schema_name)
+                    }
+                except Exception as exc:
+                    # Observability, not a gate: a worker able to do work
+                    # must start even when it cannot describe its own caps.
+                    _startup_log.warning(
+                        "resolved-capacity-read-failed",
+                        error=repr(exc),
+                    )
+                else:
+                    _emit_resolved_capacity_startup_lines(
+                        settings,
+                        actor_registry,
+                        stored_rows=stored_rows,
+                        queue_rows=queue_rows,
+                        log=_startup_log,
+                    )
 
             for res in own_reservations:
                 try:
@@ -1354,8 +1802,34 @@ async def _main(
 
             if deps.settings.health_enabled:
                 health_server = HealthServer()
-                await health_server.start(deps)
-                stack.push_async_callback(health_server.stop)
+                try:
+                    await health_server.start(deps)
+                except HealthTcpBindError:
+                    # The probe port the deployment manifest routed to THIS
+                    # replica cannot be served: refusing to start is the
+                    # honest outcome (probes passing against whatever else
+                    # holds the port is the alternative, and a booting
+                    # worker with dead probes is the silent kind of down).
+                    raise
+                except OSError as exc:
+                    # A unix-socket collision, by contrast, means a live
+                    # PEER worker owns the path (HealthServer.start's loud
+                    # refusal stops a newcomer silently stealing it):
+                    # refusing to boot would crash-loop a healthy pair
+                    # during a rolling restart. The collision is a WARN and
+                    # the boot carries on registering and claiming. No stop
+                    # callback is pushed: start() raised before this server
+                    # owned anything (its own failure paths already cleaned
+                    # up), so there is nothing of ours to stop.
+                    _startup_log.warning(
+                        "health-server-unavailable",
+                        socket_path=deps.settings.health_socket_path,
+                        health_port=deps.settings.health_port,
+                        errno=exc.errno,
+                        error=str(exc),
+                    )
+                else:
+                    stack.push_async_callback(health_server.stop)
 
             cancel_wake_event: asyncio.Event | None = None
             _subscribe_cancel = getattr(backend, "subscribe_cancel_wake", None)
@@ -1368,6 +1842,26 @@ async def _main(
 
             deps.liveness.grace_factor = settings.watchdog_tick_grace_factor
             deps.liveness.stale_floor = settings.watchdog_stale_floor
+            # Stall attribution: the watchdog matches sampled code objects
+            # against the registered actor functions (ActorRef.fn's code),
+            # and joins running jobs via a snapshot callable instead of a
+            # registry reference, so the watchdog never touches loop-owned
+            # state directly. The registry is quiescent while the loop is
+            # blocked (the loop thread is its only mutator), but a resize
+            # racing the snapshot raises RuntimeError, and that must never
+            # kill the watchdog thread, hence the guard.
+            actor_code_names: dict[int, str] = (
+                {id(ref.fn.__code__): ref.name for ref in actor_registry.values()}
+                if actor_registry is not None
+                else {}
+            )
+
+            def _running_job_actors() -> list[tuple[str, str]]:
+                try:
+                    return [(job.ctx.actor, str(job.job_id)) for job in deps.active_jobs.all()]
+                except RuntimeError:
+                    return []
+
             lag_watchdog = LoopLagWatchdog(
                 asyncio.get_running_loop(),
                 deps.liveness,
@@ -1376,6 +1870,9 @@ async def _main(
                 startup_grace=settings.watchdog_loop_lag_startup_grace,
                 poll_interval=settings.watchdog_check_interval,
                 enabled=settings.watchdog_enabled,
+                actor_code_names=actor_code_names,
+                stall_tally=deps.stall_tally,
+                list_running_jobs=_running_job_actors,
             )
 
             def _stamp_shutdown_started(t: float) -> None:
@@ -1392,7 +1889,7 @@ async def _main(
                 shutdown_started_event=deps.producer_stop_event,
                 dump_after_fraction=settings.watchdog_dump_after_fraction,
             )
-            # Cron parity (issue #118): singleton / max_pending reach client
+            # Cron parity: singleton / max_pending reach client
             # enqueues via the ActorRef stamps in client/_args.py; the cron
             # tick builds its EnqueueArgs directly, so it needs the flags
             # here or its fires silently bypass both. Derived once, at the
@@ -1665,6 +2162,36 @@ def _make_sibling_spawner(
     return _spawn
 
 
+def _worker_reload_schedule(deps: WorkerDeps) -> ReloadSchedule:
+    """The cadence every factory-backed resource on *deps* is rebuilt on.
+
+    ``settings.reload_interval`` when the operator set one; otherwise
+    derived from the leases the factories were granted when the pools were
+    built (each factory declares the :class:`~taskq.auth.ReloadSchedule` it
+    records on, read back with :func:`~taskq.auth.reload_schedule_of`).
+    The role factories built by :func:`taskq.auth.build_worker_connections`
+    share one schedule; a hand-assembled ``WorkerConnections`` may carry
+    one per factory, so the schedules are composed and the shortest lease
+    across them wins. Live: a lease recorded on a later rebuild is seen
+    through the composite.
+    """
+    declared: dict[int, ReloadSchedule] = {}
+    for factory in (
+        deps.dispatcher_pool_factory,
+        deps.heartbeat_pool_factory,
+        deps.worker_pool_factory,
+        deps.slot_pool_factory,
+        deps.notify_conn_factory,
+        deps.leader_conn_factory,
+    ):
+        schedule = reload_schedule_of(factory) if factory is not None else None
+        if schedule is not None:
+            declared.setdefault(id(schedule), schedule)
+    return ReloadSchedule(
+        configured=deps.settings.reload_interval, sources=tuple(declared.values())
+    )
+
+
 async def _reload_coordinator_loop(
     deps: WorkerDeps,
     shutdown: asyncio.Event,
@@ -1676,8 +2203,11 @@ async def _reload_coordinator_loop(
 
     Runs as a sibling task in the worker's ``TaskGroup``. Reloads are
     triggered by ``deps.reload_event`` (set by the SIGHUP handler or by
-    :meth:`~taskq.worker.deps.WorkerDeps.request_reload`) and, when
-    ``settings.reload_interval`` is set, by a periodic timer — the
+    :meth:`~taskq.worker.deps.WorkerDeps.request_reload`) and by a periodic
+    timer on the worker's :class:`~taskq.auth.ReloadSchedule` —
+    ``settings.reload_interval`` when set, otherwise the cadence derived
+    from the shortest lease any factory-backed pool or connection was
+    granted (half its TTL), and no timer when neither is known — the
     rotation path for platforms without SIGHUP and for hands-off
     scheduled rotation. Each trigger calls
     :func:`~taskq.worker.deps.reload_credentials` to hot-swap every
@@ -1703,9 +2233,20 @@ async def _reload_coordinator_loop(
     """
     from taskq.worker.deps import reload_credentials
 
-    interval = deps.settings.reload_interval
+    schedule = _worker_reload_schedule(deps)
+    if schedule.derived:
+        _startup_log.info(
+            "reload-interval-derived-from-lease",
+            reload_interval=schedule.interval,
+            lease_duration=schedule.lease_duration,
+            reason="TASKQ_RELOAD_INTERVAL is unset; pools pinned to an issued lease pair "
+            "are rebuilt at half the shortest lease TTL the provider granted",
+        )
 
     while not shutdown.is_set():
+        # Re-read per wait: a lease granted shorter on a rebuild tightens
+        # the cadence from the next wait on.
+        interval = schedule.interval
         # Wait for a reload request, the interval timer, or shutdown.
         waiters: list[
             asyncio.Task[Any]

@@ -8,24 +8,36 @@ the fencing gate applied per-row over the unnest arrays.
 import asyncio
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager, suppress
+from datetime import UTC, datetime
 from typing import cast
 from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID
 
+import orjson
 import pytest
+import structlog
 from hypothesis import given
 from hypothesis import settings as hyp_settings
 from hypothesis import strategies as st
 
 from taskq._ids import new_uuid
+from taskq._json import dumps, dumps_jsonb_str, embed_encoded
+from taskq.client._enqueuer import SubJobEnqueuer
+from taskq.context import JobContext
+from taskq.obs import bind_job_context
 from taskq.progress._buffer import _progress_after_flush, _ProgressBuffer, _snapshot_progress
 from taskq.progress._flush import (
     _FLUSH_BATCH_ROWS,  # pyright: ignore[reportPrivateUsage]  # Why: the pin asserts the batch bound itself — the doctrine constant is the contract under test.
     _FLUSH_MAX_BATCHES_PER_TICK,  # pyright: ignore[reportPrivateUsage]  # Why: the pin asserts the tick cap itself — the doctrine constant is the contract under test.
     _flush_buffer,
     _flush_buffer_immediate,
+    _flush_dirty_set,
     progress_flush_loop,
 )
+from taskq.settings import WorkerSettings
+from taskq.testing.clock import FakeClock
+from taskq.testing.in_memory import InMemoryBackend, PassthroughPayload
+from tests._progress_context import make_progress_context
 
 _JOB_ID = UUID("aaaaaaaa-bbbb-cccc-dddd-000000000001")
 _JOB_ID_B = UUID("aaaaaaaa-bbbb-cccc-dddd-000000000002")
@@ -119,18 +131,12 @@ async def test_progress_too_large_at_exactly_max_plus_one_byte() -> None:
     """ctx.progress(data=...) where serialised data is exactly 16385 bytes
     raises ProgressTooLarge(limit=16384, actual=16385)."""
     import asyncio
-    from datetime import UTC, datetime
 
     import structlog
 
     from taskq._json import dumps
-    from taskq.client._enqueuer import SubJobEnqueuer
-    from taskq.context import JobContext
     from taskq.exceptions import ProgressTooLarge
-    from taskq.obs import bind_job_context
     from taskq.settings import WorkerSettings
-    from taskq.testing.clock import FakeClock
-    from taskq.testing.in_memory import InMemoryBackend, PassthroughPayload
 
     settings = WorkerSettings.load_from_dict({"TASKQ_PROGRESS_DATA_MAX_BYTES": "16384"})
     backend = InMemoryBackend(clock=FakeClock(datetime(2025, 1, 1, tzinfo=UTC)))
@@ -189,15 +195,8 @@ async def test_ctx_progress_out_of_range_percent_not_rejected() -> None:
     """ctx.progress(percent=150.0) succeeds — no range validation on percent.
     pending_state["percent"] == 150.0."""
     import asyncio
-    from datetime import UTC, datetime
 
     import structlog
-
-    from taskq.client._enqueuer import SubJobEnqueuer
-    from taskq.context import JobContext
-    from taskq.obs import bind_job_context
-    from taskq.testing.clock import FakeClock
-    from taskq.testing.in_memory import InMemoryBackend, PassthroughPayload
 
     backend = InMemoryBackend(clock=FakeClock(datetime(2025, 1, 1, tzinfo=UTC)))
     job_id = UUID("00000000-0000-0000-0000-aabbccddee01")
@@ -239,16 +238,10 @@ async def test_ctx_progress_unserializable_data_raises_type_error() -> None:
     serialisation) before the ProgressTooLarge check. The buffer is not
     updated."""
     import asyncio
-    from datetime import UTC, datetime
 
     import structlog
 
-    from taskq.client._enqueuer import SubJobEnqueuer
-    from taskq.context import JobContext
-    from taskq.obs import bind_job_context
     from taskq.settings import WorkerSettings
-    from taskq.testing.clock import FakeClock
-    from taskq.testing.in_memory import InMemoryBackend, PassthroughPayload
 
     settings = WorkerSettings.load_from_dict({"TASKQ_PROGRESS_DATA_MAX_BYTES": "16384"})
     backend = InMemoryBackend(clock=FakeClock(datetime(2025, 1, 1, tzinfo=UTC)))
@@ -304,6 +297,117 @@ async def test_flush_buffer_rejects_nul_before_touching_connection() -> None:
     conn.fetchrow.assert_not_awaited()
     # The buffer is left dirty (not falsely marked flushed) so the state is
     # never silently discarded.
+    assert buf.dirty is True
+
+
+# ── The flush binds the data bytes ctx.progress already encoded ────
+
+
+def _encodes_of(data: dict[str, object], encoded: list[object]) -> int:
+    """How many orjson encodes walked *data*, at top level or as a value."""
+    return sum(
+        1
+        for value in encoded
+        if value is data or (isinstance(value, dict) and any(v is data for v in value.values()))  # pyright: ignore[reportUnknownVariableType, reportUnknownArgumentType]  # Why: the recorded encoder arguments are untyped; only identity is inspected.
+    )
+
+
+async def _flush_one(
+    surface: str,
+    pool: MagicMock,
+    conn: AsyncMock,
+    job_id: UUID,
+    buffers: dict[UUID, _ProgressBuffer],
+) -> str:
+    """Flush *job_id* through one of the two statement surfaces; return the bound state document."""
+    buffer = buffers[job_id]
+    if surface == "single_row":
+        await _flush_buffer(pool, "taskq_test", job_id, _WORKER_ID, buffer, buffers)
+        bound = conn.fetchrow.await_args
+    else:
+        await _flush_dirty_set(pool, "taskq_test", _WORKER_ID, buffers, [(job_id, buffer)])
+        bound = conn.fetch.await_args
+    assert bound is not None
+    state_docs = cast("list[str]", bound.args[3])
+    return state_docs[0]
+
+
+@pytest.mark.parametrize("surface", ["single_row", "tick_batch"])
+async def test_flush_binds_the_data_bytes_ctx_progress_already_encoded(
+    monkeypatch: pytest.MonkeyPatch, surface: str
+) -> None:
+    """``ctx.progress`` encodes ``data`` once to enforce the size cap; the
+    flush binds those bytes rather than walking the dict a second time,
+    and the document it binds is byte-identical to a fresh encode of the
+    snapshot — key order, nesting and escaping included."""
+    encoded: list[object] = []
+    real_dumps = orjson.dumps
+
+    def recording_dumps(value: object, *args: object, **kwargs: object) -> bytes:
+        encoded.append(value)
+        return real_dumps(value, *args, **kwargs)  # type: ignore[arg-type]  # Why: pass-through of orjson's own keyword options.
+
+    monkeypatch.setattr(orjson, "dumps", recording_dumps)
+
+    job_id = UUID("00000000-0000-0000-0000-aabbccddee02")
+    buf = _ProgressBuffer(job_id=job_id, base_seq=0)
+    buffers: dict[UUID, _ProgressBuffer] = {job_id: buf}
+    ctx = make_progress_context(buffers, job_id, settings=WorkerSettings.load_from_dict({}))
+    data: dict[str, object] = {
+        "rows": [{"id": i, "name": f"item-{i}", "u": "é\n"} for i in range(50)]
+    }
+
+    await ctx.progress(step=1, detail="halfway", data=data)
+    pool, conn = _make_pool_with_conn(returning_row={"progress_seq": 1})
+    bound_doc = await _flush_one(surface, pool, conn, job_id, buffers)
+    data_encodes = _encodes_of(data, encoded)
+
+    assert bound_doc == dumps_jsonb_str({"step": 1, "detail": "halfway", "data": data})
+    assert buf.dirty is False
+    assert data_encodes == 1, "data was encoded again for the flush"
+
+
+_json_ints = st.integers(min_value=-(2**63), max_value=2**64 - 1)
+_json_scalars = st.none() | st.booleans() | _json_ints | st.floats(allow_nan=False) | st.text()
+_json_values = st.recursive(
+    _json_scalars,
+    lambda children: (
+        st.lists(children, max_size=4) | st.dictionaries(st.text(), children, max_size=4)
+    ),
+    max_leaves=12,
+)
+
+
+@given(data=st.dictionaries(st.text(), _json_values, max_size=4), step=_json_ints)
+@hyp_settings(max_examples=200)
+def test_embedded_data_bytes_render_the_same_document(data: dict[str, object], step: int) -> None:
+    """Embedding ``dumps(data)`` in the state document is byte-identical to
+    encoding ``data`` in place, for any JSON-shaped ``data`` — a NUL
+    included, so the jsonb guard's byte scan sees the same bytes."""
+    in_place = dumps({"step": step, "data": data})
+    embedded = dumps({"step": step, "data": embed_encoded(dumps(data))})
+    assert embedded == in_place
+
+
+@pytest.mark.parametrize("surface", ["single_row", "tick_batch"])
+async def test_flush_rejects_a_nul_inside_pre_encoded_data(surface: str) -> None:
+    """The jsonb NUL guard fires on the bytes the flush binds, whether it
+    encoded them itself or reused ``ctx.progress``'s: the statement never
+    reaches the connection and the buffer stays dirty."""
+    job_id = UUID("00000000-0000-0000-0000-aabbccddee03")
+    buf = _ProgressBuffer(job_id=job_id, base_seq=0)
+    buffers: dict[UUID, _ProgressBuffer] = {job_id: buf}
+    ctx = make_progress_context(buffers, job_id, settings=WorkerSettings.load_from_dict({}))
+
+    await ctx.progress(data={"path": "bad\x00value"})
+    pool, conn = _make_pool_with_conn(returning_row={"progress_seq": 1})
+    if surface == "single_row":
+        await _flush_buffer(pool, "taskq_test", job_id, _WORKER_ID, buf, buffers)
+    else:
+        await _flush_dirty_set(pool, "taskq_test", _WORKER_ID, buffers, [(job_id, buf)])
+
+    conn.fetchrow.assert_not_awaited()
+    conn.fetch.assert_not_awaited()
     assert buf.dirty is True
 
 
@@ -516,11 +620,10 @@ async def test_flush_loop_fenced_out_row_dropped_while_sibling_flushes() -> None
 async def test_flush_tick_batches_all_dirty_buffers_into_one_statement() -> None:
     """One flush tick reaches the backend exactly once regardless of dirty
     count: every dirty buffer's row rides ONE batched multi-row UPDATE —
-    the unnest-array shape the vendored bulk writers converged on (river's
-    columnar arrays, graphile's unnest-joined set op, procrastinate's
-    composite array). The recorded statement's unnest arrays carry both
-    job ids with their per-row deltas and attempt epochs, the fencing
-    gate stays per-row over the unnest rows, and both rows update.
+    columnar arrays (unnest-array form) carry both job ids with their
+    per-row deltas and attempt epochs. The recorded statement's unnest
+    arrays keep the fencing gate per-row over the unnest rows, and both
+    rows update.
     """
     conn = AsyncMock()
 
@@ -606,7 +709,7 @@ async def test_flush_tick_batches_all_dirty_buffers_into_one_statement() -> None
 
 
 async def test_flush_tick_drains_in_bounded_batches_with_a_tick_cap() -> None:
-    """The #120 doctrine: no flush statement ever carries more than
+    """The bounded-batch doctrine: no flush statement ever carries more than
     ``_FLUSH_BATCH_ROWS`` rows, and no tick issues more than
     ``_FLUSH_MAX_BATCHES_PER_TICK`` batches — an all-in-one statement
     over the whole dirty set is the long-running-statement trap (it
@@ -664,7 +767,7 @@ async def test_flush_tick_drains_in_bounded_batches_with_a_tick_cap() -> None:
     for call in conn.fetch.await_args_list:
         assert len(call.args[1]) <= _FLUSH_BATCH_ROWS, (
             f"a flush statement carried {len(call.args[1])} rows — the batch bound "
-            f"({_FLUSH_BATCH_ROWS}) is the #120 doctrine's guarantee that no "
+            f"({_FLUSH_BATCH_ROWS}) is the doctrine's guarantee that no "
             "statement runs long"
         )
     assert all(buf.dirty is False for buf in buffers.values())
@@ -705,8 +808,89 @@ async def test_flush_tick_drains_in_bounded_batches_with_a_tick_cap() -> None:
     )
 
 
+async def test_flush_tick_cost_is_flat_up_to_the_batch_bound() -> None:
+    """A tick's database cost does not grow with the number of dirty
+    buffers, up to the batch bound: one statement and one connection
+    checkout, whether one buffer is dirty or the bound's worth are.
+
+    Why it matters operationally: progress reporting is the surface a
+    chatty actor drives hardest, and a tick whose cost tracked the dirty
+    count would turn a busy worker's own progress calls into the thing
+    that stalls its progress loop — a feedback loop that gets worse
+    exactly when an operator is watching progress because jobs are slow.
+    The flat shape is what makes the coalescing interval, not the
+    concurrency, the thing that sizes the flush load.
+    """
+    per_size_costs: dict[int, tuple[int, int]] = {}
+
+    for dirty_count in (1, 2, _FLUSH_BATCH_ROWS // 2, _FLUSH_BATCH_ROWS):
+        conn = AsyncMock()
+
+        async def _fetch(*args: object) -> list[dict[str, object]]:
+            job_ids = args[1] if len(args) > 1 else None
+            if not isinstance(job_ids, list):
+                return []
+            typed_ids = cast("list[UUID]", job_ids)  # pyright: ignore[reportUnknownVariableType]  # Why: the fake conn's *args are object; the pins only ever bind UUID lists.
+            return [{"id": job_id, "progress_seq": 9} for job_id in typed_ids]
+
+        conn.fetch.side_effect = _fetch
+
+        acquires = 0
+        pool = MagicMock()
+        pool.get_size.return_value = _POOL_SIZE
+
+        @asynccontextmanager
+        async def _acquire(_conn: AsyncMock = conn) -> AsyncGenerator[AsyncMock, None]:
+            nonlocal acquires
+            acquires += 1
+            yield _conn
+
+        pool.acquire = _acquire
+
+        buffers: dict[UUID, _ProgressBuffer] = {}
+        for _ in range(dirty_count):
+            job_id = new_uuid()
+            buf = _ProgressBuffer(job_id=job_id, base_seq=0)
+            buf.pending_seq_delta = 1
+            buf.pending_state["step"] = 1
+            buf.attempt = 2
+            buf.dirty = True
+            buffers[job_id] = buf
+
+        shutdown = asyncio.Event()
+
+        async def _stop(_event: asyncio.Event = shutdown) -> None:
+            await asyncio.sleep(0.05)
+            _event.set()
+
+        await asyncio.gather(
+            progress_flush_loop(
+                lambda _pool=pool: _pool,  # pyright: ignore[reportUnknownLambdaType, reportUnknownArgumentType]  # Why: default-bound so each loop iteration's pool double is captured, not the last one.
+                "taskq_test",
+                _WORKER_ID,
+                buffers,
+                0.15,
+                shutdown,
+            ),
+            _stop(),
+        )
+
+        assert all(buf.dirty is False for buf in buffers.values()), (
+            f"{dirty_count} dirty buffers did not all drain in one tick"
+        )
+        per_size_costs[dirty_count] = (conn.fetch.await_count, acquires)
+
+    assert set(per_size_costs.values()) == {(1, 1)}, (
+        "a tick's cost must be one statement on one connection checkout for any "
+        f"dirty count up to the batch bound ({_FLUSH_BATCH_ROWS}); measured "
+        f"(statements, acquires) per dirty count: {per_size_costs} — a cost that "
+        "scales with the dirty count makes a busy worker's own progress calls "
+        "stall its flush loop"
+    )
+
+
 async def test_flush_failing_batch_leaves_only_its_own_buffers_dirty() -> None:
-    """Per-batch failure isolation — the #120 doctrine's other half: a
+    """Per-batch failure isolation — the doctrine's other half: a
     failing batch is that batch's failure alone. 70 dirty buffers in 3
     bounded batches; the middle batch's statement fails — its 32
     buffers stay dirty with deltas intact while the first and third
@@ -864,7 +1048,6 @@ async def test_flush_loop_pool_acquire_failure_keeps_buffers_dirty_with_pool_kin
     the same taxonomy the loop's pool_getter handler uses.
     """
     import asyncpg
-    import structlog
 
     bad_id = UUID("bad00000-0000-0000-0000-000000000000")
     good_id = UUID("600d0000-0000-0000-0000-000000000000")

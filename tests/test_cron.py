@@ -11,6 +11,9 @@ property test — compute_next_fire_after always returns a datetime
 """
 
 import asyncio
+import contextlib
+import threading
+import time
 from collections.abc import Iterator
 from dataclasses import FrozenInstanceError
 from datetime import UTC, datetime
@@ -763,6 +766,97 @@ async def testresolve_payload_factory_import_error_propagates() -> None:
         await resolve_payload("nonexistent.module.fn", {})
 
 
+# ── Cron payload factories are isolated from the actor thread pool ─────
+#
+# Cron payload resolution must not depend on actor-pool availability to
+# make progress. A sync factory runs off the event loop so a blocking
+# factory cannot stall the loop, but the executor it runs on must not be
+# the loop's default ThreadPoolExecutor — that is the same pool sync
+# actor bodies check out of. Sharing it means a fleet of busy sync actors
+# holding every thread stalls schedule ticks: even an instantaneous
+# `def f(): return {}` cannot start until a slot frees, and the bounded
+# resolution can time out while the tick holds the cron advisory lock.
+# Isolation also bounds leaked threads when a factory hangs.
+
+
+def _trivial_sync_factory() -> dict[str, object]:
+    """Instantaneous sync factory — the case that must never wait on
+    actor-pool contention at all."""
+    return {}
+
+
+@pytest.mark.asyncio
+async def testresolve_payload_trivial_sync_factory_survives_a_saturated_actor_pool() -> None:
+    """A trivial sync payload factory must resolve promptly even when every
+    slot of the loop's default thread pool is held by long-running sync
+    actor work.
+
+    Cron payload resolution runs a sync factory off the event loop to keep
+    a blocking factory from stalling the loop, but it must do so on an
+    executor of its own. Submitting to the default pool — the one sync
+    actor bodies use — makes a schedule tick's progress depend on actor
+    load: an instantaneous factory queues behind saturating work and its
+    bounded resolution times out while the tick holds the cron lock."""
+    import concurrent.futures
+    import threading
+
+    loop = asyncio.get_running_loop()
+    # Discover (and pin) the loop's default executor exactly as
+    # asyncio.to_thread would create/reuse it, so max_workers is the real
+    # configured size, not a guess.
+    probe_started = threading.Event()
+    probe_release = threading.Event()
+
+    def _probe() -> None:
+        probe_started.set()
+        probe_release.wait(5.0)
+
+    probe_future = loop.run_in_executor(None, _probe)
+    assert probe_started.wait(5.0), "the probe task never started on the default executor"
+    executor = loop._default_executor  # type: ignore[attr-defined]  # Why: no public accessor; this is exactly what to_thread submits to.
+    assert isinstance(executor, concurrent.futures.ThreadPoolExecutor)
+    max_workers = executor._max_workers  # type: ignore[attr-defined]  # Why: no public accessor for the configured pool size.
+    probe_release.set()
+    await asyncio.wrap_future(probe_future)
+
+    # Saturate every worker slot with long-blocking work — standing in for
+    # sync actor bodies holding the pool.
+    saturators_started = [threading.Event() for _ in range(max_workers)]
+    saturators_release = threading.Event()
+
+    def _saturate(started: threading.Event) -> None:
+        started.set()
+        saturators_release.wait(10.0)
+
+    saturator_futures = [
+        loop.run_in_executor(None, _saturate, started) for started in saturators_started
+    ]
+    try:
+        for started in saturators_started:
+            assert started.wait(5.0), (
+                "not every saturating task reached the pool — miscounted max_workers"
+            )
+
+        # Every slot is now held by simulated actor work. A cron system
+        # that does not share the actor pool (or that calls a plain sync
+        # factory inline) resolves a trivial factory immediately, well
+        # inside a generous 3s timeout, regardless of pool saturation.
+        result = await resolve_payload(
+            f"{_trivial_sync_factory.__module__}.{_trivial_sync_factory.__qualname__}",
+            {},
+            timeout_s=3.0,
+        )
+        assert result == {}, (
+            "resolve_payload did not return the trivial factory's payload — "
+            "unexpected failure shape, not the starvation this test targets"
+        )
+    finally:
+        saturators_release.set()
+        await asyncio.gather(
+            *(asyncio.wrap_future(f) for f in saturator_futures), return_exceptions=True
+        )
+
+
 # ── compute_next_fire_after: a seed inside a repeated (fall-back) hour ──
 #
 # croniter walks naive wall-clock time, so a seed sitting exactly ON a
@@ -848,3 +942,256 @@ async def testresolve_payload_timeout_names_the_factory() -> None:
     with pytest.raises(TimeoutError, match="timed out after 5s") as exc_info:
         await resolve_payload(dotted, {})
     assert dotted in str(exc_info.value)
+
+
+# ── resolve_payload: a coroutine-function factory needs only the loop ──
+#
+# Running a factory off the event loop exists to protect the loop from a
+# SYNC factory that blocks. A coroutine function needs no such protection:
+# calling it does not run the body, it only constructs a coroutine object,
+# and that construction never blocks. Routing that call through the
+# default thread pool buys nothing and couples cron payload resolution to
+# a pool sync actor bodies also check out of, so a busy fleet of sync
+# actors can stall a cron tick that has no blocking work at all.
+
+
+async def _immediate_async_factory() -> dict[str, object]:
+    """A coroutine-function factory that awaits nothing and returns at once."""
+    return {"ok": True}
+
+
+@pytest.mark.asyncio
+async def testresolve_payload_async_factory_resolves_off_the_shared_thread_pool() -> None:
+    """A coroutine-function payload factory must resolve promptly even when
+    every worker of the loop's default thread pool is checked out.
+
+    Calling a coroutine function only constructs a coroutine object, so
+    resolution needs the event loop and nothing else. Submitting that call
+    to the default executor makes it queue behind whatever holds the pool
+    -- sync actor bodies run there too -- and a trivially fast cron
+    payload can then miss its per-factory deadline while the tick holds
+    the cron advisory lock.
+    """
+    import time
+
+    loop = asyncio.get_running_loop()
+    # The default executor is created lazily on first use; touch it, then
+    # read its real configured size. Saturating EXACTLY that many workers
+    # matters: extra submissions would queue behind the blockers and
+    # deadlock this test's own setup, since none of them release early.
+    probe = await loop.run_in_executor(None, lambda: None)
+    del probe
+    executor = loop._default_executor  # type: ignore[attr-defined]  # Why: no public accessor; this is exactly what to_thread submits to.
+    n_blockers = executor._max_workers  # type: ignore[attr-defined]  # Why: no public accessor for the configured pool size.
+
+    release = asyncio.Event()
+    started = asyncio.Event()
+    starts_remaining = n_blockers
+
+    def _block_until_released() -> None:
+        nonlocal starts_remaining
+        starts_remaining -= 1
+        if starts_remaining == 0:
+            loop.call_soon_threadsafe(started.set)
+        while not release.is_set():
+            time.sleep(0.01)
+
+    blocker_futures = [loop.run_in_executor(None, _block_until_released) for _ in range(n_blockers)]
+    try:
+        await asyncio.wait_for(started.wait(), timeout=5.0)
+
+        dotted = f"{_immediate_async_factory.__module__}.{_immediate_async_factory.__qualname__}"
+        t0 = time.monotonic()
+        result = await asyncio.wait_for(resolve_payload(dotted, {}), timeout=2.0)
+        elapsed = time.monotonic() - t0
+
+        assert result == {"ok": True}
+        assert elapsed < 1.0, (
+            f"resolving a coroutine-function factory took {elapsed:.2f}s with the "
+            "default thread pool saturated -- the factory call is being submitted "
+            "to that pool instead of being made directly on the event loop"
+        )
+    finally:
+        release.set()
+        for fut in blocker_futures:
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(fut, timeout=5.0)
+
+
+# ── A hung factory strands threads outside the actor pool ──────────────
+#
+# A sync factory that never returns is cut off at the per-factory
+# deadline, but the thread already running it cannot be interrupted: it
+# stays parked inside the factory. A schedule whose factory hangs every
+# fire strands one such thread per tick, and cron ticks forever. Those
+# stranded threads must come from cron's own bounded pool, never from the
+# pool sync actor bodies check out of — otherwise one permanently hung
+# schedule silently eats the fleet's actor execution capacity, a
+# slow-motion outage no cron metric reports.
+
+
+_HUNG_FACTORY_RELEASE = threading.Event()
+"""Release flag for :func:`_hung_sync_factory` — module scope because the
+factory is resolved by dotted path, so the test can only reach it here."""
+
+
+def _hung_sync_factory() -> dict[str, object]:
+    """Sync factory that blocks until the test releases it, recording the
+    thread it was parked on so the test can identify that thread's pool."""
+    _HUNG_PARKED_THREADS.append(threading.current_thread())
+    _HUNG_FACTORY_RELEASE.wait(60.0)
+    return {}
+
+
+_HUNG_PARKED_THREADS: list[threading.Thread] = []
+"""Threads :func:`_hung_sync_factory` was parked on, in call order."""
+
+
+@pytest.mark.asyncio
+async def testresolve_payload_hung_factories_never_strand_actor_pool_threads() -> None:
+    """Threads stranded by hung payload factories must not be the loop's
+    default-executor threads.
+
+    The per-factory deadline bounds how long a tick waits, not how long the
+    factory runs: each cut-off call leaves its thread parked inside the
+    factory until the factory itself returns, which a truly hung one never
+    does. Cron ticks indefinitely, so one permanently hung schedule strands
+    a thread per tick. If those calls run on the loop's default thread pool
+    — the one sync actor bodies run on — the hung schedule steadily
+    consumes the worker's own execution capacity until sync actors have no
+    thread left, with nothing in the cron telemetry to explain it. Cron
+    must strand only threads from a pool of its own.
+    """
+    _HUNG_FACTORY_RELEASE.clear()
+    _HUNG_PARKED_THREADS.clear()
+    loop = asyncio.get_running_loop()
+
+    # Materialize the loop's default executor and note its threads, so a
+    # parked factory thread can be attributed to that pool or not. It is
+    # created lazily, exactly as asyncio.to_thread would create it.
+    await loop.run_in_executor(None, lambda: None)
+    default_executor = loop._default_executor  # type: ignore[attr-defined]  # Why: no public accessor; this is exactly what to_thread submits to.
+
+    dotted = f"{_hung_sync_factory.__module__}.{_hung_sync_factory.__qualname__}"
+    try:
+        for _ in range(3):
+            with pytest.raises(TimeoutError):
+                await resolve_payload(dotted, {}, timeout_s=0.05)
+
+        assert len(_HUNG_PARKED_THREADS) == 3, (
+            "vacuous run: the factory never reached a thread, so nothing here "
+            f"says which pool it stranded; saw {_HUNG_PARKED_THREADS}"
+        )
+        default_threads = set(default_executor._threads)  # type: ignore[attr-defined]  # Why: no public accessor for a pool's worker threads.
+        stranded_from_actor_pool = [t for t in _HUNG_PARKED_THREADS if t in default_threads]
+        assert stranded_from_actor_pool == [], (
+            f"{len(stranded_from_actor_pool)} of 3 hung payload factories are "
+            "parked on the loop's default executor — the same pool sync actor "
+            "bodies run on. Each hung fire permanently removes one thread from "
+            "actor execution capacity, so a single stuck schedule degrades "
+            "unrelated work until the pool is exhausted"
+        )
+    finally:
+        _HUNG_FACTORY_RELEASE.set()
+
+
+@pytest.mark.asyncio
+async def testresolve_payload_healthy_factory_survives_a_saturated_cron_pool() -> None:
+    """A pool whose every thread is stranded on abandoned work must be
+    retired, not queue new work behind it forever.
+
+    The cron-dedicated factory pool is finite (_FACTORY_POOL_SIZE) and a
+    stdlib executor cannot recall a parked thread, so that many hung sync
+    factories strand the whole pool. Without recovery a healthy factory
+    then queues behind the residue and misses every deadline for the rest
+    of the process's life — cron's OWN contention against itself, one
+    level in from where the actor-pool isolation fixed it. The contract:
+    the submit path detects the fully-stranded pool, retires it loudly
+    (one WARN, naming the residue), and the healthy factory resolves on a
+    fresh pool. The parked threads are NOT reclaimed — they finish when
+    their factories return, which the test's release forces so nothing
+    outlives it.
+    """
+    import structlog.testing
+
+    from taskq.cron import (
+        _FACTORY_POOL_SIZE,  # pyright: ignore[reportPrivateUsage]  # Why: the saturation level under test IS the pool's own cap.
+    )
+
+    _HUNG_FACTORY_RELEASE.clear()
+    _HUNG_PARKED_THREADS.clear()
+    dotted = f"{_hung_sync_factory.__module__}.{_hung_sync_factory.__qualname__}"
+    try:
+        # Saturate the dedicated cron factory pool with _FACTORY_POOL_SIZE
+        # hung calls -- each one permanently strands its worker thread.
+        pool_size = _FACTORY_POOL_SIZE
+        for _ in range(pool_size):
+            with pytest.raises(TimeoutError):
+                await resolve_payload(dotted, {}, timeout_s=0.05)
+        assert len(_HUNG_PARKED_THREADS) == pool_size
+
+        # A completely healthy, instantaneous factory must now resolve —
+        # the saturated pool was retired instead of queueing this call
+        # behind residue it could never pass.
+        with structlog.testing.capture_logs() as captured:
+            result = await asyncio.wait_for(
+                resolve_payload(
+                    f"{_trivial_sync_factory.__module__}.{_trivial_sync_factory.__qualname__}",
+                    {},
+                    timeout_s=5.0,
+                ),
+                timeout=5.0,
+            )
+        assert result == {}
+
+        retired = [e for e in captured if e["event"] == "cron-factory-pool-saturated-retired"]
+        assert len(retired) == 1, (
+            f"expected exactly one pool-retirement WARN, got {len(retired)} — "
+            "retirement must be loud (it is the only place an operator learns "
+            "hung schedules stranded a pool) and must not spam per submit"
+        )
+        assert retired[0]["log_level"] == "warning"
+        assert retired[0]["abandoned"] == pool_size
+    finally:
+        _HUNG_FACTORY_RELEASE.set()
+
+
+def _slow_sync_factory() -> dict[str, object]:
+    """Slow-but-alive sync factory: occupies a pool thread briefly, then
+    returns — the live-work contrast to :func:`_hung_sync_factory`."""
+    time.sleep(0.3)
+    return {"slow": True}
+
+
+@pytest.mark.asyncio
+async def testresolve_payload_busy_but_alive_cron_pool_is_not_retired() -> None:
+    """Retirement is for ABANDONED residue, not busyness: a pool whose
+    threads are all occupied by slow-but-alive factories their waiters
+    still await must serve a queued call as soon as a thread frees, and
+    must not be retired out from under live work.
+    """
+    import structlog.testing
+
+    from taskq.cron import (
+        _FACTORY_POOL_SIZE,  # pyright: ignore[reportPrivateUsage]  # Why: the occupancy level under test IS the pool's own cap.
+    )
+
+    pool_size = _FACTORY_POOL_SIZE
+    dotted_slow = f"{_slow_sync_factory.__module__}.{_slow_sync_factory.__qualname__}"
+    dotted_trivial = f"{_trivial_sync_factory.__module__}.{_trivial_sync_factory.__qualname__}"
+    with structlog.testing.capture_logs() as captured:
+        # Occupy every thread with live, waited-on work...
+        slow = [
+            asyncio.create_task(resolve_payload(dotted_slow, {}, timeout_s=5.0))
+            for _ in range(pool_size)
+        ]
+        # ...then queue a healthy call behind them: it resolves as soon as
+        # the first slow call frees its thread.
+        healthy = asyncio.create_task(resolve_payload(dotted_trivial, {}, timeout_s=5.0))
+        results = await asyncio.wait_for(asyncio.gather(*slow, healthy), timeout=10.0)
+    assert results[:pool_size] == [{"slow": True}] * pool_size
+    assert results[pool_size] == {}
+    assert not [e for e in captured if e["event"] == "cron-factory-pool-saturated-retired"], (
+        "a busy-but-alive pool was retired — retirement is only for pools "
+        "whose every thread is stranded on work nobody waits for"
+    )

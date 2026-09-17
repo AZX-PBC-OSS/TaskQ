@@ -147,6 +147,14 @@ async def send_email(payload: EmailPayload, ctx: JobContext[EmailPayload]) -> No
 registry = [send_email]
 ```
 
+> **Set a per-attempt timeout before you forget.** `start_to_close` (per
+> enqueue, per actor, or `TASKQ_DEFAULT_START_TO_CLOSE`) is the one knob
+> that bounds a hung actor; it defaults to unbounded so a long job is never
+> killed by surprise. Every real deployment wants one — see
+> [ops.md §2](docs/guides/ops.md#2-timeouts-start_to_close-and-schedule_to_close),
+> and ops.md's [scaling playbook](docs/guides/ops.md) for what to tune as
+> load grows.
+
 ### Enqueue a job
 
 ```python

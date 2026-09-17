@@ -53,6 +53,7 @@ from typer.testing import CliRunner
 from taskq._json import loads
 from taskq.cli import app
 from taskq.client._taskq import TaskQ
+from taskq.constants import DEFAULT_MAX_RETRY_BACKOFF
 
 runner = CliRunner()
 
@@ -169,8 +170,6 @@ def _capture_ui_app(
     """
     import uvicorn
 
-    import taskq.cli as cli_mod
-
     captured: dict[str, Any] = {}
 
     def _fake_uvicorn_run(app: Any, **kwargs: Any) -> None:
@@ -180,7 +179,9 @@ def _capture_ui_app(
 
     redis_url: str | None = None
     if create_pool is not None:
-        monkeypatch.setattr(cli_mod.asyncpg, "create_pool", create_pool)
+        # The module-top asyncpg import is the same module object
+        # taskq.cli binds, so patching it patches the cli path.
+        monkeypatch.setattr(asyncpg, "create_pool", create_pool)
     if from_url_result is not None:
         import redis.asyncio as aioredis
 
@@ -421,10 +422,12 @@ async def test_taskq_open_dsn_pool_carries_command_timeout(
     async with asyncio.timeout(_TEST_BUDGET_SECS):
         await tq.close()
 
-    assert captured_kwargs.get("command_timeout") == 5.0, (
+    assert captured_kwargs.get("command_timeout") == 10.0, (
         "the DSN pool TaskQ builds must carry the pool-level per-query "
-        "bound (client._taskq._CLIENT_POOL_COMMAND_TIMEOUT_SECS, mirroring "
-        "WorkerSettings.dispatcher_command_timeout's default), got "
+        "bound (client._taskq._CLIENT_POOL_COMMAND_TIMEOUT_SECS — set "
+        "deliberately above the 5 s enqueue-path lock budgets so the "
+        "server-side typed lock refusal wins the race against asyncpg's "
+        "client-side cancellation), got "
         f"kwargs: {sorted(captured_kwargs)}"
     )
 
@@ -455,13 +458,141 @@ def test_taskq_pg_provider_pool_factory_carries_command_timeout(
         schema="taskq",
     )
 
-    assert captured_kwargs.get("command_timeout") == 5.0, (
+    assert captured_kwargs.get("command_timeout") == 10.0, (
         "make_pg_pool_factory must receive the pool-level per-query bound "
         "(client._taskq._CLIENT_POOL_COMMAND_TIMEOUT_SECS) from the "
         "pg_provider sugar, got kwargs: "
         f"{sorted(captured_kwargs)}"
     )
-    assert taskq_mod._CLIENT_POOL_COMMAND_TIMEOUT_SECS == 5.0
+    assert taskq_mod._CLIENT_POOL_COMMAND_TIMEOUT_SECS == 10.0
+
+
+# ── Enqueue lock budgets vs the client pool's per-query bound ──────────
+#
+# The typed lock-timeout refusals (MaxPendingLockTimeoutError and
+# siblings) fire server-side via a lock_timeout GUC — they only exist if
+# the budget fits inside the pool's per-query command_timeout with the
+# 80% share of headroom the refusal needs to unwind first. These pins
+# cover the wiring that makes an operator's TASKQ_*_LOCK_TIMEOUT_MS reach
+# that arithmetic on the client path: the env overlay, the pool-bound
+# derivation, and the clamp.
+
+
+def _deps_budgets(tq: TaskQ) -> tuple[float, float, float]:
+    """The three lock budgets the client's backend was actually handed."""
+    deps = tq._deps  # pyright: ignore[reportPrivateUsage]  # Why: the wiring under test is what open() hands the backend; no public accessor exposes it.
+    assert deps is not None
+    settings = deps.settings
+    return (
+        settings.max_pending_lock_timeout_ms,
+        settings.unique_for_lock_timeout_ms,
+        settings.idempotency_lock_timeout_ms,
+    )
+
+
+async def test_taskq_open_delivers_default_budgets_inside_the_pool_bound(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """At the shipped defaults the client path delivers each 5000 ms
+    budget in full inside the pool's 10.0 s per-query bound — the bound
+    is deliberately larger than every 5000 ms lock budget, so the
+    server-side lock_timeout fires well before the client-side timer and
+    the refusal is the typed one, never a bare TimeoutError."""
+    import asyncpg as asyncpg_mod
+
+    captured_kwargs: dict[str, Any] = {}
+
+    def _recording_create_pool(*a: Any, **kw: Any) -> _FakePool:
+        captured_kwargs.update(kw)
+        return _FakePool("dsn")
+
+    monkeypatch.setattr(asyncpg_mod, "create_pool", _recording_create_pool)
+    tq = TaskQ(dsn="postgresql://x:x@localhost/x", schema="taskq")
+    async with asyncio.timeout(_TEST_BUDGET_SECS):
+        await tq.open()
+        budgets = _deps_budgets(tq)
+    async with asyncio.timeout(_TEST_BUDGET_SECS):
+        await tq.close()
+
+    assert captured_kwargs.get("command_timeout") == 10.0
+    assert budgets == (5000.0, 5000.0, 5000.0)
+
+
+async def test_taskq_open_operator_widened_budget_is_delivered_end_to_end(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An operator widening a budget past its default re-derives the
+    pool's per-query bound to fit it at the same 80% share — the widened
+    budget is delivered in full (not silently clamped to fit the floor),
+    and the untouched siblings now fit the larger bound unclamped too."""
+    import asyncpg as asyncpg_mod
+
+    captured_kwargs: dict[str, Any] = {}
+
+    def _recording_create_pool(*a: Any, **kw: Any) -> _FakePool:
+        captured_kwargs.update(kw)
+        return _FakePool("dsn")
+
+    monkeypatch.setattr(asyncpg_mod, "create_pool", _recording_create_pool)
+    monkeypatch.setenv("TASKQ_IDEMPOTENCY_LOCK_TIMEOUT_MS", "30000")
+    tq = TaskQ(dsn="postgresql://x:x@localhost/x", schema="taskq")
+    async with asyncio.timeout(_TEST_BUDGET_SECS):
+        await tq.open()
+        budgets = _deps_budgets(tq)
+    async with asyncio.timeout(_TEST_BUDGET_SECS):
+        await tq.close()
+
+    assert captured_kwargs.get("command_timeout") == 37.5, (
+        "a 30000 ms budget needs a 37.5 s pool bound to keep its 80% share; "
+        f"got {captured_kwargs.get('command_timeout')!r}"
+    )
+    assert budgets == (5000.0, 5000.0, 30000.0)
+
+
+async def test_taskq_caller_supplied_pool_leaves_budgets_as_configured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A caller-owned pool's timeouts are the caller's own choice (the
+    worker's doctrine for caller pools): no derivation, no clamp — the
+    budgets stand as configured."""
+    monkeypatch.setenv("TASKQ_MAX_PENDING_LOCK_TIMEOUT_MS", "12000")
+    tq = TaskQ(pool=_FakePool("caller"), schema="taskq")  # type: ignore[arg-type]  # Why: the pool seam under test is duck-typed at open(); the fake covers the close path.
+    async with asyncio.timeout(_TEST_BUDGET_SECS):
+        await tq.open()
+        budgets = _deps_budgets(tq)
+    async with asyncio.timeout(_TEST_BUDGET_SECS):
+        await tq.close()
+
+    assert budgets == (12000.0, 5000.0, 5000.0)
+
+
+def test_taskq_pg_provider_pool_factory_derives_the_bound_from_a_widened_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The pg_provider sugar's pool factory carries the DERIVED bound too,
+    not the bare floor — otherwise the provider path would be the one
+    client pool where widening a lock budget silently does nothing."""
+
+    import taskq.auth as auth_mod
+
+    captured_kwargs: dict[str, Any] = {}
+
+    def _recording_factory(*a: Any, **kw: Any) -> Any:
+        captured_kwargs.update(kw)
+        return _black_hole_pool_factory(asyncio.Event())
+
+    monkeypatch.setattr(auth_mod, "make_pg_pool_factory", _recording_factory)
+    monkeypatch.setenv("TASKQ_UNIQUE_FOR_LOCK_TIMEOUT_MS", "20000")
+    TaskQ(
+        dsn="postgresql://u@h/db",
+        pg_provider=_Provider(),
+        schema="taskq",
+    )
+
+    assert captured_kwargs.get("command_timeout") == 25.0, (
+        "a 20000 ms budget needs a 25 s pool bound to keep its 80% share; "
+        f"got {captured_kwargs.get('command_timeout')!r}"
+    )
 
 
 # ── taskq ui serve: startup factory calls and eager redis are bounded ──
@@ -834,14 +965,16 @@ def test_ui_serve_command_passes_command_timeout_to_pool_factory(
 
 # ── Protocol completeness: the settings doubles declare every knob ─────
 
-_LOCK_BUDGET_FIELDS: tuple[tuple[str, float], ...] = (
+_KNOB_DEFAULT_FIELDS: tuple[tuple[str, Any], ...] = (
     ("max_pending_lock_timeout_ms", 5000.0),
     ("unique_for_lock_timeout_ms", 5000.0),
     ("idempotency_lock_timeout_ms", 5000.0),
+    ("max_retry_backoff", DEFAULT_MAX_RETRY_BACKOFF),
 )
-"""The three BackendSettings lock-budget members and the defaults they
-must carry — WorkerSettings' own (5000.0 each, the module constants the
-backend's defensive getattr fallbacks supply).
+"""The BackendSettings members whose defaults the doubles must carry —
+WorkerSettings' own (5000.0 ms each for the enqueue lock budgets, the
+module constants the backend's defensive getattr fallbacks supply;
+24 h for the reclaim sweep's backoff ceiling).
 
 Why presence is asserted via getattr and not runtime_checkable isinstance:
 a runtime protocol isinstance inspects only METHOD members on Python
@@ -853,8 +986,14 @@ execution environment relaxes for argument passing)."""
 _MISSING: Final[Any] = object()
 
 
-def _assert_lock_budget_fields(settings_object: Any, double_name: str) -> None:
-    for field, expected in _LOCK_BUDGET_FIELDS:
+def _assert_declared_knobs(settings_object: Any, double_name: str) -> None:
+    # The presence set is derived from the protocol, not hand-listed: a
+    # knob added to BackendSettings must appear on every settings object
+    # the backend can receive, and a hand-list stops at the members its
+    # author remembered.
+    from taskq.backend._protocol import BackendSettings
+
+    for field in BackendSettings.__annotations__:
         value = getattr(settings_object, field, _MISSING)
         assert value is not _MISSING, (
             f"{double_name} must declare BackendSettings.{field} — the "
@@ -862,8 +1001,10 @@ def _assert_lock_budget_fields(settings_object: Any, double_name: str) -> None:
             "PostgresBackend must carry the knobs, so the contract is "
             "checkable rather than hoped for."
         )
-        assert value == expected, (
-            f"{double_name}.{field} must mirror WorkerSettings' default ({expected}), got {value!r}"
+    for field, expected in _KNOB_DEFAULT_FIELDS:
+        assert getattr(settings_object, field) == expected, (
+            f"{double_name}.{field} must mirror WorkerSettings' default ({expected}), got "
+            f"{getattr(settings_object, field)!r}"
         )
 
 
@@ -871,12 +1012,12 @@ def test_client_settings_satisfies_backend_settings_protocol() -> None:
     """``_ClientSettings`` declares every ``BackendSettings`` member — the
     protocol's own doctrine: every settings object that reaches a
     PostgresBackend must carry the knobs, so the contract is checkable
-    rather than hoped for. The three enqueue lock-budget fields are the
-    completion; the backend's defensive getattr fallbacks stay for
-    undeclared doubles."""
+    rather than hoped for. The enqueue lock-budget fields and the reclaim
+    backoff ceiling carry value pins; the backend's defensive getattr
+    fallbacks stay for undeclared doubles."""
     from taskq.client._taskq import _ClientSettings
 
-    _assert_lock_budget_fields(_ClientSettings(schema_name="taskq"), "_ClientSettings")
+    _assert_declared_knobs(_ClientSettings(schema_name="taskq"), "_ClientSettings")
 
 
 def test_web_admin_settings_double_satisfies_backend_settings_protocol() -> None:
@@ -884,4 +1025,4 @@ def test_web_admin_settings_double_satisfies_backend_settings_protocol() -> None
     contract as ``_ClientSettings`` — same doctrine, same fields."""
     from tests.test_web_admin_integration import _TestBackendSettings
 
-    _assert_lock_budget_fields(_TestBackendSettings(), "_TestBackendSettings")
+    _assert_declared_knobs(_TestBackendSettings(), "_TestBackendSettings")

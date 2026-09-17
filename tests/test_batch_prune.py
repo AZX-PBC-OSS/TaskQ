@@ -171,8 +171,8 @@ def test_prune_old_batches_sql_windows_candidates_with_limit() -> None:
 
 async def test_prune_old_batches_drains_in_bounded_batches() -> None:
     """A 2 500-row eligible set at ``batch_size=1 000`` drains in three
-    bounded calls (full, full, short) and reports the total — the
-    GoodJob ``in_batches_of`` shape, one committed statement per batch."""
+    bounded calls (full, full, short) and reports the total — windowed
+    deletes with one committed statement per batch."""
     conn = _FetchvalScriptConn(counts=[1000, 1000, 500])
     total = await _prune_old_batches_pg(conn, cutoff=_START)
     assert total == 2500

@@ -1,5 +1,7 @@
 """Workers overview and leader detail admin pages."""
 
+from typing import cast
+
 import asyncpg
 import structlog
 from fastapi import APIRouter, Depends
@@ -7,8 +9,9 @@ from fastapi.responses import HTMLResponse
 from jinja2 import Environment
 
 from taskq.settings import TaskQSettings
+from taskq.web._pool import BoundedPool
 from taskq.web.admin._factory import (
-    get_pg_pool,
+    get_admin_pool,
     get_realtime_ctx,
     get_schema,
     get_settings,
@@ -20,8 +23,14 @@ logger = structlog.get_logger("taskq.web.admin.workers")
 
 
 _WORKERS_SQL = (
-    "SELECT w.*, (ml.worker_id IS NOT NULL) AS is_leader "
+    "SELECT w.*, (ml.worker_id IS NOT NULL) AS is_leader, "
+    "COALESCE(running.running_count, 0) AS running_jobs "
     'FROM "{schema}".workers w '
+    "LEFT JOIN LATERAL ("
+    "  SELECT count(*)::int AS running_count "
+    '  FROM "{schema}".jobs j '
+    "  WHERE j.locked_by_worker = w.id AND j.status = 'running'"
+    ") running ON true "
     'LEFT JOIN "{schema}".maintenance_leader ml ON ml.worker_id = w.id '
     "ORDER BY w.last_seen_at DESC"
 )
@@ -33,10 +42,60 @@ _WORKERS_SQL = (
 _LEADER_SQL = (
     "SELECT ml.*, w.hostname, w.pid, "
     "w.last_seen_at AS worker_last_seen, "
-    "(ml.last_seen_at > clock_timestamp() - make_interval(secs => {live_secs})) AS watchdog_healthy "
+    # The holder's own lease is the truthful verdict when it wrote one: the
+    # expiry it chose is the instant its peers act on, so anything derived
+    # from this process's idea of a freshness window would disagree with the
+    # fleet. A row without one was written by a pod that does not lease, and
+    # only its ping can answer for it.
+    "(CASE WHEN ml.expires_at IS NOT NULL THEN ml.expires_at >= clock_timestamp() "
+    "ELSE ml.last_seen_at > clock_timestamp() - make_interval(secs => {live_secs}) END) "
+    "AS watchdog_healthy "
     'FROM "{schema}".maintenance_leader ml '
     'JOIN "{schema}".workers w ON ml.worker_id = w.id'
 )
+
+
+def format_stall_hotspots(tally: object) -> str:
+    """Render a worker's stall tally hottest-first, or ``''`` when empty.
+
+    *tally* is the ``loop_stalls`` value of the workers row metadata:
+    ``{actor: {kind: count}}`` as the watchdog's tally holder wrote it.
+    Actors sort by total attributed stalls, descending (ties by name);
+    each renders as ``actor xN (kinds)`` with the kind counts shown
+    plain when there is one kind and ``kind count`` pairs hottest-first
+    when there are several. Malformed shapes (metadata written by an
+    older worker, or hand-edited) render as empty rather than raising:
+    a broken tally must not take down the page that shows it.
+    """
+    if not isinstance(tally, dict):
+        return ""
+    tally_map = cast("dict[str, object]", tally)
+    entries: list[tuple[int, str, dict[str, int]]] = []
+    for actor_name, kinds in tally_map.items():
+        if not isinstance(kinds, dict):
+            continue
+        kind_map = cast("dict[str, object]", kinds)
+        kind_counts = {
+            str(kind): int(count)
+            for kind, count in kind_map.items()
+            if isinstance(count, (int, float)) and not isinstance(count, bool)
+        }
+        if not kind_counts:
+            continue
+        total = sum(kind_counts.values())
+        entries.append((total, str(actor_name), kind_counts))
+    entries.sort(key=lambda e: (-e[0], e[1]))
+    parts: list[str] = []
+    for total, actor_name, kind_counts in entries:
+        if len(kind_counts) == 1:
+            kinds = next(iter(kind_counts))
+        else:
+            kinds = ", ".join(
+                f"{kind} {count}"
+                for kind, count in sorted(kind_counts.items(), key=lambda kv: (-kv[1], kv[0]))
+            )
+        parts.append(f"{actor_name} x{total} ({kinds})")
+    return "; ".join(parts)
 
 
 def register(router: APIRouter) -> None:
@@ -44,7 +103,7 @@ def register(router: APIRouter) -> None:
 
     @router.get("/workers", response_class=HTMLResponse)
     async def workers_overview(  # pyright: ignore[reportUnusedFunction]  # Why: registered via FastAPI decorator; pyright cannot see the route registration.
-        pool: asyncpg.Pool = Depends(get_pg_pool),
+        pool: BoundedPool = Depends(get_admin_pool),
         schema: str = Depends(get_schema),
         tmpl: Environment = Depends(get_templates),
         realtime_ctx: tuple[str, str] = Depends(get_realtime_ctx),
@@ -56,11 +115,20 @@ def register(router: APIRouter) -> None:
         workers = [dict(r) for r in rows]
         for w in workers:
             md = decode_jsonb(w.get("metadata"))
-            w["notify_enabled"] = (
-                bool(md.get("notify_enabled", False))  # pyright: ignore[reportUnknownArgumentType]  # Why: decode_jsonb returns object; isinstance(md, dict) narrows the container but pyright cannot narrow the dict value type, so the argument is statically unknown.
-                if isinstance(md, dict)
-                else False
-            )
+            # running_jobs counts the worker's own running ROWS (the same
+            # population taskq.worker.active_jobs counts per process); the
+            # max is the registered capacity those rows are bounded by.
+            # Reserved-but-unclaimed capacity (rate-limit slots, in-flight
+            # dispatch probes) is deliberately NOT in either number.
+            if isinstance(md, dict):
+                md_map = cast("dict[str, object]", md)
+                w["max_concurrency"] = md_map.get("max_concurrency")
+                w["notify_enabled"] = bool(md_map.get("notify_enabled", False))
+                w["stall_hotspots"] = format_stall_hotspots(md_map.get("loop_stalls"))
+            else:
+                w["max_concurrency"] = None
+                w["notify_enabled"] = False
+                w["stall_hotspots"] = ""
         realtime_mode, mode_label = realtime_ctx
         html = tmpl.get_template("workers.html").render(
             workers=workers,
@@ -71,7 +139,7 @@ def register(router: APIRouter) -> None:
 
     @router.get("/leader", response_class=HTMLResponse)
     async def leader_detail(  # pyright: ignore[reportUnusedFunction]  # Why: registered via FastAPI decorator; pyright cannot see the route registration.
-        pool: asyncpg.Pool = Depends(get_pg_pool),
+        pool: BoundedPool = Depends(get_admin_pool),
         schema: str = Depends(get_schema),
         tmpl: Environment = Depends(get_templates),
         realtime_ctx: tuple[str, str] = Depends(get_realtime_ctx),

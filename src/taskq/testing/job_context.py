@@ -26,6 +26,7 @@ from pydantic import BaseModel
 
 from taskq.backend._protocol import JobId
 from taskq.client._enqueuer import SubJobEnqueuer
+from taskq.context import CancelOrigin
 
 __all__ = ["JobContext"]
 
@@ -67,6 +68,12 @@ class JobContext[P: BaseModel]:
     progress_reports: list[dict[str, object]] = field(
         default_factory=list[dict[str, object]],
     )
+
+    # Mirrors the production JobContext's origin surface: actors that read
+    # ``ctx.cancel_origin`` to tell a deploy apart from an operator cancel
+    # stay exercisable through the harness (the harness never stamps it —
+    # construct with an explicit value to test the shutdown branch).
+    cancel_origin: CancelOrigin = CancelOrigin.NONE
 
     @property
     def cancellation_requested(self) -> bool:

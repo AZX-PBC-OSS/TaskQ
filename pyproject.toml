@@ -93,8 +93,8 @@ otel = [
     "opentelemetry-instrumentation>=0.64b0,<1",
 ]
 prometheus = [
-    # >=0.63b0 guarantees PrometheusMetricReader's public `registry=` kwarg
-    # (opentelemetry-python #5055); earlier releases hard-coded the global
+    # >=0.63b0 guarantees PrometheusMetricReader's public `registry=` kwarg;
+    # earlier releases hard-coded the global
     # REGISTRY, which is not safe for isolated metric scrapes.
     "opentelemetry-exporter-prometheus>=0.63b0,<1",
     "prometheus-client>=0.26.0,<1",
@@ -430,6 +430,7 @@ ignore = [
 # cryptographic purposes.
 "tests/test_retry_backoff.py" = ["S311"]
 "tests/test_retry_backoff_overflow.py" = ["S311"]
+"tests/test_retry_jitter_at_cap.py" = ["S311"]
 # S311: random.Random used for poll-jitter determinism in producer-wake
 # tests, not cryptographic purposes.
 "tests/test_worker_producer_wake.py" = ["S311"]
@@ -614,6 +615,7 @@ markers = [
     "redis: marks tests requiring the [redis] extra and a Redis container",
     "examples: marks tests for the example app (excluded from default CI run)",
     "e2e: end-to-end tests with containerized workers (requires --e2e opt-in; CI job 'e2e')",
+    "otel_validation: OTLP round-trip tests against a collector container (requires --otel-validation opt-in and Docker; see make test-otel)",
 ]
 
 [tool.coverage.run]
@@ -659,6 +661,8 @@ dev = [
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
     "pytest-cov>=7.1.0",
+    "pytest-gremlins>=1.9.0",
+    "pytest-randomly>=5.0.0",
     "pytest-timeout>=2.4.0",
     "pytest-xdist>=3.8.0",
     "python-multipart>=0.0.32",

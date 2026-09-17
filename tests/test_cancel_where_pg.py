@@ -54,6 +54,83 @@ class TestCancelWherePostgres:
         assert sc[0].detail.get("from_state") in ("pending", "scheduled")
         assert sc[0].detail.get("to_state") == "cancelled"
 
+    async def test_pg_bulk_cancel_marks_origin_consistently_with_single_job_cancel(
+        self, backend_pair: Backend
+    ) -> None:
+        """A job cancelled by a bulk filter carries the same cancel-origin
+        marker on its row as the same job cancelled one at a time.
+
+        Bulk cancel is how an operator offboards a tenant or aborts a bad
+        deploy, and it is exactly when monitoring needs to say *why* a
+        large population of rows went terminal. If the bulk path writes a
+        different marker from the single-job path — or none at all — the
+        cancelled-jobs view splits into two populations that mean the same
+        thing, and the bulk one is the population with no explanation
+        attached.
+        """
+        single = await backend_pair.enqueue(
+            make_enqueue_args(tags=("single-cancel",), scheduled_at=_NOW)
+        )
+        bulk = await backend_pair.enqueue(
+            make_enqueue_args(tags=("bulk-cancel",), scheduled_at=_NOW)
+        )
+
+        await backend_pair.write_cancel_request(single.id, "offboard")
+        await backend_pair.cancel_where(JobFilter(tags=("bulk-cancel",)), reason="offboard")
+
+        single_row = await backend_pair.get(single.id)
+        bulk_row = await backend_pair.get(bulk.id)
+        assert single_row is not None
+        assert bulk_row is not None
+        assert single_row.status == bulk_row.status == "cancelled"
+
+        assert bulk_row.error_class is not None, (
+            "a bulk-cancelled job row carries no cancel-origin marker, so a "
+            "mass cancellation is indistinguishable on the row from any other "
+            "terminal cancel"
+        )
+        assert bulk_row.error_class == single_row.error_class, (
+            "the bulk-cancel and single-job cancel paths stamp different "
+            f"cancel-origin markers ({bulk_row.error_class!r} vs "
+            f"{single_row.error_class!r}); the same outcome must read the same "
+            "way whichever path produced it"
+        )
+
+    async def test_pg_bulk_cancelled_job_leaves_terminal_timeline_entry(
+        self, backend_pair: Backend
+    ) -> None:
+        """Every job a bulk cancel terminates keeps a terminal-cancel entry
+        on its event timeline.
+
+        The bulk path writes its events in bounded committed batches rather
+        than one per call, which is the shape most likely to drop a
+        transition. No cancelled job may end with a timeline that never
+        shows it ending.
+        """
+        rows = [
+            await backend_pair.enqueue(
+                make_enqueue_args(tags=("timeline-bulk",), scheduled_at=_NOW)
+            )
+            for _ in range(3)
+        ]
+
+        await backend_pair.cancel_where(JobFilter(tags=("timeline-bulk",)), reason="offboard")
+
+        for row in rows:
+            updated = await backend_pair.get(row.id)
+            assert updated is not None
+            assert updated.status == "cancelled"
+            events = await backend_pair.get_events(row.id)
+            terminal = [
+                e
+                for e in events
+                if e.kind == "state_change" and e.detail.get("to_state") == "cancelled"
+            ]
+            assert terminal, (
+                "a bulk-cancelled job left no terminal-cancel entry on its "
+                f"event timeline; kinds were {[e.kind for e in events]}"
+            )
+
     async def test_pg_cancel_where_reason_with_quotes(self, backend_pair: Backend) -> None:
         """Reason containing double-quotes does not cause DataError."""
         args = make_enqueue_args(tags=("tenant-acme",), scheduled_at=_NOW)

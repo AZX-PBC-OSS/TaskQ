@@ -336,6 +336,23 @@ no Redis/DB dependency. The cookie payload stores only `subject`, `email`, and
 `groups` (as a sorted list). Cookie flags: `HttpOnly`, `Secure` (configurable),
 `SameSite=Lax`.
 
+The SAML backend also sets a second, short-lived cookie (`taskq_saml_request`,
+5 minutes) that correlates the ACS callback with the AuthnRequest that started
+the login. A hosted IdP POSTs its assertion from a different site, and a
+browser withholds a `SameSite=Lax` cookie from a cross-site POST, so this one
+is marked `SameSite=None` when `secure_cookie` is on and is scoped to the
+`/callback` path alone. The session cookie's policy is untouched.
+
+Because a browser may withhold that cookie anyway (third-party cookie
+blocking, a privacy mode), the callback also keeps a short-lived record of the
+AuthnRequest IDs the process issued. An assertion arriving without the cookie
+is validated in full, and is then accepted only if its `InResponseTo` names an
+AuthnRequest that process issued and has not yet spent — so a response
+answering a login this deployment never started is still refused. That record
+is per process: with more than one admin replica, keep SAML logins on a single
+replica (sticky sessions) or expect an occasional retry when the cookie is
+dropped and the callback lands on a different replica than the login.
+
 The auth dependency re-checks the group allowlist on every request, so changing
 `allowed_groups` takes effect immediately for existing sessions (a user whose
 group no longer intersects the allowlist gets 401 on the next request). Rotating

@@ -26,7 +26,7 @@ from taskq.backend._protocol import (
     ScheduleUpdateArgs,
     SnoozeOutcome,
 )
-from taskq.retry import OnRetryExhausted, OnSuccess, RetryClassifierHook, RetryPolicy
+from taskq.retry import OnCancel, OnRetryExhausted, OnSuccess, RetryClassifierHook, RetryPolicy
 
 __all__ = [
     "EmptyPayload",
@@ -46,6 +46,8 @@ class StubActorConfig:
     on_retry_exhausted_timeout: float = 3.0
     on_success: OnSuccess | None = None
     on_success_timeout: float = 3.0
+    on_cancel: OnCancel | None = None
+    on_cancel_timeout: float = 3.0
 
 
 def default_actor_config() -> StubActorConfig:
@@ -100,7 +102,22 @@ def _make_job_row() -> JobRow:
 
 
 class FakeBackend:
-    """Minimal backend recording method calls for assertions."""
+    """Minimal backend recording method calls for assertions.
+
+    The terminal writes model the real backends' fencing, not just the
+    happy path: Postgres and the in-memory twin both fence on
+    ``(status='running', locked_by_worker, attempt)``, so once one
+    terminal write has moved a job row out of ``running`` every later
+    terminal write for that job matches nothing and reports ``False``.
+    The double keeps the terminal-state half of that contract — the first
+    ``mark_succeeded``/``mark_cancelled`` for a job id lands, any
+    subsequent one returns ``False`` — so a test exercising a
+    cancel/success race cannot pass vacuously against a backend that let
+    both writes land. The worker/attempt conjuncts are subsumed by
+    first-writer-wins: the landing write IS the holder's, and on the real
+    backends a repeated write fails the status conjunct even from the
+    same worker and attempt.
+    """
 
     # Bound to the canonical constant (not a literal) so the fake can
     # never drift behind a protocol bump — a hardcoded 2 here previously
@@ -111,12 +128,13 @@ class FakeBackend:
     def __init__(
         self,
         *,
-        mark_snoozed_return: Literal[
-            "scheduled", "failed", "failed:MaxAttemptsExceeded", "noop"
-        ] = "scheduled",
+        mark_snoozed_return: Literal["scheduled", "failed", "noop"] = "scheduled",
         mark_retry_after_return: Literal[
             "scheduled", "failed:DeadlineExceeded", "failed:MaxAttemptsExceeded", "noop"
         ] = "scheduled",
+        mark_interrupted_return: Literal[
+            "pending", "scheduled", "failed:DeadlineExceeded", "noop"
+        ] = "pending",
     ) -> None:
         self.mark_succeeded_calls: list[
             tuple[UUID, UUID, dict[str, object] | None, bytes | None]
@@ -124,13 +142,28 @@ class FakeBackend:
         self.mark_cancelled_calls: list[dict[str, object]] = []
         self.mark_snoozed_calls: list[dict[str, object]] = []
         self.mark_retry_after_calls: list[dict[str, object]] = []
+        self.mark_interrupted_calls: list[dict[str, object]] = []
         self.mark_failed_or_retry_calls: list[dict[str, object]] = []
-        self._mark_snoozed_return: Literal[
-            "scheduled", "failed", "failed:MaxAttemptsExceeded", "noop"
-        ] = mark_snoozed_return
+        # The fence's terminal-state half: job ids a terminal write
+        # already moved out of 'running', mapped to the outcome that won.
+        self._terminal_outcomes: dict[UUID, str] = {}
+        self._mark_snoozed_return: Literal["scheduled", "failed", "noop"] = mark_snoozed_return
         self._mark_retry_after_return: Literal[
             "scheduled", "failed:DeadlineExceeded", "failed:MaxAttemptsExceeded", "noop"
         ] = mark_retry_after_return
+        self._mark_interrupted_return: Literal[
+            "pending", "scheduled", "failed:DeadlineExceeded", "noop"
+        ] = mark_interrupted_return
+
+    def _land_terminal_write(self, job_id: UUID, outcome: str) -> bool:
+        """The double's fence: the first terminal write for *job_id* lands
+        (``True``); every later one is fenced out (``False``), the way the
+        real backends' ``status='running'`` conjunct matches nothing once
+        the row has gone terminal."""
+        if job_id in self._terminal_outcomes:
+            return False
+        self._terminal_outcomes[job_id] = outcome
+        return True
 
     async def enqueue(self, args: EnqueueArgs) -> JobRow:
         raise NotImplementedError
@@ -162,7 +195,7 @@ class FakeBackend:
         attempt: int | None = None,
     ) -> bool:
         self.mark_succeeded_calls.append((job_id, worker_id, result, result_bytes))
-        return True
+        return self._land_terminal_write(job_id, "succeeded")
 
     async def mark_succeeded_with_conn(
         self,
@@ -226,7 +259,7 @@ class FakeBackend:
                 "progress_state": progress_state,
             }
         )
-        return True
+        return self._land_terminal_write(job_id, "cancelled")
 
     async def write_cancel_escalation(
         self, job_id: UUID, worker_id: UUID, phase: Literal[2]
@@ -253,7 +286,7 @@ class FakeBackend:
         outcome: SnoozeOutcome = "snoozed",
         attempt: int | None = None,
         denial_reason: DenialReason = "capacity",
-    ) -> Literal["scheduled", "failed", "failed:MaxAttemptsExceeded", "noop"]:
+    ) -> Literal["scheduled", "failed", "noop"]:
         self.mark_snoozed_calls.append(
             {
                 "job_id": job_id,
@@ -290,6 +323,28 @@ class FakeBackend:
             }
         )
         return self._mark_retry_after_return
+
+    async def mark_interrupted(
+        self,
+        job_id: UUID,
+        worker_id: UUID,
+        *,
+        attempt: int,
+        hold: timedelta,
+        progress_seq: int = 0,
+        progress_state: dict[str, object] | None = None,
+    ) -> Literal["pending", "scheduled", "failed:DeadlineExceeded", "noop"]:
+        self.mark_interrupted_calls.append(
+            {
+                "job_id": job_id,
+                "worker_id": worker_id,
+                "attempt": attempt,
+                "hold": hold,
+                "progress_seq": progress_seq,
+                "progress_state": progress_state,
+            }
+        )
+        return self._mark_interrupted_return
 
     async def write_attempt(self, attempt: AttemptRow) -> None:
         pass

@@ -136,7 +136,7 @@ Raises `ValueError` if `limit < 1`, `window <= timedelta(0)`, or `style` is not 
 
 !!! note "Postgres log-style acquire: bounded lock wait, fail-closed denial"
 
-    The log-style Postgres acquire serialises its per-bucket DELETE/count/INSERT behind a transaction-scoped advisory lock, taken with a **bounded** wait — 5 s by default (`DEFAULT_SLIDING_WINDOW_LOCK_TIMEOUT_MS` in `taskq.ratelimit._sliding_window_pg`; a module constant tunable only through the acquire's private kwargs today — settings plumbing is a filed follow-up; `0` or less waits indefinitely). The acquire is two-tier: an uncontended racer pays exactly one `pg_try_advisory_xact_lock` statement, while a contended one queues **server-side** — Postgres' own lock scheduler hands the lock to the next waiter as each holder's transaction ends — with the wait bounded by a `lock_timeout` set inside a savepoint (and restored before the savepoint releases, so nothing leaks to later statements in the transaction), plus a client-side backstop that bounds the network-black-hole case where the server never answers. The window itself is unchanged and exact either way.
+    The log-style Postgres acquire serialises its per-bucket DELETE/count/INSERT behind a transaction-scoped advisory lock, taken with a **bounded** wait — 5 s by default, tunable with `TASKQ_SLIDING_WINDOW_LOCK_TIMEOUT_MS` (`0` or less waits indefinitely). The acquire is two-tier: an uncontended racer pays exactly one `pg_try_advisory_xact_lock` statement, while a contended one queues **server-side** — Postgres' own lock scheduler hands the lock to the next waiter as each holder's transaction ends — with the wait bounded by a `lock_timeout` set inside a savepoint (and restored before the savepoint releases, so nothing leaks to later statements in the transaction), plus a client-side backstop that bounds the network-black-hole case where the server never answers. The window itself is unchanged and exact either way.
 
     A racer that exhausts the wait budget — a pathologically contended bucket, or a holder whose connection died without releasing the lock — is **denied, never admitted**: it receives `RateLimitDecision(allowed=False)` with `retry_after` set to exactly one more budget. This is fail-closed: a racer that could not check the window must not admit past the limit. The dispatch layer treats it exactly like a window denial (job snoozed, then re-promoted), so a stuck bucket degrades to backpressure instead of stalling dispatch. A lock-timeout denial is *not* an empty bucket: repeated `ratelimit-lock-timeout` warnings in the worker logs are the signal that the bucket (or its lock holder) is contended or sick rather than merely busy. Refunding a lock-timeout denial is a no-op — nothing was admitted, so there is nothing to remove.
 
@@ -237,6 +237,39 @@ result = await sync_slots([gpu_reservation], pool=pg_pool)
 print(result.inserted, result.deleted, result.skipped_held)
 ```
 
+!!! warning "A never-synced reservation denies exactly like a saturated one"
+    Acquiring a slot reads the `reservation_slots` rows. If no rows were ever
+    materialised for the name — the owned-instance pattern above
+    (a registry you construct and `.register()` on for non-job use) never
+    writes them; only a worker bootstrap (actor-declared instances, queue
+    caps) or an explicit `sync_slots`/`ensure_slots` call does — then **every
+    acquire is denied**, and the denial is indistinguishable from real
+    saturation at the point it bites: same `ReservationUnavailable`, same
+    `retry_after_seconds=5.0` (the default backoff — there is no held lease
+    to derive a hint from), same `reservation-unavailable` log line.
+
+    The distinguishing signal is the slot-row count:
+
+    ```sql
+    SELECT count(*) FROM "{schema}".reservation_slots
+    WHERE bucket_name = 'gpu_slots';
+    ```
+
+    `0` rows means **never materialised** — no acquire can ever succeed; fix
+    it by calling `sync_slots` (or passing the reservation through a worker's
+    actor declarations so bootstrap syncs it). `N` rows means the reservation
+    is live and a denial is ordinary contention — wait, or raise `slots` and
+    call `sync_slots` again. The programmatic twin of the row count is
+    `await reservation.slot_rows_exist(pool)` — the same read-only probe the
+    acquire path's own heal uses to tell "rows deleted out from under it"
+    apart from "rows present, all held".
+
+    Note what does **not** discriminate: the `/admin/reservations` page
+    renders a configured-but-never-synced reservation from its declared
+    config (all slots shown free), so the page alone cannot tell
+    "never materialised" from "materialised and idle" — the row count is the
+    ground truth.
+
 ### Example
 
 ```python
@@ -329,10 +362,11 @@ If a job's queue has a registered cap, the worker prepends that reservation to t
 acquire list before running the actor — transparent to actor code, no `@actor` argument
 needed. This is the "implicit, not per-actor opt-in" behavior the issue asked for.
 
-### Prior art
+### How it works
 
-This mirrors Oban Pro's `global_limit` with queue partitioning — a fleet-wide cap applied
-per-queue rather than opted into per worker/actor.
+The queue-level cap is a fleet-wide limit applied per-queue rather than opted into per
+worker or actor. This ensures consistent behavior across all workers in a deployment without
+requiring per-actor configuration.
 
 ---
 
@@ -476,7 +510,7 @@ For full `FakeClock` walkthroughs, see
 | Backend | Value | Storage | Notes |
 |---|---|---|---|
 | Redis | `"redis"` | Redis sorted set / hash | Fastest. Requires `taskq-py[redis]` extra and `TASKQ_REDIS_URL`. Atomic Lua scripts prevent race conditions. |
-| Postgres | `"postgres"` | `rate_limit_buckets`, `rate_limit_window_entries` | No extra dependencies. Slower; uses `FOR UPDATE` row locks (token bucket, GCRA) and a bounded per-bucket advisory lock (log-style sliding window — see the note above). Also serves as fallback when Redis is unavailable. |
+| Postgres | `"postgres"` | `rate_limit_buckets`, `rate_limit_window_entries` | No extra dependencies. Slower; uses bounded `FOR UPDATE` row locks (token bucket — `TASKQ_TOKEN_BUCKET_LOCK_TIMEOUT_MS`; GCRA — `TASKQ_SLIDING_WINDOW_LOCK_TIMEOUT_MS`) and a bounded per-bucket advisory lock (log-style sliding window, same setting as GCRA — see the note above). Also serves as fallback when Redis is unavailable. |
 | Memory | `"memory"` | Per-process `asyncio.Lock`-guarded data structure | No external dependencies. State is lost on restart and **not shared across worker processes**. Use in tests and single-process development only. |
 
 !!! warning "Redis backend without the `[redis]` extra"
@@ -547,7 +581,10 @@ class RateLimitRegistry:
   handler, or one primitive referenced by name from many actors). In a
   multi-process deployment, construct a same-configured instance in EACH
   process — Python objects cannot cross process boundaries; the underlying
-  limiter state (Redis hashes, PG rows) is shared.
+  limiter state (Redis hashes, PG rows) is shared. A `ConcurrencyReservation`
+  acquired only this way has no worker bootstrap to materialise its slot
+  rows — call `sync_slots` yourself, or every acquire denies (see the warning
+  under [`sync_slots`](#concurrencyreservation)).
 
 - **Inject via DI (worker bootstrap).** Register the owned instance as a
   **value** provider at `Scope.LOOP` in your `di_registry`; the worker
@@ -684,12 +721,12 @@ At dispatch time the worker calls `registry.acquire_for_actor()`:
 1. Reservations are acquired first, in declaration order.
 2. Rate limits are acquired next, in declaration order.
 3. If any acquisition is denied, all previously acquired resources are released in reverse order (rollback) and `ReservationUnavailable` is raised.
-4. A rate-limited job transitions to `snoozed` status (not failed or retried) and is re-promoted to `pending` when the snooze period expires. You will see `snoozed` in the admin UI for these jobs.
+4. A rate-limited job is rescheduled (not failed and not retried): it goes to `scheduled` with a future `scheduled_at` (the denial's backoff), and is re-promoted to `pending` when that time arrives. There is no `snoozed` job status — query for `scheduled` rows, and read `rate_limit_blocked_count` on the job row to see how many denials the job has met.
 5. After the actor completes, reservation slots are released. Rate-limit tokens are consumed permanently (not refunded).
 
 If `RateLimitDecision.retry_after` is `None` (fixed quota with `refill_per_second=0`), the registry substitutes `DEFAULT_RESERVATION_BACKOFF = timedelta(seconds=5)` before raising `ReservationUnavailable`.
 
-**Queue depth under sustained rate limiting:** Jobs accumulate as `snoozed` under sustained rate-limit pressure. They do not consume retry budget. There is no built-in backpressure beyond `max_pending` on the actor — monitor queue depth via the admin UI or OTel metrics.
+**Queue depth under sustained rate limiting:** Jobs accumulate as `scheduled` under sustained rate-limit pressure. They do not consume retry budget. A denial writes no `job_events` and no `job_attempts` row — per-denial rows would grow without bound under sustained contention, so the aggregated `rate_limit_blocked_count` column on the job row is the contention record. Denial is admission control with HTTP-429 semantics — a denied job is rescheduled indefinitely until capacity frees or its `schedule_to_close` deadline expires and the ordinary deadline path fails it; a denial never terminalises a job by itself. There is no built-in backpressure beyond `max_pending` on the actor — monitor queue depth via the admin UI or OTel metrics, and `rate_limit_blocked_count` on the job row for the per-job contention a single job absorbed.
 
 Primitives referenced **by name** must be registered before the worker starts (actor-declared
 **instances** are registered by the worker at bootstrap instead — see

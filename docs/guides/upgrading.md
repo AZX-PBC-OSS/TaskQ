@@ -43,16 +43,30 @@ This is a deliberate tradeoff, not a missing feature:
    This lists every discovered migration and whether it has already been
    applied, without changing anything.
 
-4. **Apply migrations explicitly**, or let the worker apply them at startup
-   via `TASKQ_MIGRATE_ON_START=true`:
+4. **Apply migrations explicitly** — from a pre-deploy job or init container,
+   before any worker starts:
 
    ```shell
    taskq migrate up
    ```
 
+   Workers never self-migrate. `TASKQ_MIGRATE_ON_START=true` is honoured only
+   by `taskq ui serve`; a worker warns and ignores it, and refuses to boot
+   while a pre-phase migration is pending, so relying on it there produces a
+   crash-loop rather than a migrated schema. N replicas racing to migrate is
+   the concurrent-migration hazard migrations exist to avoid.
+
    The command is idempotent — migrations already recorded in
    `{schema}.schema_migrations` are skipped. See [cli.md](cli.md#taskq-migrate-up)
-   for the full option reference (`--phase`, `--target`, `--max-steps`).
+   for the full option reference (`--phase`, `--target`, `--max-steps`,
+   `--ddl-lock-timeout`).
+
+   `TASKQ_MIGRATE_ON_START=true` is **not** a substitute here: it is honoured
+   only by `taskq ui serve`, which runs as a single process. The worker
+   ignores it (and warns when it is set) — N worker replicas racing to migrate
+   is the hazard the migration advisory lock exists to prevent — and a worker
+   started against a schema still missing a `pre`-phase migration refuses to
+   boot rather than running against a schema behind its code.
 
 ## Non-transactional migrations
 
@@ -119,6 +133,33 @@ need to inspect catalog state by hand.
 The whole file rolled back automatically, so the schema is exactly as it was
 before the attempt. Fix the cause of the error, then re-run `taskq migrate
 up`.
+
+### The migration gave up waiting for a table lock
+
+A transactional migration's DDL (`ALTER TABLE jobs`, a plain `CREATE INDEX`)
+needs a lock that any session holding even a read on the table blocks — an
+actor's open transaction connection mid-job, an admin snapshot, `pg_dump`.
+Postgres queues lock requests first-come-first-served, so once the DDL is
+queued every later statement on that table (dispatch, enqueue, heartbeat)
+queues behind it; left unbounded, the wait outlives the workers' heartbeat
+budget and the fleet self-terminates while the migration is still waiting.
+Each transactional migration therefore waits at most
+`DEFAULT_MIGRATION_DDL_LOCK_TIMEOUT` (30 s, `SET LOCAL lock_timeout` inside
+its own transaction) and then fails with `MigrationLockTimeoutError`; the
+report names the migration, the bound, and this remedy. The migration rolled
+back and nothing was applied: find the holder in `pg_stat_activity` /
+`pg_locks`, end it or wait for it, then re-run `taskq migrate up`. To wait
+longer, pass `taskq migrate up --ddl-lock-timeout SECS`, or
+`ddl_lock_timeout=` to `apply_pending` / `apply_pending_locked` from your
+own deploy tooling (`0` waits indefinitely, at the cost of parking every
+statement on the table behind the queued DDL). The
+bound governs the *wait* only — a statement that already holds its lock,
+such as an index build, is never interrupted by it. The runner's own upgrade
+of the `schema_migrations` ledger (an `ALTER TABLE` before the first
+migration of a run) waits under the same bound and reports the same error,
+naming the ledger instead of a migration. `-- taskq:no-transaction`
+migrations are not bounded: their `CONCURRENTLY` phases wait on heavyweight
+locks by design.
 
 ### Non-transactional migration (`-- taskq:no-transaction`)
 
@@ -468,9 +509,13 @@ Per-worker attribution is unchanged on the channels where cardinality is
 free: `worker_id` is bound onto every log line via contextvars, and
 `taskq.worker_id` is a cron-fire span attribute. The `record_*` helpers
 still accept their `worker_id` argument — only the dimension is gone.
-`taskq.cron.consecutive_failures` keeps its `schedule_id` dimension:
-schedules are a bounded, operator-created set, and
-`cron_auto_disable_threshold` is evaluated per schedule.
+`taskq.cron.consecutive_failures` is labeled by `actor`, not `schedule_id`
+— schedule rows accept any actor string at creation time, so the label is
+capped at the emitter like `queue`. A dashboard grouped by `schedule_id`
+loses its series; group by `actor` and read per-schedule attribution from
+the cron-fire span and the log lines, where cardinality is free.
+`cron_auto_disable_threshold` is still evaluated per schedule in the
+database.
 
 ### `taskq._json.dumps()` requires `str` dict keys
 
@@ -523,10 +568,10 @@ counter columns on the job row and emits an OTEL counter; it writes no
 Anything that consumed per-denial event rows (e.g. dashboards over
 `job_events`) must read the counters or OTEL instead.
 
-### Snoozing and denials no longer raise `max_attempts`; deferrals refund the claim's attempt
+### Snoozing and denials no longer raise `max_attempts`; both refund the claim's attempt
 
-> **Unreleased.** Breaking for jobs that previously snoozed forever
-> under admission denials.
+> **Unreleased.** Breaking for anything that read `max_attempts` as a
+> counter that deferrals inflate.
 
 `max_attempts` is now immutable — no code path raises it (the ceiling is
 a bound, not a counter). Two behaviours follow from that:
@@ -534,24 +579,93 @@ a bound, not a counter). Two behaviours follow from that:
 * **Actor-requested deferrals are unbounded, and never spend budget.**
   A `Snooze`, or a `RetryAfter(consume_budget=False)` honouring a
   server 429, refunds the dispatch claim's `attempt` increment
-  (`attempt - 1`, floored at 0 — the Oban/River snooze convention), so a
-  job can wait out an unready downstream indefinitely: `attempt`
-  oscillates and never walks toward the smallint ceiling, and
-  `max_attempts` never moves. Backoff keys off real executions only.
-* **Admission denials are budget-bounded.** A reservation/rate-limit
-  denial leaves the claim's increment standing, and a
-  non-`indefinite` job with no `schedule_to_close` now terminally fails
-  with `MaxAttemptsExceeded` when its retry budget is spent, rather
-  than re-queueing forever against a saturated bucket. Jobs that must
-  wait out a saturation express it explicitly: `retry_kind
-  'indefinite'`, or a `schedule_to_close` deadline (the deadline, not
-  the budget, ends a deadline-carrying job).
+  (`attempt - 1`, floored at 0) — when work is deferred without executing,
+  the attempt reservation is released so the job can wait out an unready
+  downstream indefinitely: `attempt` oscillates and never walks toward the
+  smallint ceiling, and `max_attempts` never moves. Backoff keys off real
+  executions only.
+* **Admission denials have HTTP-429 semantics.** A reservation or
+  rate-limit denial means "come back later": the actor body never ran,
+  so the denial refunds the claim's `attempt` increment, spends no retry
+  budget, never writes a `job_events` or `job_attempts` row, and never
+  by itself terminally fails the job. A denied job is rescheduled with
+  backoff for as long as the bucket stays saturated. The single bound on
+  a job that is never admitted is its `schedule_to_close` deadline,
+  which fails it through the ordinary deadline path — a queue or limiter
+  misconfiguration cannot kill a job whose only offence is that the
+  fleet was busy more times than its `max_attempts`.
 
-  The `schedule_to_close` deadline is the terminal exit for the
-  deferral paths only — a consuming `RetryAfter` (the default,
-  `consume_budget=True`) at a spent budget terminally fails regardless
-  of a future deadline: a consuming retry is a real execution, so its
-  budget exhaustion ends the job, deadline or no deadline.
+  Sustained contention stays visible on the aggregated counters the job
+  row already carries — `rate_limit_blocked_count` and `snooze_count` —
+  and on the denial metrics, rather than as one durable row per denial.
+
+  A consuming `RetryAfter` (the default, `consume_budget=True`) is
+  unaffected: it is a real execution asking for a known delay, so its
+  budget exhaustion still terminally fails the job, deadline or no
+  deadline.
+
+### Graceful shutdown interrupts — it no longer terminalises in-flight work
+
+> **Unreleased.** Behaviour change with one additive pre migration
+> (`01.00.12_02_pre_job_interrupt_count.sql` — apply it before rolling
+> the code, as with every `pre` file).
+
+When a deploy's grace windows expire with a job still running, the worker
+no longer writes a terminal state for it. The job is *interrupted*:
+released back to the fleet as `pending` (actor unwound on the cancel) or
+`scheduled` behind the remaining `TASKQ_TERMINATION_GRACE_PERIOD` budget
+(actor never unwound — the row stays unclaimable until the exiting process
+is provably gone; with `TASKQ_WATCHDOG_ENABLED=false` the hold is
+`TASKQ_LOCK_LEASE`). The claim's `attempt` increment is refunded — the
+same idiom the snooze/denial arms use — so a deploy no longer spends a
+job's retry budget, and a job interrupted on every deploy is rescheduled
+until it finishes or its `schedule_to_close` fails it with
+`DeadlineExceeded`. The release writes one `job_events` transition with
+`reason = 'interrupted'` and bumps the new `interrupt_count` column on the
+row; `taskq.jobs.interrupted{actor,hold}` and
+`taskq.jobs.interrupted_noop` are the OTEL counters.
+
+What to audit:
+
+* **`abandoned` now means "operator cancel".** A graceful shutdown never
+  produces `cancelled` or `abandoned` for infrastructure reasons; any
+  alert or dashboard that reads those statuses as deploy noise should now
+  treat them as operator intent. (The abandoned-jobs alert is purely an
+  operator-cancel signal now.)
+* **Actors that return early on cancel persist that result.** A cancel
+  request — operator or deploy — no longer overrides an actor that
+  returns a value: returning records `succeeded` and keeps the result.
+  Actors that must not keep a partial result on a deploy should read
+  `ctx.cancel_origin` and re-raise on `SHUTDOWN` (see
+  [cancellation.md](cancellation.md#shutdown-is-not-an-operator-cancel-ctxcancel_origin)).
+* **The phase-4 name changed.** `ShutdownPhase.ABANDONING` is now
+  `ShutdownPhase.RELEASING` — the integer value `4` is unchanged, so
+  `/health` JSON and the CLI keep their numbers, but the `phase="RELEASING"`
+  log string and any code importing the old enum member must move.
+* **Long actors re-run from scratch on every deploy.** Anything longer
+  than `cancellation_grace_period + cleanup_grace_period` is interrupted
+  and re-claimed repeatedly; bound such actors with `schedule_to_close`
+  or checkpoint via progress state (the released row carries the last
+  checkpoint).
+
+### Maintenance leadership is now a bounded lease
+
+> **Unreleased.** Requires one new pre-phase migration.
+
+`maintenance_leader` gains an `expires_at` column
+(`01.00.12_01_pre_leader_lease.sql`). Leadership is held by the row while
+its lease is unexpired and renewed on the heartbeat cadence, so a leader
+that dies without closing its connection is replaced within
+`TASKQ_LEADER_LEASE` plus one heartbeat instead of waiting on the
+server's connection-reaping horizon. The migration is pre-phase and
+rolling-safe: it only adds a nullable column that pre-lease pods never
+read, and rolling back to the previous release ignores it. Recovering a
+dead leader now needs no privilege beyond table access, so the
+`pg_terminate_backend` runbook steps are gone. The advisory lock a new
+leader also takes is a transition courtesy for mixed-version fleets and
+is never waited on; it is removed entirely in the release after every
+pod in your fleet runs this one. Size `TASKQ_LEADER_LEASE` at four or
+more heartbeat intervals (the default, 40 s, already is).
 
 ---
 
@@ -559,6 +673,66 @@ a bound, not a counter). Two behaviours follow from that:
 
 These change what your code *does* without changing what it *accepts*. Nothing
 raises, so nothing points you at the call site — audit for them explicitly.
+
+* **`taskq_leader_lock_contention_total` stops rising in a healthy fleet.** It
+  previously incremented on every follower's every heartbeat, so the
+  sustained-rate alert fired permanently wherever more than one pod ran. It
+  now records one event per distinct holder a pod finds in its way.
+  Dashboards that graphed the old always-rising counter will go flat.
+
+* **`dispatch_scope_by_home_queue` is a deprecated no-op.** The setting
+  (removed from the docs of the old probe-narrowing shape it applied to) is
+  accepted again so configurations that set it keep loading, but dispatch is
+  assignment-routed now and the flag has nothing left to apply. The worker
+  logs a `deprecated-setting-ignored` WARNING at startup when it is set;
+  delete `TASKQ_DISPATCH_SCOPE_BY_HOME_QUEUE` from the environment.
+
+* **Scrubbed exception messages on the `job_exception` / `job_timeout` log
+  lines are bounded at 2000 characters.** The durable `ErrorInfo` row keeps
+  the full text (the admin UI reads it there); only the log line truncates,
+  and it reports the dropped remainder count. The bound follows
+  `TASKQ_EXCEPTION_MESSAGE_MAX_CHARS` when raised.
+
+### `unique_for`'s default `unique_states` now includes `succeeded`
+
+> **Unreleased.** Breaking for actors using `unique_for` without an
+> explicit `unique_states`.
+
+The default `unique_states` was `("pending", "scheduled", "running")`; it is
+now `("pending", "scheduled", "running", "succeeded")`. `unique_for` reads as
+"at most one job for this identity in this period" — leaving `succeeded` out
+freed the identity the instant the first job completed, so a re-delivered
+webhook or a double-clicked button inside a still-open window could run the
+work a second time. The failure states (`failed`, `cancelled`, `crashed`,
+`abandoned`) remain excluded: they mean the work did not happen, so matching
+them would let one transient failure suppress every later attempt for the
+rest of the window. This matches the default every comparable job queue
+ships (the completed state is included in the uniqueness check by default).
+
+To keep the old "block only concurrent execution" behaviour, pass
+`unique_states=("pending", "scheduled", "running")` explicitly on the actor.
+
+A dedup onto a job that already finished is now surfaced: the enqueue logs a
+`WARN`-level `enqueue_deduplicated` line naming the matched status, and
+`JobHandle.deduplicated_onto_terminal` is `True`.
+
+### `migrate.apply_pending_locked` defaults to the `pre` phase only
+
+`apply_pending_locked(...)` previously applied **every** pending migration when
+called without a `phase` argument; it now applies only `pre`-phase migrations.
+The entry point exists to fire on process lifecycle events — a pod restart, a
+rollout, an autoscale event — that nobody sequences, and a `post`-phase
+migration exists precisely to be withheld until the whole fleet is confirmed
+upgraded. Letting a restart apply one would close a rolling-deploy overlap
+window mid-rollout (for example, dropping the old single-column idempotency
+index while half the fleet still issues `ON CONFLICT (idempotency_key)` takes
+that half's entire enqueue path down).
+
+If you call `apply_pending_locked` from your own deploy tooling and relied on
+the old all-phases default, pass `phase=None` explicitly to restore it — from a
+context that knows the fleet is fully upgraded. The operator-sequenced path is
+unchanged: `taskq migrate up --phase post` remains the way to close out a
+phased migration.
 
 ### Rate-limit refunds now credit the store that paid
 
@@ -645,6 +819,97 @@ itself, not the steady state. See
 [runbooks.md](runbooks.md#taskqleaderlockcontention) for the alert whose
 remediation carries this note.
 
+### A cross-actor `idempotency_key` hit now raises
+
+> **Unreleased.** Breaking only for callers that share one idempotency key
+> across actors and relied on the second enqueue returning the first
+> actor's job.
+
+`enqueue` / `enqueue_batch` with an `idempotency_key` that matches an
+existing job **of a different actor** used to return that job's handle with
+`was_existing=True` — a handle whose `.result()` belongs to another actor,
+logged at INFO as an ordinary dedup. It now raises
+`IdempotencyKeyActorMismatchError` (naming both actors, the key, the scope
+and the existing job id) with nothing enqueued; in `enqueue_batch` the whole
+batch is withdrawn. `enqueue_batch_fast` aborts the whole COPY either way
+(all-or-nothing bulk-import semantics are unchanged) and now classifies the
+abort the same way: a cross-actor pair raises
+`IdempotencyKeyActorMismatchError`, a same-actor pair keeps
+`DuplicateIdempotencyKeyError`. Same-actor hits on the single and batch
+tiers are unchanged. Keys were always documented as unique per scope across
+actors; namespace them per actor (`"send_receipt:order_123"`) or use
+per-actor `idempotency_scope` values. See
+[jobs-clients.md](jobs-clients.md#idempotency_key).
+
+### NOTIFY channels embed a hash of the schema: adopt by restart
+
+> **Unreleased.** Silent for correctly-deployed fleets; a rolling deploy
+> across the rename leaves old workers polling instead of woken. Fixes a
+> bug for schema names of 14 characters or more.
+
+Every NOTIFY channel — the wake channel, the fleet events channel, the
+per-worker cancel channel, the progress channels and the cron commit gate —
+now embeds `schema_channel_tag(schema)` (the first 10 hex digits of
+`sha224(schema)`) in place of the schema name: `taskq_wake_taskq` becomes
+`taskq_wake_124a200651`. Channels are Postgres identifiers bounded by
+63 bytes, `LISTEN` silently truncates longer ones and `pg_notify` rejects
+them, and the schema name alone may be 63 characters. With the name
+interpolated, the per-worker cancel channel (13 + schema + 37 bytes) broke
+from a 14-character schema on — every cancel's NOTIFY errored, was logged
+as `cancel-request-notify-failed`, and cancellation fell back to the
+heartbeat poll — and the wake channel broke every enqueue from 53. The tag
+makes every channel's length independent of the schema; settings loading
+now refuses any schema whose channels would not fit.
+
+Migration `01.00.14_01_pre_wake_channel_schema_tag.sql` redefines the wake
+trigger to compute the same tag in SQL. **Once it applies, workers of the
+previous release stop receiving wakes** (they LISTEN on the old name) and
+claim on their poll interval until restarted; new workers are woken
+normally. Nothing errors. **Adopt by restarting the fleet onto the new
+release** after migrating, rather than rolling it — the same discipline as
+the schema-qualified advisory locks above.
+
+Anything outside TaskQ that issued `SELECT pg_notify('taskq_wake_<schema>',
+'')` must switch to the derived name; see
+[workers.md](workers.md#internal-components) for the SQL expression.
+
+### Retries at the backoff cap spread over `[cap × (1 − jitter), cap]`
+
+> **Unreleased.** Silent; only the distribution of capped retry delays
+> changes. The documented bounds are unchanged and `jitter=0` remains the
+> identity.
+
+Jitter was applied to the saturated curve value and the draw clipped at the
+effective cap, so the upper half of the band collapsed onto the cap exactly
+and about half of a cohort retrying at the cap came due at the same instant —
+the herd jitter exists to spread, on the retries most likely to follow a
+fleet-wide event. The band is now fitted under the cap before the draw: a
+capped retry (the default exponential policy from attempt 11, any
+`fixed`/`linear` policy whose base reaches the cap, any curve above
+`max_retry_backoff`, every reclaimed cohort at the ceiling) is drawn
+uniformly from `[cap × (1 − jitter), cap]` — `[48 min, 60 min]` for the
+default policy. The RNG path and the row-derived reclaim path (Python and
+SQL) evaluate the same expressions, so they remain bit-for-bit equal. See
+[retries.md](retries.md#jitter).
+
+### Transactional migrations give up waiting for a table lock after 30 s
+
+> **Unreleased.** A migration that previously parked indefinitely behind a
+> lock holder now fails with a typed error; nothing else changes.
+
+Each transactional migration runs under `SET LOCAL lock_timeout` of
+`DEFAULT_MIGRATION_DDL_LOCK_TIMEOUT` (30 s) and raises
+`MigrationLockTimeoutError` — naming the migration (or the runner's own
+ledger upgrade), the bound and the remedy, with the driver's
+`LockNotAvailableError` as its cause — instead of waiting forever with
+every `jobs` statement queued behind it until the fleet's heartbeats gave
+out. Nothing is applied on a timeout; re-run after ending the holder. The
+bound is settable with `taskq migrate up --ddl-lock-timeout` or
+`ddl_lock_timeout=` on `apply_pending` / `apply_pending_locked` (`0`
+restores the unbounded wait). `-- taskq:no-transaction` migrations are
+unaffected. See
+[the migration gave up waiting for a table lock](#the-migration-gave-up-waiting-for-a-table-lock).
+
 ### Migration `01.00.06_01` takes write-blocking index locks
 
 > **Unreleased.** Operational note for the `jobs` / `job_attempts` index
@@ -662,6 +927,11 @@ table the apply can stall the worker fleet's writes for a noticeable window.
   (e.g. right after a prune sweep), on any deployment where `jobs` is large.
   Most deployments see momentary builds — the bounded maintenance sweeps keep
   steady-state `jobs` small.
+- The wait *for* the lock is bounded (`ddl_lock_timeout`, 30 s by default —
+  see [the migration gave up waiting for a table lock](#the-migration-gave-up-waiting-for-a-table-lock)):
+  a session holding `jobs` open fails the migration cleanly instead of parking
+  the fleet behind it. The bound never interrupts a build that already holds
+  its lock.
 - It is transactional *deliberately*: the `CREATE INDEX CONCURRENTLY` form
   deadlocks under the migration runner's own serialized-migrator advisory
   lock (the concurrent build waits on every transaction that started before
@@ -669,6 +939,28 @@ table the apply can stall the worker fleet's writes for a noticeable window.
   detector breaks by failing the apply). This follows the
   `01.00.02_01` precedent; the migration file's header carries the full
   derivation.
+
+### Migration `01.00.13_03` adds the batch open-members index
+
+> **Unreleased.** Operational note; nothing breaks. Same lock caveat as
+> `01.00.06_01` above.
+
+`01.00.13_03_pre_jobs_batch_open_members_index.sql` adds
+`jobs_batch_open_members_idx`, a partial index over the non-terminal
+members of every batch keyed by `batch_id`. It serves the member probe
+every batched job's terminal write runs (`complete_batch`'s guard and the
+`remaining` count the failure-counter writes return, the same probe as
+`count_batch_non_terminal`) as one index range over the members still
+open, where the `metadata @>` containment form walked the batch's whole
+membership on every write. Pre-phase and rolling-safe: the previous
+release's statements never reference the index and this release's run
+without it (only the cost bound is lost). Like every sibling index
+migration it is a plain `CREATE INDEX` — the build takes a write-blocking
+lock on `jobs`, so on a large `jobs` table build it `CONCURRENTLY` by hand
+first (the statement is in the migration file) and let the migration
+no-op. As with `01.00.06_01`, the wait for the lock is bounded by
+`ddl_lock_timeout` and a held `jobs` fails the migration cleanly rather
+than stalling the fleet; the build itself, once it holds the lock, is not.
 
 ### Bulk cancel and force-deregistration now make bounded committed progress
 
@@ -772,7 +1064,10 @@ handlers emits exactly one `job_failed` ERROR event (`job_id`, `actor`,
 `attempt`, `cause`, `error_class`, plus handler context such as
 `snooze_count` / `consume_budget` / `bucket_name`) — one alertable event per
 dead job, and per-attempt diagnostics at WARNING so retryable attempts
-produce zero ERROR noise. Tracebacks are formatted from the explicit
+produce zero ERROR noise. A retry the row's `schedule_to_close` deadline
+refuses at the write (the job lands `failed` with `cause=DeadlineExceeded`)
+is a terminal failure like any other: it emits the same `job_failed` event
+and fires `on_retry_exhausted` and the `ErrorReporter` once. Tracebacks are formatted from the explicit
 exception object rather than the ambient `sys.exception()`, so handler
 invocations outside an `except` block no longer record `'NoneType: None'`.
 The `terminal-write-failed` event now includes `job_error_traceback` and
@@ -883,8 +1178,59 @@ message now names only the ref, matching the sanitization contract
 `job_events` rows older than `TASKQ_EVENT_RETENTION_PERIOD` (default 7
 days) are now deleted by a leader sweep regardless of parent-job status;
 `timedelta(0)` disables it; the crash-reclaim outbox slice
-(`kind='state_change' AND detail->>'reason'='lock_expired'`) is exempt at
-any setting.
+(`kind='state_change' AND detail->>'reason'='lock_expired'`) is carved out
+of the ordinary window so an unread reclaim event survives it — but the
+carve-out is bounded, not unconditional. The same sweep deletes that slice
+once it is older than 100x the retention period
+(`RECLAIM_OUTBOX_RETENTION_MULTIPLIER`), because a fleet with no
+`watch_reclaims` consumer would otherwise retain every `lock_expired` event
+forever. Shortening the retention period shortens that window
+proportionally: a `TaskQ.watch_reclaims` consumer lagging past 100x
+retention loses events silently, with no error on either side. Size the
+retention period against your slowest consumer's worst outage, not only
+against event volume.
+
+### TaskQ-built client pools carry a 10 s per-query bound
+
+> **Unreleased.** Silent; a black-holed database now raises instead of
+> parking the client forever.
+
+Every pool TaskQ builds for a client — the DSN pool at `TaskQ.open()` and
+the `pg_provider` sugar's factory pools — now carries an asyncpg
+`command_timeout` of 10 s. Previously a black-holed Postgres (packets
+dropped, no RST) parked the client's first `enqueue`/`get`/`cancel`
+indefinitely: client processes arm no watchdogs, so nothing converted the
+hang into a crash. The query now fails with `TimeoutError` after 10 s.
+
+The trade-off cuts the other way for a slow-but-alive database: a
+legitimate client query exceeding 10 s is now cancelled, so size
+client-side expectations (and any outer retry) accordingly. The bound is
+deliberately above the enqueue-path lock budgets (5 s defaults) — the
+server-side `lock_timeout` still fires first, so a lock refusal surfaces
+as the typed `MaxPendingLockTimeoutError` / `UniqueForLockTimeoutError` /
+`IdempotencyKeyLockTimeoutError` rather than a bare `TimeoutError`. Pools
+you supply yourself (`pool=` / `pool_factory=`) stay caller-owned: their
+timeouts are your choice.
+
+### The queue-depth alert fires on oldest-pending age, not raw depth
+
+> **Unreleased.** Operator-visible: the bundled `TaskQQueueDepthHigh`
+> alert's expression changed; any override of it must be re-expressed.
+
+The bundled Prometheus rule `TaskQQueueDepthHigh`
+(`src/taskq/contrib/prometheus/rules.yaml`) previously fired on raw depth —
+`taskq_queue_depth > 1000`; it now fires on the oldest pending job's age —
+`max by (actor, queue) (taskq_jobs_oldest_pending_age_seconds) > 900`,
+sustained for 5 minutes. Depth alone is ambiguous — a deep queue that
+drains is healthy throughput — and a queue-summed number cannot tell a
+busy shared queue apart from an actor nobody consumes: a misrouted actor
+produces no refusal and no failed job, its rows simply pile up pending
+while every probe stays green, and its age series rises without bound
+while its queue-mates stay flat. The per-`(actor, queue)` attribution
+names exactly whose `TASKQ_QUEUES` coverage to check. `taskq_queue_depth`
+is still emitted, so dashboards and any rules you wrote against it keep
+working — but if you overrode the bundled alert's threshold, re-express
+the override in seconds of oldest-pending age.
 
 ---
 
@@ -1058,6 +1404,56 @@ to strand jobs quietly will now stop your process from starting.
 
 ---
 
+## The default termination grace period rose from 75 seconds to 85
+
+> **Unreleased.** Action required before upgrading for any deployment that
+> set its platform's stop grace against the old 75 s number: Kubernetes
+> `terminationGracePeriodSeconds`, an Azure Container Apps or ECS stop
+> timeout, Docker Compose `stop_grace_period`, or systemd `TimeoutStopSec`.
+
+`TASKQ_TERMINATION_GRACE_PERIOD` (the worker's own SIGTERM-to-forced-exit
+budget) now defaults to 85 s, up from 75 s. Nothing rejects the old value:
+an explicitly set number keeps working, and a deployment that never set the
+variable picks the new default up on its next image roll.
+
+**Why.** Two provider-release closes joined the modelled teardown tail. The
+bounded-close unwind that runs at the end of every shutdown (see
+`taskq._close.worst_case_teardown_tail`) went from 6 sequential closes
+(~32 s) to 8 (~42 s): the credential providers a managed-identity
+deployment resolves (one Postgres, one Redis) each close once, after every
+resource built through them. At the default phase graces (30 s + 10 s) the
+modelled worst case rose from 72 s to 82 s, so the old 75 s default no
+longer covered it and the new 85 s default does.
+
+**The action.** A platform grace pinned to 75 s now sits ~10 s below what
+the worker needs, so the platform SIGKILLs the worker mid-teardown, right
+in the provider-release step that motivated the change. The kill truncates
+in-flight terminal writes, the jobs' leases expire, and the leader's
+crash-reclaim sweep re-runs the work later: the shutdown degrades to the
+crash-reclaim path instead of finishing cleanly. Before upgrading:
+
+- raise the platform grace above the worker's worst case: at the shipped
+  defaults, 85 s is the safe floor; or
+- compute it from your settings:
+  `TASKQ_CANCELLATION_GRACE_PERIOD + TASKQ_CLEANUP_GRACE_PERIOD + ~42 s`.
+  The formula and its caveats (the conditional per-slot pool, the ~87 s
+  sibling-crash path) are in
+  [deployment.md](deployment.md#health-probes)'s fail-closed grace notes;
+- and keep the platform grace at or above `TASKQ_TERMINATION_GRACE_PERIOD`
+  itself, so the worker's own watchdog, not the platform, owns the
+  shutdown deadline.
+
+Two surfaces help confirm the sizing. The worker logs
+`shutdown-budget-exceeds-termination-grace` at startup when its own
+settings fall short of the model, but that warning compares settings to
+settings: the platform's grace is invisible to the worker, so a manifest
+still pinned to 75 s produces no warning anywhere and can only be caught
+by auditing the deployment config against the formula above. The settings
+tables in [configuration.md](configuration.md#validation-constraints) and
+[workers.md](workers.md#workersettings-reference) carry the new default.
+
+---
+
 ## Unreleased features
 
 The features and notes below land with the next release. The canonical
@@ -1201,6 +1597,15 @@ changelog becomes the authoritative record and these notes age out.
   `taskq.error_reporter.failures` OTel counter. `report()` takes
   `(job, exception)` — the same argument order as `on_retry_exhausted` —
   and is guarded by the `error_reporter_timeout` setting (default 3 s).
+  The registration's scope is validated at worker startup: a reporter
+  registered at `TRANSIENT` scope (which the hook, running after the
+  actor's scope closed, could never resolve) fails the boot with a
+  `DIError` naming the scope and the allowed ones, where dispatch time
+  previously raised per job. A dispatch that never bootstrapped
+  (in-process runners)
+  degrades instead: the hook is skipped behind a window-gated
+  `error-reporter-defect` WARNING, and a provider resolving to a value
+  without the reporter protocol warns the same way.
 - **`retry_classifier` hook on `@actor`** for exception-instance-level
   retry classification (inspect attributes like HTTP status codes, return
   `RetryOverride` to refine kind/delay per occurrence). Non-`RetryOverride`
@@ -1333,7 +1738,11 @@ onto the fixed `_other_` value) instead of the per-schedule UUID.
 Dashboards grouping by `schedule_id` lose their series on upgrade.
 Per-schedule attribution lives on the `cron fired` / `cron fire failed`
 log lines and the `cron fire` span's `taskq.cron_schedule_id` attribute.
-The per-actor balance can carry permanent residue from disabled,
-re-enabled or deleted schedules — `cron_schedules.consecutive_failures`
-and the logs are authoritative; alert on
-`taskq.cron.disabled_schedules > 0` rather than on this balance.
+The per-actor balance is reconciled against the database every tick —
+each tick re-derives the per-actor sum over the whole
+`cron_schedules.consecutive_failures` table — so disable, re-enable and
+delete actions taken in any process self-correct on the next tick with
+due work rather than stranding residue, and the value returns to zero
+once no schedule is failing. `cron_schedules.consecutive_failures` and
+the logs remain the authoritative per-schedule record; alert on
+`taskq.cron.disabled_schedules > 0` for the auto-disabled condition.

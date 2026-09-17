@@ -14,16 +14,21 @@ The observable contract, attacked here end to end:
   ``(job_id, attempt)`` primary key cannot unique-violate because the
   skipping call never wrote anything for it.
 
-The second attack is the atomicity half: the driving UPDATE, the batched
-attempt INSERT and the batched event INSERT share ONE transaction, so a
-constraint failure anywhere in the batch must roll back the ENTIRE batch
-— no job transitions, no events.  The existing pin
-(``test_postgres_sweeps.py``'s ``test_atomicity_event_insert_failure_rolls_back_state``)
-simulates the failure in Python by wrapping the connection; this attack
-makes the database itself reject a row — a pre-seeded duplicate
-``job_attempts`` row unique-violates the batched attempt INSERT after
-the driving UPDATE has already transitioned the rows — which is the
-stronger, server-level version of the same property.
+The second attack targets the same batch-atomicity seam from the
+database side: a pre-seeded duplicate ``job_attempts`` row collides with
+the batched attempt INSERT after the driving UPDATE has already
+transitioned the rows.  Under the merged keep-first-record doctrine
+(every ``job_attempts`` insert carries ``ON CONFLICT (job_id, attempt)
+DO NOTHING`` — an attempt number can legitimately already have its row,
+and the truthful first record yields to nothing) the collision is no
+longer a constraint failure at all: the synthetic crash row is SKIPPED
+and the batch commits whole.  Atomicity under a genuine mid-batch
+failure remains pinned by ``test_postgres_sweeps.py``'s
+``test_atomicity_event_insert_failure_rolls_back_state`` (a failing
+event INSERT rolls back the driving UPDATE); this attack pins the other
+half — the collision must not BECOME such a failure (a permanently
+colliding row would otherwise tear the leader's sweep loop on a
+non-transient error every tick, wedging every orphan behind it).
 """
 
 from __future__ import annotations
@@ -161,25 +166,33 @@ async def test_locked_row_is_skipped_then_reclaimed_after_holder_rollback(
     assert events == _JOBS, "one event per job across the two calls"
 
 
-async def test_mid_batch_constraint_failure_rolls_back_the_whole_batch(
+async def test_mid_batch_attempt_collision_skips_and_commits_the_batch(
     clean_pg_conn: asyncpg.Connection,
     module_pg_schema: ModulePgSchema,
 ) -> None:
-    """A DB-level constraint failure mid-batch must roll back everything.
+    """A (job_id, attempt) collision mid-batch is skipped, and the batch
+    still commits whole — every sibling transitioned and audited.
 
-    Pre-seeding a duplicate ``job_attempts`` row for one eligible job
-    makes the BATCHED attempt INSERT unique-violate after the driving
-    UPDATE has already transitioned rows — the failure lands between the
-    sweep's statements, exactly where a partial write would be possible
-    if the statements were not in one transaction.  The whole batch must
-    roll back: every job still running, zero events, only the pre-seeded
-    attempt row present.  A constraint violation is non-transient in the
-    leader's error classification, so a partial write here would also be
-    a permanently inconsistent corpus, not a retry away.
+    Rewritten for the merged keep-first-record doctrine: the pre-seeded
+    duplicate previously unique-violated the batched attempt INSERT and
+    rolled the whole batch back, which this pin asserted.  Every
+    ``job_attempts`` insert now carries ``ON CONFLICT (job_id, attempt)
+    DO NOTHING`` — an attempt number can legitimately already have its
+    row (a claim-clamped repeat at the smallint ceiling, a spent attempt
+    left behind by a re-pend), and the existing row is the truthful
+    record of what the actor actually did, so the synthetic crash row
+    yields to it.  The superseded expectation was not a tolerance loss:
+    the old rollback is precisely the wedge the doctrine removes — a
+    permanently colliding row would abort the sweep on a non-transient
+    error every tick, leaving its own job AND every sibling batched
+    behind it unreclaimed forever.  Batch atomicity under a genuine
+    mid-batch failure is still pinned (server-side, one transaction) by
+    ``test_postgres_sweeps.py``'s
+    ``test_atomicity_event_insert_failure_rolls_back_state``.
     """
     schema = module_pg_schema.schema_name
     _worker_id, job_ids = await _seed_worker_and_expired_locks(clean_pg_conn, schema, 3)
-    # The duplicate the sweep's attempt INSERT will collide with: same
+    # The row the sweep's attempt INSERT will collide with: same
     # (job_id, attempt) as the row the sweep is about to write.
     await clean_pg_conn.execute(
         f'INSERT INTO "{schema}".job_attempts '  # noqa: S608  # Why: schema is a test-fixture identifier, validated by render() upstream.
@@ -190,34 +203,41 @@ async def test_mid_batch_constraint_failure_rolls_back_the_whole_batch(
         job_ids[1],
     )
 
-    with pytest.raises(asyncpg.UniqueViolationError):
-        await PostgresBackend.sweep_expired_locks(
-            clean_pg_conn,  # type: ignore[arg-type]  # Why: asyncpg.Connection satisfies ConnLike.
-            _CANCEL_GRACE,
-            _CLEANUP_GRACE,
-            schema=schema,
-        )
-
-    running, attempts, events = await _counts(clean_pg_conn, schema, job_ids)
-    assert running == 3, (
-        f"the whole batch must roll back — {3 - running} job(s) transitioned "
-        "despite the batch failing on the attempt INSERT"
-    )
-    assert attempts == 1, "only the pre-seeded duplicate may exist — no partial writes"
-    assert events == 0, "no event rows may survive a failed batch"
-
-    # Removing the stray duplicate restores drainability: the sweep's
-    # own writes were fully rolled back, so nothing is half-done.
-    await clean_pg_conn.execute(
-        f'DELETE FROM "{schema}".job_attempts WHERE job_id = $1',  # noqa: S608  # Why: schema is a test-fixture identifier, validated by render() upstream.
-        job_ids[1],
-    )
     reclaimed = await PostgresBackend.sweep_expired_locks(
         clean_pg_conn,  # type: ignore[arg-type]  # Why: asyncpg.Connection satisfies ConnLike.
         _CANCEL_GRACE,
         _CLEANUP_GRACE,
         schema=schema,
     )
-    assert reclaimed == 3, "after the obstacle is gone the drain must complete"
+    assert reclaimed == 3, (
+        f"the collision must skip, not abort: one call reclaims the whole "
+        f"batch, got {reclaimed} of 3"
+    )
+
     running, attempts, events = await _counts(clean_pg_conn, schema, job_ids)
-    assert (running, attempts, events) == (0, 3, 3)
+    assert running == 0, (
+        f"the whole batch commits — {running} job(s) still running means the "
+        "collision rolled back the driving UPDATE's transitions"
+    )
+    assert attempts == 3, (
+        "the kept pre-seeded row plus one new attempt row per sibling — "
+        "no partial application, no duplicate"
+    )
+    assert events == 3, "one event per reclaimed job — the batch is not half-applied"
+
+    kept = await clean_pg_conn.fetchval(
+        f'SELECT error_message FROM "{schema}".job_attempts WHERE job_id = $1',  # noqa: S608  # Why: schema is a test-fixture identifier, validated by render() upstream.
+        job_ids[1],
+    )
+    assert kept == "pre-seeded duplicate", (
+        "keep-first-record: the synthetic crash row must yield to the "
+        "existing attempt row, not overwrite or duplicate it"
+    )
+
+    again = await PostgresBackend.sweep_expired_locks(
+        clean_pg_conn,  # type: ignore[arg-type]  # Why: asyncpg.Connection satisfies ConnLike.
+        _CANCEL_GRACE,
+        _CLEANUP_GRACE,
+        schema=schema,
+    )
+    assert again == 0, "the drained corpus stays drained — nothing wedged behind the collision"

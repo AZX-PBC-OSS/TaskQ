@@ -17,8 +17,11 @@ winner committed, and must find the winner's row.
 ``tests/test_postgres_idempotency_scope.py`` pins the concurrent
 same-(scope,key) race only for ONE actor (the default ``test_actor``), so
 the cross-actor, no-lock-hit window is unpinned.  Green pin here: exactly
-one row, both callers handed the same job id, the loser served the
-winner's row.
+one row, and the loser's follow-up SELECT finds the winner's committed
+row — which, being another actor's, it refuses with
+``IdempotencyKeyActorMismatchError`` naming that row (a cross-actor hit is
+not a dedup of the loser's job; see ``tests/test_idempotency_key_actor_
+mismatch.py``) rather than being handed it as its own.
 
 The singleton path is not re-tested: ``tests/test_singleton.py``'s layer-2
 test already pins the concurrent INSERT race (preflight miss → unique
@@ -38,6 +41,7 @@ import pytest
 
 from taskq._ids import new_base62, new_job_id
 from taskq.backend._protocol import EnqueueArgs, IdempotencyKey, JobRow
+from taskq.exceptions import IdempotencyKeyActorMismatchError
 from taskq.testing.fixtures import _open_pg_backend
 
 pytestmark = pytest.mark.integration
@@ -70,7 +74,7 @@ async def _teardown(stack: Any, pg_dsn: str, schema: str) -> None:
         await cleanup.close()
 
 
-async def test_cross_actor_same_scope_key_concurrent_enqueue_dedups_via_index_wait(
+async def test_cross_actor_same_scope_key_concurrent_enqueue_resolves_via_index_wait(
     pg_dsn: str,
 ) -> None:
     schema = f"tqr_{new_base62()}".lower()
@@ -106,23 +110,24 @@ async def test_cross_actor_same_scope_key_concurrent_enqueue_dedups_via_index_wa
                     task_r.cancel()
                 raise
             assert task_r is not None
-            row_r: JobRow = await asyncio.wait_for(task_r, timeout=_BOUNDED_WAIT_SECS)
+            with pytest.raises(IdempotencyKeyActorMismatchError) as refusal:
+                await asyncio.wait_for(task_r, timeout=_BOUNDED_WAIT_SECS)
         finally:
             await deps.worker_pool.release(conn_l)
             await deps.worker_pool.release(conn_r)
 
-        assert row_r.id == row_l.id, (
+        assert refusal.value.existing_job_id == row_l.id, (
             f"CONTRACT: two concurrent enqueues sharing (idempotency_scope, "
-            f"idempotency_key) must be handed the SAME job — the composite partial "
-            f"unique index plus ON CONFLICT DO NOTHING's wait on the in-flight twin "
+            f"idempotency_key) resolve to ONE job — the composite partial unique "
+            f"index plus ON CONFLICT DO NOTHING's wait on the in-flight twin "
             f"arbitrate, and the loser's enqueue_select_by_key SELECT must find the "
             f"winner's committed row. No advisory lock serializes them here (the "
             f"unique_for lock key includes the actor, and these are two different "
-            f"actors). Got winner {row_l.id} vs racer {row_r.id}."
+            f"actors). Got winner {row_l.id} vs the racer's refusal naming "
+            f"{refusal.value.existing_job_id}."
         )
-        assert row_r.actor == actor_l, (
-            "the dedup return is the surviving row itself — the racer must be served "
-            "the winner's row, not one of its own args"
+        assert refusal.value.existing_actor == actor_l and refusal.value.actor == actor_r, (
+            "the refusal names the surviving row's actor and the racer's own"
         )
         async with deps.worker_pool.acquire() as conn:
             val: Any = await conn.fetchval(

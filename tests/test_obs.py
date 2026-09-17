@@ -43,6 +43,7 @@ def _patch_instruments(monkeypatch: pytest.MonkeyPatch, meter: Meter) -> None:
         ),
         ("_published_messages", lambda: m.create_counter("messaging.client.published.messages")),
         ("_dispatch_duration", lambda: m.create_histogram("taskq.dispatch.duration")),
+        ("_dispatch_failures", lambda: m.create_counter("taskq.dispatch.failures")),
         ("_consumed_messages", lambda: m.create_counter("messaging.client.consumed.messages")),
         ("_process_duration", lambda: m.create_histogram("messaging.process.duration")),
         ("_lock_expires_in_seconds", lambda: m.create_histogram("taskq.lock.expires_in_seconds")),
@@ -275,13 +276,17 @@ def test_record_slot_pool_acquire_failure_fires_on_failure_path(
     otel_reader: InMemoryMetricReader,
 ) -> None:
     """The acquire-failure counter fires when the record helper is called
-    from the acquire's exception branch, with NO dimensions — the
-    per-occurrence job id lives in the log event, never a metric."""
-    obs_mod.record_slot_pool_acquire_failure()
+    from the acquire's exception branch, naming the failure class on the
+    ``error_type`` dimension — the per-occurrence job id lives in the log
+    event, never a metric."""
+    try:
+        raise TimeoutError("simulated acquire timeout")
+    except TimeoutError:
+        obs_mod.record_slot_pool_acquire_failure()
 
     assert counter_value(otel_reader, "taskq.worker.slot_pool.acquire_failures") == 1
     points = counter_data_points(otel_reader, "taskq.worker.slot_pool.acquire_failures")
-    assert all(dict(p.attributes or {}) == {} for p in points)
+    assert all(dict(p.attributes or {}) == {"error_type": "TimeoutError"} for p in points)
 
 
 def test_record_slot_pool_acquire_failure_disabled() -> None:
@@ -363,6 +368,47 @@ def test_slot_pool_occupancy_gauge_is_label_free() -> None:
     assert observations[0].value == 8
 
 
+# ── instrument: taskq.dispatch.failures ───────────────────────────────────
+
+
+def test_record_dispatch_failure_names_the_handled_exception_class(
+    otel_reader: InMemoryMetricReader,
+) -> None:
+    """Called from an except block with no explicit value — the production
+    call shape at every dispatch raise site — the counter's ``error_type``
+    is the caught exception's class name."""
+    try:
+        raise ConnectionResetError("simulated reset mid dispatch query")
+    except ConnectionResetError:
+        obs_mod.record_dispatch_failure("default")
+
+    dps = counter_data_points(otel_reader, "taskq.dispatch.failures")
+    assert len(dps) == 1
+    assert dps[0].value == 1
+    assert dps[0].attributes == {"queue": "default", "error_type": "ConnectionResetError"}
+
+
+def test_record_dispatch_failure_error_type_resolution_contract(
+    otel_reader: InMemoryMetricReader,
+) -> None:
+    """An explicit ``error_type`` always wins; with neither an explicit
+    value nor an active exception the label is the fixed ``unknown``
+    value, so the dimension stays a closed class set rather than whatever
+    string a caller happened to have in scope."""
+    obs_mod.record_dispatch_failure("default", error_type="TimeoutError")
+    obs_mod.record_dispatch_failure("default")
+
+    dps = counter_data_points(otel_reader, "taskq.dispatch.failures")
+    by_error_type = {dp.attributes["error_type"]: dp.value for dp in dps if dp.attributes}
+    assert by_error_type == {"TimeoutError": 1, "unknown": 1}
+
+
+def test_record_dispatch_failure_disabled() -> None:
+    otel_mod.set_otel_enabled(False)
+    obs_mod.record_dispatch_failure("default")
+    otel_mod.set_otel_enabled(True)
+
+
 # ── instrument 12: taskq.progress.publish_failures ────────────────────────
 
 
@@ -382,12 +428,16 @@ def test_record_progress_publish_failure_disabled() -> None:
 
 
 def test_record_ratelimit_refund_failure(otel_reader: InMemoryMetricReader) -> None:
-    obs_mod.record_ratelimit_refund_failure("my_bucket", "redis")
+    obs_mod.record_ratelimit_refund_failure("my_bucket", "redis", error_type="ConnectionError")
 
     dps = counter_data_points(otel_reader, "taskq.ratelimit.refund_failures")
     assert len(dps) == 1
     assert dps[0].value == 1
-    assert dps[0].attributes == {"bucket": "my_bucket", "backend": "redis"}
+    assert dps[0].attributes == {
+        "bucket": "my_bucket",
+        "backend": "redis",
+        "error_type": "ConnectionError",
+    }
 
 
 def test_record_ratelimit_refund_failure_disabled() -> None:
@@ -472,9 +522,9 @@ def test_record_cron_failure_is_dimensioned_per_actor(
 def test_record_cron_failure_disabled(otel_reader: InMemoryMetricReader) -> None:
     """The disabled contract is a no-op, not a best-effort record: with
     ``_otel_enabled=False`` the emitter must leave the instrument
-    untouched. The reader-backed assertion is the pin -- the pre-#157
-    shape of this test called the emitter and asserted nothing, so a
-    regression that records while disabled passed vacuously."""
+    untouched. The reader-backed assertion is the pin -- an earlier shape
+    of this test called the emitter and asserted nothing, so a regression
+    that records while disabled passed vacuously."""
     otel_mod.set_otel_enabled(False)
     obs_mod.record_cron_failure("actor-1", 1)
     otel_mod.set_otel_enabled(True)

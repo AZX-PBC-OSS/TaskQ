@@ -1,15 +1,17 @@
 """Tests for taskq worker CLI subcommand."""
 
+import os
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any
 
+import pytest
 from pydantic import BaseModel
 from typer.testing import CliRunner
 
 from taskq.actor import ActorRef, actor
-from taskq.cli import app
+from taskq.cli import app, main
 from taskq.exceptions import ActorConfigDriftError, ActorConfigDriftList
 from taskq.testing.assertions import plain_cli_output
 
@@ -376,3 +378,97 @@ def test_idle_poll_interval_passed(monkeypatch: Any) -> None:
     )
     assert result.exit_code == 0, f"stderr: {result.stderr}"
     assert captured["idle_poll_interval"] == 0.5
+
+
+# ── console-script entry resolves application modules from the cwd ──────
+
+
+def test_console_script_resolves_actors_from_cwd(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``taskq worker --actors myapp.actors:registry`` works from a fresh
+    project directory: the console script puts the cwd on ``sys.path``
+    (``python -m`` semantics), so a ``module:attr`` ref resolves a module
+    that lives only in the directory the operator ran the command from.
+
+    Driven through the real console entry (``taskq.cli.main``), not the
+    Typer app directly — the insertion happens at the entry point, so a
+    test that bypasses it proves nothing. The scratch module is written
+    into a tmp dir and evicted from ``sys.modules`` at teardown; the
+    ``sys.path`` and cwd mutations revert via monkeypatch.
+    """
+    import sys
+
+    (tmp_path / "scratch_actors.py").write_text(
+        "from pydantic import BaseModel\n"
+        "from taskq.actor import actor\n"
+        "\n"
+        "\n"
+        "class _Payload(BaseModel):\n"
+        "    value: int\n"
+        "\n"
+        "\n"
+        '@actor(name="scratch_actor")\n'
+        "async def scratch_actor(payload: _Payload) -> None: ...\n"
+        "\n"
+        "\n"
+        'registry = {"scratch_actor": scratch_actor}\n'
+    )
+    monkeypatch.chdir(tmp_path)
+    # The console script starts with the cwd absent from sys.path; scrub it
+    # so the test cannot pass on a stray entry rather than on the fix.
+    monkeypatch.setattr(sys, "path", [p for p in sys.path if p != str(tmp_path)])
+    monkeypatch.setattr(sys, "argv", ["taskq", "worker", "--actors", "scratch_actors:registry"])
+
+    captured: dict[str, Any] = {}
+
+    def fake_worker_main(settings: Any, *, actor_registry: Any = None, **kwargs: Any) -> int:
+        captured["actor_registry"] = actor_registry
+        return 0
+
+    monkeypatch.setattr("taskq.cli._worker_main", fake_worker_main)
+
+    try:
+        with pytest.raises(SystemExit) as exc_info:
+            main()
+    finally:
+        sys.modules.pop("scratch_actors", None)
+
+    assert exc_info.value.code == 0, (
+        "the console entry must reach worker_main, not 'module not found'"
+    )
+    assert captured["actor_registry"] is not None
+    assert list(captured["actor_registry"]) == ["scratch_actor"]
+
+
+def test_console_script_cwd_insertion_is_idempotent(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Re-running the entry (or a ``python -m taskq`` start, which already
+    carries the cwd) never stacks duplicate ``sys.path`` entries."""
+    import sys
+
+    from taskq.cli import _ensure_cwd_on_sys_path
+
+    # Both frames are synthetic: the live ``sys.path`` cannot serve as the
+    # "cwd absent" frame under a full-suite run, because earlier tests invoke
+    # ``main()`` against the real ``sys.path`` and its insertion (correct
+    # production behaviour, no monkeypatch rollback) survives into this test's
+    # starting copy — the starting count there is a run-order artifact, not a
+    # property of the helper.
+    monkeypatch.setattr(sys, "path", ["/does-not-exist"])
+
+    _ensure_cwd_on_sys_path()
+    _ensure_cwd_on_sys_path()
+
+    assert sys.path.count(os.getcwd()) == 1
+    assert sys.path[0] == os.getcwd()
+
+    # The ``python -m taskq`` shape: the cwd is already carried, and a
+    # re-run of the entry must not stack a duplicate behind it.
+    monkeypatch.setattr(sys, "path", [os.getcwd(), "/does-not-exist"])
+
+    _ensure_cwd_on_sys_path()
+    _ensure_cwd_on_sys_path()
+
+    assert sys.path.count(os.getcwd()) == 1
+    assert sys.path[0] == os.getcwd()

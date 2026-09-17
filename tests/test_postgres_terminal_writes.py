@@ -22,7 +22,7 @@ from taskq.testing.assertions import (
 )
 from taskq.testing.fixtures import JobsApp
 from taskq.testing.in_memory import InMemoryBackend
-from taskq.testing.jobs import enqueue_and_dispatch_memory
+from taskq.testing.jobs import enqueue_and_dispatch_memory, enqueue_and_dispatch_pg
 from taskq.testing.pg import create_worker, setup_running_job
 
 if TYPE_CHECKING:
@@ -128,6 +128,29 @@ class TestTerminalWritesUpdateRow:
         assert len(attempts) == 1
         assert attempts[0]["outcome"] == "cancelled"
         assert_has_event(events, "state_change")
+
+    async def test_mark_abandoned_counts_on_the_abandoned_series(
+        self, clean_jobs_app: JobsApp, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The applied abandon write records taskq.jobs.abandoned{actor}
+        once — the series TaskQAbandonedJobs pages on — and a predicate
+        miss (second call, row already terminal) records nothing more."""
+        from taskq.testing.otel import counter_data_points, setup_meter
+
+        reader = setup_meter(monkeypatch)
+        deps = clean_jobs_app.deps
+        backend = clean_jobs_app.backend
+        schema = deps.settings.schema_name
+
+        async with deps.worker_pool.acquire() as conn:
+            _, job_id = await setup_running_job(conn, schema, cancel_phase=2)
+            actor = await conn.fetchval(f'SELECT actor FROM "{schema}".jobs WHERE id = $1', job_id)
+
+        assert await backend.mark_abandoned(job_id) is True
+        assert await backend.mark_abandoned(job_id) is False
+
+        points = counter_data_points(reader, "taskq.jobs.abandoned")
+        assert [(p.value, dict(p.attributes or {})) for p in points] == [(1, {"actor": actor})]
 
     async def test_mark_failed_terminal(self, clean_jobs_app: JobsApp) -> None:
         deps = clean_jobs_app.deps
@@ -648,12 +671,16 @@ class TestEquivalence:
         mem_events = await memory_jobs.get_events(mem_job_id)
 
         # ── PG backend ───────────────────────────────────────────
+        # Real enqueue + dispatch, exactly like the memory side: a claim
+        # deliberately writes no job_events row (the events diet —
+        # backend/_dispatch.py), so a fixture-injected claim event would
+        # leave the PG stream one row ahead of anything the memory twin
+        # can produce and break the event-count equivalence below.
         deps = clean_jobs_app.deps
         backend = clean_jobs_app.backend
         schema = deps.settings.schema_name
 
-        async with deps.worker_pool.acquire() as conn:
-            pg_worker, pg_job_id = await setup_running_job(conn, schema, with_events=True)
+        pg_job_id, pg_worker = await enqueue_and_dispatch_pg(backend)
 
         pg_result = await backend.mark_succeeded(pg_job_id, pg_worker, {"ok": True}, attempt=1)
         assert pg_result is True
@@ -694,14 +721,13 @@ class TestEquivalence:
         mem_events = await memory_jobs.get_events(mem_job_id)
 
         # ── PG backend ───────────────────────────────────────────
+        # Real enqueue + dispatch — see test_mark_succeeded_equivalence
+        # for why a fixture-injected claim event cannot work here.
         deps = clean_jobs_app.deps
         backend = clean_jobs_app.backend
         schema = deps.settings.schema_name
 
-        async with deps.worker_pool.acquire() as conn:
-            pg_worker, pg_job_id = await setup_running_job(
-                conn, schema, max_attempts=1, with_events=True
-            )
+        pg_job_id, pg_worker = await enqueue_and_dispatch_pg(backend, max_attempts=1)
 
         pg_row = await backend.mark_failed_or_retry(
             pg_job_id, pg_worker, error_info, None, attempt=1
@@ -873,9 +899,11 @@ class TestMarkSnoozedDeadline:
 
 
 class TestMarkSnoozedReservationDenied:
-    """mark_snoozed with outcome='reservation_denied' counts the denial on
-    the row and writes the metadata annotation — no attempt row (a denial
-    is admission control, not an execution)."""
+    """mark_snoozed with outcome='reservation_denied' reschedules the job on
+    429 semantics: the retry budget is untouched, no terminal failure is
+    written, and the denial is recorded only as the aggregated count on the
+    row plus the metadata annotation — no attempt row (a denial is admission
+    control, not an execution)."""
 
     async def test_mark_snoozed_outcome_reservation_denied(self, clean_jobs_app: JobsApp) -> None:
         deps = clean_jobs_app.deps
@@ -900,7 +928,7 @@ class TestMarkSnoozedReservationDenied:
                 f'SELECT * FROM "{schema}".job_attempts WHERE job_id = $1', job_id
             )
             row = await conn.fetchrow(
-                f"SELECT metadata, rate_limit_blocked_count, snooze_count "
+                f"SELECT metadata, rate_limit_blocked_count, snooze_count, attempt "
                 f'FROM "{schema}".jobs WHERE id = $1',
                 job_id,
             )
@@ -908,6 +936,12 @@ class TestMarkSnoozedReservationDenied:
         assert len(attempts) == 0
         assert row["rate_limit_blocked_count"] == 1
         assert row["snooze_count"] == 0
+        # 429 semantics: the actor never ran, so the claim's attempt
+        # increment is refunded and the budget is intact for the attempt
+        # that eventually gets capacity.
+        assert row["attempt"] == 0, (
+            f"a denial must not consume the retry budget; got attempt={row['attempt']}"
+        )
 
         metadata: object = row["metadata"]
         if isinstance(metadata, str):
@@ -915,6 +949,69 @@ class TestMarkSnoozedReservationDenied:
 
             metadata = loads(metadata)
         assert isinstance(metadata, dict) and metadata.get("awaiting") == "reservation:gpu_pool"
+
+    async def test_mark_snoozed_reservation_denied_at_max_attempts_reschedules(
+        self, clean_jobs_app: JobsApp
+    ) -> None:
+        """A denial never spends retry budget and never terminalises a job.
+
+        An admission denial is "come back later", exactly like an HTTP 429
+        with Retry-After: the actor never ran, so nothing about the job was
+        proven and nothing of its budget was used. A job already sitting at
+        its last attempt must therefore still be rescheduled when a
+        reservation is denied — not failed as MaxAttemptsExceeded — and its
+        attempt counter must come back to the pre-claim value so the budget
+        is intact for the attempt that eventually gets a slot. A queue or
+        rate-limit misconfiguration must not be able to kill work that
+        simply never got capacity; only the schedule-to-close deadline ends
+        such a job, through the normal deadline path.
+
+        The denial stays visible in the aggregated counter on the row, which
+        is the only record a denial writes.
+        """
+        deps = clean_jobs_app.deps
+        backend = clean_jobs_app.backend
+        schema = deps.settings.schema_name
+
+        async with deps.worker_pool.acquire() as conn:
+            worker_id, job_id = await setup_running_job(conn, schema, attempt=1, max_attempts=1)
+
+        result = await backend.mark_snoozed(
+            job_id,
+            worker_id,
+            timedelta(seconds=30),
+            outcome="reservation_denied",
+            attempt=1,
+        )
+        assert result == "scheduled", (
+            "a denial at the last attempt must reschedule the job, not "
+            f"terminalise it; got {result!r}"
+        )
+
+        async with deps.worker_pool.acquire() as conn:
+            row = await conn.fetchrow(
+                f"SELECT status, error_class, attempt, rate_limit_blocked_count "
+                f'FROM "{schema}".jobs WHERE id = $1',
+                job_id,
+            )
+            attempts = await conn.fetch(
+                f'SELECT * FROM "{schema}".job_attempts WHERE job_id = $1', job_id
+            )
+        assert row is not None
+        assert row["status"] == "scheduled"
+        assert row["error_class"] is None, (
+            "a denial by itself must never write a terminal error class; got "
+            f"{row['error_class']!r}"
+        )
+        assert row["attempt"] == 0, (
+            "a denial must not consume the retry budget: the claim's attempt "
+            f"increment is refunded; got attempt={row['attempt']}"
+        )
+        assert row["rate_limit_blocked_count"] == 1, (
+            "contention must stay observable through the aggregated denial "
+            f"count on the row; got {row['rate_limit_blocked_count']}"
+        )
+        assert len(attempts) == 0, "a denial is admission control, not an execution"
 
 
 # ── Idempotent noop: second call returns "noop" ────────────────────────
@@ -1460,12 +1557,8 @@ class TestMarkSucceededResultExpiryFallback:
                 None,
                 "snoozed",
                 # The trailing 1 is the attempt-epoch fence bind ($8) —
-                # the seeded row is at attempt 1. "capacity" is the
-                # denial-reason bind ($9): this write is an
-                # actor-requested deferral, not a denial, so the reason
-                # rides its default.
+                # the seeded row is at attempt 1.
                 1,
-                "capacity",
             )
             assert rec is not None
             assert rec["outcome_branch"] == "snoozed"

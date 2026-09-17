@@ -41,12 +41,18 @@ The helpers accept any object exposing ``get_token(*scopes) -> AccessToken``
 async counterpart from :mod:`azure.identity.aio` (e.g.
 :class:`azure.identity.aio.DefaultAzureCredential`). See
 :data:`AadCredential`. Sync credentials are offloaded to a thread so
-their blocking HTTP never stalls the event loop. The credential is
-**caller-owned**: create it once per process (async credentials are
+their blocking HTTP never stalls the event loop. An explicit credential
+is **caller-owned**: create it once per process (async credentials are
 async context managers — close them in your lifespan). Pass ``None`` to
 let the provider lazily create one async ``DefaultAzureCredential`` and
 reuse it for its lifetime (a per-fetch credential would leak unclosed
-aiohttp sessions and cold-cache every acquisition).
+aiohttp sessions and cold-cache every acquisition); that credential is
+the provider's own, released by ``await provider.aclose()`` (or by
+using the provider as an async context manager) — ``taskq ui serve``
+closes the providers it loads at shutdown, and an embedder closes the
+ones it constructs. The one-shot helpers ``fetch_pg_access_token`` /
+``fetch_redis_credentials`` called without a credential create and close
+one per call.
 
 This module never imports ``azure.identity`` at module top level — the
 import is deferred to call time so ``import taskq.aad`` is safe without
@@ -61,7 +67,7 @@ import asyncio
 import base64
 import inspect
 import json
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Protocol, Self, runtime_checkable
 
 from taskq.auth import (
     PgCredential,
@@ -149,13 +155,31 @@ def _default_credential() -> AadCredential:
         ) from exc
 
 
+async def _close_credential(credential: AadCredential) -> None:
+    """Release *credential*'s transport, sync or async.
+
+    ``azure.identity.aio`` credentials close an aiohttp session through an
+    awaitable ``close()``; the sync ones close a ``requests`` session
+    synchronously; a credential with no ``close`` (a fake, a token cache)
+    has nothing to release.
+    """
+    close = getattr(credential, "close", None)
+    if not callable(close):
+        return
+    result = close()
+    if inspect.isawaitable(result):
+        await result
+
+
 class _LazyDefaultCredential:
     """Lazily creates and caches a single default credential.
 
     Creating one per token fetch would leak unclosed aiohttp sessions and
     cold-cache every acquisition (a full MSAL/IMDS round-trip each time) —
     worst on the Redis path, where the redis-py adapter re-fetches on
-    every reconnect.
+    every reconnect. :meth:`aclose` releases the one it created; a later
+    :meth:`get` creates a fresh one, so a provider closed early is not
+    wedged.
     """
 
     def __init__(self) -> None:
@@ -165,6 +189,11 @@ class _LazyDefaultCredential:
         if self._instance is None:
             self._instance = _default_credential()
         return self._instance
+
+    async def aclose(self) -> None:
+        instance, self._instance = self._instance, None
+        if instance is not None:
+            await _close_credential(instance)
 
 
 async def _get_token(credential: AadCredential, scope: str) -> str:
@@ -189,11 +218,18 @@ async def fetch_pg_access_token(credential: AadCredential | None = None) -> str:
     """Fetch a fresh AAD access token for Azure Database for PostgreSQL.
 
     ``credential`` defaults to a fresh async
-    :class:`azure.identity.aio.DefaultAzureCredential`; pass your own
-    (sync or async) to reuse a process-wide credential.
+    :class:`azure.identity.aio.DefaultAzureCredential` that is closed
+    before this returns (a one-shot fetch must not leak its aiohttp
+    session); pass your own (sync or async) to reuse a process-wide
+    credential and its token cache.
     """
-    cred = credential if credential is not None else _default_credential()
-    return await _get_token(cred, PG_TOKEN_SCOPE)
+    if credential is not None:
+        return await _get_token(credential, PG_TOKEN_SCOPE)
+    default = _default_credential()
+    try:
+        return await _get_token(default, PG_TOKEN_SCOPE)
+    finally:
+        await _close_credential(default)
 
 
 async def fetch_redis_credentials(
@@ -208,8 +244,14 @@ async def fetch_redis_credentials(
     is passed explicitly (recommended in production: pass the object ID to
     avoid relying on JWT shape).
     """
-    cred = credential if credential is not None else _default_credential()
-    token = await _get_token(cred, REDIS_TOKEN_SCOPE)
+    if credential is not None:
+        token = await _get_token(credential, REDIS_TOKEN_SCOPE)
+    else:
+        default = _default_credential()
+        try:
+            token = await _get_token(default, REDIS_TOKEN_SCOPE)
+        finally:
+            await _close_credential(default)
     if username is not None:
         return username, token
     oid = _decode_jwt_oid(token)
@@ -247,7 +289,10 @@ class _EntraIdProviderBase:
 
     An explicit credential is used as-is (caller-owned). Otherwise a
     single default async ``DefaultAzureCredential`` is created lazily and
-    reused for the provider's lifetime — see :class:`_LazyDefaultCredential`.
+    reused for the provider's lifetime — see :class:`_LazyDefaultCredential`
+    — and released by :meth:`aclose`, which the provider's owner calls at
+    shutdown (or uses the provider as an async context manager). A
+    caller-owned credential is never closed here.
     """
 
     def __init__(self, credential: AadCredential | None = None) -> None:
@@ -256,6 +301,16 @@ class _EntraIdProviderBase:
 
     def _resolve_credential(self) -> AadCredential:
         return self._credential if self._credential is not None else self._default_credential.get()
+
+    async def aclose(self) -> None:
+        """Release the default credential this provider created, if any."""
+        await self._default_credential.aclose()
+
+    async def __aenter__(self) -> Self:
+        return self
+
+    async def __aexit__(self, *_: object) -> None:
+        await self.aclose()
 
 
 class EntraIdPgProvider(_EntraIdProviderBase, PgCredentialProvider):

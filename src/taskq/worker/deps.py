@@ -14,7 +14,8 @@ import sys
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import AsyncExitStack, asynccontextmanager, suppress
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from datetime import datetime
+from typing import TYPE_CHECKING, Final
 from uuid import UUID
 
 import asyncpg
@@ -25,20 +26,24 @@ from taskq._close import (
     PUBLISH_DRAIN_TIMEOUT_SECS,
     close_conn_bounded,
     close_pool_bounded,
+    close_provider_bounded,
     close_redis_bounded,
 )
 from taskq._dsn import dsn_host as _dsn_host
+from taskq.auth import credential_provider_of
 from taskq.connections import (
     ConnFactory,
     PoolFactory,
     RedisFactory,
     WorkerConnections,
+    lock_budget_command_timeout_secs,
     statement_cache_kwargs,
 )
 from taskq.constants import wake_channel
 from taskq.obs import get_logger, set_slot_pool_occupancy_source
 from taskq.progress._buffer import _ProgressBuffer
 from taskq.settings import WorkerSettings
+from taskq.worker._stall_tally import StallAttributionTally
 from taskq.worker._watchdog import LoopLiveness
 from taskq.worker.budget import compute_connection_budget
 from taskq.worker.cancel import ActiveJobRegistry
@@ -89,6 +94,47 @@ _drain_tasks: set[asyncio.Task[None]] = set()
 _TCP_KEEPIDLE = 30
 _TCP_KEEPINTVL = 5
 _TCP_KEEPCNT = 3
+
+_DISPATCHER_SERVER_SETTINGS: Final[dict[str, str]] = {"jit": "off"}
+"""Per-connection GUCs every TaskQ-built dispatcher pool connection carries.
+
+``jit = off`` because every statement this pool runs — the dispatch claim
+CTEs, the leader sweeps, the bounded admission lock acquires — is a short
+bounded OLTP round trip that JIT compilation cannot help: below
+``jit_above_cost`` the setting is inert, and at or above it compilation is
+pure cost paid per plan. The dispatch statement's own estimate cascade is
+fixed at the source (taskq.backend._dispatch_sql), so this is a guard
+against FUTURE estimate surprises, not the fix — a regression there now
+degrades a round to its uncompiled speed, never to a second spent
+compiling. Do not "helpfully" re-enable JIT here; if a dispatcher-pool
+statement ever does benefit from compilation, that belongs in a measured
+change to the statement itself. Caller-supplied pools keep their own
+settings (the caller-owned doctrine); the worker/heartbeat pools run only
+single-row primary-key-class statements whose plans never approach the
+threshold, so they carry no entry.
+"""
+
+_ADMISSION_LOCK_BUDGET_FIELDS: Final[tuple[str, ...]] = (
+    "token_bucket_lock_timeout_ms",
+    "sliding_window_lock_timeout_ms",
+)
+"""The ``WorkerSettings`` field names of the two admission-path lock budgets
+— listed once so the dispatcher pool's bound derivation cannot drift onto a
+different spelling (the same listing doctrine as
+``taskq.client._taskq._ENQUEUE_LOCK_BUDGET_FIELDS``)."""
+
+
+def _admission_lock_budget_pairs(settings: WorkerSettings) -> list[tuple[float, float]]:
+    """``(configured, shipped default)`` per admission lock budget — the
+    input :func:`taskq.connections.lock_budget_command_timeout_secs`
+    derives the dispatcher pool's per-query bound from. The defaults are
+    read off the model's field metadata, never restated."""
+    pairs: list[tuple[float, float]] = []
+    fields = type(settings).get_fields()
+    for field_name in _ADMISSION_LOCK_BUDGET_FIELDS:
+        _field_type, field_info = fields[field_name]
+        pairs.append((float(getattr(settings, field_name)), float(field_info.default)))
+    return pairs
 
 
 def _apply_keepalive(sock: socket.socket) -> None:
@@ -176,6 +222,26 @@ async def open_dedicated_conn(
     return conn
 
 
+@dataclass(slots=True, frozen=True)
+class LeaderTerm:
+    """One period of maintenance leadership, fenced and locally time-boxed.
+
+    ``elected_at`` is the server clock instant the lease row was written
+    with; it is the fence token every renewal and the resign carry, so a
+    statement issued after a takeover cannot touch the successor's row.
+
+    ``trusted_until`` is on this process's monotonic clock and is always
+    earlier than the server's ``expires_at`` for the same attempt: it is
+    measured from *before* the round trip and is one margin shorter, so
+    this process stops acting as leader strictly before any peer may
+    legally take over. Clock offset between the two machines is
+    irrelevant — each side measures a duration from its own instant.
+    """
+
+    elected_at: datetime
+    trusted_until: float
+
+
 @dataclass
 class WorkerDeps:
     """Stable named handle for worker pools and connections.
@@ -197,11 +263,28 @@ class WorkerDeps:
     # callback-aware reconnect (re-registers LISTEN + callbacks on the new
     # connection). None before the listener starts or after it stops.
     notify_reconnect_fn: Callable[[], Awaitable[None]] | None = None
-    # The AsyncExitStack from open_worker_deps, stored so
-    # reload_credentials can register hot-swapped pools for LIFO teardown.
-    # None before open_worker_deps yields or after it exits.
+    # The INCREMENTAL AsyncExitStack from open_worker_deps — every
+    # teardown registered after the deps shell opens (the dedicated-conn
+    # / redis guards, the per-slot pool via _maybe_open_slot_pool, and
+    # hot-reload swaps via reload_credentials). It unwinds BEFORE the
+    # shell's own role pools at context exit; unwinding it directly
+    # (mid-flight, bounded) detaches exactly those late registrations
+    # and leaves the role pools serving. None before open_worker_deps
+    # yields or after it exits.
     _exit_stack: AsyncExitStack | None = None
+    # Credential providers declared by the TaskQ-owned factories this deps
+    # was opened with (read via credential_provider_of, deduped by
+    # identity). open_worker_deps closes each once, after every pool and
+    # client built through it; _maybe_open_slot_pool consults the tuple so
+    # the slot pool's provider is never closed twice. Empty for a DSN-built
+    # worker.
+    _credential_providers: tuple[object, ...] = ()
     is_leader: asyncio.Event = field(default_factory=asyncio.Event)
+    # Set and cleared together with is_leader by the election loop. Kept
+    # separate because is_leader is what the watchdog parks on and what the
+    # gauge and health report expose, while the term is what leader-gated
+    # work must consult per iteration (see `leading`).
+    leader_term: LeaderTerm | None = None
     producer_stop_event: asyncio.Event = field(default_factory=asyncio.Event)
     active_jobs: ActiveJobRegistry = field(default_factory=ActiveJobRegistry)
     shutdown_phase: ShutdownPhase = ShutdownPhase.NONE
@@ -210,6 +293,17 @@ class WorkerDeps:
     # is first). Feeds the /ready shutdown_elapsed_seconds surface.
     shutdown_started_at: float | None = None
     heartbeat_failures: int = 0
+    disowned_jobs: set[UUID] = field(default_factory=set[UUID])
+    """Jobs this worker has finished with but could not record an outcome
+    for — every attempt of the terminal write failed with an infra error,
+    so the row is still ``running`` and locked to this worker. The
+    heartbeat renews leases by ``locked_by_worker`` and excludes these ids,
+    so the row's lease lapses on schedule and the reclaim sweep hands it
+    back to the fleet — the recovery the terminal-write-failed log promises,
+    which a lease renewed for the life of the process would never deliver.
+    The consumer adds an id on the exhausted-write path, the heartbeat drops
+    ids whose row is no longer this worker's running row, and the producer
+    drops an id it claims again (the row is a live job of ours once more)."""
     progress_buffers: dict[UUID, _ProgressBuffer] = field(
         default_factory=dict[UUID, _ProgressBuffer]
     )
@@ -234,6 +328,13 @@ class WorkerDeps:
     interval-driven sibling loops tick once per iteration and the watchdog
     trips when any tracked loop goes stale. Gated loops must ``forget``
     their entry when their gate closes."""
+    stall_tally: StallAttributionTally = field(default_factory=StallAttributionTally)
+    """Rolling tally of this process's attributed event-loop stalls. The
+    lag watchdog's daemon thread records into it from off-loop; the
+    heartbeat loop reads it once per tick and merges the value into this
+    worker's ``workers`` row metadata, which is the only thread-safe seam
+    between the two: the tally object is the shared holder, never a
+    reference into loop-owned state."""
     leader_conn_factory: ConnFactory | None = None
     """Resolved factory that (re)builds ``leader_conn``. Same contract as
     ``notify_conn_factory``; used by :mod:`taskq.worker.leader`'s election
@@ -272,6 +373,19 @@ class WorkerDeps:
     probe can never coalesce another worker's readiness request (two
     workers can share a process) and never outlive this deps object's
     event loop."""
+    slot_pool_connection_init: Callable[[asyncpg.Connection], Awaitable[None]] | None = None
+    """The per-connection init hook the CURRENT ``slot_pool``'s connections
+    already carry from connect time — the registration-declared hook
+    :func:`taskq.worker._bootstrap._maybe_open_slot_pool` threads into the
+    pool factory's ``init=``. Recorded here (not on the pool: asyncpg pools
+    are ``__slots__``-sealed) so the dispatch path never re-applies it —
+    the hook must run exactly once per physical connection. ``None`` means
+    the pool's connections are NOT guaranteed to carry the registration's
+    declared hook: either none was declared, or the pool was not opened by
+    bootstrap (an injected/foreign pool), which is the shape dispatch
+    repairs by applying the hook itself. Reload-safe: a credential reload
+    rebuilds the pool through the same init-carrying factory, so the
+    disposition survives the swap."""
     redis_client_factory: RedisFactory | None = None
     """Resolved factory that rebuilds ``redis_client`` on
     :func:`reload_credentials`. ``None`` when the client is caller-owned or
@@ -308,6 +422,44 @@ class WorkerDeps:
     incremented unconditionally in all modes, but is only read in
     until-idle mode — in non-idle mode it is never consulted."""
 
+    def lead(self, term: LeaderTerm) -> None:
+        """Take the leader role for *term*.
+
+        The invariant: the flag is never set without a term, and clearing
+        (``stop_leading``) always drops both — no path can leave a half-set
+        role behind. A renewal does NOT move the pair; it replaces the term
+        in place (the election loop assigns ``leader_term`` directly), which
+        keeps the flag set while the term's trust window rolls forward.
+        """
+        self.leader_term = term
+        self.is_leader.set()
+
+    def stop_leading(self) -> None:
+        """Give up the leader role."""
+        self.is_leader.clear()
+        self.leader_term = None
+
+    def leading(self) -> bool:
+        """Whether leader-gated work may run in THIS iteration.
+
+        Every leader-gated loop consults this per iteration rather than the
+        bare ``is_leader`` event: a process suspended between two iterations
+        (SIGSTOP, a long GC pause, a partitioned event loop) resumes with the
+        event still set and its lease long since taken over by a peer. The
+        monotonic trust window is what makes that resumption a no-op.
+
+        The event remains the authority on the role; the term only narrows
+        how long that authority is trusted between renewals. A role held
+        without a term is therefore led, not refused — an embedder that
+        drives ``is_leader`` itself has taken on the coordination the term
+        would otherwise bound, and silently declining to do the maintenance
+        work would strand every sweep with nothing in any log to say why.
+        """
+        if not self.is_leader.is_set():
+            return False
+        term = self.leader_term
+        return term is None or asyncio.get_running_loop().time() < term.trusted_until
+
     def request_reload(self) -> None:
         """Programmatic credential hot-reload trigger for embedders.
 
@@ -328,10 +480,20 @@ async def open_worker_deps(
 
     Startup ordering: validate settings → open dispatcher_pool →
     open heartbeat_pool → open worker_pool → open notify_conn → open
-    leader_conn → open redis_client.  Uses
-    :class:`~contextlib.AsyncExitStack` so that a failure during step N
-    closes steps 1..N-1 before the exception propagates.  Teardown is
-    LIFO.
+    leader_conn → open redis_client.  Uses two
+    :class:`~contextlib.AsyncExitStack` instances so that a failure
+    during step N closes steps 1..N-1 before the exception propagates:
+    the base stack owns the role pools (their lifecycle is this
+    context), the incremental stack — exposed as ``deps._exit_stack`` —
+    owns every teardown registered after the deps shell exists
+    (dedicated-conn / redis guards, the per-slot pool, hot-reload
+    swaps).  Teardown is LIFO across both: at context exit the
+    incremental stack unwinds first (late registrations close before
+    the role pools), and unwinding ``deps._exit_stack`` on its own
+    detaches only those late registrations — the bounded,
+    graceful-window-then-terminate surface a mid-flight caller can
+    drive without closing the role pools still serving in-flight
+    dispatches.
 
     ``connections`` provides per-role overrides — pre-constructed,
     caller-owned resources or zero-arg async factories — replacing the
@@ -392,7 +554,55 @@ async def open_worker_deps(
     owns_notify = conns.notify_conn is None  # DSN or factory → TaskQ-owned
     owns_leader = conns.leader_conn is None
 
-    async with AsyncExitStack() as stack:
+    # Credential providers the TaskQ-owned factories were built over:
+    # collected up front, deduped by identity (one provider may serve both
+    # the PG and the Redis role), and closed ONCE each — after every pool
+    # and client built through them, never while a connection that
+    # authenticates through the provider could still be opened. A factory
+    # built some other way declares no provider (credential_provider_of
+    # answers None), and the caller who built one keeps owning it.
+    providers: list[object] = []
+    for factory in (
+        conns.dispatcher_pool_factory,
+        conns.heartbeat_pool_factory,
+        conns.worker_pool_factory,
+        conns.notify_conn_factory,
+        conns.leader_conn_factory,
+        conns.redis_client_factory,
+    ):
+        if factory is None:
+            continue
+        provider = credential_provider_of(factory)
+        if provider is not None and not any(p is provider for p in providers):
+            providers.append(provider)
+
+    # Two stacks, one LIFO sequence at teardown. ``base_stack`` owns the
+    # open-sequence ROLE POOLS (dispatcher / heartbeat / worker): their
+    # lifecycle is the open_worker_deps context itself, so they close
+    # when the context exits — never on a manual unwind of
+    # ``deps._exit_stack``. ``incremental_stack`` (exposed as
+    # ``deps._exit_stack``) owns every teardown registered AFTER the
+    # deps shell exists: the dedicated-conn / redis guards below, the
+    # per-slot pool (``_maybe_open_slot_pool``), and every hot-reload
+    # swap (``reload_credentials``) — the detachable surface a caller
+    # can unwind mid-flight (bounded, graceful-window-then-terminate)
+    # without tearing down the role pools still serving in-flight
+    # dispatches. At context exit the incremental stack unwinds FIRST
+    # (it is entered last), then the base pools — exactly the LIFO
+    # order the single-stack shape produced.
+    incremental_stack = AsyncExitStack()
+    async with AsyncExitStack() as base_stack, incremental_stack:
+        # Pushed FIRST so they unwind LAST: every pool and client below is
+        # built through these providers, so each provider's own resources
+        # (the Entra ID providers' credential session) are released only
+        # once nothing that authenticates through it can be opened again.
+        # Bounded and never raising, a no-op for a provider with nothing
+        # to release — the same teardown discipline taskq ui serve's
+        # lifespan applies to the providers it loads.
+        for _provider in providers:
+            base_stack.push_async_callback(
+                close_provider_bounded, _provider, "worker", CLOSE_TIMEOUT_SECS
+            )
         # DSN-fallback factories — built inline with explicit kwargs so pyright
         # can trace types through ``asyncpg.create_pool`` (a ``**dict`` splat
         # would erase them). ``None`` when the DSN is unused (every role for
@@ -404,6 +614,27 @@ async def open_worker_deps(
         dispatcher_dsn_factory: PoolFactory | None = None
         heartbeat_dsn_factory: PoolFactory | None = None
         worker_dsn_factory: PoolFactory | None = None
+        # The dispatcher pool's per-query bound is DERIVED, not read
+        # directly: the admission-path rate-limit acquires run on this pool
+        # (worker/_leader_sweeps.py) with server-side lock_timeout budgets
+        # from settings (token_bucket_lock_timeout_ms /
+        # sliding_window_lock_timeout_ms), and asyncpg enforces
+        # command_timeout as its own client-side per-statement timer — an
+        # admission budget widened past the floor would be silently
+        # truncated by the pool's own timer before the server-side refusal
+        # could ever fire. lock_budget_command_timeout_secs re-derives the
+        # bound as max(floor, widest_widened_budget / share), the same
+        # reconciliation the client pool applies to the enqueue budgets
+        # (client/_taskq.py): at the shipped defaults (5000 ms budgets,
+        # 5.0 s floor) the bound is exactly the configured value, so a
+        # deployment that sets nothing keeps byte-identical behavior. The
+        # leader/notify dedicated connections keep the CONFIGURED value:
+        # no admission acquire runs on them, and the leader-loop staleness
+        # invariant is defined against the configured timeout.
+        dispatcher_pool_command_timeout = lock_budget_command_timeout_secs(
+            _admission_lock_budget_pairs(settings),
+            floor_secs=settings.dispatcher_command_timeout,
+        )
         if direct_dsn is not None:
             _direct = direct_dsn
             _lifetime = settings.pool_max_inactive_lifetime
@@ -414,7 +645,8 @@ async def open_worker_deps(
                     min_size=1,
                     max_size=settings.dispatcher_pool_size,
                     max_inactive_connection_lifetime=_lifetime,
-                    command_timeout=settings.dispatcher_command_timeout,
+                    command_timeout=dispatcher_pool_command_timeout,
+                    server_settings=_DISPATCHER_SERVER_SETTINGS,
                     statement_cache_size=_stmt_kwargs["statement_cache_size"],
                     max_cached_statement_lifetime=_stmt_kwargs["max_cached_statement_lifetime"],
                 )
@@ -459,7 +691,7 @@ async def open_worker_deps(
             conns.dispatcher_pool,
             conns.dispatcher_pool_factory,
             dispatcher_dsn_factory,
-            stack,
+            base_stack,
             settings=settings,
             label="dispatcher",
             host=_dsn_host(direct_dsn) if direct_dsn else None,
@@ -470,7 +702,7 @@ async def open_worker_deps(
             conns.heartbeat_pool,
             conns.heartbeat_pool_factory,
             heartbeat_dsn_factory,
-            stack,
+            base_stack,
             settings=settings,
             label="heartbeat",
             host=_dsn_host(direct_dsn) if direct_dsn else None,
@@ -481,7 +713,7 @@ async def open_worker_deps(
             conns.worker_pool,
             conns.worker_pool_factory,
             worker_dsn_factory,
-            stack,
+            base_stack,
             settings=settings,
             label="worker",
             host=_dsn_host(pooled_dsn) if pooled_dsn else None,
@@ -517,7 +749,8 @@ async def open_worker_deps(
             redis_client_factory=conns.redis_client_factory,
             owns_notify_conn=owns_notify,
             owns_leader_conn=owns_leader,
-            _exit_stack=stack,
+            _credential_providers=tuple(providers),
+            _exit_stack=incremental_stack,
         )
 
         # ── notify_conn (pg_dsn_direct, TCP keepalive) ────────────────
@@ -590,7 +823,7 @@ async def open_worker_deps(
                     await close_conn_bounded(conn, "notify", CLOSE_TIMEOUT_SECS)
                     deps.notify_conn = None
 
-            stack.push_async_callback(_close_notify_conn)
+            incremental_stack.push_async_callback(_close_notify_conn)
 
         # Issue LISTEN so the connection is in subscription state. Why
         # bounded: the open runs before any watchdog is armed, and a
@@ -681,7 +914,7 @@ async def open_worker_deps(
                     await close_conn_bounded(conn, "leader", CLOSE_TIMEOUT_SECS)
                     deps.leader_conn = None
 
-            stack.push_async_callback(_close_leader_conn)
+            incremental_stack.push_async_callback(_close_leader_conn)
 
         # ── redis_client ───────────────────────────────────────────────
         redis_client: redis_async.Redis | None = None  # type: ignore[type-arg]  # Why: redis-py stubs expose Redis as an unparameterised generic; the type arg cannot be supplied without a stubs update.
@@ -779,7 +1012,7 @@ async def open_worker_deps(
                     await close_redis_bounded(client, "worker", CLOSE_TIMEOUT_SECS)
                     deps.redis_client = None
 
-            stack.push_async_callback(_close_redis_client)
+            incremental_stack.push_async_callback(_close_redis_client)
 
             async def _drain_pending_publishes() -> None:
                 """Give in-flight fire-and-forget progress publishes a bounded
@@ -789,7 +1022,7 @@ async def open_worker_deps(
                         deps.pending_publish_tasks, timeout=PUBLISH_DRAIN_TIMEOUT_SECS
                     )
 
-            stack.push_async_callback(_drain_pending_publishes)
+            incremental_stack.push_async_callback(_drain_pending_publishes)
 
         try:
             yield deps
@@ -931,9 +1164,9 @@ async def reload_credentials(
     ``notify_conn`` is rebuilt through the listener's
     ``reconnect_notify_conn`` helper, which re-issues LISTEN and
     re-registers callbacks. ``leader_conn`` is closed and nulled (not
-    swapped): the leader election watchdog observes the None and reopens
-    through ``leader_conn_factory`` on its next tick, re-acquiring the
-    advisory lock.
+    swapped): the leader election loop observes the None, stands down,
+    and reopens through ``leader_conn_factory`` on its next tick,
+    re-electing on the lease row.
 
     New pools are registered on ``deps._exit_stack`` (the ``AsyncExitStack``
     from ``open_worker_deps``) for LIFO teardown at shutdown. Old pools are
@@ -1066,26 +1299,27 @@ async def reload_credentials(
                 failed.append("notify_conn")
 
         # ── leader_conn ────────────────────────────────────────────
-        # The leader election loop has its own watchdog that detects a dead
-        # leader_conn, clears is_leader, and reopens via _open_leader_conn
-        # (which uses deps.leader_conn_factory when set). We trigger that
-        # failover path by closing the current leader_conn — the watchdog
-        # reopens with a fresh credential and re-acquires the advisory lock.
-        # This is the same path as a PG connection drop, so it's well-tested.
+        # The leader election loop detects a dead leader_conn, stands down,
+        # and reopens via _open_leader_conn (which uses
+        # deps.leader_conn_factory when set). We trigger that path by
+        # closing the current leader_conn — the loop reopens with a fresh
+        # credential and re-elects itself on the lease row (the recorded
+        # holder's arm admits its own row while that lease is live, so the
+        # reload costs a re-election, not a lease lapse). This is the same
+        # path as a PG connection drop, so it's well-tested.
         #
         # The old conn is closed inline (bounded) BEFORE nulling — a
-        # background close would let the watchdog's re-election race the
-        # old session's lock release, guaranteeing a first-attempt
-        # pg_try_advisory_lock failure. On timeout the close moves to a
-        # background task that terminates the conn.
+        # background close would leave the re-election racing the old
+        # session's teardown. On timeout the close moves to a background
+        # task that terminates the conn.
         #
         # This ALSO rebuilds MaintenanceLeader's other dedicated connections
         # (_leader_monitor_conn, _cron_conn) as a side effect: re-election
         # (triggered by leader_conn becoming None while is_leader is still
         # set) reopens both through the same leader_conn_factory before
-        # re-setting is_leader — see leader.py's _election_loop `if got_lock:`
-        # branch. So a single SIGHUP rotates every leader-owned connection,
-        # not just leader_conn, even though this function never touches
+        # re-setting is_leader — see leader.py's _election_loop win branch.
+        # So a single SIGHUP rotates every leader-owned connection, not
+        # just leader_conn, even though this function never touches
         # _leader_monitor_conn/_cron_conn directly.
         if deps.leader_conn_factory is not None and deps.leader_conn is not None:
             old_leader = deps.leader_conn

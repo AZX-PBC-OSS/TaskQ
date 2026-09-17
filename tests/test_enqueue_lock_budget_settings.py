@@ -1,6 +1,6 @@
 """Enqueue advisory-lock wait budgets are operator-tunable settings.
 
-Contract under attack (#161, composed with #151 + #139): the two bounded
+Contract under attack: the two bounded
 advisory-lock waits on the single-enqueue path -- the max_pending
 capacity lock and the unique_for single-flight lock -- are operator
 knobs. Today they are the hard-coded 5 s module constants
@@ -114,7 +114,7 @@ def test_enqueue_lock_budgets_are_worker_settings_fields() -> None:
         "(MaxPendingLockTimeoutError / UniqueForLockTimeoutError) and "
         "denials consume retry budget, so the fixed 5 s ceiling converts "
         "an outage that slows lock holders into refused enqueues and "
-        "permanent job failure (#161, composed with #151/#139). Plumb them "
+        "permanent job failure. Plumb them "
         "the way dispatch_oversample reaches _dispatch: WorkerSettings "
         "field under the TASKQ_ prefix -> BackendSettings protocol -> "
         "the PostgresBackend enqueue use sites. "
@@ -149,7 +149,7 @@ def test_enqueue_lock_budgets_load_from_the_taskq_env_prefix() -> None:
             f"{env_var}={expected:g} did not reach WorkerSettings.{name} "
             f"(got {loaded!r}): the field does not exist, so the env var "
             "an operator sets to widen a lock budget during an outage is "
-            "silently ignored -- no knob at all (#161). "
+            "silently ignored -- no knob at all. "
             "grep -rn 'lock_timeout' src/taskq/settings.py finds nothing."
         )
 
@@ -167,7 +167,7 @@ def test_enqueue_lock_budget_settings_default_to_the_current_constants() -> None
         assert entry is not None, (
             f"WorkerSettings has no {name!r} field -- the "
             f"{constant:g} ms bounded-wait budget is a hard-coded constant "
-            "(taskq/backend/_enqueue.py) with no operator surface (#161)."
+            "(taskq/backend/_enqueue.py) with no operator surface."
         )
         _type, info = entry
         assert info.default == constant, (
@@ -315,7 +315,7 @@ async def test_operator_max_pending_lock_budget_reaches_the_enqueue_seam() -> No
         f"{DEFAULT_MAX_PENDING_LOCK_TIMEOUT_MS:g}) -- the settings value "
         "stops before the enqueue seam: PostgresBackend.enqueue calls "
         "_enqueue without any budget, so the module constant is the only "
-        "source (#161). Plumb it the way dispatch_oversample reaches "
+        "source. Plumb it the way dispatch_oversample reaches "
         "_dispatch: the backend reads self._deps.settings at the use site."
     )
     # The server-side wait bound the contended acquire actually set --
@@ -354,7 +354,7 @@ async def test_operator_unique_for_lock_budget_reaches_the_enqueue_seam() -> Non
         f"{DEFAULT_UNIQUE_FOR_LOCK_TIMEOUT_MS:g}) -- the settings value "
         "stops before the enqueue seam: PostgresBackend.enqueue_with_conn "
         "calls _enqueue_with_conn without any budget, so the module "
-        "constant is the only source (#161). Plumb it the way "
+        "constant is the only source. Plumb it the way "
         "dispatch_oversample reaches _dispatch: the backend reads "
         "self._deps.settings at the use site."
     )
@@ -427,7 +427,7 @@ async def test_operator_idempotency_lock_budget_reaches_the_enqueue_seam() -> No
         "stops before the enqueue seam for the third bounded wait: the "
         "token INSERT's speculative-lock budget, the idempotency sibling "
         "of the two knobs above, must be plumbed with them or an operator "
-        "widening it during an outage is silently ignored (#161)."
+        "widening it during an outage is silently ignored."
     )
     assert conn.set_config_values == [f"{round(_OPERATOR_IDEMPOTENCY_BUDGET_MS)}ms"], (
         f"the server-side lock_timeout GUC was set to "

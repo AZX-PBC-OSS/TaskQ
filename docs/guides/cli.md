@@ -145,6 +145,7 @@ taskq migrate up [OPTIONS]
 | `--phase` | `pre \| post \| None` | `None` | Restrict to only `pre` or only `post` phase migrations. When absent, applies both phases in order. |
 | `--target` | `str \| None` | `None` | Stop after applying this migration version (inclusive). Version format matches the filename prefix, e.g. `01.00.00_01`. |
 | `--max-steps` | `int \| None` | `None` | Maximum number of migrations to apply in this invocation. |
+| `--ddl-lock-timeout` | `float` | `30` | Seconds a transactional migration waits for a table lock before it fails and rolls back (`SET LOCAL lock_timeout`; see [Upgrading — the migration gave up waiting for a table lock](upgrading.md#the-migration-gave-up-waiting-for-a-table-lock)). `0` waits indefinitely, parking every statement on the table behind the queued DDL. |
 
 The command is idempotent: each migration is recorded in `{schema}.schema_migrations` and is skipped on subsequent runs. Running `taskq migrate up` with no options applies all pending migrations.
 
@@ -344,7 +345,12 @@ bounded committed batches, then one final transaction locks the stored
 assignment, carries the old queue's `queues` row (mode + `max_concurrent`) to
 the target when the target has no row of its own, and flips it — so
 old-queue strays drain through the target's consumers, and a crash mid-drain
-re-runs cleanly. Running jobs finish where they were claimed; other actors
+re-runs cleanly (the abort logs `actor-queue-move-aborted` with the count
+already committed). Running jobs finish on the workers that claimed them;
+any that re-pend instead (failure retry, crash reclaim, operator retry) keep
+their old queue label as an audit trail but are routed at dispatch by the
+actor's *current* assignment, so the running-job tail drains through the
+target queue's consumers; other actors
 on the old queue are untouched; cron fires follow the moved assignment from
 the flip on.
 
@@ -355,8 +361,84 @@ assignment). Ensure workers consume the new queue, and keep consuming the
 old queue until every producer runs the new literal — stale producers
 keep enqueueing to it.
 
-Exit code 0 on success, 2 on refusal (invalid queue name, or the actor is
-already on that queue), 3 on unknown actor.
+The command reports how many pending jobs still carry the old queue label.
+That count is the residual stale producers keep adding to, and it is what
+tells you when the retired queue can stop being consumed — keep its
+consumers up until it reaches zero.
+
+Exit code 0 on success, 2 on refusal (invalid queue name, the actor is
+already on that queue, the assignment changed concurrently, or a drain
+batch exceeded its statement timeout — batches committed before the abort
+are kept, so the move is incomplete and safe to re-run), 3 on unknown
+actor.
+
+### `taskq queue migrate`
+
+The same move under the queue noun, for when you are thinking about queue
+lifecycle rather than about the `actor_config` table the assignment is
+stored in:
+
+```bash
+taskq queue migrate <ACTOR> --to <QUEUE>
+```
+
+The target queue is named by an explicit `--to` rather than positionally.
+Both arguments of a move are plain strings, and two bare positionals are
+easy to transpose under pressure — with the consequence that the backlog
+drains onto a queue that was never the target.
+
+Behaviour, reporting and exit codes are identical to
+`taskq actor-config move-queue`.
+
+### `taskq doctor`
+
+A read-only health report for the misconfigurations that produce no error
+anywhere:
+
+```bash
+taskq doctor --actors myapp.actors:registry
+```
+
+TaskQ refuses boot only on structural stored-config drift, so a whole
+family of capacity and configuration problems fails silently — their only
+symptom is work that quietly does not happen. `doctor` names them together:
+
+- a registered actor with **no stored row**, which never dispatches (the
+  dispatch capacity gate reads only `actor_config` rows);
+- a **stale `queues` row** whose queue no actor is assigned to — inert
+  now, but silently applied to the next actor moved onto that name;
+- **incoherent capacity combinations**: a `max_pending` below
+  `max_concurrent` (the actor may queue fewer jobs than it may run at
+  once, so its cap is unreachable), and an actor cap above its queue's cap
+  (the queue binds first, so raising the actor cap changes nothing).
+
+When a live worker's `workers` row metadata carries a non-empty event-loop
+stall tally, `doctor` reports one finding per attributed actor: which
+worker recorded it, the actor, the kind counts (`blocking_call` — a sync
+call that released the GIL; `gil_held` — sync work that held it), and the
+remedy. The tally is the rolling top-20 the worker's lag watchdog
+attributed (see [runbooks.md — Event-loop stall attribution](runbooks.md#event-loop-stall-attribution-worker-warnings));
+the worker's own `event-loop-stall-attributed` warnings name the exact
+file:line.
+
+A stored `max_concurrent=0` is labelled **drain mode** and a stored `NULL`
+is labelled **uncapped**, so a deliberate drain is distinguishable from an
+accidental zero and a real "no actor-level cap" from missing data.
+
+Pass `--platform-grace-seconds` (Kubernetes `terminationGracePeriodSeconds`,
+an ACA/ECS stop timeout, compose `stop_grace_period`, systemd
+`TimeoutStopSec`) and doctor compares it against the worker's modelled
+worst-case shutdown: a platform grace below the worst case gets SIGKILLed
+mid-teardown, degrading every shutdown to crash reclaim (leases expire,
+in-flight work re-runs) — the report names the shortfall and the fix. The
+worker itself cannot see the platform's number, so this is the one check
+that needs the operator to supply it.
+
+It issues no writing statement, so it is safe to run against production
+mid-incident. It always exits 0: every condition it reports is one a worker
+keeps running through, and a diagnostic that fails the shell gets wrapped
+in `|| true` and then ignored. Gate CI on drift with
+`taskq actor-config diff`, which exits non-zero by design.
 
 ### Exit codes
 
@@ -368,6 +450,53 @@ already on that queue), 3 on unknown actor.
 | `4` | `--until-idle`: idle-max-runtime exceeded before drain completed |
 
 `ActorConfigDriftList` is caught by the CLI and produces a clean one-line error message on stderr. Other bootstrap failures (import errors, wrong attribute type, etc.) produce a Python traceback on stderr. Both exit with code 1.
+
+---
+
+## `taskq job show`
+
+Shows one job's stored row, reading `{schema}.jobs` first and falling back to `{schema}.jobs_archive` — a pruned terminal job is shown from the archive, not reported missing.
+
+```shell
+taskq job show JOB_ID
+```
+
+**Arguments:**
+
+| Argument | Type | Description |
+|---|---|---|
+| `JOB_ID` | `UUID` | The job's id. A non-UUID value is rejected as a usage error before any database access. |
+
+Prints the operator-facing fields of the stored row — id, actor, queue, status, priority, attempt, max_attempts, retry_kind, the four timestamps, and (only when set) `error_class`/`error_message` and `idempotency_key`. `payload`, `result` and `error_traceback` are deliberately not printed, keeping a terminal read from dragging arbitrarily large blobs onto the wire. A row found in `jobs_archive` is marked `archived: yes`; see [jobs-clients.md](jobs-clients.md) for the archival lifecycle.
+
+Under `retry_kind="indefinite"` the stored `max_attempts` ceiling is inert — the retry path never consults it — so the command renders it as `— (indefinite)`, the same framing the admin UI uses; a bare number would advertise a budget the job is not enforcing. See [retries.md](retries.md#2-retry-kinds).
+
+**Example output:**
+
+```
+id: 018f1c7e-5a2b-7c3d-8e4f-9a0b1c2d3e4f
+actor: send_email
+queue: default
+status: succeeded
+priority: 0
+attempt: 168
+max_attempts: — (indefinite)
+retry_kind: indefinite
+created_at: 2026-01-01 00:00:00+00:00
+scheduled_at: 2026-01-01 00:00:00+00:00
+started_at: 2026-01-01 00:00:01+00:00
+finished_at: 2026-01-01 00:00:02+00:00
+archived: yes
+```
+
+**Exit codes:**
+
+| Code | Condition |
+|---|---|
+| `0` | Row found in `jobs` or `jobs_archive` |
+| `1` | Invalid job id (not a UUID), or no row with that id in either table |
+
+**No options.** Uses `TASKQ_PG_DSN` and `TASKQ_SCHEMA_NAME` from the environment.
 
 ---
 
@@ -447,7 +576,7 @@ All conditions must pass for the response to be `200`. During any shutdown phase
 }
 ```
 
-`shutdown_phase` is `null` when `NONE`; otherwise the integer value (1=DRAINING, 2=CANCELLING, 3=FORCING, 4=ABANDONING).
+`shutdown_phase` is `null` when `NONE`; otherwise the integer value (1=DRAINING, 2=CANCELLING, 3=FORCING, 4=RELEASING).
 
 **Exit codes:**
 
@@ -563,13 +692,17 @@ taskq workgroup validate CONFIG
 |---|---|---|
 | `CONFIG` | `PATH` | Path to the workgroup TOML configuration file. |
 
-Prints a summary of each worker's configuration. Exits 1 if the config is missing, malformed, or contains invalid values (e.g. negative poll interval, misconfigured health check thresholds).
+Prints a summary of each worker's configuration. Exits 1 if the config is missing, malformed, contains invalid values (e.g. negative poll interval, misconfigured health check thresholds), or names an `actors` reference that cannot be resolved — an unimportable module, a module that raises on import, or a missing attribute.
+
+Validation **imports the `actors` module**, so it must run where the application is importable — the same interpreter and `PYTHONPATH` the workgroup would start under. Resolving the reference here is what makes the check worth having: every child imports it the moment it is spawned, so an unresolvable reference crashes each one at import and the supervisor sees only a run of child exits, restarting them on backoff until the burst budget is spent. A CI or lint invocation that runs without the application on `sys.path` will report a valid config as invalid; run it from the deployment image instead.
+
+Resolving the reference is also what lets validate warn about an actor whose queue no `[[workers]]` entry consumes. That is a warning, never an exit-1 condition: another workgroup or deployment may consume the queue, and no single supervisor can know the whole fleet.
 
 **Example:**
 
 ```shell
 taskq workgroup validate workgroup.toml
-# config OK — 2 worker(s), actors='myapp.actors:registry'
+# config OK — 2 worker(s), actors='billing.actors:registry'
 #   api: queues=['default'] poll=0.5s concurrency=8 health=off
 #   batch: queues=['email', 'report'] poll=5.0s concurrency=2 health=on
 ```

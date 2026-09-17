@@ -4,12 +4,29 @@ from dataclasses import dataclass, field
 from uuid import UUID
 
 __all__ = [
+    "_EncodedProgressData",
     "_ProgressBuffer",
     "_progress_after_flush",
     "_seq_and_state_after_flush_attempt",
     "_snapshot_progress",
     "_terminal_seq_and_state",
 ]
+
+
+@dataclass(frozen=True, slots=True)
+class _EncodedProgressData:
+    """A progress ``data`` dict paired with its :func:`taskq._json.dumps` bytes.
+
+    ``ctx.progress`` encodes ``data`` once to enforce the size cap and
+    keeps the bytes with the very dict that entered ``pending_state``, so
+    the flush binds them instead of encoding the dict again. The pairing
+    is by identity: the bytes stand in for ``pending_state["data"]`` only
+    while that entry is ``source`` itself, so a dict that reached the
+    buffer by any other route is encoded from the dict as before.
+    """
+
+    source: dict[str, object]
+    json: bytes
 
 
 @dataclass
@@ -35,6 +52,7 @@ class _ProgressBuffer:
     attempt: int = 0
     pending_seq_delta: int = 0
     pending_state: dict[str, object] = field(default_factory=lambda: {})
+    encoded_data: _EncodedProgressData | None = None
     dirty: bool = False
     last_flush_at: float = 0.0
 

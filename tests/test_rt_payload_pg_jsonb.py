@@ -264,7 +264,7 @@ async def test_enqueue_nul_payload_raises_canonical_value_error(pg_env: _PgEnv) 
 async def test_enqueue_surrogate_payload_raises_type_error(pg_env: _PgEnv) -> None:
     """GREEN: a lone surrogate in the payload is refused at the enqueue
     boundary with orjson's TypeError (the same fail-fast contract as the
-    #134 non-str-keys break) -- never a DataError mid-INSERT."""
+    non-str-keys break) -- never a DataError mid-INSERT."""
     await _seed_actor(pg_env)
     args = make_enqueue_args(payload={"m": _SURROGATE})
     with pytest.raises(TypeError, match="surrogates not allowed"):

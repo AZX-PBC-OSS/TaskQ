@@ -17,11 +17,13 @@ Covers:
 # inherently have unknown parameter types.
 
 import asyncio
+from dataclasses import replace as _dc_replace
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
+import taskq.constants as _constants
 from taskq._ids import new_job_id
-from taskq.backend._protocol import JobId
+from taskq.backend._protocol import EnqueueArgs, JobId
 from taskq.testing.clock import FakeClock
 from taskq.testing.in_memory import InMemoryBackend
 
@@ -275,3 +277,214 @@ class TestCancelTrackingCleanup:
         await backend.tick_cancel_polling()
         assert job_id not in backend._cancel_observed_at
         assert job_id not in backend._cancel_events
+
+
+# ── Cancel-origin auditability (backend parity) ─────────────────
+
+
+class TestCancelOriginAuditability:
+    """Cancel origin is auditable from the job row alone, on both backends.
+
+    A cooperative self-cancel, a forced abandon and a job cancelled before
+    it ever reached a worker are three operationally distinct outcomes: an
+    actor honoured ``ctx.cancellation_requested``, a worker had to stop an
+    actor that would not yield, or the work never ran at all. Operators
+    triage those differently and worker logs roll off, so each terminal
+    cancel path stamps its own distinguishing ``error_class`` on the row —
+    the same self-describing terminal write every failure path already
+    makes.
+
+    The in-memory backend is the observable twin of Postgres at this seam,
+    so a marker that only Postgres writes is a parity break: tests and
+    local development would see an unauditable cancel that production does
+    not have.
+    """
+
+    async def test_cooperative_cancel_stamps_error_class(self) -> None:
+        """``mark_cancelled`` leaves a non-NULL ``error_class`` on the row
+        so the terminal write says why the job stopped without a log
+        lookup."""
+        backend = _make_backend()
+        job_id, worker_id = await _make_running_job(backend)
+
+        assert await backend.mark_cancelled(job_id, worker_id, attempt=1) is True
+
+        row = await backend.get(job_id)
+        assert row is not None
+        assert row.status == "cancelled"
+        assert row.error_class is not None, (
+            "a cooperative cancel wrote no error_class — cancel origin is "
+            "unauditable on the job row"
+        )
+
+    async def test_cancel_origins_are_distinguishable_on_the_row(self) -> None:
+        """Cooperative cancel, forced abandon and cancelled-while-pending
+        each stamp a *different* ``error_class``, so three cancelled rows
+        read side by side say which actor yielded, which had to be killed
+        and which never ran."""
+        backend = _make_backend()
+
+        coop_job, coop_worker = await _make_running_job(backend)
+        abandon_job, _abandon_worker = await _make_running_job(backend)
+
+        pending_args = EnqueueArgs(
+            id=new_job_id(),
+            actor="test_actor",
+            queue="default",
+            payload={},
+            max_attempts=3,
+            retry_kind="transient",
+            scheduled_at=_START,
+        )
+        await backend.enqueue(pending_args)
+
+        assert await backend.mark_cancelled(coop_job, coop_worker, attempt=1) is True
+        # The abandon path requires the escalated phase the forcing ladder reaches.
+        backend._jobs[abandon_job] = _dc_replace(backend._jobs[abandon_job], cancel_phase=2)
+        assert await backend.mark_abandoned(abandon_job) is True
+        assert await backend.write_cancel_request(pending_args.id, "operator stop") is True
+
+        classes = {}
+        for label, job_id in (
+            ("cooperative", coop_job),
+            ("abandoned", abandon_job),
+            ("cancelled_while_pending", pending_args.id),
+        ):
+            row = await backend.get(job_id)
+            assert row is not None
+            classes[label] = row.error_class
+
+        assert all(v is not None for v in classes.values()), (
+            f"a cancel terminal path left error_class NULL: {classes}"
+        )
+        assert len(set(classes.values())) == 3, (
+            f"cancel origins are not distinguishable on the job row: {classes}"
+        )
+
+    async def test_cancelled_attempt_records_its_reason(self) -> None:
+        """The ``job_attempts`` row a cancelled attempt leaves behind
+        carries the same ``error_class`` marker as the job row.
+
+        Attempt history is what a postmortem queries when the job row has
+        already been reclaimed by retention; an attempt that records only
+        ``outcome='cancelled'`` cannot say which of the cancel paths ended
+        it."""
+        backend = _make_backend()
+        job_id, worker_id = await _make_running_job(backend)
+
+        assert await backend.mark_cancelled(job_id, worker_id, attempt=1) is True
+
+        attempts = await backend.get_attempts(job_id)
+        assert len(attempts) == 1
+        assert attempts[0].outcome == "cancelled"
+        assert attempts[0].error_class is not None, (
+            "the cancelled attempt row recorded no reason, so attempt history "
+            "cannot distinguish a cooperative cancel from a forced abandon"
+        )
+
+    async def test_cancelled_while_pending_leaves_terminal_timeline_entry(self) -> None:
+        """A job cancelled before it ever reached a worker still shows the
+        terminal transition on its event timeline.
+
+        Trimming bookkeeping rows from the event stream cut noise, not state
+        transitions: no cancelled job may end with a timeline that never
+        shows it ending, or the admin timeline view shows a job that simply
+        stops."""
+        backend = _make_backend()
+        args = EnqueueArgs(
+            id=new_job_id(),
+            actor="test_actor",
+            queue="default",
+            payload={},
+            max_attempts=3,
+            retry_kind="transient",
+            scheduled_at=_START,
+        )
+        await backend.enqueue(args)
+
+        assert await backend.write_cancel_request(args.id, "operator stop") is True
+
+        events = await backend.get_events(args.id)
+        assert events, "a cancelled job ended with an empty event timeline"
+        terminal = [
+            e
+            for e in events
+            if e.kind == "state_change" and (e.detail or {}).get("to_state") == "cancelled"
+        ]
+        assert terminal, (
+            "a job cancelled while pending left no terminal-cancel entry on its "
+            f"event timeline; kinds were {[e.kind for e in events]}"
+        )
+
+    async def test_cancelled_while_scheduled_leaves_terminal_timeline_entry(self) -> None:
+        """The same holds for a job cancelled while scheduled for a future
+        run — the deferred-start path must not be the one that loses its
+        audit transition."""
+        backend = _make_backend()
+        args = EnqueueArgs(
+            id=new_job_id(),
+            actor="test_actor",
+            queue="default",
+            payload={},
+            max_attempts=3,
+            retry_kind="transient",
+            scheduled_at=_START + timedelta(hours=1),
+        )
+        await backend.enqueue(args)
+        row = await backend.get(args.id)
+        assert row is not None
+        assert row.status == "scheduled"
+
+        assert await backend.write_cancel_request(args.id, "operator stop") is True
+
+        events = await backend.get_events(args.id)
+        terminal = [
+            e
+            for e in events
+            if e.kind == "state_change" and (e.detail or {}).get("to_state") == "cancelled"
+        ]
+        assert terminal, (
+            "a job cancelled while scheduled left no terminal-cancel entry on "
+            f"its event timeline; kinds were {[e.kind for e in events]}"
+        )
+
+    async def test_phase_1_cancel_stamps_the_cooperative_marker(self) -> None:
+        """A running job cancelled while still only ASKED (cancel_phase=1)
+        reads exactly ``CancelledCooperatively`` on the row — the constant,
+        not merely a non-NULL distinct value: the existing distinctness pin
+        would also pass if the phase arms were swapped."""
+        backend = _make_backend()
+        job_id, worker_id = await _make_running_job(backend)
+
+        assert await backend.write_cancel_request(job_id, "operator stop") is True
+        assert await backend.mark_cancelled(job_id, worker_id, attempt=1) is True
+
+        row = await backend.get(job_id)
+        assert row is not None
+        assert row.status == "cancelled"
+        assert row.error_class == _constants.CANCEL_ORIGIN_COOPERATIVE
+
+        attempts = await backend.get_attempts(job_id)
+        assert len(attempts) == 1
+        assert attempts[0].error_class == _constants.CANCEL_ORIGIN_COOPERATIVE
+
+    async def test_phase_2_cancel_stamps_the_forced_marker(self) -> None:
+        """A running job cancelled after escalation (cancel_phase=2) reads
+        exactly ``CancelledForced`` on the row and the attempt — the
+        marker says the actor had to be interrupted, which is the
+        operational signal to go look at that actor."""
+        backend = _make_backend()
+        job_id, worker_id = await _make_running_job(backend)
+
+        assert await backend.write_cancel_request(job_id, "operator stop") is True
+        assert await backend.write_cancel_escalation(job_id, worker_id, 2) is True
+        assert await backend.mark_cancelled(job_id, worker_id, attempt=1) is True
+
+        row = await backend.get(job_id)
+        assert row is not None
+        assert row.status == "cancelled"
+        assert row.error_class == _constants.CANCEL_ORIGIN_FORCED
+
+        attempts = await backend.get_attempts(job_id)
+        assert len(attempts) == 1
+        assert attempts[0].error_class == _constants.CANCEL_ORIGIN_FORCED

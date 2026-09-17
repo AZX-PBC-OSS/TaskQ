@@ -31,12 +31,10 @@ from typing import TYPE_CHECKING
 from uuid import UUID
 
 import pytest
-import structlog
 from pydantic import BaseModel
 
 from taskq._ids import new_job_id, new_uuid
 from taskq.context import JobContext
-from taskq.obs import bind_job_context
 from taskq.progress._buffer import _ProgressBuffer
 from taskq.settings import WorkerSettings
 from taskq.testing.actor import default_actor_config
@@ -44,6 +42,7 @@ from taskq.testing.clock import FakeClock
 from taskq.testing.in_memory import InMemoryBackend, PassthroughPayload
 from taskq.testing.jobs import make_enqueue_args
 from taskq.worker._consumer import consume_one_job
+from tests._progress_context import make_progress_context
 
 if TYPE_CHECKING:
     from taskq.backend._protocol import JobRow
@@ -66,36 +65,14 @@ class _BufDeps:
         self.dispatcher_pool: object | None = None
         self.settings: WorkerSettings | None = None
         self.redis_client: object | None = None
+        self.disowned_jobs: set[UUID] = set()
 
 
 def _make_ctx(
     buffers: dict[UUID, _ProgressBuffer],
 ) -> JobContext[BaseModel]:
-    job_id = new_job_id()
     settings = WorkerSettings.load_from_dict({"TASKQ_SCHEMA_NAME": "taskq_rt_test"})
-    ctx: JobContext[BaseModel] = JobContext(
-        job_id=job_id,
-        actor="rt_actor",
-        queue="default",
-        attempt=1,
-        worker_id=new_uuid(),
-        payload=PassthroughPayload(),  # pyright: ignore[arg-type]  # Why: JobContext is generic over the payload model; PassthroughPayload accepts anything and is never read here.
-        jobs=None,  # pyright: ignore[arg-type]  # Why: no sub-enqueuer is wired; progress() never touches it before the publish guard under test.
-        log=bind_job_context(
-            structlog.get_logger("test"),
-            job_id=job_id,
-            actor="rt_actor",
-            queue="default",
-            attempt=1,
-            identity_key=None,
-            trace_id="",
-        ),
-        _progress_buffers=buffers,
-        _redis_client=None,
-        _worker_settings=settings,
-        _pending_publish_tasks=None,
-    )
-    return ctx
+    return make_progress_context(buffers, actor="rt_actor", worker_id=new_uuid(), settings=settings)
 
 
 # ── Defect 1: progress(detail=...) bypasses the publish-time guard ──────
@@ -173,7 +150,7 @@ async def test_surrogate_detail_must_not_break_the_terminal_write() -> None:
         actor_config=default_actor_config(),
         payload_type=PassthroughPayload,
         clock=FakeClock(datetime(2026, 1, 1, tzinfo=UTC)),
-        deps=_BufDeps(buffers),  # pyright: ignore[arg-type]  # Why: duck-typed WorkerDeps; the consumer reads only progress_buffers/pool/settings/redis off it.
+        deps=_BufDeps(buffers),  # pyright: ignore[arg-type]  # Why: duck-typed WorkerDeps; the consumer reads only progress_buffers/pool/settings/redis/disowned_jobs off it.
     )
     assert outcome == "succeeded", (
         f"contract: a surrogate progress detail must not break the terminal write; outcome={outcome!r}"

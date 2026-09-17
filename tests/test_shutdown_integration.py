@@ -18,6 +18,7 @@ import asyncio
 import contextlib
 import inspect as _inspect
 from collections.abc import Callable
+from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock
 from uuid import UUID
 
@@ -32,6 +33,7 @@ from taskq.client._jobs import JobsClient
 from taskq.obs import bind_job_context
 from taskq.settings import WorkerSettings
 from taskq.testing.fixtures import JobsApp
+from taskq.testing.pg import create_worker
 from taskq.worker.cancel import _ActiveJob
 from taskq.worker.deps import WorkerDeps
 from taskq.worker.shutdown import (
@@ -379,6 +381,103 @@ async def test_ti4_drain_to_pending(
         assert row.locked_by_worker is None
 
 
+async def test_draining_hands_back_only_jobs_no_consumer_is_running(
+    clean_jobs_app: JobsApp,
+) -> None:
+    """Graceful shutdown hands a claimed job back at most once and never both ways.
+
+    Two rows are claimed by the same worker. One is the local_queue backlog:
+    claimed, no consumer, never started executing. The other has a live
+    consumer inside the actor body, represented by an entry in the in-flight
+    registry exactly as the consumer loop registers it.
+
+    The backlog row must come back to pending with its lock cleared so another
+    worker can take it — that is the hand-back, and it happens once. The
+    executing row must stay locked and running: publishing it to the fleet
+    while its consumer is still in the actor body is how one job becomes two
+    executions. Those rows are the cancelling / forcing / abandoning phases'
+    business, and this phase must not touch them.
+
+    Operationally this is the difference between a rolling deploy that moves
+    queued work to the surviving pods and one that silently double-charges a
+    customer for every job that happened to be mid-flight when the pod got
+    its SIGTERM.
+    """
+    deps = clean_jobs_app.deps
+    backend = clean_jobs_app.backend
+    worker_id = new_uuid()
+
+    backlog_id = new_uuid()
+    executing_id = new_uuid()
+    for jid in (backlog_id, executing_id):
+        await backend.enqueue(
+            EnqueueArgs(
+                id=JobId(jid),
+                actor="test_actor",
+                queue="default",
+                payload={},
+                max_attempts=3,
+                retry_kind="transient",
+                scheduled_at=_immediate(),
+            )
+        )
+
+    # Both rows carry the shape the dispatch claim leaves behind: running,
+    # locked by this worker, started_at stamped at claim. The database row
+    # cannot tell the two cases apart — only this process's registry can.
+    await _mark_jobs_running(deps, [backlog_id, executing_id], worker_id)
+
+    active = _fake_active_job(job_id=executing_id)
+    try:
+        await deps.active_jobs.register(active.job_id, active.task, active.ctx)
+
+        drained = await drain_local_queue_to_pending(deps, worker_id)
+
+        assert drained == 1, (
+            "exactly the one claimed-but-unstarted row may be handed back; "
+            f"the hand-back released {drained} rows"
+        )
+
+        backlog_row = await backend.get(JobId(backlog_id))
+        assert backlog_row is not None
+        assert backlog_row.status == "pending", (
+            "a job claimed but never started must be handed back to pending so "
+            f"another worker can run it; status was {backlog_row.status!r}"
+        )
+        assert backlog_row.locked_by_worker is None, (
+            "the hand-back must clear the lock, otherwise the row is pending "
+            "but still fenced to a worker that is going away"
+        )
+
+        executing_row = await backend.get(JobId(executing_id))
+        assert executing_row is not None
+        assert executing_row.status == "running", (
+            "a job whose consumer is inside the actor body must stay running "
+            "through DRAINING and be resolved by the later cancel phases; "
+            f"status was {executing_row.status!r}"
+        )
+        assert executing_row.locked_by_worker == worker_id, (
+            "unlocking a job that is still executing here publishes it to the "
+            "fleet while the first run is in flight — the same job body then "
+            f"runs twice; locked_by_worker was {executing_row.locked_by_worker!r}"
+        )
+
+        # A second pass — a drain-monitor trigger racing a signal, or a retry
+        # after a transient failure — must release nothing further. Hand-back
+        # is once per claim, not once per shutdown attempt.
+        again = await drain_local_queue_to_pending(deps, worker_id)
+        assert again == 0, (
+            "a repeated hand-back pass must match no rows: the first pass "
+            "cleared the lock, and re-pending a row another worker has since "
+            f"claimed would strand or duplicate it; released {again} rows"
+        )
+    finally:
+        await deps.active_jobs.deregister(active.job_id)
+        active.task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await active.task
+
+
 async def test_ti5_heartbeat_during_cancelling(
     clean_jobs_app: JobsApp,
 ) -> None:
@@ -484,12 +583,13 @@ async def test_ti6_cancel_poll_loop(
 async def test_tc1_forcing_recovery(
     clean_jobs_app: JobsApp,
 ) -> None:
-    """Chaos: job stuck in FORCING is marked abandoned.
+    """Chaos: job stuck in FORCING under an operator cancel is marked abandoned.
 
     Register a job with NONE cancel_phase; simulate a stuck task
     by making the task.cancel() a no-op (the real path would be
     the consumer stub catching CancelledError). Oracle: FORCING
-    escalates; ABANDONING marks abandoned; job not running.
+    escalates; RELEASING marks abandoned (the operator ladder's
+    terminal); job not running.
     """
     deps = clean_jobs_app.deps
     backend = clean_jobs_app.backend
@@ -591,12 +691,12 @@ async def test_tc2_pg_unavailable_drain(
     assert drained == 0
 
 
-async def test_tc3_shielded_abandoning_write(
+async def test_tc3_shielded_releasing_write(
     clean_jobs_app: JobsApp,
 ) -> None:
-    """Chaos: Shielded ABANDONING write survives external cancel.
+    """Chaos: Shielded RELEASING write survives external cancel.
 
-    Run orchestrate_shutdown as a task, cancel it during ABANDONING.
+    Run orchestrate_shutdown as a task, cancel it during RELEASING.
     Oracle: cancel does not deadlock; shutdown completes; active_jobs
     cleared.
     """
@@ -635,10 +735,10 @@ async def test_tc3_shielded_abandoning_write(
         )
     )
 
-    # Wait for ABANDONING phase or orchestrator completion (under
+    # Wait for RELEASING phase or orchestrator completion (under
     # parallel load the orchestrator may complete before we observe
     # the phase transition).
-    while deps.shutdown_phase != ShutdownPhase.ABANDONING and not orch_task.done():  # noqa: ASYNC110 # Why: polling for phase transition in test; ShutdownPhase is not an asyncio.Event.
+    while deps.shutdown_phase != ShutdownPhase.RELEASING and not orch_task.done():  # noqa: ASYNC110 # Why: polling for phase transition in test; ShutdownPhase is not an asyncio.Event.
         await asyncio.sleep(0.01)
 
     orch_task.cancel()
@@ -646,7 +746,7 @@ async def test_tc3_shielded_abandoning_write(
     with contextlib.suppress(asyncio.CancelledError):
         await orch_task
 
-    # The shielded mark_abandoned write may still be in-flight after
+    # The shielded RELEASING write may still be in-flight after
     # the orchestrator task is cancelled. Poll briefly for the job to
     # reach a terminal state before asserting.
     row = await backend.get(JobId(jid))
@@ -667,7 +767,7 @@ async def test_tc4_pg_failover_forcing(
     """Chaos: PG failover during FORCING.
 
     Break PG writes during FORCING phase. Oracle: per-job try/except
-    catches the connection error; ABANDONING runs; worker exits cleanly.
+    catches the connection error; RELEASING runs; worker exits cleanly.
     """
     deps = clean_jobs_app.deps
     backend = clean_jobs_app.backend
@@ -728,8 +828,8 @@ async def test_tc5_actor_swallows_cancelled_error(
     """Actor swallows CancelledError.
 
     Register a job; the orchestrator escalates through FORCING →
-    ABANDONING. Oracle: job marked abandoned; shutdown completes;
-    the registered task is no longer in active_jobs.
+    RELEASING. Oracle: job marked abandoned (operator ladder); shutdown
+    completes; the registered task is no longer in active_jobs.
     """
     deps = clean_jobs_app.deps
     backend = clean_jobs_app.backend
@@ -856,13 +956,13 @@ async def test_tn1_signal_handler_must_not_await(
     )
 
 
-async def test_tn2_abandoning_runs_with_zero_jobs(
+async def test_tn2_releasing_runs_with_zero_jobs(
     clean_jobs_app: JobsApp,
 ) -> None:
-    """ABANDONING runs even with zero remaining jobs.
+    """RELEASING runs even with zero remaining jobs.
 
     Run orchestrate_shutdown with zero active jobs. Oracle:
-    ABANDONING phase logged despite no-op loop body.
+    RELEASING phase logged despite no-op loop body.
     """
     deps = clean_jobs_app.deps
     backend = clean_jobs_app.backend
@@ -881,6 +981,153 @@ async def test_tn2_abandoning_runs_with_zero_jobs(
 
     assert result == 0
     assert shutdown_event.is_set()
-    # Behavioral: shutdown proceeds through all phases including ABANDONING
+    # Behavioral: shutdown proceeds through all phases including RELEASING
     # even with zero active jobs — verified by shutdown_event being set
     # and result == 0 (clean exit).
+
+
+# ── Phase-0 siblings: a deploy with no operator cancel in flight ──────────
+#
+# The suite above seeds rows at ``cancel_phase = 1`` (an operator cancel in
+# flight) — those pins stand. These siblings cover the ordinary deploy:
+# rows the production claim CTE leaves at ``cancel_phase = 0``. The deploy
+# must release them back to the fleet (never ``cancelled``/``abandoned``)
+# with the claim's attempt increment refunded.
+
+
+async def test_deploy_releases_running_work_back_to_the_fleet(
+    clean_jobs_app: JobsApp,
+) -> None:
+    """Phase-0 rows are released (held), never terminalised, and refunded.
+
+    Three jobs claimed through the production claim CTE sit mid-flight
+    when the deploy lands — no operator has asked for anything. Every one
+    must come back to the fleet with its attempt refund, an interruption
+    counted on the row, and an 'interrupted' transition on its timeline,
+    held behind the remaining termination budget because its actor might
+    still be alive in the exiting process.
+    """
+    deps = clean_jobs_app.deps
+    backend = clean_jobs_app.backend
+    schema = deps.settings.schema_name
+
+    job_ids = [new_uuid() for _ in range(3)]
+    for jid in job_ids:
+        await backend.enqueue(
+            EnqueueArgs(
+                id=JobId(jid),
+                actor="test_actor",
+                queue="default",
+                payload={},
+                max_attempts=3,
+                retry_kind="transient",
+                scheduled_at=_immediate(),
+            )
+        )
+
+    worker_id = new_uuid()
+    async with deps.worker_pool.acquire() as conn:
+        await create_worker(conn, schema, worker_id)
+    claimed = await backend.dispatch_batch(worker_id, ["default"], 10, timedelta(seconds=60))
+    assert {row.id for row in claimed} == set(job_ids)
+    attempt_at_claim = {row.id: row.attempt for row in claimed}
+
+    # In-flight entries whose actors never unwind (tasks already done, so
+    # the forced cancel lands nowhere) — the rows survive to RELEASING.
+    for jid in job_ids:
+        active = _fake_active_job(job_id=jid)
+        await deps.active_jobs.register(active.job_id, active.task, active.ctx)  # type: ignore[arg-type] # Why: JobContext[PassthroughPayload] is a JobContext[BaseModel]; pyright cannot widen Generic contravariance.
+
+    shutdown_event = asyncio.Event()
+    result = await orchestrate_shutdown(
+        deps,
+        deps.settings,
+        worker_id,
+        shutdown_event,
+        None,
+        backend=backend,
+    )
+
+    assert result == 0
+    assert shutdown_event.is_set()
+
+    for jid in job_ids:
+        row = await backend.get(JobId(jid))
+        assert row is not None
+        assert row.status == "scheduled", (
+            "a deploy with no operator cancel in flight must release the row "
+            f"behind the termination-budget hold, not terminalise it; got {row.status!r}"
+        )
+        assert row.attempt == attempt_at_claim[jid] - 1, (
+            "the claim's attempt increment must be refunded: the deploy ran "
+            f"nothing; attempt reads {row.attempt}, claimed at {attempt_at_claim[jid]}"
+        )
+        assert row.locked_by_worker is None and row.lock_expires_at is None, (
+            "a released row must not stay locked to the departed pod"
+        )
+        assert row.interrupt_count == 1, (
+            f"the interruption must be counted on the row; got {row.interrupt_count}"
+        )
+        assert (await _count_job_events(deps, schema, jid, "state_change")) >= 1, (
+            "the release writes the job's timeline transition"
+        )
+
+
+async def test_deploy_release_is_not_reclaimable_until_the_hold(
+    clean_jobs_app: JobsApp,
+) -> None:
+    """The held row stays out of the fleet's reach until the hold elapses.
+
+    A released row whose actor may still be alive in the exiting process
+    must not be claimable elsewhere before the process is provably gone —
+    that ordering is the whole point of the hold (requeue before kill, and
+    never both at once).
+    """
+    deps = clean_jobs_app.deps
+    backend = clean_jobs_app.backend
+    schema = deps.settings.schema_name
+
+    jid = new_uuid()
+    await backend.enqueue(
+        EnqueueArgs(
+            id=JobId(jid),
+            actor="test_actor",
+            queue="default",
+            payload={},
+            max_attempts=3,
+            retry_kind="transient",
+            scheduled_at=_immediate(),
+        )
+    )
+
+    worker_id = new_uuid()
+    async with deps.worker_pool.acquire() as conn:
+        await create_worker(conn, schema, worker_id)
+    claimed = await backend.dispatch_batch(worker_id, ["default"], 1, timedelta(seconds=60))
+    assert len(claimed) == 1
+
+    active = _fake_active_job(job_id=jid)
+    await deps.active_jobs.register(active.job_id, active.task, active.ctx)  # type: ignore[arg-type] # Why: JobContext[PassthroughPayload] is a JobContext[BaseModel]; pyright cannot widen Generic contravariance.
+
+    shutdown_event = asyncio.Event()
+    await orchestrate_shutdown(
+        deps, deps.settings, worker_id, shutdown_event, None, backend=backend
+    )
+
+    row = await backend.get(JobId(jid))
+    assert row is not None and row.status == "scheduled"
+    assert row.scheduled_at > datetime.now(UTC), (
+        "the held row's due time is in the future — the surviving fleet must "
+        "not be able to claim it while the departing pod may still be alive"
+    )
+
+    # A surviving worker's claim round finds nothing while the hold holds.
+    surviving = new_uuid()
+    async with deps.worker_pool.acquire() as conn:
+        await create_worker(conn, schema, surviving)
+    batch = await backend.dispatch_batch(surviving, ["default"], 10, timedelta(seconds=60))
+    assert batch == [], (
+        "a row released behind the termination-budget hold was claimable "
+        "immediately — the hold exists so the row cannot be claimed while "
+        "the interrupted actor might still be alive"
+    )

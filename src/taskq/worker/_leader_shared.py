@@ -18,6 +18,8 @@ from uuid import UUID
 import asyncpg
 import structlog
 
+from taskq._advisory import DEADLINE_ERRORS
+from taskq.backend._batch_sql import open_member_where
 from taskq.backend._protocol import Backend, ConnLike
 from taskq.backend._sql_templates import COPY_FROM_COLUMNS
 from taskq.backend._sweeps import (
@@ -435,7 +437,7 @@ async def _run_prune_batch(
         prev_timeout = await _apply_batch_statement_timeout(conn, statement_timeout_ms)
         try:
             rows = await conn.fetch(sql, *args)
-        except (asyncpg.QueryCanceledError, TimeoutError):
+        except DEADLINE_ERRORS:
             if sizer is not None:
                 sizer.on_timeout()
             raise
@@ -673,9 +675,8 @@ WITH candidate AS MATERIALIZED (
     FROM "{schema}".batches b
     WHERE b.status = 'active'
       AND NOT EXISTS (
-        SELECT 1 FROM "{schema}".jobs j
-        WHERE j.metadata @> jsonb_build_object('batch_id', b.id::text)
-          AND j.status {terminal_not_in}
+        SELECT 1 FROM "{schema}".jobs
+        WHERE {open_member}
       )
     LIMIT $1
 ),
@@ -702,8 +703,16 @@ async def complete_stale_batches(
     is one bounded batch: at most *batch_size* completions, committed, so
     the sweep loop drains the remainder one call per tick.
     """
+    completed: int = await conn.fetchval(complete_stale_batches_sql(schema), batch_size)
+    return completed
+
+
+def complete_stale_batches_sql(schema: str) -> str:
+    """The sweep's statement for *schema*; the member probe is the same
+    index-served open-member predicate every terminal write's completion
+    probe uses (``open_member_where``), correlated on the candidate row."""
     if not _IDENT_RE.match(schema):
         raise ValueError(f"invalid schema identifier: {schema!r}")
-    sql = _COMPLETE_STALE_BATCHES_SQL.format(schema=schema, terminal_not_in=_TERMINAL_NOT_IN)
-    completed: int = await conn.fetchval(sql, batch_size)
-    return completed
+    return _COMPLETE_STALE_BATCHES_SQL.format(
+        schema=schema, open_member=open_member_where("b.id::text")
+    )

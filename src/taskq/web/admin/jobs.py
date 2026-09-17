@@ -5,21 +5,19 @@ to ensure route registration order (static paths before {job_id}).
 """
 
 import uuid
-from collections.abc import AsyncGenerator
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from typing import Any
 
 import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 from jinja2 import Environment
 
 from taskq.backend._cursor import CursorValue, JobOrdering, SortColumn
 from taskq.backend._protocol import Backend, JobId
-from taskq.constants import events_channel
 from taskq.settings import TaskQSettings
-from taskq.web._sse_limit import acquire_sse_slot
+from taskq.web._pool import BoundedPool
 from taskq.web.admin._constants import (
     _ACTIVE_STATUSES,  # pyright: ignore[reportPrivateUsage]  # Why: shared constants published by the admin constants module; private prefix scopes them within the admin package.
     _ALL_STATUSES,  # pyright: ignore[reportPrivateUsage]  # Why: shared constants published by the admin constants module; private prefix scopes them within the admin package.
@@ -32,9 +30,10 @@ from taskq.web.admin._constants import (
     parse_time_filter,
 )
 from taskq.web.admin._factory import (
+    get_admin_pool,
     get_backend,
+    get_base_path,
     get_csrf_token,
-    get_pg_pool,
     get_realtime_ctx,
     get_schema,
     get_settings,
@@ -53,6 +52,7 @@ from taskq.web.admin._jsonb import decode_jsonb
 # LAST placement and therefore have a NULL range to page through.
 _SORTABLE_LIVE: dict[str, SortColumn] = {
     "created_at": SortColumn("created_at", "ts", descending=True),
+    "started_at": SortColumn("started_at", "ts", descending=True, nullable=True),
     "actor": SortColumn("actor", "text", descending=True),
     "queue": SortColumn("queue", "text", descending=True),
     "status": SortColumn("status", "text", descending=True),
@@ -61,6 +61,7 @@ _SORTABLE_LIVE: dict[str, SortColumn] = {
 _SORTABLE_ARCHIVE: dict[str, SortColumn] = {
     "finished_at": SortColumn("finished_at", "ts", descending=True, nullable=True),
     "created_at": SortColumn("created_at", "ts", descending=True),
+    "started_at": SortColumn("started_at", "ts", descending=True, nullable=True),
     "actor": SortColumn("actor", "text", descending=True),
     "queue": SortColumn("queue", "text", descending=True),
     "status": SortColumn("status", "text", descending=True),
@@ -82,7 +83,10 @@ _LIVE_COLS = (
     "CASE WHEN started_at IS NOT NULL AND finished_at IS NOT NULL "
     "  THEN extract(epoch from finished_at - started_at) * 1000 "
     "  ELSE NULL END AS duration_ms, "
-    "attempt, max_attempts, priority, identity_key, fairness_key, "
+    # retry_kind travels with max_attempts so the Attempt cell can mark the
+    # ceiling inert on an indefinite-kind row instead of advertising a
+    # budget the job is not enforcing (retries.md §2).
+    "attempt, max_attempts, retry_kind, priority, identity_key, fairness_key, "
     # The lease columns: lock_expires_at for display, and lease_expired
     # computed server-side against the database clock — the lease is
     # written by that clock, so "is it past" is a stored predicate, not a
@@ -101,7 +105,9 @@ _ARCHIVE_COLS = (
     "CASE WHEN started_at IS NOT NULL AND finished_at IS NOT NULL "
     "  THEN extract(epoch from finished_at - started_at) * 1000 "
     "  ELSE NULL END AS duration_ms, "
-    "attempt, max_attempts, priority, identity_key, fairness_key, "
+    # retry_kind: same inert-ceiling marker as the live tab (jobs_archive
+    # carries the column too).
+    "attempt, max_attempts, retry_kind, priority, identity_key, fairness_key, "
     "archived_at, error_message, tags"
 )
 
@@ -234,7 +240,9 @@ def _cursor_values(
     ends in the unfinished rows), and parses to ``None``.  A malformed
     cursor -- hand-edited URL, stale bookmark, or an empty value on a
     column that has no NULL range -- returns ``None`` so the caller falls
-    back to the unpaged first page rather than surfacing a driver error.
+    back to the unpaged first page rather than surfacing a driver error;
+    the caller must then treat the page as NOT paged-into (no cursor was
+    applied, so there is no page before it) whatever the query string said.
     """
     if not cursor_id:
         return None
@@ -257,24 +265,26 @@ def _build_paginated_sql(
     sort: str,
     order: str,
 ) -> tuple[str, list[Any]]:
-    """Build a keyset-paginated SELECT for the given table and column list."""
-    ordering = _build_order(sort, order, sortable)
-    # "next" walks the ORDER BY forwards and "prev" walks it backwards.
-    # The ordering renders both the reversed comparison and the reversed
-    # NULLS placement from that one flag -- reversing only the directions
-    # would strand the NULL range at the wrong end of a "prev" page.
-    forward = cursor_dir != "prev"
+    """Build a keyset-paginated SELECT for the given table and column list.
+
+    See :func:`_paginated_page` for the direction and cursor semantics; this
+    is the SQL half of it, kept separate so the statement shape can be
+    asserted on its own.
+    """
+    page = _paginated_page(sortable, cursor_at, cursor_id, cursor_dir, sort, order)
+    ordering = page.ordering
     from_clause = f'SELECT {cols} FROM "{schema}".{table}'
 
     cursor_clause = ""
-    values = _cursor_values(ordering, cursor_at, cursor_id)
-    if values is not None:
-        predicate, cursor_params = ordering.sql_after(values, len(params) + 1, forward=forward)
+    if page.cursor is not None:
+        predicate, cursor_params = ordering.sql_after(
+            page.cursor, len(params) + 1, forward=page.forward
+        )
         cursor_clause = f" AND {predicate}"
         params = [*params, *cursor_params]
 
     outer_order = ordering.order_by_sql()
-    if not forward:
+    if not page.forward:
         inner = (
             f"{from_clause} WHERE {where} {cursor_clause} "
             f"ORDER BY {ordering.order_by_sql(forward=False)} LIMIT {_FETCH_SIZE}"
@@ -282,6 +292,52 @@ def _build_paginated_sql(
         return f"SELECT * FROM ({inner}) sub ORDER BY {outer_order}", params
     sql = f"{from_clause} WHERE {where} {cursor_clause} ORDER BY {outer_order} LIMIT {_FETCH_SIZE}"
     return sql, params
+
+
+@dataclass(frozen=True, slots=True)
+class _PaginatedPage:
+    """How one jobs-list request is positioned in its result set.
+
+    ``cursor`` is the applied keyset cursor (``None`` on the unpaged first
+    page - absent OR malformed in the query string), and ``forward`` is the
+    walk direction that was actually used.  Both the SQL builder and the
+    handler's has_prev / has_next derivation read these so they can never
+    disagree about whether a cursor was applied.
+    """
+
+    ordering: JobOrdering
+    cursor: tuple[CursorValue, ...] | None
+    forward: bool
+
+    @property
+    def paged_in(self) -> bool:
+        return self.cursor is not None
+
+
+def _paginated_page(
+    sortable: dict[str, SortColumn],
+    cursor_at: str | None,
+    cursor_id: str | None,
+    cursor_dir: str,
+    sort: str,
+    order: str,
+) -> _PaginatedPage:
+    """Resolve the ordering, the applied cursor and the walk direction.
+
+    "next" walks the ORDER BY forwards and "prev" walks it backwards.  The
+    ordering renders both the reversed comparison and the reversed NULLS
+    placement from that one flag -- reversing only the directions would
+    strand the NULL range at the wrong end of a "prev" page.
+
+    A "prev" walk needs a cursor to walk back from: with none applied the
+    request is the unpaged first page and is walked forwards, whatever the
+    query string said -- a reversed unpaged query would serve the TAIL of
+    the result set as if it were the first page.
+    """
+    ordering = _build_order(sort, order, sortable)
+    cursor = _cursor_values(ordering, cursor_at, cursor_id)
+    forward = cursor is None or cursor_dir != "prev"
+    return _PaginatedPage(ordering=ordering, cursor=cursor, forward=forward)
 
 
 def _parse_time_range(
@@ -361,7 +417,7 @@ def register(router: APIRouter) -> None:
     @router.get("/jobs", response_class=HTMLResponse)
     async def jobs_list(  # pyright: ignore[reportUnusedFunction]  # Why: FastAPI decorator pattern prevents pyright from seeing registration via router.get().
         request: Request,
-        pool: asyncpg.Pool = Depends(get_pg_pool),
+        pool: BoundedPool = Depends(get_admin_pool),
         schema: str = Depends(get_schema),
         tmpl: Environment = Depends(get_templates),
         realtime_ctx: tuple[str, str] = Depends(get_realtime_ctx),
@@ -413,8 +469,9 @@ def register(router: APIRouter) -> None:
             parse_time_filter(time_to, "time_to"),
         )
 
-        # Shared parser: dedupes, caps the item count and per-item length
-        # (the enqueue-side tag contract), and 400s on abuse.
+        # Shared parser: dedupes, caps per-item length (the enqueue-side tag
+        # contract; the item count is deliberately uncapped, see
+        # parse_job_tags), and 400s on abuse.
         tag_list: list[str] | None = parse_job_tags(tags)
 
         where, params = _build_where(
@@ -430,6 +487,7 @@ def register(router: APIRouter) -> None:
             within=within,
         )
 
+        sortable = _SORTABLE_LIVE if tab == "live" else _SORTABLE_ARCHIVE
         if tab == "live":
             query_sql, query_params = _build_paginated_sql(
                 schema,
@@ -466,22 +524,23 @@ def register(router: APIRouter) -> None:
         display_rows = [_normalize_row(dict(r)) for r in rows[:_PAGE_SIZE]]
 
         # `overfetched` only tells us whether more rows exist on the side of
-        # the result set we just queried (the direction of `cursor_dir`).
+        # the result set we just queried (the direction actually walked).
         # A page reached via "prev" already knows a "next" page exists (we
         # came from it), and vice versa — so has_next/has_prev must be
         # direction-aware rather than both derived from the same flag.
         #
-        # `cursor_id` and not `cursor_at` is what marks a page as paged-into:
-        # on a NULLS LAST column the seam value itself is legitimately empty
-        # (a cursor inside the `finished_at IS NULL` range), and reading
-        # emptiness as "no cursor" hid the link back.
-        paged_in = bool(cursor_id)
-        if cursor_dir == "prev":
+        # Paged-into means a cursor was APPLIED, which is what the resolved
+        # page reports: the query string alone cannot say so, because a
+        # malformed cursor is dropped and the first page served, and on a
+        # NULLS LAST column the seam value itself is legitimately empty.
+        page = _paginated_page(sortable, cursor_at, cursor_id, cursor_dir, sort, order)
+        cursor_dir = "next" if page.forward else "prev"
+        if not page.forward:
             has_prev = overfetched
-            has_next = paged_in
+            has_next = True
         else:
             has_next = overfetched
-            has_prev = paged_in
+            has_prev = page.paged_in
 
         next_cursor_at: str = ""
         next_cursor_id: str = ""
@@ -489,7 +548,6 @@ def register(router: APIRouter) -> None:
         prev_cursor_id: str = ""
         if display_rows:
             # Use the active sort column as the cursor key
-            sortable = _SORTABLE_LIVE if tab == "live" else _SORTABLE_ARCHIVE
             cursor_col = (sortable.get(sort) or next(iter(sortable.values()))).name
             last = display_rows[-1]
             next_cursor_at = _cursor_field(last.get(cursor_col))
@@ -546,7 +604,7 @@ def register(router: APIRouter) -> None:
 
     @router.get("/jobs/count")
     async def jobs_count(  # pyright: ignore[reportUnusedFunction]  # Why: FastAPI decorator pattern prevents pyright from seeing registration via router.get().
-        pool: asyncpg.Pool = Depends(get_pg_pool),
+        pool: BoundedPool = Depends(get_admin_pool),
         schema: str = Depends(get_schema),
         tab: str = Query(default="live"),
         status: list[str] = Query(default=[]),
@@ -586,50 +644,6 @@ def register(router: APIRouter) -> None:
             cnt = await conn.fetchval(count_sql, *params)
         return {"count": int(cnt) if cnt else 0}
 
-    # ── SSE endpoint for live job updates ─────────────────────────────
-
-    @router.get("/jobs/sse/live")
-    async def jobs_sse(  # pyright: ignore[reportUnusedFunction]  # Why: FastAPI decorator pattern prevents pyright from seeing registration via router.get().
-        request: Request,
-        pool: asyncpg.Pool = Depends(get_pg_pool),
-        schema: str = Depends(get_schema),
-        settings: TaskQSettings = Depends(get_settings),
-    ) -> StreamingResponse:
-        channel = events_channel(schema)
-        # Why capped here rather than in admin/sse.py: this endpoint lives in
-        # jobs.py and never went through the `/sse/{topic}` handler, so the
-        # `admin_max_sse_connections` semaphore that endpoint applies has never
-        # covered it. Each connection holds a PG LISTEN connection and an
-        # asyncio task for as long as the client stays open.
-        semaphore = await acquire_sse_slot("admin-jobs-live", settings.admin_max_sse_connections)
-
-        async def event_stream() -> AsyncGenerator[str, None]:
-            from taskq.web.admin._listen import listen_with_reconnect
-
-            try:
-                async for payload in listen_with_reconnect(pool, channel):
-                    if await request.is_disconnected():
-                        return
-                    if payload is None:
-                        yield ": keepalive\n\n"
-                    else:
-                        yield f"event: state_change\ndata: {payload}\n\n"
-            finally:
-                # In the generator, not the handler: the slot is held for the
-                # life of the stream, and a disconnect arrives as
-                # CancelledError thrown in here.
-                semaphore.release()
-
-        return StreamingResponse(
-            event_stream(),
-            media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache",
-                "Connection": "keep-alive",
-                "X-Accel-Buffering": "no",
-            },
-        )
-
     # ── Job detail ─────────────────────────────────────────────────────
 
     @router.get("/jobs/{job_id}", response_class=HTMLResponse)
@@ -637,7 +651,7 @@ def register(router: APIRouter) -> None:
         job_id: uuid.UUID,
         request: Request,
         csrf_token: str = Depends(get_csrf_token),
-        pool: asyncpg.Pool = Depends(get_pg_pool),
+        pool: BoundedPool = Depends(get_admin_pool),
         schema: str = Depends(get_schema),
         tmpl: Environment = Depends(get_templates),
         realtime_ctx: tuple[str, str] = Depends(get_realtime_ctx),
@@ -706,6 +720,7 @@ def register(router: APIRouter) -> None:
         reason: str | None = Query(default=None),
         backend: Backend | None = Depends(get_backend),
         settings: TaskQSettings = Depends(get_settings),
+        base_path: str = Depends(get_base_path),
     ) -> RedirectResponse:
         if not settings.admin_actions_enabled:
             raise HTTPException(
@@ -732,4 +747,8 @@ def register(router: APIRouter) -> None:
 
         await backend.write_cancel_request(JobId(job_id), reason)
 
-        return RedirectResponse(url=f"../../jobs/{job_id}", status_code=303)
+        # The redirect must carry base_path: a relative ../../ URL only
+        # resolves back to the job page when the router is mounted at the
+        # root — under a host prefix it climbs out of the mount and 404s
+        # (or lands in the host's own routes).
+        return RedirectResponse(url=f"{base_path}/jobs/{job_id}", status_code=303)

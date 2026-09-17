@@ -59,7 +59,7 @@ from taskq.backend._sql import (
 from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining
 )
-from taskq.context import JobContext
+from taskq.context import CancelOrigin, JobContext
 from taskq.obs import get_logger, get_meter, log_cancel_phase_change
 
 if TYPE_CHECKING:
@@ -121,6 +121,14 @@ class CancelController(Protocol):
 
 class _CancelController:
     """Drives the five-phase cancel-poll loop for one worker.
+
+    The ladder is the OPERATOR-cancel ladder: its phases track a row whose
+    ``cancel_requested_at`` an operator set, and its PG-observation arms
+    stamp the entry's ``cancel_origin`` OPERATOR accordingly. A shutdown
+    (SIGTERM / drain monitor) is not an operator cancel and never walks
+    this ladder — the shutdown orchestrator's own phases release
+    infrastructure-interrupted work instead (see
+    :mod:`taskq.worker.shutdown`).
 
     Constructed once per worker via ``make_cancel_controller``.  Holds the
     SQL strings, grace-period settings, and ``_pending_abandons`` queue as
@@ -232,6 +240,12 @@ class _CancelController:
                 active.ctx._abort_requested.set()  # pyright: ignore[reportPrivateUsage]  # Why: cancel controller intentionally accesses the private _abort_requested Event to signal sync actors.
                 active.cancel_observed_at = loop.time()
                 active.cancel_phase = CancelPhase.COOPERATIVE
+                # The poll only returns rows carrying cancel_requested_at,
+                # so this observation is proof the OPERATOR asked — it
+                # overrides a SHUTDOWN stamp from a deploy that signalled
+                # the job first (the row is the final arbiter of origin).
+                active.cancel_origin = CancelOrigin.OPERATOR
+                active.ctx._set_cancel_origin(CancelOrigin.OPERATOR)  # pyright: ignore[reportPrivateUsage]  # Why: the controller is the designated writer of the context's origin stamp (set alongside cancel_event.set(), per the field's contract).
                 log_cancel_phase_change(
                     _log,
                     from_phase=int(CancelPhase.NONE),
@@ -252,6 +266,11 @@ class _CancelController:
                 )
                 _record_phase_transition(active.cancel_phase, CancelPhase.FORCED)
                 active.cancel_phase = CancelPhase.FORCED
+                # A row at FORCED is only reachable through an operator's
+                # cancel request — stamp the origin so the terminal routing
+                # never reads the operator's escalation as a deploy.
+                active.cancel_origin = CancelOrigin.OPERATOR
+                active.ctx._set_cancel_origin(CancelOrigin.OPERATOR)  # pyright: ignore[reportPrivateUsage]  # Why: the controller is the designated writer of the context's origin stamp (set alongside the phase change, per the field's contract).
                 continue
 
             elapsed: float | None = None
@@ -448,6 +467,15 @@ class _ActiveJob:
     the job first transitioned to ``cancel_phase >= 1``.  It is ``None`` until
     phase 1 is entered.  Using ``loop.time()`` (monotonic) prevents NTP
     corrections on the host from triggering premature phase-2 escalation.
+
+    ``cancel_origin`` records WHO asked for the cancellation
+    (:class:`~taskq.context.CancelOrigin`): the cancel-poll loop stamps
+    OPERATOR when the row's cancel request is observed, the shutdown
+    orchestrator stamps SHUTDOWN when it signals the job. The consumer's
+    ``CancelledError`` routing reads it to tell an operator's terminal
+    cancel apart from an infrastructure interruption — the two surface
+    identically as ``CancelledError``, so the distinction has to come from
+    the recorded origin, not from the raised error's type.
     """
 
     job_id: JobId
@@ -455,6 +483,7 @@ class _ActiveJob:
     ctx: JobContext[BaseModel]
     cancel_phase: CancelPhase = CancelPhase.NONE
     cancel_observed_at: float | None = field(default=None)  # loop.time(), not wall clock
+    cancel_origin: CancelOrigin = CancelOrigin.NONE
 
 
 class ActiveJobRegistry:

@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import threading
 from dataclasses import dataclass, field
+from enum import IntEnum
 from typing import TYPE_CHECKING
 from uuid import UUID
 
@@ -19,6 +20,7 @@ from pydantic import BaseModel
 
 from taskq._json import dumps
 from taskq.exceptions import ProgressTooLarge
+from taskq.progress._buffer import _EncodedProgressData
 from taskq.progress._publish import _publish_progress_event
 
 if TYPE_CHECKING:
@@ -28,7 +30,28 @@ if TYPE_CHECKING:
     from taskq.progress._buffer import _ProgressBuffer
     from taskq.settings import WorkerSettings
 
-__all__ = ["JobContext"]
+__all__ = ["CancelOrigin", "JobContext"]
+
+
+class CancelOrigin(IntEnum):
+    """Who asked for the running attempt's cancellation.
+
+    The terminal routing for a cancelled attempt keys on the ORIGIN, not on
+    the exception type (a deploy and an operator cancel both surface as
+    ``CancelledError``), so the distinction must come from the row's
+    cancel bookkeeping rather than from the raised error's type.
+
+    NONE     — no cancel has been signalled.
+    OPERATOR — the row's ``cancel_requested_at`` was observed (the heartbeat
+               cancel poll), or the orchestrator's escalation probe found
+               the row already under an operator cancel.
+    SHUTDOWN — the shutdown orchestration (SIGTERM / drain monitor) asked.
+    """
+
+    NONE = 0
+    OPERATOR = 1
+    SHUTDOWN = 2
+
 
 _log: structlog.stdlib.BoundLogger = structlog.get_logger(__name__)
 
@@ -58,8 +81,7 @@ class JobContext[P: BaseModel]:
     ``consume_budget=False``) at dispatch time. Such a deferral refunds
     the claim's attempt increment, so ``attempt`` alone cannot count
     snooze cycles — an actor that wants to snooze N times and then
-    succeed keys off ``snooze_count`` (the Oban snoozed-meta /
-    River snoozes-counter convention), not off ``attempt``.
+    succeed keys off ``snooze_count``, not off ``attempt``.
     """
 
     job_id: UUID
@@ -74,6 +96,7 @@ class JobContext[P: BaseModel]:
     span: Span | None = None
     cancel_event: asyncio.Event = field(default_factory=asyncio.Event)
     _abort_requested: threading.Event = field(default_factory=threading.Event)
+    _cancel_origin: CancelOrigin = CancelOrigin.NONE
     _progress_buffers: dict[UUID, _ProgressBuffer] | None = None
     _redis_client: redis_async.Redis | None = None  # type: ignore[type-arg]  # Why: redis-py stubs expose Redis as an unparameterised generic; type arg cannot be supplied without a stubs update.
     _worker_settings: WorkerSettings | None = None
@@ -83,6 +106,33 @@ class JobContext[P: BaseModel]:
     @property
     def cancellation_requested(self) -> bool:
         return self.cancel_event.is_set()
+
+    @property
+    def cancel_origin(self) -> CancelOrigin:
+        """Who asked for this attempt's cancellation.
+
+        Read it alongside :attr:`cancellation_requested` when the two
+        answers differ in what the actor should do: on a shutdown
+        (:attr:`CancelOrigin.SHUTDOWN`) the attempt is released back to the
+        fleet with its budget refunded, so an actor that can checkpoint
+        should prefer to stash progress and raise rather than return a
+        partial result; on an operator cancel
+        (:attr:`CancelOrigin.OPERATOR`) the job terminalises, so returning
+        the partial result is the only way to keep it.
+        """
+        return self._cancel_origin
+
+    def _set_cancel_origin(self, origin: CancelOrigin) -> None:
+        """Stamp the cancel origin. Called by the cancel controller and the
+        shutdown orchestrator alongside ``cancel_event.set()`` — never by
+        actor code.
+
+        ``object.__setattr__`` because the dataclass is frozen: the origin
+        is process state that arrives AFTER construction (the registry
+        entry's), exactly as the ``cancel_event``/``_abort_requested``
+        fields mutate through their own methods rather than assignment.
+        """
+        object.__setattr__(self, "_cancel_origin", origin)
 
     def check_cancelled(self) -> None:
         if self.cancel_event.is_set():
@@ -143,6 +193,7 @@ class JobContext[P: BaseModel]:
         publishing to Redis are logged and recorded as a metric, never
         raised here.
         """
+        data_json: bytes | None = None
         if (data is not None or detail is not None) and self._worker_settings is not None:
             # Load-bearing serialization, not redundant with the publish
             # path's ``model_dump_json``: this is the only
@@ -156,13 +207,15 @@ class JobContext[P: BaseModel]:
             # ``Json[dict]``-typed field rejects dict construction outright
             # and would change the wire format; verified against pydantic
             # 2.13). The double serialization of ``data`` (here + the event
-            # dump) is therefore the price of the synchronous-raise contract;
-            # the flush's re-serialization is a separate (PG) boundary.
+            # dump) is therefore the price of the synchronous-raise contract.
+            # The flush is not a third: the bytes measured here travel with
+            # the dict on the buffer and are bound to the jsonb parameter
+            # as-is.
             if data is not None:
-                serialised_len = len(dumps(data))
+                data_json = dumps(data)
                 limit = self._worker_settings.progress_data_max_bytes
-                if serialised_len > limit:
-                    raise ProgressTooLarge(limit=limit, actual=serialised_len)
+                if len(data_json) > limit:
+                    raise ProgressTooLarge(limit=limit, actual=len(data_json))
             if detail is not None:
                 # The detail string passes through the same publish-time
                 # serialization ``data`` does: an unencodable detail (a lone
@@ -199,6 +252,9 @@ class JobContext[P: BaseModel]:
             buffer.pending_state["detail"] = detail
         if data is not None:
             buffer.pending_state["data"] = data
+            buffer.encoded_data = (
+                _EncodedProgressData(source=data, json=data_json) if data_json is not None else None
+            )
         buffer.dirty = True
 
         seq = buffer.base_seq + buffer.pending_seq_delta

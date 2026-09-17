@@ -7,6 +7,7 @@ and without a deps↔shutdown module cycle.
 """
 
 import asyncio
+from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from typing import TYPE_CHECKING, Protocol
 
@@ -22,6 +23,7 @@ __all__ = [
     "PUBLISH_DRAIN_TIMEOUT_SECS",
     "close_conn_bounded",
     "close_pool_bounded",
+    "close_provider_bounded",
     "close_redis_bounded",
     "worst_case_teardown_tail",
 ]
@@ -39,13 +41,17 @@ CLOSE_TIMEOUT_SECS: float = 5.0
 
 # Bounded closes that unwind SEQUENTIALLY on the worker's AsyncExitStack:
 # up to 4 pools (dispatcher, heartbeat, worker, and the conditional
-# per-slot transaction pool) + notify_conn + redis_client.
+# per-slot transaction pool) + notify_conn + redis_client + the two
+# credential providers (pg, redis) a provider-backed deployment resolves.
 #
 # The slot pool is conditional (it exists only when a LOOP-scope
 # connection is registered and max_concurrency > 1), but this constant
 # models the WORST case — a deployment's SIGTERM budget must not be
 # silently short one close timeout because its worker happens to run
-# the per-slot path.
+# the per-slot path. The providers follow the same rule: a managed-
+# identity deployment resolves at most one pg provider and one redis
+# provider, and each is closed once, after every resource built through
+# it (open_worker_deps pushes them first so they unwind last).
 #
 # Scope note: this models the BOOT-time stack. Each credential reload
 # pushes one more bounded close per factory-backed pool onto the same
@@ -65,9 +71,9 @@ CLOSE_TIMEOUT_SECS: float = 5.0
 # the worker down (worker/_bootstrap.py's _guarded sets shutdown_event
 # with no orchestrator), the early leader close never ran, so the exit
 # stack's leader guard closes a TaskQ-owned leader conn sequentially
-# too: 7 closes ≈ 37s on that path, not the 32s modelled here. The
+# too: 9 closes ≈ 47s on that path, not the 42s modelled here. The
 # startup warning's number understates the crash path by one close.
-_SEQUENTIAL_BOUNDED_CLOSES: int = 6
+_SEQUENTIAL_BOUNDED_CLOSES: int = 8
 
 # Bound on the trailing progress-publish drain (asyncio.wait timeout in the
 # worker's teardown callback). Additive on top of the closes above.
@@ -93,8 +99,8 @@ def worst_case_teardown_tail(close_timeout: float = CLOSE_TIMEOUT_SECS) -> float
     Sibling-crash caveat: on the path where a sibling crash (not an
     orchestrated shutdown) tears the worker down, the orchestrator's
     early leader-conn close never ran and the exit stack's leader guard
-    closes a TaskQ-owned leader conn sequentially as well — seven
-    bounded closes, ~37s at the default bound, understated by the 32s
+    closes a TaskQ-owned leader conn sequentially as well — nine
+    bounded closes, ~47s at the default bound, understated by the 42s
     modelled here.
     """
     return _SEQUENTIAL_BOUNDED_CLOSES * close_timeout + PUBLISH_DRAIN_TIMEOUT_SECS
@@ -192,3 +198,24 @@ async def close_redis_bounded(client: _AsyncCloseable, label: str, close_timeout
         logger.warning("redis-teardown-close-timeout", label=label, close_timeout=close_timeout)
     except Exception as exc:
         logger.warning("redis-teardown-close-error", label=label, error=repr(exc))
+
+
+async def close_provider_bounded(provider: object, label: str, close_timeout: float) -> None:
+    """Close a credential provider during teardown, bounded by ``close_timeout``.
+
+    A provider that owns a resource - the Entra ID providers' lazily created
+    ``DefaultAzureCredential`` holds an aiohttp session - releases it through
+    an async ``aclose()``; a provider without one (a token signer, a Vault
+    client the caller owns) has nothing to release and is left alone. Same
+    log-and-continue contract as :func:`close_redis_bounded`: never raises,
+    a hung close is reported and teardown keeps unwinding.
+    """
+    aclose: Callable[[], Awaitable[None]] | None = getattr(provider, "aclose", None)
+    if not callable(aclose):
+        return
+    try:
+        await asyncio.wait_for(aclose(), timeout=close_timeout)
+    except TimeoutError:
+        logger.warning("provider-teardown-close-timeout", label=label, close_timeout=close_timeout)
+    except Exception as exc:
+        logger.warning("provider-teardown-close-error", label=label, error=repr(exc))

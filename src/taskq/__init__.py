@@ -26,7 +26,7 @@ from taskq.auth import (
     make_redis_client_factory,
 )
 
-# Why: issue #91 — imported from taskq.backend (the public aggregation module,
+# Why: imported from taskq.backend (the public aggregation module,
 # not the _protocol/statemachine internals) so embedders spell "is this job
 # done" checks and JobStatus annotations (e.g. EnqueueArgs.unique_states)
 # without copying the five statuses into their own constants, which drift
@@ -84,6 +84,7 @@ from taskq.exceptions import (
     DuplicateIdempotencyKeyError,
     EmptyBatchError,
     EmptyFilterError,
+    IdempotencyKeyActorMismatchError,
     IllegalStateTransition,
     JobFailed,
     MaxPendingExceededError,
@@ -101,6 +102,7 @@ from taskq.exceptions import (
     ScopeViolation,
     SingletonCollisionError,
     Snooze,
+    StreamUnavailable,
     SubEnqueueError,
     TaskQError,
     UniqueForLockTimeoutError,
@@ -111,6 +113,7 @@ from taskq.progress import ProgressEvent
 from taskq.retry import (
     Fail,
     JobRetryState,
+    OnCancel,
     OnSuccess,
     Retry,
     RetryClassifier,
@@ -168,6 +171,7 @@ __all__ = [
     "Fail",
     "FakeClock",
     "IdempotencyKey",
+    "IdempotencyKeyActorMismatchError",
     "IdentityKey",
     "IllegalStateTransition",
     "JobContext",
@@ -187,6 +191,7 @@ __all__ = [
     "MissingProvider",
     "NullErrorReporter",
     "OIDCSettings",
+    "OnCancel",
     "OnSuccess",
     "PartialBatchError",
     "PayloadValidationError",
@@ -220,6 +225,7 @@ __all__ = [
     "ScopedIdempotencyMigrationPendingError",
     "SingletonCollisionError",
     "Snooze",
+    "StreamUnavailable",
     "SubEnqueueError",
     "SubJobEnqueuer",
     "SystemClock",

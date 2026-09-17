@@ -1137,8 +1137,7 @@ async def test_watch_reclaims_pg_listen_delivers_promptly(pg_dsn: str) -> None:
 @pytest.mark.integration
 async def test_watch_reclaims_survives_listen_connection_kill(pg_dsn: str) -> None:
     """pg_terminate_backend kills watch_reclaims()'s dedicated LISTEN
-    connection mid-stream (same technique as test_stream.py's
-    test_tc1_pg_listen_connection_dropped_stream_recovers).  asyncpg does
+    connection mid-stream.  asyncpg does
     NOT raise into the consume loop when this happens — the death is
     detected via the termination listener / is_closed() checks; the
     generator falls back to polling and delivers the pending event, then

@@ -36,7 +36,7 @@ __all__ = [
 _EFFECTS_COLUMNS = "seq, at, actor, job_id, attempt, kind, detail"
 _JOBS_COLUMNS = (
     "id, actor, queue, status, attempt, max_attempts, created_at, scheduled_at, "
-    "started_at, finished_at, metadata, payload"
+    "started_at, finished_at, metadata, payload, interrupt_count"
 )
 
 
@@ -227,11 +227,25 @@ async def wait_for_effects(
     return rows
 
 
+async def fresh_worker_ids(pool: asyncpg.Pool, schema: str) -> set[UUID]:
+    """The workers of *schema* with a fresh post-register heartbeat
+    (``last_seen_at > started_at``, within the last 10 s)."""
+    rows = await pool.fetch(
+        f"""
+        SELECT id FROM "{schema}".workers
+        WHERE last_seen_at > now() - interval '10 seconds'
+          AND last_seen_at > started_at
+        """
+    )
+    return {row["id"] for row in rows}
+
+
 async def wait_for_worker_ready(
     pool: asyncpg.Pool,
     schema: str,
     *,
     timeout: float = 30.0,  # noqa: ASYNC109  # Why: forwarded to poll_until as a polling deadline, not an asyncio.timeout-style wrapper.
+    known_workers: frozenset[UUID] | set[UUID] = frozenset(),
 ) -> None:
     """Readiness gate: poll ``{schema}.workers`` until a row shows a fresh
     POST-REGISTER heartbeat (``last_seen_at > started_at``, within the last
@@ -239,20 +253,16 @@ async def wait_for_worker_ready(
     crashes mid-bootstrap (after ``register_worker`` but before its first
     tick — e.g. an actor-config failure) never satisfies the gate, so the
     fixture dumps the container logs with the actual traceback instead of
-    letting the test proceed against a dead worker."""
+    letting the test proceed against a dead worker.
+
+    *known_workers* are the ids already beating before the worker under
+    the gate started (:func:`fresh_worker_ids`); the gate waits for a
+    fresh heartbeat from some OTHER worker, so a second container on a
+    schema whose first worker is alive is gated on its own readiness,
+    never on its sibling's."""
 
     async def _fresh_heartbeat() -> bool:
-        return (
-            await pool.fetchval(
-                f"""
-                SELECT 1 FROM "{schema}".workers
-                WHERE last_seen_at > now() - interval '10 seconds'
-                  AND last_seen_at > started_at
-                LIMIT 1
-                """
-            )
-            is not None
-        )
+        return bool(await fresh_worker_ids(pool, schema) - set(known_workers))
 
     await poll_until(
         _fresh_heartbeat,

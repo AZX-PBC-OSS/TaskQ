@@ -72,10 +72,12 @@ production never constructs. See the section comment there.
 # claim was measured — revert the guarded thing, count what fails — rather than
 # asserted. Files where that measurement was made carry the numbers in a
 # comment at the site (test_schema_name_validator.py, test_shutdown_integration.py,
-# test_obs_exception_redaction.py, test_pr39_followup_fixes.py,
+# test_obs_exception_redaction.py, test_settings_validator_producer_scope.py,
 # test_drain_old_redis_bounded.py).
 
 import ast
+import asyncio
+import contextlib
 import hashlib
 import os
 import re
@@ -92,6 +94,7 @@ from taskq.testing.fixtures import (
     run_isolation_token,
 )
 from tests.conftest import (
+    _leaked_pending_task_report,  # pyright: ignore[reportPrivateUsage]  # Why: shared test-infra helper under test; mirrors the conftest imports above.
     _module_db_name,  # pyright: ignore[reportPrivateUsage]  # Why: shared test-infra naming helper under test; mirrors tests/e2e's imports of conftest helpers.
 )
 
@@ -211,8 +214,8 @@ def test_testing_pkg_no_module_level_schema_constant() -> None:
 # satisfies the gate as surely as our own. A false positive lands the
 # test's raced COMMIT early: test_rt_cancel_window_race.py's
 # deregistration preflight then saw the claimed row as committed
-# 'running' and refused with ActorHasActiveJobsError (PR #120's CI
-# failure, mechanism reproduced deterministically against a two-database
+# 'running' and refused with ActorHasActiveJobsError (a CI failure of the
+# unscoped gate, mechanism reproduced deterministically against a two-database
 # cluster), and test_rt_cancel_deadlock.py's holder would close the
 # deadlock cycle before the drain's event INSERT parked, inverting which
 # transaction's detector arms first. Every pg_stat_activity query in the
@@ -502,3 +505,59 @@ def test_session_publishes_run_isolation_token(
     worker = os.environ.get("PYTEST_XDIST_WORKER")
     expected = worker if worker is not None else tmp_path_factory.getbasetemp().name
     assert token == expected
+
+
+# ── Asyncio task-leak guard ────────────────────────────────────────
+#
+# conftest's _fail_on_leaked_asyncio_tasks fails any test that leaves an
+# asyncio task pending on the module event loop — a live loop keeps
+# writing shared state into later tests (module-scoped loops mean the
+# task advances at every later test's await points). This pin holds the
+# guard's classification to its contract: leaks are NAMED (task name and
+# coroutine), completed tasks and inherited baselines are not leaks.
+
+
+async def _hygiene_leak_probe_coro() -> None:
+    await asyncio.Event().wait()
+
+
+async def test_leaked_pending_task_report_names_the_leaked_task() -> None:
+    """A pending task minted by the test is reported by name and coroutine;
+    a task that completed and tasks pending since before the test are
+    not leaks; cleaning the leak clears the report."""
+    before = asyncio.all_tasks()
+    done_task = asyncio.create_task(_hygiene_noop(), name="hygiene-done-probe")
+    await done_task
+    leaked_task = asyncio.create_task(_hygiene_leak_probe_coro(), name="hygiene-leak-probe")
+    try:
+        report = _leaked_pending_task_report(before, asyncio.all_tasks())
+        assert report is not None, "a pending task minted by the test went unreported"
+        assert "'hygiene-leak-probe'" in report
+        assert "_hygiene_leak_probe_coro" in report
+        assert "hygiene-done-probe" not in report, "a completed task is not a leak"
+    finally:
+        leaked_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await leaked_task
+    assert _leaked_pending_task_report(before, asyncio.all_tasks()) is None
+
+
+async def _hygiene_noop() -> None:
+    return None
+
+
+async def test_leaked_pending_task_report_treats_inherited_tasks_as_clean() -> None:
+    """Tasks already pending when the test started (a module fixture's
+    long-lived worker) are the test's inheritance, not its leak — the
+    guard is a baseline-diff, so a long-lived task inherited and left
+    running reports nothing."""
+    inherited = asyncio.create_task(_hygiene_leak_probe_coro(), name="hygiene-inherited")
+    try:
+        before = asyncio.all_tasks()
+        # Simulate a test that creates nothing and tears down cleanly: the
+        # inherited task is still pending, but it was pending at baseline.
+        assert _leaked_pending_task_report(before, asyncio.all_tasks()) is None
+    finally:
+        inherited.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await inherited

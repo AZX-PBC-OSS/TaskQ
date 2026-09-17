@@ -1,18 +1,19 @@
 """Chaos tests for MaintenanceLeader.
 
-Test IDs map to the test plan: through Each test verifies
-the leader survives a specific failure mode under real PostgreSQL
-conditions (testcontainers PG18, pg_terminate_backend).
+Each test verifies the leader survives a specific failure mode under real
+PostgreSQL conditions (testcontainers PG18, pg_terminate_backend).
 
-Failover SLA (source:):
+Failover SLA (mirrors the module docstring of ``worker/leader.py``):
 
 list-table::
    header-rows: 1
 
    * - Scenario
      - Max recovery window
-   * - Worker killed
-     - ≤ heartbeat_interval + 1 s
+   * - Graceful stop
+     - ≤ heartbeat_interval + one round trip (the resign frees the row)
+   * - Worker killed / silent leader
+     - ≤ leader_lease + heartbeat_interval + one round trip
    * - Partition detect
      - ≤ watchdog_interval + heartbeat_interval + 2 s
    * - PG failover
@@ -20,9 +21,9 @@ list-table::
    * - Watchdog detect
      - ≤ watchdog_interval + heartbeat_interval
 
-Uses production defaults (heartbeat_interval=10s, WATCHDOG_INTERVAL=5s,
-LOCK_LEASE=60s) so the tests prove the SLA empirically. dominates
-runtime with a container restart.
+Uses shortened settings (heartbeat_interval=1s, leases=4s via
+shorten_chaos_settings) so the lease horizons the SLA names are exercised
+inside the test rather than at production timings.
 
 Private-attribute access policy: Option A — direct access with
 ``# pyright: ignore[reportPrivateUsage]`` and a ``Why:`` justification.
@@ -99,14 +100,17 @@ async def _start_leader_and_wait_for_win(
 @pytest.mark.asyncio
 @pytest.mark.xdist_group(name="chaos")
 async def test_tc1_kill_leader_pod_mid_sweep(pg_dsn: str) -> None:
-    """Kill leader pod mid-sweep via pg_terminate_backend on leader_conn.
+    """Kill leader pod mid-sweep: the survivor promotes on the lease horizon.
 
     Uses _open_two_pg_workers. Both pods start concurrently; whichever
-    wins first is killed via pg_terminate_backend on its leader_conn.
-    Asserts the survivor becomes leader within heartbeat_interval + 5s and
-    the maintenance_leader row reflects the survivor's worker_id.
-
-    Source: "No-leader window" — worker killed ≤ heartbeat_interval + 1s.
+    wins first is killed the way an ungraceful pod death lands it: its
+    leader_conn is terminated server-side (so the departing pod's resign
+    cannot reach the database and its lease row is left behind), then its
+    task is cancelled (the process is gone, so it never re-contends). The
+    survivor must take over within the bound the lease sets —
+    ``leader_lease + heartbeat_interval + one round trip`` — because the
+    row the dead pod left is all that ever gates it, and the
+    maintenance_leader row must come to name the survivor.
     """
     schema = f"tc1_{new_base62()}"
     async with _open_two_pg_workers(pg_dsn, schema=schema) as (
@@ -165,11 +169,29 @@ async def test_tc1_kill_leader_pod_mid_sweep(pg_dsn: str) -> None:
                 finally:
                     await raw_conn.close()
 
+                # The process dies with its link already severed: no resign
+                # can land, so the lease row outlives it and lapses on the
+                # horizon the dead pod itself wrote. Cancelling the task (the
+                # process going away) also keeps it from re-contending — the
+                # takeover below is the survivor's alone.
+                winner_task.cancel()
+                with suppress(asyncio.CancelledError, ExceptionGroup):
+                    await winner_task
+
+                failover_bound = (
+                    loser_deps.settings.resolved_leader_lease
+                    + loser_deps.settings.heartbeat_interval
+                    + 2.0  # round trips and scheduling slack
+                )
                 await asyncio.wait_for(
                     loser_deps.is_leader.wait(),
-                    timeout=loser_deps.settings.heartbeat_interval + 5,
+                    timeout=failover_bound,
                 )
-                assert loser_deps.is_leader.is_set()
+                assert loser_deps.is_leader.is_set(), (
+                    f"the survivor did not take over within leader_lease + "
+                    f"heartbeat_interval + margin ({failover_bound}s) of a "
+                    "leader's ungraceful death — the bound the lease sets"
+                )
 
                 async with loser_deps.dispatcher_pool.acquire() as conn:
                     row = await conn.fetchrow(
@@ -595,21 +617,18 @@ async def test_tc4_advisory_lock_release_on_graceful_shutdown(
 
 @pytest.mark.asyncio
 @pytest.mark.xdist_group(name="chaos")
-async def test_tc5_lock_name_collision(pg_dsn: str) -> None:
-    """Lock-name collision — external holder blocks election.
+async def test_tc5_lock_name_collision_never_blocks_election(pg_dsn: str) -> None:
+    """Lock-name collision — an external holder never blocks election.
 
-    Acquires pg_try_advisory_lock on a raw connection BEFORE starting the
-    leader. Starts MaintenanceLeader.run. Waits 2 * heartbeat_interval.
-    Asserts is_leader is still False, no unhandled exception occurred,
-    and multiple kind='leader_retry' logs were captured. Then closes the
-    external connection (releasing the lock); within heartbeat_interval +
-    2s, asserts is_leader becomes True.
-
-    Source: ; "Non-leaders retry."
+    The lease row is the authority, so a session holding the schema's
+    courtesy advisory lock — a stranger on the same name, or a dead peer's
+    lingering session — must not stop a pod electing: acquires
+    pg_try_advisory_lock on a raw connection BEFORE starting the leader,
+    starts MaintenanceLeader.run, and the pod must still win within a
+    heartbeat-scale window, with the courtesy miss logged rather than
+    waited on. Releasing the stranger's lock afterwards changes nothing.
     """
-    _schema, stack, deps, backend, worker_id = await _setup_single_pod(
-        pg_dsn, f"tc5_{new_base62()}"
-    )
+    schema, stack, deps, backend, worker_id = await _setup_single_pod(pg_dsn, f"tc5_{new_base62()}")
     try:
         with shorten_chaos_settings(deps):
             blocker_conn = await asyncpg.connect(str(deps.settings.pg_dsn_direct))
@@ -618,32 +637,44 @@ async def test_tc5_lock_name_collision(pg_dsn: str) -> None:
                     "SELECT pg_try_advisory_lock(hashtextextended($1, 0))",
                     schema_lock_name("maintenance_leader", deps.settings.schema_name),
                 )
-                assert got is True
+                assert got is True, "test setup: the stranger must hold the courtesy lock"
 
                 leader = MaintenanceLeader(deps, worker_id, backend, clock=SystemClock())
                 shutdown = asyncio.Event()
 
-                task = asyncio.create_task(leader.run(shutdown), name="leader-tc5")
-                await asyncio.sleep(2 * deps.settings.heartbeat_interval)
+                with structlog.testing.capture_logs() as captured:
+                    task = asyncio.create_task(leader.run(shutdown), name="leader-tc5")
+                    try:
+                        # The win is not even slowed by the held lock: the
+                        # row is absent, and the row alone decides.
+                        await asyncio.wait_for(
+                            deps.is_leader.wait(),
+                            timeout=deps.settings.heartbeat_interval + 2,
+                        )
+                        assert deps.is_leader.is_set(), (
+                            "the courtesy lock must never gate the election — "
+                            "the lease row is the authority"
+                        )
+                        assert not task.done(), "Leader task exited unexpectedly"
 
-                assert not deps.is_leader.is_set(), (
-                    "Leader won despite external session holding the lock"
+                        async with deps.dispatcher_pool.acquire() as conn:
+                            row = await conn.fetchrow(
+                                f'SELECT worker_id FROM "{schema}".maintenance_leader WHERE singleton = true'  # noqa: S608 # Why: schema_name is a trusted config value validated against IDENT_RE — safe from injection; asyncpg cannot bind identifiers.
+                            )
+                        assert row is not None and UUID(str(row["worker_id"])) == worker_id
+                    finally:
+                        shutdown.set()
+                        task.cancel()
+                        with suppress(asyncio.CancelledError):
+                            await task
+
+                assert any(
+                    e.get("event") == "leader-advisory-lock-unavailable" for e in captured
+                ), (
+                    "the courtesy miss must be logged — an operator watching a roll "
+                    "needs to see the lock could not be taken, even though it never "
+                    "gates the role"
                 )
-                assert not task.done(), "Leader task exited unexpectedly during lock collision"
-
-                await blocker_conn.close()
-                await asyncio.sleep(1)
-
-                await asyncio.wait_for(
-                    deps.is_leader.wait(),
-                    timeout=deps.settings.heartbeat_interval + 2,
-                )
-                assert deps.is_leader.is_set()
-
-                shutdown.set()
-                task.cancel()
-                with suppress(asyncio.CancelledError):
-                    await task
             finally:
                 await blocker_conn.close()
     finally:

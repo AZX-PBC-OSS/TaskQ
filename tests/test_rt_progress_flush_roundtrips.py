@@ -3,21 +3,18 @@ mid-await coalescing invariant.
 
 Two contracts, one per test:
 
-* **Round trips per tick (red today — #136).** The flush loop walks
-  dirty buffers and awaits one UPDATE per buffer
-  (``src/taskq/progress/_flush.py`` — ``for job_id, buffer in ...: await
-  _flush_buffer(...)``), so a tick with N dirty jobs costs N sequential
-  round trips. Every vendored system that writes per-job state in bulk
-  converged on the single-statement multi-row shape: river's columnar
-  ``unnest(@id::bigint[], @args::jsonb[])``
-  (``vendor/river/riverdriver/riverpgxv5/internal/dbsqlc/river_job.sql``),
-  graphile-worker's ``delete ... using unnest($1::bigint[])``
-  (``vendor/graphile-worker/src/sql/completeJobs.ts``), procrastinate's
-  composite-type array (``vendor/procrastinate/procrastinate/sql/queries.sql``).
-  The pin asserts the contract in upper-bound form — at most ONE
-  statement per flush tick regardless of dirty-buffer count — so a
-  batched implementation passes and any better one still passes; only
-  the per-buffer sequential shape stays red.
+* **Round trips per tick.** A tick with N dirty jobs must reach the
+  backend with a bounded number of statements, not one sequential
+  round trip per job. Bulk writers converge on the single-statement
+  multi-row shape with columnar arrays for efficient batch updates.
+  The pin drives the actual flush loop entry point
+  (``progress_flush_loop``) and asserts on the connection method the
+  loop's real per-tick path calls (``conn.fetch``, the unnest-columnar
+  batch statement) — the contract is an upper bound of one statement
+  per flush tick regardless of dirty-buffer count, so a batched
+  implementation passes and any better one still passes; only a
+  per-buffer sequential shape (one statement awaited per dirty job)
+  would go red.
 
 * **Mid-await lost update (green today).** ``_flush_buffer`` snapshots
   the delta before its await and subtracts only the snapshotted portion
@@ -55,13 +52,14 @@ def _dirty_buffer(job_id: UUID, *, base_seq: int = 0, delta: int = 2) -> _Progre
 def _pool_with_counting_conn(
     *,
     returning_seq: int,
+    job_ids: tuple[UUID, ...],
 ) -> tuple[MagicMock, AsyncMock]:
     conn = AsyncMock()
 
-    async def _fetchrow(*args: object, **kwargs: object) -> dict[str, int]:
-        return {"progress_seq": returning_seq}
+    async def _fetch(*args: object, **kwargs: object) -> list[dict[str, object]]:
+        return [{"id": job_id, "progress_seq": returning_seq} for job_id in job_ids]
 
-    conn.fetchrow.side_effect = _fetchrow
+    conn.fetch.side_effect = _fetch
 
     pool = MagicMock()
 
@@ -75,12 +73,14 @@ def _pool_with_counting_conn(
 
 async def test_flush_tick_costs_at_most_one_statement_regardless_of_dirty_count() -> None:
     """One flush tick with two dirty buffers must reach the backend at
-    most once — the single-statement multi-row shape every vendored
-    bulk writer converged on (river's unnest arrays, graphile's
-    unnest-id delete, procrastinate's composite array). The per-buffer
-    sequential await is issue #136: N dirty jobs cost N round trips per
-    tick, every tick, for the whole fleet."""
-    pool, conn = _pool_with_counting_conn(returning_seq=10)
+    most once — the single-statement multi-row shape with columnar
+    arrays for efficient batch updates. This drives the real per-tick
+    entry point (``progress_flush_loop``), which calls ``conn.fetch``
+    with all dirty job ids columnar-batched into one ``unnest``
+    statement — a per-buffer sequential await (one statement per dirty
+    job) would cost N round trips per tick, every tick, for the whole
+    fleet."""
+    pool, conn = _pool_with_counting_conn(returning_seq=10, job_ids=(_JOB_ID_A, _JOB_ID_B))
     buffers: dict[UUID, _ProgressBuffer] = {
         _JOB_ID_A: _dirty_buffer(_JOB_ID_A, base_seq=0, delta=2),
         _JOB_ID_B: _dirty_buffer(_JOB_ID_B, base_seq=5, delta=3),
@@ -97,11 +97,17 @@ async def test_flush_tick_costs_at_most_one_statement_regardless_of_dirty_count(
         _stop(),
     )
 
-    assert conn.fetchrow.await_count <= 1, (
-        f"the flush tick issued {conn.fetchrow.await_count} statements for 2 dirty "
-        "buffers — the per-buffer sequential round trip is #136; the contract is "
-        "one batched multi-row statement per tick (upper bound: implementations "
-        "that do better stay green)"
+    assert conn.fetch.await_count == 1, (
+        f"the flush tick issued {conn.fetch.await_count} batch statements for 2 dirty "
+        "buffers — the contract is one batched multi-row statement per tick regardless "
+        "of dirty-buffer count; a per-buffer sequential round trip would cost N "
+        "statements per tick"
+    )
+    call_args = conn.fetch.call_args_list[0]
+    batched_job_ids = call_args.args[1]
+    assert set(batched_job_ids) == {_JOB_ID_A, _JOB_ID_B}, (
+        "the single statement must carry BOTH dirty job ids in its columnar arrays, "
+        f"not just one: got {batched_job_ids!r}"
     )
 
 

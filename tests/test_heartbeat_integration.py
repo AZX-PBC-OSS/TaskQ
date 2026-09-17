@@ -24,7 +24,7 @@ import pytest
 import structlog
 
 from taskq.backend.postgres import _SWEEP_1_SQL
-from taskq.constants import DEFAULT_EVENT_WRITER_BATCH_SIZE
+from taskq.constants import DEFAULT_EVENT_WRITER_BATCH_SIZE, DEFAULT_MAX_RETRY_BACKOFF
 from taskq.testing.assertions import assert_job_status
 from taskq.testing.fixtures import ModulePgSchema
 from taskq.testing.pg import create_running_job, reset_schema, setup_running_job
@@ -372,13 +372,16 @@ async def test_sweep1_consistency(module_pg_schema: ModulePgSchema) -> None:
             )
 
             # Third argument is the sweep's batch cap (LIMIT $3), added when
-            # the sweep was bounded; the production default bound is used so
-            # this direct-SQL drive mirrors what the sweep loop executes.
+            # the sweep was bounded; the fourth is the reclaim delay's
+            # effective-cap ceiling ($4, max_retry_backoff in seconds). The
+            # production defaults are used so this direct-SQL drive mirrors
+            # what the sweep loop executes.
             await conn.execute(
                 _SWEEP_1_SQL.format(schema=schema),
                 timedelta(seconds=30),
                 timedelta(seconds=30),
                 DEFAULT_EVENT_WRITER_BATCH_SIZE,
+                DEFAULT_MAX_RETRY_BACKOFF.total_seconds(),
             )
 
             row = await conn.fetchrow(
@@ -485,6 +488,68 @@ async def test_isolate_self_cancel_in_flight_exhausted_lands_cancelled(
         assert len(complete) == 1
         assert complete[0]["jobs_cancelled_count"] == 1
         assert complete[0]["jobs_crashed_count"] == 0
+    finally:
+        await stack.aclose()
+
+
+async def test_isolate_self_hands_back_an_indefinite_job_past_max_attempts(
+    module_pg_schema: ModulePgSchema,
+) -> None:
+    """A worker isolating itself must not terminalise an ``indefinite``
+    job whose attempt count has passed ``max_attempts``.
+
+    ``max_attempts`` is documented as ignored for the retry decision of an
+    ``indefinite`` job — its budget is the ``schedule_to_close`` deadline,
+    and the consumer's own failure path reschedules such a job whatever
+    its attempt number. Isolation happens on the least conclusive events
+    there are (a lost heartbeat pool, a rolling deploy), so it must hand
+    the work back rather than end it.
+
+    The operator symptom when it does not: a routine restart silently
+    kills long-running jobs that were deliberately configured to outlive
+    transient failure. They land in ``crashed`` with deadline budget to
+    spare, and nothing on the row names a cause.
+    """
+    stack, deps, schema = await _setup_fast(module_pg_schema)
+    try:
+        deadline = datetime.now(UTC) + timedelta(hours=6)
+        async with deps.heartbeat_pool.acquire() as conn:
+            worker_id, job_id = await setup_running_job(
+                conn,
+                schema,
+                attempt=3,
+                max_attempts=3,
+                retry_kind="indefinite",
+                schedule_to_close=deadline,
+                lock_expires_at=datetime.now(UTC) + timedelta(seconds=_LOCK_LEASE),
+            )
+
+        shutdown = asyncio.Event()
+        await isolate_self(deps, worker_id, shutdown)
+        assert shutdown.is_set()
+
+        async with deps.heartbeat_pool.acquire() as conn:
+            row = await conn.fetchrow(
+                f"SELECT status, finished_at, error_class, schedule_to_close "
+                f'FROM "{schema}".jobs WHERE id = $1',
+                job_id,
+            )
+
+        assert row is not None
+        assert row["schedule_to_close"] is not None
+        assert row["schedule_to_close"] > datetime.now(UTC), (
+            "the scenario requires a deadline that has not yet passed"
+        )
+        assert row["status"] == "pending", (
+            f"an isolating worker left an indefinite job with an open "
+            f"schedule_to_close in {row['status']!r} rather than handing it back "
+            f"for another attempt; max_attempts does not bound an indefinite "
+            f"job's retries, and error_class={row['error_class']!r} gives an "
+            f"operator nothing to explain the terminal state"
+        )
+        assert row["finished_at"] is None, (
+            "a job handed back for another attempt must not carry a finished_at"
+        )
     finally:
         await stack.aclose()
 

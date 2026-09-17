@@ -621,6 +621,66 @@ async def test_aclose_idempotent_executor() -> None:
     assert loop_scope._sync_gen_executor is None
 
 
+# ── A hung sync-gen __exit__ must not park scope teardown ────────────
+
+
+async def test_sync_gen_hung_exit_bounds_scope_teardown() -> None:
+    """A sync generator whose ``__exit__`` never returns parks the pinned
+    executor's only thread in unkillable user code. Scope teardown must
+    bound its WAIT on that thread (``factory_timeout``), log the trip
+    loudly, and complete — the residue is one thread per hung container
+    until the code returns, never a wedged close. Both bounded waits are
+    exercised: the teardown callback's and the executor shutdown's."""
+    import time
+
+    import structlog.testing
+
+    exit_entered = threading.Event()
+    release = threading.Event()
+
+    def make_resource() -> Iterator[_MockResource]:
+        yield _MockResource()
+        exit_entered.set()
+        # Bounded so the parked thread cannot outlive the test run; never
+        # set from inside the teardown path under test.
+        release.wait(30.0)
+
+    entry = ProviderEntry(
+        type_=_MockResource,
+        scope=Scope.LOOP,
+        kind="factory",
+        impl=make_resource,
+        factory_shape=FactoryShape.SYNC_GENERATOR,
+    )
+    registry = ProviderRegistry()
+    registry._providers[_MockResource] = entry
+
+    loop_scope = LoopScope(resolver=_stub_resolver, factory_timeout=0.2)
+    try:
+        await loop_scope.bootstrap(registry, ProcessScope(resolver=_stub_resolver))
+        assert loop_scope._sync_gen_executor is not None
+
+        started = time.monotonic()
+        with structlog.testing.capture_logs() as captured:
+            await asyncio.wait_for(loop_scope.shutdown(), timeout=10.0)
+        elapsed = time.monotonic() - started
+    finally:
+        release.set()
+
+    assert exit_entered.is_set(), (
+        "vacuous run: the hung __exit__ was never reached, so nothing here "
+        "proves teardown survives it"
+    )
+    assert elapsed < 5.0, (
+        f"scope teardown took {elapsed:.1f}s against a hung __exit__ — the "
+        "waits on the parked thread are unbounded"
+    )
+    assert loop_scope._sync_gen_executor is None
+    events = [e["event"] for e in captured]
+    assert "sync-generator-teardown-timeout" in events
+    assert "sync-generator-executor-shutdown-timeout" in events
+
+
 # ── LoopScope.resolved_cache() ────────────────────────────────────
 
 
@@ -1042,3 +1102,68 @@ async def test_class_shape_teardown_failure_isolation() -> None:
     await loop_scope.shutdown()
 
     assert inst_a.exited
+
+
+# ── has_teardown_work ─────────────────────────────────────────────
+
+
+async def test_has_teardown_work_false_for_plain_resolutions() -> None:
+    """A container that only served plain (teardown-free) values reports no
+    close work, so a per-job caller can skip the shielded close task."""
+    container = ScopeContainer(scope=Scope.TRANSIENT, resolver=_stub_resolver)
+    assert container.has_teardown_work is False
+
+    entry = ProviderEntry(
+        type_=_SvcA,
+        scope=Scope.TRANSIENT,
+        kind="class",
+        impl=_SvcA,
+        factory_shape=FactoryShape.CLASS,
+        lifecycle=ProviderLifecycle.Plain,
+    )
+    await container.get_or_create(_SvcA, entry)
+
+    assert container.has_teardown_work is False
+
+
+async def test_has_teardown_work_true_until_generator_teardown_runs() -> None:
+    container = ScopeContainer(scope=Scope.TRANSIENT, resolver=_stub_resolver)
+
+    async def make_client() -> AsyncIterator[_MockClient]:
+        yield _MockClient()
+
+    entry = ProviderEntry(
+        type_=_MockClient,
+        scope=Scope.TRANSIENT,
+        kind="factory",
+        impl=make_client,
+        factory_shape=FactoryShape.ASYNC_GENERATOR,
+    )
+    await container.get_or_create(_MockClient, entry)
+    assert container.has_teardown_work is True
+
+    await container.aclose()
+    assert container.has_teardown_work is False
+
+
+async def test_has_teardown_work_true_while_sync_gen_executor_is_open() -> None:
+    """The pinned SYNC_GENERATOR executor is close work of its own even
+    after every per-provider teardown has run."""
+    container = ScopeContainer(scope=Scope.TRANSIENT, resolver=_stub_resolver)
+
+    def make_resource() -> Iterator[_MockResource]:
+        yield _MockResource()
+
+    entry = ProviderEntry(
+        type_=_MockResource,
+        scope=Scope.TRANSIENT,
+        kind="factory",
+        impl=make_resource,
+        factory_shape=FactoryShape.SYNC_GENERATOR,
+    )
+    await container.get_or_create(_MockResource, entry)
+    container._teardowns.clear()  # pyright: ignore[reportPrivateUsage]  # Why: isolates the executor half of the predicate from the teardown-list half.
+    assert container.has_teardown_work is True
+
+    await container.aclose()
+    assert container.has_teardown_work is False

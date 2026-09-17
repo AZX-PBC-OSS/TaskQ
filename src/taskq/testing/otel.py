@@ -5,6 +5,7 @@ need to set up providers, exporters, or patching themselves.
 """
 
 import logging
+import sys
 from collections.abc import Generator, Sequence
 from typing import Any
 
@@ -19,6 +20,7 @@ from opentelemetry.sdk.metrics.export import (
 )
 from opentelemetry.sdk.trace import ReadableSpan, TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor, SpanExporter, SpanExportResult
+from structlog._config import BoundLoggerLazyProxy
 
 import taskq.obs as obs_mod
 import taskq.obs._otel as otel_mod
@@ -28,12 +30,15 @@ __all__ = [
     "ListSpanExporter",
     "_logging_configured_guard",
     "_otel_enabled_guard",
+    "_otel_gauge_cache_guard",
     "_save_logging_configured",
     "_save_otel_enabled",
+    "_unpin_cached_loggers",
     "collect_metrics",
     "counter_data_points",
     "counter_value",
     "histogram_points",
+    "reset_otel_gauge_caches",
     "restore_logging_configured",
     "restore_otel_enabled",
     "setup_meter",
@@ -134,6 +139,11 @@ def setup_meter(
     )
     monkeypatch.setattr(
         otel_mod,
+        "_dispatch_failures",
+        new_meter.create_counter("taskq.dispatch.failures", unit="1"),
+    )
+    monkeypatch.setattr(
+        otel_mod,
         "_consumed_messages",
         new_meter.create_counter("messaging.client.consumed.messages", unit="1"),
     )
@@ -179,6 +189,100 @@ def _otel_enabled_guard() -> Generator[None, None, None]:  # pyright: ignore[rep
         otel_mod._otel_enabled = original  # type: ignore[reportPrivateUsage]  # Why: testing utility restores private module flag on teardown.
 
 
+# ── Process-global gauge-cache isolation ─────────────────────────────────
+#
+# Every observable gauge in obs/_otel.py is fed by a process-global the
+# event-loop thread writes and the gauge callbacks read.  Those globals
+# are module state, not test state: a test that drives the production
+# writers leaves its values behind for every later test in the same
+# process, and under pytest-xdist "later in the same process" is whatever
+# the load balancer schedules next on that worker.  The prune family is
+# the proven polluter: it stamps the batch-size gauges on EVERY batch,
+# empty ones included, so one prune-driving test leaves "prune" /
+# "archive_expiry" in ``_sweep_batch_size_cache`` forever — and the
+# sweep-batch-size cardinality test, which MERGES its eight production
+# names into that cache and asserts strict key-set equality, failed once
+# in a full xdist suite exactly that way (reproduced deterministically;
+# see tests/test_rt_otel_gauge_cache_test_isolation.py).  The reset below
+# restores construction state around every test, the same doctrine the
+# suite's other process-global resets follow (_reset_web_admin_caches,
+# _otel_enabled_guard, _logging_configured_guard): both ends, so a test
+# can neither inherit residue nor leave it.
+
+
+def reset_otel_gauge_caches() -> None:
+    """Reset every process-global in :mod:`taskq.obs._otel` that a gauge
+    observer — or a test asserting on one — can read, to construction
+    state.
+
+    Rebind, never mutate in place: the gauge caches follow a copy-on-write
+    rebind discipline in production precisely because the OTel reader
+    thread iterates them, and an in-place ``dict.clear()`` landing while
+    any reader's iterator is open is the ``dictionary changed size during
+    iteration`` hazard that discipline exists to prevent.  Rebinding is
+    also coherent for importers: every reader of these globals reads
+    through the module namespace at call time (``worker/health.py`` reads
+    ``_otel._sweep_success_cache`` / ``_otel._sweep_batch_size_cache``
+    that way, the ``_observe_*`` callbacks read the module globals, and
+    the tests read ``otel_mod.<attr>``), so no holder of a stale object
+    exists to desynchronize.
+
+    Covers the gauge-fed caches (queue depth, stranded jobs, reservation
+    slots, keyed-reclaim pending, sweep success/batch-size stamps, the
+    leader lease TTL, jobs-by-status, actor backlog and oldest-pending
+    age, oldest-due age, scheduled count, running-lease-expired count,
+    heartbeat consecutive failures, disabled schedules, the slot-pool
+    occupancy source) plus the two label-admission sets and the cron
+    failure-level ledger — emitter-side process globals the cardinality
+    tests were already forced to pin per test because a prior test's
+    admissions widen a later test's boundary.  Deliberately NOT reset:
+    ``_lazy_counters`` / ``_lazy_histograms`` (memoized per meter
+    identity; a stale entry self-replaces on the first call after a meter
+    swap, and clearing would undo the memoization under test),
+    ``_library_tracer`` / ``_library_meter`` (resolve-once resolvers that
+    are safe across provider transitions; tests patch the accessor
+    functions, not these values), and ``_otel_enabled`` (restored by
+    ``_otel_enabled_guard``).
+    """
+    otel_mod._queue_depth_cache = {}  # pyright: ignore[reportPrivateUsage]  # Why: test isolation seam — the suite's established pattern for module-global caches with no other reset surface.
+    otel_mod._stranded_jobs_cache = {}  # pyright: ignore[reportPrivateUsage]  # Why: same seam as above.
+    otel_mod._queue_live_workers_cache = {}  # pyright: ignore[reportPrivateUsage]  # Why: same seam as above.
+    otel_mod._reservation_slots_cache = {}  # pyright: ignore[reportPrivateUsage]  # Why: same seam as above.
+    otel_mod._keyed_reclaim_pending = 0  # pyright: ignore[reportPrivateUsage]  # Why: same seam as above.
+    otel_mod._sweep_success_cache = {}  # pyright: ignore[reportPrivateUsage]  # Why: same seam as above.
+    otel_mod._sweep_batch_size_cache = {}  # pyright: ignore[reportPrivateUsage]  # Why: same seam as above.
+    otel_mod._sweep_batch_size_configured_cache = {}  # pyright: ignore[reportPrivateUsage]  # Why: same seam as above.
+    otel_mod._leader_lease_expires_in_seconds_cache = None  # pyright: ignore[reportPrivateUsage]  # Why: same seam as above.
+    otel_mod._jobs_by_status_cache = {}  # pyright: ignore[reportPrivateUsage]  # Why: same seam as above.
+    otel_mod._actor_backlog_cache = {}  # pyright: ignore[reportPrivateUsage]  # Why: same seam as above.
+    otel_mod._actor_oldest_pending_age_cache = {}  # pyright: ignore[reportPrivateUsage]  # Why: same seam as above.
+    otel_mod._oldest_due_age_seconds = 0.0  # pyright: ignore[reportPrivateUsage]  # Why: same seam as above.
+    otel_mod._scheduled_count = 0  # pyright: ignore[reportPrivateUsage]  # Why: same seam as above.
+    otel_mod._running_lease_expired_count = 0  # pyright: ignore[reportPrivateUsage]  # Why: same seam as above.
+    otel_mod._heartbeat_consecutive_failures_count = 0  # pyright: ignore[reportPrivateUsage]  # Why: same seam as above.
+    otel_mod._disabled_schedules_count = 0  # pyright: ignore[reportPrivateUsage]  # Why: same seam as above.
+    otel_mod._slot_pool_occupancy_source = None  # pyright: ignore[reportPrivateUsage]  # Why: same seam as above.
+    otel_mod._worker_capacity_source = None  # pyright: ignore[reportPrivateUsage]  # Why: same seam as above.
+    otel_mod._jobs_running_cache = {}  # pyright: ignore[reportPrivateUsage]  # Why: same seam as above.
+    otel_mod._actor_oldest_running_age_cache = {}  # pyright: ignore[reportPrivateUsage]  # Why: same seam as above.
+    otel_mod._queue_label_values.clear()  # pyright: ignore[reportPrivateUsage]  # Why: same seam as above — the set is iterated only on the emitter thread, so in-place clear is the copy-on-write exemption's exact case.
+    otel_mod._cron_actor_label_values.clear()  # pyright: ignore[reportPrivateUsage]  # Why: same seam and same exemption as above.
+    otel_mod._cron_failure_levels.clear()  # pyright: ignore[reportPrivateUsage]  # Why: same seam as above.
+
+
+@pytest.fixture(autouse=True)
+def _otel_gauge_cache_guard() -> Generator[None, None, None]:  # pyright: ignore[reportUnusedFunction]  # Why: pytest autouse fixture; referenced by pytest runner via reflection.
+    """Reset the :mod:`taskq.obs._otel` process-global gauge caches around
+    every test — before, so no test inherits a prior test's residue, and
+    after, so none is left behind (see :func:`reset_otel_gauge_caches`'s
+    section comment for the xdist flake this closes)."""
+    reset_otel_gauge_caches()
+    try:
+        yield
+    finally:
+        reset_otel_gauge_caches()
+
+
 def _save_logging_configured() -> bool:
     """Snapshot ``obs._structlog._logging_configured`` for later restoration."""
     return structlog_mod._logging_configured  # type: ignore[reportPrivateUsage]  # Why: testing utility snapshots private module flag for restoration.
@@ -189,8 +293,86 @@ def restore_logging_configured(saved: bool) -> None:
     structlog_mod._logging_configured = saved  # type: ignore[reportPrivateUsage]  # Why: testing utility restores private module flag from snapshot.
 
 
+# ── structlog lazy-proxy pin sweep ─────────────────────────────────────────
+#
+# ``setup_logging`` configures structlog with ``cache_logger_on_first_use=True``.
+# A module-level ``structlog.get_logger(...)`` proxy whose ``bind`` first runs
+# while that flag is in force gets an INSTANCE-LEVEL ``bind`` closure wrapping
+# the assembled logger — the production processor chain frozen onto the proxy
+# (``structlog._config.BoundLoggerLazyProxy.bind``). ``structlog.reset_defaults()``
+# replaces the configuration but cannot reach those closures: the pinned proxy
+# keeps rendering through the frozen chain forever, so a later test's
+# ``structlog.testing.capture_logs`` — which swaps only the CURRENT config's
+# processor list — captures none of its events. The victim test then fails on
+# an EMPTY capture with no hint why, and only when a polluter test happened to
+# run earlier in the same process (the event still reaches stdlib handlers,
+# which is what makes the failure order-dependent rather than total).
+#
+# Resetting defaults at both ends of the guard therefore cannot isolate this
+# suite on its own; the pin must be deleted from the proxy instance. Deleting
+# the instance attribute restores the class's lazy ``bind``, so the proxy
+# rebinds against whatever configuration the next caller runs under. This is
+# the revert ``tests/test_obs_structlog_integration.py`` documents for its
+# file-local fixture, promoted here so every test file gets it.
+
+_known_lazy_proxies: list[BoundLoggerLazyProxy] = []
+_proxy_scan_module_count: int = -1
+
+
+def _refresh_lazy_proxy_registry() -> None:
+    """Rebuild the registry of module-level lazy proxies when ``sys.modules`` changed.
+
+    Module-level proxies are created by a module's own import-time statements,
+    so a full rescan is only needed when the set of imported modules changes —
+    which, after collection, is the occasional lazy import rather than every
+    test. The count comparison is what keeps the per-test sweep at O(#proxies)
+    instead of O(#module-attributes).
+    """
+    global _proxy_scan_module_count
+    count = len(sys.modules)
+    if count == _proxy_scan_module_count:
+        return
+    _proxy_scan_module_count = count
+    _known_lazy_proxies.clear()
+    for module in list(sys.modules.values()):
+        if module is None:  # pyright: ignore[reportUnnecessaryComparison]  # Why: sys.modules can hold None entries (blocked/stale imports) at runtime; the stubs model it as ModuleType only.
+            continue
+        try:
+            namespace = vars(module)
+        except TypeError:
+            continue  # a non-module object a test stuffed into sys.modules
+        for value in namespace.values():
+            if isinstance(value, BoundLoggerLazyProxy):
+                _known_lazy_proxies.append(value)
+
+
+def _unpin_cached_loggers() -> None:
+    """Delete instance-pinned ``bind`` closures from every module-level lazy proxy.
+
+    A proxy pinned under ``cache_logger_on_first_use=True`` renders through its
+    frozen processor chain regardless of later configuration, bypassing any
+    ``capture_logs`` window. Removing the instance attribute restores lazy
+    class-level dispatch so the next use rebinds against the current config.
+    Proxies not (or no longer) pinned are untouched; rebinding rather than
+    deleting would freeze a stale chain onto them instead.
+    """
+    _refresh_lazy_proxy_registry()
+    for proxy in _known_lazy_proxies:
+        if "bind" in vars(proxy):
+            del proxy.bind
+
+
 @pytest.fixture(autouse=True)
 def _logging_configured_guard() -> Generator[None, None, None]:  # pyright: ignore[reportUnusedFunction]  # Why: pytest autouse fixture; referenced by pytest runner via reflection.
+    """Reset structlog/logging global state around every test.
+
+    The sweep runs at BOTH ends: teardown so a test that configured logging
+    cannot leak frozen proxies forward, and setup as a backstop so a pin
+    created outside this fixture's reach (a pytest plugin, a test that
+    restores the configuration itself but cannot reach the proxies) can never
+    poison the next test either.
+    """
+    _unpin_cached_loggers()
     structlog.reset_defaults()
     structlog_mod._logging_configured = False  # type: ignore[reportPrivateUsage]  # Why: test fixture resets private module flag for isolation, following _otel_enabled_guard precedent.
     for handler in list(logging.root.handlers):
@@ -202,6 +384,7 @@ def _logging_configured_guard() -> Generator[None, None, None]:  # pyright: igno
     try:
         yield
     finally:
+        _unpin_cached_loggers()
         structlog.reset_defaults()
         structlog_mod._logging_configured = False  # type: ignore[reportPrivateUsage]  # Why: test fixture resets private module flag for isolation, following _otel_enabled_guard precedent.
         for handler in list(logging.root.handlers):

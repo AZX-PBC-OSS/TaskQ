@@ -1,30 +1,35 @@
 """Bounds on durable rows written by reservation/rate-limit denials, and
 age-based retention for ``job_events``.
 
-Three defects are pinned here, all verified against real Postgres:
+An admission denial — a rate-limit or reservation refusal — carries HTTP-429
+semantics: "come back later".  No handler ran and nothing failed, so a denial
+must never consume the job's retry budget and must never by itself terminally
+fail a job.  A denied job is rescheduled for as long as it takes, until
+capacity frees or its own ``schedule_to_close`` deadline expires and ends it
+through the ordinary deadline path.  A queue or rate-limit misconfiguration is
+an operator problem; it must not be able to kill work that simply never got a
+slot.
 
-1. A reservation denial is dispatched to ``_handle_reservation_class_denied``
-   (``src/taskq/worker/_handlers.py``) with ``outcome="reservation_denied"``,
-   which calls ``mark_snoozed``.  Per denial cycle that template writes one
-   ``job_attempts`` row and one ``job_events`` row, so a job that is denied
-   forever accrues unbounded durable rows from a single logical unit of work.
+Three contracts are pinned here, all verified against real Postgres:
 
-2. ``mark_snoozed`` also does ``max_attempts = j.max_attempts + 1`` while
-   never assigning ``attempt``.  Dispatch increments ``attempt`` by one each
-   cycle, so the gap ``max_attempts - attempt`` is INVARIANT across denials
-   and the retry-exhaustion gate is unreachable.  Combined with
-   ``finished_at = NULL`` on every snooze, the job never reaches a terminal
-   status, so ``prune_terminal_jobs`` (which keys on
-   ``status IN (terminal) AND finished_at < cutoff``) can never reclaim any
-   of those rows at ANY retention period.
+1. Denials write no per-denial ``job_attempts`` or ``job_events`` rows.  A job
+   denied forever must not accrue durable rows linear in the number of
+   denials from a single logical unit of work.  Contention stays observable
+   through the aggregated denial counter on the job row.
 
-3. ``job_events`` has no age-based retention at all: 16 INSERT sites and zero
-   DELETE sites in ``src/taskq``.  Its only exit is the FK cascade when the
-   parent job is pruned, which by (2) never happens for a perpetually denied
-   job.  There is also no index on ``occurred_at`` alone.
+2. Neither side of the retry budget moves across a denial loop:
+   ``max_attempts`` stays at its configured ceiling and ``attempt`` returns to
+   where it started, so the job stays reschedulable.  The rows of a job that
+   does reach a terminal state — via its close deadline — are reclaimable by
+   the terminal prune.
+
+3. ``job_events`` needs its own age-based retention, independent of parent
+   terminality: a long-lived non-terminal job otherwise accumulates event rows
+   with no upper bound and no mechanism that can ever remove them.  There is
+   also no index on ``occurred_at`` alone to support such a sweep.
 
 The tests below assert the DESIRABLE behaviour so they go green when the
-defects are fixed.
+implementation matches it.
 
 CRITICAL — crash-reclamation outbox.  ``job_events`` rows with
 ``kind = 'state_change' AND detail->>'reason' = 'lock_expired'`` are the
@@ -158,8 +163,8 @@ async def _drive_denial_loop(
 _SEED_CARRIER_DEADLINE: Final[object] = object()
 """Sentinel for ``_seed_denied_job``: seed with the +1-day close deadline —
 the shape whose denial loop keeps rescheduling until the deadline. Pass
-``None`` for the no-deadline shape, whose only terminal exit is the retry
-budget."""
+``None`` for the no-deadline shape, which has no terminal exit at all under
+denial pressure: it stays reschedulable indefinitely."""
 
 
 async def _seed_denied_job(
@@ -189,7 +194,7 @@ async def _seed_denied_job(
     return job_id
 
 
-# ── DEFECT 1 — denials accrue unbounded durable rows ──────────────────
+# ── Denials must not accrue durable rows per denial ───────────────────
 
 
 async def test_reservation_denial_does_not_accrue_unbounded_durable_rows(
@@ -210,8 +215,9 @@ async def test_reservation_denial_does_not_accrue_unbounded_durable_rows(
     the job row, or a single updated event — so the durable footprint of a
     denied job is O(1) in the number of denials.
 
-    RED today: ``mark_snoozed`` writes one ``job_attempts`` row and one
-    ``job_events`` row per cycle unconditionally.
+    The durable footprint of a denied job must therefore be O(1) in the
+    number of denials, with contention carried instead by the aggregated
+    denial counter on the job row.
     """
     schema = settings.schema_name
     worker_settings = _build_settings(pg_dsn, schema)
@@ -257,28 +263,34 @@ def _make_backend(deps: WorkerDeps) -> PostgresBackend:
     )
 
 
-# ── DEFECT 2 — the retry gap never closes ─────────────────────────────
+# ── Denials must not consume retry budget ─────────────────────────────
 
 
-async def test_denial_does_not_inflate_max_attempts_so_the_gap_closes(
+async def test_denial_consumes_no_retry_budget(
     pg_dsn: str,
     settings: TaskQSettings,
 ) -> None:
-    """CONTRACT: ``max_attempts`` is a CEILING, not a tally.
+    """CONTRACT: an admission denial never spends the job's retry budget.
 
-    A denial legitimately should not consume retry budget — that is why
-    ``mark_snoozed`` leaves ``attempt`` alone.  But it compensates with
-    ``max_attempts = j.max_attempts + 1``, and dispatch DOES increment
-    ``attempt`` on every re-pickup.  The two increments cancel, so the gap
-    ``max_attempts - attempt`` is invariant and the job can never fail out:
-    a permanently saturated bucket produces a job that retries forever while
-    its ``max_attempts`` climbs without bound.
+    A denial is HTTP-429 semantics — "come back later" — not a failed
+    execution.  No handler ran, nothing failed, so nothing may be charged
+    against the budget that exists to bound *failures*.  Concretely, across
+    any number of deny/redispatch cycles both sides of the budget must be
+    untouched: ``max_attempts`` stays at its configured ceiling (it is a
+    ceiling, never a tally that inflates to "pay back" a spend), and
+    ``attempt`` returns to where it started (the dispatcher's claim-time
+    increment is refunded, because that claim did no work).
 
-    The right shape is to leave ``max_attempts`` fixed at its configured
-    ceiling and not count a denial as an attempt — then the gap closes as
-    real attempts are consumed and retry exhaustion stays reachable.
+    This matters because the alternative lets a capacity misconfiguration
+    kill work.  A saturated bucket or a mis-sized rate limit is an operator
+    problem; if each denial nibbles the budget, a job with ``max_attempts=3``
+    dies after three polls against a full bucket having never once run its
+    handler.  Backpressure must delay work, never destroy it — a denied job
+    is rescheduled indefinitely until capacity frees or its
+    schedule-to-close deadline ends it through the normal deadline path.
 
-    RED today: ``max_attempts`` grows by one per denial and the gap is frozen.
+    Contention stays visible instead through the aggregated denial counter
+    on the job row, which must rise once per denial.
     """
     schema = settings.schema_name
     worker_settings = _build_settings(pg_dsn, schema)
@@ -289,45 +301,62 @@ async def test_denial_does_not_inflate_max_attempts_so_the_gap_closes(
         await apply_pending(conn, schema=schema)
 
         worker_id = new_uuid()
-        job_id = await _seed_denied_job(conn, schema, worker_id)
+        # No schedule_to_close: nothing but the budget could end this job, so
+        # if the budget is spendable by denials the loop terminalises and the
+        # per-cycle "scheduled" assertion fails.
+        job_id = await _seed_denied_job(conn, schema, worker_id, schedule_to_close=None)
 
         row_before = await conn.fetchrow(
-            f'SELECT attempt, max_attempts FROM "{schema}".jobs WHERE id = $1',  # noqa: S608
+            f"SELECT attempt, max_attempts, rate_limit_blocked_count "  # noqa: S608
+            f'FROM "{schema}".jobs WHERE id = $1',
             job_id,
         )
         assert row_before is not None
         max_attempts_before: int = row_before["max_attempts"]
-        gap_before: int = row_before["max_attempts"] - row_before["attempt"]
+        attempt_before: int = row_before["attempt"]
+        denials_before: int = row_before["rate_limit_blocked_count"]
 
         async with open_worker_deps(worker_settings) as deps:
             backend = _make_backend(deps)
             await _drive_denial_loop(backend, conn, schema, job_id, worker_id)
 
         row_after = await conn.fetchrow(
-            f'SELECT attempt, max_attempts FROM "{schema}".jobs WHERE id = $1',  # noqa: S608
+            f"SELECT attempt, max_attempts, status::text AS status, "  # noqa: S608
+            f'rate_limit_blocked_count FROM "{schema}".jobs WHERE id = $1',
             job_id,
         )
         assert row_after is not None
         max_attempts_after: int = row_after["max_attempts"]
         attempt_after: int = row_after["attempt"]
+        status_after: str = row_after["status"]
+        denials_after: int = row_after["rate_limit_blocked_count"]
     finally:
         await conn.close()
 
-    gap_after = max_attempts_after - attempt_after
-
     assert max_attempts_after == max_attempts_before, (
         f"max_attempts drifted {max_attempts_before} -> {max_attempts_after} across "
-        f"{_DENIAL_CYCLES} denials; the configured ceiling must be immutable — inflating "
-        "it to 'pay back' the attempt dispatch consumed makes the ceiling unreachable."
+        f"{_DENIAL_CYCLES} denials; the configured ceiling must be immutable — a denial "
+        "is not an execution, so neither side of the budget may move."
     )
-    assert gap_after < gap_before, (
-        f"retry gap (max_attempts - attempt) is invariant at {gap_before} across "
-        f"{_DENIAL_CYCLES} denials; the failure gate is unreachable and the job retries "
-        "forever against a saturated bucket."
+    assert attempt_after == attempt_before, (
+        f"attempt drifted {attempt_before} -> {attempt_after} across {_DENIAL_CYCLES} "
+        "denials; the claim that ended in a denial did no work, so its increment must be "
+        "refunded — otherwise a saturated bucket spends a budget that exists to bound "
+        "failures, and a job dies without its handler ever running."
+    )
+    assert status_after not in {"failed", "cancelled", "crashed", "abandoned"}, (
+        f"{_DENIAL_CYCLES} denials drove the job to {status_after!r}; backpressure must "
+        "never by itself terminally fail a job. A denied job stays reschedulable until "
+        "capacity frees or its schedule-to-close deadline expires."
+    )
+    assert denials_after == denials_before + _DENIAL_CYCLES, (
+        f"the aggregated denial counter moved {denials_before} -> {denials_after} across "
+        f"{_DENIAL_CYCLES} denials; with no per-denial job_events or job_attempts rows "
+        "this counter is the only way contention stays visible to an operator."
     )
 
 
-# ── DEFECT 2b — the rows are unreclaimable by prune ───────────────────
+# ── A deadline-exited denied job's rows are reclaimable ───────────────
 
 
 async def test_denial_rows_are_reclaimable_by_retention(
@@ -337,26 +366,25 @@ async def test_denial_rows_are_reclaimable_by_retention(
     """CONTRACT: rows written by a denial loop must be reclaimable.
 
     ``prune_terminal_jobs`` keys on ``status IN (terminal) AND finished_at
-    < cutoff`` — the vendored corpus's only reclaim shape (delete whole
-    job rows keyed on a completion timestamp: Oban's pruner ``max_age``,
-    good_job's ``finished_before``, River's per-status retention periods;
-    a zero retention is the documented prune-terminal-now point in all of
-    them and in TaskQ's own prune family). Two composing defects made
-    denial rows permanently unreclaimable: the loop never terminated
-    (every snooze re-nulled ``finished_at`` and raised the ceiling, so
-    the budget gate was unreachable), and each cycle minted rows nothing
-    could ever reach. The contract is the docstring's own disjunction —
-    the rows must not accrue, or some sweep must be able to reach them —
-    and this test pins the second arm on the shape the first arm's fix
-    terminalises: a no-deadline transient job, driven to its
-    ``MaxAttemptsExceeded`` exit by denial pressure, whose aged rows the
-    prune then reclaims via the parent cascade.
+    < cutoff`` — a standard reclaim shape (delete whole job rows keyed on
+    a completion timestamp with a configurable retention window). A zero
+    retention is the documented prune-terminal-now point, archiving all
+    terminal jobs immediately.
 
-    RED against the pre-fix defect by construction: under the
-    ceiling-raising snooze the loop NEVER terminates (the mechanism
-    ``test_denial_loop_terminates_within_retry_budget`` pins red in the
-    companion file), so no row ever becomes prune-eligible at ANY
-    retention and the count cannot drop.
+    A denied job must never be terminalised by the denials themselves —
+    backpressure delays work, it does not destroy it.  The one exit a
+    perpetually denied job has is its own ``schedule_to_close`` deadline:
+    when the next reschedule point would fall past it, the job fails
+    terminally as ``DeadlineExceeded`` through the ordinary deadline path,
+    exactly as it would have had it been waiting for any other reason.
+    That is the moment its rows become reachable, and this test pins the
+    whole chain: denial pressure against a close deadline, the deadline
+    exit, and the prune reclaiming the aged rows via the parent cascade.
+
+    Anchoring reclaimability on the deadline rather than on retry
+    exhaustion is what keeps the two halves consistent — if a denial could
+    exhaust the budget, this test would be green for the wrong reason and
+    would quietly re-license killing work that never got a slot.
     """
     schema = settings.schema_name
     worker_settings = _build_settings(pg_dsn, schema)
@@ -367,12 +395,20 @@ async def test_denial_rows_are_reclaimable_by_retention(
         await apply_pending(conn, schema=schema)
 
         worker_id = new_uuid()
-        job_id = await _seed_denied_job(conn, schema, worker_id, schedule_to_close=None)
+        # A close deadline already in the past: the very next reschedule
+        # point falls beyond it, so the deadline arm — the only terminal
+        # exit a denied job has — fires on the first denial.
+        job_id = await _seed_denied_job(
+            conn,
+            schema,
+            worker_id,
+            schedule_to_close=datetime.now(UTC) - timedelta(seconds=1),
+        )
 
         async with open_worker_deps(worker_settings) as deps:
             backend = _make_backend(deps)
             # Drive the real denial cycle — mark_snoozed, then the
-            # dispatcher's re-claim — until the budget exit fires.
+            # dispatcher's re-claim — until the deadline exit fires.
             terminal_outcome: str | None = None
             for _ in range(_DENIAL_CYCLES):
                 outcome = await backend.mark_snoozed(
@@ -389,9 +425,18 @@ async def test_denial_rows_are_reclaimable_by_retention(
                     terminal_outcome = outcome
                     break
                 await _relock_for_next_dispatch(conn, schema, job_id, worker_id)
-        assert terminal_outcome == "failed:MaxAttemptsExceeded", (
-            f"the no-deadline denial loop must terminate within its retry budget; "
-            f"last outcome {terminal_outcome!r}"
+        assert terminal_outcome == "failed", (
+            "a denied job past its schedule_to_close must fail terminally through the "
+            f"deadline path, not the retry budget; last outcome {terminal_outcome!r}"
+        )
+        error_class: str | None = await conn.fetchval(
+            f'SELECT error_class FROM "{schema}".jobs WHERE id = $1',  # noqa: S608
+            job_id,
+        )
+        assert error_class == "DeadlineExceeded", (
+            "the denied job's terminal exit must be attributed to its schedule_to_close "
+            f"deadline, not to retry exhaustion; got error_class {error_class!r}. A denial "
+            "never consumes retry budget, so MaxAttemptsExceeded is unreachable here."
         )
 
         row = await conn.fetchrow(
@@ -443,12 +488,12 @@ async def test_denial_rows_are_reclaimable_by_retention(
         f"{events_before} job_events rows aged 400 days survived an immediate-retention "
         "prune of their terminal parent: prune_terminal_jobs' "
         "`status IN (terminal) AND finished_at < cutoff` predicate matched the "
-        f"budget-exited job but its event rows survived ({events_after} remain). A "
+        f"deadline-exited job but its event rows survived ({events_after} remain). A "
         "terminal job's rows must be reclaimable with it."
     )
 
 
-# ── DEFECT 3 — no age-based retention for job_events ──────────────────
+# ── job_events needs age-based retention ──────────────────────────────
 
 
 async def test_job_events_have_age_based_retention_for_nonterminal_parents(
@@ -468,8 +513,10 @@ async def test_job_events_have_age_based_retention_for_nonterminal_parents(
     independent of parent terminality — while EXEMPTING the crash-reclaim
     outbox slice (see the companion pinning test below).
 
-    RED today: no such mechanism exists anywhere in ``src/taskq``.  This test
-    is expected to fail until one is added.
+    Because a denial never fails a job and a worker never refuses to start
+    over a capacity condition, unbounded event growth has no loud failure to
+    announce it — a bounded sweep is the only thing keeping the table from
+    being a silent growth vector.
     """
     schema = settings.schema_name
     worker_settings = _build_settings(pg_dsn, schema)
@@ -541,10 +588,9 @@ async def test_lock_expired_reclaim_outbox_is_exempt_from_retention(
     event is lost silently and permanently, and a crashed worker's job is
     never surfaced to any watcher.
 
-    This test is the guard rail on the fix for defect 3: whatever sweep is
-    added, an aged ``lock_expired`` row must survive it and must still be
-    visible to ``poll_reclaim_events``.  It is GREEN today (no sweep deletes
-    anything) and must stay green after the fix.
+    This test is the guard rail on the retention sweep: whatever shape that
+    sweep takes, an aged ``lock_expired`` row must survive it and must still
+    be visible to ``poll_reclaim_events``.
     """
     schema = settings.schema_name
     worker_settings = _build_settings(pg_dsn, schema)

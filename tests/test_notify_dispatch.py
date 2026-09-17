@@ -383,6 +383,36 @@ class TestPollFallback:
         assert backend.dispatch_batch.call_count >= 1  # type: ignore[reportOptionalMemberAccess]
 
 
+class _NoopDrainPool:
+    """asyncpg.Pool stand-in for the producer's drain-path exit hand-back.
+
+    These tests drive ``producer_loop`` with a ``Mock()`` deps and a stubbed
+    ``dispatch_batch``; when a stub claim completes, the loop's exit
+    hand-back (``drain_local_queue_to_pending``) reads
+    ``deps.active_jobs`` / ``deps.dispatcher_pool`` for one bounded,
+    registry-excluding UPDATE that matches nothing here.
+    """
+
+    class _Conn:
+        async def __aenter__(self) -> "_NoopDrainPool._Conn":
+            return self
+
+        async def __aexit__(self, *exc: object) -> None:
+            return None
+
+        async def execute(self, *_args: object) -> str:
+            return "UPDATE 0"
+
+    def acquire(self, *, timeout: float | None = None) -> "_NoopDrainPool._Conn":
+        return self._Conn()
+
+
+def _drain_capable(deps: Mock) -> None:
+    """Give a Mock deps the two reads the producer's exit hand-back makes."""
+    deps.active_jobs = Mock(all=list)
+    deps.dispatcher_pool = _NoopDrainPool()
+
+
 # ── Eager re-check optimization ────────────────────────────────────
 
 
@@ -406,6 +436,9 @@ class TestEagerRecheck:
         deps.worker_pool = Mock()
         deps.dispatcher_pool = Mock()
         deps.notify_conn = Mock()
+        # The producer's drain-path exit hand-back reads these (a no-op
+        # write here: empty registry, pool answers UPDATE 0).
+        _drain_capable(deps)
 
         mock_clock = Mock(spec=Clock)
         mock_clock.now.return_value = NotImplemented
@@ -628,6 +661,9 @@ class TestWakeEventLifecycle:
         deps.worker_pool = Mock()
         deps.dispatcher_pool = Mock()
         deps.notify_conn = Mock()
+        # The producer's drain-path exit hand-back reads these (a no-op
+        # write here: empty registry, pool answers UPDATE 0).
+        _drain_capable(deps)
 
         mock_clock = Mock(spec=Clock)
         mock_clock.now.return_value = NotImplemented

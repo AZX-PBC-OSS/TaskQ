@@ -3,8 +3,11 @@
 Each tick acquires one connection from heartbeat_pool, opens a single
 transaction, and atomically extends workers.last_seen_at, jobs lock /
 heartbeat columns, and reservation_slots leases for jobs locked by this
-worker. After max_heartbeat_failures consecutive connection failures,
-isolate_self proactively transitions running jobs and signals shutdown.
+worker — except the jobs the worker has disowned (``WorkerDeps.disowned_jobs``:
+finished with, outcome unrecordable), whose leases must lapse so the
+reclaim sweep can hand them back. After max_heartbeat_failures
+consecutive connection failures, isolate_self proactively transitions
+running jobs and signals shutdown.
 """
 
 import asyncio
@@ -19,10 +22,15 @@ import structlog
 from taskq._close import CLOSE_TIMEOUT_SECS, close_conn_bounded
 from taskq._dsn import dsn_host
 from taskq._shield import shield_with_retrieval
+from taskq.backend._records import jsonb_param
 from taskq.backend._sql import (
     INSERT_ATTEMPT_SQL,
     build_heartbeat_sql,
     parse_rowcount,
+)
+from taskq.backend._sweeps import (  # pyright: ignore[reportPrivateUsage]  # Why: isolate and the reclaim sweep must decide a job's budget and its hand-back delay identically — one fragment, no second hand-maintained copy.
+    _RECLAIM_DELAY_SQL,
+    _RECLAIM_HAS_BUDGET_SQL,
 )
 from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining
@@ -41,6 +49,14 @@ from taskq.worker.deps import WorkerDeps
 logger: structlog.stdlib.BoundLogger = get_logger(__name__)
 
 _meter = get_meter()
+
+# Which disowned ids still name a running row locked to this worker: the
+# rest have been reclaimed (re-pended, or claimed by another worker) and
+# leave the set. Only issued on a tick whose set is non-empty.
+_SELECT_STILL_HELD_SQL_TEMPLATE = (
+    'SELECT id FROM "{schema}".jobs '
+    "WHERE id = ANY($1::uuid[]) AND locked_by_worker = $2 AND status = 'running'"
+)
 _tick_duration = _meter.create_histogram(
     name="taskq.heartbeat.tick_duration_seconds",
     unit="s",
@@ -63,9 +79,13 @@ async def heartbeat_loop(
         update_worker_liveness_sql,
         update_jobs_lock_sql,
         update_reservation_leases_sql,
-        update_leader_ping_sql,
     ) = build_heartbeat_sql(schema)
+    select_still_held_sql = _SELECT_STILL_HELD_SQL_TEMPLATE.format(schema=schema)
 
+    # Monotonic stamp of the last jobs-lock renewal that landed: the
+    # reference the next tick measures its remaining lease against. None
+    # until the first renewal — there is nothing to measure before it.
+    last_renewal_at: float | None = None
     while not shutdown.is_set():
         deps.liveness.tick("heartbeat", period=interval)
         _in_tx_failed = False
@@ -77,9 +97,32 @@ async def heartbeat_loop(
                     deps.heartbeat_pool.acquire(timeout=interval) as conn,
                     conn.transaction(),
                 ):
-                    await conn.execute(update_worker_liveness_sql, worker_id)
-                    jobs_tag = await conn.execute(update_jobs_lock_sql, worker_id, lock_lease)
-                    await conn.execute(update_reservation_leases_sql, worker_id, lock_lease)
+                    # Snapshot: consumers add to the set while this tick
+                    # awaits, and an id that arrives mid-tick belongs to
+                    # the next tick's exclusion — the prune below must
+                    # not read it as "still held" and drop it.
+                    disowned = list(deps.disowned_jobs)
+                    # The stall-attribution tally rides the liveness write:
+                    # one dict merge in the statement the tick already
+                    # issues, no extra round trip. An empty tally merges a
+                    # no-op, so a quiet process leaves the registered
+                    # metadata keys untouched.
+                    await conn.execute(
+                        update_worker_liveness_sql,
+                        worker_id,
+                        jsonb_param(deps.stall_tally.metadata_value()),
+                    )
+                    renewal_at = time.monotonic()
+                    jobs_tag = await conn.execute(
+                        update_jobs_lock_sql, worker_id, lock_lease, disowned
+                    )
+                    await conn.execute(
+                        update_reservation_leases_sql, worker_id, lock_lease, disowned
+                    )
+                    if disowned:
+                        held_rows = await conn.fetch(select_still_held_sql, disowned, worker_id)
+                        still_held = {row["id"] for row in held_rows}
+                        deps.disowned_jobs.difference_update(set(disowned) - still_held)
                     if cancel_controller is not None:
                         try:
                             await cancel_controller.run_in_tx(conn)  # type: ignore[arg-type]  # Why: asyncpg PoolConnectionProxy is a Connection subclass at runtime; pyright types don't reflect this delegation.
@@ -99,8 +142,6 @@ async def heartbeat_loop(
                             raise OSError(
                                 f"cancel_controller.run_in_tx failed: {hook_exc!r}"
                             ) from hook_exc
-                    if deps.is_leader.is_set():
-                        await conn.execute(update_leader_ping_sql, worker_id)
             except BaseException:
                 _tick_raised = True
                 raise
@@ -132,7 +173,19 @@ async def heartbeat_loop(
             update_heartbeat_consecutive_failures(str(worker_id), 0)
             tick_duration_s = time.monotonic() - tick_start
             _tick_duration.record(tick_duration_s)
-            record_lock_expires_in_seconds(str(worker_id), lock_lease.total_seconds())
+            # The lease the previous renewal stamped had this much left when
+            # this one landed: lease minus the gap between the two UPDATEs
+            # (both measured at the same point, so network latency cancels).
+            # A failed or late tick widens the gap and lowers the sample,
+            # which is the signal the lock-expiry alert reads; the config
+            # constant would never move. Clamped at 0: a renewal that lands
+            # after expiry renews an already-expired lease.
+            if last_renewal_at is not None:
+                record_lock_expires_in_seconds(
+                    str(worker_id),
+                    max(0.0, lock_lease.total_seconds() - (renewal_at - last_renewal_at)),
+                )
+            last_renewal_at = renewal_at
             logger.debug(
                 "heartbeat-tick-success",
                 worker_id=str(worker_id),
@@ -173,13 +226,31 @@ async def heartbeat_loop(
                 "heartbeat-tick-unexpected-error",
                 worker_id=str(worker_id),
             )
+        # The wait is anchored to the tick's START, not its end, so the
+        # beat cadence is the interval however long the tick took. A
+        # fixed post-tick sleep instead makes the cadence
+        # tick_duration + interval, and a tick may legitimately run for
+        # nearly a whole interval — the pool acquire above is bounded at
+        # exactly that. One slow or failed tick then stretches the gap
+        # between good beats to roughly twice the interval, which is the
+        # very sizing the ops guide calls the safe floor for a per-job
+        # heartbeat_timeout: the knob's own guidance would be unable to
+        # tolerate a single transient blip, and a worker that is alive,
+        # lease-valid and beating again would lose its job to the sweep.
+        # The heartbeat's promise to the reclaim arm is a beat every
+        # interval; this is where that promise is kept. A tick that
+        # overruns the interval waits zero and re-enters immediately,
+        # which is the correct urgency — it is already late — and cannot
+        # become a hot loop, because the next tick's own pool acquire is
+        # bounded at the interval and paces it.
+        remaining = max(0.0, interval - (time.monotonic() - tick_start))
         if cancel_wake_event is not None:
-            # Wait up to interval, but wake immediately on a cancel NOTIFY.
+            # Wait out the remainder, but wake immediately on a cancel NOTIFY.
             with contextlib.suppress(asyncio.TimeoutError):
-                await asyncio.wait_for(cancel_wake_event.wait(), timeout=interval)
+                await asyncio.wait_for(cancel_wake_event.wait(), timeout=remaining)
             cancel_wake_event.clear()
         else:
-            await asyncio.sleep(interval)
+            await asyncio.sleep(remaining)
 
 
 _SELECT_RUNNING_JOBS_SQL_TEMPLATE = (
@@ -200,7 +271,8 @@ _SELECT_RUNNING_JOBS_SQL_TEMPLATE = (
 # 'WorkerCrashed' — a heartbeat-lost worker may still be alive but
 # partitioned, while Sweep 1 assumes the worker is gone.
 
-# Branch-for-branch mirror of _sweeps.py's _SWEEP_1_SQL SET clause — the
+# Branch-for-branch mirror of _sweeps.py's _SWEEP_1_SQL SET clause,
+# sharing its budget predicate and hand-back delay verbatim — the
 # property test tests/test_leader_property.py asserts row-state
 # equivalence between this path and the sweep, so any branch change there
 # (cancel-state reset on retry, 'cancelled' label for an exhausted
@@ -215,12 +287,28 @@ _SELECT_RUNNING_JOBS_SQL_TEMPLATE = (
 # shutdown is not a crash-reclaim), so the visibility-delay
 # co-monotonicity motivation for clock_timestamp() does not apply — it is
 # kept anyway so the two templates stay structurally identical.
-_ISOLATE_JOB_SQL_TEMPLATE = """\
-UPDATE "{schema}".jobs
+#
+# The re-pend arm wakes nobody: an UPDATE never fires the INSERT-only
+# wake trigger and this worker is on its way out, so the fleet claims
+# the handed-back row within the producer's poll floor
+# (notify_poll_interval / poll_interval) — the same wake source every
+# release arm in backend/_sql_templates.py relies on.
+#
+#: The statement is built as ONE constant: the literal with the sweep's
+#: shared fragments substituted by name (``str.replace``, not ``format``,
+#: so ``{schema}`` stays the only placeholder the caller renders).
+#: ``$3`` is the effective-cap ceiling (max_retry_backoff, seconds),
+#: this statement's third parameter after the job id and worker id — the
+#: sweep's shared delay fragment carries the placeholder as
+#: ``{max_backoff_seconds}`` precisely so each statement binds the index
+#: its own parameter layout assigns.
+_ISOLATE_JOB_SQL_TEMPLATE = (
+    """\
+UPDATE "{schema}".jobs j
 SET status = CASE
-        WHEN attempt < max_attempts AND retry_kind != 'non_retryable'
+        WHEN {has_budget}
             THEN 'pending'::"{schema}".job_status
-        WHEN cancel_phase != 0
+        WHEN j.cancel_phase != 0
             THEN 'cancelled'::"{schema}".job_status
         ELSE 'crashed'::"{schema}".job_status
     END,
@@ -228,17 +316,27 @@ SET status = CASE
     lock_expires_at = NULL,
     cancel_phase = 0,
     cancel_requested_at = NULL,
+    -- An isolate re-pend hands the row back to the fleet, so it routes
+    -- by the actor's current assignment from here on (the routing
+    -- contract in taskq/backend/_dispatch_sql.py) -- the same SET this
+    -- template mirrors branch-for-branch from _SWEEP_1_SQL.
+    assignment_routed = true,
     scheduled_at = CASE
-        WHEN attempt < max_attempts AND retry_kind != 'non_retryable'
-            THEN clock_timestamp() + interval '5 seconds'
-        ELSE scheduled_at
+        WHEN {has_budget}
+            THEN clock_timestamp() + {reclaim_delay}
+        ELSE j.scheduled_at
     END,
     finished_at = CASE
-        WHEN NOT (attempt < max_attempts AND retry_kind != 'non_retryable')
+        WHEN NOT ({has_budget})
             THEN clock_timestamp()
-        ELSE finished_at
+        ELSE j.finished_at
     END
-WHERE id = $1 AND status = 'running' AND locked_by_worker = $2"""
+WHERE j.id = $1 AND j.status = 'running' AND j.locked_by_worker = $2""".replace(
+        "{has_budget}", _RECLAIM_HAS_BUDGET_SQL
+    )
+    .replace("{reclaim_delay}", _RECLAIM_DELAY_SQL)
+    .replace("{max_backoff_seconds}", "$3")
+)
 
 
 async def isolate_self(
@@ -255,6 +353,11 @@ async def isolate_self(
     select_running_jobs_sql = _SELECT_RUNNING_JOBS_SQL_TEMPLATE.format(schema=schema)
     isolate_job_sql = _ISOLATE_JOB_SQL_TEMPLATE.format(schema=schema)
     insert_attempt_sql = INSERT_ATTEMPT_SQL.format(schema=schema)
+    # The reclaim delay's effective ceiling, bound per statement — the
+    # same operator knob the sweep binds as its own parameter, so a
+    # heartbeat-lost hand-back lands on the same schedule the leader's
+    # reclaim would have stamped.
+    max_backoff_seconds = deps.settings.max_retry_backoff.total_seconds()
     jobs_pending_count = 0
     jobs_crashed_count = 0
     jobs_cancelled_count = 0
@@ -291,13 +394,21 @@ async def isolate_self(
                         # WHOLE transaction and collapses the isolation of
                         # rows that are still this worker's. Only the
                         # winner of the transition writes the attempt row.
-                        tag = await conn.execute(isolate_job_sql, row["id"], worker_id)
+                        tag = await conn.execute(
+                            isolate_job_sql, row["id"], worker_id, max_backoff_seconds
+                        )
                         if parse_rowcount(tag) == 0:
                             lost_race += 1
                             continue
+                        # Mirrors _RECLAIM_HAS_BUDGET_SQL, which the UPDATE
+                        # above applied: an 'indefinite' job's budget is its
+                        # schedule_to_close deadline, not max_attempts.
                         is_pending = (  # pyright: ignore[reportUnknownVariableType]  # Why: row column accessor types unknown — propagates from conn.fetch() suppression.
-                            row["attempt"] < row["max_attempts"]
-                            and row["retry_kind"] != "non_retryable"
+                            row["retry_kind"] != "non_retryable"
+                            and (
+                                row["retry_kind"] == "indefinite"
+                                or row["attempt"] < row["max_attempts"]
+                            )
                         )
                         if is_pending:
                             pending += 1
@@ -336,7 +447,7 @@ async def isolate_self(
         finally:
             # Why bounded: isolate_self only runs when PG is already
             # suspected dead (heartbeat failures exceeded), so this close is
-            # exactly the dead-PG hang case (#38) — unbounded, it would
+            # exactly the dead-PG hang case — unbounded, it would
             # wedge shutdown.set() below. The helper never raises, so a
             # close error can no longer mask an in-flight exception or be
             # misreported as an isolate-self failure.

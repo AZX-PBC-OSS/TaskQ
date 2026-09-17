@@ -15,7 +15,7 @@ docstring claims field-shape parity with production. Two contracts:
 * The method surface — ``await ctx.progress(...)`` and
   ``ctx.check_cancelled()`` (``docs/guides/progress.md`` teaches
   progress reporting as a headline actor feature) — now carried by the
-  mirror per issue #172: progress reports land observably on the
+  mirror: progress reports land observably on the
   context's ``progress_reports`` with a strictly monotone ``seq`` (the
   fixture path has no Redis/Postgres wiring, so recording, not
   publishing, is the faithful harness half), and ``check_cancelled()``

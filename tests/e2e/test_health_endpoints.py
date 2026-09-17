@@ -16,11 +16,12 @@ the Unix socket is inside the container, so a Python one-liner is
 ``exec_run``'d in the container to issue a raw HTTP GET over the socket
 and return the response body.
 
-The ``/ready`` shutdown-state assertion SIGTERMs the worker and polls
-``/ready`` until it reports a non-null ``shutdown_phase`` (the
-orchestration sets ``deps.shutdown_phase`` at the start of DRAINING).
-The module-local ``clean_e2e_state`` override tolerates the intentionally
-killed worker.
+The ``/ready`` shutdown-state assertion SIGTERMs a worker of its own (the
+function-scoped ``e2e_disposable_worker``, so the module's shared worker
+stays alive for its siblings under any test order) and polls ``/ready``
+until it reports a non-null ``shutdown_phase`` (the orchestration sets
+``deps.shutdown_phase`` at the start of DRAINING). The module-local
+``clean_e2e_state`` override tolerates the intentionally killed worker.
 """
 
 from __future__ import annotations
@@ -39,8 +40,6 @@ from .conftest import E2EWorker
 
 if TYPE_CHECKING:
     import asyncpg
-    from containerspec import BuiltImage
-    from testcontainers.core.network import Network
 
     from taskq import TaskQ
 
@@ -165,11 +164,9 @@ async def test_health_live_endpoint(
 
 async def test_health_ready_endpoint(
     e2e_client: TaskQ,
-    e2e_worker: E2EWorker,
+    e2e_disposable_worker: E2EWorker,
     e2e_pg_pool: asyncpg.Pool,
     e2e_schema: E2ESchema,
-    e2e_network: Network,
-    e2e_worker_image: BuiltImage,
     run_id: str,
 ) -> None:
     """``GET /ready`` reports health fields while running, then reflects
@@ -196,7 +193,7 @@ async def test_health_ready_endpoint(
     )
     await handle.wait(timeout=60)
 
-    body = await asyncio.to_thread(_exec_health_get, e2e_worker.container, "/ready")
+    body = await asyncio.to_thread(_exec_health_get, e2e_disposable_worker.container, "/ready")
     data = json.loads(body)
     assert data["ready"] is True
     assert data["live"] is True
@@ -204,12 +201,14 @@ async def test_health_ready_endpoint(
     assert "loop_tick_ages" in data
     assert "shutdown_elapsed_seconds" in data
 
-    wrapped = e2e_worker.container.get_wrapped_container()
+    wrapped = e2e_disposable_worker.container.get_wrapped_container()
     await asyncio.to_thread(wrapped.kill, signal="TERM")
 
     async def _shutdown_visible() -> bool:
         try:
-            body = await asyncio.to_thread(_exec_health_get, e2e_worker.container, "/ready")
+            body = await asyncio.to_thread(
+                _exec_health_get, e2e_disposable_worker.container, "/ready"
+            )
         except RuntimeError:
             return False
         try:

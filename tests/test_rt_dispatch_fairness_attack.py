@@ -1,10 +1,10 @@
 """Red-team attacks on dispatch fairness: batch seriality vs cross-actor starvation (real PG).
 
 HYPOTHESIS (unverified suspicion): the batch-claim path silently upgrades serial
-queues to concurrent (graphile-worker #621 precedent — one batch fetch locked
-several jobs from one named queue; fixed by enforcing at-most-one-per-queue
-IN SQL via DISTINCT ON) or lets a flooded actor starve a lone actor's job
-beyond any bounded number of batches (global FIFO-by-id defeating fairness).
+queues to concurrent (a batch fetch might hand out multiple jobs that should
+serialize; defended by enforcing at-most-one-per-queue IN SQL via DISTINCT ON)
+or lets a flooded actor starve a lone actor's job beyond any bounded number of
+batches (global FIFO-by-id defeating fairness).
 
 What was read before choosing the angles
 (``src/taskq/backend/_dispatch_sql.py`` fully, plus the dispatch indexes in
@@ -16,10 +16,10 @@ What was read before choosing the angles
   ``identity_dedup`` CTE plus the ``running_identities`` exclusion — and
   (b) ``actor_config.max_concurrent`` — a per-round admission damper enforced
   IN SQL by the ``per_actor_capacity`` residual and the ``eligible``
-  ``actor_rank <= max_concurrent - in_flight`` gate. Both are the same
-  in-SQL enforcement shape as the graphile fix, so angle 1 attacks them
-  directly: a single dispatch batch must never hand out two jobs that must
-  serialize.
+  ``actor_rank <= max_concurrent - in_flight`` gate. Both use in-SQL
+  DISTINCT-like gates to enforce one-at-a-time semantics, so angle 1 attacks
+  them directly: a single dispatch batch must never hand out two jobs that
+  must serialize.
 * ``singleton`` (``jobs_singleton_uniq``) is enqueue-time mutual exclusion,
   not a dispatch-time seriality semantic, so it is out of scope here.
 * Cross-actor fairness in ``strict_fifo`` mode comes from ``pending_rank``
@@ -135,9 +135,9 @@ async def _count_by_status(
 
 class TestSerialQueueUpgrade:
     """Angle 1: a single dispatch batch must never hand out two jobs that must
-    serialize — the graphile-worker #621 shape (batch fetch upgrading a serial
-    queue to concurrent). Both per-actor seriality semantics TaskQ offers are
-    attacked: ``identity_key`` serialization and ``max_concurrent = 1``."""
+    serialize — a batch fetch must not upgrade a serial queue to concurrent.
+    Both per-actor seriality semantics TaskQ offers are attacked: ``identity_key``
+    serialization and ``max_concurrent = 1``."""
 
     async def test_single_batch_admits_at_most_one_job_per_identity(
         self,
@@ -168,7 +168,7 @@ class TestSerialQueueUpgrade:
         pairs = [(row["actor"], row["identity_key"]) for row in rows]
         assert len(pairs) == len(set(pairs)), (
             f"single batch handed out two jobs for one identity: {pairs} — "
-            "the serial-queue upgrade (graphile-worker #621 shape)"
+            "a batch must not upgrade a serial identity to concurrent"
         )
         assert len(rows) == 1, (
             f"expected exactly 1 of 5 same-identity jobs admitted, got {len(rows)}"
@@ -200,7 +200,7 @@ class TestSerialQueueUpgrade:
 
         assert len(rows) == 1, (
             f"max_concurrent=1 actor admitted {len(rows)} jobs in one batch — "
-            "the serial-queue upgrade (graphile-worker #621 shape)"
+            "a batch must not upgrade a serial actor to concurrent"
         )
         assert await _count_by_status(clean_pg_conn, schema, _CAPPED_ACTOR, "pending") == 4
         assert await _count_by_status(clean_pg_conn, schema, _CAPPED_ACTOR, "running") == 1

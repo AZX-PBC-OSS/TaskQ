@@ -70,7 +70,7 @@ class _FetchPool:
     def __init__(self, conn: _FetchConn) -> None:
         self._conn = conn
 
-    def acquire(self) -> _FetchAcquireCtx:
+    def acquire(self, *, timeout: float | None = None) -> _FetchAcquireCtx:
         return _FetchAcquireCtx(self._conn)
 
 
@@ -89,6 +89,9 @@ def _history_job_row(
     job_id: UUID | None = None,
     status: str = "succeeded",
     finished_at: datetime | None = None,
+    attempt: int = 1,
+    max_attempts: int = 3,
+    retry_kind: str = "transient",
 ) -> StubRecord:
     return StubRecord(
         id=job_id or new_uuid(),
@@ -99,8 +102,9 @@ def _history_job_row(
         created_at=datetime(2025, 1, 1, tzinfo=UTC),
         started_at=datetime(2025, 1, 1, tzinfo=UTC),
         duration_ms=1500.0,
-        attempt=1,
-        max_attempts=3,
+        attempt=attempt,
+        max_attempts=max_attempts,
+        retry_kind=retry_kind,
         is_archived=True,
         status_priority=1,
     )
@@ -490,3 +494,75 @@ class TestComputeSuccessRate:
     def test_includes_crashed_and_abandoned(self) -> None:
         result = _compute_success_rate({"succeeded": 5, "crashed": 2, "abandoned": 3})
         assert result == 50.0
+
+
+# ── GET /history: the attempt cell marks an inert ceiling ─────────────
+
+
+def test_history_marks_max_attempts_inert_for_indefinite_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An indefinite-kind row ignores max_attempts entirely (retries.md §2):
+    the stored ceiling is inert, so the /history Attempt cell renders the
+    shared ``attempt_budget`` marker — the real attempt count with the
+    ceiling shown as inert — exactly as /jobs and /jobs/{id} already do.
+    A row can legitimately sit at attempt 168 over a stored 3, and
+    "168/3" reads as a lie about what is enforced."""
+    rows = [
+        _history_job_row(
+            status="failed",
+            finished_at=datetime(2025, 1, 1, 12, 0, 0, tzinfo=UTC),
+            attempt=168,
+            retry_kind="indefinite",
+        )
+    ]
+    summary = [StubRecord(status="failed", cnt=1)]
+    conn = _FetchConn(fetch_results=[rows, summary])
+    client = _build_history_app(_FetchPool(conn), monkeypatch)
+
+    response = client.get("/history?status=failed")  # pyright: ignore[reportUnknownMemberType]
+
+    assert response.status_code == 200  # pyright: ignore[reportUnknownMemberType]
+    text = response.text  # pyright: ignore[reportUnknownMemberType]
+    assert "168 / — (indefinite)" in text, (
+        "the inert ceiling must render as — (indefinite), keeping the real attempt count visible"
+    )
+    assert "168/3" not in text, (
+        "rendering the stored max_attempts as-is advertises a budget the job is not enforcing"
+    )
+
+
+def test_history_renders_the_ceiling_for_bounded_kinds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The control: a bounded retry_kind renders the real ceiling."""
+    rows = [
+        _history_job_row(
+            status="failed",
+            finished_at=datetime(2025, 1, 1, 12, 0, 0, tzinfo=UTC),
+            attempt=2,
+            retry_kind="transient",
+        )
+    ]
+    summary = [StubRecord(status="failed", cnt=1)]
+    conn = _FetchConn(fetch_results=[rows, summary])
+    client = _build_history_app(_FetchPool(conn), monkeypatch)
+
+    response = client.get("/history?status=failed")  # pyright: ignore[reportUnknownMemberType]
+
+    assert response.status_code == 200  # pyright: ignore[reportUnknownMemberType]
+    text = response.text  # pyright: ignore[reportUnknownMemberType]
+    assert "2 / 3" in text
+    assert "— (indefinite)" not in text
+
+
+def test_history_queries_select_retry_kind() -> None:
+    """The marker needs retry_kind selected: a column the query never
+    fetches can never be rendered (the jobs-list pin's shape)."""
+    from taskq.web.admin.history import _SELECT_COLS, _SELECT_COLS_LIVE
+
+    for name, cols in (("_SELECT_COLS", _SELECT_COLS), ("_SELECT_COLS_LIVE", _SELECT_COLS_LIVE)):
+        assert "retry_kind" in cols.lower(), (
+            f"{name} must select retry_kind so the history Attempt cell can "
+            "mark an indefinite row's ceiling inert"
+        )

@@ -19,7 +19,11 @@ Clock-domain normalization
 The two sides' clocks are independent (FakeClock is frozen until advanced;
 PG advances in wall time).  Scenarios therefore express time as OFFSETS from
 a per-side anchor captured at calibration (``side.ts(offset_seconds)``), and
-the snapshot normalizes every timestamp to a domain-relative bucket:
+the snapshot normalizes every timestamp to a domain-relative bucket. At
+snapshot the memory clock is first advanced by exactly the wall time the PG
+side consumed running the scenario, so both sides' action-written
+timestamps sit at the same logical elapsed and bucket identically however
+loaded the runner is:
 
 * ``None`` — the column is NULL;
 * ``"past"`` — the instant is at least 0.5 s before the snapshot's now;
@@ -57,7 +61,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Awaitable, Callable, Sequence
-from dataclasses import replace
+from dataclasses import fields, replace
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal, cast
 from uuid import UUID
@@ -132,6 +136,16 @@ def _bucket_ms(duration_ms: int | None) -> Any:
     if duration_ms is None:
         return None
     return round(duration_ms / 1000)
+
+
+def _seconds(delta: timedelta | None) -> float | None:
+    """Project a duration column onto seconds (None passes through).
+
+    Both backends hand the row a ``timedelta`` (asyncpg decodes interval;
+    the mirror stores the EnqueueArgs value), and PG's double-precision
+    round-trip is shortest-exact, so the plain float compares cross-domain.
+    """
+    return None if delta is None else delta.total_seconds()
 
 
 class DiffSide:
@@ -271,13 +285,27 @@ class DiffSide:
         stc_in: float | None = None,
         result_ttl_s: float | None = None,
         explicit_id: UUID | None = None,
+        retry_jitter: float | None = None,
     ) -> JobRow:
         """Enqueue one job; ``token`` maps to the RETURNED row's id.
 
         ``scheduled_in=None`` means immediate (each domain's own now stamps
         and decides status); an offset means an absolute instant at
         ``anchor + offset`` in this side's domain.
+
+        ``retry_jitter=None`` leaves the ``EnqueueArgs`` default in place
+        (the default is not restated here — one source); a scenario passes
+        an explicit value when its observable includes a reclaim-stamped
+        ``scheduled_at``: the projection buckets timestamps at
+        second-resolution, which cannot resolve a jitter band, so a
+        scenario comparing a reclaimed row's ``scheduled_at`` across
+        backends pins jitter off. Exact per-(id, attempt) jitter parity
+        is pinned separately at full precision by
+        ``tests/test_reclaim_backoff_policy_parity.py``.
         """
+        retry_kwargs: dict[str, float] = (
+            {} if retry_jitter is None else {"retry_jitter": retry_jitter}
+        )
         args = EnqueueArgs(
             id=JobId(explicit_id) if explicit_id is not None else new_job_id(),
             actor=actor,
@@ -298,6 +326,7 @@ class DiffSide:
             metadata=metadata if metadata is not None else {},
             tags=tags,
             result_ttl=None if result_ttl_s is None else timedelta(seconds=result_ttl_s),
+            **retry_kwargs,  # type: ignore[arg-type]  # Why: narrow dict-splat of one optional float field into a dataclass constructor; the key is a literal and the value type-checked above.
         )
         row = await self.backend.enqueue(args)
         self._jobs_by_token[token] = JobId(row.id)
@@ -340,6 +369,12 @@ class DiffSide:
                     queue=queue,
                     actor=actor,
                 ),
+                # make_job_row generates its OWN id; the twin must store a
+                # row whose id IS the key it is stored under — the PG arm's
+                # INSERT writes the same id as its pkey. A mismatch leaves
+                # the mirror holding a row whose identity disagrees with
+                # its storage key (and every attempt/event it later writes).
+                id=JobId(jid),
                 status=status,  # type: ignore[arg-type]  # Why: scenario-supplied status is a known JobStatus literal.
                 identity_key=identity_key,  # type: ignore[arg-type]  # Why: IdentityKey NewType is runtime-transparent.
                 created_at=self.ts(-1.0),
@@ -364,7 +399,10 @@ class DiffSide:
             # started_at / lock_expires_at / cancel_requested_at are inlined
             # clock_timestamp() expressions (fixed scenario literals, never
             # user input — the same S608 justification as the schema name);
-            # every plain value stays $-bound.
+            # every plain value stays $-bound. payload and created_at mirror
+            # the memory arm's make_job_row defaults verbatim (empty payload,
+            # anchor - 1s): the snapshot projection compares both, so the
+            # two arms must plant the same logical row.
             started_sql = (
                 "NULL"
                 if started_ago_s is None
@@ -385,9 +423,9 @@ class DiffSide:
                 "attempt, created_at, scheduled_at, started_at, locked_by_worker, "
                 "lock_expires_at, cancel_phase, cancel_requested_at, schedule_to_close, "
                 "identity_key, metadata) VALUES ("
-                '$1, $2, $3, \'{"value": 1}\'::jsonb, $4, $5, $6::"'
+                "$1, $2, $3, '{}'::jsonb, $4, $5, $6::\""
                 + self.schema
-                + f'".job_status, $7, $8, clock_timestamp(), $9, {started_sql}, $10, '
+                + f'".job_status, $7, $8, $15, $9, {started_sql}, $10, '
                 f"{lock_sql}, $11, {cancel_req_sql}, $12, $13, $14::jsonb)",
                 jid,
                 actor,
@@ -403,6 +441,7 @@ class DiffSide:
                 None if stc_in is None else self.ts(stc_in),
                 identity_key,
                 json.dumps(metadata if metadata is not None else {}),
+                self.ts(-1.0),
             )
         self._jobs_by_token[token] = JobId(jid)
         self._token_by_id[jid] = token
@@ -723,31 +762,60 @@ class DiffSide:
                     (t for t, b in self._batches_by_token.items() if b == bid),
                     "<batch>",
                 )
+        # The projection is TOTAL over JobRow's fields — one key per field,
+        # guarded by test_job_observable_projects_every_jobrow_field: a
+        # field the projection cannot serialize is a PG↔memory divergence
+        # the harness would never catch. Identity and side-local values
+        # normalize to scenario tokens; timestamps bucket against the
+        # snapshot's now; durations project to seconds.
         return {
             "present": True,
+            "id": self.token_of(row.id),
+            "actor": row.actor,
+            "queue": row.queue,
+            "identity_key": row.identity_key,
+            "fairness_key": row.fairness_key,
+            "payload": row.payload,
+            "payload_schema_ver": row.payload_schema_ver,
             "status": row.status,
-            "attempt": row.attempt,
             "priority": row.priority,
+            "attempt": row.attempt,
             "max_attempts": row.max_attempts,
             "retry_kind": row.retry_kind,
-            "identity_key": row.identity_key,
-            "idempotency_key": row.idempotency_key,
-            "error_class": row.error_class,
-            "error_message": row.error_message,
-            "result": row.result,
-            "result_size_bytes": row.result_size_bytes,
-            "snooze_count": row.snooze_count,
-            "rate_limit_blocked_count": row.rate_limit_blocked_count,
-            "cancel_phase": int(row.cancel_phase),
-            "cancel_requested_at": _bucket(row.cancel_requested_at, now),
-            "locked_by_worker": self.worker_token(row.locked_by_worker),
-            "lock_expires_at": _bucket(row.lock_expires_at, now),
-            "scheduled_at": _bucket(row.scheduled_at, now),
             "schedule_to_close": _bucket(row.schedule_to_close, now),
+            "start_to_close": _seconds(row.start_to_close),
+            "heartbeat_timeout": _seconds(row.heartbeat_timeout),
+            "created_at": _bucket(row.created_at, now),
+            "scheduled_at": _bucket(row.scheduled_at, now),
             "started_at": _bucket(row.started_at, now),
             "finished_at": _bucket(row.finished_at, now),
+            "last_heartbeat_at": _bucket(row.last_heartbeat_at, now),
+            "locked_by_worker": self.worker_token(row.locked_by_worker),
+            "lock_expires_at": _bucket(row.lock_expires_at, now),
+            "cancel_requested_at": _bucket(row.cancel_requested_at, now),
+            "cancel_phase": int(row.cancel_phase),
+            "error_class": row.error_class,
+            "error_message": row.error_message,
+            "error_traceback": row.error_traceback,
+            "progress_state": row.progress_state,
+            "progress_seq": row.progress_seq,
+            "result": row.result,
+            "result_size_bytes": row.result_size_bytes,
             "result_expires_at": _bucket(row.result_expires_at, now),
+            "idempotency_key": row.idempotency_key,
+            "idempotency_scope": row.idempotency_scope,
+            "trace_id": row.trace_id,
+            "span_id": row.span_id,
             "metadata": metadata,
+            "tags": list(row.tags),
+            "snooze_count": row.snooze_count,
+            "rate_limit_blocked_count": row.rate_limit_blocked_count,
+            "interrupt_count": row.interrupt_count,
+            "retry_base": _seconds(row.retry_base),
+            "retry_cap": _seconds(row.retry_cap),
+            "retry_backoff": row.retry_backoff,
+            "retry_jitter": row.retry_jitter,
+            "assignment_routed": row.assignment_routed,
             "attempts": [
                 {
                     "attempt": a.attempt,
@@ -922,6 +990,22 @@ async def run_differential(
     try:
         await scenario(mem)
         await scenario(pg)
+        # Co-drive the memory clock to the PG side's elapsed time. The
+        # scenario's action-written timestamps (claims, cancels) anchor to
+        # each side's own clock: PG's to the server clock, which advances
+        # with real runner time, the memory's to the frozen FakeClock,
+        # which does not. Bucketing both sides against their own now then
+        # diverges on a loaded runner — a lifecycle field written at the
+        # enqueue reads "now" on the frozen clock and "past" on the
+        # advanced one, and a lease reads one second lower. This is the
+        # harness's own drive-both-to-the-same-logical-time rule, applied
+        # at snapshot: the memory clock advances by exactly the elapsed
+        # the PG side experienced, so action-written fields bucket
+        # identically and the rounding absorbs only sub-second residual.
+        assert pg._t0 is not None  # pyright: ignore[reportPrivateUsage]  # Why: harness-owned anchor; the established same-module pattern.
+        elapsed = await pg.now() - pg._t0
+        assert mem._clock is not None  # pyright: ignore[reportPrivateUsage]
+        mem._clock.advance(elapsed)
         mem_obs = await mem.snapshot()
         pg_obs = await pg.snapshot()
         return mem_obs, pg_obs
@@ -969,3 +1053,66 @@ async def test_diff_harness_baseline_green(pg_dsn: str) -> None:
     assert pg["records"]["dispatched"] == ["j1", "j2"]
     assert pg["records"]["retry_status"] == "scheduled"
     assert pg["status_counts"] == {"scheduled": 1, "failed": 1}
+
+
+# ── Projection completeness: the differential's blind-spot guard ────────
+
+
+async def test_job_observable_projects_every_jobrow_field() -> None:
+    """The job projection is TOTAL: every ``JobRow`` field has a same-named key.
+
+    The differential can only catch PG↔memory divergence in fields the
+    projection serializes — a field added to ``JobRow`` but never projected
+    here is a silent blind spot (the retry-curve scalars, ``interrupt_count``
+    and ``assignment_routed`` were exactly that). The field list derives
+    from the dataclass itself — one source of truth — so adding a
+    ``JobRow`` field without projecting it fails this test. The planted
+    row carries non-default values for the previously unprojected fields
+    so their serialization is exercised, not just their key presence.
+    """
+    side = _memory_side(())
+    memory = side.backend
+    assert isinstance(memory, InMemoryBackend)
+    planted = replace(
+        make_job_row(status="pending"),
+        actor="obs_actor",
+        queue="obs_queue",
+        fairness_key="fk",
+        payload={"k": 7},
+        payload_schema_ver=2,
+        start_to_close=timedelta(seconds=31),
+        heartbeat_timeout=timedelta(seconds=6),
+        error_traceback="tb",
+        progress_state={"step": 2},
+        progress_seq=3,
+        idempotency_scope="scope",
+        trace_id="trace",
+        span_id="span",
+        tags=("t1", "t2"),
+        retry_base=timedelta(seconds=17),
+        retry_cap=timedelta(seconds=915),
+        retry_backoff="linear",
+        retry_jitter=0.5,
+        interrupt_count=4,
+        assignment_routed=True,
+    )
+    memory._jobs[JobId(planted.id)] = planted  # pyright: ignore[reportPrivateUsage]  # Why: test-only private seeding, the established same-module pattern (DiffSide.plant).
+    side.register_job_id("j1", JobId(planted.id))
+
+    obs = await side._job_observable(JobId(planted.id), await side.now())  # pyright: ignore[reportPrivateUsage]  # Why: the self-test inspects the harness's own projection directly.
+
+    missing = {f.name for f in fields(JobRow)} - set(obs)
+    assert not missing, (
+        f"JobRow fields missing from the differential projection: {sorted(missing)} — "
+        "a field the projection cannot serialize is a PG↔memory divergence the "
+        "harness can never catch"
+    )
+    # Value fidelity for the fields the projection gained last: durations
+    # project to seconds, the identity to the scenario token.
+    assert obs["id"] == "j1"
+    assert obs["retry_base"] == 17.0
+    assert obs["retry_cap"] == 915.0
+    assert obs["retry_backoff"] == "linear"
+    assert obs["retry_jitter"] == 0.5
+    assert obs["interrupt_count"] == 4
+    assert obs["assignment_routed"] is True

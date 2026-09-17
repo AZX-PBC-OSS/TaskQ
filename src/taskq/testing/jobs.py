@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from typing import TYPE_CHECKING
 from uuid import UUID
 
 from taskq._ids import new_job_id, new_uuid
@@ -16,6 +18,9 @@ from taskq.backend._protocol import (
     RetryKind,
 )
 from taskq.testing.in_memory import InMemoryBackend
+
+if TYPE_CHECKING:
+    from taskq.backend.postgres import PostgresBackend
 
 _NOW = datetime(2026, 1, 1, tzinfo=UTC)
 _WORKER_ID = new_uuid()
@@ -110,6 +115,7 @@ def make_enqueue_args(
     schedule_to_close: datetime | None = None,
     metadata: dict[str, object] | None = None,
     tags: tuple[str, ...] | None = None,
+    retry_jitter: float | None = None,
 ) -> EnqueueArgs:
     """Build EnqueueArgs with sensible defaults.
 
@@ -119,8 +125,13 @@ def make_enqueue_args(
     ``clock_timestamp()``, and Python's monotonic/wall clock can diverge
     from PG's realtime clock enough under parallel load that a "now"
     computed here reads as still-future by the time the row lands.
+
+    ``retry_jitter`` defaults to the ``EnqueueArgs`` field's own default;
+    pass ``0.0`` to make a test's reclaim/retry timing assertions exact —
+    jitter is fleet randomness, and the suite doubles randomness at the
+    boundary rather than sampling it.
     """
-    return EnqueueArgs(
+    base = EnqueueArgs(
         id=new_job_id(),
         actor=actor,
         queue=queue,
@@ -136,6 +147,9 @@ def make_enqueue_args(
         metadata=metadata or {},
         tags=tags if tags is not None else (),
     )
+    if retry_jitter is None:
+        return base
+    return replace(base, retry_jitter=retry_jitter)
 
 
 def error_info(
@@ -185,8 +199,55 @@ async def enqueue_and_dispatch_memory(
     return dispatched[0].id, worker_id
 
 
+async def enqueue_and_dispatch_pg(
+    backend: PostgresBackend,
+    worker_id: UUID | None = None,
+    *,
+    actor: str = "test_actor",
+    queue: str = "default",
+    max_attempts: int = 3,
+    retry_kind: RetryKind = "transient",
+) -> tuple[JobId, UUID]:
+    """Enqueue and dispatch a job on the Postgres backend through the real
+    claim path, returning ``(job_id, worker_id)``.
+
+    Twin of :func:`enqueue_and_dispatch_memory` for the PG side of an
+    equivalence test. The claim goes through ``dispatch_batch`` rather
+    than a hand-written fixture row because the events diet made the two
+    paths observably different: a claim deliberately writes NO
+    ``job_events`` row (``backend/_dispatch.py``), so a fixture that
+    inserts one leaves the PG event stream one row ahead of everything
+    the memory twin can produce and breaks the cross-backend comparison.
+    """
+    from taskq.testing.pg import create_worker
+
+    wid = worker_id or new_uuid()
+    async with backend._worker_pool.acquire() as conn:  # pyright: ignore[reportPrivateUsage]  # Why: test-only helper; the worker row must exist before dispatch claims against it, and the pool is the fixture's connection source.
+        await create_worker(conn, backend._schema_name, wid)  # pyright: ignore[reportPrivateUsage]  # Why: same test-only access to the rendered schema name.
+    args = EnqueueArgs(
+        id=new_job_id(),
+        actor=actor,
+        queue=queue,
+        payload={"key": "value"},
+        max_attempts=max_attempts,
+        retry_kind=retry_kind,
+        scheduled_at=None,
+    )
+    row = await backend.enqueue(args)
+    dispatched = await backend.dispatch_batch(
+        wid,
+        [queue],
+        limit=1,
+        lock_lease=timedelta(seconds=60),
+    )
+    assert len(dispatched) == 1
+    assert dispatched[0].id == row.id
+    return row.id, wid
+
+
 __all__ = [
     "enqueue_and_dispatch_memory",
+    "enqueue_and_dispatch_pg",
     "error_info",
     "make_enqueue_args",
     "make_job_row",

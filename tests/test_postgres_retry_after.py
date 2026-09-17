@@ -3,11 +3,16 @@ multi-arm CTE branch selection.
 
 Covers:
 - mark_retry_after with consume_budget=True (three-arm CTE): snoozed,
-  max_attempts_failed, deadline_failed, noop
+  max_attempts_failed, deadline_failed, noop. This is a real execution
+  the job spent an attempt on, so the retry budget governs it.
 - mark_retry_after with consume_budget=False (two-arm CTE): snoozed,
   deadline_failed, attempt-not-incremented
 - mark_snoozed (two-arm CTE): snoozed, deadline_failed, event/attempt
   row verification
+- mark_snoozed under an admission denial outcome, which carries
+  HTTP-429 semantics: never spends retry budget, never terminalises the
+  job on its own, writes no per-denial audit rows, and stays visible
+  only through the aggregated denial counter on the job row.
 """
 
 # ruff: noqa: S608 Why: schema name validated by WorkerSettings.post_load against _IDENT_RE before reaching SQL; asyncpg has no parameter binding for identifiers; matches existing integration test pattern
@@ -708,3 +713,297 @@ async def test_mark_snoozed_job_events_and_attempts_both_branches(
         assert d_detail["from_state"] == "running"
         assert d_detail["to_state"] == "failed"
         assert d_detail["error_class"] == "DeadlineExceeded"
+
+
+# ── mark_snoozed under an admission denial: 429 semantics ───────────────
+
+
+@pytest.mark.parametrize("outcome", ["rate_limit_denied", "reservation_denied"])
+async def test_admission_denial_never_terminally_fails_an_exhausted_job(
+    clean_jobs_app: JobsApp,
+    module_pg_schema: ModulePgSchema,
+    outcome: str,
+) -> None:
+    """An admission denial is "come back later", not a failure: a job
+    that never got a slot is rescheduled however many times it is
+    denied, even at attempt >= max_attempts and with no
+    schedule_to_close to bound it.
+
+    Why it matters: a denial says nothing about the job, only about the
+    system's capacity at that instant. Letting one spend the retry
+    budget means a rate-limit or reservation pool sized too small can
+    terminally kill work that would have run perfectly, and the
+    operator's only signal is jobs dying with an error class that
+    claims the actor ran and failed. Capacity pressure must degrade to
+    waiting, never to data loss.
+    """
+    deps = clean_jobs_app.deps
+    backend = clean_jobs_app.backend
+    schema = module_pg_schema.schema_name
+    worker_id = new_uuid()
+
+    async with deps.worker_pool.acquire() as conn:
+        await create_worker(conn, schema, worker_id)
+        job_id = await create_running_job(
+            conn,
+            schema,
+            worker_id,
+            max_attempts=3,
+            retry_kind="transient",
+            attempt=3,
+            schedule_to_close=None,
+        )
+
+    result = await backend.mark_snoozed(
+        JobId(job_id),
+        worker_id,
+        timedelta(seconds=5),
+        outcome=outcome,  # pyright: ignore[reportArgumentType]
+        attempt=3,
+    )
+    assert result == "scheduled", (
+        "a denied job has no budget to spend: admission control must reschedule it, not fail it"
+    )
+
+    async with deps.worker_pool.acquire() as conn:
+        row = await conn.fetchrow(
+            f'SELECT status, attempt, max_attempts, error_class, finished_at, rate_limit_blocked_count FROM "{schema}".jobs WHERE id = $1',
+            job_id,
+        )
+
+    assert row is not None
+    assert row["status"] == "scheduled"
+    assert row["error_class"] is None
+    assert row["finished_at"] is None
+    # The denial neither spends nor extends the budget: it refunds the
+    # claim's attempt increment (GREATEST(attempt - 1, 0)), returning the
+    # row to the attempt it held before this dispatch claimed it. The gap
+    # `max_attempts - attempt` is exactly what it was before the claim, so
+    # a job denied without bound never walks its attempt counter toward
+    # max_attempts or the smallint ceiling.
+    assert row["attempt"] == 2
+    assert row["max_attempts"] == 3
+    assert row["rate_limit_blocked_count"] == 1
+
+
+@pytest.mark.parametrize("retry_kind", ["transient", "non_retryable"])
+async def test_repeated_admission_denials_reschedule_without_bound(
+    clean_jobs_app: JobsApp,
+    module_pg_schema: ModulePgSchema,
+    retry_kind: str,
+) -> None:
+    """Denials are survivable indefinitely: a job held out of a
+    saturated bucket keeps being rescheduled for as long as the
+    saturation lasts, whatever its retry tier, and the only thing that
+    moves is the aggregated denial counter on its row.
+
+    Why it matters: a bucket can stay full longer than any retry budget
+    is deep. If the Nth denial behaved differently from the first, the
+    job's survival would depend on how long the outage happened to run,
+    which is exactly the misconfiguration-kills-work failure the 429
+    contract exists to prevent. The counter is also the only remaining
+    signal of that contention, since a denial writes no audit rows, so
+    it has to accumulate across every one of them.
+    """
+    deps = clean_jobs_app.deps
+    backend = clean_jobs_app.backend
+    schema = module_pg_schema.schema_name
+    worker_id = new_uuid()
+
+    async with deps.worker_pool.acquire() as conn:
+        await create_worker(conn, schema, worker_id)
+        job_id = await create_running_job(
+            conn,
+            schema,
+            worker_id,
+            max_attempts=2,
+            retry_kind=retry_kind,
+            attempt=2,
+            schedule_to_close=None,
+        )
+
+    # Each cycle mirrors one real claim→denial round: mark_snoozed refunds
+    # the claim's attempt increment (GREATEST(attempt - 1, 0)), and the
+    # raw re-claim below plays the dispatcher's own increment before the
+    # next denial — the attempt oscillates between N and N+1 and never
+    # walks toward max_attempts or the smallint ceiling, however many
+    # denials occur.
+    denials = 5
+    claimed_attempt = 2
+    for cycle in range(denials):
+        result = await backend.mark_snoozed(
+            JobId(job_id),
+            worker_id,
+            timedelta(seconds=1),
+            outcome="rate_limit_denied",
+            attempt=claimed_attempt,
+        )
+        assert result == "scheduled", f"denial {cycle + 1} must reschedule, not terminalise"
+
+        # Re-claim: a real dispatch increments attempt exactly as the
+        # initial claim did, re-admitting the refunded row.
+        claimed_attempt += 1
+        async with deps.worker_pool.acquire() as conn:
+            await conn.execute(
+                f"""UPDATE "{schema}".jobs
+                SET status = 'running',
+                    attempt = $3,
+                    locked_by_worker = $1,
+                    lock_expires_at = now() + interval '60 seconds',
+                    started_at = now(),
+                    last_heartbeat_at = now()
+                WHERE id = $2""",
+                worker_id,
+                job_id,
+                claimed_attempt,
+            )
+
+    async with deps.worker_pool.acquire() as conn:
+        row = await conn.fetchrow(
+            f'SELECT attempt, max_attempts, rate_limit_blocked_count, snooze_count FROM "{schema}".jobs WHERE id = $1',
+            job_id,
+        )
+
+    assert row is not None
+    assert row["attempt"] == claimed_attempt
+    assert row["max_attempts"] == 2
+    assert row["snooze_count"] == 0  # a denial is not a voluntary deferral
+    assert row["rate_limit_blocked_count"] == denials, (
+        "contention is only visible through the aggregated denial "
+        "counter, so every denial must be counted on the job row"
+    )
+
+
+async def test_admission_denial_writes_no_attempt_or_event_rows(
+    clean_jobs_app: JobsApp,
+    module_pg_schema: ModulePgSchema,
+) -> None:
+    """A denial leaves no per-denial audit trail: no job_attempts row
+    and no job_events row, however many times the job is denied.
+
+    Why it matters: a job held behind a saturated bucket can be denied
+    thousands of times, and one audit row per denial is an unbounded
+    growth vector on the two highest-volume tables in the schema.
+    Admission control is not an execution, so it has nothing to record
+    per occurrence; the aggregated counter on the job row carries the
+    contention signal instead.
+    """
+    deps = clean_jobs_app.deps
+    backend = clean_jobs_app.backend
+    schema = module_pg_schema.schema_name
+    worker_id = new_uuid()
+
+    async with deps.worker_pool.acquire() as conn:
+        await create_worker(conn, schema, worker_id)
+        job_id = await create_running_job(
+            conn,
+            schema,
+            worker_id,
+            max_attempts=1,
+            retry_kind="transient",
+            attempt=1,
+            schedule_to_close=None,
+        )
+
+    # mark_snoozed refunds the claim's attempt increment on every denial;
+    # the raw re-claim below plays the dispatcher's own increment, exactly
+    # as test_repeated_admission_denials_reschedule_without_bound does.
+    claimed_attempt = 1
+    for _ in range(3):
+        assert (
+            await backend.mark_snoozed(
+                JobId(job_id),
+                worker_id,
+                timedelta(seconds=1),
+                outcome="reservation_denied",
+                attempt=claimed_attempt,
+            )
+            == "scheduled"
+        )
+        claimed_attempt += 1
+        async with deps.worker_pool.acquire() as conn:
+            await conn.execute(
+                f"""UPDATE "{schema}".jobs
+                SET status = 'running',
+                    attempt = $3,
+                    locked_by_worker = $1,
+                    lock_expires_at = now() + interval '60 seconds',
+                    started_at = now(),
+                    last_heartbeat_at = now()
+                WHERE id = $2""",
+                worker_id,
+                job_id,
+                claimed_attempt,
+            )
+
+    async with deps.worker_pool.acquire() as conn:
+        attempts = await conn.fetch(
+            f'SELECT * FROM "{schema}".job_attempts WHERE job_id = $1', job_id
+        )
+        events = await conn.fetch(
+            f'SELECT * FROM "{schema}".job_events WHERE job_id = $1 ORDER BY occurred_at',
+            job_id,
+        )
+        row = await conn.fetchrow(
+            f'SELECT rate_limit_blocked_count FROM "{schema}".jobs WHERE id = $1', job_id
+        )
+
+    assert len(attempts) == 0
+    # Only create_running_job's pending→running seed.
+    assert len(events) == 1
+    assert row is not None
+    assert row["rate_limit_blocked_count"] == 3
+
+
+async def test_admission_denial_past_schedule_to_close_fails_on_the_deadline_path(
+    clean_jobs_app: JobsApp,
+    module_pg_schema: ModulePgSchema,
+) -> None:
+    """The schedule-to-close deadline is the one thing that terminates a
+    perpetually denied job, and it fails it as DeadlineExceeded through
+    the ordinary deadline path.
+
+    Why it matters: "rescheduled indefinitely" needs a floor that is
+    honest about why the job died. The deadline is the operator's own
+    statement of how long the work stays worth doing, so a job that ran
+    out of that window reports DeadlineExceeded — never an error class
+    asserting the actor ran and exhausted its retries, which would send
+    whoever reads it looking for a bug in code that never executed.
+    """
+    deps = clean_jobs_app.deps
+    backend = clean_jobs_app.backend
+    schema = module_pg_schema.schema_name
+    worker_id = new_uuid()
+
+    async with deps.worker_pool.acquire() as conn:
+        await create_worker(conn, schema, worker_id)
+        job_id = await create_running_job(
+            conn,
+            schema,
+            worker_id,
+            max_attempts=3,
+            retry_kind="transient",
+            attempt=3,
+            schedule_to_close=datetime.now(UTC) - timedelta(seconds=60),
+        )
+
+    result = await backend.mark_snoozed(
+        JobId(job_id),
+        worker_id,
+        timedelta(seconds=5),
+        outcome="rate_limit_denied",
+        attempt=3,
+    )
+    assert result == "failed"
+
+    async with deps.worker_pool.acquire() as conn:
+        row = await conn.fetchrow(
+            f'SELECT status, error_class, error_message, finished_at FROM "{schema}".jobs WHERE id = $1',
+            job_id,
+        )
+
+    assert row is not None
+    assert row["status"] == "failed"
+    assert row["error_class"] == "DeadlineExceeded"
+    assert row["error_message"] == "schedule_to_close reached before next dispatch"
+    assert row["finished_at"] is not None

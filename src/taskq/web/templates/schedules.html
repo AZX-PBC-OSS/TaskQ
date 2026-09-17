@@ -21,7 +21,7 @@
         {% call table_row() %}
             <td class="px-4 py-2.5 text-sm font-medium">{{ s.actor }}</td>
             <td class="px-4 py-2.5 text-xs font-mono bg-slate-100 dark:bg-slate-800 rounded px-1.5 py-0.5">{{ s.cron_expr }}</td>
-            <td class="px-4 py-2.5 text-xs text-slate-500">{{ s.timezone }}</td>
+            <td class="px-4 py-2.5 text-xs text-slate-500 dark:text-slate-400">{{ s.timezone }}</td>
             <td class="px-4 py-2.5">
                 {% if s.enabled %}
                 <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-300">
@@ -31,9 +31,9 @@
                 <span class="px-2 py-0.5 rounded-full text-xs font-medium bg-slate-100 text-slate-500 dark:bg-slate-700 dark:text-slate-400">Off</span>
                 {% endif %}
             </td>
-            <td class="px-4 py-2.5 text-xs text-slate-500 whitespace-nowrap">{{ s.next_fire_at }}</td>
-            <td class="px-4 py-2.5 text-xs text-slate-500 whitespace-nowrap">{{ s.last_fired_at or "—" }}</td>
-            <td class="px-4 py-2.5 text-xs text-slate-500 max-w-[180px] truncate" title="{{ s.last_fire_error or '' }}">{{ s.last_fire_error[:80] if s.last_fire_error else "—" }}</td>
+            <td class="px-4 py-2.5 text-xs text-slate-500 dark:text-slate-400 whitespace-nowrap">{{ s.next_fire_at }}</td>
+            <td class="px-4 py-2.5 text-xs text-slate-500 dark:text-slate-400 whitespace-nowrap">{{ s.last_fired_at or "—" }}</td>
+            <td class="px-4 py-2.5 text-xs text-slate-500 dark:text-slate-400 max-w-[180px] truncate" title="{{ s.last_fire_error or '' }}">{{ s.last_fire_error[:80] if s.last_fire_error else "—" }}</td>
             <td class="px-4 py-2.5">
                 {% if s.consecutive_failures > 0 %}
                 <span class="px-1.5 py-0.5 rounded text-xs font-medium bg-red-100 text-red-700 dark:bg-red-900 dark:text-red-300">{{ s.consecutive_failures }}</span>
@@ -70,7 +70,7 @@
 {% endcall %}
 {% else %}
 <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg p-12 text-center">
-    <p class="text-slate-400 text-sm">No cron schedules configured.</p>
+    <p class="text-slate-500 dark:text-slate-400 text-sm">No cron schedules configured.</p>
 </div>
 {% endif %}
 {% endblock %}

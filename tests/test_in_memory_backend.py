@@ -345,7 +345,7 @@ class TestExtendLeasesForJobCount:
         assert count == 1
 
     def test_multiple_slots_for_same_job(self) -> None:
-        from taskq.testing.in_memory import _SlotTable
+        from taskq.testing._slots import _SlotTable
 
         table = _SlotTable()
         table.ensure_slots("bucket_a", 4)
@@ -1045,7 +1045,10 @@ class TestReclaimExpiredLocks:
         updated = await backend.get(job_id)
         assert updated is not None
         assert updated.status == "crashed"
-        assert updated.error_class is None
+        # The crashed row self-describes: the same error fields the
+        # attempt row carries, so the cause is readable off the row.
+        assert updated.error_class == "WorkerCrashed"
+        assert updated.error_message == "lock expired before worker reported terminal state"
 
     async def test_crashed_writes_attempt_row(self) -> None:
         backend = _make_backend()
@@ -1883,7 +1886,7 @@ class TestExpireArchivedJobs:
         call expire_archived_jobs(); assert 0 rows remain."""
         from dataclasses import replace as _replace
 
-        from taskq.testing.in_memory import _ArchivedJobRow
+        from taskq.testing._runner import _ArchivedJobRow
 
         clock = FakeClock(_START)
         backend = InMemoryBackend(
@@ -1932,7 +1935,7 @@ class TestExpireArchivedJobs:
         """Rows with expire_at in the future are not deleted."""
         from dataclasses import replace as _replace
 
-        from taskq.testing.in_memory import _ArchivedJobRow
+        from taskq.testing._runner import _ArchivedJobRow
 
         clock = FakeClock(_START)
         backend = InMemoryBackend(

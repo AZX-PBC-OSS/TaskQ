@@ -8,7 +8,7 @@ from uuid import UUID
 import asyncpg
 import structlog
 
-from taskq._json import dumps_jsonb_str
+from taskq._json import dumps_jsonb_str, embed_encoded
 from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: canonical identifier regex; copying would drift the validation pattern.
 )
@@ -32,7 +32,7 @@ _FLUSH_UNNEST_BINDING_ORDER: Final[tuple[str, ...]] = (
     "worker_id: UUID",  # the loop-wide owner, the gate's scalar conjunct
 )
 
-# The bounded-batch doctrine (the #120 lesson): no flush statement ever
+# The bounded-batch doctrine: no flush statement ever
 # carries more than this many rows, so every statement is short-lived and
 # independently bounded — an all-in-one statement over the whole dirty set
 # is the long-running-statement trap (it times out as a whole and stalls
@@ -51,10 +51,10 @@ def _flush_update_sql(schema: str) -> str:
     """Render the single-source-of-truth progress flush UPDATE.
 
     One statement carries a bounded batch of rows columnar-style — the
-    unnest-array bulk-writer shape the vendored corpus converged on
-    (river's columnar arrays, graphile's unnest-joined set operation,
-    procrastinate's composite array), sized by ``_FLUSH_BATCH_ROWS`` so
-    no statement ever runs long (the #120 doctrine). Each unnest row is
+    unnest-array bulk-writer shape reduces the number of parameters
+    and makes merge operations efficient (array-side operations merge
+    per-row without row-by-row iteration), sized by ``_FLUSH_BATCH_ROWS``
+    so no statement ever runs long. Each unnest row is
     fenced PER ROW (running + this worker + this attempt epoch) and
     merges PER ROW (monotone base + delta on ``progress_seq``,
     last-writer-wins ``||`` merge on ``progress_state``); a row whose
@@ -103,6 +103,22 @@ def _drop_fenced_out_buffer(
         del progress_buffers[job_id]
 
 
+def _state_document(buffer: _ProgressBuffer, snapshot_state: dict[str, object]) -> str:
+    """Render a snapshot's ``progress_state`` merge document for the jsonb bind.
+
+    A ``data`` dict that ``ctx.progress`` already encoded for its size cap
+    is embedded as those bytes rather than walked again; the document is
+    byte-identical either way (see :func:`taskq._json.embed_encoded`), and
+    the jsonb NUL guard scans the embedded bytes exactly as it scans
+    freshly encoded ones. The bytes are used only while the snapshot's
+    ``data`` is the very dict they encode.
+    """
+    encoded = buffer.encoded_data
+    if encoded is None or snapshot_state.get("data") is not encoded.source:
+        return dumps_jsonb_str(snapshot_state)
+    return dumps_jsonb_str({**snapshot_state, "data": embed_encoded(encoded.json)})
+
+
 def _retire_flushed_snapshot(
     buffer: _ProgressBuffer,
     returned_seq: int,
@@ -116,13 +132,16 @@ def _retire_flushed_snapshot(
     place; retiring only what was actually flushed preserves that late
     update on top of the new base (seq stays monotone). A key re-written
     during the await (same or different value) survives the drop so the
-    next flush picks it up.
+    next flush picks it up. The encoded ``data`` bytes are released with
+    the ``data`` entry they stood in for.
     """
     buffer.base_seq = returned_seq
     buffer.pending_seq_delta -= snapshot_delta
     for key, snapshotted_value in snapshot_state.items():
         if key in buffer.pending_state and buffer.pending_state[key] == snapshotted_value:
             del buffer.pending_state[key]
+    if "data" not in buffer.pending_state:
+        buffer.encoded_data = None
     buffer.dirty = buffer.pending_seq_delta != 0 or bool(buffer.pending_state)
     buffer.last_flush_at = asyncio.get_running_loop().time()
 
@@ -164,7 +183,7 @@ async def _flush_buffer(
                     sql,
                     [job_id],
                     [snapshot_delta],
-                    [dumps_jsonb_str(snapshot_state)],
+                    [_state_document(buffer, snapshot_state)],
                     [buffer.attempt],
                     worker_id,
                 )
@@ -242,7 +261,7 @@ async def _flush_dirty_set(
 ) -> None:
     """Flush one tick's dirty set in bounded row-batches.
 
-    The doctrine (the #120 lesson, deliberately re-applied here after a
+    The doctrine (deliberately re-applied here after a
     one-statement shape regressed it): an all-in-one statement over an
     unbounded dirty set is the long-running-statement trap — it times
     out as a whole, and the timeout kills the tick while the loop
@@ -276,7 +295,7 @@ async def _flush_dirty_set(
         snapshot_delta = buffer.pending_seq_delta
         snapshot_state = dict(buffer.pending_state)
         try:
-            state_doc = dumps_jsonb_str(snapshot_state)
+            state_doc = _state_document(buffer, snapshot_state)
         except ValueError as exc:
             # The jsonb NUL guard: a permanent data defect in this one
             # row. Skipped and left dirty so the next tick retries (and

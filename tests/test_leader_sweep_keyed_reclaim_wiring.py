@@ -1,4 +1,4 @@
-"""The sweep loop's fleet-wide keyed-row reclaim wiring (#139 residual).
+"""The sweep loop's fleet-wide keyed-row reclaim wiring (the keyed-row residual).
 
 The reclaim seam itself (``sweep_idle_keyed_rows`` — one bounded,
 committed batch per table per call, the keyed mark plus the
@@ -165,7 +165,7 @@ async def test_sweep_loop_drives_keyed_row_reclaim_with_configured_horizon() -> 
     """One leader tick invokes the keyed-row reclaim sweep once, on the
     dispatcher pool, with the operator's configured horizon and batch
     size — the wiring that turns ``sweep_idle_keyed_rows`` into the
-    #139 fleet reclaim (one bounded, committed batch per table per
+    fleet-wide reclaim (one bounded, committed batch per table per
     tick, deliberately NOT a ``_drain_bounded`` drain — the
     slow-and-constant discipline the event-retention block settled)."""
     deps = _deps(keyed_row_reclaim_period="2h")

@@ -12,16 +12,17 @@ to the ambient trace context.
 Pure-Python, no PG required.
 """
 
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 import pytest
-from asyncpg.exceptions import UniqueViolationError
+from asyncpg.exceptions import InterfaceError, UniqueViolationError
 from opentelemetry import trace
 from opentelemetry.trace import StatusCode
 
 from taskq._ids import new_uuid
+from taskq.constants import cron_commit_gate_channel
 from taskq.cron import _factory_cache
 from taskq.settings import WorkerSettings
 from taskq.testing.clock import FakeClock
@@ -61,6 +62,10 @@ class _FakeCronRecord:
     def __init__(self, data: dict[str, object]) -> None:
         self._data = data
 
+    @property
+    def data(self) -> dict[str, object]:
+        return self._data
+
     def __getitem__(self, key: str) -> object:
         return self._data[key]
 
@@ -98,25 +103,39 @@ class _FakeCronConn(FakeConn):
         self.actor_config_rows = actor_config_rows if actor_config_rows is not None else []
         self._disabled_count = disabled_count
         self.fetch_calls: list[tuple[str, tuple[object, ...]]] = []
+        self.fetchrow_calls: list[tuple[str, tuple[object, ...]]] = []
         self.read_due_schedules = False
 
     async def fetchval(self, sql: str, *args: object) -> object:
         self.fetchval_calls.append((sql, args))
-        if "pg_try_advisory_xact_lock" in sql:
-            return True
-        if "clock_timestamp" in sql:
-            return _NOW
         if "COUNT" in sql:
             return self._disabled_count
         raise AssertionError(f"unexpected fetchval: {sql}")
+
+    async def fetchrow(self, sql: str, *args: object) -> object:
+        """Answer the tick's one single-row read: the per-actor failure
+        totals aggregate (an empty totals object — this fake holds no
+        failing rows). Any other ``fetchrow`` is a new read the fake does
+        not model."""
+        self.fetchrow_calls.append((sql, args))
+        if "jsonb_object_agg" in sql:
+            return _FakeCronRecord({"totals": "{}"})
+        raise AssertionError(f"unexpected fetchrow: {sql}")
 
     async def fetch(self, sql: str, *args: object) -> list[_FakeCronRecord]:
         self.fetch_calls.append((sql, args))
         if "actor_config" in sql:
             return self.actor_config_rows
+        if "pg_try_advisory_xact_lock" in sql:
+            # The tick's first statement: the lock probe, nothing else.
+            return [_FakeCronRecord({"got": True})]
         if "cron_schedules" in sql:
+            # The tick's second statement: the due read. The planning clock
+            # rides every row; an empty due set is no rows at all.
             self.read_due_schedules = True
-            return self.schedule_rows
+            if not self.schedule_rows:
+                return []
+            return [_FakeCronRecord({**row.data, "server_now": _NOW}) for row in self.schedule_rows]
         if '"taskq".jobs' in sql:
             # The policy preflights (singleton blockers, max_pending counts)
             # and the DST overlap-twin probe read the jobs table; this fake
@@ -1560,3 +1579,354 @@ async def test_cancelled_error_mid_savepoint_rolls_back_and_writes_no_strikes(
     ]
     assert error_spans == []
     assert _success_updates(conn) == []
+
+
+# ── the factory deadline's budget math ─────────────────────────────────
+#
+# The per-factory deadline is ``min(cron_payload_factory_timeout, what the
+# tick has left of its whole-tick budget after the write reserve)``.  Any
+# floor under that clamp lets each factory wait exceed the budget the tick
+# actually has — and a batch of hung factories sums those floors past the
+# leader's whole-tick ``asyncio.timeout``: the outer deadline wins, the
+# tick's transaction rolls back every strike, and the identical batch is
+# re-selected next tick.  A tick whose budget is spent must therefore
+# fund NO further factory wait (None), and the planning loop turns that
+# into an immediate, named per-schedule failure.
+
+
+class TestFactoryDeadlineMath:
+    """The clamp/reserve/exhaustion edges of the per-factory deadline."""
+
+    def test_configured_budget_applies_when_the_tick_has_room(self) -> None:
+        settings = _cron_settings(
+            DISPATCHER_COMMAND_TIMEOUT="5.0", CRON_PAYLOAD_FACTORY_TIMEOUT="2.0"
+        )
+        assert cron_loop._factory_deadline(settings, 0.0) == 2.0
+
+    def test_the_write_reserve_stays_unspent(self) -> None:
+        settings = _cron_settings(
+            DISPATCHER_COMMAND_TIMEOUT="5.0", CRON_PAYLOAD_FACTORY_TIMEOUT="5.0"
+        )
+        # A fresh tick at the matching defaults: the clamp holds the 10%
+        # write reserve back from the factory.
+        assert cron_loop._factory_deadline(settings, 0.0) == 4.5
+        # Two seconds in, the clamp tracks what the tick actually has left.
+        assert cron_loop._factory_deadline(settings, 2.0) == 2.5
+
+    def test_a_spent_tick_funds_no_factory_wait(self) -> None:
+        settings = _cron_settings(
+            DISPATCHER_COMMAND_TIMEOUT="5.0", CRON_PAYLOAD_FACTORY_TIMEOUT="5.0"
+        )
+        assert cron_loop._factory_deadline(settings, 4.5) is None, (
+            "a tick at the edge of its funded budget must not grant even a "
+            "minimal wait — per-factory floors are what sum a hung batch "
+            "past the whole-tick deadline"
+        )
+        assert cron_loop._factory_deadline(settings, 100.0) is None
+
+
+# ── the commit-gate fallback is loud ───────────────────────────────────
+#
+# A connection that cannot carry the gate's session-scoped LISTEN (a
+# transaction-pooling proxy shape) gets its telemetry emitted inline —
+# pre-commit precision lost.  That degradation must be a named warning:
+# emitted silently, telemetry that can describe an uncommitted
+# transaction is indistinguishable from the commit-gated kind, and a
+# failure has come to look exactly like a success.
+
+
+class _GatelessCronConn(_FakeCronConn):
+    """A connection that cannot carry the commit gate's LISTEN: the server
+    pid reads fine but listener registration fails, the shape a
+    transaction-pooling proxy in front of Postgres presents."""
+
+    def get_server_pid(self) -> int:
+        # Implausible backend pid: the armed-emission map is keyed by pid
+        # and shares this process with real-PG tests, so the fake must not
+        # collide with a real session's entry.
+        return 2**30
+
+    async def remove_listener(self, *_args: object) -> None:
+        return None
+
+    async def add_listener(self, *_args: object) -> None:
+        raise InterfaceError("cannot LISTEN through a transaction-pooling proxy")
+
+
+async def test_commit_gate_fallback_warns_and_still_emits_inline() -> None:
+    """add_listener raising InterfaceError: the tick still fires, the
+    fallback logs one warning naming the cause, and the tick's own
+    telemetry is still emitted (inline) rather than lost."""
+    import structlog.testing
+
+    row = _make_schedule_row(actor="gateless_actor", next_fire_at=_NOW)
+    conn = _GatelessCronConn(
+        schedule_rows=[row],
+        actor_config_rows=[_make_actor_config_row(actor="gateless_actor")],
+    )
+    backend = InMemoryBackend(clock=FakeClock(_NOW))
+
+    with structlog.testing.capture_logs() as captured:
+        fired = await _tick(conn, _cron_settings(), backend)
+
+    assert fired == 1
+    fallback_warnings = [e for e in captured if e["event"] == "cron-commit-gate-unavailable"]
+    assert len(fallback_warnings) == 1, (
+        "the commit gate's failure must be a loud, named warning — a silent "
+        "fallback makes telemetry that can describe an uncommitted "
+        "transaction indistinguishable from the gated kind"
+    )
+    assert fallback_warnings[0]["log_level"] == "warning"
+    assert "transaction-pooling proxy" in str(fallback_warnings[0].get("error", "")), (
+        "the warning must name the cause"
+    )
+    assert len([e for e in captured if e["event"] == "cron fired"]) == 1, (
+        "the tick's telemetry must still be emitted inline — losing the "
+        "whole failure trail costs more than the commit-time precision the "
+        "gate buys"
+    )
+
+
+# ── the failure-totals round trip is gated on telemetry being on ───────
+#
+# The per-tick per-actor failure aggregate has exactly one consumer: the
+# failure-gauge reconcile in the emission.  With telemetry disabled that
+# reconcile is a no-op, so the aggregate is one wasted round trip on every
+# non-empty tick.
+
+
+async def test_failure_totals_round_trip_only_when_telemetry_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A non-empty tick with telemetry disabled must not issue the totals
+    query at all; re-enabled, exactly one totals read runs per tick."""
+    import taskq.obs._otel as otel_mod
+
+    row = _make_schedule_row(
+        actor="quiet_actor",
+        payload_factory="nonexistent.module.fn",
+        next_fire_at=_NOW,
+    )
+    conn = _FakeCronConn(
+        schedule_rows=[row],
+        actor_config_rows=[_make_actor_config_row(actor="quiet_actor")],
+    )
+    backend = InMemoryBackend(clock=FakeClock(_NOW))
+
+    monkeypatch.setattr(otel_mod, "_otel_enabled", False)
+    await _tick(conn, _cron_settings(), backend)
+    assert conn.fetchrow_calls == [], (
+        "the failure-totals aggregate ran with telemetry disabled — one "
+        "wasted round trip on every non-empty tick"
+    )
+
+    monkeypatch.setattr(otel_mod, "_otel_enabled", True)
+    await _tick(conn, _cron_settings(), backend)
+    totals_reads = [sql for sql, _args in conn.fetchrow_calls if "jsonb_object_agg" in sql]
+    assert len(totals_reads) == 1, (
+        "with telemetry enabled the reconcile's source query runs exactly once per non-empty tick"
+    )
+
+
+# ── commit-gate session state retires with its connection ────────────
+#
+# ``_armed_commit_emits`` and ``_confirmed_listening`` are keyed by backend
+# pid. A tick that arms an emission and then loses its connection leaves
+# the entry unanswered forever (the server rolled the NOTIFY back with the
+# session), and a confirmed LISTEN outlives its session — under cron
+# connection churn both maps would grow without bound, and a pid the
+# server recycles would inherit a dead session's "confirmed listening"
+# proof. The gate hooks the connection's termination signal to retire all
+# of it.
+
+
+class _GateSession:
+    """A connection that CAN carry the commit gate: records the channel
+    listener, captures the arming ``pg_notify``, and fires termination
+    listeners on death (asyncpg's ``Connection._cleanup`` behavior).
+
+    Implausible pids, like ``_GatelessCronConn``'s, so the process-global
+    gate maps never collide with a real session's entry.
+    """
+
+    def __init__(self, pid: int) -> None:
+        self.pid = pid
+        self.channel_listeners: dict[str, Callable[..., None]] = {}
+        self.remove_listener_calls: list[str] = []
+        self.notify_calls: list[tuple[str, str]] = []
+        self.termination_listeners: list[Callable[[object], None]] = []
+        self.dead = False
+
+    def get_server_pid(self) -> int:
+        return self.pid
+
+    async def remove_listener(self, channel: str, callback: object) -> None:
+        self.remove_listener_calls.append(channel)
+        self.channel_listeners.pop(channel, None)
+
+    async def add_listener(self, channel: str, callback: Callable[..., None]) -> None:
+        self.channel_listeners[channel] = callback
+
+    def add_termination_listener(self, callback: Callable[[object], None]) -> None:
+        self.termination_listeners.append(callback)
+
+    async def execute(self, sql: str, *args: object) -> str:
+        assert "pg_notify" in sql, f"unexpected execute on the gate seam: {sql}"
+        self.notify_calls.append((str(args[0]), str(args[1])))
+        return "SELECT 1"
+
+    def deliver_commit_notify(self) -> None:
+        """The server's answer when the arming tick's transaction COMMITs:
+        the session's own NOTIFY rides back, addressed to its own pid."""
+        channel, nonce = self.notify_calls[-1]
+        self.channel_listeners[channel](self, self.pid, channel, nonce)
+
+    def die(self) -> None:
+        """What asyncpg does from ``_cleanup`` on close/terminate/loss."""
+        self.dead = True
+        for callback in self.termination_listeners:
+            callback(self)
+
+
+@pytest.fixture
+def _commit_gate_maps() -> Iterator[None]:  # pyright: ignore[reportUnusedFunction] # Why: pytest fixture consumed implicitly by the test runner; pyright does not track fixture usage.
+    """Snapshot and restore the module-level commit-gate maps.
+
+    The maps are process-global (keyed by backend pid); these tests fill
+    them deliberately, so each hands the suite back the state it found.
+    """
+    armed = dict(cron_loop._armed_commit_emits)
+    confirmed = set(cron_loop._confirmed_listening)
+    hooked = set(cron_loop._termination_hooked)
+    try:
+        yield
+    finally:
+        cron_loop._armed_commit_emits.clear()
+        cron_loop._armed_commit_emits.update(armed)
+        cron_loop._confirmed_listening.clear()
+        cron_loop._confirmed_listening.update(confirmed)
+        cron_loop._termination_hooked.clear()
+        cron_loop._termination_hooked.update(hooked)
+
+
+async def test_commit_gate_retires_session_state_on_close(
+    _commit_gate_maps: None,
+) -> None:
+    """Full gated cycle: arm, COMMIT delivers the NOTIFY (the emission
+    runs), then the connection dies — every per-pid entry is retired."""
+    conn = _GateSession(pid=2**30 + 1)
+    emitted: list[bool] = []
+
+    await cron_loop._emit_on_commit(conn, lambda: emitted.append(True), schema="taskq")
+    conn.deliver_commit_notify()
+    assert emitted == [True], "a committed tick's emission must run"
+    assert 2**30 + 1 in cron_loop._confirmed_listening
+
+    conn.die()
+
+    assert cron_loop._armed_commit_emits == {}
+    assert cron_loop._confirmed_listening == set()
+    assert cron_loop._termination_hooked == set()
+
+
+async def test_commit_gate_retires_unanswered_emission_on_close(
+    _commit_gate_maps: None,
+) -> None:
+    """The churn leak: a tick armed an emission, then its transaction
+    rolled back (no NOTIFY can ever answer) and the connection died. The
+    armed entry must not outlive the session — and the emission must
+    never run for a commit that did not happen."""
+    conn = _GateSession(pid=2**30 + 2)
+    emitted: list[bool] = []
+
+    await cron_loop._emit_on_commit(conn, lambda: emitted.append(True), schema="taskq")
+    assert 2**30 + 2 in cron_loop._armed_commit_emits
+
+    conn.die()
+
+    assert emitted == [], "no commit, no emission — the gate's core contract"
+    assert cron_loop._armed_commit_emits == {}
+    assert cron_loop._confirmed_listening == set()
+
+
+async def test_commit_gate_state_stays_bounded_under_connection_churn(
+    _commit_gate_maps: None,
+) -> None:
+    """Fifty rotate-and-tick cycles (a leader losing and rebuilding its
+    cron connection) must leave the gate maps empty, not holding one entry
+    per dead session."""
+    for i in range(50):
+        conn = _GateSession(pid=2**30 + 100 + i)
+        emitted: list[bool] = []
+        await cron_loop._emit_on_commit(
+            conn, lambda emitted=emitted: emitted.append(True), schema="taskq"
+        )
+        conn.deliver_commit_notify()
+        assert emitted == [True]
+        conn.die()
+
+    assert cron_loop._armed_commit_emits == {}, (
+        "armed emissions for dead sessions never got an answer and never retired"
+    )
+    assert cron_loop._confirmed_listening == set(), (
+        "confirmed LISTEN entries outlived their sessions"
+    )
+    assert cron_loop._termination_hooked == set()
+
+
+async def test_commit_gate_channel_is_scoped_to_the_schema(
+    _commit_gate_maps: None,
+) -> None:
+    """NOTIFY channels share one database-wide namespace: two schemas'
+    cron sessions in one database would otherwise deliver each other's
+    commit signals — and, since the gate records the SENDER's pid as
+    confirmed-listening, a foreign schema's notification would mark this
+    session confirmed without its own LISTEN ever having survived a
+    commit. The channel carries the schema's tag like every other
+    channel, so the two schemas never share it."""
+    from taskq.constants import cron_commit_gate_channel
+
+    session = _GateSession(pid=2**30 + 400)
+    await cron_loop._emit_on_commit(session, lambda: None, schema="tenant_a")
+    channel, _nonce = session.notify_calls[-1]
+    assert channel == cron_commit_gate_channel("tenant_a")
+    assert channel in session.channel_listeners
+    assert channel != cron_commit_gate_channel("tenant_b")
+
+
+async def test_commit_gate_relistens_for_a_recycled_pid(
+    _commit_gate_maps: None,
+) -> None:
+    """A pid the server hands to a fresh session must not inherit the dead
+    session's confirmed LISTEN: the arm must force the defensive
+    re-LISTEN (remove then add) on the new session, exactly as for a
+    never-seen pid."""
+    first = _GateSession(pid=2**30 + 200)
+    await cron_loop._emit_on_commit(first, lambda: None, schema="taskq")
+    first.deliver_commit_notify()
+    assert 2**30 + 200 in cron_loop._confirmed_listening
+    first.die()
+
+    second = _GateSession(pid=2**30 + 200)
+    await cron_loop._emit_on_commit(second, lambda: None, schema="taskq")
+
+    assert cron_commit_gate_channel("taskq") in second.remove_listener_calls, (
+        "a recycled pid inherited its dead predecessor's confirmed-listening "
+        "proof — the fresh session skipped the defensive re-LISTEN"
+    )
+
+
+async def test_commit_gate_hooks_termination_once_per_connection(
+    _commit_gate_maps: None,
+) -> None:
+    """Re-arming every tick must not stack termination listeners on a
+    long-lived connection — the bound is one hook per session."""
+    conn = _GateSession(pid=2**30 + 300)
+
+    await cron_loop._emit_on_commit(conn, lambda: None, schema="taskq")
+    conn.deliver_commit_notify()
+    await cron_loop._emit_on_commit(conn, lambda: None, schema="taskq")
+    conn.deliver_commit_notify()
+    await cron_loop._emit_on_commit(conn, lambda: None, schema="taskq")
+
+    assert len(conn.termination_listeners) == 1

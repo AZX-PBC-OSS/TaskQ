@@ -255,12 +255,27 @@ async def test_batch_size_one_drains_oldest_eligible_first(
     ascending ``scheduled_at`` order (oldest-eligible first).  This pins
     both the size-1 edge (the ladder degenerates to ordinal 1 on every
     row) and the documented oldest-first drain determinism.
+
+    Rewritten for the promotion-writes-no-events contract: the drain
+    order was previously observed through the one ``job_events`` row per
+    promoted row the sweep then wrote.  That per-row event is exactly
+    the unbounded-growth vector the denial-events decision abolished
+    (promotion is scheduler bookkeeping — pinned green in
+    tests/test_sweep_scheduled_to_pending_batching.py and
+    tests/test_dispatch_claim_writes_no_event_rows.py), so the order is
+    now observed through the status column itself: a size-1 call flips
+    exactly one row scheduled→pending, so the per-call newly-pending id
+    IS the promotion order.  The ordering assertions are unchanged; the
+    pin additionally asserts the merged event behaviour — a full drain
+    writes ZERO event rows.
     """
     schema = module_pg_schema.schema_name
     rows = 6
     job_ids = [new_uuid() for _ in range(rows)]
     await _seed_scheduled_spread(clean_pg_conn, schema, job_ids)
 
+    promoted_order: list[UUID] = []
+    seen_pending: set[UUID] = set()
     calls = 0
     for _ in range(rows + 2):
         n = await PostgresBackend.sweep_scheduled_to_pending(
@@ -272,20 +287,24 @@ async def test_batch_size_one_drains_oldest_eligible_first(
         if n == 0:
             break
         assert n == 1, f"a size-1 call must promote exactly one row, got {n}"
+        pending_now = {
+            rec["id"]
+            for rec in await clean_pg_conn.fetch(
+                f"SELECT id FROM \"{schema}\".jobs WHERE status = 'pending'",  # noqa: S608  # Why: schema is a test-fixture identifier, validated by render() upstream.
+            )
+        }
+        newly = pending_now - seen_pending
+        assert len(newly) == 1, (
+            f"a size-1 call must flip exactly one new row to pending, got {len(newly)}"
+        )
+        promoted_order.append(next(iter(newly)))
+        seen_pending = pending_now
 
     assert calls == rows + 1, (
         f"a size-1 drain of {rows} rows must take {rows + 1} calls (rows + the "
         f"terminating zero), took {calls}"
     )
-    # The drain order is observable through the per-call event rows: each
-    # size-1 call writes exactly one state_change event, bigserial-ordered.
-    promoted_order = [
-        rec["job_id"]
-        for rec in await clean_pg_conn.fetch(
-            f'SELECT job_id FROM "{schema}".job_events ORDER BY id',  # noqa: S608  # Why: schema is a test-fixture identifier, validated by render() upstream.
-        )
-    ]
-    assert len(promoted_order) == rows, "one state_change event per promoted row"
+    assert len(promoted_order) == rows, "one promoted row per size-1 call"
     scheduled_order = [
         rec["id"]
         for rec in await clean_pg_conn.fetch(
@@ -294,6 +313,14 @@ async def test_batch_size_one_drains_oldest_eligible_first(
     ]
     assert promoted_order == scheduled_order, (
         "the drain must be deterministic oldest-eligible-first (the snap's ORDER BY scheduled_at)"
+    )
+    written_events: int = await clean_pg_conn.fetchval(
+        f'SELECT count(*) FROM "{schema}".job_events',  # noqa: S608  # Why: schema is a test-fixture identifier, validated by render() upstream.
+    )
+    assert written_events == 0, (
+        f"a size-1 promotion drain wrote {written_events} job_events rows — "
+        "promotion is scheduler bookkeeping and writes no durable event rows "
+        "(the unbounded-growth vector the denial-events decision abolished)"
     )
 
 

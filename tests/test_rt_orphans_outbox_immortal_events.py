@@ -8,7 +8,7 @@ reach ``id > $1`` (the trailing watermark cursor,
 src/taskq/backend/_sql_templates.py:1138). Two consequences nothing bounds:
 
 * (a) a fleet with NO watch_reclaims consumer retains every lock_expired
-  event forever — unbounded growth (the #139 class);
+  event forever — unbounded growth (the orphaned-row class);
 * (b) an event committed late, below a cursor that already passed it, is
   both unreachable (the cursor cannot go back) and immortal (the exemption
   has no age cap).

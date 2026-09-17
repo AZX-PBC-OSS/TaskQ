@@ -11,6 +11,7 @@ from taskq.retry import (
     JobRetryState,
     Retry,
     RetryDecision,
+    RetryOverride,
     RetryPolicy,
     time_budget_as_interval,
 )
@@ -141,3 +142,34 @@ def test_time_budget_as_interval_indefinite_none_budget() -> None:
     """Edge: kind='indefinite', time_budget=None → None."""
     result = time_budget_as_interval(RetryPolicy(kind="indefinite", time_budget=None))
     assert result is None
+
+
+# ── RetryOverride.delay budget caveat ───────────────────────────────────────
+
+
+def test_retry_override_delay_docstring_carries_budget_caveat() -> None:
+    """RetryOverride's `delay` field must document that delay alone does not
+    spare the attempt budget.
+
+    A consumer classifier that returns `RetryOverride(delay=...)` with no
+    `kind` gets the delay honoured while the attempt budget is still spent,
+    so the job dies after its sustained retries. The class-level docstring
+    explains the kind/delay
+    interaction in prose, but the `delay` field itself carries no caveat and
+    no pointer to `RetryAfter(consume_budget=False)` for the no-budget case.
+    This should be discoverable directly from the field (e.g. via a
+    Pydantic `Field(description=...)`), not only by reading the whole class
+    docstring.
+    """
+    field_info = RetryOverride.model_fields["delay"]
+    description = field_info.description or ""
+
+    assert description, (
+        "RetryOverride.delay has no field-level description; a reader "
+        "inspecting the field (e.g. via model_fields, generated schema, or "
+        "IDE tooltip) gets no caveat that delay alone does not spare the "
+        "attempt budget, nor a pointer to "
+        "RetryAfter(consume_budget=False)"
+    )
+    assert "budget" in description.lower()
+    assert "RetryAfter" in description

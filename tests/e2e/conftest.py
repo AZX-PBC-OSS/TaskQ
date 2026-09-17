@@ -23,9 +23,10 @@ import os
 import re
 import shutil
 import subprocess
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncGenerator, AsyncIterator, Iterator
+from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING, NamedTuple
+from typing import TYPE_CHECKING, NamedTuple, Protocol
 
 import pytest
 import pytest_asyncio
@@ -37,7 +38,7 @@ from taskq.testing._shared_containers import (
     skip_test_without_docker,
 )
 
-from ._assertions import poll_until, wait_for_worker_ready
+from ._assertions import fresh_worker_ids, poll_until, wait_for_worker_ready
 from ._image_hygiene import (
     WHEEL_CACHE_DIR,
     remove_worker_image,
@@ -49,11 +50,12 @@ from ._image_hygiene import (
 
 if TYPE_CHECKING:
     import asyncpg
-    from containerspec import BuiltImage
     from testcontainers.core.container import DockerContainer
     from testcontainers.core.network import Network
 
     from taskq import TaskQ
+
+    from ._types import BuiltImage
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -122,6 +124,16 @@ class E2ESchema(NamedTuple):
     host_dsn: str
     worker_env: dict[str, str]
     redis_db: int
+
+
+class WorkerSchema(Protocol):
+    """What :func:`running_worker` needs of a schema: the name its
+    readiness gate and network alias are keyed by. ``E2ESchema``
+    satisfies it, and so do the chaos modules' schema tuples, which
+    carry their own env builders instead of the fleet ``worker_env``."""
+
+    @property
+    def schema_name(self) -> str: ...
 
 
 class E2EWorker(NamedTuple):
@@ -457,7 +469,12 @@ async def e2e_schema(
     finally:
         await conn.close()
 
-    await apply_pending_locked(e2e_pg.host_dsn, schema=schema)
+    # All phases, deliberately: each e2e module gets a throwaway schema no
+    # other process ever reads, so the rolling-deploy overlap window the
+    # pre/post phase split exists to protect cannot occur here. The locked
+    # default applies pre only, which would leave the post-phase migrations
+    # pending and push the runtime onto its legacy-compatibility paths.
+    await apply_pending_locked(e2e_pg.host_dsn, schema=schema, phase=None)
 
     conn = await asyncpg.connect(e2e_pg.host_dsn)
     try:
@@ -599,6 +616,66 @@ def _raise_if_worker_crashed(worker: E2EWorker) -> None:
         raise RuntimeError(msg)
 
 
+@asynccontextmanager
+async def running_worker(
+    request: pytest.FixtureRequest,
+    *,
+    network: Network,
+    schema: WorkerSchema,
+    pg_pool: asyncpg.Pool,
+    image: BuiltImage,
+    alias: str,
+    env: dict[str, str],
+    label: str = "e2e worker",
+) -> AsyncGenerator[E2EWorker]:
+    """One worker container on the shared network, gated on a real
+    end-to-end readiness signal (fresh heartbeat row in ``schema_name.workers``),
+    stopped and removed on exit even when the body fails.
+
+    Every worker fixture — module-scoped, serial, disposable, or a test's
+    in-test replacement — is this one context, so the ownership labels, the
+    readiness gate and the teardown cannot drift between them. The worker
+    env is the caller's (the fleet env plus whatever the module overrides);
+    the schema argument only needs the name the gate and alias are keyed
+    by. On readiness timeout the container logs are dumped into the failure
+    message.
+    """
+    from testcontainers.core.container import DockerContainer
+
+    container = DockerContainer(image=image.tag)
+    # Ownership labels: Ryuk is disabled process-wide, so a crashed session's
+    # worker containers must stay sweepable via the e2e sweep (the
+    # ``taskq-e2e-worker`` image prefix makes them sweep candidates; the
+    # labels let the sweep remove RUNNING leftovers once their owner pids
+    # die, instead of keeping them for the 24h backstop).
+    container.with_kwargs(labels=creator_labels())
+    container.with_network(network).with_network_aliases(alias)
+    for key, value in env.items():
+        container.with_env(key, value)
+
+    # Gate on THIS container's heartbeat: a sibling worker already beating
+    # on the schema must not satisfy the gate for one that has not booted.
+    known_workers = await fresh_worker_ids(pg_pool, schema.schema_name)
+    await asyncio.to_thread(container.start)
+    try:
+        try:
+            await wait_for_worker_ready(
+                pg_pool, schema.schema_name, timeout=30.0, known_workers=known_workers
+            )
+        except TimeoutError:
+            logs = _container_logs(container)
+            msg = (
+                f"{label} failed readiness gate: no fresh heartbeat in "
+                f"{schema.schema_name}.workers within 30s\n{logs}"
+            )
+            raise RuntimeError(msg) from None
+        yield E2EWorker(container=container, schema=schema.schema_name)
+    finally:
+        if request.config.option.verbose >= 2:
+            print(_container_logs(container))
+        await asyncio.to_thread(_stop_container, container)
+
+
 @pytest_asyncio.fixture(scope="module")
 async def e2e_worker(
     request: pytest.FixtureRequest,
@@ -607,41 +684,45 @@ async def e2e_worker(
     e2e_pg_pool: asyncpg.Pool,
     e2e_worker_image: BuiltImage,
 ) -> AsyncIterator[E2EWorker]:
-    """Module-scoped worker container on the shared network, gated on a real
-    end-to-end readiness signal (fresh heartbeat row in ``{schema}.workers``).
+    """Module-scoped worker container (see :func:`running_worker`). A test
+    that kills its worker must take :func:`e2e_disposable_worker` instead:
+    this one is shared by every test of the module in whatever order they
+    run."""
+    async with running_worker(
+        request,
+        network=e2e_network,
+        schema=e2e_schema,
+        pg_pool=e2e_pg_pool,
+        image=e2e_worker_image,
+        alias=f"worker-{e2e_schema.schema_name}",
+        env=e2e_schema.worker_env,
+    ) as worker:
+        yield worker
 
-    On readiness timeout the container logs are dumped into the failure
-    message. Teardown stops/removes the container even when tests fail.
-    """
-    from testcontainers.core.container import DockerContainer
 
-    container = DockerContainer(image=e2e_worker_image.tag)
-    # Ownership labels: Ryuk is disabled process-wide, so a crashed session's
-    # worker containers must stay sweepable via the e2e sweep (the
-    # ``taskq-e2e-worker`` image prefix makes them sweep candidates; the
-    # labels let the sweep remove RUNNING leftovers once their owner pids
-    # die, instead of keeping them for the 24h backstop).
-    container.with_kwargs(labels=creator_labels())
-    container.with_network(e2e_network).with_network_aliases(f"worker-{e2e_schema.schema_name}")
-    for key, value in e2e_schema.worker_env.items():
-        container.with_env(key, value)
-
-    await asyncio.to_thread(container.start)
-    try:
-        try:
-            await wait_for_worker_ready(e2e_pg_pool, e2e_schema.schema_name, timeout=30.0)
-        except TimeoutError:
-            logs = _container_logs(container)
-            msg = (
-                "e2e worker failed readiness gate: no fresh heartbeat in "
-                f"{e2e_schema.schema_name}.workers within 30s\n{logs}"
-            )
-            raise RuntimeError(msg) from None
-        yield E2EWorker(container=container, schema=e2e_schema.schema_name)
-    finally:
-        if request.config.option.verbose >= 2:
-            print(_container_logs(container))
-        await asyncio.to_thread(_stop_container, container)
+@pytest_asyncio.fixture
+async def e2e_disposable_worker(
+    request: pytest.FixtureRequest,
+    e2e_network: Network,
+    e2e_schema: E2ESchema,
+    e2e_pg_pool: asyncpg.Pool,
+    e2e_worker_image: BuiltImage,
+) -> AsyncIterator[E2EWorker]:
+    """Function-scoped worker container for a test that signals, stops or
+    otherwise consumes its worker: each test gets a fresh one, torn down
+    after it, so the module-scoped worker stays alive for its siblings
+    under any test order."""
+    async with running_worker(
+        request,
+        network=e2e_network,
+        schema=e2e_schema,
+        pg_pool=e2e_pg_pool,
+        image=e2e_worker_image,
+        alias=f"worker-disposable-{e2e_schema.schema_name}-{new_uuid().hex[:6]}",
+        env=e2e_schema.worker_env,
+        label="disposable e2e worker",
+    ) as worker:
+        yield worker
 
 
 @pytest_asyncio.fixture(scope="module")
@@ -659,33 +740,17 @@ async def e2e_worker_serial(
     Identical to :func:`e2e_worker` except the worker env is overridden with
     a single concurrency slot so jobs dispatch one at a time.
     """
-    from testcontainers.core.container import DockerContainer
-
-    serial_env = {**e2e_schema.worker_env, "TASKQ_MAX_CONCURRENCY": "1"}
-
-    container = DockerContainer(image=e2e_worker_image.tag)
-    container.with_network(e2e_network).with_network_aliases(
-        f"worker-serial-{e2e_schema.schema_name}"
-    )
-    for key, value in serial_env.items():
-        container.with_env(key, value)
-
-    await asyncio.to_thread(container.start)
-    try:
-        try:
-            await wait_for_worker_ready(e2e_pg_pool, e2e_schema.schema_name, timeout=30.0)
-        except TimeoutError:
-            logs = _container_logs(container)
-            msg = (
-                "e2e serial worker failed readiness gate: no fresh heartbeat in "
-                f"{e2e_schema.schema_name}.workers within 30s\n{logs}"
-            )
-            raise RuntimeError(msg) from None
-        yield E2EWorker(container=container, schema=e2e_schema.schema_name)
-    finally:
-        if request.config.option.verbose >= 2:
-            print(_container_logs(container))
-        await asyncio.to_thread(_stop_container, container)
+    async with running_worker(
+        request,
+        network=e2e_network,
+        schema=e2e_schema,
+        pg_pool=e2e_pg_pool,
+        image=e2e_worker_image,
+        alias=f"worker-serial-{e2e_schema.schema_name}",
+        env={**e2e_schema.worker_env, "TASKQ_MAX_CONCURRENCY": "1"},
+        label="e2e serial worker",
+    ) as worker:
+        yield worker
 
 
 @pytest_asyncio.fixture(scope="module")

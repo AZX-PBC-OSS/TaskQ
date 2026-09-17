@@ -1,4 +1,4 @@
-"""#149 — bulk-tier cap enforcement partitions admission per actor.
+"""Bulk-tier cap enforcement partitions admission per actor.
 
 ``_batch_cap_refusals`` (PG) / ``_batch_cap_refusals`` (InMemory)
 (InMemory) refused the ENTIRE enqueue_batch / enqueue_batch_fast call
@@ -6,11 +6,10 @@ when ANY single actor's group exceeded its cap — all-or-nothing across
 actors. A parent enqueuing a mixed-actor sub-batch where ONE child actor
 is capped lost the whole call: nothing enqueued for anyone.
 
-The evolved contract (vendor prior art: pgqueuer's dequeue capacity gates
-bind per entrypoint — the multi-entrypoint statement admits the
-entrypoints with free room instead of failing wholesale; river's
-InsertMany shows whole-batch atomicity is the norm only where no
-per-actor constraint exists): an over-cap actor's items are refused as a
+The evolved contract: multi-entrypoint admission routes items with free
+room instead of failing wholesale, and whole-batch atomicity is the
+appropriate model only where no per-actor constraint exists. Thus: an
+over-cap actor's items are refused as a
 group (never partially filled — the single path refuses a capped enqueue
 outright, and filling "up to" the cap would admit items whose ordering
 the caller never chose), every other actor's items are admitted, and the
@@ -165,8 +164,8 @@ async def test_backend_enqueue_batch_exact_fill_is_admitted() -> None:
 
 
 async def test_backend_enqueue_batch_multi_refusal_attribution() -> None:
-    """TWO over-cap actors in one mixed batch (every earlier #149 test
-    refuses exactly one): ``refusals`` names BOTH, in group order (first
+    """TWO over-cap actors in one mixed batch (every earlier partition
+    test refuses exactly one): ``refusals`` names BOTH, in group order (first
     appearance in the caller's list), each with its own per-actor
     ``refused_indices``, and ``admitted_count`` counts only the healthy
     actor's items — everything a caller needs to retry several refused
@@ -417,10 +416,8 @@ async def test_pg_enqueue_batch_inserts_admitted_items_only() -> None:
         fetch_map={
             # count_pending_jobs: the capped actor holds one row.
             "GROUP BY actor": [_Record({"actor": args_list[1].actor, "cnt": 1})],
-            # The batch INSERT's RETURNING + the follow-up full-row fetch
-            # both see only the admitted items.
-            "RETURNING id, actor": [_rec(args_list[0]), _rec(args_list[2])],
-            "id = ANY($1::uuid[])": [_rec(args_list[0]), _rec(args_list[2])],
+            # The batch INSERT's RETURNING * sees only the admitted items.
+            "INSERT INTO": [_rec(args_list[0]), _rec(args_list[2])],
         }
     )
 
@@ -444,7 +441,7 @@ async def test_pg_enqueue_batch_inserts_admitted_items_only() -> None:
     assert len(count_calls) == 1
     # The INSERT statement ran exactly once and carried only the admitted
     # items' ids — the refused actor's item never reached the statement.
-    insert_calls = [c for c in conn.fetch_calls if "RETURNING id, actor" in c[0]]
+    insert_calls = [c for c in conn.fetch_calls if "INSERT INTO" in c[0]]
     assert len(insert_calls) == 1
     assert list(insert_calls[0][1][0]) == admitted_ids
 
@@ -474,7 +471,7 @@ async def test_pg_enqueue_batch_abort_mode_refuses_whole_call() -> None:
 
     assert exc_info.value.actor == args_list[1].actor
     # Nothing reached the INSERT: the refusal fired at admission time.
-    assert not any("RETURNING id, actor" in c[0] for c in conn.fetch_calls)
+    assert not any("INSERT INTO" in c[0] for c in conn.fetch_calls)
 
 
 async def test_pg_partition_refusal_logs_and_records_per_refused_actor(
@@ -484,7 +481,7 @@ async def test_pg_partition_refusal_logs_and_records_per_refused_actor(
     actor: one ``max-pending-exceeded`` warning and one
     ``record_backpressure_error(actor, kind="max_pending")`` call each —
     parity with the single-enqueue path's log+metric pair. Neither was
-    pinned by the #149 tests; an operator's backpressure dashboards read
+    pinned by the partition tests; an operator's backpressure dashboards read
     these, so a silent regression would blank them."""
     from taskq.backend import _enqueue as enqueue_mod
 
@@ -510,9 +507,8 @@ async def test_pg_partition_refusal_logs_and_records_per_refused_actor(
                 _Record({"actor": capped_a.actor, "cnt": 1}),
                 _Record({"actor": capped_b.actor, "cnt": 1}),
             ],
-            # The admitted healthy item's RETURNING + full-row fetch.
-            "RETURNING id, actor": [_rec(healthy)],
-            "id = ANY($1::uuid[])": [_rec(healthy)],
+            # The admitted healthy item's RETURNING *.
+            "INSERT INTO": [_rec(healthy)],
         }
     )
 

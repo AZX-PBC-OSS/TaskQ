@@ -13,7 +13,7 @@ from taskq._ids import new_uuid
 from taskq.web.admin import create_router
 from taskq.web.admin.jobs import _normalize_row, _truncate_traceback
 
-from . import _StubPool
+from . import StubConnection, StubRecord, _StubPool
 
 # ── Job detail route: discovery and registration ───────────────────────
 
@@ -49,6 +49,101 @@ def test_job_detail_invalid_uuid_returns_422(
 
 
 # ── Job detail template ────────────────────────────────────────────────
+
+
+def _detail_job_data(**overrides: object) -> dict[str, object]:
+    """The minimal job mapping job_detail.html renders, with per-test overrides."""
+    data: dict[str, object] = {
+        "id": "00000000-0000-0000-0000-000000000010",
+        "actor": "sync_data",
+        "queue": "default",
+        "status": "running",
+        "priority": 0,
+        "attempt": 168,
+        "max_attempts": 3,
+        "retry_kind": "indefinite",
+        "scheduled_at": "2025-01-01T00:00:00+00:00",
+        "started_at": "2025-01-01T00:00:01+00:00",
+        "finished_at": None,
+        "error_class": None,
+        "error_message": None,
+        "error_traceback": None,
+        "trace_id": None,
+        "payload": "{}",
+        "metadata": "{}",
+    }
+    data.update(overrides)
+    return data
+
+
+def test_job_detail_marks_max_attempts_inert_for_indefinite_retry(
+    monkeypatch: pytest.MonkeyPatch, stub_pool: _StubPool
+) -> None:
+    """An indefinite-kind job ignores max_attempts entirely (retries.md §2):
+    the stored ceiling is inert, so the Attempt cell must not advertise it
+    as a live budget — a row can legitimately sit at attempt 168 over a
+    stored 3, and "168 / 3" reads as a lie about what is enforced."""
+    monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
+    bundle = create_router(stub_pool)  # pyright: ignore[reportArgumentType]  # Why: test duck-type pool.
+    template = bundle.templates.get_template("job_detail.html")
+
+    html = template.render(job=_detail_job_data(), attempts=[], events=[])
+
+    assert "168 / — (indefinite)" in html, (
+        "the inert ceiling must render as — (indefinite), keeping the real attempt count visible"
+    )
+    assert "168 / 3" not in html, (
+        "rendering the stored max_attempts as-is advertises a budget the job is not enforcing"
+    )
+
+
+def test_job_detail_renders_the_ceiling_for_bounded_kinds(
+    monkeypatch: pytest.MonkeyPatch, stub_pool: _StubPool
+) -> None:
+    """The control: a bounded retry_kind renders the real ceiling."""
+    monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
+    bundle = create_router(stub_pool)  # pyright: ignore[reportArgumentType]  # Why: test duck-type pool.
+    template = bundle.templates.get_template("job_detail.html")
+
+    html = template.render(
+        job=_detail_job_data(retry_kind="transient", attempt=2), attempts=[], events=[]
+    )
+
+    assert "2 / 3" in html
+    assert "— (indefinite)" not in html
+
+
+def test_jobs_list_marks_max_attempts_inert_for_indefinite_retry(
+    monkeypatch: pytest.MonkeyPatch, stub_pool: _StubPool
+) -> None:
+    """The jobs list's Attempt column carries the same marker (the row is
+    where an operator scanning a queue first meets the inert field)."""
+    monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
+    html = _render_job_table(
+        stub_pool,
+        jobs=[_render_job_table_row(retry_kind="indefinite", attempt=168)],
+    )
+    assert "168 / — (indefinite)" in html
+    assert "168/3" not in html
+
+    html = _render_job_table(
+        stub_pool,
+        jobs=[_render_job_table_row(retry_kind="transient", attempt=2)],
+    )
+    assert "2 / 3" in html
+    assert "— (indefinite)" not in html
+
+
+def test_jobs_list_queries_fetch_retry_kind() -> None:
+    """The marker needs retry_kind selected: a column the query never
+    fetches can never be rendered (the lease-column pin's shape)."""
+    from taskq.web.admin.jobs import _ARCHIVE_COLS, _LIVE_COLS
+
+    for name, cols in (("_LIVE_COLS", _LIVE_COLS), ("_ARCHIVE_COLS", _ARCHIVE_COLS)):
+        assert "retry_kind" in cols.lower(), (
+            f"{name} must select retry_kind so the Attempt cell can mark an "
+            "indefinite row's ceiling inert"
+        )
 
 
 def test_job_detail_template_extends_base(
@@ -653,6 +748,80 @@ def test_build_paginated_sql_prev_direction_reverses_order() -> None:
     assert "ASC" in sql  # reversed from DESC
 
 
+def test_build_paginated_sql_prev_direction_without_a_cursor_is_the_first_page() -> None:
+    """``cursor_dir=prev`` with no usable cursor has nothing to walk back
+    from: the query is the unpaged first page, not the reversed tail of the
+    result set."""
+    from taskq.web.admin.jobs import _SORTABLE_LIVE, _build_paginated_sql
+
+    for cursor_id in (None, "not-a-uuid"):
+        sql, params = _build_paginated_sql(
+            schema="taskq",
+            table="jobs",
+            cols="*",
+            sortable=_SORTABLE_LIVE,
+            where="status = ANY($1)",
+            params=[["pending"]],
+            cursor_at="2025-01-01T00:00:00+00:00",
+            cursor_id=cursor_id,
+            cursor_dir="prev",
+            sort="created_at",
+            order="desc",
+        )
+        assert "SELECT * FROM (" not in sql, cursor_id
+        assert "ASC" not in sql, cursor_id
+        assert params == [["pending"]], cursor_id
+
+
+class _OneJobConnection(StubConnection):
+    """Connection whose jobs-list query returns one row so the table (and its
+    pagination block) renders; every other query stays empty."""
+
+    async def fetch(self, query: str, *args: object) -> list[StubRecord]:
+        if ".jobs WHERE" in query:
+            return [StubRecord(_render_job_table_row(id=new_uuid()))]
+        return []
+
+
+class _OneJobPool(_StubPool):
+    def acquire(self, *, timeout: float | None = None) -> Any:
+        conn = _OneJobConnection()
+
+        class _Ctx:
+            async def __aenter__(self) -> StubConnection:
+                return conn
+
+            async def __aexit__(self, *args: object) -> None:
+                pass
+
+        return _Ctx()
+
+
+def test_jobs_route_malformed_cursor_renders_the_first_page_without_a_prev_link(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A stale bookmark's cursor is dropped and the first page served; the
+    page must then not claim to be paged-into. With one row and no more,
+    neither a "Previous" nor a "Next" link may render - a link built from a
+    cursor that was never applied walks the operator into the wrong page."""
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from taskq.web.admin import setup_admin_state
+
+    monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
+    bundle = create_router(_OneJobPool())  # pyright: ignore[reportArgumentType]  # Why: test duck-type pool.
+    app = FastAPI()
+    setup_admin_state(app, bundle)
+    app.include_router(bundle.router)
+    client = TestClient(app)
+
+    response = client.get("/jobs?tab=live&cursor_at=garbage&cursor_id=garbage&cursor_dir=prev")
+    assert response.status_code == 200
+    assert "cursor_dir=prev" not in response.text
+    assert "cursor_dir=next" not in response.text
+
+
 # ── _parse_time_range: explicit instants vs. a relative window ──────────
 
 
@@ -721,26 +890,7 @@ def _render_job_table(stub_pool: _StubPool, **context: Any) -> str:
     """
     bundle = create_router(stub_pool)  # pyright: ignore[reportArgumentType]  # Why: test duck-type pool.
     defaults: dict[str, Any] = {
-        "jobs": [
-            {
-                "id": "abc-123",
-                "actor": "send_email",
-                "queue": "default",
-                "status": "failed",
-                "created_at": "2025-01-01T12:00:00",
-                "scheduled_at": "2025-01-01T12:00:00",
-                "started_at": None,
-                "finished_at": None,
-                "duration_ms": None,
-                "attempt": 1,
-                "max_attempts": 3,
-                "priority": 5,
-                "identity_key": None,
-                "fairness_key": None,
-                "progress_state": None,
-                "error_message": None,
-            }
-        ],
+        "jobs": [_render_job_table_row()],
         "tab": "archived",
         "statuses": ["failed"],
         "all_statuses": ["failed"],
@@ -758,6 +908,31 @@ def _render_job_table(stub_pool: _StubPool, **context: Any) -> str:
     return bundle.templates.get_template("_partials/job_table.html").render(
         **{**defaults, **context}
     )
+
+
+def _render_job_table_row(**overrides: Any) -> dict[str, Any]:
+    """One jobs-list row as the page hands it to the table partial."""
+    row: dict[str, Any] = {
+        "id": "abc-123",
+        "actor": "send_email",
+        "queue": "default",
+        "status": "failed",
+        "created_at": "2025-01-01T12:00:00",
+        "scheduled_at": "2025-01-01T12:00:00",
+        "started_at": None,
+        "finished_at": None,
+        "duration_ms": None,
+        "attempt": 1,
+        "max_attempts": 3,
+        "retry_kind": "transient",
+        "priority": 5,
+        "identity_key": None,
+        "fairness_key": None,
+        "progress_state": None,
+        "error_message": None,
+    }
+    row.update(overrides)
+    return row
 
 
 def _page_links(html: str) -> list[str]:
@@ -914,3 +1089,57 @@ def test_live_jobs_table_non_running_rows_have_no_lease_state(
         "a row that holds no lease must not render an expired badge — the "
         "badge means a running row's lease is past, nothing else"
     )
+
+
+# ── started_at sort: running-longest view ───────────────────────────────
+
+
+def test_started_at_is_a_sortable_column_on_both_tabs() -> None:
+    """``started_at`` pages like the other timestamp columns.
+
+    An operator answers "what has been running longest" with
+    ``status=running&sort=started_at&order=asc``; that only works when the
+    column joins the keyset ordering instead of falling back to the
+    default (created_at) sort, which would silently re-serve one page.
+    """
+    from taskq.web.admin.jobs import _SORTABLE_ARCHIVE, _SORTABLE_LIVE
+
+    assert "started_at" in _SORTABLE_LIVE
+    assert "started_at" in _SORTABLE_ARCHIVE
+    assert _SORTABLE_LIVE["started_at"].kind == "ts"
+    assert _SORTABLE_LIVE["started_at"].nullable
+
+
+def test_started_at_sort_pages_by_keyset() -> None:
+    """sort=started_at builds a timestamptz cursor clause and NULLS LAST."""
+    from taskq.web.admin.jobs import _SORTABLE_LIVE, _build_paginated_sql
+
+    sql, params = _build_paginated_sql(
+        schema="taskq",
+        table="jobs",
+        cols="*",
+        sortable=_SORTABLE_LIVE,
+        where="status = ANY($1)",
+        params=[["running"]],
+        cursor_at="2025-01-01T00:00:00+00:00",
+        cursor_id="00000000-0000-0000-0000-000000000001",
+        cursor_dir="next",
+        sort="started_at",
+        order="asc",
+    )
+    assert "timestamptz" in sql
+    assert "started_at" in sql
+    assert "NULLS LAST" in sql.upper()
+    assert len(params) == 3
+
+
+def test_started_at_sort_header_links_to_the_column(stub_pool: _StubPool) -> None:
+    """The Started column header is a sort control, not a static label."""
+    html = _render_job_table(
+        stub_pool,
+        tab="live",
+        sort="started_at",
+        order="asc",
+    )
+    assert "sort=started_at" in html
+    assert "▲" in html  # active sort indicator rendered on the asc link

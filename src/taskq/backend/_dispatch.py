@@ -24,13 +24,12 @@ from taskq.backend._dispatch_sql import (
 from taskq.backend._protocol import ConnLike, JobRow
 from taskq.backend._records import (
     _job_row_from_record,
-    jsonb_param,
 )
 from taskq.backend._sql_templates import SqlTemplates
 from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining
 )
-from taskq.obs import get_logger
+from taskq.obs import get_logger, record_dispatch_duration, record_dispatch_failure
 
 if TYPE_CHECKING:
     import asyncpg
@@ -67,6 +66,24 @@ _live_queue_mode_caches: "weakref.WeakSet[QueueModeCache]" = weakref.WeakSet()
 """Every cache a live backend instance owns, so the queue-ops seam can
 clear them all without holding backend references. Weak: a backend's
 cache must not outlive (or keep alive) the backend that owns it."""
+
+_MAX_DISPATCH_WINDOW_EXPANSIONS: Final[int] = 3
+"""How many times one dispatch round may widen its candidate window after
+coming back empty.
+
+Each expansion doubles the per-cohort candidate window
+(``residual * oversample * 2**expansions``), so three expansions absorb a
+transient lock-out by up to ``oversample * 8`` concurrent dispatchers on
+one (actor, queue) — 16 at the default oversample of 2 — before the
+round reports empty and defers to the next tick. The steady-state sizing
+rule lives on ``WorkerSettings.dispatch_oversample``: an oversample at
+or above the number of dispatchers polling the same (actor, queue) keeps
+the common case expansion-free. The claim's own per-round bounds are
+untouched — every re-run still admits at most ``limit_n`` rows, and each
+candidate probe stays an ORDER BY + LIMIT index read whose cost is
+independent of backlog depth — so expansion multiplies the round's
+constant factor, never its depth coupling.
+"""
 
 
 class QueueModeCache:
@@ -180,37 +197,69 @@ async def _dispatch_batch(
     mixed unintentionally.
 
     *queue_mode_cache* is the backend's worker-side mode cache: a hit
-    removes the resolve statement from this transaction entirely. The
+    removes the resolve statement from this round entirely. The
     miss path re-resolves through the query and refills the cache.
     ``None`` keeps the pre-cache contract — resolve on every call — for
     standalone callers that want fresh resolution.
+
+    A claim deliberately writes NO ``job_events`` row. pending→running is
+    the dispatcher's bookkeeping, not an outcome transition, and a claim
+    is the one act every admission-denial cycle repeats — under the 429
+    denial contract a denied job is claimed and rescheduled until capacity
+    frees or its deadline expires, so a row per claim is precisely the
+    unbounded-growth vector the aggregated denial counters on the job row
+    (``snooze_count`` / ``rate_limit_blocked_count``) replaced. The
+    transitions of record are the terminal writes and the sweep/cancel
+    audit entries; the claim itself writes no row, so the jobs table cannot
+    grow per claim. The claim's observability rides the ``kind='dispatch'``
+    log line and OTEL span in ``_dispatch_sql.dispatch_batch``.
     """
-    event_sql = sql.insert_events_batch
+    queue_attr = queues[0] if queues else ""
+    # Autocommit, deliberately: the claim is one atomic UPDATE … RETURNING
+    # whose row locks end with the statement, and nothing else in the round
+    # needs a shared snapshot — the mode resolve and the claimable probe are
+    # read-only, and an empty round holds no locks between iterations.
+    # asyncpg sends BEGIN and COMMIT as their own round trips, so a
+    # transaction here only tripled the cost of every claim; the claim is
+    # one statement, so autocommit already gives it all the atomicity it
+    # needs.
     async with dispatcher_pool.acquire(timeout=acquire_timeout) as conn:
         queue_modes = (
             queue_mode_cache.resolved_modes(queues) if queue_mode_cache is not None else None
         )
-        async with conn.transaction():
-            if queue_modes is None:
+        if queue_modes is None:
+            # Mode resolution runs before the dispatch CTE is issued, so
+            # a failure here never reaches the dispatch helper's own
+            # telemetry. Recording the round here keeps the whole
+            # failure class visible: a producer whose every round dies
+            # resolving modes is otherwise silent on every metric, and
+            # reads exactly like a pod polling an idle queue.
+            resolve_started = time.monotonic()
+            try:
                 modes_by_queue = await _resolve_queue_modes_by_queue(conn, queues, schema)
-                if queue_mode_cache is not None:
-                    queue_mode_cache.store(modes_by_queue)
-                # An empty queue list resolves to the strict variant (the
-                # resolver's own empty-list contract); every non-empty
-                # list yields at least one entry.
-                queue_modes = set(modes_by_queue.values()) or {"strict_fifo"}
-            if len(queue_modes) > 1:
-                logger.debug(
-                    "dispatch-mixed-queue-modes",
-                    queues=queues,
-                    modes=sorted(queue_modes),
-                    selected_sql="round_robin",
-                )
-            sql_stmt = (
-                sql.dispatch_round_robin
-                if "round_robin" in queue_modes
-                else sql.dispatch_strict_fifo
+            except Exception:
+                record_dispatch_duration(queue_attr, time.monotonic() - resolve_started)
+                record_dispatch_failure(queue_attr)
+                raise
+            if queue_mode_cache is not None:
+                queue_mode_cache.store(modes_by_queue)
+            # An empty queue list resolves to the strict variant (the
+            # resolver's own empty-list contract); every non-empty
+            # list yields at least one entry.
+            queue_modes = set(modes_by_queue.values()) or {"strict_fifo"}
+        if len(queue_modes) > 1:
+            logger.debug(
+                "dispatch-mixed-queue-modes",
+                queues=queues,
+                modes=sorted(queue_modes),
+                selected_sql="round_robin",
             )
+        sql_stmt = (
+            sql.dispatch_round_robin if "round_robin" in queue_modes else sql.dispatch_strict_fifo
+        )
+        oversample = dispatch_oversample
+        expansions = 0
+        while True:
             records = await dispatch_batch_helper(
                 conn,
                 sql=sql_stmt,
@@ -218,25 +267,46 @@ async def _dispatch_batch(
                 limit_n=limit,
                 worker_id=worker_id,
                 lock_lease=lock_lease,
-                oversample=dispatch_oversample,
+                oversample=oversample,
             )
-            if records:
-                # One statement, not one per job. This runs inside the
-                # transaction still holding the dispatch row locks, so each
-                # extra round trip is lock hold time; every row here shares
-                # `kind` and `detail`, so only the ids vary.
-                await conn.execute(
-                    event_sql,
-                    [rec["id"] for rec in records],
-                    "state_change",
-                    jsonb_param(
-                        {
-                            "from_state": "pending",
-                            "to_state": "running",
-                            "worker_id": str(worker_id),
-                        }
-                    ),
-                )
+            if records or expansions >= _MAX_DISPATCH_WINDOW_EXPANSIONS:
+                break
+            # An empty round means one of two things: nothing
+            # claimable remains, or every row of the candidate
+            # window is row-locked by peers — the window is
+            # deliberately bounded (residual x oversample per cohort
+            # probe) and SKIP LOCKED slides only within it, so more
+            # than oversample dispatchers on one (actor, queue) can
+            # lock the whole window and starve the rest while deeper
+            # rows sit unlocked. The probe arbitrates before a wider
+            # re-run is paid for: no pending routable rows (the idle
+            # case, by far the commonest empty round) costs one
+            # LIMIT-1 probe and ends the round. A round that returns
+            # empty never holds row locks — zero admissions means
+            # nothing passed the lock stage — so re-executing with a
+            # doubled window starts lock-clean, and the expansion
+            # bound keeps a permanently saturated round from
+            # re-running without limit.
+            probe_started = time.monotonic()
+            try:
+                probe_rows = await conn.fetch(sql.dispatch_claimable_probe, queues)
+            except Exception:
+                record_dispatch_duration(queue_attr, time.monotonic() - probe_started)
+                record_dispatch_failure(queue_attr)
+                raise
+            if not probe_rows:
+                break
+            expansions += 1
+            oversample = dispatch_oversample * (2**expansions)
+            logger.debug(
+                "dispatch-window-expansion",
+                queues=queues,
+                expansion=expansions,
+                oversample=oversample,
+            )
+        # Claims deliberately write NO job_events rows (see this
+        # function's docstring above): the dispatch log line and OTEL
+        # span carry the observability.
     return [_job_row_from_record(rec) for rec in records]
 
 

@@ -15,6 +15,7 @@ either an :class:`~taskq.testing.in_memory.InMemoryBackend` (tests) or a
 """
 
 import asyncio
+import dataclasses
 from collections.abc import Callable, Generator, Iterable, Sequence
 from contextlib import AsyncExitStack, contextmanager
 from dataclasses import replace
@@ -27,10 +28,11 @@ import structlog
 from pydantic import BaseModel, TypeAdapter, ValidationError
 
 from taskq._close import CLOSE_TIMEOUT_SECS, close_redis_bounded
-from taskq._validation import validate_actor_payload
+from taskq._validation import CURRENT_PAYLOAD_SCHEMA_VER, validate_actor_payload
 from taskq.actor import ActorRef
 from taskq.backend._cursor import encode_job_cursor
 from taskq.backend._protocol import (
+    MAX_JOB_LIST_LIMIT,
     Backend,
     BatchFilter,
     BatchRow,
@@ -121,6 +123,10 @@ def _item_payload_error(idx: int, actor_name: str, exc: ValidationError) -> Payl
     return PayloadValidationError(
         f"Payload validation failed for item {idx} (actor={actor_name!r}): {exc}",
         actor=actor_name,
+        # Enqueue-time validation runs against the actor's currently
+        # declared payload_type, so the version in scope is the one being
+        # validated against (and about to be stamped on the row).
+        payload_schema_ver=str(CURRENT_PAYLOAD_SCHEMA_VER),
         validation_errors=errs,
         # The machine-readable copy of the message's index. ``idx`` is
         # already caller-global at both callers: the atomic arm's lazy
@@ -417,7 +423,7 @@ class JobsClient:
 
             # Why not stack.enter_async_context(client): Redis.__aexit__
             # calls aclose() UNBOUNDED — a hung broker would wedge
-            # JobsClient.close() (#38). initialize() preserves
+            # JobsClient.close(). initialize() preserves
             # __aenter__'s eager-setup semantics; the pushed callback
             # bounds the close instead (b072692 pattern).
             async def _close_client() -> None:
@@ -563,10 +569,10 @@ class JobsClient:
           like the pre-scope global behavior, just scoped to that
           namespace. This is a deliberate scope decision, not an
           oversight: a real sliding-window TTL cannot be expressed as a
-          single static unique index the way scope can — every mature
-          job queue that offers one (Oban, River) either gives up the
-          atomic ``INSERT ... ON CONFLICT`` for a check-then-insert lock
-          (weaker concurrency guarantee) or buckets time into the key
+          single static unique index the way scope can — a sliding
+          window would require either abandoning the atomic ``INSERT
+          ... ON CONFLICT`` for a check-then-insert lock (weaker
+          concurrency guarantee) or encoding time-bucketing into the key
           itself (coarser, edge-artifact-prone semantics). If your use
           case genuinely needs "dedupe for the next hour, not forever,"
           encode the window into the scope yourself (e.g. a
@@ -817,7 +823,7 @@ class JobsClient:
         # pairs that will dedupe instead of writing, and partitions
         # admission per actor. The old client-side aggregated pre-check
         # raised here for the WHOLE call — one capped actor aborted
-        # everyone's items (#149) — and its count was strictly less
+        # everyone's items — and its count was strictly less
         # informed than the backend's, so it was removed rather than
         # duplicated.
         effective_mp: dict[str, int | None] = {}
@@ -1553,20 +1559,36 @@ class JobsClient:
         sequence of statuses (e.g. ``JobFilter(status=["pending",
         "running"])``).
 
-        ``filter.active`` is a meta-filter — **not Celery's 'active'**:
-        ``active=True`` selects *non-terminal* statuses (pending,
-        scheduled, running — 'not yet finished', not 'currently
-        executing') and ``active=False`` selects terminal ones.  See
-        :class:`JobFilter` for full semantics.
+        ``filter.active`` is a meta-filter: ``active=True`` selects
+        *non-terminal* statuses (pending, scheduled, running — 'not yet
+        finished', not 'currently executing') and ``active=False`` selects
+        terminal ones.  See :class:`JobFilter` for full semantics.
 
         ``next_cursor`` is returned for every ordering, encoded from the
-        columns that ordering actually sorts by, and is only ``None`` on
-        the last page.
+        columns that ordering actually sorts by, and is ``None`` exactly on
+        the last page: the backend is asked for one row past the limit, so
+        a last page that happens to fill the limit is still known to be the
+        last, and a caller paging until the cursor runs out never fetches an
+        empty trailing page. ``filter.limit`` is capped at
+        :data:`~taskq.backend._protocol.MAX_JOB_LIST_LIMIT` (``ValueError``
+        above it); at the ceiling there is no room to look past the limit,
+        so a full page there carries a cursor that may lead to one empty
+        page.
         """
+        if filter.limit > MAX_JOB_LIST_LIMIT:
+            raise ValueError(
+                f"limit must be <= {MAX_JOB_LIST_LIMIT}, got {filter.limit}; page with cursor "
+                "for larger result sets"
+            )
+        if filter.limit < MAX_JOB_LIST_LIMIT:
+            probe = dataclasses.replace(filter, limit=filter.limit + 1)
+        else:
+            probe = filter
         with self._translate_schema_errors():
-            rows = await self._backend.list_jobs(filter)
+            fetched = await self._backend.list_jobs(probe)
+        rows = fetched[: filter.limit]
         next_cursor: str | None = None
-        if rows and len(rows) == filter.limit:
+        if rows and len(fetched) >= probe.limit:
             next_cursor = encode_job_cursor(rows[-1], filter.order_by)
         return JobPage(jobs=rows, next_cursor=next_cursor)
 

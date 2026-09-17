@@ -31,6 +31,15 @@
     {% endif %}
 {% endmacro %}
 
+{% macro attempt_budget(job) %}
+    {# A job whose retry_kind is 'indefinite' ignores max_attempts entirely
+       (retries.md §2): the row still carries the configured ceiling, but
+       rendering it as a live budget would advertise a limit the job is not
+       enforcing — a live row can sit at attempt 168 over a stored 3. The
+       attempt count stays visible; the inert ceiling renders as a dash. #}
+    {{ job.attempt }} / {% if job.retry_kind == 'indefinite' %}— (indefinite){% else %}{{ job.max_attempts }}{% endif %}
+{% endmacro %}
+
 {% macro time_ago(ts) %}
     {% if ts is none or ts == 'None' or ts == '' %}—{% else %}
     {% set now_ts = now().timestamp() if now is defined else 0 %}
@@ -57,39 +66,39 @@
 <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg p-4">
     <dl class="grid grid-cols-2 sm:grid-cols-3 gap-x-4 gap-y-2 text-sm">
         <div>
-            <dt class="text-xs text-slate-500 uppercase tracking-wider">ID</dt>
+            <dt class="text-xs text-slate-500 dark:text-slate-400 uppercase tracking-wider">ID</dt>
             <dd class="font-mono text-xs">{{ job.id }}</dd>
         </div>
         <div>
-            <dt class="text-xs text-slate-500 uppercase tracking-wider">Status</dt>
+            <dt class="text-xs text-slate-500 dark:text-slate-400 uppercase tracking-wider">Status</dt>
             <dd>{{ status_badge(job.status) }}</dd>
         </div>
         <div>
-            <dt class="text-xs text-slate-500 uppercase tracking-wider">Queue</dt>
+            <dt class="text-xs text-slate-500 dark:text-slate-400 uppercase tracking-wider">Queue</dt>
             <dd>{{ job.queue }}</dd>
         </div>
         <div>
-            <dt class="text-xs text-slate-500 uppercase tracking-wider">Actor</dt>
+            <dt class="text-xs text-slate-500 dark:text-slate-400 uppercase tracking-wider">Actor</dt>
             <dd class="font-medium">{{ job.actor }}</dd>
         </div>
         <div>
-            <dt class="text-xs text-slate-500 uppercase tracking-wider">Priority</dt>
+            <dt class="text-xs text-slate-500 dark:text-slate-400 uppercase tracking-wider">Priority</dt>
             <dd>{{ job.priority }}</dd>
         </div>
         <div>
-            <dt class="text-xs text-slate-500 uppercase tracking-wider">Attempt</dt>
+            <dt class="text-xs text-slate-500 dark:text-slate-400 uppercase tracking-wider">Attempt</dt>
             <dd>{{ job.attempt }} / {{ job.max_attempts }}</dd>
         </div>
         <div>
-            <dt class="text-xs text-slate-500 uppercase tracking-wider">Scheduled At</dt>
+            <dt class="text-xs text-slate-500 dark:text-slate-400 uppercase tracking-wider">Scheduled At</dt>
             <dd class="text-xs">{{ job.scheduled_at }}</dd>
         </div>
         <div>
-            <dt class="text-xs text-slate-500 uppercase tracking-wider">Started At</dt>
+            <dt class="text-xs text-slate-500 dark:text-slate-400 uppercase tracking-wider">Started At</dt>
             <dd class="text-xs">{{ job.started_at or '—' }}</dd>
         </div>
         <div>
-            <dt class="text-xs text-slate-500 uppercase tracking-wider">Finished At</dt>
+            <dt class="text-xs text-slate-500 dark:text-slate-400 uppercase tracking-wider">Finished At</dt>
             <dd class="text-xs">{{ job.finished_at or '—' }}</dd>
         </div>
     </dl>

@@ -2,16 +2,28 @@ groups:
   - name: taskq.rules
     rules:
       - alert: TaskQQueueDepthHigh
-        expr: taskq_queue_depth > 1000
+        expr: max by (actor, queue) (taskq_jobs_oldest_pending_age_seconds) > 900
         for: 5m
         labels:
           severity: warning
         annotations:
-          summary: "TaskQ queue {{ $labels.queue }} depth is {{ $value }}"
+          summary: >-
+            TaskQ actor {{ $labels.actor }} on queue {{ $labels.queue }} has
+            pending work {{ $value }}s old
           description: >-
-            Queue depth has been above threshold (1000) for 5 minutes.
-            Operators should override the threshold in their own rule
-            configuration.
+            An actor's oldest PENDING job has been waiting past the
+            threshold (15 minutes) for 5 minutes. Attributed per actor, not
+            per queue: no worker refuses to start because an actor's queue
+            has no consumer — in a multi-worker fleet no supervisor can
+            know what consumes a queue — so a misrouted actor produces no
+            refusal, no error and no failed job, and its rows simply pile
+            up pending while every probe stays green. A queue-summed depth
+            cannot tell that apart from a busy shared queue; this actor's
+            own age series rises without bound while its queue-mates stay
+            flat. Age rather than depth, because a deep queue that drains
+            is healthy throughput. Check that some worker's TASKQ_QUEUES
+            includes this actor's declared queue. Operators should override
+            the threshold in their own rule configuration.
 
       - alert: TaskQHeartbeatMisses
         expr: rate(taskq_heartbeat_misses_total[5m]) > 0
@@ -25,30 +37,69 @@ groups:
             worker will self-isolate. Investigate PG connectivity
             and lock lease configuration.
 
-      - alert: TaskQCrashedJobRateHigh
+      - alert: TaskQFailedJobRateHigh
         expr: |
-          rate(messaging_client_consumed_messages_total{outcome="failed"}[5m])
-          / rate(messaging_client_consumed_messages_total[5m]) > 0.01
+          sum(rate(messaging_client_consumed_messages_total{outcome="failed"}[5m]))
+          / sum(rate(messaging_client_consumed_messages_total[5m])) > 0.01
         for: 5m
         labels:
           severity: warning
         annotations:
-          summary: "TaskQ failed job rate > 1%"
+          summary: "TaskQ terminal-failed job share > 1%"
           description: >-
-            Terminal failures exceed 1% of completions in the last 5 minutes.
-            Inspect job_attempts.error_class for root cause.
+            Attempts ending in a TERMINAL failure (outcome="failed": a
+            non-retryable class, or the retry budget exhausted) exceed 1% of
+            consumed attempts over the last 5 minutes. Retried failures are
+            not in this share — they end as outcome="scheduled" and are
+            counted by taskq_jobs_attempt_failures_total{retryable="true"}
+            (TaskQRetryRateHigh). An attempt whose TERMINAL WRITE failed on
+            infrastructure (a transient Postgres outage at the wrong moment)
+            also ends as outcome="failed" and is re-claimed after the lease
+            lapses, so a spike coinciding with database errors is an infra
+            signal, not an actor-failure signal: the terminal-write-failed
+            ERROR log and a job row still running with no error_class are
+            the tells. Both sides are summed to fleet-wide
+            scalars so the ratio never silently empties on a label mismatch.
+            Inspect job_attempts.error_class for the root cause. Runbook:
+            docs/guides/runbooks.md#taskqfailedjobratehigh.
+
+      - alert: TaskQRetryRateHigh
+        expr: |
+          sum(rate(taskq_jobs_attempt_failures_total{retryable="true"}[5m]))
+          / sum(rate(messaging_client_consumed_messages_total[5m])) > 0.1
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "TaskQ retried-failure share > 10%"
+          description: >-
+            More than 10% of consumed attempts over the last 5 minutes ended
+            in a failure that was rescheduled for another try, sustained for
+            10 minutes. Each retry burns an attempt, a backoff delay and a
+            worker slot, so a sustained rate is a dependency that is failing
+            under retry cover — invisible on the terminal-failure share
+            until budgets run out. Split by actor and error_type on
+            taskq_jobs_attempt_failures_total to find it. Runbook:
+            docs/guides/runbooks.md#taskqretryratehigh.
 
       - alert: TaskQAbandonedJobs
-        expr: rate(messaging_client_consumed_messages_total{outcome="abandoned"}[5m]) > 0
+        expr: rate(taskq_jobs_abandoned_total[5m]) > 0
         for: 5m
         labels:
           severity: critical
         annotations:
-          summary: "TaskQ abandoned jobs detected"
+          summary: "TaskQ abandoned jobs detected (actor {{ $labels.actor }})"
           description: >-
-            Any abandoned job is concerning — it means a worker died during
-            shutdown phase 4 (ABANDONING) without cleaning up. Inspect
-            job_attempts with outcome=abandoned.
+            A job was abandoned: an operator-requested cancel outlasted both
+            grace periods (the actor was asked to stop, then forced, and
+            never exited), so the running attempt was taken from it.
+            Shutdowns never produce this — a deploy releases (interrupts)
+            in-flight jobs back to the fleet instead — so any rate is worth
+            a page. Recorded by mark_abandoned itself, on the row write;
+            a retry or snooze is outcome="scheduled" on the consumed-messages
+            counter and never reaches this series. Inspect job_attempts rows
+            with outcome='cancelled' and error_class='CancelAbandoned'. Runbook:
+            docs/guides/runbooks.md#taskqabandonedjobs.
 
       - alert: TaskQLockExpiringSoon
         expr: histogram_quantile(0.99, rate(taskq_lock_expires_in_seconds_bucket[5m])) < 30
@@ -58,10 +109,13 @@ groups:
         annotations:
           summary: "TaskQ lock p99 remaining time < 30s"
           description: >-
-            Lock remaining-time-to-expiry p99 is below 30s. Locks are
-            dangerously close to expiry, indicating the heartbeat loop is
-            not renewing fast enough. Investigate PG latency or heartbeat
-            interval configuration.
+            The lease left on job locks when the heartbeat renewed them
+            (lock_lease minus the measured gap since the previous renewal)
+            has a p99 below 30s: renewals are landing late — a slow
+            heartbeat pool, failed ticks (taskq_heartbeat_misses_total) or a
+            blocked event loop (taskq_worker_event_loop_lag_seconds) — and
+            the reclaim sweep will take the jobs if the gap reaches the
+            lease. Investigate PG latency or heartbeat interval configuration.
 
       - alert: TaskQLeaderSplitBrainOrNoLeader
         expr: sum(taskq_maintenance_leader_is_leader) != 1
@@ -113,16 +167,43 @@ groups:
             affected schedule(s) and fix the payload_factory.
 
       - alert: TaskQScheduledBacklogGrowing
-        expr: deriv(taskq_jobs_by_status{status="scheduled"}[15m]) > 0 and taskq_jobs_oldest_due_age_seconds > 300
+        expr: taskq_jobs_oldest_due_age_seconds > 300 and (taskq_jobs_scheduled_count > (taskq_jobs_scheduled_count offset 5m) or changes(taskq_jobs_scheduled_count[5m]) == 0)
         for: 5m
         labels:
           severity: warning
         annotations:
-          summary: "TaskQ scheduled backlog is growing while due jobs wait over 5m"
+          summary: "TaskQ scheduled backlog is growing or has stalled while due jobs wait over 5m"
           description: >-
-            The scheduled backlog is growing (positive 15m derivative) AND
-            the oldest due job has been waiting more than 5 minutes —
-            promotion from scheduled to pending is stalled. Runbook:
+            The oldest due job has been waiting more than 5 minutes AND the
+            scheduled job COUNT is demonstrably not draining — either it is
+            higher than it was 5 minutes ago (promotion is not keeping up
+            with arrivals) or it has not moved at all across those 5
+            minutes. The second arm is the stalled plateau a strict growth
+            comparison cannot see: a flat count never satisfies `count >
+            count offset 5m`, so a promoter that has stopped completely
+            while arrivals are absent or throttled would stay silent
+            forever on the growth arm alone; changes(...) == 0 holds only
+            when the count never moved across the whole window, which with
+            a due job aging past the threshold means promotion is not
+            happening. The previous form compared the oldest-due-age gauge
+            against itself: that gauge tracks whichever single job is
+            currently oldest, and its age climbs monotonically right up
+            until THAT job is promoted regardless of how healthily
+            everything behind it is draining — a steadily draining backlog
+            whose oldest-due job simply hasn't had its turn yet satisfied
+            the old expression for the whole `for: 5m` window and the check
+            degenerated to a bare age>300 threshold. Count, not the single
+            oldest item's age: a scheduled count that is MOVING — falling
+            as jobs promote or rising as arrivals land — is healthy flow no
+            matter how long the current straggler has waited; what is never
+            healthy is a due job aging past the threshold while the count
+            never moves at all.
+            taskq_jobs_scheduled_count is the label-less twin of
+            taskq_jobs_by_status{status="scheduled"}, kept in step with it
+            by the same sampler tick, specifically so every operand here
+            carries an identical (empty) label set — vector `and`/`or` with
+            no `on`/`ignoring` modifier only pairs series whose label sets
+            match exactly. Runbook:
             docs/guides/runbooks.md#taskqscheduledbackloggrowing.
 
       - alert: TaskQPromotionStalled
@@ -167,17 +248,26 @@ groups:
             docs/guides/runbooks.md#taskqsweepdegraded.
 
       - alert: TaskQLeaderLockContention
-        expr: rate(taskq_leader_lock_contention_total[10m]) > 0
+        expr: sum(rate(taskq_leader_lock_contention_total[10m])) > 0 and sum(taskq_maintenance_leader_is_leader) < 1
         for: 10m
         labels:
           severity: warning
         annotations:
-          summary: "TaskQ maintenance-lock acquisitions are being lost to another session"
+          summary: "TaskQ maintenance-lock contention is leaving the fleet with no leader"
           description: >-
-            Maintenance-lock acquisitions are being lost to another session;
-            sustained contention at the attempt rate means a worker never
-            wins the lock (the second-schema lock-loss signature). Runbook:
-            docs/guides/runbooks.md#taskqleaderlockcontention.
+            Maintenance-lock acquisitions are being lost AND no worker holds
+            leadership. The second condition is what makes this alertable: a
+            healthy multi-worker fleet has exactly one winner per election
+            round and every other worker records a loss, so a lost-acquire
+            rate above zero is the NORMAL steady state of any fleet larger
+            than one worker — alerting on it alone pages on health. Losses
+            while the leader count has fallen below one is the genuine
+            signature: a second schema sharing the lock, or a stuck holder,
+            so that no worker ever wins. Both operands are summed to
+            fleet-wide scalars so the vector join pairs — an `and` between
+            series carrying different label sets never matches, and
+            Prometheus reports that as an empty result rather than an error.
+            Runbook: docs/guides/runbooks.md#taskqleaderlockcontention.
 
       - alert: TaskQRateLimitDependencyOutage
         expr: rate(taskq_ratelimit_acquire_dependency_failures_total[5m]) > 0
@@ -209,6 +299,41 @@ groups:
             means cron is not running anywhere — a partitioned holder never
             releasing the transaction-scoped lock is the fleet-wide cron
             stall. Runbook: docs/guides/runbooks.md#taskqcronlockcontention.
+
+      - alert: TaskQQueueUnserved
+        expr: taskq_queue_depth{queue!="_other_"} > 0 unless on(queue) taskq_queue_live_workers > 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "TaskQ queue {{ $labels.queue }} has {{ $value }} queued jobs and no live worker"
+          description: >-
+            A queue holds pending or scheduled jobs and no worker whose
+            heartbeat is inside the liveness window
+            (TASKQ_ADMIN_WORKER_LIVENESS_SECONDS) subscribes to it, for 2
+            minutes. Nothing will consume the work: a deploy dropped the
+            queue from every TASKQ_QUEUES, the only replica serving it is
+            down, or a producer enqueues onto a queue name nobody runs. Both
+            series come from the same leader sampler tick, so the join never
+            compares two moments; the `_other_` overflow bucket is excluded
+            because its member set differs between the two gauges. Runbook:
+            docs/guides/runbooks.md#taskqqueueunserved.
+
+      - alert: TaskQStrandedJobs
+        expr: taskq_jobs_stranded > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "TaskQ actor {{ $labels.actor }} has {{ $value }} stranded jobs ({{ $labels.reason }})"
+          description: >-
+            Pending/scheduled jobs that can never dispatch, sustained for 5
+            minutes, with the reason on the label: no_actor_config (the actor
+            has no actor_config row — deregistered, or never registered by a
+            worker) or unserved_queue (the queue dispatch routes the actor on
+            has no live worker subscribed). Neither dispatch nor the deadline
+            sweep will ever touch these rows; the leader's detector is the
+            only signal. Runbook: docs/guides/runbooks.md#taskqstrandedjobs.
 
       - alert: TaskQRunningLeaseExpired
         expr: taskq_jobs_running_lease_expired > 0

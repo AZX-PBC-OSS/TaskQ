@@ -136,13 +136,6 @@ async def test_expired_lease_inline_reclaim(
 # ── Heartbeat extends lease ────────────────────────────────────────
 
 
-_UPD_JOBS_LOCK_SQL_TEMPLATE = (
-    'UPDATE "{schema}".jobs '
-    "SET last_heartbeat_at = now(), lock_expires_at = now() + $2 "
-    "WHERE locked_by_worker = $1 AND status = 'running'"
-)
-
-
 async def test_heartbeat_extends_lease(
     module_pg_schema: ModulePgSchema,
     module_pg_pool: asyncpg.Pool,
@@ -168,9 +161,10 @@ async def test_heartbeat_extends_lease(
 
     await res.acquire(job_id, worker_id, module_pg_pool)
 
-    _, _, update_reservation_leases_sql, _ = _build_heartbeat_sql(settings.schema_name)
+    _, update_jobs_lock_sql, update_reservation_leases_sql = _build_heartbeat_sql(
+        settings.schema_name
+    )
     lock_lease = timedelta(seconds=settings.lock_lease)
-    update_jobs_lock_sql = _UPD_JOBS_LOCK_SQL_TEMPLATE.format(schema=schema)
 
     async with module_pg_pool.acquire() as conn:
         row_before = await conn.fetchrow(
@@ -184,8 +178,8 @@ async def test_heartbeat_extends_lease(
     assert expires_before is not None
 
     async with module_pg_pool.acquire() as conn, conn.transaction():
-        await conn.execute(update_jobs_lock_sql, worker_id, lock_lease)
-        await conn.execute(update_reservation_leases_sql, worker_id, lock_lease)
+        await conn.execute(update_jobs_lock_sql, worker_id, lock_lease, [])
+        await conn.execute(update_reservation_leases_sql, worker_id, lock_lease, [])
 
     async with module_pg_pool.acquire() as conn:
         row_tick1 = await conn.fetchrow(
@@ -200,8 +194,8 @@ async def test_heartbeat_extends_lease(
     assert expires_tick1 > expires_before
 
     async with module_pg_pool.acquire() as conn, conn.transaction():
-        await conn.execute(update_jobs_lock_sql, worker_id, lock_lease)
-        await conn.execute(update_reservation_leases_sql, worker_id, lock_lease)
+        await conn.execute(update_jobs_lock_sql, worker_id, lock_lease, [])
+        await conn.execute(update_reservation_leases_sql, worker_id, lock_lease, [])
 
     async with module_pg_pool.acquire() as conn:
         row_tick2 = await conn.fetchrow(
@@ -228,6 +222,16 @@ async def test_sweep_4_reclaims_expired_slots(
     held_by_worker_id = NULL)."""
     schema = module_pg_schema.schema_name
     bucket = _unique_name()
+
+    # Own the sweep's schema-wide input. Sweep 4's SQL deliberately carries
+    # no bucket filter (it reclaims every expired slot in the schema), and
+    # this module-scoped table outlives any single test: earlier tests' held
+    # slots expire on their own _LEASE wall clock and land in the count (and
+    # did, under a full-suite ordering that ran this test more than ten
+    # seconds after a sibling). Deleting them here disturbs no sibling —
+    # every test in this module builds its own uniquely named buckets.
+    async with module_pg_pool.acquire() as conn:
+        await conn.execute(f'DELETE FROM "{schema}".reservation_slots')
 
     res = ConcurrencyReservation(name=bucket, slots=2, lease=_LEASE, schema=schema)
     await res.ensure_slots(module_pg_pool)

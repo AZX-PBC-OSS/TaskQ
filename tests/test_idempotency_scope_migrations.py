@@ -718,6 +718,7 @@ async def _insert_job_old_shape_returning_status(
     schema: str,
     *,
     idempotency_key: str | None,
+    actor: str = "direct_actor",
 ) -> str:
     """Like _insert_job_old_shape but returns the command status
     (``INSERT 0 1`` = row won the race, ``INSERT 0 0`` = deduped)."""
@@ -727,7 +728,7 @@ async def _insert_job_old_shape_returning_status(
         f"VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7, $8) "
         f"ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING",
         new_uuid(),
-        "direct_actor",
+        actor,
         "default",
         "{}",
         3,
@@ -785,10 +786,14 @@ class TestConcurrentOverlapWindow:
             key = "overlap-concurrent-unscoped"
 
             async def old_write() -> str | asyncpg.UniqueViolationError:
+                # The same actor as the new-code writer: old and new code
+                # enqueuing one job share its actor, and a same-key hit on
+                # ANOTHER actor's row is a refused cross-actor collision,
+                # not the dedup this race is about.
                 try:
                     async with old_pool.acquire() as conn:
                         return await _insert_job_old_shape_returning_status(
-                            conn, settings.schema_name, idempotency_key=key
+                            conn, settings.schema_name, idempotency_key=key, actor="test_actor"
                         )
                 except asyncpg.UniqueViolationError as exc:
                     return exc
@@ -1066,3 +1071,98 @@ class TestMigrationReRunIdempotency:
                 continue
             # Re-executing the fully-applied SQL verbatim must not raise.
             await pg_conn.execute(migration.render(schema))
+
+
+# ── Who is allowed to close the overlap window ─────────────────
+#
+# The overlap window (pre applied, post deliberately withheld) is the
+# only thing keeping not-yet-upgraded workers' enqueues alive during a
+# rolling deploy, and closing it is a fleet-wide decision: only the
+# operator can know that every replica now runs the new release.
+# TestPhaseOrderingGuard covers the operator's own deliberate
+# `--phase post`. The automatic migrate-on-start entry point
+# (TASKQ_MIGRATE_ON_START / `taskq ui serve --migrate`) is the other
+# way the post phase can reach the database, and it runs on a schedule
+# nobody chose: an admin pod restart, a rollout, an autoscale event.
+
+
+class TestMigrateOnStartDuringTheOverlapWindow:
+    """The migrate-on-start entry point must not close the rolling-deploy
+    overlap window on its own.
+
+    A single process cannot know whether the fleet has finished rolling,
+    so applying the post phase from a process lifecycle event decides a
+    fleet-wide question locally. The blast radius is the whole enqueue
+    path, not just the keyed part: dropping the old single-column index
+    makes pre-that-release code's `ON CONFLICT (idempotency_key)` fail to
+    resolve an arbiter index at plan time, so EVERY enqueue that code
+    issues fails with SQLSTATE 42P10 regardless of row values.
+    """
+
+    async def test_migrate_on_start_leaves_the_overlap_window_open(
+        self, pg_conn: asyncpg.Connection, settings: TaskQSettings
+    ) -> None:
+        """An admin process starting mid-rollout must not drop the old
+        index while the operator is still rolling the fleet.
+
+        Operator sequence: `taskq migrate up --phase pre` (step 1 of the
+        documented three-step sequence), fleet still rolling, post phase
+        deliberately withheld. An admin process then starts with
+        migrate-on-start enabled — a restart, not a decision. It must
+        bring the schema up to the pre phase and stop there, leaving the
+        post phase for the operator.
+        """
+        schema = settings.schema_name
+        await migrate_mod.apply_pending(pg_conn, schema=schema, phase="pre")
+        assert "01.00.03_01:post" not in await migrate_mod.list_applied(pg_conn, schema), (
+            "precondition: the overlap window must be open before the admin process starts"
+        )
+
+        await migrate_mod.apply_pending_locked(str(settings.pg_dsn), schema=schema)
+
+        applied = await migrate_mod.list_applied(pg_conn, schema)
+        assert "01.00.03_01:post" not in applied, (
+            "migrate-on-start applied the post phase and closed the rolling-deploy "
+            "overlap window; only the operator can know the fleet has finished rolling"
+        )
+        index_row = await pg_conn.fetchrow(
+            """
+            SELECT indexname FROM pg_indexes
+            WHERE schemaname = $1 AND indexname = 'jobs_idempotency_key_uniq'
+            """,
+            schema,
+        )
+        assert index_row is not None, (
+            "the old single-column idempotency index was dropped by a process start, "
+            "not by the operator"
+        )
+
+    async def test_old_release_enqueue_survives_an_admin_process_start(
+        self, pg_conn: asyncpg.Connection, settings: TaskQSettings
+    ) -> None:
+        """The operator-visible consequence: not-yet-upgraded workers keep
+        enqueuing across an admin process start mid-rollout.
+
+        This is the same old-release statement shape TestPrePhaseOverlapWindow
+        proves works while the window is open, re-issued after a
+        migrate-on-start process has booted against the same schema. A
+        NULL idempotency_key is used deliberately: the ON CONFLICT arbiter
+        is resolved at plan time, so if the window has been closed even
+        completely unkeyed enqueues fail — the whole enqueue path of the
+        un-upgraded half of the fleet goes down, not just the keyed part.
+        """
+        schema = settings.schema_name
+        await migrate_mod.apply_pending(pg_conn, schema=schema, phase="pre")
+        await _insert_job_old_shape(pg_conn, schema, idempotency_key=None)
+
+        await migrate_mod.apply_pending_locked(str(settings.pg_dsn), schema=schema)
+
+        try:
+            await _insert_job_old_shape(pg_conn, schema, idempotency_key=None)
+        except asyncpg.InvalidColumnReferenceError as exc:
+            pytest.fail(
+                "an admin process starting with migrate-on-start took down the enqueue "
+                "path of every not-yet-upgraded worker in the fleet: old-release "
+                f"enqueue now fails with SQLSTATE {exc.sqlstate} ({exc}). The operator "
+                "ran only `migrate up --phase pre` and was still rolling the fleet"
+            )

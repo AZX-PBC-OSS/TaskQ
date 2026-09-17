@@ -27,10 +27,7 @@ from pydantic import BaseModel
 from taskq._di.registry import ProviderRegistry
 from taskq._di.scope import Scope
 from taskq._di.scopes import (
-    LoopScope,
-    ProcessScope,
     ResolvedActorScope,
-    ThreadScope,
     build_actor_scope,
 )
 from taskq._ids import new_uuid
@@ -38,6 +35,7 @@ from taskq.backend.clock import Clock, SystemClock
 from taskq.context import JobContext
 from taskq.obs import bind_job_context
 from taskq.testing.clock import FakeClock
+from tests._di_scopes import bootstrap_scopes, make_scopes
 
 # ── Helpers ────────────────────────────────────────────────────────
 
@@ -85,74 +83,6 @@ def _make_job_ctx() -> JobContext[_Payload]:
     )
 
 
-def _make_scopes(
-    registry: ProviderRegistry,
-) -> tuple[ProcessScope, ThreadScope, LoopScope]:
-    scope_containers: dict[Scope, Any] = {}
-
-    def _resolver(func: object) -> Any:
-        async def _resolve() -> dict[str, object]:
-            from taskq._di.solver import solve_dependencies
-
-            return await solve_dependencies(
-                func=func,
-                registry=registry,
-                scope_containers=scope_containers,
-            )
-
-        return _resolve()
-
-    process_scope = ProcessScope(resolver=_resolver)
-    thread_scope = ThreadScope(resolver=_resolver)
-    loop_scope = LoopScope(resolver=_resolver)
-
-    scope_containers = {
-        Scope.PROCESS: process_scope,
-        Scope.THREAD: thread_scope,
-        Scope.LOOP: loop_scope,
-    }
-
-    # Why: re-bind resolver with full container dict so nested resolution
-    # from LOOP factories can reach PROCESS/THREAD providers.
-    def _resolver_full(func: object) -> Any:
-        async def _resolve() -> dict[str, object]:
-            from taskq._di.solver import solve_dependencies
-
-            return await solve_dependencies(
-                func=func,
-                registry=registry,
-                scope_containers=scope_containers,
-            )
-
-        return _resolve()
-
-    process_scope._resolver = _resolver_full
-    thread_scope._resolver = _resolver_full
-    loop_scope._resolver = _resolver_full
-
-    return process_scope, thread_scope, loop_scope
-
-
-async def _bootstrap_scopes(
-    registry: ProviderRegistry,
-    process_scope: ProcessScope,
-    thread_scope: ThreadScope,
-    loop_scope: LoopScope,
-) -> None:
-    from taskq.settings import WorkerSettings
-
-    settings = WorkerSettings.load_from_dict(
-        {
-            "PG_DSN": "postgres://u:p@localhost:5432/db",
-            "LOCK_LEASE": 60,
-            "HEARTBEAT_INTERVAL": 10,
-        },
-    )
-    await process_scope.bootstrap(registry, settings)
-    await thread_scope.bootstrap(registry, process_scope)
-    await loop_scope.bootstrap(registry, process_scope, thread_scope)
-
-
 # ── Happy path: actor with no DI params ─────────────────────────────
 
 
@@ -162,8 +92,8 @@ async def test_happy_path_no_di_params() -> None:
 
     registry = ProviderRegistry()
     registry.validate()
-    process_scope, thread_scope, loop_scope = _make_scopes(registry)
-    await _bootstrap_scopes(registry, process_scope, thread_scope, loop_scope)
+    process_scope, thread_scope, loop_scope = make_scopes(registry)
+    await bootstrap_scopes(registry, process_scope, thread_scope, loop_scope)
 
     mock_ctx = _make_job_ctx()
     async with build_actor_scope(
@@ -201,8 +131,8 @@ async def test_happy_path_one_loop_scoped_param() -> None:
         lambda: _AsyncGraphClient(),
     )
     registry.validate()
-    process_scope, thread_scope, loop_scope = _make_scopes(registry)
-    await _bootstrap_scopes(registry, process_scope, thread_scope, loop_scope)
+    process_scope, thread_scope, loop_scope = make_scopes(registry)
+    await bootstrap_scopes(registry, process_scope, thread_scope, loop_scope)
 
     mock_ctx = _make_job_ctx()
     async with build_actor_scope(
@@ -244,8 +174,8 @@ async def test_transient_per_invocation_isolation() -> None:
     registry = ProviderRegistry()
     registry.register_factory(_TransDep, Scope.TRANSIENT, make_transient)
     registry.validate()
-    process_scope, thread_scope, loop_scope = _make_scopes(registry)
-    await _bootstrap_scopes(registry, process_scope, thread_scope, loop_scope)
+    process_scope, thread_scope, loop_scope = make_scopes(registry)
+    await bootstrap_scopes(registry, process_scope, thread_scope, loop_scope)
 
     mock_ctx = _make_job_ctx()
     async with build_actor_scope(
@@ -300,8 +230,8 @@ async def test_transient_teardown_runs_on_exit() -> None:
     registry = ProviderRegistry()
     registry.register_factory(_TransDep, Scope.TRANSIENT, make_transient)
     registry.validate()
-    process_scope, thread_scope, loop_scope = _make_scopes(registry)
-    await _bootstrap_scopes(registry, process_scope, thread_scope, loop_scope)
+    process_scope, thread_scope, loop_scope = make_scopes(registry)
+    await bootstrap_scopes(registry, process_scope, thread_scope, loop_scope)
 
     mock_ctx = _make_job_ctx()
     async with build_actor_scope(
@@ -343,8 +273,8 @@ async def test_transient_teardown_on_actor_exception() -> None:
     registry = ProviderRegistry()
     registry.register_factory(_TransDep, Scope.TRANSIENT, make_transient)
     registry.validate()
-    process_scope, thread_scope, loop_scope = _make_scopes(registry)
-    await _bootstrap_scopes(registry, process_scope, thread_scope, loop_scope)
+    process_scope, thread_scope, loop_scope = make_scopes(registry)
+    await bootstrap_scopes(registry, process_scope, thread_scope, loop_scope)
 
     mock_ctx = _make_job_ctx()
     with pytest.raises(RuntimeError, match="actor boom"):
@@ -381,8 +311,8 @@ async def test_two_transient_params_distinct_instances() -> None:
     registry = ProviderRegistry()
     registry.register_factory(_TransDep, Scope.TRANSIENT, lambda: _TransDep())
     registry.validate()
-    process_scope, thread_scope, loop_scope = _make_scopes(registry)
-    await _bootstrap_scopes(registry, process_scope, thread_scope, loop_scope)
+    process_scope, thread_scope, loop_scope = make_scopes(registry)
+    await bootstrap_scopes(registry, process_scope, thread_scope, loop_scope)
 
     mock_ctx = _make_job_ctx()
     async with build_actor_scope(
@@ -410,8 +340,8 @@ async def test_ctx_must_be_job_context() -> None:
 
     registry = ProviderRegistry()
     registry.validate()
-    process_scope, thread_scope, loop_scope = _make_scopes(registry)
-    await _bootstrap_scopes(registry, process_scope, thread_scope, loop_scope)
+    process_scope, thread_scope, loop_scope = make_scopes(registry)
+    await bootstrap_scopes(registry, process_scope, thread_scope, loop_scope)
 
     with pytest.raises(TypeError, match="must be a JobContext"):
         async with build_actor_scope(
@@ -451,8 +381,8 @@ async def test_loop_cache_persists_across_invocations() -> None:
     registry = ProviderRegistry()
     registry.register_factory(_AsyncGraphClient, Scope.LOOP, make_loop_dep)
     registry.validate()
-    process_scope, thread_scope, loop_scope = _make_scopes(registry)
-    await _bootstrap_scopes(registry, process_scope, thread_scope, loop_scope)
+    process_scope, thread_scope, loop_scope = make_scopes(registry)
+    await bootstrap_scopes(registry, process_scope, thread_scope, loop_scope)
 
     mock_ctx = _make_job_ctx()
     async with build_actor_scope(
@@ -485,30 +415,41 @@ async def test_loop_cache_persists_across_invocations() -> None:
     await process_scope.shutdown()
 
 
-# ── TRANSIENT scope INFO logging ──────────────────────────────────────
+# ── TRANSIENT scope open/close logging ────────────────────────────────
 
 
 async def test_transient_scope_logging() -> None:
+    """The per-job open/close lines are DEBUG: they carry only the actor
+    name, nothing consumes them, and at INFO they would be two rendered
+    lines per job."""
+
     async def my_actor(payload: _Payload, ctx: JobContext[_Payload]) -> dict[str, object]:
         return {}
 
     registry = ProviderRegistry()
     registry.validate()
-    process_scope, thread_scope, loop_scope = _make_scopes(registry)
-    await _bootstrap_scopes(registry, process_scope, thread_scope, loop_scope)
+    process_scope, thread_scope, loop_scope = make_scopes(registry)
+    await bootstrap_scopes(registry, process_scope, thread_scope, loop_scope)
 
     mock_ctx = _make_job_ctx()
-    async with build_actor_scope(
-        registry=registry,
-        process_scope=process_scope,
-        thread_scope=thread_scope,
-        loop_scope=loop_scope,
-        actor_func=my_actor,
-        actor_name="my_actor",
-        passthrough_kwargs={"ctx": mock_ctx, "payload": _Payload()},
-    ) as resolved:
-        assert resolved.ctx is mock_ctx
-        assert resolved.di_kwargs == {}
+    with structlog.testing.capture_logs() as captured:
+        async with build_actor_scope(
+            registry=registry,
+            process_scope=process_scope,
+            thread_scope=thread_scope,
+            loop_scope=loop_scope,
+            actor_func=my_actor,
+            actor_name="my_actor",
+            passthrough_kwargs={"ctx": mock_ctx, "payload": _Payload()},
+        ) as resolved:
+            assert resolved.ctx is mock_ctx
+            assert resolved.di_kwargs == {}
+
+    scope_lines = [e for e in captured if e["event"].startswith("transient-scope-")]
+    assert [(e["event"], e["log_level"], e["actor_name"]) for e in scope_lines] == [
+        ("transient-scope-opened", "debug", "my_actor"),
+        ("transient-scope-closed", "debug", "my_actor"),
+    ]
 
     await loop_scope.shutdown()
     await thread_scope.shutdown()
@@ -537,8 +478,8 @@ async def test_transient_teardown_under_cancellation() -> None:
     registry = ProviderRegistry()
     registry.register_factory(_TransDep, Scope.TRANSIENT, make_transient)
     registry.validate()
-    process_scope, thread_scope, loop_scope = _make_scopes(registry)
-    await _bootstrap_scopes(registry, process_scope, thread_scope, loop_scope)
+    process_scope, thread_scope, loop_scope = make_scopes(registry)
+    await bootstrap_scopes(registry, process_scope, thread_scope, loop_scope)
 
     mock_ctx = _make_job_ctx()
 
@@ -598,8 +539,8 @@ async def test_plain_clock_receives_system_clock() -> None:
     registry = ProviderRegistry()
     registry.register_value(Clock, Scope.PROCESS, registered)
     registry.validate()
-    process_scope, thread_scope, loop_scope = _make_scopes(registry)
-    await _bootstrap_scopes(registry, process_scope, thread_scope, loop_scope)
+    process_scope, thread_scope, loop_scope = make_scopes(registry)
+    await bootstrap_scopes(registry, process_scope, thread_scope, loop_scope)
 
     mock_ctx = _make_job_ctx()
     async with build_actor_scope(
@@ -642,8 +583,8 @@ async def test_plain_clock_receives_pre_registered_fake_clock() -> None:
     registry = ProviderRegistry()
     registry.register_value(Clock, Scope.PROCESS, fake)
     registry.validate()
-    process_scope, thread_scope, loop_scope = _make_scopes(registry)
-    await _bootstrap_scopes(registry, process_scope, thread_scope, loop_scope)
+    process_scope, thread_scope, loop_scope = make_scopes(registry)
+    await bootstrap_scopes(registry, process_scope, thread_scope, loop_scope)
 
     mock_ctx = _make_job_ctx()
     async with build_actor_scope(
@@ -676,3 +617,102 @@ def test_transient_consumer_of_process_clock_no_violation() -> None:
     registry.register_value(Clock, Scope.PROCESS, SystemClock())
     registry.register_class(_TransientConsumer, Scope.TRANSIENT)
     registry.validate()
+
+
+# ── TRANSIENT close is skipped when there is nothing to close ─────────
+
+
+async def test_actor_scope_exit_skips_shielded_close_without_teardown_work(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Most jobs resolve nothing with a teardown, yet every exit spawned a
+    shielded task to run a no-op close; the exit consults the container
+    and only shields a close that has work to do."""
+    from taskq._di import scopes as scopes_mod
+
+    shielded: list[object] = []
+    real_shield = scopes_mod.shield_with_retrieval
+
+    async def spy(aw: Any) -> Any:
+        shielded.append(aw)
+        return await real_shield(aw)
+
+    monkeypatch.setattr(scopes_mod, "shield_with_retrieval", spy)
+
+    async def plain_actor(payload: _Payload, ctx: JobContext[_Payload]) -> dict[str, object]:
+        return {}
+
+    registry = ProviderRegistry()
+    registry.validate()
+    process_scope, thread_scope, loop_scope = make_scopes(registry)
+    await bootstrap_scopes(registry, process_scope, thread_scope, loop_scope)
+
+    async with build_actor_scope(
+        registry=registry,
+        process_scope=process_scope,
+        thread_scope=thread_scope,
+        loop_scope=loop_scope,
+        actor_func=plain_actor,
+        actor_name="plain_actor",
+        passthrough_kwargs={"ctx": _make_job_ctx(), "payload": _Payload()},
+    ):
+        pass
+
+    assert shielded == []
+
+    await loop_scope.shutdown()
+    await thread_scope.shutdown()
+    await process_scope.shutdown()
+
+
+async def test_actor_scope_exit_shields_close_when_teardown_is_pending(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from taskq._di import scopes as scopes_mod
+
+    shielded: list[object] = []
+    real_shield = scopes_mod.shield_with_retrieval
+
+    async def spy(aw: Any) -> Any:
+        shielded.append(aw)
+        return await real_shield(aw)
+
+    monkeypatch.setattr(scopes_mod, "shield_with_retrieval", spy)
+
+    torn_down = False
+
+    async def make_transient() -> AsyncIterator[_TransDep]:
+        nonlocal torn_down
+        yield _TransDep()
+        torn_down = True
+
+    async def my_actor(
+        payload: _Payload,
+        ctx: JobContext[_Payload],
+        dep: Annotated[_TransDep, Scope.TRANSIENT],
+    ) -> dict[str, object]:
+        return {}
+
+    registry = ProviderRegistry()
+    registry.register_factory(_TransDep, Scope.TRANSIENT, make_transient)
+    registry.validate()
+    process_scope, thread_scope, loop_scope = make_scopes(registry)
+    await bootstrap_scopes(registry, process_scope, thread_scope, loop_scope)
+
+    async with build_actor_scope(
+        registry=registry,
+        process_scope=process_scope,
+        thread_scope=thread_scope,
+        loop_scope=loop_scope,
+        actor_func=my_actor,
+        actor_name="my_actor",
+        passthrough_kwargs={"ctx": _make_job_ctx(), "payload": _Payload()},
+    ):
+        pass
+
+    assert len(shielded) == 1
+    assert torn_down
+
+    await loop_scope.shutdown()
+    await thread_scope.shutdown()
+    await process_scope.shutdown()

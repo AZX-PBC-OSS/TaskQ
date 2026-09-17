@@ -12,20 +12,20 @@ state. A single `TASKQ_PG_DSN` is sufficient to run the full stack.
 
 ## Why TaskQ?
 
-If you are evaluating Python task queues, here is how TaskQ compares to the alternatives:
+TaskQ's key capabilities and where it fits:
 
-| | TaskQ | Celery | Dramatiq | arq | RQ |
-|---|---|---|---|---|---|
-| **Broker** | Postgres (no external broker) | Redis/RabbitMQ | Redis/RabbitMQ | Redis | Redis |
-| **Async-native** | Yes (asyncio + asyncpg) | No (thread-based) | No (thread-based) | Yes | No |
-| **Type-safe end-to-end** | Yes (Pydantic + pyright strict) | No | No | Partial | No |
-| **Admin UI** | Built-in (FastAPI + htmx) | Via Flower | Via Flower | No | No |
-| **DI engine** | Yes (scoped providers) | No | No | No | No |
-| **Cron scheduling** | Built-in (leader-elected) | celery-beat | periodic | via arq-cron | via rq-scheduler |
-| **Rate limiting** | Built-in (token bucket, sliding window, reservations) | No | No | No | No |
-| **Observability** | OpenTelemetry-native, vendor-neutral | Via extensions | Via extensions | Limited | Limited |
-| **Batch enqueue** | Yes (COPY FROM up to 50K rows) | `group()` | No | No | No |
-| **Cooperative cancellation** | Three-phase protocol | No | No | No | No |
+| | TaskQ |
+|---|---|
+| **Broker** | Postgres (no external broker) — no Redis/RabbitMQ required |
+| **Async-native** | Yes (asyncio + asyncpg) — full stack speaks async natively |
+| **Type-safe end-to-end** | Yes (Pydantic + pyright strict) — inferred types flow from `@actor` through results |
+| **Admin UI** | Built-in (FastAPI + htmx) — no separate dashboard required |
+| **DI engine** | Yes (scoped providers) — resolve dependencies at dispatch time |
+| **Cron scheduling** | Built-in (leader-elected) — periodic schedules with no extra daemon |
+| **Rate limiting** | Built-in (token bucket, sliding window, reservations) — no external rate limiter needed |
+| **Observability** | OpenTelemetry-native, vendor-neutral — OTLP spans, metrics, and logs |
+| **Batch enqueue** | Yes (COPY FROM up to 50K rows) — transactional fan-out with idempotency |
+| **Cooperative cancellation** | Three-phase protocol — cooperative then forced then abandoned |
 
 **When to choose TaskQ:**
 
@@ -37,7 +37,7 @@ If you are evaluating Python task queues, here is how TaskQ compares to the alte
 
 **When to look elsewhere:**
 
-- You need a polyglot broker shared across multiple languages (Celery + RabbitMQ)
+- You need a polyglot broker shared across multiple languages (language-agnostic message broker)
 - You need massive throughput (>50K jobs/sec) where Redis's in-memory dispatch wins over Postgres
 - You're on an older Python (<3.12) or don't use async
 

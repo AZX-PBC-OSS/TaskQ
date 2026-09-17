@@ -577,7 +577,7 @@ async def test_resolve_keyed_ref_str_enum_key_uses_member_value_not_repr() -> No
     the key normalization guards against) and ``StrEnum``.
     """
 
-    class Tenant(str, Enum):  # noqa: UP042  # Why: issue #32 explicitly names the classic (str, Enum) mixin; its __format__ trap is what this test pins. StrEnum is covered below.
+    class Tenant(str, Enum):  # noqa: UP042  # Why: the classic (str, Enum) mixin and its __format__ trap is what this test pins. StrEnum is covered below.
         ACME = "acme"
 
     class TenantSE(StrEnum):

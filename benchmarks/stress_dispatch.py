@@ -187,6 +187,14 @@ def _make_record() -> _FakeRecord:
         span_id="span-bench-0001",
         metadata=_jsonb("metadatablock0123456789", 1),
         tags=["bench", "stress"],
+        snooze_count=0,
+        rate_limit_blocked_count=0,
+        interrupt_count=0,
+        retry_base_seconds=1.0,
+        retry_cap_seconds=60.0,
+        retry_backoff="exponential",
+        retry_jitter=0.1,
+        assignment_routed=False,
     )
 
 

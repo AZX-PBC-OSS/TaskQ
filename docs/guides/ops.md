@@ -38,9 +38,10 @@ Mechanics live in the canonical guides (linked throughout); this page is about *
 6. [Classifying failures: terminal, retryable, transient](#6-classifying-failures-terminal-retryable-transient)
 7. [Waiting politely: rate limits, `Snooze`, `RetryAfter`, `Retry-After`](#7-waiting-politely-rate-limits-snooze-retryafter-retry-after)
 8. [Observability and alerting](#8-observability-and-alerting)
-9. [Migrating from Celery](#9-migrating-from-celery)
+9. [Porting workers from other queue systems](#9-porting-workers-from-other-queue-systems)
 10. [The footgun index](#10-the-footgun-index)
 11. [Adoption checklist](#11-adoption-checklist)
+12. [Scaling playbook: from signal to knob](#12-scaling-playbook-from-signal-to-knob)
 
 ---
 
@@ -138,7 +139,16 @@ async def reindex_bucket(payload: Payload) -> None: ...
   by the leader's sweep even while its lease — the global `TASKQ_LOCK_LEASE`
   (default 60 s) — is still valid: the shorter of the two deadlines governs. Size it
   `>= 2x` the fleet's `TASKQ_HEARTBEAT_INTERVAL`; a value below one heartbeat
-  interval reclaims a healthy job on a single missed beat.
+  interval reclaims a healthy job on a single missed beat. `2x` is enough to
+  absorb one transient beat because the heartbeat loop anchors its wait to each
+  tick's start rather than its end: a slow or failed tick does not push the next
+  beat out by its own duration, so the gap after one miss is one interval, not
+  two. The same rule names the
+  upper-bound trap: a `heartbeat_timeout` at or above `TASKQ_LOCK_LEASE` never
+  governs — the lease deadline (last beat + lease) always precedes the heartbeat
+  deadline (last beat + timeout), so the lease arm reclaims first and the per-job
+  budget silently no-ops. Size it inside the window: `>= 2x`
+  `TASKQ_HEARTBEAT_INTERVAL` and `< TASKQ_LOCK_LEASE`.
 - **The stored `error_message` of a genuine `start_to_close` timeout is the literal string
   `"start_to_close"`** — alert on `error_class == "TimeoutError"` if you want all timeouts, and
   remember an actor raising its own `TimeoutError` is indistinguishable by class.
@@ -146,8 +156,10 @@ async def reindex_bucket(payload: Payload) -> None: ...
 ### How a worker death is recovered
 
 `lock_lease` (60 s default) is the visibility timeout. The leader's sweep runs every
-`sweep_interval` (30 s default), so worst-case reclaim is ~90 s, then the job retries with a 5 s
-backoff — or lands `crashed` if attempts are exhausted. Invariants that keep this safe:
+`sweep_interval` (30 s default), so worst-case reclaim is ~90 s, then the job retries on its own
+`RetryPolicy` backoff curve (base, cap, backoff kind, jitter — the same curve an
+application-level failure would use, not a flat interval) — or lands `crashed` if attempts are
+exhausted. Invariants that keep this safe:
 `lock_lease >= 4 * heartbeat_interval`, and the watchdog kills a stalled loop *before* its leases
 expire. Don't lower `TASKQ_LOCK_LEASE` without re-checking both
 ([configuration.md — Validation Constraints](configuration.md#validation-constraints)).
@@ -180,6 +192,24 @@ misconfiguration:
     actor can run longer than its bucket's `lease`, two of them will hold one slot. Size the lease
     above your p-max runtime, not your p99.
 
+### When to add workers: saturation, not depth
+
+Depth alone does not say whether the fleet is short of slots or the slots are idle. The
+capacity gauges answer it per process and per actor:
+
+| Signal | PromQL | Reads |
+|---|---|---|
+| Utilisation ≥ 0.9 for 10 m **and** `oldest_pending_age` rising | `taskq_worker_active_jobs / taskq_worker_max_concurrency > 0.9` beside `max by (actor) (taskq_jobs_oldest_pending_age_seconds)` climbing | every slot is busy and pending work is ageing: **add workers** (or raise `TASKQ_MAX_CONCURRENCY` where the actors are I/O-bound). |
+| Utilisation high, `oldest_pending_age` flat | as above, age not climbing | the fleet is busy but keeping up — no action. |
+| Utilisation low, `oldest_pending_age` rising | `... < 0.5` with the age climbing | slots are free and work still waits: not a capacity problem — an admission cap (`max_concurrent`, a reservation or rate limit: `taskq_reservation_denials_total`), an unserved queue (`TaskQQueueUnserved`), or a promotion stall (`TaskQPromotionStalled`). Adding workers changes nothing. |
+| One actor holding the slots | `sum by (actor) (taskq_jobs_running)` dominated by one actor while others' `oldest_pending_age` climbs | that actor's `max_concurrent` (or a queue cap) is the lever, not the replica count. |
+| Running age past the actor's p99 with `timeouts` flat | `max by (actor) (taskq_jobs_oldest_running_age_seconds)` beyond `histogram_quantile(0.99, rate(messaging_process_duration_seconds_bucket[1h]))` while `taskq_jobs_timeouts_total{kind="start_to_close"}` does not move | an actor with no `start_to_close`: the attempt has outlived what the actor normally takes and nothing will end it — declare the budget (see [§2](#2-timeouts-start_to_close-and-schedule_to_close)). |
+
+`taskq_worker_active_jobs` / `taskq_worker_max_concurrency` are one series per worker process
+(the health socket's `taskq_active_jobs` is the same number, but only a real scrape sees these
+two); `taskq_jobs_running{actor}` is the fleet-wide running count per actor, sampled by every
+worker beside `taskq_jobs_by_status`.
+
 ### Capacity ownership: the seed-only trap
 
 The `@actor(max_concurrent=...)` literal only *seeds* the `actor_config` row on first
@@ -200,7 +230,10 @@ taskq actor-config set my_actor --max-concurrent 10
 
 The exception: **`max_pending`** — a NULL stored value falls back to the code literal, so its
 declarations work on deploy. (`max_pending` rejects enqueues past the queued depth with
-`MaxPendingExceededError`, surfaced as `taskq.backpressure.errors`.)
+`MaxPendingExceededError`, surfaced as `taskq.backpressure.errors` with `kind="max_pending"` —
+filter on the `kind` label, because the same counter also carries identity-serialization
+refusals (`unique_for_lock_timeout`, `idempotency_lock_timeout`) that are lock contention, not
+capacity pressure.)
 
 Two viable ownership postures — pick one deliberately:
 
@@ -218,7 +251,14 @@ target has no row of its own), so old-queue strays drain through the target's co
 Workers boot on either side of the matching code deploy (a
 stale literal logs `actor-config-queue-override` and adopts the stored queue); ensure
 workers consume the new queue, and keep consuming the old one until every producer runs
-the new literal. `metadata` is the remaining structural field: changing it after a row
+the new literal. Running jobs the move leaves behind finish on the workers that claimed
+them; any that re-pend instead (failure retry, crash reclaim, operator retry) keep their
+old queue label as an audit trail but are routed at dispatch by the actor's *current*
+assignment — so the running-job tail drains through the target queue's consumers and
+never strands on the retired source queue. A mid-drain abort (timeout, lost connection)
+re-raises after the `actor-queue-move-aborted` event logs how many rows were already
+committed onto the target; re-running the move continues where it stopped. `metadata`
+is the remaining structural field: changing it after a row
 exists **refuses to boot** (`ActorConfigDriftList`) — set
 `TASKQ_FORCE_UPDATE_ACTOR_CONFIG=true` for exactly one boot. Never leave it set. See
 [workers.md — ActorConfig sync](workers.md#actorconfig-sync).
@@ -389,6 +429,17 @@ factories — a partial override yields a worker that starts, dispatches nothing
 `leader-elected`. The slot pool is not one of them: it is worker-internal and takes its
 credentials from `pg_credential_provider` or the direct DSN. Full reference:
 [managed-identities.md](managed-identities.md).
+
+**The notify reconnect lock's worst-case hold.** A NOTIFY connection reconnect (health-check
+failure, or a `SIGHUP` credential reload) serializes on `notify_reconnect_lock` for the sum of
+every step inside it: the credential factory call (`TASKQ_RELOAD_FACTORY_TIMEOUT`, 30s default),
+each of the three channels' `LISTEN` execute and `add_listener` registration
+(`TASKQ_NOTIFY_LISTENER_SETUP_TIMEOUT`, 10s default, ×2 steps ×3 channels = 60s), and the failed
+connection's bounded close (5s) — **~95s at shipped defaults**. Every individual step is bounded,
+so this is never a hang, but for that whole span a concurrent `SIGHUP` reload reports the notify
+connection as failed and dispatch runs on the poll fallback instead of NOTIFY wakeups — to an
+operator watching a rotation that looks identical to a wedged worker. It resolves on its own;
+widening any of the three timeouts above raises this worst case by the same amount.
 
 ### Database performance knobs
 
@@ -607,9 +658,9 @@ that a pure finalizer would wait on forever.
 
 | API | Size | Idempotency | Notes |
 |---|---|---|---|
-| `enqueue_batch` | ≤ 1,000 | per-item keys honored; collisions return existing jobs | single transaction; `max_pending` enforced per actor — over-cap actors' items refused (typed `BatchMaxPendingExceededError` naming the actor + item indices), everyone else's admitted |
+| `enqueue_batch` | ≤ 1,000 | per-item keys honored; same-actor collisions return existing jobs, a collision with another actor's job refuses the whole batch (`IdempotencyKeyActorMismatchError`) | single transaction; `max_pending` enforced per actor — over-cap actors' items refused (typed `BatchMaxPendingExceededError` naming the actor + item indices), everyone else's admitted |
 | `enqueue_batch_streaming` | unbounded (chunks of ≤ 1,000) | per-item keys honored | generator input; `max_pending` enforced per chunk with the same per-actor partition; with no caller connection each chunk is its own committed transaction — a failure leaves the committed prefix durable (retry via idempotency keys or the error's refused indices) |
-| `enqueue_batch_fast` | ≤ 50,000 | **none** — any duplicate key aborts the whole COPY with `DuplicateIdempotencyKeyError` | bulk-import semantics; returns a count only; `max_pending` enforced per actor (same partition; COPY stays all-or-nothing on constraint violations) |
+| `enqueue_batch_fast` | ≤ 50,000 | **none** — any duplicate key aborts the whole COPY with `DuplicateIdempotencyKeyError` (`IdempotencyKeyActorMismatchError` when the holder is another actor's) | bulk-import semantics; returns a count only; `max_pending` enforced per actor (same partition; COPY stays all-or-nothing on constraint violations) |
 
 See [jobs-clients.md](jobs-clients.md) for the full tradeoff table.
 
@@ -739,21 +790,32 @@ Two more states worth naming because they mean *infrastructure*, not your code:
   exhausted. Crash labels are `WorkerCrashed` (assumed gone) and `HeartbeatLost` (alive but
   partitioned).
 - **`abandoned`** — only ever produced by *cancellation* escalation: a force-cancel whose cleanup
-  did not finish within the grace periods. A timeout or exception never produces `abandoned`.
+  did not finish within the grace periods after an operator's cancel request. A timeout or
+  exception never produces `abandoned` — and **shutdown never produces it either**: a deploy
+  releases (interrupts) the job back to the fleet with its attempt refunded instead.
 
 !!! note "Infra failures during the terminal write leave the job `running` — on purpose"
-    If Postgres itself errors while recording the outcome, the row is left `running` and
-    reclaimed by lease expiry (~90 s worst case with defaults) rather than misclassifying an
-    infrastructure blip as your actor's failure. Don't be alarmed by a short-lived `running` row
-    on a dead worker; the sweep owns it.
+    If Postgres itself errors while recording the outcome, the write is retried for about a
+    second (waits of 50, 200 and 800 ms, four attempts, within a 5 s wall-time budget); if it
+    still has not landed, the row is left `running` and reclaimed by lease expiry (~90 s worst
+    case with defaults) rather than misclassifying an infrastructure blip as your actor's
+    failure. Don't be alarmed by a short-lived `running` row on a dead worker; the sweep owns
+    it. **The reclaim re-runs the attempt** — the actor's work finished but its outcome was
+    never recorded, so this is the at-least-once delivery case that does not involve a worker
+    crash. Actors whose side effects are not naturally idempotent should guard them with
+    `idempotency_key` / `unique_for` on the jobs they enqueue and idempotent writes of their
+    own ([§5](#5-fan-out-at-scale-chunks-cursors-idempotency)).
 
 !!! warning "A routine SIGTERM drain sets the same cancel event an operator cancel does"
-    `ctx.cancel_event` / `ctx.should_abort()` fire during *every* rolling deploy's drain phase —
-    if your actor treats "cancelled" as "close the run as cancelled and return", the job records
-    **`succeeded`** (it returned normally), no retry runs, and successor enqueues never happen:
-    the chain dies silently on every deploy. Distinguish drain from operator intent with your own
-    persisted state, and on cancel, either re-raise or arrange a successor — never return
-    normally. See [cancellation.md](cancellation.md).
+    `ctx.cancel_event` / `ctx.should_abort()` fire during *every* rolling deploy's drain phase.
+    What the row records is the actor's own outcome: if your actor treats "cancelled" as "close
+    the run as cancelled and return", the job records **`succeeded`** (it returned normally), no
+    retry runs, and successor enqueues never happen — a chain whose actor returns early on cancel
+    dies on every deploy. Read `ctx.cancel_origin` to tell the deploy apart from the operator:
+    on `SHUTDOWN` the attempt is released and re-run by the fleet with its budget refunded, so
+    checkpoint via progress state and re-raise; on `OPERATOR` the job terminalises, so the
+    partial result you return is the one kept. See
+    [cancellation.md — Shutdown is not an operator cancel](cancellation.md#shutdown-is-not-an-operator-cancel-ctxcancel_origin).
 
 ---
 
@@ -763,9 +825,18 @@ Two more states worth naming because they mean *infrastructure*, not your code:
 
 When an actor's rate limit or reservation denies admission, the actor body **never runs**: the
 job is rescheduled at `now + retry_after` (computed by the limiter store in the DB/Redis clock
-domain), the slot is freed, and **no retry budget is consumed**. The attempt row records
-`rate_limit_denied` / `reservation_denied` and `metadata.awaiting` names the bucket. A denied job
-waits in Postgres — this is not busy-spinning in the worker.
+domain), the slot is freed, and **no retry budget is consumed**. A denial is admission control
+with HTTP-429 semantics — "come back later", indefinitely retryable — not an execution, so it
+writes no `job_attempts` and no `job_events` row: per-denial rows grow without bound under
+sustained contention, so contention is carried by the aggregated `rate_limit_blocked_count` on
+the job row (`snooze_count` for an actor-requested deferral), while `metadata.awaiting` names
+the bucket being waited on. A denied job waits in Postgres — this is not busy-spinning in the
+worker.
+
+A denial never terminally fails a job either: the job reschedules until capacity frees, and its
+only terminal exit is its own `schedule_to_close` deadline, reached through the ordinary
+deadline path. To find jobs starving for admission rather than progressing, sort by
+`rate_limit_blocked_count`.
 
 ```python
 from taskq.ratelimit import SlidingWindow, TokenBucket, registry
@@ -815,6 +886,40 @@ connection errors the limiter falls back to the PG implementation by default
 (`TASKQ_RATE_LIMIT_PG_FALLBACK_ENABLED`). Full reference:
 [rate-limiting.md](rate-limiting.md).
 
+### A saturated reservation does not tax its neighbours
+
+Dispatch is reservation-aware at claim time. The claim statement reads live slot occupancy in
+`reservation_slots` — which actors' running jobs currently hold live slots, and how many slots in
+those buckets remain acquirable — and folds it into per-actor admission: an actor whose held bucket
+is **full** is admitted nothing that round, and a partially free held bucket admits at most its
+free count (times the dispatch oversample). Without this gate, a saturated actor's pending jobs
+were claimed into the worker's shared `TASKQ_MAX_CONCURRENCY` consumer pool, denied by the
+post-claim acquire, and snoozed — every cycle, for as long as the backlog and the exhaustion both
+lasted, each denied job occupying a consumer slot while it was denied (measured: 25–45% throughput
+loss for a healthy actor sharing the worker; after the gate, none — see
+`perf-evidence-dispatch.md`).
+
+What you observe instead:
+
+- The saturated actor's rows stay `pending` (never claimed), so they appear in the per-actor
+  backlog series — `taskq.jobs.actor_backlog` / `taskq.jobs.oldest_pending_age_seconds` — as what
+  they are: work waiting on capacity. A saturated actor is *more* visible, not less.
+- When capacity frees (a holder finishes, or its lease expires — the same acquirability definition
+  the acquire path uses), the gate re-opens on the next dispatch round and the actor drains. The
+  gate is a damper, never a starvation mechanism: the first claim of a never-running actor is never
+  gated, so capacity can always be taken.
+- The post-claim acquire remains the admission authority. A claim-to-acquire race (a peer takes the
+  last slot in between) degrades to one bounded denial cycle per race, with the 429 semantics above
+  intact — no retry budget spent, no per-denial rows, `rate_limit_blocked_count` bumped.
+
+Because the gate derives pressure from holder state (`reservation_slots.job_id` → the holding
+job's actor) rather than from actor declarations, it covers static reservations, keyed
+reservations, and the per-queue concurrency cap (`queues.max_concurrent`) alike. Two boundaries to
+know: a bucket shared across *different* actors gates only the actors currently holding it — a
+co-declarant with nothing running is discovered by the ordinary post-claim denial path — and
+token-bucket / sliding-window *rate limits* are not read by the gate at all (their denials are
+discovered post-claim and snoozed at the limiter's retry hint, the behaviour described above).
+
 !!! warning "A drained fixed-quota bucket repolls every 5 s — forever"
     A `TokenBucket` with `refill_per_second=0` never refills and returns `retry_after=None`, so
     denials fall back to the 5 s default backoff. Without a `schedule_to_close`, such a job
@@ -831,7 +936,7 @@ connection errors the limiter falls back to the PG implementation by default
 
 | Signal | Consumes budget | Reschedules at | Use for |
 |---|---|---|---|
-| `raise Snooze(delay)` | **No** — `max_attempts` is bumped to keep the invariant `attempt < max_attempts` | `now + delay` | waiting for a condition (batch completion, external state) |
+| `raise Snooze(delay)` | **No** — the claim's attempt increment is released, so `attempt` returns to what it was and `max_attempts` never moves | `now + delay` | waiting for a condition (batch completion, external state) |
 | `raise RetryAfter(delay)` | **Yes** (default) — bounded by `max_attempts`, terminal `MaxAttemptsExceeded` when out | `now + delay` | a retry that should wait a *known* time (429s) |
 | `raise RetryAfter(delay, consume_budget=False)` | No (snooze semantics) | `now + delay` | known-delay wait that must never exhaust the budget |
 
@@ -875,20 +980,26 @@ success. The job queue is your timer, and dedup makes the pattern crash-safe.
 
 ### Wiring an exporter
 
-TaskQ emits via the OpenTelemetry **API** and never overrides standard OTel vars; the SDK and
-exporter are your boilerplate. Two supported shapes:
+TaskQ emits via the OpenTelemetry **API** and never overrides standard OTel vars. Two
+supported shapes:
 
-- **OTLP** (collector, Jaeger, Tempo, Datadog, Sentry, PostHog): set
-  `OTEL_EXPORTER_OTLP_ENDPOINT` (`:4317` gRPC / `:4318` HTTP), `OTEL_SERVICE_NAME`,
-  `OTEL_RESOURCE_ATTRIBUTES` — or initialize the SDK in-process
-  (`examples/otel_setup.py`).
+- **OTLP** (collector, Jaeger, Tempo, Datadog, Sentry, PostHog): install `taskq-py[otel]`
+  and set `OTEL_EXPORTER_OTLP_ENDPOINT` (`:4317` gRPC / `:4318` HTTP), `OTEL_SERVICE_NAME`,
+  `OTEL_RESOURCE_ATTRIBUTES`. `taskq worker` installs the SDK providers from those variables
+  at startup and logs `otel-exporter-configured traces=otlp metrics=otlp source=env`
+  (`opentelemetry-instrument taskq worker` is the equivalent launcher; an embedded worker
+  calls `taskq.obs.configure_exporters(settings)` or initializes the SDK in-process —
+  `examples/otel_setup.py`).
 - **Vendor SDK in-process** (e.g. Azure Monitor / App Insights): call the vendor's
-  `configure_azure_monitor(...)` **inside the worker process** before it starts.
+  `configure_azure_monitor(...)` **inside the worker process** before it starts; the worker
+  logs `otel-exporter-preconfigured` and leaves the vendor's providers alone.
 
-!!! warning "An exporter env var set on the container does nothing by itself"
+!!! warning "A vendor connection string on the container does nothing by itself"
     `APPLICATIONINSIGHTS_CONNECTION_STRING` on a worker container exports nothing unless the
-    worker process itself configures the exporter; with no exporter configured, OTel drops
-    spans and metrics **silently** — health stays green while nothing is collected. Verify
+    worker process itself calls the vendor's configure function — it is not one of the
+    standard `OTEL_*` variables the worker wires from. The standard variables set without
+    the `[otel]` extra export nothing either; the worker says so at startup
+    (`otel-exporter-unavailable`, naming the extra). Verify the startup line and that
     telemetry actually arrives (one trace, one metric series) before trusting the pipeline.
 
 Every job emits an `enqueue` PRODUCER span, a `process` CONSUMER span (linked, with
@@ -902,16 +1013,24 @@ Every job emits an `enqueue` PRODUCER span, a `process` CONSUMER span (linked, w
 |---|---|
 | `taskq.queue.depth` (by queue — counts `pending` **and** `scheduled`) | backlog growth, starved queues, fan-out storms |
 | `taskq.jobs.by_status` (by status — `pending` and `scheduled` reported separately) | which side of promotion the backlog sits on |
+| `taskq.jobs.actor_backlog` (by actor **and** queue — `pending` only; exact below the sampler's 1000-row per-pair cap, reading 1000 at/above it) | the unconsumed actor: one actor's series rises while its queue-mates stay flat — invisible in any queue-summed view |
+| `taskq.jobs.queue_wait_seconds` (histogram by actor and queue) | what dispatched jobs actually waited — a rising p99 with flat depth is dispatch starvation (priority/fairness, admission caps), not backlog |
+| `taskq.jobs.oldest_pending_age_seconds` (by actor and queue) | the same condition as a head-of-line age growing with wall clock — the series `TaskQQueueDepthHigh` fires on |
 | `taskq.jobs.oldest_due_age_seconds` | how long the oldest due `scheduled` job has waited for promotion |
 | `taskq_maintenance_leader_sweep_last_success_seconds` (by sweep) | per-sweep stalls — a sweep that stops completing |
 | `taskq_maintenance_leader_sweep_timeouts_total` (by sweep) | batches aborted by deadlines or server-side cancels |
-| `taskq.jobs.stranded` (gauge) | jobs whose actor has no `actor_config` row — can never dispatch |
+| `taskq.queue.live_workers` (by queue, same tick as depth) | a queue with work and no live worker — `TaskQQueueUnserved` joins it against `taskq.queue.depth` |
+| `taskq.jobs.stranded` (by actor and `reason`) | jobs that can never dispatch: `no_actor_config` (no `actor_config` row) or `unserved_queue` (no live worker on the routing queue) |
 | `taskq.dispatch.duration` | dispatch contention (PgBouncer/pool trouble) |
+| `taskq.jobs.oldest_running_age_seconds` (by actor) | an attempt that outlived what the actor normally takes with `taskq.jobs.timeouts` flat — an actor with no `start_to_close` |
+| `taskq.worker.active_jobs` / `taskq.worker.max_concurrency` (one series per process) and `taskq.jobs.running` (by actor) | slot saturation — utilisation ≥ 0.9 with `oldest_pending_age` rising is "add workers"; which actor holds the slots (see [§3 — When to add workers](#when-to-add-workers-saturation-not-depth)) |
 | `taskq.worker.slot_pool.acquire_failures` / `taskq.worker.slot_pool.connections_in_use` | per-slot pool exhaustion and saturation — an acquire failure is infrastructure (the job is left for lock-lease reclaim, not failed); the gauge pinned at the pool maximum with zero acquire failures is saturation, visible below the acquire-failure cliff |
-| `messaging.process.duration` | actor latency, slow chunks |
+| `messaging.process.duration` (by `outcome`) | actor latency, slow chunks — filter `outcome="succeeded"` for the healthy percentiles |
+| `taskq.jobs.attempt_failures` (by actor, `error_type`, `retryable`) | a dependency failing under retry cover (`retryable="true"` rising while the terminal-failed share stays flat) — the series `TaskQRetryRateHigh` fires on |
+| `taskq.jobs.abandoned` (by actor) | an actor that ignores cancellation — an operator cancel outlasted both graces; never produced by a deploy |
 | `taskq.lock.expires_in_seconds` | heartbeat trouble before it becomes `crashed` jobs |
-| `taskq.deadline_exceeded_sweep.jobs_failed` | `schedule_to_close` too tight |
-| `taskq.backpressure.errors` | `max_pending` rejections — producer pressure |
+| `taskq.jobs.timeouts` (by actor and `kind`) | `start_to_close` hits per attempt; `schedule_to_close` hits however the deadline was enforced (sweep or handler arm) — `taskq.deadline_exceeded_sweep.jobs_failed` is the sweep's own count |
+| `taskq.backpressure.errors` (filter `kind` to the capacity kinds) | `max_pending` rejections — producer pressure |
 | `taskq.cron.disabled_schedules` | a cron outage with one log line |
 | `taskq.maintenance_leader.is_leader` summed != 1 | leader split-brain / no leader |
 
@@ -928,6 +1047,38 @@ SELECT queue, status, count(*) FROM {schema}.jobs
 WHERE status IN ('pending','scheduled','running')
 GROUP BY queue, status ORDER BY count(*) DESC;
 ```
+
+### The per-actor backlog sampler: every worker, every interval, depth-bounded
+
+The two per-`(actor, queue)` series above are fed by the backlog-detection sampler, which runs on
+**every worker** every `TASKQ_QUEUE_DEPTH_INTERVAL` (default 15 s) — deliberately **not**
+leader-gated, unlike the maintenance sweeps: a detector hosted behind the leadership gate would
+emit nothing under exactly the failure it exists to expose (an election loss or a stuck lock mutes
+every leader-gated loop at once). Your scrape target deduplicates the identical per-worker series.
+
+Because N workers pay the read each interval, the read itself is bounded so its cost never grows
+with backlog depth: a loose index scan over `jobs_actor_dispatch_idx` enumerates the distinct
+pending (actor, queue) pairs (one index seek per pair, never one per row), and a per-pair probe
+reads at most **1000** rows in dispatch-head order (`priority DESC, scheduled_at`). One tick costs
+at most (#pairs holding pending work) × 1000 row visits — shaped by the deployment's actors and
+queues, never by how deep a backlog gets — and touches no terminal rows. Measured on a single
+100k-deep pair (local Postgres 18): ~14 ms and ~6000 shared buffers per tick before the bound,
+~0.4 ms and ~100 buffers after, flat against the 10k case
+(see `perf-evidence-dispatch.md`).
+
+What the cap does to the numbers you read:
+
+- `taskq.jobs.actor_backlog` is **exact below 1000 pending for a pair and reads 1000 at or above
+  it** — a lower bound, never an under-count. A pair pinned at the cap is "at least this deep";
+  dashboard over it with that meaning.
+- `taskq.jobs.oldest_pending_age_seconds` is the age of the oldest row within the pair's
+  dispatch-head sample: exactly the oldest pending row whenever the pair is below the cap (or
+  priorities are uniform), and in every case the head-of-line age an unconsumed actor grows without
+  bound — so the `TaskQQueueDepthHigh` alert's semantics are unchanged by the cap.
+- When you need the exact depth of a pair at/above the cap, query the table directly:
+  `SELECT count(*) FROM {schema}.jobs WHERE status='pending' AND actor='...' AND queue='...'` —
+  the right tool for a one-off investigation, which is exactly what a fleet-wide every-15-s sampler
+  cannot afford to be.
 
 ### Watch: large scheduled backlogs
 
@@ -960,41 +1111,47 @@ and bounded fan-out per job (chunk sizes in the hundreds, not the tens of thousa
 
 Ship-ready alert rules for the metrics above exist in the repo and are ready to import:
 [`src/taskq/contrib/prometheus/rules.yaml`](https://github.com/AZX-PBC-OSS/TaskQ/blob/main/src/taskq/contrib/prometheus/rules.yaml)
-(17 rules: queue depth, heartbeat misses, crashed-job rate, abandoned jobs, lock TTL, leader
-split-brain, dispatch latency, progress failures, disabled cron, scheduled-backlog growth,
-promotion stall, sweep timeouts, sweep degraded tier, maintenance-lock contention, rate-limit
-dependency outage, cron lock contention, expired-lease zombies) and the equivalent PrometheusRule
+(20 rules: queue depth, heartbeat misses, terminal-failed share, retried-failure share, abandoned
+jobs, lock TTL, leader split-brain, dispatch latency, progress failures, disabled cron,
+scheduled-backlog growth, promotion stall, sweep timeouts, sweep degraded tier, maintenance-lock
+contention, rate-limit dependency outage, cron lock contention, unserved queue, stranded jobs,
+expired-lease zombies) and the equivalent PrometheusRule
 CRD at `src/taskq/contrib/kubernetes/prometheus_rule.yaml`. Importing them is not enough — make
-sure something **scrapes** `/jobs/health/metrics` (see
-[deployment.md — Prometheus scrape](deployment.md#observability-setup)).
+sure something **scrapes the workers** (`TASKQ_METRICS_PORT`, every pod; see
+[deployment.md — Prometheus scrape](deployment.md#observability-setup)): the rules read
+worker-side series the admin process's `/jobs/health/metrics` never carries. The scrape listener
+binds nothing until the port is set, refuses startup (exit 1) if it cannot bind or configure, and
+serves an unauthenticated endpoint: pin it to the pod network with a
+`TASKQ_METRICS_HOST=127.0.0.1` sidecar scraper, or scope it by network policy. Per-platform env
+blocks are in [deployment.md — Listener deployment recipes](deployment.md#listener-deployment-recipes).
 
 ---
 
-## 9. Migrating from Celery
+## 9. Porting workers from other queue systems
 
-Concept mapping for teams porting workers:
+TaskQ's core concepts and their operational equivalents for teams moving from background job systems:
 
-| Celery | TaskQ | Notes |
+| Concept | TaskQ feature | Notes |
 |---|---|---|
-| `--concurrency` (prefork) | `TASKQ_MAX_CONCURRENCY` | asyncio coroutines, not processes — CPU-bound work must move to threads/executors |
-| `soft_time_limit` | `start_to_close` | cooperative cancellation of the attempt |
-| `time_limit` (SIGKILL) | — | no per-job process kill; see the sync-actor caveat in [§2](#2-timeouts-start_to_close-and-schedule_to_close) |
-| `visibility_timeout` | `lock_lease` (60 s) + leader sweep | worker death → reclaim → retry |
-| `acks_late` / `reject_on_worker_lost` | default behavior | at-least-once via lease reclaim |
-| `max_retries` + `retry_backoff` | `RetryPolicy(max_attempts, backoff, base, cap, jitter)` | jitter is ±20% multiplicative, not full jitter — and it does not decorrelate synchronized cohorts (see [§6](#6-classifying-failures-terminal-retryable-transient)) |
-| `autoretry_for` | default (all exceptions retry under the policy) | list the *terminal* ones instead: `non_retryable_exceptions` |
-| `rate_limit="100/m"` | `TokenBucket` / `SlidingWindow` on the actor | fleet-wide, Redis- or PG-backed; keyed refs for per-tenant quotas |
-| `countdown=` / `eta=` | `scheduled_at` | timezone-aware; ~1 s promotion precision |
-| `expires=` | `retry.time_budget` → `schedule_to_close` (`time_budget` requires `kind="indefinite"`) | interval from enqueue, server clock |
-| `task_id` dedup hacks | `idempotency_key` (+ scope) | DB-enforced; duplicates return the existing job — mind the key-discipline rules in [§5](#5-fan-out-at-scale-chunks-cursors-idempotency) |
-| `chord` | batch `finalizer` + `wait_for_batch`, or app-level run accounting | [§5 Patterns B/C](#5-fan-out-at-scale-chunks-cursors-idempotency) |
-| `chain` / `canvas` | `ctx.jobs.enqueue(...)` from the actor body | transactional on a LOOP-scope conn (per-slot connections make it safe at any `max_concurrency`; session-state inheritance still needs a single-slot worker), autonomous otherwise — [§5](#5-fan-out-at-scale-chunks-cursors-idempotency) |
-| `task_routes` | `@actor(queue=...)` + worker `TASKQ_QUEUES` | routing is by queue, not by broker exchange |
-| `priority=` (queue priority) | `@actor(priority=...)` / `enqueue(priority=...)` | higher dispatches first; stamped at enqueue — see [§3](#starvation-priority-and-fairness) |
-| `fair_queues` / per-tenant fairness | `round_robin` mode + `fairness_key` | the mode must be set explicitly — see [§3](#starvation-priority-and-fairness) |
-| worker `-n` names | `worker_label` (+ `worker_group` OTel label) | labels only — no routing semantics |
-| `celery beat` | `@cron(...)` | fires on schedule regardless of the previous fire; overlap suppression has traps — see [§5 — Cron](#cron-and-scheduled-workloads) |
-| DLQ plugin | `on_retry_exhausted` + `ErrorReporter` | no built-in queue — route where you want it |
+| Concurrency model | `TASKQ_MAX_CONCURRENCY` | asyncio coroutines, not processes — CPU-bound work must move to threads/executors |
+| Soft timeout per attempt | `start_to_close` | cooperative cancellation of the attempt |
+| Hard process kill per job | — | no per-job process kill; see the sync-actor caveat in [§2](#2-timeouts-start_to_close-and-schedule_to_close) |
+| Visibility timeout for dead workers | `lock_lease` (60 s) + leader sweep | worker death → reclaim → retry |
+| At-least-once delivery | default behavior | lease reclaim on worker loss |
+| Backoff algorithm | `RetryPolicy(max_attempts, backoff, base, cap, jitter)` | jitter is ±20% multiplicative, not full jitter — and it does not decorrelate synchronized cohorts (see [§6](#6-classifying-failures-terminal-retryable-transient)) |
+| Retry configuration | default (all exceptions retry under the policy) | list the *terminal* ones instead: `non_retryable_exceptions` |
+| Rate limiting per actor | `TokenBucket` / `SlidingWindow` on the actor | fleet-wide, Redis- or PG-backed; keyed refs for per-tenant quotas |
+| Delayed scheduling | `scheduled_at` | timezone-aware; ~1 s promotion precision |
+| Time budget for entire job lifetime | `retry.time_budget` → `schedule_to_close` (`time_budget` requires `kind="indefinite"`) | interval from enqueue, server clock |
+| Deduplication of reruns | `idempotency_key` (+ scope) | DB-enforced; duplicates return the existing job — mind the key-discipline rules in [§5](#5-fan-out-at-scale-chunks-cursors-idempotency) |
+| Job dependency chains (many-to-one) | batch `finalizer` + `wait_for_batch`, or app-level run accounting | [§5 Patterns B/C](#5-fan-out-at-scale-chunks-cursors-idempotency) |
+| Job workflows (chaining) | `ctx.jobs.enqueue(...)` from the actor body | transactional on a LOOP-scope conn (per-slot connections make it safe at any `max_concurrency`; session-state inheritance still needs a single-slot worker), autonomous otherwise — [§5](#5-fan-out-at-scale-chunks-cursors-idempotency) |
+| Task routing | `@actor(queue=...)` + worker `TASKQ_QUEUES` | routing is by queue, not by broker exchange |
+| Job priority | `@actor(priority=...)` / `enqueue(priority=...)` | higher dispatches first; stamped at enqueue — see [§3](#starvation-priority-and-fairness) |
+| Per-tenant fairness | `round_robin` mode + `fairness_key` | the mode must be set explicitly — see [§3](#starvation-priority-and-fairness) |
+| Worker labeling | `worker_label` (+ `worker_group` OTel label) | labels only — no routing semantics |
+| Scheduled job execution (cron) | `@cron(...)` | fires on schedule regardless of the previous fire; overlap suppression has traps — see [§5 — Cron](#cron-and-scheduled-workloads) |
+| Dead-letter queue routing | `on_retry_exhausted` + `ErrorReporter` | no built-in queue — route where you want it |
 
 ---
 
@@ -1025,6 +1182,7 @@ The condensed "know this before your first incident" list. Each row links to the
 | Expecting `schedule_to_close` to kill a running attempt | long attempt survives past deadline | it only gates *future* dispatches ([§2](#2-timeouts-start_to_close-and-schedule_to_close)) |
 | `start_to_close` expected to kill a sync actor's thread | job marked timed out, side effects continue anyway | sync actors keep running — poll `ctx.should_abort()` ([actors.md](actors.md#sync-actors)) |
 | `heartbeat_timeout` set below one heartbeat interval | healthy jobs reclaimed on a single missed beat | size it `>= 2x` `TASKQ_HEARTBEAT_INTERVAL` — the per-job analogue of the `lock_lease >= 4 x heartbeat_interval` invariant ([§2](#2-timeouts-start_to_close-and-schedule_to_close)) |
+| `heartbeat_timeout` at or above the fleet's `TASKQ_LOCK_LEASE` | the per-job budget silently never governs: the lease deadline (last beat + lease) always precedes the heartbeat deadline (last beat + timeout), so the lease arm reclaims first and the knob no-ops — the reclaim event honestly names `cause='lock_expired'` | size it inside the window: `>= 2x` `TASKQ_HEARTBEAT_INTERVAL` and below `TASKQ_LOCK_LEASE` ([§2](#2-timeouts-start_to_close-and-schedule_to_close)) |
 | Retry window shorter than routine provider blips | terminal exhaustion on an ordinary 5xx | fewer attempts, longer `base` ([§6](#6-classifying-failures-terminal-retryable-transient)) |
 | Snoozing finalizer with a tight `time_budget` | `DeadlineExceeded` mid-batch | size the budget to batch duration + retries; `time_budget` requires `kind="indefinite"` ([§5](#5-fan-out-at-scale-chunks-cursors-idempotency)) |
 | `max_retry_backoff` raised, long backoffs still capped | retries at 24 h ceiling | the ceiling is `min(policy.cap, TASKQ_MAX_RETRY_BACKOFF)` ([retries.md](retries.md#3-backoff-algorithms)) |
@@ -1056,8 +1214,10 @@ The condensed "know this before your first incident" list. Each row links to the
 | BYO `PoolFactory` counted as one pool | three full-sized pools (plus the conditional per-slot pool on that path), budget blown | factory is invoked once per role ([§4](#bring-your-own-pools-change-the-arithmetic)) |
 | TaskQ client handed the request handlers' pool | silent whole-process deadlock at `pool_max` | dedicated small pool — [§4](#bring-your-own-pools-change-the-arithmetic) |
 | Token auth without reload | healthy for an hour, then cannot connect | `TASKQ_RELOAD_INTERVAL` inside token lifetime, all five roles ([§4](#managed-identities-and-token-rotation)) |
-| `terminationGracePeriodSeconds` < shutdown worst case | SIGKILL mid-drain, `crashed` jobs | grace ≥ cancellation + cleanup + ~32 s tail ([deployment.md](deployment.md#health-probes)) |
+| NOTIFY reconnect mid-rotation looks like a hang | dispatch on poll fallback, `SIGHUP` reload reports notify as failed, for up to ~95s | `notify_reconnect_lock`'s worst-case hold is the sum of its bounded steps, not a hang — [§4](#managed-identities-and-token-rotation) |
+| `terminationGracePeriodSeconds` < shutdown worst case | SIGKILL mid-drain, `crashed` jobs | grace ≥ cancellation + cleanup + ~42 s tail ([deployment.md](deployment.md#health-probes)) |
 | One job longer than the shutdown budget | watchdog force-exits; *sibling* in-flight jobs die too | size the grace to your slowest actor, or cap it with `start_to_close` ([§2](#2-timeouts-start_to_close-and-schedule_to_close)) |
+| Actors longer than `cancellation_grace_period + cleanup_grace_period` | interrupted on every deploy and re-run from scratch (`interrupt_count` climbs, work restarts); only `schedule_to_close` ends the loop | bound them with `schedule_to_close`, or checkpoint via progress state and resume on re-claim ([§6](#6-classifying-failures-terminal-retryable-transient), [cancellation.md](cancellation.md#shutdown-is-not-an-operator-cancel-ctxcancel_origin)) |
 | Drained `refill_per_second=0` bucket, no deadline | job re-queues every 5 s forever | add refill or `schedule_to_close` ([§7](#7-waiting-politely-rate-limits-snooze-retryafter-retry-after)) |
 | Redis in dev, none in prod | worker refuses to start in prod only | decide the limiter backend per environment ([§7](#7-waiting-politely-rate-limits-snooze-retryafter-retry-after)) |
 | Worker without a Redis client expected to publish progress | SSE/progress silently empty, no error | progress fanout needs Redis; PG snapshotting still works — [progress.md](progress.md) |
@@ -1065,6 +1225,7 @@ The condensed "know this before your first incident" list. Each row links to the
 | Redis-backed limiter without `TASKQ_REDIS_URL` | worker refuses to start | fail-fast by design — configure Redis or use `backend="postgres"` ([§7](#7-waiting-politely-rate-limits-snooze-retryafter-retry-after)) |
 | Suppressing `asyncio.CancelledError` in an actor | cancel phase escalates to `abandoned` | never catch it — [cancellation.md](cancellation.md) |
 | Two workers, same health socket path | second worker's health server fails | unique `TASKQ_HEALTH_SOCKET_PATH` per process |
+| `leader_lease` below `4 * heartbeat_interval` | no error, no boot refusal | silently raised to the floor — the same `lock_lease >= 4 x heartbeat_interval` invariant, honoured rather than enforced, so raising `heartbeat_interval` alone raises the effective lease instead of shortening the renewal margin ([architecture.md](../architecture.md#leader-election)) |
 | Cancel expected to survive a crash-retry | retried attempt runs uncancelled | retry arms reset cancel state by design — re-cancel if still needed |
 | Exporter env var set, telemetry expected | nothing collected, silently | exporter must be configured in-process — [§8](#8-observability-and-alerting) |
 | PyPI release assumed current | fixed bugs recur; documented features missing | check the [CHANGELOG](../changelog.md), pin a rev, assert the pin (see the intro warning) |
@@ -1108,9 +1269,14 @@ mechanics of each item: [deployment.md — Production Checklist](deployment.md#p
 - [ ] **DSN split**: `TASKQ_PG_DSN_DIRECT` (worker core) vs `TASKQ_PG_DSN_POOLED` (worker_pool)
 - [ ] **Credentials**: reload interval inside token lifetime; all five connection roles covered
 - [ ] **Shutdown budget**: supervisor/`terminationGracePeriodSeconds` ≥
-      `cancellation_grace + cleanup_grace + ~32 s` (default model: 72 s), and ≥ your slowest actor
+      `cancellation_grace + cleanup_grace + ~42 s` (default model: 82 s), and ≥ your slowest actor
 - [ ] **Health probes**: `taskq health live/ready` wired (exec probes; TCP `TASKQ_HEALTH_PORT`
-      only where `httpGet` is forced); unique socket path per process
+      only where `httpGet` is forced); unique socket path AND unique probe port per process
+      (a bind collision fails the listener loudly but the boot continues; the orchestrator's
+      failed probes are the fail-closed backstop)
+- [ ] **Metrics scrape**: `TASKQ_METRICS_PORT` set on every worker (off unless set; scrape
+      endpoint unauthenticated, so pod network, loopback sidecar via `TASKQ_METRICS_HOST`, or
+      SG-scoped); a bind or config failure exits the worker, so a bad port shows up at deploy
 - [ ] **Redis** provisioned iff using Redis-backed limiters or real-time progress; PG fallback
       decision made; dev/prod symmetry checked
 - [ ] **Observability**: exporter wired *in-process* and verified to arrive; the alert rules from
@@ -1120,6 +1286,33 @@ mechanics of each item: [deployment.md — Production Checklist](deployment.md#p
       built-in dead-letter queue)
 - [ ] **Idempotency of actor bodies** audited — delivery is at-least-once, including crash-reclaim
       re-dispatch
+
+---
+
+## 12. Scaling playbook: from signal to knob
+
+Symptom-first: what the operator actually sees (an alert, an admin UI view, a metric series),
+the knob(s) that address it, and how to confirm the knob worked. This table only *routes*:
+the arithmetic behind each row is in the section it links; do not re-derive it here. Incident
+*response* (what to do while it burns) lives in [runbooks.md](runbooks.md); this section is
+about which knob to reach for once the fire is out. Admin routes referenced below are in
+[admin-ui.md](admin-ui.md).
+
+| You see | First knob(s) | Confirm it worked | Failure mode of over-tuning |
+|---|---|---|---|
+| **Actor saturated**: `taskq_worker_active_jobs / taskq_worker_max_concurrency > 0.9` sustained while `taskq.jobs.oldest_pending_age_seconds` climbs; `/admin/actors` shows the actor pinned at its cap. No shipped alert: this one is a dashboard check. | `taskq actor-config set ACTOR --max-concurrent N` (live; the stored row wins over the code literal; see [§3 seed-only trap](#capacity-ownership-the-seed-only-trap)); `TASKQ_MAX_CONCURRENCY` or more replicas when no per-actor cap binds (the math: [§3 when to add workers](#when-to-add-workers-saturation-not-depth), [§4 throughput](#4-sizing-workers-and-postgres-connections)) | Utilisation drops below 0.9 and `oldest_pending_age` flattens on the *other* actors first | Pushing `max_concurrent` high "to use the fleet" removes the damper that was protecting a downstream dependency; adding replicas when a strict queue cap or `ConcurrencyReservation` is the real bound buys idle pods |
+| **Worker CPU / event-loop lag**: watchdog tier-1 `loop-lag` warnings with faulthandler dumps; `/admin/workers` shows beats arriving late. No shipped alert. The stall ATTRIBUTION names the actor: `taskq_worker_loop_stall_attributions_total` (and the worker's Stall hotspots column) tells you which actor's synchronous code is blocking the loop, and as `blocking_call` (released the GIL: move it to a thread) or `gil_held` (held the GIL: chunk it or move it off the loop) | More worker processes (asyncio is one thread per process; CPU-bound actors block the loop, [§3](#3-concurrency-process-actor-queue-fleet)); lower `TASKQ_MAX_CONCURRENCY` per process. `TASKQ_WATCHDOG_LOOP_LAG_WARN_BUDGET` / `TASKQ_WATCHDOG_LOOP_LAG_BUDGET` only after the host is provably not loaded | Lag warnings stop *without* having touched the budgets | Raising the lag budgets converts a designed trip-and-restart into a wedged worker that keeps serving slowly; the terminal detector exists so the supervisor restarts you |
+| **Queue depth growing, live workers idle**: `TaskQQueueDepthHigh` fires while utilisation stays low; `taskq.jobs.queue_wait_seconds` p99 rises with flat depth; `/admin/queues/{queue}` shows depth sitting on one queue | Queue mode + fairness: `taskq queues set-mode <queue> round_robin` and `fairness_key` on the hot producers ([§3 starvation](#starvation-priority-and-fairness)); the actor's `max_concurrent` damper or a reservation holding slots; `TASKQ_DISPATCH_OVERSAMPLE` when identity collisions or many dispatchers poll the same actor+queue | `queue_wait_seconds` flattens while depth stays flat, then drains | `oversample` above the number of dispatchers that routinely poll the same actor+queue enlarges every candidate window for nothing; `round_robin` set without `fairness_key` collapses to FIFO with zero signal |
+| **Pending backlog with `stranded > 0`**: `TaskQStrandedJobs`; `taskq.jobs.stranded` carries the `reason` (`no_actor_config` / `unserved_queue`); `/admin/actors` misses the actor | No worker knob fixes the rows: register the actor on a worker consuming that queue (`TASKQ_QUEUES` / `--queues`), or `taskq actor-config move-queue` ([§3 capacity ownership](#capacity-ownership-the-seed-only-trap)). `TASKQ_STRANDED_JOBS_INTERVAL` is detection cadence only | The stranded gauge returns to 0 per actor | Shortening the interval polls Postgres more often and recovers nothing; it is a detector period, not a repair loop |
+| **Rate-limit denials**: `taskq_reservation_denials_total` climbing; `/admin/rate-limits` and `/admin/reservations` show saturated buckets; `TaskQRateLimitDependencyOutage` when the PG fallback path is the one struggling | Limiter rates and reservation capacity (application config, not env; see [§7](#7-waiting-politely-rate-limits-snooze-retryafter-retry-after)); `TASKQ_MAX_KEYED_RESERVATIONS` / `TASKQ_MAX_KEYED_RATE_LIMITS` when denials are cardinality-driven; `TASKQ_TOKEN_BUCKET_LOCK_TIMEOUT_MS` / `TASKQ_SLIDING_WINDOW_LOCK_TIMEOUT_MS` when fallback row locks are the bottleneck | The denials counter flattens and `queue_wait_seconds` resumes | Widening the lock budgets makes a saturated bucket *wait* longer instead of denying: latency replaces refusals; adding workers changes nothing because admission sits upstream of the worker |
+| **Cron piling up at tick**: `TaskQScheduledBacklogGrowing` / `TaskQPromotionStalled` with `scheduled` depth growing; `/admin/schedules` shows the fire history; `TaskQCronLockContention` on the lock | Spread cron expressions across minutes rather than aligning every schedule at `* * * * *`; `TASKQ_CRON_TICK_LIMIT` for a catch-up burst larger than one tick plans ([§5 cron](#cron-and-scheduled-workloads), [§8 watch](#watch-large-scheduled-backlogs)); `TASKQ_CRON_CATCH_UP_WINDOW` bounds what a restart replays | Scheduled depth drains one bounded batch per tick and `taskq.jobs.oldest_due_age_seconds` falls | The tick limit is consumed by the single leader; raising it moves the pile downstream into dispatch instead of clearing it faster; only one process pays the knob no matter how many replicas run |
+| **`terminal-write-failed` logs / disowned jobs**: the worker fails every attempt of a terminal write, disowns the row (lease stops renewing), and `TaskQRunningLeaseExpired` catches the reclaim; usually beside `TaskQHeartbeatMisses` or `TaskQLockExpiringSoon` | Not actor config: database health. PgBouncer saturation, `max_connections` exhaustion, a failover ([§4 connection budget](#the-connection-budget)). Fix the budget (`TASKQ_MAX_CONCURRENCY` down, a pooled DSN for `worker_pool`), never the actor | `terminal-write-failed` stops and no rows sit `running` past their lease | Raising `TASKQ_MAX_CONCURRENCY` grows the derived `worker_pool` and makes the exact connection pressure that caused the writes to fail worse |
+| **p95 duration far above p50**: `messaging.process.duration{outcome="succeeded"}` tail; `/admin/history` sorted by `started_at` shows the long-running jobs | Review the outlier actors' `start_to_close` ([§2](#2-timeouts-start_to_close-and-schedule_to_close)) and chunk sizes ([§5](#5-fan-out-at-scale-chunks-cursors-idempotency)); `TASKQ_DEFAULT_START_TO_CLOSE` as the fleet-wide safety net; `fairness_key` when one cohort causes the tail | p95 tracks p50 and `taskq.jobs.timeouts` stays flat | A fleet-wide `start_to_close` sized above everyone's p95 silently kills legitimately slow attempts (and sync actors keep running past it anyway; only the slot is freed) |
+
+Two rows in this table are deliberately "no knob": stranded rows and terminal-write failures
+are *routing* and *infrastructure* conditions, and both failure modes above where an operator
+reached for a per-process number to fix a fleet-wide condition are the ones §3 and §4 exist to
+prevent.
 
 ---
 

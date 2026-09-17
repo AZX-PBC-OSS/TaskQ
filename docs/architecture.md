@@ -113,8 +113,12 @@ class Backend(Protocol):
     ) -> list[JobRow]: ...
 
     # Heartbeat
-    async def heartbeat_jobs(self, worker_id: UUID, lock_lease: timedelta) -> int: ...
-    async def extend_reservation_leases(self, worker_id: UUID, lock_lease: timedelta) -> int: ...
+    async def heartbeat_jobs(
+        self, worker_id: UUID, lock_lease: timedelta, *, disowned: Collection[UUID] = ()
+    ) -> int: ...
+    async def extend_reservation_leases(
+        self, worker_id: UUID, lock_lease: timedelta, *, disowned: Collection[UUID] = ()
+    ) -> int: ...
 
     # Terminal writes
     async def mark_succeeded(
@@ -289,12 +293,10 @@ rejected with `ValueError` at `JobFilter` construction so both backends
 fail identically.  `status` and `active` are mutually exclusive —
 specifying both raises `ValueError`.
 
-The `active` meta-filter selects statuses by terminality.  **Despite the
-name, this is not Celery/Flower's 'active'** (currently-executing tasks
-only): `active=True` selects all non-terminal statuses (pending,
-scheduled, running — 'not yet finished') and `active=False` the terminal
-ones; the non-terminal set is derived from `ACTIVE_STATUSES` in
-`statemachine.py`.
+The `active` meta-filter selects statuses by terminality. `active=True`
+selects all non-terminal statuses (pending, scheduled, running — 'not yet
+finished') and `active=False` the terminal ones; the non-terminal set is
+derived from `ACTIVE_STATUSES` in `statemachine.py`.
 
 `BACKEND_PROTOCOL_VERSION` is a `ClassVar[int]` (currently `3`). Both backends
 assert this constant matches at import time, preventing silent protocol drift.
@@ -342,10 +344,16 @@ constant at import time, the same pattern `PostgresBackend` and
 `InMemoryBackend` use (`_EXPECTED_PROTOCOL_VERSION` + `RuntimeError`), so a
 contract bump fails fast instead of drifting silently.
 
-`retry_job` resets a terminal job (`failed`, `crashed`, or `cancelled`) back to
-`pending` so it can be re-dispatched. Returns `True` if the job was retried,
-`False` if it was not in a retryable state. The admin UI exposes this via the
-`POST /jobs/{job_id}/retry` endpoint.
+`retry_job` puts a job that has come to rest back to `pending` so it can be
+re-dispatched. Every resting state is a valid source — `failed`, `crashed`,
+`cancelled`, `abandoned` and `succeeded` — because an operator re-run means
+"run this again": `succeeded` records that the actor returned without raising,
+not that the result was right, and `abandoned` means a deploy interrupted the
+job. A `running` job is refused, because re-pending a row while an attempt is
+live races that attempt's terminal write and the job could execute twice; a
+`pending` or `scheduled` job is refused because it is already queued to run.
+Returns `True` if the job was retried, `False` otherwise. The admin UI exposes
+this via the `POST /jobs/{job_id}/retry` endpoint.
 
 `subscribe_cancel_wake` is the cancel-signal analogue of `subscribe_wake`: it
 yields an `asyncio.Event` that is set whenever a cancel NOTIFY arrives, allowing
@@ -392,7 +400,8 @@ Defined in `src/taskq/backend/statemachine.py` and mirrored as a PG enum in
 ```
 pending   → running (dispatch), cancelled (cancel request), failed (deadline sweep)
 scheduled → pending (scheduled_to_pending sweep), cancelled, failed (deadline sweep)
-running   → succeeded, failed, cancelled, crashed, abandoned, scheduled (snooze/retry/RetryAfter)
+running   → succeeded, failed, cancelled, crashed, abandoned, scheduled (snooze/retry/RetryAfter),
+            pending/scheduled (shutdown interrupt), failed (hold past schedule_to_close)
 succeeded → (terminal)
 failed    → (terminal)
 cancelled → (terminal)
@@ -422,8 +431,9 @@ extends the active filter without a second edit.
 | running → scheduled | Consumer on `Snooze` / `RetryAfter` / transient retry |
 | running → cancelled | Consumer after cancel_phase=1 (cooperative) |
 | running → cancelled | `reclaim_expired_locks` sweep (leader, Sweep 1 — cancel in-flight, retries exhausted) |
-| running → abandoned | `CancelController.run_post_tx` (heartbeat, post-phase-3) |
+| running → abandoned | `CancelController.run_post_tx` (heartbeat, post-phase-3) / shutdown RELEASING phase (operator cancel in flight only) |
 | running → crashed | `reclaim_expired_locks` sweep (leader, Sweep 1) |
+| running → pending/scheduled | `mark_interrupted` (consumer on a shutdown-origin cancel; shutdown RELEASING phase) — the attempt is refunded, `interrupt_count` bumps |
 | pending/scheduled → cancelled | `write_cancel_request` (client) |
 | pending/scheduled → failed | `deadline_sweep` (leader, Sweep 2) |
 
@@ -432,6 +442,21 @@ additionally writes a fleet-wide-pollable `job_events` outbox row in the same
 transaction as the reclaim UPDATE.  Consumers observe crash-reclaimed jobs via
 `Backend.poll_reclaim_events(after_id)` or `TaskQ.watch_reclaims(after_id)`
 without enumerating every `job_id`.
+
+A `running → pending` reclaim (crash or heartbeat) reschedules through the
+job's own `RetryPolicy` — base, cap, backoff kind and jitter — exactly as an
+application-level failure does, not a hardcoded flat interval, and clamped at
+the same effective cap: the lesser of the policy's `cap` and the operator's
+`TASKQ_MAX_RETRY_BACKOFF` ceiling (24 h default). The sweep
+runs on a leader that need not host the crashed job's actor at all, so the
+curve cannot be read from a live registration; instead it is stamped onto
+the row at enqueue time (`retry_base_seconds` / `retry_cap_seconds` /
+`retry_backoff` / `retry_jitter`, migration
+`01.00.12_03_pre_reclaim_retry_policy.sql`) from the enqueuing client's
+`ActorRef.retry`, the same way `max_attempts` and `retry_kind` already are.
+Jitter is evaluated per row, so a fleet-wide event that reclaims a whole
+cohort at once spreads their `scheduled_at` across a band instead of
+stamping every row with the same instant.
 
 Delivery is **at-least-once, and gap-free under a bounded-transaction-duration
 assumption** — not an unconditional guarantee. `job_events.id` (`bigserial`)
@@ -620,11 +645,20 @@ two dispatch SQL variants selected per-queue at dispatch time:
 Each queue has a `mode` column in the `queues` table: `strict_fifo` (default) or
 `round_robin`. The dispatch batch method selects the SQL variant via
 `_resolve_queue_modes()`, served from a per-worker TTL cache (5 s): a cache hit
-adds no query to the batch's transaction, the miss path runs the one indexed
+adds no query to the round, the miss path runs the one indexed
 `queues` read and refills the cache, and `taskq queues set-mode` invalidates the
 caches of the process it runs in — so a mode flip reaches every worker within
 the TTL.
 Queues absent from the table default to `strict_fifo`.
+
+A dispatch round runs in autocommit — no `BEGIN`/`COMMIT` around the claim.
+The claim is one atomic `UPDATE … RETURNING` whose row locks end with the
+statement, the mode resolve and the claimable probe are read-only, and an
+empty round holds no locks between window expansions, so a transaction added
+two round trips per round and nothing else (asyncpg sends `BEGIN` and `COMMIT`
+as separate statements). A cache-hit round that claims is exactly one
+statement; an empty round is the claim plus one probe (pinned by
+`tests/test_round_trip_budgets.py`).
 
 | Mode | Ordering | Use case |
 |---|---|---|
@@ -663,7 +697,14 @@ identity_dedup      → DISTINCT ON (actor, identity_key) for identity-gated job
                       UNION ALL non-identity jobs
 ranked              → ROW_NUMBER() OVER (PARTITION BY actor ORDER BY …) as pending_rank
                       (round_robin: ORDER BY fairness_rank, priority; strict_fifo: ORDER BY priority)
-locked              → FOR UPDATE SKIP LOCKED, LIMIT limit_n
+                      MATERIALIZED — the optimization fence that finalizes ranks before the cut
+capped_ranked       → the ranked rows of actors carrying a max_concurrent cap
+top_ids             → capped actors only: the pre-lock window, LIMIT limit_n
+locked              → capped: FOR UPDATE SKIP LOCKED over the top_ids window
+sliding_locked      → uncapped: ORDER BY + LIMIT limit_n + FOR UPDATE SKIP LOCKED at one
+                      query level, so the lock node slides past peers' locked rows down
+                      the window instead of stopping at it
+claimed             → locked UNION ALL sliding_locked
 eligible_candidates → LEFT JOIN actor_config for max_concurrent
                       LEFT JOIN running_per_actor for in_flight count
                       BOOLEAN gate: in_flight < max_concurrent
@@ -675,7 +716,8 @@ UPDATE jobs         → WHERE j.id IN eligible AND j.status = 'pending'
 
 ### Key correctness invariants
 
-1. `FOR UPDATE SKIP LOCKED` is confined to the `locked` CTE. PostgreSQL forbids
+1. `FOR UPDATE SKIP LOCKED` is confined to the two lock-step CTEs (`locked` for
+   capped actors, `sliding_locked` for uncapped). PostgreSQL forbids
    window functions and `FOR UPDATE` in the same `SELECT`; the `candidates`
    passthrough CTE is mandatory.
 
@@ -696,7 +738,11 @@ UPDATE jobs         → WHERE j.id IN eligible AND j.status = 'pending'
    identity serialization. `residual` is the actor's remaining dispatch slots this
    round; oversampling reads a multiple of that per-actor LATERAL, not a multiple of
    the overall `limit_n`. Under pathological workloads (all candidates share one
-   identity) the producer retries on the next tick.
+   identity) the producer retries on the next tick. The window also bounds the
+   SKIP LOCKED slide under concurrent dispatchers: a round whose whole window is
+   row-locked by peers re-runs the claim with a geometrically doubled window (up to
+   8×, gated by a bounded `LIMIT 1` claimable-rows probe so idle rounds stay one
+   statement), then defers to the next tick.
 
 ---
 
@@ -862,25 +908,65 @@ Source: `src/taskq/worker/leader.py`.
 
 ### Mechanism
 
-Leader election uses a PostgreSQL session-level advisory lock
-(`pg_try_advisory_lock`) on a schema-qualified name
-(`taskq:maintenance_leader:<schema>`, built by
-`taskq.constants.schema_lock_name`). The
-lock is acquired over `deps.leader_conn` — a dedicated, non-pooled connection.
+Leadership is a lease on the `maintenance_leader` row. The holder writes an
+`expires_at` of its own choosing (`leader_lease`, default 40 s) and renews it
+every `heartbeat_interval` over `deps.leader_conn` — a dedicated, non-pooled
+connection — under a term fenced by `(worker_id, elected_at)`. Any pod may
+take the row over once that instant has passed.
 
-On each heartbeat tick, each pod calls `pg_try_advisory_lock`:
-- If acquired: upserts `maintenance_leader` table row, sets `deps.is_leader` event.
-- If not acquired: waits; retries on next tick.
+On each heartbeat tick, a pod that is not leading runs one statement that
+claims the row if it is unclaimed or its holder has gone quiet, and returns
+nothing if a live holder owns it. A pod that is leading renews instead, and
+its renewal returning nothing means a successor holds the row.
 
-The `maintenance_leader` table is queryable for observability and the admin UI, but
-the advisory lock is the authoritative source of truth for election.
+"Gone quiet" means both of the liveness signals the row can carry have
+stopped: the lease the holder chose has expired, and its `last_seen_at` has
+been silent for four heartbeat intervals. Two are needed because during a
+roll the row can be written by two protocols — a pod from a release that
+predates the lease names four columns in its upsert and leaves whatever
+`expires_at` it found in place, so the expiry alone would judge a pod that is
+pinging every tick to be dead. Requiring both costs nothing against the
+failover bound: the lease is never shorter than four heartbeat intervals, so
+for a pod that does lease the expiry is always the later horizon.
+
+Split-brain is prevented by a local trust window rather than a per-statement
+fence: the leader trusts its term only until `attempt_started + leader_lease -
+1 s` on its own monotonic clock and stands down before that, while peers may
+take over only after the server's `expires_at`, which was written after that
+same instant plus the full lease. Every leader-gated loop consults
+`deps.leading()` on each iteration rather than the bare `is_leader` event, so
+a process resuming from a suspension finds the gate already closed. Clock
+offset between machines is irrelevant; each side measures a duration from its
+own instant.
+
+The election loop sets the event and the term together and clears them
+together, and it clears them before any await that could release the courtesy
+lock — a peer must never be able to elect while this process still reads
+`leading()` as true. The two are exposed separately because `is_leader` is
+what the watchdog parks on and what the gauge and health report publish, while
+the term is what narrows how long that role is trusted between renewals.
+
+The schema-qualified advisory lock (`taskq:maintenance_leader:<schema>`, built
+by `taskq.constants.schema_lock_name`) is still taken after winning. It keeps a
+pod from a release that knows only the lock from leading beside a lease holder
+during a roll. It is never required and never waited on: the row alone decides
+the election in every state — held, lapsed, or absent — so a lock that
+outlives the row behind it (a candidate dead between its lock attempt and its
+election write, a departed leader's lingering session) blocks nothing.
+Recovery from a holder that died without closing its session depends only on
+the lease, and so needs no privilege beyond `UPDATE` on the row. A graceful
+stop hands over faster than the lapse: the leader's teardown resigns the row,
+so a follower's next election cycle already finds it free. Failover from a
+holder that dies without a FIN is bounded by `leader_lease +
+heartbeat_interval` plus one round trip.
 
 ### What the leader does
 
 `MaintenanceLeader` runs eleven cooperative loops in a `TaskGroup`:
 
-1. **Election loop** — acquires and renews the advisory lock.
-2. **Watchdog** — detects stale lock state; refreshes `last_seen_at`.
+1. **Election loop** — claims and renews the leadership lease.
+2. **Watchdog** — detects a lost connection to Postgres on a dedicated monitor
+   connection, faster than the renewal cadence would.
 3. **Scheduled-wake (Sweep 3)** — promotes `scheduled` → `pending` when
    `scheduled_at <= statement_timestamp()` (a STABLE bound, so
    `jobs_scheduled_wake_idx` serves it as an index condition). Sends
@@ -940,26 +1026,55 @@ Three Postgres LISTEN channels are subscribed per worker:
 
 | Channel | Format | Payload |
 |---|---|---|
-| `taskq_wake_{schema}` | `wake_channel(schema)` | Empty (payload ignored — notification alone triggers dispatch) |
-| `taskq_events_{schema}` | `events_channel(schema)` | JSON: `{"type": "cancel", "worker_id": "...", "job_id": "..."}` |
-| `taskq_worker_{schema}_{worker_id}` | `worker_channel(schema, worker_id)` | Same JSON format; no worker_id filtering needed |
+| `taskq_wake_{tag}` | `wake_channel(schema)` | Empty (payload ignored — notification alone triggers dispatch) |
+| `taskq_events_{tag}` | `events_channel(schema)` | JSON: `{"type": "cancel", "worker_id": "...", "job_id": "..."}` |
+| `taskq_worker_{tag}_{worker_id}` | `worker_channel(schema, worker_id)` | Same JSON format; no worker_id filtering needed |
+
+`{tag}` is `schema_channel_tag(schema)`: the first 10 hex digits of
+`sha224(schema)` (`taskq` → `124a200651`). Channels are Postgres identifiers
+bounded by 63 bytes — `LISTEN` silently truncates a longer name and
+`pg_notify` rejects it — while a schema name may itself be 63 characters, so
+a channel that interpolated the schema stopped matching its listener past a
+schema length (14 characters for the per-worker channel). The fixed-width tag
+makes every channel's length independent of the schema; `check_channels_fit`
+runs at settings load so a template change cannot reintroduce the cliff. The
+wake trigger derives the same tag in SQL
+(`left(encode(sha224(...), 'hex'), 10)`), pinned end to end by
+`tests/test_notify_channel_length.py`. The progress channels
+(`taskq:{tag}:progress:{job_id}`, `taskq:{tag}:progress`) and the cron
+commit-gate channel (`taskq_cron_commit_{tag}`) use the same tag.
 
 Channel name helpers validate the schema identifier against `_IDENT_RE` before
-interpolation. Each schema gets its own set of channels, enabling multi-tenant
-deployments on a single PG instance. The per-worker channel
-(`taskq_worker_{schema}_{worker_id}`) enables targeted event delivery without
-fleet-wide fanout.
+hashing. Each schema gets its own set of channels, enabling multi-tenant
+deployments on a single PG instance. The per-worker channel enables targeted
+event delivery without fleet-wide fanout.
 
 ### Enqueue path
 
-After a successful INSERT into `jobs`, `PostgresBackend.enqueue` executes:
-
-```sql
-SELECT pg_notify('taskq_wake_<schema>', '')
-```
+The wake is the `tr_notify_job_insert` row trigger's: `AFTER INSERT ON jobs
+… WHEN (NEW.status = 'pending')`, it issues `pg_notify(wake_channel(schema),
+'')` for every row that lands dispatchable. The single and batch INSERT
+paths issue no notify of their own and decide `status` server-side in the
+INSERT (a future `scheduled_at` lands as `scheduled`), so the WHEN clause
+is what keeps a future-dated enqueue from waking the fleet. The COPY path
+cannot decide status in its write: its rows land as `scheduled` (the
+trigger stays silent) and the fixup UPDATE that flips the runnable rows to
+`pending` issues the one wake itself, only when it flipped any — so a
+future-dated COPY batch wakes nobody and a mixed batch wakes the fleet
+once. Postgres coalesces identical
+`(channel, payload)` notifications within one transaction, so a batch costs
+one delivery. (An app-side notify after the INSERT was the same pair the
+trigger emits: coalesced with it in a transaction, a second delivery to
+every listener on a caller's bare connection — pinned by
+`tests/test_enqueue_wake_source.py`.) A plain pool enqueue is therefore
+exactly one statement, `INSERT … RETURNING *`, in autocommit
+(`tests/test_round_trip_budgets.py`). pg-boss folds its notify into the
+INSERT gated on the row being due; Oban notifies only for `available` rows.
 
 The empty payload is intentional — consumers do not need to parse it; the
-notification alone is sufficient to trigger a dispatch poll.
+notification alone is sufficient to trigger a dispatch poll. Paths that
+re-pend a row by UPDATE (admin retry, the reclaim sweeps) issue their own
+`pg_notify`, since the trigger fires on INSERT only.
 
 ### Consumer path
 
@@ -977,6 +1092,17 @@ DSN, TCP keepalives enabled) and subscribes to all three channels:
 Consumer loops register via `backend.subscribe_wake()` (an async context manager)
 which adds a fresh `asyncio.Event` to `_wake_subscribers` on enter and removes it
 on exit. The consumer loop awaits the event; on wake it polls `dispatch_batch`.
+
+The wake channel is schema-wide, so one enqueue wakes every worker's producer
+and all but one run a losing round. After a round that came back short (fewer
+rows than requested, or none) the producer waits a small jittered cooldown
+(`_CLAIM_COOLDOWN_SECONDS`, 50 ms) before its next round; wakes and freed
+slots that land meanwhile are folded into that one round. A full round
+re-claims immediately, a wake that lands mid-round always yields one
+follow-up round, and the fallback poll keeps its own cadence. This is
+River's `FetchCooldown` / Oban's `dispatch_cooldown` shape; the cost is up to
+one cooldown of claim latency for a job that arrives right after a short
+round.
 
 A `_health_check_loop` runs concurrently with the listener, executing `SELECT 1`
 on the notify connection at `notify_health_check_interval`. On failure it
@@ -1004,12 +1130,12 @@ begins, so health endpoints and consumers can observe the current phase:
 | Phase | Value | Meaning |
 |---|---|---|
 | `NONE` | 0 | Running normally |
-| `DRAINING` | 1 | Stop accepting new dispatch; re-pend locked-but-unstarted jobs |
-| `CANCELLING` | 2 | Cooperative cancel of remaining in-flight jobs (set `cancel_event`) |
-| `FORCING` | 3 | Force-cancel grace: `task.cancel()` + `write_cancel_escalation(phase=2)` |
-| `ABANDONING` | 4 | Pod must be replaced; `mark_abandoned` for any remaining jobs |
+| `DRAINING` | 1 | Stop accepting new dispatch; re-pend locked-but-unstarted jobs (attempt refunded) |
+| `CANCELLING` | 2 | Cooperative cancel of remaining in-flight jobs (set `cancel_event`, stamp the shutdown origin) |
+| `FORCING` | 3 | Force-cancel grace: `task.cancel()` + `write_cancel_escalation(phase=2)` (lands only on rows carrying an operator's cancel request) |
+| `RELEASING` | 4 | Release never-unwound jobs back to the fleet via `mark_interrupted` (attempt refunded, held behind the remaining termination budget); operator-cancelled jobs still reach `abandoned` |
 
-Phase ordering invariant: `NONE → DRAINING → CANCELLING → FORCING → ABANDONING`.
+Phase ordering invariant: `NONE → DRAINING → CANCELLING → FORCING → RELEASING`.
 
 ### Signal handling
 
@@ -1512,6 +1638,14 @@ overhead. For batched jobs:
 | `cancelled` / `crashed` | Counts non-terminal jobs; if none remain, marks batch `complete`. Does not touch the failure counter. |
 | `snoozed` / `reservation_denied` / `rate_limit_denied` / `scheduled` | Returns immediately — the job is rescheduled, not terminal. |
 
+"No non-terminal jobs remain" is decided by `complete_batch`'s own `NOT
+EXISTS` guard in its statement's snapshot (the count the counter writes
+return is advisory). Both the guard and that count are the open-member
+probe served by `jobs_batch_open_members_idx` — a partial index over
+exactly the non-terminal members, keyed by `batch_id` — so each terminal
+write costs an index range over the members still open, never a walk of
+the batch's whole membership.
+
 Aborting cancels all pending and scheduled child jobs (`pending` /
 `scheduled` → `cancelled`) with a hardcoded `error_message = 'Batch
 aborted due to consecutive failures'` and sets the batch row to
@@ -1659,6 +1793,14 @@ These invariants must remain true across all changes.
    `WHERE status = 'running' AND locked_by_worker = $worker_id`. A rowcount of 0
    means the write was a no-op (concurrent writer already moved the row).
    `WorkerOwnershipMismatch` is raised for unexpected ownership failures.
+   A pool-path terminal write that fails with an infrastructure error is
+   retried a bounded number of times (`terminal-write-retry`); when the budget
+   is spent the row stays `running` and the worker **disowns** it
+   (`WorkerDeps.disowned_jobs`): the heartbeat's lease renewal excludes
+   disowned ids, so lock-lease expiry — not the process's lifetime — bounds how
+   long the row stays orphaned, and the reclaim sweep hands it back to the
+   fleet. The producer re-owns an id it claims again; the heartbeat drops ids
+   whose row is no longer this worker's running row.
 
 4. **Schema identifier validation is defence-in-depth, not single-point** —
    `PostgresBackend.__init__` validates `schema_name` against `_IDENT_RE` once

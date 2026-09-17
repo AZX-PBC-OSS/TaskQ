@@ -36,7 +36,8 @@ Invariants preserved verbatim from the three-statement form:
   attempt conjunct ``AND attempt = $k``, the handler's dispatch-time
   job-row attempt snapshot threaded from every call site: a stale
   attempt's write after a same-worker reclaim/redispatch no-ops exactly
-  like a different worker's late write, Oban's ``ack_query`` contract)
+  like a different worker's late write, fencing stale attempts so their
+  terminal writes cannot land on rows they no longer own)
   decides everything, and an empty ``upd`` CTE makes the INSERT CTEs
   insert nothing and the final ``SELECT`` return no row — the exact
   ``rec is None`` / ``WorkerOwnershipMismatch`` / ``False`` contract,
@@ -143,6 +144,9 @@ from taskq.obs import (
     get_logger,
     log_cancel_phase_change,
     log_state_change,
+    record_job_abandoned,
+    record_job_interrupted,
+    record_job_interrupted_noop,
 )
 
 if TYPE_CHECKING:
@@ -154,6 +158,7 @@ __all__ = [
     "_mark_abandoned",
     "_mark_cancelled",
     "_mark_failed_or_retry",
+    "_mark_interrupted",
     "_mark_retry",
     "_mark_retry_after",
     "_mark_snoozed",
@@ -325,10 +330,11 @@ async def _mark_succeeded_on_conn(
     worker fence: ``attempt = $8`` must match the row's current attempt,
     so a stale handler's write (a same-worker reclaim/redispatch moved
     the row to a later attempt) no-ops exactly like a different worker's
-    late write — Oban's ``ack_query`` contract. ``attempt=None`` — a
-    caller that cannot present the epoch — binds NULL, which never
-    satisfies the equality: a write that cannot prove which attempt it
-    terminates must not terminate any attempt.
+    late write — stale attempts cannot land their terminal writes on rows
+    they no longer own. ``attempt=None`` — a caller that cannot present
+    the epoch — binds NULL, which never satisfies the equality: a write
+    that cannot prove which attempt it terminates must not terminate any
+    attempt.
 
     ``result_bytes`` carries the caller's own orjson encoding of *result*
     (the worker consumer serializes exactly once and passes the bytes);
@@ -733,6 +739,7 @@ async def _mark_abandoned(
         worker_id=str(locked_by_worker) if locked_by_worker is not None else None,
         attempt=rec["attempt"],
     )
+    record_job_abandoned(rec["actor"])
     return True
 
 
@@ -753,15 +760,16 @@ async def _mark_snoozed(
     attempt: int | None = None,
     denial_reason: DenialReason = "capacity",
     acquire_timeout: float = DEFAULT_TERMINAL_POOL_ACQUIRE_TIMEOUT_S,
-) -> Literal["scheduled", "failed", "failed:MaxAttemptsExceeded", "noop"]:
+) -> Literal["scheduled", "failed", "noop"]:
     # The statement's arms key on exactly the three SnoozeOutcome values;
     # PG cannot reject an unknown bind value inside the statement itself,
     # so this boundary owns the check (the in-memory twin raises the
     # identical error) — before the pool is even touched, so an illegal
     # outcome raises loudly whatever the job's state instead of firing
-    # no arm and stranding the row 'running'. denial_reason gets the
-    # same boundary check for the same reason: an illegal reason must
-    # not silently fall into one arm's budget semantics.
+    # no arm and stranding the row 'running'. denial_reason keeps the
+    # same boundary check even though the statement no longer branches
+    # on it — a caller naming a reason the protocol does not define is a
+    # coding error the API must refuse rather than silently accept.
     validate_snooze_outcome(outcome)
     validate_denial_reason(denial_reason)
     branch: str
@@ -776,7 +784,6 @@ async def _mark_snoozed(
             _progress_jsonb_escaped(progress_state),
             outcome,
             attempt,
-            denial_reason,
         )
         if rec is None:
             return "noop"
@@ -784,9 +791,10 @@ async def _mark_snoozed(
         branch = rec["outcome_branch"]
         # A non-terminal snooze/denial writes no attempt/event rows and no
         # timestamps of its own — it increments the outcome-keyed counter
-        # on the row (see _sql_templates.mark_snoozed).  The terminal
-        # max_attempts arm writes its attempt row and state_change event
-        # exactly like every other terminal transition.
+        # on the row (see _sql_templates.mark_snoozed).  The deadline arm
+        # is the statement's ONLY terminal exit, and writes its attempt
+        # row and state_change event exactly like every other terminal
+        # transition.
 
     if branch == "snoozed":
         log_state_change(
@@ -798,17 +806,6 @@ async def _mark_snoozed(
             attempt=rec["attempt"],
         )
         return "scheduled"
-    if branch == "max_attempts_failed":
-        log_state_change(
-            logger,
-            from_state="running",
-            to_state="failed",
-            job_id=str(job_id),
-            worker_id=str(worker_id),
-            attempt=rec["attempt"],
-            cause="max_attempts",
-        )
-        return "failed:MaxAttemptsExceeded"
     log_state_change(
         logger,
         from_state="running",
@@ -889,6 +886,79 @@ async def _mark_retry_after(
     )
     if branch == "max_attempts_failed":
         return "failed:MaxAttemptsExceeded"
+    return "failed:DeadlineExceeded"
+
+
+# ── mark_interrupted ───────────────────────────────────────────────────
+
+
+async def _mark_interrupted(
+    pool: "asyncpg.Pool",
+    sql: SqlTemplates,
+    job_id: JobId,
+    worker_id: UUID,
+    *,
+    attempt: int,
+    hold: timedelta,
+    progress_seq: int = 0,
+    progress_state: dict[str, object] | None = None,
+    acquire_timeout: float = DEFAULT_TERMINAL_POOL_ACQUIRE_TIMEOUT_S,
+) -> Literal["pending", "scheduled", "failed:DeadlineExceeded", "noop"]:
+    """Release a running attempt this worker cannot finish (process going
+    away): refund the claim's attempt increment, count the interruption on
+    the row, write one ``reason='interrupted'`` event. Fenced on ownership,
+    attempt epoch and ``cancel_phase = 0`` — an operator cancel in flight
+    wins and reads back as ``"noop"`` (a row whose
+    ``cancel_attempted_at`` is set is cancelled, never re-available).
+    A hold that would outlive
+    ``schedule_to_close`` fails the row on the deadline instead.
+    """
+    branch: str
+    async with pool.acquire(timeout=acquire_timeout) as conn:
+        rec = await conn.fetchrow(
+            sql.mark_interrupted,
+            job_id,
+            worker_id,
+            attempt,
+            hold,
+            progress_seq,
+            _progress_jsonb_escaped(progress_state),
+        )
+        if rec is None:
+            # Fenced out — the row moved (reclaim, a terminal write, or an
+            # operator cancel in flight). Instrumented per the project rule
+            # that a no-op on a release path must not look like a release.
+            record_job_interrupted_noop(None)
+            return "noop"
+
+        branch = rec["outcome_branch"]
+
+    if branch == "released":
+        row_status: str = rec["status"]
+        record_job_interrupted(rec["actor"], held=row_status == "scheduled")
+        log_state_change(
+            logger,
+            from_state="running",
+            to_state=row_status,
+            job_id=str(job_id),
+            worker_id=str(worker_id),
+            attempt=rec["attempt"],
+            reason="interrupted",
+        )
+        return "pending" if row_status == "pending" else "scheduled"
+
+    # deadline_failed arm: the hold would have outlived the job's own
+    # schedule_to_close, so the job fails on the deadline like every
+    # deferral arm's deadline exit.
+    log_state_change(
+        logger,
+        from_state="running",
+        to_state="failed",
+        job_id=str(job_id),
+        worker_id=str(worker_id),
+        attempt=rec["attempt"],
+        reason="schedule_to_close",
+    )
     return "failed:DeadlineExceeded"
 
 

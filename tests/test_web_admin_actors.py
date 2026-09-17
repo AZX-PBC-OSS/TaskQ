@@ -250,6 +250,22 @@ async def test_deregister_route_returns_404_for_unknown_actor(
     assert "no stored actor_config row" in resp.text
 
 
+async def test_deregister_route_rejects_a_nul_in_the_actor_name_with_400(
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A %00 in the path's actor name is a clean 400, not the asyncpg
+    22021 (CharacterNotInRepertoireError) 500 the text bind raises."""
+    schema = module_pg_schema.schema_name
+    app = _make_admin_app(module_pg_pool, schema, monkeypatch, admin_actions_enabled=True)
+
+    resp = await _get_csrf_then_post(app, "/admin/actors", "/admin/actors/bad%00name/deregister")
+
+    assert resp.status_code == 400
+    assert "NUL" in resp.text
+
+
 async def test_actors_page_shows_notice_after_deregister(
     clean_pg_conn: asyncpg.Connection,
     module_pg_pool: asyncpg.Pool,

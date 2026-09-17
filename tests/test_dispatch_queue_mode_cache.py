@@ -50,21 +50,29 @@ def _fake_clock() -> FakeClock:
 
 class _FakeDispatchConn:
     """Serves the queue-mode resolve from a mutable row map and records
-    every dispatch-CTE fetch, distinguishing the two statements by shape:
+    every dispatch-CTE fetch, distinguishing the three statements by shape:
     the resolve query reads the queues *table* (``.queues WHERE``); the
     dispatch CTE's ``queues`` is a params column — qualified references
-    like ``p.queues`` in the idle-actor prefilter must NOT match.
+    like ``p.queues`` in the idle-actor prefilter must NOT match; the
+    empty-round claimable-rows probe (``ac.queue = ANY($1...)``) is the
+    window-expansion gate — this fake's claim returns empty, so the probe
+    fires each round and answers "nothing remains" (idle), matching the
+    claim's own result.
     """
 
     def __init__(self, queue_rows: dict[str, str]) -> None:
         self.queue_rows = queue_rows
         self.resolve_fetches = 0
+        self.probe_fetches = 0
         self.dispatch_sqls: list[str] = []
 
     async def fetch(self, sql: str, *args: object) -> list[dict[str, str]]:
         if ".queues WHERE" in sql:
             self.resolve_fetches += 1
             return [{"name": name, "mode": mode} for name, mode in self.queue_rows.items()]
+        if "ac.queue = ANY($1::text[])" in sql:
+            self.probe_fetches += 1
+            return []
         self.dispatch_sqls.append(sql)
         return []
 
@@ -137,6 +145,11 @@ async def test_resolve_runs_once_per_ttl_not_once_per_round() -> None:
         f"TTL, got {conn.resolve_fetches} — the per-round statement is back"
     )
     assert len(conn.dispatch_sqls) == 5, "every round must still dispatch"
+    assert conn.probe_fetches == 5, (
+        "every round here comes back empty (the fake's claim returns no rows), "
+        "so each must pay exactly one claimable-rows probe and never a widened "
+        "re-claim — the idle-round cost contract of window expansion"
+    )
 
 
 async def test_mode_change_is_picked_up_within_the_ttl() -> None:

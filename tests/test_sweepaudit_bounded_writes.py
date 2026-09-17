@@ -130,12 +130,22 @@ _EXEMPT: dict[str, tuple[str, str]] = {
         "WHERE id = $1",
         "keyed single workers row (own heartbeat)",
     ),
-    "UPDATE_LEADER_PING_SQL_TEMPLATE": (
-        "WHERE worker_id = $1",
-        "keyed single maintenance_leader row",
+    "_LEADER_ELECT_SQL_TEMPLATE": (
+        "ON CONFLICT (singleton)",
+        "keyed singleton maintenance_leader row: the table's primary key is a "
+        "boolean CHECKed to true, so the insert and its conflict update each "
+        "touch at most that one row",
+    ),
+    "_LEADER_RENEW_SQL_TEMPLATE": (
+        "WHERE singleton = true AND worker_id = $1 AND elected_at = $2",
+        "keyed singleton maintenance_leader row, fenced on the holder's term",
+    ),
+    "_LEADER_RESIGN_SQL_TEMPLATE": (
+        "WHERE singleton = true AND worker_id = $1 AND elected_at = $2",
+        "keyed singleton maintenance_leader row, fenced on the holder's term",
     ),
     "_ISOLATE_JOB_SQL_TEMPLATE": (
-        "WHERE id = $1",
+        "WHERE j.id = $1",
         "keyed single running job (watchdog self-isolation)",
     ),
     "_RELEASE_FENCED_SQL_TEMPLATE": (
@@ -261,8 +271,8 @@ def test_every_write_statement_is_bounded_or_registered() -> None:
     carry its own LIMIT inside a windowing CTE. If the statement truly
     cannot grow with the backlog (keyed, config-cardinality, or
     worker-scoped), register it in ``_EXEMPT`` above *with the reason*;
-    that reason is the review. See constitution, "Maintenance and
-    background work is bounded per transaction."
+    that reason is the review — maintenance and background
+    work is bounded per transaction.
     """
     unregistered: list[str] = []
     wrong_scope: list[str] = []

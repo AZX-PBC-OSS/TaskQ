@@ -10,6 +10,7 @@ so the suite completes in seconds rather than minutes.
 
 import asyncio
 import contextlib
+import time
 from contextlib import AsyncExitStack
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
@@ -19,6 +20,7 @@ import pytest
 from asyncpg.pool import PoolAcquireContext
 
 from taskq._ids import new_uuid
+from taskq.backend.postgres import PostgresBackend
 from taskq.testing.asyncpg_chaos import ChaosConnection, ChaosException
 from taskq.testing.pg import create_running_job, create_worker
 from taskq.testing.settings import make_integration_settings
@@ -479,5 +481,183 @@ async def test_tc6_oserror_on_execute(pg_dsn: str) -> None:
             )
             assert row is not None
             assert row["lock_expires_at"] == initial_lock
+    finally:
+        await stack.aclose()
+
+
+# ── Surviving a single transient miss at the documented sizing ───
+
+
+#: The sizing the ops guidance tells operators is safe: heartbeat_timeout
+#: at the documented floor of 2x the heartbeat interval. The lease is kept
+#: large so only the sweep's heartbeat arm can fire, never its lease arm,
+#: and the failure budget is large so the worker survives the miss rather
+#: than isolating itself.
+_SAFE_SIZING_INTERVAL = 1.5
+_SAFE_SIZING_TIMEOUT = timedelta(seconds=2 * _SAFE_SIZING_INTERVAL)
+_SAFE_SIZING_LEASE = 30.0
+_NO_GRACE = timedelta(seconds=0)
+
+
+class _StallingAcquireCtx:
+    """Stalls the acquire past the caller's own ``timeout`` bound.
+
+    ``heartbeat_loop`` acquires with ``timeout=interval``, and asyncpg's
+    own ``acquire(timeout=...)`` races the pool wait against that bound,
+    so racing a sleep against it reproduces a pool-contention spike: the
+    caller sees ``TimeoutError`` only after the tick has burned close to a
+    full interval of wall time, which an instantly-raised query error
+    would not.
+    """
+
+    def __init__(self, ctx: PoolAcquireContext, delay: float, timeout: float | None) -> None:
+        self._ctx = ctx
+        self._delay = delay
+        self._timeout = timeout
+
+    async def __aenter__(self) -> object:
+        await asyncio.wait_for(asyncio.sleep(self._delay), timeout=self._timeout)
+        return await self._ctx.__aenter__()  # pragma: no cover - the timeout always fires first
+
+    async def __aexit__(self, *args: object) -> None:
+        await self._ctx.__aexit__(*args)
+
+
+class _OneShotStallingPool:
+    """Stalls the very first acquire past the caller's timeout, then
+    behaves like the real pool for every later tick.
+
+    This models a single transient blip followed by recovery, not
+    sustained failure.
+    """
+
+    def __init__(self, real_pool: asyncpg.Pool, *, delay: float) -> None:
+        self._real_pool = real_pool
+        self._delay = delay
+        self._used = False
+
+    def acquire(self, *, timeout: float | None = None) -> object:
+        if not self._used:
+            self._used = True
+            return _StallingAcquireCtx(
+                self._real_pool.acquire(timeout=timeout),
+                delay=self._delay,
+                timeout=timeout,
+            )
+        return self._real_pool.acquire(timeout=timeout)
+
+    async def close(self) -> None:
+        await self._real_pool.close()
+
+
+async def _job_status(conn: asyncpg.Connection, schema: str, job_id: UUID) -> str:
+    value = await conn.fetchval(f'SELECT status::text FROM "{schema}".jobs WHERE id = $1', job_id)
+    return str(value)
+
+
+async def test_single_transient_tick_failure_at_documented_sizing_keeps_the_job(
+    pg_dsn: str,
+) -> None:
+    """A job whose ``heartbeat_timeout`` is sized at the documented floor
+    of 2x the heartbeat interval must survive exactly one transient tick
+    failure without being reclaimed by the sweep.
+
+    The sizing guidance is only worth following if it actually holds under
+    the failure it exists to tolerate. A worker that is alive, still holds
+    a valid lock lease, and resumes heartbeating on its very next tick
+    must not have its job stolen and re-run, because a reclaim there is a
+    duplicate execution of work that was never lost.
+
+    The nuance is where the gap comes from. ``heartbeat_loop`` sleeps a
+    full interval after every tick regardless of whether that tick
+    succeeded, and a failed tick can itself consume up to an interval
+    (the pool ``acquire(timeout=interval)`` bound), so one transient miss
+    pushes the gap between two good beats to roughly 2x interval, landing
+    at the documented floor rather than below it.
+
+    The reclaim window is narrow -- the span between the deadline
+    crossing and the recovery beat's UPDATE committing -- so the test
+    sweeps on every poll iteration through and past that window and
+    asserts the invariant at every sweep rather than at one sampled
+    instant. A reclaimed job never returns to 'running' on its own, so
+    polling longer than necessary cannot manufacture a false failure.
+    """
+    stack, deps, schema = await _setup(
+        pg_dsn,
+        HEARTBEAT_INTERVAL=str(_SAFE_SIZING_INTERVAL),
+        LOCK_LEASE=str(_SAFE_SIZING_LEASE),
+        MAX_HEARTBEAT_FAILURES="20",
+    )
+    try:
+        worker_id = new_uuid()
+        job_id: UUID
+
+        async with deps.heartbeat_pool.acquire() as conn:
+            await create_worker(conn, schema, worker_id)
+            job_id = await create_running_job(
+                conn,
+                schema,
+                worker_id,
+                lock_expires_at=datetime.now(UTC) + timedelta(seconds=_SAFE_SIZING_LEASE),
+            )
+            await conn.execute(
+                f'UPDATE "{schema}".jobs '
+                "SET heartbeat_timeout = $2::interval, last_heartbeat_at = clock_timestamp() "
+                "WHERE id = $1",
+                job_id,
+                _SAFE_SIZING_TIMEOUT,
+            )
+
+        real_pool = deps.heartbeat_pool
+        # Stall the first acquire well past the loop's own
+        # acquire(timeout=interval) bound so tick 1 raises TimeoutError,
+        # which is in TRANSIENT_PG_ERRORS, after burning close to a full
+        # interval of wall time.
+        deps.heartbeat_pool = _OneShotStallingPool(  # type: ignore[assignment] # Why: chaos pool substitution, see _FailingPool pattern above.
+            real_pool,
+            delay=_SAFE_SIZING_INTERVAL * 10,
+        )
+
+        seed_time = time.monotonic()
+        shutdown = asyncio.Event()
+        task = asyncio.create_task(
+            heartbeat_loop(deps, worker_id, shutdown),
+            name="heartbeat-safe-sizing",
+        )
+
+        deadline = seed_time + _SAFE_SIZING_TIMEOUT.total_seconds()
+        # Poll from before the deadline through several further interval
+        # cycles, wide enough that ordinary scheduling and DB-latency
+        # jitter cannot close the window before a poll iteration lands
+        # inside it.
+        poll_until = deadline + _SAFE_SIZING_INTERVAL * 4
+        reclaimed_at: float | None = None
+        last_status = "running"
+        while time.monotonic() < poll_until:
+            async with real_pool.acquire() as conn:
+                count = await PostgresBackend.sweep_expired_locks(
+                    conn, _NO_GRACE, _NO_GRACE, schema=schema
+                )
+                last_status = await _job_status(conn, schema, job_id)
+            if count > 0 or last_status != "running":
+                reclaimed_at = time.monotonic() - seed_time
+                break
+
+        shutdown.set()
+        with contextlib.suppress(asyncio.CancelledError):
+            await asyncio.wait_for(task, timeout=5.0)
+
+        assert reclaimed_at is None and last_status == "running", (
+            f"a job whose heartbeat_timeout was sized at the documented floor "
+            f"(2x TASKQ_HEARTBEAT_INTERVAL = {_SAFE_SIZING_TIMEOUT}), and whose worker suffered "
+            f"exactly one transient tick failure before recovering and heartbeating normally "
+            f"again, was reclaimed by the sweep at t={reclaimed_at!r}s after the seed beat "
+            f"(status={last_status!r}). heartbeat_loop sleeps a full interval after every tick "
+            f"regardless of outcome, and a failed tick can itself take up to an interval (the "
+            f"pool acquire(timeout=interval) bound), so the gap between good beats after one "
+            f"miss is roughly 2x interval, landing at rather than below the documented floor. A "
+            f"worker that is alive, still lease-valid, and beating again must not lose its job "
+            f"to a single transient blip at the sizing the guidance calls safe."
+        )
     finally:
         await stack.aclose()

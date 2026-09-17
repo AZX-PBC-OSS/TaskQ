@@ -1,0 +1,64 @@
+-- Open-member probe index for batch completion: a partial B-tree over
+-- the NON-TERMINAL members of every batch, keyed by batch id. Forward-only;
+-- there is no down migration. To revert, DROP INDEX. The literal
+-- "{schema}" token is substituted at apply time by the migration runner.
+--
+-- ── Why this index exists ───────────────────────────────────────────
+-- Every batched job's terminal write runs the batch hook
+-- (taskq/batch.py), and the hook's completion attempt asks one question:
+-- "does this batch still have a member that is not terminal?"
+-- (_COMPLETE_BATCH_SQL's NOT EXISTS guard in backend/_batch_sql.py, the
+-- same probe count_batch_non_terminal asks). Answered through
+-- jobs_metadata_gin_idx's `metadata @>` bitmap, that question visits
+-- EVERY member of the batch — terminal ones
+-- included, because the GIN posting list holds them all and only the
+-- heap recheck tells them apart — so a batch of N members paid O(N)
+-- member visits per terminal write and O(N²) to complete. Measured on
+-- postgres:18 with a 10 000-member batch: 323 buffers and ~1.1 ms per
+-- probe; with this index, 5 buffers and ~0.05 ms.
+--
+-- The index body holds exactly the rows the probe can return: a member
+-- row enters it when inserted (or re-pended by retry_job) and leaves it
+-- in the same transaction that makes the row terminal, so the probe is
+-- an equality seek on the batch id that stops at the first entry — or
+-- at an empty range, which is the completion answer. Its size tracks
+-- the in-flight member population, never the batch history.
+--
+-- ── Why the key and predicate take this shape ───────────────────────
+--   * `(metadata->>'batch_id')` as text, not cast to uuid: metadata is
+--     caller-supplied jsonb on every enqueue path, and a uuid cast in an
+--     index expression would turn a non-uuid `batch_id` value on an
+--     unrelated job into a failed INSERT.
+--   * `(metadata->>'batch_id') IS NOT NULL`: keeps every non-batch job out
+--     of the index (no entry, no maintenance on the write hot path), and
+--     the planner proves it from the probe's own equality — a strict
+--     operator on the same expression implies NOT NULL.
+--   * `status IN ('pending', 'running', 'scheduled')`: the non-terminal
+--     set, spelled positively so the predicate is exactly the text the
+--     probe's own qual renders (backend/_batch_sql.py derives it from
+--     ACTIVE_STATUSES); the partial index is only a candidate when the
+--     planner can prove its predicate from the statement's quals, which
+--     tests/test_batch_completion_cost_pg.py pins with EXPLAIN.
+--
+-- ROLLING DEPLOY: pre-phase is safe for both code generations. The index
+-- is purely additive — the previous release's statements use the GIN
+-- containment probe and never reference it, and this release's probe
+-- runs without it too (it degrades to a filtered scan; only the cost
+-- bound is lost, never correctness).
+--
+-- OPS NOTE (locks), same caveat as every sibling index migration: the
+-- CREATE INDEX takes a write-blocking lock on jobs for the duration of
+-- the build, and build time is proportional to the current row count
+-- (the index body only ever holds the open batch members). Operators
+-- with a large jobs table should run the equivalent
+-- `CREATE INDEX CONCURRENTLY IF NOT EXISTS jobs_batch_open_members_idx
+-- ON "{schema}".jobs ((metadata->>'batch_id')) WHERE
+-- (metadata->>'batch_id') IS NOT NULL AND status IN ('pending',
+-- 'running', 'scheduled')` manually outside the migration runner during
+-- a maintenance window, then let this migration no-op via IF NOT EXISTS.
+-- Plain CREATE INDEX here, not the no-transaction CONCURRENTLY form, for
+-- the deadlock reason 01.00.11_01_pre_repended_probe_index.sql derives.
+CREATE INDEX IF NOT EXISTS jobs_batch_open_members_idx
+    ON "{schema}".jobs ((metadata->>'batch_id'))
+    WHERE (metadata->>'batch_id') IS NOT NULL
+      AND status IN ('pending', 'running', 'scheduled');

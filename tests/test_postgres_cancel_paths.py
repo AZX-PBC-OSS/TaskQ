@@ -13,6 +13,10 @@ import pytest
 
 from taskq._ids import new_job_id, new_uuid
 from taskq.backend._protocol import EnqueueArgs
+from taskq.constants import (
+    CANCEL_ORIGIN_COOPERATIVE,
+    CANCEL_ORIGIN_FORCED,
+)
 from taskq.testing.assertions import (
     assert_has_event,
     assert_job_status,
@@ -20,7 +24,7 @@ from taskq.testing.assertions import (
 )
 from taskq.testing.fixtures import JobsApp
 from taskq.testing.in_memory import InMemoryBackend
-from taskq.testing.jobs import enqueue_and_dispatch_memory
+from taskq.testing.jobs import enqueue_and_dispatch_memory, enqueue_and_dispatch_pg
 from taskq.testing.pg import (
     create_pending_job,
     create_running_job,
@@ -420,12 +424,16 @@ class TestEquivalence:
         mem_events = await memory_jobs.get_events(mem_job_id)
 
         # ── PG backend ───────────────────────────────────────────
+        # The job reaches 'running' through the REAL enqueue + dispatch
+        # path, exactly like the memory side: a claim deliberately writes
+        # no job_events row (the events diet — backend/_dispatch.py), so
+        # a fixture-injected one would count an event production never
+        # writes and break the cross-backend event comparison below.
         deps = clean_jobs_app.deps
         backend = clean_jobs_app.backend
         schema = deps.settings.schema_name
 
-        async with deps.worker_pool.acquire() as conn:
-            _, pg_job_id = await setup_running_job(conn, schema, with_events=True)
+        pg_job_id, _pg_worker = await enqueue_and_dispatch_pg(backend)
 
         pg_result = await backend.write_cancel_request(pg_job_id, "test")
         assert pg_result is True
@@ -450,7 +458,7 @@ class TestEquivalence:
         assert mem_updated.cancel_requested_at is not None
         assert pg_row["cancel_requested_at"] is not None
         assert len(mem_attempts) == len(pg_attempts) == 0
-        assert len(mem_events) == len(pg_events) == 2
+        assert len(mem_events) == len(pg_events) == 1
 
     async def test_cancel_escalation_equivalence(
         self, clean_jobs_app: JobsApp, memory_jobs: InMemoryBackend
@@ -465,12 +473,14 @@ class TestEquivalence:
         mem_events = await memory_jobs.get_events(mem_job_id)
 
         # ── PG backend ───────────────────────────────────────────
+        # Real enqueue + dispatch for the same reason as
+        # test_cancel_running_equivalence: a claim writes no event row,
+        # so the comparable stream starts at the cancel_request.
         deps = clean_jobs_app.deps
         backend = clean_jobs_app.backend
         schema = deps.settings.schema_name
 
-        async with deps.worker_pool.acquire() as conn:
-            pg_worker, pg_job_id = await setup_running_job(conn, schema, with_events=True)
+        pg_job_id, pg_worker = await enqueue_and_dispatch_pg(backend)
 
         await backend.write_cancel_request(pg_job_id, None)
         pg_esc = await backend.write_cancel_escalation(pg_job_id, pg_worker, 2)  # type: ignore[arg-type] # Why: Literal[2] not narrowed
@@ -489,7 +499,7 @@ class TestEquivalence:
         assert pg_row is not None
         assert mem_updated.cancel_phase == pg_row["cancel_phase"]
         assert mem_updated.status == pg_row["status"]
-        assert len(mem_events) == len(pg_events) == 3
+        assert len(mem_events) == len(pg_events) == 2
 
 
 # ── poll_cancel_flags ─────────────────────────────────────────
@@ -628,3 +638,176 @@ class TestMarkCancelledPoolSource:
         # Idempotent: second call returns False
         result2 = await backend.mark_cancelled(job_id, worker_id, attempt=1)
         assert result2 is False
+
+
+# ── cancel-origin auditability ──────────────────────────────────────
+
+
+class TestCancelOriginAuditability:
+    """Cancel origin must be auditable from the job row alone.
+
+    A cooperative self-cancel, a forced abandon, and a job cancelled
+    while still pending are three operationally different outcomes: one
+    means an actor honoured ``ctx.cancellation_requested``, one means a
+    worker had to stop an actor that would not yield, and one means the
+    work never reached a worker at all. Operators triage those
+    differently, and logs are not a durable audit trail — so each
+    terminal cancel path stamps its own distinguishing ``error_class``
+    on the row, exactly as every terminal failure path already does.
+    Without it, monitoring can see that jobs are being cancelled but
+    never why, which is the blind spot this pins shut.
+    """
+
+    async def test_cooperative_cancel_stamps_error_class(self, clean_jobs_app: JobsApp) -> None:
+        """A cooperatively cancelled job's row carries a non-NULL
+        ``error_class`` marking it as a cancel, so the terminal write
+        is self-describing without consulting logs."""
+        deps = clean_jobs_app.deps
+        backend = clean_jobs_app.backend
+        schema = deps.settings.schema_name
+
+        async with deps.worker_pool.acquire() as conn:
+            worker_id, job_id = await setup_running_job(conn, schema)
+
+        result = await backend.mark_cancelled(job_id, worker_id, attempt=1)
+        assert result is True
+
+        async with deps.worker_pool.acquire() as conn:
+            row = await conn.fetchrow(
+                f'SELECT status, error_class FROM "{schema}".jobs WHERE id = $1', job_id
+            )
+        assert row is not None
+        assert row["status"] == "cancelled"
+        assert row["error_class"] is not None, (
+            "a cooperative cancel wrote no error_class — cancel origin is "
+            "unauditable on the job row"
+        )
+
+    async def test_cancel_origins_are_distinguishable_on_the_row(
+        self, clean_jobs_app: JobsApp
+    ) -> None:
+        """A cooperative cancel, a forced abandon, and a
+        cancelled-while-pending job each stamp a *different*
+        ``error_class``, so an operator reading three cancelled rows can
+        tell which actor yielded, which had to be killed, and which
+        never ran at all."""
+        deps = clean_jobs_app.deps
+        backend = clean_jobs_app.backend
+        schema = deps.settings.schema_name
+
+        async with deps.worker_pool.acquire() as conn:
+            coop_worker, coop_job = await setup_running_job(conn, schema)
+            abandon_worker, abandon_job = await setup_running_job(conn, schema)
+            pending_job = await create_pending_job(conn, schema)
+
+        assert await backend.mark_cancelled(coop_job, coop_worker, attempt=1) is True
+        # The abandon path is only reachable once the cooperative window
+        # has elapsed and the cancel escalated to forcing.
+        assert await backend.write_cancel_request(abandon_job, None) is True
+        assert await backend.write_cancel_escalation(abandon_job, abandon_worker, 2) is True  # type: ignore[arg-type] # Why: Literal[2] not narrowed from int literal
+        assert await backend.mark_abandoned(abandon_job) is True
+        assert await backend.write_cancel_request(pending_job, "operator stop") is True
+
+        async with deps.worker_pool.acquire() as conn:
+            rows = await conn.fetch(
+                f'SELECT id, status, error_class FROM "{schema}".jobs WHERE id = ANY($1::uuid[])',
+                [coop_job, abandon_job, pending_job],
+            )
+        by_id = {r["id"]: r for r in rows}
+        classes = {
+            "cooperative": by_id[coop_job]["error_class"],
+            "abandoned": by_id[abandon_job]["error_class"],
+            "cancelled_while_pending": by_id[pending_job]["error_class"],
+        }
+
+        assert all(v is not None for v in classes.values()), (
+            f"a cancel terminal path left error_class NULL: {classes}"
+        )
+        assert len(set(classes.values())) == 3, (
+            f"cancel origins are not distinguishable on the job row: {classes}"
+        )
+
+    async def test_cancelled_while_pending_leaves_terminal_timeline_entry(
+        self, clean_jobs_app: JobsApp
+    ) -> None:
+        """A job cancelled before it ever reached a worker still has a
+        terminal transition on its event timeline. Trimming per-denial
+        bookkeeping rows cut noise, not state transitions — no cancelled
+        job may end with a timeline that never shows it ending."""
+        deps = clean_jobs_app.deps
+        backend = clean_jobs_app.backend
+        schema = deps.settings.schema_name
+
+        async with deps.worker_pool.acquire() as conn:
+            job_id = await create_pending_job(conn, schema)
+
+        assert await backend.write_cancel_request(job_id, "operator stop") is True
+
+        async with deps.worker_pool.acquire() as conn:
+            events = await conn.fetch(
+                f'SELECT * FROM "{schema}".job_events WHERE job_id = $1 ORDER BY occurred_at',
+                job_id,
+            )
+
+        assert events, "a cancelled job ended with an empty event timeline"
+        assert_has_event(events, "state_change", to_state="cancelled")
+
+    async def test_phase_1_cancel_stamps_the_cooperative_marker(
+        self, clean_jobs_app: JobsApp
+    ) -> None:
+        """A running job cancelled while still only ASKED (cancel_phase=1)
+        reads exactly ``CancelledCooperatively`` on the row and the attempt
+        — the constant itself, not merely a non-NULL distinct value: the
+        distinctness pin above would also pass if the phase arms were
+        swapped."""
+        deps = clean_jobs_app.deps
+        backend = clean_jobs_app.backend
+        schema = deps.settings.schema_name
+
+        async with deps.worker_pool.acquire() as conn:
+            worker_id, job_id = await setup_running_job(conn, schema)
+
+        assert await backend.write_cancel_request(job_id, "operator stop") is True
+        assert await backend.mark_cancelled(job_id, worker_id, attempt=1) is True
+
+        async with deps.worker_pool.acquire() as conn:
+            row = await conn.fetchrow(
+                f'SELECT status, error_class FROM "{schema}".jobs WHERE id = $1', job_id
+            )
+            attempt = await conn.fetchrow(
+                f'SELECT error_class FROM "{schema}".job_attempts WHERE job_id = $1', job_id
+            )
+        assert row is not None
+        assert row["status"] == "cancelled"
+        assert row["error_class"] == CANCEL_ORIGIN_COOPERATIVE
+        assert attempt is not None
+        assert attempt["error_class"] == CANCEL_ORIGIN_COOPERATIVE
+
+    async def test_phase_2_cancel_stamps_the_forced_marker(self, clean_jobs_app: JobsApp) -> None:
+        """A running job cancelled after escalation (cancel_phase=2) reads
+        exactly ``CancelledForced`` on the row and the attempt — the marker
+        says the actor had to be interrupted, the operational signal to go
+        look at that actor."""
+        deps = clean_jobs_app.deps
+        backend = clean_jobs_app.backend
+        schema = deps.settings.schema_name
+
+        async with deps.worker_pool.acquire() as conn:
+            worker_id, job_id = await setup_running_job(conn, schema)
+
+        assert await backend.write_cancel_request(job_id, "operator stop") is True
+        assert await backend.write_cancel_escalation(job_id, worker_id, 2) is True  # type: ignore[arg-type] # Why: Literal[2] not narrowed from int literal
+        assert await backend.mark_cancelled(job_id, worker_id, attempt=1) is True
+
+        async with deps.worker_pool.acquire() as conn:
+            row = await conn.fetchrow(
+                f'SELECT status, error_class FROM "{schema}".jobs WHERE id = $1', job_id
+            )
+            attempt = await conn.fetchrow(
+                f'SELECT error_class FROM "{schema}".job_attempts WHERE job_id = $1', job_id
+            )
+        assert row is not None
+        assert row["status"] == "cancelled"
+        assert row["error_class"] == CANCEL_ORIGIN_FORCED
+        assert attempt is not None
+        assert attempt["error_class"] == CANCEL_ORIGIN_FORCED

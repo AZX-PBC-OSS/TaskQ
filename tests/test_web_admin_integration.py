@@ -26,6 +26,7 @@ from taskq.backend.postgres import PostgresBackend
 from taskq.constants import (
     DEFAULT_EVENT_WRITER_BATCH_SIZE,
     DEFAULT_EVENT_WRITER_STATEMENT_TIMEOUT_MS,
+    DEFAULT_MAX_RETRY_BACKOFF,
     MAX_RESULT_BYTES,
 )
 from taskq.migrate import apply_pending
@@ -86,6 +87,10 @@ class _TestBackendSettings:
     max_pending_lock_timeout_ms: float = 5000.0
     unique_for_lock_timeout_ms: float = 5000.0
     idempotency_lock_timeout_ms: float = 5000.0
+    # Reclaim-sweep backoff ceiling declared on BackendSettings — same
+    # doctrine as every knob above. Default mirrors WorkerSettings'
+    # (24 h, the module constant).
+    max_retry_backoff: timedelta = DEFAULT_MAX_RETRY_BACKOFF
 
 
 @dataclass
@@ -1046,6 +1051,157 @@ async def test_cancel_button_visibility(pool: asyncpg.Pool, conn: asyncpg.Connec
     done_resp = await _get(app, f"/admin/jobs/{done_jid}")
     assert done_resp.status_code == 200
     assert "Cancel Job" not in done_resp.text
+
+
+# ── Retry a succeeded/abandoned job through the real admin HTTP route ──
+#
+# tests/test_retry_job_source_states_parity.py already pins the backend
+# contract (Backend.retry_job accepts succeeded/abandoned) against both
+# PostgresBackend and InMemoryBackend directly. Nothing in this suite
+# previously drove a POST to /admin/jobs/{id}/retry against real Postgres
+# for ANY source state — not even the already-supported 'failed' case —
+# so the admin route's own precheck (job.status not in _TERMINAL_STATUSES)
+# and its delegation to backend.retry_job were only ever exercised through
+# a StubBackend in tests/web_admin/test_backend_delegation.py, which never
+# asserts on a real row afterward. This closes that gap for the two
+# source states the route supports.
+
+
+async def _post_retry(
+    app: FastAPI,
+    job_id: uuid.UUID,
+    *,
+    follow_redirects: bool = True,
+) -> httpx.Response:
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://test",
+        follow_redirects=follow_redirects,
+    ) as client:
+        get_resp = await client.get(f"/admin/jobs/{job_id}")
+        csrf_token = get_resp.cookies.get("taskq_csrf_token", "")
+        return await client.post(
+            f"/admin/jobs/{job_id}/retry",
+            data={"csrf_token": csrf_token},
+        )
+
+
+@pytest.mark.asyncio
+async def test_retry_succeeded_job_via_admin_http(
+    pool: asyncpg.Pool, conn: asyncpg.Connection
+) -> None:
+    """POST /admin/jobs/{id}/retry re-pends a succeeded job and clears its result.
+
+    Exercises the real route (job_retry in web/admin/ops.py), the real
+    _TERMINAL_STATUSES-derived precheck, and the real retry_job SQL
+    statement against Postgres -- not a stub. A caller reading the handle
+    after a re-run must not see the previous run's stale result.
+    """
+    jid = new_job_id()
+    sa = datetime.now(UTC)
+    await conn.execute(
+        f"""INSERT INTO {_SCHEMA_LABEL}.jobs (
+            id, actor, queue, payload, max_attempts, retry_kind,
+            status, priority, attempt, scheduled_at, schedule_to_close,
+            finished_at, result
+        ) VALUES (
+            $1, $2, $3, $4::jsonb, 3, 'transient',
+            'succeeded', 0, 1, $5::timestamptz, $5::timestamptz + interval '60 seconds',
+            $5::timestamptz, $6::jsonb
+        )""",
+        jid,
+        "test_actor",
+        "default",
+        '{"key": "value"}',
+        sa,
+        '{"ok": true}',
+    )
+
+    app = _make_app(pool)
+    resp = await _post_retry(app, jid)
+
+    assert resp.status_code == 200  # followed redirect to job detail
+
+    row = await conn.fetchrow(
+        f'SELECT status, result, finished_at FROM "{_SCHEMA_LABEL}".jobs WHERE id = $1', jid
+    )
+    assert row is not None
+    assert row["status"] in ("pending", "scheduled"), (
+        f"admin retry of a succeeded job must re-pend it, got {row['status']!r}"
+    )
+    assert row["finished_at"] is None
+    assert row["result"] is None, (
+        "the previous run's stored result must not survive an admin-triggered retry"
+    )
+
+
+@pytest.mark.asyncio
+async def test_retry_abandoned_job_via_admin_http(
+    pool: asyncpg.Pool, conn: asyncpg.Connection
+) -> None:
+    """POST /admin/jobs/{id}/retry re-pends an abandoned job.
+
+    'abandoned' is the state called out as most likely to need
+    a manual re-run (a deploy interrupted the job, it did not fail), and
+    it is the state that most needs the real HTTP route proven, not just
+    the backend method.
+    """
+    jid = new_job_id()
+    sa = datetime.now(UTC)
+    await conn.execute(
+        f"""INSERT INTO {_SCHEMA_LABEL}.jobs (
+            id, actor, queue, payload, max_attempts, retry_kind,
+            status, priority, attempt, scheduled_at, schedule_to_close,
+            finished_at
+        ) VALUES (
+            $1, $2, $3, $4::jsonb, 3, 'transient',
+            'abandoned', 0, 1, $5::timestamptz, $5::timestamptz + interval '60 seconds',
+            $5::timestamptz
+        )""",
+        jid,
+        "test_actor",
+        "default",
+        '{"key": "value"}',
+        sa,
+    )
+
+    app = _make_app(pool)
+    resp = await _post_retry(app, jid)
+
+    assert resp.status_code == 200
+
+    row = await conn.fetchrow(
+        f'SELECT status, finished_at FROM "{_SCHEMA_LABEL}".jobs WHERE id = $1', jid
+    )
+    assert row is not None
+    assert row["status"] in ("pending", "scheduled"), (
+        f"admin retry of an abandoned job must re-pend it, got {row['status']!r}"
+    )
+    assert row["finished_at"] is None
+
+
+@pytest.mark.asyncio
+async def test_retry_running_job_via_admin_http_returns_409(
+    pool: asyncpg.Pool, conn: asyncpg.Connection
+) -> None:
+    """POST /admin/jobs/{id}/retry on a live attempt returns 409 and leaves it alone.
+
+    The complement to the two widenings above: retry_job's one real
+    exclusion (a job a worker is executing right now) must still be
+    enforced by the admin route against real Postgres, not just the
+    backend method the StubBackend tests exercise.
+    """
+    worker_id = await _seed_worker(conn)
+    jid = await _seed_running_job(conn, queue="default", worker_id=worker_id)
+
+    app = _make_app(pool)
+    resp = await _post_retry(app, jid, follow_redirects=False)
+
+    assert resp.status_code == 409
+
+    row = await conn.fetchrow(f'SELECT status FROM "{_SCHEMA_LABEL}".jobs WHERE id = $1', jid)
+    assert row is not None
+    assert row["status"] == "running"
 
 
 # ── Admin UI archive fallback ──────────────────────────────────────

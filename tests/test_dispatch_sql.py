@@ -82,8 +82,7 @@ class TestDispatchStrictFifoSql:
         carrier: the LIMIT rendered as a (SELECT ... FROM params)
         subquery the planner cannot fold, so the ranked→jobs re-join was
         estimated at the whole pending index range and planned as a hash
-        join over a Seq Scan of the entire backlog (issue #130's
-        O(depth) row work). The bound now lives in top_ids as a direct
+        join over a Seq Scan of the entire backlog (O(depth) row work). The bound now lives in top_ids as a direct
         $2 parameter (folds to its value in custom-plan estimates), and
         locked drives jobs by primary key through a correlated LATERAL —
         correlation denies the hash-join path, so the lock step is
@@ -114,9 +113,10 @@ class TestDispatchStrictFifoSql:
         estimate in ANY plan, so the candidate chain is estimated at the
         whole index range and the terminal joins get planned as hash
         joins over a Seq Scan of the entire pending backlog — the
-        measured 1.04ms→55.8ms (1k→200k) depth scaling of issue #130.
-        Direct $n parameters fold in custom plans (river ships exactly
-        this: LIMIT $5::integer in JobGetAvailable).
+        measured 1.04ms→55.8ms (1k→200k) depth scaling of that
+        unbounded shape.
+        Direct $n parameters fold in custom-plan row estimates, unlike
+        subquery bounds which never fold.
         """
         for variant, sql in (
             ("strict_fifo", DISPATCH_STRICT_FIFO_SQL),
@@ -179,8 +179,13 @@ class TestDispatchStrictFifoSql:
         assert "j.status = 'pending'" in rendered
 
     def test_final_update_contains_attempt_plus_1(self) -> None:
+        # The increment is pinned through its saturating form: the claim
+        # still stamps attempt + 1 on every claimed row, and the LEAST
+        # clamp at the smallint ceiling is what keeps a row parked at
+        # 32767 (retry_kind='indefinite' climbs there) from turning the
+        # whole round into a smallint-out-of-range driver error.
         rendered = DISPATCH_STRICT_FIFO_SQL.format(schema="taskq")
-        assert "attempt = j.attempt + 1" in rendered
+        assert "attempt = LEAST(j.attempt + 1, 32767)" in rendered
 
     def test_final_update_contains_returning(self) -> None:
         rendered = DISPATCH_STRICT_FIFO_SQL.format(schema="taskq")
@@ -326,13 +331,13 @@ class TestDispatchStrictFifoSql:
             )
 
     def test_contains_vendor_derived_structural_patterns(self) -> None:
-        """Verify structural patterns derived from vendor precedents are present:
-        - FOR UPDATE OF ... SKIP LOCKED (river-style atomicity)
-        - DISTINCT ON for per-identity dedup (procrastinate-style serialization)
-        - boolean_gate concurrency cap (pgqueuer-style LEFT JOIN + COUNT)
-        - LATERAL per-actor subquery (oban-style subset CTE fence)
+        """Verify essential structural patterns are present:
+        - FOR UPDATE OF ... SKIP LOCKED for atomic row locking
+        - DISTINCT ON for per-identity dedup and serialization
+        - boolean_gate concurrency cap via LEFT JOIN + COUNT
+        - LATERAL per-actor subquery for bounded subset exploration
         - the id set finalized before the heap re-join, bounded by a
-          parameterized LIMIT (river JobGetAvailable's locked_jobs shape)
+          parameterized LIMIT for depth-safe execution
         """
         rendered = DISPATCH_STRICT_FIFO_SQL.format(schema="taskq")
         assert "FOR UPDATE OF j2 SKIP LOCKED" in rendered
@@ -408,8 +413,8 @@ class TestDispatchRoundRobinSql:
         A window function cannot short-circuit: the shipped shape
         computed ROW_NUMBER over EVERY due pending row and only then
         filtered fairness_rank <= residual * oversample, so the WindowAgg
-        (and the scan feeding it) paid full backlog depth every round
-        (issue #130). Per-cohort top-k probes yield the identical
+        (and the scan feeding it) paid full backlog depth every round.
+        Per-cohort top-k probes yield the identical
         surviving rows with identical ranks while the window's input is
         at most cohorts * residual * oversample rows per pair.
         """

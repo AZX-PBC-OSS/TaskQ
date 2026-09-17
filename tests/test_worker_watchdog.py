@@ -16,12 +16,15 @@ from collections.abc import Callable
 from typing import Any
 
 import pytest
+import structlog
 
+from taskq.worker._stall_tally import StallAttributionTally
 from taskq.worker._watchdog import (
     EXIT_WATCHDOG,
     LoopLagWatchdog,
     LoopLiveness,
     ShutdownWatchdog,
+    attribute_stall,
     dump_task_stacks,
     loop_watchdog_loop,
     trip,
@@ -258,6 +261,103 @@ def test_loop_lag_watchdog_arms_early_on_first_tick(exit_codes: list[int]) -> No
         clock=clock,
     )
     assert watchdog._armed()
+
+
+# ── Detector 4: the event-loop lag histogram ─────────────────────────
+
+
+class _HistogramRecorder:
+    def __init__(self) -> None:
+        self.samples: list[float] = []
+
+    def record(self, value: float, attrs: dict[str, object] | None = None) -> None:
+        self.samples.append(value)
+
+
+async def test_event_loop_lag_histogram_samples_a_blocked_loop(
+    monkeypatch: pytest.MonkeyPatch, exit_codes: list[int]
+) -> None:
+    """taskq.worker.event_loop_lag_seconds is the continuous signal under
+    the warn/trip thresholds: a healthy loop samples microseconds per
+    beat, and a loop blocked for 0.3 s produces one sample at least that
+    long (the beat request outstanding when the block began lands when it
+    ends — the requests polled during the block must not re-stamp it)."""
+    from taskq.worker import _watchdog as watchdog_mod
+
+    histogram = _HistogramRecorder()
+    monkeypatch.setattr(watchdog_mod, "_event_loop_lag", histogram)
+    block, poll = 0.3, 0.01
+    watchdog = LoopLagWatchdog(
+        asyncio.get_running_loop(),
+        LoopLiveness(),
+        budget=100.0,
+        warn_budget=50.0,
+        startup_grace=0.0,
+        poll_interval=poll,
+    )
+    watchdog.start()
+    try:
+        deadline = time.monotonic() + 5.0
+        while len(histogram.samples) < 3 and time.monotonic() < deadline:  # noqa: ASYNC110  # Why: the producer is a thread with no event to await; a bounded poll is the seam.
+            await asyncio.sleep(poll)
+        healthy = list(histogram.samples)
+        assert len(healthy) >= 3, "a responsive loop must produce a sample per landed beat"
+        assert max(healthy) < block / 2, healthy
+
+        time.sleep(block)  # noqa: ASYNC251  # Why: blocking the loop IS the scenario under test.
+
+        # The beat outstanding across the block lands when it ends and is
+        # sampled on the watchdog's next poll; a beat that had landed just
+        # before the block may be sampled first, so wait for the block-
+        # sized sample rather than the first new one.
+        deadline = time.monotonic() + 5.0
+        while (  # noqa: ASYNC110  # Why: as above.
+            not any(s >= block - poll for s in histogram.samples[len(healthy) :])
+            and time.monotonic() < deadline
+        ):
+            await asyncio.sleep(poll)
+        stalled = histogram.samples[len(healthy) :]
+        assert stalled and max(stalled) >= block - poll, (
+            f"the sample must carry the block, not the last poll's request: {stalled}"
+        )
+        assert max(stalled) < block + 1.0
+        assert exit_codes == []
+    finally:
+        watchdog.stop()
+
+
+async def test_event_loop_lag_trip_records_the_stall_before_exit(
+    monkeypatch: pytest.MonkeyPatch, exit_codes: list[int]
+) -> None:
+    """A loop that never recovers trips; the stall observed at the trip is
+    recorded so the histogram is not silent about the one lag that
+    mattered most."""
+    from taskq.worker import _watchdog as watchdog_mod
+
+    histogram = _HistogramRecorder()
+    monkeypatch.setattr(watchdog_mod, "_event_loop_lag", histogram)
+    monkeypatch.setattr(watchdog_mod, "_flush_metrics_before_exit", lambda: None)
+    monkeypatch.setattr("taskq.worker._watchdog.faulthandler.dump_traceback", lambda *a, **k: None)
+    t, clock = _clock()
+    watchdog = LoopLagWatchdog(
+        _NeverResponsiveLoop(),  # type: ignore[arg-type]
+        LoopLiveness(clock=clock),
+        budget=1.0,
+        warn_budget=0.5,
+        startup_grace=0.0,
+        poll_interval=0.01,
+        clock=clock,
+    )
+    watchdog.start()
+    try:
+        t[0] = 5.0
+        deadline = time.monotonic() + 5.0
+        while not exit_codes and time.monotonic() < deadline:
+            time.sleep(0.01)  # noqa: ASYNC251  # Why: the trip fires on the watchdog thread against a fake loop; nothing here is awaitable.
+    finally:
+        watchdog.stop()
+    assert exit_codes == [EXIT_WATCHDOG]
+    assert histogram.samples and max(histogram.samples) >= 1.0, histogram.samples
 
 
 # ── Detector 4, tier 1: non-terminal lag warning ─────────────────────
@@ -847,3 +947,175 @@ async def test_sibling_crash_counter_counts_crashes_not_cancellations(
         f"one crash cancelled one sibling; counter must record 1 crash, "
         f"not 1 crash + 1 cancellation: {increments}"
     )
+
+
+# ── Detector 4: the stall classifier and attribution ─────────────────
+
+
+def _stall_watchdog(clock: Callable[[], float], **overrides: Any) -> LoopLagWatchdog:
+    """A lag watchdog for classifier tests: poll and warn budgets sized so
+    a single advanced-clock step crosses the warn tier, and the terminal
+    budget so large the trip tier is out of the way."""
+    defaults: dict[str, Any] = {
+        "budget": 100.0,
+        "warn_budget": 1.0,
+        "startup_grace": 0.0,
+        "poll_interval": 0.5,
+        "clock": clock,
+    }
+    defaults.update(overrides)
+    return LoopLagWatchdog(
+        _NeverResponsiveLoop(),  # type: ignore[arg-type]
+        LoopLiveness(clock=clock),
+        **defaults,
+    )
+
+
+def _attributed_events(logs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [e for e in logs if e["event"] == "event-loop-stall-attributed"]
+
+
+def test_classifier_blocking_call_when_the_watchdog_thread_keeps_ticking() -> None:
+    """Loop lag with a quiet watchdog thread (its own waits on time) is a
+    synchronous call that RELEASED the GIL: the sampling is exact because
+    the watchdog thread keeps running while the loop cannot."""
+    t, clock = _clock()
+    tally = StallAttributionTally()
+    watchdog = _stall_watchdog(clock, stall_tally=tally)
+    with structlog.testing.capture_logs() as logs:
+        t[0] += 2.0  # one poll, lag 2s past the 1s warn budget
+        watchdog._poll()
+    events = _attributed_events(logs)
+    assert len(events) == 1
+    event = events[0]
+    assert event["kind"] == "blocking_call"
+    assert event["actor"] is None  # no registered actor in the sampled stack
+    assert event["frame"] is not None
+    assert event["samples"] == 1
+    assert "asyncio.to_thread" in event["remedy"]
+    assert tally.snapshot() == {"_unattributed_": {"blocking_call": 1}}
+
+
+def test_classifier_gil_held_when_the_watchdogs_own_waits_overshoot() -> None:
+    """Loop lag with the watchdog thread's OWN wakeup starved is the
+    interpreter held: the overshoot of one wait past a full extra interval
+    is the bystander signal a blocking call that released the GIL cannot
+    produce."""
+    t, clock = _clock()
+    watchdog = _stall_watchdog(clock)
+    watchdog._note_own_wait(1.5)  # waited 1.5s for a 0.5s interval
+    with structlog.testing.capture_logs() as logs:
+        t[0] += 2.0
+        watchdog._poll()
+    events = _attributed_events(logs)
+    assert len(events) == 1
+    event = events[0]
+    assert event["kind"] == "gil_held"
+    assert "chunk" in event["remedy"]
+
+
+def test_classifier_threshold_tolerates_scheduler_jitter() -> None:
+    """A wait may overshoot by scheduler jitter up to a full extra
+    interval without flipping the kind; past it, the same lag is GIL
+    pressure. The boundary sits AT the extra interval, not inside it."""
+    t, clock = _clock()
+    watchdog = _stall_watchdog(clock)
+    watchdog._note_own_wait(1.0)  # overshoot exactly one interval: still jitter
+    with structlog.testing.capture_logs() as logs:
+        t[0] += 2.0
+        watchdog._poll()
+    assert _attributed_events(logs)[0]["kind"] == "blocking_call"
+
+    watchdog_two = _stall_watchdog(clock)
+    watchdog_two._note_own_wait(1.01)  # one interval plus one tick: pressure
+    with structlog.testing.capture_logs() as logs:
+        t[0] += 2.0
+        watchdog_two._poll()
+    assert _attributed_events(logs)[0]["kind"] == "gil_held"
+
+
+def test_attribution_does_not_fire_below_the_warn_budget() -> None:
+    t, clock = _clock()
+    watchdog = _stall_watchdog(clock)
+    with structlog.testing.capture_logs() as logs:
+        t[0] += 0.5  # lag 0.5s, under the 1s warn budget
+        watchdog._poll()
+    assert _attributed_events(logs) == []
+
+
+def test_stall_sampling_keeps_a_bounded_ring() -> None:
+    t, clock = _clock()
+    watchdog = _stall_watchdog(clock, warn_budget=0.1)
+    for _ in range(30):
+        t[0] += 0.2
+        watchdog._poll()
+    with structlog.testing.capture_logs():
+        pass
+    assert len(watchdog._stall_samples) <= 16
+
+
+def test_attribute_stall_walks_outward_to_the_actor_boundary() -> None:
+    """The sampled stack is walked from the blocking frame OUTWARD: the
+    first frame whose code object is a registered actor names the actor,
+    and the innermost non-taskq frame is the cited file:line:function."""
+    marker_code = test_attribute_stall_walks_outward_to_the_actor_boundary.__code__
+    samples = [
+        (
+            ("/app/worker.py", 10, "dispatcher", 1),
+            ("/app/myapp/actors.py", 42, "send_email", id(marker_code)),
+        ),
+    ]
+    actor, frame, _stack = attribute_stall(samples, {id(marker_code): "send_email"})
+    assert actor == "send_email"
+    assert frame == "/app/worker.py:10:dispatcher"
+
+
+def test_attribute_stall_without_an_actor_still_cites_the_frame() -> None:
+    samples = [(("/usr/lib/python3/subprocess.py", 7, "wait", 1),)]
+    actor, frame, _stack = attribute_stall(samples, {})
+    assert actor is None
+    assert frame == "/usr/lib/python3/subprocess.py:7:wait"
+
+
+def test_unique_job_id_carried_only_when_exactly_one_job_matches() -> None:
+    _t, clock = _clock()
+    watchdog = _stall_watchdog(
+        clock,
+        list_running_jobs=lambda: [("send_email", "job-1"), ("resize_image", "job-2")],
+    )
+    assert watchdog._unique_job_id("send_email") == "job-1"
+    assert watchdog._unique_job_id("nobody") is None
+    assert watchdog._unique_job_id(None) is None
+
+    ambiguous = _stall_watchdog(
+        clock,
+        list_running_jobs=lambda: [("send_email", "job-1"), ("send_email", "job-2")],
+    )
+    assert ambiguous._unique_job_id("send_email") is None
+
+
+def test_trip_tier_emits_the_attribution_before_the_exit(
+    monkeypatch: pytest.MonkeyPatch, exit_codes: list[int]
+) -> None:
+    """The terminal tier attributes the stall too: the trip is the last
+    thing the process ever reports, and it must name the actor that
+    forced it. _warn_recorder keeps the real thread dumps off stderr."""
+    _increments, _dumps = _warn_recorder(monkeypatch)
+    liveness = LoopLiveness()
+    watchdog = LoopLagWatchdog(
+        _NeverResponsiveLoop(),  # type: ignore[arg-type]
+        liveness,
+        budget=0.05,
+        warn_budget=0.01,
+        startup_grace=0.0,
+    )
+    with structlog.testing.capture_logs() as logs:
+        watchdog.start()
+        deadline = time.monotonic() + 5.0
+        while not exit_codes and time.monotonic() < deadline:
+            time.sleep(0.01)
+        watchdog.stop()
+    assert exit_codes == [EXIT_WATCHDOG]
+    events = _attributed_events(logs)
+    assert events, "the trip tier must emit an attributed stall warning"
+    assert any(e["lag_seconds"] >= 0.05 for e in events)

@@ -83,7 +83,7 @@ class _ScriptedPool:
     def __init__(self, conn: _ScriptedConnection) -> None:
         self._conn = conn
 
-    def acquire(self) -> _AcquireCtx:
+    def acquire(self, *, timeout: float | None = None) -> _AcquireCtx:
         return _AcquireCtx(self._conn)
 
 
@@ -462,6 +462,31 @@ def test_rate_limit_reset_pg_only_bucket_is_not_a_500(monkeypatch: pytest.Monkey
     assert "not registered in this admin process" in resp.text  # pyright: ignore[reportUnknownMemberType]
 
 
+def test_rate_limit_reset_timeout_is_a_503_with_retry_after(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A reset whose backend round trip outlives admin_acquire_timeout
+    answers 503 with Retry-After — the same shape the pool checkout uses —
+    never a parked request and never a raw TimeoutError 500."""
+    monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
+    monkeypatch.setenv("TASKQ_ADMIN_UI_ALLOW_RATE_LIMIT_RESET", "true")
+    bucket = TokenBucket("api:global", capacity=3, refill_per_second=1.0, backend="memory")
+    monkeypatch.setattr(rl_registry, "_rate_limits", {"api:global": bucket})
+
+    async def _reset_raises_timeout(*_: object, **__: object) -> None:
+        raise TimeoutError
+
+    monkeypatch.setattr(rl_registry, "reset", _reset_raises_timeout)
+    conn = _ScriptedConnection()
+    client = _make_app(_ScriptedPool(conn))
+    token = _get_csrf_token(client)
+    resp = client.post(
+        "/rate-limits/api%3Aglobal/reset", data={"csrf_token": token}, follow_redirects=False
+    )
+    assert resp.status_code == 503  # pyright: ignore[reportUnknownMemberType]
+    assert resp.headers["retry-after"] == "2"  # pyright: ignore[reportUnknownMemberType]
+
+
 # ── Rate-limits page ─────────────────────────────────────────────────────
 
 
@@ -572,7 +597,13 @@ def test_reservations_page_sync_slots_success_refetches(monkeypatch: pytest.Monk
     reservation = ConcurrencyReservation("premium-api", slots=5, lease=timedelta(seconds=30))
     monkeypatch.setattr(rl_registry, "_reservations", {"premium-api": reservation})
 
-    async def _fake_sync_slots(reservations: object, pool: object, *, schema: str) -> None:
+    async def _fake_sync_slots(
+        reservations: object,
+        pool: object,
+        *,
+        schema: str,
+        timeout: "float | None" = None,  # noqa: ASYNC109  # Why: mirrors the production signature the route calls.
+    ) -> None:
         return None
 
     monkeypatch.setattr("taskq.ratelimit.reservation.sync_slots", _fake_sync_slots)
@@ -603,7 +634,13 @@ def test_reservations_page_excludes_foreign_schema_reservations(
 
     synced: list[list[str]] = []
 
-    async def _spy_sync_slots(reservations: object, pool: object, *, schema: str) -> None:
+    async def _spy_sync_slots(
+        reservations: object,
+        pool: object,
+        *,
+        schema: str,
+        timeout: "float | None" = None,  # noqa: ASYNC109  # Why: mirrors the production signature the route calls.
+    ) -> None:
         synced.append([r.name for r in reservations])  # type: ignore[union-attr]  # Why: test spy recording the names sync_slots was asked to reconcile.
 
     monkeypatch.setattr("taskq.ratelimit.reservation.sync_slots", _spy_sync_slots)
@@ -672,7 +709,7 @@ async def test_fetch_redis_rl_state_token_bucket_empty_raw_skips() -> None:
     """An empty hgetall result for a token bucket does not populate the result dict."""
     # StubPipelinedRedis's default hgetall reader is the empty-hash case.
     result = await _fetch_redis_rl_state(
-        StubPipelinedRedis(), "taskq", [("api:global", "token_bucket")]
+        StubPipelinedRedis(), "taskq", [("api:global", "token_bucket")], read_timeout=1.0
     )
     assert result == {}
 
@@ -685,7 +722,7 @@ async def test_fetch_redis_rl_state_gcra_present() -> None:
             return b"12345.0"
 
     result = await _fetch_redis_rl_state(
-        _FakeRedis(), "taskq", [("my_gcra", "sliding_window_gcra")]
+        _FakeRedis(), "taskq", [("my_gcra", "sliding_window_gcra")], read_timeout=1.0
     )
     assert result is not None
     assert result["my_gcra"]["tat"] == "12345.0"
@@ -695,7 +732,7 @@ async def test_fetch_redis_rl_state_gcra_absent() -> None:
     """sliding_window_gcra kind with no TAT key present does not populate the result."""
     # StubPipelinedRedis's default get reader is the missing-key case.
     result = await _fetch_redis_rl_state(
-        StubPipelinedRedis(), "taskq", [("my_gcra", "sliding_window_gcra")]
+        StubPipelinedRedis(), "taskq", [("my_gcra", "sliding_window_gcra")], read_timeout=1.0
     )
     assert result == {}
 
@@ -704,7 +741,7 @@ async def test_fetch_redis_rl_state_sliding_window_log_zero_count_skips() -> Non
     """A zero ZCARD count for sliding_window_log does not populate the result."""
     # StubPipelinedRedis's default zcard reader is the empty-zset case.
     result = await _fetch_redis_rl_state(
-        StubPipelinedRedis(), "taskq", [("my_window", "sliding_window_log")]
+        StubPipelinedRedis(), "taskq", [("my_window", "sliding_window_log")], read_timeout=1.0
     )
     assert result == {}
 
@@ -731,7 +768,7 @@ async def test_fetch_redis_rl_state_unknown_kind_raises_value_error() -> None:
 
     redis = _RecordingRedis()
     with pytest.raises(ValueError, match="unknown rate-limit kind"):
-        await _fetch_redis_rl_state(redis, "taskq", [("mystery", "unknown_kind")])
+        await _fetch_redis_rl_state(redis, "taskq", [("mystery", "unknown_kind")], read_timeout=1.0)
     assert redis.commands == [], "validation must land before any Redis round trip"
 
 
@@ -797,9 +834,17 @@ def test_rate_limits_page_live_states_populate_all_fields(
         refill_per_second=None,
     )
 
+    captured: dict[str, object] = {}
+
     async def _fake_peek_all(
-        *, redis_client: object, pg_pool: object, clock: object, settings: object
+        *,
+        redis_client: object,
+        pg_pool: object,
+        clock: object,
+        settings: object,
+        timeout: "float | None" = None,  # noqa: ASYNC109  # Why: mirrors the production signature the route calls.
     ) -> dict[str, RateLimitState]:
+        captured["timeout"] = timeout
         return {"api:global": fake_state, "api:window": fake_state_no_capacity}
 
     monkeypatch.setattr(rl_registry, "peek_all", _fake_peek_all)
@@ -807,6 +852,9 @@ def test_rate_limits_page_live_states_populate_all_fields(
     client = _make_app(_ScriptedPool(conn))
     resp = client.get("/rate-limits")
     assert resp.status_code == 200  # pyright: ignore[reportUnknownMemberType]
+    # The pass is bounded by the admin UI's own backend-wait setting: a hung
+    # broker must degrade the page after it, not park the request.
+    assert captured["timeout"] == 5.0
 
 
 def test_rate_limits_page_peek_all_failure_is_swallowed(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -816,7 +864,12 @@ def test_rate_limits_page_peek_all_failure_is_swallowed(monkeypatch: pytest.Monk
     monkeypatch.setattr(rl_registry, "_rate_limits", {"api:global": bucket})
 
     async def _fake_peek_all_raises(
-        *, redis_client: object, pg_pool: object, clock: object, settings: object
+        *,
+        redis_client: object,
+        pg_pool: object,
+        clock: object,
+        settings: object,
+        timeout: "float | None" = None,  # noqa: ASYNC109  # Why: mirrors the production signature the route calls.
     ) -> dict[str, RateLimitState]:
         raise RuntimeError("peek failed")
 
@@ -852,7 +905,9 @@ def test_rate_limits_page_redis_configured_but_fetch_fails(
     bucket = TokenBucket("api:global", capacity=3, refill_per_second=1.0, backend="redis")
     monkeypatch.setattr(rl_registry, "_rate_limits", {"api:global": bucket})
 
-    async def _fake_fetch_redis_rl_state(redis_client: object, schema: str, names: object) -> None:
+    async def _fake_fetch_redis_rl_state(
+        redis_client: object, schema: str, names: object, *, read_timeout: float
+    ) -> None:
         return None
 
     monkeypatch.setattr("taskq.web.admin.ops._fetch_redis_rl_state", _fake_fetch_redis_rl_state)

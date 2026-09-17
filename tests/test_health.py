@@ -550,6 +550,45 @@ async def test_stale_socket_cleanup() -> None:
     )  # Why: test assertion checks file state synchronously; Path.exists() is a fast metadata read.
 
 
+async def _echo_nothing_and_close(
+    reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+) -> None:
+    """Peer handler that mirrors a real worker: accept, answer nothing, close.
+
+    Closing the writer matters in tests that ``wait_closed()`` a peer: a
+    handler that leaves the accepted transport open (e.g. a bare
+    ``lambda r, w: None``) makes Python 3.12's ``Server.wait_closed()`` wait
+    for that transport forever.
+    """
+    writer.close()
+    with contextlib.suppress(ConnectionError):
+        await writer.wait_closed()
+
+
+async def test_stop_never_unlinks_a_path_this_server_never_bound() -> None:
+    """The collision warn path: a live peer owns the socket file, this
+    server's bind was refused, and boot continued elsewhere. ``stop()`` must
+    leave the file exactly where it is — it is the peer's serving surface,
+    and deleting it breaks every probe already routed to the peer.
+    """
+    peer_path = _next_sock_path()
+    peer = await asyncio.start_unix_server(_echo_nothing_and_close, path=peer_path)
+    try:
+        deps = _make_deps(settings=_make_settings(peer_path))
+
+        server = HealthServer()
+        with pytest.raises(OSError, match="already in use"):
+            await server.start(deps)
+        await server.stop()
+
+        assert os.path.exists(peer_path), (  # noqa: ASYNC240 # Why: test assertion checks file state synchronously; Path.exists() is a fast metadata read.
+            "stop() unlinked the live peer's socket file this server never bound"
+        )
+    finally:
+        peer.close()
+        await peer.wait_closed()
+
+
 # ── shutdown_phase JSON serialisation ──────────────────────────
 
 

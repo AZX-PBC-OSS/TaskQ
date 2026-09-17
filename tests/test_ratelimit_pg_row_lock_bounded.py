@@ -37,7 +37,9 @@ contract against real Postgres (row locks are server state).
 """
 
 import asyncio
+import inspect
 import time
+from collections.abc import Callable
 from datetime import timedelta
 
 import asyncpg
@@ -45,10 +47,23 @@ import pytest
 import structlog.testing
 
 from taskq._ids import new_base62
+from taskq.connections import lock_budget_command_timeout_secs
 from taskq.ratelimit import SlidingWindow, TokenBucket
-from taskq.ratelimit._sliding_window_pg import _acquire_pg_gcra
+from taskq.ratelimit._lock_budget import (
+    resolve_sliding_window_lock_timeout_ms,
+    resolve_token_bucket_lock_timeout_ms,
+)
+from taskq.ratelimit._sliding_window_pg import (
+    DEFAULT_SLIDING_WINDOW_LOCK_TIMEOUT_MS,
+    _acquire_pg_gcra,
+)
+from taskq.ratelimit.token_bucket import DEFAULT_TOKEN_BUCKET_LOCK_TIMEOUT_MS
 from taskq.settings import WorkerSettings
 from taskq.testing.fixtures import ModulePgSchema
+from taskq.worker.deps import (
+    _admission_lock_budget_pairs,  # pyright: ignore[reportPrivateUsage]  # Why: the pair-list seam is the exact input open_worker_deps derives the dispatcher pool's bound from — pinning it pins the reconciliation's wiring, not a reimplementation of it.
+    open_worker_deps,
+)
 
 
 def _fake_settings() -> WorkerSettings:
@@ -672,3 +687,416 @@ class TestRowLockBoundedWaitPg:
         cleared = await _acquire_pg_gcra(sw, module_pg_pool, settings, lock_timeout_ms=250.0)
         assert cleared.allowed is True
         assert cleared.retry_after == timedelta(0)
+
+
+# ── Operator surface: the row-lock budgets are WorkerSettings knobs ──────
+#
+# The budgets above are correct but frozen: DEFAULT_TOKEN_BUCKET_LOCK_TIMEOUT_MS
+# and DEFAULT_SLIDING_WINDOW_LOCK_TIMEOUT_MS are module constants reachable only
+# through private keyword arguments that no production caller passes. Every
+# dispatch arm in sliding_window.py and token_bucket.py calls the PG acquire and
+# refund with the settings object but no budget, so the constant is the only
+# source.
+#
+# That matters because these budgets bound admission, not a background sweep.
+# With rate_limit_pg_fallback_enabled on, a Redis outage funnels the whole
+# fleet's admission through these row locks; budget exhaustion is a fail-closed
+# DENIAL that sheds load, and on the refund side it raises. An operator riding
+# out a slow-holder incident needs to widen the budget, and one riding out a
+# latency incident needs to narrow it, and today neither is possible without a
+# code change and a redeploy.
+#
+# The knobs are spelled the way the enqueue path's budgets are spelled (see
+# tests/test_enqueue_lock_budget_settings.py): a WorkerSettings field under the
+# TASKQ_ env prefix, defaulting to today's constant so wiring the surface cannot
+# change the shipped ceiling, and read at the PG use site -- where a real
+# settings object is already in hand and already consulted for schema_name.
+
+
+#: Operator budgets distinct from each other and from the 5 s default, so a
+#: wiring that falls back to the constant, or cross-wires the two knobs onto
+#: one parameter, fails instead of passing by coincidence.
+_OPERATOR_TOKEN_BUCKET_BUDGET_MS = 150.0
+_OPERATOR_SLIDING_WINDOW_BUDGET_MS = 250.0
+
+
+def _operator_settings(**overrides: object) -> WorkerSettings:
+    """Fake-pool settings carrying operator-set lock budgets.
+
+    ``load_from_dict`` is hermetic (no dotfiles, no process env) and silently
+    ignores unknown keys, so a missing field loads clean and the value simply
+    never arrives -- which is the failure these tests catch.
+    """
+    base: dict[str, object] = {"pg_dsn": "postgresql://u:p@h/d", "schema_name": "taskq_fake"}
+    base.update(overrides)
+    return WorkerSettings.load_from_dict(base)
+
+
+class TestRowLockBudgetsAreOperatorSettings:
+    """The PG rate-limiter lock budgets are WorkerSettings fields, and the
+    value an operator sets is the value the row-lock wait actually uses."""
+
+    def test_lock_budgets_are_worker_settings_fields(self) -> None:
+        """Both rate-limiter budgets exist as WorkerSettings fields, the
+        operator surface for the PG admission row locks."""
+        # WorkerSettings is a dotenvmodel DotEnvConfig, not a pydantic
+        # BaseModel: get_fields() is its introspection seam, mapping
+        # name -> (type, FieldInfo).
+        fields = WorkerSettings.get_fields()
+        missing = [
+            name
+            for name in ("token_bucket_lock_timeout_ms", "sliding_window_lock_timeout_ms")
+            if name not in fields
+        ]
+        assert not missing, (
+            f"WorkerSettings has no {missing} -- the PG rate-limiter row-lock "
+            "wait budgets are hard-coded module constants "
+            "(DEFAULT_TOKEN_BUCKET_LOCK_TIMEOUT_MS in taskq/ratelimit/"
+            "token_bucket.py, DEFAULT_SLIDING_WINDOW_LOCK_TIMEOUT_MS in "
+            "taskq/ratelimit/_sliding_window_pg.py, 5 s each) that no "
+            "production caller overrides, so an operator cannot tune them. "
+            "The enqueue path's three budgets already have this surface; "
+            "the admission path does not."
+        )
+
+    def test_lock_budgets_load_from_the_taskq_env_prefix(self) -> None:
+        """Both budgets round-trip through their TASKQ_* env keys, so the
+        env var an operator sets during an incident is the value the
+        settings object carries."""
+        s = WorkerSettings.load_from_dict(
+            {
+                "TASKQ_PG_DSN": "postgresql://u:p@h/d",
+                "TASKQ_TOKEN_BUCKET_LOCK_TIMEOUT_MS": f"{_OPERATOR_TOKEN_BUCKET_BUDGET_MS:g}",
+                "TASKQ_SLIDING_WINDOW_LOCK_TIMEOUT_MS": f"{_OPERATOR_SLIDING_WINDOW_BUDGET_MS:g}",
+            },
+        )
+        expectations = (
+            (
+                "token_bucket_lock_timeout_ms",
+                "TASKQ_TOKEN_BUCKET_LOCK_TIMEOUT_MS",
+                _OPERATOR_TOKEN_BUCKET_BUDGET_MS,
+            ),
+            (
+                "sliding_window_lock_timeout_ms",
+                "TASKQ_SLIDING_WINDOW_LOCK_TIMEOUT_MS",
+                _OPERATOR_SLIDING_WINDOW_BUDGET_MS,
+            ),
+        )
+        for name, env_var, expected in expectations:
+            loaded = getattr(s, name, None)
+            assert loaded == expected, (
+                f"{env_var}={expected:g} did not reach WorkerSettings.{name} "
+                f"(got {loaded!r}): the field does not exist, so the env var "
+                "an operator sets to retune an admission lock budget is "
+                "silently ignored."
+            )
+
+    def test_lock_budget_settings_default_to_the_shipped_constants(self) -> None:
+        """The knobs' defaults are today's constants, so wiring the settings
+        surface cannot silently change the shipped ceiling for a deployment
+        that never sets the env var."""
+        defaults = (
+            ("token_bucket_lock_timeout_ms", DEFAULT_TOKEN_BUCKET_LOCK_TIMEOUT_MS),
+            ("sliding_window_lock_timeout_ms", DEFAULT_SLIDING_WINDOW_LOCK_TIMEOUT_MS),
+        )
+        for name, constant in defaults:
+            entry = WorkerSettings.get_fields().get(name)
+            assert entry is not None, (
+                f"WorkerSettings has no {name!r} field -- the {constant:g} ms "
+                "bounded-wait budget is a hard-coded constant with no "
+                "operator surface."
+            )
+            _type, info = entry
+            assert info.default == constant, (
+                f"WorkerSettings.{name} defaults to {info.default!r}, not the "
+                f"shipped {constant:g} ms constant -- wiring the knob must "
+                "preserve today's ceiling or every deployment that does not "
+                "set the env var changes behavior on upgrade."
+            )
+
+    @pytest.mark.parametrize(
+        ("resolve", "field"),
+        [
+            (resolve_token_bucket_lock_timeout_ms, "token_bucket_lock_timeout_ms"),
+            (resolve_sliding_window_lock_timeout_ms, "sliding_window_lock_timeout_ms"),
+        ],
+        ids=["token_bucket", "sliding_window"],
+    )
+    def test_settings_double_lacking_the_knob_fails_loud(
+        self,
+        resolve: Callable[[float | None, WorkerSettings | None, float], float],
+        field: str,
+    ) -> None:
+        """A settings object missing the budget field raises AttributeError
+        at the resolution seam rather than silently falling back to the
+        shipped constant: a stale or mis-spelled settings double must
+        surface as a loud failure, not as the operator's knob being
+        ignored while the wait pretends all is well."""
+
+        class _PreKnobSettings:
+            """A settings double from before the knobs existed: it carries
+            schema_name (the other field the PG paths read) but not the
+            lock-budget fields."""
+
+            schema_name = "taskq_fake"
+
+        with pytest.raises(AttributeError, match=field):
+            resolve(
+                None,
+                _PreKnobSettings(),  # type: ignore[arg-type]  # Why: the double deliberately lacks the field — its absence is the behaviour under test.
+                DEFAULT_TOKEN_BUCKET_LOCK_TIMEOUT_MS,
+            )
+
+    async def test_operator_budget_governs_the_token_bucket_acquire_wait(self) -> None:
+        """A token-bucket PG acquire called the way production calls it,
+        with no explicit budget, bounds its row-lock wait at the operator's
+        configured budget: the server-side lock_timeout GUC carries it and
+        the denial's retry hint reports it."""
+        tb = _tb("tb_row_lock_operator_budget")
+        conn = _RowLockFakeConn(select_times_out=True)
+        settings = _operator_settings(token_bucket_lock_timeout_ms=_OPERATOR_TOKEN_BUCKET_BUDGET_MS)
+        decision = await tb._acquire_pg(  # pyright: ignore[reportPrivateUsage]  # Why: the acquire is the unit under test; the public surface wraps it in Redis-fallback machinery a fake pool cannot satisfy.
+            1.0,
+            _FakePgPool(conn),  # type: ignore[arg-type]  # Why: duck-typed pool stand-in
+            settings,
+            # No lock_timeout_ms override: this is the exact call shape
+            # TokenBucket.acquire's postgres arm uses in production.
+        )
+        assert decision.allowed is False
+        assert conn.set_config_values == [f"{round(_OPERATOR_TOKEN_BUCKET_BUDGET_MS)}ms"], (
+            f"the server-side lock_timeout GUC was set to "
+            f"{conn.set_config_values!r}, not the operator's "
+            f"{_OPERATOR_TOKEN_BUCKET_BUDGET_MS:g} ms budget -- the wait real "
+            "Postgres enforces is still the frozen module default, because "
+            "the acquire never reads a budget off the settings object it was "
+            "handed."
+        )
+        assert decision.retry_after == timedelta(milliseconds=_OPERATOR_TOKEN_BUCKET_BUDGET_MS), (
+            "the denial's retry hint must be one more of the OPERATOR's "
+            "budget: a hint derived from the frozen default tells callers to "
+            "back off for a window the limiter no longer waits."
+        )
+
+    async def test_operator_budget_governs_the_gcra_acquire_wait(self) -> None:
+        """The GCRA PG acquire honors the sliding-window budget from
+        settings under the same no-override call shape, so both admission
+        styles share one operator knob rather than one being tunable and
+        the other frozen."""
+        sw = _sw("gcra_row_lock_operator_budget")
+        conn = _RowLockFakeConn(select_times_out=True)
+        settings = _operator_settings(
+            sliding_window_lock_timeout_ms=_OPERATOR_SLIDING_WINDOW_BUDGET_MS
+        )
+        decision = await _acquire_pg_gcra(
+            sw,
+            _FakePgPool(conn),  # type: ignore[arg-type]  # Why: duck-typed pool stand-in
+            settings,
+            # No lock_timeout_ms override: the shape sliding_window.py's
+            # postgres/gcra dispatch arm uses.
+        )
+        assert decision.allowed is False
+        assert conn.set_config_values == [f"{round(_OPERATOR_SLIDING_WINDOW_BUDGET_MS)}ms"], (
+            f"the server-side lock_timeout GUC was set to "
+            f"{conn.set_config_values!r}, not the operator's "
+            f"{_OPERATOR_SLIDING_WINDOW_BUDGET_MS:g} ms budget."
+        )
+        assert decision.retry_after == timedelta(milliseconds=_OPERATOR_SLIDING_WINDOW_BUDGET_MS), (
+            "the denial's retry hint must be one more of the OPERATOR's budget"
+        )
+
+    async def test_operator_budget_governs_the_token_bucket_refund_wait(self) -> None:
+        """The refund's row-lock wait honors the same operator budget as
+        the acquire.
+
+        The refund is the arm most easily left behind by a partial fix: it
+        is a separate method with its own frozen default, and it is the arm
+        where exhaustion RAISES rather than denying. A refund left on the
+        frozen budget while the acquire is tuned down means spent tokens
+        sit unreturned for a window the operator thought they had shortened,
+        and for a fixed-quota bucket an unreturned token is gone for good.
+        """
+        tb = _tb("tb_refund_row_lock_operator_budget")
+        conn = _RowLockFakeConn(select_times_out=True)
+        settings = _operator_settings(token_bucket_lock_timeout_ms=_OPERATOR_TOKEN_BUCKET_BUDGET_MS)
+        with pytest.raises(asyncpg.LockNotAvailableError):
+            await tb._refund_pg(  # pyright: ignore[reportPrivateUsage]  # Why: the refund is the unit under test; the public surface wraps it in machinery a fake pool cannot satisfy.
+                1.0,
+                _FakePgPool(conn),  # type: ignore[arg-type]  # Why: duck-typed pool stand-in
+                settings,
+                # No lock_timeout_ms override: the shape TokenBucket.refund's
+                # postgres arm uses in production.
+            )
+        assert conn.set_config_values == [f"{round(_OPERATOR_TOKEN_BUCKET_BUDGET_MS)}ms"], (
+            f"the refund's server-side lock_timeout GUC was set to "
+            f"{conn.set_config_values!r}, not the operator's "
+            f"{_OPERATOR_TOKEN_BUCKET_BUDGET_MS:g} ms budget -- the refund arm "
+            "still reads the frozen module default even once the acquire arm "
+            "is plumbed."
+        )
+
+
+class TestAdmissionLockBudgetReDerivesTheDispatcherPoolBound:
+    """A widened admission lock budget re-derives the dispatcher pool's own
+    client-side ``command_timeout`` upward, so the pool's per-statement
+    timer can never truncate the operator's wider server-side budget.
+
+    ``dispatcher_pool`` is the pool the admission-path acquires actually
+    run on in production (``taskq.worker.deps.open_worker_deps`` builds it,
+    and ``_leader_sweeps.py`` / the rate-limit registry run their PG
+    acquires against exactly this pool). The acquires wrap the contended
+    tier in ``asyncio.wait_for(..., timeout=lock_timeout_ms / 1000 +
+    slack)`` — but that ``wait_for`` is layered OUTSIDE asyncpg's own
+    per-statement ``command_timeout`` enforcement, which fires
+    independently on the connection itself. Left unreconciled, a budget
+    widened past the pool's bound is silently truncated by it: the
+    connection's timer fires before the operator's wider server-side
+    ``lock_timeout`` can produce the fail-closed denial with its retry
+    hint.
+
+    The reconciliation these tests pin: ``open_worker_deps`` derives the
+    dispatcher pool's bound through
+    ``taskq.connections.lock_budget_command_timeout_secs`` from the
+    ``(configured, shipped-default)`` pairs that
+    ``_admission_lock_budget_pairs`` reads off the two admission budget
+    fields, with ``settings.dispatcher_command_timeout`` as the floor —
+    the same machinery the client pool applies to the enqueue budgets
+    (``taskq.client._taskq._ENQUEUE_LOCK_BUDGET_FIELDS``). At the shipped
+    defaults the derived bound IS the configured value, so a deployment
+    that sets nothing keeps byte-identical behavior; a budget widened
+    past its default raises the bound to ``budget / 0.8``, so the
+    server-side ``lock_timeout`` refusal always fires a fifth of the
+    bound ahead of the pool's client-side timer. The leader/notify
+    dedicated connections keep the CONFIGURED value: no admission
+    acquire runs on them.
+
+    There is deliberately NO settings-level cross-field validator here:
+    refusing a valid configuration would be strictly weaker than
+    honouring it. (This class previously pinned the pre-reconciliation
+    defect — a widened budget silently accepted and then truncated at
+    run time; its negative form is ungreenable now that the derivation
+    exists, and its own failure message instructed this rewrite.)
+    """
+
+    def test_shipped_defaults_keep_the_pool_bound_byte_identical(self) -> None:
+        """A deployment that sets nothing gets exactly the pre-knob pool
+        bound: the pairs carry each budget's shipped constant as BOTH the
+        configured and default value, and the derivation returns the
+        configured floor untouched."""
+        settings = _operator_settings()
+        pairs = _admission_lock_budget_pairs(settings)
+        assert pairs == [
+            (DEFAULT_TOKEN_BUCKET_LOCK_TIMEOUT_MS, DEFAULT_TOKEN_BUCKET_LOCK_TIMEOUT_MS),
+            (DEFAULT_SLIDING_WINDOW_LOCK_TIMEOUT_MS, DEFAULT_SLIDING_WINDOW_LOCK_TIMEOUT_MS),
+        ], (
+            "the derivation input drifted from the shipped constants — the "
+            "pairs must carry (configured, shipped default) per admission "
+            "budget, read off the settings fields, so a widened budget is "
+            "detected against its own default"
+        )
+        derived = lock_budget_command_timeout_secs(
+            pairs, floor_secs=settings.dispatcher_command_timeout
+        )
+        assert derived == settings.dispatcher_command_timeout == 5.0, (
+            "at the shipped defaults the derived dispatcher pool bound must "
+            "BE the configured dispatcher_command_timeout — the "
+            "reconciliation exists to deliver WIDENED budgets and must not "
+            "move the bound for a deployment that sets nothing"
+        )
+
+    @pytest.mark.parametrize(
+        ("field", "widened_ms"),
+        [
+            ("token_bucket_lock_timeout_ms", 8000.0),
+            ("sliding_window_lock_timeout_ms", 9000.0),
+        ],
+        ids=["token_bucket", "sliding_window"],
+    )
+    def test_widened_admission_budget_re_derives_a_bound_that_cannot_truncate_it(
+        self, field: str, widened_ms: float
+    ) -> None:
+        """A budget widened past its 5000ms shipped default re-derives the
+        pool bound to ``budget / 0.8``: the server-side ``lock_timeout``
+        fires at exactly the 0.8 share of the bound, so the pool's
+        client-side timer always loses the race and the denial (with its
+        retry hint) is what the caller sees. The two budgets use distinct
+        widened values so a cross-wiring onto one parameter fails instead
+        of passing by coincidence."""
+        settings = _operator_settings(**{field: f"{widened_ms:g}"})
+        derived = lock_budget_command_timeout_secs(
+            _admission_lock_budget_pairs(settings),
+            floor_secs=settings.dispatcher_command_timeout,
+        )
+        expected_secs = widened_ms / 1000.0 / 0.8
+        assert derived == expected_secs, (
+            f"a widened {field}={widened_ms:g}ms must re-derive the "
+            f"dispatcher pool's command_timeout to {expected_secs:g}s "
+            f"(budget / 0.8); got {derived:g}s — left at the "
+            f"{settings.dispatcher_command_timeout:g}s floor, the pool's own "
+            "client-side timer would fire first and silently truncate the "
+            "operator's wider server-side budget"
+        )
+        assert derived * 1000.0 * 0.8 == widened_ms, (
+            "the widened budget occupies exactly its share of the derived "
+            "bound — the server-side refusal fires a fifth of the bound "
+            "ahead of the pool's client-side timer"
+        )
+        assert derived > settings.dispatcher_command_timeout
+
+    def test_two_widened_budgets_raise_the_bound_to_the_wider_one(self) -> None:
+        """With both budgets widened, the bound follows the WIDER budget —
+        the narrower one then fits inside the same bound unclamped."""
+        settings = _operator_settings(
+            token_bucket_lock_timeout_ms="8000",
+            sliding_window_lock_timeout_ms="12000",
+        )
+        derived = lock_budget_command_timeout_secs(
+            _admission_lock_budget_pairs(settings),
+            floor_secs=settings.dispatcher_command_timeout,
+        )
+        assert derived == 12000.0 / 1000.0 / 0.8 == 15.0
+
+    def test_narrowed_or_unbounded_budgets_never_lower_the_pool_bound(self) -> None:
+        """A narrowed budget, ``0``, or a negative value (both spell an
+        unbounded server-side wait under the ``lock_timeout`` GUC
+        convention) never moves the bound off the configured floor: the
+        floor already delivers a narrowed budget, and an unbounded wait
+        cannot fit inside any finite bound — dropping the pool's
+        per-query bound for it would remove the black-hole guard every
+        other statement relies on."""
+        for value in ("1000", "0", "-1"):
+            settings = _operator_settings(
+                token_bucket_lock_timeout_ms=value,
+                sliding_window_lock_timeout_ms=value,
+            )
+            derived = lock_budget_command_timeout_secs(
+                _admission_lock_budget_pairs(settings),
+                floor_secs=settings.dispatcher_command_timeout,
+            )
+            assert derived == settings.dispatcher_command_timeout, (
+                f"budgets of {value}ms must leave the pool bound at the "
+                f"configured floor; got {derived:g}s"
+            )
+
+    def test_open_worker_deps_applies_the_derived_bound_to_the_dispatcher_pool(
+        self,
+    ) -> None:
+        """The derivation is wired, not dead code: ``open_worker_deps``
+        feeds the derived value into the dispatcher pool factory's
+        ``command_timeout``. A refactor that stopped applying it (the
+        original defect's shape — machinery present, admission fields
+        never wired in) fails here even though the derivation's own unit
+        tests still pass."""
+        src = inspect.getsource(open_worker_deps)
+        assert "lock_budget_command_timeout_secs(" in src, (
+            "open_worker_deps no longer derives any pool bound from the lock budgets"
+        )
+        assert "_admission_lock_budget_pairs(settings)" in src, (
+            "open_worker_deps no longer derives the dispatcher pool bound "
+            "from the admission lock budgets — a widened "
+            "token_bucket_lock_timeout_ms / sliding_window_lock_timeout_ms "
+            "is silently truncated by the pool's own command_timeout again"
+        )
+        assert "command_timeout=dispatcher_pool_command_timeout" in src, (
+            "the dispatcher pool factory no longer receives the derived "
+            "bound as its command_timeout"
+        )

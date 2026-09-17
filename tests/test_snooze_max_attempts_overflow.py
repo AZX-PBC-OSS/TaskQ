@@ -68,6 +68,133 @@ def test_retry_policy_rejects_out_of_smallint_range_max_attempts() -> None:
     )
 
 
+def test_enqueue_args_rejects_out_of_smallint_range_max_attempts() -> None:
+    """``EnqueueArgs`` itself must refuse a ``max_attempts`` that cannot
+    fit the ``jobs.max_attempts smallint NOT NULL`` column
+    (migrations/01.00.00_01_pre_initial.sql:82).
+
+    ``RetryPolicy`` guards the client-facing construction path, but
+    ``EnqueueArgs.__post_init__`` (backend/_protocol.py) is the actual
+    boundary every enqueue path funnels through — including callers that
+    build ``EnqueueArgs`` directly from a raw DB column instead of through
+    ``RetryPolicy`` (e.g. ``cron_loop.py`` reading ``actor_config.max_attempts``,
+    ``web/admin/ops.py``). Today ``__post_init__`` only checks the
+    schedule_to_close mutual-exclusion and NUL-byte text fields; it has no
+    max_attempts bound at all, so this out-of-range construction succeeds
+    silently instead of raising — a defect this test pins as failing until
+    fixed.
+    """
+    with pytest.raises((ValueError, ValidationError)) as exc_info:
+        EnqueueArgs(
+            id=new_job_id(),
+            actor="foo",
+            queue="default",
+            payload={},
+            max_attempts=_SMALLINT_MAX + 1,
+            retry_kind="fixed",
+            scheduled_at=None,
+        )
+
+    assert "smallint" in str(exc_info.value).lower(), (
+        "EnqueueArgs accepted max_attempts=32768, which does not fit the "
+        "smallint jobs.max_attempts column. Any raw EnqueueArgs construction "
+        "(direct backend use, cron re-enqueue of an actor_config row, "
+        "web/admin/ops.py) bypasses RetryPolicy's guard entirely and must be "
+        "bounded at the protocol layer itself."
+    )
+
+
+def test_enqueue_args_rejects_negative_max_attempts() -> None:
+    """``EnqueueArgs(max_attempts=-5, ...)`` must also be rejected.
+
+    A negative max_attempts is nonsensical domain-wise (a job cannot have
+    fewer than zero attempts) even though it technically fits inside the
+    smallint's signed range; it should never reach the jobs table.
+    """
+    with pytest.raises((ValueError, ValidationError)):
+        EnqueueArgs(
+            id=new_job_id(),
+            actor="foo",
+            queue="default",
+            payload={},
+            max_attempts=-5,
+            retry_kind="fixed",
+            scheduled_at=None,
+        )
+
+
+def test_enqueue_args_rejects_non_integer_max_attempts() -> None:
+    """``EnqueueArgs(max_attempts=3.5, ...)`` must be rejected, not stored.
+
+    ``check_max_attempts_domain`` (constants.py) only compares ``<`` and
+    ``>`` against the bound; it never checks ``isinstance(value, int)``.
+    A ``bool`` or ``float`` value compares fine against the smallint
+    bound and sails through silently, so ``EnqueueArgs`` accepts a
+    fractional attempt count. ``RetryPolicy`` — the client-facing
+    construction path — already rejects the same value via pydantic's
+    strict int coercion (``RetryPolicy(max_attempts=3.5)`` raises
+    ``ValidationError``), so this is a parity gap between the two
+    layers: ``EnqueueArgs`` is supposed to
+    be the one common boundary every enqueue path funnels through, and
+    it is currently laxer than the policy layer that feeds it.
+
+    "3.5 attempts" is nonsensical domain-wise the same way a negative
+    count is; Postgres will coerce or reject it in a way the in-memory
+    twin (which stores whatever Python object it is handed) will not
+    replicate, breaking backend parity for any downstream equality or
+    arithmetic against ``max_attempts``.
+    """
+    with pytest.raises((ValueError, ValidationError, TypeError)) as exc_info:
+        EnqueueArgs(
+            id=new_job_id(),
+            actor="foo",
+            queue="default",
+            payload={},
+            max_attempts=3.5,  # type: ignore[arg-type]
+            retry_kind="fixed",
+            scheduled_at=None,
+        )
+
+    assert not isinstance(exc_info.value, TypeError), (
+        "EnqueueArgs accepted max_attempts=3.5 outright (no exception at all "
+        "if this assertion is reached, the pytest.raises above would already "
+        "have failed) — a fractional attempt count must be refused with a "
+        "typed ValueError identifying the bad field, not silently stored."
+    )
+
+
+def test_enqueue_args_rejects_none_max_attempts_with_typed_error() -> None:
+    """``EnqueueArgs(max_attempts=None, ...)`` must raise a typed refusal,
+    not an untyped ``TypeError`` from the comparison inside the guard.
+
+    ``check_max_attempts_domain`` does ``if value < 1`` with no type
+    check first; handed ``None`` this raises
+    ``TypeError: '<' not supported between instances of 'NoneType' and
+    'int'`` — an implementation-detail exception a caller has no reason
+    to catch, not the "max_attempts must be >= 1" ``ValueError`` every
+    other bad value gets. A bare ``TypeError`` escaping the enqueue
+    boundary instead of a typed domain refusal is exactly the class of
+    failure a typed boundary must refuse: an untyped exception a caller cannot
+    usefully handle, escaping in place of a deliberate refusal.
+    """
+    with pytest.raises(ValueError) as exc_info:
+        EnqueueArgs(
+            id=new_job_id(),
+            actor="foo",
+            queue="default",
+            payload={},
+            max_attempts=None,  # type: ignore[arg-type]
+            retry_kind="fixed",
+            scheduled_at=None,
+        )
+
+    assert not isinstance(exc_info.value, TypeError), (
+        "EnqueueArgs(max_attempts=None) raised a bare TypeError from the "
+        "unguarded '<' comparison inside check_max_attempts_domain instead "
+        "of a typed ValueError naming max_attempts as the bad field."
+    )
+
+
 def test_retry_policy_rejects_max_attempts_that_cannot_absorb_one_snooze() -> None:
     """A job enqueued at exactly 32767 has no defensive headroom left.
 
@@ -240,14 +367,23 @@ async def _in_memory_running_job_at_ceiling(
     max_attempts: int,
 ) -> tuple[InMemoryBackend, JobId, UUID]:
     """Enqueue + dispatch one running job at *max_attempts* on the
-    in-memory mirror — the same row shape ``_seed`` builds for PG."""
+    in-memory mirror — the same row shape ``_seed`` builds for PG.
+
+    ``EnqueueArgs`` refuses the top-of-domain value (one of defensive
+    headroom — see ``MAX_ENQUEUABLE_MAX_ATTEMPTS``), so the seed enqueues
+    inside the enqueuable bound and then writes the ceiling onto the
+    stored row directly, exactly as the PG side's ``create_running_job``
+    bypasses the enqueue boundary with a direct INSERT.
+    """
+    from dataclasses import replace
+
     backend = InMemoryBackend(clock=FakeClock(_MEM_NOW))
     args = EnqueueArgs(
         id=new_job_id(),
         actor="mem_ceiling_actor",
         queue="default",
         payload={},
-        max_attempts=max_attempts,
+        max_attempts=min(max_attempts, 32766),
         retry_kind="transient",
         scheduled_at=_MEM_NOW - timedelta(seconds=1),
     )
@@ -258,6 +394,12 @@ async def _in_memory_running_job_at_ceiling(
     worker_id = new_uuid()
     dispatched = await backend.dispatch_batch(worker_id, ["default"], 1, timedelta(seconds=60))
     assert len(dispatched) == 1
+    if max_attempts > 32766:
+        job_id = dispatched[0].id
+        backend._jobs[job_id] = replace(  # type: ignore[reportPrivateUsage]  # Why: test-only private access — parks the stored row at the column ceiling the enqueue boundary now refuses, mirroring the PG side's direct-INSERT seed.
+            backend._jobs[job_id],  # type: ignore[reportPrivateUsage]  # Why: test-only private access
+            max_attempts=max_attempts,
+        )
     return backend, dispatched[0].id, worker_id
 
 

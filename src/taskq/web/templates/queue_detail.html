@@ -1,7 +1,7 @@
 {% extends "_base.html" %}
 {% set active_page = "queue_detail" %}
 {% from "_partials/table.html" import styled_table, table_header, table_body, table_row %}
-{% from "_partials/job_card.html" import status_badge %}
+{% from "_partials/job_card.html" import status_badge, attempt_budget %}
 
 {% block title %}Queue {{ queue_name }} — TaskQ Admin{% endblock %}
 
@@ -36,8 +36,8 @@
             </td>
             <td class="px-4 py-2.5 text-sm font-medium">{{ job.actor }}</td>
             <td class="px-4 py-2.5">{{ status_badge(job.status) }}</td>
-            <td class="px-4 py-2.5 text-xs text-slate-500 whitespace-nowrap">{{ job.scheduled_at }}</td>
-            <td class="px-4 py-2.5 text-xs text-slate-500">{{ job.attempt }}/{{ job.max_attempts }}</td>
+            <td class="px-4 py-2.5 text-xs text-slate-500 dark:text-slate-400 whitespace-nowrap">{{ job.scheduled_at }}</td>
+            <td class="px-4 py-2.5 text-xs text-slate-500 dark:text-slate-400">{{ attempt_budget(job) }}</td>
         {% endcall %}
     {% endfor %}
     {% endcall %}
@@ -53,7 +53,7 @@
 {% endif %}
 {% else %}
 <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg p-12 text-center">
-    <p class="text-slate-400 text-sm">No jobs with status "{{ status }}" in this queue.</p>
+    <p class="text-slate-500 dark:text-slate-400 text-sm">No jobs with status "{{ status }}" in this queue.</p>
 </div>
 {% endif %}
 {% endblock %}
