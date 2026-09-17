@@ -71,6 +71,7 @@ __all__ = [
     "INSTRUMENTATION_NAME",
     "ConsumedOutcome",
     "StrandedReason",
+    "TimeoutKind",
     "get_meter",
     "get_tracer",
     "otel_enabled",
@@ -449,6 +450,9 @@ def record_deadline_exceeded_swept(actor: str, count: int = 1) -> None:
         _log.warning(
             "otel-metric-record-failed", instrument_name="taskq.deadline_exceeded_sweep.jobs_failed"
         )
+    # The sweep's arm of the whole-job deadline, on the timeouts family
+    # beside the handler arms (gated, unlike the sweep counter above).
+    record_job_timeout(actor, kind="schedule_to_close", count=count)
 
 
 #: Why the ``queue`` label is capped on the job-side instruments
@@ -677,22 +681,63 @@ def record_job_abandoned(actor: str) -> None:
 _process_duration = get_meter().create_histogram(
     "messaging.process.duration",
     description=(
-        "Job execution duration, labeled by actor and queue (capped -- see _bounded_queue)."
+        "Job execution duration, labeled by actor, queue (capped -- see "
+        "_bounded_queue) and outcome (the consumed-messages outcome set), so "
+        "a timed-out or failed attempt's duration is not folded into the "
+        "success distribution."
     ),
     unit="s",
 )
 
 
-def record_process_duration(actor: str, queue: str, elapsed: float) -> None:
+def record_process_duration(
+    actor: str, queue: str, elapsed: float, *, outcome: ConsumedOutcome
+) -> None:
     """Record job execution duration on the histogram.
 
-    Called outside the CONSUMER span body for sampling independence.
+    Called outside the CONSUMER span body for sampling independence, with
+    the same ``outcome`` the consumed-messages counter records for the
+    attempt: a ``start_to_close`` timeout lands at exactly the budget and
+    a failure at whatever it took, and either would drag a success
+    percentile if the distributions were shared.
     Respects ``_otel_enabled`` — no-op when False.
     Custom buckets are the operator's responsibility via SDK Views.
     """
     if not _otel_enabled:
         return
-    _process_duration.record(elapsed, {"actor": actor, "queue": _bounded_queue(queue)})
+    _process_duration.record(
+        elapsed, {"actor": actor, "queue": _bounded_queue(queue), "outcome": outcome}
+    )
+
+
+type TimeoutKind = Literal["start_to_close", "schedule_to_close"]
+"""Which budget a job exceeded — the closed ``kind`` label set of
+``taskq.jobs.timeouts``."""
+
+
+def record_job_timeout(actor: str, *, kind: TimeoutKind, count: int = 1) -> None:
+    """Count *count* jobs that exceeded a time budget.
+
+    ``start_to_close`` is recorded at the timeout handler once per
+    attempt that hit its per-attempt budget, retried or not.
+    ``schedule_to_close`` is recorded wherever the whole-job deadline is
+    what ended it: the deadline sweep (which counts a batch at a time),
+    and the handler arms where the backend's deadline arbitration refused
+    a retry, a snooze or a denial's requeue with ``DeadlineExceeded``.
+    Respects ``_otel_enabled`` — no-op when False.
+    """
+    if not _otel_enabled:
+        return
+    _lazy_counter(
+        "taskq.jobs.timeouts",
+        description=(
+            "Jobs that exceeded a time budget. Attributes: actor, kind "
+            "('start_to_close' — the per-attempt budget, at the timeout "
+            "handler; 'schedule_to_close' — the whole-job deadline, at the "
+            "deadline sweep and the handler arms the backend refused with "
+            "DeadlineExceeded)."
+        ),
+    ).add(count, {"actor": actor, "kind": kind})
 
 
 #: Why identity values are not metric dimensions

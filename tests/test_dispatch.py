@@ -467,13 +467,14 @@ async def test_process_duration_records_elapsed(
     """record_process_duration records histogram with actor and queue."""
     reader = setup_meter(monkeypatch)
 
-    obs_mod.record_process_duration("my_actor", "default", 0.42)
+    obs_mod.record_process_duration("my_actor", "default", 0.42, outcome="succeeded")
 
     points = histogram_points(reader, "messaging.process.duration")
     assert len(points) == 1
     assert points[0].attributes is not None
     assert points[0].attributes.get("actor") == "my_actor"
     assert points[0].attributes.get("queue") == "default"
+    assert points[0].attributes.get("outcome") == "succeeded"
     assert points[0].count >= 1
     assert points[0].sum >= 0.42
 
@@ -483,6 +484,6 @@ async def test_process_duration_disabled(monkeypatch: pytest.MonkeyPatch) -> Non
     setup_meter(monkeypatch)
     obs_mod.set_otel_enabled(False)
 
-    obs_mod.record_process_duration("my_actor", "default", 0.42)
+    obs_mod.record_process_duration("my_actor", "default", 0.42, outcome="succeeded")
 
     assert len(collect_metrics(setup_meter(monkeypatch))) == 0

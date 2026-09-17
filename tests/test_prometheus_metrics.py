@@ -131,6 +131,7 @@ _NAME_MAP: list[tuple[str, str]] = [
     ("taskq.reservation.denials", "taskq_reservation_denials_total"),
     ("taskq.jobs.attempt_failures", "taskq_jobs_attempt_failures_total"),
     ("taskq.jobs.abandoned", "taskq_jobs_abandoned_total"),
+    ("taskq.jobs.timeouts", "taskq_jobs_timeouts_total"),
     ("taskq.jobs.stranded", "taskq_jobs_stranded"),
     ("taskq.queue.live_workers", "taskq_queue_live_workers"),
 ]
@@ -277,6 +278,9 @@ def _populate_all_instruments(meter: Any) -> None:
         1, {"actor": "a", "error_type": "RuntimeError", "retryable": "true"}
     )
     meter.create_counter("taskq.jobs.abandoned", unit="1").add(1, {"actor": "a"})
+    meter.create_counter("taskq.jobs.timeouts", unit="1").add(
+        1, {"actor": "a", "kind": "start_to_close"}
+    )
     meter.create_observable_gauge(
         "taskq.jobs.stranded",
         unit="1",

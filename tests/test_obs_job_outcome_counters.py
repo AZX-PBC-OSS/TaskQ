@@ -97,3 +97,32 @@ def test_consumed_outcome_set_has_no_value_without_a_producer() -> None:
         "cancelled",
         "scheduled",
     }
+
+
+def test_timeouts_counter_carries_actor_and_kind(otel_reader: InMemoryMetricReader) -> None:
+    obs_mod.record_job_timeout("send_email", kind="start_to_close")
+    obs_mod.record_job_timeout("send_email", kind="schedule_to_close", count=3)
+    assert sorted(_points(otel_reader, "taskq.jobs.timeouts"), key=str) == sorted(
+        [
+            (1, {"actor": "send_email", "kind": "start_to_close"}),
+            (3, {"actor": "send_email", "kind": "schedule_to_close"}),
+        ],
+        key=str,
+    )
+
+
+def test_deadline_sweep_arm_feeds_the_timeouts_family(
+    otel_reader: InMemoryMetricReader,
+) -> None:
+    """The sweep's whole-job deadline arm counts on taskq.jobs.timeouts
+    beside the handler arms, so kind="schedule_to_close" is the complete
+    count however the deadline was enforced."""
+    obs_mod.record_deadline_exceeded_swept("send_email", count=4)
+    assert _points(otel_reader, "taskq.jobs.timeouts") == [
+        (4, {"actor": "send_email", "kind": "schedule_to_close"})
+    ]
+    otel_mod.set_otel_enabled(False)
+    obs_mod.record_deadline_exceeded_swept("send_email", count=4)
+    assert _points(otel_reader, "taskq.jobs.timeouts") == [
+        (4, {"actor": "send_email", "kind": "schedule_to_close"})
+    ]

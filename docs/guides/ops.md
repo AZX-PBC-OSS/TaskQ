@@ -1017,11 +1017,11 @@ Every job emits an `enqueue` PRODUCER span, a `process` CONSUMER span (linked, w
 | `taskq.jobs.oldest_running_age_seconds` (by actor) | an attempt that outlived what the actor normally takes with `taskq.jobs.timeouts` flat — an actor with no `start_to_close` |
 | `taskq.worker.active_jobs` / `taskq.worker.max_concurrency` (one series per process) and `taskq.jobs.running` (by actor) | slot saturation — utilisation ≥ 0.9 with `oldest_pending_age` rising is "add workers"; which actor holds the slots (see [§3 — When to add workers](#when-to-add-workers-saturation-not-depth)) |
 | `taskq.worker.slot_pool.acquire_failures` / `taskq.worker.slot_pool.connections_in_use` | per-slot pool exhaustion and saturation — an acquire failure is infrastructure (the job is left for lock-lease reclaim, not failed); the gauge pinned at the pool maximum with zero acquire failures is saturation, visible below the acquire-failure cliff |
-| `messaging.process.duration` | actor latency, slow chunks |
+| `messaging.process.duration` (by `outcome`) | actor latency, slow chunks — filter `outcome="succeeded"` for the healthy percentiles |
 | `taskq.jobs.attempt_failures` (by actor, `error_type`, `retryable`) | a dependency failing under retry cover (`retryable="true"` rising while the terminal-failed share stays flat) — the series `TaskQRetryRateHigh` fires on |
 | `taskq.jobs.abandoned` (by actor) | an actor that ignores cancellation — an operator cancel outlasted both graces; never produced by a deploy |
 | `taskq.lock.expires_in_seconds` | heartbeat trouble before it becomes `crashed` jobs |
-| `taskq.deadline_exceeded_sweep.jobs_failed` | `schedule_to_close` too tight |
+| `taskq.jobs.timeouts` (by actor and `kind`) | `start_to_close` hits per attempt; `schedule_to_close` hits however the deadline was enforced (sweep or handler arm) — `taskq.deadline_exceeded_sweep.jobs_failed` is the sweep's own count |
 | `taskq.backpressure.errors` (filter `kind` to the capacity kinds) | `max_pending` rejections — producer pressure |
 | `taskq.cron.disabled_schedules` | a cron outage with one log line |
 | `taskq.maintenance_leader.is_leader` summed != 1 | leader split-brain / no leader |
