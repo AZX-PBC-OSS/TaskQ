@@ -685,7 +685,8 @@ async def dispatch_one_job(
             # would double-count the message and stretch the histogram
             # with a phantom process.
             if outcome != "noop":
-                record_consumed_message(job.actor, job.queue, outcome=_to_consumed_outcome(outcome))
-                record_process_duration(job.actor, job.queue, elapsed)
+                consumed = _to_consumed_outcome(outcome)
+                record_consumed_message(job.actor, job.queue, outcome=consumed)
+                record_process_duration(job.actor, job.queue, elapsed, outcome=consumed)
 
     return outcome

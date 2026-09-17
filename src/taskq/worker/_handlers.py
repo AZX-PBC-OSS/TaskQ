@@ -62,6 +62,7 @@ from taskq.obs import (
     invoke_error_reporter,
     log_state_change,
     record_attempt_failure,
+    record_job_timeout,
     record_reservation_denial,
     render_exception,
 )
@@ -331,6 +332,7 @@ async def _handle_timeout(
         error_message=log_message,
         error_traceback=log_traceback,
     )
+    record_job_timeout(job.actor, kind="start_to_close")
     job_state = JobRetryState(
         attempt=job.attempt,
         max_attempts=job.max_attempts,
@@ -385,6 +387,9 @@ async def _handle_timeout(
             cause=type(exc).__name__,
         )
         if updated_row.status == "failed":
+            # The retry was decided here but the backend's deadline
+            # arbitration refused it: schedule_to_close ended the job.
+            record_job_timeout(job.actor, kind="schedule_to_close")
             return "failed"
         return "scheduled"
     else:
@@ -493,6 +498,7 @@ async def _handle_snooze(
         )
         return "scheduled"
     elif tri == "failed":
+        record_job_timeout(job.actor, kind="schedule_to_close")
         span.add_event(
             "lifecycle.failed",
             attributes={
@@ -587,6 +593,8 @@ async def _handle_retry_after(
         return "scheduled"
     elif tri in ("failed:DeadlineExceeded", "failed:MaxAttemptsExceeded"):
         cause = tri.split(":")[1]
+        if cause == "DeadlineExceeded":
+            record_job_timeout(job.actor, kind="schedule_to_close")
         span.add_event(
             "lifecycle.failed",
             attributes={
@@ -700,6 +708,7 @@ async def _handle_reservation_class_denied(
         )
         return "scheduled"
     elif tri == "failed":
+        record_job_timeout(job.actor, kind="schedule_to_close")
         span.add_event(
             "lifecycle.failed",
             attributes={
@@ -839,6 +848,9 @@ async def _handle_generic_exception(
             cause=type(e).__name__,
         )
         if updated_row.status == "failed":
+            # The retry was decided here but the backend's deadline
+            # arbitration refused it: schedule_to_close ended the job.
+            record_job_timeout(job.actor, kind="schedule_to_close")
             return "failed"
         return "scheduled"
     else:

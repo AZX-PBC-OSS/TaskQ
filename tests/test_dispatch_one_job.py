@@ -1202,6 +1202,150 @@ async def test_dispatch_one_job_records_scheduled_on_snooze(
         assert counter_data_points(reader, "taskq.jobs.attempt_failures") == []
 
 
+async def _dispatch_with(
+    monkeypatch: pytest.MonkeyPatch,
+    actor_fn: Callable[..., Coroutine[Any, Any, object]],
+    *,
+    backend: FakeBackend | None = None,
+) -> tuple[Any, str]:
+    """Dispatch one job through the real dispatch path against a FakeBackend
+    with a per-test isolated meter; return (reader, outcome)."""
+    from taskq.testing.otel import setup_meter, setup_tracer
+
+    setup_tracer(monkeypatch)
+    reader = setup_meter(monkeypatch)
+    fake_backend = backend if backend is not None else FakeBackend()
+    async with _ScopeStack() as scopes:
+        outcome = await dispatch_one_job(
+            backend=as_backend(fake_backend),
+            deps=_as_deps(_FakeWorkerDeps()),
+            job=make_job_row(payload={"value": 42}),
+            worker_id=_WORKER_ID,
+            registry=scopes.registry,
+            process_scope=scopes.process_scope,
+            thread_scope=scopes.thread_scope,
+            loop_scope=scopes.loop_scope,
+            actor_ref=_make_actor_ref(actor_fn),  # type: ignore[arg-type]  # Why: ActorRef[Any, Any] is not ActorRef[BaseModel, BaseModel | None]; pyright cannot widen the generic parameters, but the runtime contract is sound
+            actor_config=StubActorConfig(retry=RetryPolicy()),
+            clock=FakeClock(_NOW),
+            enqueuer=SubJobEnqueuer(
+                backend=as_backend(fake_backend), loop_scope_resolved=None, worker_pool=None
+            ),
+        )
+    return reader, outcome
+
+
+def _timeouts(reader: Any) -> dict[tuple[str, str], int]:
+    from taskq.testing.otel import counter_data_points
+
+    return {
+        (str(p.attributes["actor"]), str(p.attributes["kind"])): int(p.value)
+        for p in counter_data_points(reader, "taskq.jobs.timeouts")
+        if p.attributes
+    }
+
+
+async def test_start_to_close_timeout_is_counted_and_its_duration_labelled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A per-attempt timeout records taskq.jobs.timeouts{kind="start_to_close"}
+    once, and the process-duration sample carries the attempt's outcome so
+    a budget-length timeout is not folded into the success distribution."""
+    from taskq.testing.otel import histogram_points
+
+    async def slow_actor(payload: _Payload, ctx: JobContext[_Payload]) -> None:
+        raise TimeoutError("start_to_close")
+
+    reader, outcome = await _dispatch_with(monkeypatch, slow_actor)
+
+    assert outcome == "scheduled"
+    assert _timeouts(reader) == {("test_actor", "start_to_close"): 1}
+    durations = histogram_points(reader, "messaging.process.duration")
+    assert [dict(p.attributes or {}) for p in durations] == [
+        {"actor": "test_actor", "queue": "default", "outcome": "scheduled"}
+    ]
+
+
+async def test_success_duration_is_labelled_succeeded(monkeypatch: pytest.MonkeyPatch) -> None:
+    from taskq.testing.otel import histogram_points
+
+    async def ok_actor(payload: _Payload, ctx: JobContext[_Payload]) -> dict[str, object]:
+        return {"ok": True}
+
+    reader, outcome = await _dispatch_with(monkeypatch, ok_actor)
+    assert outcome == "succeeded"
+    assert [
+        p.attributes.get("outcome")
+        for p in histogram_points(reader, "messaging.process.duration")
+        if p.attributes
+    ] == ["succeeded"]
+    assert _timeouts(reader) == {}
+
+
+async def test_schedule_to_close_refusals_count_as_whole_job_timeouts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When the backend's deadline arbitration refuses a snooze or a
+    RetryAfter with DeadlineExceeded, the job ended on its whole-job
+    budget: taskq.jobs.timeouts{kind="schedule_to_close"} counts it. A
+    MaxAttemptsExceeded refusal is not a timeout."""
+    from taskq.exceptions import RetryAfter
+
+    async def snoozy(payload: _Payload, ctx: JobContext[_Payload]) -> None:
+        raise Snooze(delay=timedelta(seconds=30))
+
+    async def retry_later(payload: _Payload, ctx: JobContext[_Payload]) -> None:
+        raise RetryAfter(delay=timedelta(seconds=30))
+
+    reader, outcome = await _dispatch_with(
+        monkeypatch, snoozy, backend=FakeBackend(mark_snoozed_return="failed")
+    )
+    assert outcome == "failed"
+    assert _timeouts(reader) == {("test_actor", "schedule_to_close"): 1}
+
+    reader, outcome = await _dispatch_with(
+        monkeypatch,
+        retry_later,
+        backend=FakeBackend(mark_retry_after_return="failed:DeadlineExceeded"),
+    )
+    assert outcome == "failed"
+    assert _timeouts(reader) == {("test_actor", "schedule_to_close"): 1}
+
+    reader, outcome = await _dispatch_with(
+        monkeypatch,
+        retry_later,
+        backend=FakeBackend(mark_retry_after_return="failed:MaxAttemptsExceeded"),
+    )
+    assert outcome == "failed"
+    assert _timeouts(reader) == {}
+
+
+async def test_retry_refused_by_the_deadline_arm_counts_as_a_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The classifier decided a retry but the backend's deadline arbitration
+    landed the row failed (schedule_to_close reached before the next
+    dispatch): the attempt failure is counted as retryable — that was the
+    decision — and the whole-job timeout is counted beside it."""
+    from taskq.testing.otel import counter_data_points
+
+    class _DeadlineRefusingBackend(FakeBackend):
+        async def mark_failed_or_retry(self, *args: Any, **kwargs: Any) -> JobRow:
+            row = await super().mark_failed_or_retry(*args, **kwargs)
+            return replace(row, status="failed", error_class="DeadlineExceeded")
+
+    async def flaky(payload: _Payload, ctx: JobContext[_Payload]) -> None:
+        raise RuntimeError("upstream 503")
+
+    reader, outcome = await _dispatch_with(monkeypatch, flaky, backend=_DeadlineRefusingBackend())
+    assert outcome == "failed"
+    assert _timeouts(reader) == {("test_actor", "schedule_to_close"): 1}
+    failures = counter_data_points(reader, "taskq.jobs.attempt_failures")
+    assert [dict(p.attributes or {}) for p in failures] == [
+        {"actor": "test_actor", "error_type": "RuntimeError", "retryable": "true"}
+    ]
+
+
 async def test_dispatch_one_job_counts_a_retried_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
