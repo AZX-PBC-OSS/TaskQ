@@ -359,6 +359,10 @@ async def test_unix_collision_with_health_port_still_serves_tcp() -> None:
             await server.start(_make_deps(settings))
         assert excinfo.value.path == peer_path
         assert excinfo.value.errno == errno.EADDRINUSE
+        assert "live peer worker owns the path" in str(excinfo.value)
+        assert "unique TASKQ_HEALTH_SOCKET_PATH" in str(excinfo.value), (
+            "the peer-collision message must keep prescribing the per-replica fix"
+        )
         # The port-routed probe surface is up and answering despite the
         # collision — this is the whole fix. Captured while the listener
         # lives: stop() nulls the server object it came from.
@@ -396,6 +400,56 @@ async def test_unix_collision_with_health_port_still_serves_tcp() -> None:
     finally:
         peer.close()
         await peer.wait_closed()
+
+
+async def test_a_directory_at_the_socket_path_with_a_port_set_reports_the_real_cause() -> None:
+    """F5: a non-collision Unix-bind failure must not wear the peer message.
+
+    A directory at the socket path fails the bind with ``EISDIR`` (the
+    stale-file cleaner cannot remove it), and the old message told the
+    operator "a live peer owns the path — give each replica a unique
+    TASKQ_HEALTH_SOCKET_PATH", which sends them hunting for a peer that
+    does not exist. The message now names the errno shape — but the TYPE
+    and the ownership contract are unchanged: with a port set the TCP
+    listener is still up and owned (surfacing ``EISDIR`` as the bare
+    "owns nothing" OSError would leak it), ``stop()`` cleans exactly the
+    TCP listener, and the directory is never this server's to remove.
+
+    The other attacker shapes never reach the handler at all — a stale
+    socket file, a bind-only leftover, and a regular file are all
+    cleaned by ``_unlink_stale_socket`` and the bind succeeds — pinned
+    by ``test_stale_socket_cleanup`` and the stale-socket suite.
+    """
+    base = _next_sock_path()
+    dir_path = f"{base}.d"
+    os.mkdir(dir_path)
+    server = HealthServer()
+    try:
+        settings = _make_settings(dir_path, health_port=0)
+        with pytest.raises(HealthUnixBindCollisionError) as excinfo:
+            await server.start(_make_deps(settings))
+        assert excinfo.value.path == dir_path
+        assert excinfo.value.errno == errno.EISDIR
+        assert "live peer" not in str(excinfo.value), (
+            "the peer-collision message was shown for a path that is a directory"
+        )
+        assert "unusable" in str(excinfo.value)
+        # The ownership contract is the same as the collision's: the TCP
+        # probe listener is up and must be stopped by THIS server.
+        resp = await _tcp_get(_port(server), "/live")
+        assert resp.startswith(b"HTTP/1.0 200 OK\r\n"), resp
+    finally:
+        with structlog.testing.capture_logs() as stop_logs:
+            await server.stop()
+
+    assert not any(e["event"] == "health-server-stop-skipped-unlink" for e in stop_logs), (
+        "a never-bound path (a directory, no less) must be skipped silently"
+    )
+    assert pathlib.Path(dir_path).is_dir(), (  # noqa: ASYNC240  # Why: a single fast metadata read in a test assertion; matches this file's existing convention.
+        "stop() must never try to remove the directory"
+    )
+    with contextlib.suppress(OSError):
+        os.rmdir(dir_path)
 
 
 async def test_unix_collision_without_health_port_keeps_the_bare_oserror_contract() -> None:
@@ -446,7 +500,9 @@ async def test_stop_with_the_socket_already_unlinked_is_clean() -> None:
     server = HealthServer()
     await server.start(_make_deps(settings))
     try:
-        assert pathlib.Path(sock_path).exists(), "sanity: the server bound the path"
+        assert pathlib.Path(sock_path).exists(), (  # noqa: ASYNC240  # Why: a single fast metadata read in a test assertion; matches this file's existing convention.
+            "sanity: the server bound the path"
+        )
         # What asyncio's own close() does on 3.13+ before stop() looks.
         os.unlink(sock_path)
         with structlog.testing.capture_logs() as captured:
