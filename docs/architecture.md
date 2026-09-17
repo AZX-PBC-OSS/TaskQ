@@ -876,17 +876,34 @@ The phases above only ever advance on the lock-holding worker. If that worker
 dies mid-protocol, Sweep 1 (`reclaim_expired_locks`) eventually reclaims the job
 — after a flat extra 60s of headroom on top of `cancel_grace + cleanup_grace`,
 so a merely-slow cancellation isn't mistaken for a crash. What the reclaim does
-with the in-flight cancel state is a deliberate tradeoff:
+with the in-flight cancel state puts operator intent first:
 
-- **Retry branch** (`running → pending`): `cancel_phase`/`cancel_requested_at`
-  are **reset**, so the next dispatch doesn't immediately re-cancel the retried
-  job. A caller's cancel therefore does **not** survive into a retried attempt —
-  with the lock-holding worker dead, no other path could honor it there anyway.
-- **Exhausted branch** (no retries remaining): the job lands on **`cancelled`**,
-  not `crashed` — the caller's explicit request is the honest terminal label:
-  anyone reconciling terminal states sees the cancel was honored. The
-  `job_attempts` row still records `outcome='crashed'` (`WorkerCrashed`): that
-  IS what happened to the attempt.
+- **Cancel branch** (`cancel_phase != 0`, any retry budget): the job lands on
+  **`cancelled`**, not `crashed` — the caller's explicit request is the honest
+  terminal label: anyone reconciling terminal states sees the cancel was
+  honored. The row **keeps** `cancel_phase`/`cancel_requested_at` as the audit
+  trail of the honored request, exactly as the worker-honored terminal write
+  (`mark_cancelled`) does. The `job_attempts` row still records
+  `outcome='crashed'` (`WorkerCrashed`): that IS what happened to the attempt.
+- **Retry branch** (`cancel_phase = 0`, retries remaining): `running → pending`
+  on the row's own backoff curve. The row's cancel columns were already clean
+  (the cancel branch took every cancel-carrying row), so the next claimant
+  never inherits a phase.
+
+The earlier design evaluated the retry budget *before* `cancel_phase`, so a
+retryable job with a cancel in flight went back to `pending` with its cancel
+columns wiped — the operator's request silently lost, and the result counted a
+row as cancel-honored that was in fact uncancelled. The reset-on-re-pend that
+design carried existed to prevent a re-cancel loop (a re-pended row still
+carrying `cancel_phase` would be re-cancelled by each new claimant, then
+reclaimed again). Ordering the cancel branch first removes the loop
+structurally instead: the cancel branch never re-pends — it terminalises — so
+no arm of the sweep can produce a re-pended row carrying cancel columns, and
+the retry branch resets columns that are already clean. `isolate_self`
+(worker heartbeat loss) mirrors this ordering branch for branch; its one
+deliberate asymmetry is that it applies the cancel branch immediately, with no
+grace headroom, because the isolating worker is by definition going away now
+and no lock-holder remains to complete the cooperative protocol.
 
 ### `CancelController` Protocol
 

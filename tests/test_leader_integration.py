@@ -643,7 +643,12 @@ async def test_ti7_equivalence_cancel_phase_1_grace_divergence(pg_dsn: str) -> N
 
         assert row_a is not None
         assert row_b is not None
-        assert row_a["status"] in ("pending", "crashed")
+        assert row_a["status"] == "cancelled", (
+            "isolate applies the cancel arm immediately (no grace headroom — "
+            "the departing worker is the only writer that could have honoured "
+            "the request), and with #238 the cancel arm outranks the retry "
+            "budget, so this phase=1 row terminalises rather than re-pending"
+        )
         assert row_b["status"] == "running"
     finally:
         await stack.aclose()

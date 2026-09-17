@@ -411,7 +411,10 @@ class TestSweepExpiredLocks:
 
     async def test_cancel_phase_carve_out_deeply_expired(self, clean_jobs_app: JobsApp) -> None:
         """Running job with cancel_phase=1 and lock expired past the
-        cancel_grace + cleanup_grace + 60s threshold SHOULD be swept."""
+        cancel_grace + cleanup_grace + 60s threshold SHOULD be swept —
+        and with operator intent outranking the retry budget (#238),
+        the reclaim terminalises it 'cancelled' whatever its budget,
+        never re-pends it with a wiped cancel."""
         deps = clean_jobs_app.deps
         schema = deps.settings.schema_name
         worker_id = new_uuid()
@@ -443,29 +446,39 @@ class TestSweepExpiredLocks:
             row = await conn.fetchrow(f'SELECT status FROM "{schema}".jobs WHERE id = $1', job_id)
 
         assert row is not None
-        assert row["status"] in ("pending", "crashed")
+        assert row["status"] == "cancelled", (
+            "a deeply expired row with a cancel in flight must land "
+            "'cancelled' even with retries remaining — the operator's "
+            "request is the honest terminal label, and the lock-holding "
+            "worker this cancel was addressed to is provably gone"
+        )
 
-    async def test_cancel_state_cleared_on_deeply_expired_retry(
+    async def test_deeply_expired_cancel_in_flight_retryable_lands_cancelled(
         self, clean_jobs_app: JobsApp
     ) -> None:
-        """A deeply expired lock with an in-flight cancel request is
-        reclaimed; the retry branch must reset cancel_phase and
-        cancel_requested_at so the next worker does not immediately
-        re-cancel the job.
+        """A deeply expired lock with an in-flight cancel request on a
+        RETRYABLE job terminalises 'cancelled' and keeps its cancel
+        columns as the audit trail of the honored request (#238).
 
-        The second half reproduces the full retry loop the reset
-        prevents: the retried job is dispatched to a *new* worker
-        (simulated by the same UPDATE the dispatch CTE performs), and the
-        new worker's heartbeat cancel-poll must NOT return it.  On the
-        pre-fix code (cancel_phase/cancel_requested_at left set by the
-        reclaim) the cancel-poll returns the job and the worker
-        re-cancels it — an infinite cancel/reclaim/retry loop."""
+        The pre-fix statement evaluated the retry budget before
+        ``cancel_phase``, so this row went back 'pending' with
+        ``cancel_phase``/``cancel_requested_at`` wiped — the operator's
+        cancel silently lost, addressed to a worker the reclaim itself
+        had just declared dead. The cancel-first ordering cannot
+        resurrect the re-cancel loop the old reset-on-re-pend spelling
+        existed to prevent: that loop required a RE-PENDED row still
+        carrying cancel columns, and the cancel arm never re-pends.
+        The second half pins exactly that loop-guard from the other
+        side: a phase-0 reclaim's re-pended row is claimable by a new
+        worker whose cancel-poll stays quiet — no inherited phase.
+        """
         deps = clean_jobs_app.deps
         backend = clean_jobs_app.backend
         schema = deps.settings.schema_name
         worker_id = new_uuid()
 
         deep_past = datetime.now(UTC) - timedelta(seconds=180)
+        requested_at = datetime.now(UTC)
 
         async with deps.worker_pool.acquire() as conn:
             await create_worker(conn, schema, worker_id)
@@ -475,7 +488,7 @@ class TestSweepExpiredLocks:
                 worker_id,
                 lock_expires_at=deep_past,
                 cancel_phase=1,
-                cancel_requested_at=datetime.now(UTC),
+                cancel_requested_at=requested_at,
             )
 
             count = await PostgresBackend.sweep_expired_locks(
@@ -489,36 +502,82 @@ class TestSweepExpiredLocks:
 
         async with deps.worker_pool.acquire() as conn:
             row = await conn.fetchrow(
-                f'SELECT status, cancel_phase, cancel_requested_at FROM "{schema}".jobs WHERE id = $1',
+                f"SELECT status, cancel_phase, cancel_requested_at, finished_at "
+                f'FROM "{schema}".jobs WHERE id = $1',
+                job_id,
+            )
+            attempt_row = await conn.fetchrow(
+                f'SELECT outcome, error_class FROM "{schema}".job_attempts '
+                f"WHERE job_id = $1 ORDER BY started_at DESC LIMIT 1",
                 job_id,
             )
 
         assert row is not None
-        assert row["status"] == "pending"
-        assert row["cancel_phase"] == 0
-        assert row["cancel_requested_at"] is None
+        assert row["status"] == "cancelled", (
+            "a retryable row with a cancel in flight must terminalise "
+            "'cancelled' — the operator's request outranks the retry budget"
+        )
+        # The audit trail of the honored request survives the terminal
+        # write, exactly as mark_cancelled keeps both columns.
+        assert row["cancel_phase"] == 1
+        assert row["cancel_requested_at"] is not None
+        assert row["finished_at"] is not None
 
-        # Reproduce the retry loop's mechanism: the retried job is
-        # dispatched to a new worker (same UPDATE the dispatch CTE
-        # performs), and the new worker's heartbeat cancel-poll runs.
-        next_worker_id = new_uuid()
+        assert attempt_row is not None
+        assert attempt_row["outcome"] == "crashed"
+        assert attempt_row["error_class"] == "WorkerCrashed"
+
+        # The loop-guard half, kept from the test this replaces: a
+        # PHASE-0 reclaim re-pends, and the re-pended row must carry a
+        # clean cancellation slate — the next worker's cancel-poll must
+        # not return it, or the fleet re-cancels and re-reclaims
+        # forever. On a re-pend that left the columns set (the shape
+        # the old reset-on-re-pend spelling guarded against) the
+        # cancel-poll returns the job and the worker re-cancels it —
+        # the infinite cancel/reclaim/retry loop.
+        second_worker_id = new_uuid()
         async with deps.worker_pool.acquire() as conn:
-            await create_worker(conn, schema, next_worker_id)
+            phase_zero_id = await create_running_job(
+                conn,
+                schema,
+                worker_id,
+                lock_expires_at=datetime.now(UTC) - timedelta(seconds=180),
+            )
+            reclaim_count = await PostgresBackend.sweep_expired_locks(
+                conn,
+                _CANCEL_GRACE,
+                _CLEANUP_GRACE,
+                schema=schema,
+            )
+            assert reclaim_count == 1
+            repended = await conn.fetchrow(
+                f"SELECT status, cancel_phase, cancel_requested_at "
+                f'FROM "{schema}".jobs WHERE id = $1',
+                phase_zero_id,
+            )
+            assert repended is not None
+            assert repended["status"] == "pending"
+            assert repended["cancel_phase"] == 0
+            assert repended["cancel_requested_at"] is None
+
+            # Simulate the claim the dispatch CTE performs: the re-pended
+            # row is taken by a new worker.
+            await create_worker(conn, schema, second_worker_id)
             await conn.execute(
                 f'UPDATE "{schema}".jobs SET '
                 "status = 'running', locked_by_worker = $2, "
                 "lock_expires_at = $3, started_at = $3, last_heartbeat_at = $3 "
                 "WHERE id = $1",
-                job_id,
-                next_worker_id,
+                phase_zero_id,
+                second_worker_id,
                 datetime.now(UTC) + timedelta(seconds=30),
             )
 
-        flags = await backend.poll_cancel_flags(next_worker_id)
+        flags = await backend.poll_cancel_flags(second_worker_id)
         assert flags == [], (
-            "the retried job must not be returned by the next worker's "
-            "cancel-poll — on the pre-fix code cancel_requested_at was left "
-            "set, so the job was immediately re-cancelled (retry loop)"
+            "a re-pended row must never carry an inherited cancel phase — "
+            "any regression that re-pends a phase-carrying row re-enters "
+            "the cancel/reclaim/retry loop this pins shut"
         )
 
     async def test_deeply_expired_cancel_exhausted_labelled_cancelled(
@@ -577,8 +636,12 @@ class TestSweepExpiredLocks:
 
         assert row is not None
         assert row["status"] == "cancelled"
-        assert row["cancel_phase"] == 0
-        assert row["cancel_requested_at"] is None
+        # The audit trail of the honored request survives the terminal
+        # write (#238): the sweep's cancelled arm keeps both cancel
+        # columns, the same doctrine mark_cancelled carries — the
+        # pre-fix statement wiped them here too.
+        assert row["cancel_phase"] == 1
+        assert row["cancel_requested_at"] is not None
         assert row["finished_at"] is not None
 
         reclaim_events = []

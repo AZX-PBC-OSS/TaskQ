@@ -267,6 +267,26 @@ async def test_isolate_self_honours_fr12_case_shape() -> None:
         )
         assert "WHERE j.id = $1" in runner
         assert "j.locked_by_worker = $2" in runner
+        # #238 pins: operator intent outranks retry budget — the cancel
+        # arm is evaluated BEFORE the budget arm; the cancel columns are
+        # preserved on the arm that honours them; the crashed arm
+        # self-describes on the job row (shape-mirror of the sweep's
+        # WorkerCrashed stamp, with the intentionally distinct class).
+        assert "WHEN j.cancel_phase != 0" in runner
+        assert runner.index("WHEN j.cancel_phase != 0") < runner.index(
+            "WHEN (j.retry_kind = 'indefinite'"
+        ), (
+            "the cancel arm must be evaluated before the budget arm — "
+            "budget-first re-pends a cancel-in-flight row and wipes the "
+            "operator's cancel"
+        )
+        assert (
+            "cancel_phase = CASE WHEN j.cancel_phase != 0 THEN j.cancel_phase ELSE 0 END" in runner
+        ), "the cancel arm must preserve the phase as the audit trail"
+        assert "THEN 'HeartbeatLost'" in runner, (
+            "the isolate's crashed arm must self-describe on the job row, "
+            "mirroring the sweep's crashed-arm stamp in shape"
+        )
     finally:
         apg.connect = orig_connect  # type: ignore[method-assign]
 

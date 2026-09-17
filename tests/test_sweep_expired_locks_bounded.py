@@ -544,8 +544,25 @@ class TestSweepExpiredLocksBehaviourPinned:
             row = by_id[job_id]
             assert row["locked_by_worker"] is None, "every branch must clear the lock holder"
             assert row["lock_expires_at"] is None, "every branch must clear the lock expiry"
-            assert row["cancel_phase"] == 0, "every branch must reset cancel_phase"
-            assert row["cancel_requested_at"] is None, "every branch must reset cancel_requested_at"
+
+        for job_id in (*retry_ids, *crash_ids):
+            row = by_id[job_id]
+            assert row["cancel_phase"] == 0, (
+                "the re-pend and crashed branches read phase 0 by construction "
+                "(they fell through the cancel arm), so the reset is a no-op"
+            )
+            assert row["cancel_requested_at"] is None
+
+        for job_id in cancel_ids:
+            row = by_id[job_id]
+            assert row["cancel_phase"] == 1, (
+                "the cancelled branch preserves cancel_phase as the audit "
+                "trail of the honored request — the mark_cancelled doctrine"
+            )
+            assert row["cancel_requested_at"] is not None, (
+                "the cancelled branch preserves cancel_requested_at as the "
+                "audit trail of the honored request"
+            )
 
     async def test_job_attempts_row_shape(
         self,

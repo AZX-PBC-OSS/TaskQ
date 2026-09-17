@@ -30,7 +30,11 @@ from taskq.testing.fixtures import ModulePgSchema
 from taskq.testing.pg import create_running_job, reset_schema, setup_running_job
 from taskq.testing.settings import make_integration_settings
 from taskq.worker.deps import WorkerDeps, open_worker_deps
-from taskq.worker.heartbeat import heartbeat_loop, isolate_self
+from taskq.worker.heartbeat import (
+    _ISOLATE_CRASHED_MESSAGE,  # pyright: ignore[reportPrivateUsage]  # Why: the pin asserts the exact crashed-arm message the template renders; importing the constant keeps the assertion from drifting with the wording.
+    heartbeat_loop,
+    isolate_self,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -400,15 +404,15 @@ async def test_sweep1_consistency(module_pg_schema: ModulePgSchema) -> None:
 async def test_isolate_self_transitions_cancel_phase_gt_zero(
     module_pg_schema: ModulePgSchema,
 ) -> None:
-    """isolate_self transitions jobs with cancel_phase > 0.
-    Job with cancel_phase=1 is transitioned (status no longer 'running'),
-    and — mirroring _SWEEP_1_SQL branch-for-branch (see
-    tests/test_leader_property.py's isolate≡sweep invariant) — its cancel
-    state is RESET: a reclaimed attempt starts with a clean cancellation
-    slate, so the next worker's cancel-poll does not immediately re-cancel
-    the retried job (the retry loop the sweep's identical reset fixes).
-    A caller's cancel therefore does not survive into a retried attempt —
-    the same documented tradeoff the crash-reclaim sweep makes."""
+    """isolate_self transitions jobs with cancel_phase > 0 — to
+    terminal 'cancelled', whatever the retry budget, mirroring
+    _SWEEP_1_SQL's operator-intent-first CASE ordering (see
+    tests/test_leader_property.py's isolate≡sweep invariant and #238).
+    A departing worker is the only writer that could have honoured the
+    request cooperatively, so the honest resolution is the caller's
+    explicit terminal label, with the cancel columns preserved as the
+    audit trail of the honored request — the same doctrine
+    mark_cancelled carries."""
     stack, deps, schema = await _setup_fast(module_pg_schema)
     try:
         async with deps.heartbeat_pool.acquire() as conn:
@@ -416,21 +420,35 @@ async def test_isolate_self_transitions_cancel_phase_gt_zero(
                 conn,
                 schema,
                 cancel_phase=1,
+                cancel_requested_at=datetime.now(UTC),
                 lock_expires_at=datetime.now(UTC) + timedelta(seconds=_LOCK_LEASE),
             )
 
         shutdown = asyncio.Event()
-        await isolate_self(deps, worker_id, shutdown)
+        with structlog.testing.capture_logs() as captured:
+            await isolate_self(deps, worker_id, shutdown)
         assert shutdown.is_set()
 
         async with deps.heartbeat_pool.acquire() as conn:
             row = await conn.fetchrow(
-                f'SELECT status, cancel_phase FROM "{schema}".jobs WHERE id = $1',
+                f"SELECT status, cancel_phase, cancel_requested_at, finished_at "
+                f'FROM "{schema}".jobs WHERE id = $1',
                 job_id,
             )
             assert row is not None
-            assert row["status"] == "pending"
-            assert row["cancel_phase"] == 0
+            assert row["status"] == "cancelled", (
+                "a cancel in flight must outrank the retry budget at "
+                "isolation — the pre-fix template re-pended the row 'pending' "
+                "and wiped the operator's cancel"
+            )
+            assert row["cancel_phase"] == 1
+            assert row["cancel_requested_at"] is not None
+            assert row["finished_at"] is not None
+
+        complete = [e for e in captured if e["event"] == "isolate-self-complete"]
+        assert len(complete) == 1
+        assert complete[0]["jobs_cancelled_count"] == 1
+        assert complete[0]["jobs_pending_count"] == 0
     finally:
         await stack.aclose()
 
@@ -440,8 +458,10 @@ async def test_isolate_self_cancel_in_flight_exhausted_lands_cancelled(
 ) -> None:
     """Mirror of the sweep's exhausted branch: a job with an in-flight
     cancel request and no retries remaining lands on 'cancelled' — the
-    caller's explicit request is the honest terminal label.  Cancel state
-    is cleared, the attempt row still records outcome='crashed'/
+    caller's explicit request is the honest terminal label.  The cancel
+    columns are PRESERVED as the audit trail of the honored request
+    (#238: the same doctrine mark_cancelled carries), the attempt row
+    still records outcome='crashed'/
     error_class='HeartbeatLost' (that IS what happened to the attempt),
     and isolate-self-complete telemetry counts the job as cancelled, not
     crashed."""
@@ -476,8 +496,11 @@ async def test_isolate_self_cancel_in_flight_exhausted_lands_cancelled(
 
         assert row is not None
         assert row["status"] == "cancelled"
-        assert row["cancel_phase"] == 0
-        assert row["cancel_requested_at"] is None
+        assert row["cancel_phase"] == 1, (
+            "the cancelled arm preserves the phase as the audit trail of "
+            "the honored request — mark_cancelled keeps it too"
+        )
+        assert row["cancel_requested_at"] is not None
         assert row["finished_at"] is not None
 
         assert attempt_row is not None
@@ -615,7 +638,10 @@ async def test_isolate_self_non_retryable_mirrors_sweep1(
 ) -> None:
     """isolate_self non_retryable + budget-remaining mirrors Sweep 1 exactly.
     For a non_retryable job with attempt < max_attempts: status='crashed',
-    finished_at IS NOT NULL, scheduled_at unchanged, AttemptRow written."""
+    finished_at IS NOT NULL, scheduled_at unchanged, AttemptRow written —
+    and the crashed arm self-describes on the JOB row too (#238): the
+    pre-fix template left error_class/error_message NULL there while the
+    sweep stamped its own, despite the branch-for-branch mirror claim."""
     stack, deps, schema = await _setup_fast(module_pg_schema)
     try:
         async with deps.heartbeat_pool.acquire() as conn:
@@ -640,12 +666,20 @@ async def test_isolate_self_non_retryable_mirrors_sweep1(
 
         async with deps.heartbeat_pool.acquire() as conn:
             row = await conn.fetchrow(
-                f'SELECT status, finished_at, scheduled_at FROM "{schema}".jobs WHERE id = $1',
+                f"SELECT status, finished_at, scheduled_at, error_class, error_message "
+                f'FROM "{schema}".jobs WHERE id = $1',
                 job_id,
             )
             assert row is not None
             assert_job_status(row, "crashed", finished=True)
             assert row["scheduled_at"] == original_scheduled_at
+            assert row["error_class"] == "HeartbeatLost", (
+                "the isolate's crashed arm must self-describe on the job row — "
+                "shape-mirror of the sweep's WorkerCrashed stamp, with the "
+                "intentionally distinct class the attempt rows have always "
+                "carried"
+            )
+            assert row["error_message"] == _ISOLATE_CRASHED_MESSAGE
 
             attempts = await conn.fetch(
                 f'SELECT outcome, error_class FROM "{schema}".job_attempts WHERE job_id = $1',

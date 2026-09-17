@@ -58,7 +58,7 @@ import asyncpg
 import pytest
 
 from taskq._ids import new_uuid
-from taskq.backend._protocol import JobId
+from taskq.backend._protocol import CancelPhase, JobId
 from taskq.backend.postgres import PostgresBackend
 from taskq.testing.clock import FakeClock
 from taskq.testing.fixtures import ModulePgSchema
@@ -206,6 +206,11 @@ def _twin_running_row(
         locked_by_worker=backend._worker_id,
         lock_expires_at=lease,
         last_heartbeat_at=heartbeat_at,
+        # Parity with _seed_hb_running_job: a phase-carrying row is
+        # seeded with its request timestamp, so the preserved-column
+        # assertions below read a real audit value, not the None the
+        # bare make_job_row default leaves.
+        cancel_requested_at=_TWIN_START if cancel_phase else None,
     )
     backend._jobs[running.id] = running
     return running.id
@@ -413,6 +418,9 @@ async def test_cancel_carve_out_on_the_heartbeat_arm_rides_the_heartbeat_deadlin
     ``lock_expires_at``-based carve-out would leave EVERY row ineligible
     (the lease is never past the margin) and the two deep-past rows would
     stop being reclaimed — the discriminator this test exists to hold.
+    Both deep-past rows land 'cancelled' (#238: operator intent outranks
+    the retry budget), with the cancel columns preserved as the audit
+    trail of the honored request.
     """
     schema = module_pg_schema.schema_name
     worker_id = new_uuid()
@@ -471,10 +479,12 @@ async def test_cancel_carve_out_on_the_heartbeat_arm_rides_the_heartbeat_deadlin
         "on 'cancelled' — the caller's explicit request is the honest "
         "terminal label, on the heartbeat arm exactly as on the lease arm."
     )
-    assert await _job_status(clean_pg_conn, schema, deep_retryable) == "pending", (
+    assert await _job_status(clean_pg_conn, schema, deep_retryable) == "cancelled", (
         "a retryable heartbeat-stale row with a cancel in flight must land "
-        "on 'pending' — crash-reclaim starts the new attempt with a clean "
-        "cancellation slate."
+        "on 'cancelled' too — operator intent outranks the retry budget "
+        "(#238): the pre-fix budget-first CASE re-pended this row 'pending' "
+        "and wiped the operator's cancel, addressed to a holder the sweep "
+        "itself had just declared dead."
     )
     detail = await _latest_reclaim_detail(clean_pg_conn, schema, deep_exhausted)
     assert detail.get("cause") == "heartbeat_timeout", (
@@ -486,9 +496,12 @@ async def test_cancel_carve_out_on_the_heartbeat_arm_rides_the_heartbeat_deadlin
         deep_retryable,
     )
     assert retry_row is not None
-    assert retry_row["cancel_phase"] == 0, "the retry branch must reset cancel_phase"
-    assert retry_row["cancel_requested_at"] is None, (
-        "the retry branch must reset cancel_requested_at"
+    assert retry_row["cancel_phase"] == 1, (
+        "the cancel arm preserves cancel_phase as the audit trail of the "
+        "honored request — the same doctrine mark_cancelled carries"
+    )
+    assert retry_row["cancel_requested_at"] is not None, (
+        "the cancel arm preserves cancel_requested_at as the audit trail of the honored request"
     )
 
 
@@ -958,8 +971,11 @@ async def test_twin_both_arms_row_is_lease_owned_and_written_once() -> None:
 
 async def test_twin_cancel_carve_out_and_branch_labels_mirror_the_sql() -> None:
     """Twin parity for the carve-out pin: the grace ladder applies to the
-    heartbeat deadline, the exhausted branch lands 'cancelled', and the
-    retry branch resets the cancellation slate."""
+    heartbeat deadline, both cancel-in-flight rows (exhausted AND
+    retryable) land 'cancelled' with the cancel columns preserved —
+    operator intent outranks the retry budget (#238), mirroring the
+    reordered CASE — and the no-cancel exhausted row stays the crashed
+    arm."""
     backend = _twin_backend()
     timeout = timedelta(seconds=30)
     deadline_past_inside = timedelta(seconds=_CANCEL_MARGIN_SECONDS - 20)
@@ -1001,9 +1017,17 @@ async def test_twin_cancel_carve_out_and_branch_labels_mirror_the_sql() -> None:
     exhausted_row = await backend.get(deep_exhausted)
     assert exhausted_row is not None and exhausted_row.status == "cancelled"
     retry_row = await backend.get(deep_retryable)
-    assert retry_row is not None and retry_row.status == "pending"
-    assert retry_row.cancel_phase == 0, "the twin's retry branch must reset cancel_phase"
-    assert retry_row.cancel_requested_at is None
+    assert retry_row is not None and retry_row.status == "cancelled", (
+        "the twin's cancel arm must outrank the budget arm, exactly as "
+        "the reordered _SWEEP_1_SQL CASE does — the old budget-first "
+        "twin re-pended this row and wiped the operator's cancel"
+    )
+    assert retry_row.cancel_phase == CancelPhase.COOPERATIVE, (
+        "the twin's cancel arm preserves cancel_phase as the audit trail"
+    )
+    assert retry_row.cancel_requested_at is not None, (
+        "the twin's cancel arm preserves cancel_requested_at as the audit trail"
+    )
     detail = await _twin_reclaim_detail(backend, deep_exhausted)
     assert detail.get("cause") == "heartbeat_timeout", (
         f"the twin's carve-out path is still the heartbeat arm's reclaim (detail={detail!r})"
