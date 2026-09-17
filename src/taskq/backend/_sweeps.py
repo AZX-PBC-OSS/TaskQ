@@ -123,9 +123,15 @@ from taskq.constants import (
     RECLAIM_OUTBOX_RETENTION_MULTIPLIER,
     wake_channel,
 )
-from taskq.obs import get_logger, log_state_change, record_deadline_exceeded_swept
+from taskq.obs import (
+    get_logger,
+    log_state_change,
+    record_deadline_exceeded_swept,
+    record_reclaimed_jobs,
+)
 
 __all__ = [
+    "_RECLAIM_DISPOSITIONS",
     "_SWEEP_1_SQL",
     "_SWEEP_2_SQL",
     "_SWEEP_3_SQL",
@@ -336,6 +342,23 @@ spread across a band instead of at a point."""
 _ATTEMPT_MESSAGES: dict[str, str] = {
     "lock_expired": "lock expired before worker reported terminal state",
     "heartbeat_timeout": "heartbeat timeout passed before worker reported terminal state",
+}
+
+#: The disposition label the ``taskq.jobs.reclaimed`` counter carries for
+#: each branch, keyed by the post-update ``j.status`` the sweep's RETURNING
+#: already reports. One map, imported by the PG caller and the in-memory
+#: twin, so the metric's label set cannot drift between backends. The
+#: disposition is DERIVED from the returned status rather than emitted as
+#: a second CASE literal in the RETURNING on purpose: the status CASE is
+#: the single source of truth for which branch fired, and a second
+#: hand-maintained CASE beside it is exactly the drift surface the
+#: ``{has_budget}`` fragment exists to remove — one edit to the branch
+#: conditions must not leave a disposition literal silently disagreeing
+#: with the status it labels.
+_RECLAIM_DISPOSITIONS: dict[str, str] = {
+    "pending": "repended",
+    "crashed": "crashed",
+    "cancelled": "cancelled",
 }
 
 
@@ -575,7 +598,17 @@ SET status = CASE
     END
 FROM snap
 WHERE j.id = snap.id
-RETURNING j.id, j.status, j.attempt, j.started_at, snap.locked_by_worker,
+-- j.actor rides the RETURNING for the reclaimed-jobs counter: it is a
+-- plain column of the row this statement already locked and updated, so
+-- reading it in RETURNING adds no join and no second visit to jobs —
+-- the snap CTEs' index-driven scans (the measured plans in the module
+-- docstring) are untouched, and the cost class of the statement is
+-- unchanged. The disposition half of the counter's label set is NOT a
+-- second literal here: it derives from the returned j.status through
+-- _RECLAIM_DISPOSITIONS (see that map's comment for why one CASE, not
+-- two, is the invariant).
+RETURNING j.id, j.status, j.attempt, j.started_at, j.actor,
+          snap.locked_by_worker,
           snap.reason AS reclaim_reason, clock_timestamp() AS now_ts"""
 
 #: The sweep with its shared fragments bound, still carrying ``{schema}``
@@ -1204,6 +1237,16 @@ async def sweep_expired_locks(
     NULL`` semantics — instead of FK-violating on the dangling id, while
     the job_events detail still carries the last-known holder for audit.
 
+    The RETURNING also carries ``j.actor`` and the post-update
+    ``j.status``; from those this function aggregates the
+    ``taskq.jobs.reclaimed{actor, disposition}`` counter (disposition via
+    :data:`_RECLAIM_DISPOSITIONS`: ``repended`` / ``crashed`` /
+    ``cancelled``) and records it once per (actor, disposition) pair
+    after the transaction — the per-actor crash split the generic
+    ``taskq.maintenance_leader.sweep_rows{sweep_name}`` total cannot
+    express. The in-memory twin emits the identical counter so the two
+    backends' label sets cannot drift.
+
     One ``pg_notify`` is fired per sweep call that reclaims at least one
     row (not one per row) so that fleet-wide consumers using
     ``watch_reclaims`` get a low-latency wakeup on both branches.
@@ -1228,6 +1271,12 @@ async def sweep_expired_locks(
     event_sql = INSERT_EVENTS_DETAIL_BATCH_SQL.format(schema=schema)
 
     reclaimed: list[_ReclaimedRow] = []
+    # (actor, disposition) -> rows this call reclaimed, for the
+    # taskq.jobs.reclaimed counter. Aggregated on the row loop and emitted
+    # AFTER the transaction — the same shape sweep_deadline_exceeded uses
+    # for its per-actor counter: per-row metric calls on the DB-hold path
+    # are what the batching exists to remove.
+    reclaim_counts: Counter[tuple[str, str]] = Counter()
 
     async with conn.transaction():
         prev_timeout = await _apply_batch_statement_timeout(conn, statement_timeout_ms)
@@ -1249,8 +1298,14 @@ async def sweep_expired_locks(
                 new_status: str = rec["status"]
                 attempt: int = rec["attempt"]
                 started_at: datetime | None = rec["started_at"]
+                actor_name: str = rec["actor"]
                 original_worker: UUID | None = rec["locked_by_worker"]
                 reclaim_reason: str = rec["reclaim_reason"]
+                # The disposition label derives from the ONE branch
+                # arbiter — the status this statement just wrote — so the
+                # counter's split can never disagree with the row's own
+                # disposition (see _RECLAIM_DISPOSITIONS).
+                reclaim_counts[(actor_name, _RECLAIM_DISPOSITIONS[new_status])] += 1
 
                 # started_at is database-written and the attempt row's
                 # finished_at is stamped clock_timestamp(); the elapsed span
@@ -1314,6 +1369,15 @@ async def sweep_expired_locks(
             reason="lock_expired",
             cause=row.reclaim_reason,
         )
+    # Aggregated per (actor, disposition) AFTER the transaction — the
+    # same placement and rationale as sweep_deadline_exceeded's per-actor
+    # emission. The generic taskq.maintenance_leader.sweep_rows counter
+    # the leader loop records is deliberately left untouched: it stays
+    # the total per sweep_name, and this counter carries the per-actor
+    # crash split beside it, so dashboards keyed on the existing series
+    # keep reading the same totals.
+    for (actor_name, disposition), count in reclaim_counts.items():
+        record_reclaimed_jobs(actor=actor_name, disposition=disposition, count=count)
     if reclaimed:
         logger.error(
             "recovery_reclaim",
