@@ -41,7 +41,7 @@ from taskq.backend._records import (
     item_tags_jsonb_param,
     jsonb_param,
 )
-from taskq.backend._sql_templates import SqlTemplates
+from taskq.backend._sql_templates import COPY_ENQUEUE_STATUS, SqlTemplates
 from taskq.backend.clock import Clock
 from taskq.backend.statemachine import TERMINAL_STATUSES
 from taskq.connections import (
@@ -49,6 +49,7 @@ from taskq.connections import (
 )
 from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: the canonical identifier regex, shared with every schema-qualified SQL site — a local copy would drift.
+    wake_channel,
 )
 from taskq.exceptions import (
     BatchMaxPendingExceededError,
@@ -1884,7 +1885,9 @@ async def _enqueue_batch_fast(
     # domain-insensitive columns (sql.copy_enqueue_columns) and the fixup
     # UPDATE below stamps status/scheduled_at/schedule_to_close/
     # result_expires_at from the server clock inside the same transaction —
-    # never from this process's Python clock.
+    # never from this process's Python clock. Every row lands as
+    # COPY_ENQUEUE_STATUS so the INSERT trigger stays silent; the fixup
+    # wakes the fleet itself, once, only if it made any row runnable.
     # Same per-item annotation as _enqueue_batch's build loop (including
     # the index_base shift): the COPY record tuples are serialized here,
     # before any statement is issued, so a NUL-bearing item rejects the
@@ -1910,6 +1913,7 @@ async def _enqueue_batch_fast(
                     args.payload, idx=index_base + idx, field="payload", actor=args.actor
                 ),
                 args.payload_schema_ver,
+                COPY_ENQUEUE_STATUS,
                 args.priority,
                 0,
                 args.max_attempts,
@@ -2130,6 +2134,7 @@ async def _enqueue_batch_fast(
         await conn.execute(
             sql.enqueue_batch_fast_fixup,
             *fixup_cols,
+            wake_channel(schema),
         )
         return count, refusals, refused_indices
 

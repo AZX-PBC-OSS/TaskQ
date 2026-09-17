@@ -1049,11 +1049,15 @@ event delivery without fleet-wide fanout.
 
 The wake is the `tr_notify_job_insert` row trigger's: `AFTER INSERT ON jobs
 … WHEN (NEW.status = 'pending')`, it issues `pg_notify(wake_channel(schema),
-'')` for every row that lands dispatchable. No enqueue path issues a notify
-of its own — single INSERT, batch INSERT and COPY all rely on the trigger.
-Every insert path decides `status` server-side (a future `scheduled_at`
-lands as `scheduled`), so the WHEN clause is what keeps a future-dated
-enqueue from waking the fleet; Postgres coalesces identical
+'')` for every row that lands dispatchable. The single and batch INSERT
+paths issue no notify of their own and decide `status` server-side in the
+INSERT (a future `scheduled_at` lands as `scheduled`), so the WHEN clause
+is what keeps a future-dated enqueue from waking the fleet. The COPY path
+cannot decide status in its write: its rows land as `scheduled` (the
+trigger stays silent) and the fixup UPDATE that flips the runnable rows to
+`pending` issues the one wake itself, only when it flipped any — so a
+future-dated COPY batch wakes nobody and a mixed batch wakes the fleet
+once. Postgres coalesces identical
 `(channel, payload)` notifications within one transaction, so a batch costs
 one delivery. (An app-side notify after the INSERT was the same pair the
 trigger emits: coalesced with it in a transaction, a second delivery to

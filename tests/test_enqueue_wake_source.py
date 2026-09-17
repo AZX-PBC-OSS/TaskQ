@@ -99,3 +99,39 @@ async def test_a_copy_enqueue_wakes_listeners_exactly_once(clean_jobs_app: JobsA
     async with _listener(clean_jobs_app) as listener:
         await clean_jobs_app.backend.enqueue_batch_fast([make_enqueue_args() for _ in range(5)])
         assert await listener.settled() == 1
+
+
+async def test_a_future_dated_copy_batch_wakes_nobody(clean_jobs_app: JobsApp) -> None:
+    """The COPY tier decides status in its fixup UPDATE, after the rows
+    are in: rows that land ``pending`` at COPY time and are flipped to
+    ``scheduled`` afterwards would fire the INSERT trigger for work
+    nobody can dispatch — the herd the trigger's gate exists to prevent."""
+    async with _listener(clean_jobs_app) as listener:
+        later = clean_jobs_app.backend._clock.now() + timedelta(hours=1)  # pyright: ignore[reportPrivateUsage]  # Why: the backend's own clock keeps the stamp in the store's domain.
+        await clean_jobs_app.backend.enqueue_batch_fast(
+            [make_enqueue_args(scheduled_at=later) for _ in range(5)]
+        )
+        assert await listener.settled() == 0
+
+
+async def test_a_mixed_copy_batch_wakes_listeners_exactly_once(clean_jobs_app: JobsApp) -> None:
+    async with _listener(clean_jobs_app) as listener:
+        later = clean_jobs_app.backend._clock.now() + timedelta(hours=1)  # pyright: ignore[reportPrivateUsage]  # Why: the backend's own clock keeps the stamp in the store's domain.
+        await clean_jobs_app.backend.enqueue_batch_fast(
+            [make_enqueue_args(scheduled_at=later) for _ in range(3)]
+            + [make_enqueue_args() for _ in range(2)]
+        )
+        assert await listener.settled() == 1
+
+
+async def test_a_copy_batch_on_a_bare_caller_connection_wakes_exactly_once(
+    clean_jobs_app: JobsApp,
+) -> None:
+    async with _listener(clean_jobs_app) as listener:
+        pool = clean_jobs_app.backend._worker_pool  # pyright: ignore[reportPrivateUsage]  # Why: the bare-connection path is reached only through a caller-supplied conn.
+        async with pool.acquire() as conn:  # pyright: ignore[reportUnknownVariableType]  # Why: asyncpg stubs yield PoolConnectionProxy | Unknown
+            assert not conn.is_in_transaction()
+            await clean_jobs_app.backend.enqueue_batch_fast(
+                [make_enqueue_args() for _ in range(5)], connection=conn
+            )
+        assert await listener.settled() == 1
