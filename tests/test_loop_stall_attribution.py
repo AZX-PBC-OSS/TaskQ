@@ -8,7 +8,7 @@ main thread, with the real ``LoopLagWatchdog`` thread sampling it:
   while the loop cannot schedule.
 - ``gil_held``: an actor whose body parses a large document with orjson
   holds the GIL for the whole parse, starving even the watchdog thread's
-  wakeups — the second classifier signal.
+  wakeups (the second classifier signal).
 
 The asserts are the operator-facing contract: the warn carries the actor
 name, the kind, a file:line:function frame, the job id when exactly one

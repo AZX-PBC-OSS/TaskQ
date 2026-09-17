@@ -310,6 +310,8 @@ Duration percentiles are derived from `job_attempts_archive.duration_ms` via `pe
 
 Workers overview. Lists all rows from the `workers` table ordered by `last_seen_at DESC`, with an `is_leader` flag computed by a LEFT JOIN on `maintenance_leader`, and a **Running / Max** column: the count of `jobs` rows in `status = 'running'` locked by that worker (one index seek per worker over `jobs_locked_by_worker_running_idx`, the same population the `taskq.worker.active_jobs` metric counts per process) against the `max_concurrency` the worker registered in its row metadata. Amber when the worker is at capacity; a dash when an older registration carried no capacity. Reserved-but-unclaimed capacity (rate-limit slots, in-flight dispatch probes) is in neither number.
 
+The **Stall hotspots** column renders the worker's rolling tally of attributed event-loop stalls from the same metadata (`send_email x12 (gil_held)`, hottest actor first) — the actors whose synchronous code blocked that worker's event loop, as the lag watchdog attributed them. Empty when the worker attributed none. The tally counts ATTRIBUTED stalls per actor; the Running / Max column counts running rows. See [runbooks.md — Event-loop stall attribution](runbooks.md#event-loop-stall-attribution-worker-warnings).
+
 ### `GET /admin/leader`
 
 Maintenance leader detail. Shows the current leader worker (hostname, pid, last seen). If no leader is elected, renders the template with `leader=None`. A watchdog-health indicator marks the leader as healthy when `last_seen_at` is within 30 seconds of the current wall-clock time.

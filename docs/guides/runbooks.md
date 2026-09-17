@@ -431,6 +431,25 @@ The leader-count operand is what makes this alertable at all. A healthy multi-wo
 
 ---
 
+## Event-loop stall attribution (worker warnings)
+
+**What fires.** No alert: the worker's lag watchdog warns on its own. A warning named `event-loop-stall-attributed` logs once per stall at the warn tier and again at the terminal trip tier, alongside the existing `worker-watchdog-lag-warn` and `worker-watchdog-trip` events. Every attribution also bumps `taskq_worker_loop_stall_attributions_total{actor, kind}`, and the heartbeat merges the worker's rolling tally (top 20 actors by count, with per-kind counts) into its `workers` row metadata, so the hotspots are visible fleet-wide in `/admin/workers` and `taskq doctor` without scraping each worker.
+
+**What it means.** The event loop could not schedule (a beat was late past the warn budget), and the watchdog attributes the stall to the actor whose frame sat under the work holding the interpreter. The `kind` label separates the two shapes:
+
+- `blocking_call`: the actor's synchronous call RELEASED the GIL (`time.sleep`, a socket or HTTP wait, a subprocess). The sampling is exact — the watchdog thread kept running and caught the blocking frame.
+- `gil_held`: the synchronous work HELD the GIL (a C extension that does not release it, such as a large document parse, or a hot pure-Python loop). The watchdog's own wakeups starved; the sample is approximate and points at (or just after) the C call.
+
+The warning's `frame` field is `file:line:function` of the deepest non-taskq frame, and `actor`/`job_id` name the registered actor and (when exactly one running job matched) the job.
+
+**How to remediate.**
+
+1. `blocking_call`: move the blocking call off the event loop (`asyncio.to_thread` / `run_in_executor`) or make the actor async.
+2. `gil_held`: the actor holds the GIL in a long synchronous computation — chunk it or move it off the loop.
+3. Confirm recovery: the per-actor rate of `taskq_worker_loop_stall_attributions_total` flattens, and the worker's Stall hotspots column in `/admin/workers` stops growing.
+
+---
+
 ## Related documentation
 
 - [Observability](observability.md) — the metrics these alerts evaluate,

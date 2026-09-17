@@ -411,6 +411,15 @@ symptom is work that quietly does not happen. `doctor` names them together:
   once, so its cap is unreachable), and an actor cap above its queue's cap
   (the queue binds first, so raising the actor cap changes nothing).
 
+When a live worker's `workers` row metadata carries a non-empty event-loop
+stall tally, `doctor` reports one finding per attributed actor: which
+worker recorded it, the actor, the kind counts (`blocking_call` — a sync
+call that released the GIL; `gil_held` — sync work that held it), and the
+remedy. The tally is the rolling top-20 the worker's lag watchdog
+attributed (see [runbooks.md — Event-loop stall attribution](runbooks.md#event-loop-stall-attribution-worker-warnings));
+the worker's own `event-loop-stall-attributed` warnings name the exact
+file:line.
+
 A stored `max_concurrent=0` is labelled **drain mode** and a stored `NULL`
 is labelled **uncapped**, so a deliberate drain is distinguishable from an
 accidental zero and a real "no actor-level cap" from missing data.
