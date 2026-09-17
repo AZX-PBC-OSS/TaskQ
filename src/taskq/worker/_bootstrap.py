@@ -1804,6 +1804,26 @@ async def _main(
 
             deps.liveness.grace_factor = settings.watchdog_tick_grace_factor
             deps.liveness.stale_floor = settings.watchdog_stale_floor
+            # Stall attribution: the watchdog matches sampled code objects
+            # against the registered actor functions (ActorRef.fn's code),
+            # and joins running jobs via a snapshot callable instead of a
+            # registry reference, so the watchdog never touches loop-owned
+            # state directly. The registry is quiescent while the loop is
+            # blocked (the loop thread is its only mutator), but a resize
+            # racing the snapshot raises RuntimeError, and that must never
+            # kill the watchdog thread, hence the guard.
+            actor_code_names: dict[int, str] = (
+                {id(ref.fn.__code__): ref.name for ref in actor_registry.values()}
+                if actor_registry is not None
+                else {}
+            )
+
+            def _running_job_actors() -> list[tuple[str, str]]:
+                try:
+                    return [(job.ctx.actor, str(job.job_id)) for job in deps.active_jobs.all()]
+                except RuntimeError:
+                    return []
+
             lag_watchdog = LoopLagWatchdog(
                 asyncio.get_running_loop(),
                 deps.liveness,
@@ -1812,6 +1832,9 @@ async def _main(
                 startup_grace=settings.watchdog_loop_lag_startup_grace,
                 poll_interval=settings.watchdog_check_interval,
                 enabled=settings.watchdog_enabled,
+                actor_code_names=actor_code_names,
+                stall_tally=deps.stall_tally,
+                list_running_jobs=_running_job_actors,
             )
 
             def _stamp_shutdown_started(t: float) -> None:

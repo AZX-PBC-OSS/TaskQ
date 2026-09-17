@@ -52,7 +52,13 @@ import structlog
 from opentelemetry import metrics as otel_metrics
 from opentelemetry.metrics import CallbackOptions, Observation
 
-from taskq.obs import get_logger, get_meter
+from taskq.obs import get_logger, get_meter, record_loop_stall_attribution
+from taskq.worker._stall_tally import (
+    KIND_BLOCKING_CALL,
+    KIND_GIL_HELD,
+    StallAttributionTally,
+    remedy_for_kind,
+)
 
 __all__ = [
     "EXIT_WATCHDOG",
@@ -65,6 +71,19 @@ __all__ = [
 ]
 
 EXIT_WATCHDOG = 2
+
+# Stall attribution: how many stack samples the ring keeps while a stall
+# persists, how many frames of the best sample the warning carries, and how
+# far outward one sample walks before giving up on an actor boundary.
+_STALL_SAMPLE_RING_SIZE = 16
+_STALL_STACK_LIMIT = 8
+_STALL_WALK_LIMIT = 64
+
+# One frame of a sampled stack: (file, line, function, code-object id),
+# innermost first. The code-object id is what matches against the actor
+# registry; the rest is display material.
+_StackFrame = tuple[str, int, str, int]
+_StackSample = tuple[_StackFrame, ...]
 
 # Hard wall on the pre-exit metrics flush. force_flush has no usable
 # timeout against a hung OTLP collector (the gRPC exporter ignores
@@ -142,6 +161,65 @@ _loop_tick_age_gauge = _meter.create_observable_gauge(
     unit="s",
     callbacks=[_observe_tick_age],
 )
+
+
+def _taskq_dir() -> str:
+    return os.path.dirname(os.path.abspath(__file__)) + os.sep
+
+
+_TASKQ_DIR = _taskq_dir()
+
+
+def _sample_frame_stack(frame: Any) -> _StackSample:
+    """Flatten a frame chain innermost first, bounded, keeping code ids."""
+    frames: list[_StackFrame] = []
+    while frame is not None and len(frames) < _STALL_WALK_LIMIT:
+        code = frame.f_code
+        frames.append((code.co_filename, frame.f_lineno, code.co_name, id(code)))
+        frame = frame.f_back
+    return tuple(frames)
+
+
+def _innermost_non_taskq_frame(sample: _StackSample) -> str | None:
+    """The deepest frame taskq does not own: the file:line the stall sits on.
+
+    The innermost frame is usually the blocking callee itself (a user helper,
+    a third-party client); a frame inside taskq's own package is skipped, so
+    the cited line is code the operator can change.
+    """
+    for filename, lineno, funcname, _code_id in sample:
+        if not filename.startswith(_TASKQ_DIR):
+            return f"{filename}:{lineno}:{funcname}"
+    return None
+
+
+def attribute_stall(
+    samples: list[_StackSample],
+    actor_code_names: dict[int, str],
+) -> tuple[str | None, str | None, list[str]]:
+    """Name the actor and the frame behind a stall from its sampled stacks.
+
+    Walks the newest sample outward to the actor boundary: the first frame
+    whose code object is a registered actor function names the actor. The
+    innermost non-taskq frame of that same sample is the cited
+    ``file:line:function``. When no sample names an actor the newest
+    sample's deepest non-taskq frame is still cited and the actor is
+    ``None`` (the block sits under taskq's own code or a non-actor
+    coroutine). Returns ``(actor, frame, stack)`` with the stack the
+    newest sample's frames, innermost first.
+    """
+    if not samples:
+        return None, None, []
+    stack = [f"{fn}:{lineno}:{funcname}" for fn, lineno, funcname, _ in samples[-1]]
+    for sample in reversed(samples):
+        actor: str | None = None
+        for _filename, _lineno, _funcname, code_id in sample:
+            if code_id in actor_code_names:
+                actor = actor_code_names[code_id]
+                break
+        if actor is not None:
+            return actor, _innermost_non_taskq_frame(sample), stack
+    return None, _innermost_non_taskq_frame(samples[-1]), stack
 
 
 class TaskDumpRecord:
@@ -490,6 +568,26 @@ class LoopLagWatchdog:
       sweep on lock-lease expiry — which is only safe while the trip
       lands inside the lease (see the lag-lease invariant in
       ``WorkerSettings.post_load``).
+
+    Attribution (both tiers): while a stall persists the thread samples
+    the event-loop thread's stack into a small ring, and each tier pairs
+    its lag signal with a classifier before emitting. The classifier
+    joins TWO signals:
+
+    - loop lag (the beat gap): the loop is not scheduling; and
+    - the watchdog thread's OWN wakeup gap: how far each
+      ``_stop.wait(poll_interval)`` overshoots the requested interval.
+      An overshoot beyond one full interval means the watchdog thread
+      itself was starved of the GIL, which is what synchronous work that
+      never releases the interpreter does to a bystander thread.
+
+    Loop lag with a quiet watchdog thread classifies ``blocking_call``
+    (the blocking frame released the GIL: an I/O wait, a subprocess);
+    loop lag with an overshooting watchdog thread classifies
+    ``gil_held`` (the interpreter is held: a C extension without GIL
+    release, or a hot pure-Python loop). The threshold is generous
+    because scheduler jitter on a loaded host can stretch a single wait;
+    only sustained starvation past a whole extra interval counts.
     """
 
     def __init__(
@@ -503,6 +601,9 @@ class LoopLagWatchdog:
         poll_interval: float = 0.5,
         enabled: bool = True,
         clock: Callable[[], float] = time.monotonic,
+        actor_code_names: dict[int, str] | None = None,
+        stall_tally: StallAttributionTally | None = None,
+        list_running_jobs: Callable[[], list[tuple[str, str]]] | None = None,
     ) -> None:
         self._loop = loop
         self._liveness = liveness
@@ -512,9 +613,18 @@ class LoopLagWatchdog:
         self._poll_interval = poll_interval
         self._enabled = enabled
         self._clock = clock
+        self._actor_code_names: dict[int, str] = dict(actor_code_names or {})
+        self._stall_tally = stall_tally
+        self._list_running_jobs = list_running_jobs
         self._last_beat = clock()
         self._started = clock()
         self._warned = False
+        # Stall-attribution state, guarded by its own lock: the watchdog
+        # thread samples and reads it, the loop thread clears it in _beat
+        # when the stall ends.
+        self._stall_lock = threading.Lock()
+        self._stall_samples: list[_StackSample] = []
+        self._gil_pressure = False
         # The beat request whose latency the lag histogram measures: the
         # request outstanding when a stall begins is the one that lands
         # when the loop recovers, so it is held (not re-stamped by the
@@ -541,8 +651,12 @@ class LoopLagWatchdog:
         self._last_beat = self._clock()
         # A beat means the loop scheduled again: the stall is over. Clear
         # the latch so the NEXT stall gets a fresh tier-1 warning instead
-        # of riding this one's.
+        # of riding this one's, and drop the stall's sample ring and
+        # classifier signal with it.
         self._warned = False
+        with self._stall_lock:
+            self._stall_samples.clear()
+            self._gil_pressure = False
 
     def _armed(self) -> bool:
         if self._clock() - self._started >= self._startup_grace:
@@ -570,6 +684,100 @@ class LoopLagWatchdog:
                 note="event-loop-lag detection is no longer active in this process",
             )
 
+    def _note_own_wait(self, elapsed: float) -> None:
+        """Classifier signal 2: the watchdog thread's own wakeup gap.
+
+        *elapsed* is how long one ``_stop.wait(poll_interval)`` actually
+        took. Overshooting by more than a full extra interval means this
+        thread could not get the GIL for the entire requested interval on
+        top of it: scheduler jitter on a loaded host can stretch a wait,
+        but only an interpreter held by the loop thread starves a bystander
+        by that much. Recorded as pressure for the CURRENT stall; the next
+        landed beat clears it.
+        """
+        if elapsed - self._poll_interval > self._poll_interval:
+            with self._stall_lock:
+                self._gil_pressure = True
+
+    def _sample_main_thread(self) -> None:
+        """Take one stack sample of the event-loop thread into the ring.
+
+        Safe from this thread even while the loop is blocked: the sampler
+        only reads the thread's current frame chain. The sample is
+        flattened immediately (no frame objects are kept, so nothing pins
+        a dead frame), and the ring keeps the last
+        ``_STALL_SAMPLE_RING_SIZE`` samples so attribution sees the whole
+        stall, not one instant of it.
+        """
+        ident = threading.main_thread().ident
+        if ident is None:
+            return
+        frame = sys._current_frames().get(ident)
+        if frame is None:
+            return
+        sample = _sample_frame_stack(frame)
+        with self._stall_lock:
+            self._stall_samples.append(sample)
+            if len(self._stall_samples) > _STALL_SAMPLE_RING_SIZE:
+                del self._stall_samples[0]
+
+    def _stall_kind(self) -> str:
+        with self._stall_lock:
+            gil_pressure = self._gil_pressure
+        return KIND_GIL_HELD if gil_pressure else KIND_BLOCKING_CALL
+
+    def _unique_job_id(self, actor: str | None) -> str | None:
+        """The running job id when exactly one matches the attributed actor.
+
+        The registry is quiescent while the loop is blocked (the loop
+        thread is its only mutator), but a resize racing the read raises
+        RuntimeError, and that must never kill the watchdog thread: a
+        stalled attribution with no job id is still useful, so the guard
+        degrades to None.
+        """
+        if actor is None or self._list_running_jobs is None:
+            return None
+        try:
+            matches = [
+                job_id for job_actor, job_id in self._list_running_jobs() if job_actor == actor
+            ]
+        except RuntimeError:
+            return None
+        if len(matches) == 1:
+            return matches[0]
+        return None
+
+    def _emit_attribution(self, lag: float) -> None:
+        """Attribute the current stall: counter, tally, and the warning.
+
+        Shared by both tiers (warn and trip), so every stall the watchdog
+        reports names the actor that caused it when the sampled stack can
+        name one. The span of the running attempt is deliberately NOT
+        recorded: OTel span operations are not thread-safe, and the
+        attempt's span lives on the loop thread, so recording a span event
+        from this daemon thread risks corrupting it mid-block.
+        """
+        with self._stall_lock:
+            samples = list(self._stall_samples)
+        kind = self._stall_kind()
+        actor, frame, stack = attribute_stall(samples, self._actor_code_names)
+        record_loop_stall_attribution(actor, kind=kind)
+        if self._stall_tally is not None:
+            self._stall_tally.record(actor, kind=kind)
+        _log.warning(
+            "event-loop-stall-attributed",
+            actor=actor,
+            job_id=self._unique_job_id(actor),
+            frame=frame,
+            kind=kind,
+            lag_seconds=round(lag, 3),
+            samples=len(samples),
+            # Not `stack`: structlog's console renderer consumes that key
+            # for stack_info rendering, which would swallow the field.
+            stack_frames=stack[:_STALL_STACK_LIMIT],
+            remedy=remedy_for_kind(kind),
+        )
+
     def _warn(self, lag: float) -> None:
         """Tier 1: diagnose a stall without killing the worker for it."""
         _loop_lag_warns.add(1, {"detector": "event-loop-lag-warn"})
@@ -580,6 +788,7 @@ class LoopLagWatchdog:
             lag_seconds=round(lag, 3),
             warn_budget=self._warn_budget,
         )
+        self._emit_attribution(lag)
         # Thread-state dump is safe from this thread even while the loop
         # is blocked; the task-stack dump is not (asyncio.all_tasks is not
         # thread-safe), so it is deferred onto the loop and lands once the
@@ -609,47 +818,66 @@ class LoopLagWatchdog:
         self._beat_sampled = True
 
     def _watch(self) -> None:
-        while not self._stop.wait(self._poll_interval):
-            if not self._armed():
-                continue
-            self._sample_landed_beat()
-            lag = self._clock() - self._last_beat
-            if lag > self._warn_budget and not self._warned:
+        while True:
+            wait_started = self._clock()
+            stopped = self._stop.wait(self._poll_interval)
+            # The overshoot of this very wait is the classifier's second
+            # signal, measured before anything else so the stall's own
+            # starvation is captured even when the poll that follows finds
+            # the loop already recovered.
+            self._note_own_wait(self._clock() - wait_started)
+            if stopped:
+                return
+            self._poll()
+
+    def _poll(self) -> None:
+        """One watchdog iteration, split from the wait for testability."""
+        if not self._armed():
+            return
+        self._sample_landed_beat()
+        lag = self._clock() - self._last_beat
+        if lag > self._warn_budget:
+            # The loop has not scheduled for a warn budget: the stall is
+            # real, so this poll joins a sample. Warn-tier attribution
+            # walks these samples; the trip tier below walks the same ring.
+            self._sample_main_thread()
+            if not self._warned:
                 self._warned = True
                 self._warn(lag)
-            if lag > self._budget:
-                _watchdog_trips.add(1, {"detector": "event-loop-lag"})
-                # The stall's own sample: no beat will land, so the time
-                # since the last one is the lag the trip is reporting.
-                _event_loop_lag.record(lag)
-                self._beat_sampled = True
-                _log.critical(
-                    "worker-watchdog-trip",
-                    kind="worker_watchdog_trip",
-                    detector="event-loop-lag",
-                    reason=f"event loop has not scheduled for {lag:.1f}s",
-                )
-                print(
-                    f"=== watchdog trip: event loop blocked for {lag:.1f}s ===",
-                    file=sys.stderr,
-                    flush=True,
-                )
-                faulthandler.dump_traceback(file=sys.stderr, all_threads=True)
-                sys.stderr.flush()
-                # Same flush-before-exit as trip(): without it the
-                # event-loop-lag increment of watchdog_trips_total never
-                # reaches the exporter, and this is the trip you least want
-                # to be guessing about after the fact.
-                _flush_metrics_before_exit()
-                os._exit(EXIT_WATCHDOG)
-                # Unreachable in production. If os._exit is ever intercepted
-                # (a test, an embedded host), stop rather than re-trip and
-                # re-dump on every subsequent poll.
-                return
-            if self._beat_sampled:
-                self._beat_requested_at = self._clock()
-                self._beat_sampled = False
-            try:
-                self._loop.call_soon_threadsafe(self._beat)
-            except RuntimeError:
-                return
+        if lag > self._budget:
+            _watchdog_trips.add(1, {"detector": "event-loop-lag"})
+            # The stall's own sample: no beat will land, so the time
+            # since the last one is the lag the trip is reporting.
+            _event_loop_lag.record(lag)
+            self._beat_sampled = True
+            self._emit_attribution(lag)
+            _log.critical(
+                "worker-watchdog-trip",
+                kind="worker_watchdog_trip",
+                detector="event-loop-lag",
+                reason=f"event loop has not scheduled for {lag:.1f}s",
+            )
+            print(
+                f"=== watchdog trip: event loop blocked for {lag:.1f}s ===",
+                file=sys.stderr,
+                flush=True,
+            )
+            faulthandler.dump_traceback(file=sys.stderr, all_threads=True)
+            sys.stderr.flush()
+            # Same flush-before-exit as trip(): without it the
+            # event-loop-lag increment of watchdog_trips_total never
+            # reaches the exporter, and this is the trip you least want
+            # to be guessing about after the fact.
+            _flush_metrics_before_exit()
+            os._exit(EXIT_WATCHDOG)
+            # Unreachable in production. If os._exit is ever intercepted
+            # (a test, an embedded host), stop rather than re-trip and
+            # re-dump on every subsequent poll.
+            return
+        if self._beat_sampled:
+            self._beat_requested_at = self._clock()
+            self._beat_sampled = False
+        try:
+            self._loop.call_soon_threadsafe(self._beat)
+        except RuntimeError:
+            return
