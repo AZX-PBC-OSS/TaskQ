@@ -3791,6 +3791,133 @@ async def test_escaped_assume_failure_also_hands_the_won_lease_back(
     assert hand_backs[0]["reason"] == "assume_failed"
 
 
+class _SteerableConn(_ElectRecordingConn):
+    """A double whose elect answers follow a shared mutable flag, per call.
+
+    The R1 attack shape needs the election to flip mid-run — a peer takes
+    the row, so this pod's elects start LOSING — while ``FakeConn`` binds
+    its lease-statement answer at construction and the leader conn is
+    rebuilt every failed cycle. The flag is therefore read at call time:
+    ``win`` truthy answers the elect with a fresh term (recorded in the
+    timeline), ``win`` falsy answers with no row at all (the ordinary
+    follower state).
+    """
+
+    def __init__(self, timeline: list[tuple[str, datetime]], state: dict[str, int]) -> None:
+        super().__init__(timeline, fetchval_result=True)
+        self._state = state
+
+    async def fetchval(self, sql: str, *args: object) -> object:
+        if _is_lease_statement(sql) and not _is_server_clock_read(sql) and not self._state["win"]:
+            return None
+        return await super().fetchval(sql, *args)
+
+
+async def test_a_blip_after_a_peer_takeover_gets_a_fresh_trust_window(
+    monkeypatch: Any,  # type: ignore[reportUnknownParameterType]
+) -> None:
+    """F1, the R1 attack shape: an OLD episode's spent anchor must not
+    resign a NEW term's first conn-open blip.
+
+    Sequence: a broken episode hands the lease back at its trust horizon;
+    a peer takes the row; this pod later wins again (the peer's lease
+    ended) and hits ONE failed dedicated-conn open. The stale anchor —
+    cleared only by a successful assume in the code under attack — is
+    long spent, so that single blip resigned the fresh term immediately:
+    the per-blip leadership thrash the #234 design explicitly rejected,
+    arriving through the back door for exactly the pods that once had an
+    unassumable episode.
+
+    A lost election is the observable end of an episode (a peer holds the
+    row now), so the anchor must clear there — while the sibling pin
+    (``test_persistent_dedicated_conn_failure_hands_the_won_lease_back``)
+    keeps the other rule: a re-win while still broken, with NO peer
+    having taken the row in between, hands it straight back.
+    """
+    import taskq.worker.leader as leader_mod
+
+    timeline: list[tuple[str, datetime]] = []
+    # win: 1 = this pod's elects win (its row / a free row), 0 = a live
+    # peer holds the row and every elect loses. fail_opens: every
+    # dedicated-conn open refuses (the broken episode). blips_left: a
+    # one-shot refusal count for the new term's single blip.
+    state: dict[str, int] = {"win": 1, "fail_opens": 1, "blips_left": 0}
+
+    async def fake_open(
+        dsn: str,
+        *,
+        label: str = "",
+        apply_keepalive: bool = True,
+        command_timeout: float | None = None,
+    ) -> FakeConn:
+        if label in ("leader_monitor_conn", "cron_conn") and (
+            state["fail_opens"] or state["blips_left"] > 0
+        ):
+            # The one-shot blip decrements only when the persistent
+            # failure is over — phase 3's single refusal.
+            if state["blips_left"] > 0 and not state["fail_opens"]:
+                state["blips_left"] -= 1
+            raise asyncpg.TooManyConnectionsError("remaining connection slots reserved")
+        return _SteerableConn(timeline, state)
+
+    monkeypatch.setattr(leader_mod, "open_dedicated_conn", fake_open)
+
+    leader, deps, _backend, _first_conn, _, shutdown = await _make_leader(
+        leader_conn=_SteerableConn(timeline, state),
+        monkeypatch=None,
+        leader_lease=1.0,
+    )
+
+    task = asyncio.create_task(leader._election_loop(shutdown))  # pyright: ignore[reportPrivateUsage]  # Why: the election loop IS the episode state machine under test.
+
+    try:
+        with structlog.testing.capture_logs() as captured:
+
+            def _warn_count() -> int:
+                return sum(1 for e in captured if e.get("kind") == "leader_resigned_unassumable")
+
+            # Phase 1 — the broken episode: wins, failed opens, the
+            # trust-spent hand-back (and its re-win churn).
+            await wait_for_condition(
+                _warn_count,
+                description="phase 1 never produced the trust-spent hand-back",
+            )
+
+            # Phase 2 — the peer takes the row: this pod's elects lose.
+            state["win"] = 0
+            await wait_for_condition(
+                lambda: any(e.get("kind") == "leader_retry" for e in captured),
+                description="the pod never observed the election loss that ends the episode",
+            )
+            warns_after_loss = _warn_count()
+
+            # Phase 3 — the pod wins a NEW term (the peer's lease ended)
+            # and hits exactly one conn-open blip on it: the persistent
+            # failure is over, one open still refuses.
+            state["win"] = 1
+            state["fail_opens"] = 0
+            state["blips_left"] = 1
+            await wait_for_leader(deps)
+
+        assert _warn_count() == warns_after_loss, (
+            "the first conn-open blip of a NEW term resigned immediately: the "
+            "spent anchor from an old episode (ended by a peer takeover) "
+            "survived the election loss it should have cleared on"
+        )
+        assert deps.is_leader.is_set(), (
+            "the blipped term must recover through its own trust window and "
+            "assume on the next cycle"
+        )
+    finally:
+        shutdown.set()
+        await task
+
+    # The recovery was real leadership, not a hand-back: this pod assumed
+    # the term it won in phase 3.
+    assert deps.leader_term is not None
+    assert any(e.get("event") == "leader-elected" for e in captured)
+
+
 # ── Leadership gap-window after reload ──────────────────────────────────
 
 
