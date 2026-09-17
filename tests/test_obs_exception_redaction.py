@@ -1330,7 +1330,7 @@ def test_no_nested_quantifier_regexes_in_taskq_obs() -> None:
     dynamically built pattern is unauditable by any static guard, and
     the flag is the honest answer). A pattern that does not even parse
     as a regex is flagged rather than skipped, the same fail-closed
-    posture the post-attack review endorsed for the parser import
+    posture the follow-up review endorsed for the parser import
     itself: a guard that quietly tolerates what it cannot check is a
     guard that reports green on the next #248.
 
@@ -1576,7 +1576,7 @@ def test_no_nested_quantifier_regexes_in_taskq_obs() -> None:
 
 # ── the repr channel: marker parity and a terminator that cannot cross lines ──
 #
-# The fix-round attack on #248 (PR #269) found the repr channel -- the
+# The fix-round review of #248 (PR #269) found the repr channel -- the
 # ``error=repr(exc)`` majority log idiom, scrubbed by
 # _PG_DETAIL_ESCAPED_RE -- half-updated: the line-anchored _PG_DETAIL_RE had
 # gained the ``[ \t|+]*`` ExceptionGroup marker class, the escaped companion
@@ -1584,7 +1584,7 @@ def test_no_nested_quantifier_regexes_in_taskq_obs() -> None:
 # message shipped verbatim once repr() flattened its newline. That is the
 # branch's own named poison vector -- adversarial text echoed into an
 # exception message -- so the parity gap was a leak on exactly the threat
-# model the perf fix had closed the stall for. The same attack also found
+# model the perf fix had closed the stall for. The same review also found
 # the escaped scrub's closers terminator ending in ``\s*``: ``\s`` crosses
 # newlines, so on CR-bearing text a DETAIL value carrying quote + closers +
 # a CR/LF boundary satisfied the repr-tail leg by peering PAST the line end,
@@ -1684,7 +1684,7 @@ def test_repr_channel_boundary_is_line_shaped_detail_only() -> None:
 
 def test_repr_escaped_terminator_cannot_cross_a_line_boundary() -> None:
     """The closers leg of the escaped scrub's terminator ends in
-    ``[ \\t]*`` — same-line trailing whitespace only, never ``\\s*``.
+    ``[ \\t]*``: same-line trailing whitespace only, never ``\\s*``.
 
     ``\\s`` crosses newlines, so a DETAIL value carrying a quote, closers
     and a CR/LF boundary satisfied the repr-tail leg by peering PAST the
@@ -1696,7 +1696,7 @@ def test_repr_escaped_terminator_cannot_cross_a_line_boundary() -> None:
     """
     from taskq.obs._redact_exc import scrub_exception_field
 
-    # The attacker's shape, CR-rendered blank line: the value carries
+    # The reviewer's shape, CR-rendered blank line: the value carries
     # quote + closers + a CR/LF boundary. The scrub must NOT accept the
     # closers as a repr tail across that boundary -- it fails closed and
     # the closers ride the scrub (more deletion, never less).
@@ -1713,7 +1713,7 @@ def test_repr_escaped_terminator_cannot_cross_a_line_boundary() -> None:
         "tail by a terminator that peers across the CR/LF boundary -- the "
         "scrub must fail closed there and delete more, never less"
     )
-    # The line-wise boundary, stated honestly: text on the NEXT physical
+    # The line-wise boundary, stated directly: text on the NEXT physical
     # line is outside this line-bounded scrub's reach (``.`` never crosses
     # a real newline) -- identically for the shape and its no-closers
     # control below. Covering the next line is the line-channel's job on

@@ -9,9 +9,9 @@ cooperative cancel does not get its in-flight work double-run. The
 gauge's predicate now carves those rows out
 (`status='running' AND lock_expires_at < now AND cancel_phase = 0`),
 so `TaskQRunningLeaseExpired` pages only on genuinely stuck rows: a
-cancel that never completes pages elsewhere — TaskQAbandonedJobs when
+cancel that never completes pages elsewhere: TaskQAbandonedJobs when
 its worker is alive to escalate through the phases, TaskQHeartbeatMisses
-when it died mid-cancel — and the reclaim sweep honors the row to
+when it died mid-cancel, and the reclaim sweep honors the row to
 `cancelled` either way.
 
 These pins were filed RED-for-the-desired-state (the gauge
@@ -197,10 +197,10 @@ async def test_gauge_excludes_a_lone_cancelling_row(
 ) -> None:
     """The lone-row shape the original evidence pin caught red: nothing in
     the fleet but a cancel in flight whose lease expired five seconds ago.
-    Both cooperative (1) and forced (2) phases are carved out — the
+    Both cooperative (1) and forced (2) phases are carved out: the
     reclaim sweep's grace ladder applies to either, and a cancel that
     never completes pages elsewhere (TaskQAbandonedJobs when its worker
-    is alive to escalate, TaskQHeartbeatMisses when it died mid-cancel —
+    is alive to escalate, TaskQHeartbeatMisses when it died mid-cancel,
     reclaim honors the row to `cancelled` either way), not on this gauge.
     """
     schema = module_pg_schema.schema_name
@@ -232,8 +232,8 @@ async def test_gauge_freezes_at_last_good_value_when_sampling_fails(
     """Drive one healthy sample (gauge reads 1), then break the pool so the
     next round's statements fail. The fleet-wide arm never resets
     `_running_lease_expired_count` (or its by-status/oldest-due siblings)
-    on a failed tick — the caches keep their last values rather than drop
-    to a zero an operator would read as recovery — and the failure counts
+    on a failed tick: the caches keep their last values rather than drop
+    to a zero an operator would read as recovery, and the failure counts
     on `taskq.maintenance_leader.sweep_timeouts` under the
     backlog_detection sweep_name, which is what keeps a held fleet-wide
     value observable instead of silent (see TaskQSweepTimeouts).

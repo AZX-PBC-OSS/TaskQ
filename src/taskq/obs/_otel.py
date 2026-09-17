@@ -2460,7 +2460,7 @@ def update_running_lease_expired_cache(count: int) -> None:
     not draining. Rows with a cancel in flight (cancel_phase != 0) are
     carved out: the reclaim sweep deliberately waits out the cancel grace
     ladder for them, so their lease expiring mid-cancel is the protocol
-    working, not a zombie — a cancel that never completes pages
+    working, not a zombie: a cancel that never completes pages
     elsewhere (TaskQAbandonedJobs when its worker is alive to escalate
     through the phases, TaskQHeartbeatMisses when it died mid-cancel;
     reclaim honors the row to 'cancelled' either way). No dimensions:

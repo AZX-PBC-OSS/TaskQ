@@ -240,14 +240,14 @@ def test_scheduled_backlog_growing_asserts_count_growth_not_self_referenced_age(
 
 def test_sweep_timeouts_alert_counts_every_sampler_failure_class() -> None:
     """TaskQSweepTimeouts must count the gauge samplers' read failures, not
-    only sweep batches — and must keep doing so.
+    only sweep batches, and must keep doing so.
 
     The per-actor backlog read's failure arms (#249) count on the
     sweep-timeouts counter under the actor_backlog sweep_name; the queue
     depth, backlog-detection and reservation-slots samplers already do
     under theirs. The alert's expression must therefore stay UNFILTERED on
     sweep_name: a selector narrowed to the batch sweep names would silently
-    un-wire every sampler-failure class — a metrics-only operator would
+    un-wire every sampler-failure class: a metrics-only operator would
     again watch TaskQQueueDepthHigh resolve itself under the exact incident
     that kills its read, with the counting alert green. Its description
     must name the sampler class too, or the page will send the operator
