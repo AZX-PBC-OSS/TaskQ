@@ -855,6 +855,43 @@ Anything outside TaskQ that issued `SELECT pg_notify('taskq_wake_<schema>',
 '')` must switch to the derived name; see
 [workers.md](workers.md#internal-components) for the SQL expression.
 
+### Retries at the backoff cap spread over `[cap × (1 − jitter), cap]`
+
+> **Unreleased.** Silent; only the distribution of capped retry delays
+> changes. The documented bounds are unchanged and `jitter=0` remains the
+> identity.
+
+Jitter was applied to the saturated curve value and the draw clipped at the
+effective cap, so the upper half of the band collapsed onto the cap exactly
+and about half of a cohort retrying at the cap came due at the same instant —
+the herd jitter exists to spread, on the retries most likely to follow a
+fleet-wide event. The band is now fitted under the cap before the draw: a
+capped retry (the default exponential policy from attempt 11, any
+`fixed`/`linear` policy whose base reaches the cap, any curve above
+`max_retry_backoff`, every reclaimed cohort at the ceiling) is drawn
+uniformly from `[cap × (1 − jitter), cap]` — `[48 min, 60 min]` for the
+default policy. The RNG path and the row-derived reclaim path (Python and
+SQL) evaluate the same expressions, so they remain bit-for-bit equal. See
+[retries.md](retries.md#jitter).
+
+### Transactional migrations give up waiting for a table lock after 30 s
+
+> **Unreleased.** A migration that previously parked indefinitely behind a
+> lock holder now fails with a typed error; nothing else changes.
+
+Each transactional migration runs under `SET LOCAL lock_timeout` of
+`DEFAULT_MIGRATION_DDL_LOCK_TIMEOUT` (30 s) and raises
+`MigrationLockTimeoutError` — naming the migration (or the runner's own
+ledger upgrade), the bound and the remedy, with the driver's
+`LockNotAvailableError` as its cause — instead of waiting forever with
+every `jobs` statement queued behind it until the fleet's heartbeats gave
+out. Nothing is applied on a timeout; re-run after ending the holder. The
+bound is settable with `taskq migrate up --ddl-lock-timeout` or
+`ddl_lock_timeout=` on `apply_pending` / `apply_pending_locked` (`0`
+restores the unbounded wait). `-- taskq:no-transaction` migrations are
+unaffected. See
+[the migration gave up waiting for a table lock](#the-migration-gave-up-waiting-for-a-table-lock).
+
 ### Migration `01.00.06_01` takes write-blocking index locks
 
 > **Unreleased.** Operational note for the `jobs` / `job_attempts` index
