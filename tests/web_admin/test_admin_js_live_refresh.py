@@ -81,7 +81,15 @@ if (scenario === "poll-while-sse-connected") {
     global.lastEventSource.emit("state_change", { type: "cancel", job_id: "j1", worker_id: "w1" });
 } else if (scenario === "sse-terminal-status-for-unlisted-row") {
     global.lastEventSource.emit("state_change", { job_id: "j1", status: "succeeded" });
+} else if (scenario === "sse-error-keeps-polling") {
+    global.lastEventSource.handlers["error"]();
+    advance(2000);
+} else if (scenario === "toggle-off-keeps-polling") {
+    page.toggleLive();
+    advance(2000);
+    page.toggleLive();
 }
+log.push("polling:" + (page.pollTimer !== null) + " sse:" + (page.eventSource !== null));
 process.stdout.write(JSON.stringify(log));
 """
 
@@ -127,3 +135,25 @@ def test_sse_terminal_status_for_unlisted_row_refreshes_the_table() -> None:
     than the event being dropped."""
     log = _drive("sse-terminal-status-for-unlisted-row")
     assert log.count("fetch:/admin/jobs") == 1, log
+
+
+@requires_node
+def test_sse_error_falls_back_to_the_poll_already_running() -> None:
+    """An EventSource error closes the stream; the poll that was running all
+    along carries the page, with nothing to restart."""
+    log = _drive("sse-error-keeps-polling")
+    assert "sse-close" in log
+    assert log.count("fetch:/admin/jobs") == 2, log
+    assert log[-1] == "polling:true sse:false"
+
+
+@requires_node
+def test_pausing_live_closes_sse_and_keeps_polling() -> None:
+    """Pausing the live toggle drops the SSE connection only; the poll keeps
+    the table current, and resuming reconnects SSE and reloads the table."""
+    log = _drive("toggle-off-keeps-polling")
+    assert log.index("sse-close") < log.index("fetch:/admin/jobs")
+    assert log.count("fetch:/admin/jobs") == 2, log
+    assert log.count("sse-open:/admin/sse/jobs") == 2
+    assert "submit" in log
+    assert log[-1] == "polling:true sse:true"

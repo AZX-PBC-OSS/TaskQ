@@ -701,6 +701,24 @@ async def test_dedicated_conn_password_is_callable_refetched_per_connection() ->
     assert await _pw(password_arg) == "conn-2"
 
 
+async def test_dedicated_conn_password_pins_a_username_bearing_pair() -> None:
+    """A LISTEN / advisory-lock connection built on a Vault lease re-opens
+    with that lease's password: asyncpg re-invokes the callable on a
+    re-open, and the pinned username has no other valid password."""
+    provider = _RotatingPgProvider(password="lease-pw-1", username="v-lease-1")
+    factory = make_dedicated_conn_factory("postgresql://user@host/db", provider)
+
+    with patch("asyncpg.connect", new=AsyncMock(return_value=MagicMock())) as mock_connect:
+        await factory()
+
+    kwargs = mock_connect.call_args.kwargs
+    assert kwargs["user"] == "v-lease-1"
+    provider.username = "v-lease-2"
+    provider.password = "lease-pw-2"
+    assert await _pw(kwargs["password"]) == "lease-pw-1"
+    assert provider.calls == 1
+
+
 async def test_password_callable_propagates_provider_failure() -> None:
     """A failing token fetch surfaces as a connection error, never a silent
     hang or an unauthenticated fallback - and the provider's own exception

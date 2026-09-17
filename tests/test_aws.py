@@ -203,3 +203,31 @@ async def test_rds_iam_provider_builds_its_boto3_client_once() -> None:
 
     assert [t.password for t in tokens] == ["tok-1"] * 4
     assert built == [{"service": "rds", "region_name": "eu-west-1"}]
+
+
+async def test_rds_iam_provider_does_not_cache_a_failed_client_build() -> None:
+    """A client build that fails (the extra missing, a botocore
+    configuration error) propagates to the caller and is retried on the
+    next fetch rather than leaving the provider wedged on the failure."""
+    import sys
+    from types import ModuleType
+
+    fake_boto3 = ModuleType("boto3")
+    attempts = 0
+
+    def _client(service: str, **kwargs: object) -> MagicMock:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise RuntimeError("region could not be resolved")
+        client = MagicMock()
+        client.generate_db_auth_token.return_value = "tok"
+        return client
+
+    fake_boto3.client = _client  # type: ignore[attr-defined]  # Why: stand-in module for the optional extra.
+    with patch.dict(sys.modules, {"boto3": fake_boto3}):
+        provider = RdsIamProvider("postgresql://user@host:5432/db")
+        with pytest.raises(RuntimeError, match="region could not be resolved"):
+            await provider.get_pg_credential()
+        assert (await provider.get_pg_credential()).password == "tok"
+    assert attempts == 2
