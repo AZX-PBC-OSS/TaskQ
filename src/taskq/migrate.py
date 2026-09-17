@@ -607,8 +607,8 @@ async def apply_pending(
 
     :param phase: restrict to ``pre`` or ``post`` migrations only.
     :param target: stop after applying this version (inclusive). Must
-        name a version in the discovered set: an unknown target — a
-        deleted or renumbered migration — raises ``ValueError`` rather
+        name a version in the discovered set: an unknown target, a
+        deleted or renumbered migration, raises ``ValueError`` rather
         than silently applying every pending migration.
     :param max_steps: stop after this many applies.
     :param ddl_lock_timeout: seconds a transactional migration may wait for
@@ -657,7 +657,7 @@ async def apply_pending(
     # A target the runner no longer bundles must fail loudly. The
     # truncation loop below only stops when it SEES the target, so an
     # unknown one falls through and silently applies EVERY pending
-    # migration — the exact inversion of what a caller passing a target
+    # migration: the exact inversion of what a caller passing a target
     # expects, and reachable the moment any release deletes or renumbers
     # files (this round deleted 01.00.11_01 and 01.00.12_05:post, both
     # previously valid targets). Refuse before anything is applied.

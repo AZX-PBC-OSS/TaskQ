@@ -920,7 +920,7 @@ async def test_assignment_routed_backfill_marks_exactly_the_repend_population(
 ) -> None:
     """The marker round's backfill (its own migration since the lock-scope
     split, 01.00.12_07) paints exactly the rows the old started_at-proxy
-    arm was serving — nothing more, nothing less.
+    arm was serving: nothing more, nothing less.
 
     The proxy probed ``pending`` rows with ``started_at IS NOT NULL``, and a
     re-pended row still sleeping off a deferral (``scheduled`` with
@@ -951,7 +951,7 @@ async def test_assignment_routed_backfill_marks_exactly_the_repend_population(
     try:
         await _drop_schema(conn, schema)
         # The pre-upgrade world: every migration up to the last one before
-        # the marker round — the release that still routed re-pends by the
+        # the marker round: the release that still routed re-pends by the
         # started_at proxy (the marker column, its backfill, and the
         # probe indexes are 01.00.12_05/07/08/09, so 01.00.12_04 is the
         # last pre-marker schema).

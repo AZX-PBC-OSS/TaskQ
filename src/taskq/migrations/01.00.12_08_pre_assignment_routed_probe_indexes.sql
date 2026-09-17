@@ -30,17 +30,17 @@
 -- Leading (actor, queue) matches the drain's two equality predicates; the
 -- trailing id serves its ORDER BY without a sort, so each batch is an
 -- ordered scan that stops at its LIMIT. Partial on the dispatchable
--- statuses, which is the only population the drain moves — a terminal
+-- statuses, which is the only population the drain moves: a terminal
 -- row's queue label is inert.
 --
 -- ── Locks: one FILE per transaction, writers drain between files ────
 -- The runner wraps each FILE in one transaction (the whole rendered
--- file is a single conn.execute — the same doctrine every sibling
+-- file is a single conn.execute, the same doctrine every sibling
 -- states, and 01.00.12_06 carries four builds in one file), so both
 -- builds below share this file's transaction. Each build takes a SHARE
 -- lock on jobs: reads (dispatch probes, depth samplers, the admin UI)
 -- keep flowing, while writes (claims, heartbeats, re-pends) queue for
--- the duration of ALL builds in this file — the write-block window per
+-- the duration of ALL builds in this file: the write-block window per
 -- file is the SUM of its builds, with no drain between builds inside a
 -- file (measured: a writer INSERT blocked 1.04 s behind this file's two
 -- builds vs 0.49 s behind a single-build file). The lock queue is FIFO,
@@ -48,14 +48,14 @@
 -- NEXT file asks for the table: a fleet upgrading with old workers
 -- still live sees one write-block window per file, never one continuous
 -- window across the whole round, and reads never block at all (issue
--- #250 — the original single-file form additionally held ACCESS
+-- #250: the original single-file form additionally held ACCESS
 -- EXCLUSIVE, which blocks reads too, across the ALTERs, the backfill
 -- and both builds in ONE window).
 --
 -- OPS NOTE (locks), same caveat as every sibling index migration
 -- (01.00.06_01, 01.00.09_01, 01.00.13_02, 01.00.13_03): build time is
 -- proportional to the jobs ROW COUNT (a partial index build still scans
--- the whole table). Most deployments see momentary builds — the bounded
+-- the whole table). Most deployments see momentary builds: the bounded
 -- maintenance sweeps keep steady-state jobs small. On a deployment
 -- where a single build would outrun the workers' heartbeat budget,
 -- pre-build this file's indexes by hand outside the runner during a
@@ -74,7 +74,7 @@
 -- above: the migration runner serializes concurrent migrators with
 -- pg_advisory_lock, a second replica's blocking lock wait is an open
 -- transaction, and CREATE INDEX CONCURRENTLY waits for every
--- transaction that started before it — a cycle the deadlock detector
+-- transaction that started before it, a cycle the deadlock detector
 -- breaks by failing the apply.
 CREATE INDEX IF NOT EXISTS jobs_assignment_routed_probe_idx
     ON "{schema}".jobs (actor, COALESCE(fairness_key, '__null__'),

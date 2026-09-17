@@ -192,9 +192,9 @@ async def test_dispatch_lateral_scheduled_at_bound_is_index_served(
     wrapped only with the outer CTE names it references): the
     scheduled_at bound must appear in an Index Cond on a per-(actor,
     queue) dispatch probe index (jobs_actor_dispatch_idx or its
-    marker-partial twin jobs_unrouted_actor_dispatch_idx — this seed is
+    marker-partial twin jobs_unrouted_actor_dispatch_idx, this seed is
     exclusively producer-placed, so the twins cost the same; see the
-    assertion below) — the migration's promised "bounded LATERAL
+    assertion below), the migration's promised "bounded LATERAL
     range scan decoupled from backlog depth". A bound that only appears
     as a Filter walks the whole not-yet-due backlog per dispatch round.
     """
@@ -232,13 +232,13 @@ async def test_dispatch_lateral_scheduled_at_bound_is_index_served(
             f"expected a per-(actor, queue) dispatch probe index in the plan:\n{plan}"
         )
         # Why either twin: this module's seed is exclusively producer-
-        # placed rows (the direct-INSERT shape — no re-pends), so the
+        # placed rows (the direct-INSERT shape: no re-pends), so the
         # pending-only jobs_actor_dispatch_idx and its marker-partial
         # jobs_unrouted_actor_dispatch_idx (01.00.12_09) hold the SAME
         # rows and cost the same; which one the planner names is
         # stats-dependent, and both serve the doctrine this test pins.
-        # The load-bearing difference between the twins — the unrouted
-        # one never walking a re-pended tail — is pinned by
+        # The critical difference between the twins, the unrouted
+        # one never walking a re-pended tail, is pinned by
         # tests/test_migration_lock_scope_dead_index.py's #243 oracle,
         # which seeds the mixed population.
         cond_lines = [line for line in plan.splitlines() if "Index Cond:" in line]

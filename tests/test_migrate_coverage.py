@@ -207,8 +207,8 @@ async def test_apply_pending_rejects_unknown_target_loudly(pg_dsn: str) -> None:
     apply the whole stack.
 
     The truncation only stops when it SEES the target, so before this
-    guard a stale version — a deleted or renumbered migration, e.g. this
-    round's removed 01.00.11_01 — was a silent apply-everything flag:
+    guard a stale version, a deleted or renumbered migration, e.g. this
+    round's removed 01.00.11_01, was a silent apply-everything flag:
     the exact inversion of what a caller passing a target means.
     """
     schema = f"mig_cov_stale_{new_base62()}".lower()

@@ -3,25 +3,25 @@ probe index pair's removal (#243), and the unrouted probe indexes (#243).
 
 Three pin families:
 
-1. Structural (no PG) — the restructured round is split into
+1. Structural (no PG): the restructured round is split into
    single-purpose files so no transaction mixes lock classes on ``jobs``:
    the columns file holds ONLY the two metadata-only ALTERs (whose ACCESS
    EXCLUSIVE is held for milliseconds), the backfill file ONLY the
-   bounded UPDATE (ROW EXCLUSIVE — blocks neither readers nor writers),
+   bounded UPDATE (ROW EXCLUSIVE: blocks neither readers nor writers),
    the index files ONLY their CREATE INDEX statements (SHARE). The
-   runner wraps each FILE — not each statement — in one transaction, so
+   runner wraps each FILE, not each statement, in one transaction, so
    a file's builds share ONE write-block window (its duration is the
    sum of the file's builds, with no drain between builds inside a
    file) and the writes queued behind it drain only between FILES.
-   What the split bounds is the window per file plus the lock MODE —
+   What the split bounds is the window per file plus the lock MODE:
    the original single-file form held ACCESS EXCLUSIVE, which blocks
    reads too, across the ALTERs, the backfill and both builds in ONE
    window (#250). The dead pair (01.00.11_01's create +
    01.00.12_05:post's drop of ``jobs_repended_probe_idx``, referenced by
    no code at HEAD) is gone from the bundled set entirely (#243).
 
-2. Schema equivalence (PG) — the consumer upgrade path (a ledger at the
-   pinned-consumer baseline — the bundled set ends at 01.00.05_01 —
+2. Schema equivalence (PG): the consumer upgrade path (a ledger at the
+   pinned-consumer baseline, the bundled set ends at 01.00.05_01,
    applying every pending migration, pre phase then post, exactly the
    gated one-shot ``apply_pending_locked`` deploy shape) reaches the
    SAME final ``jobs``/``jobs_archive`` inventory as a fresh full apply:
@@ -30,7 +30,7 @@ Three pin families:
    name so the restructure cannot silently drop or reshape a structure
    the frozen files below it declare.
 
-3. Plan oracles (PG) — the #243 measurement shape (re-pended rows ahead
+3. Plan oracles (PG): the #243 measurement shape (re-pended rows ahead
    of producer-placed rows on the same (actor, queue)): the production
    candidates laterals' probes ride the new marker-partial indexes,
    ``NOT assignment_routed`` is served by the index predicate instead of
@@ -94,7 +94,7 @@ def _statement_bodies(sql: str) -> list[str]:
 
 def _statement_kinds(sql: str) -> list[str]:
     """Classify each statement's leading keyword shape: ALTER TABLE,
-    UPDATE, CREATE INDEX, CREATE UNIQUE INDEX — enough for the lock-class
+    UPDATE, CREATE INDEX, CREATE UNIQUE INDEX, enough for the lock-class
     pins without a SQL parser."""
     kinds: list[str] = []
     for body in _statement_bodies(sql):
@@ -160,7 +160,7 @@ def test_columns_file_holds_only_the_two_metadata_alters() -> None:
 def test_backfill_file_holds_only_the_bounded_update() -> None:
     """The backfill runs under ROW EXCLUSIVE (it blocks neither readers
     nor other writers), which is only true if it does not share a
-    transaction with the columns' ALTER — and its population stays
+    transaction with the columns' ALTER, and its population stays
     EXACTLY the pre-upgrade proxy's: dispatchable-now or promotable rows
     claimed at least once, never the whole table."""
     sql = _rendered("01.00.12_07_pre_assignment_routed_backfill.sql")
@@ -177,7 +177,7 @@ def test_backfill_file_holds_only_the_bounded_update() -> None:
 
 def test_probe_index_files_hold_only_their_builds() -> None:
     """A file's builds share its ONE transaction (the runner wraps each
-    FILE, not each statement — the doctrine 01.00.12_06's own header
+    FILE, not each statement: the doctrine 01.00.12_06's own header
     states), so the write-block window is the file's builds summed and
     drains only between files; what the split bounds is the window per
     FILE and the lock MODE (SHARE blocks writes only; the original
@@ -208,7 +208,7 @@ def test_unrouted_index_predicates_match_the_dispatch_arms_exactly() -> None:
     query's quals imply the index predicate, and the probe must not
     reorder around the marker: the arms' conjuncts and the indexes'
     predicates must stay the same population, VERBATIM (#243's
-    coordination requirement — the predicates match the dispatch SQL as
+    coordination requirement, the predicates match the dispatch SQL as
     it exists, sibling worktrees' semantics changes renumber here)."""
     for lateral in (_STRICT_FIFO_CANDIDATES_LATERAL, _ROUND_ROBIN_CANDIDATES_LATERAL):
         assert "AND NOT j2.assignment_routed" in lateral
@@ -360,8 +360,8 @@ async def test_consumer_upgrade_path_reaches_the_pinned_end_state(pg_dsn: str) -
     """A ledger at the pinned-consumer baseline, upgraded by the one-shot
     gated deploy shape (pre phase, then post), ends on EXACTLY the fresh
     install's schema: same index definitions, columns, constraints and
-    ledger keys — the restructure is invisible to taskq_migrate state and
-    to any fresh install (#250's red-team: restructuring must be
+    ledger keys, the restructure is invisible to taskq_migrate state and
+    to any fresh install (#250's adversarial review: restructuring must be
     end-state-preserving; #243's dead pair and new indexes are the only
     sanctioned deltas, both pinned by name here)."""
     fresh = f"mig_eq_fresh_{new_base62()}".lower()
@@ -374,7 +374,7 @@ async def test_consumer_upgrade_path_reaches_the_pinned_end_state(pg_dsn: str) -
         # Path A: fresh install, one full apply.
         await migrate_mod.apply_pending(conn, schema=fresh)
 
-        # Path B: the consumer path — the baseline ledger first...
+        # Path B: the consumer path, the baseline ledger first...
         baseline = await migrate_mod.apply_pending(
             conn, schema=upgraded, target=_CONSUMER_BASELINE_TARGET
         )
@@ -565,7 +565,7 @@ async def test_strict_fifo_lateral_probe_rides_the_unrouted_index(
     """EXPLAIN ANALYZE the production strict-FIFO candidates lateral over
     the #243 shape: the probe must ride jobs_unrouted_actor_dispatch_idx
     (the marker is in the index predicate), so not one re-pended row is
-    visited — the pending-only twin would walk all _REPEND_ROWS of them
+    visited, the pending-only twin would walk all _REPEND_ROWS of them
     as "Rows Removed by Filter" before the first admissible row."""
     conn = await asyncpg.connect(pg_dsn)
     try:
@@ -626,7 +626,7 @@ async def test_round_robin_lateral_probe_rides_the_unrouted_index(
 async def test_full_dispatch_statements_pick_up_the_unrouted_indexes(
     pg_dsn: str, mixed_population_schema: str
 ) -> None:
-    """EXPLAIN (no ANALYZE — the statements are UPDATEs) both production
+    """EXPLAIN (no ANALYZE: the statements are UPDATEs) both production
     dispatch statements end to end: the marker-partial indexes appear in
     the plans, so the arms the laterals feed (capped and uncapped alike)
     inherit the depth bound."""

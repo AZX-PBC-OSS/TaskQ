@@ -7,10 +7,10 @@
 -- the migration runner.
 --
 -- ── Why the pending-only twins are not enough ──────────────────────────
--- Every label-routed probe filters NOT assignment_routed — the strict-
+-- Every label-routed probe filters NOT assignment_routed: the strict-
 -- FIFO and round-robin candidates laterals, per_actor_capacity's
 -- has_pending probe, and the claimable probe's first arm in
--- backend/_dispatch_sql.py — but jobs_actor_dispatch_idx and
+-- backend/_dispatch_sql.py, but jobs_actor_dispatch_idx and
 -- jobs_round_robin_probe_idx are partial on status = 'pending' alone,
 -- so a re-pended pending row sits in their ordered ranges and the
 -- marker conjunct degrades to a post-scan Filter. Each probe walks
@@ -18,14 +18,14 @@
 -- claim cost grows LINEARLY in re-pend depth (issue #243, measured on
 -- PG 18 with 5k producer rows behind a same-(actor, queue) re-pend
 -- tail: strict_fifo 2.3 ms -> 27.4 ms at 100k re-pended, round_robin
--- 2.7 ms -> 46.8 ms) — the exact depth-proportional shape the depth
+-- 2.7 ms -> 46.8 ms), the exact depth-proportional shape the depth
 -- contract exists to remove, paid on the crash-reclaim re-pend tails
 -- that follow every fleet-wide restart. The indexes below carry the
 -- marker in their PREDICATES, so the re-pended population is not in
 -- them at all: each probe starts at its first admissible row and stops
 -- at its LIMIT, and the re-pended population is probed separately, by
 -- the assignment-routed arm, on jobs_assignment_routed_probe_idx
--- (01.00.12_08) — the two populations' probes are disjoint by the
+-- (01.00.12_08), the two populations' probes are disjoint by the
 -- marker, matching the routing contract's two disjoint arms.
 --
 -- jobs_queue_actor_dispatch_idx (01.00.13_02) already narrowed the
@@ -37,7 +37,7 @@
 -- twin is IMMUTABLE and must stay VERBATIM-identical to every use in
 -- the dispatch SQL (the probe equality, the rr_keys walk, and the
 -- window PARTITION BY), or the expression index stops serving the
--- query — the same doctrine as its pending-only twin.
+-- query, the same doctrine as its pending-only twin.
 --
 -- ── Why no capped-arm index ────────────────────────────────────────────
 -- The capped arm (capped_ranked -> top_ids -> locked) never probes the
@@ -49,10 +49,10 @@
 -- would duplicate this file's for no query the planner could reach.
 --
 -- ROLLING DEPLOY: pre-phase is safe for both code generations. The
--- indexes are purely additive — no shipped statement references them
+-- indexes are purely additive: no shipped statement references them
 -- (the pending-only twins keep serving every pre-marker query), and
 -- this release's probes run without them too (the marker conjunct
--- stays a Filter; only the depth bound is lost, never correctness) —
+-- stays a Filter; only the depth bound is lost, never correctness),
 -- which is why they ship in the pre phase, before the code rollout.
 --
 -- OPS NOTE (locks), same caveat as every sibling index migration
@@ -60,7 +60,7 @@
 -- CREATE INDEX takes a SHARE lock that blocks writes to jobs for the
 -- duration of the build, and build time is proportional to the jobs
 -- row count (a partial index build still scans the whole table). The
--- runner wraps each FILE — not each statement — in one transaction, so
+-- runner wraps each FILE, not each statement, in one transaction, so
 -- this file's two builds share ONE write-block window: writes queue
 -- for the duration of both (their sum) and drain only when the file
 -- commits, before the next file asks for the table. On a deployment
@@ -81,7 +81,7 @@
 -- above: the migration runner serializes concurrent migrators with
 -- pg_advisory_lock, a second replica's blocking lock wait is an open
 -- transaction, and CREATE INDEX CONCURRENTLY waits for every
--- transaction that started before it — a cycle the deadlock detector
+-- transaction that started before it, a cycle the deadlock detector
 -- breaks by failing the apply.
 CREATE INDEX IF NOT EXISTS jobs_unrouted_actor_dispatch_idx
     ON "{schema}".jobs (actor, queue, priority DESC, scheduled_at, id)
