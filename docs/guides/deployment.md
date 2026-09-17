@@ -17,7 +17,7 @@ TaskQ is an async-native, Postgres-backed background job library for Python 3.12
 - [ ] **Direct DSN** — `TASKQ_PG_DSN` (or `TASKQ_PG_DSN_DIRECT`) points at Postgres directly, **not** a transaction-mode PgBouncer
 - [ ] **Migrations** — `taskq migrate up` run before workers start (or `TASKQ_MIGRATE_ON_START=true` for the admin UI)
 - [ ] **Worker supervisor** — systemd unit, Docker container, or Kubernetes Deployment
-- [ ] **Health probes** — `taskq health live` / `taskq health ready` wired to exec probes (not `httpGet` — the worker serves on a Unix socket)
+- [ ] **Health probes**: `taskq health live` / `taskq health ready` as exec probes, or `httpGet`/`tcpSocket` probes against the optional TCP listener (`TASKQ_HEALTH_PORT`) on platforms without exec probes; see [Listener deployment recipes](#listener-deployment-recipes)
 - [ ] **Shutdown budget** — `termination_grace_period` > `cancellation_grace_period + cleanup_grace_period + 5`
 - [ ] **Job timeouts** — `TASKQ_DEFAULT_START_TO_CLOSE` set as a fleet safety net; every long-running actor declares its own `start_to_close`; every `kind="indefinite"` actor has a `retry.time_budget` (see [ops.md](ops.md#2-timeouts-start_to_close-and-schedule_to_close))
 - [ ] **Connection budget** — fleet connection count computed against Postgres `max_connections` including application pools (see [ops.md](ops.md#4-sizing-workers-and-postgres-connections))
@@ -512,6 +512,126 @@ Add a `PodDisruptionBudget` (`minAvailable: 1`, selector matching `app: taskq-wo
     and recovered later by the leader's crash-reclaim sweep after `lock_lease`
     expires, rather than being released cleanly.
 
+### Listener deployment recipes
+
+The worker has up to three listeners, and every one of them is **off unless you set it**:
+
+| Listener | Enabled by | Serves | Auth |
+|---|---|---|---|
+| Unix health socket | `TASKQ_HEALTH_ENABLED` (default `true`) | `/live`, `/ready`, `/metrics`, opt-in `/tasks` | filesystem permissions on the socket (`0600` when `TASKQ_HEALTH_TASKS_ENABLED=true`) |
+| TCP health listener | `TASKQ_HEALTH_PORT` | `/live`, `/ready` | none; `TASKQ_HEALTH_TOKEN` on `taskq ui serve` does not apply to it, so keep the port pod-network-only |
+| Prometheus scrape listener | `TASKQ_METRICS_PORT` (needs `taskq[prometheus]` + `TASKQ_OTEL_AUTOCONFIGURE=true`) | `/metrics` | **unauthenticated** (see [SECURITY.md](https://github.com/AZX-PBC-OSS/TaskQ/blob/main/SECURITY.md)); keep it on the pod network or loopback |
+
+Fail-closed semantics, identical across the platforms below:
+
+- **Both TCP listeners bind nothing until you set a port.** A worker that binds a port nobody asked for is a surprise network surface; setting the port is the opt-in.
+- **A health listener that cannot bind fails loudly but does not stop the boot.** The worker logs `health-http-bind-failed` (ERROR) and `health-server-unavailable` (WARN) and keeps working; every probe against the address then fails at the orchestrator, which is the fail-closed backstop. Give each replica a unique port and alert on the WARN.
+- **The scrape listener refuses startup.** If `[prometheus]` or autoconfigure is missing the worker tells you and binds nothing; if the listener itself cannot be configured or bound, `OtelExporterConfigurationError` exits the worker with code 1 rather than run with its scrape silently dead.
+- The scrape endpoint answers without a token: keep it on interfaces only your scraper reaches.
+
+#### Kubernetes
+
+`httpGet` probes and annotations-driven scraping, both over the pod network (`TASKQ_HEALTH_HOST` defaults to `0.0.0.0`, which pod-network probers need):
+
+```yaml
+metadata:
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "9464"
+    prometheus.io/path: /metrics
+spec:
+  template:
+    spec:
+      containers:
+        - name: worker
+          env:
+            - name: TASKQ_HEALTH_PORT
+              value: "8600"
+            - name: TASKQ_METRICS_PORT
+              value: "9464"
+          ports:
+            - name: health
+              containerPort: 8600
+            - name: metrics
+              containerPort: 9464
+          livenessProbe:
+            httpGet: { path: /live, port: 8600 }
+          readinessProbe:
+            httpGet: { path: /ready, port: 8600 }
+```
+
+Loopback sidecar scraper next to pod-network probers: leave the probes on the pod network and pin the scrape listener to loopback with `TASKQ_METRICS_HOST`, so the unauthenticated endpoint is reachable only inside the pod:
+
+```yaml
+            - name: TASKQ_METRICS_PORT
+              value: "9464"
+            - name: TASKQ_METRICS_HOST
+              value: 127.0.0.1
+          containers:
+            - name: worker
+              ...
+            - name: prometheus-sidecar
+              # scrapes http://127.0.0.1:9464/metrics and remote-writes
+```
+
+#### Azure Container Apps
+
+ACA probes support only `httpGet`/`tcpSocket`, so **`TASKQ_HEALTH_PORT` is required there**: the Unix socket is unprobeable and the worker has no other surface a probe can reach.
+
+```yaml
+env:
+  - name: TASKQ_HEALTH_PORT
+    value: "8600"
+  - name: TASKQ_METRICS_PORT
+    value: "9464"
+```
+
+Keep `TASKQ_HEALTH_HOST` at its `0.0.0.0` default: the ACA runtime reaches the replica over the pod network, and a loopback bind would fail every probe. The full probe definitions (liveness, readiness, startup) are in [Health probes](#azure-container-apps) above.
+
+#### AWS EC2
+
+On a plain EC2 host (systemd unit as above) there is no orchestrator probe, so pick the shape that matches who reads the endpoints:
+
+```ini
+# /etc/taskq/worker.env
+TASKQ_HEALTH_PORT=8600
+TASKQ_METRICS_PORT=9464
+```
+
+- **Loopback bind + reverse proxy** (the default posture): set `TASKQ_HEALTH_HOST=127.0.0.1` and front the worker with nginx, which terminates the ALB target-group health check on `http://127.0.0.1:8600/ready` and can require-scrape `/metrics`. Nothing outside the host can reach either listener.
+- **Security-group-scoped `0.0.0.0`**: leave `TASKQ_HEALTH_HOST` at its default and restrict the security group so only the scraper (or ALB) security group may reach 8600 and 9464. The scrape endpoint is unauthenticated, so the SG is the only thing standing between it and the VPC.
+
+Either way the metrics listener still refuses startup on a bind failure (exit 1), and a health-port collision is a WARN plus failed probes, so give each instance on a shared host its own port.
+
+#### docker / docker-compose
+
+Publish the probe port, keep the health socket on a tmpfs, and let a sidecar scraper in the worker's network namespace see the metrics:
+
+```yaml
+services:
+  worker:
+    image: myapp:latest
+    environment:
+      TASKQ_HEALTH_SOCKET_PATH: /run/taskq/health.sock   # tmpfs, not the image layer
+      TASKQ_HEALTH_PORT: "8600"
+      TASKQ_METRICS_PORT: "9464"
+      TASKQ_METRICS_HOST: "127.0.0.1"   # scrape listener loopback-only
+    tmpfs:
+      - /run/taskq:size=1m,mode=0700
+    ports:
+      - "8600:8600"        # host probes / load balancer health check
+    healthcheck:
+      test: ["CMD", "taskq", "health", "ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+  prometheus:
+    image: prom/prometheus
+    network_mode: "service:worker"   # shares the worker loopback, scrapes 127.0.0.1:9464/metrics
+```
+
+The `healthcheck` uses the Unix socket and needs no published port; the `8600` mapping exists for host-level probes. If your scraper is a plain linked container on the compose bridge network instead of a loopback sidecar, drop `TASKQ_METRICS_HOST` so the scrape listener falls back to `0.0.0.0` and reach it as `worker:9464`, scoped by whatever firewall fronts the bridge.
+
 ---
 
 ## Docker Compose for Production
@@ -642,7 +762,7 @@ With the `[otel]` extra installed, `taskq worker` installs SDK tracer and meter 
 
 ### Prometheus scrape
 
-The worker series — leader-sampled gauges, dispatch/consume counters, attempt failures, the watchdog family — exist only in the **worker** processes; the admin UI's `/jobs/health/metrics` serves the admin process's own activity and none of them. Scrape every worker pod: install `taskq[prometheus]`, set `TASKQ_METRICS_PORT=9464`, and point a scrape job at each worker on that port with `metrics_path: /metrics` (a pod-role discovery with a `taskq-worker` selector, or a headless Service). The worker's health socket additionally serves three process gauges at `GET /metrics` without any extra. See [observability.md — Serving the metrics](observability.md#serving-the-metrics-the-prometheus-endpoint).
+The worker series — leader-sampled gauges, dispatch/consume counters, attempt failures, the watchdog family — exist only in the **worker** processes; the admin UI's `/jobs/health/metrics` serves the admin process's own activity and none of them. Scrape every worker pod: install `taskq[prometheus]`, set `TASKQ_METRICS_PORT=9464`, and point a scrape job at each worker on that port with `metrics_path: /metrics` (a pod-role discovery with a `taskq-worker` selector, or a headless Service). The listener binds `TASKQ_METRICS_HOST` when set, falling back to `TASKQ_HEALTH_HOST` (`0.0.0.0`); set `TASKQ_METRICS_HOST=127.0.0.1` for a sidecar scraper that shares the pod's loopback while the health probes stay on the pod network. The port and host writes are scoped to the SDK call and rolled back, so neither leaks to child processes. A worker missing the `[prometheus]` extra binds no listener and says so; one that cannot configure or bind the listener exits 1 rather than run with its scrape silently dead. The endpoint is unauthenticated (see [SECURITY.md](https://github.com/AZX-PBC-OSS/TaskQ/blob/main/SECURITY.md)), so keep it on the pod network or loopback. The worker's health socket additionally serves three process gauges at `GET /metrics` without any extra. See [observability.md — Serving the metrics](observability.md#serving-the-metrics-the-prometheus-endpoint).
 
 ### Structured logging
 
@@ -714,6 +834,8 @@ The slot pool exists only when a LOOP-scope `asyncpg.Connection` is registered a
 | 5432 | Postgres | Workers, admin UI, migrate jobs only |
 | 6379 | Redis | Workers, admin UI only |
 | 8080 | Admin UI | Internal operators only; never public |
+| 8600 (`TASKQ_HEALTH_PORT`) | Worker TCP health listener (`/live`, `/ready`) | Orchestrator probes / load balancer health checks only (pod network, SG or loopback plus proxy) |
+| 9464 (`TASKQ_METRICS_PORT`) | Worker Prometheus scrape listener (`/metrics`, unauthenticated) | The scraper only: pod network, security-group-scoped, or loopback sidecar |
 | Unix socket | Worker health | Same pod only (exec probes) |
 
 The admin UI should never be exposed to the public internet without an authentication layer. Use Kubernetes NetworkPolicy resources to restrict pod-to-pod communication.

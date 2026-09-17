@@ -1112,7 +1112,11 @@ expired-lease zombies) and the equivalent PrometheusRule
 CRD at `src/taskq/contrib/kubernetes/prometheus_rule.yaml`. Importing them is not enough — make
 sure something **scrapes the workers** (`TASKQ_METRICS_PORT`, every pod; see
 [deployment.md — Prometheus scrape](deployment.md#observability-setup)): the rules read
-worker-side series the admin process's `/jobs/health/metrics` never carries.
+worker-side series the admin process's `/jobs/health/metrics` never carries. The scrape listener
+binds nothing until the port is set, refuses startup (exit 1) if it cannot bind or configure, and
+serves an unauthenticated endpoint: pin it to the pod network with a
+`TASKQ_METRICS_HOST=127.0.0.1` sidecar scraper, or scope it by network policy. Per-platform env
+blocks are in [deployment.md — Listener deployment recipes](deployment.md#listener-deployment-recipes).
 
 ---
 
@@ -1260,7 +1264,12 @@ mechanics of each item: [deployment.md — Production Checklist](deployment.md#p
 - [ ] **Shutdown budget**: supervisor/`terminationGracePeriodSeconds` ≥
       `cancellation_grace + cleanup_grace + ~32 s` (default model: 72 s), and ≥ your slowest actor
 - [ ] **Health probes**: `taskq health live/ready` wired (exec probes; TCP `TASKQ_HEALTH_PORT`
-      only where `httpGet` is forced); unique socket path per process
+      only where `httpGet` is forced); unique socket path AND unique probe port per process
+      (a bind collision fails the listener loudly but the boot continues; the orchestrator's
+      failed probes are the fail-closed backstop)
+- [ ] **Metrics scrape**: `TASKQ_METRICS_PORT` set on every worker (off unless set; scrape
+      endpoint unauthenticated, so pod network, loopback sidecar via `TASKQ_METRICS_HOST`, or
+      SG-scoped); a bind or config failure exits the worker, so a bad port shows up at deploy
 - [ ] **Redis** provisioned iff using Redis-backed limiters or real-time progress; PG fallback
       decision made; dev/prod symmetry checked
 - [ ] **Observability**: exporter wired *in-process* and verified to arrive; the alert rules from
