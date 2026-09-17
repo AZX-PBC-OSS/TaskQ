@@ -520,9 +520,10 @@ _SELECT_RUNNING_JOBS_SQL_TEMPLATE = (
     "WHERE locked_by_worker = $1 AND status = 'running'"
 )
 
-# Recovery transitions via isolate_self: running→pending when retries
-# remain; running→cancelled when exhausted with a cancel in-flight;
-# running→crashed otherwise.  All are present in VALID_TRANSITIONS.
+# Recovery transitions via isolate_self: running→cancelled when a
+# cancel is in-flight (any retry budget); running→pending when no
+# cancel is in-flight and retries remain; running→crashed otherwise.
+# All are present in VALID_TRANSITIONS.
 # The heartbeat-pool failure forces a fresh asyncpg
 # connection, so the worker cannot rely on its in-memory status being
 # current.  The SQL self-guards via WHERE status='running' AND
@@ -535,10 +536,21 @@ _SELECT_RUNNING_JOBS_SQL_TEMPLATE = (
 # Branch-for-branch mirror of _sweeps.py's _SWEEP_1_SQL SET clause,
 # sharing its budget predicate and hand-back delay verbatim — the
 # property test tests/test_leader_property.py asserts row-state
-# equivalence between this path and the sweep, so any branch change there
-# (cancel-state reset on retry, 'cancelled' label for an exhausted
-# cancel-in-flight reclaim, clock_timestamp() for terminal timestamps)
-# must be mirrored here.  Note the mirror covers the SET clause, NOT the
+# equivalence between this path and the sweep, so any branch change
+# there (the operator-intent-first CASE ordering: cancel_phase != 0
+# terminalises 'cancelled' ahead of the budget arm, cancel-column
+# preservation on the cancel arm, clock_timestamp() for terminal
+# timestamps) must be mirrored here. The mirror covers the SET
+# clause's SHAPE; the crashed arm's error_class/error_message VALUES
+# are deliberately distinct — 'HeartbeatLost' plus this module's own
+# message, where the sweep stamps 'WorkerCrashed' plus the
+# deadline-naming message from _ATTEMPT_MESSAGES — for the same
+# reason the attempt rows differ: the sweep's reclaim means the
+# LEADER declared the holder dead, isolate means the worker itself
+# declared PG unreachable and is walking away. The job row must
+# self-describe on the crashed arm either way (issue #238: the
+# pre-fix template left both fields NULL while claiming the mirror).
+# Note the mirror covers the SET clause, NOT the
 # selection predicate: the sweep leaves cancel-in-flight jobs alone until
 # cancel_grace + cleanup_grace + 60s has passed (a merely-slow
 # cancellation isn't pre-empted), while isolate applies the 'cancelled'
@@ -555,6 +567,19 @@ _SELECT_RUNNING_JOBS_SQL_TEMPLATE = (
 # (notify_poll_interval / poll_interval) — the same wake source every
 # release arm in backend/_sql_templates.py relies on.
 #
+#: The job-row error message the isolate's crashed arm stamps — the
+#: isolate-path twin of ``_sweeps._ATTEMPT_MESSAGES``' deadline-naming
+#: messages ("lock expired before worker reported terminal state" /
+#: "heartbeat timeout passed before worker reported terminal state").
+#: Isolate has no per-arm deadline to name (it is a whole-worker event,
+#: not a row-level one), so the message names what actually fired: the
+#: worker lost its heartbeat connection and never reported a terminal
+#: state. One constant, not a map — the template renders it by name
+#: (``str.replace``) so ``{schema}`` stays the only ``format``
+#: placeholder the caller renders, the same discipline
+#: ``_SWEEP_1_SQL``'s message fragments follow.
+_ISOLATE_CRASHED_MESSAGE = "worker heartbeat connection lost before terminal state was reported"
+#
 #: The statement is built as ONE constant: the literal with the sweep's
 #: shared fragments substituted by name (``str.replace``, not ``format``,
 #: so ``{schema}`` stays the only placeholder the caller renders).
@@ -567,36 +592,69 @@ _ISOLATE_JOB_SQL_TEMPLATE = (
     """\
 UPDATE "{schema}".jobs j
 SET status = CASE
-        WHEN {has_budget}
-            THEN 'pending'::"{schema}".job_status
+        -- Operator intent outranks retry budget, mirroring
+        -- _SWEEP_1_SQL's CASE ordering verbatim: a cancel in flight
+        -- terminalises 'cancelled' whatever the budget, so an
+        -- operator's request cannot be laundered away by this
+        -- worker's own departure. The re-pend arm therefore reads
+        -- cancel_phase = 0 by construction.
         WHEN j.cancel_phase != 0
             THEN 'cancelled'::"{schema}".job_status
+        WHEN {has_budget}
+            THEN 'pending'::"{schema}".job_status
         ELSE 'crashed'::"{schema}".job_status
     END,
     locked_by_worker = NULL,
     lock_expires_at = NULL,
-    cancel_phase = 0,
-    cancel_requested_at = NULL,
+    -- Cancel columns survive the arm that honoured them (the
+    -- mark_cancelled/mark_abandoned audit-trail doctrine); the
+    -- re-pend and crashed arms read 0/NULL by construction, so the
+    -- CASE arms are no-ops there, kept as defence-in-depth.
+    cancel_phase = CASE WHEN j.cancel_phase != 0 THEN j.cancel_phase ELSE 0 END,
+    cancel_requested_at = CASE
+        WHEN j.cancel_phase != 0 THEN j.cancel_requested_at
+        ELSE NULL END,
     -- An isolate re-pend hands the row back to the fleet, so it routes
     -- by the actor's current assignment from here on (the routing
     -- contract in taskq/backend/_dispatch_sql.py) -- the same SET this
-    -- template mirrors branch-for-branch from _SWEEP_1_SQL.
+    -- template mirrors branch-for-branch from _SWEEP_1_SQL. After the
+    -- CASE reorder the re-pend arm alone reschedules.
     assignment_routed = true,
     scheduled_at = CASE
-        WHEN {has_budget}
+        WHEN j.cancel_phase = 0 AND {has_budget}
             THEN clock_timestamp() + {reclaim_delay}
         ELSE j.scheduled_at
     END,
     finished_at = CASE
-        WHEN NOT ({has_budget})
+        WHEN j.cancel_phase != 0 OR NOT ({has_budget})
             THEN clock_timestamp()
         ELSE j.finished_at
+    END,
+    -- The crashed arm self-describes on the row, mirroring the sweep's
+    -- crashed arm in shape: 'HeartbeatLost' plus this module's own
+    -- message, not the sweep's 'WorkerCrashed' — the same distinction
+    -- the attempt rows have always carried (documented above); the
+    -- pre-fix template stamped nothing here while claiming the
+    -- branch-for-branch mirror. The re-pend and cancelled arms keep
+    -- their error fields: a handed-back row has no failure to
+    -- describe, and a cancel-honouring row's record is the in-flight
+    -- request the row preserves above.
+    error_class = CASE
+        WHEN j.cancel_phase = 0 AND NOT ({has_budget})
+            THEN 'HeartbeatLost'
+        ELSE j.error_class
+    END,
+    error_message = CASE
+        WHEN j.cancel_phase = 0 AND NOT ({has_budget})
+            THEN '{isolate_crashed_message}'
+        ELSE j.error_message
     END
 WHERE j.id = $1 AND j.status = 'running' AND j.locked_by_worker = $2""".replace(
         "{has_budget}", _RECLAIM_HAS_BUDGET_SQL
     )
     .replace("{reclaim_delay}", _RECLAIM_DELAY_SQL)
     .replace("{max_backoff_seconds}", "$3")
+    .replace("{isolate_crashed_message}", _ISOLATE_CRASHED_MESSAGE)
 )
 
 
@@ -662,7 +720,8 @@ async def isolate_self(
                             lost_race += 1
                             continue
                         # Mirrors _RECLAIM_HAS_BUDGET_SQL, which the UPDATE
-                        # above applied: an 'indefinite' job's budget is its
+                        # above applied as its SECOND CASE arm: an
+                        # 'indefinite' job's budget is its
                         # schedule_to_close deadline, not max_attempts.
                         is_pending = (  # pyright: ignore[reportUnknownVariableType]  # Why: row column accessor types unknown — propagates from conn.fetch() suppression.
                             row["retry_kind"] != "non_retryable"
@@ -671,12 +730,15 @@ async def isolate_self(
                                 or row["attempt"] < row["max_attempts"]
                             )
                         )
-                        if is_pending:
-                            pending += 1
-                        elif row["cancel_phase"] != 0:
-                            # Mirrors _ISOLATE_JOB_SQL_TEMPLATE's CASE arm:
-                            # exhausted + cancel in-flight → 'cancelled'.
+                        # The classification mirrors the UPDATE's CASE
+                        # ORDER exactly: operator cancel first — a
+                        # cancel-in-flight row terminalises 'cancelled'
+                        # whatever its budget — then the re-pend arm, then
+                        # crashed.
+                        if row["cancel_phase"] != 0:
                             cancelled += 1
+                        elif is_pending:
+                            pending += 1
                         else:
                             crashed += 1
                         await conn.execute(

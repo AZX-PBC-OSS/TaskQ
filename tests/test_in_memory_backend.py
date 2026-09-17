@@ -1101,11 +1101,14 @@ class TestReclaimExpiredLocks:
         assert count == 0
 
     async def test_deeply_expired_cancel_phase_nonzero_is_reclaimed(self) -> None:
-        """Mirrors PostgresBackend's carve-out: a job with an in-flight
-        cancel request is still reclaimed once its lock has been expired
-        for cancel_grace + cleanup_grace + 60s, and the reclaim resets
-        cancel_phase/cancel_requested_at so the next dispatch doesn't
-        immediately re-cancel the retried job."""
+        """Mirrors PostgresBackend's carve-out and its #238 ordering: a
+        job with an in-flight cancel request is still reclaimed once its
+        lock has been expired for cancel_grace + cleanup_grace + 60s,
+        and — operator intent outranking the retry budget — the reclaim
+        terminalises it 'cancelled' (whatever the budget) with the
+        cancel columns preserved as the audit trail of the honored
+        request. The pre-fix twin re-pended this row 'pending' with the
+        columns wiped, exactly as the pre-fix SQL did."""
         backend = _make_backend()
         job_id, _ = await _make_running_row(backend, max_attempts=3, retry_kind="transient")
 
@@ -1130,9 +1133,13 @@ class TestReclaimExpiredLocks:
 
         updated = await backend.get(job_id)
         assert updated is not None
-        assert updated.status == "pending"
-        assert updated.cancel_phase == 0
-        assert updated.cancel_requested_at is None
+        assert updated.status == "cancelled", (
+            "the twin's cancel arm must outrank the budget arm, exactly as "
+            "the reordered _SWEEP_1_SQL CASE does"
+        )
+        assert updated.cancel_phase == 1
+        assert updated.cancel_requested_at is not None
+        assert updated.finished_at is not None
 
     async def test_deeply_expired_cancel_exhausted_is_labelled_cancelled(self) -> None:
         """Retries-exhausted reclaim of a job with an in-flight cancel
@@ -1168,8 +1175,11 @@ class TestReclaimExpiredLocks:
         updated = await backend.get(job_id)
         assert updated is not None
         assert updated.status == "cancelled"
-        assert updated.cancel_phase == 0
-        assert updated.cancel_requested_at is None
+        assert updated.cancel_phase == 1, (
+            "the cancel columns survive the arm that honoured them — the "
+            "mark_cancelled audit-trail doctrine"
+        )
+        assert updated.cancel_requested_at is not None
         assert updated.finished_at is not None
 
         attempts = await backend.get_attempts(job_id)
