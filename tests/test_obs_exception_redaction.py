@@ -1316,17 +1316,37 @@ def test_no_nested_quantifier_regexes_in_taskq_obs() -> None:
     ``{m,n}``/lazy repeat whose body contains another plain repeat can be
     re-partitioned by backtracking in exponentially many ways.
 
+    Two passes, because each sees a surface the other cannot. The
+    attribute walk covers every ``re.Pattern`` object the modules expose
+    at import time (compiled module-level constants, and anything
+    re-exported into them) -- the package's standing convention is that
+    scrub regexes ARE module-level constants, visible to this walk, to
+    the reader, and compiled once. The AST pass closes that walk's
+    visibility hole: a future function-local ``re.compile`` (zero such
+    sites today) never becomes a module attribute, so the walk would
+    silently skip it -- the AST pass audits every ``*.compile(...)`` call
+    site in the package's source wherever it sits, checking its pattern
+    argument when it is a constant and FLAGGING it when it is not (a
+    dynamically built pattern is unauditable by any static guard, and
+    the flag is the honest answer). A pattern that does not even parse
+    as a regex is flagged rather than skipped, the same fail-closed
+    posture the post-attack review endorsed for the parser import
+    itself: a guard that quietly tolerates what it cannot check is a
+    guard that reports green on the next #248.
+
     Two deliberate scope limits, both stated so the next author knows the
     guard's edge: an ``ATOMIC_GROUP`` / possessive-repeat boundary is not
     crossed for the containment check (an outer quantifier cannot
     re-partition what an atomic group committed -- though a nested pair
     fully INSIDE one is still flagged by the recursion, since it explodes
     within its own single match attempt); and the overlapping-alternation
-    shape (``(?:a|a)*``, equally catastrophic, equally absent here) is not
-    analysed -- an alternation inside a repeat must keep DISJOINT first
-    characters, the way ``'(?:[^'\\\\]|\\\\.)*'`` does. Unknown opcodes fail
-    the test rather than pass silently, so the guard extends consciously.
+    shape (``(?:a|a)*``, equally catastrophic, equally absent here) is
+    not analysed -- an alternation inside a repeat must keep DISJOINT
+    first characters, the way ``'(?:[^'\\\\]|\\\\.)*'`` does. Unknown
+    opcodes fail the test rather than pass silently, so the guard extends
+    consciously.
     """
+    import ast
     import importlib
     from pathlib import Path
     from types import ModuleType
@@ -1339,7 +1359,9 @@ def test_no_nested_quantifier_regexes_in_taskq_obs() -> None:
     # only as private submodules (re._parser / re._constants -- no public
     # API, no type stubs), and importlib keeps the guard working on every
     # interpreter that can run the suite while pyright stays quiet without
-    # a blanket ignore.
+    # a blanket ignore. No try/except around the import on purpose: a
+    # future Python that moves the parser again must FAIL this guard
+    # loudly, not pass it vacuously.
     sre_parser: Any = importlib.import_module("re._parser")
     sre_constants: Any = importlib.import_module("re._constants")
 
@@ -1431,8 +1453,14 @@ def test_no_nested_quantifier_regexes_in_taskq_obs() -> None:
             "boundaries must not count as nested quantifiers"
         )
 
-    # The actual audit: every regex compiled by every module of the obs
-    # package (file-driven, so a new module is covered the day it lands).
+    # Pass one, recorded: remember which module attributes were audited, so
+    # pass two can close the loop for dynamically built patterns below.
+    audited_attrs: set[tuple[str, str]] = set()  # (module_name, attr_name)
+
+    # The actual audit, pass one: every regex compiled by every module of
+    # the obs package (file-driven, so a new module is covered the day it
+    # lands), read from the module attributes -- the module-level-constant
+    # convention this package keeps its scrub regexes under.
     pkg_dir = Path(obs_pkg.__file__).resolve().parent
     checked = 0
     for path in sorted(pkg_dir.glob("*.py")):
@@ -1442,6 +1470,7 @@ def test_no_nested_quantifier_regexes_in_taskq_obs() -> None:
             if not isinstance(attr, re.Pattern) or attr_name.startswith("__"):
                 continue
             checked += 1
+            audited_attrs.add((mod_name, attr_name))
             offenders = _pattern_offenders(attr)
             assert offenders == [], (
                 f"{mod_name}.{attr_name} ({attr.pattern!r}) carries the "
@@ -1451,6 +1480,97 @@ def test_no_nested_quantifier_regexes_in_taskq_obs() -> None:
     assert checked >= 4, (
         "the audit found fewer compiled regexes than the obs package is known "
         "to carry -- the walker is probably reading the wrong modules"
+    )
+
+    # Pass two, the visibility hole the attribute walk cannot close: a
+    # future function-local re.compile never becomes a module attribute.
+    # The AST pass audits every *.compile(...) call site in the package's
+    # own source wherever it sits -- a constant pattern is checked on the
+    # spot; a NON-constant pattern is acceptable only as the right-hand
+    # side of a module-level assignment, whose compiled object lands in a
+    # module attribute that pass one audited (asserted below, closing the
+    # loop); anywhere else -- a function body, a conditional, an inline
+    # expression -- a dynamically built pattern is unauditable by any
+    # static guard and is flagged. A pattern that does not even parse as
+    # a regex is flagged too (re.compile would reject it at runtime -- the
+    # site is broken, not unauditable).
+    def _compile_sites(node: ast.AST, in_top_assign_value: bool) -> list[tuple[ast.Call, bool]]:
+        """Every ``*.compile(...)`` call under *node*, flagged with whether
+        it sits inside a MODULE-LEVEL assignment's value."""
+        sites: list[tuple[ast.Call, bool]] = []
+        if isinstance(node, ast.Call):
+            if isinstance(node.func, ast.Attribute) and node.func.attr == "compile" and node.args:
+                sites.append((node, in_top_assign_value))
+            for arg in node.args:
+                sites.extend(_compile_sites(arg, in_top_assign_value))
+            for kwarg in node.keywords:
+                sites.extend(_compile_sites(kwarg.value, in_top_assign_value))
+            return sites
+        for child in ast.iter_child_nodes(node):
+            sites.extend(_compile_sites(child, in_top_assign_value))
+        return sites
+
+    compile_calls = 0
+    for path in sorted(pkg_dir.glob("*.py")):
+        mod_name = "taskq.obs" if path.stem == "__init__" else f"taskq.obs.{path.stem}"
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for stmt in tree.body:
+            if isinstance(stmt, ast.Assign | ast.AnnAssign) and stmt.value is not None:
+                sites = _compile_sites(stmt.value, in_top_assign_value=True)
+                targets = stmt.targets if isinstance(stmt, ast.Assign) else [stmt.target]
+                assign_names = [t.id for t in targets if isinstance(t, ast.Name)]
+            else:
+                sites = _compile_sites(stmt, in_top_assign_value=False)
+                assign_names = []
+            for call, in_top_assign in sites:
+                compile_calls += 1
+                pattern_arg = call.args[0]
+                if not (
+                    isinstance(pattern_arg, ast.Constant) and isinstance(pattern_arg.value, str)
+                ):
+                    if not in_top_assign:
+                        raise AssertionError(
+                            f"{mod_name}: re.compile at line {call.lineno} "
+                            "builds its pattern dynamically OUTSIDE a "
+                            "module-level assignment -- no static guard can "
+                            "audit it, and the compiled object never becomes "
+                            "an attribute pass one can see. Spell the pattern "
+                            "as a literal, or hoist the call to a module-level "
+                            "constant so the compiled object is audited"
+                        )
+                    # Dynamic, but the compiled object lands in module
+                    # attributes: pass one must have audited every one of
+                    # them.
+                    assert assign_names, (
+                        f"{mod_name}: re.compile at line {call.lineno} is a "
+                        "dynamically built pattern assigned to no plain name "
+                        "-- pass one cannot see its compiled object"
+                    )
+                    for name in assign_names:
+                        assert (mod_name, name) in audited_attrs, (
+                            f"{mod_name}: the dynamically built pattern "
+                            f"assigned to {name!r} did not reach pass one's "
+                            "audit -- the attribute walk and the AST walk "
+                            "have drifted apart"
+                        )
+                    continue
+                try:
+                    offenders = _offenders(sre_parser.parse(pattern_arg.value, 0))
+                except Exception as exc:  # Why: any parse failure means re.compile itself would fail at runtime; the site is broken and must be flagged, never skipped.
+                    raise AssertionError(
+                        f"{mod_name}: re.compile at line {call.lineno} takes "
+                        f"a pattern that does not parse as a regex ({exc!r}) "
+                        "-- the call site is broken"
+                    ) from exc
+                assert offenders == [], (
+                    f"{mod_name}: re.compile at line {call.lineno} "
+                    f"({pattern_arg.value!r}) carries the nested-quantifier "
+                    f"shape that made exception redaction exponential on "
+                    f"hostile input (#248): {offenders}"
+                )
+    assert compile_calls >= 4, (
+        "the AST pass found fewer re.compile call sites than the obs package "
+        "is known to carry -- it is probably scanning the wrong files"
     )
 
 
@@ -1518,7 +1638,7 @@ def test_repr_channel_scrubs_marker_prefixed_detail_lines() -> None:
     # escaped anchor must see through them there too.
     embedded = (
         "Traceback (most recent call last):\n"
-        "  File \"app.py\", line 3, in run\n"
+        '  File "app.py", line 3, in run\n'
         "RuntimeError('some failure\\n| | DETAIL:  Key (k)=(" + "tenant-secret-88" + ") exists.')\n"
         "during handling, another exception occurred"
     )
@@ -1603,9 +1723,7 @@ def test_repr_escaped_terminator_cannot_cross_a_line_boundary() -> None:
     # The control -- same structure, no quote+closers in the value -- scrubs
     # its DETAIL line and leaves the next line alone: the shape above must
     # not scrub LESS of its own line than the control does.
-    control = (
-        "RuntimeError('some failure\\nDETAIL:  Key (k)=(PART1-PLAIN-VALUE)\r\n\r\nPART2-CONTROL more')"
-    )
+    control = "RuntimeError('some failure\\nDETAIL:  Key (k)=(PART1-PLAIN-VALUE)\r\n\r\nPART2-CONTROL more')"
     safe_control = scrub_exception_field("error", control)
     assert isinstance(safe_control, str)  # Why: see above.
     assert "PART1-PLAIN-VALUE" not in safe_control
@@ -1628,8 +1746,10 @@ def test_repr_line_embedded_in_a_traceback_keeps_its_closers() -> None:
 
     embedded = (
         "Traceback (most recent call last):\n"
-        "  File \"app.py\", line 3, in run\n"
-        "RuntimeError('some failure\\nDETAIL:  Key (k)=(" + "subject-424242" + ") already exists.')\n"
+        '  File "app.py", line 3, in run\n'
+        "RuntimeError('some failure\\nDETAIL:  Key (k)=("
+        + "subject-424242"
+        + ") already exists.')\n"
         "during handling, another exception occurred"
     )
     safe = scrub_exception_field("error_traceback", embedded)
