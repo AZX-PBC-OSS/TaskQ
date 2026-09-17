@@ -292,6 +292,8 @@ The runner enforces the ordering: a post-phase migration is refused until its sa
 
 The ledger (`{schema}.schema_migrations`) records each applied migration under its `{ver}_{nn}:{phase}` key together with a SHA-256 checksum of the rendered SQL. Editing a file after it shipped makes the checksum drift, and the runner logs a `migration-checksum-drift` warning on every subsequent apply. Treat released migrations as frozen — releases v0.1.0 through v0.2.2 shipped only `01.00.00_01` and `01.00.01_01`, and those files have not changed since. Fix forward with a new migration instead.
 
+`tests/data/released_migrations.sha256` pins the bytes of every shipped migration file and `tests/test_migrations_released_frozen.py` fails when one changes. When a release ships new migration files, append their `sha256sum` lines (run from `src/taskq/migrations`) to the manifest; never edit an existing line.
+
 ### File Header Convention
 
 Every migration file opens with a `--` header comment block, modeled on the existing files:
