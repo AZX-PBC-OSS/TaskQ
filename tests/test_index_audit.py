@@ -41,6 +41,7 @@ taskq.backend._sweeps / taskq.worker.cron_loop:
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
@@ -852,8 +853,12 @@ async def test_cron_due_tick_is_index_bounded_without_sort(audit_schema: Any, pg
     """The every-second tick's due statement (the probe runs first in its
     own statement; see CRON_LOCK_SQL_TEMPLATE for why the read cannot
     share it): cron_schedules_next_fire_idx serves the bound as an Index
-    Cond, and the index's key order satisfies ORDER BY next_fire_at — a
-    Sort node here means the ordered path regressed."""
+    Cond and presorts the first ORDER BY key (next_fire_at). The s.id
+    tiebreaker — budget deferrals mint next_fire_at ties, and which tied
+    row is funded first must not depend on heap order — may only be paid
+    for with an Incremental Sort over the tie prefix the LIMIT actually
+    reads; a plain Sort node (sorting the whole scan output) means the
+    ordered path regressed."""
     schema, _ = audit_schema
     conn = await asyncpg.connect(pg_dsn)
     try:
@@ -863,8 +868,15 @@ async def test_cron_due_tick_is_index_bounded_without_sort(audit_schema: Any, pg
             "cron_schedules_next_fire_idx",
             "(next_fire_at <= statement_timestamp())",
         )
-        assert "Sort" not in plan, (
-            f"ORDER BY next_fire_at should be index-served, found a Sort:\n{plan}"
+        assert "Presorted Key: next_fire_at" in plan, (
+            f"the index's key order must still carry the first ORDER BY key:\n{plan}"
+        )
+        plain_sort = re.search(r"(?m)^\s*(?:->\s*)?Sort(?! Key)", plan)
+        assert plain_sort is None, (
+            "ORDER BY next_fire_at, id must stay index-presorted with a "
+            "bounded Incremental Sort over the tie prefix — a plain Sort "
+            "sorts the whole scan output and the every-second tick's cost "
+            f"regresses:\n{plan}"
         )
     finally:
         await conn.close()
