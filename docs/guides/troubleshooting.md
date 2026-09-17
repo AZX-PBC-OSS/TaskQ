@@ -166,9 +166,10 @@ The `scheduled_to_pending` sweep (Sweep 3) runs every 1 second **on the leader o
     UPDATE {schema}.jobs j SET status = 'pending'::{schema}.job_status
     FROM snap WHERE j.id = snap.id;
 
-    -- Then wake the producers (default schema shown; the channel is
-    -- taskq_wake_<schema>).
-    SELECT pg_notify('taskq_wake_taskq', '');
+    -- Then wake the producers. The channel embeds a hash of the schema
+    -- name (default schema shown; substitute yours in the literal, or use
+    -- taskq.constants.wake_channel(schema) from Python).
+    SELECT pg_notify('taskq_wake_' || left(encode(sha224('taskq'::bytea), 'hex'), 10), '');
     ```
 
     `FOR UPDATE SKIP LOCKED` keeps this from contending with the leader's own
@@ -310,7 +311,7 @@ Worker logs `notify-conn-error` and repeated `notify-reconnect-attempt`. Dispatc
 
 ### Cause
 
-The NOTIFY listener holds a dedicated direct connection (`notify_conn`) subscribed to `taskq_wake_{schema}`. A health-check issues `SELECT 1` every `notify_health_check_interval` (default 5s). On failure, it reconnects with bounded exponential backoff (initial 1s, doubling, max 30s, each delay multiplied by a random factor in [0.75, 1.25] so a fleet that lost PG simultaneously does not retry in lockstep). Common triggers: `pg_terminate_backend`, network partition, PgBouncer in transaction mode (LISTEN is session-scoped), or Postgres restart (`AdminShutdownError` is treated as reconnectable).
+The NOTIFY listener holds a dedicated direct connection (`notify_conn`) subscribed to the schema's wake channel (`wake_channel(schema)`). A health-check issues `SELECT 1` every `notify_health_check_interval` (default 5s). On failure, it reconnects with bounded exponential backoff (initial 1s, doubling, max 30s, each delay multiplied by a random factor in [0.75, 1.25] so a fleet that lost PG simultaneously does not retry in lockstep). Common triggers: `pg_terminate_backend`, network partition, PgBouncer in transaction mode (LISTEN is session-scoped), or Postgres restart (`AdminShutdownError` is treated as reconnectable).
 
 ### Diagnosis
 

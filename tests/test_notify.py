@@ -26,6 +26,7 @@ import pytest
 
 from taskq.backend.clock import Clock
 from taskq.backend.postgres import PostgresBackend
+from taskq.constants import events_channel, wake_channel, worker_channel
 from taskq.testing.assertions import wait_for, wait_for_condition
 from taskq.worker.notify import (
     _active_listeners,
@@ -158,9 +159,9 @@ class TestListenerStartup:
 
         assert conn.add_listener.call_count == 3
         channels_registered = [c[0][0] for c in conn.add_listener.call_args_list]
-        assert "taskq_wake_taskq_test" in channels_registered
-        assert "taskq_events_taskq_test" in channels_registered
-        assert f"taskq_worker_taskq_test_{_WORKER_ID}" in channels_registered
+        assert wake_channel("taskq_test") in channels_registered
+        assert events_channel("taskq_test") in channels_registered
+        assert worker_channel("taskq_test", str(_WORKER_ID)) in channels_registered
 
 
 # ---- Fan-out (wake channel) ----------------------------------------------------------------------
@@ -365,9 +366,9 @@ class TestShutdownPath:
 
         assert conn.remove_listener.call_count == 3
         channels_removed = [c[0][0] for c in conn.remove_listener.call_args_list]
-        assert "taskq_wake_taskq_test" in channels_removed
-        assert "taskq_events_taskq_test" in channels_removed
-        assert f"taskq_worker_taskq_test_{_WORKER_ID}" in channels_removed
+        assert wake_channel("taskq_test") in channels_removed
+        assert events_channel("taskq_test") in channels_removed
+        assert worker_channel("taskq_test", str(_WORKER_ID)) in channels_removed
 
         unlisten_calls = [
             c[0][0]
@@ -382,38 +383,37 @@ class TestShutdownPath:
 
 class TestChannelNameInterpolation:
     def test_wake_channel_name_from_constant(self) -> None:
-        """wake_channel returns correct name."""
-        from taskq.constants import wake_channel
+        """wake_channel is the readable prefix plus the schema's tag."""
+        from taskq.constants import schema_channel_tag
 
         result = wake_channel("myschema")
-        assert result == "taskq_wake_myschema"
-        assert result != "taskq_wake_{schema}"
+        assert result == f"taskq_wake_{schema_channel_tag('myschema')}"
+        assert result != wake_channel("otherschema")
 
     def test_events_channel_name_from_constant(self) -> None:
-        """events_channel returns correct name."""
-        from taskq.constants import events_channel
+        """events_channel is the readable prefix plus the schema's tag."""
+        from taskq.constants import schema_channel_tag
 
         result = events_channel("myschema")
-        assert result == "taskq_events_myschema"
+        assert result == f"taskq_events_{schema_channel_tag('myschema')}"
 
     def test_worker_channel_name_from_constant(self) -> None:
-        """worker_channel returns correct name including worker_id."""
-        from taskq.constants import worker_channel
+        """worker_channel carries the schema tag and the worker id."""
+        from taskq.constants import schema_channel_tag
 
         result = worker_channel("myschema", "abc123")
-        assert result == "taskq_worker_myschema_abc123"
+        assert result == f"taskq_worker_{schema_channel_tag('myschema')}_abc123"
 
     def test_channel_names_used_with_worker_settings(self) -> None:
-        """When WorkerSettings has schema_name='myapp', channels
-        are interpolated correctly.
-        """
-        from taskq.constants import events_channel, wake_channel, worker_channel
-
+        """When WorkerSettings has schema_name='myapp', the channels are
+        derived from that schema and differ from another schema's."""
         deps = _make_mock_deps(schema_name="myapp")
-        assert wake_channel(deps.settings.schema_name) == "taskq_wake_myapp"
-        assert events_channel(deps.settings.schema_name) == "taskq_events_myapp"
-        wch = worker_channel(deps.settings.schema_name, str(_WORKER_ID))
-        assert wch == f"taskq_worker_myapp_{_WORKER_ID}"
+        schema = deps.settings.schema_name
+        assert wake_channel(schema) == wake_channel("myapp") != wake_channel("other")
+        assert events_channel(schema) == events_channel("myapp") != events_channel("other")
+        wch = worker_channel(schema, str(_WORKER_ID))
+        assert wch == worker_channel("myapp", str(_WORKER_ID))
+        assert wch.endswith(f"_{_WORKER_ID}")
 
 
 # ---- Reconnect backoff ----------------------------------------------------------------------------------

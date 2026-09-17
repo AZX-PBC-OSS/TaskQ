@@ -119,7 +119,7 @@ TASKQ_SCHEMA_NAME=taskq_billing    TASKQ_PG_DSN=postgresql://app:secret@postgres
 TASKQ_SCHEMA_NAME=taskq_notifications TASKQ_PG_DSN=postgresql://app:secret@postgres:5432/appdb
 ```
 
-Each schema gets its own migration set, NOTIFY channel (`taskq_wake_{schema}`), and advisory-lock keyspace. Must match `^[A-Za-z_][A-Za-z0-9_]*$`.
+Each schema gets its own migration set, NOTIFY channels (derived from a hash of the schema name — see [architecture.md](../architecture.md#notify--wake-mechanism)), and advisory-lock keyspace. Must match `^[A-Za-z_][A-Za-z0-9_]*$` and be at most 63 characters.
 
 ### Migration strategy
 

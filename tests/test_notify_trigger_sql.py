@@ -11,6 +11,7 @@ import asyncpg
 import pytest
 
 from taskq._ids import new_uuid
+from taskq.constants import wake_channel
 from taskq.testing.fixtures import ModulePgSchema
 
 
@@ -58,7 +59,7 @@ async def test_a_pending_insert_wakes_listeners_on_the_schema_channel(
     conn = await asyncpg.connect(module_pg_schema.pg_dsn)
     try:
         await conn.add_listener(
-            f"taskq_wake_{schema}",
+            wake_channel(schema),
             lambda _c, _pid, _ch, _payload: woken.set(),
         )
         await conn.execute(
@@ -85,7 +86,7 @@ async def test_a_non_pending_insert_does_not_wake_listeners(
     conn = await asyncpg.connect(module_pg_schema.pg_dsn)
     try:
         await conn.add_listener(
-            f"taskq_wake_{schema}",
+            wake_channel(schema),
             lambda _c, _pid, _ch, _payload: woken.set(),
         )
         await conn.execute(

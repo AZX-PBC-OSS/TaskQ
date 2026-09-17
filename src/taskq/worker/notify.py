@@ -6,11 +6,12 @@ in-process ``SELECT 1`` health-check with bounded exponential-backoff
 reconnect so the listener survives connection loss without crashing the
 worker.
 
-Two channels are subscribed per worker:
-  - ``taskq_wake_{schema}``: enqueue wakeup (payload ignored)
-  - ``taskq_events_{schema}``: fleet-wide worker events with JSON payload
+Three channels are subscribed per worker (names from ``taskq.constants``,
+each carrying the schema's fixed-width tag rather than the schema name):
+  - ``wake_channel(schema)``: enqueue wakeup (payload ignored)
+  - ``events_channel(schema)``: fleet-wide worker events with JSON payload
     ``{"type": "<event>", ...}``
-  - ``taskq_worker_{schema}_{worker_id}``: per-worker targeted events,
+  - ``worker_channel(schema, worker_id)``: per-worker targeted events,
     same payload format, no filtering needed
 
 The reconnect backoff carries multiplicative jitter (±25% around the

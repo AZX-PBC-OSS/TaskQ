@@ -1013,22 +1013,35 @@ Three Postgres LISTEN channels are subscribed per worker:
 
 | Channel | Format | Payload |
 |---|---|---|
-| `taskq_wake_{schema}` | `wake_channel(schema)` | Empty (payload ignored — notification alone triggers dispatch) |
-| `taskq_events_{schema}` | `events_channel(schema)` | JSON: `{"type": "cancel", "worker_id": "...", "job_id": "..."}` |
-| `taskq_worker_{schema}_{worker_id}` | `worker_channel(schema, worker_id)` | Same JSON format; no worker_id filtering needed |
+| `taskq_wake_{tag}` | `wake_channel(schema)` | Empty (payload ignored — notification alone triggers dispatch) |
+| `taskq_events_{tag}` | `events_channel(schema)` | JSON: `{"type": "cancel", "worker_id": "...", "job_id": "..."}` |
+| `taskq_worker_{tag}_{worker_id}` | `worker_channel(schema, worker_id)` | Same JSON format; no worker_id filtering needed |
+
+`{tag}` is `schema_channel_tag(schema)`: the first 10 hex digits of
+`sha224(schema)` (`taskq` → `124a200651`). Channels are Postgres identifiers
+bounded by 63 bytes — `LISTEN` silently truncates a longer name and
+`pg_notify` rejects it — while a schema name may itself be 63 characters, so
+a channel that interpolated the schema stopped matching its listener past a
+schema length (14 characters for the per-worker channel). The fixed-width tag
+makes every channel's length independent of the schema; `check_channels_fit`
+runs at settings load so a template change cannot reintroduce the cliff. The
+wake trigger derives the same tag in SQL
+(`left(encode(sha224(...), 'hex'), 10)`), pinned end to end by
+`tests/test_notify_channel_length.py`. The progress channels
+(`taskq:{tag}:progress:{job_id}`, `taskq:{tag}:progress`) and the cron
+commit-gate channel (`taskq_cron_commit_{tag}`) use the same tag.
 
 Channel name helpers validate the schema identifier against `_IDENT_RE` before
-interpolation. Each schema gets its own set of channels, enabling multi-tenant
-deployments on a single PG instance. The per-worker channel
-(`taskq_worker_{schema}_{worker_id}`) enables targeted event delivery without
-fleet-wide fanout.
+hashing. Each schema gets its own set of channels, enabling multi-tenant
+deployments on a single PG instance. The per-worker channel enables targeted
+event delivery without fleet-wide fanout.
 
 ### Enqueue path
 
 After a successful INSERT into `jobs`, `PostgresBackend.enqueue` executes:
 
 ```sql
-SELECT pg_notify('taskq_wake_<schema>', '')
+SELECT pg_notify(wake_channel(schema), '')
 ```
 
 The empty payload is intentional — consumers do not need to parse it; the

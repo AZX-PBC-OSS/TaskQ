@@ -20,15 +20,16 @@ See [../getting-started/quick-start.md](../getting-started/quick-start.md) for i
 
 **Heartbeat loop.** On every `heartbeat_interval` tick, acquires one connection from `heartbeat_pool`, opens a single transaction, and atomically updates `workers.last_seen_at`, extends `jobs.lock_expires_at` for all running jobs owned by this worker, extends `reservation_slots.lease_expires_at`, and (if this worker is the leader) pings `maintenance_leader.last_seen_at`. After the transaction commits, runs the cancel-controller's `run_post_tx` to drain any phase-3 abandonment queue. Consecutive failures increment `heartbeat_failures`; exceeding `max_heartbeat_failures` triggers `isolate_self`.
 
-**NOTIFY listener.** Holds a dedicated direct connection (`notify_conn`) subscribed to the `taskq_wake_{schema}` channel. When a NOTIFY arrives, the listener calls `event.set()` on all registered producer wake-subscribers, waking any sleeping producer immediately rather than waiting for the next poll tick. A health-check coroutine issues `SELECT 1` every `notify_health_check_interval` seconds and reconnects with jittered bounded exponential backoff (±25% multiplicative jitter around each doubling delay) on failure.
+**NOTIFY listener.** Holds a dedicated direct connection (`notify_conn`) subscribed to the schema's wake channel (`wake_channel(schema)`, see [architecture.md](../architecture.md#notify--wake-mechanism)). When a NOTIFY arrives, the listener calls `event.set()` on all registered producer wake-subscribers, waking any sleeping producer immediately rather than waiting for the next poll tick. A health-check coroutine issues `SELECT 1` every `notify_health_check_interval` seconds and reconnects with jittered bounded exponential backoff (±25% multiplicative jitter around each doubling delay) on failure.
 
-External code (for example a bulk-enqueue script) can wake sleeping workers immediately without going through the normal enqueue path:
+External code (for example a bulk-enqueue script) can wake sleeping workers immediately without going through the normal enqueue path. The channel name embeds a hash of the schema rather than the schema itself (so it fits Postgres's 63-byte identifier limit for any schema name); derive it in SQL from the value of `TASKQ_SCHEMA_NAME` (default `taskq`):
 
 ```sql
-SELECT pg_notify('taskq_wake_taskq', '');
+SELECT pg_notify('taskq_wake_' || left(encode(sha224('taskq'::bytea), 'hex'), 10), '');
+-- for the default schema this is the channel taskq_wake_124a200651
 ```
 
-Replace `taskq_wake_taskq` with `taskq_wake_{schema}` where `{schema}` is the value of `TASKQ_SCHEMA_NAME` (default `taskq`).
+In Python, `taskq.constants.wake_channel(schema)` returns the same name.
 
 **Maintenance leader.** One worker per schema wins a Postgres advisory lock (`pg_try_advisory_lock`) and becomes the maintenance leader. The leader runs eleven cooperative sub-loops inside a single `asyncio.TaskGroup`: `_election_loop`, `_watchdog_loop`, `_scheduled_wake_loop`, `_cron_loop`, `_sweep_loop`, `_prune_loop`, `_archive_expiry_loop`, `_queue_depth_loop`, `_backlog_detection_loop`, `_reservation_slots_loop`, and `_stranded_jobs_loop`. Non-leader workers re-attempt election each `heartbeat_interval`. See [maintenance-sweeps.md](maintenance-sweeps.md) for what the sweep loops do and why their database work is bounded.
 
