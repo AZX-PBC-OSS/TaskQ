@@ -452,7 +452,7 @@ async def test_failing_gauge_sampler_publishes_no_success_stamp(
 # so it can never reach the tick-level handler that counts under
 # "backlog_detection". Its two failure arms (the fetch raising, and rows
 # coming back with a shape the cache rebuild cannot read) used to log a
-# bare WARN and move on — and the fetch arm's empty fallback CLEARS the
+# bare WARN and move on, and the fetch arm's empty fallback CLEARS the
 # per-actor series, which resolves TaskQQueueDepthHigh (its operand is the
 # oldest-pending age) at the exact moment the incident it alerts on is
 # killing the read, with no metric naming the loss. Both arms must count on
@@ -466,7 +466,7 @@ class _BacklogTickConn:
 
     Dispatches on the statement's own shape the way the real tick issues
     them: the by-status UNION, the two fleet fetchvals, the per-actor
-    running GROUP BY, and the per-actor backlog GROUP BY (the pair walk —
+    running GROUP BY, and the per-actor backlog GROUP BY (the pair walk,
     the widest-shaped statement in the tick, and the first to hit the
     statement timeout under the incident load it exists to expose).
     """
@@ -513,7 +513,7 @@ def _spy_backlog_cache_updates(monkeypatch: pytest.MonkeyPatch) -> dict[str, lis
 
     Spies the sweeps module's own imported update names (the established
     instrumentation seam) so the tick under test never writes the process
-    singleton caches — the neighboring sampler tests here fail every read,
+    singleton caches: the neighboring sampler tests here fail every read,
     but this tick's fleet reads SUCCEED, and a test that leaves
     ``_jobs_by_status_cache`` populated leaks its numbers into whichever
     test runs next.
@@ -576,11 +576,11 @@ async def test_actor_backlog_read_failure_counts_and_clears_only_its_own_gauges(
     read in the same tick succeeds.
 
     What the failure must produce, all at once: the per-actor series go
-    ABSENT (the empty fallback — the honest state, never a stale claim),
+    ABSENT (the empty fallback: the honest state, never a stale claim),
     the fleet-wide samples still land (the isolation the read exists
     under), and the failure increments
     taskq.maintenance_leader.sweep_timeouts under the actor_backlog
-    sweep_name — the counter TaskQSweepTimeouts reads. Without that
+    sweep_name, the counter TaskQSweepTimeouts reads. Without that
     increment, a metrics-only operator watched TaskQQueueDepthHigh
     resolve itself exactly when the incident it alerts on killed the read,
     with nothing but an unalertable WARN log naming the loss.
@@ -631,8 +631,8 @@ async def test_actor_backlog_read_failure_counts_and_clears_only_its_own_gauges(
         # The half-valid row: depth reads fine, oldest_age is malformed.
         # As call arguments the comprehensions ran update #1 (a fresh depth
         # cache) and then raised in comprehension #2, landing the fresh
-        # depth beside a FROZEN age cache — the alert's operand — a mixed
-        # state the fix-round attack flagged; built as locals first, the
+        # depth beside a FROZEN age cache, the alert's operand, a mixed
+        # state the fix-round review flagged; built as locals first, the
         # failure is atomic (neither cache is written).
         (
             [{"actor": "emails", "queue": "default", "depth": 7}],
@@ -671,7 +671,7 @@ async def test_actor_backlog_malformed_row_counts_atomically_on_the_metric_plane
     assert _timeout_value(sweep_metric_reader, "backlog_detection") == 0
     # The atomic-failure shape itself: the rebuild raised before EITHER
     # update ran, so no per-actor update fires while the fleet samples of
-    # the same ticks keep landing — a mixed fresh-depth/frozen-age state
+    # the same ticks keep landing: a mixed fresh-depth/frozen-age state
     # can never occur.
     assert calls["actor_backlog"] == [], (
         f"{shape_id}: the depth cache must not be written when the age "

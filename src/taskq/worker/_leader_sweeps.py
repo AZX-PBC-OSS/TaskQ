@@ -1441,9 +1441,9 @@ _QUERY_OLDEST_DUE_AGE_SQL_TEMPLATE = (
 # statement is the direct count.
 #
 # The cancel_phase = 0 carve-out: a row with a cancel in flight
-# (cancel_phase != 0 — an operator asked to cancel, and the worker owns the
+# (cancel_phase != 0: an operator asked to cancel, and the worker owns the
 # terminal write) is in the cancellation protocol's own window, where an
-# expired lease is EXPECTED, not a zombie — the reclaim sweep's lease arm
+# expired lease is EXPECTED, not a zombie: the reclaim sweep's lease arm
 # deliberately waits cancel_grace + cleanup_grace + 60 s past lease expiry
 # before it pre-empts one (backend/_sweeps.py's
 # `cancel_phase = 0 OR lock_expires_at < now - <grace ladder>`), so a merely
@@ -1453,11 +1453,11 @@ _QUERY_OLDEST_DUE_AGE_SQL_TEMPLATE = (
 # 60 s plus a sweep interval and a sampling interval, and combined graces
 # from about four minutes up crossed the firing line on every cancel. The
 # filter keys on the PHASE, not on the sweep's grace ladder, so it stays
-# correct whatever that ladder becomes — and a cancelling row that outlives
+# correct whatever that ladder becomes, and a cancelling row that outlives
 # the whole ladder is not lost: reclaim takes it (to 'cancelled', the
 # caller's request honored) and the never-completing cancel has its own
 # pager in TaskQAbandonedJobs. The term rides as a post-scan Filter over
-# the expired-lease candidates the Index Cond already bounded — cancel_phase
+# the expired-lease candidates the Index Cond already bounded, cancel_phase
 # is NOT NULL DEFAULT 0, and count(*) had to visit those rows anyway.
 _QUERY_RUNNING_LEASE_EXPIRED_SQL_TEMPLATE = (
     'SELECT count(*) FROM "{schema}".jobs '
@@ -1657,7 +1657,7 @@ async def _backlog_detection_loop(ctx: SweepContext, shutdown: asyncio.Event) ->
                 # comparison silently false while the loop stays alive.
                 # The empty fallback clears the per-actor caches below
                 # rather than freezing them at readings the worker can no
-                # longer see — which is also why the failure must ride the
+                # longer see, which is also why the failure must ride the
                 # metric plane, not only the log: clearing the series
                 # resolves TaskQQueueDepthHigh (its operand is the
                 # oldest-pending age) at the exact moment the incident it
@@ -1710,14 +1710,14 @@ async def _backlog_detection_loop(ctx: SweepContext, shutdown: asyncio.Event) ->
             # vanished (actor, queue) pair vanishes from the series instead
             # of ageing forever at a stale value.
             #
-            # BOTH snapshots are built before EITHER cache is written — the
+            # BOTH snapshots are built before EITHER cache is written: the
             # comprehensions are plain locals, not call arguments. As
             # arguments, a row valid for depth but malformed for
             # oldest_age ran the first update and then raised in the second
             # comprehension, landing a fresh depth cache beside a frozen
             # age cache: a mixed state whose frozen half is exactly the
             # TaskQQueueDepthHigh operand. Built first, a malformed row
-            # leaves both caches at their last values together — the
+            # leaves both caches at their last values together: the
             # failure stays atomic, and it still counts on the metric plane
             # below.
             try:
@@ -1733,7 +1733,7 @@ async def _backlog_detection_loop(ctx: SweepContext, shutdown: asyncio.Event) ->
             except Exception as exc:
                 # Same failure surface as the fetch above, so same routing:
                 # a malformed row leaves the per-actor caches stale exactly
-                # as a failed fetch leaves them empty — either way this
+                # as a failed fetch leaves them empty: either way this
                 # read did not happen, and a read that did not happen is
                 # the whole fault a detector must report (warnings are not
                 # alertable). Counted under the sampler's own sweep_name,

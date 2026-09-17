@@ -633,7 +633,7 @@ async def test_running_lease_expired_counts_only_expired_running_jobs(
 ) -> None:
     """The zombie-running shape is visible: the expired-lease count covers
     exactly the running rows whose lease is past AND that carry no cancel
-    in flight — not future leases, not pending rows, not running rows that
+    in flight, not future leases, not pending rows, not running rows that
     hold no lease, and not cancelling rows (the reclaim sweep deliberately
     waits out the cancel grace ladder for those, so an expired lease
     mid-cancel is the protocol working, never a zombie the alert should
