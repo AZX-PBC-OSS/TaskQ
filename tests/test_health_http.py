@@ -430,6 +430,38 @@ async def test_unix_collision_without_health_port_keeps_the_bare_oserror_contrac
         await peer.wait_closed()
 
 
+async def test_stop_with_the_socket_already_unlinked_is_clean() -> None:
+    """F3: a path already gone at ``stop()`` is the clean outcome, not the race.
+
+    Python 3.13's ``Server.close()`` unlinks the socket it served (inode-guarded
+    — the attacker proved a replacement's file survives it), so by the time
+    ``stop()`` looks, every clean stop on 3.13+ finds no file. The file is
+    removed by hand here so the pin holds on every version: no
+    ``health-server-stop-skipped-unlink`` WARN — that is reserved for a
+    DIFFERENT file sitting at the path — and the ``health-server-stopped``
+    record still fires, because the stop did complete.
+    """
+    sock_path = _next_sock_path()
+    settings = _make_settings(sock_path)
+    server = HealthServer()
+    await server.start(_make_deps(settings))
+    try:
+        assert pathlib.Path(sock_path).exists(), "sanity: the server bound the path"
+        # What asyncio's own close() does on 3.13+ before stop() looks.
+        os.unlink(sock_path)
+        with structlog.testing.capture_logs() as captured:
+            await server.stop()
+        assert not any(e["event"] == "health-server-stop-skipped-unlink" for e in captured), (
+            "a path already unlinked cleanly was reported as a shutdown-race near-miss"
+        )
+        assert any(e["event"] == "health-server-stopped" for e in captured), (
+            "the clean-stop record must still be emitted — the stop completed"
+        )
+    finally:
+        with contextlib.suppress(OSError):
+            await server.stop()  # idempotent backstop; also ENOENT-clean now
+
+
 async def test_unix_and_tcp_both_collide_refuses_startup_and_leaves_the_peer_alone() -> None:
     """When both transports collide, the TCP refusal governs the boot.
 

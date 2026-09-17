@@ -616,17 +616,30 @@ class HealthServer:
             # socket this worker never bound at all. Nothing to unlink.
             if self._server is None and self._socket_inode is None:
                 return
-            # Unlink only when the inode captured at bind time still names
-            # the file now sitting at the path: a replacement worker's
-            # fresh socket bound to the same path after this one stopped
-            # listening must survive this worker's teardown. An inode that
-            # is None here means this server DID bind but could not stat
-            # its own file — ownership unprovable, so it never unlinks;
-            # deleting a stranger's serving surface is exactly the
-            # shutdown-race this guard exists to prevent.
+            # The path's unlink has TWO owners once the server above is
+            # closed: this method, and asyncio itself — Server.close()
+            # unlinks the socket it served (guarded the same way, so a
+            # replacement worker's fresh file survives it) on Python
+            # 3.13+, which by the time stop() reaches here has usually
+            # already done the work. A missing file is therefore the
+            # CLEAN outcome on every version — asyncio's unlink, or any
+            # other removal after this server stopped listening — and
+            # must be recorded as one: no unlink to attempt, the INFO,
+            # never the WARN. The WARN is reserved for the real race: a
+            # stat that succeeds but names a different inode, meaning a
+            # replacement worker bound a fresh socket to the same path,
+            # and that file must survive this worker's teardown. An
+            # inode that is None with the file present means this server
+            # DID bind but could not stat its own file — ownership
+            # unprovable, so it never unlinks either.
             current_inode: int | None = None
-            with contextlib.suppress(OSError):
+            try:
                 current_inode = os.stat(self._socket_path).st_ino
+            except FileNotFoundError:
+                logger.info("health-server-stopped", socket_path=self._socket_path)
+                return
+            except OSError:
+                current_inode = None
 
             if self._socket_inode is not None and current_inode == self._socket_inode:
                 with contextlib.suppress(FileNotFoundError):
