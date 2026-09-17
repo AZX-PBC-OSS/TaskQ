@@ -29,7 +29,7 @@ from __future__ import annotations
 
 import asyncio
 import threading
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterator
 from contextlib import suppress
 from datetime import UTC, datetime, timedelta
 from types import TracebackType
@@ -64,6 +64,26 @@ from taskq.worker.shutdown import (  # pyright: ignore[reportPrivateUsage]  # Wh
 
 _NOW = datetime(2025, 1, 1, tzinfo=UTC)
 _WORKER_ID = new_uuid()
+
+
+@pytest.fixture(autouse=True)
+def _clean_tracked_actor_handles() -> Iterator[None]:  # pyright: ignore[reportUnusedFunction]  # Why: autouse fixture consumed implicitly by the test runner; pyright does not track fixture usage.
+    """Isolate the process-wide tracked-handle registry per test.
+
+    The registry is module state shared with every other module in the
+    session; a handle leaked by a failed assertion here would park a
+    later ``await_tracked_actor_reap`` forever (the watchdog is its only
+    bound, and unit tests do not arm one).
+    """
+    from taskq.worker import _watchdog as _watchdog_mod
+
+    saved = set(_watchdog_mod._tracked_actor_handles)  # pyright: ignore[reportPrivateUsage]  # Why: test isolation of the module-level registry under assertion.
+    _watchdog_mod._tracked_actor_handles.clear()
+    try:
+        yield
+    finally:
+        _watchdog_mod._tracked_actor_handles.clear()
+        _watchdog_mod._tracked_actor_handles.update(saved)
 
 
 def _settings(*, cleanup_grace: float = 0.4, termination_grace: float = 20.0) -> WorkerSettings:
@@ -657,3 +677,62 @@ async def test_infra_failed_release_write_propagates_the_cancellation_not_the_er
         "mark_cancelled — the row carries no operator cancel, and a cancel "
         "write here would terminalise a deploy interruption"
     )
+
+
+# ── The dispatch→registry seam ────────────────────────────────────────
+
+
+async def test_a_running_sync_actor_is_registered_until_its_thread_returns() -> None:
+    """The dispatch helper's registry twin: live while the body runs, gone
+    when it returns.
+
+    The ctx stash serves the consumer's park; the process-wide registry is
+    what the shutdown exit gate reads (await_tracked_actor_reap keeps the
+    watchdog armed on it). A registration that missed either surface would
+    silently unbound one half of the closure.
+    """
+    from taskq.worker._watchdog import (  # pyright: ignore[reportPrivateUsage]  # Why: the registry is the seam under test.
+        live_tracked_actor_handles,
+        register_tracked_actor_handle,
+    )
+
+    body_started = threading.Event()
+    release_body = threading.Event()
+
+    def body() -> object:
+        body_started.set()
+        release_body.wait(30.0)
+        return {"done": True}
+
+    class _Ctx:
+        """Minimal ctx double carrying the stash contract the helper uses."""
+
+        _sync_actor_task: asyncio.Task[object] | None = None
+
+        def _set_sync_actor_task(self, task: asyncio.Task[object]) -> None:
+            self._sync_actor_task = task
+
+    ctx = _Ctx()
+    runner = asyncio.ensure_future(_run_sync_actor_tracked(body, {}, ctx))  # type: ignore[arg-type]  # Why: the minimal double satisfies the setter contract; the body takes no kwargs.
+    await asyncio.to_thread(body_started.wait, 10.0)
+
+    handle = ctx._sync_actor_task
+    assert handle is not None
+    assert live_tracked_actor_handles() == [handle], (
+        "a sync actor mid-body must be registered process-wide — this is "
+        "what keeps the shutdown watchdog armed past the TaskGroup"
+    )
+
+    release_body.set()
+    with suppress(asyncio.CancelledError):
+        await runner
+    assert handle.done()
+    assert live_tracked_actor_handles() == [], (
+        "a reaped handle must leave the registry's live set — the exit "
+        "gate disarms the watchdog exactly when this empties"
+    )
+
+    # The registration is idempotent-shaped for the done filter: a done
+    # entry lingering in the weak set never blocks a reap.
+    register_tracked_actor_handle(handle)
+    assert live_tracked_actor_handles() == []
