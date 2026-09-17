@@ -354,6 +354,14 @@ async def test_redis_discards_malformed_messages() -> None:
     entry = next(log for log in logs if log["event"] == "stream-event-deserialise-error")
     assert entry["job_id"] == str(_JOB_ID)
     assert entry["log_level"] == "warning"
+    # The failing locations and their count are enough to trace a bad
+    # publisher; the payload itself (pydantic's input_value) never
+    # reaches the log, as it is the user's own progress data.
+    assert entry["error_type"] == "ValidationError"
+    assert entry["error_count"] >= 1
+    assert isinstance(entry["locations"], list) and entry["locations"]
+    assert "error" not in entry
+    assert "input_value" not in repr(entry)
 
 
 async def test_redis_deduplicates_by_seq() -> None:

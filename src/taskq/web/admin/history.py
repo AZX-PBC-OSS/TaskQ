@@ -4,13 +4,13 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
-import asyncpg
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import HTMLResponse, JSONResponse
 from jinja2 import Environment
 
 from taskq.client._taskq import orjson_response_class
+from taskq.web._pool import BoundedPool
 from taskq.web.admin._actor_stats import fetch_actor_stats
 from taskq.web.admin._constants import (
     _ALL_STATUSES,  # pyright: ignore[reportPrivateUsage]  # Why: shared constants published by the admin constants module; private prefix scopes them within the admin package.
@@ -19,7 +19,12 @@ from taskq.web.admin._constants import (
     parse_job_statuses,
     parse_text_filter,
 )
-from taskq.web.admin._factory import get_pg_pool, get_realtime_ctx, get_schema, get_templates
+from taskq.web.admin._factory import (
+    get_admin_pool,
+    get_realtime_ctx,
+    get_schema,
+    get_templates,
+)
 
 logger = structlog.get_logger("taskq.web.admin.history")
 
@@ -123,7 +128,7 @@ def register(router: APIRouter) -> None:
 
     @router.get("/history", response_class=HTMLResponse)
     async def history_list(  # pyright: ignore[reportUnusedFunction]  # Why: FastAPI decorator pattern prevents pyright from seeing registration via router.get().
-        pool: asyncpg.Pool = Depends(get_pg_pool),
+        pool: BoundedPool = Depends(get_admin_pool),
         schema: str = Depends(get_schema),
         tmpl: Environment = Depends(get_templates),
         realtime_ctx: tuple[str, str] = Depends(get_realtime_ctx),
@@ -238,7 +243,7 @@ def register(router: APIRouter) -> None:
 
     @router.get("/api/history/stats")
     async def history_stats(  # pyright: ignore[reportUnusedFunction]  # Why: FastAPI decorator pattern prevents pyright from seeing registration via router.get().
-        pool: asyncpg.Pool = Depends(get_pg_pool),
+        pool: BoundedPool = Depends(get_admin_pool),
         schema: str = Depends(get_schema),
     ) -> JSONResponse:
         async with pool.acquire() as conn:

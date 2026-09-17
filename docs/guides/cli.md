@@ -425,6 +425,15 @@ A stored `max_concurrent=0` is labelled **drain mode** and a stored `NULL`
 is labelled **uncapped**, so a deliberate drain is distinguishable from an
 accidental zero and a real "no actor-level cap" from missing data.
 
+Pass `--platform-grace-seconds` (Kubernetes `terminationGracePeriodSeconds`,
+an ACA/ECS stop timeout, compose `stop_grace_period`, systemd
+`TimeoutStopSec`) and doctor compares it against the worker's modelled
+worst-case shutdown: a platform grace below the worst case gets SIGKILLed
+mid-teardown, degrading every shutdown to crash reclaim (leases expire,
+in-flight work re-runs) — the report names the shortfall and the fix. The
+worker itself cannot see the platform's number, so this is the one check
+that needs the operator to supply it.
+
 It issues no writing statement, so it is safe to run against production
 mid-incident. It always exits 0: every condition it reports is one a worker
 keeps running through, and a diagnostic that fails the shell gets wrapped

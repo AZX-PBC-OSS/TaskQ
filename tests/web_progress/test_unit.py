@@ -11,6 +11,7 @@ specific marker and then close the connection.
 """
 
 import asyncio
+import functools
 import json
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
@@ -211,15 +212,19 @@ def _make_stream_endpoint(
     tests wrap the call in ``asyncio.timeout`` so a hung cleanup wedges the
     RED state fast instead of blocking a portal thread.
     """
+    redis = _StubRedis(pubsub)
     router = create_router(
         pg_pool,
-        _StubRedis(pubsub),
+        redis,
         schema=_SCHEMA_LABEL,
         sse_heartbeat_interval=_HEARTBEAT,
     )
     for route in router.routes:
         if isinstance(route, APIRoute) and route.path.endswith("/progress/stream"):
-            return route.endpoint
+            # The pool and Redis client are FastAPI dependencies on the
+            # endpoint (resolved per request from the host's state); bound
+            # here the way the dependency graph would bind them.
+            return functools.partial(route.endpoint, pg_pool=pg_pool, redis_client=redis)
     raise AssertionError("progress stream route not found")
 
 
@@ -365,6 +370,33 @@ async def test_header_takes_precedence_over_query_param() -> None:
     first_raw = _encode(results[0])
     assert "id: 7\n" in first_raw
     assert "event: progress\n" in first_raw
+
+
+def test_malformed_last_event_id_header_is_rejected_with_400() -> None:
+    """The server issues integer event ids, so a Last-Event-ID that is not
+    one cannot have come from this stream: it is rejected at the boundary
+    rather than silently read as 'no cursor' - which would also have
+    shadowed a valid ?last_event_id= query parameter."""
+    request = MagicMock()
+    request.headers.get.return_value = "not-a-sequence"
+    with pytest.raises(HTTPException) as info:
+        _resolve_last_event_id(request, 3)
+    assert info.value.status_code == 400
+    assert "Last-Event-ID" in str(info.value.detail)
+
+
+def test_negative_last_event_id_header_is_rejected_with_400() -> None:
+    request = MagicMock()
+    request.headers.get.return_value = "-1"
+    with pytest.raises(HTTPException) as info:
+        _resolve_last_event_id(request, None)
+    assert info.value.status_code == 400
+
+
+def test_well_formed_last_event_id_header_resolves() -> None:
+    request = MagicMock()
+    request.headers.get.return_value = "12"
+    assert _resolve_last_event_id(request, 3) == 12
 
 
 # ── Query param used when no header ─────────────────────────────
@@ -626,7 +658,13 @@ async def test_503_before_sse_uses_orjson_response_class() -> None:
         if isinstance(route, APIRoute) and route.path.endswith("/progress/stream")
     )
 
-    resp = await endpoint(job_id=_JOB_ID, request=_mock_request(), last_event_id=None)
+    resp = await endpoint(
+        job_id=_JOB_ID,
+        request=_mock_request(),
+        last_event_id=None,
+        pg_pool=_StubPool(_pg_row()),
+        redis_client=None,
+    )
 
     assert isinstance(resp, orjson_response_class())
     assert resp.status_code == 503

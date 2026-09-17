@@ -30,14 +30,15 @@ from taskq.cron import (
 )
 from taskq.ratelimit.registry import RateLimitRegistry
 from taskq.settings import TaskQSettings
+from taskq.web._pool import BoundedPool
 from taskq.web.admin._constants import (
     _TERMINAL_STATUSES,  # pyright: ignore[reportPrivateUsage]  # Why: shared constants published by the admin constants module; private prefix scopes them within the admin package.
 )
 from taskq.web.admin._factory import (
+    get_admin_pool,
     get_backend,
     get_base_path,
     get_csrf_token,
-    get_pg_pool,
     get_realtime_ctx,
     get_redis_client,
     get_rl_registry,
@@ -126,6 +127,8 @@ async def _fetch_redis_rl_state(
     redis_client: Any,
     schema: str,
     names: Sequence[tuple[str, str]],
+    *,
+    read_timeout: float,
 ) -> dict[str, dict[str, str]] | None:
     """Fetch live Redis state for registered rate-limit primitives.
 
@@ -144,8 +147,13 @@ async def _fetch_redis_rl_state(
     the request handler take O(names) sequential round trips on a page the
     admin UI re-polls — the per-row-round-trip shape.
 
-    Returns ``None`` on any Redis failure so the caller can degrade
-    gracefully. An unknown *kind* raises :class:`ValueError` instead: that
+    The one round trip is bounded by *read_timeout* (``TASKQ_ADMIN_ACQUIRE_TIMEOUT``):
+    a black-holed broker degrades the page after that long instead of
+    hanging the request. Returns ``None`` on any Redis failure - the
+    timeout included - so the caller can degrade visibly (the failure is
+    logged here as ``redis-rl-fetch-failed`` with its ``error_type``, and
+    the page reports the degradation). An unknown *kind* raises
+    :class:`ValueError` instead: that
     is a caller bug (the registry only emits the three kinds), and the
     degrade-to-None path exists for the transport being down — swallowing
     the validation failure would convert a loud programming error into a
@@ -170,7 +178,7 @@ async def _fetch_redis_rl_state(
         else:
             raise ValueError(f"unknown rate-limit kind: {kind!r}")
     try:
-        raw_results: list[Any] = await pipe.execute()
+        raw_results: list[Any] = await asyncio.wait_for(pipe.execute(), timeout=read_timeout)
 
         result: dict[str, dict[str, str]] = {}
         for (name, kind), raw in zip(names, raw_results, strict=True):
@@ -188,8 +196,14 @@ async def _fetch_redis_rl_state(
             elif kind == "sliding_window_log" and raw is not None and raw > 0:
                 result[name] = {"count": str(raw)}
         return result
-    except Exception:
-        logger.debug("redis-rl-fetch-failed", exc_info=True)
+    except Exception as exc:
+        logger.warning(
+            "redis-rl-fetch-failed",
+            error_type=type(exc).__name__,
+            error=str(exc),
+            buckets=len(names),
+            read_timeout=read_timeout,
+        )
         return None
 
 
@@ -200,7 +214,7 @@ def register(router: APIRouter) -> None:
     async def schedules_page(  # pyright: ignore[reportUnusedFunction]  # Why: registered via FastAPI decorator; pyright cannot see the route registration.
         error: str | None = None,
         csrf_token: str = Depends(get_csrf_token),
-        pool: asyncpg.Pool = Depends(get_pg_pool),
+        pool: BoundedPool = Depends(get_admin_pool),
         schema: str = Depends(get_schema),
         tmpl: Environment = Depends(get_templates),
         realtime_ctx: tuple[str, str] = Depends(get_realtime_ctx),
@@ -233,7 +247,7 @@ def register(router: APIRouter) -> None:
     async def schedule_enable(  # pyright: ignore[reportUnusedFunction]  # Why: registered via FastAPI decorator; pyright cannot see the route registration.
         schedule_id: UUID,
         _csrf: None = Depends(validate_csrf),
-        pool: asyncpg.Pool = Depends(get_pg_pool),
+        pool: BoundedPool = Depends(get_admin_pool),
         schema: str = Depends(get_schema),
         base_path: str = Depends(get_base_path),
         settings: TaskQSettings = Depends(get_settings),
@@ -260,7 +274,7 @@ def register(router: APIRouter) -> None:
     async def schedule_disable(  # pyright: ignore[reportUnusedFunction]  # Why: registered via FastAPI decorator; pyright cannot see the route registration.
         schedule_id: UUID,
         _csrf: None = Depends(validate_csrf),
-        pool: asyncpg.Pool = Depends(get_pg_pool),
+        pool: BoundedPool = Depends(get_admin_pool),
         schema: str = Depends(get_schema),
         base_path: str = Depends(get_base_path),
         settings: TaskQSettings = Depends(get_settings),
@@ -287,7 +301,7 @@ def register(router: APIRouter) -> None:
     async def schedule_skip(  # pyright: ignore[reportUnusedFunction]  # Why: registered via FastAPI decorator; pyright cannot see the route registration.
         schedule_id: UUID,
         _csrf: None = Depends(validate_csrf),
-        pool: asyncpg.Pool = Depends(get_pg_pool),
+        pool: BoundedPool = Depends(get_admin_pool),
         schema: str = Depends(get_schema),
         base_path: str = Depends(get_base_path),
         settings: TaskQSettings = Depends(get_settings),
@@ -354,7 +368,7 @@ def register(router: APIRouter) -> None:
     async def schedule_run_now(  # pyright: ignore[reportUnusedFunction]  # Why: registered via FastAPI decorator; pyright cannot see the route registration.
         schedule_id: UUID,
         _csrf: None = Depends(validate_csrf),
-        pool: asyncpg.Pool = Depends(get_pg_pool),
+        pool: BoundedPool = Depends(get_admin_pool),
         schema: str = Depends(get_schema),
         base_path: str = Depends(get_base_path),
         backend: Backend | None = Depends(get_backend),
@@ -482,7 +496,7 @@ def register(router: APIRouter) -> None:
 
     @router.get("/rate-limits", response_class=HTMLResponse)
     async def rate_limits_page(  # pyright: ignore[reportUnusedFunction]  # Why: registered via FastAPI decorator; pyright cannot see the route registration.
-        pool: asyncpg.Pool = Depends(get_pg_pool),
+        pool: BoundedPool = Depends(get_admin_pool),
         schema: str = Depends(get_schema),
         tmpl: Environment = Depends(get_templates),
         redis_client: Any | None = Depends(get_redis_client),
@@ -492,7 +506,7 @@ def register(router: APIRouter) -> None:
         rl_registry: RateLimitRegistry = Depends(get_rl_registry),
     ) -> HTMLResponse:
         from taskq.ratelimit.token_bucket import TokenBucket
-        from taskq.worker.deps import WorkerSettings
+        from taskq.settings import WorkerSettings
 
         allow_reset = getattr(settings, "admin_ui_allow_rate_limit_reset", False)
 
@@ -557,6 +571,7 @@ def register(router: APIRouter) -> None:
 
         # Attempt live peek for non-memory backends if dependencies are available.
         live_states: dict[str, object] = {}
+        live_peek_error: str | None = None
         try:
             rl_settings = WorkerSettings.load_from_dict(
                 {
@@ -567,9 +582,16 @@ def register(router: APIRouter) -> None:
             clock = SystemClock()
             live_states_raw = await rl_registry.peek_all(
                 redis_client=redis_client,
-                pg_pool=pool,
+                pg_pool=pool.pool,
                 clock=clock,
                 settings=rl_settings,
+                # The same bound every other backend wait on this page takes
+                # (admin_acquire_timeout): each bucket's peek is a separate
+                # broker round trip and the registry can hold
+                # max_keyed_rate_limits keyed buckets, so an unbounded pass
+                # parks the request on a black-holed broker. The TimeoutError
+                # degrades the page exactly like any other peek failure.
+                timeout=settings.admin_acquire_timeout,
             )
             for name, state in live_states_raw.items():
                 d: dict[str, object] = {
@@ -590,8 +612,17 @@ def register(router: APIRouter) -> None:
                 if state.refill_per_second is not None:
                     d["refill_per_second"] = state.refill_per_second
                 live_states[name] = d
-        except Exception:
-            logger.debug("ratelimit-peek-all-failed", exc_info=True)
+        except Exception as exc:
+            # The page still renders on PG state alone, but a bucket with no
+            # live state must not read as a bucket with nothing in flight:
+            # the failure is reported and the page says it is degraded.
+            live_peek_error = type(exc).__name__
+            logger.warning(
+                "ratelimit-peek-all-failed",
+                error_type=live_peek_error,
+                error=str(exc),
+                buckets=len(configured),
+            )
 
         redis_available = False
         redis_configured = redis_client is not None
@@ -599,7 +630,9 @@ def register(router: APIRouter) -> None:
 
         if redis_configured:
             redis_available = True
-            redis_state = await _fetch_redis_rl_state(redis_client, schema, redis_names)
+            redis_state = await _fetch_redis_rl_state(
+                redis_client, schema, redis_names, read_timeout=settings.admin_acquire_timeout
+            )
             if redis_state is None:
                 redis_available = False
 
@@ -639,6 +672,7 @@ def register(router: APIRouter) -> None:
             redis_state=redis_state,
             redis_available=redis_available,
             redis_configured=redis_configured,
+            live_peek_error=live_peek_error,
             has_memory_buckets=has_memory_buckets,
             realtime_mode=realtime_mode,
             mode_label=mode_label,
@@ -649,14 +683,14 @@ def register(router: APIRouter) -> None:
     async def rate_limit_reset(  # pyright: ignore[reportUnusedFunction]  # Why: registered via FastAPI decorator; pyright cannot see the route registration.
         bucket_name: str,
         _csrf: None = Depends(validate_csrf),
-        pool: asyncpg.Pool = Depends(get_pg_pool),
+        pool: BoundedPool = Depends(get_admin_pool),
         redis_client: Any | None = Depends(get_redis_client),
         schema: str = Depends(get_schema),
         settings: Any = Depends(get_settings),
         base_path: str = Depends(get_base_path),
         rl_registry: RateLimitRegistry = Depends(get_rl_registry),
     ) -> RedirectResponse:
-        from taskq.worker.deps import WorkerSettings
+        from taskq.settings import WorkerSettings
 
         allow_reset = getattr(settings, "admin_ui_allow_rate_limit_reset", False)
         if not allow_reset:
@@ -673,10 +707,33 @@ def register(router: APIRouter) -> None:
             await rl_registry.reset(
                 bucket_name,
                 redis_client=redis_client,
-                pg_pool=pool,
+                pg_pool=pool.pool,
                 clock=SystemClock(),
                 settings=rl_settings,
+                # The same bound every other backend wait on the admin UI
+                # takes (admin_acquire_timeout): the reset's round trip must
+                # time out into a 503, not park the request on a dead store.
+                timeout=settings.admin_acquire_timeout,
             )
+        except TimeoutError:
+            # The reset is a best-effort state change, not a read the page
+            # needs to render: answer with the same 503/Retry-After shape
+            # the pool checkout uses, naming the bound.
+            logger.warning(
+                "rate-limit-reset-timed-out",
+                bucket_name=_log_safe_text(bucket_name),
+                timeout=settings.admin_acquire_timeout,
+            )
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    f"Rate limit reset did not complete within "
+                    f"{settings.admin_acquire_timeout}s; whether the store "
+                    "applied it is unknowable from here - re-check the page "
+                    "before retrying."
+                ),
+                headers={"Retry-After": "2"},
+            ) from None
         except KeyError as exc:
             # A keyed bucket a worker published to PG exists ONLY as a PG
             # row in a standalone admin process — the registry has no
@@ -700,11 +757,12 @@ def register(router: APIRouter) -> None:
 
     @router.get("/reservations", response_class=HTMLResponse)
     async def reservations_page(  # pyright: ignore[reportUnusedFunction]  # Why: registered via FastAPI decorator; pyright cannot see the route registration.
-        pool: asyncpg.Pool = Depends(get_pg_pool),
+        pool: BoundedPool = Depends(get_admin_pool),
         schema: str = Depends(get_schema),
         tmpl: Environment = Depends(get_templates),
         realtime_ctx: tuple[str, str] = Depends(get_realtime_ctx),
         rl_registry: RateLimitRegistry = Depends(get_rl_registry),
+        settings: Any = Depends(get_settings),
     ) -> HTMLResponse:
         from taskq.ratelimit.registry import QUEUE_CONCURRENCY_PREFIX
         from taskq.ratelimit.reservation import sync_slots
@@ -747,14 +805,35 @@ def register(router: APIRouter) -> None:
                 logger.debug("reservation-slots-table-missing")
                 reservations_installed = False
 
+        sync_error: str | None = None
         if reservations_installed and reservation_primitives:
             try:
-                await sync_slots(reservation_primitives, pool, schema=schema)
+                await sync_slots(
+                    reservation_primitives,
+                    pool.pool,
+                    schema=schema,
+                    # The same bound every other backend wait on the admin
+                    # UI takes (admin_acquire_timeout): the sync costs one
+                    # connection acquire plus a transaction of statements
+                    # PER reservation, so a wedged store must time out into
+                    # the degraded page, not park the request.
+                    timeout=settings.admin_acquire_timeout,
+                )
                 async with pool.acquire() as conn:
                     rows = await conn.fetch(reservations_sql)
                     held_slot_rows = await conn.fetch(held_slots_sql)
-            except Exception:
-                logger.debug("reservation-sync-failed", exc_info=True)
+            except Exception as exc:
+                # The rows read before the sync still render, but a table
+                # that silently predates a failed sync is a stale table the
+                # operator cannot tell from a fresh one: report it and say
+                # so on the page.
+                sync_error = type(exc).__name__
+                logger.warning(
+                    "reservation-sync-failed",
+                    error_type=sync_error,
+                    error=str(exc),
+                    primitives=len(reservation_primitives),
+                )
 
         pg_state: dict[str, dict[str, object]] = {}
         for r in rows:
@@ -794,6 +873,7 @@ def register(router: APIRouter) -> None:
         html = tmpl.get_template("reservations.html").render(
             reservations=reservations,
             reservations_installed=reservations_installed,
+            sync_error=sync_error,
             notice_text="reservations not installed — run taskq migrate up to enable",
             held_slots=held_slots,
             realtime_mode=realtime_mode,

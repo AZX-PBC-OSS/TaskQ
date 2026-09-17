@@ -205,6 +205,33 @@ async def test_rds_iam_provider_builds_its_boto3_client_once() -> None:
     assert built == [{"service": "rds", "region_name": "eu-west-1"}]
 
 
+def test_rds_iam_provider_built_outside_a_loop_serves_inside_one() -> None:
+    """The CLI builds the provider at settings time, before any event loop
+    runs; the client-build lock it carries binds to the loop on first use,
+    so concurrent first fetches inside a later loop still build one client."""
+    import sys
+    from types import ModuleType
+
+    fake_boto3 = ModuleType("boto3")
+    built: list[str] = []
+
+    def _client(service: str, **_kwargs: object) -> MagicMock:
+        built.append(service)
+        client = MagicMock()
+        client.generate_db_auth_token.return_value = "tok"
+        return client
+
+    fake_boto3.client = _client  # type: ignore[attr-defined]  # Why: stand-in module for the optional extra.
+    provider = RdsIamProvider("postgresql://user@host:5432/db", region="eu-west-1")
+
+    async def _fetch_concurrently() -> None:
+        await asyncio.gather(*(provider.get_pg_credential() for _ in range(3)))
+
+    with patch.dict(sys.modules, {"boto3": fake_boto3}):
+        asyncio.run(_fetch_concurrently())
+    assert built == ["rds"]
+
+
 async def test_rds_iam_provider_does_not_cache_a_failed_client_build() -> None:
     """A client build that fails (the extra missing, a botocore
     configuration error) propagates to the caller and is retried on the

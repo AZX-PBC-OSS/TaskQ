@@ -303,3 +303,107 @@ async def test_aad_missing_extra_raises_importerror(monkeypatch: pytest.MonkeyPa
 
     with pytest.raises(ImportError, match=r"taskq\[aad\]"):
         await fetch_pg_access_token()
+
+
+# ── Default credential lifecycle ───────────────────────────────────────
+
+
+class _CountingCredential:
+    """An async credential that counts its constructions and closes."""
+
+    constructed = 0
+    closed = 0
+
+    def __init__(self) -> None:
+        type(self).constructed += 1
+
+    async def get_token(self, *scopes: str, **_kw: object) -> _FakeAccessToken:
+        return _FakeAccessToken(_make_jwt())
+
+    async def close(self) -> None:
+        type(self).closed += 1
+
+
+@pytest.fixture
+def counting_credential(monkeypatch: pytest.MonkeyPatch) -> type[_CountingCredential]:
+    _CountingCredential.constructed = 0
+    _CountingCredential.closed = 0
+    monkeypatch.setattr("taskq.aad._default_credential", _CountingCredential)
+    return _CountingCredential
+
+
+async def test_provider_closes_the_default_credential_it_created(
+    counting_credential: type[_CountingCredential],
+) -> None:
+    """One default credential for the provider's life, released once by
+    aclose(); a provider that never fetched has nothing to close."""
+    provider = EntraIdProvider()
+    await provider.get_pg_credential()
+    await provider.get_redis_credential()
+    assert counting_credential.constructed == 1
+    await provider.aclose()
+    assert counting_credential.closed == 1
+
+    idle = EntraIdPgProvider()
+    await idle.aclose()
+    assert counting_credential.constructed == 1
+    assert counting_credential.closed == 1
+
+
+async def test_provider_is_an_async_context_manager(
+    counting_credential: type[_CountingCredential],
+) -> None:
+    async with EntraIdPgProvider() as provider:
+        await provider.get_pg_credential()
+    assert counting_credential.constructed == 1
+    assert counting_credential.closed == 1
+
+
+async def test_a_provider_closed_early_recreates_its_credential_on_the_next_fetch(
+    counting_credential: type[_CountingCredential],
+) -> None:
+    provider = EntraIdPgProvider()
+    await provider.get_pg_credential()
+    await provider.aclose()
+    await provider.get_pg_credential()
+    assert counting_credential.constructed == 2
+    assert counting_credential.closed == 1
+    await provider.aclose()
+    assert counting_credential.closed == 2
+
+
+async def test_provider_never_closes_a_caller_owned_credential(
+    counting_credential: type[_CountingCredential],
+) -> None:
+    explicit = _FakeAsyncCredential()
+    provider = EntraIdPgProvider(explicit)
+    await provider.get_pg_credential()
+    await provider.aclose()
+    assert counting_credential.constructed == 0
+    assert counting_credential.closed == 0
+
+
+async def test_one_shot_fetchers_close_the_default_credential_per_call(
+    counting_credential: type[_CountingCredential],
+) -> None:
+    """Without a credential the helpers create one and release it before
+    returning: no aiohttp session outlives the call."""
+    await fetch_pg_access_token()
+    await fetch_redis_credentials()
+    assert counting_credential.constructed == 2
+    assert counting_credential.closed == 2
+
+
+async def test_one_shot_fetcher_closes_the_default_credential_when_the_fetch_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _Failing(_CountingCredential):
+        async def get_token(self, *scopes: str, **_kw: object) -> _FakeAccessToken:
+            raise RuntimeError("IMDS unreachable")
+
+    _Failing.constructed = 0
+    _Failing.closed = 0
+    monkeypatch.setattr("taskq.aad._default_credential", _Failing)
+    with pytest.raises(RuntimeError, match="IMDS"):
+        await fetch_pg_access_token()
+    assert _Failing.closed == 1

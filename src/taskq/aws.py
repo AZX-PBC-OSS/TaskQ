@@ -201,16 +201,14 @@ class RdsIamProvider(PgCredentialProvider):
             )
         self._region = region
         self._client = client
-        self._client_lock: asyncio.Lock | None = None
+        # Safe to create outside a running loop (the CLI builds the provider
+        # at settings time): asyncio.Lock binds to the loop on first use,
+        # not at construction.
+        self._client_lock = asyncio.Lock()
 
     async def _resolve_client(self) -> Any:
         if self._client is not None:
             return self._client
-        # The lock is created here rather than in __init__ so the provider
-        # can be constructed outside a running event loop (settings-time
-        # construction from the CLI) and still bind to the loop that uses it.
-        if self._client_lock is None:
-            self._client_lock = asyncio.Lock()
         async with self._client_lock:
             if self._client is None:
                 self._client = await asyncio.to_thread(_build_rds_client, self._region)

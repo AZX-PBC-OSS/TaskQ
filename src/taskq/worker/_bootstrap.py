@@ -26,14 +26,25 @@ from typing import Any, cast
 import asyncpg
 import structlog
 
-from taskq._close import CLOSE_TIMEOUT_SECS, close_pool_bounded, worst_case_teardown_tail
+from taskq._close import (
+    CLOSE_TIMEOUT_SECS,
+    close_pool_bounded,
+    close_provider_bounded,
+    worst_case_teardown_tail,
+)
 from taskq._di import ProviderRegistry, Scope
 from taskq._di.scopes import LoopScope, ProcessScope, ThreadScope, make_resolver
 from taskq._dsn import dsn_host as _dsn_host
 from taskq.actor import ActorRef
 from taskq.actor_config import ActorConfig
 from taskq.actor_config_ops import list_actor_configs
-from taskq.auth import PgCredentialProvider, make_pg_pool_factory
+from taskq.auth import (
+    PgCredentialProvider,
+    ReloadSchedule,
+    credential_provider_of,
+    make_pg_pool_factory,
+    reload_schedule_of,
+)
 from taskq.backend._protocol import Backend, JobRow, ScheduleCreateArgs
 from taskq.backend.clock import Clock, SystemClock
 from taskq.backend.postgres import PostgresBackend
@@ -344,6 +355,11 @@ def _slot_pool_factory(
     # to inherit builds exactly the pool it always built.
     inherited = dict(session_settings) if session_settings else None
     if pg_credential_provider is not None:
+        # The slot pool is rebuilt by the same reload coordinator as the
+        # role pools, on the same cadence: the operator's interval, else
+        # the lease it is granted (the coordinator composes every factory's
+        # schedule, see _worker_reload_schedule).
+        schedule = ReloadSchedule(configured=settings.reload_interval)
         if inherited is None and init is None:
             return make_pg_pool_factory(
                 direct,
@@ -354,6 +370,7 @@ def _slot_pool_factory(
                 command_timeout=command_timeout,
                 statement_cache_size=stmt_kwargs["statement_cache_size"],
                 max_cached_statement_lifetime=stmt_kwargs["max_cached_statement_lifetime"],
+                reload_schedule=schedule,
             )
         # Explicit kwargs, never splatted (pyright traces the types
         # through); make_pg_pool_factory treats a None hook as absent, so
@@ -369,6 +386,7 @@ def _slot_pool_factory(
             max_cached_statement_lifetime=stmt_kwargs["max_cached_statement_lifetime"],
             server_settings=inherited,
             init=init,
+            reload_schedule=schedule,
         )
 
     async def _dsn_slot_pool_factory() -> asyncpg.Pool:
@@ -575,6 +593,22 @@ async def _maybe_open_slot_pool(
         factory = _slot_pool_factory(
             settings, pg_credential_provider, session_state, init=inherited_init
         )
+
+    # The slot pool's provider, when it is NOT already tracked on deps (it
+    # usually is: the documented worker path builds every role through the
+    # same provider, which open_worker_deps closes after the role pools).
+    # Pushed BEFORE the pool's teardown guard so LIFO unwinds the slot
+    # pool first and the credential that built it second — and never while
+    # the role pools a shared provider also serves are still open, which
+    # is why a tracked provider is skipped rather than closed here.
+    provider = credential_provider_of(factory)
+    if (
+        pg_credential_provider is not None
+        and provider is not None
+        and not any(p is provider for p in deps._credential_providers)
+    ):
+        stack.push_async_callback(close_provider_bounded, provider, "slot", CLOSE_TIMEOUT_SECS)
+        deps._credential_providers = (*deps._credential_providers, provider)
 
     try:
         pool = await asyncio.wait_for(factory(), timeout=settings.reload_factory_timeout)
@@ -929,7 +963,10 @@ def _emit_startup_warnings(settings: WorkerSettings) -> None:
                 f"{settings.worst_case_shutdown_seconds}s (Kubernetes "
                 "terminationGracePeriodSeconds, Azure Container Apps "
                 "terminationGracePeriodSeconds), or lower "
-                "TASKQ_CANCELLATION_GRACE_PERIOD / TASKQ_CLEANUP_GRACE_PERIOD."
+                "TASKQ_CANCELLATION_GRACE_PERIOD / TASKQ_CLEANUP_GRACE_PERIOD. "
+                "If this warning appeared right after an upgrade, see the "
+                "termination-grace default entry in docs/guides/upgrading.md: "
+                "a platform grace pinned to the old 75s default needs raising too."
             ),
         )
 
@@ -2125,6 +2162,36 @@ def _make_sibling_spawner(
     return _spawn
 
 
+def _worker_reload_schedule(deps: WorkerDeps) -> ReloadSchedule:
+    """The cadence every factory-backed resource on *deps* is rebuilt on.
+
+    ``settings.reload_interval`` when the operator set one; otherwise
+    derived from the leases the factories were granted when the pools were
+    built (each factory declares the :class:`~taskq.auth.ReloadSchedule` it
+    records on, read back with :func:`~taskq.auth.reload_schedule_of`).
+    The role factories built by :func:`taskq.auth.build_worker_connections`
+    share one schedule; a hand-assembled ``WorkerConnections`` may carry
+    one per factory, so the schedules are composed and the shortest lease
+    across them wins. Live: a lease recorded on a later rebuild is seen
+    through the composite.
+    """
+    declared: dict[int, ReloadSchedule] = {}
+    for factory in (
+        deps.dispatcher_pool_factory,
+        deps.heartbeat_pool_factory,
+        deps.worker_pool_factory,
+        deps.slot_pool_factory,
+        deps.notify_conn_factory,
+        deps.leader_conn_factory,
+    ):
+        schedule = reload_schedule_of(factory) if factory is not None else None
+        if schedule is not None:
+            declared.setdefault(id(schedule), schedule)
+    return ReloadSchedule(
+        configured=deps.settings.reload_interval, sources=tuple(declared.values())
+    )
+
+
 async def _reload_coordinator_loop(
     deps: WorkerDeps,
     shutdown: asyncio.Event,
@@ -2136,8 +2203,11 @@ async def _reload_coordinator_loop(
 
     Runs as a sibling task in the worker's ``TaskGroup``. Reloads are
     triggered by ``deps.reload_event`` (set by the SIGHUP handler or by
-    :meth:`~taskq.worker.deps.WorkerDeps.request_reload`) and, when
-    ``settings.reload_interval`` is set, by a periodic timer — the
+    :meth:`~taskq.worker.deps.WorkerDeps.request_reload`) and by a periodic
+    timer on the worker's :class:`~taskq.auth.ReloadSchedule` —
+    ``settings.reload_interval`` when set, otherwise the cadence derived
+    from the shortest lease any factory-backed pool or connection was
+    granted (half its TTL), and no timer when neither is known — the
     rotation path for platforms without SIGHUP and for hands-off
     scheduled rotation. Each trigger calls
     :func:`~taskq.worker.deps.reload_credentials` to hot-swap every
@@ -2163,9 +2233,20 @@ async def _reload_coordinator_loop(
     """
     from taskq.worker.deps import reload_credentials
 
-    interval = deps.settings.reload_interval
+    schedule = _worker_reload_schedule(deps)
+    if schedule.derived:
+        _startup_log.info(
+            "reload-interval-derived-from-lease",
+            reload_interval=schedule.interval,
+            lease_duration=schedule.lease_duration,
+            reason="TASKQ_RELOAD_INTERVAL is unset; pools pinned to an issued lease pair "
+            "are rebuilt at half the shortest lease TTL the provider granted",
+        )
 
     while not shutdown.is_set():
+        # Re-read per wait: a lease granted shorter on a rebuild tightens
+        # the cadence from the next wait on.
+        interval = schedule.interval
         # Wait for a reload request, the interval timer, or shutdown.
         waiters: list[
             asyncio.Task[Any]

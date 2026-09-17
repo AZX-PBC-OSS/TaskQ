@@ -5,21 +5,19 @@ to ensure route registration order (static paths before {job_id}).
 """
 
 import uuid
-from collections.abc import AsyncGenerator
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from typing import Any
 
 import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 from jinja2 import Environment
 
 from taskq.backend._cursor import CursorValue, JobOrdering, SortColumn
 from taskq.backend._protocol import Backend, JobId
-from taskq.constants import events_channel
 from taskq.settings import TaskQSettings
-from taskq.web._sse_limit import acquire_sse_slot
+from taskq.web._pool import BoundedPool
 from taskq.web.admin._constants import (
     _ACTIVE_STATUSES,  # pyright: ignore[reportPrivateUsage]  # Why: shared constants published by the admin constants module; private prefix scopes them within the admin package.
     _ALL_STATUSES,  # pyright: ignore[reportPrivateUsage]  # Why: shared constants published by the admin constants module; private prefix scopes them within the admin package.
@@ -32,9 +30,9 @@ from taskq.web.admin._constants import (
     parse_time_filter,
 )
 from taskq.web.admin._factory import (
+    get_admin_pool,
     get_backend,
     get_csrf_token,
-    get_pg_pool,
     get_realtime_ctx,
     get_schema,
     get_settings,
@@ -418,7 +416,7 @@ def register(router: APIRouter) -> None:
     @router.get("/jobs", response_class=HTMLResponse)
     async def jobs_list(  # pyright: ignore[reportUnusedFunction]  # Why: FastAPI decorator pattern prevents pyright from seeing registration via router.get().
         request: Request,
-        pool: asyncpg.Pool = Depends(get_pg_pool),
+        pool: BoundedPool = Depends(get_admin_pool),
         schema: str = Depends(get_schema),
         tmpl: Environment = Depends(get_templates),
         realtime_ctx: tuple[str, str] = Depends(get_realtime_ctx),
@@ -605,7 +603,7 @@ def register(router: APIRouter) -> None:
 
     @router.get("/jobs/count")
     async def jobs_count(  # pyright: ignore[reportUnusedFunction]  # Why: FastAPI decorator pattern prevents pyright from seeing registration via router.get().
-        pool: asyncpg.Pool = Depends(get_pg_pool),
+        pool: BoundedPool = Depends(get_admin_pool),
         schema: str = Depends(get_schema),
         tab: str = Query(default="live"),
         status: list[str] = Query(default=[]),
@@ -645,50 +643,6 @@ def register(router: APIRouter) -> None:
             cnt = await conn.fetchval(count_sql, *params)
         return {"count": int(cnt) if cnt else 0}
 
-    # ── SSE endpoint for live job updates ─────────────────────────────
-
-    @router.get("/jobs/sse/live")
-    async def jobs_sse(  # pyright: ignore[reportUnusedFunction]  # Why: FastAPI decorator pattern prevents pyright from seeing registration via router.get().
-        request: Request,
-        pool: asyncpg.Pool = Depends(get_pg_pool),
-        schema: str = Depends(get_schema),
-        settings: TaskQSettings = Depends(get_settings),
-    ) -> StreamingResponse:
-        channel = events_channel(schema)
-        # Why capped here rather than in admin/sse.py: this endpoint lives in
-        # jobs.py and never went through the `/sse/{topic}` handler, so the
-        # `admin_max_sse_connections` semaphore that endpoint applies has never
-        # covered it. Each connection holds a PG LISTEN connection and an
-        # asyncio task for as long as the client stays open.
-        semaphore = await acquire_sse_slot("admin-jobs-live", settings.admin_max_sse_connections)
-
-        async def event_stream() -> AsyncGenerator[str, None]:
-            from taskq.web.admin._listen import listen_with_reconnect
-
-            try:
-                async for payload in listen_with_reconnect(pool, channel):
-                    if await request.is_disconnected():
-                        return
-                    if payload is None:
-                        yield ": keepalive\n\n"
-                    else:
-                        yield f"event: state_change\ndata: {payload}\n\n"
-            finally:
-                # In the generator, not the handler: the slot is held for the
-                # life of the stream, and a disconnect arrives as
-                # CancelledError thrown in here.
-                semaphore.release()
-
-        return StreamingResponse(
-            event_stream(),
-            media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache",
-                "Connection": "keep-alive",
-                "X-Accel-Buffering": "no",
-            },
-        )
-
     # ── Job detail ─────────────────────────────────────────────────────
 
     @router.get("/jobs/{job_id}", response_class=HTMLResponse)
@@ -696,7 +650,7 @@ def register(router: APIRouter) -> None:
         job_id: uuid.UUID,
         request: Request,
         csrf_token: str = Depends(get_csrf_token),
-        pool: asyncpg.Pool = Depends(get_pg_pool),
+        pool: BoundedPool = Depends(get_admin_pool),
         schema: str = Depends(get_schema),
         tmpl: Environment = Depends(get_templates),
         realtime_ctx: tuple[str, str] = Depends(get_realtime_ctx),

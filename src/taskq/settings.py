@@ -379,6 +379,17 @@ class TaskQSettings(DotEnvConfig):
         "False only for local http dev, where a Secure cookie is rejected by "
         "the browser and the admin UI stops working.",
     )
+    admin_acquire_timeout: float = Field(
+        default=5.0,
+        gt=0,
+        description="TASKQ_ADMIN_ACQUIRE_TIMEOUT (seconds). Bounds every wait an "
+        "admin UI or progress request makes for a backend resource before "
+        "its own query runs: a Postgres pool checkout and a Redis read. A "
+        "pool with every connection wedged, or a black-holed broker, answers "
+        "the request with 503 (Retry-After: 2) after this long instead of "
+        "hanging it - and every other request behind it - until the client "
+        "gives up. The query itself is bounded by the pool's command_timeout.",
+    )
     admin_actions_enabled: bool = Field(
         default=False,
         description="TASKQ_ADMIN_ACTIONS_ENABLED. When True, the admin UI permits "
@@ -408,6 +419,22 @@ class TaskQSettings(DotEnvConfig):
         description="TASKQ_REDIS_CREDENTIAL_PROVIDER. Module:attr reference to a "
         "RedisCredentialProvider, in the same shapes as pg_credential_provider. "
         "Requires TASKQ_REDIS_URL. Overridden by --redis-credential-provider.",
+    )
+    reload_interval: float | None = Field(
+        default=None,
+        gt=0,
+        description="TASKQ_RELOAD_INTERVAL (seconds). Cadence of the credential "
+        "hot-reload (the same path as SIGHUP) on the worker and on `taskq ui "
+        "serve`: every provider-backed pool and connection is rebuilt on a "
+        "fresh credential with no external signal required - the rotation "
+        "path for platforms without SIGHUP (e.g. Windows) and for hands-off "
+        "scheduled rotation (e.g. ~720s for AWS IAM's 15-minute tokens). "
+        "Unset, the cadence is derived from the lease the provider grants "
+        "when it reports one (a Vault dynamic credential is rebuilt at half "
+        "its lease TTL - see taskq.auth.ReloadSchedule); a username-bearing "
+        "provider that reports no lease then warns at startup, and only "
+        "SIGHUP / deps.request_reload() rotate it. Only factory-backed "
+        "resources are rebuilt; DSN/static credentials are unaffected.",
     )
 
     # -- SSO / SAML -------------------------------------------------------
@@ -1168,16 +1195,16 @@ class WorkerSettings(TaskQSettings):
 
     # ── Cancellation and cleanup grace periods ───────────
     termination_grace_period: float = Field(
-        default=75.0,
+        default=85.0,
         ge=5.0,
         description="TASKQ_TERMINATION_GRACE_PERIOD (seconds). Total wall-clock "
         "budget from SIGTERM to forced exit; the shutdown watchdog counts "
         "it down from the first shutdown signal. Must satisfy "
         "cancellation_grace + cleanup_grace < termination_grace - 5, and "
         "should cover the modelled worst case cancellation_grace + "
-        "cleanup_grace + the ~32s bounded-close teardown tail (see "
+        "cleanup_grace + the ~42s bounded-close teardown tail (see "
         "WorkerSettings.worst_case_shutdown_seconds) — the default does: "
-        "30 + 10 + 32 = 72s. The ~77s sibling-crash path (seven closes, "
+        "30 + 10 + 42 = 82s. The ~87s sibling-crash path (nine closes, "
         "including the conditional per-slot pool) exceeds the default by "
         "2s on per-slot workers — that path is the documented caveat the "
         "model understates; raise this setting when per-slot workers need "
@@ -1512,18 +1539,8 @@ class WorkerSettings(TaskQSettings):
     )
 
     # -- Credential hot-reload --------------------------------------------
-    reload_interval: float | None = Field(
-        default=None,
-        gt=0,
-        description="TASKQ_RELOAD_INTERVAL (seconds). When set, the worker "
-        "periodically triggers a credential hot-reload (the same path as "
-        "SIGHUP) with no external signal required - the rotation path for "
-        "platforms without SIGHUP (e.g. Windows) and for hands-off "
-        "scheduled rotation (e.g. ~720s for AWS IAM's 15-minute tokens). "
-        "None disables the timer; SIGHUP and deps.request_reload() still "
-        "work. Only factory-backed resources are rebuilt; DSN/static "
-        "credentials are unaffected.",
-    )
+    # reload_interval lives on TaskQSettings: the worker and `taskq ui serve`
+    # both rebuild provider-backed pools on it.
     reload_factory_timeout: float = Field(
         default=30.0,
         gt=0,

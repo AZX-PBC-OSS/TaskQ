@@ -26,9 +26,11 @@ from taskq._close import (
     PUBLISH_DRAIN_TIMEOUT_SECS,
     close_conn_bounded,
     close_pool_bounded,
+    close_provider_bounded,
     close_redis_bounded,
 )
 from taskq._dsn import dsn_host as _dsn_host
+from taskq.auth import credential_provider_of
 from taskq.connections import (
     ConnFactory,
     PoolFactory,
@@ -270,6 +272,13 @@ class WorkerDeps:
     # and leaves the role pools serving. None before open_worker_deps
     # yields or after it exits.
     _exit_stack: AsyncExitStack | None = None
+    # Credential providers declared by the TaskQ-owned factories this deps
+    # was opened with (read via credential_provider_of, deduped by
+    # identity). open_worker_deps closes each once, after every pool and
+    # client built through it; _maybe_open_slot_pool consults the tuple so
+    # the slot pool's provider is never closed twice. Empty for a DSN-built
+    # worker.
+    _credential_providers: tuple[object, ...] = ()
     is_leader: asyncio.Event = field(default_factory=asyncio.Event)
     # Set and cleared together with is_leader by the election loop. Kept
     # separate because is_leader is what the watchdog parks on and what the
@@ -545,6 +554,28 @@ async def open_worker_deps(
     owns_notify = conns.notify_conn is None  # DSN or factory → TaskQ-owned
     owns_leader = conns.leader_conn is None
 
+    # Credential providers the TaskQ-owned factories were built over:
+    # collected up front, deduped by identity (one provider may serve both
+    # the PG and the Redis role), and closed ONCE each — after every pool
+    # and client built through them, never while a connection that
+    # authenticates through the provider could still be opened. A factory
+    # built some other way declares no provider (credential_provider_of
+    # answers None), and the caller who built one keeps owning it.
+    providers: list[object] = []
+    for factory in (
+        conns.dispatcher_pool_factory,
+        conns.heartbeat_pool_factory,
+        conns.worker_pool_factory,
+        conns.notify_conn_factory,
+        conns.leader_conn_factory,
+        conns.redis_client_factory,
+    ):
+        if factory is None:
+            continue
+        provider = credential_provider_of(factory)
+        if provider is not None and not any(p is provider for p in providers):
+            providers.append(provider)
+
     # Two stacks, one LIFO sequence at teardown. ``base_stack`` owns the
     # open-sequence ROLE POOLS (dispatcher / heartbeat / worker): their
     # lifecycle is the open_worker_deps context itself, so they close
@@ -561,6 +592,17 @@ async def open_worker_deps(
     # order the single-stack shape produced.
     incremental_stack = AsyncExitStack()
     async with AsyncExitStack() as base_stack, incremental_stack:
+        # Pushed FIRST so they unwind LAST: every pool and client below is
+        # built through these providers, so each provider's own resources
+        # (the Entra ID providers' credential session) are released only
+        # once nothing that authenticates through it can be opened again.
+        # Bounded and never raising, a no-op for a provider with nothing
+        # to release — the same teardown discipline taskq ui serve's
+        # lifespan applies to the providers it loads.
+        for _provider in providers:
+            base_stack.push_async_callback(
+                close_provider_bounded, _provider, "worker", CLOSE_TIMEOUT_SECS
+            )
         # DSN-fallback factories — built inline with explicit kwargs so pyright
         # can trace types through ``asyncpg.create_pool`` (a ``**dict`` splat
         # would erase them). ``None`` when the DSN is unused (every role for
@@ -707,6 +749,7 @@ async def open_worker_deps(
             redis_client_factory=conns.redis_client_factory,
             owns_notify_conn=owns_notify,
             owns_leader_conn=owns_leader,
+            _credential_providers=tuple(providers),
             _exit_stack=incremental_stack,
         )
 

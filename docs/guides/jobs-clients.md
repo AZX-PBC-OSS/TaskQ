@@ -1237,7 +1237,7 @@ Frozen dataclass. All fields are optional.
 | `batch_id` | `UUID \| None` | `None` | Filter by batch ID. |
 | `tags` | `tuple[str, ...] \| None` | `None` | Filter by tags. Uses `&&` (array overlap) with a GIN index. Returns jobs that match any of the given tags. |
 | `order_by` | `JobSortField \| None` | `None` | Sort order for results. `None` resolves to `JobSortField.SCHEDULED_AT_ASC` — see [JobSortField](#jobsortfield). |
-| `limit` | `int` | `100` | Maximum number of rows to return. |
+| `limit` | `int` | `100` | Maximum number of rows to return: one page. `JobsClient.list()` rejects a limit above `10_000` (`taskq.backend._protocol.MAX_JOB_LIST_LIMIT`; a page materialises every row it returns, so a larger result set is paged with `cursor`). Ignored by `cancel_where`. |
 | `cursor` | `str \| None` | `None` | Opaque keyset-pagination token from `JobPage.next_cursor`. |
 
 ```python
@@ -1320,7 +1320,7 @@ Frozen dataclass.
 | Field | Type | Description |
 |---|---|---|
 | `jobs` | `list[JobRow]` | The matched job rows. |
-| `next_cursor` | `str \| None` | Pagination token for the next page. `None` when no more rows exist. |
+| `next_cursor` | `str \| None` | Pagination token for the next page. `None` exactly when no more rows exist — the client looks one row past `limit`, so a last page that happens to fill the limit still ends the walk without an empty trailing page (at the `10_000` ceiling there is no room to look past it, and a full page there may lead to one empty page). |
 
 ```python
 page = await client.list(JobFilter(queue="payments", status="pending", limit=50))

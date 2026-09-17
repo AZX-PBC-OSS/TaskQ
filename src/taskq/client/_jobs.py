@@ -15,6 +15,7 @@ either an :class:`~taskq.testing.in_memory.InMemoryBackend` (tests) or a
 """
 
 import asyncio
+import dataclasses
 from collections.abc import Callable, Generator, Iterable, Sequence
 from contextlib import AsyncExitStack, contextmanager
 from dataclasses import replace
@@ -31,6 +32,7 @@ from taskq._validation import CURRENT_PAYLOAD_SCHEMA_VER, validate_actor_payload
 from taskq.actor import ActorRef
 from taskq.backend._cursor import encode_job_cursor
 from taskq.backend._protocol import (
+    MAX_JOB_LIST_LIMIT,
     Backend,
     BatchFilter,
     BatchRow,
@@ -1563,13 +1565,30 @@ class JobsClient:
         terminal ones.  See :class:`JobFilter` for full semantics.
 
         ``next_cursor`` is returned for every ordering, encoded from the
-        columns that ordering actually sorts by, and is only ``None`` on
-        the last page.
+        columns that ordering actually sorts by, and is ``None`` exactly on
+        the last page: the backend is asked for one row past the limit, so
+        a last page that happens to fill the limit is still known to be the
+        last, and a caller paging until the cursor runs out never fetches an
+        empty trailing page. ``filter.limit`` is capped at
+        :data:`~taskq.backend._protocol.MAX_JOB_LIST_LIMIT` (``ValueError``
+        above it); at the ceiling there is no room to look past the limit,
+        so a full page there carries a cursor that may lead to one empty
+        page.
         """
+        if filter.limit > MAX_JOB_LIST_LIMIT:
+            raise ValueError(
+                f"limit must be <= {MAX_JOB_LIST_LIMIT}, got {filter.limit}; page with cursor "
+                "for larger result sets"
+            )
+        if filter.limit < MAX_JOB_LIST_LIMIT:
+            probe = dataclasses.replace(filter, limit=filter.limit + 1)
+        else:
+            probe = filter
         with self._translate_schema_errors():
-            rows = await self._backend.list_jobs(filter)
+            fetched = await self._backend.list_jobs(probe)
+        rows = fetched[: filter.limit]
         next_cursor: str | None = None
-        if rows and len(rows) == filter.limit:
+        if rows and len(fetched) >= probe.limit:
             next_cursor = encode_job_cursor(rows[-1], filter.order_by)
         return JobPage(jobs=rows, next_cursor=next_cursor)
 

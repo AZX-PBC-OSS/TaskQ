@@ -54,14 +54,21 @@ username per credential (Vault dynamic database credentials) therefore
 pin the pair for the pool's life - the callable hands asyncpg the pair's
 password - and rotate on the pool rebuild that ``SIGHUP`` /
 ``TASKQ_RELOAD_INTERVAL`` / ``taskq.worker.deps.reload_credentials``
-performs, scheduled shorter than the lease TTL.
+performs. The rebuild cadence is a :class:`ReloadSchedule`: the
+operator's explicit interval when one is set, otherwise derived from the
+lease the provider granted (``PgCredential.lease_duration``) at
+:data:`LEASE_RELOAD_FRACTION` of the TTL, so a pair is replaced with a
+full half-life to spare. Every pool builder records the leases it is
+issued on its schedule, and every consumer that rebuilds pools (the
+worker, ``taskq ui serve``, :class:`taskq.TaskQ`) reads the interval
+from it.
 """
 
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Final, Protocol, runtime_checkable
 from urllib.parse import parse_qs, quote, urlencode, urlparse, urlunparse
 
 from taskq.connections import (
@@ -84,16 +91,20 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 __all__ = [
+    "LEASE_RELOAD_FRACTION",
     "PgCredential",
     "PgCredentialProvider",
     "RedisCredential",
     "RedisCredentialProvider",
+    "ReloadSchedule",
     "build_worker_connections",
+    "credential_provider_of",
     "enrich_pg_dsn",
     "ensure_sslmode_require",
     "make_dedicated_conn_factory",
     "make_pg_pool_factory",
     "make_redis_client_factory",
+    "reload_schedule_of",
 ]
 
 
@@ -109,6 +120,12 @@ class PgCredential:
     providers that issue a fresh username alongside the password (e.g.
     Vault dynamic DB creds). When ``None``, the DSN's existing user is
     preserved.
+
+    ``lease_duration`` is how long, in seconds, the issuer will honour this
+    credential - the Vault lease TTL. It is the bound a rebuild schedule
+    has to beat for a username-bearing pair (see :class:`ReloadSchedule`),
+    and ``None`` when the issuer does not say (token providers, whose
+    tokens refresh per connection and never need one).
     """
 
     # Why repr=False: the default dataclass repr embeds the token a provider
@@ -118,6 +135,13 @@ class PgCredential:
     # unchanged. username stays repr-able: a principal name, not a secret.
     password: str = field(repr=False)
     username: str | None = None
+    lease_duration: float | None = None
+
+    def __post_init__(self) -> None:
+        if self.lease_duration is not None and self.lease_duration <= 0:
+            raise ValueError(
+                f"lease_duration must be a positive number of seconds, got {self.lease_duration!r}"
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -331,6 +355,232 @@ def _make_pg_password_callable(
     return _fetch_password
 
 
+# --- Reload schedule ---
+
+
+LEASE_RELOAD_FRACTION: Final[float] = 0.5
+"""Fraction of a granted lease TTL at which a pinned pair is rebuilt.
+
+Half the TTL leaves a full half-life for the rebuild to fail and be retried
+before the issuer revokes the pair: a rebuild that fails at ``T + TTL/2``
+still has until ``T + TTL`` before every reconnect on the old pool starts
+failing authentication - the renew-at-half-life rule lease-issuing
+secret stores apply to their own renewals."""
+
+_RELOAD_SCHEDULE_ATTR: Final[str] = "taskq_reload_schedule"
+
+_PROVIDER_ATTR: Final[str] = "taskq_credential_provider"
+
+
+@dataclass(slots=True, eq=False)
+class ReloadSchedule:
+    """How often pools built through a credential provider are rebuilt.
+
+    A username-bearing credential pins its pool to one issued pair (see
+    :func:`_make_pg_password_callable`), so the only rotation is a pool
+    rebuild, and the rebuild has to happen before the issuer revokes the
+    pair. This object is the single source of that cadence:
+
+    * ``configured`` is the operator's explicit interval
+      (``TASKQ_RELOAD_INTERVAL`` on the worker and ``taskq ui serve``,
+      ``reload_interval=`` on :class:`taskq.TaskQ`). It always wins.
+    * Otherwise the interval is **derived from the granted lease**: the
+      pool builders record ``PgCredential.lease_duration`` here as each
+      credential is issued, and :attr:`interval` is the shortest lease
+      seen so far scaled by :data:`LEASE_RELOAD_FRACTION`. Shortest, not
+      latest, because Vault caps a lease at the issuing token's remaining
+      TTL - a lease that came back shorter than the last is the bound that
+      now has to be beaten.
+    * ``None`` when nothing is configured and no issued credential carried
+      a lease - there is nothing to schedule, and a username-bearing
+      credential built against such a schedule warns at build time
+      (``pg-lease-pair-pinned-without-reload``).
+
+    ``sources`` composes schedules: a consumer that rebuilds several
+    factories (the worker's role pools and dedicated connections) reads
+    one schedule whose lease is the shortest across all of them, and whose
+    ``configured`` is its own. The composite is live - a lease recorded on
+    a source after composition is seen through it.
+
+    One schedule is normally shared by every factory a consumer rebuilds
+    (:func:`build_worker_connections` does this); a factory built without
+    one declares its own, which :func:`reload_schedule_of` returns so a
+    consumer handed an opaque factory can still adopt it.
+    """
+
+    configured: float | None = None
+    sources: tuple[ReloadSchedule, ...] = ()
+    _lease_duration: float | None = field(default=None, init=False)
+    _pins_pair: bool = field(default=False, init=False)
+
+    def __post_init__(self) -> None:
+        if self.configured is not None and self.configured <= 0:
+            raise ValueError(
+                f"configured reload interval must be a positive number of seconds, "
+                f"got {self.configured!r}"
+            )
+
+    def record(self, credential: PgCredential) -> None:
+        """Note a credential a factory on this schedule was just issued."""
+        if credential.username is not None:
+            self._pins_pair = True
+        if credential.lease_duration is not None:
+            self._lease_duration = (
+                credential.lease_duration
+                if self._lease_duration is None
+                else min(self._lease_duration, credential.lease_duration)
+            )
+
+    @property
+    def lease_duration(self) -> float | None:
+        """Shortest lease TTL recorded here or on any source, in seconds."""
+        leases = [self._lease_duration, *(source.lease_duration for source in self.sources)]
+        known = [lease for lease in leases if lease is not None]
+        return min(known) if known else None
+
+    @property
+    def pins_pair(self) -> bool:
+        """Whether a username-bearing credential was issued through this
+        schedule or any source - i.e. whether anything actually needs the
+        rebuild."""
+        return self._pins_pair or any(source.pins_pair for source in self.sources)
+
+    @property
+    def interval(self) -> float | None:
+        """Seconds between rebuilds: ``configured``, else the derived
+        lease-based interval, else ``None``."""
+        if self.configured is not None:
+            return self.configured
+        lease = self.lease_duration
+        return None if lease is None else lease * LEASE_RELOAD_FRACTION
+
+    @property
+    def derived(self) -> bool:
+        """True when :attr:`interval` comes from a granted lease rather
+        than an explicit setting."""
+        return self.configured is None and self.lease_duration is not None
+
+
+def reload_schedule_of(factory: object) -> ReloadSchedule | None:
+    """The :class:`ReloadSchedule` a pool / connection factory declares.
+
+    Every factory :func:`make_pg_pool_factory` and
+    :func:`make_dedicated_conn_factory` return declares the schedule it
+    records leases on; a consumer handed an opaque factory (``TaskQ(
+    pool_factory=...)``, a hand-assembled ``WorkerConnections``) reads it
+    here to derive its rebuild cadence. ``None`` for a factory built some
+    other way - such a factory has no lease to report.
+    """
+    schedule = getattr(factory, _RELOAD_SCHEDULE_ATTR, None)
+    return schedule if isinstance(schedule, ReloadSchedule) else None
+
+
+def credential_provider_of(
+    factory: object,
+) -> PgCredentialProvider | RedisCredentialProvider | None:
+    """The credential provider a pool / connection / Redis factory was built
+    over, or ``None`` for a factory built some other way.
+
+    Every factory :func:`make_pg_pool_factory`, :func:`make_dedicated_conn_factory`
+    and :func:`make_redis_client_factory` return declares the provider it
+    fetches credentials from. A consumer that owns the factory's resources
+    (``open_worker_deps``) reads it here to release the provider at teardown
+    once every pool and client built through it is closed - the provider's
+    own resources (the Entra ID providers' lazily created credential session)
+    must outlive the connections that authenticate with it. ``None`` for a
+    factory built some other way: such a factory declares no provider, and
+    its consumer has nothing to release.
+    """
+    provider = getattr(factory, _PROVIDER_ATTR, None)
+    if provider is None or isinstance(provider, (PgCredentialProvider, RedisCredentialProvider)):
+        return provider
+    return None
+
+
+def _declare_reload_schedule[F: Callable[..., Any]](factory: F, schedule: ReloadSchedule) -> F:
+    setattr(factory, _RELOAD_SCHEDULE_ATTR, schedule)
+    return factory
+
+
+def _declare_provider[F: Callable[..., Any]](factory: F, provider: object) -> F:
+    """Stamp *provider* on *factory* so the owner of the factory's consumer
+    can release the provider at teardown (see :func:`credential_provider_of`)."""
+    setattr(factory, _PROVIDER_ATTR, provider)
+    return factory
+
+
+def _record_issued_credential(
+    schedule: ReloadSchedule,
+    credential: PgCredential,
+    *,
+    role: str,
+    warn_without_schedule: bool,
+) -> None:
+    """Record *credential* on *schedule* and report what that means for rotation.
+
+    A credential that carries a ``username`` is one issued lease pair, and
+    asyncpg resolves ``user=`` once per pool, so the pool is pinned to that
+    pair for its life (see :func:`_make_pg_password_callable`): unlike a
+    token credential it cannot refresh per connection, and every reconnect
+    authenticates with the pair's password. If nothing rebuilds the pool
+    the pair is never replaced, so reconnects fail authentication once the
+    lease expires. Three outcomes, all visible to the operator:
+
+    * an explicit interval is configured - nothing to say, the operator
+      owns the cadence;
+    * the issuer reported a lease and no interval is configured - the
+      rebuild cadence is derived from it and logged
+      (``pg-lease-reload-derived``) so the 3am reader can see when the
+      next rebuild is due and what TTL it was derived from;
+    * neither - the pair is pinned with nothing to rebuild it, and the
+      build warns (``pg-lease-pair-pinned-without-reload``) naming
+      ``TASKQ_RELOAD_INTERVAL``. A warning, never a refusal: the operator
+      may rotate the lease externally.
+
+    *warn_without_schedule* is False for a factory whose caller owns the
+    resulting connection's whole life (a one-shot migration connection):
+    there is no long-lived pool to rotate, so nothing to warn about.
+    """
+    schedule.record(credential)
+    if credential.username is None or schedule.configured is not None:
+        return
+    if schedule.derived:
+        logger.info(
+            "pg-lease-reload-derived",
+            role=role,
+            lease_duration=schedule.lease_duration,
+            reload_interval=schedule.interval,
+            reason=(
+                "no reload interval is configured, so the pool is rebuilt on a "
+                f"fresh pair at {LEASE_RELOAD_FRACTION:g} of the shortest lease "
+                "TTL the provider has granted; set TASKQ_RELOAD_INTERVAL to override"
+            ),
+        )
+        return
+    if not warn_without_schedule:
+        return
+    logger.warning(
+        "pg-lease-pair-pinned-without-reload",
+        kind="lease_pair_without_reload",
+        role=role,
+        lease_ttl=None,
+        reason=(
+            "the credential provider issued a username-bearing credential with "
+            "no lease duration: the username and password are one lease, so "
+            "this pool is pinned to that pair for its life and every reconnect "
+            "authenticates with the pair's password, which stops authenticating "
+            "once the lease expires - and with no TTL reported, no rebuild can "
+            "be scheduled from it"
+        ),
+        remedy=(
+            "set TASKQ_RELOAD_INTERVAL below the lease TTL so the pool is "
+            "rebuilt on a fresh pair, have the provider report "
+            "PgCredential.lease_duration, or rotate the lease externally; this "
+            "is a warning only, the process runs either way"
+        ),
+    )
+
+
 # --- Factory builders ---
 #
 # All factories are zero-arg async callables matching the ``PoolFactory`` /
@@ -353,6 +603,7 @@ def make_pg_pool_factory(
     setup: Callable[[asyncpg.Connection], Awaitable[None]] | None = None,
     server_settings: dict[str, str] | None = None,
     connection_class: type[asyncpg.Connection] | None = None,
+    reload_schedule: ReloadSchedule | None = None,
 ) -> PoolFactory:
     """Build a :data:`~taskq.connections.PoolFactory` backed by *provider*.
 
@@ -385,8 +636,8 @@ def make_pg_pool_factory(
     lease per connection for a password the pinned user cannot use. Such
     a pool rotates when the factory is re-invoked: ``SIGHUP`` /
     ``TASKQ_RELOAD_INTERVAL`` (``taskq.worker.deps.reload_credentials``)
-    rebuilds it on a fresh pair, so schedule the reload shorter than the
-    lease TTL. Reload is also the way to force a full pool rebuild for a
+    rebuilds it on a fresh pair, on the cadence *reload_schedule* carries
+    (below). Reload is also the way to force a full pool rebuild for a
     token credential (dropping sessions opened under a revoked token).
 
     Per-connection setup: *init* is forwarded verbatim to
@@ -433,8 +684,26 @@ def make_pg_pool_factory(
     the :class:`asyncpg.Connection` subclass used by the pool. Use it to
     install custom codecs or override connection methods across the
     entire pool.
+
+    *reload_schedule* is the :class:`ReloadSchedule` this pool is rebuilt
+    on. Each build records the credential it was issued there - its
+    ``lease_duration`` when the issuer reports one - so a consumer with no
+    explicit interval rebuilds at :data:`LEASE_RELOAD_FRACTION` of the
+    granted TTL. Pass one schedule to every factory a consumer rebuilds
+    together (:func:`build_worker_connections` does) so they share the
+    shortest lease; omitted, the factory declares a schedule of its own,
+    readable with :func:`reload_schedule_of`. A username-bearing
+    credential built against a schedule that can derive nothing (no
+    configured interval, no reported lease) logs
+    ``pg-lease-pair-pinned-without-reload`` naming
+    ``TASKQ_RELOAD_INTERVAL``, because reconnects will fail authentication
+    once the lease expires and nothing here can prevent it. It is a
+    warning, never a refusal: an operator rotating the lease externally
+    can ignore it.
     """
     import asyncpg  # Why: deferred so this module is import-safe without asyncpg at module load.
+
+    schedule = reload_schedule if reload_schedule is not None else ReloadSchedule()
 
     async def factory() -> asyncpg.Pool:
         # Fetched once here to resolve `user=` (not callable in asyncpg) and to
@@ -443,6 +712,7 @@ def make_pg_pool_factory(
         # password goes in as a callable: re-fetched per physical connection
         # for a token credential, the pair's own for a username-bearing one.
         credential = await provider.get_pg_credential()
+        _record_issued_credential(schedule, credential, role="pool", warn_without_schedule=True)
         kwargs: dict[str, Any] = {
             "dsn": ensure_sslmode_require(dsn),
             "password": _make_pg_password_callable(provider, pinned=credential, role="pool"),
@@ -468,7 +738,7 @@ def make_pg_pool_factory(
         assert pool is not None  # asyncpg returns None only for record_class paths
         return pool
 
-    return factory
+    return _declare_provider(_declare_reload_schedule(factory, schedule), provider)
 
 
 def make_dedicated_conn_factory(
@@ -479,6 +749,7 @@ def make_dedicated_conn_factory(
     setup: Callable[[asyncpg.Connection], Awaitable[None]] | None = None,
     server_settings: dict[str, str] | None = None,
     connection_class: type[asyncpg.Connection] | None = None,
+    reload_schedule: ReloadSchedule | None = None,
 ) -> ConnFactory:
     """Build a :data:`~taskq.connections.ConnFactory` backed by *provider*.
 
@@ -524,12 +795,28 @@ def make_dedicated_conn_factory(
     *connection_class* is forwarded to ``asyncpg.connect`` and sets the
     :class:`asyncpg.Connection` subclass for this connection. Use it to
     install custom codecs or override connection methods.
+
+    *reload_schedule* is the :class:`ReloadSchedule` the connection is
+    rebuilt on, exactly as for :func:`make_pg_pool_factory`: pass the
+    consumer's shared schedule for a connection that lives as long as the
+    process (the worker's ``notify_conn`` / ``leader_conn``), so the lease
+    it is issued counts toward the derived cadence. Omitted, the factory
+    is taken to be one-shot - a migration connection the caller opens,
+    uses and closes - and records its lease on a schedule of its own
+    without the pinned-pair warning, since there is no long-lived
+    connection to rotate.
     """
     import asyncpg
+
+    schedule = reload_schedule if reload_schedule is not None else ReloadSchedule()
+    long_lived = reload_schedule is not None
 
     async def factory() -> asyncpg.Connection:
         # Fetched once to resolve `user=` and fail fast; see make_pg_pool_factory.
         credential = await provider.get_pg_credential()
+        _record_issued_credential(
+            schedule, credential, role="dedicated_conn", warn_without_schedule=long_lived
+        )
         kwargs: dict[str, Any] = {
             "dsn": ensure_sslmode_require(dsn),
             "password": _make_pg_password_callable(
@@ -553,7 +840,7 @@ def make_dedicated_conn_factory(
         # lifecycle position as a pool's init - so it is declared as the
         # inheritable init hook verbatim.
         setattr(factory, _CONNECTION_INIT_HOOK_ATTR, setup)
-    return factory
+    return _declare_provider(_declare_reload_schedule(factory, schedule), provider)
 
 
 def make_redis_client_factory(
@@ -621,7 +908,7 @@ def make_redis_client_factory(
             **client_kwargs,
         )
 
-    return factory
+    return _declare_provider(factory, provider)
 
 
 # --- Whole-worker wiring ---
@@ -702,6 +989,12 @@ def build_worker_connections(
         # The kwargs are forwarded explicitly (not splatted) so pyright
         # traces types through make_pg_pool_factory's typed parameters.
         stmt_kwargs = statement_cache_kwargs(settings)
+        # One schedule for every role: the worker rebuilds them together, so
+        # the cadence is the shortest lease any of them was granted, under
+        # the operator's TASKQ_RELOAD_INTERVAL when that is set (see
+        # ReloadSchedule). The reload coordinator reads it back off the
+        # factories with reload_schedule_of.
+        schedule = ReloadSchedule(configured=settings.reload_interval)
         conns.dispatcher_pool_factory = make_pg_pool_factory(
             direct,
             pg_provider,
@@ -710,6 +1003,7 @@ def build_worker_connections(
             command_timeout=settings.dispatcher_command_timeout,
             statement_cache_size=stmt_kwargs["statement_cache_size"],
             max_cached_statement_lifetime=stmt_kwargs["max_cached_statement_lifetime"],
+            reload_schedule=schedule,
         )
         conns.heartbeat_pool_factory = make_pg_pool_factory(
             direct,
@@ -719,6 +1013,7 @@ def build_worker_connections(
             command_timeout=settings.heartbeat_command_timeout,
             statement_cache_size=stmt_kwargs["statement_cache_size"],
             max_cached_statement_lifetime=stmt_kwargs["max_cached_statement_lifetime"],
+            reload_schedule=schedule,
         )
         conns.worker_pool_factory = make_pg_pool_factory(
             pooled,
@@ -727,12 +1022,19 @@ def build_worker_connections(
             max_inactive_connection_lifetime=lifetime,
             statement_cache_size=stmt_kwargs["statement_cache_size"],
             max_cached_statement_lifetime=stmt_kwargs["max_cached_statement_lifetime"],
+            reload_schedule=schedule,
         )
         conns.notify_conn_factory = make_dedicated_conn_factory(
-            direct, pg_provider, command_timeout=settings.dispatcher_command_timeout
+            direct,
+            pg_provider,
+            command_timeout=settings.dispatcher_command_timeout,
+            reload_schedule=schedule,
         )
         conns.leader_conn_factory = make_dedicated_conn_factory(
-            direct, pg_provider, command_timeout=settings.dispatcher_command_timeout
+            direct,
+            pg_provider,
+            command_timeout=settings.dispatcher_command_timeout,
+            reload_schedule=schedule,
         )
 
     if redis_provider is not None:

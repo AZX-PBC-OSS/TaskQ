@@ -979,6 +979,19 @@ class CancelFlag:
     cancel_phase: CancelPhase
 
 
+MAX_JOB_LIST_LIMIT: Final[int] = 10_000
+"""Largest page ``JobsClient.list`` will ask a backend for.
+
+A page is one round trip that materialises every row it returns, on the
+server and in the client; ``cursor`` is what reaches the rows past it. An
+unbounded limit let one call ask for the whole table, which is a query
+plan and a memory spike no caller can want by accident; ten thousand is
+the ceiling peer job queues put on a listed page. Enforced by the
+client's list entry, not by :class:`JobFilter`
+itself: the same filter drives ``cancel_where``, which ignores ``limit``
+and whose in-process implementation lists with no page at all."""
+
+
 @dataclass(frozen=True, slots=True)
 class JobFilter:
     """Filter parameters for :meth:`Backend.list_jobs` and
@@ -1055,6 +1068,8 @@ class JobFilter:
     actor: str | None = None
     identity_key: IdentityKey | None = None
     batch_id: UUID | None = None
+    # One list page (JobsClient.list caps it at MAX_JOB_LIST_LIMIT; cursor
+    # reaches the rest). Ignored by cancel_where.
     limit: int = 100
     cursor: str | None = None
     tags: tuple[str, ...] | None = None

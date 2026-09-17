@@ -6,6 +6,9 @@
 {% block content %}
 <h2 class="text-xl font-semibold tracking-tight mb-4">Rate Limits</h2>
 
+{% if live_peek_error %}
+<div class="mb-3 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg p-3 text-sm text-red-700 dark:text-red-300" data-degraded="live-peek">Live state unavailable ({{ live_peek_error }}) — the Status and Remaining columns are not current; showing stored state only.</div>
+{% endif %}
 {% if not ratelimit_installed %}
 <div class="bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 rounded-lg p-3 text-sm text-yellow-700 dark:text-yellow-300">{{ notice_text }}</div>
 {% elif buckets %}

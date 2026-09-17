@@ -83,7 +83,7 @@ Three consequences worth knowing:
 | Worker — notify conn | `WorkerConnections.notify_conn` | `notify_conn_factory` | LISTEN is issued by TaskQ; a dropped conn is rebuilt through the same factory |
 | Worker — leader conn | `WorkerConnections.leader_conn` | `leader_conn_factory` | Advisory-lock conn |
 | Worker — Redis | `WorkerConnections.redis_client` | `redis_client_factory` | |
-| Client — main pool | `TaskQ(pool=...)` (caller-owned) | `TaskQ(pool_factory=...)` or `TaskQ(dsn=..., pg_provider=...)` | TaskQ-owned; rotate with `await tq.reload_credentials()` |
+| Client — main pool | `TaskQ(pool=...)` (caller-owned) | `TaskQ(pool_factory=...)` or `TaskQ(dsn=..., pg_provider=...)` | TaskQ-owned; rotated on its `ReloadSchedule` (`reload_interval=` or the granted lease), on demand with `await tq.reload_credentials()` |
 | Client — Redis | `TaskQ(redis_client=...)` ✓ existing | — | |
 | Client — `watch_reclaims` LISTEN conn | `TaskQ(listen_conn=...)` | `TaskQ(pg_conn_factory=...)` | Replaces the DSN-only LISTEN transport; `stream()` polls through the main pool and needs neither |
 | Migrate — locked apply | `apply_pending_locked(conn=...)` | `apply_pending_locked(conn_factory=...)` | `list_applied` / `apply_pending` take an open conn only — no factory |
@@ -258,9 +258,15 @@ taskq ui serve --pg-credential-provider myapp.auth:make_provider
 taskq migrate up --pg-credential-provider myapp.auth:make_provider
 ```
 
-`taskq ui serve` has no reload path, and does not need one: its pool
-re-authenticates per physical connection through the same `password=`
-callable described below.
+`taskq ui serve` rotates its admin pool the way the worker does: a token
+credential re-authenticates per physical connection through the
+`password=` callable described below, and a username-bearing pair (Vault)
+is rebuilt on SIGHUP and on the same `TASKQ_RELOAD_INTERVAL` /
+lease-derived cadence (see
+[Token refresh for long-lived pools](#token-refresh-for-long-lived-pools)).
+Every admin route resolves the live pool per request, so a rotation never
+serves from a closed pool. The migration connection (`--migrate`) is
+one-shot and takes no schedule.
 
 **Embedding.** The builder behind the worker option is public — use it
 when you have a custom entrypoint and want the same full wiring:
@@ -311,17 +317,42 @@ Two things per-connection refresh cannot do, for which the
   a fresh username alongside each password (HashiCorp Vault dynamic
   database credentials) therefore pin one pair per pool: every physical
   connection authenticates with that pair's password, and the pair is
-  replaced by the pool rebuild. Schedule the reload shorter than the
-  lease TTL.
+  replaced by the pool rebuild. The rebuild has to land before the issuer
+  revokes the pair, and it does so by default: **the cadence is derived
+  from the granted lease** when no interval is configured (below).
 * **Forcing a full pool rebuild** - e.g. to drop sessions opened under a
   revoked credential, or after a DSN/endpoint change.
+
+**The rebuild cadence: `ReloadSchedule`.** Every pool and dedicated
+connection built by `make_pg_pool_factory` / `make_dedicated_conn_factory`
+records the credential it is issued on a `taskq.auth.ReloadSchedule`, and
+every consumer that rebuilds pools — the worker, `taskq ui serve`,
+`TaskQ` — reads its interval from that schedule:
+
+* `TASKQ_RELOAD_INTERVAL` (or `TaskQ(reload_interval=...)`) set: that
+  interval, always.
+* Unset, and the provider reports a lease (`PgCredential.lease_duration`
+  — `VaultDynamicDbProvider` reports the TTL Vault granted): **half the
+  shortest lease seen so far** (`taskq.auth.LEASE_RELOAD_FRACTION`), so a
+  rebuild that fails at `T + TTL/2` still has a full half-life of retries
+  before the pair is revoked. Logged at pool build as
+  `pg-lease-reload-derived` (and by the worker as
+  `reload-interval-derived-from-lease`). Shortest, not latest: Vault caps a
+  lease at the issuing token's remaining TTL, so a lease can come back
+  shorter than the last.
+* Unset, and the provider reports no lease: no timer. A username-bearing
+  pool built this way warns once at build (`pg-lease-pair-pinned-without-reload`,
+  naming `TASKQ_RELOAD_INTERVAL`) because reconnects will fail
+  authentication once the lease expires; SIGHUP / `deps.request_reload()`
+  / `tq.reload_credentials()` still rotate it. Token providers (username
+  unset) never warn and never need a timer.
 
 All four triggers run the same `reload_credentials` path:
 
 | Trigger | How | When to use |
 | --- | --- | --- |
-| `TASKQ_RELOAD_INTERVAL` (seconds, unset by default) | `TASKQ_RELOAD_INTERVAL=720 taskq worker --actors …` | **Recommended.** Periodic reload with no external signal — the only option on Windows (no SIGHUP) and the hands-off option everywhere else. |
-| SIGHUP | `pkill -HUP -f 'taskq worker'` | Unix on-demand rotation (cron, k8s CronJob, config-change hooks). |
+| `TASKQ_RELOAD_INTERVAL` (seconds; unset = derived from the lease) | `TASKQ_RELOAD_INTERVAL=720 taskq worker --actors …` | Periodic reload with no external signal — the only option on Windows (no SIGHUP) and the hands-off option everywhere else. Set it to override the lease-derived cadence, or to force periodic rebuilds for a token provider (e.g. ~720 s for AWS IAM's 15-minute tokens). |
+| SIGHUP | `pkill -HUP -f 'taskq worker'` (also `taskq ui serve`) | Unix on-demand rotation (cron, k8s CronJob, config-change hooks). |
 | `deps.request_reload()` | programmatic, from an embedder holding `WorkerDeps` | In-process trigger (e.g. your own secrets-watch callback). Equivalent to SIGHUP. |
 | `reload_credentials(deps, ...)` | direct async call | Lower-level (e.g. tests); returns `(reloaded, failed)`. |
 
@@ -556,12 +587,17 @@ is overridden — and the pair is only valid together, so the factory
 builders pin **one lease per pool / dedicated connection**: `user=` is
 the lease's username and every physical connection authenticates with
 that lease's password (a pool never burns a lease per connection).
-Rotation is the pool rebuild: run the worker with
-`TASKQ_RELOAD_INTERVAL` (or send `SIGHUP`) at an interval shorter than
-the role's lease TTL so each pool is rebuilt on a fresh lease before
-Vault revokes the previous user. Each issued lease is logged as
-`vault-lease-issued` with its `lease_id` and `lease_duration`, so the
-reload interval can be checked against the TTL Vault actually granted.
+Rotation is the pool rebuild, and it is scheduled for you: the provider
+reports the TTL Vault granted as `PgCredential.lease_duration`, and with no
+`TASKQ_RELOAD_INTERVAL` set the worker, `taskq ui serve` and `TaskQ` rebuild
+each pool at half that TTL — before Vault revokes the previous user (see
+[Token refresh for long-lived pools](#token-refresh-for-long-lived-pools)).
+Set `TASKQ_RELOAD_INTERVAL` to choose the cadence yourself. Each issued
+lease is logged as `vault-lease-issued` with its `lease_id` and
+`lease_duration`, and the derived cadence as `pg-lease-reload-derived`, so
+the rebuild schedule can be checked against the TTL Vault actually
+granted. A role whose secret carries no lease (`lease_duration` 0) derives
+nothing and warns at build.
 `hvac` is synchronous; the provider offloads `generate_credentials` to a
 thread via `asyncio.to_thread`.
 
@@ -806,6 +842,14 @@ backend behind `enqueue`/`get`/`list`/`cancel`, the `tq.actors` client and the
 with a bounded drain. Nothing needs to reach into the client's internals, and
 no restart is required when a token expires.
 
+A username-bearing pair is rotated **automatically**: the client runs the
+same rebuild loop as the worker for the life of the client, at
+`reload_interval=` when given and otherwise at half the lease TTL the
+factory was granted (a token provider's pool has no lease and is never
+rebuilt by itself). A rebuild that fails leaves the live pool serving and
+is retried on the next tick; `reload_credentials()` remains the on-demand
+path and is serialized with the scheduled one.
+
 ```python
 from taskq import TaskQ
 from taskq.aad import EntraIdProvider
@@ -840,9 +884,9 @@ Note that `reload_credentials()` is not needed for ordinary token refresh:
 `make_pg_pool_factory` passes `password=` to asyncpg as a callable, so every
 *new physical connection* already authenticates with a freshly fetched
 credential. Reload is how you drop sessions opened under a **revoked**
-credential, and the only way to rotate a **username-bearing pair** such as
-a Vault lease (asyncpg resolves `user=` once per pool, so the pool stays on
-the pair it was built with).
+credential, and the way a **username-bearing pair** such as a Vault lease
+rotates (asyncpg resolves `user=` once per pool, so the pool stays on the
+pair it was built with) — scheduled for you as described above.
 
 ### LISTEN transport
 

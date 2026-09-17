@@ -6,15 +6,10 @@ subscription, and a socket/file descriptor. Without a cap, any principal who
 can reach the route can open them until the process runs out -- on the app
 hosting the ingestion pipeline, not on some isolated dashboard tier.
 
-`web/admin/sse.py` already capped its own `/sse/{topic}` endpoint this way. Two
-other streams did not, so the mechanism is extracted here rather than
-duplicated a third time:
-
-* ``/jobs/api/job/{job_id}/progress/stream`` (per-job progress; holds a Redis
-  pubsub subscription)
-* ``/jobs/sse/live`` (admin live job feed; holds a PG LISTEN connection) --
-  which lives in `admin/jobs.py` and bypassed `admin/sse.py` entirely, so its
-  `admin_max_sse_connections` cap never applied to it.
+`web/admin/sse.py` caps its own `/sse/{topic}` endpoint this way; the
+per-job progress stream (``/jobs/api/job/{job_id}/progress/stream``, which
+holds a Redis pubsub subscription) shares the mechanism from here rather
+than duplicating it.
 
 The semaphore is keyed by endpoint family and limit, and is process-local.
 Multiple worker processes each get their own budget, which is the same

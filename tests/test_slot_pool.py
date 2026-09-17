@@ -40,7 +40,7 @@ import contextlib
 from contextlib import AsyncExitStack
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import ANY, AsyncMock, MagicMock
 from urllib.parse import urlsplit, urlunsplit
 
 import asyncpg
@@ -48,6 +48,7 @@ import pytest
 import structlog.testing
 
 from taskq._di import ProviderRegistry, Scope
+from taskq.auth import ReloadSchedule
 from taskq.connections import with_connection_init
 from taskq.obs import set_slot_pool_occupancy_source
 from taskq.settings import WorkerSettings
@@ -127,7 +128,13 @@ async def test_slot_pool_factory_is_provider_backed_when_given_provider() -> Non
         # never switches cache behaviour.
         statement_cache_size=settings.statement_cache_size,
         max_cached_statement_lifetime=settings.max_cached_statement_lifetime,
+        reload_schedule=ANY,
     )
+    # The slot pool rotates on the same cadence as the role pools: the
+    # operator's interval (unset here), else the lease it is granted.
+    schedule = make_pg_pool_factory.call_args.kwargs["reload_schedule"]
+    assert isinstance(schedule, ReloadSchedule)
+    assert schedule.configured == settings.reload_interval
 
 
 async def test_slot_pool_factory_carries_session_settings_onto_dsn_built_pool() -> None:

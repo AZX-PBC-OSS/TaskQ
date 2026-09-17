@@ -68,7 +68,7 @@ class StubAcquireContext:
 class StubPool:
     """Minimal asyncpg.Pool duck type for testing."""
 
-    def acquire(self) -> StubAcquireContext:
+    def acquire(self, *, timeout: float | None = None) -> StubAcquireContext:
         return StubAcquireContext()
 
 

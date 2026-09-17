@@ -4,14 +4,10 @@ Each SSE connection pins server resources for as long as the client keeps it
 open: an asyncio task, a Postgres LISTEN connection or a Redis pubsub
 subscription, and a file descriptor. `web/admin/sse.py` capped its own
 `/sse/{topic}` endpoint with a per-topic semaphore and returned 429 when
-exhausted. Two other streams had no cap of any kind:
+exhausted; the per-job progress bridge
+(`/jobs/api/job/{job_id}/progress/stream`) had no cap of any kind.
 
-* `/jobs/api/job/{job_id}/progress/stream` -- the per-job progress bridge.
-* `/jobs/sse/live` -- the admin live job feed, which lives in `admin/jobs.py`
-  and never went through `admin/sse.py`, so the `admin_max_sse_connections`
-  semaphore never applied to it. The original report missed this one.
-
-Uncapped, any principal who can reach these routes opens streams until the
+Uncapped, any principal who can reach the route opens streams until the
 process runs out of Redis connections, event-loop tasks or descriptors -- on
 the app hosting the ingestion pipeline.
 """
@@ -321,57 +317,5 @@ async def test_progress_stream_rejects_with_429_at_the_cap(
         rejected = client.get(f"/jobs/api/job/{_JOB_ID}/progress/stream")
         assert rejected.status_code == 429, rejected.text
         assert "progress-stream" in rejected.text
-    finally:
-        held.release()
-
-
-async def test_admin_live_sse_rejects_with_429_at_the_cap(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """/jobs/sse/live never went through admin/sse.py, so its cap must be
-    proven through its own route: with the admin-jobs-live budget exhausted,
-    the request must be rejected with 429.
-
-    Why the request runs on a bounded worker thread: a live-feed request
-    that is (wrongly) admitted never completes against a stub pool — the
-    LISTEN loop reconnects with backoff and streams keepalives forever. An
-    uncapped endpoint, the exact regression this test guards, therefore
-    manifests as "the request opened a stream instead of being rejected";
-    the bound turns that into a fast, explicit failure instead of a hung
-    test."""
-    import threading
-
-    from fastapi import FastAPI
-    from fastapi.testclient import TestClient
-
-    from taskq.web.admin import create_router, setup_admin_state
-
-    monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
-    monkeypatch.setenv("TASKQ_ADMIN_MAX_SSE_CONNECTIONS", "1")
-
-    bundle = create_router(_SwitchablePool())  # pyright: ignore[reportArgumentType]  # Why: duck-typed pool; the 429 path rejects before any query runs.
-    app = FastAPI()
-    setup_admin_state(app, bundle)
-    app.include_router(bundle.router)
-    client = TestClient(app, raise_server_exceptions=False)
-
-    held = await _sse_limit.acquire_sse_slot("admin-jobs-live", 1)
-    outcome: dict[str, object] = {}
-
-    def _request() -> None:
-        response = client.get("/jobs/sse/live")
-        outcome["status"] = response.status_code
-        outcome["body"] = response.text
-
-    requester = threading.Thread(target=_request, daemon=True)
-    requester.start()
-    try:
-        requester.join(timeout=10.0)
-        assert not requester.is_alive(), (
-            "the /jobs/sse/live request never completed — it opened a "
-            "stream instead of being rejected at the cap"
-        )
-        assert outcome.get("status") == 429, outcome
-        assert "admin-jobs-live" in str(outcome.get("body")), outcome
     finally:
         held.release()

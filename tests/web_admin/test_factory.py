@@ -459,7 +459,7 @@ async def test_clock_offset_probe_failure_is_reported_and_backed_off(
     import taskq.web.admin._factory as factory
 
     class _DeadPool:
-        def acquire(self) -> object:
+        def acquire(self, *, timeout: float | None = None) -> object:
             raise ConnectionError("pool is closed")
 
     monkeypatch.setattr(factory, "_db_clock_offset", factory._DbClockOffset())

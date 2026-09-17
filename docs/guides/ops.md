@@ -1215,7 +1215,7 @@ The condensed "know this before your first incident" list. Each row links to the
 | TaskQ client handed the request handlers' pool | silent whole-process deadlock at `pool_max` | dedicated small pool — [§4](#bring-your-own-pools-change-the-arithmetic) |
 | Token auth without reload | healthy for an hour, then cannot connect | `TASKQ_RELOAD_INTERVAL` inside token lifetime, all five roles ([§4](#managed-identities-and-token-rotation)) |
 | NOTIFY reconnect mid-rotation looks like a hang | dispatch on poll fallback, `SIGHUP` reload reports notify as failed, for up to ~95s | `notify_reconnect_lock`'s worst-case hold is the sum of its bounded steps, not a hang — [§4](#managed-identities-and-token-rotation) |
-| `terminationGracePeriodSeconds` < shutdown worst case | SIGKILL mid-drain, `crashed` jobs | grace ≥ cancellation + cleanup + ~32 s tail ([deployment.md](deployment.md#health-probes)) |
+| `terminationGracePeriodSeconds` < shutdown worst case | SIGKILL mid-drain, `crashed` jobs | grace ≥ cancellation + cleanup + ~42 s tail ([deployment.md](deployment.md#health-probes)) |
 | One job longer than the shutdown budget | watchdog force-exits; *sibling* in-flight jobs die too | size the grace to your slowest actor, or cap it with `start_to_close` ([§2](#2-timeouts-start_to_close-and-schedule_to_close)) |
 | Actors longer than `cancellation_grace_period + cleanup_grace_period` | interrupted on every deploy and re-run from scratch (`interrupt_count` climbs, work restarts); only `schedule_to_close` ends the loop | bound them with `schedule_to_close`, or checkpoint via progress state and resume on re-claim ([§6](#6-classifying-failures-terminal-retryable-transient), [cancellation.md](cancellation.md#shutdown-is-not-an-operator-cancel-ctxcancel_origin)) |
 | Drained `refill_per_second=0` bucket, no deadline | job re-queues every 5 s forever | add refill or `schedule_to_close` ([§7](#7-waiting-politely-rate-limits-snooze-retryafter-retry-after)) |
@@ -1269,7 +1269,7 @@ mechanics of each item: [deployment.md — Production Checklist](deployment.md#p
 - [ ] **DSN split**: `TASKQ_PG_DSN_DIRECT` (worker core) vs `TASKQ_PG_DSN_POOLED` (worker_pool)
 - [ ] **Credentials**: reload interval inside token lifetime; all five connection roles covered
 - [ ] **Shutdown budget**: supervisor/`terminationGracePeriodSeconds` ≥
-      `cancellation_grace + cleanup_grace + ~32 s` (default model: 72 s), and ≥ your slowest actor
+      `cancellation_grace + cleanup_grace + ~42 s` (default model: 82 s), and ≥ your slowest actor
 - [ ] **Health probes**: `taskq health live/ready` wired (exec probes; TCP `TASKQ_HEALTH_PORT`
       only where `httpGet` is forced); unique socket path AND unique probe port per process
       (a bind collision fails the listener loudly but the boot continues; the orchestrator's

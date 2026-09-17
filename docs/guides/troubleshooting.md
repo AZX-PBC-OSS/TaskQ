@@ -282,7 +282,7 @@ Check whether the actor suppresses `asyncio.CancelledError` — a `try/except as
 - **Always re-raise `asyncio.CancelledError`:** never swallow it. Let it propagate so the consumer can call `mark_cancelled`.
 - **Check cancellation boundaries:** ensure the actor observes `ctx.cancellation_requested` at natural loop boundaries. For single long `await` calls, use `ctx.cancel_event.wait()`.
 - **Increase grace periods:** if the actor needs more cleanup time, raise `TASKQ_CANCELLATION_GRACE_PERIOD` and `TASKQ_CLEANUP_GRACE_PERIOD`. Constraints: `cancellation + cleanup < lock_lease` and `< termination_grace_period - 5.0`.
-- **Re-running an abandoned job:** `abandoned` jobs — interrupted by a worker restart, not failed — can be retried via `backend.retry_job()` or the admin UI's Retry button, the same as `failed`, `crashed`, `cancelled`, and `succeeded` jobs. Only a `running` job (a live attempt) or one already queued as `pending`/`scheduled` is refused.
+- **Re-running an abandoned job:** `abandoned` jobs — an operator cancel the actor did not honour within the cancellation and cleanup grace periods, so the worker gave up on the attempt (not a worker restart: that releases the job as `pending`/`scheduled`, see below) — can be retried via `backend.retry_job()` or the admin UI's Retry button, the same as `failed`, `crashed`, `cancelled`, and `succeeded` jobs. Only a `running` job (a live attempt) or one already queued as `pending`/`scheduled` is refused.
 
 ### Shutdown never lands here — read `interrupt_count` instead
 
