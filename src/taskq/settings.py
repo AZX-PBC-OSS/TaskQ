@@ -407,6 +407,22 @@ class TaskQSettings(DotEnvConfig):
         "RedisCredentialProvider, in the same shapes as pg_credential_provider. "
         "Requires TASKQ_REDIS_URL. Overridden by --redis-credential-provider.",
     )
+    reload_interval: float | None = Field(
+        default=None,
+        gt=0,
+        description="TASKQ_RELOAD_INTERVAL (seconds). Cadence of the credential "
+        "hot-reload (the same path as SIGHUP) on the worker and on `taskq ui "
+        "serve`: every provider-backed pool and connection is rebuilt on a "
+        "fresh credential with no external signal required - the rotation "
+        "path for platforms without SIGHUP (e.g. Windows) and for hands-off "
+        "scheduled rotation (e.g. ~720s for AWS IAM's 15-minute tokens). "
+        "Unset, the cadence is derived from the lease the provider grants "
+        "when it reports one (a Vault dynamic credential is rebuilt at half "
+        "its lease TTL - see taskq.auth.ReloadSchedule); a username-bearing "
+        "provider that reports no lease then warns at startup, and only "
+        "SIGHUP / deps.request_reload() rotate it. Only factory-backed "
+        "resources are rebuilt; DSN/static credentials are unaffected.",
+    )
 
     # -- SSO / SAML -------------------------------------------------------
     sso_backend: str = Field(
@@ -1460,18 +1476,8 @@ class WorkerSettings(TaskQSettings):
     )
 
     # -- Credential hot-reload --------------------------------------------
-    reload_interval: float | None = Field(
-        default=None,
-        gt=0,
-        description="TASKQ_RELOAD_INTERVAL (seconds). When set, the worker "
-        "periodically triggers a credential hot-reload (the same path as "
-        "SIGHUP) with no external signal required - the rotation path for "
-        "platforms without SIGHUP (e.g. Windows) and for hands-off "
-        "scheduled rotation (e.g. ~720s for AWS IAM's 15-minute tokens). "
-        "None disables the timer; SIGHUP and deps.request_reload() still "
-        "work. Only factory-backed resources are rebuilt; DSN/static "
-        "credentials are unaffected.",
-    )
+    # reload_interval lives on TaskQSettings: the worker and `taskq ui serve`
+    # both rebuild provider-backed pools on it.
     reload_factory_timeout: float = Field(
         default=30.0,
         gt=0,

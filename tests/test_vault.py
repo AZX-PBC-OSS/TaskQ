@@ -198,3 +198,52 @@ async def test_vault_provider_logs_issued_lease_without_password() -> None:
     assert entry["lease_id"] == "database/creds/taskq/lease-1"
     assert entry["lease_duration"] == 3600
     assert "pw-1" not in repr(entry)
+
+
+# ── The granted lease rides on the credential ─────────────────────────
+
+
+async def test_vault_credential_carries_the_granted_lease_duration() -> None:
+    """The TTL Vault granted is reported on the credential itself, which is
+    what a consumer's rebuild schedule is derived from; the provider keeps
+    the same value as last_lease_duration for an operator's own checks."""
+    client = _fake_hvac_client_with_distinct_leases()
+    provider = VaultDynamicDbProvider(client, role="taskq")
+    assert provider.last_lease_duration is None
+    credential = await provider.get_pg_credential()
+    assert credential.lease_duration == 3600.0
+    assert provider.last_lease_duration == 3600.0
+
+
+@pytest.mark.parametrize("raw", [0, None, "3600", True])
+async def test_vault_credential_reports_no_lease_when_vault_granted_none(raw: object) -> None:
+    """A ``lease_duration`` of 0 is Vault's "no lease" (a static role), an
+    absent or malformed one is a response shape the provider does not know:
+    neither is a TTL to schedule a rebuild from, so the credential carries
+    none rather than a number it is not."""
+    client = MagicMock()
+    response: dict[str, Any] = {"data": {"username": "v-u", "password": "v-p"}}
+    if raw is not None:
+        response["lease_duration"] = raw
+    client.secrets.database.generate_credentials.return_value = response
+    provider = VaultDynamicDbProvider(client, role="taskq")
+    credential = await provider.get_pg_credential()
+    assert credential.lease_duration is None
+    assert provider.last_lease_duration is None
+
+
+async def test_pool_built_on_a_vault_lease_derives_its_rebuild_cadence() -> None:
+    """End to end through the real provider and the real factory: the pool's
+    schedule rebuilds at half the TTL Vault granted."""
+    from taskq.auth import ReloadSchedule
+
+    client = _fake_hvac_client_with_distinct_leases()
+    provider = VaultDynamicDbProvider(client, role="taskq")
+    schedule = ReloadSchedule()
+    factory = make_pg_pool_factory(
+        "postgresql://ignored:ignored@host/db", provider, reload_schedule=schedule
+    )
+    with patch("asyncpg.create_pool", new=AsyncMock(return_value=MagicMock())):
+        await factory()
+    assert schedule.interval == 1800.0
+    assert schedule.derived is True

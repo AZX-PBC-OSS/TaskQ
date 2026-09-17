@@ -42,12 +42,14 @@ therefore pin one lease per pool / dedicated connection: ``user=`` is the
 lease's username and every physical connection asyncpg opens
 authenticates with that lease's password (see
 :func:`~taskq.auth.make_pg_pool_factory`). Rotation happens when the
-factory is re-invoked, so run the worker with ``TASKQ_RELOAD_INTERVAL``
-(or send ``SIGHUP``) on a schedule shorter than the role's lease TTL —
-the pool is rebuilt on a fresh lease (see
-``taskq.worker.deps.reload_credentials``); no restart needed. Each
-issued lease is logged (``vault-lease-issued``: ``lease_id``,
-``lease_duration``, ``username``) so the reload schedule can be checked
+factory is re-invoked - the pool is rebuilt on a fresh lease (see
+``taskq.worker.deps.reload_credentials``); no restart needed. The
+provider reports the TTL Vault granted as ``PgCredential.lease_duration``,
+and every consumer that rebuilds pools (the worker, ``taskq ui serve``,
+:class:`taskq.TaskQ`) derives its rebuild cadence from it when no
+``TASKQ_RELOAD_INTERVAL`` is set (see :class:`~taskq.auth.ReloadSchedule`).
+Each issued lease is also logged (``vault-lease-issued``: ``lease_id``,
+``lease_duration``, ``username``) so a rebuild cadence can be checked
 against the TTL Vault actually granted.
 
 ``hvac`` is synchronous; ``generate_credentials`` does network I/O, so the
@@ -113,10 +115,10 @@ class VaultDynamicDbProvider(PgCredentialProvider):
         self._client = client
         self._role = role
         self._mount_point = mount_point
-        # The TTL of the lease this provider last issued, in seconds. Nothing
-        # here schedules rotation with it: it is the bound an operator's
-        # reload schedule has to beat, surfaced so the pool factory's
-        # pinned-pair startup warning can name it (see taskq.auth).
+        # The TTL of the lease this provider last issued, in seconds - the
+        # same value the credential carries as lease_duration, kept here for
+        # an operator's own checks; the rebuild cadence is derived from the
+        # credential, not from this attribute (see taskq.auth.ReloadSchedule).
         self.last_lease_duration: float | None = None
 
     async def get_pg_credential(self) -> PgCredential:
@@ -130,7 +132,8 @@ class VaultDynamicDbProvider(PgCredentialProvider):
         response = await asyncio.to_thread(_fetch)
         data: dict[str, Any] = response["data"]
         username, password = data["username"], data["password"]
-        self.last_lease_duration = response.get("lease_duration")
+        lease_duration = _lease_duration_seconds(response.get("lease_duration"))
+        self.last_lease_duration = lease_duration
         # The lease TTL is the bound the operator's reload schedule must beat;
         # logging it beside the identity Vault issued is what lets a later
         # "password authentication failed for user v-…" be traced to an
@@ -144,4 +147,18 @@ class VaultDynamicDbProvider(PgCredentialProvider):
             lease_duration=response.get("lease_duration"),
             renewable=response.get("renewable"),
         )
-        return PgCredential(username=username, password=password)
+        return PgCredential(username=username, password=password, lease_duration=lease_duration)
+
+
+def _lease_duration_seconds(raw: object) -> float | None:
+    """Vault's ``lease_duration`` as seconds, or ``None`` when it granted none.
+
+    Vault reports the TTL as an integer number of seconds; ``0`` means the
+    secret has no lease (a static role), which is "no TTL to schedule
+    against", not a zero-second one. Anything else is a response shape this
+    provider does not know, and is treated the same way rather than fed
+    into a rebuild schedule as a number it is not.
+    """
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)) or raw <= 0:
+        return None
+    return float(raw)
