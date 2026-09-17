@@ -1818,7 +1818,7 @@ def record_cron_budget_deferral(actor: str) -> None:
     Labeled by ``actor``, admitted through the same cap as
     :func:`record_cron_failure` (schedule rows accept any string at
     creation time, so the label is bounded).
-    Respects ``_otel_enabled`` — no-op when False.
+    Respects ``_otel_enabled``: no-op when False.
     """
     if not _otel_enabled:
         return

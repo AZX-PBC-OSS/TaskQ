@@ -553,7 +553,7 @@ def test_disabled_schedules_gauge_reads_from_state(otel_reader: InMemoryMetricRe
 def test_record_cron_budget_deferral_counts_per_actor(otel_reader: InMemoryMetricReader) -> None:
     """The monopolizer-starvation signal: one count per deferred fire,
     dimensioned by the STARVING schedule's actor (per-schedule
-    attribution stays on the cron-fire-budget-deferred log line — the
+    attribution stays on the cron-fire-budget-deferred log line, the
     same label contract as consecutive_failures)."""
     obs_mod.record_cron_budget_deferral("actor-a")
     obs_mod.record_cron_budget_deferral("actor-a")
@@ -565,7 +565,7 @@ def test_record_cron_budget_deferral_counts_per_actor(otel_reader: InMemoryMetri
 
 
 def test_record_cron_budget_deferral_disabled(otel_reader: InMemoryMetricReader) -> None:
-    """The disabled contract is a no-op, not a best-effort record — same
+    """The disabled contract is a no-op, not a best-effort record, same
     rigor as consecutive_failures: the reader-backed assertion is the
     pin, so a regression that records while disabled cannot pass
     vacuously.  The unconditional trail for this signal is the

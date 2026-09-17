@@ -157,10 +157,10 @@ async def slow_monopolizer_factory() -> dict[str, object]:
     (0.70s of the 0.9s a 1.0s whole-tick deadline funds) and SUCCEEDS.
 
     Dotted path: ``tests.test_rt_cron_hang_livelock.slow_monopolizer_factory``.
-    The #260 attack shape: a slow-but-successful monopolizer never
+    The #260 review shape: a slow-but-successful monopolizer never
     strikes, never auto-disables and never frees the budget, so the
     micro-grant it leaves is the only thing its peers could ever be
-    called under — exactly what the minimum fundable grant refuses.
+    called under, exactly what the minimum fundable grant refuses.
     """
     await asyncio.sleep(0.70)
     return {}
@@ -719,10 +719,10 @@ class TestHungFactoryBatchCannotLivelockTheTick:
     rolls back every strike, and the identical batch is re-selected on the
     very next tick — forever. The tick must instead stop funding factory
     waits once its budget is spent: the factory-backed schedules the
-    budget could not fund are DEFERRED — ``next_fire_at`` advances one
+    budget could not fund are DEFERRED: ``next_fire_at`` advances one
     leader cadence, no strike, because their factories never ran (#235:
     striking them made one hung factory march every schedule behind it to
-    auto-disable in lockstep) — and the tick commits inside its deadline
+    auto-disable in lockstep), and the tick commits inside its deadline
     with the funded monopolizer carrying its own strike.
     """
 
@@ -736,9 +736,9 @@ class TestHungFactoryBatchCannotLivelockTheTick:
         (not be cut by it), the ONE schedule whose factory consumed the
         funded budget must carry a committed strike naming its factory
         (the path to auto-disable), the 19 the budget could not fund must
-        be DEFERRED — no strike, no error text, next_fire_at advanced a
+        be DEFERRED: no strike, no error text, next_fire_at advanced a
         short retry that stays strictly between the owed slot and the next
-        hourly slot — and the healthy peer must have fired and advanced."""
+        hourly slot, and the healthy peer must have fired and advanced."""
         schema = module_pg_schema.schema_name
         settings = cron_settings(schema)
         await seed_actor_config(clean_pg_conn, schema, _ACTOR)
@@ -845,12 +845,12 @@ class TestHungFactoryBatchCannotLivelockTheTick:
 
 
 class TestSlowSuccessfulMonopolizer:
-    """The #260 attack: a monopolizer that SUCCEEDS within its grant every
-    tick never strikes, never auto-disables and never frees the budget —
+    """The #260 review: a monopolizer that SUCCEEDS within its grant every
+    tick never strikes, never auto-disables and never frees the budget,
     so whatever it leaves for the peers behind it is all they will ever
     be called under.  Before the minimum fundable grant that leftover was
     a micro-grant: the peer's factory ran under ~0.08s, was cut by
-    ``wait_for`` into a plain ``TimeoutError``, and struck — three ticks
+    ``wait_for`` into a plain ``TimeoutError``, and struck: three ticks
     to auto-disable with nothing to stop the march (the monopolizer
     itself never drains).  These tests pin the floor's contract against
     real Postgres and the real due-read: the peer is deferred (never
@@ -863,17 +863,17 @@ class TestSlowSuccessfulMonopolizer:
         module_pg_schema: ModulePgSchema,
     ) -> None:
         """An every-minute monopolizer crawling its catch-up backlog
-        (seeded two minute-boundary slots in the past — it is due, at the
+        (seeded two minute-boundary slots in the past: it is due, at the
         FRONT of the order, on several successive ticks) beside an
         every-minute peer owing one slot.  While the monopolizer is due
-        the peer defers every tick — its next_fire_at strictly advances
+        the peer defers every tick: its next_fire_at strictly advances
         (the real due-read re-selects it each tick; no test at any tier
         pinned that before), its consecutive_failures stays 0 and its
         last_fire_error stays NULL.  The first monopolizer-free tick, the
         peer's factory is funded a full grant and it fires."""
         schema = module_pg_schema.schema_name
         # 1.0s whole tick → 0.9s funded, 0.225s minimum fundable grant:
-        # the monopolizer's 0.70s wait leaves ~0.2s — below the floor.
+        # the monopolizer's 0.70s wait leaves ~0.2s, below the floor.
         settings = cron_settings(
             schema,
             TASKQ_DISPATCHER_COMMAND_TIMEOUT="1.0",
@@ -945,7 +945,7 @@ class TestSlowSuccessfulMonopolizer:
                 peer_fired = True
                 break
             # Not fired yet: this row state is a deferral the real
-            # due-read must re-select on the next tick — the advance is
+            # due-read must re-select on the next tick: the advance is
             # the proof it was planned (a struck row would sit unmoved at
             # its owed slot).
             assert peer["next_fire_at"] > peer_owed, (
