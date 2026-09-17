@@ -4,12 +4,15 @@ The component is driven under Node with the browser surface it touches
 stubbed (``document``, ``Alpine.data``, ``EventSource``, timers, ``fetch``),
 so the assertions are on what the page does — which requests it issues and
 when — not on the source text. Node is the only JS runtime the repository
-has; the tests skip where it is absent.
+has; the tests skip where it is absent on a developer machine, and fail
+in CI, where the workflow installs Node so that a skip there would be
+silent coverage loss.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -21,8 +24,22 @@ pytest.importorskip("fastapi")
 
 ADMIN_JS = Path(__file__).resolve().parents[2] / "src" / "taskq" / "web" / "static" / "admin.js"
 
+
+def _node_or_skip() -> str:
+    node = shutil.which("node")
+    if node is None:
+        if os.environ.get("CI"):
+            pytest.fail(
+                "node is not on PATH in CI: the admin.js tests would skip silently; "
+                "the workflow's setup-node step is missing or broken"
+            )
+        pytest.skip("admin.js behaviour is driven under Node")
+    return node
+
+
 requires_node = pytest.mark.skipif(
-    shutil.which("node") is None, reason="admin.js behaviour is driven under Node"
+    shutil.which("node") is None and not os.environ.get("CI"),
+    reason="admin.js behaviour is driven under Node",
 )
 
 # A minimal browser: Alpine registers the component factory; EventSource,
@@ -88,6 +105,7 @@ function advance(ms) {
     now = target;
 }
 
+if (scenario === "starts-paused") global.window.__taskqJobConfig.liveOn = false;
 new Function(src)();
 listeners["alpine:init"]();
 const page = components.jobsPage();
@@ -112,10 +130,17 @@ if (scenario === "poll-while-sse-connected") {
 } else if (scenario === "sse-error-keeps-polling") {
     global.lastEventSource.handlers["error"]();
     advance(2000);
-} else if (scenario === "toggle-off-keeps-polling") {
+} else if (scenario === "paused-freezes-the-table") {
+    page.toggleLive();
+    advance(3000);
+    global.lastEventSource.emit("state_change", { type: "cancel", job_id: "j1", worker_id: "w1" });
+} else if (scenario === "resume-reloads-and-restarts") {
+    page.toggleLive();
+    advance(3000);
     page.toggleLive();
     advance(2000);
-    page.toggleLive();
+} else if (scenario === "starts-paused") {
+    // handled below: the page was initialised with liveOn=false
 }
 log.push("polling:" + (page.pollTimer !== null) + " sse:" + (page.eventSource !== null));
 process.stdout.write(JSON.stringify(log));
@@ -123,8 +148,7 @@ process.stdout.write(JSON.stringify(log));
 
 
 def _drive(scenario: str) -> list[str]:
-    node = shutil.which("node")
-    assert node is not None
+    node = _node_or_skip()
     result = subprocess.run(  # noqa: S603  # Why: fixed argv, no shell; the harness and scenario names are this file's own constants.
         [node, "-e", _HARNESS, "--", str(ADMIN_JS), scenario],
         capture_output=True,
@@ -212,22 +236,46 @@ def test_sse_terminal_status_for_unlisted_row_refreshes_the_table() -> None:
 
 
 @requires_node
-def test_sse_error_falls_back_to_the_poll_already_running() -> None:
-    """An EventSource error closes the stream; the poll that was running all
-    along carries the page, with nothing to restart."""
+def test_sse_error_leaves_the_stream_to_reconnect_and_keeps_polling() -> None:
+    """An EventSource error is not the end of the stream: the browser's own
+    reconnect is left to run (closing it here made a proxy idle timeout or a
+    server restart permanent), and the poll that was running all along
+    carries the page meanwhile."""
     log = _drive("sse-error-keeps-polling")
-    assert "sse-close" in log
+    assert "sse-close" not in log
+    assert log.count("sse-open:/admin/sse/jobs") == 1
     assert log.count("fetch:/admin/jobs") == 2, log
-    assert log[-1] == "polling:true sse:false"
+    assert log[-1] == "polling:true sse:true"
 
 
 @requires_node
-def test_pausing_live_closes_sse_and_keeps_polling() -> None:
-    """Pausing the live toggle drops the SSE connection only; the poll keeps
-    the table current, and resuming reconnects SSE and reloads the table."""
-    log = _drive("toggle-off-keeps-polling")
-    assert log.index("sse-close") < log.index("fetch:/admin/jobs")
-    assert log.count("fetch:/admin/jobs") == 2, log
+def test_paused_freezes_the_table() -> None:
+    """Paused means the table stays as the operator left it: the poll
+    stops, SSE is closed, and nothing — not even a late event on the old
+    stream — fetches the table."""
+    log = _drive("paused-freezes-the-table")
+    assert "sse-close" in log
+    assert log.count("fetch:/admin/jobs") == 0, log
+    assert log[-1] == "polling:false sse:false"
+
+
+@requires_node
+def test_resuming_reloads_the_table_and_restarts_live_refresh() -> None:
+    """Resuming reloads the table immediately (whatever changed while it
+    was frozen), reconnects SSE and restarts the poll."""
+    log = _drive("resume-reloads-and-restarts")
     assert log.count("sse-open:/admin/sse/jobs") == 2
     assert "submit" in log
+    # The two fetches are both after the resume: none while paused.
+    assert log.count("fetch:/admin/jobs") == 2, log
+    assert log.index("submit") < log.index("fetch:/admin/jobs")
     assert log[-1] == "polling:true sse:true"
+
+
+@requires_node
+def test_a_page_opened_paused_starts_frozen() -> None:
+    """``live=off`` in the URL (the form's own state) opens the page with
+    neither the poll nor SSE running."""
+    log = _drive("starts-paused")
+    assert "sse-open:/admin/sse/jobs" not in log
+    assert log[-1] == "polling:false sse:false"

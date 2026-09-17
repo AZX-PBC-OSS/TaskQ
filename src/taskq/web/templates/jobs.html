@@ -179,7 +179,7 @@ window.__taskqJobConfig = {
                           class="pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out"></span>
                 </button>
                 <span class="text-xs" :class="liveOn ? 'text-green-600 dark:text-green-400' : 'text-slate-400'" x-text="liveOn ? '● Live' : '○ Paused'"></span>
-                <span x-show="!liveOn && pendingCount > 0" class="text-xs text-blue-600 dark:text-blue-400 cursor-pointer hover:underline" @click="showPending()" x-text="pendingCount + ' new'"></span>
+                <span x-show="!liveOn" class="text-xs text-slate-400">table frozen until resumed</span>
             </div>
         </form>
     </div>

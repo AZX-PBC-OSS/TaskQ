@@ -64,7 +64,6 @@
                 selectedStatuses: cfg.selectedStatuses || [],
                 allStatuses: cfg.allStatuses || [],
                 totalRows: cfg.totalRows || 0,
-                pendingCount: 0,
                 eventSource: null,
                 pollTimer: null,
                 // The page the operator is on, as the cursor of the last
@@ -74,12 +73,24 @@
                 init: function () {
                     this.trackPagination();
                     if (this.tab !== "live") return;
-                    // Polling is the source of truth in both modes: the events
-                    // channel carries only the cancel fast-path (terminal writes
-                    // and dispatch never NOTIFY it), so SSE can only bring a
-                    // refresh forward, never replace the poll.
+                    // Live refresh is the poll plus the SSE accelerator; paused
+                    // is neither, so the table stays exactly as the operator
+                    // left it until they resume or act on it themselves.
+                    if (this.liveOn) this.startLive();
+                },
+
+                startLive: function () {
+                    // Polling is the source of truth: the events channel carries
+                    // only the cancel fast-path (terminal writes and dispatch
+                    // never NOTIFY it), so SSE can only bring a refresh forward,
+                    // never replace the poll.
                     this.startPolling();
-                    if (this.liveOn) this.connectSSE();
+                    this.connectSSE();
+                },
+
+                stopLive: function () {
+                    this.disconnectSSE();
+                    this.stopPolling();
                 },
 
                 trackPagination: function () {
@@ -118,28 +129,14 @@
                 toggleLive: function () {
                     this.liveOn = !this.liveOn;
                     if (this.liveOn) {
-                        this.pendingCount = 0;
-                        this.connectSSE();
+                        // Resuming reloads the table: whatever changed while
+                        // it was frozen is fetched now rather than on the
+                        // next poll tick.
+                        this.startLive();
                         var form = document.getElementById("job-filters");
                         if (form) form.requestSubmit();
                     } else {
-                        this.disconnectSSE();
-                    }
-                },
-
-                showPending: function () {
-                    this.pendingCount = 0;
-                    // Showing the pending jobs is an explicit jump to the
-                    // unpaged first page: drop the cursor, not just the form's
-                    // copy of it.
-                    this.cursor = null;
-                    var form = document.getElementById("job-filters");
-                    if (form) {
-                        var ca = form.querySelector('input[name="cursor_at"]');
-                        var ci = form.querySelector('input[name="cursor_id"]');
-                        if (ca) ca.value = "";
-                        if (ci) ci.value = "";
-                        form.requestSubmit();
+                        this.stopLive();
                     }
                 },
 
@@ -151,10 +148,14 @@
                     es.addEventListener("state_change", function (evt) {
                         try { self.handleStateChange(JSON.parse(evt.data)); } catch (e) {}
                     });
-                    es.addEventListener("error", function () {
-                        es.close();
-                        self.eventSource = null;
-                    });
+                    // An error is left to EventSource itself, which reconnects
+                    // with the server's retry interval: closing it here made a
+                    // dropped connection (a proxy idle timeout, a server
+                    // restart) permanent, with polling carrying the page alone
+                    // for the rest of the visit. Polling stays the source of
+                    // truth throughout, so the page never depends on the
+                    // reconnect succeeding.
+                    es.addEventListener("error", function () {});
                 },
 
                 disconnectSSE: function () {
@@ -167,8 +168,14 @@
                     this.pollTimer = setInterval(function () { self.refreshTable(); }, this.pollIntervalMs);
                 },
 
+                stopPolling: function () {
+                    if (this.pollTimer) { clearInterval(this.pollTimer); this.pollTimer = null; }
+                },
+
                 handleStateChange: function (evt) {
-                    if (!this.liveOn) { this.pendingCount++; return; }
+                    // An event in flight when the operator paused must not
+                    // touch the frozen table.
+                    if (!this.liveOn) return;
                     var jobId = evt.job_id;
                     var row = document.querySelector('tr[data-job-id="' + jobId + '"]');
                     if (row && evt.status) {
@@ -224,12 +231,11 @@
                 },
 
                 destroy: function () {
-                    this.disconnectSSE();
+                    this.stopLive();
                     if (this._onHtmxRequest) {
                         document.body.removeEventListener("htmx:beforeRequest", this._onHtmxRequest);
                         this._onHtmxRequest = null;
                     }
-                    if (this.pollTimer) { clearInterval(this.pollTimer); this.pollTimer = null; }
                 }
             };
         });
