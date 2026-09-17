@@ -325,19 +325,29 @@ def _flush_metrics_before_exit() -> None:
 
 def trip(detector: str, reason: str) -> None:
     """Critical log + metric + dump + force-exit. Never returns."""
-    _watchdog_trips.add(1, {"detector": detector})
-    _log.critical(
-        "worker-watchdog-trip",
-        kind="worker_watchdog_trip",
-        detector=detector,
-        reason=reason,
-    )
     try:
+        # Inside the try, deliberately: a raising OTel counter add or a
+        # log sink on a broken pipe must not kill this task before the
+        # exit. The exit is the whole point of the trip. Everything
+        # around it is best-effort observability. The tracked-exit gate
+        # in the worker's shutdown path relies on this function always
+        # reaching os._exit.
+        _watchdog_trips.add(1, {"detector": detector})
+        _log.critical(
+            "worker-watchdog-trip",
+            kind="worker_watchdog_trip",
+            detector=detector,
+            reason=reason,
+        )
         dump_task_stacks(reason, detector=detector)
     finally:
-        sys.stderr.flush()
-        sys.stdout.flush()
-        _flush_metrics_before_exit()
+        # Nothing before the exit may be allowed to raise: a broken pipe
+        # on the flushes would otherwise skip the exit the trip exists
+        # for, so the observability tail is suppressed, not trusted.
+        with contextlib.suppress(BaseException):
+            sys.stderr.flush()
+            sys.stdout.flush()
+            _flush_metrics_before_exit()
         os._exit(EXIT_WATCHDOG)
 
 
