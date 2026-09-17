@@ -11,7 +11,7 @@ from jinja2 import Environment
 
 from taskq.client._taskq import orjson_response_class
 from taskq.web._pool import BoundedPool
-from taskq.web.admin._actor_stats import fetch_actor_stats
+from taskq.web.admin._actor_stats import fetch_actor_stats, resolve_stats_window
 from taskq.web.admin._constants import (
     _ALL_STATUSES,  # pyright: ignore[reportPrivateUsage]  # Why: shared constants published by the admin constants module; private prefix scopes them within the admin package.
     _FETCH_SIZE,  # pyright: ignore[reportPrivateUsage]  # Why: shared constants published by the admin constants module; private prefix scopes them within the admin package.
@@ -245,9 +245,13 @@ def register(router: APIRouter) -> None:
     async def history_stats(  # pyright: ignore[reportUnusedFunction]  # Why: FastAPI decorator pattern prevents pyright from seeing registration via router.get().
         pool: BoundedPool = Depends(get_admin_pool),
         schema: str = Depends(get_schema),
+        window: str | None = Query(default=None),
     ) -> JSONResponse:
+        # Same closed-set window selector the actors page renders as a
+        # toggle; None / "all" is the documented default.
+        window_delta = resolve_stats_window(window)
         async with pool.acquire() as conn:
             data: list[dict[str, Any]] = await fetch_actor_stats(
-                conn, schema=schema, per_queue=True
+                conn, schema=schema, per_queue=True, window=window_delta
             )
         return _OrjsonJSONResponse(content={"actors": data})

@@ -74,6 +74,111 @@ async def _get_csrf_then_post(
         return await client.post(post_url, data={"csrf_token": csrf_token, **(data or {})})
 
 
+async def test_actors_stats_include_live_terminal_rows_and_respect_the_window(
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The actors-page failure view counts the live terminal population,
+    not the archive alone — a terminal row stays in ``jobs`` for its
+    whole prune retention before the prune sweep moves it, so an
+    archive-only read shows a clean actor for exactly as long as its
+    fresh failures matter most. #230's stale-failure bullet, pinned
+    end-to-end: the fresh failure renders on the page and in the stats
+    JSON at the default and in a 24h window, and the window bound
+    excludes the older archived row.
+    """
+    from taskq._ids import new_uuid
+
+    schema = module_pg_schema.schema_name
+    actor = "live-fire-actor"
+    # A fresh LIVE failed row (still inside its prune retention) and an
+    # older ARCHIVED succeeded row for the same actor.
+    live_failed = new_uuid()
+    archived_succeeded = new_uuid()
+    await clean_pg_conn.execute(
+        f'INSERT INTO "{schema}".jobs '  # Why: schema is a test-fixture identifier, validated by the fixtures upstream.
+        "(id, actor, queue, payload, status, max_attempts, retry_kind, "
+        " started_at, finished_at, error_class, error_message) "
+        f"VALUES ($1, $2, 'default', '{{}}'::jsonb, 'failed'::\"{schema}\".job_status, "
+        "3, 'transient', clock_timestamp() - interval '4 seconds', "
+        "clock_timestamp(), 'ValueError', 'boom')",
+        live_failed,
+        actor,
+    )
+    await clean_pg_conn.execute(
+        f'INSERT INTO "{schema}".jobs_archive '  # Why: schema is a test-fixture identifier, validated by the fixtures upstream.
+        "(id, actor, queue, payload, status, max_attempts, retry_kind, "
+        " started_at, finished_at, archived_at, expire_at) "
+        f"VALUES ($1, $2, 'default', '{{}}'::jsonb, 'succeeded'::\"{schema}\".job_status, "
+        "3, 'transient', clock_timestamp() - interval '3 days 10 seconds', "
+        "clock_timestamp() - interval '3 days', clock_timestamp(), "
+        "clock_timestamp() + interval '30 days')",
+        archived_succeeded,
+        actor,
+    )
+
+    app = _make_admin_app(module_pg_pool, schema, monkeypatch, admin_actions_enabled=True)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        all_time = await client.get("/admin/api/history/stats")
+        windowed = await client.get("/admin/api/history/stats?window=24h")
+        page_all = await client.get("/admin/actors")
+        page_window = await client.get("/admin/actors?window=24h")
+
+    assert all_time.status_code == 200
+    assert windowed.status_code == 200
+    all_time_rows = [r for r in all_time.json()["actors"] if r["actor"] == actor]
+    windowed_rows = [r for r in windowed.json()["actors"] if r["actor"] == actor]
+    assert len(all_time_rows) == 1
+    assert len(windowed_rows) == 1
+
+    # All-time: both rows — the live failure AND the archived success.
+    assert all_time_rows[0]["total"] == 2
+    assert all_time_rows[0]["failed"] == 1
+    assert all_time_rows[0]["succeeded"] == 1
+    assert all_time_rows[0]["last_error_class"] == "ValueError"
+    # The 24h window keeps the fresh live failure and drops the archived
+    # row — the bound applies to BOTH sides of the UNION.
+    assert windowed_rows[0]["total"] == 1
+    assert windowed_rows[0]["failed"] == 1
+    assert windowed_rows[0]["succeeded"] == 0
+    assert windowed_rows[0]["last_error_class"] == "ValueError"
+
+    # The page renders the fresh failure in both views — the exact
+    # regression an archive-only read had: the 24h view of a crashing
+    # actor showed nothing until the prune moved the rows.
+    assert page_all.status_code == 200
+    assert "live-fire-actor" in page_all.text
+    assert "ValueError" in page_all.text
+    assert "1 (50.0%)" in page_all.text, "all-time view: 1 failure of 2 total"
+    assert page_window.status_code == 200
+    assert "live-fire-actor" in page_window.text
+    assert "ValueError" in page_window.text
+    assert "1 (100.0%)" in page_window.text, "24h view: 1 failure of 1 total"
+
+
+async def test_actors_page_rejects_unknown_window(
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unknown window value is a clean 400, not a silent all-time read."""
+    schema = module_pg_schema.schema_name
+    app = _make_admin_app(module_pg_pool, schema, monkeypatch, admin_actions_enabled=True)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/admin/actors?window=ludicrous")
+
+    assert resp.status_code == 400
+    assert "ludicrous" in resp.text
+
+
 async def test_actors_page_lists_actor_config_rows(
     clean_pg_conn: asyncpg.Connection,
     module_pg_pool: asyncpg.Pool,

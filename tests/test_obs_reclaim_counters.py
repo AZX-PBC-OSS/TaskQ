@@ -17,6 +17,7 @@ stays the sweep-name total and is pinned separately
 from collections import Counter
 from dataclasses import replace as dc_replace
 from datetime import UTC, datetime, timedelta
+from uuid import UUID
 
 import pytest
 from opentelemetry.sdk.metrics.export import InMemoryMetricReader
@@ -128,7 +129,12 @@ def _make_memory_backend() -> InMemoryBackend:
 
 
 async def _seed_memory_row(
-    backend: InMemoryBackend, holder, actor: str, *, max_attempts: int, cancel_phase: int
+    backend: InMemoryBackend,
+    holder: UUID,
+    actor: str,
+    *,
+    max_attempts: int,
+    cancel_phase: int,
 ) -> None:
     """Seed one running row whose lease expired, in the twin's established
     seeding shape (test_rt_sweeps_parity.py)."""
@@ -202,7 +208,7 @@ async def test_pg_reclaim_increments_per_actor_and_disposition(
 
         holder = new_uuid()
         await conn.execute(
-            f'INSERT INTO "{schema}".workers (id, hostname, pid, queues) '
+            f'INSERT INTO "{schema}".workers (id, hostname, pid, queues) '  # noqa: S608  # Why: schema is a test-fixture identifier, rendered only after apply_pending created it.
             "VALUES ($1, 'test-host', 12345, ARRAY['default'])",
             holder,
         )
