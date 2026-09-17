@@ -33,6 +33,7 @@ from taskq.web.admin._constants import (
 )
 from taskq.web.admin._factory import (
     get_backend,
+    get_base_path,
     get_csrf_token,
     get_pg_pool,
     get_realtime_ctx,
@@ -765,6 +766,7 @@ def register(router: APIRouter) -> None:
         reason: str | None = Query(default=None),
         backend: Backend | None = Depends(get_backend),
         settings: TaskQSettings = Depends(get_settings),
+        base_path: str = Depends(get_base_path),
     ) -> RedirectResponse:
         if not settings.admin_actions_enabled:
             raise HTTPException(
@@ -791,4 +793,8 @@ def register(router: APIRouter) -> None:
 
         await backend.write_cancel_request(JobId(job_id), reason)
 
-        return RedirectResponse(url=f"../../jobs/{job_id}", status_code=303)
+        # The redirect must carry base_path: a relative ../../ URL only
+        # resolves back to the job page when the router is mounted at the
+        # root — under a host prefix it climbs out of the mount and 404s
+        # (or lands in the host's own routes).
+        return RedirectResponse(url=f"{base_path}/jobs/{job_id}", status_code=303)
