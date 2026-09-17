@@ -32,6 +32,7 @@ shared between ``consume_one_job`` and ``_consume_transactional``.
 """
 
 import asyncio
+import time
 import traceback
 from collections.abc import Awaitable, Callable
 from datetime import timedelta
@@ -131,20 +132,33 @@ _TERMINAL_WRITE_INFRA_EXCEPTIONS: tuple[type[BaseException], ...] = (
 )
 
 
-_TERMINAL_WRITE_ATTEMPTS: Final[int] = 3
+_TERMINAL_WRITE_ATTEMPTS: Final[int] = 4
 """How many times one terminal write is attempted before it is reported
-as failed. Three: enough to ride out a connection reset or a
-pool-acquire timeout. The heartbeat keeps renewing the lease for the
-whole window (the job is disowned only after the budget is spent), so
-the lock lease cannot lapse mid-retry."""
+as failed. Four: enough to ride out a connection reset, a pool-acquire
+timeout or a failover of a few hundred milliseconds. The heartbeat keeps
+renewing the lease for the whole window (the job is disowned only after
+the budget is spent), so the lock lease cannot lapse mid-retry."""
 
 _TERMINAL_WRITE_BACKOFF: Final[tuple[timedelta, ...]] = (
     timedelta(milliseconds=50),
     timedelta(milliseconds=200),
+    timedelta(milliseconds=800),
 )
-"""The wait before the second and third attempt. Short and geometric: a
-blip that has not cleared within a quarter of a second is an outage the
-lease-reclaim path owns, not something the consumer should sit on."""
+"""The wait before the second, third and fourth attempt. Geometric and
+just over a second in total: a blip that has not cleared by then is an
+outage the lease-reclaim path owns, and every attempt past it converts
+into an at-least-once re-run of work that already finished, so the
+window is worth a little more than the quarter-second a bare connection
+reset needs."""
+
+_TERMINAL_WRITE_BUDGET: Final[timedelta] = timedelta(seconds=5)
+"""Wall time, from the first attempt, within which a retry may still be
+started. Attempts alone do not bound the window: against a black-holed
+Postgres each attempt costs a full statement timeout, and counting to
+four would hold the consumer slot for four of them. A retry whose wait
+would end past the budget is not made. One statement timeout at the
+default settings — a write still failing after that long is an outage,
+not a blip."""
 
 _TERMINAL_WRITE_JITTER: Final[float] = 0.25
 """Spread on each backoff wait, so every consumer slot that hit the same
@@ -157,6 +171,7 @@ async def _terminal_write_with_retry[T](
     log: structlog.stdlib.BoundLogger,
     job: JobRow,
     write_name: str,
+    monotonic: Callable[[], float] = time.monotonic,
 ) -> T:
     """Run one pool-path terminal write, retrying the infra-failure family.
 
@@ -166,14 +181,18 @@ async def _terminal_write_with_retry[T](
     :data:`_TERMINAL_WRITE_INFRA_EXCEPTIONS` is retried — a fence outcome
     (``False``, ``"noop"``, ``None``) is the backend's answer and returns
     as-is, and any other exception is a defect that stays loud on the
-    first raise. The final infra failure propagates unchanged, so every
-    caller's existing ``terminal-write-failed`` handling is the terminal
-    outcome of an exhausted budget.
+    first raise. The budget is both :data:`_TERMINAL_WRITE_ATTEMPTS` and
+    :data:`_TERMINAL_WRITE_BUDGET` of wall time (read from *monotonic*),
+    whichever is spent first. The final infra failure propagates
+    unchanged, so every caller's existing ``terminal-write-failed``
+    handling is the terminal outcome of an exhausted budget.
 
     Not for ``*_with_conn`` writes: those run on the job's own transaction
     connection, and an infra error there has already aborted the
     transaction — re-issuing the statement on it cannot land.
     """
+    started = monotonic()
+    budget_s = _TERMINAL_WRITE_BUDGET.total_seconds()
     for attempt in range(1, _TERMINAL_WRITE_ATTEMPTS + 1):
         try:
             return await shield_with_retrieval(write())
@@ -181,6 +200,21 @@ async def _terminal_write_with_retry[T](
             if attempt >= _TERMINAL_WRITE_ATTEMPTS:
                 raise
             wait = apply_jitter(_TERMINAL_WRITE_BACKOFF[attempt - 1], _TERMINAL_WRITE_JITTER)
+            elapsed = monotonic() - started
+            if elapsed + wait.total_seconds() > budget_s:
+                log.warning(
+                    "terminal-write-retry-budget-exhausted",
+                    kind="terminal_write_retry_budget_exhausted",
+                    job_id=str(job.id),
+                    actor=job.actor,
+                    write=write_name,
+                    attempt=attempt,
+                    elapsed_ms=int(elapsed * 1000),
+                    budget_ms=int(budget_s * 1000),
+                    infra_error_class=type(infra_exc).__name__,
+                    infra_error_message=str(infra_exc),
+                )
+                raise
             log.warning(
                 "terminal-write-retry",
                 kind="terminal_write_retry",

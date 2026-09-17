@@ -186,9 +186,11 @@ async def test_success_write_lands_after_two_blips() -> None:
 
 
 async def test_write_that_keeps_failing_is_reported_after_the_budget() -> None:
-    """Three failures exhaust the budget: the write is reported as failed
-    exactly once (the existing terminal-write-failed contract), the row
-    stays running for lease reclaim, and no fourth attempt is made."""
+    """Four failures exhaust the attempt budget: the write is reported as
+    failed exactly once (the existing terminal-write-failed contract), the
+    row stays running for lease reclaim, and no fifth attempt is made. The
+    third wait (800 ms) is the one that turns a blip of a few hundred
+    milliseconds into a landed write instead of an at-least-once re-run."""
     backend = _BlippingBackend(failures=10, clock=FakeClock(start=_START))
     job, worker_id = await _running_job(backend)
 
@@ -198,12 +200,60 @@ async def test_write_that_keeps_failing_is_reported_after_the_budget() -> None:
     row = await backend.get(job.id)
     assert row is not None
     assert row.status == "running"
-    assert backend.write_calls == 3
-    assert [e["attempt"] for e in _events(captured, "terminal-write-retry")] == [1, 2]
+    assert backend.write_calls == 4
+    retries = _events(captured, "terminal-write-retry")
+    assert [e["attempt"] for e in retries] == [1, 2, 3]
+    assert [e["retry_in_ms"] for e in retries] == pytest.approx([50, 200, 800], rel=0.25)
     failed = _events(captured, "terminal-write-failed")
     assert len(failed) == 1
     assert failed[0]["infra_error_class"] == "OSError"
     assert failed[0]["job_error_class"] == "ValueError"
+
+
+async def test_slow_failures_are_bounded_by_wall_time_not_only_by_attempts() -> None:
+    """Each attempt against a black-holed Postgres costs a full statement
+    timeout, so counting attempts alone would hold a consumer slot for
+    attempts times the timeout. The budget is wall time from the first attempt: a
+    retry whose wait would end past it is not made, and the exhausted
+    budget is reported the same way."""
+    from taskq.testing.jobs import make_job_row
+    from taskq.worker._handlers import (
+        _TERMINAL_WRITE_BUDGET,
+        _terminal_write_with_retry,
+    )
+
+    now = 0.0
+    attempt_cost = _TERMINAL_WRITE_BUDGET.total_seconds() * 0.6
+
+    def monotonic() -> float:
+        return now
+
+    calls = 0
+
+    async def slow_failing_write() -> bool:
+        nonlocal now, calls
+        calls += 1
+        now += attempt_cost
+        raise TimeoutError("statement timed out")
+
+    with structlog.testing.capture_logs() as captured, pytest.raises(TimeoutError):
+        await _terminal_write_with_retry(
+            slow_failing_write,
+            log=structlog.get_logger("test"),
+            job=make_job_row(),
+            write_name="mark_succeeded",
+            monotonic=monotonic,
+        )
+
+    # Attempt 1 ends at 0.6 of the budget; the 50 ms wait fits, attempt 2 ends
+    # at 1.2 of the budget, and no wait fits after that.
+    assert calls == 2
+    retries = _events(captured, "terminal-write-retry")
+    assert [e["attempt"] for e in retries] == [1]
+    exhausted = _events(captured, "terminal-write-retry-budget-exhausted")
+    assert len(exhausted) == 1
+    assert exhausted[0]["attempt"] == 2
+    assert exhausted[0]["budget_ms"] == int(_TERMINAL_WRITE_BUDGET.total_seconds() * 1000)
 
 
 # ── What the retry never touches: fences and defects ────────────────────

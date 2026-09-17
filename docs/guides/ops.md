@@ -776,10 +776,16 @@ Two more states worth naming because they mean *infrastructure*, not your code:
   releases (interrupts) the job back to the fleet with its attempt refunded instead.
 
 !!! note "Infra failures during the terminal write leave the job `running` — on purpose"
-    If Postgres itself errors while recording the outcome, the row is left `running` and
-    reclaimed by lease expiry (~90 s worst case with defaults) rather than misclassifying an
-    infrastructure blip as your actor's failure. Don't be alarmed by a short-lived `running` row
-    on a dead worker; the sweep owns it.
+    If Postgres itself errors while recording the outcome, the write is retried for about a
+    second (waits of 50, 200 and 800 ms, four attempts, within a 5 s wall-time budget); if it
+    still has not landed, the row is left `running` and reclaimed by lease expiry (~90 s worst
+    case with defaults) rather than misclassifying an infrastructure blip as your actor's
+    failure. Don't be alarmed by a short-lived `running` row on a dead worker; the sweep owns
+    it. **The reclaim re-runs the attempt** — the actor's work finished but its outcome was
+    never recorded, so this is the at-least-once delivery case that does not involve a worker
+    crash. Actors whose side effects are not naturally idempotent should guard them with
+    `idempotency_key` / `unique_for` on the jobs they enqueue and idempotent writes of their
+    own ([§5](#5-fan-out-at-scale-chunks-cursors-idempotency)).
 
 !!! warning "A routine SIGTERM drain sets the same cancel event an operator cancel does"
     `ctx.cancel_event` / `ctx.should_abort()` fire during *every* rolling deploy's drain phase.
