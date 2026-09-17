@@ -1979,6 +1979,17 @@ mechanisms now split the concern:
   costs exactly one transparent retry — nothing was sent, so the retry
   cannot conflict with anything.
 
+For context, the peer doctrine: procrastinate scopes its own
+dead-connection retry to the LISTEN connection only
+(`psycopg_connector.py:313-353`) and never auto-retries query paths.
+Pre-fix TaskQ sat at the opposite pole — any `InternalClientError`,
+including one raised after an acknowledged write, was retried. Post-fix
+TaskQ retries only the provably-nothing-sent case and surfaces ambiguous
+outcomes instead of re-running them: closer to the peer's conservatism
+than base, deliberately not as absolute, because the first-statement
+local failure it still absorbs is provably duplicate-free (nothing
+reached the server).
+
 A mid-QUERY kill is unchanged: it raises
 `ConnectionDoesNotExistError` (a Postgres error, not retried by this
 wrapper) and whether the statement committed before the server died is
