@@ -529,11 +529,17 @@ class HealthServer:
             await self._server.wait_closed()
 
         if self._socket_path is not None:
+            # Unlink only when the inode captured at bind time still names
+            # the file now sitting at the path. A server that never bound —
+            # the collision path, where boot continued while a live peer
+            # kept the file — has no inode, so it can never prove ownership
+            # and never unlinks; deleting the peer's serving surface is
+            # exactly the shutdown-race this guard exists to prevent.
             current_inode: int | None = None
             with contextlib.suppress(OSError):
                 current_inode = os.stat(self._socket_path).st_ino
 
-            if self._socket_inode is None or current_inode == self._socket_inode:
+            if self._socket_inode is not None and current_inode == self._socket_inode:
                 with contextlib.suppress(FileNotFoundError):
                     os.unlink(self._socket_path)
                 logger.info("health-server-stopped", socket_path=self._socket_path)
@@ -541,7 +547,7 @@ class HealthServer:
                 logger.warning(
                     "health-server-stop-skipped-unlink",
                     socket_path=self._socket_path,
-                    reason="socket inode changed since bind; a replacement worker owns this path now",
+                    reason="the socket file at this path is not the one this worker bound",
                 )
 
     async def _handle_unix(
