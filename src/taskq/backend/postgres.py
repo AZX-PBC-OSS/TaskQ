@@ -17,7 +17,7 @@ signals, NOTIFY, and schedule CRUD wiring.
 """
 
 import asyncio
-from collections.abc import Awaitable, Callable, Iterable
+from collections.abc import Awaitable, Callable, Collection, Iterable
 from contextlib import AbstractAsyncContextManager as AsyncContextManager
 from datetime import datetime, timedelta
 from typing import ClassVar, Literal
@@ -470,20 +470,24 @@ class PostgresBackend:
         self,
         worker_id: UUID,
         lock_lease: timedelta,
+        *,
+        disowned: Collection[UUID] = (),
     ) -> int:
         sql = UPDATE_JOBS_LOCK_SQL_TEMPLATE.format(schema=self._schema_name)
         async with self._heartbeat_pool.acquire() as conn:
-            tag = await conn.execute(sql, worker_id, lock_lease)
+            tag = await conn.execute(sql, worker_id, lock_lease, list(disowned))
         return parse_rowcount(tag)
 
     async def extend_reservation_leases(
         self,
         worker_id: UUID,
         lock_lease: timedelta,
+        *,
+        disowned: Collection[UUID] = (),
     ) -> int:
         sql = UPDATE_RESERVATION_LEASES_SQL_TEMPLATE.format(schema=self._schema_name)
         async with self._heartbeat_pool.acquire() as conn:
-            tag = await conn.execute(sql, worker_id, lock_lease)
+            tag = await conn.execute(sql, worker_id, lock_lease, list(disowned))
         return parse_rowcount(tag)
 
     # ── Terminal writes ─────────────────────────────────────────────────

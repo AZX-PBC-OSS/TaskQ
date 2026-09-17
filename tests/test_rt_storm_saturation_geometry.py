@@ -246,6 +246,7 @@ async def test_full_fleet_geometry_saturates_without_livelock(pg_dsn: str) -> No
                     UPDATE_JOBS_LOCK_SQL_TEMPLATE.format(schema=schema),
                     worker_id,
                     _LEASE,
+                    [],
                 )
 
         async def leader_sweep() -> int:

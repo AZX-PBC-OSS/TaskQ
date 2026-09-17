@@ -49,16 +49,6 @@ logger: structlog.stdlib.BoundLogger = get_logger(__name__)
 
 _meter = get_meter()
 
-# The renewal statements come from backend._sql with the worker-and-status
-# predicate every other reader of them shares (the backend's own
-# heartbeat_jobs, the PG fixtures); the disowned exclusion is this loop's
-# concern alone, so it is appended here rather than widening the shared
-# template's parameter list. Both templates end in their WHERE clause, so
-# a conjunct appends cleanly; the reservation template's subquery is
-# closed before the conjunct, so it filters the slot rows by job_id.
-_DISOWNED_JOBS_EXCLUSION_SQL = " AND NOT (id = ANY($3::uuid[]))"
-_DISOWNED_SLOTS_EXCLUSION_SQL = " AND NOT (job_id = ANY($3::uuid[]))"
-
 # Which disowned ids still name a running row locked to this worker: the
 # rest have been reclaimed (re-pended, or claimed by another worker) and
 # leave the set. Only issued on a tick whose set is non-empty.
@@ -89,8 +79,6 @@ async def heartbeat_loop(
         update_jobs_lock_sql,
         update_reservation_leases_sql,
     ) = build_heartbeat_sql(schema)
-    update_jobs_lock_sql += _DISOWNED_JOBS_EXCLUSION_SQL
-    update_reservation_leases_sql += _DISOWNED_SLOTS_EXCLUSION_SQL
     select_still_held_sql = _SELECT_STILL_HELD_SQL_TEMPLATE.format(schema=schema)
 
     while not shutdown.is_set():

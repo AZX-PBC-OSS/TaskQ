@@ -18,7 +18,7 @@ Single-threaded by contract — do not share across threads or event loops.
 """
 
 import asyncio
-from collections.abc import Iterable
+from collections.abc import Collection, Iterable
 from contextlib import AbstractAsyncContextManager as AsyncContextManager
 from dataclasses import replace
 from datetime import datetime, timedelta
@@ -518,11 +518,18 @@ class InMemoryBackend:
         self,
         worker_id: UUID,
         lock_lease: timedelta,
+        *,
+        disowned: Collection[UUID] = (),
     ) -> int:
         now = self._clock.now()
+        excluded = set(disowned)
         count = 0
         for job_id, row in list(self._jobs.items()):
-            if row.status == "running" and row.locked_by_worker == worker_id:
+            if (
+                row.status == "running"
+                and row.locked_by_worker == worker_id
+                and job_id not in excluded
+            ):
                 self._jobs[job_id] = replace(
                     row,
                     lock_expires_at=now + lock_lease,
@@ -535,11 +542,18 @@ class InMemoryBackend:
         self,
         worker_id: UUID,
         lock_lease: timedelta,
+        *,
+        disowned: Collection[UUID] = (),
     ) -> int:
         now = self._clock.now()
+        excluded = set(disowned)
         count = 0
         for job_id, row in list(self._jobs.items()):
-            if row.status == "running" and row.locked_by_worker == worker_id:
+            if (
+                row.status == "running"
+                and row.locked_by_worker == worker_id
+                and job_id not in excluded
+            ):
                 if self._slot_table is not None:
                     count += self._slot_table.extend_leases_for_job(job_id, now, lock_lease)
                 else:

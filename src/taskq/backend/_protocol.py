@@ -12,7 +12,7 @@ creating a circular dependency through the re-export boundary in
 
 import asyncio
 import re
-from collections.abc import Container, Iterable, Sequence
+from collections.abc import Collection, Container, Iterable, Sequence
 from contextlib import AbstractAsyncContextManager as AsyncContextManager
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -1690,13 +1690,26 @@ class Backend(Protocol):
         self,
         worker_id: UUID,
         lock_lease: timedelta,
-    ) -> int: ...
+        *,
+        disowned: Collection[UUID] = (),
+    ) -> int:
+        """Renew the lock lease of every running job *worker_id* holds,
+        except the *disowned* ids — rows the worker could not record an
+        outcome for, whose leases must lapse for the reclaim sweep. Returns
+        the number of rows renewed."""
+        ...
 
     async def extend_reservation_leases(
         self,
         worker_id: UUID,
         lock_lease: timedelta,
-    ) -> int: ...
+        *,
+        disowned: Collection[UUID] = (),
+    ) -> int:
+        """Renew the reservation-slot leases of every running job
+        *worker_id* holds, with the same *disowned* exclusion as
+        :meth:`heartbeat_jobs`. Returns the number of slots renewed."""
+        ...
 
     # ── Terminal writes ─────────────────────────────────────────────────
     async def mark_succeeded(
