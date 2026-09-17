@@ -527,7 +527,7 @@ Non-leader workers re-attempt election every `heartbeat_interval` seconds.
 
 ## Graceful shutdown
 
-SIGTERM (or SIGINT) triggers `orchestrate_shutdown`. A second signal fast-advances CANCELLING → FORCING. A third signal calls `sys.exit(1)` (Kubernetes SIGKILL is the hard backstop).
+SIGTERM (or SIGINT) triggers `orchestrate_shutdown`. A second signal fast-advances CANCELLING → FORCING. A third signal calls `sys.exit(1)` (Kubernetes SIGKILL is the hard backstop). A third signal sent while the tracked-actor reap gate is waiting exits through `sys.exit(1)`'s interpreter unwind, which joins the default executor like any join: a still-running actor thread is waited out, not killed. That shape is operator-forced, predates this design, and the two-legged promise below does not cover it.
 
 **Phase sequence:**
 
