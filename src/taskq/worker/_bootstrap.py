@@ -277,9 +277,9 @@ def _slot_pool_factory(
 
     Provider-backed when *pg_credential_provider* is given — the
     documented managed-identity path — so every physical connection
-    authenticates with a freshly fetched credential and a SIGHUP
-    rebuild picks up a changed username. DSN-built otherwise, like the
-    role pools when the caller supplies none.
+    authenticates with a freshly fetched token and a SIGHUP rebuild
+    rotates a username-bearing pair. DSN-built otherwise, like the role
+    pools when the caller supplies none.
 
     *session_settings* are startup GUCs applied to every connection the
     pool opens — the registered connection's session state, carried

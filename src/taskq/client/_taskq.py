@@ -717,8 +717,8 @@ class TaskQ:
         gives you. It is not needed for the ordinary token refresh that
         :func:`taskq.auth.make_pg_pool_factory` already does per physical
         connection; it is how you drop sessions opened under a revoked
-        credential, and the only way to pick up a **changed username**, which
-        asyncpg resolves once per pool.
+        credential, and the only way to rotate a **username-bearing pair**
+        such as a Vault lease, since asyncpg resolves ``user=`` once per pool.
 
         Raises :class:`RuntimeError` if the client is not open, or if the pool
         is caller-owned (``pool=``) - TaskQ must never close a pool it does not

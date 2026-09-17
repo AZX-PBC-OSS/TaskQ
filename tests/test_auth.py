@@ -754,11 +754,12 @@ async def test_password_callable_logs_provider_failure() -> None:
     assert entry["log_level"] == "error"
 
 
-async def test_password_callable_rejects_changed_username() -> None:
-    """asyncpg resolves `user=` once per pool and only `password=` per
-    connection, so a provider that rotates its USERNAME cannot be honoured in
-    place. That must fail loudly rather than pair a fresh password with the
-    stale username (which would authenticate as the wrong role)."""
+async def test_password_callable_pins_a_username_bearing_pair() -> None:
+    """A credential that carries a username is one issued pair (Vault dynamic
+    database credentials). asyncpg resolves `user=` once per pool, so every
+    physical connection must authenticate with THAT pair's password - never
+    with a re-fetched password belonging to a different username - and the
+    provider is not consulted again until the pool is rebuilt."""
     provider = _RotatingPgProvider(password="pw-1", username="vault-user-a")
     factory = make_pg_pool_factory("postgresql://old@host/db", provider)
 
@@ -770,11 +771,20 @@ async def test_password_callable_rejects_changed_username() -> None:
     password_arg = call_kwargs["password"]
     assert await _pw(password_arg) == "pw-1"
 
-    # Vault issues a brand-new username/password pair on rotation.
+    # Vault issues a brand-new username/password pair on the next fetch; the
+    # live pool is still pinned to vault-user-a and keeps that pair's password.
     provider.username = "vault-user-b"
     provider.password = "pw-2"
-    with pytest.raises(RuntimeError, match="changed the username"):
-        await _pw(password_arg)
+    assert await _pw(password_arg) == "pw-1"
+    assert await _pw(password_arg) == "pw-1"
+    assert provider.calls == 1
+
+    # The pool rebuild (SIGHUP / reload_credentials) is where the pair rotates.
+    with patch("asyncpg.create_pool", new=AsyncMock(return_value=MagicMock())) as mock_rebuild:
+        await factory()
+    rebuilt = mock_rebuild.call_args.kwargs
+    assert rebuilt["user"] == "vault-user-b"
+    assert await _pw(rebuilt["password"]) == "pw-2"
 
 
 async def test_password_callable_allows_username_none_providers() -> None:

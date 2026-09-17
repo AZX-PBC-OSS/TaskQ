@@ -305,12 +305,14 @@ behaviour before this changed; it no longer is.
 Two things per-connection refresh cannot do, for which the
 **credential hot-reload** below is still the answer:
 
-* **A changed username.** asyncpg resolves `user=` once per pool and
-  accepts a callable only for `password=`. Providers that issue a fresh
-  username alongside each password (HashiCorp Vault dynamic database
-  credentials) need a pool rebuild; the password callable raises a
-  `RuntimeError` naming this rather than pairing a fresh password with
-  the stale username.
+* **A username-bearing pair.** asyncpg resolves `user=` once per pool
+  and accepts a callable only for `password=`, and a dynamic username is
+  only valid with the password issued alongside it. Providers that issue
+  a fresh username alongside each password (HashiCorp Vault dynamic
+  database credentials) therefore pin one pair per pool: every physical
+  connection authenticates with that pair's password, and the pair is
+  replaced by the pool rebuild. Schedule the reload shorter than the
+  lease TTL.
 * **Forcing a full pool rebuild** - e.g. to drop sessions opened under a
   revoked credential, or after a DSN/endpoint change.
 
@@ -547,8 +549,18 @@ WorkerConnections(
 Vault's database secrets engine issues a **fresh username + password** on
 each `generate_credentials` call, with a configurable lease TTL. Unlike
 token providers, `PgCredential.username` is always set — the DSN's user
-is overridden. `hvac` is synchronous; the provider offloads
-`generate_credentials` to a thread via `asyncio.to_thread`.
+is overridden — and the pair is only valid together, so the factory
+builders pin **one lease per pool / dedicated connection**: `user=` is
+the lease's username and every physical connection authenticates with
+that lease's password (a pool never burns a lease per connection).
+Rotation is the pool rebuild: run the worker with
+`TASKQ_RELOAD_INTERVAL` (or send `SIGHUP`) at an interval shorter than
+the role's lease TTL so each pool is rebuilt on a fresh lease before
+Vault revokes the previous user. Each issued lease is logged as
+`vault-lease-issued` with its `lease_id` and `lease_duration`, so the
+reload interval can be checked against the TTL Vault actually granted.
+`hvac` is synchronous; the provider offloads `generate_credentials` to a
+thread via `asyncio.to_thread`.
 
 **Prerequisites**: enable the database secrets engine; configure a
 connection and role pointing at your Postgres. The DSN's host/port/dbname
@@ -825,8 +837,9 @@ Note that `reload_credentials()` is not needed for ordinary token refresh:
 `make_pg_pool_factory` passes `password=` to asyncpg as a callable, so every
 *new physical connection* already authenticates with a freshly fetched
 credential. Reload is how you drop sessions opened under a **revoked**
-credential, and the only way to pick up a **changed username** (asyncpg
-resolves `user=` once per pool).
+credential, and the only way to rotate a **username-bearing pair** such as
+a Vault lease (asyncpg resolves `user=` once per pool, so the pool stays on
+the pair it was built with).
 
 ### LISTEN transport
 
