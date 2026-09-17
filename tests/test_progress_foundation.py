@@ -198,6 +198,7 @@ def test_progress_buffer_fields() -> None:
         "attempt",
         "pending_seq_delta",
         "pending_state",
+        "encoded_data",
         "dirty",
         "last_flush_at",
     }
@@ -214,6 +215,7 @@ def test_progress_buffer_construction_with_defaults() -> None:
     assert buf.attempt == 0
     assert buf.pending_seq_delta == 0
     assert buf.pending_state == {}
+    assert buf.encoded_data is None
     assert buf.dirty is False
     assert buf.last_flush_at == 0.0
 

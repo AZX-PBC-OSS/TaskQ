@@ -8,24 +8,35 @@ the fencing gate applied per-row over the unnest arrays.
 import asyncio
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager, suppress
+from datetime import UTC, datetime
 from typing import cast
 from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID
 
+import orjson
 import pytest
+import structlog
 from hypothesis import given
 from hypothesis import settings as hyp_settings
 from hypothesis import strategies as st
 
 from taskq._ids import new_uuid
+from taskq._json import dumps, dumps_jsonb_str, embed_encoded
+from taskq.client._enqueuer import SubJobEnqueuer
+from taskq.context import JobContext
+from taskq.obs import bind_job_context
 from taskq.progress._buffer import _progress_after_flush, _ProgressBuffer, _snapshot_progress
 from taskq.progress._flush import (
     _FLUSH_BATCH_ROWS,  # pyright: ignore[reportPrivateUsage]  # Why: the pin asserts the batch bound itself — the doctrine constant is the contract under test.
     _FLUSH_MAX_BATCHES_PER_TICK,  # pyright: ignore[reportPrivateUsage]  # Why: the pin asserts the tick cap itself — the doctrine constant is the contract under test.
     _flush_buffer,
     _flush_buffer_immediate,
+    _flush_dirty_set,
     progress_flush_loop,
 )
+from taskq.settings import WorkerSettings
+from taskq.testing.clock import FakeClock
+from taskq.testing.in_memory import InMemoryBackend, PassthroughPayload
 
 _JOB_ID = UUID("aaaaaaaa-bbbb-cccc-dddd-000000000001")
 _JOB_ID_B = UUID("aaaaaaaa-bbbb-cccc-dddd-000000000002")
@@ -304,6 +315,145 @@ async def test_flush_buffer_rejects_nul_before_touching_connection() -> None:
     conn.fetchrow.assert_not_awaited()
     # The buffer is left dirty (not falsely marked flushed) so the state is
     # never silently discarded.
+    assert buf.dirty is True
+
+
+# ── The flush binds the data bytes ctx.progress already encoded ────
+
+
+def _make_progress_context(
+    buffers: dict[UUID, _ProgressBuffer], job_id: UUID
+) -> "JobContext[PassthroughPayload]":
+    """A JobContext wired to *buffers* with worker settings, no Redis client."""
+    backend = InMemoryBackend(clock=FakeClock(datetime(2025, 1, 1, tzinfo=UTC)))
+    return JobContext(
+        job_id=job_id,
+        actor="test_actor",
+        queue="default",
+        attempt=1,
+        worker_id=backend._worker_id,  # type: ignore[reportPrivateUsage] # Why: fixture helper accesses private field for test setup.
+        payload=PassthroughPayload(),
+        cancel_event=asyncio.Event(),
+        jobs=SubJobEnqueuer(loop_scope_resolved=None, worker_pool=None, backend=backend),
+        log=bind_job_context(
+            structlog.get_logger("test"),
+            job_id=job_id,
+            actor="test_actor",
+            queue="default",
+            attempt=1,
+            identity_key=None,
+            trace_id="",
+        ),
+        _progress_buffers=buffers,
+        _worker_settings=WorkerSettings.load_from_dict({}),
+    )
+
+
+def _encodes_of(data: dict[str, object], encoded: list[object]) -> int:
+    """How many orjson encodes walked *data*, at top level or as a value."""
+    return sum(
+        1
+        for value in encoded
+        if value is data or (isinstance(value, dict) and any(v is data for v in value.values()))  # pyright: ignore[reportUnknownVariableType, reportUnknownArgumentType]  # Why: the recorded encoder arguments are untyped; only identity is inspected.
+    )
+
+
+async def _flush_one(
+    surface: str,
+    pool: MagicMock,
+    conn: AsyncMock,
+    job_id: UUID,
+    buffers: dict[UUID, _ProgressBuffer],
+) -> str:
+    """Flush *job_id* through one of the two statement surfaces; return the bound state document."""
+    buffer = buffers[job_id]
+    if surface == "single_row":
+        await _flush_buffer(pool, "taskq_test", job_id, _WORKER_ID, buffer, buffers)
+        bound = conn.fetchrow.await_args
+    else:
+        await _flush_dirty_set(pool, "taskq_test", _WORKER_ID, buffers, [(job_id, buffer)])
+        bound = conn.fetch.await_args
+    assert bound is not None
+    state_docs = cast("list[str]", bound.args[3])
+    return state_docs[0]
+
+
+@pytest.mark.parametrize("surface", ["single_row", "tick_batch"])
+async def test_flush_binds_the_data_bytes_ctx_progress_already_encoded(
+    monkeypatch: pytest.MonkeyPatch, surface: str
+) -> None:
+    """``ctx.progress`` encodes ``data`` once to enforce the size cap; the
+    flush binds those bytes rather than walking the dict a second time,
+    and the document it binds is byte-identical to a fresh encode of the
+    snapshot — key order, nesting and escaping included."""
+    encoded: list[object] = []
+    real_dumps = orjson.dumps
+
+    def recording_dumps(value: object, *args: object, **kwargs: object) -> bytes:
+        encoded.append(value)
+        return real_dumps(value, *args, **kwargs)  # type: ignore[arg-type]  # Why: pass-through of orjson's own keyword options.
+
+    monkeypatch.setattr(orjson, "dumps", recording_dumps)
+
+    job_id = UUID("00000000-0000-0000-0000-aabbccddee02")
+    buf = _ProgressBuffer(job_id=job_id, base_seq=0)
+    buffers: dict[UUID, _ProgressBuffer] = {job_id: buf}
+    ctx = _make_progress_context(buffers, job_id)
+    data: dict[str, object] = {
+        "rows": [{"id": i, "name": f"item-{i}", "u": "é\n"} for i in range(50)]
+    }
+
+    await ctx.progress(step=1, detail="halfway", data=data)
+    pool, conn = _make_pool_with_conn(returning_row={"progress_seq": 1})
+    bound_doc = await _flush_one(surface, pool, conn, job_id, buffers)
+    data_encodes = _encodes_of(data, encoded)
+
+    assert bound_doc == dumps_jsonb_str({"step": 1, "detail": "halfway", "data": data})
+    assert buf.dirty is False
+    assert data_encodes == 1, "data was encoded again for the flush"
+
+
+_json_ints = st.integers(min_value=-(2**63), max_value=2**64 - 1)
+_json_scalars = st.none() | st.booleans() | _json_ints | st.floats(allow_nan=False) | st.text()
+_json_values = st.recursive(
+    _json_scalars,
+    lambda children: (
+        st.lists(children, max_size=4) | st.dictionaries(st.text(), children, max_size=4)
+    ),
+    max_leaves=12,
+)
+
+
+@given(data=st.dictionaries(st.text(), _json_values, max_size=4), step=_json_ints)
+@hyp_settings(max_examples=200)
+def test_embedded_data_bytes_render_the_same_document(data: dict[str, object], step: int) -> None:
+    """Embedding ``dumps(data)`` in the state document is byte-identical to
+    encoding ``data`` in place, for any JSON-shaped ``data`` — a NUL
+    included, so the jsonb guard's byte scan sees the same bytes."""
+    in_place = dumps({"step": step, "data": data})
+    embedded = dumps({"step": step, "data": embed_encoded(dumps(data))})
+    assert embedded == in_place
+
+
+@pytest.mark.parametrize("surface", ["single_row", "tick_batch"])
+async def test_flush_rejects_a_nul_inside_pre_encoded_data(surface: str) -> None:
+    """The jsonb NUL guard fires on the bytes the flush binds, whether it
+    encoded them itself or reused ``ctx.progress``'s: the statement never
+    reaches the connection and the buffer stays dirty."""
+    job_id = UUID("00000000-0000-0000-0000-aabbccddee03")
+    buf = _ProgressBuffer(job_id=job_id, base_seq=0)
+    buffers: dict[UUID, _ProgressBuffer] = {job_id: buf}
+    ctx = _make_progress_context(buffers, job_id)
+
+    await ctx.progress(data={"path": "bad\x00value"})
+    pool, conn = _make_pool_with_conn(returning_row={"progress_seq": 1})
+    if surface == "single_row":
+        await _flush_buffer(pool, "taskq_test", job_id, _WORKER_ID, buf, buffers)
+    else:
+        await _flush_dirty_set(pool, "taskq_test", _WORKER_ID, buffers, [(job_id, buf)])
+
+    conn.fetchrow.assert_not_awaited()
+    conn.fetch.assert_not_awaited()
     assert buf.dirty is True
 
 

@@ -20,6 +20,7 @@ from pydantic import BaseModel
 
 from taskq._json import dumps
 from taskq.exceptions import ProgressTooLarge
+from taskq.progress._buffer import _EncodedProgressData
 from taskq.progress._publish import _publish_progress_event
 
 if TYPE_CHECKING:
@@ -193,6 +194,7 @@ class JobContext[P: BaseModel]:
         publishing to Redis are logged and recorded as a metric, never
         raised here.
         """
+        data_json: bytes | None = None
         if (data is not None or detail is not None) and self._worker_settings is not None:
             # Load-bearing serialization, not redundant with the publish
             # path's ``model_dump_json``: this is the only
@@ -206,13 +208,15 @@ class JobContext[P: BaseModel]:
             # ``Json[dict]``-typed field rejects dict construction outright
             # and would change the wire format; verified against pydantic
             # 2.13). The double serialization of ``data`` (here + the event
-            # dump) is therefore the price of the synchronous-raise contract;
-            # the flush's re-serialization is a separate (PG) boundary.
+            # dump) is therefore the price of the synchronous-raise contract.
+            # The flush is not a third: the bytes measured here travel with
+            # the dict on the buffer and are bound to the jsonb parameter
+            # as-is.
             if data is not None:
-                serialised_len = len(dumps(data))
+                data_json = dumps(data)
                 limit = self._worker_settings.progress_data_max_bytes
-                if serialised_len > limit:
-                    raise ProgressTooLarge(limit=limit, actual=serialised_len)
+                if len(data_json) > limit:
+                    raise ProgressTooLarge(limit=limit, actual=len(data_json))
             if detail is not None:
                 # The detail string passes through the same publish-time
                 # serialization ``data`` does: an unencodable detail (a lone
@@ -249,6 +253,9 @@ class JobContext[P: BaseModel]:
             buffer.pending_state["detail"] = detail
         if data is not None:
             buffer.pending_state["data"] = data
+            buffer.encoded_data = (
+                _EncodedProgressData(source=data, json=data_json) if data_json is not None else None
+            )
         buffer.dirty = True
 
         seq = buffer.base_seq + buffer.pending_seq_delta

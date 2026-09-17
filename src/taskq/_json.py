@@ -27,6 +27,7 @@ __all__ = [
     "dumps",
     "dumps_jsonb_str",
     "dumps_str",
+    "embed_encoded",
     "loads",
     "sanitize_nul_str",
     "sanitize_surrogates",
@@ -112,6 +113,18 @@ def dumps(value: Any, /) -> bytes:
         )
     except TypeError as exc:
         raise UnencodableValue(str(exc)) from exc
+
+
+def embed_encoded(data: bytes, /) -> orjson.Fragment:
+    """Wrap :func:`dumps` output so a containing document embeds it verbatim.
+
+    orjson emits a nested value exactly as it emits that value at top
+    level, so a document built around the embedded bytes is byte-identical
+    to one that encodes the original value in place — for the price of a
+    copy of the bytes rather than a second walk of the value. The bytes
+    must be :func:`dumps` output: orjson embeds a fragment unvalidated.
+    """
+    return orjson.Fragment(data)
 
 
 def dumps_str(value: Any, /) -> str:

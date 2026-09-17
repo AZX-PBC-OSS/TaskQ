@@ -8,7 +8,7 @@ from uuid import UUID
 import asyncpg
 import structlog
 
-from taskq._json import dumps_jsonb_str
+from taskq._json import dumps_jsonb_str, embed_encoded
 from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: canonical identifier regex; copying would drift the validation pattern.
 )
@@ -103,6 +103,22 @@ def _drop_fenced_out_buffer(
         del progress_buffers[job_id]
 
 
+def _state_document(buffer: _ProgressBuffer, snapshot_state: dict[str, object]) -> str:
+    """Render a snapshot's ``progress_state`` merge document for the jsonb bind.
+
+    A ``data`` dict that ``ctx.progress`` already encoded for its size cap
+    is embedded as those bytes rather than walked again; the document is
+    byte-identical either way (see :func:`taskq._json.embed_encoded`), and
+    the jsonb NUL guard scans the embedded bytes exactly as it scans
+    freshly encoded ones. The bytes are used only while the snapshot's
+    ``data`` is the very dict they encode.
+    """
+    encoded = buffer.encoded_data
+    if encoded is None or snapshot_state.get("data") is not encoded.source:
+        return dumps_jsonb_str(snapshot_state)
+    return dumps_jsonb_str({**snapshot_state, "data": embed_encoded(encoded.json)})
+
+
 def _retire_flushed_snapshot(
     buffer: _ProgressBuffer,
     returned_seq: int,
@@ -116,13 +132,16 @@ def _retire_flushed_snapshot(
     place; retiring only what was actually flushed preserves that late
     update on top of the new base (seq stays monotone). A key re-written
     during the await (same or different value) survives the drop so the
-    next flush picks it up.
+    next flush picks it up. The encoded ``data`` bytes are released with
+    the ``data`` entry they stood in for.
     """
     buffer.base_seq = returned_seq
     buffer.pending_seq_delta -= snapshot_delta
     for key, snapshotted_value in snapshot_state.items():
         if key in buffer.pending_state and buffer.pending_state[key] == snapshotted_value:
             del buffer.pending_state[key]
+    if "data" not in buffer.pending_state:
+        buffer.encoded_data = None
     buffer.dirty = buffer.pending_seq_delta != 0 or bool(buffer.pending_state)
     buffer.last_flush_at = asyncio.get_running_loop().time()
 
@@ -164,7 +183,7 @@ async def _flush_buffer(
                     sql,
                     [job_id],
                     [snapshot_delta],
-                    [dumps_jsonb_str(snapshot_state)],
+                    [_state_document(buffer, snapshot_state)],
                     [buffer.attempt],
                     worker_id,
                 )
@@ -276,7 +295,7 @@ async def _flush_dirty_set(
         snapshot_delta = buffer.pending_seq_delta
         snapshot_state = dict(buffer.pending_state)
         try:
-            state_doc = dumps_jsonb_str(snapshot_state)
+            state_doc = _state_document(buffer, snapshot_state)
         except ValueError as exc:
             # The jsonb NUL guard: a permanent data defect in this one
             # row. Skipped and left dirty so the next tick retries (and
