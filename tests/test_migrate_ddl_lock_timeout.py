@@ -94,6 +94,47 @@ async def test_default_bound_is_thirty_seconds(monkeypatch: Any) -> None:
     assert "SET LOCAL lock_timeout = 30000" in conn.executed
 
 
+async def test_sub_millisecond_bound_is_refused(monkeypatch: Any) -> None:
+    """``lock_timeout`` is an integer number of milliseconds; a bound below
+    one millisecond would render as ``0``, which Postgres reads as "wait
+    indefinitely" — the inverse of what the caller asked for, silently."""
+    migration = _migration("SELECT 1;", use_transaction=True)
+    monkeypatch.setattr(migrate_mod, "discover", lambda: [migration])
+    conn = _RecordingConn()
+
+    with pytest.raises(ValueError, match="at least one millisecond"):
+        await migrate_mod.apply_pending(conn, schema="taskq", ddl_lock_timeout=0.0005)  # type: ignore[arg-type]
+
+    assert conn.executed == [], "a refused bound must run nothing"
+
+
+@pytest.mark.parametrize(
+    ("ddl_lock_timeout", "rendered"),
+    [(0.001, 1), (0.0019, 1), (1.5, 1500)],
+    ids=["one-ms", "just-under-two-ms", "one-and-a-half-s"],
+)
+async def test_bounds_of_a_millisecond_or_more_render_a_nonzero_wait(
+    monkeypatch: Any, ddl_lock_timeout: float, rendered: int
+) -> None:
+    migration = _migration("SELECT 1;", use_transaction=True)
+    monkeypatch.setattr(migrate_mod, "discover", lambda: [migration])
+    conn = _RecordingConn()
+
+    await migrate_mod.apply_pending(conn, schema="taskq", ddl_lock_timeout=ddl_lock_timeout)  # type: ignore[arg-type]
+
+    assert f"SET LOCAL lock_timeout = {rendered}" in conn.executed
+
+
+async def test_zero_means_wait_indefinitely_and_sets_no_bound(monkeypatch: Any) -> None:
+    migration = _migration("SELECT 1;", use_transaction=True)
+    monkeypatch.setattr(migrate_mod, "discover", lambda: [migration])
+    conn = _RecordingConn()
+
+    await migrate_mod.apply_pending(conn, schema="taskq", ddl_lock_timeout=0)  # type: ignore[arg-type]
+
+    assert not any("lock_timeout" in sql for sql in conn.executed)
+
+
 async def test_no_transaction_migration_keeps_the_unbounded_wait(monkeypatch: Any) -> None:
     """``-- taskq:no-transaction`` files run statement by statement with no
     transaction to scope a bound to; their CONCURRENTLY waits are meant to
