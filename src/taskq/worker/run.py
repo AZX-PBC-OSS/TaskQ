@@ -211,8 +211,9 @@ async def producer_loop(
 
     1. Waits for a wake signal (NOTIFY-driven ``asyncio.Event``) or the
        ``poll_interval`` fallback timer — whichever fires first.
-    2. Calls ``backend.dispatch_batch()`` to atomically claim up to
-       ``local_queue.maxsize - local_queue.qsize()`` pending jobs
+    2. Calls ``backend.dispatch_batch()`` to atomically claim up to the
+       worker's genuinely free slots — ``local_queue.maxsize -
+       local_queue.qsize() - active_jobs.count()`` pending jobs
        (pending → running) using ``FOR UPDATE SKIP LOCKED``.
     3. Puts each returned :class:`JobRow` onto ``local_queue`` for the
        consumer tasks.
@@ -222,12 +223,28 @@ async def producer_loop(
     round, so a burst of wakes or freed slots costs one round rather than
     one per trigger; a full round re-claims immediately.
 
+    Slot accounting (#229): a worker with ``max_concurrency`` slots may
+    hold at most that many rows locked at once — the claim sizes by the
+    slots actually free (queue emptiness minus jobs actively running),
+    not by queue emptiness alone, which allowed up to 2x
+    ``max_concurrency`` rows locked (a full local queue while every
+    consumer was busy still looked like ``max_concurrency`` free slots:
+    double reclaim exposure on a crash, and head-of-line latency behind
+    long jobs while peer workers idle). The transient window between a
+    consumer's ``get()`` and the job's ``active_jobs`` register is
+    uncounted for one scheduler step (bounded by the consumer count);
+    the completion-side slot frees at the consumer's ``deregister``, and
+    the wake the consumer sets there re-arms this producer the moment
+    accounting settles — no claim waits for the next poll tick.
+
     Exits cleanly when either ``shutdown_event`` or ``producer_stop_event``
     is set.
 
-    ``slot_freed_event`` is set by the consumer loops each time a
-    ``local_queue.get()`` drains a slot; the bootstrap wires one shared
-    event into this loop and every consumer. ``rng`` supplies the
+    ``slot_freed_event`` is set by the consumer loops at the two
+    slot-release points — when a ``local_queue.get()`` drains a queue
+    slot, and when a job's ``active_jobs`` registration ends; the
+    bootstrap wires one shared event into this loop and every consumer.
+    ``rng`` supplies the
     fallback-poll jitter (a test seam; production uses the module RNG
     seeded per process). Both default to standalone behaviour: a private
     event nobody sets degrades the slot-refill wait to the fallback
@@ -243,10 +260,12 @@ async def producer_loop(
     pooled = bool(getattr(settings, "pg_is_pooled", False))
     poll_interval = settings.notify_poll_interval if notify_enabled else settings.poll_interval
     rng_source = rng if rng is not None else _PRODUCER_RNG
-    # Wakes this producer the moment a consumer's local_queue.get()
-    # drains a slot (see the saturation branch below). None keeps the
-    # loop standalone: a private event nobody sets degrades the bounded
-    # wait to exactly the fixed-cadence poll it replaces.
+    # Wakes this producer at the consumers' two slot-release points: a
+    # local_queue.get() draining a queue slot, and a job's active_jobs
+    # deregister freeing an active slot (see the saturation branch
+    # below). None keeps the loop standalone: a private event nobody
+    # sets degrades the bounded wait to exactly the fixed-cadence poll
+    # it replaces.
     slot_freed = slot_freed_event if slot_freed_event is not None else asyncio.Event()
 
     _producer_log.info(
@@ -287,14 +306,27 @@ async def producer_loop(
 
         while not (shutdown_event.is_set() or producer_stop_event.is_set()):
             deps.liveness.tick("producer", period=poll_interval)
-            available = local_queue.maxsize - local_queue.qsize()
+            # The worker's genuinely free slots (#229): every slot is
+            # either empty, lent to a queued row (qsize), or occupied by
+            # a running job (active_jobs). Sizing the claim by queue
+            # emptiness alone counted a fully-busy worker's slots as
+            # free whenever its queue had drained — up to 2x
+            # max_concurrency rows locked fleet-wide, 2x the reclaim
+            # exposure on a crash, and pending work locked behind long
+            # jobs while peer workers idled. The get()-to-register
+            # window (a row taken from the queue but not yet in
+            # active_jobs) is one scheduler step wide and bounded by the
+            # consumer count; the reverse — a row finished but not yet
+            # deregistered — delays only its own slot's re-claim until
+            # the deregister-side wake, never a poll tick.
+            available = local_queue.maxsize - local_queue.qsize() - deps.active_jobs.count()
             if available <= 0:
                 # All consumer slots busy and the local queue full. A
-                # consumer's get() is what frees a slot from this
-                # producer's accounting — qsize drops there, not at job
-                # completion — and the consumer loops set slot_freed at
-                # exactly that point, so the next claim begins the
-                # moment a slot frees instead of on the next poll tick.
+                # consumer's get() frees a queue slot and a job's
+                # completion (deregister) frees an active slot — the
+                # consumer loops set slot_freed at exactly those two
+                # points, so the next claim begins the moment either
+                # lands instead of on the next poll tick.
                 # Bounded, not bare: an event that is never set (broken
                 # wiring, a consumer-less worker) must still leave this
                 # loop re-checking on the fallback cadence.
@@ -569,12 +601,11 @@ async def consumer_loop_stub(
 
         job: JobRow = q_get.result()
 
-        # Slot-release point: the get() above dropped qsize by one, so a
-        # saturated producer can claim again — wake it now (see
-        # producer_loop's saturation branch). Not at job completion: the
-        # slot was handed back at get(), and a completion-time signal
-        # races the producer's availability check against this loop's
-        # next get().
+        # Slot-release point #1 of 2 (#229): the get() above dropped
+        # qsize by one, so a producer held up on queue capacity can
+        # claim again — wake it now. Point #2 is the deregister at the
+        # end of this iteration (the active-side slot), because the
+        # producer's availability subtracts active jobs too.
         if slot_freed_event is not None:
             slot_freed_event.set()
 
@@ -648,6 +679,13 @@ async def consumer_loop_stub(
 
             finally:
                 await deps.active_jobs.deregister(job.id)
+                # Slot-release point #2 (#229): the producer's
+                # availability subtracts active jobs, so this slot
+                # frees at the deregister above, not at the get() that
+                # only lent the queue slot — wake the producer the
+                # moment accounting settles.
+                if slot_freed_event is not None:
+                    slot_freed_event.set()
 
 
 async def di_consumer_loop(
@@ -728,13 +766,13 @@ async def di_consumer_loop(
 
         job: JobRow = q_get.result()
 
-        # Slot-release point: the get() above dropped qsize by one, so a
-        # saturated producer can claim again — wake it now (see
-        # producer_loop's saturation branch). Not at job completion: the
-        # slot was handed back at get(), and a completion-time signal
-        # races the producer's availability check against this loop's
-        # next get(). Fires on every iteration — every exit path
-        # (success, failure, snooze, not-found release) passes it.
+        # Slot-release point #1 of 2 (#229): the get() above dropped
+        # qsize by one, so a producer held up on queue capacity can
+        # claim again — wake it now. Point #2 is the finally around
+        # dispatch_one_job below (the active-side slot), because the
+        # producer's availability subtracts active jobs too. Fires on
+        # every iteration — every exit path (success, failure, snooze,
+        # not-found release) passes it.
         if slot_freed_event is not None:
             slot_freed_event.set()
 
@@ -833,6 +871,19 @@ async def di_consumer_loop(
         except Exception:
             _consumer_log.exception("dispatch-failed", job_id=str(job.id))
             deps.drain_failures += 1
+        finally:
+            # Slot-release point #2 (#229): the producer's availability
+            # subtracts active jobs, so the slot this job held frees at
+            # the deregister dispatch_one_job's own finally has run by
+            # every path that reaches here — not at the get() that only
+            # lent the queue slot. The wake is what re-arms the producer
+            # the moment accounting settles; without it a finished job's
+            # replacement claim would wait for the fallback poll tick.
+            # (The SlotPoolAcquireError path never registered, so its
+            # wake is redundant with the get()-point one — bounded, and
+            # the price of one unconditional release point.)
+            if slot_freed_event is not None:
+                slot_freed_event.set()
 
 
 async def register_worker(pool: asyncpg.Pool, settings: WorkerSettings) -> UUID:

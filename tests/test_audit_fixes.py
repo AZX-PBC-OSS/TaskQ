@@ -128,6 +128,10 @@ async def test_producer_loop_single_dispatch_on_empty_poll() -> None:
 
     deps = MagicMock()
     deps.settings = settings
+    # The producer's availability subtracts active jobs (#229): an
+    # empty-poll round with an empty queue and no active jobs must size
+    # at the full slot count.
+    deps.active_jobs.count.return_value = 0
 
     iteration = 0
 

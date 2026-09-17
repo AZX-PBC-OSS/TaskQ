@@ -91,7 +91,15 @@ async def test_producer_loop_forgets_liveness_registration_on_exit() -> None:
         notify_poll_interval=0.05,
         max_concurrency=4,
     )
-    deps = cast(WorkerDeps, SimpleNamespace(settings=settings, liveness=liveness))
+    deps = cast(
+        WorkerDeps,
+        SimpleNamespace(
+            settings=settings,
+            liveness=liveness,
+            # The producer's availability subtracts active jobs (#229).
+            active_jobs=SimpleNamespace(count=lambda: 0),
+        ),
+    )
     local_queue: asyncio.Queue[object] = asyncio.Queue(maxsize=4)
     shutdown_event = asyncio.Event()
     producer_stop_event = asyncio.Event()

@@ -98,7 +98,10 @@ def _producer_deps(
     return SimpleNamespace(
         settings=settings,
         liveness=liveness,
-        active_jobs=SimpleNamespace(all=list),
+        # `all` feeds the drain-path hand-back; `count` the producer's
+        # availability accounting (#229). Tests that need a live count
+        # override it on the namespace.
+        active_jobs=SimpleNamespace(all=list, count=lambda: 0),
         disowned_jobs=set(),
         dispatcher_pool=_NoopPool(),
     )
