@@ -273,8 +273,8 @@ async def test_capped_round_pays_only_its_own_running_rows(
     taken branch) and still never the fleet's.
 
     The polled actor declares ``max_concurrent`` and holds two of its
-    own running rows, so the gated count executes — an index-only scan
-    of that actor's jobs_actor_running_idx entries — while the fleet's
+    own running rows, so the gated count executes — a scan of that
+    actor's running-row partial-index entries — while the fleet's
     unrelated running population must not move the widest node: the
     count is correlated per actor, not a fleet-wide aggregate.
     """

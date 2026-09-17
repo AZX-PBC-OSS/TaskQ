@@ -387,8 +387,12 @@ subplans' own nodes):
   loops (once per claimed row) for `eligible_candidates`' re-check —
   plus the planner's duplicate of each at the inlined
   `eligible_candidates` -> `eligible` boundary — for 14 executions
-  x 2 rows = 28 rows of count work, every one an index-only read of the
-  actor's OWN running entries. Honest note: the duplication is a
+  x 2 rows = 28 rows of count work, every one a read of the actor's OWN
+  running entries through the running-row partial indexes (the planner
+  picked a heap-visiting scan — Bitmap Heap + Bitmap Index on jobs at the
+  R2 shape, an Index Scan on the jobs_locked_by_worker_running_idx
+  partial at the cap=100 shape below — NOT an index-only scan; the
+  round-1 text here over-claimed the plan class). Honest note: the duplication is a
   bounded constant factor on capped actors only (the `LIMIT 1` fence
   holds per site; without it the pull-up would re-evaluate per
   reference), and it is still 28 rows versus OLD's fleet-wide 1002-row
@@ -420,3 +424,68 @@ axis — they seed no running rows; the new oracle
   and wall clock; the correctness pins (claim semantics, cap
   enforcement, over-admission bound, reservation headroom, identity
   serialization, fleet concurrency, cohort rotation) all stay green.
+
+---
+
+## A8 addendum — the capped-actor cost curve, and the honest crossover (fix round)
+
+The §A8 measurements above were taken at **cap=5** — the correlated
+count's best case. The fix-round attack measured the full curve, and it
+crosses over: the correlated count's row work is
+**O(oversample × cap²) per capped actor per round** — the
+`eligible_candidates` re-check executes once per *claimed* row (×2 plan
+sites after the inlined `eligible_candidates` → `eligible` boundary),
+and each execution reads the actor's *running* rows (≈ cap at
+saturation), while a capped actor's claimed rows scale with its cap:
+
+| capped actor's cap | NEW (correlated count) row work | OLD (fleet-wide CTE) row work | verdict |
+|---|---|---|---|
+| 5 (the §A8 shape) | 28 | 1,002 | ~36× win |
+| 25 | 648 | 1,012 | win |
+| **~30** | ≈ crossover | ≈ | — |
+| 50 | 2,550 | 1,025 | **2.5× worse than the CTE this replaced** |
+| 100 | 10,100 | 1,050 | **9.6× worse** |
+| 100, fleet running = 0 | — | — | **202× worse** (the CTE's empty aggregate is nearly free; the count still pays per-claimed-row × per-running-row) |
+
+Wall clock at cap=100: 3.4-3.6 ms NEW vs 1.8-2.6 ms OLD (the same
+container and protocol as §A8; the red-team's measurements, shapes
+consistent with the §A8 cap=5 numbers). The curve is why: the win
+§A8 reported holds for modest caps and *any* uncapped fleet (the
+default), and inverts for high-cap actors — a capped actor with cap ≥
+~30 pays more per round than the fleet-wide CTE it replaced.
+
+Index-plan correction from the same review: the count subplans' actual
+plans are heap-visiting scans over the running-row partial indexes (an
+Index Scan on `jobs_locked_by_worker_running_idx` at the cap=100 shape,
+Bitmap Heap + Bitmap Index on `jobs` at the §A8 shapes — the planner's
+own cost discretion), **not** index-only scans over
+`jobs_actor_running_idx` as §A8's round-1 text claimed; the row-work
+numbers were emitted-row counts either way.
+
+### The recommended follow-up shape (filed by the orchestrator, sibling of #281)
+
+A **SQL-gated capped-actors-only CTE** keeps both ends of the curve:
+
+```sql
+running_per_capped_actor AS (
+  SELECT j.actor, count(*) AS in_flight
+  FROM "{schema}".jobs j
+  WHERE j.status = 'running'
+    AND j.actor IN (SELECT actor FROM "{schema}".actor_config
+                    WHERE max_concurrent IS NOT NULL)
+  GROUP BY j.actor
+)
+```
+
+— one count per *capped actor* (not per claimed row, not per plan
+site): the uncapped fleet's zero-work stays (no capped actors ⇒ nothing
+to count) and the capped cost profile returns to the CTE's
+O(capped actors × their running rows) instead of O(oversample × cap²),
+with no client-side state and no variant selection. The follow-up's
+plan-shape obligation (the trap to avoid): the CTE must be *driven from
+the capped-actor side* — a nested-loop over the (typically tiny)
+capped-actor set probing `jobs_actor_running_idx` per actor. A planner
+that instead hash-joins the running population against the IN-subquery
+keeps the fleet-wide scan and gives back the uncapped zero-work — the
+follow-up's oracles should pin the driver shape the way §A8's pin the
+row counts.
