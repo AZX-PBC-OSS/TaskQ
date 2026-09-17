@@ -28,6 +28,15 @@ The fix, in this tree:
 4. Migration `01.00.12_06_pre_jobs_cancel_drain_tag_indexes.sql`: two
    partial GIN tag indexes whose membership tracks each arm's live
    window.
+5. The two-arm drain runs as bounded fixpoint rounds (#237): a matching
+   running row re-pended mid-drain (denial snooze, shutdown interrupt,
+   crash reclaim, consumer retry) lands pending/scheduled at an id the
+   pending arm's cursor has already passed, where a single pair of
+   passes loses it — the running arm matches only
+   `running AND cancel_phase=0`. Each round restarts both arms' cursors
+   from the bottom of the key space; the loop stops at the first round
+   that commits nothing, hard-capped at 3 rounds
+   (`_MAX_CANCEL_DRAIN_ROUNDS`).
 
 ## Method
 
@@ -134,11 +143,19 @@ UPDATE plus its event writes.
   id-only partial that would close it cannot ship (previous bullet but
   one).
 - A row whose match status flaps *behind* the cursor mid-drain (claimed
-  and released by a dispatcher inside one pass) is left for a re-run —
-  the same non-atomic contract the drain already documented for
-  concurrent enqueues ("a concurrent enqueue can slip a new matching row
-  in between batches"). Job ids are UUIDv7, so new inserts sort above
-  the cursor and are caught within the same call.
+  and released by a dispatcher inside one pass) is caught by the NEXT
+  round's fresh-cursor pass — the #237 fixpoint — and the residual is
+  only what survives the round cap: a row still being re-fed by live
+  claim/retry churn when round 3 ends is left for a re-run, the same
+  non-atomic contract the drain already documented for concurrent
+  enqueues ("a concurrent enqueue can slip a new matching row in between
+  batches"). Job ids are UUIDv7, so new inserts sort above the cursor
+  and are caught within the same call. The rounds' cost is a constant
+  multiple of one drain: a quiescent tail costs one extra empty two-arm
+  pass (round 2 confirms zero and stops), so the unfiltered drain's
+  once-per-call linear walk of the terminal-history prefix (next
+  residual) is now paid at most 3× per call, still
+  statement-timeout-guarded and bounded per batch.
 
 ## Suite results (this tree, final state)
 

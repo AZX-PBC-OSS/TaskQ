@@ -15,6 +15,19 @@ design: statement 1's EPQ guard rejects the now-running row, and
 statement 2's fresh snapshot sees it as running and sets
 ``cancel_phase=1``.
 
+The pair runs as bounded fixpoint ROUNDS (``_MAX_CANCEL_DRAIN_ROUNDS``):
+round N's pending/scheduled arm walks a keyset window forward, and a
+matching RUNNING row rescheduled mid-drain — a denial snooze, a shutdown
+interrupt, a crash reclaim, a consumer retry — lands pending/scheduled at
+an id the pending arm has already passed, where the running arm (strictly
+after it, matching only ``running AND cancel_phase=0``) can never see it
+(#237: the pre-rounds drain returned normally with such a row uncancelled,
+contradicting the "cancels EVERY matching job" contract below). The next
+round's fresh cursor re-walks from the bottom of the key space and picks
+the straggler up; the drain stops at the first round that matched nothing,
+capped at the constant bound so sustained concurrent churn cannot turn
+the fixpoint into an unbounded loop.
+
 Each statement still cancels EVERY matching job, and one call still
 returns the complete :class:`BulkCancelResult` plus NOTIFY targets — but
 the work executes as a sequence of bounded committed batches
@@ -50,7 +63,7 @@ import asyncio
 import random
 from collections.abc import Awaitable, Callable
 from functools import partial
-from typing import NamedTuple
+from typing import Final, NamedTuple
 from uuid import UUID
 
 import asyncpg
@@ -82,6 +95,31 @@ __all__ = ["_cancel_where"]
 # than NULL so the cursor parameter has one type on every pass and the
 # statement keeps a single cached plan.
 _UUID_MIN = UUID(int=0)
+
+#: The hard bound on the two-arm fixpoint rounds `_cancel_where` runs
+#: (see the module docstring). Round 1 is the drain itself; every later
+#: round exists to catch rows a concurrent re-pend moved BEHIND a
+#: previous round's keyset cursor — a denial snooze, a shutdown
+#: interrupt, a crash reclaim, a consumer retry — which no single
+#: forward-only pass can see, because the pending arm has already
+#: windowed past their ids and the running arm matches only
+#: ``status='running' AND cancel_phase=0`` (#237).
+#:
+#: Why a hard cap rather than "loop while progress": each round can only
+#: match rows a concurrent writer re-fed into the pending/scheduled (or
+#: freshly claimable running) population DURING the previous round —
+#: a claim/fail/retry cycle on matching rows under live dispatch is a
+#: steady feed, so an uncapped fixpoint is an unbounded loop under
+#: exactly the production churn bulk cancel exists for. The cap keeps
+#: one call's total work a constant multiple of one two-arm drain
+#: (at most 3 rounds) while every per-batch cost bound — the keyset window, the
+#: ``= ANY`` restriction clause, the per-batch custom-plan pin, the
+#: statement_timeout — is unchanged. Rows still being re-fed when the
+#: cap is reached are left for a re-run, the same non-atomic contract
+#: the drain already documents for concurrent enqueues: EPQ predicates
+#: skip everything earlier rounds cancelled, so a re-run is resumable,
+#: never double-counted.
+_MAX_CANCEL_DRAIN_ROUNDS: Final = 3
 
 
 class NotifyTarget(NamedTuple):
@@ -471,12 +509,44 @@ async def _cancel_where(
             if wid is not None
         )
 
-    await _drain_cancel_batches(
-        pool, cancel_ps_sql, params, batch_size, statement_timeout_ms, _handle_ps_batch
-    )
-    await _drain_cancel_batches(
-        pool, cancel_running_sql, params, batch_size, statement_timeout_ms, _handle_running_batch
-    )
+    # The two-arm drain as bounded fixpoint ROUNDS (#237). A single
+    # pair of passes loses matching rows that a concurrent re-pend
+    # moves BEHIND the pending arm's keyset cursor mid-drain: the row
+    # was 'running' (or phase!=0) when the pending arm windowed past
+    # its id, so no window ever held it, and the running arm — strictly
+    # after the pending arm, matching only running+phase-0 — cannot
+    # see the re-pended row either. The call used to return normally
+    # with such a row uncancelled, contradicting the "cancels EVERY
+    # matching job" contract. Each subsequent round re-walks from the
+    # bottom of the key space (`_UUID_MIN`), so a re-pended straggler
+    # is matched by round N+1's pending arm whatever id it carries.
+    #
+    # Termination and cost: a round stops the loop when NEITHER arm
+    # committed a single row (progress measured on the committed id
+    # lists the handlers append to — windowed-but-EPQ-dropped rows are
+    # deliberately not progress, they belong to the other arm), and
+    # `_MAX_CANCEL_DRAIN_ROUNDS` bounds the loop outright, because a
+    # live claim/fail/retry churn on matching rows re-feeds the match
+    # set every round and an uncapped fixpoint would chase it forever.
+    # Ids cannot repeat across rounds: arm 1's rows land terminal
+    # 'cancelled' (EPQ re-check rejects them forever after) and arm 2's
+    # rows leave the running arm's phase-0 predicate, so the result
+    # totals stay exactly-once.
+    for _round in range(_MAX_CANCEL_DRAIN_ROUNDS):
+        _before = len(cancelled_ids) + len(cancel_requested_ids)
+        await _drain_cancel_batches(
+            pool, cancel_ps_sql, params, batch_size, statement_timeout_ms, _handle_ps_batch
+        )
+        await _drain_cancel_batches(
+            pool,
+            cancel_running_sql,
+            params,
+            batch_size,
+            statement_timeout_ms,
+            _handle_running_batch,
+        )
+        if len(cancelled_ids) + len(cancel_requested_ids) == _before:
+            break
 
     result = BulkCancelResult(
         cancelled_directly=len(cancelled_ids),
