@@ -679,6 +679,40 @@ def record_job_abandoned(actor: str) -> None:
     ).add(1, {"actor": actor})
 
 
+def record_loop_stall_attribution(actor: str | None, *, kind: str) -> None:
+    """Count one event-loop stall attributed to the frame holding the GIL.
+
+    Called from the loop-lag watchdog's daemon thread at the stall's warn
+    and trip tiers: sampling the main thread's current frame from there is
+    the only attribution that works mid-block, and it needs no loop
+    cooperation. ``actor`` is ``None`` when no registered actor function
+    appeared in the sampled stack (the block sits under taskq's own code
+    or a non-actor coroutine). Respects ``_otel_enabled`` — no-op when
+    False.
+    """
+    if not _otel_enabled:
+        return
+    _lazy_counter(
+        "taskq.worker.loop_stall_attributions",
+        description=(
+            "Event-loop scheduling stalls attributed to the synchronous work "
+            "holding the interpreter while the loop could not schedule. "
+            "kind='blocking_call' marks a synchronous call that released the "
+            "GIL (I/O wait, a subprocess); kind='gil_held' marks synchronous "
+            "work that held it (a C extension without GIL release, or a hot "
+            "pure-Python loop). The actor label names the registered actor "
+            "function whose frame sat under the blocking call; run it down by "
+            "moving the cited work off the event loop. Attributes: actor, kind."
+        ),
+    ).add(
+        1,
+        {
+            "actor": (_bounded_cron_actor(actor) if actor is not None else _ACTOR_LABEL_OVERFLOW),
+            "kind": kind,
+        },
+    )
+
+
 _process_duration = get_meter().create_histogram(
     "messaging.process.duration",
     description=(

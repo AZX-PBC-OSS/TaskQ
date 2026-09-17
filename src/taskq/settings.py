@@ -1018,7 +1018,12 @@ class WorkerSettings(TaskQSettings):
         default=3,
         ge=1,
         description="TASKQ_MAX_HEARTBEAT_FAILURES. Consecutive heartbeat "
-        "failures before the worker self-terminates.",
+        "failures before the worker self-terminates. Deliberate fail-fast: "
+        "at the defaults (3 failures, 2 s command timeout) roughly six "
+        "seconds of Postgres unavailability ends every worker at once, and "
+        "the orchestrator restarts them into a recovered database while "
+        "crash reclaim re-pends their leases — expect a restart herd on a "
+        "Postgres failover, sized by your replica count.",
     )
 
     # ── Leader sweep intervals ─────────────────────────────────
@@ -1251,7 +1256,10 @@ class WorkerSettings(TaskQSettings):
         description="TASKQ_MAX_KEYED_RESERVATIONS. Guardrail on the number of "
         "distinct keyed-reservation entries tracked in memory. When the limit "
         "is reached, new keyed reservations raise ReservationUnavailable. "
-        "Tune to your workload's expected key cardinality.",
+        "Tune to your workload's expected key cardinality: the guardrail is "
+        "PER PROCESS, so adding replicas does not raise the effective "
+        "tenant-key fleet capacity — a tenant fleet above the limit gets "
+        "denials on every replica at once.",
     )
     max_keyed_rate_limits: int = Field(
         default=10000,
@@ -1260,7 +1268,9 @@ class WorkerSettings(TaskQSettings):
         "distinct keyed-rate-limit entries tracked in memory. When the limit "
         "is reached, new keyed rate limits raise ReservationUnavailable. "
         "Independent from max_keyed_reservations, which governs keyed "
-        "reservations only. Tune to your workload's expected key cardinality.",
+        "reservations only. Tune to your workload's expected key cardinality; "
+        "like max_keyed_reservations the guardrail is per process and does "
+        "not scale with the replica count.",
     )
 
     # -- Prometheus standalone metrics server ------------------
@@ -1269,8 +1279,9 @@ class WorkerSettings(TaskQSettings):
         ge=1,
         le=65535,
         description="TASKQ_METRICS_PORT. TCP port for the worker's standalone "
-        "Prometheus scrape listener, bound on TASKQ_HEALTH_HOST. Unset (the "
-        "default) means no listener — setting a port is the opt-in, the same "
+        "Prometheus scrape listener, bound on TASKQ_METRICS_HOST (falling back "
+        "to TASKQ_HEALTH_HOST). Unset (the "
+        "default) means no listener, so setting a port is the opt-in, the same "
         "shape as TASKQ_HEALTH_PORT. Needs the [prometheus] extra and "
         "TASKQ_OTEL_AUTOCONFIGURE=true: the `taskq worker` CLI then adds a "
         "PrometheusMetricReader to the SDK meter provider it installs, so "
@@ -1283,11 +1294,20 @@ class WorkerSettings(TaskQSettings):
     # -- Health server ------------------------------------------
     health_enabled: bool = Field(
         default=True,
-        description="TASKQ_HEALTH_ENABLED. Enable the Unix-socket health server.",
+        description="TASKQ_HEALTH_ENABLED. Enable the health server: both the "
+        "Unix socket and the optional TCP listener (health_port). False "
+        "disables both, and a health_port set alongside it is not honoured, "
+        "so probes against that port fail.",
     )
     health_socket_path: str = Field(
         default="/tmp/taskq_health.sock",  # noqa: S108  # Why: default. Production deployments override via env var (typically /run/taskq.sock under tmpfs).
-        description="TASKQ_HEALTH_SOCKET_PATH. Unix socket path for the health server.",
+        description="TASKQ_HEALTH_SOCKET_PATH. Unix socket path for the health "
+        "server, serving /live, /ready, /metrics and the opt-in /tasks "
+        "endpoint. Give each co-located process a unique path: a path whose "
+        "live peer holds it fails to bind, and that collision is a WARNING "
+        "with the boot continuing (a live peer owning the path is a rolling-"
+        "restart shape, not a failure); see health_port for the TCP arm's "
+        "different contract.",
     )
     health_pg_ping_timeout: float = Field(
         default=0.2,
@@ -1314,16 +1334,30 @@ class WorkerSettings(TaskQSettings):
         "over the pod network; narrow it to 127.0.0.1 when a local sidecar is the "
         "only prober.",
     )
+    metrics_host: str | None = Field(
+        default=None,
+        description="TASKQ_METRICS_HOST. Bind address for the optional Prometheus "
+        "scrape listener, overriding TASKQ_HEALTH_HOST for that listener alone, so "
+        "the scrape and the probes can sit on different interfaces (a loopback "
+        "sidecar scraper next to a pod-network probe is the shape that needs "
+        "this). Unset falls back to TASKQ_HEALTH_HOST. Only used when "
+        "metrics_port is set.",
+    )
     health_port: int | None = Field(
         default=None,
         ge=0,
         le=65535,
         description="TASKQ_HEALTH_PORT. TCP port for the HTTP health listener serving "
-        "/live and /ready. Unset (the default) means no TCP listener at all — setting a "
+        "/live and /ready. Unset (the default) means no TCP listener at all, so setting a "
         "port is the opt-in. Required on Azure Container Apps, whose probes support only "
         "httpGet/tcpSocket and cannot reach a Unix socket (there is no exec probe type). "
         "The Unix socket keeps working either way. If the port cannot be bound the worker "
-        "fails to start rather than run with probes silently dead. 0 binds an ephemeral "
+        "fails to start with HealthTcpBindError rather than run with probes silently dead: "
+        "the orchestrator routes this replica's probes here, and a tcpSocket probe against "
+        "a port some other process holds would pass while "
+        "probing the wrong process). The unix socket's collision is "
+        "deliberately softer: a live peer owns the path, so the boot warns "
+        "and continues. 0 binds an ephemeral "
         "port (tests only).",
     )
     health_request_timeout: float = Field(
@@ -1814,7 +1848,10 @@ class WorkerSettings(TaskQSettings):
         description="TASKQ_CRON_TICK_LIMIT. Maximum schedules one cron tick "
         "selects, plans and fires. A catch-up burst larger than this drains "
         "across successive one-second ticks instead of one oversized "
-        "transaction; the remainder stays due and untouched until its tick.",
+        "transaction; the remainder stays due and untouched until its tick. "
+        "Only the leader plans ticks, so this guardrail does not scale with "
+        "the replica count: raise it when one tick's share of schedules "
+        "genuinely exceeds it, or spread schedules off the second boundary.",
     )
     cron_payload_factory_timeout: float = Field(
         default=5.0,

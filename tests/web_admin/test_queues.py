@@ -1,6 +1,7 @@
 """Tests for queue routes and templates in taskq.web.admin."""
 
 from collections.abc import Callable
+from datetime import UTC, datetime
 from typing import Any
 
 import pytest
@@ -10,7 +11,7 @@ pytest.importorskip("jinja2")
 
 from taskq.web.admin import create_router
 
-from . import _StubPool
+from . import StubRecord, _StubPool
 
 # ── Queue routes: discovery and registration ───────────────────────────
 
@@ -336,3 +337,187 @@ def test_queue_detail_queries_select_retry_kind() -> None:
             f"{name} must select retry_kind so the queue-detail Attempt cell "
             "can mark an indefinite row's ceiling inert"
         )
+
+
+# ── Queue list: live workers and stranded roll-ups ────────────────────
+#
+# The list view carries the leader-sampled pressure signals per queue:
+# live workers (the queue-depth sampler's read over workers_last_seen_idx)
+# and stranded pending/scheduled rows (the stranded-jobs detector's shape,
+# grouped by routing queue). Both are parameterized reads over existing
+# partial indexes with the batches page's 200-row cap.
+
+
+class _ScriptedConn:
+    """Connection returning preset ``fetch`` results in call order."""
+
+    def __init__(self, fetch_results: list[list[StubRecord]]) -> None:
+        self._results = list(fetch_results)
+
+    async def fetch(self, query: str, *args: object) -> list[StubRecord]:
+        if self._results:
+            return self._results.pop(0)
+        return []
+
+    async def fetchrow(self, query: str, *args: object) -> StubRecord | None:
+        return None
+
+    async def fetchval(self, query: str, *args: object) -> object:
+        if "clock_timestamp()" in query:
+            # The router's clock-offset probe: answer like Postgres would.
+            return datetime.now(UTC)
+        return None
+
+    async def execute(self, query: str, *args: object) -> str:
+        return ""
+
+
+class _ScriptedAcquireCtx:
+    def __init__(self, conn: _ScriptedConn) -> None:
+        self._conn = conn
+
+    async def __aenter__(self) -> _ScriptedConn:
+        return self._conn
+
+    async def __aexit__(self, *args: object) -> None:
+        pass
+
+
+class _ScriptedPool:
+    def __init__(self, conn: _ScriptedConn) -> None:
+        self._conn = conn
+
+    def acquire(self) -> _ScriptedAcquireCtx:
+        return _ScriptedAcquireCtx(self._conn)
+
+
+def test_queue_list_renders_live_workers_and_stranded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The queues table renders the live-worker count and stranded flag per queue."""
+    monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
+    bundle = create_router(_StubPool())  # pyright: ignore[reportArgumentType]  # Why: test duck-type pool.
+    template = bundle.templates.get_template("queues.html")
+    html = template.render(
+        queues=[
+            {
+                "queue": "default",
+                "pending_count": 5,
+                "scheduled_count": 2,
+                "running_count": 1,
+                "failed_count": 0,
+                "live_workers": 3,
+                "stranded_count": 0,
+            },
+            {
+                "queue": "stuck",
+                "pending_count": 7,
+                "scheduled_count": 0,
+                "running_count": 0,
+                "failed_count": 0,
+                "live_workers": 0,
+                "stranded_count": 4,
+            },
+        ],
+        orphan_queues=frozenset(),
+    )
+    assert "Live Workers" in html
+    assert "Stranded" in html
+    assert "3" in html
+
+
+def test_queue_list_defaults_new_columns_when_absent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Queue rows without the new keys render 0, not an undefined error."""
+    monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
+    bundle = create_router(_StubPool())  # pyright: ignore[reportArgumentType]  # Why: test duck-type pool.
+    template = bundle.templates.get_template("queues.html")
+    html = template.render(
+        queues=[
+            {"queue": "default", "pending_count": 5, "scheduled_count": 2, "running_count": 1},
+        ],
+        orphan_queues=frozenset(),
+    )
+    assert "default" in html
+
+
+def test_queue_overview_merges_live_workers_and_stranded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """GET /queues merges the live-worker and stranded reads into the per-queue rows."""
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from taskq.web.admin import setup_admin_state
+
+    overview = [
+        StubRecord(
+            queue="default",
+            pending_count=5,
+            scheduled_count=2,
+            running_count=1,
+            failed_count=0,
+        )
+    ]
+    orphans: list[StubRecord] = []
+    workers = [StubRecord(queue="default", worker_count=3)]
+    stranded = [StubRecord(queue="default", stranded_count=4)]
+    conn = _ScriptedConn(fetch_results=[overview, orphans, workers, stranded])
+    monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
+    bundle = create_router(_ScriptedPool(conn))  # pyright: ignore[reportArgumentType]  # Why: test duck-type pool.
+    app = FastAPI()
+    setup_admin_state(app, bundle)
+    app.include_router(bundle.router)
+    client = TestClient(app)
+    response = client.get("/queues")
+    assert response.status_code == 200
+    assert "Live Workers" in response.text
+    assert "Stranded" in response.text
+    # The stranded badge carries the count and its remediation hint.
+    assert "can never dispatch" in response.text
+
+
+def test_queue_pressure_reads_are_parameterized_and_bounded() -> None:
+    """The live-worker and stranded reads take the liveness window as $1,
+    bound the server clock with statement_timestamp(), and cap their rows."""
+    from taskq.web.admin.queues import (
+        _QUEUE_LIVE_WORKERS_SQL,
+        _QUEUE_ROW_CAP,
+        _QUEUE_STRANDED_SQL,
+    )
+
+    for name, sql in (
+        ("_QUEUE_LIVE_WORKERS_SQL", _QUEUE_LIVE_WORKERS_SQL),
+        ("_QUEUE_STRANDED_SQL", _QUEUE_STRANDED_SQL),
+    ):
+        assert "$1" in sql, f"{name} must bind the liveness window as a parameter"
+        assert "statement_timestamp()" in sql, (
+            f"{name} must use the STABLE server clock so the bound stays a "
+            "btree index condition (the samplers' two-clock rule)"
+        )
+        assert f"LIMIT {_QUEUE_ROW_CAP}" in sql, f"{name} must cap its row count"
+
+    stranded = _QUEUE_STRANDED_SQL.format(schema="taskq")
+    live = _QUEUE_LIVE_WORKERS_SQL.format(schema="taskq")
+    assert 'FROM "taskq".workers' in live
+    # The stranded read covers only the live statuses: no terminal row
+    # enters it, and nothing reads the archive here.
+    assert "status IN ('pending', 'scheduled')" in stranded
+    for terminal in ("succeeded", "failed", "crashed", "abandoned", "cancelled"):
+        assert terminal not in stranded
+        assert terminal not in live
+
+
+def test_queue_live_workers_read_matches_the_leader_sampler_shape() -> None:
+    """The page's live-worker read is the queue-depth sampler's SQL, capped."""
+    from taskq.web.admin.queues import _QUEUE_LIVE_WORKERS_SQL
+    from taskq.worker._leader_sweeps import _QUERY_QUEUE_LIVE_WORKERS_SQL_TEMPLATE
+
+    sampler_core = (
+        _QUERY_QUEUE_LIVE_WORKERS_SQL_TEMPLATE.format(schema="taskq").split("WHERE", 1)[1].strip()
+    )
+    assert sampler_core in _QUEUE_LIVE_WORKERS_SQL.format(schema="taskq"), (
+        "the queues page must reuse the leader sampler's live-worker SQL "
+        "shape, not a second definition of 'live'"
+    )

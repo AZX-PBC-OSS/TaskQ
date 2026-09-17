@@ -190,7 +190,7 @@ these endpoints in production — they can modify job state.
 
 ## Routes
 
-All `GET` routes are read-only HTML pages. `POST` routes (cancel, retry, schedule management, rate-limit reset) are CSRF-protected write operations.
+All `GET` routes are read-only HTML pages. `POST` routes (cancel, retry, schedule management, rate-limit reset) are CSRF-protected write operations. Every page is reachable from the top navigation bar (Queues, Jobs, History, Workers, Actors, Batches, Schedules, Rate Limits, Reservations, Leader); the job detail page is linked from any job ID in the lists.
 
 ### `GET /admin/`
 
@@ -198,7 +198,11 @@ Redirects (302) to `/admin/queues`.
 
 ### `GET /admin/queues`
 
-Queue overview. Lists all queues that have jobs in `pending`, `scheduled`, or `running` state. For each queue shows the count of jobs in each of those three statuses.
+Queue overview. Lists all queues that have jobs in `pending`, `scheduled`, `running`, or `failed` state. For each queue shows the count of jobs in each of those four statuses, the number of live workers subscribed to it, and a stranded count.
+
+The **Live Workers** column counts workers whose `last_seen_at` falls inside the `TASKQ_ADMIN_WORKER_LIVENESS_SECONDS` window, per queue subscription. It is the same read the leader's queue-depth sampler runs (`statement_timestamp()` bound over `workers_last_seen_idx`), so the page, the orphan banner, and the stranded-jobs detector all agree on which worker counts as alive. A queue with pending depth and zero live workers is unserved; that is the condition the `TaskQQueueUnserved` alert fires on.
+
+The **Stranded** column counts pending and scheduled rows whose routing queue cannot dispatch them: the actor has no `actor_config` row, or no live worker serves the queue dispatch routes the row on (a re-pended row routes on its actor's stored assignment, not its own label). It is the stranded-jobs detector's SQL shape grouped by routing queue instead of by actor; the predicate reads only the `pending`/`scheduled` partial indexes (`jobs_dispatch_idx`, `jobs_scheduled_wake_idx`) and `workers_last_seen_idx`. A non-zero count is red; both strand shapes mean the depth column will not move no matter how many workers you add until the underlying condition is fixed.
 
 ### `GET /admin/queues/{queue}`
 
@@ -236,7 +240,9 @@ Archived rows (from `jobs_archive`) are shown with an "archived" badge in the So
 
 ### `GET /admin/jobs`
 
-Job listing page with "Live Jobs" and "Archived" tabs. Supports filtering by status (multi-select), actor (substring match), queue, time range, identity key, fairness key, free-text search (matches job ID or actor), and tags. Results are paginated at 100 rows using keyset pagination and can be sorted by created_at, actor, queue, status, or attempt. HTMX partial refreshes update the table without a full page reload. The table is polled at `TASKQ_ADMIN_UI_POLLING_INTERVAL_SECONDS` whenever the Live Jobs tab is open; with the live toggle on, an SSE stream (`/admin/sse/jobs`, PG `LISTEN` on the schema's events channel) additionally brings a refresh forward the moment an event arrives. The events channel carries only the running-job cancel fast-path today — terminal writes and dispatch do not NOTIFY it — which is why polling stays the source of truth and SSE is an accelerator, never a replacement.
+Job listing page with "Live Jobs" and "Archived" tabs. Supports filtering by status (multi-select), actor (substring match), queue, time range, identity key, fairness key, free-text search (matches job ID or actor), and tags. Results are paginated at 100 rows using keyset pagination and can be sorted by created_at, started_at, actor, queue, status, or attempt. HTMX partial refreshes update the table without a full page reload. The table is polled at `TASKQ_ADMIN_UI_POLLING_INTERVAL_SECONDS` whenever the Live Jobs tab is open; with the live toggle on, an SSE stream (`/admin/sse/jobs`, PG `LISTEN` on the schema's events channel) additionally brings a refresh forward the moment an event arrives. The events channel carries only the running-job cancel fast-path today — terminal writes and dispatch do not NOTIFY it — which is why polling stays the source of truth and SSE is an accelerator, never a replacement.
+
+Sorting by `started_at` ascending together with a `status=running` filter is the "running longest" view: the jobs that have held a worker the longest come first. `started_at` is NULL for jobs that have not started, and those rows sort last in both directions (NULLS LAST) so paging through live rows is never interrupted by the not-yet-started tail.
 
 **Query parameters (selected):**
 
@@ -255,7 +261,7 @@ Job detail. Shows the full job record, attempt history from `job_attempts`, and 
 
 If the job has already been pruned to `jobs_archive`, the page loads from the archive table instead; attempt history comes from `job_attempts_archive` and the event log is empty (events are not archived). An "archived" banner is shown at the top of the page.
 
-The job detail page includes a **Cancel** button (for non-terminal jobs) and a **Retry** button (for jobs in any terminal state — `succeeded`, `failed`, `cancelled`, `crashed`, or `abandoned`). Both are CSRF-protected POST forms. When `admin_actions_enabled` is `false` (the default), both buttons return `403` on submit; set `TASKQ_ADMIN_ACTIONS_ENABLED=true` to enable them.
+The job detail page includes a **Cancel** button (for non-terminal jobs) and a **Retry** button (for jobs in any terminal state — `succeeded`, `failed`, `cancelled`, `crashed`, or `abandoned`). Both are CSRF-protected POST forms guarded by a browser `confirm()` dialog, so a double-click or stray Enter cannot fire the write. When `admin_actions_enabled` is `false` (the default), both buttons return `403` on submit; set `TASKQ_ADMIN_ACTIONS_ENABLED=true` to enable them.
 
 ### `POST /admin/jobs/{job_id}/cancel`
 
@@ -273,7 +279,7 @@ Used by the jobs list page to render the result count without re-fetching the fu
 
 ### `GET /admin/api/history/stats`
 
-Per-actor metrics as JSON. Returns aggregate execution statistics for all completed jobs in `jobs_archive`, grouped by `(actor, queue)`. Does not paginate; returns at most 200 rows ordered by total job count descending.
+Per-actor metrics as JSON. Returns aggregate execution statistics for all completed jobs in `jobs_archive`, grouped by `(actor, queue)`. Does not paginate; returns at most 200 rows ordered by total job count descending. This endpoint and the actors page render the same aggregate read through a shared helper, so the two cannot drift.
 
 Response shape:
 
@@ -291,17 +297,20 @@ Response shape:
       "abandoned": 10,
       "avg_duration_ms": 340,
       "p50_duration_ms": 280,
-      "p95_duration_ms": 950
+      "p95_duration_ms": 950,
+      "last_activity_at": "2026-09-16T12:00:00+00:00"
     }
   ]
 }
 ```
 
-Duration percentiles are derived from `job_attempts_archive.duration_ms` via `percentile_cont`. Actors with no recorded attempt rows will have `null` for duration fields.
+Duration percentiles are derived from `job_attempts_archive.duration_ms` via `percentile_cont`. Actors with no recorded attempt rows will have `null` for duration fields. `last_activity_at` is the freshest `finished_at` the actor has in the archive (`max(jobs_archive.finished_at)`); `total` counts archived attempt rows, which equals the job count in the common single-attempt case.
 
 ### `GET /admin/workers`
 
-Workers overview. Lists all rows from the `workers` table ordered by `last_seen_at DESC`, with an `is_leader` flag computed by a LEFT JOIN on `maintenance_leader`.
+Workers overview. Lists all rows from the `workers` table ordered by `last_seen_at DESC`, with an `is_leader` flag computed by a LEFT JOIN on `maintenance_leader`, and a **Running / Max** column: the count of `jobs` rows in `status = 'running'` locked by that worker (one index seek per worker over `jobs_locked_by_worker_running_idx`, the same population the `taskq.worker.active_jobs` metric counts per process) against the `max_concurrency` the worker registered in its row metadata. Amber when the worker is at capacity; a dash when an older registration carried no capacity. Reserved-but-unclaimed capacity (rate-limit slots, in-flight dispatch probes) is in neither number.
+
+The **Stall hotspots** column renders the worker's rolling tally of attributed event-loop stalls from the same metadata (`send_email x12 (gil_held)`, hottest actor first) — the actors whose synchronous code blocked that worker's event loop, as the lag watchdog attributed them. Empty when the worker attributed none. The tally counts ATTRIBUTED stalls per actor; the Running / Max column counts running rows. See [runbooks.md — Event-loop stall attribution](runbooks.md#event-loop-stall-attribution-worker-warnings).
 
 ### `GET /admin/leader`
 
@@ -355,7 +364,17 @@ The `/admin/actors` page lists all stored `actor_config` rows with:
 - Enabled schedule count
 - Last updated timestamp
 
-Each row has a **Deregister** button with `force` and `purge queue` checkboxes.
+Each row also carries the executor statistics the shared per-actor stats read computes over `jobs_archive` joined to `job_attempts_archive` (the same aggregate `GET /admin/api/history/stats` serves, grouped by actor instead of by `(actor, queue)`), so the page answers "which actor is hot, which is failing, which is slow" without leaving the table:
+
+- **Jobs (archive)**: total archived attempt rows for the actor, hottest actor first
+- **Failures**: failed count with its share of the total, red when non-zero
+- **p50 / p95 (ms)**: execution duration percentiles from `job_attempts_archive.duration_ms`
+- **Last Activity**: the freshest `finished_at` the actor has in the archive
+
+The stats read is capped at the 200 most active actors; the page says so when the cap is reached. Actors with archive history but no `actor_config` row (for example, one deregistered while its history is retained) render as "archive only": their stats show, but they have no capacity fields and no Deregister button.
+
+Each row with a config row has a **Deregister** button with `force` and `purge queue` checkboxes.
+The form asks for confirmation in the browser before submitting.
 Deregistration requires `TASKQ_ADMIN_ACTIONS_ENABLED=true`. The form is
 CSRF-protected via the synchronizer-token pattern.
 
@@ -371,6 +390,10 @@ Response codes:
 - `403` — admin actions disabled or CSRF validation failed
 - `404` — actor not found (no `actor_config` row)
 - `409` — actor has active jobs or enabled schedules (force=False)
+
+### `GET /admin/batches`
+
+Batch overview. Reads all rows from the `batches` table: batch ID (linked to its finalizer job's detail page when one is set), queue, status (`active`, `complete`, or `aborted`), expected size, consecutive failures against the failure threshold, originating actor, and created/completed timestamps. Active batches sort first, then the most recent rows. The page renders at most 200 batches and says so when the cap is reached; there is no pagination. If the batches migration has not been applied, renders a notice instead of raising.
 
 ### `GET /admin/sse/{topic}`
 

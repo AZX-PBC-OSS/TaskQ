@@ -41,6 +41,7 @@ from taskq.constants import wake_channel
 from taskq.obs import get_logger, set_slot_pool_occupancy_source
 from taskq.progress._buffer import _ProgressBuffer
 from taskq.settings import WorkerSettings
+from taskq.worker._stall_tally import StallAttributionTally
 from taskq.worker._watchdog import LoopLiveness
 from taskq.worker.budget import compute_connection_budget
 from taskq.worker.cancel import ActiveJobRegistry
@@ -318,6 +319,13 @@ class WorkerDeps:
     interval-driven sibling loops tick once per iteration and the watchdog
     trips when any tracked loop goes stale. Gated loops must ``forget``
     their entry when their gate closes."""
+    stall_tally: StallAttributionTally = field(default_factory=StallAttributionTally)
+    """Rolling tally of this process's attributed event-loop stalls. The
+    lag watchdog's daemon thread records into it from off-loop; the
+    heartbeat loop reads it once per tick and merges the value into this
+    worker's ``workers`` row metadata, which is the only thread-safe seam
+    between the two: the tally object is the shared holder, never a
+    reference into loop-owned state."""
     leader_conn_factory: ConnFactory | None = None
     """Resolved factory that (re)builds ``leader_conn``. Same contract as
     ``notify_conn_factory``; used by :mod:`taskq.worker.leader`'s election

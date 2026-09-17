@@ -1,7 +1,7 @@
 """Unit tests for heartbeat_loop — pure-Python, no PG required."""
 
 import asyncio
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Callable
 from contextlib import asynccontextmanager
 from datetime import UTC, timedelta
 from typing import Any
@@ -166,6 +166,7 @@ async def _run_tick(
     is_leader: bool = False,
     cancel_controller: CancelController | None = None,
     max_heartbeat_failures: int = 3,
+    deps_hook: Callable[[WorkerDeps], None] | None = None,
 ) -> tuple[WorkerDeps, asyncio.Event]:
     """Run one heartbeat tick, then set shutdown so the loop exits.
 
@@ -173,6 +174,10 @@ async def _run_tick(
     record hook) rather than a fixed sleep, so this is robust to scheduler
     jitter under parallel test load instead of merely guessing that 0.1s
     is enough wall-clock time for one tick to complete.
+
+    ``deps_hook`` runs after the deps are built but before the loop
+    starts, for tests that need to seed per-process state (the stall
+    tally) the first tick then reads.
     """
     import taskq.worker.heartbeat as hb_mod
 
@@ -181,6 +186,8 @@ async def _run_tick(
         is_leader=is_leader,
         max_heartbeat_failures=max_heartbeat_failures,
     )
+    if deps_hook is not None:
+        deps_hook(deps)
     shutdown = asyncio.Event()
     tick_done = asyncio.Event()
     prev_record = hb_mod._tick_duration.record  # type: ignore[reportPrivateUsage]
@@ -1093,3 +1100,61 @@ async def test_isolate_self_sweep1_row_state_identical(
             assert row_a["scheduled_at"] == row_b["scheduled_at"]
     finally:
         await stack.aclose()
+
+
+# ── The stall-attribution tally rides the liveness statement ──────────
+
+
+async def test_tick_merges_the_stall_tally_into_the_liveness_statement() -> None:
+    """The liveness write carries this process's stall tally as a jsonb
+    MERGE in the same statement (no extra round trip): the watchdog hands
+    the tally to the heartbeat loop via deps, and the loop never reads
+    anything off the watchdog thread itself."""
+    pool = FakePool()
+
+    def _seed(deps: WorkerDeps) -> None:
+        deps.stall_tally.record("send_email", kind="gil_held")
+        deps.stall_tally.record("send_email", kind="gil_held")
+        deps.stall_tally.record("resize_image", kind="blocking_call")
+
+    _deps, _shutdown = await _run_tick(pool=pool, deps_hook=_seed)
+
+    liveness_calls = [
+        (sql, args) for sql, args in pool.execute_calls if "last_seen_at = clock_timestamp()" in sql
+    ]
+    assert len(liveness_calls) == 1
+    sql, args = liveness_calls[0]
+    assert "metadata = metadata || $2::jsonb" in sql
+    assert "WHERE id = $1" in sql
+    assert args[1] is not None
+    assert '"send_email":{"gil_held":2}' in str(args[1])
+    assert '"resize_image":{"blocking_call":1}' in str(args[1])
+
+
+async def test_tick_merges_an_empty_tally_as_a_noop() -> None:
+    """A process that attributed nothing merges an empty object: the jsonb
+    concat leaves the registered metadata keys (max_concurrency,
+    notify_enabled) untouched and writes no loop_stalls key."""
+    pool = FakePool()
+    _deps, _shutdown = await _run_tick(pool=pool)
+
+    liveness_calls = [
+        (sql, args) for sql, args in pool.execute_calls if "last_seen_at = clock_timestamp()" in sql
+    ]
+    assert len(liveness_calls) == 1
+    _sql, args = liveness_calls[0]
+    assert args[1] == "{}"
+
+
+def test_build_heartbeat_sql_liveness_shape_pins_the_merge() -> None:
+    """The liveness template is the merge statement's single source: the
+    jsonb concat must keep the registration keys AND key the tally write
+    to $2, which is what keeps the heartbeat at one statement per tick."""
+    from taskq.backend._sql import build_heartbeat_sql
+
+    liveness_sql, _jobs_sql, _slots_sql = build_heartbeat_sql("taskq")
+    assert liveness_sql == (
+        'UPDATE "taskq".workers '
+        "SET last_seen_at = clock_timestamp(), metadata = metadata || $2::jsonb "
+        "WHERE id = $1"
+    )

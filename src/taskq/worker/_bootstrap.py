@@ -75,7 +75,7 @@ from taskq.worker._watchdog import LoopLagWatchdog, ShutdownWatchdog, loop_watch
 from taskq.worker.cancel import make_cancel_controller
 from taskq.worker.cron_loop import ActorFirePolicy
 from taskq.worker.deps import WorkerDeps, open_worker_deps
-from taskq.worker.health import HealthServer
+from taskq.worker.health import HealthServer, HealthTcpBindError
 from taskq.worker.heartbeat import heartbeat_loop
 from taskq.worker.leader import MaintenanceLeader
 from taskq.worker.notify import notify_listener_loop
@@ -1767,19 +1767,23 @@ async def _main(
                 health_server = HealthServer()
                 try:
                     await health_server.start(deps)
+                except HealthTcpBindError:
+                    # The probe port the deployment manifest routed to THIS
+                    # replica cannot be served: refusing to start is the
+                    # honest outcome (probes passing against whatever else
+                    # holds the port is the alternative, and a booting
+                    # worker with dead probes is the silent kind of down).
+                    raise
                 except OSError as exc:
-                    # The health listener is an accessory: a unix socket
-                    # path (or TCP probe port) colliding with a live peer
-                    # is an operator-visible misconfiguration, never a
-                    # reason to refuse work — a worker that can do work
-                    # must not fail to start over one diagnostic
-                    # side-channel. HealthServer.start's loud refusal is
-                    # what stops a newcomer silently stealing the peer's
-                    # socket; the boot converts it into a WARN and carries
-                    # on registering and claiming. No stop callback is
-                    # pushed: start() raised before this server owned
-                    # anything (its own failure paths already cleaned up),
-                    # so there is nothing of ours to stop.
+                    # A unix-socket collision, by contrast, means a live
+                    # PEER worker owns the path (HealthServer.start's loud
+                    # refusal stops a newcomer silently stealing it):
+                    # refusing to boot would crash-loop a healthy pair
+                    # during a rolling restart. The collision is a WARN and
+                    # the boot carries on registering and claiming. No stop
+                    # callback is pushed: start() raised before this server
+                    # owned anything (its own failure paths already cleaned
+                    # up), so there is nothing of ours to stop.
                     _startup_log.warning(
                         "health-server-unavailable",
                         socket_path=deps.settings.health_socket_path,
@@ -1801,6 +1805,26 @@ async def _main(
 
             deps.liveness.grace_factor = settings.watchdog_tick_grace_factor
             deps.liveness.stale_floor = settings.watchdog_stale_floor
+            # Stall attribution: the watchdog matches sampled code objects
+            # against the registered actor functions (ActorRef.fn's code),
+            # and joins running jobs via a snapshot callable instead of a
+            # registry reference, so the watchdog never touches loop-owned
+            # state directly. The registry is quiescent while the loop is
+            # blocked (the loop thread is its only mutator), but a resize
+            # racing the snapshot raises RuntimeError, and that must never
+            # kill the watchdog thread, hence the guard.
+            actor_code_names: dict[int, str] = (
+                {id(ref.fn.__code__): ref.name for ref in actor_registry.values()}
+                if actor_registry is not None
+                else {}
+            )
+
+            def _running_job_actors() -> list[tuple[str, str]]:
+                try:
+                    return [(job.ctx.actor, str(job.job_id)) for job in deps.active_jobs.all()]
+                except RuntimeError:
+                    return []
+
             lag_watchdog = LoopLagWatchdog(
                 asyncio.get_running_loop(),
                 deps.liveness,
@@ -1809,6 +1833,9 @@ async def _main(
                 startup_grace=settings.watchdog_loop_lag_startup_grace,
                 poll_interval=settings.watchdog_check_interval,
                 enabled=settings.watchdog_enabled,
+                actor_code_names=actor_code_names,
+                stall_tally=deps.stall_tally,
+                list_running_jobs=_running_job_actors,
             )
 
             def _stamp_shutdown_started(t: float) -> None:

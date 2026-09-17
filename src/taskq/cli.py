@@ -64,6 +64,7 @@ from taskq.constants import (
 from taskq.exceptions import ActorConfigDriftList, ActorDeregistrationError, ActorNotFoundError
 from taskq.obs import OtelExporterConfigurationError, configure_exporters, setup_logging
 from taskq.settings import TaskQSettings, WorkerSettings
+from taskq.worker._stall_tally import remedy_for_kind
 from taskq.worker.dev import dev_watch_loop
 from taskq.worker.queue_ops import (
     QUEUE_MODES,
@@ -1416,11 +1417,43 @@ GROUP BY s.actor"""  # noqa: S608  # Why: schema is identifier-validated above a
     ]
 
 
+async def _list_worker_stall_tallies(
+    conn: asyncpg.Connection,
+    *,
+    schema: str,
+) -> list[tuple[str, dict[str, object]]]:
+    """Read each live worker's attributed-stall tally from its row metadata.
+
+    The heartbeat merges the tally (``loop_stalls``: actor -> kind ->
+    count) into the metadata the worker registered with; a worker that
+    has attributed nothing carries no key and contributes nothing here.
+    Malformed metadata (a non-dict tally, or non-dict kind counts) is
+    skipped rather than raised: a hand-edited or stale row must not stop
+    the whole report. Read-only, like every doctor read.
+    """
+    if not _IDENT_RE.match(schema):
+        raise ValueError(f"invalid schema identifier: {schema!r}")
+    rows = await conn.fetch(
+        f'SELECT id, metadata FROM "{schema}".workers'  # noqa: S608  # Why: schema is identifier-validated above and double-quoted; no user values are interpolated.
+    )
+    tallies: list[tuple[str, dict[str, object]]] = []
+    for row in rows:
+        metadata: object = row["metadata"]
+        if not isinstance(metadata, dict):
+            continue
+        metadata_map = cast("dict[str, object]", metadata)
+        tally = metadata_map.get("loop_stalls")
+        if isinstance(tally, dict) and tally:
+            tallies.append((str(row["id"]), cast("dict[str, object]", tally)))
+    return tallies
+
+
 def _doctor_findings(
     registry: Mapping[str, ActorRef[Any, Any]],
     rows: list[ActorConfigRow],
     queues: list[QueueRow],
     stranded: list[_StrandedActorJobs],
+    worker_stalls: list[tuple[str, dict[str, object]]] | None = None,
 ) -> list[str]:
     """Every condition worth an operator's attention, as report lines.
 
@@ -1428,6 +1461,10 @@ def _doctor_findings(
     running through, which is why they surface here rather than at boot:
     each one produces no error anywhere, and its only symptom is work
     that quietly does not happen.
+
+    ``worker_stalls`` carries each live worker's stall tally as read from
+    its ``workers`` row metadata (``(worker_id, loop_stalls)``): the
+    attributed event-loop stalls that worker's lag watchdog recorded.
     """
     stored_by_actor = {row.actor: row for row in rows}
     findings: list[str] = []
@@ -1508,6 +1545,29 @@ def _doctor_findings(
                 f"queue {row.queue!r}'s max_concurrent={queue_cap}, which binds first; "
                 "raising the actor cap alone changes nothing."
             )
+    for worker_id, tally in sorted(worker_stalls or [], key=lambda w: w[0]):
+        for actor_name, kinds in sorted(tally.items(), key=lambda kv: str(kv[0])):
+            if not isinstance(kinds, dict) or not kinds:
+                continue
+            kind_map = cast("dict[str, object]", kinds)
+            kind_counts: dict[str, int] = {}
+            for kind, count in kind_map.items():
+                if isinstance(count, (int, float)) and not isinstance(count, bool):
+                    kind_counts[str(kind)] = int(count)
+            if not kind_counts:
+                continue
+            total = sum(kind_counts.values())
+            dominant = max(kind_counts, key=lambda k: (kind_counts[k], k))
+            kind_desc = ", ".join(
+                f"{kind} x{count}"
+                for kind, count in sorted(kind_counts.items(), key=lambda kv: (-kv[1], kv[0]))
+            )
+            findings.append(
+                f"worker {worker_id}: actor {actor_name} has stalled the event loop "
+                f"{total} time(s) ({kind_desc}; {dominant} dominates) — "
+                f"{remedy_for_kind(dominant)}. The worker's "
+                "`event-loop-stall-attributed` warnings name the file:line."
+            )
     return findings
 
 
@@ -1554,6 +1614,7 @@ async def _doctor(
         rows = await list_actor_configs(conn, schema=settings.schema_name)
         queues = await list_queues(conn, schema=settings.schema_name)
         stranded = await _list_stranded_pending_jobs(conn, schema=settings.schema_name)
+        worker_stalls = await _list_worker_stall_tallies(conn, schema=settings.schema_name)
     finally:
         await close_conn_bounded(conn, "doctor", CLOSE_TIMEOUT_SECS)
 
@@ -1563,7 +1624,7 @@ async def _doctor(
     if not rows:
         typer.echo("  (no stored actor_config rows)")
 
-    findings = _doctor_findings(registry, rows, queues, stranded)
+    findings = _doctor_findings(registry, rows, queues, stranded, worker_stalls)
     typer.echo("")
     if not findings:
         typer.echo("no findings — every registered actor has a stored row and every")

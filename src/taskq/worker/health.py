@@ -422,6 +422,29 @@ async def _read_request_head(
     return request_line
 
 
+class HealthTcpBindError(RuntimeError):
+    """The TCP probe listener the deployment routed here could not bind.
+
+    Raised by :meth:`HealthServer.start` when ``health_port`` is set and
+    the address cannot be served. Distinct from a bare bind ``OSError`` on
+    the Unix-socket arm: a socket-path collision means a live peer worker
+    owns that path (boot continues, the collision is a WARNING), while an
+    unservable probe port means the orchestrator routes health checks to
+    this replica and nothing answers them — the worker refuses to start
+    rather than run with probes silently dead.
+    """
+
+    def __init__(self, host: str, port: int, cause: OSError) -> None:
+        self.host = host
+        self.port = port
+        super().__init__(
+            f"health TCP listener could not bind {host}:{port} ({cause}); "
+            "the deployment's probes target this port, so refusing to start "
+            "is the honest outcome — free the port or change "
+            "TASKQ_HEALTH_PORT / TASKQ_HEALTH_HOST"
+        )
+
+
 class HealthServer:
     """HTTP health server for orchestrator probes, over a Unix socket and optionally TCP."""
 
@@ -492,7 +515,7 @@ class HealthServer:
             # nobody is actually checking. Refusing to start is the only honest outcome.
             logger.error("health-http-bind-failed", host=host, port=port, error=str(exc))
             await self.stop()
-            raise
+            raise HealthTcpBindError(host, port, exc) from exc
         logger.info("health-http-server-started", host=host, port=self.bound_port)
 
     async def stop(self) -> None:

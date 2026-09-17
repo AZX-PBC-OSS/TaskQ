@@ -25,6 +25,7 @@ from unittest.mock import AsyncMock, MagicMock, create_autospec, patch
 
 import asyncpg
 import pytest
+import structlog
 from pydantic import BaseModel
 
 from taskq._di.registry import ProviderRegistry
@@ -43,6 +44,7 @@ from taskq.testing.actor import EmptyPayload
 from taskq.testing.clock import FakeClock
 from taskq.testing.health import unique_health_sock_path
 from taskq.worker.deps import WorkerDeps
+from taskq.worker.health import HealthTcpBindError
 from taskq.worker.run import _main
 from tests._di_scopes import bootstrap_scopes, make_scopes
 from tests.conftest import _FakePool
@@ -1366,3 +1368,46 @@ async def test_bootstrap_with_watchdog_disabled_does_not_spawn_or_fail() -> None
     path that must never fail."""
     result = await _run_main_with_mocked_deps(_settings(TASKQ_WATCHDOG_ENABLED="false"))
     assert result == 0
+
+
+# ── Health listener bind failures: fail-closed on the probe port ──
+
+
+async def test_health_tcp_bind_failure_refuses_startup() -> None:
+    """The probe port the deployment manifest routed to this replica cannot
+    be served: the worker refuses to start. A booting worker with dead
+    probes is the silent kind of down, and a tcpSocket probe on a port some
+    other process holds would pass while checking nothing."""
+    import socket as socket_mod
+
+    with socket_mod.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        probe.listen(1)
+        taken = probe.getsockname()[1]
+        settings = _settings(
+            **{
+                "TASKQ_HEALTH_PORT": taken,
+                "TASKQ_HEALTH_HOST": "127.0.0.1",
+            }
+        )
+        with pytest.raises(HealthTcpBindError):
+            await _run_main_with_mocked_deps(settings)
+
+
+async def test_health_socket_collision_warns_and_boots() -> None:
+    """A unix-socket path collision means a live PEER worker owns the path;
+    refusing to boot would crash-loop a healthy pair during a rolling
+    restart. The boot warns and carries on."""
+
+    peer_path = unique_health_sock_path("health_collision_peer")
+    peer = await asyncio.start_unix_server(lambda r, w: None, path=peer_path)
+    try:
+        settings = _settings(**{"TASKQ_HEALTH_SOCKET_PATH": peer_path})
+        with structlog.testing.capture_logs() as logs:
+            await _run_main_with_mocked_deps(settings)
+        unavailable = [e for e in logs if e.get("event") == "health-server-unavailable"]
+        assert len(unavailable) == 1
+        assert unavailable[0]["socket_path"] == peer_path
+    finally:
+        peer.close()
+        await peer.wait_closed()

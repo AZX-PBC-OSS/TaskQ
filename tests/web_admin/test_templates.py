@@ -75,7 +75,18 @@ def test_base_template_contains_navigation_links(
 ) -> None:
     """DoD: nav contains links to all required pages."""
     html = _render_base(monkeypatch=monkeypatch, pool=stub_pool)
-    for path in ["/queues", "/workers", "/schedules", "/rate-limits", "/reservations", "/leader"]:
+    for path in [
+        "/queues",
+        "/jobs",
+        "/history",
+        "/workers",
+        "/actors",
+        "/batches",
+        "/schedules",
+        "/rate-limits",
+        "/reservations",
+        "/leader",
+    ]:
         assert f'href="{path}"' in html
 
 

@@ -574,6 +574,8 @@ readinessProbe:
   periodSeconds: 10
 ```
 
+On platforms without exec probes (Azure Container Apps), or when an orchestrator or scraper should reach the worker over the network, set `TASKQ_HEALTH_PORT` to serve the same `/live` and `/ready` over TCP on `TASKQ_HEALTH_HOST` (default `0.0.0.0`, the pod-network address container probes need). The TCP listener is off unless the port is set, answers `/tasks` with `404` (the socket's filesystem permissions do not apply to a TCP port), and carries no token check: keep it pod-network-only. A TCP port that cannot be bound refuses the worker's startup (`HealthTcpBindError`: the probes target that port); a unix-socket collision, by contrast, warns and boots (a live peer owns the path). The Prometheus scrape listener (`TASKQ_METRICS_PORT`, host `TASKQ_METRICS_HOST` falling back to `TASKQ_HEALTH_HOST`) is a separate, unauthenticated surface documented in [observability.md](observability.md#serving-the-metrics-the-prometheus-endpoint) and refuses startup on a bind failure the same way. Full per-platform recipes: [deployment.md — Listener deployment recipes](deployment.md#listener-deployment-recipes).
+
 **Endpoints:**
 
 | Path | Success condition | Success response | Failure response |
@@ -916,8 +918,14 @@ All variables use the `TASKQ_` prefix. `WorkerSettings` extends `TaskQSettings`;
 | `TASKQ_MAX_RETRY_BACKOFF` | `timedelta` | `PT24H` | Global ceiling on per-attempt retry backoff |
 | `TASKQ_DEFAULT_START_TO_CLOSE` | `timedelta \| None` | `None` | Worker-wide fallback per-attempt execution timeout, applied only when neither the enqueue call nor the actor sets `start_to_close`. `None` = unbounded. See [retries.md — `start_to_close` vs `schedule_to_close`](retries.md#7-start_to_close-vs-schedule_to_close) |
 | `TASKQ_RATE_LIMIT_PG_FALLBACK_ENABLED` | `bool` | `True` | Fall back to Postgres when Redis errors occur during rate limiting |
-| `TASKQ_HEALTH_ENABLED` | `bool` | `True` | Enable the Unix-socket health server |
+| `TASKQ_HEALTH_ENABLED` | `bool` | `True` | Enable the health server, both transports (Unix socket and the optional TCP listener) |
 | `TASKQ_HEALTH_SOCKET_PATH` | `str` | `/tmp/taskq_health.sock` | Path for the health Unix socket |
+| `TASKQ_HEALTH_PORT` | `int \| None` | `None` | Optional TCP health listener (`/live`, `/ready`); off unless set, required on Azure Container Apps. See [Health server](#health-server) |
+| `TASKQ_HEALTH_HOST` | `str` | `0.0.0.0` | Bind host for both TCP listeners; pod-network default |
+| `TASKQ_HEALTH_TASKS_ENABLED` | `bool` | `False` | Expose the privileged `/tasks` stack dump on the Unix socket (mode `0600`); TCP answers `404` |
+| `TASKQ_HEALTH_REQUEST_TIMEOUT` | `float` | `2.0` | Seconds a probe gets to send its request line and headers before the connection is dropped |
+| `TASKQ_METRICS_PORT` | `int \| None` | `None` | Optional Prometheus scrape listener; off unless set, needs `taskq[prometheus]` |
+| `TASKQ_METRICS_HOST` | `str \| None` | `None` | Bind host override for the scrape listener alone; falls back to `TASKQ_HEALTH_HOST` |
 | `TASKQ_HEALTH_PG_PING_TIMEOUT` | `float` | `0.2` | Seconds to wait for the readiness PG ping |
 | `TASKQ_POLL_INTERVAL` | `float` | `1.0` | Fallback producer polling cadence (seconds) when NOTIFY is disabled |
 | `TASKQ_NOTIFY_ENABLED` | `bool` | `true` | When `true`, the worker uses LISTEN/NOTIFY for near-zero-latency dispatch wakeups. When `false`, uses poll-only dispatch with `poll_interval`. |

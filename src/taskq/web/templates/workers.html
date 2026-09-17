@@ -4,7 +4,8 @@
 {% block title %}Workers — TaskQ Admin{% endblock %}
 
 {% block content %}
-<h2 class="text-xl font-semibold tracking-tight mb-4">Workers</h2>
+<h2 class="text-xl font-semibold tracking-tight mb-2">Workers</h2>
+<p class="text-xs text-slate-500 dark:text-slate-400 mb-4">Stall hotspots count attributed event-loop stalls per actor; the Running / Max column counts running rows.</p>
 
 {% if workers %}
 <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg overflow-hidden">
@@ -15,6 +16,8 @@
                     <th class="px-4 py-2.5 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">Hostname</th>
                     <th class="px-4 py-2.5 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">PID</th>
                     <th class="px-4 py-2.5 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">Queues</th>
+                    <th class="px-4 py-2.5 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">Running / Max</th>
+                    <th class="px-4 py-2.5 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">Stall hotspots</th>
                     <th class="px-4 py-2.5 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">NOTIFY</th>
                     <th class="px-4 py-2.5 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">Last Seen</th>
                     <th class="px-4 py-2.5 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">Status</th>
@@ -44,6 +47,30 @@
                         {% endif %}
                     </td>
                     <td class="px-4 py-2.5 text-xs text-slate-500 whitespace-nowrap">{{ w.last_seen_at }}</td>
+                    {% set hotspots = w.get('stall_hotspots', '') if w is mapping else '' %}
+                    <td class="px-4 py-2.5 text-xs whitespace-nowrap font-mono">
+                        {% if hotspots %}
+                        <span class="text-slate-700 dark:text-slate-200">{{ hotspots }}</span>
+                        {% else %}
+                        <span class="text-slate-400">&mdash;</span>
+                        {% endif %}
+                    </td>
+                    <td class="px-4 py-2.5 text-xs whitespace-nowrap">
+                        <!-- running_jobs counts the worker's own running rows,
+                             the same population taskq.worker.active_jobs counts
+                             per process; max is the registered max_concurrency.
+                             Reserved-but-unclaimed capacity (rate-limit slots,
+                             dispatch probes) is in neither number. -->
+                        {% set running = w.get('running_jobs', 0) if w is mapping else 0 %}
+                        {% set max_conc = w.get('max_concurrency') if w is mapping else none %}
+                        {% if max_conc is not none %}
+                        <span class="inline-flex items-center px-2 py-0.5 rounded font-medium {% if running >= max_conc %}bg-amber-100 text-amber-700 dark:bg-amber-900 dark:text-amber-300{% else %}bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-300{% endif %}">
+                            {{ running }} / {{ max_conc }}
+                        </span>
+                        {% else %}
+                        <span class="text-slate-400">{{ running }} / &mdash;</span>
+                        {% endif %}
+                    </td>
                     <td class="px-4 py-2.5">
                         {% if w.is_leader %}
                         <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-300">

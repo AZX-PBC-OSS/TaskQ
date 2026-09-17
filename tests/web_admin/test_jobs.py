@@ -1089,3 +1089,57 @@ def test_live_jobs_table_non_running_rows_have_no_lease_state(
         "a row that holds no lease must not render an expired badge — the "
         "badge means a running row's lease is past, nothing else"
     )
+
+
+# ── started_at sort: running-longest view ───────────────────────────────
+
+
+def test_started_at_is_a_sortable_column_on_both_tabs() -> None:
+    """``started_at`` pages like the other timestamp columns.
+
+    An operator answers "what has been running longest" with
+    ``status=running&sort=started_at&order=asc``; that only works when the
+    column joins the keyset ordering instead of falling back to the
+    default (created_at) sort, which would silently re-serve one page.
+    """
+    from taskq.web.admin.jobs import _SORTABLE_ARCHIVE, _SORTABLE_LIVE
+
+    assert "started_at" in _SORTABLE_LIVE
+    assert "started_at" in _SORTABLE_ARCHIVE
+    assert _SORTABLE_LIVE["started_at"].kind == "ts"
+    assert _SORTABLE_LIVE["started_at"].nullable
+
+
+def test_started_at_sort_pages_by_keyset() -> None:
+    """sort=started_at builds a timestamptz cursor clause and NULLS LAST."""
+    from taskq.web.admin.jobs import _SORTABLE_LIVE, _build_paginated_sql
+
+    sql, params = _build_paginated_sql(
+        schema="taskq",
+        table="jobs",
+        cols="*",
+        sortable=_SORTABLE_LIVE,
+        where="status = ANY($1)",
+        params=[["running"]],
+        cursor_at="2025-01-01T00:00:00+00:00",
+        cursor_id="00000000-0000-0000-0000-000000000001",
+        cursor_dir="next",
+        sort="started_at",
+        order="asc",
+    )
+    assert "timestamptz" in sql
+    assert "started_at" in sql
+    assert "NULLS LAST" in sql.upper()
+    assert len(params) == 3
+
+
+def test_started_at_sort_header_links_to_the_column(stub_pool: _StubPool) -> None:
+    """The Started column header is a sort control, not a static label."""
+    html = _render_job_table(
+        stub_pool,
+        tab="live",
+        sort="started_at",
+        order="asc",
+    )
+    assert "sort=started_at" in html
+    assert "▲" in html  # active sort indicator rendered on the asc link

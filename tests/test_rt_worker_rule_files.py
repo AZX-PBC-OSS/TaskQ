@@ -139,7 +139,7 @@ def test_new_alert_exprs_reference_series_the_bridge_emits() -> None:
     is not a Prometheus error — the alert just silently never fires."""
     from tests.test_prometheus_metrics import _NAME_MAP
 
-    emitted = {prom_name for _, prom_name in _NAME_MAP}
+    emitted = {prom_name for _, prom_name, _kind in _NAME_MAP}
 
     for rules_path in (_RULES_YAML, _K8S_RULES_YAML):
         rules = _rules_from(rules_path)
@@ -566,3 +566,63 @@ def test_backlog_alerts_make_an_unconsumed_actor_visible(rules_path: Path) -> No
             "but its annotations never render $labels.actor — the page reports a "
             "starving actor without naming it"
         )
+
+
+# ── the registered-instrument pin ────────────────────────────────────────
+# The failure class this closes: a rule file or runbook citing a series
+# name that no code path registers (an alert that can never fire, or a
+# runbook instruction that greps nothing). The oracle is BEHAVIORAL, not
+# source shape: _NAME_MAP is the fixture the scrape tests verify by
+# recording one observation per instrument and reading a real scrape, so
+# "in the map" means "provably served". The expr-only pin above covered
+# the runbooked alerts' exprs; this one covers EVERY taskq_/messaging_
+# mention in exprs AND annotations AND the runbook prose, and validates
+# suffix forms (_total on counters, _bucket/_sum/_count on histograms,
+# bare names on gauges and up-down counters) against the instrument's
+# rendered family.
+
+
+def _allowed_series() -> dict[str, str]:
+    """Prometheus series the bridge can emit, keyed by instrument kind.
+
+    Built from _NAME_MAP's (instrument, rendering, kind) rows: counters
+    also render ``_total``, histograms also render
+    ``_bucket``/``_sum``/``_count``, gauges and up-down counters render
+    the bare name only.
+    """
+    allowed: dict[str, str] = {}
+    from tests.test_prometheus_metrics import _NAME_MAP
+
+    for _otel_name, prom_name, kind in _NAME_MAP:
+        allowed[prom_name] = kind
+        if kind == "counter" and not prom_name.endswith("_total"):
+            allowed[prom_name + "_total"] = kind
+        if kind == "histogram":
+            for suffix in ("_bucket", "_sum", "_count"):
+                allowed[prom_name + suffix] = kind
+    # The health socket's three hand-rendered gauges (worker/health.py's
+    # /metrics text) are real, served series on a separate surface from the
+    # OTel scrape; they are deliberately not OTel instruments and so not in
+    # _NAME_MAP.
+    allowed.update(
+        {
+            "taskq_active_jobs": "gauge",
+            "taskq_is_leader": "gauge",
+            "taskq_shutdown_phase": "gauge",
+        }
+    )
+    return allowed
+
+
+def test_every_series_name_the_shipped_text_cites_is_registered() -> None:
+    """Exprs, alert descriptions and runbook prose may only cite series a
+    real scrape serves: a name is allowed only when _NAME_MAP renders it
+    (the map's builders add a counter's ``_total`` and a histogram's
+    ``_bucket``/``_sum``/``_count`` families themselves, so citing
+    ``_total`` on a gauge or a wrong suffix on anything fails here)."""
+    allowed = _allowed_series()
+    for text_path in (_RULES_YAML, _K8S_RULES_YAML, _RUNBOOKS_MD):
+        text = text_path.read_text()
+        cited = set(re.findall(r"\b(?:taskq|messaging)_[a-z][a-z0-9_]*\b", text))
+        unknown = sorted(cited - allowed.keys())
+        assert not unknown, f"{text_path.name}: cites series no code path registers: {unknown}"

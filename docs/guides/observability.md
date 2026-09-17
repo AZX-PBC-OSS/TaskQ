@@ -386,7 +386,18 @@ source=prometheus prometheus_port=9464`; with an OTLP endpoint set as well,
 provider. `OTEL_METRICS_EXPORTER=prometheus` with
 `OTEL_EXPORTER_PROMETHEUS_PORT`/`_HOST` is the SDK's own spelling of the
 same thing and works identically; `TASKQ_METRICS_PORT` is authoritative
-for the port when both are set. Unset, no listener is bound.
+for the port when both are set, and the worker's own write of the port and
+host is scoped to the SDK call and rolled back, so neither value leaks to
+child processes. Unset, no listener is bound; when a provider is already
+installed by the embedding application, the worker wires nothing and the
+port stays unbound behind an `otel-exporter-scrape-not-served` WARNING.
+
+> **The scrape endpoint is unauthenticated.** It exposes actor names,
+> queue names, and exception class names — never payloads or credentials,
+> but real operational metadata. The listener binds the health host
+> (`TASKQ_HEALTH_HOST`, `0.0.0.0` by default): keep it on the pod network,
+> behind a network policy or an authenticating proxy if your cluster is
+> shared.
 
 - The worker's health socket separately serves three hand-rendered process
   gauges — `taskq_active_jobs`, `taskq_is_leader`, `taskq_shutdown_phase` —
@@ -457,6 +468,7 @@ you *which* jobs absorbed them.
 | `taskq.ratelimit.acquire_dependency_failures` | `1` | `error_type` | Rate-limit acquires that failed on a store dependency (Redis or the PG fallback) and were failed closed as denials — an availability signal, distinct from `taskq.reservation.denials` (admission decisions). Read the two together before scaling a bucket; `error_type` is the exception class name. | yes |
 | `taskq.reservation.denials` | `1` | `source` | Reservation/rate-limit admission denials surfaced to a worker handler. `source` is `reservation` or `rate_limit`. Bucket names are not a dimension. | yes |
 | `taskq.sub_enqueue.failures` | `1` | `actor`, `error_type` | Sub-enqueue flush failures after the parent job committed — each counted unit is one child job that was reported as enqueued but was not. `actor` is the parent's actor; `error_type` is the exception class name. | yes |
+| `taskq.worker.loop_stall_attributions` | `1` | `actor`, `kind` | Event-loop scheduling stalls attributed to the synchronous work holding the interpreter while the loop could not schedule, recorded by the lag watchdog's daemon thread at the warn and trip tiers. `kind="blocking_call"` — a synchronous call that released the GIL (I/O wait, a subprocess); `kind="gil_held"` — synchronous work that held it (a C extension without GIL release, or a hot pure-Python loop). `actor` names the registered actor whose frame sat under the stall, or the `_other_` overflow when no registered actor appeared in the sampled stack. See [The watchdog family](#the-watchdog-family). | yes |
 | `taskq.pruned.jobs` | `1` | `actor`, `status` | Jobs moved from `jobs` to `jobs_archive` by the prune sweep (Sweep 5). | yes |
 | `taskq.archived.jobs` | `1` | `status` | Same prune-sweep event, status-only view (no actor dimension). | yes |
 | `taskq.expired_archive.jobs` | `1` | `status` | Jobs hard-deleted from `jobs_archive` by the archive expiry sweep (Sweep 6). | yes |
@@ -532,10 +544,22 @@ The in-worker watchdog (`taskq.worker._watchdog`; [workers.md — In-worker watc
 | `taskq.worker.watchdog_loop_lag_warns_total` | counter | `1` | `detector` (`event-loop-lag-warn`) | Tier-1 lag warnings: the loop exceeded `TASKQ_WATCHDOG_LOOP_LAG_WARN_BUDGET` — once per stall (the latch clears on the next beat), with a thread dump and a deferred task-stack dump. Non-terminal. |
 | `taskq.worker.watchdog_trips_total` | counter | `1` | `detector` (`event-loop-lag`, `stale-loop-tick`, `shutdown-deadline`) | Terminal trips: the worker force-exited with `EXIT_WATCHDOG` because the loop exceeded `TASKQ_WATCHDOG_LOOP_LAG_BUDGET`, an interval-driven loop stopped ticking, or shutdown outlived `TASKQ_TERMINATION_GRACE_PERIOD`. In-flight jobs are reclaimed by the leader on lock-lease expiry. |
 | `taskq.worker.loop_tick_age_seconds` | gauge | `s` | `loop` | Seconds since each interval-driven sibling loop (heartbeat, producer, the leader loops, ...) last ticked — the `/ready` body's `loop_tick_ages`, exported. A loop whose age grows past its period × grace factor is the stale-loop-tick trip in the making. |
+| `taskq.worker.loop_stall_attributions` | counter | `1` | `actor` (bounded), `kind` (`blocking_call`, `gil_held`) | Attributed event-loop stalls: each warn-tier and trip-tier stall names the registered actor whose frame sat under the work holding the interpreter, and classifies it (below). |
 | `taskq.worker.sibling_crashes_total` | counter | `1` | `loop` | Sibling task exits by exception (never cancellations): the crash that sets the shutdown event and takes the worker down. |
 | `taskq.worker.shutdown_duration_seconds` | histogram | `s` | — | Clean shutdown wall-clock time; a trip records nothing here, so a missing sample beside a `shutdown-deadline` trip is the expected shape. |
 
 Read them together: `event_loop_lag_seconds` rising → `watchdog_loop_lag_warns_total` → `watchdog_trips_total{detector="event-loop-lag"}` is one stall escalating through the tiers; `loop_tick_age_seconds{loop="heartbeat"}` climbing while the lag histogram stays flat is a loop that is scheduling but not ticking (blocked on an await — a pool acquire, a wedged connection), the `stale-loop-tick` shape.
+
+### Stall attribution: which actor is blocking the loop
+
+The lag watchdog's daemon thread joins two signals while a stall persists, sampling the event-loop thread's stack every poll into a small ring (the last 16 samples):
+
+- **Loop lag** (the beat gap): the loop is not scheduling.
+- **The watchdog thread's own wakeup gap**: how far each poll wait overshoots the requested interval. An overshoot beyond one full extra interval means the watchdog thread itself was starved of the GIL — what synchronous work that never releases the interpreter does to a bystander thread.
+
+Loop lag with a quiet watchdog thread classifies the stall `blocking_call`: a synchronous call that released the GIL (an I/O wait, a subprocess), where `sys._current_frames` sampling from the still-running watchdog thread lands exactly on the blocking frame. Loop lag with a starved watchdog thread classifies it `gil_held`: the interpreter is held (a C extension that does not detach, or a hot pure-Python loop); that sample is approximate and its line points at or just after the C call.
+
+Each attribution is emitted as the `event-loop-stall-attributed` WARNING (with `actor`, `job_id` when exactly one running job matched the actor, `frame` as `file:line:function` of the deepest non-taskq frame, `kind`, `lag_seconds`, the sample count, a truncated stack, and the remedy in `remedy`), bumps `taskq.worker.loop_stall_attributions`, and records into the rolling tally the heartbeat merges into the worker's `workers` row metadata — which is what `/admin/workers`' Stall hotspots column and `taskq doctor` read. No span event is recorded on the running attempt's span: span operations are not thread-safe, and the attempt's span lives on the loop thread, so writing to it from the watchdog's daemon thread would risk corrupting it mid-block.
 
 ### Sweep samples: rows and duration are different populations
 
@@ -634,7 +658,32 @@ leader-sampled gauges or worker-path counters must be evaluated against
 **worker** scrapes, not the `ui serve` process.
 
 The operational "which metric catches which failure mode" table is in
-[ops.md — Observability and alerting](ops.md#8-observability-and-alerting).
+[ops.md, Observability and alerting](ops.md#8-observability-and-alerting),
+and [ops.md §12, Scaling playbook](ops.md#12-scaling-playbook-from-signal-to-knob) maps the
+tunable failure modes to the knob that addresses them. Where each shipped alert lands:
+
+| Alert | Playbook row (ops.md §12) | Runbook |
+|---|---|---|
+| `TaskQQueueDepthHigh` | [Queue depth growing, live workers idle](ops.md#12-scaling-playbook-from-signal-to-knob) (or the saturation row when utilisation is high too) | none |
+| `TaskQQueueUnserved` | [Pending backlog with `stranded > 0`](ops.md#12-scaling-playbook-from-signal-to-knob) | [TaskQQueueUnserved](runbooks.md#taskqqueueunserved) |
+| `TaskQStrandedJobs` | [Pending backlog with `stranded > 0`](ops.md#12-scaling-playbook-from-signal-to-knob) | [TaskQStrandedJobs](runbooks.md#taskqstrandedjobs) |
+| `TaskQScheduledBacklogGrowing` | [Cron piling up at tick](ops.md#12-scaling-playbook-from-signal-to-knob) | [TaskQScheduledBacklogGrowing](runbooks.md#taskqscheduledbackloggrowing) |
+| `TaskQPromotionStalled` | [Cron piling up at tick](ops.md#12-scaling-playbook-from-signal-to-knob) | [TaskQPromotionStalled](runbooks.md#taskqpromotionstalled) |
+| `TaskQCronLockContention` | [Cron piling up at tick](ops.md#12-scaling-playbook-from-signal-to-knob) | [TaskQCronLockContention](runbooks.md#taskqcronlockcontention) |
+| `TaskQCronScheduleDisabled` | cron schedule failure, upstream of any sizing knob | none |
+| `TaskQRateLimitDependencyOutage` | [Rate-limit denials](ops.md#12-scaling-playbook-from-signal-to-knob) | [TaskQRateLimitDependencyOutage](runbooks.md#taskqratelimitdependencyoutage) |
+| `TaskQRunningLeaseExpired` | [`terminal-write-failed` logs / disowned jobs](ops.md#12-scaling-playbook-from-signal-to-knob) | [TaskQRunningLeaseExpired](runbooks.md#taskqrunningleaseexpired) |
+| `TaskQHeartbeatMisses`, `TaskQLockExpiringSoon` | worker-to-Postgres health, not actor config (same row as the terminal-write failures) | none |
+| `TaskQDispatchLatencyHigh` | [Queue depth growing, live workers idle](ops.md#12-scaling-playbook-from-signal-to-knob) when depth also grows; otherwise PgBouncer/pool trouble (the database-health row) | none |
+| `TaskQFailedJobRateHigh` | failure classification ([ops.md §6](ops.md#6-classifying-failures-terminal-retryable-transient)), not a scaling knob | [TaskQFailedJobRateHigh](runbooks.md#taskqfailedjobratehigh) |
+| `TaskQRetryRateHigh` | failure classification ([ops.md §6](ops.md#6-classifying-failures-terminal-retryable-transient)) | [TaskQRetryRateHigh](runbooks.md#taskqretryratehigh) |
+| `TaskQAbandonedJobs` | actor ignores cancellation ([ops.md §2](ops.md#2-timeouts-start_to_close-and-schedule_to_close)) | [TaskQAbandonedJobs](runbooks.md#taskqabandonedjobs) |
+| `TaskQSweepTimeouts`, `TaskQSweepDegraded`, `TaskQLeaderLockContention` | maintenance sweep load, no worker knob | [TaskQSweepTimeouts](runbooks.md#taskqsweeptimeouts), [TaskQSweepDegraded](runbooks.md#taskqsweepdegraded), [TaskQLeaderLockContention](runbooks.md#taskqleaderlockcontention) |
+| `TaskQLeaderSplitBrainOrNoLeader` | leadership, no sizing knob | none |
+| `TaskQProgressPublishFailures` | Redis health on the progress path, no worker knob | none |
+
+The remaining tuned-by-dashboard conditions (actor saturation, event-loop lag) ship no
+alert on purpose; both are read off the gauges in the playbook table.
 
 ---
 

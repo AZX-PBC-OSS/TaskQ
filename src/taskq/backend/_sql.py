@@ -136,7 +136,9 @@ def parse_rowcount(tag: str) -> int:
 # ── Heartbeat SQL templates ──────────────────────────
 
 UPDATE_WORKER_LIVENESS_SQL_TEMPLATE = (
-    'UPDATE "{schema}".workers SET last_seen_at = clock_timestamp() WHERE id = $1'
+    'UPDATE "{schema}".workers '
+    "SET last_seen_at = clock_timestamp(), metadata = metadata || $2::jsonb "
+    "WHERE id = $1"
 )
 # $3 is the worker's disowned set (WorkerDeps.disowned_jobs): rows this
 # worker holds but could not record an outcome for, whose leases must
@@ -167,6 +169,13 @@ def build_heartbeat_sql(schema: str) -> tuple[str, str, str]:
     Validates *schema* against the canonical identifier regex before
     formatting. The two renewal statements bind ``(worker_id, lease,
     disowned_ids)``.
+
+    The liveness statement's ``$2`` merge is deliberately a jsonb
+    concat (``metadata || $2``) rather than a metadata overwrite: the
+    heartbeat writes only the keys it owns this tick (the loop-stall
+    attribution tally), and the registration row's other keys
+    (``max_concurrency``, ``notify_enabled``) must survive the merge
+    untouched. An empty merge object is a no-op.
 
     ``maintenance_leader`` is deliberately absent: that row carries the
     maintenance lease and is written only by the election loop, under the

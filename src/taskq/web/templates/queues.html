@@ -28,7 +28,7 @@
      hx-target="#queue-table-wrap">
 {% if queues %}
 {% call styled_table() %}
-    {{ table_header(["Queue", "Pending", "Scheduled", "Running", "Failed"]) }}
+    {{ table_header(["Queue", "Pending", "Scheduled", "Running", "Failed", "Live Workers", "Stranded"]) }}
     {% call table_body() %}
     {% for q in queues %}
         {% call table_row() %}
@@ -70,6 +70,26 @@
                 <span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs font-medium bg-red-100 text-red-700 dark:bg-red-900 dark:text-red-300">{{ fc }}</span>
                 {% else %}
                 <span class="text-slate-400">{{ fc }}</span>
+                {% endif %}
+            </td>
+            <td class="px-4 py-2.5">
+                {% set lw = q.live_workers | default(0) %}
+                {% if lw > 0 %}
+                <span class="text-green-600 dark:text-green-400">{{ lw }}</span>
+                {% else %}
+                <span class="inline-flex items-center gap-1">
+                    <span class="w-2 h-2 rounded-full bg-slate-300 dark:bg-slate-600" title="No worker has heartbeated on this queue inside the liveness window"></span>
+                    <span class="text-slate-400">0</span>
+                </span>
+                {% endif %}
+            </td>
+            <td class="px-4 py-2.5">
+                {% set sc = q.stranded_count | default(0) %}
+                {% if sc > 0 %}
+                <span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs font-medium bg-red-100 text-red-700 dark:bg-red-900 dark:text-red-300"
+                      title="Pending/scheduled jobs here can never dispatch (no actor_config row, or no live worker serves the routing queue)">{{ sc }}</span>
+                {% else %}
+                <span class="text-slate-400">0</span>
                 {% endif %}
             </td>
         {% endcall %}

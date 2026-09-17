@@ -22,6 +22,7 @@ import structlog
 from taskq._close import CLOSE_TIMEOUT_SECS, close_conn_bounded
 from taskq._dsn import dsn_host
 from taskq._shield import shield_with_retrieval
+from taskq.backend._records import jsonb_param
 from taskq.backend._sql import (
     INSERT_ATTEMPT_SQL,
     build_heartbeat_sql,
@@ -101,7 +102,16 @@ async def heartbeat_loop(
                     # the next tick's exclusion — the prune below must
                     # not read it as "still held" and drop it.
                     disowned = list(deps.disowned_jobs)
-                    await conn.execute(update_worker_liveness_sql, worker_id)
+                    # The stall-attribution tally rides the liveness write:
+                    # one dict merge in the statement the tick already
+                    # issues, no extra round trip. An empty tally merges a
+                    # no-op, so a quiet process leaves the registered
+                    # metadata keys untouched.
+                    await conn.execute(
+                        update_worker_liveness_sql,
+                        worker_id,
+                        jsonb_param(deps.stall_tally.metadata_value()),
+                    )
                     renewal_at = time.monotonic()
                     jobs_tag = await conn.execute(
                         update_jobs_lock_sql, worker_id, lock_lease, disowned
