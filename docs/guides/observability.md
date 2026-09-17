@@ -430,7 +430,7 @@ you *which* jobs absorbed them.
 |---|---|---|---|
 | `messaging.process.duration` | `s` | `actor`, `queue` | End-to-end job execution duration from dispatch to terminal state. |
 | `taskq.dispatch.duration` | `s` | `queue` | Batch dispatch SQL query latency (SQL execution only). |
-| `taskq.lock.expires_in_seconds` | `s` | — | Remaining lock TTL at each heartbeat renewal. Buckets: 0, 5, 10, 15, 20, 30, 45, 60 s. |
+| `taskq.lock.expires_in_seconds` | `s` | — | Lease remaining on this worker's job locks at the moment the heartbeat renewed them: `lock_lease` minus the measured gap since the previous renewal (nothing on the first), so a late or failed tick lowers the sample and `TaskQLockExpiringSoon` can fire; 0 when the renewal landed after expiry. A healthy worker reads `lock_lease − heartbeat_interval`. Buckets: 0, 5, 10, 15, 20, 30, 45, 60 s. |
 | `taskq.heartbeat.tick_duration_seconds` | `s` | — | Wall-clock seconds per heartbeat tick. |
 | `taskq.maintenance_leader.sweep_duration_ms` | `ms` | — | Per-sweep-tick wall-clock duration. |
 

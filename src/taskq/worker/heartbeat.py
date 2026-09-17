@@ -69,6 +69,10 @@ async def heartbeat_loop(
         update_reservation_leases_sql,
     ) = build_heartbeat_sql(schema)
 
+    # Monotonic stamp of the last jobs-lock renewal that landed: the
+    # reference the next tick measures its remaining lease against. None
+    # until the first renewal — there is nothing to measure before it.
+    last_renewal_at: float | None = None
     while not shutdown.is_set():
         deps.liveness.tick("heartbeat", period=interval)
         _in_tx_failed = False
@@ -81,6 +85,7 @@ async def heartbeat_loop(
                     conn.transaction(),
                 ):
                     await conn.execute(update_worker_liveness_sql, worker_id)
+                    renewal_at = time.monotonic()
                     jobs_tag = await conn.execute(update_jobs_lock_sql, worker_id, lock_lease)
                     await conn.execute(update_reservation_leases_sql, worker_id, lock_lease)
                     if cancel_controller is not None:
@@ -133,7 +138,19 @@ async def heartbeat_loop(
             update_heartbeat_consecutive_failures(str(worker_id), 0)
             tick_duration_s = time.monotonic() - tick_start
             _tick_duration.record(tick_duration_s)
-            record_lock_expires_in_seconds(str(worker_id), lock_lease.total_seconds())
+            # The lease the previous renewal stamped had this much left when
+            # this one landed: lease minus the gap between the two UPDATEs
+            # (both measured at the same point, so network latency cancels).
+            # A failed or late tick widens the gap and lowers the sample,
+            # which is the signal the lock-expiry alert reads; the config
+            # constant would never move. Clamped at 0: a renewal that lands
+            # after expiry renews an already-expired lease.
+            if last_renewal_at is not None:
+                record_lock_expires_in_seconds(
+                    str(worker_id),
+                    max(0.0, lock_lease.total_seconds() - (renewal_at - last_renewal_at)),
+                )
+            last_renewal_at = renewal_at
             logger.debug(
                 "heartbeat-tick-success",
                 worker_id=str(worker_id),

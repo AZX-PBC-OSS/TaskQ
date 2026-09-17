@@ -739,16 +739,24 @@ def record_process_duration(actor: str, queue: str, elapsed: float) -> None:
 
 _lock_expires_in_seconds = get_meter().create_histogram(
     "taskq.lock.expires_in_seconds",
-    description="Remaining TTL at each heartbeat renewal. No dimensions.",
+    description=(
+        "Lease remaining on this worker's job locks at the moment the "
+        "heartbeat renewed them: lock_lease minus the gap since the previous "
+        "renewal, measured, so a late or failed tick lowers the sample. "
+        "0 when the renewal landed after expiry. No dimensions."
+    ),
     unit="s",
     explicit_bucket_boundaries_advisory=(0, 5, 10, 15, 20, 30, 45, 60),
 )
 
 
 def record_lock_expires_in_seconds(worker_id: str, remaining_ttl: float) -> None:
-    """Record remaining lock TTL on the histogram.
+    """Record the measured remaining lock TTL on the histogram.
 
-    Called in heartbeat.py at each successful heartbeat renewal.
+    Called in heartbeat.py at each successful renewal after the first,
+    with the lease the previous renewal stamped minus the time elapsed
+    since — a measurement, never the configured constant, so the
+    lock-expiry alert can fire when renewals run late.
     Respects ``_otel_enabled`` — no-op when False.
     """
     if not _otel_enabled:

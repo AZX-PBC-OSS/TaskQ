@@ -103,10 +103,13 @@ groups:
         annotations:
           summary: "TaskQ lock p99 remaining time < 30s"
           description: >-
-            Lock remaining-time-to-expiry p99 is below 30s. Locks are
-            dangerously close to expiry, indicating the heartbeat loop is
-            not renewing fast enough. Investigate PG latency or heartbeat
-            interval configuration.
+            The lease left on job locks when the heartbeat renewed them
+            (lock_lease minus the measured gap since the previous renewal)
+            has a p99 below 30s: renewals are landing late — a slow
+            heartbeat pool, failed ticks (taskq_heartbeat_misses_total) or a
+            blocked event loop (taskq_worker_event_loop_lag_seconds) — and
+            the reclaim sweep will take the jobs if the gap reaches the
+            lease. Investigate PG latency or heartbeat interval configuration.
 
       - alert: TaskQLeaderSplitBrainOrNoLeader
         expr: sum(taskq_maintenance_leader_is_leader) != 1
