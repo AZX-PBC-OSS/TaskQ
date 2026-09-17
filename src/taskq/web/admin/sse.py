@@ -10,15 +10,22 @@ Importing this module requires the ``taskq[fastapi]`` optional extra.
 
 import asyncio
 from collections.abc import AsyncGenerator
+from typing import Any
 
 import asyncpg
 import structlog
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
 from taskq.constants import events_channel
 from taskq.settings import TaskQSettings
-from taskq.web.admin._factory import get_pg_pool, get_schema, get_settings
+from taskq.web.admin._factory import (
+    get_pg_pool,
+    get_realtime_mode,
+    get_redis_client,
+    get_schema,
+    get_settings,
+)
 from taskq.web.admin._listen import listen_with_reconnect
 
 logger = structlog.get_logger("taskq.web.admin.sse")
@@ -75,7 +82,28 @@ async def _sse_generator(
 
 
 def register(router: APIRouter) -> None:
-    """Attach the ``GET /sse/{topic}`` SSE endpoint to *router*."""
+    """Attach the ``GET /sse/mode`` probe and the ``GET /sse/{topic}`` SSE endpoint.
+
+    ``/sse/mode`` is registered FIRST: FastAPI matches routes in registration
+    order, so the probe must exist before the ``{topic}`` catch-all or the
+    topic route claims the path (and answers 400 for an unknown topic).
+    """
+
+    @router.get("/sse/mode")
+    async def sse_mode(  # pyright: ignore[reportUnusedFunction]  # Why: registered via FastAPI decorator; pyright cannot see the route registration.
+        redis_client: Any | None = Depends(get_redis_client),
+    ) -> JSONResponse:
+        """The page-render Redis verdict, re-checked through the same 5 s cache.
+
+        The admin UI's job-detail script polls this every 30 s so a page that
+        rendered in polling-degraded mode upgrades itself when Redis returns,
+        without a manual reload. This is the only reachable reachability probe
+        a mounted admin router has: the worker health router's
+        ``/jobs/health/ready`` answers a different process's deps and is not
+        registered here, so the client used to 404 it forever.
+        """
+        mode, _label = await get_realtime_mode(redis_client)
+        return JSONResponse({"realtime": mode == "realtime"})
 
     @router.get("/sse/{topic}")
     async def sse_endpoint(  # pyright: ignore[reportUnusedFunction]  # Why: registered via FastAPI decorator; pyright cannot see the route registration.
