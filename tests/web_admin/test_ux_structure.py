@@ -134,6 +134,53 @@ def test_history_page_uses_the_shared_table_and_badge_styling(
     assert "status_badge(" in source
 
 
+def test_history_page_renders_uuid_row_ids_from_real_rows(
+    monkeypatch: pytest.MonkeyPatch, stub_pool: StubPool
+) -> None:
+    """A history row's id arrives as a uuid.UUID (the asyncpg decoder), not a
+    string: slicing it directly raised TypeError and 500ed the page on the
+    first render with data, which the empty-render test cannot see."""
+    monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
+    from datetime import UTC, datetime
+
+    from taskq._ids import new_uuid
+
+    bundle = create_router(stub_pool)  # pyright: ignore[reportArgumentType]
+    template = bundle.templates.get_template("history.html")
+    job_id = new_uuid()
+    html = template.render(
+        jobs=[
+            {
+                "id": job_id,
+                "actor": "send_email",
+                "queue": "email",
+                "status": "succeeded",
+                "created_at": datetime.now(UTC),
+                "started_at": datetime.now(UTC),
+                "finished_at": datetime.now(UTC),
+                "duration_ms": 1234.0,
+                "attempt": 1,
+                "max_attempts": 3,
+                "retry_kind": "transient",
+                "is_archived": True,
+            }
+        ],
+        statuses=[],
+        all_statuses=["succeeded", "failed"],
+        actor_filter=None,
+        queue_filter=None,
+        has_next=False,
+        next_cursor_at=None,
+        next_cursor_id=None,
+        summary={"succeeded": 1},
+        total_display="1",
+        success_rate=100.0,
+        realtime_mode="polling",
+        mode_label="polling mode",
+    )
+    assert str(job_id)[:8] in html
+
+
 def test_history_page_empty_state_is_styled_and_contrast_pinned(
     monkeypatch: pytest.MonkeyPatch, stub_pool: StubPool
 ) -> None:
