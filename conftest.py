@@ -38,10 +38,6 @@ def pytest_addoption(parser: pytest.Parser) -> None:
     )
 
 
-def _is_e2e_path(path: Path) -> bool:
-    return path.name == "e2e" and path.parent.name == "tests"
-
-
 #: Directory names of the opt-in containerized tiers, each gated the way the
 #: e2e tier is (collection ignored unless the tier's flag is passed).
 _OPT_IN_TIERS: tuple[tuple[str, str], ...] = (
