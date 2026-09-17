@@ -6,6 +6,7 @@ _InMemorySlotTable using the in-memory backend with FakeClock — no real PG
 instance required.
 """
 
+import asyncio
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -13,7 +14,7 @@ import pytest
 
 from taskq._ids import new_uuid
 from taskq.exceptions import ReservationUnavailable
-from taskq.ratelimit.reservation import ConcurrencyReservation, _InMemorySlotTable
+from taskq.ratelimit.reservation import ConcurrencyReservation, _InMemorySlotTable, sync_slots
 from taskq.testing.clock import FakeClock
 
 _START = datetime(2025, 1, 1, tzinfo=UTC)
@@ -635,3 +636,38 @@ async def test_peek_invalid_mutated_schema_raises_value_error() -> None:
 
     with pytest.raises(ValueError, match="invalid schema identifier"):
         await res.peek(pool=object())  # type: ignore[arg-type] # Why: pool is never touched — the schema check raises first
+
+
+# ── sync_slots timeout bound ───────────────────────────────────────────
+
+
+class _HungAcquirePool:
+    """Fake asyncpg pool whose acquire never returns — a wedged store."""
+
+    def acquire(self) -> "_HungAcquireContext":
+        return _HungAcquireContext()
+
+
+class _HungAcquireContext:
+    async def __aenter__(self) -> object:
+        await asyncio.Event().wait()  # never answers
+
+    async def __aexit__(self, *_: object) -> None:
+        return None
+
+
+async def test_sync_slots_timeout_bounds_a_wedged_store() -> None:
+    """sync_slots' pass costs one connection acquire plus a transaction of
+    statements PER reservation; against a store whose acquire never
+    returns, the caller-supplied timeout must raise TimeoutError instead
+    of parking the caller (the reservations page awaits it per render)."""
+    clock = FakeClock(_START)
+    reservation = _reservation(name="gpu", slots=4, clock=clock)
+
+    with pytest.raises(TimeoutError):
+        await sync_slots(
+            [reservation],
+            _HungAcquirePool(),  # type: ignore[arg-type]
+            schema="taskq",
+            timeout=0.05,
+        )

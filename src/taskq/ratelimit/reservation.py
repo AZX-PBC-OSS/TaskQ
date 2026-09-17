@@ -26,6 +26,7 @@ the PG primary key. Thread-safe via ``threading.Lock`` with ``Clock``
 injection for deterministic lease expiry.
 """
 
+import asyncio
 import threading
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -838,12 +839,21 @@ async def sync_slots(
     pool: "asyncpg.Pool",
     *,
     schema: str = "taskq",
+    timeout: "float | None" = None,  # noqa: ASYNC109  # Why: the bound is a per-call deadline the caller passes, not an enclosing asyncio.timeout scope.
 ) -> SyncResult:
     """Synchronise slot rows to match the registered reservation config.
 
     For each reservation: insert missing slots (filling gaps from prior
     held-slot-preserving shrinks), delete excess free slots, and report
     held slots that could not be deleted.
+
+    *timeout* bounds the WHOLE pass — one connection acquire plus a
+    transaction of statements per reservation, so a call costs
+    O(reservations) round trips and a wedged store must not park the
+    caller past the bound. Raises :class:`TimeoutError` when it fires
+    (a reservation whose transaction already committed stays synced;
+    the pass is safe to re-run). ``None`` (the default) keeps the
+    unbounded shape for callers that manage their own deadline.
 
     "Free" / "held" use the same definition as the acquire CTE: a slot row
     with an EXPIRED lease is acquirable, hence deletable; only rows with a
@@ -864,66 +874,71 @@ async def sync_slots(
     """
     _validate_schema(schema)
 
-    all_inserted: list[tuple[str, int]] = []
-    all_deleted: list[tuple[str, int]] = []
-    all_skipped: list[tuple[str, int]] = []
+    async def _sync_all() -> SyncResult:
+        all_inserted: list[tuple[str, int]] = []
+        all_deleted: list[tuple[str, int]] = []
+        all_skipped: list[tuple[str, int]] = []
 
-    for res in reservations:
-        n_inserted = 0
-        n_deleted = 0
-        n_skipped = 0
+        for res in reservations:
+            n_inserted = 0
+            n_deleted = 0
+            n_skipped = 0
 
-        async with pool.acquire() as conn, conn.transaction():
-            existing_sql = _SYNC_EXISTING_SQL_TEMPLATE.format(schema=schema)
-            existing_rows = await conn.fetch(existing_sql, res.name)
-            existing_indices: set[int] = {row["slot_index"] for row in existing_rows}
+            async with pool.acquire() as conn, conn.transaction():
+                existing_sql = _SYNC_EXISTING_SQL_TEMPLATE.format(schema=schema)
+                existing_rows = await conn.fetch(existing_sql, res.name)
+                existing_indices: set[int] = {row["slot_index"] for row in existing_rows}
 
-            desired_set = set(range(res.slots))
-            missing_indices = sorted(desired_set - existing_indices)
-            excess_indices = sorted(existing_indices - desired_set)
+                desired_set = set(range(res.slots))
+                missing_indices = sorted(desired_set - existing_indices)
+                excess_indices = sorted(existing_indices - desired_set)
 
-            if missing_indices:
-                insert_sql = _SYNC_INSERT_SQL_TEMPLATE.format(schema=schema)
-                rows = await conn.fetch(
-                    insert_sql,
-                    res.name,
-                    missing_indices,
-                )
-                for row in rows:
-                    all_inserted.append((res.name, row["slot_index"]))
-                n_inserted = len(rows)
+                if missing_indices:
+                    insert_sql = _SYNC_INSERT_SQL_TEMPLATE.format(schema=schema)
+                    rows = await conn.fetch(
+                        insert_sql,
+                        res.name,
+                        missing_indices,
+                    )
+                    for row in rows:
+                        all_inserted.append((res.name, row["slot_index"]))
+                    n_inserted = len(rows)
 
-            if excess_indices:
-                held_sql = _SYNC_HELD_SQL_TEMPLATE.format(schema=schema)
-                held_rows = await conn.fetch(
-                    held_sql,
-                    res.name,
-                    excess_indices,
-                )
-                for row in held_rows:
-                    all_skipped.append((res.name, row["slot_index"]))
-                n_skipped = len(held_rows)
+                if excess_indices:
+                    held_sql = _SYNC_HELD_SQL_TEMPLATE.format(schema=schema)
+                    held_rows = await conn.fetch(
+                        held_sql,
+                        res.name,
+                        excess_indices,
+                    )
+                    for row in held_rows:
+                        all_skipped.append((res.name, row["slot_index"]))
+                    n_skipped = len(held_rows)
 
-                delete_sql = _SYNC_DELETE_SQL_TEMPLATE.format(schema=schema)
-                deleted_rows = await conn.fetch(
-                    delete_sql,
-                    res.name,
-                    excess_indices,
-                )
-                for row in deleted_rows:
-                    all_deleted.append((res.name, row["slot_index"]))
-                n_deleted = len(deleted_rows)
+                    delete_sql = _SYNC_DELETE_SQL_TEMPLATE.format(schema=schema)
+                    deleted_rows = await conn.fetch(
+                        delete_sql,
+                        res.name,
+                        excess_indices,
+                    )
+                    for row in deleted_rows:
+                        all_deleted.append((res.name, row["slot_index"]))
+                    n_deleted = len(deleted_rows)
 
-        logger.debug(
-            "reservation-sync-slots",
-            bucket_name=res.name,
-            inserted=n_inserted,
-            deleted=n_deleted,
-            skipped=n_skipped,
+            logger.debug(
+                "reservation-sync-slots",
+                bucket_name=res.name,
+                inserted=n_inserted,
+                deleted=n_deleted,
+                skipped=n_skipped,
+            )
+
+        return SyncResult(
+            inserted=all_inserted,
+            deleted=all_deleted,
+            skipped_held=all_skipped,
         )
 
-    return SyncResult(
-        inserted=all_inserted,
-        deleted=all_deleted,
-        skipped_held=all_skipped,
-    )
+    if timeout is not None:
+        return await asyncio.wait_for(_sync_all(), timeout=timeout)
+    return await _sync_all()

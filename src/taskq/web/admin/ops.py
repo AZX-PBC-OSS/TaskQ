@@ -585,6 +585,13 @@ def register(router: APIRouter) -> None:
                 pg_pool=pool.pool,
                 clock=clock,
                 settings=rl_settings,
+                # The same bound every other backend wait on this page takes
+                # (admin_acquire_timeout): each bucket's peek is a separate
+                # broker round trip and the registry can hold
+                # max_keyed_rate_limits keyed buckets, so an unbounded pass
+                # parks the request on a black-holed broker. The TimeoutError
+                # degrades the page exactly like any other peek failure.
+                timeout=settings.admin_acquire_timeout,
             )
             for name, state in live_states_raw.items():
                 d: dict[str, object] = {
@@ -703,7 +710,30 @@ def register(router: APIRouter) -> None:
                 pg_pool=pool.pool,
                 clock=SystemClock(),
                 settings=rl_settings,
+                # The same bound every other backend wait on the admin UI
+                # takes (admin_acquire_timeout): the reset's round trip must
+                # time out into a 503, not park the request on a dead store.
+                timeout=settings.admin_acquire_timeout,
             )
+        except TimeoutError:
+            # The reset is a best-effort state change, not a read the page
+            # needs to render: answer with the same 503/Retry-After shape
+            # the pool checkout uses, naming the bound.
+            logger.warning(
+                "rate-limit-reset-timed-out",
+                bucket_name=_log_safe_text(bucket_name),
+                timeout=settings.admin_acquire_timeout,
+            )
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    f"Rate limit reset did not complete within "
+                    f"{settings.admin_acquire_timeout}s; whether the store "
+                    "applied it is unknowable from here - re-check the page "
+                    "before retrying."
+                ),
+                headers={"Retry-After": "2"},
+            ) from None
         except KeyError as exc:
             # A keyed bucket a worker published to PG exists ONLY as a PG
             # row in a standalone admin process — the registry has no
@@ -732,6 +762,7 @@ def register(router: APIRouter) -> None:
         tmpl: Environment = Depends(get_templates),
         realtime_ctx: tuple[str, str] = Depends(get_realtime_ctx),
         rl_registry: RateLimitRegistry = Depends(get_rl_registry),
+        settings: Any = Depends(get_settings),
     ) -> HTMLResponse:
         from taskq.ratelimit.registry import QUEUE_CONCURRENCY_PREFIX
         from taskq.ratelimit.reservation import sync_slots
@@ -777,7 +808,17 @@ def register(router: APIRouter) -> None:
         sync_error: str | None = None
         if reservations_installed and reservation_primitives:
             try:
-                await sync_slots(reservation_primitives, pool.pool, schema=schema)
+                await sync_slots(
+                    reservation_primitives,
+                    pool.pool,
+                    schema=schema,
+                    # The same bound every other backend wait on the admin
+                    # UI takes (admin_acquire_timeout): the sync costs one
+                    # connection acquire plus a transaction of statements
+                    # PER reservation, so a wedged store must time out into
+                    # the degraded page, not park the request.
+                    timeout=settings.admin_acquire_timeout,
+                )
                 async with pool.acquire() as conn:
                     rows = await conn.fetch(reservations_sql)
                     held_slot_rows = await conn.fetch(held_slots_sql)

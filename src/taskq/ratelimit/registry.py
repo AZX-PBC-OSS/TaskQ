@@ -55,6 +55,7 @@ Over-acquisition window on rollback failure:
   within 30 seconds at most.
 """
 
+import asyncio
 from collections.abc import AsyncGenerator, Callable, Sequence
 from contextlib import asynccontextmanager
 from datetime import timedelta
@@ -1385,25 +1386,45 @@ class RateLimitRegistry:
         pg_pool: "asyncpg.Pool | None" = None,
         clock: "Clock | None" = None,
         settings: "WorkerSettings | None" = None,
+        timeout: "float | None" = None,  # noqa: ASYNC109  # Why: the bound is a per-call deadline the caller passes, not an enclosing asyncio.timeout scope; the registry's other bounded methods (drain_pending_reservation_reclaims) take the same shape.
     ) -> dict[str, RateLimitState]:
-        """Peek all registered rate limits. Returns {name: RateLimitState}."""
+        """Peek all registered rate limits. Returns {name: RateLimitState}.
+
+        Each bucket's read is a separate Redis/PG round trip, so a call
+        costs O(buckets) round trips — and the registry can hold up to
+        ``max_keyed_rate_limits`` keyed-materialised buckets. *timeout*
+        bounds the WHOLE pass: a bucket whose store hangs (a black-holed
+        broker answers no read) must not park the caller past it. Raises
+        :class:`TimeoutError` when the bound fires — per-bucket failures
+        are still caught and logged per bucket, but a read that never
+        RETURNS is indistinguishable from a dead registry at page-render
+        time, so the caller learns of the bound instead of rendering a
+        half-empty live-state map as if it were current. ``None`` (the
+        default) keeps the unbounded shape for callers that manage their
+        own deadline.
+        """
+        if timeout is not None:
+            return await asyncio.wait_for(
+                self._peek_all(redis_client, pg_pool, clock, settings), timeout=timeout
+            )
+        return await self._peek_all(redis_client, pg_pool, clock, settings)
+
+    async def _peek_all(
+        self,
+        redis_client: "redis_async.Redis | None",
+        pg_pool: "asyncpg.Pool | None",
+        clock: "Clock | None",
+        settings: "WorkerSettings | None",
+    ) -> dict[str, RateLimitState]:
         results: dict[str, RateLimitState] = {}
         for name, prim in list(self._rate_limits.items()):
             try:
-                if isinstance(prim, TokenBucket):
-                    results[name] = await prim.peek(
-                        redis_client=redis_client,
-                        pg_pool=pg_pool,
-                        clock=clock,
-                        settings=settings,
-                    )
-                else:
-                    results[name] = await prim.peek(
-                        redis_client=redis_client,
-                        pg_pool=pg_pool,
-                        clock=clock,
-                        settings=settings,
-                    )
+                results[name] = await prim.peek(
+                    redis_client=redis_client,
+                    pg_pool=pg_pool,
+                    clock=clock,
+                    settings=settings,
+                )
             except Exception as exc:
                 logger.warning(
                     "ratelimit-peek-failed",
@@ -1420,8 +1441,16 @@ class RateLimitRegistry:
         pg_pool: "asyncpg.Pool | None" = None,
         clock: "Clock | None" = None,
         settings: "WorkerSettings | None" = None,
+        timeout: "float | None" = None,  # noqa: ASYNC109  # Why: the bound is a per-call deadline the caller passes, not an enclosing asyncio.timeout scope.
     ) -> None:
-        """Reset a rate-limit bucket to full capacity."""
+        """Reset a rate-limit bucket to full capacity.
+
+        *timeout* bounds the reset's backend round trip (a Redis DEL or a
+        PG upsert against a dead store can hang the caller forever);
+        raises :class:`TimeoutError` when it fires. ``None`` (the default)
+        keeps the unbounded shape for callers that manage their own
+        deadline.
+        """
         if name in self._reservations:
             raise TypeError(
                 f"name {name!r} is a ConcurrencyReservation — "
@@ -1431,12 +1460,15 @@ class RateLimitRegistry:
             raise KeyError(name)
 
         primitive = self._rate_limits[name]
-        if isinstance(primitive, TokenBucket):
-            await primitive.reset(
-                redis_client=redis_client,
-                pg_pool=pg_pool,
-                clock=clock,
-                settings=settings,
+        if timeout is not None:
+            await asyncio.wait_for(
+                primitive.reset(
+                    redis_client=redis_client,
+                    pg_pool=pg_pool,
+                    clock=clock,
+                    settings=settings,
+                ),
+                timeout=timeout,
             )
         else:
             await primitive.reset(
