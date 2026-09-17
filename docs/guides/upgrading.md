@@ -1053,11 +1053,16 @@ allows:
   re-pend backlog backfills for as long as it needs without parking the
   fleet.
 - `01.00.12_08` / `01.00.12_09` — only the `CREATE INDEX` builds. Each
-  build takes a `SHARE` lock (writes queue, reads keep flowing) for its
-  own duration only: the builds are separate transactions, and Postgres'
-  FIFO lock queue grants the writes that queued behind one build before
-  the next asks for the table, so the fleet sees one short write-block
-  window per index instead of one continuous window across the round.
+  build takes a `SHARE` lock (writes queue, reads keep flowing). The
+  runner wraps each **file** in one transaction — not each statement —
+  so a file's builds share ONE write-block window whose duration is the
+  **sum** of that file's builds (`01.00.12_08`'s two builds run
+  back-to-back with no drain between them; measured, a writer INSERT
+  blocked 1.04 s behind both vs 0.49 s behind a single-build file).
+  Postgres' FIFO lock queue grants the writes that queued behind a file
+  when it commits, before the **next file** asks for the table: the
+  fleet sees one write-block window per file, never one continuous
+  window across the whole round, and reads never block.
 
 Same caveat as `01.00.06_01` above on the builds themselves: build time
 is proportional to the `jobs` row count, and on a deployment where a
@@ -1072,11 +1077,28 @@ Two more changes land with the same round ([#243](https://github.com/AZX-PBC-OSS
   `jobs_repended_probe_idx` (`01.00.11_01`) and dropped it again two
   files later (`01.00.12_05:post`) — no shipped code ever read its
   predicate, so every upgrade paid one write-blocking full-table build
-  for nothing. Neither file ships now. If you ran a **dev checkout** of
-  the unreleased stack against a database, that database still carries
-  the index and its ledger rows; drop it by hand
-  (`DROP INDEX IF EXISTS "{schema}".jobs_repended_probe_idx;`) — nothing
-  reads it. Released deployments never had it.
+  for nothing. Neither file ships now. A database that ran a **dev
+  checkout** of the unreleased stack carries the index only if its
+  `01.00.12_05:post` never ran — a pre-phase-only or intermediate-era
+  database (one that ran the stack's full pre AND post phases already
+  had the index dropped by the post file). Such a database also keeps
+  the deleted files' ledger rows; if it carries the index, drop it by
+  hand (`DROP INDEX IF EXISTS "{schema}".jobs_repended_probe_idx;`) —
+  nothing reads it. Released deployments never had it.
+- A database that ran a **dev checkout** of the unreleased stack will
+  also log a `migration-checksum-drift` warning on every future
+  `migrate up`, for `01.00.12_05:pre` (the file was restructured into
+  the columns/backfill/index files above) and `01.00.13_03:pre` (a
+  comment-only header fix changed its rendered checksum). The warning
+  means exactly what it says: the ledger's recorded checksum for that
+  key no longer matches the bundled file — the runner compares them,
+  warns, and skips the file because the ledger key is already recorded.
+  It is permanent for as long as that ledger lives (released
+  checksums are frozen and the files will not be reverted), and it is
+  harmless-but-expected for pre-release dev checkouts: nothing fails,
+  nothing re-applies, and every *new* migration applies normally.
+  Released deployments never see it — their ledgers never held the
+  pre-restructure checksums.
 - `01.00.12_09` adds the producer-placed population's two probe indexes
   (`jobs_unrouted_actor_dispatch_idx`,
   `jobs_unrouted_round_robin_probe_idx`), partial on

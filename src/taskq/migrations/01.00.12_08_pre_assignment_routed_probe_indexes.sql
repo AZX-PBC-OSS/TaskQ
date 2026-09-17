@@ -33,17 +33,24 @@
 -- statuses, which is the only population the drain moves — a terminal
 -- row's queue label is inert.
 --
--- ── Locks: one build per transaction, writers drain between them ────
--- Each CREATE INDEX below takes a SHARE lock on jobs for the duration
--- of its own build: reads (dispatch probes, depth samplers, the admin
--- UI) keep flowing, while writes (claims, heartbeats, re-pends) queue —
--- for THAT build only, because each build is its own transaction. The
--- lock queue is FIFO, so the writes that queued behind build N are
--- granted and run before build N+1 asks for the table: a fleet
--- upgrading with old workers still live sees one write-block window per
--- index, not one continuous window across the round (issue #250 — the
--- original single-transaction form held ACCESS EXCLUSIVE, which blocks
--- reads too, across both builds and the backfill).
+-- ── Locks: one FILE per transaction, writers drain between files ────
+-- The runner wraps each FILE in one transaction (the whole rendered
+-- file is a single conn.execute — the same doctrine every sibling
+-- states, and 01.00.12_06 carries four builds in one file), so both
+-- builds below share this file's transaction. Each build takes a SHARE
+-- lock on jobs: reads (dispatch probes, depth samplers, the admin UI)
+-- keep flowing, while writes (claims, heartbeats, re-pends) queue for
+-- the duration of ALL builds in this file — the write-block window per
+-- file is the SUM of its builds, with no drain between builds inside a
+-- file (measured: a writer INSERT blocked 1.04 s behind this file's two
+-- builds vs 0.49 s behind a single-build file). The lock queue is FIFO,
+-- so the writes that queued behind this file commit and run before the
+-- NEXT file asks for the table: a fleet upgrading with old workers
+-- still live sees one write-block window per file, never one continuous
+-- window across the whole round, and reads never block at all (issue
+-- #250 — the original single-file form additionally held ACCESS
+-- EXCLUSIVE, which blocks reads too, across the ALTERs, the backfill
+-- and both builds in ONE window).
 --
 -- OPS NOTE (locks), same caveat as every sibling index migration
 -- (01.00.06_01, 01.00.09_01, 01.00.13_02, 01.00.13_03): build time is

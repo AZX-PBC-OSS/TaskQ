@@ -59,12 +59,14 @@
 -- (01.00.06_01, 01.00.09_01, 01.00.13_02, 01.00.13_03): a plain
 -- CREATE INDEX takes a SHARE lock that blocks writes to jobs for the
 -- duration of the build, and build time is proportional to the jobs
--- row count (a partial index build still scans the whole table). Each
--- build is its own transaction, so the writes queued behind one build
--- drain before the next asks for the table. On a deployment where a
--- single build would outrun the workers' heartbeat budget, pre-build
--- by hand outside the runner during a maintenance window and let this
--- migration no-op via IF NOT EXISTS:
+-- row count (a partial index build still scans the whole table). The
+-- runner wraps each FILE — not each statement — in one transaction, so
+-- this file's two builds share ONE write-block window: writes queue
+-- for the duration of both (their sum) and drain only when the file
+-- commits, before the next file asks for the table. On a deployment
+-- where that window would outrun the workers' heartbeat budget,
+-- pre-build by hand outside the runner during a maintenance window and
+-- let this migration no-op via IF NOT EXISTS:
 --
 --   CREATE INDEX CONCURRENTLY IF NOT EXISTS jobs_unrouted_actor_dispatch_idx
 --       ON "{schema}".jobs (actor, queue, priority DESC, scheduled_at, id)
