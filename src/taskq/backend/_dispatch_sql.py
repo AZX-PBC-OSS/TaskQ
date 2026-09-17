@@ -179,9 +179,11 @@ it was ever claimed — a deliberate hand-back that would otherwise
 route by its stale label and strand permanently; ``attempt`` is
 likewise unusable (the snooze/refund arms give the claim's increment
 back, flooring to 0).  The two populations are probed by disjoint arms
-with disjoint partial indexes (``jobs_actor_dispatch_idx`` /
-``jobs_round_robin_probe_idx`` for producer-placed rows,
-``jobs_assignment_routed_probe_idx`` for re-pended rows),
+with disjoint partial indexes (``jobs_unrouted_actor_dispatch_idx`` /
+``jobs_unrouted_round_robin_probe_idx`` for producer-placed rows,
+``jobs_assignment_routed_probe_idx`` for re-pended rows — each partial
+on its own population's half of the marker, so neither arm's probe ever
+walks the other's rows),
 each arm keeping its own ORDER BY + LIMIT probe so the depth contract
 holds for both; the re-pended arm's cohort enumeration
 (``rr_tail_keys``) walks only the re-pended population, which is empty
@@ -368,9 +370,10 @@ reservation_headroom AS (
 -- The LATERAL shape removes the planner's option instead of arguing
 -- with its costs: the correlation denies the unparameterized (hashable)
 -- inner path, and the per-queue equality from unnest plus the ORDER BY
--- over jobs_actor_dispatch_idx's (actor, queue, priority DESC, ...)
--- key pins the probe to an index-ordered first-entry read, bounded by
--- the number of round queues per actor, never by backlog depth. A
+-- over jobs_unrouted_actor_dispatch_idx's (actor, queue,
+-- priority DESC, ...) key pins the probe to an index-ordered
+-- first-entry read, bounded by the number of round queues per actor,
+-- never by backlog depth. A
 -- queue = ANY(...) array predicate cannot serve that ORDER BY (an
 -- ScalarArrayOp breaks the index's single ordered stream), which is why
 -- the fan-out is over unnest(queues) with one plain-equality probe per
@@ -863,7 +866,9 @@ RETURNING j.*;
 
 # Round-robin cohort enumeration: a recursive loose index scan over the
 # (actor, queue, COALESCE(fairness_key, '__null__')) prefix of
-# jobs_round_robin_probe_idx. Postgres 18 has no native skip scan
+# jobs_unrouted_round_robin_probe_idx (the producer-placed twin of
+# jobs_round_robin_probe_idx, partial on the marker so the walk never
+# reads a re-pended row). Postgres 18 has no native skip scan
 # (no enable_indexskipscan GUC exists), so `SELECT DISTINCT
 # fairness_key` over a pair's pending rows is a full scan of them --
 # exactly the depth-proportional read this CTE family must not do. The
@@ -975,7 +980,8 @@ pa_keys AS (
 # Two-clock split (same doctrine as taskq.backend._sweeps): the
 # row-selection bounds in the candidates laterals use statement_timestamp()
 # (STABLE) so the planner can serve them as index-level conditions on
-# jobs_actor_dispatch_idx / jobs_round_robin_probe_idx — a VOLATILE
+# jobs_unrouted_actor_dispatch_idx /
+# jobs_unrouted_round_robin_probe_idx — a VOLATILE
 # clock_timestamp() bound is only ever a post-scan Filter, and a Filter
 # walks every not-yet-due pending row at the head of the index order
 # before it can collect LIMIT due rows: measured on a 20k-row
@@ -1060,9 +1066,10 @@ _ROUND_ROBIN_CANDIDATES_LATERAL = """\
       -- bit-identical to the shipped shape while the window's input is
       -- at most cohorts * limit_n * oversample rows for the pair.
       --
-      -- The probes ride jobs_round_robin_probe_idx
+      -- The probes ride jobs_unrouted_round_robin_probe_idx
       -- (actor, queue, COALESCE(fairness_key, '__null__'),
-      --  priority DESC, scheduled_at, id) WHERE status = 'pending':
+      --  priority DESC, scheduled_at, id) WHERE status = 'pending'
+      --  AND NOT assignment_routed:
       -- the three-column equality prefix is an Index Cond, the
       -- priority DESC order is the index's own within that prefix, and
       -- the STABLE due bounds are index-level conditions — so each
@@ -1145,7 +1152,8 @@ _ROUND_ROBIN_CANDIDATES_LATERAL = """\
 # cohort equality is a two-column Index Cond prefix, the index's own
 # (priority DESC, scheduled_at, id) order serves the probe's ORDER BY
 # without a sort, and the LIMIT stops the scan -- the same depth
-# contract the label-routed arm keeps on jobs_actor_dispatch_idx.
+# contract the label-routed arm keeps on
+# jobs_unrouted_actor_dispatch_idx.
 # Ranks are not computed here (the strict variant orders by priority
 # downstream), but the admission stays per-cohort rather than one
 # queue-agnostic probe because the only index over this population is

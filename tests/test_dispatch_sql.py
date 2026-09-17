@@ -136,8 +136,8 @@ class TestDispatchStrictFifoSql:
         # Why statement_timestamp (STABLE), not clock_timestamp (VOLATILE):
         # a volatile bound is never an Index Cond, so the candidates lateral
         # post-scan-filters the pending backlog instead of terminating at
-        # the range boundary on jobs_actor_dispatch_idx — pinned by plan in
-        # tests/test_sweepaudit_dispatch_bound.py.
+        # the range boundary on jobs_unrouted_actor_dispatch_idx — pinned
+        # by plan in tests/test_sweepaudit_dispatch_bound.py.
         assert "schedule_to_close > statement_timestamp()" in candidates_body
 
     def test_locked_has_no_window_function(self) -> None:
@@ -285,7 +285,9 @@ class TestDispatchStrictFifoSql:
         the option: the correlation on ac.actor denies the hashable
         inner path, and the per-queue equality from unnest(p.queues)
         plus the ORDER BY pins the probe to an index-ordered first-entry
-        read (LIMIT 1) on jobs_actor_dispatch_idx.
+        read (LIMIT 1) on jobs_unrouted_actor_dispatch_idx (the
+        marker-partial twin of jobs_actor_dispatch_idx, so the probe
+        never reads a re-pended row).
 
         Override-safety is the load-bearing half of the shape: the
         probe must cover exactly the queues in the round's params —
@@ -423,9 +425,9 @@ class TestDispatchRoundRobinSql:
         assert "FROM rr_keys k" in candidates_body
         assert "COALESCE(j2.fairness_key, '__null__') = k.fkey" in candidates_body, (
             "the per-cohort probe must equality-match the COALESCE-normalized "
-            "key on jobs_round_robin_probe_idx (a bare IS NULL probe cannot "
-            "share the keyed cohorts' path; IS NOT DISTINCT FROM never "
-            "indexes)"
+            "key on jobs_unrouted_round_robin_probe_idx (a bare IS NULL probe "
+            "cannot share the keyed cohorts' path; IS NOT DISTINCT FROM "
+            "never indexes)"
         )
         assert "LIMIT pac.residual * $5::int" in candidates_body
         # The fairness window sits INSIDE the per-pair lateral, over the
