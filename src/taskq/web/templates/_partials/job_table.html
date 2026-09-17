@@ -123,7 +123,7 @@
                            tint matches the running status badge: a live span,
                            not a settled duration. #}
                         {% if job.duration_ms is not none %}{{ duration_fmt(job.duration_ms) }}
-                        {% elif job.get('running_for_ms') is not none %}<span class="text-yellow-700 dark:text-yellow-300" title="still running — elapsed since started_at, measured against the database clock at render time">{{ duration_fmt(job.get('running_for_ms')) }}</span>
+                        {% elif job.get('running_for_ms') is not none %}<span class="text-yellow-700 dark:text-yellow-300" title="still running: elapsed since started_at, measured against the database clock at render time">{{ duration_fmt(job.get('running_for_ms')) }}</span>
                         {% else %}—{% endif %}
                     </td>
                     <td class="px-3 py-2 text-xs text-slate-500 dark:text-slate-400">{{ attempt_budget(job) }}</td>

@@ -1108,7 +1108,7 @@ def test_live_jobs_list_computes_running_for_server_side() -> None:
 
     cols = _LIVE_COLS.lower()
     assert "running_for_ms" in cols, (
-        "the live /jobs list must compute running_for_ms — a running row's "
+        "the live /jobs list must compute running_for_ms: a running row's "
         "elapsed span is invisible on the one page an operator triages it from"
     )
     assert "clock_timestamp() - started_at" in cols, (
@@ -1116,7 +1116,7 @@ def test_live_jobs_list_computes_running_for_server_side() -> None:
         "reconstructed in Python from a started_at string"
     )
     assert "status = 'running'" in cols, (
-        "the live span belongs to running rows only — a terminal row's "
+        "the live span belongs to running rows only: a terminal row's "
         "settled duration is duration_ms"
     )
 
@@ -1136,7 +1136,7 @@ def test_live_jobs_table_renders_running_for_on_running_rows(
 
     assert "1m 5s" in html, "a running row's live span must render, not a dash"
     assert "still running" in html, (
-        "the live span must be distinguishable from a settled duration — the "
+        "the live span must be distinguishable from a settled duration: the "
         "tooltip is what keeps 1m 5s from reading as the job's final duration"
     )
     assert "1.2s" in html, "a finished row keeps its settled duration_ms"

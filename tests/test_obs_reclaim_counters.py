@@ -285,19 +285,19 @@ def test_disposition_map_is_exhaustive_over_the_sweep_case_branches() -> None:
 
     block = re.search(r"SET status = CASE(.*?)END,", _SWEEP_1_SQL, re.DOTALL)
     assert block is not None, (
-        "the status CASE block moved in _SWEEP_1_SQL — update this pin's "
+        "the status CASE block moved in _SWEEP_1_SQL: update this pin's "
         "extraction so it keeps tying _RECLAIM_DISPOSITIONS to the CASE branches"
     )
     case_statuses = set(re.findall(r"'(\w+)'::\"\{schema\}\"\.job_status", block.group(1)))
     assert case_statuses, (
-        "no job_status literals found inside the status CASE — the pin's "
+        "no job_status literals found inside the status CASE: the pin's "
         "extraction and the SQL drifted apart"
     )
     assert case_statuses == set(_RECLAIM_DISPOSITIONS), (
         "_RECLAIM_DISPOSITIONS and the sweep CASE's reachable statuses "
         f"drifted: the CASE writes {sorted(case_statuses)}, the map knows "
         f"{sorted(_RECLAIM_DISPOSITIONS)}. add the new status to the map (or "
-        "drop the stale entry) — an unmapped status costs the sweep its "
+        "drop the stale entry): an unmapped status costs the sweep its "
         'per-actor split and counts as disposition="unknown" until fixed'
     )
 
@@ -384,11 +384,11 @@ async def test_pg_reclaim_survives_an_unmapped_returning_status(
     # The sweep completed and its writes escaped the transaction.
     assert count == 2
     assert conn.tx_outcome == "COMMIT", (
-        "an unmapped status must not roll the reclaim batch back — the "
+        "an unmapped status must not roll the reclaim batch back: the "
         "batch is the fleet's crash-recovery path"
     )
     assert any("pg_notify" in sql for sql in conn.executed_sql), (
-        "the wake NOTIFY must fire — consumers of the crash-reclaim outbox "
+        "the wake NOTIFY must fire: consumers of the crash-reclaim outbox "
         "channel lose their low-latency wakeup when the batch rolls back"
     )
     assert any("job_attempts" in sql for sql in conn.executed_sql)
