@@ -27,6 +27,7 @@ from opentelemetry.trace import SpanKind, StatusCode
 from pydantic import BaseModel
 
 from taskq._di.registry import ProviderRegistry
+from taskq._di.scope import Scope
 from taskq._di.scopes import LoopScope, ProcessScope, ThreadScope, build_actor_scope
 from taskq._validation import validate_actor_payload
 from taskq.actor import ActorRef
@@ -36,8 +37,10 @@ from taskq.batch import apply_batch_terminal_outcome
 from taskq.client._enqueuer import SubJobEnqueuer
 from taskq.constants import DEFAULT_MAX_RETRY_BACKOFF
 from taskq.context import JobContext
+from taskq.exceptions import DIError
 from taskq.obs import (
     ConsumedOutcome,
+    ErrorReporter,
     bind_job_context,
     get_logger,
     record_consumed_message,
@@ -149,6 +152,47 @@ def _effective_reservations(
     return reservations
 
 
+async def _resolve_error_reporter(
+    registry: ProviderRegistry,
+    *,
+    process_scope: ProcessScope,
+    thread_scope: ThreadScope,
+    loop_scope: LoopScope,
+) -> ErrorReporter | None:
+    """The :class:`ErrorReporter` the application registered, or ``None``.
+
+    The reporter is a long-lived hook — a PROCESS-scope value for the
+    stateless adapters most deployments register, a THREAD or LOOP scope
+    for one holding a loop-lifetime connection — so it is read from the
+    scope container its registration named. Hot path: one registry probe
+    and one cache lookup per job, no allocation; the LOOP read goes
+    through the same resolved-cache seam the rate-limit registry and the
+    transaction connection use.
+
+    A TRANSIENT registration is refused here rather than silently
+    ignored: nothing per-invocation is reachable for a hook that runs
+    after the actor's scope has closed, and a reporter that never fires
+    is indistinguishable from a healthy fleet with no failures.
+    """
+    if not registry.has_provider(ErrorReporter):
+        return None
+    entry = registry.get(ErrorReporter)
+    raw: object | None
+    match entry.scope:
+        case Scope.PROCESS:
+            raw = await process_scope.get_or_create(ErrorReporter, entry)
+        case Scope.THREAD:
+            raw = thread_scope.get(ErrorReporter)
+        case Scope.LOOP:
+            raw = loop_scope.resolved_cache().get(ErrorReporter)
+        case _:
+            raise DIError(
+                f"ErrorReporter is registered at {entry.scope.name} scope; a terminal-failure "
+                "hook outlives the actor invocation and must be PROCESS, THREAD or LOOP scoped"
+            )
+    return raw if isinstance(raw, ErrorReporter) else None
+
+
 async def _ensure_registered_init_on_slot_conn(
     conn: ConnLike,
     *,
@@ -248,7 +292,8 @@ async def dispatch_one_job(
        (``loop_slot_values``), so the actor's own writes join this job's
        transaction and concurrent slots never share a connection.
     2. Create the CONSUMER span with link to the PRODUCER span.
-    3. Validate the payload against actor_ref's payload schema.
+    3. Resolve the registered :class:`~taskq.obs.ErrorReporter` (if any)
+       and validate the payload against actor_ref's payload schema.
     4. Build the interim JobContext with the CONSUMER span.
     5. Open build_actor_scope to resolve DI kwargs.
     6. Hand the resolved kwargs to consume_one_job via a run_actor
@@ -472,7 +517,21 @@ async def dispatch_one_job(
                 attributes=consumer_attrs,
                 links=links,
             ) as consumer_span:
+                # Resolved first, inside the try: a failure before the
+                # actor runs (payload validation, DI resolution) is a
+                # terminal failure like any other, and the outer handler
+                # below reports it through the same hook. A reporter
+                # misregistration surfaces the same way a broken actor
+                # dependency does — on the job, through the retry
+                # decision — rather than tearing down the consumer loop.
+                error_reporter: ErrorReporter | None = None
                 try:
+                    error_reporter = await _resolve_error_reporter(
+                        registry,
+                        process_scope=process_scope,
+                        thread_scope=thread_scope,
+                        loop_scope=loop_scope,
+                    )
                     # The row's stored version rides the raise — not the
                     # helper's current-version default — so a row that
                     # predates a payload migration is distinguishable from
@@ -586,6 +645,7 @@ async def dispatch_one_job(
                             redis_client=redis_client,
                             worker_pool=deps.worker_pool,
                             settings=deps.settings,
+                            error_reporter=error_reporter,
                             fallback_result_ttl=actor_ref.result_ttl,
                         )
                         outcome = result
@@ -654,6 +714,7 @@ async def dispatch_one_job(
                             max_retry_backoff,
                             consumer_span,
                             handler_log,
+                            error_reporter=error_reporter,
                         )
                     except _TERMINAL_WRITE_INFRA_EXCEPTIONS as infra_exc:
                         # An infra-failed terminal write leaves the row
