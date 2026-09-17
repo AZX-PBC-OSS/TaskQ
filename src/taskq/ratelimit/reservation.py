@@ -261,12 +261,21 @@ class SyncResult:
 
 @dataclass(frozen=True, slots=True)
 class _SlotState:
-    """Single slot row in the in-memory table."""
+    """Single slot row in the in-memory table.
+
+    ``keyed`` mirrors the PG ``reservation_slots.keyed`` column (migration
+    01.00.10_02): rows materialised by a keyed reservation carry the
+    fleet-reclaimable mark. Preserved by every state-rebuilding statement
+    below exactly as PG's statements preserve it — acquire/release/extend
+    never flip the mark, only ``ensure_slots(keyed=...)`` stamps it at
+    materialisation.
+    """
 
     job_id: UUID | None = None
     worker_id: UUID | None = None
     acquired_at: datetime | None = None
     lease_expires_at: datetime | None = None
+    keyed: bool = False
 
 
 class _InMemorySlotTable:
@@ -285,12 +294,17 @@ class _InMemorySlotTable:
         self._lock = threading.Lock()
         self._buckets: dict[str, dict[int, _SlotState]] = {}
 
-    def ensure_slots(self, bucket_name: str, slots: int) -> None:
+    def ensure_slots(self, bucket_name: str, slots: int, *, keyed: bool = False) -> None:
+        """Materialise *slots* rows, stamping the keyed mark on new rows only.
+
+        Existing rows are untouched (the PG ``ensure_slots`` conflict arm
+        never touches holder state or an existing row's mark).
+        """
         with self._lock:
             bucket = self._buckets.setdefault(bucket_name, {})
             for i in range(slots):
                 if i not in bucket:
-                    bucket[i] = _SlotState()
+                    bucket[i] = _SlotState(keyed=keyed)
 
     def acquire(
         self,
@@ -315,6 +329,7 @@ class _InMemorySlotTable:
                         worker_id=worker_id,
                         acquired_at=now,
                         lease_expires_at=now + lease,
+                        keyed=slot.keyed,
                     )
                     return SlotLease(i, now)
 
@@ -363,7 +378,7 @@ class _InMemorySlotTable:
                 return False
             if fence is not None and slot.acquired_at != fence:
                 return False
-            bucket[slot_index] = _SlotState()
+            bucket[slot_index] = _SlotState(keyed=slot.keyed)
             return True
 
     def extend_leases(self, worker_id: UUID, lock_lease: timedelta) -> int:
@@ -378,6 +393,7 @@ class _InMemorySlotTable:
                             worker_id=slot.worker_id,
                             acquired_at=slot.acquired_at,
                             lease_expires_at=now + lock_lease,
+                            keyed=slot.keyed,
                         )
                         count += 1
         return count
@@ -676,7 +692,10 @@ class ConcurrencyReservation:
                     "pool=None but no in-memory table — pass clock= at "
                     "construction for in-memory acquire, or supply a PG pool"
                 )
-            self._table.ensure_slots(self._name, self._slots)
+            # The keyed mark rides the materialisation exactly as the PG
+            # ensure_slots statement stamps it (the fleet-reclaimable mark
+            # is born on the rows the keyed lifecycle creates).
+            self._table.ensure_slots(self._name, self._slots, keyed=self._keyed)
             slot_index = self._table.acquire(
                 self._name,
                 job_id,

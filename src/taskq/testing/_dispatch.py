@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Final
 from uuid import UUID
 
 from taskq.backend._protocol import JobId, JobRow, QueueMode
-from taskq.constants import SMALLINT_MAX
+from taskq.constants import QUEUE_CONCURRENCY_PREFIX, SMALLINT_MAX
 from taskq.testing._reads import _read_copy
 
 if TYPE_CHECKING:
@@ -63,15 +63,28 @@ async def _dispatch_batch(
     # claiming them would only churn shared consumer slots into denied
     # acquires. The twin derives the same headroom from the same
     # holder-state signal (slot -> holding job -> actor; like the DB,
-    # the in-memory store has no actor -> bucket declaration mapping, so
-    # static, keyed, and queue-cap buckets all ride it), with the same
-    # acquirability predicate the twin acquire uses: free is
-    # job_id-None or an expired lease, held is its negation. An actor
+    # the in-memory store has no actor -> bucket declaration mapping),
+    # with the same acquirability predicate the twin acquire uses: free
+    # is job_id-None or an expired lease, held is its negation. An actor
     # holding nothing is absent from the map, leaving its residual
     # untouched — the gate never blocks a first claim (PG: LEAST ignores
     # the NULL headroom), so capacity can always be taken and a
     # saturated actor drains the moment a slot frees.
+    #
+    # Two scoping rules mirror the PG gate's (#242):
+    #   * KEYED buckets are excluded from the holder derivation — their
+    #     concrete names are payload-derived per job, so claim time
+    #     cannot know which pending row needs them; their caps stay
+    #     enforced in the consumer's post-claim acquire (the authority).
+    #   * QUEUE-CAP buckets (taskq:global:queue:{queue}) fold per
+    #     (actor, queue), not per actor — a queue cap binds per queue,
+    #     so queue X's saturation must not zero the actor's claims on
+    #     queue Y. The static per-actor map below carries only
+    #     non-queue-cap buckets; the per-queue map is folded into each
+    #     queue's admission bound in the actor loop, exactly where PG's
+    #     candidates laterals fold queue_cap_headroom into their LIMIT.
     reservation_headroom: dict[str, int] = {}
+    queue_cap_headroom: dict[tuple[str, str], int] = {}
     slot_table = self._slot_table
     if slot_table is not None:
         # The lock is held only for a shallow dict copy (no await, no
@@ -84,6 +97,7 @@ async def _dispatch_batch(
             bucket_snapshot = {name: dict(bucket) for name, bucket in slot_table._buckets.items()}
         free_by_bucket: dict[str, int] = {}
         held_buckets_by_actor: dict[str, set[str]] = {}
+        held_queue_caps_by_pair: dict[tuple[str, str], set[str]] = {}
         for bucket_name, bucket in bucket_snapshot.items():
             free = 0
             for slot in bucket.values():
@@ -92,15 +106,29 @@ async def _dispatch_batch(
                 ):
                     free += 1
                     continue
+                # The keyed mark excludes the row from the holder
+                # derivation (PG: reservation_holdings' NOT rs.keyed);
+                # free-slot counting above still covers the whole bucket.
+                if slot.keyed:
+                    continue
                 # The PG join keys on jobs.id = reservation_slots.job_id;
                 # the store is keyed by JobId (a UUID NewType), the slot
                 # carries the same UUID value.
                 holder = self._jobs.get(JobId(slot.job_id))
-                if holder is not None:
+                if holder is None:
+                    continue
+                if bucket_name.startswith(QUEUE_CONCURRENCY_PREFIX):
+                    queue = bucket_name[len(QUEUE_CONCURRENCY_PREFIX) :]
+                    held_queue_caps_by_pair.setdefault((holder.actor, queue), set()).add(
+                        bucket_name
+                    )
+                else:
                     held_buckets_by_actor.setdefault(holder.actor, set()).add(bucket_name)
             free_by_bucket[bucket_name] = free
         for actor, bucket_names in held_buckets_by_actor.items():
             reservation_headroom[actor] = min(free_by_bucket[name] for name in bucket_names)
+        for pair, bucket_names in held_queue_caps_by_pair.items():
+            queue_cap_headroom[pair] = min(free_by_bucket[name] for name in bucket_names)
 
     # Why: `row.queue in queues` with NO `not queues` escape — PG builds the
     # candidate set with ``CROSS JOIN LATERAL unnest((SELECT queues FROM
@@ -176,10 +204,13 @@ async def _dispatch_batch(
             _residual = limit if _cap is None else max(_cap - running_per_actor.get(_actor, 0), 0)
             # The reservation-headroom fold (PG: LEAST(base.residual,
             # rh.headroom) in per_actor_capacity / repend_capacity): a
-            # live-held bucket with fewer acquirable slots than the
+            # live-held static bucket with fewer acquirable slots than the
             # residual clamps admission to the acquirable count — zero
             # when full — so a saturated actor's rows are not claimed
-            # into consumer slots that can only deny them.
+            # into consumer slots that can only deny them. Keyed buckets
+            # never reach this map (excluded upstream, mirroring PG's
+            # reservation_holdings), and queue-cap buckets fold per queue
+            # below — the two #242 scoping rules.
             _headroom = reservation_headroom.get(_actor)
             if _headroom is not None and _headroom < _residual:
                 _residual = _headroom
@@ -201,7 +232,17 @@ async def _dispatch_batch(
                     # the row's own label is irrelevant once claimed.
                     _fk = row.fairness_key if row.fairness_key is not None else "__null__"
                     _repended_by_fk[_fk].append(row)
-            for _queue_rows in _by_queue.values():
+            for _queue_name, _queue_rows in _by_queue.items():
+                # The queue-cap fold (PG: LEAST(pac.residual,
+                # queue_cap_headroom) in each candidates lateral's LIMIT):
+                # the per-(actor, queue) admission bound, LEAST-ignoring a
+                # NULL headroom exactly as PG's LEAST does. A full
+                # queue-cap bucket admits zero rows of its holder actors on
+                # THIS queue and leaves their claims on every other queue
+                # untouched.
+                _q_headroom = queue_cap_headroom.get((_actor, _queue_name))
+                _q_residual = _residual if _q_headroom is None else min(_residual, _q_headroom)
+                _q_bound = _q_residual * oversample
                 if _use_round_robin:
                     _fk_groups: dict[str, list[JobRow]] = _dd(list)
                     for r in _queue_rows:
@@ -224,16 +265,22 @@ async def _dispatch_batch(
                         # LIMIT would truncate before partitioning — PG filters
                         # ``fairness_rank <= residual * oversample`` instead), so
                         # every cohort contributes candidates up to the bound.
+                        # _q_bound (not _bound): the queue-cap headroom rides
+                        # this per-(actor, queue) window, mirroring the RR
+                        # lateral's LEAST(pac.residual, queue_cap_headroom)
+                        # cohort LIMIT.
                         for _rank, _r in enumerate(_fk_rows, 1):
-                            if _rank <= _bound:
+                            if _rank <= _q_bound:
                                 _fairness_rank[_r.id] = _rank
                                 candidates.append(_r)
                 else:
                     # Strict-FIFO lateral: ORDER BY priority DESC, scheduled_at,
                     # id LIMIT residual * oversample — the truncation that can
                     # starve a dispatchable job sorting behind the bound.
+                    # _q_bound carries the queue-cap fold (the lateral's
+                    # LEAST(pac.residual, queue_cap_headroom) LIMIT).
                     _queue_rows.sort(key=lambda r: (-r.priority, r.scheduled_at, r.id))
-                    candidates.extend(_queue_rows[:_bound])
+                    candidates.extend(_queue_rows[:_q_bound])
             # Assignment-routed admission, mirroring PG's rr_tail_keys
             # per-cohort probes: the same per-cohort residual * oversample
             # bound (a queue-agnostic global bound would truncate before the
