@@ -1904,13 +1904,23 @@ class RateLimitRegistry:
           away) deletes it. A name with no rows left — fully deleted
           this tick, or never materialized at all — leaves the pending
           set.
-        - The rate-limit DELETE needs no guard and no probe: a bucket
-          row has no holder, so nothing survives the statement and every
-          sliced name leaves the pending set in one pass — the queue
-          drains FIFO with no survivors to rotate. A live bucket never
-          reaches the statement at all: only evicted keyed names are
-          ever recorded, and the re-registered check above drops a
-          re-activated key first.
+        - The rate-limit DELETE needs no HOLDER guard and no survivor
+          probe — a bucket row has no holder or lease, so nothing
+          survives the statement on that axis and every sliced name
+          leaves the pending set in one pass — the queue drains FIFO
+          with no survivors to rotate. It DOES carry a guard, and that
+          guard is load-bearing: the consumed-quota veto
+          (``_no_consumed_quota_sql``, the same predicate the fleet
+          sweep applies) refuses to delete a row whose fixed quota is
+          partly spent, so an evicted spent bucket's row survives the
+          drain and a re-materialized key resumes its spent state
+          instead of resetting to full capacity (pinned by
+          tests/test_keyed_fixed_quota_eviction.py). A vetoed name
+          still leaves the pending set — the row simply stays — and the
+          fleet sweep is the backstop once the quota is no longer
+          consumed. A live bucket never reaches the statement at all:
+          only evicted keyed names are ever recorded, and the
+          re-registered check above drops a re-activated key first.
         - A schema key whose pending set empties (every name
           re-registered, or every row reclaimed) is popped after the
           pass, so a later drain with nothing pending acquires no

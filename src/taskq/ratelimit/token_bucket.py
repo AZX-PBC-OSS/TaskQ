@@ -387,6 +387,22 @@ class TokenBucket:
         budget that was already spent. Rows written before these keys
         existed simply carry neither, and the sweep's veto treats a row it
         cannot prove safe to delete as one it must keep.
+
+        THE CANONICAL KEY SET is exactly ``{tokens, ts, capacity,
+        refill}`` — this method is its definition, and every reader of the
+        document reads NAMED keys only (``_peek_pg`` reads ``tokens``;
+        ``_refund_pg`` reads ``tokens``/``ts``; the reclaim sweeps read
+        ``tokens``/``refill``/``capacity``), so an unknown key is inert.
+        Exactly one writer adds a key beyond it: the fused PG acquire
+        (``_acquire_pg``) stamps a transient ``granted`` boolean so the
+        decision can ride the row home through RETURNING (RETURNING sees
+        only the final row) — it describes the acquire that last wrote
+        the state and is replaced by the next write (a refund rewrites
+        the document through this method, dropping it; the next acquire
+        re-adds it). The key-set pin in
+        tests/test_ratelimit_token_bucket_pg.py asserts both shapes so a
+        future key-iterating reader trips a loud test instead of a
+        silent assumption.
         """
         return {
             "tokens": tokens,
