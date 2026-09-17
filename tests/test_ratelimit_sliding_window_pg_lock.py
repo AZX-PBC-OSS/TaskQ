@@ -146,7 +146,7 @@ class _ContendedFakeConn:
         if "WITH pruned AS" in sql:
             # The fused log-style acquire: one row carrying the whole
             # decision (insert landed, pre-insert in-window count, and
-            # the denial hint's inputs — unused on the allowed path).
+            # the denial hint's inputs, unused on the allowed path).
             return {
                 "inserted": True,
                 "count_in_window": 1,
@@ -231,7 +231,7 @@ class TestSlidingWindowLockBoundedWaitUnit:
         assert conn.savepoint_opens == 2
         assert conn.blocking_lock_calls == 1
         assert conn.set_config_values == ["100ms"]
-        # Fail closed: no admission slot was written or evicted — the
+        # Fail closed: no admission slot was written or evicted: the
         # fused statement (prune + admission insert in one) never ran.
         assert not any("WITH pruned AS" in s for s in conn.fetched_rows)
 
@@ -407,7 +407,7 @@ class TestSlidingWindowLockBoundedWaitUnit:
         # well before any plausible unbounded hang.
         assert elapsed >= 0.5, f"the backstop must outlast the 100ms budget, took {elapsed:.3f}s"
         assert elapsed < 2.0, f"the backstop must bound the black hole, took {elapsed:.3f}s"
-        # Fail closed: no admission slot was written or evicted — the
+        # Fail closed: no admission slot was written or evicted: the
         # fused statement (prune + admission insert in one) never ran.
         assert not any("WITH pruned AS" in s for s in conn.fetched_rows)
 

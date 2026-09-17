@@ -1909,7 +1909,7 @@ class RateLimitRegistry:
           survives the statement on that axis and every sliced name
           leaves the pending set in one pass — the queue drains FIFO
           with no survivors to rotate. It DOES carry a guard, and that
-          guard is load-bearing: the consumed-quota veto
+          guard is critical: the consumed-quota veto
           (``_no_consumed_quota_sql``, the same predicate the fleet
           sweep applies) refuses to delete a row whose fixed quota is
           partly spent, so an evicted spent bucket's row survives the

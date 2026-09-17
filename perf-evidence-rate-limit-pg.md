@@ -90,7 +90,7 @@ the new round-trip pins in `tests/test_round_trip_budgets.py`.
 | GCRA window, bounded | 8 → **4** | 4.56 ms → **2.46 ms** (−46%) | 4.58 ms → **2.47 ms** (−46%) |
 | log-style window, 8-way contended | — (same 6 → 4 under the lock) | 373 acquires/s | 387 acquires/s (+4%, inside the run-to-run band at this racer count) |
 
-Reading the table honestly:
+How to read the table:
 
 * The two upsert paths (token bucket, GCRA) halve both their round
   trips and their sequential latency — the removed round trips were pure

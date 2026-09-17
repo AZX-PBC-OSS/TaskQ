@@ -22,7 +22,7 @@ the in-process instance, so eviction would genuinely reset a spent quota.
 This file pins the predicate per backend, the eviction's use of it, the
 cap-refusal regression (the #244 reproduction, inverted), and — against
 real Postgres — that evict-then-reacquire never resets or double-grants a
-spent fixed quota (the red-team shape: two workers evict and
+spent fixed quota (the adversarial-review shape: two workers evict and
 re-materialize the same key concurrently).
 """
 
@@ -102,7 +102,7 @@ async def test_pg_fixed_quota_bucket_is_not_held_spent_or_not() -> None:
     hold is redundant bookkeeping — and (pre-fix) it was the cap-filling
     leak that refused every new key past ``max_keyed_rate_limits`` (#244)."""
     for spent in (False, True):
-        # The instance carries no token state on the postgres backend —
+        # The instance carries no token state on the postgres backend:
         # the pre-fix hold could not even see spentness, it keyed purely
         # off (refill == 0, backend == postgres).
         tb = TokenBucket(name=f"tbfq_{spent}", capacity=5, refill_per_second=0, backend="postgres")
@@ -213,7 +213,7 @@ async def test_idle_eviction_still_holds_spent_memory_fixed_quota() -> None:
 class TestPgFixedQuotaEvictReacquire:
     """Evicting a PG fixed-quota keyed entry must neither reset its spent
     quota (the premise the pre-fix hold got wrong) nor double-grant under
-    concurrent re-materialization (the red-team shape: two workers evict
+    concurrent re-materialization (the adversarial-review shape: two workers evict
     and re-materialize the same key at once)."""
 
     pytestmark = pytest.mark.integration
@@ -269,7 +269,7 @@ class TestPgFixedQuotaEvictReacquire:
             assert float(state) == 3.0, "fixture broken: two of five tokens must be spent"
 
             # Evict the registry entry and run the row reclamation the
-            # sweep performs — the drain's DELETE must VETO on the spent
+            # sweep performs: the drain's DELETE must VETO on the spent
             # row (the consumed-quota guard), so the state survives.
             _seed_idle(reg, bucket)
             assert reg.evict_idle_keyed_rate_limits(idle_for=timedelta(0)) == 1
@@ -312,7 +312,7 @@ class TestPgFixedQuotaEvictReacquire:
             )
 
             # Only the remaining 2 tokens are grantable; the 6th total
-            # acquire is denied — the registry routes the decision's
+            # acquire is denied: the registry routes the decision's
             # denial into ReservationUnavailable (the 429 channel the
             # consumer snoozes on), with the fixed-quota None retry hint
             # substituted by the flat backoff constant.

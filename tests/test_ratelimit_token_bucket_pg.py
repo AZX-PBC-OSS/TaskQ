@@ -292,7 +292,7 @@ async def test_pg_refund_fixed_quota_recovers(
 #
 # The fused acquire stamps a transient `granted` boolean into the state
 # document so the decision can ride the row home through RETURNING; every
-# reader reads NAMED keys only, so the key is inert — but a future reader
+# reader reads NAMED keys only, so the key is inert, but a future reader
 # that iterates the key set would silently inherit that assumption. This
 # pin makes the assumption loud: acquire -> the key set is the canonical
 # set PLUS `granted`; refund -> exactly the canonical set (the refund

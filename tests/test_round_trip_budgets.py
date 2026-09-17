@@ -396,13 +396,13 @@ async def test_a_contended_cron_tick_issues_no_due_read() -> None:
 # try-lock + DELETE + INSERT + COUNT (+ a retry SELECT on denial) +
 # COMMIT. The fused shapes (#228):
 
-# * token bucket / GCRA — ONE ``INSERT … ON CONFLICT DO UPDATE …
+# * token bucket / GCRA: ONE ``INSERT … ON CONFLICT DO UPDATE …
 #   RETURNING`` doing the arithmetic in the conflict arm; the bounded
 #   mode wraps it in the enqueue path's pinned BEGIN + set_config +
 #   statement + COMMIT shape (no savepoint: a refusal aborts the
 #   transaction and the SET LOCAL dies with it), and the indefinite
 #   mode is the bare statement on autocommit.
-# * log-style window — the whole locked critical section (prune +
+# * log-style window: the whole locked critical section (prune +
 #   admission insert + count + retry-hint inputs) is one CTE statement
 #   under the unchanged two-tier advisory lock.
 

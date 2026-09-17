@@ -72,12 +72,12 @@ async def _dispatch_batch(
     # saturated actor drains the moment a slot frees.
     #
     # Two scoping rules mirror the PG gate's (#242):
-    #   * KEYED buckets are excluded from the holder derivation — their
+    #   * KEYED buckets are excluded from the holder derivation: their
     #     concrete names are payload-derived per job, so claim time
     #     cannot know which pending row needs them; their caps stay
     #     enforced in the consumer's post-claim acquire (the authority).
     #   * QUEUE-CAP buckets (taskq:global:queue:{queue}) fold per
-    #     (actor, queue), not per actor — a queue cap binds per queue,
+    #     (actor, queue), not per actor: a queue cap binds per queue,
     #     so queue X's saturation must not zero the actor's claims on
     #     queue Y. The static per-actor map below carries only
     #     non-queue-cap buckets; the per-queue map is folded into each
@@ -210,7 +210,7 @@ async def _dispatch_batch(
             # into consumer slots that can only deny them. Keyed buckets
             # never reach this map (excluded upstream, mirroring PG's
             # reservation_holdings), and queue-cap buckets fold per queue
-            # below — the two #242 scoping rules.
+            # below: the two #242 scoping rules.
             _headroom = reservation_headroom.get(_actor)
             if _headroom is not None and _headroom < _residual:
                 _residual = _headroom

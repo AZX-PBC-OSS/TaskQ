@@ -265,7 +265,7 @@ async def test_keyed_bucket_never_gates_its_holder_actor(pg_dsn: str) -> None:
         pod = fleet.pod("pod-1")
         reservation = await _held_reservation(fleet, slots=1, keyed=True)
         # Fixture validity: the keyed mark is what the claim's exclusion
-        # keys off — an unmarked row would ride the static fold and the
+        # keys off: an unmarked row would ride the static fold and the
         # test would pin the wrong thing.
         marked = await fleet.fetch(
             'SELECT count(*) AS n FROM "{schema}".reservation_slots '
@@ -279,7 +279,7 @@ async def test_keyed_bucket_never_gates_its_holder_actor(pg_dsn: str) -> None:
         assert [job.id for job in first] == [holder_id]
         slot = await reservation.acquire(holder_id, pod.worker_id, pod.deps.worker_pool)
 
-        # Sibling rows of the SAME actor — at claim time these are
+        # Sibling rows of the SAME actor: at claim time these are
         # indistinguishable from the holder tenant's own extra rows, and
         # that is exactly why the keyed bucket must not gate them: the
         # other tenants' rows would be stranded behind a tenant they do
@@ -400,9 +400,9 @@ async def test_queue_cap_fold_covers_the_round_robin_arm(pg_dsn: str) -> None:
 # still bites somewhere the key IS known: the consumer's post-claim
 # acquire_for_actor resolves f"{base_name}:{key}" from the validated
 # payload and denies (snooze/reschedule) when that key's bucket is full.
-# This is the red-team pin for that: one tenant saturates its keyed
+# This is the adversarial-review pin for that: one tenant saturates its keyed
 # bucket, and the OTHER tenant's jobs of the same actor complete anyway
-# — while the saturated tenant's extra jobs are denied by the acquire,
+# while the saturated tenant's extra jobs are denied by the acquire,
 # never by the claim.
 
 
@@ -524,7 +524,7 @@ async def test_keyed_limit_enforces_post_claim_per_tenant(pg_dsn: str) -> None:
                     worker_pool=pod.deps.worker_pool,
                     # The keyed ref's materialization needs the schema
                     # source for its reservation_slots rows (a static
-                    # name does not — the isolation sibling omits it).
+                    # name does not: the isolation sibling omits it).
                     settings=pod.deps.settings,
                 )
 
@@ -573,7 +573,7 @@ async def test_keyed_limit_enforces_post_claim_per_tenant(pg_dsn: str) -> None:
 
         # The keyed cap still bites for the saturated tenant: of A's
         # jobs, exactly one holds the session slot (running the hog);
-        # every other A job was denied by the acquire and rescheduled —
+        # every other A job was denied by the acquire and rescheduled,
         # the claim-level exclusion above is safe BECAUSE this half holds.
         a_running = [jid for jid in job_ids["a"] if states[jid] == "running"]
         assert len(a_running) == 1, (

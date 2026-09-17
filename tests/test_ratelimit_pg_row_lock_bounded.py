@@ -232,11 +232,11 @@ class TestTokenBucketRowLockBoundedWaitUnit:
         assert elapsed < 2.0, f"budget was 100 ms but the wait took {elapsed:.3f}s"
         # The GUC budget was set for this transaction.
         assert conn.set_config_values == ["100ms"]
-        # Only the acquire's OWN transaction wrapper opened — the fused
+        # Only the acquire's OWN transaction wrapper opened: the fused
         # statement needs no savepoint of its own (a refusal aborts the
         # transaction outright and the bound dies with it).
         assert conn.savepoint_opens == 1
-        # Fail closed: the fused acquire never RETURNED — a statement that
+        # Fail closed: the fused acquire never RETURNED, a statement that
         # raised spent and admitted nothing (statement-level atomicity).
         assert conn.fused_results == [], (
             "a timed-out racer wrote bucket state — the denial must be "
@@ -298,7 +298,7 @@ class TestTokenBucketRowLockBoundedWaitUnit:
             lock_timeout_ms=0.0,
         )
         assert decision.allowed is True
-        # Indefinite mode opens NO transaction at all — the fused
+        # Indefinite mode opens NO transaction at all: the fused
         # statement is one autocommit round trip, its row lock ending
         # with the statement.
         assert conn.savepoint_opens == 0, (
@@ -361,7 +361,7 @@ class TestGcraRowLockBoundedWaitUnit:
         assert elapsed < 2.0, f"budget was 100 ms but the wait took {elapsed:.3f}s"
         assert conn.set_config_values == ["100ms"]
         assert conn.savepoint_opens == 1
-        # Fail closed: the fused upsert never RETURNED — a statement that
+        # Fail closed: the fused upsert never RETURNED, a statement that
         # raised advanced no TAT and admitted nothing.
         assert conn.fused_results == [], (
             "a timed-out racer advanced the TAT — the denial must be "
