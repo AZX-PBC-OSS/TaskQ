@@ -31,6 +31,7 @@ import os
 import random
 import secrets
 import socket
+import time
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import timedelta
@@ -131,7 +132,24 @@ fixed sleep it replaced polled at: a slot-freed event that is never set
 re-checking on this cadence rather than parked forever."""
 
 _POLL_JITTER_FRACTION: Final[float] = 0.1
-"""Multiplicative jitter band for the fallback poll wait."""
+"""Multiplicative jitter band for the fallback poll wait and the claim cooldown."""
+
+_CLAIM_COOLDOWN_SECONDS: Final[float] = 0.05
+"""Floor between a claim round that came back short and the next one.
+
+A short round — fewer rows than asked, or none — says the backlog is
+drained or a peer won it; the triggers that keep arriving meanwhile (a
+schema-wide NOTIFY wakes every worker, every completion frees a slot) are
+folded into one round after this wait instead of each paying a full
+dispatch round plus the loser's window expansions. A full round is exempt:
+backlog drain re-claims immediately. Between River's 100 ms FetchCooldown
+and Oban's 5 ms dispatch_cooldown, sized for this worker's small slot
+count: it is the worst-case added claim latency for a job that arrives
+right after a short round. A module constant rather than a setting because
+the value is a latency-vs-load trade the peers also fix at a default; the
+settings surface is owned elsewhere and grows a knob only when a
+deployment shows it needs one.
+"""
 
 _PRODUCER_RNG = random.Random(secrets.randbits(128))  # noqa: S311  # Why: random.Random is for timing jitter, not cryptography; seeded once from the OS entropy pool so two workers never share a jitter phase — same seeding pattern as retry.py's _production_rng.
 
@@ -220,6 +238,11 @@ async def producer_loop(
     3. Puts each returned :class:`JobRow` onto ``local_queue`` for the
        consumer tasks.
 
+    A round that returns fewer rows than it asked for arms a short
+    jittered cooldown (:data:`_CLAIM_COOLDOWN_SECONDS`) before the next
+    round, so a burst of wakes or freed slots costs one round rather than
+    one per trigger; a full round re-claims immediately.
+
     Exits cleanly when either ``shutdown_event`` or ``producer_stop_event``
     is set.
 
@@ -255,6 +278,10 @@ async def producer_loop(
     # below: a producer that never claimed cannot hold a locked row, so
     # its exit owes the fleet no write (the common idle-shutdown shape).
     made_a_claim = False
+    # Monotonic deadline before which no claim round may start — armed by
+    # a short round (see _CLAIM_COOLDOWN_SECONDS), so the triggers that
+    # land while it runs (wakes, freed slots) coalesce into one round.
+    claim_not_before = 0.0
 
     async with contextlib.AsyncExitStack() as stack:
         wake_event: asyncio.Event | None = None
@@ -293,6 +320,23 @@ async def producer_loop(
                 slot_freed.clear()
                 continue
 
+            cooldown_remaining = claim_not_before - time.monotonic()
+            if cooldown_remaining > 0:
+                # Every trigger that lands during this wait — more wakes,
+                # more freed slots — is answered by the single round that
+                # follows, sized to the slots free by then. Re-entering
+                # the loop re-reads availability and the stop flags.
+                await asyncio.sleep(cooldown_remaining)
+                continue
+
+            # Cleared BEFORE the round, not after: a NOTIFY that lands
+            # while the round runs may announce a row the round's
+            # snapshot predates, and must survive as exactly one
+            # follow-up round. Everything that arrived before this point
+            # is answered by the round itself.
+            if wake_event is not None:
+                wake_event.clear()
+            round_started = time.monotonic()
             try:
                 jobs = await backend.dispatch_batch(
                     worker_id=worker_id,
@@ -306,6 +350,16 @@ async def producer_loop(
                     await asyncio.sleep(poll_interval)
                 continue
 
+            if len(jobs) < available:
+                # A short round: the backlog is drained or a peer won it.
+                # A round on its heels would only re-run the claim CTE and
+                # the loser's window expansions for nothing. A full round
+                # arms no floor — there is backlog to drain, and the next
+                # freed slot claims immediately.
+                claim_not_before = round_started + _jittered_poll_interval(
+                    _CLAIM_COOLDOWN_SECONDS, rng_source
+                )
+
             if jobs:
                 made_a_claim = True
                 for job in jobs:
@@ -314,8 +368,6 @@ async def producer_loop(
                     # its lease must be renewed from here on.
                     deps.disowned_jobs.discard(job.id)
                     await local_queue.put(job)
-                if wake_event is not None:
-                    wake_event.clear()
                 continue
 
             wake_wait = asyncio.create_task(wake_event.wait()) if wake_event is not None else None
@@ -349,8 +401,11 @@ async def producer_loop(
                         with contextlib.suppress(asyncio.CancelledError):
                             await task
 
-            if wake_event is not None:
-                wake_event.clear()
+            if poll_wait in _done:
+                # The fallback poll is its own cadence, already jittered
+                # and never shorter than a burst: a poll-timed round owes
+                # no further wait, whatever the previous round returned.
+                claim_not_before = 0.0
 
     # Exit hand-back, on the DRAINING path only (producer_stop_event is
     # what the orchestrator sets at DRAINING entry): the DRAINING pass

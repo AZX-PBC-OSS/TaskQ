@@ -1051,6 +1051,17 @@ Consumer loops register via `backend.subscribe_wake()` (an async context manager
 which adds a fresh `asyncio.Event` to `_wake_subscribers` on enter and removes it
 on exit. The consumer loop awaits the event; on wake it polls `dispatch_batch`.
 
+The wake channel is schema-wide, so one enqueue wakes every worker's producer
+and all but one run a losing round. After a round that came back short (fewer
+rows than requested, or none) the producer waits a small jittered cooldown
+(`_CLAIM_COOLDOWN_SECONDS`, 50 ms) before its next round; wakes and freed
+slots that land meanwhile are folded into that one round. A full round
+re-claims immediately, a wake that lands mid-round always yields one
+follow-up round, and the fallback poll keeps its own cadence. This is
+River's `FetchCooldown` / Oban's `dispatch_cooldown` shape; the cost is up to
+one cooldown of claim latency for a job that arrives right after a short
+round.
+
 A `_health_check_loop` runs concurrently with the listener, executing `SELECT 1`
 on the notify connection at `notify_health_check_interval`. On failure it
 reconnects with bounded exponential backoff (initial delay × 2, max 30s). After
