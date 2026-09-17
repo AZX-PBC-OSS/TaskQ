@@ -1018,7 +1018,12 @@ class WorkerSettings(TaskQSettings):
         default=3,
         ge=1,
         description="TASKQ_MAX_HEARTBEAT_FAILURES. Consecutive heartbeat "
-        "failures before the worker self-terminates.",
+        "failures before the worker self-terminates. Deliberate fail-fast: "
+        "at the defaults (3 failures, 2 s command timeout) roughly six "
+        "seconds of Postgres unavailability ends every worker at once, and "
+        "the orchestrator restarts them into a recovered database while "
+        "crash reclaim re-pends their leases — expect a restart herd on a "
+        "Postgres failover, sized by your replica count.",
     )
 
     # ── Leader sweep intervals ─────────────────────────────────
@@ -1251,7 +1256,10 @@ class WorkerSettings(TaskQSettings):
         description="TASKQ_MAX_KEYED_RESERVATIONS. Guardrail on the number of "
         "distinct keyed-reservation entries tracked in memory. When the limit "
         "is reached, new keyed reservations raise ReservationUnavailable. "
-        "Tune to your workload's expected key cardinality.",
+        "Tune to your workload's expected key cardinality: the guardrail is "
+        "PER PROCESS, so adding replicas does not raise the effective "
+        "tenant-key fleet capacity — a tenant fleet above the limit gets "
+        "denials on every replica at once.",
     )
     max_keyed_rate_limits: int = Field(
         default=10000,
@@ -1260,7 +1268,9 @@ class WorkerSettings(TaskQSettings):
         "distinct keyed-rate-limit entries tracked in memory. When the limit "
         "is reached, new keyed rate limits raise ReservationUnavailable. "
         "Independent from max_keyed_reservations, which governs keyed "
-        "reservations only. Tune to your workload's expected key cardinality.",
+        "reservations only. Tune to your workload's expected key cardinality; "
+        "like max_keyed_reservations the guardrail is per process and does "
+        "not scale with the replica count.",
     )
 
     # -- Prometheus standalone metrics server ------------------
@@ -1838,7 +1848,10 @@ class WorkerSettings(TaskQSettings):
         description="TASKQ_CRON_TICK_LIMIT. Maximum schedules one cron tick "
         "selects, plans and fires. A catch-up burst larger than this drains "
         "across successive one-second ticks instead of one oversized "
-        "transaction; the remainder stays due and untouched until its tick.",
+        "transaction; the remainder stays due and untouched until its tick. "
+        "Only the leader plans ticks, so this guardrail does not scale with "
+        "the replica count: raise it when one tick's share of schedules "
+        "genuinely exceeds it, or spread schedules off the second boundary.",
     )
     cron_payload_factory_timeout: float = Field(
         default=5.0,
