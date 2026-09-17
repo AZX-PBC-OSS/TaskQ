@@ -472,8 +472,10 @@ async def wait_for_batch(
     """Convenience helper for the fan-out-then-finalize pattern.
 
     Queries batch children by batch_id using the GIN-indexed
-    ``WHERE metadata @> $1::jsonb`` predicate. Each poll is one
-    round trip: the member counts and the ``batches`` row travel in a
+    ``WHERE metadata @> $1::jsonb`` predicate — the containment form,
+    not the open-members partial index the completion probes use, because
+    the poll counts every member including the terminal ones. Each poll is
+    one round trip: the member counts and the ``batches`` row travel in a
     single statement.
 
     Inside an actor (snooze_via_exception=True, the default):

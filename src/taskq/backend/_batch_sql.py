@@ -75,19 +75,23 @@ _TERMINAL_NOT_IN = "NOT IN (" + ",".join(f"'{s}'" for s in TERMINAL_STATUSES) + 
 _ACTIVE_IN = "IN (" + ", ".join(f"'{s}'" for s in sorted(ACTIVE_STATUSES)) + ")"
 
 
-def _open_member_where(batch_id_param: int) -> str:
-    """The open-member probe: "a member of the batch bound at ``$N`` (as
-    text) that is not terminal".
+def open_member_where(batch_id: str) -> str:
+    """The open-member probe: "a member of the batch whose id (as text)
+    is *batch_id* that is not terminal". *batch_id* is a SQL expression —
+    a bound parameter (``"$2"``) or a correlated column
+    (``"b.id::text"``).
 
     Spelled so jobs_batch_open_members_idx (01.00.13_03) serves it: the
     batch id is the index's expression key, and the positive, sorted
     status list is the index predicate's exact text, which is what lets
-    the planner prove the partial index applies. Every per-terminal-write
-    question about open members goes through this one predicate; the
+    the planner prove the partial index applies. Every question about
+    open members — the per-terminal-write probes here and the leader's
+    stale-batch sweep — goes through this one predicate; the
     ``metadata @>`` containment form stays only for the statements that
-    must touch terminal members too (abort's cancel, list counts, prune).
+    must touch terminal members too (abort's cancel, list counts, prune,
+    the wait-for-batch poll and completion status in taskq.batch).
     """
-    return f"(metadata->>'batch_id') = ${batch_id_param}\n      AND status {_ACTIVE_IN}"
+    return f"(metadata->>'batch_id') = {batch_id}\n      AND status {_ACTIVE_IN}"
 
 
 _CREATE_BATCH_SQL = """\
@@ -301,18 +305,18 @@ def render_batch_sql(schema: str) -> BatchSql:
         create_batch=_CREATE_BATCH_SQL.format(schema=schema),
         get_batch=_GET_BATCH_SQL.format(schema=schema),
         increment_batch_failures=_INCREMENT_BATCH_FAILURES_SQL.format(
-            schema=schema, open_member=_open_member_where(batch_id_param=2)
+            schema=schema, open_member=open_member_where("$2")
         ),
         reset_batch_failures=_RESET_BATCH_FAILURES_SQL.format(
-            schema=schema, open_member=_open_member_where(batch_id_param=2)
+            schema=schema, open_member=open_member_where("$2")
         ),
         abort_batch_jobs=_ABORT_BATCH_JOBS_SQL.format(schema=schema),
         abort_batch_row=_ABORT_BATCH_ROW_SQL.format(schema=schema),
         complete_batch=_COMPLETE_BATCH_SQL.format(
-            schema=schema, open_member=_open_member_where(batch_id_param=2)
+            schema=schema, open_member=open_member_where("$2")
         ),
         count_batch_non_terminal=_COUNT_BATCH_NON_TERMINAL_SQL.format(
-            schema=schema, open_member=_open_member_where(batch_id_param=1)
+            schema=schema, open_member=open_member_where("$1")
         ),
         list_batches_base=_LIST_BATCHES_BASE_SQL.format(
             schema=schema, terminal_not_in=_TERMINAL_NOT_IN

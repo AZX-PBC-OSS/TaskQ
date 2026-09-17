@@ -59,6 +59,7 @@ import importlib
 import inspect
 import pkgutil
 import re
+from collections.abc import Callable
 from dataclasses import fields
 from typing import Final
 
@@ -79,6 +80,7 @@ from taskq.backend._sql_templates import (  # pyright: ignore[reportPrivateUsage
 )
 from taskq.constants import RECLAIM_OUTBOX_RETENTION_MULTIPLIER
 from taskq.testing.fixtures import ModulePgSchema
+from taskq.worker._leader_shared import complete_stale_batches_sql
 
 pytestmark = pytest.mark.integration
 
@@ -167,19 +169,19 @@ _POSITIONAL_PARAM_RE: Final = re.compile(r"\$(\d+)")
 def _render_extra(placeholder: str, owning_module: str, body: str) -> object:
     if placeholder == "open_member":
         # taskq.backend._batch_sql renders {open_member} through its own
-        # _open_member_where(batch_id_param=N), binding the batch id as the
-        # next positional parameter after the ones the statement already
+        # open_member_where("$N"), binding the batch id as the next
+        # positional parameter after the ones the statement already
         # carries ($2 for the counter and completion writes, $1 for the bare
         # count). The rendered text is pinned to the production bundle by
         # the gaps test's _batch_open_member_render_matches_bundle tripwire.
-        helper = getattr(importlib.import_module(owning_module), "_open_member_where", None)
+        helper = getattr(importlib.import_module(owning_module), "open_member_where", None)
         if not callable(helper):
             raise AssertionError(
-                f"{owning_module}._open_member_where is gone; the open-member "
+                f"{owning_module}.open_member_where is gone; the open-member "
                 "probe's render path changed — re-review this resolver"
             )
         next_param = max((int(n) for n in _POSITIONAL_PARAM_RE.findall(body)), default=0) + 1
-        return helper(batch_id_param=next_param)
+        return helper(f"${next_param}")
     if placeholder == "terminal_not_in":
         # Each module carrying {terminal_not_in} templates defines its own
         # _TERMINAL_NOT_IN over TERMINAL_STATUSES; rendering with the owning
@@ -200,10 +202,22 @@ def _render_extra(placeholder: str, owning_module: str, body: str) -> object:
     )
 
 
+# Constants whose owning module ships its own renderer: the guard prepares
+# exactly what production executes by calling it, so no per-placeholder
+# resolution can drift from the module's render path. The completeness
+# test fails a stale entry (the constant renamed or gone).
+_OWN_RENDERERS: Final[dict[str, Callable[[str], str]]] = {
+    "taskq.worker._leader_shared:_COMPLETE_STALE_BATCHES_SQL": complete_stale_batches_sql,
+}
+
+
 def _render_constant(qualified: str, body: str, schema: str) -> str:
-    """Render one discovered constant the way its owning module does:
-    ``.format(schema=...)`` plus the registered extras for any further
-    placeholders."""
+    """Render one discovered constant the way its owning module does: the
+    module's own renderer when it ships one, else ``.format(schema=...)``
+    plus the registered extras for any further placeholders."""
+    own_renderer = _OWN_RENDERERS.get(qualified)
+    if own_renderer is not None:
+        return own_renderer(schema)
     placeholders = set(_PLACEHOLDER_RE.findall(body)) - {"schema"}
     if not placeholders:
         return body.format(schema=schema)
@@ -512,7 +526,9 @@ def test_the_guard_has_no_silent_gaps() -> None:
     open_member_drift = [
         name
         for name, body in discovered.items()
-        if "{open_member}" in body and _render_constant(name, body, schema) not in bundle_statements
+        if "{open_member}" in body
+        and name not in _OWN_RENDERERS
+        and _render_constant(name, body, schema) not in bundle_statements
     ]
     assert not open_member_drift, (
         "Open-member statements whose guard render is not a render_batch_sql "
@@ -522,6 +538,12 @@ def test_the_guard_has_no_silent_gaps() -> None:
     assert any("{open_member}" in body for body in discovered.values()), (
         "No discovered constant carries {open_member} any more — the batch "
         "probe render changed shape; drop this tripwire and the resolver branch"
+    )
+
+    stale_renderers = [name for name in _OWN_RENDERERS if name not in discovered]
+    assert not stale_renderers, (
+        "_OWN_RENDERERS names constants the discovery no longer finds — the "
+        "constant was renamed or removed; update the registry:\n  " + "\n  ".join(stale_renderers)
     )
 
     marker_drift = [
