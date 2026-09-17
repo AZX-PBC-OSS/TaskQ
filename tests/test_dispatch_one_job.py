@@ -99,6 +99,7 @@ class _FakeWorkerDeps:
         self.settings.worker_group = "default"
         self.redis_client: Any | None = None
         self.progress_buffers: dict[Any, Any] = {}
+        self.disowned_jobs: set[UUID] = set()
 
 
 def _as_deps(fd: _FakeWorkerDeps) -> Any:
@@ -844,6 +845,10 @@ async def test_interim_ctx_not_actor_ctx() -> None:
         assert actor_ctx is not None
         assert interim_ctx_ref is not None
         assert actor_ctx is not interim_ctx_ref
+        # The two contexts are one job: the DI factories' ctx and the
+        # actor's ctx log through the same bound logger, so a job's lines
+        # carry one set of fields from one logger, bound once.
+        assert actor_ctx.log is interim_ctx_ref.log
 
 
 # ── Actor sees live ctx whose cancel_event can be signalled ────────────

@@ -31,8 +31,8 @@ import os
 import random
 import secrets
 import socket
+import time
 from collections.abc import Mapping
-from dataclasses import dataclass
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any, Final, cast
 from uuid import UUID
@@ -59,7 +59,6 @@ from taskq.exceptions import MissingProvider
 from taskq.obs import bind_job_context, get_logger
 from taskq.ratelimit.refs import KeyedReservationRef
 from taskq.ratelimit.reservation import ConcurrencyReservation
-from taskq.retry import OnCancel, OnRetryExhausted, OnSuccess, RetryClassifierHook, RetryPolicy
 from taskq.settings import WorkerSettings
 from taskq.worker._bootstrap import worker_main, worker_main_async
 from taskq.worker._transient import TRANSIENT_PG_ERRORS
@@ -131,47 +130,46 @@ fixed sleep it replaced polled at: a slot-freed event that is never set
 re-checking on this cadence rather than parked forever."""
 
 _POLL_JITTER_FRACTION: Final[float] = 0.1
-"""Multiplicative jitter band for the fallback poll wait."""
+"""Multiplicative jitter band for the fallback poll wait and the claim cooldown."""
+
+_CLAIM_COOLDOWN_SECONDS: Final[float] = 0.05
+"""Floor between a claim round that came back short and the next one.
+
+A short round — fewer rows than asked, or none — says the backlog is
+drained or a peer won it; the triggers that keep arriving meanwhile (a
+schema-wide NOTIFY wakes every worker, every completion frees a slot) are
+folded into one round after this wait instead of each paying a full
+dispatch round plus the loser's window expansions. A full round is exempt:
+backlog drain re-claims immediately. Between River's 100 ms FetchCooldown
+and Oban's 5 ms dispatch_cooldown, sized for this worker's small slot
+count: it is the worst-case added claim latency for a job that arrives
+right after a short round. A module constant rather than a setting because
+the value is a latency-vs-load trade the peers also fix at a default; the
+settings surface is owned elsewhere and grows a knob only when a
+deployment shows it needs one.
+"""
 
 _PRODUCER_RNG = random.Random(secrets.randbits(128))  # noqa: S311  # Why: random.Random is for timing jitter, not cryptography; seeded once from the OS entropy pool so two workers never share a jitter phase — same seeding pattern as retry.py's _production_rng.
 
 
 def _jittered_poll_interval(interval: float, rng: random.Random) -> float:
-    """The fallback poll interval with ±_POLL_JITTER_FRACTION jitter.
+    """A producer wait — the fallback poll interval, or the claim cooldown —
+    with ±_POLL_JITTER_FRACTION jitter.
 
     Every producer in an idle fleet otherwise sleeps the same interval
     in phase, and any transient event (a GC pause, a network blip, a
-    coordinated restart) re-synchronizes them into periodic DB load
-    spikes. Jittering the poll interval breaks that synchronization and
-    spreads requests across time. The jitter is multiplicative-symmetric,
-    the repo's jitter convention (retry.compute_backoff), so the mean
-    wait stays the configured interval; the band is ±_POLL_JITTER_FRACTION.
+    coordinated restart — or one NOTIFY waking the whole fleet into the
+    same cooldown) re-synchronizes them into periodic DB load spikes.
+    Jittering the wait breaks that synchronization and spreads requests
+    across time. The jitter is multiplicative-symmetric, the repo's
+    jitter convention (retry.compute_backoff), so the mean wait stays the
+    configured interval; the band is ±_POLL_JITTER_FRACTION.
     """
     return interval * rng.uniform(1.0 - _POLL_JITTER_FRACTION, 1.0 + _POLL_JITTER_FRACTION)
 
 
 class _StubPayload(BaseModel):
     """Minimal payload model for stub JobContext (no actor handler runs)."""
-
-
-@dataclass(frozen=True, slots=True)
-class _DispatchActorConfig:
-    """Frozen dataclass satisfying ActorConfigLike for dispatch_one_job.
-
-    Built from ActorRef fields; provides the retry policy the consumer's
-    exception classifier needs along with non_retryable_exceptions and
-    on_retry_exhausted from the @actor decorator.
-    """
-
-    retry: RetryPolicy
-    non_retryable_exceptions: tuple[type[BaseException], ...] = ()
-    retry_classifier: RetryClassifierHook | None = None
-    on_retry_exhausted: OnRetryExhausted | None = None
-    on_retry_exhausted_timeout: float = 3.0
-    on_success: OnSuccess | None = None
-    on_success_timeout: float = 3.0
-    on_cancel: OnCancel | None = None
-    on_cancel_timeout: float = 3.0
 
 
 def make_heartbeat_kwargs(
@@ -220,6 +218,11 @@ async def producer_loop(
     3. Puts each returned :class:`JobRow` onto ``local_queue`` for the
        consumer tasks.
 
+    A round that returns fewer rows than it asked for arms a short
+    jittered cooldown (:data:`_CLAIM_COOLDOWN_SECONDS`) before the next
+    round, so a burst of wakes or freed slots costs one round rather than
+    one per trigger; a full round re-claims immediately.
+
     Exits cleanly when either ``shutdown_event`` or ``producer_stop_event``
     is set.
 
@@ -255,6 +258,10 @@ async def producer_loop(
     # below: a producer that never claimed cannot hold a locked row, so
     # its exit owes the fleet no write (the common idle-shutdown shape).
     made_a_claim = False
+    # Monotonic deadline before which no claim round may start — armed by
+    # a short round (see _CLAIM_COOLDOWN_SECONDS), so the triggers that
+    # land while it runs (wakes, freed slots) coalesce into one round.
+    claim_not_before = 0.0
 
     async with contextlib.AsyncExitStack() as stack:
         wake_event: asyncio.Event | None = None
@@ -293,6 +300,23 @@ async def producer_loop(
                 slot_freed.clear()
                 continue
 
+            cooldown_remaining = claim_not_before - time.monotonic()
+            if cooldown_remaining > 0:
+                # Every trigger that lands during this wait — more wakes,
+                # more freed slots — is answered by the single round that
+                # follows, sized to the slots free by then. Re-entering
+                # the loop re-reads availability and the stop flags.
+                await asyncio.sleep(cooldown_remaining)
+                continue
+
+            # Cleared BEFORE the round, not after: a NOTIFY that lands
+            # while the round runs may announce a row the round's
+            # snapshot predates, and must survive as exactly one
+            # follow-up round. Everything that arrived before this point
+            # is answered by the round itself.
+            if wake_event is not None:
+                wake_event.clear()
+            round_started = time.monotonic()
             try:
                 jobs = await backend.dispatch_batch(
                     worker_id=worker_id,
@@ -306,12 +330,24 @@ async def producer_loop(
                     await asyncio.sleep(poll_interval)
                 continue
 
+            if len(jobs) < available:
+                # A short round: the backlog is drained or a peer won it.
+                # A round on its heels would only re-run the claim CTE and
+                # the loser's window expansions for nothing. A full round
+                # arms no floor — there is backlog to drain, and the next
+                # freed slot claims immediately.
+                claim_not_before = round_started + _jittered_poll_interval(
+                    _CLAIM_COOLDOWN_SECONDS, rng_source
+                )
+
             if jobs:
                 made_a_claim = True
                 for job in jobs:
+                    # A row this worker disowned, the sweep re-pended and
+                    # this claim took back is a live job of ours again:
+                    # its lease must be renewed from here on.
+                    deps.disowned_jobs.discard(job.id)
                     await local_queue.put(job)
-                if wake_event is not None:
-                    wake_event.clear()
                 continue
 
             wake_wait = asyncio.create_task(wake_event.wait()) if wake_event is not None else None
@@ -345,8 +381,11 @@ async def producer_loop(
                         with contextlib.suppress(asyncio.CancelledError):
                             await task
 
-            if wake_event is not None:
-                wake_event.clear()
+            if poll_wait in _done:
+                # The fallback poll is its own cadence, already jittered
+                # and never shorter than a burst: a poll-timed round owes
+                # no further wait, whatever the previous round returned.
+                claim_not_before = 0.0
 
     # Exit hand-back, on the DRAINING path only (producer_stop_event is
     # what the orchestrator sets at DRAINING entry): the DRAINING pass
@@ -715,6 +754,10 @@ async def di_consumer_loop(
                     job_id=str(job.id),
                     actor=job.actor,
                 )
+                # The row is still running under this worker's lock with
+                # nothing left to move it: disown it so the heartbeat stops
+                # renewing the lease and the reclaim sweep hands it back.
+                deps.disowned_jobs.add(job.id)
             else:
                 # The snooze tri-state is the write's fence and must be
                 # read, not dropped: "scheduled" released the row,
@@ -740,17 +783,6 @@ async def di_consumer_loop(
             continue
 
         actor_ref = actor_registry[job.actor]
-        actor_config = _DispatchActorConfig(
-            retry=actor_ref.retry,
-            non_retryable_exceptions=actor_ref.non_retryable_exceptions,
-            retry_classifier=actor_ref.retry_classifier,
-            on_retry_exhausted=actor_ref.on_retry_exhausted,
-            on_retry_exhausted_timeout=actor_ref.on_retry_exhausted_timeout,
-            on_success=actor_ref.on_success,
-            on_success_timeout=actor_ref.on_success_timeout,
-            on_cancel=actor_ref.on_cancel,
-            on_cancel_timeout=actor_ref.on_cancel_timeout,
-        )
         try:
             outcome = await dispatch_one_job(
                 backend=backend,
@@ -762,7 +794,7 @@ async def di_consumer_loop(
                 thread_scope=thread_scope,
                 loop_scope=loop_scope,
                 actor_ref=actor_ref,  # type: ignore[arg-type]  # Why: ActorRef[Any, Any] is not ActorRef[BaseModel, BaseModel | None]; pyright cannot widen the generic parameters, but the runtime contract is sound — actor_ref carries the correct payload_type and fn.
-                actor_config=actor_config,
+                actor_config=actor_ref.config,
                 clock=clock,
                 active_jobs=deps.active_jobs,
                 max_retry_backoff=deps.settings.max_retry_backoff,

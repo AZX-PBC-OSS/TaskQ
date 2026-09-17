@@ -1051,6 +1051,17 @@ Consumer loops register via `backend.subscribe_wake()` (an async context manager
 which adds a fresh `asyncio.Event` to `_wake_subscribers` on enter and removes it
 on exit. The consumer loop awaits the event; on wake it polls `dispatch_batch`.
 
+The wake channel is schema-wide, so one enqueue wakes every worker's producer
+and all but one run a losing round. After a round that came back short (fewer
+rows than requested, or none) the producer waits a small jittered cooldown
+(`_CLAIM_COOLDOWN_SECONDS`, 50 ms) before its next round; wakes and freed
+slots that land meanwhile are folded into that one round. A full round
+re-claims immediately, a wake that lands mid-round always yields one
+follow-up round, and the fallback poll keeps its own cadence. This is
+River's `FetchCooldown` / Oban's `dispatch_cooldown` shape; the cost is up to
+one cooldown of claim latency for a job that arrives right after a short
+round.
+
 A `_health_check_loop` runs concurrently with the listener, executing `SELECT 1`
 on the notify connection at `notify_health_check_interval`. On failure it
 reconnects with bounded exponential backoff (initial delay × 2, max 30s). After
@@ -1740,6 +1751,14 @@ These invariants must remain true across all changes.
    `WHERE status = 'running' AND locked_by_worker = $worker_id`. A rowcount of 0
    means the write was a no-op (concurrent writer already moved the row).
    `WorkerOwnershipMismatch` is raised for unexpected ownership failures.
+   A pool-path terminal write that fails with an infrastructure error is
+   retried a bounded number of times (`terminal-write-retry`); when the budget
+   is spent the row stays `running` and the worker **disowns** it
+   (`WorkerDeps.disowned_jobs`): the heartbeat's lease renewal excludes
+   disowned ids, so lock-lease expiry — not the process's lifetime — bounds how
+   long the row stays orphaned, and the reclaim sweep hands it back to the
+   fleet. The producer re-owns an id it claims again; the heartbeat drops ids
+   whose row is no longer this worker's running row.
 
 4. **Schema identifier validation is defence-in-depth, not single-point** —
    `PostgresBackend.__init__` validates `schema_name` against `_IDENT_RE` once

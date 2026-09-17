@@ -94,6 +94,7 @@ def _producer_deps(*, poll_interval: float = 5.0, maxsize: int = 1) -> SimpleNam
         settings=settings,
         liveness=liveness,
         active_jobs=SimpleNamespace(all=list),
+        disowned_jobs=set(),
         dispatcher_pool=_NoopPool(),
     )
 
