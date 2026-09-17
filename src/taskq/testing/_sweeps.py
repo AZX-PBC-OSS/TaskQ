@@ -27,9 +27,9 @@ from typing import TYPE_CHECKING
 import structlog
 
 from taskq.backend._protocol import AttemptRow, CancelPhase, JobId, JobRow
-from taskq.backend._sweeps import (  # pyright: ignore[reportPrivateUsage]  # Why: the twins must enforce the identical contract the Postgres sweeps enforce — one validator, one message map, one disposition map, one seam, no drift.
+from taskq.backend._sweeps import (  # pyright: ignore[reportPrivateUsage]  # Why: the twins must enforce the identical contract the Postgres sweeps enforce — one validator, one message map, one disposition map and total lookup, one seam, no drift.
     _ATTEMPT_MESSAGES,
-    _RECLAIM_DISPOSITIONS,
+    _reclaim_disposition,
     _validate_positive,
 )
 from taskq.constants import DEFAULT_EVENT_WRITER_BATCH_SIZE
@@ -202,9 +202,11 @@ async def _reclaim_expired_locks(
     # * reclaimed-jobs counter — both backends aggregate (actor,
     #   disposition) pairs over the reclaimed rows and record
     #   taskq.jobs.reclaimed after the transition loop, the disposition
-    #   derived from the written status through the one shared
-    #   _RECLAIM_DISPOSITIONS map, so the metric's label set cannot drift
-    #   between backends.
+    #   derived from the written status through the one shared total
+    #   lookup (backend._sweeps._reclaim_disposition over the one
+    #   _RECLAIM_DISPOSITIONS map), so the metric's label set cannot drift
+    #   between backends and an unmapped status counts as "unknown"
+    #   instead of dying mid-loop.
     _validate_positive("batch_size", batch_size)
     now = self._clock.now()
     deep_expiry_margin = cancel_grace + cleanup_grace + timedelta(seconds=60)
@@ -439,10 +441,13 @@ async def _reclaim_expired_locks(
             )
         # The disposition derives from the row's own post-transition
         # status — the same one-map doctrine the PG sweep follows with the
-        # status its RETURNING carries — so the twin's counter labels can
-        # never disagree with the state it just wrote.
+        # status its RETURNING carries — through the same TOTAL lookup: a
+        # KeyError here died mid-loop and left a half-drained corpus (some
+        # rows transitioned, the rest still running, nothing counted), so
+        # an unmapped status counts as the explicit "unknown" disposition
+        # instead (see backend._sweeps._reclaim_disposition).
         updated_status = self._jobs[job_id].status
-        reclaim_key = (row.actor, _RECLAIM_DISPOSITIONS[updated_status])
+        reclaim_key = (row.actor, _reclaim_disposition(updated_status))
         reclaim_counts[reclaim_key] = reclaim_counts.get(reclaim_key, 0) + 1
         for event in self._wake_subscribers:
             event.set()
