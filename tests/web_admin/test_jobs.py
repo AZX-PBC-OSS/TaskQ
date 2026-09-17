@@ -1001,6 +1001,9 @@ def _live_row(**overrides: Any) -> dict[str, Any]:
         "started_at": "2025-01-01T12:00:01",
         "finished_at": None,
         "duration_ms": None,
+        # The live-span column _LIVE_COLS computes; None on every
+        # non-running row.
+        "running_for_ms": None,
         "attempt": 1,
         "max_attempts": 3,
         "priority": 5,
@@ -1088,6 +1091,72 @@ def test_live_jobs_table_non_running_rows_have_no_lease_state(
     assert "expired" not in html.replace("Lease", ""), (
         "a row that holds no lease must not render an expired badge — the "
         "badge means a running row's lease is past, nothing else"
+    )
+
+
+# ── Live-tab running_for: the running-longest number ────────────────────
+
+
+def test_live_jobs_list_computes_running_for_server_side() -> None:
+    """The live-tab list query must compute ``running_for_ms`` server-side
+    against the database clock for running rows — the same
+    single-arbiter shape the lease columns pin: ``started_at`` is
+    database-written, so a Python-clock span would skew by the
+    app-to-database offset, and a column the query never computes can
+    never be rendered."""
+    from taskq.web.admin.jobs import _LIVE_COLS
+
+    cols = _LIVE_COLS.lower()
+    assert "running_for_ms" in cols, (
+        "the live /jobs list must compute running_for_ms — a running row's "
+        "elapsed span is invisible on the one page an operator triages it from"
+    )
+    assert "clock_timestamp() - started_at" in cols, (
+        "the elapsed span must be measured by the database clock in SQL, not "
+        "reconstructed in Python from a started_at string"
+    )
+    assert "status = 'running'" in cols, (
+        "the live span belongs to running rows only — a terminal row's "
+        "settled duration is duration_ms"
+    )
+
+
+def test_live_jobs_table_renders_running_for_on_running_rows(
+    stub_pool: _StubPool,
+) -> None:
+    """A running row renders its live elapsed span in the Duration cell —
+    duration_ms is NULL while a job runs (no finished_at), and the dash
+    that used to render there hid exactly the rows an operator triaging
+    the running-longest view needs a number on."""
+    running_row = _live_row(running_for_ms=65_000)
+    finished_row = _live_row(status="succeeded", duration_ms=1200)
+    pending_row = _live_row(status="pending", started_at=None)
+
+    html = _render_live_table(stub_pool, [running_row, finished_row, pending_row])
+
+    assert "1m 5s" in html, "a running row's live span must render, not a dash"
+    assert "still running" in html, (
+        "the live span must be distinguishable from a settled duration — the "
+        "tooltip is what keeps 1m 5s from reading as the job's final duration"
+    )
+    assert "1.2s" in html, "a finished row keeps its settled duration_ms"
+    # The settled value renders unmarked; only the live span carries the
+    # live tint, so the two cannot be confused in one scan.
+    assert "text-yellow-700" in html
+
+
+def test_live_jobs_table_settled_duration_wins_over_running_for(
+    stub_pool: _StubPool,
+) -> None:
+    """duration_ms is the settled value and takes precedence: the fallback
+    renders only when there is no duration to settle (a running row)."""
+    both_row = _live_row(status="succeeded", duration_ms=2500, running_for_ms=65_000)
+
+    html = _render_live_table(stub_pool, [both_row])
+
+    assert "2.5s" in html
+    assert "1m 5s" not in html, (
+        "a row that has settled must not render the live span beside it"
     )
 
 

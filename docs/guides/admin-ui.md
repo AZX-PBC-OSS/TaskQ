@@ -247,6 +247,8 @@ Job listing page with "Live Jobs" and "Archived" tabs. Supports filtering by sta
 
 Sorting by `started_at` ascending together with a `status=running` filter is the "running longest" view: the jobs that have held a worker the longest come first. `started_at` is NULL for jobs that have not started, and those rows sort last in both directions (NULLS LAST) so paging through live rows is never interrupted by the not-yet-started tail.
 
+The **Duration** column carries a live twin for exactly that view: a running row has no `finished_at`, so its settled `duration_ms` is NULL while it runs — the cell renders `running_for_ms` instead, the elapsed span since `started_at` computed by the database at render time (`clock_timestamp() - started_at`, the same single-arbiter shape the lease column uses; a Python-clock span would skew by the admin process's offset from the database clock). The live span renders amber with a "still running" tooltip so it cannot be misread as a settled duration, and disappears the row transitions terminal, where `duration_ms` takes over. Because the value is computed server-side on each request, both refresh modes — polling and the SSE-accelerated refresh — re-render it through the same table partial, as fresh as the last refresh.
+
 **Query parameters (selected):**
 
 | Parameter | Default | Description |
