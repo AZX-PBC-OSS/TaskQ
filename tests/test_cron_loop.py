@@ -22,6 +22,7 @@ from opentelemetry import trace
 from opentelemetry.trace import StatusCode
 
 from taskq._ids import new_uuid
+from taskq.constants import cron_commit_gate_channel
 from taskq.cron import _factory_cache
 from taskq.settings import WorkerSettings
 from taskq.testing.clock import FakeClock
@@ -60,6 +61,10 @@ class _FakeCronRecord:
 
     def __init__(self, data: dict[str, object]) -> None:
         self._data = data
+
+    @property
+    def data(self) -> dict[str, object]:
+        return self._data
 
     def __getitem__(self, key: str) -> object:
         return self._data[key]
@@ -103,10 +108,6 @@ class _FakeCronConn(FakeConn):
 
     async def fetchval(self, sql: str, *args: object) -> object:
         self.fetchval_calls.append((sql, args))
-        if "pg_try_advisory_xact_lock" in sql:
-            return True
-        if "clock_timestamp" in sql:
-            return _NOW
         if "COUNT" in sql:
             return self._disabled_count
         raise AssertionError(f"unexpected fetchval: {sql}")
@@ -126,8 +127,16 @@ class _FakeCronConn(FakeConn):
         if "actor_config" in sql:
             return self.actor_config_rows
         if "cron_schedules" in sql:
+            # The tick's one folded statement: the lock verdict and the
+            # planning clock ride every row; an empty due set is one row
+            # with NULL schedule columns.
             self.read_due_schedules = True
-            return self.schedule_rows
+            if not self.schedule_rows:
+                return [_FakeCronRecord({"got": True, "server_now": _NOW, "id": None})]
+            return [
+                _FakeCronRecord({**row.data, "got": True, "server_now": _NOW})
+                for row in self.schedule_rows
+            ]
         if '"taskq".jobs' in sql:
             # The policy preflights (singleton blockers, max_pending counts)
             # and the DST overlap-twin probe read the jobs table; this fake
@@ -1809,7 +1818,7 @@ async def test_commit_gate_retires_session_state_on_close(
     conn = _GateSession(pid=2**30 + 1)
     emitted: list[bool] = []
 
-    await cron_loop._emit_on_commit(conn, lambda: emitted.append(True))
+    await cron_loop._emit_on_commit(conn, lambda: emitted.append(True), schema="taskq")
     conn.deliver_commit_notify()
     assert emitted == [True], "a committed tick's emission must run"
     assert 2**30 + 1 in cron_loop._confirmed_listening
@@ -1831,7 +1840,7 @@ async def test_commit_gate_retires_unanswered_emission_on_close(
     conn = _GateSession(pid=2**30 + 2)
     emitted: list[bool] = []
 
-    await cron_loop._emit_on_commit(conn, lambda: emitted.append(True))
+    await cron_loop._emit_on_commit(conn, lambda: emitted.append(True), schema="taskq")
     assert 2**30 + 2 in cron_loop._armed_commit_emits
 
     conn.die()
@@ -1850,7 +1859,9 @@ async def test_commit_gate_state_stays_bounded_under_connection_churn(
     for i in range(50):
         conn = _GateSession(pid=2**30 + 100 + i)
         emitted: list[bool] = []
-        await cron_loop._emit_on_commit(conn, lambda emitted=emitted: emitted.append(True))
+        await cron_loop._emit_on_commit(
+            conn, lambda emitted=emitted: emitted.append(True), schema="taskq"
+        )
         conn.deliver_commit_notify()
         assert emitted == [True]
         conn.die()
@@ -1864,6 +1875,26 @@ async def test_commit_gate_state_stays_bounded_under_connection_churn(
     assert cron_loop._termination_hooked == set()
 
 
+async def test_commit_gate_channel_is_scoped_to_the_schema(
+    _commit_gate_maps: None,
+) -> None:
+    """NOTIFY channels share one database-wide namespace: two schemas'
+    cron sessions in one database would otherwise deliver each other's
+    commit signals — and, since the gate records the SENDER's pid as
+    confirmed-listening, a foreign schema's notification would mark this
+    session confirmed without its own LISTEN ever having survived a
+    commit. The channel carries the schema's tag like every other
+    channel, so the two schemas never share it."""
+    from taskq.constants import cron_commit_gate_channel
+
+    session = _GateSession(pid=2**30 + 400)
+    await cron_loop._emit_on_commit(session, lambda: None, schema="tenant_a")
+    channel, _nonce = session.notify_calls[-1]
+    assert channel == cron_commit_gate_channel("tenant_a")
+    assert channel in session.channel_listeners
+    assert channel != cron_commit_gate_channel("tenant_b")
+
+
 async def test_commit_gate_relistens_for_a_recycled_pid(
     _commit_gate_maps: None,
 ) -> None:
@@ -1872,15 +1903,15 @@ async def test_commit_gate_relistens_for_a_recycled_pid(
     re-LISTEN (remove then add) on the new session, exactly as for a
     never-seen pid."""
     first = _GateSession(pid=2**30 + 200)
-    await cron_loop._emit_on_commit(first, lambda: None)
+    await cron_loop._emit_on_commit(first, lambda: None, schema="taskq")
     first.deliver_commit_notify()
     assert 2**30 + 200 in cron_loop._confirmed_listening
     first.die()
 
     second = _GateSession(pid=2**30 + 200)
-    await cron_loop._emit_on_commit(second, lambda: None)
+    await cron_loop._emit_on_commit(second, lambda: None, schema="taskq")
 
-    assert cron_loop._COMMIT_GATE_CHANNEL in second.remove_listener_calls, (
+    assert cron_commit_gate_channel("taskq") in second.remove_listener_calls, (
         "a recycled pid inherited its dead predecessor's confirmed-listening "
         "proof — the fresh session skipped the defensive re-LISTEN"
     )
@@ -1893,10 +1924,10 @@ async def test_commit_gate_hooks_termination_once_per_connection(
     long-lived connection — the bound is one hook per session."""
     conn = _GateSession(pid=2**30 + 300)
 
-    await cron_loop._emit_on_commit(conn, lambda: None)
+    await cron_loop._emit_on_commit(conn, lambda: None, schema="taskq")
     conn.deliver_commit_notify()
-    await cron_loop._emit_on_commit(conn, lambda: None)
+    await cron_loop._emit_on_commit(conn, lambda: None, schema="taskq")
     conn.deliver_commit_notify()
-    await cron_loop._emit_on_commit(conn, lambda: None)
+    await cron_loop._emit_on_commit(conn, lambda: None, schema="taskq")
 
     assert len(conn.termination_listeners) == 1

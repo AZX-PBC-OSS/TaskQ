@@ -168,11 +168,10 @@ class SqlTemplates:
     singleton_preflight: str
     enqueue_max_pending_count: str
     enqueue_select_by_key: str
-    enqueue_notify: str
+    wake_notify: str
     enqueue_batch: str
     enqueue_batch_fetch_existing: str
     enqueue_batch_fetch_singleton_blockers: str
-    enqueue_batch_fetch_by_ids: str
     enqueue_batch_fast_fixup: str
 
     # ── Read SQL templates ─────────────────────────────────────────
@@ -1311,7 +1310,10 @@ SELECT count(*) FROM "{s}".jobs
 WHERE actor = $1 AND status IN ('pending', 'scheduled')""",
         enqueue_select_by_key=f"""\
 SELECT * FROM "{s}".jobs WHERE idempotency_scope = $1 AND idempotency_key = $2""",
-        enqueue_notify="SELECT pg_notify($1, '')",
+        # The wake for paths that re-pend a row by UPDATE (admin retry):
+        # the jobs INSERT trigger covers every insert path, so no enqueue
+        # path issues this.
+        wake_notify="SELECT pg_notify($1, '')",
         enqueue_batch=f"""\
 INSERT INTO "{s}".jobs (
     id, actor, queue, identity_key, fairness_key,
@@ -1380,7 +1382,7 @@ FROM unnest(
     result_ttl, tags_jsonb, stc_raw,
     retry_base, retry_cap, retry_backoff, retry_jitter)
 ON CONFLICT (idempotency_scope, idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING
-RETURNING id, actor, queue, identity_key, status, idempotency_key, idempotency_scope""",
+RETURNING *""",
         enqueue_batch_fetch_existing=f"""\
 SELECT j.* FROM "{s}".jobs j
 JOIN unnest($1::text[], $2::text[]) AS pairs(scope, key)
@@ -1393,8 +1395,6 @@ SELECT actor FROM "{s}".jobs
 WHERE actor = ANY($1::text[])
   AND status IN ('pending', 'scheduled', 'running')
   AND metadata @> '{{"singleton": true}}'::jsonb""",
-        enqueue_batch_fetch_by_ids=f"""\
-SELECT * FROM "{s}".jobs WHERE id = ANY($1::uuid[])""",
         # Post-COPY corrective UPDATE for enqueue_batch_fast.  COPY cannot
         # compute/decide anything, so it writes only domain-insensitive
         # columns (COPY_ENQUEUE_COLUMNS) and this UPDATE — executed inside

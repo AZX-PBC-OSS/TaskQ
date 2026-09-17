@@ -78,9 +78,10 @@ class TestFirstEnqueueWins:
         batch1 = await backend.enqueue_batch([args_a])
         original = batch1[0]
 
-        # Second enqueue with different actor and payload, same idempotency key
+        # Second enqueue with a different payload, same actor and key (a
+        # different actor is a refused cross-actor hit, not a dedup).
         args_b = _make_args(
-            actor="actor_b",
+            actor="actor_a",
             idempotency_key=_IDEMP_KEY_2,
             payload={"second": True},
         )
@@ -89,7 +90,6 @@ class TestFirstEnqueueWins:
 
         # The collision should return the ORIGINAL data
         assert collision.id == original.id
-        assert collision.actor == "actor_a"  # NOT actor_b
         assert collision.payload == {"first": True}  # NOT {"second": True}
 
 
@@ -113,7 +113,7 @@ class TestMixedNewAndCollision:
 
         # Now enqueue a batch: [collision, new, new]
         args_collision = _make_args(
-            actor="actor_collision",
+            actor="actor_a",  # the stored key's actor: a same-actor hit dedups
             idempotency_key=_IDEMP_KEY_1,  # same key as pre
             payload={"should_be_ignored": True},
         )
@@ -168,13 +168,13 @@ class TestMultipleCollisions:
         args = [
             _make_args(actor="new_A", payload={"idx": 0}),
             _make_args(
-                actor="collision_1",
+                actor="pre_actor_1",
                 idempotency_key=_IDEMP_KEY_1,
                 payload={"should_ignore": True},
             ),
             _make_args(actor="new_B", payload={"idx": 2}),
             _make_args(
-                actor="collision_2",
+                actor="pre_actor_2",
                 idempotency_key=_IDEMP_KEY_2,
                 payload={"should_ignore": True},
             ),
@@ -224,7 +224,7 @@ class TestMultipleCollisions:
 
         # Second batch: mixed — same key (collision) and a new item without key
         args_collision = _make_args(
-            actor="actor_collision",
+            actor="actor_a",
             idempotency_key=_IDEMP_KEY_1,
         )
         args_no_key = _make_args(
@@ -347,7 +347,7 @@ class TestBatchDedupIsObservable:
         (await backend.enqueue_batch([pre]))[0]
 
         with structlog.testing.capture_logs() as captured:
-            await backend.enqueue_batch([_make_args(actor="actor_z", idempotency_key=_IDEMP_KEY_1)])
+            await backend.enqueue_batch([_make_args(actor="actor_a", idempotency_key=_IDEMP_KEY_1)])
 
         hits = [e for e in captured if e.get("event") == "enqueue_deduplicated"]
         assert len(hits) == 1, f"batch dedup emitted no log line; captured={captured}"
@@ -375,7 +375,7 @@ class TestBatchDedupIsObservable:
             )
 
         with structlog.testing.capture_logs() as captured:
-            await backend.enqueue_batch([_make_args(actor="actor_z", idempotency_key=_IDEMP_KEY_2)])
+            await backend.enqueue_batch([_make_args(actor="actor_a", idempotency_key=_IDEMP_KEY_2)])
 
         hits = [e for e in captured if e.get("event") == "enqueue_deduplicated"]
         assert len(hits) == 1, f"batch dedup emitted no log line; captured={captured}"

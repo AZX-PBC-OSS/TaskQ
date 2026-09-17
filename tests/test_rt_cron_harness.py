@@ -315,26 +315,33 @@ class CountingConn:
 class FrozenClockConn:
     """Delegates to a real connection except the tick's planning clock.
 
-    ``SELECT clock_timestamp()`` returns a pinned instant so the catch-up
-    boundary comparison (``fire_at < frozen_now - window``) is EXACT —
-    the only quantity in the tick that cannot be made deterministic with
-    a live server clock, because equality requires hitting a microsecond
-    that is only known once the tick itself reads it.  Every other
-    statement — the advisory-lock probe, the due SELECT (whose
-    ``statement_timestamp()`` bound is evaluated server-side), the
-    enqueue and the UPDATEs — runs against real PG.
+    The tick's folded lock + clock + due statement reads its planning clock
+    as ``statement_timestamp() AS server_now``; that one expression is
+    rewritten to a pinned instant so the catch-up boundary comparison
+    (``fire_at < frozen_now - window``) is EXACT — the only quantity in the
+    tick that cannot be made deterministic with a live server clock,
+    because equality requires hitting a microsecond that is only known
+    once the tick itself reads it.  Everything else in that statement —
+    the advisory-lock probe and the due bound (evaluated server-side
+    against the live clock) — and every later statement (the enqueue and
+    the UPDATEs) runs against real PG.
     """
+
+    _PLANNING_CLOCK = "statement_timestamp() AS server_now"
 
     def __init__(self, conn: asyncpg.Connection, frozen: datetime) -> None:
         self._conn = conn
         self._frozen = frozen
 
     async def fetchval(self, sql: str, *args: object) -> object | None:
-        if sql.strip() == "SELECT clock_timestamp()":
-            return self._frozen
         return await self._conn.fetchval(sql, *args)
 
     async def fetch(self, sql: str, *args: object) -> list[asyncpg.Record]:
+        if self._PLANNING_CLOCK in sql:
+            sql = sql.replace(
+                self._PLANNING_CLOCK,
+                f"'{self._frozen.isoformat()}'::timestamptz AS server_now",
+            )
         return await self._conn.fetch(sql, *args)
 
     async def fetchrow(self, sql: str, *args: object) -> asyncpg.Record | None:

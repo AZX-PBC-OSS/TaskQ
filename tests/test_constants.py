@@ -2,30 +2,30 @@
 
 import pytest
 
-from taskq.constants import WAKE_CHANNEL_FMT, schema_lock_name, wake_channel
+from taskq.constants import WAKE_CHANNEL_FMT, schema_channel_tag, schema_lock_name, wake_channel
 
 # ── wake_channel happy-path formatting ───────────────────────────
 
 
 def test_wake_channel_simple_schema() -> None:
-    """wake_channel returns the formatted channel name for a valid schema."""
-    assert wake_channel("public") == "taskq_wake_public"
+    """wake_channel is the readable prefix plus the schema's tag."""
+    assert wake_channel("public") == f"taskq_wake_{schema_channel_tag('public')}"
 
 
 def test_wake_channel_underscore_schema() -> None:
     """wake_channel accepts schemas starting with underscore."""
-    assert wake_channel("_private") == "taskq_wake__private"
+    assert wake_channel("_private") == f"taskq_wake_{schema_channel_tag('_private')}"
 
 
 def test_wake_channel_with_digits() -> None:
     """wake_channel accepts schemas containing digits after the first char."""
-    assert wake_channel("schema_v2") == "taskq_wake_schema_v2"
+    assert wake_channel("schema_v2") == f"taskq_wake_{schema_channel_tag('schema_v2')}"
 
 
 def test_wake_channel_uses_fmt_constant() -> None:
-    """wake_channel output matches WAKE_CHANNEL_FMT.format(schema=...)."""
+    """wake_channel output matches WAKE_CHANNEL_FMT.format(schema_tag=...)."""
     schema = "taskq"
-    assert wake_channel(schema) == WAKE_CHANNEL_FMT.format(schema=schema)
+    assert wake_channel(schema) == WAKE_CHANNEL_FMT.format(schema_tag=schema_channel_tag(schema))
 
 
 # ── wake_channel validation rejects invalid schemas ───────────────
@@ -72,8 +72,8 @@ def test_wake_channel_error_includes_value() -> None:
 
 
 def test_wake_channel_fmt_value() -> None:
-    """WAKE_CHANNEL_FMT is the expected template string."""
-    assert WAKE_CHANNEL_FMT == "taskq_wake_{schema}"
+    """WAKE_CHANNEL_FMT carries the readable prefix and the schema tag slot."""
+    assert WAKE_CHANNEL_FMT == "taskq_wake_{schema_tag}"
 
 
 # ── schema_lock_name: the advisory-lock naming convention ────────────────

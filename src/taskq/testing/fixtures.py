@@ -764,11 +764,10 @@ def _schema_name_from_test(request: pytest.FixtureRequest) -> str:
 def _schema_name_from_module(request: pytest.FixtureRequest) -> str:
     """Derive a unique, lowercase schema name from the test module path.
 
-    Long module names are hashed to stay within PostgreSQL's 63-char
-    identifier limit when combined with NOTIFY channel prefixes
-    (``taskq_worker_{schema}_{uuid}`` = 13 + len(schema) + 1 + 36).
-    The schema portion must be ≤ 13 chars, so we use ``tq_`` + 10-char
-    hash suffix for modules whose full name would exceed the budget.
+    Module names are hashed to a short fixed width so that the schema
+    identifier itself stays under PostgreSQL's 63-char limit whatever the
+    module path (NOTIFY channels no longer constrain it: they embed a hash
+    of the schema, not the schema).
 
     The run token (see :func:`run_isolation_token`) — the xdist worker id
     under xdist, the per-invocation token in serial runs — is incorporated
@@ -779,9 +778,8 @@ def _schema_name_from_module(request: pytest.FixtureRequest) -> str:
 
     token = run_isolation_token()
     full = request.module.__name__.replace(".", "_").replace("/", "_").lower()  # pyright: ignore[reportUnknownVariableType]  # Why: pytest.FixtureRequest types are incomplete; return value is always a str.
-    # Always hash (with token) — the non-hash branch would exceed the 13-char
-    # budget once the worker suffix is appended, and hashing guarantees both
-    # uniqueness across workers and the length constraint.
+    # Always hash (with token): hashing guarantees both uniqueness across
+    # workers and a bounded identifier length.
     return "tq_" + hashlib.md5(f"{token}_{full}".encode()).hexdigest()[:10]  # noqa: S324 # Why: non-cryptographic hash for test schema naming; collisions across ~100 test modules are negligible with 10 hex chars.
 
 

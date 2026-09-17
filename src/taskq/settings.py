@@ -50,6 +50,7 @@ from taskq.constants import (
     MAX_IDEMPOTENCY_KEY_BYTES,
     MAX_RESULT_BYTES,
     RECLAIM_EVENT_VISIBILITY_DELAY,
+    check_channels_fit,
 )
 
 __all__ = ["OIDCSettings", "SAMLSettings", "TaskQSettings", "WorkerSettings"]
@@ -219,6 +220,13 @@ def _schema_name_validator(value: str, ctx: ValidatorContext) -> str:
             f"{ctx.field_name} must be at most 63 characters (Postgres "
             f"NAMEDATALEN truncates longer identifiers), got {len(value)} characters"
         )
+    # Every NOTIFY channel is derived from the schema; one that overflows
+    # the identifier limit is a listener that silently hears nothing, so
+    # the derivation is exercised here, at load, where it can refuse.
+    try:
+        check_channels_fit(value)
+    except ValueError as exc:
+        raise ValueError(f"{ctx.field_name}: {exc}") from exc
     return value
 
 

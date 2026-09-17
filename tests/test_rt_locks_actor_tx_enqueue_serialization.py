@@ -249,3 +249,48 @@ async def test_idempotency_enqueue_blocked_until_holder_tx_commits_then_dedups(p
         with contextlib.suppress(Exception):
             await conn_a.close()
         await _drop_schema_quietly(pg_dsn, schema)
+
+
+async def test_pool_enqueue_bounded_token_wait_refuses_and_returns_a_clean_connection(
+    pg_dsn: str,
+) -> None:
+    """The pool path opens no transaction of its own around the enqueue,
+    so the bounded token wait must still bound: the bounded arm opens a
+    short transaction on the bare pooled connection so its transaction-
+    local ``lock_timeout`` spans the INSERT, the refusal aborts that
+    transaction, and the connection goes back to the pool bare — no
+    savepoint, no restore, nothing leaked onto the next borrower."""
+    from taskq.testing.fixtures import _open_pg_backend
+
+    holder, schema = await _fresh_schema(pg_dsn)
+    stack, _deps, backend = await _open_pg_backend(pg_dsn, schema_name=schema)
+    key = f"actor-tx-{new_base62()}".lower()
+    try:
+        backend._deps.settings.idempotency_lock_timeout_ms = 500.0  # pyright: ignore[reportPrivateUsage]  # Why: the budget knob lives on WorkerSettings inside the backend's deps; shortened so the refusal lands quickly.
+        async with holder.transaction():
+            await _enqueue_on_conn(
+                holder,
+                render_sql(schema),
+                schema,
+                SystemClock(),
+                make_enqueue_args(idempotency_key=key),
+            )
+            started = time.monotonic()
+            with pytest.raises(IdempotencyKeyLockTimeoutError):
+                await asyncio.wait_for(
+                    backend.enqueue(make_enqueue_args(idempotency_key=key)),
+                    timeout=_TEST_BOUND_S,
+                )
+            assert time.monotonic() - started < _UNBOUNDED_MARGIN_S
+        pool = backend._worker_pool  # pyright: ignore[reportPrivateUsage]  # Why: the pooled connection's state after the refusal is the observable.
+        async with pool.acquire() as conn:  # pyright: ignore[reportUnknownVariableType]  # Why: asyncpg stubs yield PoolConnectionProxy | Unknown
+            assert not conn.is_in_transaction()
+            assert await conn.fetchval("SELECT current_setting('lock_timeout')") == "0"
+        # The holder committed: the same enqueue now dedups onto its row.
+        row = await backend.enqueue(make_enqueue_args(idempotency_key=key))
+        assert row.idempotency_key == key
+    finally:
+        await stack.aclose()
+        with contextlib.suppress(Exception):
+            await holder.close()
+        await _drop_schema_quietly(pg_dsn, schema)

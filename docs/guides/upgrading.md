@@ -133,6 +133,29 @@ The whole file rolled back automatically, so the schema is exactly as it was
 before the attempt. Fix the cause of the error, then re-run `taskq migrate
 up`.
 
+### The migration gave up waiting for a table lock
+
+A transactional migration's DDL (`ALTER TABLE jobs`, a plain `CREATE INDEX`)
+needs a lock that any session holding even a read on the table blocks — an
+actor's open transaction connection mid-job, an admin snapshot, `pg_dump`.
+Postgres queues lock requests first-come-first-served, so once the DDL is
+queued every later statement on that table (dispatch, enqueue, heartbeat)
+queues behind it; left unbounded, the wait outlives the workers' heartbeat
+budget and the fleet self-terminates while the migration is still waiting.
+Each transactional migration therefore waits at most
+`DEFAULT_MIGRATION_DDL_LOCK_TIMEOUT` (30 s, `SET LOCAL lock_timeout` inside
+its own transaction) and then fails with `MigrationLockTimeoutError`; the
+report names the migration, the bound, and this remedy. The migration rolled
+back and nothing was applied: find the holder in `pg_stat_activity` /
+`pg_locks`, end it or wait for it, then re-run `taskq migrate up`. To wait
+longer from your own deploy tooling, pass `ddl_lock_timeout=` to
+`apply_pending` / `apply_pending_locked` (`0` waits indefinitely, at the
+cost of parking every statement on the table behind the queued DDL). The
+bound governs the *wait* only — a statement that already holds its lock,
+such as an index build, is never interrupted by it. `-- taskq:no-transaction`
+migrations are not bounded: their `CONCURRENTLY` phases wait on heavyweight
+locks by design.
+
 ### Non-transactional migration (`-- taskq:no-transaction`)
 
 Nothing rolls back: statements before the failure remain applied, and the
@@ -777,6 +800,55 @@ itself, not the steady state. See
 [maintenance-sweeps.md](maintenance-sweeps.md) §5 for the full reasoning and
 [runbooks.md](runbooks.md#taskqleaderlockcontention) for the alert whose
 remediation carries this note.
+
+### A cross-actor `idempotency_key` hit now raises
+
+> **Unreleased.** Breaking only for callers that share one idempotency key
+> across actors and relied on the second enqueue returning the first
+> actor's job.
+
+`enqueue` / `enqueue_batch` with an `idempotency_key` that matches an
+existing job **of a different actor** used to return that job's handle with
+`was_existing=True` — a handle whose `.result()` belongs to another actor,
+logged at INFO as an ordinary dedup. It now raises
+`IdempotencyKeyActorMismatchError` (naming both actors, the key, the scope
+and the existing job id) with nothing enqueued; in `enqueue_batch` the whole
+batch is withdrawn. Same-actor hits are unchanged. Keys were always
+documented as unique per scope across actors; namespace them per actor
+(`"send_receipt:order_123"`) or use per-actor `idempotency_scope` values.
+See [jobs-clients.md](jobs-clients.md#idempotency_key).
+
+### NOTIFY channels embed a hash of the schema: adopt by restart
+
+> **Unreleased.** Silent for correctly-deployed fleets; a rolling deploy
+> across the rename leaves old workers polling instead of woken. Fixes a
+> bug for schema names of 14 characters or more.
+
+Every NOTIFY channel — the wake channel, the fleet events channel, the
+per-worker cancel channel, the progress channels and the cron commit gate —
+now embeds `schema_channel_tag(schema)` (the first 10 hex digits of
+`sha224(schema)`) in place of the schema name: `taskq_wake_taskq` becomes
+`taskq_wake_124a200651`. Channels are Postgres identifiers bounded by
+63 bytes, `LISTEN` silently truncates longer ones and `pg_notify` rejects
+them, and the schema name alone may be 63 characters. With the name
+interpolated, the per-worker cancel channel (13 + schema + 37 bytes) broke
+from a 14-character schema on — every cancel's NOTIFY errored, was logged
+as `cancel-request-notify-failed`, and cancellation fell back to the
+heartbeat poll — and the wake channel broke every enqueue from 53. The tag
+makes every channel's length independent of the schema; settings loading
+now refuses any schema whose channels would not fit.
+
+Migration `01.00.14_01_pre_wake_channel_schema_tag.sql` redefines the wake
+trigger to compute the same tag in SQL. **Once it applies, workers of the
+previous release stop receiving wakes** (they LISTEN on the old name) and
+claim on their poll interval until restarted; new workers are woken
+normally. Nothing errors. **Adopt by restarting the fleet onto the new
+release** after migrating, rather than rolling it — the same discipline as
+the schema-qualified advisory locks above.
+
+Anything outside TaskQ that issued `SELECT pg_notify('taskq_wake_<schema>',
+'')` must switch to the derived name; see
+[workers.md](workers.md#internal-components) for the SQL expression.
 
 ### Migration `01.00.06_01` takes write-blocking index locks
 

@@ -641,11 +641,20 @@ two dispatch SQL variants selected per-queue at dispatch time:
 Each queue has a `mode` column in the `queues` table: `strict_fifo` (default) or
 `round_robin`. The dispatch batch method selects the SQL variant via
 `_resolve_queue_modes()`, served from a per-worker TTL cache (5 s): a cache hit
-adds no query to the batch's transaction, the miss path runs the one indexed
+adds no query to the round, the miss path runs the one indexed
 `queues` read and refills the cache, and `taskq queues set-mode` invalidates the
 caches of the process it runs in — so a mode flip reaches every worker within
 the TTL.
 Queues absent from the table default to `strict_fifo`.
+
+A dispatch round runs in autocommit — no `BEGIN`/`COMMIT` around the claim.
+The claim is one atomic `UPDATE … RETURNING` whose row locks end with the
+statement, the mode resolve and the claimable probe are read-only, and an
+empty round holds no locks between window expansions, so a transaction added
+two round trips per round and nothing else (asyncpg sends `BEGIN` and `COMMIT`
+as separate statements). A cache-hit round that claims is exactly one
+statement; an empty round is the claim plus one probe (pinned by
+`tests/test_round_trip_budgets.py`).
 
 | Mode | Ordering | Use case |
 |---|---|---|
@@ -1013,26 +1022,51 @@ Three Postgres LISTEN channels are subscribed per worker:
 
 | Channel | Format | Payload |
 |---|---|---|
-| `taskq_wake_{schema}` | `wake_channel(schema)` | Empty (payload ignored — notification alone triggers dispatch) |
-| `taskq_events_{schema}` | `events_channel(schema)` | JSON: `{"type": "cancel", "worker_id": "...", "job_id": "..."}` |
-| `taskq_worker_{schema}_{worker_id}` | `worker_channel(schema, worker_id)` | Same JSON format; no worker_id filtering needed |
+| `taskq_wake_{tag}` | `wake_channel(schema)` | Empty (payload ignored — notification alone triggers dispatch) |
+| `taskq_events_{tag}` | `events_channel(schema)` | JSON: `{"type": "cancel", "worker_id": "...", "job_id": "..."}` |
+| `taskq_worker_{tag}_{worker_id}` | `worker_channel(schema, worker_id)` | Same JSON format; no worker_id filtering needed |
+
+`{tag}` is `schema_channel_tag(schema)`: the first 10 hex digits of
+`sha224(schema)` (`taskq` → `124a200651`). Channels are Postgres identifiers
+bounded by 63 bytes — `LISTEN` silently truncates a longer name and
+`pg_notify` rejects it — while a schema name may itself be 63 characters, so
+a channel that interpolated the schema stopped matching its listener past a
+schema length (14 characters for the per-worker channel). The fixed-width tag
+makes every channel's length independent of the schema; `check_channels_fit`
+runs at settings load so a template change cannot reintroduce the cliff. The
+wake trigger derives the same tag in SQL
+(`left(encode(sha224(...), 'hex'), 10)`), pinned end to end by
+`tests/test_notify_channel_length.py`. The progress channels
+(`taskq:{tag}:progress:{job_id}`, `taskq:{tag}:progress`) and the cron
+commit-gate channel (`taskq_cron_commit_{tag}`) use the same tag.
 
 Channel name helpers validate the schema identifier against `_IDENT_RE` before
-interpolation. Each schema gets its own set of channels, enabling multi-tenant
-deployments on a single PG instance. The per-worker channel
-(`taskq_worker_{schema}_{worker_id}`) enables targeted event delivery without
-fleet-wide fanout.
+hashing. Each schema gets its own set of channels, enabling multi-tenant
+deployments on a single PG instance. The per-worker channel enables targeted
+event delivery without fleet-wide fanout.
 
 ### Enqueue path
 
-After a successful INSERT into `jobs`, `PostgresBackend.enqueue` executes:
-
-```sql
-SELECT pg_notify('taskq_wake_<schema>', '')
-```
+The wake is the `tr_notify_job_insert` row trigger's: `AFTER INSERT ON jobs
+… WHEN (NEW.status = 'pending')`, it issues `pg_notify(wake_channel(schema),
+'')` for every row that lands dispatchable. No enqueue path issues a notify
+of its own — single INSERT, batch INSERT and COPY all rely on the trigger.
+Every insert path decides `status` server-side (a future `scheduled_at`
+lands as `scheduled`), so the WHEN clause is what keeps a future-dated
+enqueue from waking the fleet; Postgres coalesces identical
+`(channel, payload)` notifications within one transaction, so a batch costs
+one delivery. (An app-side notify after the INSERT was the same pair the
+trigger emits: coalesced with it in a transaction, a second delivery to
+every listener on a caller's bare connection — pinned by
+`tests/test_enqueue_wake_source.py`.) A plain pool enqueue is therefore
+exactly one statement, `INSERT … RETURNING *`, in autocommit
+(`tests/test_round_trip_budgets.py`). pg-boss folds its notify into the
+INSERT gated on the row being due; Oban notifies only for `available` rows.
 
 The empty payload is intentional — consumers do not need to parse it; the
-notification alone is sufficient to trigger a dispatch poll.
+notification alone is sufficient to trigger a dispatch poll. Paths that
+re-pend a row by UPDATE (admin retry, the reclaim sweeps) issue their own
+`pg_notify`, since the trigger fires on INSERT only.
 
 ### Consumer path
 

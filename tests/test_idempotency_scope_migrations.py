@@ -718,6 +718,7 @@ async def _insert_job_old_shape_returning_status(
     schema: str,
     *,
     idempotency_key: str | None,
+    actor: str = "direct_actor",
 ) -> str:
     """Like _insert_job_old_shape but returns the command status
     (``INSERT 0 1`` = row won the race, ``INSERT 0 0`` = deduped)."""
@@ -727,7 +728,7 @@ async def _insert_job_old_shape_returning_status(
         f"VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7, $8) "
         f"ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING",
         new_uuid(),
-        "direct_actor",
+        actor,
         "default",
         "{}",
         3,
@@ -785,10 +786,14 @@ class TestConcurrentOverlapWindow:
             key = "overlap-concurrent-unscoped"
 
             async def old_write() -> str | asyncpg.UniqueViolationError:
+                # The same actor as the new-code writer: old and new code
+                # enqueuing one job share its actor, and a same-key hit on
+                # ANOTHER actor's row is a refused cross-actor collision,
+                # not the dedup this race is about.
                 try:
                     async with old_pool.acquire() as conn:
                         return await _insert_job_old_shape_returning_status(
-                            conn, settings.schema_name, idempotency_key=key
+                            conn, settings.schema_name, idempotency_key=key, actor="test_actor"
                         )
                 except asyncpg.UniqueViolationError as exc:
                     return exc

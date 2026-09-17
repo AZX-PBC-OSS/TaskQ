@@ -176,7 +176,7 @@ class _ConnStandin:
         return None
 
     async def execute(self, sql: str, *args: object) -> str:
-        self._record("pg_notify" if "pg_notify" in sql else "execute")
+        self._record("execute")
         return "OK"
 
 
@@ -231,7 +231,7 @@ async def test_unique_for_on_bare_caller_conn_runs_lock_preflight_and_insert_in_
     assert isinstance(row, JobRow)
     assert row.id == args.id, "fixture: the preflight found nothing, so this inserted"
     kinds_in_tx = _kinds_in_tx(conn)
-    assert {"advisory_try_lock", "unique_for_preflight", "insert", "pg_notify"} <= kinds_in_tx, (
+    assert {"advisory_try_lock", "unique_for_preflight", "insert"} <= kinds_in_tx, (
         f"the single-flight critical section must run inside one transaction; "
         f"statements={conn.statements}"
     )
