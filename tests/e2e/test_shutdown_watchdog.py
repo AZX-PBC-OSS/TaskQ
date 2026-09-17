@@ -311,3 +311,163 @@ async def test_shutdown_hard_deadline_watchdog(
         with contextlib.suppress(Exception):
             await asyncio.to_thread(wrapped_pg.start)
             await _probe_pg(chaos_pg.host_dsn, attempts=60, interval=1.0)
+
+
+# ── The tracked-actor exit gate (#232's F1 closure) ────────────────────
+
+
+def _reap_gate_worker_env(
+    chaos_pg: ChaosPg, e2e_dragonfly: E2EDragonfly, chaos_schema: ChaosSchema
+) -> dict[str, str]:
+    """Worker env for the exit-gate test: a park-able budget and a live trip.
+
+    Zero graces so the whole phase sequence completes in well under a
+    second and everything after is the parked consumer + the exit gate;
+    ``termination_grace 8.01`` gives the park a real window (the lease cap
+    8 - 0.5 - 5 = 2.5s binds first) and the deadline trip a close bound;
+    the 60s sync actor body outlives all of it. Lease/lag pair keeps the
+    lag-lease invariant (6.0 + 0.5 < 8.0) and the lease above 4 x
+    heartbeat.
+    """
+    return {
+        "TASKQ_PG_DSN": chaos_pg.network_dsn,
+        "TASKQ_REDIS_URL": f"{e2e_dragonfly.network_url}/{chaos_schema.redis_db}",
+        "TASKQ_SCHEMA_NAME": chaos_schema.schema_name,
+        "TASKQ_QUEUES": "e2e",
+        "TASKQ_MIGRATE_ON_START": "false",
+        "TASKQ_ENVIRONMENT": "dev",
+        "TASKQ_HEARTBEAT_INTERVAL": "0.5",
+        "TASKQ_LOCK_LEASE": "8.0",
+        "TASKQ_WATCHDOG_LOOP_LAG_BUDGET": "6.0",
+        "TASKQ_WATCHDOG_LOOP_LAG_WARN_BUDGET": "1.0",
+        "TASKQ_CANCELLATION_GRACE_PERIOD": "0",
+        "TASKQ_CLEANUP_GRACE_PERIOD": "0",
+        "TASKQ_TERMINATION_GRACE_PERIOD": "8.01",
+        "TASKQ_WATCHDOG_DUMP_INTERVAL": "0.5",
+        "TASKQ_SWEEP_INTERVAL": "2.0",
+        "TASKQ_QUEUE_DEPTH_INTERVAL": "2.0",
+        "TASKQ_RESERVATION_SLOTS_INTERVAL": "2.0",
+        "TASKQ_STRANDED_JOBS_INTERVAL": "2.0",
+    }
+
+
+@pytest_asyncio.fixture
+async def reap_gate_worker(
+    request: pytest.FixtureRequest,
+    e2e_network: Network,
+    e2e_worker_image: BuiltImage,
+    e2e_dragonfly: E2EDragonfly,
+    chaos_pg: ChaosPg,
+    chaos_schema: ChaosSchema,
+    chaos_pool: asyncpg.Pool,
+) -> AsyncIterator[E2EWorker]:
+    """Worker container with a live watchdog and a park-able budget."""
+    async with running_worker(
+        request,
+        network=e2e_network,
+        schema=chaos_schema,
+        pg_pool=chaos_pool,
+        image=e2e_worker_image,
+        alias=f"worker-reap-{chaos_schema.schema_name}",
+        env=_reap_gate_worker_env(chaos_pg, e2e_dragonfly, chaos_schema),
+        label="tracked-actor exit-gate e2e worker",
+    ) as worker:
+        yield worker
+
+
+async def test_shutdown_exit_gate_trips_when_a_sync_actor_outlives_teardown(
+    chaos_client: TaskQ,
+    reap_gate_worker: E2EWorker,
+    chaos_schema: ChaosSchema,
+    chaos_pool: asyncpg.Pool,
+) -> None:
+    """THE F1 closure, at process level: a sync actor whose thread outlives
+    the TaskGroup makes the process exit at the deadline trip — not park in
+    the default executor's join past the hold it modeled.
+
+    Pre-closure this was the constructible double-run: the TaskGroup exited
+    cleanly (~0.1s), the watchdog was disarmed, and ``asyncio.Runner.close``
+    then joined the detached 60s thread (THREAD_JOIN_TIMEOUT, 300s) — the
+    container stayed alive well past the released row's ``scheduled_at``
+    (deadline + exit tail), the sweep promoted it, and a second worker
+    claimed it while the thread still executed. With the exit gate the
+    watchdog stays armed until the tracked handle is reaped, the deadline
+    trip is the process exit the hold always modeled, and the trip's reason
+    says exactly what is still alive.
+    """
+    from datetime import UTC, datetime, timedelta
+
+    from .actors import SyncOutliveShutdownPayload, sync_outlive_shutdown
+
+    schema = chaos_schema.schema_name
+
+    job = await chaos_client.enqueue(
+        sync_outlive_shutdown,
+        SyncOutliveShutdownPayload(run_id="reap-gate"),
+    )
+    enqueued = job.row
+    assert enqueued.status == "pending"
+
+    async def _row() -> dict[str, object]:
+        async with chaos_pool.acquire() as conn:
+            return dict(
+                await conn.fetchrow(  # type: ignore[union-attr]  # Why: fetchrow returns a Record here; the dict() wrap is for attribute-free access below.
+                    f"SELECT status, attempt, interrupt_count, scheduled_at "  # Why: schema is a fixture-owned identifier; the job id is $-bound.
+                    f'FROM "{schema}".jobs WHERE id = $1',
+                    job.job_id,
+                )
+            )
+
+    async def _running() -> bool:
+        return (await _row())["status"] == "running"
+
+    await poll_until(_running, timeout=30.0, description="the sync actor's row to go running")
+
+    sigterm_wall = datetime.now(UTC)
+    wrapped_worker = reap_gate_worker.container.get_wrapped_container()
+    await asyncio.to_thread(wrapped_worker.kill, signal="TERM")
+
+    async def _exited() -> bool:
+        await asyncio.to_thread(wrapped_worker.reload)
+        return str(wrapped_worker.status) == "exited"
+
+    # 30s, not 60: the pre-closure shape parked in the executor join until
+    # the 60s body finished — this poll times out on that shape. The
+    # closure trips at ~termination_grace + render/flush, ~10s.
+    await poll_until(
+        _exited,
+        timeout=30.0,
+        description="the worker to exit via the deadline trip despite the live actor thread",
+    )
+
+    await asyncio.to_thread(wrapped_worker.reload)
+    exit_code = wrapped_worker.attrs["State"]["ExitCode"]
+    logs = _container_logs(reap_gate_worker.container)
+    assert exit_code == EXIT_WATCHDOG, (
+        f"expected the watchdog trip's exit code {EXIT_WATCHDOG}, got "
+        f"{exit_code} — the process must not outlive its own deadline just "
+        f"because an actor thread does\n{logs}"
+    )
+    assert "tracked-actor-outlived-teardown" in logs, (
+        "the trip must name the live tracked actor handle(s) — the distinct "
+        f"reason is what keeps an operator from misreading it as a loop stall\n{logs}"
+    )
+
+    row = await _row()
+    assert row["status"] == "scheduled", (
+        "the interrupted sync actor's row must be released HELD (scheduled "
+        f"behind the exit window); got {row['status']!r}"
+    )
+    assert row["attempt"] == enqueued.attempt, (
+        "the interruption refunds the claim's attempt increment — the re-run "
+        "must not spend a second attempt on one interruption"
+    )
+    assert row["interrupt_count"] == 1
+    scheduled_at = row["scheduled_at"]
+    assert isinstance(scheduled_at, datetime)
+    exit_tail = 0.5 + 2.0 + 1.0  # dump interval + bounded flush + slack
+    assert scheduled_at >= sigterm_wall + timedelta(seconds=8.01 + exit_tail - 1.5), (
+        "the hold must keep the row unclaimable until the process is provably "
+        "gone — the deadline trip plus the exit tail, which is now the true "
+        f"exit by construction; scheduled_at={scheduled_at}"
+    )

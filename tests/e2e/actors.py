@@ -697,6 +697,31 @@ async def long_running_job(
     )
 
 
+class SyncOutliveShutdownPayload(BaseModel):
+    run_id: str
+
+
+@actor(
+    name="sync_outlive_shutdown",
+    queue="e2e",
+    retry=RetryPolicy(max_attempts=3, base=timedelta(seconds=5)),
+)
+def sync_outlive_shutdown(payload: SyncOutliveShutdownPayload) -> None:
+    """A plain-``def`` actor whose executor thread a deploy can never reach.
+
+    Sync actors run via ``asyncio.to_thread``: the shutdown's
+    ``task.cancel()`` cancels the await, never this body, so the body is
+    exactly the shape the release-until-exited design and the shutdown
+    exit gate exist for. Sleeps long enough (60 s) to outlive any test
+    termination budget, so the watchdog's deadline trip — not the body —
+    ends the attempt. No pool DI and no effects writes: an asyncpg pool is
+    not thread-safe, and the thread's liveness evidence is the trip's
+    ``tracked-actor-outlived-teardown`` reason, not a row it wrote.
+    """
+    del payload
+    time.sleep(60.0)  # Why: a sync actor body IS a thread; the block is the scenario under test.
+
+
 # ── Short-lived job actor (shutdown drain short-job test) ─────────────────
 
 

@@ -82,7 +82,12 @@ from taskq.ratelimit.reservation import ConcurrencyReservation
 from taskq.ratelimit.sliding_window import SlidingWindow
 from taskq.ratelimit.token_bucket import TokenBucket
 from taskq.settings import WorkerSettings
-from taskq.worker._watchdog import LoopLagWatchdog, ShutdownWatchdog, loop_watchdog_loop
+from taskq.worker._watchdog import (
+    LoopLagWatchdog,
+    ShutdownWatchdog,
+    await_tracked_actor_reap,
+    loop_watchdog_loop,
+)
 from taskq.worker.cancel import make_cancel_controller
 from taskq.worker.cron_loop import ActorFirePolicy
 from taskq.worker.deps import WorkerDeps, open_worker_deps
@@ -2061,6 +2066,32 @@ async def _main(
                 # what detector 1 exists to catch, so cancelling them any
                 # earlier would make the detector dead code on the only path
                 # that matters. Both calls swallow their own errors.
+                #
+                # ── The tracked-actor reap gate (#232's exit bound) ───
+                # Disarming now — the pre-existing shape — is only safe
+                # when no actor can outlive the TaskGroup. A sync actor's
+                # executor thread can: task.cancel() cancels the await,
+                # never the thread, and with the watchdog disarmed the
+                # clean path then parks in the default executor's join
+                # (THREAD_JOIN_TIMEOUT, 300s) waiting for the very thread
+                # the release hold assumed was gone — the row becomes
+                # claimable at its held scheduled_at while its actor still
+                # runs. The gate keeps the watchdog armed until every
+                # tracked handle is reaped; the deadline trip is then the
+                # process exit the hold always modeled, and the reap's
+                # own wait is bounded by nothing else — deliberately,
+                # because the trip is the bound. Gated on a shutdown
+                # actually having started (a crashed TaskGroup with no
+                # signal never armed the countdown; waiting there would
+                # be unbounded, and the pre-existing executor join owns
+                # that path) and on the watchdog being enabled (with it
+                # disabled there is no trip to bound the wait, and the
+                # hold has already degraded to lock_lease — the promise
+                # is scoped accordingly in docs/guides/workers.md).
+                # await_tracked_actor_reap is non-raising by construction
+                # (a liveness poll), matching this block's discipline.
+                if settings.watchdog_enabled and deps.shutdown_started_at is not None:
+                    await await_tracked_actor_reap()
                 await shutdown_watchdog.cancel()
                 lag_watchdog.stop()
                 # deregister_worker must run even when the group exit RAISED
