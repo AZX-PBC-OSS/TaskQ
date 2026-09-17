@@ -105,3 +105,29 @@ async def test_cross_actor_hit_on_a_bare_caller_connection_admits_nothing(
 
     rows = await backend_pair.list_jobs(JobFilter(actor="actor_b", limit=100))
     assert all(r.id != fresh.id for r in rows), "the refused batch must leave no rows behind"
+
+
+def test_in_batch_mismatch_carries_no_stored_job_id() -> None:
+    """The fast-path batch can collide two of its own items across actors
+    before anything is stored: the error then names the batch collision
+    instead of a job id, and ``existing_job_id`` is ``None``."""
+    err = IdempotencyKeyActorMismatchError(
+        actor="send_email",
+        existing_actor="send_sms",
+        existing_job_id=None,
+        idempotency_key="order-1",
+        idempotency_scope=None,
+    )
+    assert err.existing_job_id is None
+    assert "an item of the same batch for actor 'send_sms'" in str(err)
+    assert "matched job None" not in str(err)
+
+    stored = new_job_id()
+    err = IdempotencyKeyActorMismatchError(
+        actor="send_email",
+        existing_actor="send_sms",
+        existing_job_id=stored,
+        idempotency_key="order-1",
+        idempotency_scope=None,
+    )
+    assert f"matched job {stored} of actor 'send_sms'" in str(err)

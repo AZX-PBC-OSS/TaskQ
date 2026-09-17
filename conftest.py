@@ -50,16 +50,17 @@ _OPT_IN_TIERS: tuple[tuple[str, str], ...] = (
 )
 
 
-def _is_opt_in_path(path: Path) -> str | None:
-    """The flag that gates *path*'s tier, or None when the path is not in one.
-
-    Accepts both shapes the gates see: the tier directory itself
-    (``pytest_ignore_collect`` recurses directories) and a file inside it
-    (``pytest_collection_modifyitems`` reads each item's file path).
-    """
+def _opt_in_tier_dir(path: Path) -> str | None:
+    """The flag that gates *path* when it IS a tier directory, else None."""
     for dirname, flag in _OPT_IN_TIERS:
         if path.name == dirname and path.parent.name == "tests":
             return flag
+    return None
+
+
+def _opt_in_tier_file(path: Path) -> str | None:
+    """The flag that gates *path* when it is a file inside a tier, else None."""
+    for dirname, flag in _OPT_IN_TIERS:
         if path.parent.name == dirname and path.parent.parent.name == "tests":
             return flag
     return None
@@ -75,7 +76,11 @@ def pytest_ignore_collect(collection_path: Path, config: pytest.Config) -> bool 
     ``-m "not redis"`` run. Ignoring the directory at collection is
     independent of ``-m``.
     """
-    tier_flag = _is_opt_in_path(collection_path)
+    # The directory only, never the files inside it: an explicitly passed
+    # tier directory (``pytest tests/e2e``) must reach the backstop below,
+    # which REPORTS what it strips through pytest_deselected — ignoring the
+    # files at collection would hide the stripped tier from the summary.
+    tier_flag = _opt_in_tier_dir(collection_path)
     if tier_flag is None:
         return None
     if config.getoption(tier_flag.lstrip("-").replace("-", "_")):
@@ -96,7 +101,7 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
     deselected = [
         item
         for item in items
-        if (tier_flag := _is_opt_in_path(item.path)) is not None and tier_flag not in gated_flags
+        if (tier_flag := _opt_in_tier_file(item.path)) is not None and tier_flag not in gated_flags
     ]
     if deselected:
         config.hook.pytest_deselected(items=deselected)
