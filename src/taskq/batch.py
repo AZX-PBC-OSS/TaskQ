@@ -404,7 +404,12 @@ async def apply_batch_terminal_outcome(
     the counter increment loses that increment — the failure count is
     under-counted by one.  The next terminal failure re-triggers the
     check and increments again, so a consistently failing batch still
-    aborts (just one failure later than it would have).  The stale-batch
+    aborts (just one failure later than it would have).  The same loss
+    class covers a counter write that skipped instead of parking: the
+    batches-row wait is bounded, and a streaming append holding the row
+    past the budget skips that one increment or reset (the streak is
+    frozen, never reset) while the failure itself stays recorded on the
+    job row.  The stale-batch
     sweep is the safety net for batch **STATUS** (it transitions stuck
     active/aborted rows to terminal) but it **cannot** recover lost
     failure **counts** — a crash gap means the consecutive-failure streak

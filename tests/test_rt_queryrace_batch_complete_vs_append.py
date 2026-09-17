@@ -36,6 +36,18 @@ The ``increment_batch_failures`` count-vs-write race (counts CTE snapshot
 vs the caller) is safe by construction and NOT attacked here: the hook at
 ``taskq/batch.py`` discards ``_remaining`` and decides purely on
 ``count >= threshold``, and completion is re-arbitrated server-side.
+
+3. The counter writes vs the appender's membership lock (GREEN pins).
+   The counter UPDATEs serialize on the batches row the appender holds
+   from its first chunk to its commit, and a bare UPDATE parks a
+   member's terminal write behind that holder for as long as the stream
+   lasts. The writes now run under a bounded lock wait (savepoint plus
+   transaction-local ``lock_timeout``): a contended write skips its
+   count when the budget expires instead of parking, the caller's
+   transaction survives (the savepoint rollback undoes the raw 55P03),
+   and the failure stays recorded on the job row. The skip freezes the
+   streak (an uncontended terminal write resumes counting); it never
+   resets it.
 """
 
 from __future__ import annotations
@@ -55,9 +67,10 @@ from taskq.backend._batch_sql import (
     complete_batch,
     create_batch,
     get_batch,
+    increment_batch_failures,
     render_batch_sql,
 )
-from taskq.backend._protocol import BatchRow, EnqueueArgs, JobRow
+from taskq.backend._protocol import Backend, BatchRow, EnqueueArgs, JobRow
 from taskq.backend.statemachine import TERMINAL_STATUSES
 from taskq.batch import apply_batch_terminal_outcome
 from taskq.testing.fixtures import _open_pg_backend
@@ -361,3 +374,179 @@ async def test_delayed_completion_inside_a_caller_transaction_keeps_the_terminal
             await deps.worker_pool.release(conn_a)
     finally:
         await _teardown(stack, pg_dsn, schema)
+
+
+async def test_a_members_terminal_write_is_not_blocked_by_an_in_flight_append(
+    pg_dsn: str,
+) -> None:
+    """GREEN pin: while a streaming appender holds the batches row (its
+    uncommitted member INSERT in flight), a member's terminal write and
+    its counter hook must complete without parking behind the holder.
+    The bounded counter wait expires, the increment is skipped (the
+    streak stays 0), the failure itself is recorded row-side, and the
+    writer's own transaction is never poisoned by the raw 55P03. The
+    appender keeps its lock until AFTER the hook has returned, so an
+    unbounded park could only surface as the wait_for expiring."""
+    schema = f"tqr_{new_base62()}".lower()
+    stack, deps, backend = await _open_pg_backend(pg_dsn, schema_name=schema)
+    batch_sql = render_batch_sql(schema)
+    bid = new_uuid()
+    actor = "tqr_counter_park_actor"
+    try:
+        async with deps.worker_pool.acquire() as conn:
+            await _seed_actor(conn, schema, actor)
+            await create_batch(
+                conn,
+                batch_sql,
+                bid,
+                queue=_QUEUE,
+                expected_size=1,
+                failure_threshold=5,
+                finalizer_job_id=None,
+                originating_actor=None,
+            )
+            m1 = _member_args(actor, bid)
+            rows: list[JobRow] = await backend.enqueue_batch([m1], connection=conn)
+        assert len(rows) == 1, "fixture broken: seeding"
+        job = rows[0]
+
+        conn_w = await deps.worker_pool.acquire()
+        conn_a = await deps.worker_pool.acquire()
+        try:
+            # The appender: an open transaction holding the batches row
+            # through _lock_batch_membership's FOR UPDATE, with its
+            # member INSERT uncommitted beside it.
+            tx_a = conn_a.transaction()
+            await tx_a.start()
+            try:
+                await backend.enqueue_batch([_member_args(actor, bid)], connection=conn_a)
+
+                with structlog.testing.capture_logs() as captured:
+                    await asyncio.wait_for(
+                        _member_terminal_write_and_hook(backend, conn_w, schema, job, "failed"),
+                        timeout=_BOUNDED_WAIT_SECS,
+                    )
+                skips = [e for e in captured if e.get("event") == "batch-counter-lock-timeout"]
+                assert [e["write"] for e in skips] == ["increment"], (
+                    "a counter write that outlived its wait budget must stay traceable to its cause"
+                )
+                # The writer's transaction survived the raw 55P03 the
+                # bounded wait raised under it: still usable, still
+                # committable.
+                assert await conn_w.fetchval("SELECT 1") == 1
+            finally:
+                await tx_a.rollback()
+
+            row = await backend.get(job.id)
+            assert row is not None and row.status == "failed", (
+                "the failure must be recorded on the job row even when the "
+                f"counter write skipped: status={row.status if row is not None else None!r}"
+            )
+            batch: BatchRow | None = await get_batch(conn_w, batch_sql, bid)
+            assert batch is not None and batch.status == "active", (
+                "the batch stays active: the skipped increment made no decision"
+            )
+            assert batch.consecutive_failures == 0, (
+                "the contended increment must SKIP, not park and land: the "
+                "streak only resumes on an uncontended terminal write"
+            )
+            count, threshold, _remaining = await increment_batch_failures(conn_w, batch_sql, bid)
+            assert (count, threshold) == (1, 5), (
+                "after the holder is gone the streak resumes from where it was"
+            )
+        finally:
+            await deps.worker_pool.release(conn_w)
+            await deps.worker_pool.release(conn_a)
+    finally:
+        await _teardown(stack, pg_dsn, schema)
+
+
+async def test_a_success_under_the_append_lock_freezes_the_streak(pg_dsn: str) -> None:
+    """GREEN pin, reset arm: a success whose reset runs while the batches
+    row is held past the counter budget skips the reset, so the streak is
+    FROZEN, never zeroed, and the next failure's count is not corrupted
+    downward. The terminal write itself lands untouched."""
+    schema = f"tqr_{new_base62()}".lower()
+    stack, deps, backend = await _open_pg_backend(pg_dsn, schema_name=schema)
+    batch_sql = render_batch_sql(schema)
+    bid = new_uuid()
+    actor = "tqr_counter_reset_actor"
+    try:
+        async with deps.worker_pool.acquire() as conn:
+            await _seed_actor(conn, schema, actor)
+            await create_batch(
+                conn,
+                batch_sql,
+                bid,
+                queue=_QUEUE,
+                expected_size=1,
+                failure_threshold=None,
+                finalizer_job_id=None,
+                originating_actor=None,
+            )
+            m1 = _member_args(actor, bid)
+            rows: list[JobRow] = await backend.enqueue_batch([m1], connection=conn)
+        assert len(rows) == 1, "fixture broken: seeding"
+        job = rows[0]
+
+        conn_w = await deps.worker_pool.acquire()
+        conn_a = await deps.worker_pool.acquire()
+        try:
+            count, _threshold, _remaining = await increment_batch_failures(conn_w, batch_sql, bid)
+            assert count == 1, "fixture broken: the streak must start at 1"
+
+            tx_a = conn_a.transaction()
+            await tx_a.start()
+            try:
+                await backend.enqueue_batch([_member_args(actor, bid)], connection=conn_a)
+                with structlog.testing.capture_logs() as captured:
+                    await asyncio.wait_for(
+                        _member_terminal_write_and_hook(backend, conn_w, schema, job, "succeeded"),
+                        timeout=_BOUNDED_WAIT_SECS,
+                    )
+                skips = [e for e in captured if e.get("event") == "batch-counter-lock-timeout"]
+                assert [e["write"] for e in skips] == ["reset"], (
+                    "the reset must skip on the held row, not park behind it"
+                )
+                assert await conn_w.fetchval("SELECT 1") == 1
+            finally:
+                await tx_a.rollback()
+
+            row = await backend.get(job.id)
+            assert row is not None and row.status == "succeeded", (
+                "the success write must land even when its reset skipped"
+            )
+            batch: BatchRow | None = await get_batch(conn_w, batch_sql, bid)
+            assert batch is not None
+            assert batch.consecutive_failures == 1, (
+                "a reset that skipped must leave the streak frozen at 1, "
+                "never zeroed: zeroing would let the NEXT failure count as "
+                "the second consecutive one"
+            )
+        finally:
+            await deps.worker_pool.release(conn_w)
+            await deps.worker_pool.release(conn_a)
+    finally:
+        await _teardown(stack, pg_dsn, schema)
+
+
+async def _member_terminal_write_and_hook(
+    backend: Backend,
+    conn_w: asyncpg.Connection,
+    schema: str,
+    job: JobRow,
+    outcome: str,
+) -> None:
+    """The member's terminal write plus its batch hook, inside one
+    transaction on the writer's connection (the hook's ``connection=``
+    arm, the shape the dispatch wiring uses)."""
+    status = "succeeded" if outcome == "succeeded" else "failed"
+    error_clause = ", error_class = 'tqr'" if outcome == "failed" else ""
+    async with conn_w.transaction():
+        await conn_w.execute(
+            f'UPDATE "{schema}".jobs SET status = $2::text::"{schema}".job_status, '
+            f"finished_at = clock_timestamp(){error_clause} WHERE id = $1",
+            job.id,
+            status,
+        )
+        await apply_batch_terminal_outcome(backend, job, outcome, transaction_conn=conn_w)

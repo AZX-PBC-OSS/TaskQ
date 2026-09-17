@@ -12,16 +12,20 @@ data.  The schema identifier is validated against ``_IDENT_RE`` before
 formatting (defence-in-depth).
 """
 
-from collections.abc import Iterable
+from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, replace
 from datetime import datetime
 from itertools import islice
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Final, cast
 from uuid import UUID
 
 import structlog
-from asyncpg.exceptions import UniqueViolationError
+from asyncpg.exceptions import LockNotAvailableError, UniqueViolationError
 
+from taskq._advisory import (
+    _LOCK_TIMEOUT_READ_SQL,  # pyright: ignore[reportPrivateUsage]  # Why: the one implementation of the lock_timeout GUC statements, shared with the advisory and bounded-wait machinery — a local copy would drift from the discipline it mirrors.
+    _LOCK_TIMEOUT_SET_SQL,  # pyright: ignore[reportPrivateUsage]
+)
 from taskq._json import dumps_str
 from taskq.backend._cursor import decode_batch_cursor
 from taskq.backend._enqueue import _enqueue_batch
@@ -114,6 +118,24 @@ WHERE id = $1"""
 # The LATERAL only executes for the rows the UPDATE returned: a batch
 # that is missing or no longer active costs one empty-scan of `updated`,
 # never the member probe.
+#
+# The batches row these UPDATEs take is contended from two sides: other
+# members' terminal-write tails (short, milliseconds) and a streaming
+# append's membership lock (_lock_batch_membership in _enqueue.py: a
+# whole-stream atomic append holds the row from its first chunk to its
+# commit, unbounded). The bare UPDATE parks behind either for as long
+# as the holder pleases, on the terminal-write path. The wait is
+# bounded instead: the callers run these statements through
+# _bounded_batches_row_wait, which scopes a savepoint plus a
+# transaction-local lock_timeout around the UPDATE and skips the count
+# when the budget expires. A short holder (another terminal-write tail,
+# a per-chunk append transaction) releases well within the budget, so
+# benign contention still counts; the skip fires for the unbounded
+# holder, and there the skipped increment is the documented best-effort
+# loss (M7). The failure stays recorded on the job row by the terminal
+# write, the streak is frozen rather than reset, the next uncontended
+# terminal write resumes counting, and the stale-batch sweep remains
+# the safety net for batch status.
 _INCREMENT_BATCH_FAILURES_SQL = """\
 WITH updated AS (
     UPDATE "{schema}".batches
@@ -327,6 +349,48 @@ def render_batch_sql(schema: str) -> BatchSql:
 
 # ── Record conversion helpers ───────────────────────────────────────
 
+#: The batches-row lock wait budget for the counter writes, in
+#: milliseconds. Same order as the enqueue lock budgets' five-second
+#: convention, but tighter: these run on the terminal-write path, where
+#: a parked write holds a worker slot. A holder outliving the budget is
+#: a streaming append (see the counter statements' comment), and the
+#: skip it buys is M7's best-effort loss class.
+_BATCH_COUNTER_LOCK_TIMEOUT_MS: Final[float] = 2000.0
+
+
+async def _bounded_batches_row_wait[T](
+    conn: ConnLike,
+    write: Callable[[], Awaitable[T]],
+) -> T:
+    """Run one counter write under a bounded wait for the batches row.
+
+    A savepoint scopes a transaction-local ``lock_timeout`` around
+    *write*: on a bare connection it is a real short transaction (the
+    GUC span must own a transaction for ``SET LOCAL`` to apply), inside
+    a caller's transaction it is a savepoint. On expiry the statement
+    raises :class:`asyncpg.exceptions.LockNotAvailableError`; the
+    savepoint's rollback has already restored the caller's scope to
+    usable (a raw 55P03 leaves a transaction aborted even when caught),
+    and the exception propagates for the caller to convert to its skip
+    shape. On success the prior ``lock_timeout`` is restored before the
+    savepoint's RELEASE: ``SET LOCAL`` persists through it, so skipping
+    the restore would leak the wait bound onto every later statement of
+    the caller's transaction and clobber a caller-set bound. The
+    restore must not run on the timeout path (the scope is aborted; any
+    statement in it would fail), which the linear structure below gives
+    for free.
+    """
+    nested = conn.is_in_transaction()
+    async with conn.transaction():
+        prior_lock_timeout: str | None = None
+        if nested:
+            prior_lock_timeout = await conn.fetchval(_LOCK_TIMEOUT_READ_SQL)
+        await conn.execute(_LOCK_TIMEOUT_SET_SQL, f"{round(_BATCH_COUNTER_LOCK_TIMEOUT_MS)}ms")
+        result = await write()
+        if nested:
+            await conn.execute(_LOCK_TIMEOUT_SET_SQL, str(prior_lock_timeout))
+        return result
+
 
 def _batch_counts_from_record(rec: "asyncpg.Record") -> BatchCounts:
     """Convert count fields from a list_batches query result into :class:`BatchCounts`."""
@@ -409,8 +473,33 @@ async def increment_batch_failures(
 
     Returns ``(0, None, 0)`` if the batch row does not exist. The member
     count is the same index-served probe as :func:`count_batch_non_terminal`.
+
+    The batches-row wait is bounded (see :func:`_bounded_batches_row_wait`
+    and the counter statements' comment): when the budget expires against
+    a long-held row, the increment is SKIPPED and ``(0, None, 0)`` is
+    returned, the same shape as a missing row. The hook reads a ``None``
+    threshold and makes no decision on it, the failure stays recorded on
+    the job row by the terminal write, and the streak resumes with the
+    next uncontended terminal write. It is a skip and not a bare NOWAIT
+    because a raw 55P03 aborts the enclosing transaction even when
+    caught, and not SKIP LOCKED because a zero-wait refusal would drop
+    the count under the short benign contention (another member's
+    terminal-write tail) that the threshold contract has to keep
+    counting.
     """
-    rec = await conn.fetchrow(sql.increment_batch_failures, batch_id, str(batch_id))
+    try:
+        rec = await _bounded_batches_row_wait(
+            conn,
+            lambda: conn.fetchrow(sql.increment_batch_failures, batch_id, str(batch_id)),
+        )
+    except LockNotAvailableError:
+        logger.debug(
+            "batch-counter-lock-timeout",
+            kind="batch",
+            batch_id=str(batch_id),
+            write="increment",
+        )
+        return (0, None, 0)
     if rec is None:
         return (0, None, 0)
     return (rec["consecutive_failures"], rec["failure_threshold"], rec["remaining"])
@@ -426,8 +515,25 @@ async def reset_batch_failures(
 
     Returns ``0`` if the batch row does not exist. The member count is the
     same index-served probe as :func:`count_batch_non_terminal`.
+
+    The bounded-wait semantics are :func:`increment_batch_failures`':
+    when the batches row is held past the budget, the reset is SKIPPED
+    and ``0`` returned, so the streak is frozen rather than zeroed and
+    the caller's terminal write is never parked behind a long holder.
     """
-    rec = await conn.fetchrow(sql.reset_batch_failures, batch_id, str(batch_id))
+    try:
+        rec = await _bounded_batches_row_wait(
+            conn,
+            lambda: conn.fetchrow(sql.reset_batch_failures, batch_id, str(batch_id)),
+        )
+    except LockNotAvailableError:
+        logger.debug(
+            "batch-counter-lock-timeout",
+            kind="batch",
+            batch_id=str(batch_id),
+            write="reset",
+        )
+        return 0
     if rec is None:
         return 0
     return rec["remaining"]
