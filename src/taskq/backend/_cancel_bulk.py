@@ -126,6 +126,26 @@ _UUID_MIN = UUID(int=0)
 #: the drain already documents for concurrent enqueues: EPQ predicates
 #: skip everything earlier rounds cancelled, so a re-run is resumable,
 #: never double-counted.
+#:
+#: THE SHAPE (vendor/river's JobDeleteMany): draining a filtered set as
+#: repeated bounded predicate windows rather than one unbounded
+#: statement. River's JobDeleteMany
+#: (vendor/river/riverdriver/riverpgxv5/internal/dbsqlc/
+#: river_job.sql:177-198) is one ``LIMIT``-ed, ``FOR UPDATE SKIP
+#: LOCKED`` predicate window whose callers re-invoke until the
+#: predicate stops matching — the rescuer's loop
+#: (vendor/river/internal/maintenance/job_rescuer.go:195-259) is the
+#: in-repo instance of the shape: keep fetching batches, break when one
+#: comes back under the limit. The rounds adopt that
+#: re-scan-until-satisfied instinct in place of the single forward-only
+#: pass the pre-#237 drain made. Two deliberate divergences: every arm
+#: pages on a keyset cursor inside its drain (no batch re-walks rows an
+#: earlier batch of the same arm already handled, where a bare
+#: predicate window re-evaluates them), and the loop is hard-capped —
+#: river's loop belongs to a maintenance daemon and legitimately runs
+#: as long as the feed does, but for a single API call that shape is an
+#: unbounded loop under sustained churn; the cap is what keeps one call
+#: a constant multiple of one drain.
 _MAX_CANCEL_DRAIN_ROUNDS: Final = 3
 
 
