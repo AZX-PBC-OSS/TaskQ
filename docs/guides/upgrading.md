@@ -1746,6 +1746,43 @@ due work rather than stranding residue, and the value returns to zero
 once no schedule is failing. `cron_schedules.consecutive_failures` and
 the logs remain the authoritative per-schedule record; alert on
 `taskq.cron.disabled_schedules > 0` for the auto-disabled condition.
+### The dead-connection retry no longer re-runs committed writes
+
+> **Unreleased.** Silent unless your database kills connections mid-flight;
+> when it does, the behavior you get is the one you already wanted.
+
+The retry guard behind the enqueue paths and the bulk-cancel drain
+(`_with_fresh_connection_retry`) covered the whole
+acquire-run-release cycle. A pooled connection whose server died between
+the op's last acknowledged statement and the pool's release-time reset
+raised asyncpg's `InternalClientError` from the RELEASE — the old wrapper
+read that as dead-on-acquire and re-ran the op: an un-keyed enqueue
+committed twice and the job ran twice (issue #236). Two mechanisms now
+split the concern:
+
+- The guard's checkout bounds the release (`pool.release(conn,
+  timeout=...)`, 5 s) and never raises a release failure — an op whose
+  work committed gets its result back (one `pool-release-failed` WARNING
+  is logged instead). The bound also un-wedges the hang the old path
+  could hit: against a silently dead server (no FATAL, no FIN — a frozen
+  or partitioned endpoint) the unbounded reset parked the caller's task
+  AND `pool.close()` forever; it now times out after 5 s, asyncpg
+  terminates the connection, and the pool reopens one on the next
+  acquire.
+- The retry is refused once the op marked a write durable (the INSERT's
+  acknowledgement on the autocommit arms, the transaction COMMIT's on the
+  batch/COPY/cancel arms). A connection that dies between the write and
+  a LATER statement of the same attempt surfaces its error instead of
+  re-issuing the write. A connection poisoned BEFORE the first statement
+  still costs exactly one transparent retry — nothing was sent, so
+  nothing can duplicate.
+
+A mid-QUERY kill is unchanged: it raises
+`ConnectionDoesNotExistError` (a Postgres error, not retried by this
+wrapper) and whether the statement committed before the server died is
+unknowable from the client — idempotency keys remain the dedup channel
+for the retry YOU choose to issue in that case.
+
 ### Worker pools send no per-connection GUCs in the startup packet
 
 > **Unreleased.** Breaking only in the sense that a worker that failed to

@@ -32,12 +32,14 @@ configuration error (caught in :meth:`WorkerConnections.__post_init__`).
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable, Iterable
+from collections.abc import AsyncGenerator, Awaitable, Callable, Iterable
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Final, cast
 
 if TYPE_CHECKING:
     import asyncpg
+    import asyncpg.pool
     import redis.asyncio as redis_async
 
     from taskq.settings import TaskQSettings
@@ -180,44 +182,183 @@ def lock_budget_command_timeout_secs(
     return bound
 
 
+#: Bound on the pool-release path the retry guard's checkout owns — the
+#: release-time ``reset()`` (``pg_advisory_unlock_all(); CLOSE ALL;
+#: UNLISTEN *; RESET ALL;``) plus, on the max-queries/generation paths,
+#: a graceful close. asyncpg's acquire-context release passes NO timeout
+#: (the holder falls back to the *acquire* timeout, which is ``None``
+#: whenever acquire was unbounded), so a server that dies silently —
+#: no FATAL, no FIN: a frozen/black-holed endpoint — parks that reset
+#: forever, wedging the caller's task AND ``pool.close()`` (issue #236's
+#: hang half). Five seconds matches the repo-wide teardown bound
+#: (``taskq._close.CLOSE_TIMEOUT_SECS``): the reset is sub-millisecond
+#: on a live server, so the bound only ever fires against a dead one,
+#: where asyncpg's timeout handler terminates the connection and frees
+#: the holder — the pool reopens a fresh connection on the next acquire.
+#: Module-level so tests shrink it as a seam (the ``CLOSE_TIMEOUT_SECS``
+#: convention).
+_POOL_RELEASE_RESET_TIMEOUT_SECS: Final[float] = 5.0
+
+
+class _RetryGuard:
+    """One attempt's pool discipline, handed to the op by
+    :func:`_with_fresh_connection_retry`.
+
+    Two channels, one object:
+
+    * :meth:`checkout` — the bounded acquire/release the op runs its
+      statements inside. Replaces a bare ``async with pool.acquire()``:
+      the acquire is unchanged (unbounded — pool-exhaustion waits are the
+      pool's own backpressure, not this guard's to cut short), but the
+      RELEASE carries :data:`_POOL_RELEASE_RESET_TIMEOUT_SECS` and never
+      raises — a reset that fails or times out is pool hygiene, not part
+      of the op's semantics. asyncpg's release path already terminates
+      the connection on any reset failure, so swallowing costs nothing
+      but a log line, and it buys two #236 fixes at once: an op whose
+      work committed but whose release hit a parked/dead connection
+      returns its RESULT instead of an error that invites a
+      duplicate-on-retry, and a reset sent into a silently-dead server
+      times out instead of parking the caller (and ``pool.close()``)
+      forever.
+    * :meth:`mark_wrote` — the durability flag the retry decision reads.
+      The op calls it immediately after the first point at which a write
+      has become DURABLE: an autocommit statement's acknowledgement, or
+      the transaction COMMIT's acknowledgement (see the wrapper's
+      docstring for why after-the-ack, not before-the-write).
+
+    Not thread-safe and not reusable across attempts: the wrapper builds
+    a fresh guard per attempt, so a retry's flag starts clear.
+    """
+
+    __slots__ = ("_operation", "_pool", "wrote")
+
+    def __init__(self, pool: asyncpg.Pool, operation: str) -> None:
+        self._pool = pool
+        self._operation = operation
+        self.wrote = False
+
+    def mark_wrote(self) -> None:
+        """Record that this attempt has made a write durable.
+
+        Idempotent and one-way: once a write is acknowledged, no later
+        event in the same attempt can un-commit it.
+        """
+        self.wrote = True
+
+    @asynccontextmanager
+    async def checkout(self) -> AsyncGenerator[asyncpg.pool.PoolConnectionProxy, None]:
+        """``async with guard.checkout() as conn:`` — acquire, run, bounded
+        release.
+
+        The release is bounded and never raises (see the class docstring);
+        whatever the body raised or returned is what escapes the context
+        manager.
+        """
+        acquired = self._pool.acquire()
+        if isinstance(acquired, Awaitable):  # pyright: ignore[reportUnnecessaryIsInstance]  # Why: the stubs type asyncpg's acquire() as always-awaitable (PoolAcquireContext), so a real pool only ever takes this arm; the else arm exists because test doubles model only the context-manager half of acquire()'s documented dual surface (see below).
+            # asyncpg's acquire() is documented as BOTH awaitable and an
+            # async context manager; the await form is the one that lets
+            # the release below carry its own timeout — the context
+            # manager's __aexit__ releases with no timeout, so the holder
+            # falls back to the (unbounded) acquire timeout instead.
+            conn = await acquired
+            try:
+                yield conn
+            finally:
+                try:
+                    await self._pool.release(conn, timeout=_POOL_RELEASE_RESET_TIMEOUT_SECS)
+                except Exception as exc:
+                    # Why swallow: the holder's own release path terminates
+                    # the connection on any reset failure (asyncpg pool.py),
+                    # so the pool is already consistent — raising would
+                    # either mask the op's real outcome with pool hygiene
+                    # (on the error path) or hand the caller a failure for
+                    # work that committed (on the success path), which is
+                    # precisely the duplicate-invitation #236 exists to
+                    # remove.
+                    from taskq.obs import get_logger
+
+                    get_logger(__name__).warning(
+                        "pool-release-failed",
+                        kind="pool_release_failed",
+                        operation=self._operation,
+                        error=repr(exc),
+                    )
+        else:
+            # A stand-in pool that models only the context-manager half of
+            # acquire()'s documented surface (an ``@asynccontextmanager``
+            # acquire, the common test-double shape): no network exists to
+            # hang a release on, so the context's own release is used
+            # verbatim and no timeout is imposed. Unreachable for a real
+            # asyncpg pool (the stubs' always-awaitable view), which is
+            # what makes the cast safe.
+            cm = cast(
+                "AbstractAsyncContextManager[asyncpg.pool.PoolConnectionProxy]",
+                acquired,
+            )
+            async with cm as conn:
+                yield conn
+
+
 async def _with_fresh_connection_retry[T](  # pyright: ignore[reportUnusedFunction]  # Why: the shared dead-on-acquire guard — its callers are the enqueue and bulk-cancel modules; private usage is declared at each import site.
-    op: Callable[[], Awaitable[T]],
+    pool: asyncpg.Pool,
+    op: Callable[[_RetryGuard], Awaitable[T]],
     *,
     operation: str,
 ) -> T:
-    """Run *op*, retrying once when the pool hands out a just-killed connection.
+    """Run *op* once, retrying once when the pool hands out a just-killed
+    connection — and only when no write has become durable yet.
 
     Shared home for every "acquire from the pool, use immediately" caller —
-    the enqueue paths and the bulk-cancel drain — so the recovery discipline
-    exists once instead of per call site. Each adopting site still owes its
-    own one-line retry-safety argument at the call: this wrapper guarantees
-    only that the retried *op* runs on a genuinely fresh connection, not that
-    re-running *op* is safe for every possible body.
+    the enqueue paths and the bulk-cancel drain — so the recovery
+    discipline exists once instead of per call site. *op* receives a
+    :class:`_RetryGuard` and must run every pool checkout through
+    ``guard.checkout()`` (bounded release, release errors never raised)
+    and call ``guard.mark_wrote()`` at its first durability point.
 
-    A pooled connection whose backend Postgres has terminated (restart,
-    failover, ``pg_terminate_backend``) learns of its death in two
-    event-loop steps: the server's FATAL ErrorResponse arrives first and —
-    with no in-flight query to attribute it to — parks asyncpg's protocol
-    in its error-consume state; only a later ``connection_lost`` callback
-    marks the connection closed. In the gap, ``Pool.acquire``'s
-    ``is_closed()`` guard still passes, so the pool can hand a caller a
-    connection whose first statement fails locally with
+    Why the retry exists: a pooled connection whose backend Postgres has
+    terminated (restart, failover, ``pg_terminate_backend``) learns of its
+    death in two event-loop steps: the server's FATAL ErrorResponse arrives
+    first and — with no in-flight query to attribute it to — parks
+    asyncpg's protocol in its error-consume state; only a later
+    ``connection_lost`` callback marks the connection closed. In the gap,
+    ``Pool.acquire``'s ``is_closed()`` guard still passes, so the pool can
+    hand a caller a connection whose first statement fails locally with
     ``asyncpg.InternalClientError`` ("cannot switch to state 15; another
     operation (2) is in progress") — a driver-internal state error that
     matches no except clause written against the database's own error
     types, for a condition that is physically a dropped connection. The
-    poisoned state is not visible through asyncpg's public API before the
-    first statement (the protocol's state is not exposed), so the
     boundary treats that first-statement failure as what it is — a
-    transient connection loss — and retries once.
+    transient connection loss — and retries once. The retry always lands
+    on a genuinely fresh connection: releasing the poisoned one cannot
+    complete (its reset hits the same parked state), the release path
+    terminates it, and the next acquire reconnects.
 
-    The retry always lands on a genuinely fresh connection: releasing the
-    poisoned one cannot complete (the pool's release-time reset query
-    fails on it the same way), so the release path terminates it and the
-    next acquire reconnects. At every current call site the failure
-    precedes any write — the poisoned protocol rejects the transaction's
-    BEGIN itself — so one retry cannot duplicate a write. An
-    ``InternalClientError`` from the retry is a real driver state bug,
+    When the retry is REFUSED — ``guard.wrote``: an ``InternalClientError``
+    raised by the op *after* the attempt marked a write durable means the
+    connection died between that write's acknowledgement and a LATER
+    statement of the same attempt (a post-INSERT read, a savepoint
+    RELEASE, a COMMIT-adjacent restore). Re-running the op would re-issue
+    the write against a fresh connection — for an autocommit write that is
+    a committed row inserted twice, the exact duplication #236 reports —
+    so the error propagates instead. The marker is set AFTER the write's
+    acknowledgement, not before the write is issued, on purpose: the
+    dead-on-acquire case this wrapper exists for can strike the write
+    statement itself (the plain enqueue arm's INSERT is its first
+    statement), and a locally-poisoned protocol rejects that statement
+    BEFORE anything reaches the server — unmarked, so the retry runs and
+    nothing duplicates. Marking before the write would refuse that retry
+    and regress the wrapper's whole purpose; the only marking point that
+    is correct for both orderings is the acknowledgement.
+
+    What the retry does NOT have to gate: a release-time failure after the
+    op's body finished. The guard's checkout bounds the release and never
+    raises it (asyncpg terminates the connection either way), so the op's
+    result stands — a caller whose enqueue committed gets its row, not an
+    error inviting a re-enqueue. Only errors raised by the op's own
+    statements reach this wrapper's catch.
+
+    An ``InternalClientError`` from the retry is a real driver state bug,
     not this race, and propagates.
     """
     # Why deferred: this module is import-light by design (no asyncpg or
@@ -226,9 +367,17 @@ async def _with_fresh_connection_retry[T](  # pyright: ignore[reportUnusedFuncti
     # follows for its close helper.
     from asyncpg.exceptions import InternalClientError
 
+    guard = _RetryGuard(pool, operation)
     try:
-        return await op()
+        return await op(guard)
     except InternalClientError as exc:
+        if guard.wrote:
+            # A write from this attempt is already durable; re-running op
+            # could commit it a second time (#236). The caller sees the
+            # driver error for a committed write — ambiguous, but never a
+            # silent duplication; idempotency keys remain the caller's
+            # dedup channel for the retry THEY choose to issue.
+            raise
         from taskq.obs import get_logger
 
         get_logger(__name__).warning(
@@ -237,7 +386,7 @@ async def _with_fresh_connection_retry[T](  # pyright: ignore[reportUnusedFuncti
             operation=operation,
             error=repr(exc),
         )
-        return await op()
+        return await op(_RetryGuard(pool, operation))
 
 
 # ── Factory type aliases (PEP 695) ─────────────────────────────────────

@@ -19,6 +19,7 @@ from uuid import UUID
 
 import asyncpg
 import pytest
+from asyncpg.exceptions import InternalClientError
 
 from taskq._ids import new_job_id
 from taskq.backend._enqueue import (
@@ -624,9 +625,22 @@ class _FakePool:
 
     def __init__(self, conn: _FakeEnqueueConn) -> None:
         self._conn = conn
+        self.acquire_count = 0
+        # (conn, timeout) per release — pins that the enqueue paths route
+        # their releases through the retry guard's bounded channel.
+        self.releases: list[tuple[_FakeEnqueueConn, float | None]] = []
 
     def acquire(self) -> "_PoolCtx":
+        self.acquire_count += 1
         return _PoolCtx(self._conn)
+
+    async def release(
+        self,
+        conn: _FakeEnqueueConn,
+        *,
+        timeout: float | None = None,  # noqa: ASYNC109  # Why: models asyncpg's Pool.release(timeout=...) signature — the guard's bounded-release channel, not a cancel scope.
+    ) -> None:
+        self.releases.append((conn, timeout))
 
 
 class _FakePoolSequence:
@@ -636,11 +650,20 @@ class _FakePoolSequence:
     def __init__(self, conns: list[_FakeEnqueueConn]) -> None:
         self._conns = conns
         self.acquire_count = 0
+        self.releases: list[tuple[_FakeEnqueueConn, float | None]] = []
 
     def acquire(self) -> "_PoolCtx":
         conn = self._conns[self.acquire_count]
         self.acquire_count += 1
         return _PoolCtx(conn)
+
+    async def release(
+        self,
+        conn: _FakeEnqueueConn,
+        *,
+        timeout: float | None = None,  # noqa: ASYNC109  # Why: models asyncpg's Pool.release(timeout=...) signature — the guard's bounded-release channel, not a cancel scope.
+    ) -> None:
+        self.releases.append((conn, timeout))
 
 
 def _legacy_violation() -> asyncpg.UniqueViolationError:
@@ -730,6 +753,196 @@ async def test_enqueue_with_conn_legacy_violation_converts_without_retry() -> No
     assert isinstance(exc_info.value.__cause__, asyncpg.UniqueViolationError)
 
 
+# ── _enqueue under the dead-connection retry guard (#236) ────────────────
+#
+# The retry wrapper must absorb the dead-on-acquire race WITHOUT ever
+# re-running a write that was already acknowledged. Three orderings:
+#
+# 1. The connection is poisoned BEFORE the INSERT is sent: the statement
+#    fails locally (nothing reached the server), no write is durable, the
+#    retry runs and succeeds. The wrapper's original purpose.
+# 2. The INSERT is acknowledged (committed, autocommit) and the RELEASE's
+#    reset then fails (the parked-error-consume connection): the guard's
+#    checkout swallows the release failure, the caller gets the row, and
+#    no second INSERT is issued.
+# 3. The INSERT is acknowledged and a LATER statement of the same attempt
+#    (the keyed arm's follow-up SELECT) fails with InternalClientError:
+#    the guard's mark refuses the retry; the error propagates and the
+#    INSERT count stays one.
+
+
+class _CountingInsertConn(_FakeEnqueueConn):
+    """Counts INSERT statements issued (the duplication observable)."""
+
+    def __init__(self, **kwargs: object) -> None:
+        super().__init__(**kwargs)  # type: ignore[arg-type]
+        self.insert_calls = 0
+
+    async def fetchrow(self, sql: str, *args: object) -> object | None:
+        if "INSERT" in sql.upper():
+            self.insert_calls += 1
+        return await super().fetchrow(sql, *args)
+
+
+class _ParkedBeforeInsertConn(_CountingInsertConn):
+    """The dead-on-acquire case: the pooled connection was poisoned before
+    handout, so the FIRST statement (the plain arm's INSERT) fails locally
+    with the driver's state error -- nothing was sent, nothing committed."""
+
+    async def fetchrow(self, sql: str, *args: object) -> object | None:
+        if "INSERT" in sql.upper():
+            self.insert_calls += 1
+            raise InternalClientError(
+                "cannot switch to state 15; another operation (2) is in progress"
+            )
+        return await super().fetchrow(sql, *args)
+
+
+class _ParkedAfterInsertConn(_CountingInsertConn):
+    """The server's FATAL lands between the INSERT's acknowledgement and
+    the next statement: the write is durable and every later statement of
+    the attempt fails locally with the driver's state error."""
+
+    async def fetchrow(self, sql: str, *args: object) -> object | None:
+        if "INSERT" in sql.upper():
+            # _CountingInsertConn.fetchrow does the counting; this override
+            # only arms the parked state after the acknowledged INSERT.
+            rec = await super().fetchrow(sql, *args)
+            self._parked = True  # type: ignore[attr-defined]  # Why: test-local state on the fake; _FakeEnqueueConn is not slotted.
+            return rec
+        if getattr(self, "_parked", False):
+            raise InternalClientError(
+                "cannot switch to state 15; another operation (2) is in progress"
+            )
+        return await super().fetchrow(sql, *args)
+
+
+class _ReleaseFailPool(_FakePool):
+    """Pool whose release fails the way asyncpg's does on a parked
+    connection: the reset raises, the holder terminates the connection and
+    re-raises (issue #236's release path)."""
+
+    def __init__(self, conn: _FakeEnqueueConn, exc: BaseException) -> None:
+        super().__init__(conn)
+        self._exc = exc
+
+    async def release(
+        self,
+        conn: _FakeEnqueueConn,
+        *,
+        timeout: float | None = None,  # noqa: ASYNC109  # Why: models asyncpg's Pool.release(timeout=...) signature — the guard's bounded-release channel, not a cancel scope.
+    ) -> None:
+        await super().release(conn, timeout=timeout)
+        raise self._exc
+
+
+async def test_enqueue_poisoned_before_the_insert_retries_and_succeeds() -> None:
+    """Ordering 1: a locally-poisoned first statement (nothing sent) costs
+    one transparent retry on a fresh connection. Marking-before-the-write
+    would have refused this retry -- the reason the guard marks at the
+    acknowledgement, not at issuance."""
+    first = _ParkedBeforeInsertConn()
+    second = _CountingInsertConn(fetchrow_map={"INSERT": _Record(_full_record())})  # type: ignore[arg-type]
+    pool = _FakePoolSequence([first, second])
+    clock = FakeClock(_NOW)
+
+    row = await _enqueue(pool, _SQL, _SCHEMA_LABEL, clock, _make_args())  # type: ignore[arg-type]
+
+    assert isinstance(row, JobRow)
+    assert pool.acquire_count == 2, "the dead-on-acquire failure must retry once"
+    assert first.insert_calls == 1 and second.insert_calls == 1
+    # The retry's release went through the guard's bounded channel.
+    assert all(timeout is not None for _conn, timeout in pool.releases)
+
+
+async def test_enqueue_committed_insert_survives_a_failed_release() -> None:
+    """Ordering 2 (#236's duplication half): the INSERT is acknowledged and
+    committed (autocommit), then the release's reset fails on the parked
+    connection. The caller must get the committed row -- an error here is
+    exactly what invited the caller-side re-enqueue that duplicated the
+    job -- and the INSERT must have run exactly once."""
+    conn = _CountingInsertConn(fetchrow_map={"INSERT": _Record(_full_record())})  # type: ignore[arg-type]
+    pool = _ReleaseFailPool(
+        conn,
+        InternalClientError("cannot switch to state 15; another operation (2) is in progress"),
+    )
+    clock = FakeClock(_NOW)
+
+    row = await _enqueue(pool, _SQL, _SCHEMA_LABEL, clock, _make_args())  # type: ignore[arg-type]
+
+    assert isinstance(row, JobRow)
+    assert pool.acquire_count == 1, "a release failure is not an op failure; no retry may run"
+    assert conn.insert_calls == 1, "no second INSERT: the first was acknowledged and committed"
+
+
+async def test_enqueue_post_insert_statement_error_never_re_runs_the_write() -> None:
+    """Ordering 3 (the wrote-then-read case): the INSERT is acknowledged
+    (dedup arm: no RETURNING row) and the follow-up SELECT then fails
+    locally on the parked connection. The guard's mark refuses the retry:
+    the error propagates and the INSERT count stays one. Pre-fix the
+    wrapper read every InternalClientError as dead-on-acquire and re-ran
+    the enqueue -- a second INSERT against a committed first."""
+    conn = _ParkedAfterInsertConn()  # INSERT returns None (ON CONFLICT); follow-up SELECT parks
+    pool = _FakePool(conn)
+    clock = FakeClock(_NOW)
+
+    with pytest.raises(InternalClientError, match="cannot switch to state 15"):
+        await _enqueue(pool, _SQL, _SCHEMA_LABEL, clock, _make_args(idempotency_key="k"))  # type: ignore[arg-type]
+
+    assert pool.acquire_count == 1, (
+        "a retry after an acknowledged write would commit it twice (#236)"
+    )
+    assert conn.insert_calls == 1
+
+
+async def test_enqueue_batch_committed_transaction_survives_a_failed_release() -> None:
+    """The batch arm's ordering-2: the batch transaction's COMMIT is
+    acknowledged, then the release fails. The committed rows are returned,
+    the batch INSERT ran once, no retry."""
+    args = _make_args()
+    conn = _FakeEnqueueConn(fetch_map={"FROM unnest(": [_Record(_full_record(job_id=args.id))]})
+    pool = _ReleaseFailPool(
+        conn,
+        InternalClientError("cannot switch to state 15; another operation (2) is in progress"),
+    )
+
+    rows = await _enqueue_batch(pool, _SQL, _SCHEMA_LABEL, [args])  # type: ignore[arg-type]
+
+    assert len(rows) == 1
+    assert rows[0].id == args.id
+    assert pool.acquire_count == 1
+
+
+async def test_enqueue_batch_post_commit_statement_error_refuses_the_retry() -> None:
+    """The batch arm's ordering-3, at the transaction boundary: the batch's
+    driving statement succeeded but a LATER statement of the same
+    transaction fails locally on the parked connection. The transaction
+    never committed (the server died; everything rolled back server-side),
+    so the retry IS safe -- and it runs, re-executing the batch atomically
+    on a fresh connection."""
+
+    # First connection: the multi-row INSERT dedupes... instead model the
+    # simplest in-transaction failure: the driving fetch fails parked.
+    class _ParkedMidTxConn(_FakeEnqueueConn):
+        async def fetch(self, sql: str, *args: object) -> list[_Record]:
+            raise InternalClientError(
+                "cannot switch to state 15; another operation (2) is in progress"
+            )
+
+    first = _ParkedMidTxConn()
+    args = _make_args()
+    second = _FakeEnqueueConn(fetch_map={"FROM unnest(": [_Record(_full_record(job_id=args.id))]})
+    pool = _FakePoolSequence([first, second])
+
+    rows = await _enqueue_batch(pool, _SQL, _SCHEMA_LABEL, [args])  # type: ignore[arg-type]
+
+    assert len(rows) == 1
+    assert pool.acquire_count == 2, (
+        "a mid-transaction failure rolled the batch back server-side; "
+        "the retry re-runs it atomically and must run"
+    )
+
+
 async def test_enqueue_batch_legacy_violation_retries_and_dedupes() -> None:
     """Batch path: same-pair race on the first attempt aborts the whole
     batch statement; the retry dedupes the raced item via the composite
@@ -778,6 +991,11 @@ async def test_enqueue_batch_with_conn_legacy_violation_converts_without_retry()
 
 
 class _PoolCtx:
+    """asyncpg.PoolAcquireContext stand-in: BOTH awaitable and async-CM,
+    the real surface's documented dual shape (``await pool.acquire()`` /
+    ``async with pool.acquire()``). The retry guard's checkout uses the
+    await form plus an explicit ``pool.release(conn, timeout=...)``."""
+
     def __init__(self, conn: _FakeEnqueueConn) -> None:
         self._conn = conn
 
@@ -786,3 +1004,6 @@ class _PoolCtx:
 
     async def __aexit__(self, *args: object) -> None:
         pass
+
+    def __await__(self):
+        return self.__aenter__().__await__()

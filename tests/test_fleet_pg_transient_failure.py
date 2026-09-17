@@ -35,14 +35,14 @@ attempt finishing is the implementation's business. Where a job ends up is not.
 from __future__ import annotations
 
 import asyncio
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from urllib.parse import urlparse, urlunparse
 
 import asyncpg
 import pytest
 
-from taskq._ids import new_base62
-from taskq.backend._protocol import JobFilter, JobId
+from taskq._ids import new_base62, new_uuid
+from taskq.backend._protocol import EnqueueArgs, JobFilter, JobId
 from taskq.context import JobContext
 from taskq.testing.assertions import wait_for_condition
 from tests._fleet import Fleet, FleetPayload, fleet_actor_config, open_fleet
@@ -79,6 +79,20 @@ def _interrupt_scoped_dsn(pg_dsn: str, schema: str) -> str:
         else f"{parsed.query}&application_name={schema}"
     )
     return urlunparse(parsed._replace(query=query))
+
+
+def _enqueue_args(job_id: JobId, round_index: int, index: int) -> EnqueueArgs:
+    """One plain (un-keyed, un-capped) enqueue: the autocommit INSERT arm
+    whose retry-duplication risk #236 describes."""
+    return EnqueueArgs(
+        id=job_id,
+        actor=_ACTOR,
+        queue=_QUEUE,
+        payload={"marker": f"{_ACTOR}-{round_index}-{index}"},
+        max_attempts=3,
+        retry_kind="transient",
+        scheduled_at=datetime.now(UTC) - timedelta(seconds=1),
+    )
 
 
 async def _interrupt_database(dsn: str) -> int:
@@ -436,3 +450,95 @@ async def test_bulk_cancel_recovers_typed_after_the_database_drops_its_connectio
                 "_with_fresh_connection_retry exists to absorb, not recovered "
                 "on this path"
             ) from exc
+
+
+async def test_enqueue_racing_the_interruption_never_duplicates_committed_work(
+    pg_dsn: str,
+) -> None:
+    """#236's duplication half, against a real interrupted Postgres.
+
+    An enqueue is one autocommit INSERT under the dead-on-acquire retry
+    guard. When the server's FATAL parks a pooled connection between the
+    INSERT's acknowledgement and the pool's release-time reset, the
+    unguarded wrapper read the release's ``InternalClientError`` as
+    dead-on-acquire and re-ran the enqueue: the SAME ``args.id`` was
+    inserted twice and the job ran twice. The guard now marks the write
+    at its acknowledgement (refusing any retry past that point) and its
+    bounded checkout never lets a release failure masquerade as an op
+    failure.
+
+    The parked window itself (the sub-millisecond gap between the FATAL's
+    arrival and ``connection_lost``) is intermittent by nature, so this
+    pin holds the INVARIANT rather than the interleave: it passes
+    whenever the race never fires, and it catches the duplication
+    whenever it does. A mid-QUERY kill is deliberately tolerated per
+    enqueue (the statement dies with the backend; whether the server
+    committed before processing the terminate is unknowable from the
+    client) -- the invariant is that no enqueue's id ever lands TWICE,
+    which is exactly what an unguarded re-run produced.
+    """
+    schema = f"fleet_pgfail_enq_{new_base62()}".lower()
+    dsn = _interrupt_scoped_dsn(pg_dsn, schema)
+    async with open_fleet(
+        dsn,
+        schema=schema,
+        pods=("pod-1",),
+        actors=((_ACTOR, _QUEUE),),
+    ) as fleet:
+        attempted: list[JobId] = []
+        acknowledged: list[JobId] = []
+        ambiguous = 0
+        interruptions = 0
+        for round_index in range(6):
+            for index in range(2):
+                job_id = JobId(new_uuid())
+                attempted.append(job_id)
+                try:
+                    await fleet.pod("pod-1").backend.enqueue(
+                        _enqueue_args(job_id, round_index, index)
+                    )
+                    acknowledged.append(job_id)
+                except (asyncpg.InterfaceError, asyncpg.PostgresError, OSError):
+                    # A mid-query kill: the statement died with the backend.
+                    # Whether it committed first is ambiguous; the row-level
+                    # assertions below police what actually landed.
+                    ambiguous += 1
+            # Interrupt between rounds so the next enqueues race whatever
+            # parked/dead connections the kill left in the pod's pool --
+            # the dead-on-acquire window the retry guard covers.
+            interruptions += await _interrupt_database(dsn)
+        assert interruptions > 0, (
+            "the scenario requires the database to have actually dropped the "
+            "pod's connections; no sessions were terminated"
+        )
+
+        # Verify over a FRESH untagged connection: the fleet harness's own
+        # fetch rides the pod's (just-killed) pool and can hit the very
+        # parked window under test.
+        verify = await asyncpg.connect(pg_dsn)
+        try:
+            rows = await verify.fetch(
+                f'SELECT id FROM "{schema}".jobs WHERE actor = $1',  # noqa: S608  # Why: schema is this test's own generated identifier (new_base62); every user-supplied value is $-bound.
+                _ACTOR,
+            )
+        finally:
+            await verify.close()
+        landed = [row["id"] for row in rows]
+
+        assert len(set(landed)) == len(landed), (
+            f"job ids landed twice: {len(landed) - len(set(landed))} duplicate "
+            "rows across the interruption. An enqueue whose INSERT was "
+            "acknowledged is committed (autocommit); re-running it inserts "
+            "the SAME id a second time and the job runs twice -- the "
+            "unguarded retry's exact behavior on a release-time "
+            "InternalClientError (#236)"
+        )
+        assert set(landed) <= set(attempted), "rows appeared that no enqueue issued"
+        assert set(acknowledged) <= set(landed), (
+            "an enqueue that returned a row is not in the table: acknowledged "
+            "work vanished across the interruption"
+        )
+        assert len(landed) >= len(acknowledged), (
+            f"only {len(landed)} of {len(acknowledged)} acknowledged enqueues "
+            "landed -- acknowledged autocommit writes must be durable"
+        )
