@@ -78,19 +78,40 @@ __all__ = [
 #: would delete every outer frame after it -- destroying the diagnostic while
 #: appearing to work on a single-exception test.
 #:
-#: The optional ``(?:[ \t]*[|+][ \t]*)*`` prefix absorbs
-#: ``traceback.format_exception``'s ``ExceptionGroup`` rendering, which
-#: indents every line of a sub-exception with a repeated ``| `` (or, on a
-#: group's own header/separator lines, ``+``) marker -- one added layer per
-#: level of nesting -- before the exception's own text. Without it, a DETAIL
-#: line inside a grouped or ``except*``-caught sub-exception reads
+#: The ``[ \t|+]*`` prefix absorbs ``traceback.format_exception``'s
+#: ``ExceptionGroup`` rendering, which indents every line of a sub-exception
+#: with a repeated ``| `` (or, on a group's own header/separator lines,
+#: ``+``) marker -- one added layer per level of nesting -- before the
+#: exception's own text. Without it, a DETAIL line inside a grouped or
+#: ``except*``-caught sub-exception reads
 #: ``    | DETAIL:  Key (...)=(...) already exists.`` and the anchor on a
 #: bare ``^[ \t]*`` never reaches past the marker, so the row value ships to
 #: the span/log unredacted. The prefix is still consumed only when it is
 #: immediately followed by ``DETAIL:`` -- a header line such as
 #: ``  | ExceptionGroup: ...`` does not itself start with ``DETAIL:`` and so
 #: is not touched.
-_PG_DETAIL_RE = re.compile(r"^(?:[ \t]*[|+][ \t]*)*[ \t]*DETAIL:.*$", re.MULTILINE)
+#:
+#: Why ONE character class and not the marker-shaped
+#: ``(?:[ \t]*[|+][ \t]*)*`` it replaced: the two accept exactly the same
+#: prefixes (every prefix they match is a run of spaces, tabs and ``|``/``+``
+#: -- a marker run is N zero-whitespace repetitions, the whitespace around
+#: each marker rides a repetition's ``[ \t]*`` arms or the trailing one),
+#: but the class matches in a single pass. The nested form put a quantifier
+#: (``[ \t]*``) inside another quantifier (the marker group's ``*``), so a
+#: long marker run with no ``DETAIL:`` after it could be partitioned across
+#: the repetitions in exponentially many ways and the engine tried them all:
+#: ~60 ms of scrub at 20 markers, ~4x that per marker pair added, seconds by
+#: the mid-20s and effectively unbounded beyond -- on a pass that runs
+#: synchronously on the event loop (the failed-attempt scrub, behind the
+#: ``"DETAIL:" in text`` prefilter, so one DETAIL line anywhere in the text
+#: plus one marker-heavy line is enough). A poison job whose message echoes
+#: that shape stalls every heartbeat with it until the watchdog dumps the
+#: worker (5 s) and then kills it (30 s), deterministically, on every retry.
+#: A character class has no nested quantifier to re-partition, so the match
+#: is linear in the line whatever it carries;
+#: ``test_detail_scrub_stays_under_a_time_bound_on_marker_runs`` pins the
+#: budget and ``test_no_nested_quantifier_regexes_in_taskq_obs`` the shape.
+_PG_DETAIL_RE = re.compile(r"^[ \t|+]*DETAIL:.*$", re.MULTILINE)
 
 #: Companion to :data:`_PG_DETAIL_RE` for ``repr()``-flattened text.
 #: ``repr(exc)`` renders the newline before DETAIL as the two

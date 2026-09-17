@@ -19,6 +19,7 @@ identifiers.
 from __future__ import annotations
 
 import ast
+import re
 
 import asyncpg
 import pytest
@@ -1065,3 +1066,389 @@ def test_sslpassword_libpq_form_at_end_of_string_is_masked() -> None:
     hand-built conninfo string)."""
     safe = safe_exception_message(Exception("host=db user=app sslpassword=hunter2"))
     assert safe == "host=db user=app sslpassword=***"
+
+
+# ── the marker prefix must stay LINEAR under adversarial input (#248) ──
+#
+# _PG_DETAIL_RE's ExceptionGroup marker prefix was originally spelled
+# ``(?:[ \t]*[|+][ \t]*)*`` -- a quantifier inside a quantifier. Given one
+# DETAIL line anywhere in the text (all the ``"DETAIL:" in text`` prefilter
+# needs) plus a line of markers with no DETAIL after it, the engine
+# re-partitioned the marker run across the repetitions in exponentially
+# many ways and tried them all: ~60 ms at 20 markers, ~4x per marker pair
+# added, effectively unbounded past the mid-20s. The scrub runs
+# synchronously on the event loop (the failed-attempt, dispatch-error and
+# cron paths), so a poison job whose message echoes that shape held off
+# every heartbeat with it until the watchdog dumped the loop (5 s) and then
+# killed the worker (30 s) -- deterministically, on every retry. The pins
+# below: a time budget no super-linear matcher can meet, byte-for-byte
+# equivalence with the retired pattern (the one-pass fix must not scrub a
+# byte more or less), and a structural guard so the nested-quantifier shape
+# cannot quietly return in any regex the obs package compiles.
+
+#: The retired, catastrophically-backtracking form of _PG_DETAIL_RE, kept
+#: verbatim as the equivalence oracle: the one-pass character class that
+#: replaced it must accept exactly the same marker-prefixed DETAIL lines.
+_RETIRED_MARKER_PREFIX_DETAIL_RE = re.compile(
+    r"^(?:[ \t]*[|+][ \t]*)*[ \t]*DETAIL:.*$", re.MULTILINE
+)
+
+#: Wall-clock budget for one scrub of a pathological subject. The one-pass
+#: pattern measures in single-digit milliseconds at 100k markers, so this is
+#: ~60x headroom for CI noise -- while no super-linear matcher can meet it
+#: (quadratic at 100k markers is minutes; the retired exponential form does
+#: not finish at all past ~30).
+_SCRUB_BUDGET_SECS = 0.25
+
+
+def test_detail_scrub_stays_under_a_time_bound_on_marker_runs() -> None:
+    """The scrub must stay linear on the inputs that made the retired
+    pattern exponential: a marker-heavy line (with or without whitespace,
+    before or after a DETAIL anchor) in text that carries one DETAIL line
+    somewhere, and the repr()-flattened delimiter-miss shape.
+
+    Why synthetic marker runs and not only a deep ExceptionGroup:
+    ``traceback`` truncates group rendering at ``max_group_depth`` (10), so
+    an organically rendered traceback tops out near nine marker levels --
+    harmless for even the retired pattern. The blowup needs ~20+ markers on
+    one line, which reaches the scrub as adversarial text echoed into an
+    exception MESSAGE (an actor formatting a traceback into its message, a
+    PG error echoing operator text) -- the poison-job shape modelled here.
+    """
+    import time
+
+    from taskq.obs._redact_exc import scrub_exception_field
+
+    cases: list[tuple[str, str]] = [
+        # The poison-message shape: a real DETAIL line plus a 2000-marker
+        # line with no DETAIL on it (the anchored match FAILS on that line,
+        # which is where the retired pattern re-partitioned the run).
+        (
+            "poison-message-marker-run",
+            "DETAIL: Key (idempotency_key)=(v) exists.\n"
+            + "| " * 2_000
+            + "echoed text, no DETAIL on this line\n",
+        ),
+        # Scaling legs: 100k markers kill a merely-quadratic regression,
+        # not just the exponential one.
+        ("marker-run-100k", "DETAIL: legit\n" + "| " * 100_000 + "tail\n"),
+        ("dense-marker-run-100k", "DETAIL: legit\n" + "|" * 100_000 + "\n"),
+        ("markers-before-detail-100k", "| " * 100_000 + "DETAIL: secret row value\n"),
+        # The escaped-newline companion's fail-closed leg: a DETAIL whose
+        # tail matches no safe delimiter scrubs through end of line, over a
+        # 100k run of closers.
+        (
+            "repr-escaped-delimiter-miss-100k",
+            "RuntimeError('some failure\\nDETAIL: Key (k)=(sec) exists. " + ")" * 100_000 + " x",
+        ),
+    ]
+    for label, text in cases:
+        start = time.perf_counter()
+        scrubbed = scrub_exception_field("error_traceback", text)
+        elapsed = time.perf_counter() - start
+        assert elapsed < _SCRUB_BUDGET_SECS, (
+            f"{label}: scrubbing took {elapsed * 1000:.1f} ms -- a super-linear "
+            "marker-prefix matcher is back, and this scrub runs on the event "
+            "loop where seconds per failed job arm the watchdog's kill path"
+        )
+        assert isinstance(
+            scrubbed, str
+        )  # Why: narrows the object return for the membership assert below.
+        # Non-vacuous: the subject really exercised the DETAIL scrub, so the
+        # budget was spent on the work, not skipped by a prefilter miss.
+        assert "DETAIL:" not in scrubbed, label
+
+
+def test_detail_scrub_stays_bounded_on_a_rendered_exception_group() -> None:
+    """The organic shape: a nested ExceptionGroup wrapping a PG error,
+    rendered by ``traceback.format_exception`` and scrubbed whole.
+
+    Depth 8 renders the inner DETAIL line (inside ``max_group_depth``), so
+    the scrub really has marker-prefixed work to do; depth 30 exercises the
+    truncated rendering path. Both must stay inside the same budget.
+    """
+    import time
+
+    from taskq.obs._redact_exc import render_exception
+
+    def _deep_group(levels: int) -> BaseException:
+        exc: BaseException = _unique_violation("Key (idempotency_key)=(cust-88) exists.")
+        for depth in range(levels):
+            try:
+                raise exc
+            except Exception as caught:  # Why: re-raising the accumulated chain is what gives each level a real traceback; the group is the shape under test, not the handler.
+                exc = ExceptionGroup(f"layer-{depth}", [caught])
+        return exc
+
+    try:
+        raise _deep_group(8)
+    except BaseException as group8:
+        rendered = render_exception(group8)
+        assert "cust-88" in rendered.raw_stacktrace, (
+            "precondition: the 8-deep render must carry the DETAIL line the "
+            "scrub exists to drop, or the budget below proves nothing"
+        )
+        start = time.perf_counter()
+        scrubbed = render_exception(group8)
+        elapsed = time.perf_counter() - start
+        assert elapsed < _SCRUB_BUDGET_SECS, (
+            f"8-deep group render+scrub took {elapsed * 1000:.1f} ms"
+        )
+        assert "cust-88" not in scrubbed.stacktrace
+        assert "cust-88" not in scrubbed.message
+
+    try:
+        raise _deep_group(30)
+    except BaseException as group30:
+        start = time.perf_counter()
+        render_exception(group30)
+        elapsed = time.perf_counter() - start
+        assert elapsed < _SCRUB_BUDGET_SECS, (
+            f"30-deep group render+scrub took {elapsed * 1000:.1f} ms"
+        )
+
+
+def test_detail_pattern_accepts_the_same_lines_as_the_retired_marker_shape() -> None:
+    """The one-pass ``[ \\t|+]*`` prefix must scrub byte-for-byte identically
+    to the retired ``(?:[ \\t]*[|+][ \\t]*)*`` form on every input --
+    realistic PG traces, real rendered ExceptionGroups, adversarial marker
+    runs, and a randomized sweep over the prefix alphabet.
+
+    Equivalence is the whole safety argument of the fix: the retired form's
+    accepted-prefix language is exactly "any run of spaces, tabs and
+    ``|``/``+`` markers", which is what the character class spells directly,
+    so swapping it cannot over-scrub (lose a diagnostic line) or under-scrub
+    (ship a row value) anywhere the old one was correct.
+    """
+    import random
+    import traceback as traceback_mod
+
+    from taskq.obs._redact_exc import (
+        _PG_DETAIL_RE,  # pyright: ignore[reportPrivateUsage]  # Why: the module's own pattern is the object under test; the public behaviour pins live in the byte-identical cases above.
+    )
+
+    corpus: list[str] = [
+        # Realistic PG error text: primary template, DETAIL, HINT, CONTEXT.
+        'duplicate key value violates unique constraint "jobs_pkey"\n'
+        "DETAIL:  Key (idempotency_key)=(tenant-4417-ssn) already exists.\n"
+        'HINT:  Perhaps "idempotency_key" is unique for a reason.\n'
+        "CONTEXT:  PL/pgSQL function taskq.enqueue(text) line 12 at SQL statement",
+        "error:\n  DETAIL: Key (k)=(v) exists.\nHINT: check",
+        "detail: lowercase is not Postgres's spelling",
+        # Marker-prefixed DETAIL lines at every organic nesting depth.
+        "| DETAIL:  Key (k)=(v)",
+        "| | DETAIL:  Key (k)=(v)",
+        "| | | | DETAIL:  Key (k)=(v)",
+        "\t| \t+ DETAIL: mixed markers",
+        # Group header/separator lines: must SURVIVE both patterns.
+        "  | ExceptionGroup: layer-0 (1 sub-exception)",
+        "  +-+---------------- 1 ----------------",
+        "| HINT:  structural, kept",
+        # Adversarial marker runs, with and without a DETAIL anchor. Runs
+        # stay at <=16 markers BECAUSE the retired oracle is itself
+        # exponential on a failing marker run (the perf pin above holds the
+        # 100k-marker legs; 2^16 partitions is already far more re-split
+        # ambiguity than any real prefix produces).
+        "| " * 16,
+        "|" * 16,
+        "+|" * 8 + " DETAIL: after dense run",
+        "| " * 16 + "DETAIL: after spaced run",
+        "| " * 16 + "no detail here",
+        "no markers at all",
+        "",
+    ]
+
+    # Real rendered groups at depths 1-3 (the depths that render inside
+    # max_group_depth), each with a DETAIL-bearing PG error at the bottom.
+    for levels in (1, 2, 3):
+        exc: BaseException = _unique_violation("Key (identity_key)=(subject-31337) exists.")
+        for depth in range(levels):
+            try:
+                raise exc
+            except Exception as caught:  # Why: same construction as the perf pin -- a real traceback per level is the organic rendering under test.
+                exc = ExceptionGroup(f"layer-{depth}", [caught])
+        try:
+            raise exc
+        except BaseException as group:
+            corpus.append(
+                "".join(traceback_mod.format_exception(type(group), group, group.__traceback__))
+            )
+
+    # Randomized sweep over the alphabet the two prefixes can disagree on:
+    # marker/whitespace runs, the DETAIL anchor, and filler text around
+    # them, at random line positions.
+    rng = random.Random(20260917)  # noqa: S311  # Why: a fixed seed keeps the equivalence sweep deterministic; nothing cryptographic.
+    alphabet = [" ", "\t", "|", "+", "DETAIL:", "x", "Key (k)=(v)", "HINT:", "\n"]
+    for _ in range(60):
+        lines = [
+            [rng.choice(alphabet) for _ in range(rng.randint(1, 12))]
+            for _ in range(rng.randint(2, 25))
+        ]
+        # Guarantee the scrub has something to do in most (not all) sweeps:
+        # a DETAIL-less text pins the no-match path just as tightly.
+        if rng.random() < 0.8:
+            lines[rng.randrange(len(lines))].append("DETAIL: seeded")
+        corpus.append("\n".join("".join(parts) for parts in lines))
+
+    scrubbed_any = False
+    for text in corpus:
+        expected = _RETIRED_MARKER_PREFIX_DETAIL_RE.sub("", text)
+        actual = _PG_DETAIL_RE.sub("", text)
+        assert actual == expected, (
+            "the one-pass marker prefix scrubbed differently than the retired "
+            f"form on {text!r} -- the fix must be pure performance, never a "
+            "semantic change: expected (retired) "
+            f"{expected!r}, got (current) {actual!r}"
+        )
+        scrubbed_any = scrubbed_any or actual != text
+    assert scrubbed_any, "the corpus scrubbed nothing -- the equivalence above passed vacuously"
+
+
+def test_no_nested_quantifier_regexes_in_taskq_obs() -> None:
+    """Structural guard: no regex compiled anywhere in ``taskq.obs`` may put
+    a quantifier inside a quantifier -- the catastrophic-backtracking shape
+    that made the retired _PG_DETAIL_RE exponential (#248).
+
+    Every pattern here runs on text an actor or a database error chose
+    (exception messages, tracebacks), on the event loop, at error-storm
+    rates -- a hostile message must not be able to spend seconds in a
+    scrub. The check walks the parsed pattern tree: a plain ``*``/``+``/
+    ``{m,n}``/lazy repeat whose body contains another plain repeat can be
+    re-partitioned by backtracking in exponentially many ways.
+
+    Two deliberate scope limits, both stated so the next author knows the
+    guard's edge: an ``ATOMIC_GROUP`` / possessive-repeat boundary is not
+    crossed for the containment check (an outer quantifier cannot
+    re-partition what an atomic group committed -- though a nested pair
+    fully INSIDE one is still flagged by the recursion, since it explodes
+    within its own single match attempt); and the overlapping-alternation
+    shape (``(?:a|a)*``, equally catastrophic, equally absent here) is not
+    analysed -- an alternation inside a repeat must keep DISJOINT first
+    characters, the way ``'(?:[^'\\\\]|\\\\.)*'`` does. Unknown opcodes fail
+    the test rather than pass silently, so the guard extends consciously.
+    """
+    import importlib
+    from pathlib import Path
+    from types import ModuleType
+    from typing import Any
+
+    import taskq.obs as obs_pkg
+
+    # Runtime-resolved and held as Any, deliberately: the pattern-tree
+    # walker needs the parser's own opcode vocabulary, which re exposes
+    # only as private submodules (re._parser / re._constants -- no public
+    # API, no type stubs), and importlib keeps the guard working on every
+    # interpreter that can run the suite while pyright stays quiet without
+    # a blanket ignore.
+    sre_parser: Any = importlib.import_module("re._parser")
+    sre_constants: Any = importlib.import_module("re._constants")
+
+    _plain_repeats = (sre_constants.MAX_REPEAT, sre_constants.MIN_REPEAT)
+    _breakers = {sre_constants.ATOMIC_GROUP, sre_constants.POSSESSIVE_REPEAT}
+    _leaves = {
+        sre_constants.LITERAL,
+        sre_constants.NOT_LITERAL,
+        sre_constants.IN,
+        sre_constants.ANY,
+        sre_constants.AT,
+        sre_constants.CATEGORY,
+        sre_constants.GROUPREF,
+    }
+
+    def _subtrees(op: Any, av: Any) -> list[list[Any]]:
+        """The nested node lists *op* carries; leaf opcodes carry none."""
+        if op in _leaves:
+            return []
+        if op in _plain_repeats or op is sre_constants.POSSESSIVE_REPEAT:
+            return [av[2]]
+        if op is sre_constants.ATOMIC_GROUP:
+            return [av]
+        if op is sre_constants.SUBPATTERN:
+            return [av[3]]
+        if op is sre_constants.BRANCH:
+            return list(av[1])
+        if op in (sre_constants.ASSERT, sre_constants.ASSERT_NOT):
+            return [av[1]]
+        if op is sre_constants.GROUPREF_EXISTS:
+            return [av[1], av[2]]
+        raise AssertionError(
+            f"pattern-tree walker met an opcode it does not know ({op!r}) -- "
+            "extend the container/leaf maps here rather than let a new regex "
+            "construct pass this guard unchecked"
+        )
+
+    def _contains_plain_repeat(nodes: list[Any], *, cross_breakers: bool) -> bool:
+        for op, av in nodes:
+            if op in _plain_repeats:
+                return True
+            if op in _breakers and not cross_breakers:
+                continue
+            if any(
+                _contains_plain_repeat(sub, cross_breakers=cross_breakers)
+                for sub in _subtrees(op, av)
+            ):
+                return True
+        return False
+
+    def _offenders(nodes: list[Any]) -> list[str]:
+        found: list[str] = []
+        for op, av in nodes:
+            # The containment check stops at atomic/possessive boundaries:
+            # an outer repeat cannot re-partition what they committed. The
+            # recursion below still crosses them, since a nested pair inside
+            # one explodes within its own single match attempt.
+            if op in _plain_repeats and _contains_plain_repeat(av[2], cross_breakers=False):
+                found.append(f"repeat body contains another repeat: {op!r} over {av[2]!r}")
+            for sub in _subtrees(op, av):
+                found.extend(_offenders(sub))
+        return found
+
+    def _pattern_offenders(pattern: re.Pattern[str]) -> list[str]:
+        return _offenders(sre_parser.parse(pattern.pattern, pattern.flags))
+
+    # Non-vacuity first: the guard must fire on the retired shape (and on
+    # the textbook nested-quantifier forms), or it cannot be trusted to
+    # catch a regression of #248.
+    for bad in (
+        r"^(?:[ \t]*[|+][ \t]*)*[ \t]*DETAIL:.*$",
+        r"(a+)+b",
+        r"(?:a*b)*c",
+        r"(a*)*b",
+    ):
+        assert _pattern_offenders(re.compile(bad)), (
+            f"the nested-quantifier walker failed to flag the known-catastrophic {bad!r} "
+            "-- the guard is vacuous and cannot be trusted"
+        )
+    # And it must NOT flag the mitigated shapes an author might reasonably
+    # reach for (atomic/possessive boundaries), or it would cry wolf.
+    for ok in (
+        r"(?>a*)b",
+        r"(?:(?>a*b*))*c",
+        r"a*+b",
+    ):
+        assert _pattern_offenders(re.compile(ok)) == [], (
+            f"the walker flagged the mitigated pattern {ok!r} -- atomic/possessive "
+            "boundaries must not count as nested quantifiers"
+        )
+
+    # The actual audit: every regex compiled by every module of the obs
+    # package (file-driven, so a new module is covered the day it lands).
+    pkg_dir = Path(obs_pkg.__file__).resolve().parent
+    checked = 0
+    for path in sorted(pkg_dir.glob("*.py")):
+        mod_name = "taskq.obs" if path.stem == "__init__" else f"taskq.obs.{path.stem}"
+        module: ModuleType = importlib.import_module(mod_name)
+        for attr_name, attr in vars(module).items():
+            if not isinstance(attr, re.Pattern) or attr_name.startswith("__"):
+                continue
+            checked += 1
+            offenders = _pattern_offenders(attr)
+            assert offenders == [], (
+                f"{mod_name}.{attr_name} ({attr.pattern!r}) carries the "
+                f"nested-quantifier shape that made exception redaction "
+                f"exponential on hostile input (#248): {offenders}"
+            )
+    assert checked >= 4, (
+        "the audit found fewer compiled regexes than the obs package is known "
+        "to carry -- the walker is probably reading the wrong modules"
+    )
