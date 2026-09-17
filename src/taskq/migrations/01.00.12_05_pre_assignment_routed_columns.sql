@@ -48,8 +48,10 @@
 -- as their own migrations, each with the narrowest lock its work allows:
 -- the backfill as 01.00.12_07 (ROW EXCLUSIVE — blocks neither readers
 -- nor other writers) and the index builds as 01.00.12_08 (SHARE —
--- blocks writes, never reads, one build per transaction so the writes
--- queued behind one build drain before the next asks for the table).
+-- blocks writes, never reads; that file's builds share its ONE
+-- transaction, so its write-block window is the sum of both builds and
+-- the writes queued behind them drain when the FILE commits, before
+-- the next file asks for the table).
 -- The ACCESS EXCLUSIVE window here is exactly the two catalog writes
 -- plus the commit.
 --

@@ -8,11 +8,15 @@ Three pin families:
    the columns file holds ONLY the two metadata-only ALTERs (whose ACCESS
    EXCLUSIVE is held for milliseconds), the backfill file ONLY the
    bounded UPDATE (ROW EXCLUSIVE — blocks neither readers nor writers),
-   the index files ONLY their CREATE INDEX statements (SHARE, one build
-   per transaction, so the writes queued behind one build drain before
-   the next asks for the table). The original single-transaction form
-   held ACCESS EXCLUSIVE across the backfill and both full-table index
-   builds (#250). The dead pair (01.00.11_01's create +
+   the index files ONLY their CREATE INDEX statements (SHARE). The
+   runner wraps each FILE — not each statement — in one transaction, so
+   a file's builds share ONE write-block window (its duration is the
+   sum of the file's builds, with no drain between builds inside a
+   file) and the writes queued behind it drain only between FILES.
+   What the split bounds is the window per file plus the lock MODE —
+   the original single-file form held ACCESS EXCLUSIVE, which blocks
+   reads too, across the ALTERs, the backfill and both builds in ONE
+   window (#250). The dead pair (01.00.11_01's create +
    01.00.12_05:post's drop of ``jobs_repended_probe_idx``, referenced by
    no code at HEAD) is gone from the bundled set entirely (#243).
 
@@ -172,10 +176,13 @@ def test_backfill_file_holds_only_the_bounded_update() -> None:
 
 
 def test_probe_index_files_hold_only_their_builds() -> None:
-    """Each index build is its own transaction's only table-sized work, so
-    the writes queued behind one build drain before the next asks for the
-    table (#250). The end-state definitions are byte-preserved from the
-    original single-file round."""
+    """A file's builds share its ONE transaction (the runner wraps each
+    FILE, not each statement — the doctrine 01.00.12_06's own header
+    states), so the write-block window is the file's builds summed and
+    drains only between files; what the split bounds is the window per
+    FILE and the lock MODE (SHARE blocks writes only; the original
+    ACCESS EXCLUSIVE blocked reads too) (#250). The end-state
+    definitions are byte-preserved from the original single-file round."""
     routed = _rendered("01.00.12_08_pre_assignment_routed_probe_indexes.sql")
     assert _statement_kinds(routed) == ["CREATE INDEX", "CREATE INDEX"]
     routed_bodies = _statement_bodies(routed)
