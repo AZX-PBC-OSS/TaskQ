@@ -406,6 +406,65 @@ async def _post_write_row(backend: Backend, job: JobRow) -> JobRow:
     return updated
 
 
+async def _report_terminal_failure(
+    *,
+    span: trace.Span,
+    log: structlog.stdlib.BoundLogger,
+    job: JobRow,
+    updated_row: JobRow,
+    exc: BaseException,
+    error_info: ErrorInfo,
+    log_message: str,
+    log_traceback: str,
+    cause: str,
+    retryable: bool,
+    actor_config: ActorConfigLike,
+    error_reporter: ErrorReporter | None,
+) -> None:
+    """Announce a failure the terminal write just made final — once, and
+    the same way however the job got there.
+
+    The span event, the ``running -> failed`` state change, the
+    ``job-failed`` ERROR line, the ``on_retry_exhausted`` hook and the
+    :class:`ErrorReporter` are the whole set of terminal-failure signals;
+    both the decision's own Fail and a Retry the row's
+    ``schedule_to_close`` deadline refused at the write (``cause`` is
+    then ``DeadlineExceeded``) go through here, so no terminal failure is
+    silent to the alerting contract or to the reporter.
+    """
+    span.add_event(
+        "lifecycle.failed",
+        attributes={
+            "from_state": "running",
+            "to_state": "failed",
+            "error_class": cause if cause == "DeadlineExceeded" else error_info.error_class,
+        },
+    )
+    log_state_change(
+        log,
+        from_state="running",
+        to_state="failed",
+        cause=type(exc).__name__,
+        retryable=retryable,
+    )
+    _log_job_failed(
+        log,
+        job,
+        cause=cause,
+        error_class=error_info.error_class,
+        error_message=log_message,
+        error_traceback=log_traceback,
+    )
+    await invoke_on_retry_exhausted(
+        actor_config.on_retry_exhausted,
+        updated_row,
+        exc,
+        actor_config.on_retry_exhausted_timeout,
+        log=log,
+    )
+    await invoke_error_reporter(error_reporter, updated_row, exc, log=log)
+
+
 async def _handle_timeout(
     backend: Backend,
     job: JobRow,
@@ -492,6 +551,26 @@ async def _handle_timeout(
                 cause=type(exc).__name__,
             )
             return "noop"
+        if updated_row.status == "failed":
+            # The write's deadline arm refused the retry: the row's
+            # schedule_to_close lies before the next dispatch, so the
+            # backend landed it failed with DeadlineExceeded — a terminal
+            # failure, reported exactly like a Fail decision.
+            await _report_terminal_failure(
+                span=span,
+                log=log,
+                job=job,
+                updated_row=updated_row,
+                exc=exc,
+                error_info=error_info,
+                log_message=log_message,
+                log_traceback=log_traceback,
+                cause="DeadlineExceeded",
+                retryable=True,
+                actor_config=actor_config,
+                error_reporter=error_reporter,
+            )
+            return "failed"
         span.add_event(
             "lifecycle.scheduled",
             attributes={
@@ -506,8 +585,6 @@ async def _handle_timeout(
             to_state="scheduled",
             cause=type(exc).__name__,
         )
-        if updated_row.status == "failed":
-            return "failed"
         return "scheduled"
     else:
         updated_row = await _terminal_write_with_retry(
@@ -535,41 +612,19 @@ async def _handle_timeout(
                 cause=type(exc).__name__,
             )
             return "noop"
-        span.add_event(
-            "lifecycle.failed",
-            attributes={
-                "from_state": "running",
-                "to_state": "failed",
-                "error_class": error_info.error_class,
-            },
-        )
-        log_state_change(
-            log,
-            from_state="running",
-            to_state="failed",
-            cause=type(exc).__name__,
-            retryable=decision.retryable,
-        )
-        _log_job_failed(
-            log,
-            job,
+        await _report_terminal_failure(
+            span=span,
+            log=log,
+            job=job,
+            updated_row=updated_row,
+            exc=exc,
+            error_info=error_info,
+            log_message=log_message,
+            log_traceback=log_traceback,
             cause=decision.error_class,
-            error_class=error_info.error_class,
-            error_message=log_message,
-            error_traceback=log_traceback,
-        )
-        await invoke_on_retry_exhausted(
-            actor_config.on_retry_exhausted,
-            updated_row,
-            exc,
-            actor_config.on_retry_exhausted_timeout,
-            log=log,
-        )
-        await invoke_error_reporter(
-            error_reporter,
-            updated_row,
-            exc,
-            log=log,
+            retryable=decision.retryable,
+            actor_config=actor_config,
+            error_reporter=error_reporter,
         )
         return "failed"
 
@@ -960,6 +1015,24 @@ async def _handle_generic_exception(
                 cause=type(e).__name__,
             )
             return "noop"
+        if updated_row.status == "failed":
+            # The write's deadline arm refused the retry — see
+            # _handle_timeout's retry branch.
+            await _report_terminal_failure(
+                span=span,
+                log=log,
+                job=job,
+                updated_row=updated_row,
+                exc=e,
+                error_info=error_info,
+                log_message=log_message,
+                log_traceback=log_traceback,
+                cause="DeadlineExceeded",
+                retryable=True,
+                actor_config=actor_config,
+                error_reporter=error_reporter,
+            )
+            return "failed"
         span.add_event(
             "lifecycle.scheduled",
             attributes={
@@ -974,8 +1047,6 @@ async def _handle_generic_exception(
             to_state="scheduled",
             cause=type(e).__name__,
         )
-        if updated_row.status == "failed":
-            return "failed"
         return "scheduled"
     else:
         updated_row = await _terminal_write_with_retry(
@@ -1003,41 +1074,20 @@ async def _handle_generic_exception(
                 cause=type(e).__name__,
             )
             return "noop"
-        span.add_event(
-            "lifecycle.failed",
-            attributes={
-                "from_state": "running",
-                "to_state": "failed",
-                "error_class": (
-                    "DeadlineExceeded"
-                    if decision.error_class == "DeadlineExceeded"
-                    else type(e).__name__
-                ),
-            },
-        )
-        log_state_change(
-            log,
-            from_state="running",
-            to_state="failed",
-            cause=type(e).__name__,
-            retryable=decision.retryable,
-        )
-        _log_job_failed(
-            log,
-            job,
-            cause=decision.error_class,
-            error_class=error_info.error_class,
-            error_message=log_message,
-            error_traceback=log_traceback,
-        )
-        await invoke_on_retry_exhausted(
-            actor_config.on_retry_exhausted,
-            updated_row,
-            e,
-            actor_config.on_retry_exhausted_timeout,
+        await _report_terminal_failure(
+            span=span,
             log=log,
+            job=job,
+            updated_row=updated_row,
+            exc=e,
+            error_info=error_info,
+            log_message=log_message,
+            log_traceback=log_traceback,
+            cause=decision.error_class,
+            retryable=decision.retryable,
+            actor_config=actor_config,
+            error_reporter=error_reporter,
         )
-        await invoke_error_reporter(error_reporter, updated_row, e, log=log)
         return "failed"
 
 

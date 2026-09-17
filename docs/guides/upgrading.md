@@ -1057,7 +1057,10 @@ handlers emits exactly one `job_failed` ERROR event (`job_id`, `actor`,
 `attempt`, `cause`, `error_class`, plus handler context such as
 `snooze_count` / `consume_budget` / `bucket_name`) — one alertable event per
 dead job, and per-attempt diagnostics at WARNING so retryable attempts
-produce zero ERROR noise. Tracebacks are formatted from the explicit
+produce zero ERROR noise. A retry the row's `schedule_to_close` deadline
+refuses at the write (the job lands `failed` with `cause=DeadlineExceeded`)
+is a terminal failure like any other: it emits the same `job_failed` event
+and fires `on_retry_exhausted` and the `ErrorReporter` once. Tracebacks are formatted from the explicit
 exception object rather than the ambient `sys.exception()`, so handler
 invocations outside an `except` block no longer record `'NoneType: None'`.
 The `terminal-write-failed` event now includes `job_error_traceback` and
