@@ -415,9 +415,9 @@ class TestDeadlockRetry:
         """_cancel_where succeeds immediately without retry."""
         ps_row = self._ps_success_row()
         running_row = self._running_empty_row()
-        # Round 1 drains both arms (2 driving fetchrows); round 2 — the
+        # Round 1 drains both arms (2 driving fetchrows); round 2, the
         # #237 fixpoint's confirmation pass, which must run because round
-        # 1 made progress — windows both arms empty (2 more) and stops.
+        # 1 made progress, windows both arms empty (2 more) and stops.
         pool, conn = self._mock_pool_and_conn(
             fetch_rows=[
                 ps_row,

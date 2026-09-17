@@ -53,7 +53,7 @@ _START = datetime(2025, 1, 1, tzinfo=UTC)
 
 # Per-branch corpus: (branch name, max_attempts, cancel_phase).
 # "cancel_retryable" is the #238 pin: a cancel in flight outranks the
-# retry budget on BOTH backends — the pre-fix budget-first CASE (and its
+# retry budget on BOTH backends: the pre-fix budget-first CASE (and its
 # twin) re-pended this row 'pending' with the operator's cancel wiped.
 _BRANCHES: list[tuple[str, int, int]] = [
     ("retry", 3, 0),

@@ -453,10 +453,10 @@ _SWEEP_1_BODY = """\
 -- applied to its own deadline expression.
 --
 -- Cancel-state handling on reclaim (operator intent outranks retry
--- budget — the ordering #238 pinned, supersedes the old reset-on-
+-- budget, the ordering #238 pinned, supersedes the old reset-on-
 -- re-pend tradeoff):
 -- * Cancel branch (cancel_phase != 0, ANY budget): the row is
---   terminalised 'cancelled', NOT re-pended — the lock-holding
+--   terminalised 'cancelled', NOT re-pended: the lock-holding
 --   worker is the only writer that could honour the request
 --   cooperatively, and the carve-out above already gave that
 --   worker cancel_grace + cleanup_grace + 60s to finish; past it
@@ -468,7 +468,7 @@ _SWEEP_1_BODY = """\
 -- * Retry branch (cancel_phase = 0, budget remains): 'pending' on
 --   the reclaim delay. The row's cancel columns were already
 --   clean (the CASE fell through the cancel arm), so the re-pend
---   cannot hand a next claimant an inherited phase — the re-cancel
+--   cannot hand a next claimant an inherited phase: the re-cancel
 --   loop the old reset-on-re-pend spelling existed to prevent is
 --   now excluded structurally: no arm this statement owns can
 --   produce a re-pended row carrying cancel columns.
@@ -480,15 +480,15 @@ _SWEEP_1_BODY = """\
 -- THE SHAPE (vendor/river's JobCancel + JobRescuer): operator intent
 -- outranking reclaim-driven retry is river's pattern too. JobCancel
 -- (vendor/river/riverdriver/riverpgxv5/internal/dbsqlc/
--- river_job.sql:40-77) leaves a running row running — the cooperative
--- protocol belongs to the live holder — and stamps
+-- river_job.sql:40-77) leaves a running row running, the cooperative
+-- protocol belongs to the live holder, and stamps
 -- metadata.cancel_attempted_at "so that the rescuer knows not to
 -- rescue it, even if it gets stuck in the running state"; the rescuer
 -- (vendor/river/internal/maintenance/job_rescuer.go:195-259) checks
 -- that stamp and routes a stamped stuck job straight to 'cancelled',
 -- never into the retry decision. Two deliberate divergences here:
 -- the marker rides first-class columns (cancel_phase /
--- cancel_requested_at — readable as an audit trail and PRESERVED on
+-- cancel_requested_at, readable as an audit trail and PRESERVED on
 -- the terminal row) rather than a metadata JSONB stamp, and the
 -- terminalisation happens in THIS statement, under the grace ladder
 -- the carve-out above already waited out, rather than in a separate
@@ -613,15 +613,15 @@ SET status = CASE
         -- evaluated FIRST: a row carrying cancel_phase != 0 is
         -- terminalised 'cancelled' whether or not retries remain.
         -- The pre-reorder shape (budget first) re-pended such a row
-        -- and wiped its cancel columns — the operator's request
+        -- and wiped its cancel columns: the operator's request
         -- silently lost against a dead worker that could never
         -- honour it. Ordering cancel first cannot resurrect the
         -- re-cancel loop the reset was introduced to prevent: that
         -- loop required a RE-PENDED row still carrying cancel
         -- columns (each new claimant's cancel-poll re-raises the
         -- phase, and a reclaim that leaves the columns set re-pends
-        -- it again). The cancel arm never re-pends — it
-        -- terminalises — so no row it touches can re-enter the
+        -- it again). The cancel arm never re-pends, it
+        -- terminalises, so no row it touches can re-enter the
         -- claim/reclaim cycle, and the re-pend arm below now reads
         -- cancel_phase = 0 by construction (the CASE fell through
         -- the cancel arm), so the columns it resets were already
@@ -637,7 +637,7 @@ SET status = CASE
     lock_expires_at = NULL,
     -- The cancel columns survive exactly the arm that honoured
     -- them. A terminal 'cancelled' row keeps phase and
-    -- cancel_requested_at as its audit trail — the same doctrine
+    -- cancel_requested_at as its audit trail: the same doctrine
     -- every other terminal cancel path carries (mark_cancelled
     -- deliberately sets neither column, and mark_abandoned's
     -- cancel_phase = 2 guard reads them back). The re-pend and
@@ -656,14 +656,14 @@ SET status = CASE
     -- terminalises instead is not dispatchable, and the flag is inert.
     assignment_routed = true,
     -- The re-pend arm alone reschedules: its membership after the
-    -- reorder is exactly `cancel_phase = 0 AND {has_budget}` — the
+    -- reorder is exactly `cancel_phase = 0 AND {has_budget}`: the
     -- cancelled and crashed arms keep the row's own scheduled_at.
     scheduled_at = CASE
         WHEN j.cancel_phase = 0 AND {has_budget}
             THEN clock_timestamp() + {reclaim_delay}
         ELSE j.scheduled_at
     END,
-    -- finished_at is stamped on every terminal arm — cancelled (any
+    -- finished_at is stamped on every terminal arm: cancelled (any
     -- budget) and crashed alike. The pre-reorder spelling keyed on
     -- the budget alone, which after the reorder would leave a
     -- budget-carrying cancelled row with a NULL finished_at.

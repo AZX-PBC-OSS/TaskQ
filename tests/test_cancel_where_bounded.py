@@ -1526,15 +1526,15 @@ async def test_partial_drain_progress_is_durable_and_a_rerun_resumes(
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# LAYER 2b — the fixpoint rounds (#237): mid-drain re-pends behind the
+# LAYER 2b: the fixpoint rounds (#237). Mid-drain re-pends behind the
 # keyset cursor, and their termination/cost bound.
 #
 # The keyset cursor that keeps each batch cheap (perf-evidence-bulk-cancel.md)
 # has a blind spot no single pair of passes can close: a matching RUNNING row
 # rescheduled mid-drain (crash reclaim → pending, denial snooze → scheduled,
 # shutdown interrupt → pending, consumer retry → scheduled/pending) lands at
-# an id the pending arm's cursor has ALREADY passed, and the running arm —
-# strictly after it, matching only `running AND cancel_phase = 0` — cannot
+# an id the pending arm's cursor has ALREADY passed, and the running arm,
+# strictly after it, matching only `running AND cancel_phase = 0`, cannot
 # see the re-pended row either.  The pre-rounds drain returned normally with
 # such a row uncancelled, contradicting the "cancels EVERY matching job"
 # contract.  These tests interleave real concurrent writers (the production
@@ -1678,7 +1678,7 @@ async def test_repend_behind_the_cursor_is_caught_by_the_next_round(
 
     # Seeded FIRST and 20ms before the pending backlog: job ids are
     # UUIDv7 (millisecond precision + random tail), so the sleep puts
-    # the running row's id strictly below every backlog id — the
+    # the running row's id strictly below every backlog id: the
     # pending arm's first batch advances the cursor past it.
     moved_job_id = await _seed_running_matching_job(
         conn,
@@ -1782,7 +1782,7 @@ async def test_cancel_in_flight_reclaimed_mid_drain_is_terminal_cancelled(
     await create_worker(conn, schema, worker_id)
 
     # Phase 1 from the start: an operator already asked for this cancel
-    # before the bulk call.  Lock 180s past — deeply expired, so the
+    # before the bulk call.  Lock 180s past, deeply expired, so the
     # sweep's cancel carve-out admits the phase-1 row between the arms.
     cancelled_job_id = await _seed_running_matching_job(
         conn,

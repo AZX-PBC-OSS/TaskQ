@@ -309,7 +309,7 @@ async def _reclaim_expired_locks(
         # Operator intent outranks retry budget, mirroring _SWEEP_1_SQL's
         # CASE ordering exactly (the PG statement evaluates the cancel
         # arm FIRST): a cancel-in-flight row terminalises 'cancelled'
-        # whatever its budget — the holder is the only writer that could
+        # whatever its budget: the holder is the only writer that could
         # honour the request cooperatively, and this reclaim fired
         # because the holder broke its liveness promise. The cancel
         # columns are PRESERVED on that arm as the audit trail of the
@@ -326,14 +326,14 @@ async def _reclaim_expired_locks(
                 lock_expires_at=None,
                 # assignment_routed is set on every arm for the same
                 # reason (the SQL sets it unconditionally): on a
-                # terminal row the flag is inert — the row is never
-                # dispatchable again — but the stored value must match
+                # terminal row the flag is inert, the row is never
+                # dispatchable again, but the stored value must match
                 # the contract source.
                 assignment_routed=True,
                 # cancel_phase/cancel_requested_at and the error fields
                 # are deliberately NOT in this replace: the cancel arm
                 # keeps the audit columns (the honoured request's
-                # record) and stamps no error marker — no cancel-origin
+                # record) and stamps no error marker: no cancel-origin
                 # marker describes a worker that died mid-protocol, so
                 # the attempt row and the event's cause carry the
                 # explanation there.
@@ -361,8 +361,8 @@ async def _reclaim_expired_locks(
             # cancel arm above took every phase-carrying row), budget
             # remaining. The same budget question the SQL asks (see
             # _sweeps._RECLAIM_HAS_BUDGET_SQL): 'indefinite' has no
-            # attempt ceiling — its schedule_to_close deadline is its
-            # budget — while every other kind is bounded by
+            # attempt ceiling: its schedule_to_close deadline is its
+            # budget, while every other kind is bounded by
             # max_attempts, and 'non_retryable' has no second attempt
             # at all.
             # The row's own stamped RetryPolicy curve, mirroring
@@ -468,7 +468,7 @@ async def _reclaim_expired_locks(
                 # Twin of _SWEEP_1_SQL's crashed-arm SET: a crashed row
                 # self-describes (WorkerCrashed plus the deadline that
                 # fired, drawn from the same _ATTEMPT_MESSAGES map the
-                # attempt row uses — one map, no drift).
+                # attempt row uses: one map, no drift).
                 error_class="WorkerCrashed",
                 error_message=_ATTEMPT_MESSAGES[cause],
             )
