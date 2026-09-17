@@ -23,7 +23,7 @@ class _BatchRowsPool(_StubPool):
     def __init__(self, rows: list[StubRecord]) -> None:
         self._rows = rows
 
-    def acquire(self) -> StubAcquireContext:
+    def acquire(self, *, timeout: float | None = None) -> StubAcquireContext:
         return _BatchRowsAcquire(self._rows)
 
 
@@ -134,7 +134,7 @@ def test_batches_page_missing_table_renders_notice(
     """A schema without the batches migration renders the install notice."""
 
     class _NoTablePool(_StubPool):
-        def acquire(self) -> StubAcquireContext:
+        def acquire(self, *, timeout: float | None = None) -> StubAcquireContext:
             return _NoTableAcquire()
 
     class _NoTableAcquire(StubAcquireContext):

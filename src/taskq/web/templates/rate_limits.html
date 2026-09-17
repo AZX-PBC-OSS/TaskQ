@@ -18,19 +18,19 @@
             <table class="w-full text-sm">
                 <thead>
                     <tr class="bg-slate-50 dark:bg-slate-800 border-b border-slate-200 dark:border-slate-700">
-                        <th class="px-4 py-2.5 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">Bucket</th>
-                        <th class="px-4 py-2.5 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">Kind</th>
-                        <th class="px-4 py-2.5 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">Backend</th>
-                        <th class="px-4 py-2.5 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">Config</th>
-                        <th class="px-4 py-2.5 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">Status</th>
-                        <th class="px-4 py-2.5 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">Remaining</th>
+                        <th class="px-4 py-2.5 text-left text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Bucket</th>
+                        <th class="px-4 py-2.5 text-left text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Kind</th>
+                        <th class="px-4 py-2.5 text-left text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Backend</th>
+                        <th class="px-4 py-2.5 text-left text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Config</th>
+                        <th class="px-4 py-2.5 text-left text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Status</th>
+                        <th class="px-4 py-2.5 text-left text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Remaining</th>
                         {% if redis_available %}
-                        <th class="px-4 py-2.5 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">Redis State</th>
+                        <th class="px-4 py-2.5 text-left text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Redis State</th>
                         {% endif %}
-                        <th class="px-4 py-2.5 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">PG State</th>
-                        <th class="px-4 py-2.5 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">Updated</th>
+                        <th class="px-4 py-2.5 text-left text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">PG State</th>
+                        <th class="px-4 py-2.5 text-left text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Updated</th>
                         {% if allow_reset %}
-                        <th class="px-4 py-2.5 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">Actions</th>
+                        <th class="px-4 py-2.5 text-left text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Actions</th>
                         {% endif %}
                     </tr>
                 </thead>
@@ -44,8 +44,8 @@
                                 {{ b.kind.replace("sliding_window_", "sw/") | replace("token_bucket", "tb") }}
                             </span>
                         </td>
-                        <td class="px-4 py-2.5 text-xs text-slate-500">{{ b.backend }}</td>
-                        <td class="px-4 py-2.5 text-xs text-slate-500 font-mono">{{ b.config_summary }}</td>
+                        <td class="px-4 py-2.5 text-xs text-slate-500 dark:text-slate-400">{{ b.backend }}</td>
+                        <td class="px-4 py-2.5 text-xs text-slate-500 dark:text-slate-400 font-mono">{{ b.config_summary }}</td>
                         <td class="px-4 py-2.5">
                             {% if ls.is_exhausted is defined %}
                                 {% if ls.is_exhausted %}
@@ -59,7 +59,7 @@
                                 —
                             {% endif %}
                         </td>
-                        <td class="px-4 py-2.5 text-xs text-slate-500 font-mono">
+                        <td class="px-4 py-2.5 text-xs text-slate-500 dark:text-slate-400 font-mono">
                             {% if ls.remaining is defined and ls.remaining > 0 %}
                                 {{ ls.remaining | round(1) }} / {{ ls.limit or "—" }} req
                             {% elif ls.tokens_remaining is defined %}
@@ -72,10 +72,10 @@
                             {% endif %}
                         </td>
                         {% if redis_available %}
-                        <td class="px-4 py-2.5 text-xs text-slate-500 font-mono max-w-[200px] truncate" title="{{ redis_state.get(b.bucket_name, {}) }}">{{ redis_state.get(b.bucket_name, {}) }}</td>
+                        <td class="px-4 py-2.5 text-xs text-slate-500 dark:text-slate-400 font-mono max-w-[200px] truncate" title="{{ redis_state.get(b.bucket_name, {}) }}">{{ redis_state.get(b.bucket_name, {}) }}</td>
                         {% endif %}
-                        <td class="px-4 py-2.5 text-xs text-slate-500">{{ b.pg_state or "—" }}</td>
-                        <td class="px-4 py-2.5 text-xs text-slate-500 whitespace-nowrap">{{ b.updated_at or "—" }}</td>
+                        <td class="px-4 py-2.5 text-xs text-slate-500 dark:text-slate-400">{{ b.pg_state or "—" }}</td>
+                        <td class="px-4 py-2.5 text-xs text-slate-500 dark:text-slate-400 whitespace-nowrap">{{ b.updated_at or "—" }}</td>
                         {% if allow_reset %}
                         <td class="px-4 py-2.5">
                             <form method="post" action="{{ base_path }}/rate-limits/{{ b.bucket_name }}/reset" class="inline">
@@ -101,7 +101,7 @@
 </div>
 {% else %}
 <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg p-12 text-center">
-    <p class="text-slate-400 text-sm">No rate limit buckets registered.</p>
+    <p class="text-slate-500 dark:text-slate-400 text-sm">No rate limit buckets registered.</p>
 </div>
 {% endif %}
 {% endblock %}

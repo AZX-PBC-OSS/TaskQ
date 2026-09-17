@@ -1,4 +1,5 @@
 {% extends "_base.html" %}
+{% set active_page = "actors" %}
 {% block title %}Actors — TaskQ Admin{% endblock %}
 {% block head %}
 <script>
@@ -23,18 +24,18 @@ document.addEventListener('submit', function(e) {
     <table class="min-w-full divide-y divide-slate-200 dark:divide-slate-700">
       <thead class="bg-slate-50 dark:bg-slate-800">
         <tr>
-          <th class="px-4 py-2 text-left text-xs font-medium text-slate-500">Actor</th>
-          <th class="px-4 py-2 text-left text-xs font-medium text-slate-500">Queue</th>
-          <th class="px-4 py-2 text-left text-xs font-medium text-slate-500">Max Concurrent</th>
-          <th class="px-4 py-2 text-left text-xs font-medium text-slate-500">Max Pending</th>
-          <th class="px-4 py-2 text-left text-xs font-medium text-slate-500">Active Jobs</th>
-          <th class="px-4 py-2 text-left text-xs font-medium text-slate-500">Jobs (archive)</th>
-          <th class="px-4 py-2 text-left text-xs font-medium text-slate-500">Failures</th>
-          <th class="px-4 py-2 text-left text-xs font-medium text-slate-500">p50 / p95 (ms)</th>
-          <th class="px-4 py-2 text-left text-xs font-medium text-slate-500">Last Activity</th>
-          <th class="px-4 py-2 text-left text-xs font-medium text-slate-500">Schedules</th>
-          <th class="px-4 py-2 text-left text-xs font-medium text-slate-500">Updated</th>
-          <th class="px-4 py-2 text-left text-xs font-medium text-slate-500">Actions</th>
+          <th class="px-4 py-2 text-left text-xs font-medium text-slate-500 dark:text-slate-400">Actor</th>
+          <th class="px-4 py-2 text-left text-xs font-medium text-slate-500 dark:text-slate-400">Queue</th>
+          <th class="px-4 py-2 text-left text-xs font-medium text-slate-500 dark:text-slate-400">Max Concurrent</th>
+          <th class="px-4 py-2 text-left text-xs font-medium text-slate-500 dark:text-slate-400">Max Pending</th>
+          <th class="px-4 py-2 text-left text-xs font-medium text-slate-500 dark:text-slate-400">Active Jobs</th>
+          <th class="px-4 py-2 text-left text-xs font-medium text-slate-500 dark:text-slate-400">Jobs (archive)</th>
+          <th class="px-4 py-2 text-left text-xs font-medium text-slate-500 dark:text-slate-400">Failures</th>
+          <th class="px-4 py-2 text-left text-xs font-medium text-slate-500 dark:text-slate-400">p50 / p95 (ms)</th>
+          <th class="px-4 py-2 text-left text-xs font-medium text-slate-500 dark:text-slate-400">Last Activity</th>
+          <th class="px-4 py-2 text-left text-xs font-medium text-slate-500 dark:text-slate-400">Schedules</th>
+          <th class="px-4 py-2 text-left text-xs font-medium text-slate-500 dark:text-slate-400">Updated</th>
+          <th class="px-4 py-2 text-left text-xs font-medium text-slate-500 dark:text-slate-400">Actions</th>
         </tr>
       </thead>
       <tbody class="divide-y divide-slate-200 dark:divide-slate-700">

@@ -829,6 +829,7 @@ class _HangingPrimitive:
     async def peek(self, **_: object) -> RateLimitState:
         self.peek_calls += 1
         await asyncio.Event().wait()  # never answers
+        raise AssertionError("unreachable: the wait above never resolves")
 
     async def reset(self, **_: object) -> None:
         self.reset_calls += 1

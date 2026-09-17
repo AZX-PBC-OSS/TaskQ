@@ -13,21 +13,21 @@
         <table class="w-full text-sm">
             <thead>
                 <tr class="bg-slate-50 dark:bg-slate-800 border-b border-slate-200 dark:border-slate-700">
-                    <th class="px-4 py-2.5 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">Hostname</th>
-                    <th class="px-4 py-2.5 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">PID</th>
-                    <th class="px-4 py-2.5 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">Queues</th>
-                    <th class="px-4 py-2.5 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">Running / Max</th>
-                    <th class="px-4 py-2.5 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">Stall hotspots</th>
-                    <th class="px-4 py-2.5 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">NOTIFY</th>
-                    <th class="px-4 py-2.5 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">Last Seen</th>
-                    <th class="px-4 py-2.5 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">Status</th>
+                    <th class="px-4 py-2.5 text-left text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Hostname</th>
+                    <th class="px-4 py-2.5 text-left text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">PID</th>
+                    <th class="px-4 py-2.5 text-left text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Queues</th>
+                    <th class="px-4 py-2.5 text-left text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">NOTIFY</th>
+                    <th class="px-4 py-2.5 text-left text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Last Seen</th>
+                    <th class="px-4 py-2.5 text-left text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Stall hotspots</th>
+                    <th class="px-4 py-2.5 text-left text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Running / Max</th>
+                    <th class="px-4 py-2.5 text-left text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Status</th>
                 </tr>
             </thead>
             <tbody class="divide-y divide-slate-100 dark:divide-slate-800">
             {% for w in workers %}
                 <tr class="even:bg-slate-50/50 dark:even:bg-slate-800/50 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors">
                     <td class="px-4 py-2.5 font-medium">{{ w.hostname }}</td>
-                    <td class="px-4 py-2.5 font-mono text-xs text-slate-500">{{ w.pid }}</td>
+                    <td class="px-4 py-2.5 font-mono text-xs text-slate-500 dark:text-slate-400">{{ w.pid }}</td>
                     <td class="px-4 py-2.5">
                         <div class="flex flex-wrap gap-1">
                         {% for q in w.queues %}
@@ -46,7 +46,7 @@
                         </span>
                         {% endif %}
                     </td>
-                    <td class="px-4 py-2.5 text-xs text-slate-500 whitespace-nowrap">{{ w.last_seen_at }}</td>
+                    <td class="px-4 py-2.5 text-xs text-slate-500 dark:text-slate-400 whitespace-nowrap">{{ w.last_seen_at }}</td>
                     {% set hotspots = w.get('stall_hotspots', '') if w is mapping else '' %}
                     <td class="px-4 py-2.5 text-xs whitespace-nowrap font-mono">
                         {% if hotspots %}
@@ -90,7 +90,7 @@
 </div>
 {% else %}
 <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg p-12 text-center">
-    <p class="text-slate-400 text-sm">No workers registered.</p>
+    <p class="text-slate-500 dark:text-slate-400 text-sm">No workers registered.</p>
 </div>
 {% endif %}
 {% endblock %}

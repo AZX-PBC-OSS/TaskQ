@@ -18,20 +18,20 @@
             <table class="w-full text-sm">
                 <thead>
                     <tr class="bg-slate-50 dark:bg-slate-800 border-b border-slate-200 dark:border-slate-700">
-                        <th class="px-4 py-2.5 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">Bucket</th>
-                        <th class="px-4 py-2.5 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">Configured</th>
-                        <th class="px-4 py-2.5 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">Lease</th>
-                        <th class="px-4 py-2.5 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">Held</th>
-                        <th class="px-4 py-2.5 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">Free</th>
-                        <th class="px-4 py-2.5 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">Total</th>
+                        <th class="px-4 py-2.5 text-left text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Bucket</th>
+                        <th class="px-4 py-2.5 text-left text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Configured</th>
+                        <th class="px-4 py-2.5 text-left text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Lease</th>
+                        <th class="px-4 py-2.5 text-left text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Held</th>
+                        <th class="px-4 py-2.5 text-left text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Free</th>
+                        <th class="px-4 py-2.5 text-left text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Total</th>
                     </tr>
                 </thead>
                 <tbody class="divide-y divide-slate-100 dark:divide-slate-800">
                 {% for r in reservations %}
                     <tr class="even:bg-slate-50/50 dark:even:bg-slate-800/50 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors">
                         <td class="px-4 py-2.5 font-medium">{{ r.bucket_name }}{% if r.is_queue_cap %} <span class="ml-1.5 px-1.5 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-300">queue cap</span>{% endif %}</td>
-                        <td class="px-4 py-2.5 text-xs text-slate-500">{{ r.configured_slots }}</td>
-                        <td class="px-4 py-2.5 text-xs font-mono text-slate-500">{{ r.lease }}</td>
+                        <td class="px-4 py-2.5 text-xs text-slate-500 dark:text-slate-400">{{ r.configured_slots }}</td>
+                        <td class="px-4 py-2.5 text-xs font-mono text-slate-500 dark:text-slate-400">{{ r.lease }}</td>
                         <td class="px-4 py-2.5">
                             {% if r.held_count|int > 0 %}
                             <span class="px-1.5 py-0.5 rounded text-xs font-medium bg-yellow-100 text-yellow-700 dark:bg-yellow-900 dark:text-yellow-300">{{ r.held_count }}</span>
@@ -46,7 +46,7 @@
                             <span class="px-1.5 py-0.5 rounded text-xs font-medium bg-red-100 text-red-700 dark:bg-red-900 dark:text-red-300">0</span>
                             {% endif %}
                         </td>
-                        <td class="px-4 py-2.5 text-xs text-slate-500">{{ r.total_slots }}</td>
+                        <td class="px-4 py-2.5 text-xs text-slate-500 dark:text-slate-400">{{ r.total_slots }}</td>
                     </tr>
                 {% endfor %}
                 </tbody>
@@ -62,23 +62,23 @@
                 <table class="w-full text-sm">
                     <thead>
                         <tr class="bg-slate-50 dark:bg-slate-800 border-b border-slate-200 dark:border-slate-700">
-                            <th class="px-4 py-2.5 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">Bucket</th>
-                            <th class="px-4 py-2.5 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">Slot</th>
-                            <th class="px-4 py-2.5 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">Job ID</th>
-                            <th class="px-4 py-2.5 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">Held By</th>
-                            <th class="px-4 py-2.5 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">Expires</th>
+                            <th class="px-4 py-2.5 text-left text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Bucket</th>
+                            <th class="px-4 py-2.5 text-left text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Slot</th>
+                            <th class="px-4 py-2.5 text-left text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Job ID</th>
+                            <th class="px-4 py-2.5 text-left text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Held By</th>
+                            <th class="px-4 py-2.5 text-left text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Expires</th>
                         </tr>
                     </thead>
                     <tbody class="divide-y divide-slate-100 dark:divide-slate-800">
                     {% for s in held_slots %}
                         <tr class="even:bg-slate-50/50 dark:even:bg-slate-800/50 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors">
                             <td class="px-4 py-2.5 text-xs">{{ s.bucket_name }}</td>
-                            <td class="px-4 py-2.5 text-xs font-mono text-slate-500">{{ s.slot_index }}</td>
+                            <td class="px-4 py-2.5 text-xs font-mono text-slate-500 dark:text-slate-400">{{ s.slot_index }}</td>
                             <td class="px-4 py-2.5">
                                 <a href="{{ base_path }}/jobs/{{ s.job_id }}" class="font-mono text-xs text-blue-600 dark:text-blue-400 hover:underline">{{ s.job_id }}</a>
                             </td>
-                            <td class="px-4 py-2.5 text-xs font-mono text-slate-500">{{ s.held_by_worker_id }}</td>
-                            <td class="px-4 py-2.5 text-xs text-slate-500 whitespace-nowrap">{{ s.lease_expires_at }}</td>
+                            <td class="px-4 py-2.5 text-xs font-mono text-slate-500 dark:text-slate-400">{{ s.held_by_worker_id }}</td>
+                            <td class="px-4 py-2.5 text-xs text-slate-500 dark:text-slate-400 whitespace-nowrap">{{ s.lease_expires_at }}</td>
                         </tr>
                     {% endfor %}
                     </tbody>
@@ -90,7 +90,7 @@
 </div>
 {% else %}
 <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg p-12 text-center">
-    <p class="text-slate-400 text-sm">No reservation buckets registered.</p>
+    <p class="text-slate-500 dark:text-slate-400 text-sm">No reservation buckets registered.</p>
 </div>
 {% endif %}
 {% endblock %}

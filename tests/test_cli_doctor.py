@@ -512,6 +512,8 @@ def test_doctor_is_silent_when_no_worker_attributed_stalls(
 
     assert "send_email" not in result.output
     assert "stalled the event loop" not in result.output
+
+
 def test_doctor_platform_grace_below_worst_case_reports_the_sigkill_risk(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

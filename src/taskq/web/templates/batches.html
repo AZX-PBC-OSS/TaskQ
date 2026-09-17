@@ -34,8 +34,8 @@
                 </span>
                 {% endif %}
             </td>
-            <td class="px-4 py-2.5 text-sm text-slate-500">{{ b.expected_size }}</td>
-            <td class="px-4 py-2.5 text-sm text-slate-500">
+            <td class="px-4 py-2.5 text-sm text-slate-500 dark:text-slate-400">{{ b.expected_size }}</td>
+            <td class="px-4 py-2.5 text-sm text-slate-500 dark:text-slate-400">
                 {{ b.consecutive_failures }}{% if b.failure_threshold is not none %} / {{ b.failure_threshold }}{% endif %}
             </td>
             <td class="px-4 py-2.5 text-sm">{{ b.originating_actor or '—' }}</td>
@@ -44,18 +44,18 @@
                 <a href="{{ base_path }}/jobs/{{ b.finalizer_job_id }}" class="text-blue-600 dark:text-blue-400 hover:underline" title="{{ b.finalizer_job_id }}">{{ b.finalizer_job_id[:8] }}…</a>
                 {% else %}—{% endif %}
             </td>
-            <td class="px-4 py-2.5 text-xs text-slate-500 whitespace-nowrap">{{ b.created_at }}</td>
-            <td class="px-4 py-2.5 text-xs text-slate-500 whitespace-nowrap">{{ b.completed_at or '—' }}</td>
+            <td class="px-4 py-2.5 text-xs text-slate-500 dark:text-slate-400 whitespace-nowrap">{{ b.created_at }}</td>
+            <td class="px-4 py-2.5 text-xs text-slate-500 dark:text-slate-400 whitespace-nowrap">{{ b.completed_at or '—' }}</td>
         {% endcall %}
     {% endfor %}
     {% endcall %}
 {% endcall %}
 {% if truncated %}
-<p class="text-xs text-slate-500 mt-2">Showing the {{ page_size }} most recent batches; active batches sort first. Older batches are visible in the batches table directly.</p>
+<p class="text-xs text-slate-500 dark:text-slate-400 mt-2">Showing the {{ page_size }} most recent batches; active batches sort first. Older batches are visible in the batches table directly.</p>
 {% endif %}
 {% else %}
 <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg p-12 text-center">
-    <p class="text-slate-400 text-sm">No batches recorded.</p>
+    <p class="text-slate-500 dark:text-slate-400 text-sm">No batches recorded.</p>
 </div>
 {% endif %}
 {% endblock %}

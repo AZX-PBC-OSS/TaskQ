@@ -402,6 +402,10 @@ Batch overview. Reads all rows from the `batches` table: batch ID (linked to its
 
 SSE (Server-Sent Events) endpoint over a PG `LISTEN` on the schema's events channel. `topic` is one of `jobs`, `workers`, `queues`, `history` (anything else is `400`). On connect it emits an initial `event: status` frame with `{"status": "awaiting_progress_backend"}`, then `event: state_change` frames as NOTIFY payloads arrive and `: keepalive` comments every 30 seconds. The jobs page is its only consumer today. Capped per topic by `TASKQ_ADMIN_MAX_SSE_CONNECTIONS`; see [How pages refresh](#how-pages-refresh) below.
 
+### `GET /admin/sse/mode`
+
+JSON probe answering `{"realtime": true|false}` from the same per-process cached Redis ping the pages render from. The job-detail page's script polls it every 30 seconds so a page that rendered in `polling-degraded` mode upgrades itself to real-time when Redis returns (and degrades itself when Redis goes away) without a manual reload. Registered before the `{topic}` route so the catch-all cannot claim the path; it is an admin-router route, so it works identically under `taskq ui serve` and when the router is mounted into a host application.
+
 ### `GET /admin/static/{path}`
 
 Serves static assets (CSS, JS, images) from the bundled static directory. Path traversal is prevented: requests whose resolved path falls outside the static directory return `404`.
@@ -497,8 +501,29 @@ check that gates the **progress stream** — it says nothing about the jobs page
 | **polling mode** | `polling` | No `TASKQ_REDIS_URL` configured: per-job progress is polled from Postgres. |
 | **polling mode (Redis unavailable)** | `polling-degraded` | `TASKQ_REDIS_URL` is set but Redis is not answering: per-job progress falls back to polling until it is. |
 
-The server re-checks Redis health every 5 seconds (cached per process). The badge
-reflects the result of the most recent check.
+The server re-checks Redis health every 5 seconds (cached per process). The badge reflects the
+result of the most recent check. The job-detail page also re-checks client-side every 30 seconds
+through `GET /admin/sse/mode` and transitions the badge in place, so a page that rendered during
+a Redis outage upgrades itself without a manual reload. The job-detail progress driver loads in
+all three modes: in real-time mode it opens the SSE stream, in the two polling modes it polls the
+per-job state endpoint (`GET /admin/jobs/api/job/{job_id}/state`) directly.
+
+### Real-time mode (Redis configured)
+
+When Redis is available, the page JS opens an `EventSource` connection to
+`GET /admin/sse/{topic}`. Updates are pushed over that connection, which triggers
+[HTMX](https://htmx.org/) partial-page refreshes without a full reload.
+
+If the `EventSource` connection emits an error, the JS closes it and automatically falls back to
+Postgres polling at `TASKQ_ADMIN_UI_POLLING_INTERVAL_SECONDS` intervals. The badge transitions
+to `polling-degraded`. A 30-second health heartbeat is sent on the SSE connection to keep it
+alive through proxies that would otherwise time out idle connections.
+
+### Polling mode (no Redis)
+
+When Redis is not configured, the page JS polls Postgres directly using HTMX `hx-trigger="every Ns"`.
+The poll interval is controlled by `TASKQ_ADMIN_UI_POLLING_INTERVAL_SECONDS` (default `2.0` s).
+All pages remain fully functional; data is just slightly less fresh than in real-time mode.
 
 ### Configuration
 
@@ -662,4 +687,22 @@ app = FastAPI(lifespan=lifespan)
 ```
 
 `setup_admin_state()` writes `pg_pool`, `schema`, `redis_client`, `templates`, `settings`, `base_path`, and `backend` onto `app.state`. Route handlers resolve these via `Depends(get_pg_pool)`, `Depends(get_templates)`, etc. You do not need to set `app.state` manually — `setup_admin_state()` handles it.
+
+!!! note "When the host already writes `app.state.settings`"
+    `setup_admin_state()` overwrites `app.state.settings` with TaskQ's
+    `TaskQSettings`. A host application that keeps its own settings object
+    under that key (its auth or config code reads it per request) must not
+    call `setup_admin_state()`. Set every other key from the bundle
+    individually, install the bundle's settings only for the portal's own
+    dependency, and skip the collision:
+
+    ```python
+    for key in ("pg_pool", "schema", "redis_client", "templates", "base_path", "backend"):
+        setattr(app.state, key, getattr(bundle, key))
+    app.dependency_overrides[get_settings] = lambda: bundle.settings
+    ```
+
+    Route handlers read the other keys off `app.state` exactly as documented,
+    and the portal's `get_settings` dependency serves `TaskQSettings` only to
+    the admin pages.
 
