@@ -53,6 +53,7 @@ from taskq.web.admin._jsonb import decode_jsonb
 # LAST placement and therefore have a NULL range to page through.
 _SORTABLE_LIVE: dict[str, SortColumn] = {
     "created_at": SortColumn("created_at", "ts", descending=True),
+    "started_at": SortColumn("started_at", "ts", descending=True, nullable=True),
     "actor": SortColumn("actor", "text", descending=True),
     "queue": SortColumn("queue", "text", descending=True),
     "status": SortColumn("status", "text", descending=True),
@@ -61,6 +62,7 @@ _SORTABLE_LIVE: dict[str, SortColumn] = {
 _SORTABLE_ARCHIVE: dict[str, SortColumn] = {
     "finished_at": SortColumn("finished_at", "ts", descending=True, nullable=True),
     "created_at": SortColumn("created_at", "ts", descending=True),
+    "started_at": SortColumn("started_at", "ts", descending=True, nullable=True),
     "actor": SortColumn("actor", "text", descending=True),
     "queue": SortColumn("queue", "text", descending=True),
     "status": SortColumn("status", "text", descending=True),
