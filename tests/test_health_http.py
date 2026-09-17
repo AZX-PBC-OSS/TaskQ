@@ -19,7 +19,12 @@ from types import SimpleNamespace
 import pytest
 
 from taskq.worker._watchdog import LoopLiveness
-from taskq.worker.health import HealthServer, register_readiness_check, unregister_readiness_check
+from taskq.worker.health import (
+    HealthServer,
+    HealthTcpBindError,
+    register_readiness_check,
+    unregister_readiness_check,
+)
 from taskq.worker.shutdown import ShutdownPhase
 
 # ── Stubs (mirroring tests/test_health.py) ─────────────────────────────
@@ -259,7 +264,7 @@ async def test_unbindable_port_fails_startup_loudly() -> None:
     settings = _make_settings(_next_sock_path(), health_port=taken_port)
     server = HealthServer()
     try:
-        with pytest.raises(OSError):
+        with pytest.raises(HealthTcpBindError):
             await server.start(_make_deps(settings))
     finally:
         await server.stop()
@@ -277,8 +282,11 @@ async def test_failed_http_bind_releases_the_unix_socket() -> None:
     settings = _make_settings(sock_path, health_port=taken_port)
     server = HealthServer()
     try:
-        with pytest.raises(OSError):
+        with pytest.raises(HealthTcpBindError) as excinfo:
             await server.start(_make_deps(settings))
+        assert excinfo.value.host == "127.0.0.1"
+        assert excinfo.value.port == taken_port
+        assert isinstance(excinfo.value.__cause__, OSError)
         await server.stop()
         assert not pathlib.Path(  # noqa: ASYNC240  # Why: a single fast metadata read in a test assertion; matches tests/test_health.py:403.
             sock_path

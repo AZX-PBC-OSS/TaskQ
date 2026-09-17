@@ -1294,8 +1294,10 @@ class WorkerSettings(TaskQSettings):
         description="TASKQ_HEALTH_SOCKET_PATH. Unix socket path for the health "
         "server, serving /live, /ready, /metrics and the opt-in /tasks "
         "endpoint. Give each co-located process a unique path: a path whose "
-        "live peer holds it fails to bind (see health_port for what happens "
-        "then).",
+        "live peer holds it fails to bind, and that collision is a WARNING "
+        "with the boot continuing (a live peer owning the path is a rolling-"
+        "restart shape, not a failure); see health_port for the TCP arm's "
+        "different contract.",
     )
     health_pg_ping_timeout: float = Field(
         default=0.2,
@@ -1339,12 +1341,13 @@ class WorkerSettings(TaskQSettings):
         "/live and /ready. Unset (the default) means no TCP listener at all, so setting a "
         "port is the opt-in. Required on Azure Container Apps, whose probes support only "
         "httpGet/tcpSocket and cannot reach a Unix socket (there is no exec probe type). "
-        "The Unix socket keeps working either way. If the port cannot be bound the listener "
-        "fails loudly (health-http-bind-failed at ERROR, then health-server-unavailable at "
-        "WARN) and the worker keeps booting without it: every probe against the port then "
-        "fails at the orchestrator, so give each replica a unique port and alert on the "
-        "WARN (a tcpSocket probe against a port some other process holds would pass while "
-        "probing the wrong process). 0 binds an ephemeral "
+        "The Unix socket keeps working either way. If the port cannot be bound the worker "
+        "fails to start with HealthTcpBindError rather than run with probes silently dead: "
+        "the orchestrator routes this replica's probes here, and a tcpSocket probe against "
+        "a port some other process holds would pass while "
+        "probing the wrong process). The unix socket's collision is "
+        "deliberately softer: a live peer owns the path, so the boot warns "
+        "and continues. 0 binds an ephemeral "
         "port (tests only).",
     )
     health_request_timeout: float = Field(

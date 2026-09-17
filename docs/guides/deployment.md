@@ -332,18 +332,26 @@ me*. `/ready` additionally pings Postgres, checks for stale worker loops, fails 
 and runs any checks you registered (see below) — a failing readiness probe means *stop sending me
 work*, not *restart me*.
 
-!!! warning "A listener that cannot bind does not stop the boot — the WARN does"
-    If the Unix socket path or `TASKQ_HEALTH_PORT` cannot be bound — almost always a path or
-    port a still-live peer (or a previous, still-draining replica) owns — the worker logs
-    `health-server-unavailable` at WARN with the socket path or port and the errno, and
-    **keeps booting without that listener**: it still registers, heartbeats, and claims work,
-    because a worker that can do work must never refuse to start over a diagnostic
-    side-channel. The failure is never silent: the WARN is the named, alertable record. What
-    the configured address then answers depends on who holds it — a live peer's listener
-    answers for the *peer* (its leadership, its shutdown phase, not this worker's), and an
-    address nobody holds refuses connections — so treat the WARN as an action item: give each
-    replica a unique socket path/port (or a per-replica directory), because until you do this
-    replica's health is not observable at the address you configured.
+!!! warning "A unix-socket collision does not stop the boot — the WARN does"
+    If the Unix socket path cannot be bound — almost always a path a still-live peer (or a
+    previous, still-draining replica) owns — the worker logs `health-server-unavailable` at
+    WARN with the socket path and the errno, and **keeps booting without that listener**: it
+    still registers, heartbeats, and claims work, because refusing to boot would crash-loop a
+    healthy pair during a rolling restart. The failure is never silent: the WARN is the named,
+    alertable record. What the configured address then answers depends on who holds it — a
+    live peer's listener answers for the *peer* (its leadership, its shutdown phase, not this
+    worker's), and an address nobody holds refuses connections — so treat the WARN as an
+    action item: give each replica a unique socket path (or a per-replica directory), because
+    until you do this replica's health is not observable at the address you configured.
+
+!!! danger "A TCP probe port that cannot bind refuses startup"
+    The TCP listener is a different contract: the deployment manifest routed health probes
+    for THIS replica to `TASKQ_HEALTH_PORT`, and a worker that boots without it answers
+    nothing there — or worse, under a `tcpSocket` probe on a port some other process holds,
+    the probes pass against the wrong process. When the port cannot be bound the worker logs
+    `health-http-bind-failed` (ERROR) and exits with `HealthTcpBindError` instead of running
+    with probes silently dead. Give each replica a unique port (a downward-API pod port or
+    an orchestrator-managed value), not a shared one.
 
 #### Azure Container Apps
 
@@ -525,7 +533,7 @@ The worker has up to three listeners, and every one of them is **off unless you 
 Fail-closed semantics, identical across the platforms below:
 
 - **Both TCP listeners bind nothing until you set a port.** A worker that binds a port nobody asked for is a surprise network surface; setting the port is the opt-in.
-- **A health listener that cannot bind fails loudly but does not stop the boot.** The worker logs `health-http-bind-failed` (ERROR) and `health-server-unavailable` (WARN) and keeps working; every probe against the address then fails at the orchestrator, which is the fail-closed backstop. Give each replica a unique port and alert on the WARN.
+- **A TCP health listener that cannot bind refuses startup.** The worker logs `health-http-bind-failed` (ERROR) and exits with `HealthTcpBindError` rather than run with the manifest's probe port dead (a `tcpSocket` probe on a port another process holds would pass while checking nothing). The unix socket's collision is deliberately softer: a collision there means a live peer owns the path, so the boot warns (`health-server-unavailable`) and continues.
 - **The scrape listener refuses startup.** If `[prometheus]` or autoconfigure is missing the worker tells you and binds nothing; if the listener itself cannot be configured or bound, `OtelExporterConfigurationError` exits the worker with code 1 rather than run with its scrape silently dead.
 - The scrape endpoint answers without a token: keep it on interfaces only your scraper reaches.
 
