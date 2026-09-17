@@ -1932,11 +1932,6 @@ def _ui_serve(
             # timeout and never raises.
             stack.push_async_callback(_close_ui_pool)
 
-            if pool_factory is not None:
-                await stack.enter_async_context(
-                    _ui_credential_rotation(application, pool_factory, settings)
-                )
-
             redis_client: object | None = None
             if redis_url is not None:
                 try:
@@ -2013,10 +2008,13 @@ def _ui_serve(
             )
 
             setup_admin_state(application, bundle)
-            # setup_admin_state copies the bundle's pool back onto app.state;
-            # a rotation that ran between the build and here (the first
-            # tick of a very short lease) must not be undone by that copy.
-            application.state.pg_pool = _ui_live_pool(application)
+            # Armed only now: setup_admin_state copies the bundle's pool onto
+            # app.state, so a rotation running before this point could be
+            # undone by that copy.
+            if pool_factory is not None:
+                await stack.enter_async_context(
+                    _ui_credential_rotation(application, pool_factory, settings)
+                )
             application.include_router(bundle.router, prefix="/admin")
             if sso_bundle is not None:
                 application.include_router(sso_bundle.router, prefix="/admin")

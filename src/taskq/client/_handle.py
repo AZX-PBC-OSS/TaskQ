@@ -343,10 +343,14 @@ class JobHandle[R: BaseModel | None]:
         When Redis is configured, subscribes to the per-job Redis pub/sub
         channel and yields :class:`~taskq.progress.ProgressEvent` objects in
         real time. When Redis is not available, falls back to polling Postgres
-        at 500 ms intervals and synthesising events from row diffs.
+        at 500 ms intervals (jittered ±20%) and synthesising events from row
+        diffs; a pool or connection error on a poll is retried on the next
+        one.
 
         Raises :class:`NotImplementedError` when the in-memory backend is
-        detected — the in-memory backend does not support pub/sub.
+        detected — the in-memory backend does not support pub/sub — and
+        :class:`~taskq.exceptions.StreamUnavailable` when the Postgres poll
+        could not re-read the row for 30 s straight.
 
         Does not advance :attr:`row` — the Redis path fetches no rows,
         and advancing only on the PG fallback would make the semantics
