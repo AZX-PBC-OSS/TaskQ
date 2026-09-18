@@ -800,9 +800,7 @@ async def test_dispatch_duration_is_recorded_when_the_dispatch_query_fails(
     # invisible to dispatch's candidates, so a warm statement's
     # empty-handed round could complete inside the 1ms budget instead of
     # aborting, and the round the histogram must sample never fails.
-    configs = [
-        ActorConfig(actor="telemetry_actor", max_concurrent=1, queue="default", metadata={})
-    ]
+    configs = [ActorConfig(actor="telemetry_actor", max_concurrent=1, queue="default", metadata={})]
     async with deps.worker_pool.acquire() as conn:
         await sync_actor_config(conn, configs, force=False, schema=schema)
 
@@ -870,9 +868,7 @@ async def test_dispatch_failure_is_visible_in_a_metric_not_only_a_log_line(
     # claim UPDATE on the 5 seeded rows, whose lock, update and
     # RETURNING work always exceeds the 1ms budget, so every round
     # aborts in the statement's own execution.
-    configs = [
-        ActorConfig(actor="telemetry_actor", max_concurrent=5, queue="default", metadata={})
-    ]
+    configs = [ActorConfig(actor="telemetry_actor", max_concurrent=5, queue="default", metadata={})]
     async with deps.worker_pool.acquire() as conn:
         await sync_actor_config(conn, configs, force=False, schema=schema)
 
