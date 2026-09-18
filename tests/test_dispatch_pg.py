@@ -24,11 +24,13 @@ from taskq._close import close_pool_bounded
 from taskq._ids import new_base62, new_uuid
 from taskq.actor_config import ActorConfig
 from taskq.actor_config_ops import set_actor_config_capacity
+from taskq.backend import _dispatch as _dispatch_mod
 from taskq.backend._dispatch_sql import (
     DISPATCH_ROUND_ROBIN_SQL,
     DISPATCH_STRICT_FIFO_SQL,
 )
 from taskq.backend._protocol import JobRow
+from taskq.backend._sql_templates import render
 from taskq.backend.postgres import PostgresBackend
 from taskq.obs import setup_logging
 from taskq.testing.assertions import wait_for_condition
@@ -1057,4 +1059,77 @@ async def test_backlog_still_dispatches_with_a_job_at_the_attempt_ceiling(
         f"{unclaimed} of the 3 healthy backlogged jobs were left pending by a "
         f"dispatch round that claimed {len(claimed)} rows — a single job at the "
         f"attempt ceiling must not cost the round its healthy work"
+    )
+
+
+class _PoisonConn:
+    """A connection whose protocol state machine is wedged: every statement
+    raises asyncpg's InternalClientError (the "cannot switch to state" class
+    a server-side abort can leave behind), and terminate() records the call."""
+
+    def __init__(self) -> None:
+        self.terminated = False
+
+    async def fetchval(self, *args: object, **kwargs: object) -> object:
+        raise _asyncpg.exceptions.InternalClientError(
+            "cannot switch to state 12; another operation (2) is in progress"
+        )
+
+    async def fetch(self, *args: object, **kwargs: object) -> object:
+        raise _asyncpg.exceptions.InternalClientError(
+            "cannot switch to state 12; another operation (2) is in progress"
+        )
+
+    def terminate(self) -> None:
+        self.terminated = True
+
+
+class _PoisonAcquire:
+    def __init__(self, conn: _PoisonConn) -> None:
+        self.conn = conn
+
+    async def __aenter__(self) -> _PoisonConn:
+        return self.conn
+
+    async def __aexit__(self, *exc: object) -> None:
+        return None
+
+
+class _PoisonPool:
+    """Yields the poisoned connection; its release discards a terminated
+    connection (asyncpg's PoolConnectionHolder.release returns early on
+    is_closed), so the pool grows a replacement on the next acquire."""
+
+    def __init__(self, conn: _PoisonConn) -> None:
+        self.conn = conn
+
+    def acquire(self, timeout: float) -> _PoisonAcquire:
+        return _PoisonAcquire(self.conn)
+
+
+async def test_a_protocol_poisoned_round_discards_its_connection() -> None:
+    """The dispatch round's one recovery seam for a connection the driver
+    cannot reset: a server-side abort landing in asyncpg's own protocol
+    handling raises InternalClientError with the connection mid-operation;
+    this round is autocommit, so asyncpg's release taint logic returns it
+    to the pool clean and every later acquire on it wedges (observed as
+    "cannot switch to state 12" repeating every round until the worker
+    stalls). The round must terminate the connection before propagating:
+    the pool's release then discards it and the next round starts fresh."""
+    conn = _PoisonConn()
+    with pytest.raises(_asyncpg.exceptions.InternalClientError):
+        await _dispatch_mod._dispatch_batch(
+            _PoisonPool(conn),  # pyright: ignore[reportArgumentType]  # Why: the pin drives the seam with the poison double, not a real pool.
+            render("taskq"),
+            dispatch_oversample=2,
+            acquire_timeout=2.0,
+            schema="taskq",
+            worker_id=new_uuid(),
+            queues=["default"],
+            limit=5,
+            lock_lease=timedelta(seconds=30),
+        )
+    assert conn.terminated, (
+        "a protocol-poisoned connection must be terminated before release: "
+        "releasing it intact wedges every later acquire on it"
     )
