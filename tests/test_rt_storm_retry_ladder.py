@@ -321,12 +321,13 @@ async def test_reclaim_cycle_count_is_bounded_by_attempt_exhaustion() -> None:
 
 
 async def test_zero_base_indefinite_failure_retry_cycles_at_zero_period_unfloored() -> None:
-    """A ``RetryPolicy(base=0, kind='indefinite')`` is accepted by the
-    policy boundary (only ``cap >= base`` and ``jitter`` are validated)
-    and degenerates the backoff curve to zero — the monopolisation
-    hazard with no attempt ceiling. The CONTRACT, asserted after the
-    loop: a failure-retry decision must never carry a delay below
-    ``MIN_DEFERRAL_INTERVAL`` — the same floor the deferral arms
+    """A ``RetryPolicy(base=0, kind='indefinite')`` degenerates the backoff
+    curve to zero — the monopolisation hazard with no attempt ceiling. The
+    validating policy boundary now refuses the shape, so the degenerate
+    policy is built with ``model_construct``: the shape a row stamped by an
+    earlier release carries, or a boundary bypass produces. The CONTRACT,
+    asserted after the loop: a failure-retry decision must never carry a
+    delay below ``MIN_DEFERRAL_INTERVAL`` — the same floor the deferral arms
     (``mark_snoozed``, ``mark_retry_after`` non-consuming) apply at
     their writes for exactly this monopolisation rationale, now applied
     by the failure-retry decision itself (``retry.py`` floors at the
@@ -341,15 +342,16 @@ async def test_zero_base_indefinite_failure_retry_cycles_at_zero_period_unfloore
     and the contract assert below is what fails.
     """
     backend, clock = _make_backend()
-    policy = RetryPolicy(
+    policy = RetryPolicy.model_construct(
         kind="indefinite",
         base=timedelta(0),
         cap=timedelta(hours=1),
         jitter=0.2,
     )
-    # Evidence that the policy boundary is unguarded: only cap>=base and
-    # jitter are validated; base=0 sails through, and 0 * 2**k == 0 at
-    # every rung, so "exponential, capped" degenerates to "zero, forever".
+    # The shape is outside the validating boundary (base must be > 0), so
+    # this assert documents the constructed instance, not the boundary:
+    # 0 * 2**k == 0 at every rung, so "exponential, capped" degenerates to
+    # "zero, forever" for a row carrying it.
     assert policy.base == timedelta(0)
     actor_config = StubActorConfig(retry=policy)
 

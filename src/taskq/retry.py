@@ -91,6 +91,26 @@ class RetryPolicy(BaseModel):
         check_max_attempts_domain(v)
         return v
 
+    @field_validator("base")
+    @classmethod
+    def _validate_base_positive(cls, v: timedelta) -> timedelta:
+        # The monopolisation boundary: a zero or negative base degenerates
+        # the curve (0 * 2**k == 0 at every rung; a negative base lands
+        # scheduled_at in the past), and the reclaim path reads the stamped
+        # curve on rows this policy produces. The failure-retry decision and
+        # the reclaim writes floor sub-floor delays at MIN_DEFERRAL_INTERVAL
+        # as defense-in-depth, but refusing here names the mistake at
+        # registration instead of silently substituting a curve the actor
+        # did not ask for. Mirrors the heartbeat_timeout boundary rule: a
+        # non-positive value anchors a deadline in the past.
+        if v <= timedelta(0):
+            raise ValueError(
+                f"base must be > 0, got {v}; a zero or negative base degenerates "
+                "the backoff curve to a zero-period retry loop that monopolises "
+                "a worker slot with no backoff"
+            )
+        return v
+
     @model_validator(mode="after")
     def _validate_cap_ge_base(self) -> Self:
         if self.cap < self.base:
@@ -401,13 +421,31 @@ def _compute_reclaim_backoff(  # pyright: ignore[reportUnusedFunction]  # Why: c
     :func:`_raw_backoff_seconds`) and hashes the row's raw stamped attempt
     (``j.attempt::text``), so this function does the same rather than
     rejecting the input.
+
+    The returned delay is floored at :data:`~taskq.constants.MIN_DEFERRAL_INTERVAL`,
+    the same monopolisation floor the failure-retry decision applies and the
+    SQL twin applies through ``GREATEST``: a degenerate row curve (a zero or
+    negative base stamped by an earlier release) draws a sub-floor value from
+    its own curve, and handing such a row back with no period turns lease
+    expiry into a claim/reclaim loop across the fleet.
     """
     fraction = _reclaim_jitter_fraction(job_id, attempt)
     base_s = policy.base.total_seconds()
     cap_s = min(policy.cap.total_seconds(), max_retry_backoff.total_seconds())
     raw = _raw_backoff_seconds(base_s, cap_s, policy.backoff, attempt)
     lower, upper = _capped_jitter_band(raw, cap_s, policy.jitter)
-    return timedelta(seconds=_draw_in_band(lower, upper, fraction, cap_s))
+    # The monopolisation floor, wrapping the draw exactly as the SQL twin
+    # wraps it (GREATEST after the band and the cap): a row stamped with a
+    # zero or negative base by an earlier release draws zero or a negative
+    # value from its own curve, and a sub-floor re-pend delay would make
+    # the row claimable at or before the instant the sweep hands it back,
+    # a claim/lease-expiry/reclaim loop with no period. Curves above the
+    # floor are untouched, so the parity pin's values are unchanged.
+    return timedelta(
+        seconds=max(
+            _draw_in_band(lower, upper, fraction, cap_s), MIN_DEFERRAL_INTERVAL.total_seconds()
+        )
+    )
 
 
 class RetryOverride(BaseModel):

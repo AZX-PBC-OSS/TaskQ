@@ -381,7 +381,15 @@ async def _reclaim_expired_locks(
             # handed back at once lands across the jitter band because
             # distinct ids hash to distinct fractions, rather than at one
             # synchronised instant.
-            row_policy = RetryPolicy(
+            # model_construct, not the validating constructor: the row's
+            # stamped scalars are the source here, exactly as the SQL
+            # fragment reads its columns unvalidated. A validating
+            # constructor would crash the sweep on a row an earlier
+            # release legally stamped (the release accepted base <= 0)
+            # the same way an over-ceiling max_attempts row would; the
+            # delay itself stays safe because the shared twin floors it
+            # at MIN_DEFERRAL_INTERVAL, matching the SQL's GREATEST.
+            row_policy = RetryPolicy.model_construct(
                 backoff=row.retry_backoff,
                 base=row.retry_base,
                 cap=row.retry_cap,
