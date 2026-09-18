@@ -1,16 +1,27 @@
-"""Regression: a retried attempt must start with a clean cancellation slate.
+"""A retried attempt must start with a clean cancellation slate, and a
+cancel in flight must survive the actor's own write attempts.
 
-A cancel that escalates to ``cancel_phase = 2`` in the same moment the actor
-raises an ordinary retryable exception used to survive the retry write: the
-retry paths rewrote status/scheduled_at but left ``cancel_phase`` and
-``cancel_requested_at`` in place.  Retries reuse the SAME job row, so the
-next attempt was dispatched already at FORCED — the cancel controller's
-PG-observation fast-advance then skips straight past phase 2 without ever
-calling ``task.cancel()``, and the job can no longer be cancelled.
+The regression: a cancel that escalated to ``cancel_phase = 2`` in the
+same moment the actor raised an ordinary retryable exception used to
+survive the retry write, leaving ``cancel_phase`` and
+``cancel_requested_at`` on the row.  Retries reuse the SAME job row, so
+the next attempt was dispatched already at FORCED — the cancel
+controller's fast-advance then skipped straight past phase 2 without
+ever calling ``task.cancel()``, and the job could no longer be
+cancelled.
 
-The crash-reclaim sweep (``_SWEEP_1_SQL``) and ``isolate_self`` already reset
-both columns on their retry arm; these tests pin the same rule for the
-consumer's own retry, snooze and retry-after writes, on both backends.
+The merged contract splits the consumer's terminal writes by whether a
+cancel is in flight:
+
+- ``mark_failed_or_retry``'s retry arm still writes the next attempt and
+  clears both columns (pinned below on both backends), and the
+  crash-reclaim sweep and ``isolate_self`` do the same on theirs.
+- The three deferral arms refuse a row carrying a cancel phase entirely
+  (``noop``; the operator's cancel wins over the snooze) — the refuse
+  leaves the audit columns intact for the cancel ladder to finish, and
+  the clean slate comes from the interrupt release, not the deferral.
+  These pins cover the FORCED escalation state; the COOPERATIVE twins
+  live in tests/test_cancel_fence_arms.py.
 """
 
 from dataclasses import replace
@@ -157,18 +168,24 @@ async def test_mark_failed_or_retry_clears_cancel_state(backend_pair: Backend) -
     await _assert_clean_slate_on_next_attempt(backend_pair, job_id)
 
 
-async def test_mark_snoozed_clears_cancel_state(backend_pair: Backend) -> None:
+async def test_mark_snoozed_refuses_a_row_carrying_a_cancel_phase(
+    backend_pair: Backend,
+) -> None:
     job_id, worker_id = await _enqueue_and_dispatch(backend_pair)
     await _force_cancel_escalated(backend_pair, job_id)
 
     outcome = await backend_pair.mark_snoozed(job_id, worker_id, timedelta(0), attempt=1)
-    assert outcome == "scheduled"
+    assert outcome == "noop"
 
-    await _assert_clean_slate_on_next_attempt(backend_pair, job_id)
+    row = await backend_pair.get(job_id)
+    assert row is not None
+    assert row.status == "running"
+    assert row.cancel_phase == CancelPhase.FORCED
+    assert row.cancel_requested_at is not None
 
 
 @pytest.mark.parametrize("consume_budget", [True, False])
-async def test_mark_retry_after_clears_cancel_state(
+async def test_mark_retry_after_refuses_a_row_carrying_a_cancel_phase(
     backend_pair: Backend, consume_budget: bool
 ) -> None:
     job_id, worker_id = await _enqueue_and_dispatch(backend_pair)
@@ -177,9 +194,13 @@ async def test_mark_retry_after_clears_cancel_state(
     outcome = await backend_pair.mark_retry_after(
         job_id, worker_id, timedelta(0), consume_budget=consume_budget, attempt=1
     )
-    assert outcome == "scheduled"
+    assert outcome == "noop"
 
-    await _assert_clean_slate_on_next_attempt(backend_pair, job_id)
+    row = await backend_pair.get(job_id)
+    assert row is not None
+    assert row.status == "running"
+    assert row.cancel_phase == CancelPhase.FORCED
+    assert row.cancel_requested_at is not None
 
 
 async def test_terminal_failure_preserves_cancel_state(backend_pair: Backend) -> None:

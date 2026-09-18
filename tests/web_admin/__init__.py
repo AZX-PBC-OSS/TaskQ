@@ -12,8 +12,6 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
-import pytest
-
 from taskq.backend._protocol import (
     EnqueueArgs,
     JobRow,
@@ -75,9 +73,6 @@ class StubPool:
 
 
 _StubPool = StubPool  # backward-compatible alias used by test modules
-
-pytest.importorskip("fastapi")
-pytest.importorskip("jinja2")
 
 
 def _stub_job_row(

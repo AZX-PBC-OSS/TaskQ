@@ -137,6 +137,17 @@ async def test_pending_to_failed_allowed_via_deadline_sweep(
     assert row.error_class == "DeadlineExceeded"
 
 
+def test_running_to_pending_in_valid_transitions_via_lease_expiry_sweep() -> None:
+    """``running → pending`` is a sweep-authorized path, like
+    ``pending → failed``: the lease-expiry and heartbeat-timeout sweeps
+    send a reclaimed running job back to pending whenever it still has
+    attempts left, and record the state change with from_state=running,
+    reason=lock_expired. The map's convention is to include every
+    authorized transition and annotate the sweep-only ones; the edge must
+    not be missing from the canonical encoding."""
+    assert "pending" in VALID_TRANSITIONS["running"]
+
+
 # ── scheduled → running blocked by dispatch query ────────────────
 
 
