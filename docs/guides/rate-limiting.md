@@ -879,7 +879,8 @@ dispatch. Registration is idempotent for identical config, which every acquisiti
 !!! note "Claim-time admission never gates on keyed buckets"
     The dispatch claim folds live reservation occupancy into per-actor admission (the
     `reservation_holdings` / `reservation_headroom` CTEs — see
-    [docs/guides/workers.md](workers.md)), but **keyed buckets are excluded from that fold**:
+    [perf-evidence-dispatch.md, section A6](https://github.com/AZX-PBC-OSS/TaskQ/blob/main/perf-evidence-dispatch.md)
+    for the fold and its measured cost), but **keyed buckets are excluded from that fold**:
     their concrete names are payload-derived per job (`f"{base_name}:{key}"`), and the claim
     cannot know which pending row will need which key. Folding a keyed bucket in would let one
     saturated tenant block every other tenant's claims of the same actor.
