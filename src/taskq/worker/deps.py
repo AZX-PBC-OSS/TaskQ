@@ -95,25 +95,27 @@ _TCP_KEEPIDLE = 30
 _TCP_KEEPINTVL = 5
 _TCP_KEEPCNT = 3
 
-<<<<<<< HEAD
-_DISPATCHER_SERVER_SETTINGS: Final[dict[str, str]] = {"jit": "off"}
-"""Per-connection GUCs every TaskQ-built dispatcher pool connection carries.
-
-``jit = off`` because every statement this pool runs — the dispatch claim
-CTEs, the leader sweeps, the bounded admission lock acquires — is a short
-bounded OLTP round trip that JIT compilation cannot help: below
-``jit_above_cost`` the setting is inert, and at or above it compilation is
-pure cost paid per plan. The dispatch statement's own estimate cascade is
-fixed at the source (taskq.backend._dispatch_sql), so this is a guard
-against FUTURE estimate surprises, not the fix — a regression there now
-degrades a round to its uncompiled speed, never to a second spent
-compiling. Do not "helpfully" re-enable JIT here; if a dispatcher-pool
-statement ever does benefit from compilation, that belongs in a measured
-change to the statement itself. Caller-supplied pools keep their own
-settings (the caller-owned doctrine); the worker/heartbeat pools run only
-single-row primary-key-class statements whose plans never approach the
-threshold, so they carry no entry.
-"""
+# No ``server_settings=`` on any TaskQ-built pool, deliberately. asyncpg
+# rides every ``server_settings`` entry in the STARTUP PACKET, and a pooler
+# that rejects unknown startup parameters (PgBouncer: "unsupported startup
+# parameter: jit") fails the connect: with a single TASKQ_PG_DSN pointed
+# at the pooler, every TaskQ-built boot connection dies there (#247). The
+# dispatcher pool previously carried ``jit = off`` this way; the guard it
+# provided is available server-side without the pooler hazard:
+# ``ALTER ROLE ... SET jit = off`` or ``?options=-c jit=off`` on the DSN
+# (docs/guides/ops.md §"Database performance knobs"), and a per-claim
+# ``SET LOCAL jit = off`` is structurally unavailable: the claim runs in
+# autocommit (one atomic UPDATE ... RETURNING), so there is no transaction
+# for a SET LOCAL to scope to. The measured win never needed the guard
+# anyway: the dispatch statement's estimate cascade is fixed at the source
+# (perf-evidence-dispatch.md: the depth oracle passes with JIT enabled on
+# a plain connection), and that oracle
+# (tests/test_dispatch_backlog_depth_bound.py) keeps re-proving it. The
+# slot pool's inherited ``search_path``/``role`` (worker/_bootstrap.py) are
+# the one deliberate exception: they are session state a LOOP-scope
+# connection declared, must survive the release-time ``RESET ALL`` (which
+# startup-packet values do; a post-connect ``SET`` does not), and ride the
+# direct DSN only.
 
 # ── Transaction-mode pooler hygiene (TASKQ_PG_IS_POOLED) ───────────────
 #
@@ -145,29 +147,6 @@ threshold, so they carry no entry.
 # DSN reaches Postgres directly - the tuned cache is the better default
 # there, and 26000 stays a loud bug.
 
-=======
-# No ``server_settings=`` on any TaskQ-built pool, deliberately. asyncpg
-# rides every ``server_settings`` entry in the STARTUP PACKET, and a pooler
-# that rejects unknown startup parameters (PgBouncer: "unsupported startup
-# parameter: jit") fails the connect: with a single TASKQ_PG_DSN pointed
-# at the pooler, every TaskQ-built boot connection dies there (#247). The
-# dispatcher pool previously carried ``jit = off`` this way; the guard it
-# provided is available server-side without the pooler hazard:
-# ``ALTER ROLE ... SET jit = off`` or ``?options=-c jit=off`` on the DSN
-# (docs/guides/ops.md §"Database performance knobs"), and a per-claim
-# ``SET LOCAL jit = off`` is structurally unavailable: the claim runs in
-# autocommit (one atomic UPDATE ... RETURNING), so there is no transaction
-# for a SET LOCAL to scope to. The measured win never needed the guard
-# anyway: the dispatch statement's estimate cascade is fixed at the source
-# (perf-evidence-dispatch.md: the depth oracle passes with JIT enabled on
-# a plain connection), and that oracle
-# (tests/test_dispatch_backlog_depth_bound.py) keeps re-proving it. The
-# slot pool's inherited ``search_path``/``role`` (worker/_bootstrap.py) are
-# the one deliberate exception: they are session state a LOOP-scope
-# connection declared, must survive the release-time ``RESET ALL`` (which
-# startup-packet values do; a post-connect ``SET`` does not), and ride the
-# direct DSN only.
->>>>>>> df25aac (docs(comments): the fix-round comments adopt comma-and-colon punctuation, and one evidence-doc idiom is reworded (#236, #247, #251))
 
 _ADMISSION_LOCK_BUDGET_FIELDS: Final[tuple[str, ...]] = (
     "token_bucket_lock_timeout_ms",
@@ -704,7 +683,6 @@ async def open_worker_deps(
                     max_size=settings.dispatcher_pool_size,
                     max_inactive_connection_lifetime=_lifetime,
                     command_timeout=dispatcher_pool_command_timeout,
-                    server_settings=_DISPATCHER_SERVER_SETTINGS,
                     statement_cache_size=_stmt_kwargs["statement_cache_size"],
                     max_cached_statement_lifetime=_stmt_kwargs["max_cached_statement_lifetime"],
                 )
