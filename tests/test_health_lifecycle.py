@@ -1,6 +1,7 @@
 """Unit tests for HealthServer lifecycle wiring in worker/run.py:_main."""
 
 import asyncio
+import errno
 from typing import Literal
 from uuid import UUID
 
@@ -11,6 +12,7 @@ from taskq._ids import new_uuid
 from taskq.connections import WorkerConnections
 from taskq.settings import WorkerSettings
 from taskq.worker.deps import WorkerDeps
+from taskq.worker.health import HealthUnixBindCollisionError
 from taskq.worker.run import _main
 from tests.conftest import _FakePool
 
@@ -81,11 +83,32 @@ class _FailingHealthServer:
         self._events.append("health.stop")
 
 
+class _UnixCollisionHealthServer:
+    """Fake for the #245 partial start: start() raises the collision type
+    a real server raises when a live peer owns the socket path but the TCP
+    listener is already up: the server owns something, so stop() must
+    still run even though start() raised."""
+
+    def __init__(self, events: list[str]) -> None:
+        self._events = events
+
+    async def start(self, deps: WorkerDeps) -> None:
+        self._events.append("health.start")
+        raise HealthUnixBindCollisionError(
+            "/tmp/tqhl-collided.sock",  # noqa: S108  # Why: stand-in path never bound; /tmp keeps the 104-char sun_path budget honest.
+            OSError(errno.EADDRINUSE, "Address '/tmp/tqhl-collided.sock' is already in use"),
+        )
+
+    async def stop(self) -> None:
+        self._events.append("health.stop")
+
+
 def _setup_lifecycle_stubs(
     monkeypatch: pytest.MonkeyPatch,
     events: list[str],
     health_enabled: bool = True,
     failing_health: bool = False,
+    unix_collision: bool = False,
 ) -> WorkerSettings:
     """Install all monkeypatches needed for lifecycle unit tests.
 
@@ -144,6 +167,11 @@ def _setup_lifecycle_stubs(
         monkeypatch.setattr(
             "taskq.worker._bootstrap.HealthServer",
             lambda: _FailingHealthServer(events),
+        )
+    elif unix_collision:
+        monkeypatch.setattr(
+            "taskq.worker._bootstrap.HealthServer",
+            lambda: _UnixCollisionHealthServer(events),
         )
     else:
         monkeypatch.setattr(
@@ -216,3 +244,34 @@ async def test_start_failure_propagates_deps_stack_unwinds(
     assert "pools_open" in events
     assert "pools_close" in events
     assert "health.stop" not in events
+
+
+# ── A unix collision with the TCP listener up keeps booting AND stopping ───
+
+
+@pytest.mark.asyncio
+async def test_unix_collision_warns_and_boots_but_still_stops_the_server(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#245's bootstrap half: ``HealthUnixBindCollisionError`` means the server
+    owns the TCP listener it managed to bind, so the boot that continues
+    on the strength of that listener must still push the stop callback,
+    otherwise the probe port would answer for a dead worker until the
+    process exits. The stop ordering is the assertion: it must sit
+    between health.start and pools_close exactly as a healthy boot's
+    does."""
+    events: list[str] = []
+    ws = _setup_lifecycle_stubs(
+        monkeypatch,
+        events,
+        health_enabled=True,
+        unix_collision=True,
+    )
+
+    result = await _main(ws)
+
+    assert result == 0, "a unix-path collision with TCP up must not abort the boot"
+    assert events == ["pools_open", "health.start", "health.stop", "pools_close"], (
+        "the collision boot must run the full lifecycle: start (partial), "
+        "stop (owed: the TCP listener is owned), pools close"
+    )

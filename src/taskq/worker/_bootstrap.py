@@ -92,7 +92,7 @@ from taskq.worker._watchdog import (
 from taskq.worker.cancel import make_cancel_controller
 from taskq.worker.cron_loop import ActorFirePolicy
 from taskq.worker.deps import WorkerDeps, open_worker_deps
-from taskq.worker.health import HealthServer, HealthTcpBindError
+from taskq.worker.health import HealthServer, HealthTcpBindError, HealthUnixBindCollisionError
 from taskq.worker.heartbeat import heartbeat_loop
 from taskq.worker.leader import MaintenanceLeader
 from taskq.worker.notify import notify_listener_loop
@@ -1901,15 +1901,36 @@ async def _main(
                     # holds the port is the alternative, and a booting
                     # worker with dead probes is the silent kind of down).
                     raise
+                except HealthUnixBindCollisionError as exc:
+                    # The Unix surface alone is lost (a live peer owns the
+                    # socket path), but the TCP probe listener IS up and
+                    # this server owns it (#245): the boot continues with
+                    # port-routed probes answering, the collision stays the
+                    # WARN it has been since the #207 fix, and the stop
+                    # callback is STILL pushed (a raised start() gets no
+                    # `else`, and the TCP listener must not outlive the
+                    # worker). The WARN is the action item it always was:
+                    # give each replica a unique socket path.
+                    _startup_log.warning(
+                        "health-server-unavailable",
+                        socket_path=deps.settings.health_socket_path,
+                        health_port=deps.settings.health_port,
+                        errno=exc.errno,
+                        error=str(exc),
+                        tcp_listener="serving",
+                    )
+                    stack.push_async_callback(health_server.stop)
                 except OSError as exc:
-                    # A unix-socket collision, by contrast, means a live
-                    # PEER worker owns the path (HealthServer.start's loud
-                    # refusal stops a newcomer silently stealing it):
-                    # refusing to boot would crash-loop a healthy pair
-                    # during a rolling restart. The collision is a WARN and
-                    # the boot carries on registering and claiming. No stop
-                    # callback is pushed: start() raised before this server
-                    # owned anything (its own failure paths already cleaned
+                    # A unix-socket collision with no TCP listener
+                    # configured, by contrast, means a live PEER worker
+                    # owns the path (HealthServer.start's loud refusal
+                    # stops a newcomer silently stealing it) and nothing
+                    # of ours is serving anywhere: refusing to boot would
+                    # crash-loop a healthy pair during a rolling restart.
+                    # The collision is a WARN and the boot carries on
+                    # registering and claiming. No stop callback is
+                    # pushed: start() raised before this server owned
+                    # anything (its own failure paths already cleaned
                     # up), so there is nothing of ours to stop.
                     _startup_log.warning(
                         "health-server-unavailable",

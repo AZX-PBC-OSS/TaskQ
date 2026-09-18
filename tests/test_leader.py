@@ -6,7 +6,7 @@ scheduling, and retention-config helpers against InMemoryBackend.
 
 import asyncio
 import contextlib
-from collections.abc import AsyncGenerator, Callable, Sequence
+from collections.abc import AsyncGenerator, Callable, Iterable, Sequence
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -166,6 +166,14 @@ class FakeConn:
         self.execute_calls.append((sql, args))
         if self._on_execute is not None:
             self._on_execute()
+        # Why a DELETE tag for the resign: the command tag is the delete
+        # COUNT, and resign() now reads it to decide whether the row was
+        # actually handed back: a double answering "UPDATE 1" here would
+        # report every resign as a no-op (the same class of lie as the
+        # fetchval doubles answering lease statements with a bool: the
+        # shape the caller reads must be the shape the real driver sends).
+        if sql.lstrip().upper().startswith("DELETE FROM") and "maintenance_leader" in sql:
+            return "DELETE 1"
         return "UPDATE 1"
 
     async def fetchrow(self, sql: str, *args: object) -> object | None:
@@ -284,10 +292,12 @@ def _make_deps(
     leader_conn: FakeConn | None = None,
     is_leader: bool = False,
     heartbeat_interval: float = 0.5,
+    leader_lease: float = 40.0,
 ) -> WorkerDeps:
     settings = _worker_settings(
         "postgresql://x:x@localhost/x",
         HEARTBEAT_INTERVAL=str(heartbeat_interval),
+        LEADER_LEASE=str(leader_lease),
         LOCK_LEASE="2.0",
         WATCHDOG_LOOP_LAG_BUDGET="1.2",
         WATCHDOG_LOOP_LAG_WARN_BUDGET="0.5",
@@ -314,6 +324,7 @@ async def _make_leader(
     dispatcher_pool: FakePool | None = None,
     is_leader: bool = False,
     monkeypatch: Any | None = None,
+    leader_lease: float = 40.0,
 ) -> tuple[MaintenanceLeader, WorkerDeps, InMemoryBackend, FakeConn, FakePool, asyncio.Event]:
     """Construct MaintenanceLeader wired with fake deps and InMemoryBackend.
 
@@ -328,6 +339,7 @@ async def _make_leader(
         leader_conn=fake_leader_conn,
         is_leader=is_leader,
         heartbeat_interval=0.01,
+        leader_lease=leader_lease,
     )
     worker_id = new_uuid()
     leader = MaintenanceLeader(deps, worker_id, backend, clock=clock)
@@ -3520,6 +3532,447 @@ async def test_resign_without_a_term_or_a_live_conn_is_a_noop(
     deps.lead(LeaderTerm(elected_at=datetime.now(UTC), trusted_until=60.0))
     await leader.resign()
     assert leader_conn.execute_calls == []
+
+
+# ── A won-but-unassumable lease goes back (#234) ─────────────────────────
+
+
+class _ElectRecordingConn(FakeConn):
+    """FakeConn that records elects and resigns into a shared timeline.
+
+    The elect statement's return IS the term's ``elected_at``, and the
+    leader conn is rebuilt every failed cycle, so proving the resign
+    fences on the CURRENT win needs the answers in call order across
+    every conn the cycles opened: a single interleaved timeline of
+    ``("elect", term)`` / ``("resign", fence)`` events, not per-conn
+    lists a racing loop keeps appending to.
+    """
+
+    def __init__(self, timeline: list[tuple[str, datetime]], **kwargs: object) -> None:
+        super().__init__(**kwargs)  # type: ignore[arg-type]  # Why: FakeConn kwargs are keyword-only; forwarding keeps this double a drop-in.
+        self._timeline = timeline
+
+    async def fetchval(self, sql: str, *args: object) -> object:
+        result = await super().fetchval(sql, *args)
+        if "INSERT" in sql.upper() and "maintenance_leader" in sql and isinstance(result, datetime):
+            self._timeline.append(("elect", result))
+        return result
+
+    async def execute(self, sql: str, *args: object) -> str:
+        result = await super().execute(sql, *args)
+        if sql.lstrip().upper().startswith("DELETE FROM") and "maintenance_leader" in sql:
+            fence = args[1]
+            assert isinstance(fence, datetime)
+            self._timeline.append(("resign", fence))
+        return result
+
+
+def _resign_deletes(conns: Iterable[FakeConn]) -> list[tuple[str, tuple[object, ...]]]:
+    """Every maintenance-leader resign DELETE issued through *conns*."""
+    return [
+        (sql, args)
+        for conn in conns
+        for sql, args in conn.execute_calls
+        if sql.lstrip().upper().startswith("DELETE FROM") and "maintenance_leader" in sql
+    ]
+
+
+async def test_persistent_dedicated_conn_failure_hands_the_won_lease_back(
+    monkeypatch: Any,  # type: ignore[reportUnknownParameterType]
+) -> None:
+    """#234: a pod that keeps WINNING the row but can never open its
+    dedicated conns must resign the row once its episode's trust budget
+    is spent, and keep resigning on every later re-win, because the
+    anchor survives the resign (a still-broken pod buying a fresh window
+    per re-win is exactly the unbounded hold being fixed).
+
+    ``leader_lease`` is pinned to the 1 s floor, so the trust window
+    (lease - the 1 s margin) is spent the moment the first failed assume
+    anchors it: the first failed cycle keeps the row (the blip budget,
+    pinned separately below), the second hands it back.
+    """
+    import taskq.worker.leader as leader_mod
+
+    timeline: list[tuple[str, datetime]] = []
+    opened: list[_ElectRecordingConn] = []
+
+    async def fake_open(
+        dsn: str,
+        *,
+        label: str = "",
+        apply_keepalive: bool = True,
+        command_timeout: float | None = None,
+    ) -> FakeConn:
+        conn = _ElectRecordingConn(timeline, fetchval_result=True)
+        opened.append(conn)
+        if label in ("leader_monitor_conn", "cron_conn"):
+            # The conn-count-pressure shape from the issue: the one
+            # leader-conn slot the election itself freed and re-took
+            # opens fine; the two extra dedicated conns are refused.
+            raise asyncpg.TooManyConnectionsError("remaining connection slots are reserved")
+        return conn
+
+    monkeypatch.setattr(leader_mod, "open_dedicated_conn", fake_open)
+
+    leader, deps, _backend, first_conn, _, shutdown = await _make_leader(
+        leader_conn=_ElectRecordingConn(timeline, fetchval_result=True),
+        monkeypatch=None,
+        leader_lease=1.0,
+    )
+
+    task = asyncio.create_task(leader._election_loop(shutdown))  # pyright: ignore[reportPrivateUsage]  # Why: the election loop IS the policy under test.
+    try:
+        with structlog.testing.capture_logs() as captured:
+            await wait_for_condition(
+                lambda: any(e.get("kind") == "leader_resigned_unassumable" for e in captured),
+                description="the trust-spent hand-back never resigned the "
+                "won-but-unassumable lease",
+            )
+            # The anchor outlives the resign: a still-broken pod that
+            # re-wins the freed row hands it straight back, every cycle.
+            await wait_for_condition(
+                lambda: len(_resign_deletes([*opened, first_conn])) >= 2,
+                description="a re-win while still broken bought a fresh "
+                "trust window instead of handing the row straight back",
+            )
+    finally:
+        shutdown.set()
+        await task
+
+    elects = [term for event, term in timeline if event == "elect"]
+    assert elects, "sanity: the pod must have won elects for this to be #234's shape"
+    assert not deps.is_leader.is_set(), "a pod that cannot open its conns never led"
+    assert not any(e.get("event") == "leader-elected" for e in captured), (
+        "leader-elected is the successful-assume record; this pod never assumed"
+    )
+    # The fence invariant: every resign fences on the term of the win it
+    # is handing back (the most recent elect before it in the timeline),
+    # never a stale term from an earlier cycle of the episode.
+    last_elect: datetime | None = None
+    resigned = 0
+    for event, term in timeline:
+        if event == "elect":
+            last_elect = term
+        else:
+            resigned += 1
+            assert last_elect is not None
+            assert term == last_elect, (
+                f"a resign fenced on {term!r} while the row it was handing back "
+                f"was won at {last_elect!r}: the fence must carry the CURRENT term"
+            )
+    assert resigned >= 2, "the persistently-broken pod must keep handing re-won rows back"
+    for _sql, args in _resign_deletes([*opened, first_conn]):
+        assert args[0] == leader._worker_id, "the resign must carry this pod's id"
+
+
+async def test_transient_dedicated_conn_failure_keeps_the_lease_and_recovers(
+    monkeypatch: Any,  # type: ignore[reportUnknownParameterType]
+) -> None:
+    """The blip half of the #234 budget: ONE failed conn open inside the
+    episode's trust window must not resign: the own-row arm's cheap
+    route back (the #218 case: a credential reload, a momentary
+    ``TooManyConnections``) is exactly the re-win this window preserves,
+    and resigning per blip would thrash leadership on every flake.
+    """
+    import taskq.worker.leader as leader_mod
+
+    opened: list[FakeConn] = []
+    failed_once = False
+
+    async def fake_open(
+        dsn: str,
+        *,
+        label: str = "",
+        apply_keepalive: bool = True,
+        command_timeout: float | None = None,
+    ) -> FakeConn:
+        nonlocal failed_once
+        conn = FakeConn(fetchval_result=True)
+        opened.append(conn)
+        if label in ("leader_monitor_conn", "cron_conn") and not failed_once:
+            failed_once = True
+            raise asyncpg.TooManyConnectionsError("one refused connection slot")
+        return conn
+
+    monkeypatch.setattr(leader_mod, "open_dedicated_conn", fake_open)
+
+    leader, deps, _backend, first_conn, _, shutdown = await _make_leader(
+        leader_conn=FakeConn(fetchval_result=True),
+        monkeypatch=None,
+        # Default-scale lease: a 39 s trust window, so one blip is deep
+        # inside the budget and must never reach the resign.
+    )
+
+    task = asyncio.create_task(leader._election_loop(shutdown))  # pyright: ignore[reportPrivateUsage]  # Why: the election loop IS the recovery path under test.
+    try:
+        with structlog.testing.capture_logs() as captured:
+            await wait_for_leader(deps)
+    finally:
+        shutdown.set()
+        await task
+
+    assert deps.is_leader.is_set(), "the blip must recover through the own-row arm's cheap re-win"
+    assert _resign_deletes([*opened, first_conn]) == [], (
+        "a single failed conn open inside the trust window resigned the "
+        "won lease: the blip budget is what keeps leadership from "
+        "thrashing on every flake"
+    )
+    assert not any(e.get("kind") == "leader_resigned_unassumable" for e in captured)
+    assert any(e.get("kind") == "leader_dedicated_conn_failed" for e in captured), (
+        "sanity: the failure this test recovers from must have actually happened"
+    )
+
+
+async def test_escaped_assume_failure_also_hands_the_won_lease_back(
+    monkeypatch: Any,  # type: ignore[reportUnknownParameterType]
+) -> None:
+    """The sibling entry point into #234: an exception ESCAPING
+    ``_assume_leadership`` after a won elect (here, a courtesy-lock
+    probe whose conn dies with a transient error the probe's own catch
+    reclassifies as a miss-then-raise) leaves the same held-but-never-led
+    row behind. ``_election_attempt_failed`` must run the same
+    trust-spent hand-back for the won-row cycles it cleans up.
+    """
+    timeline: list[tuple[str, datetime]] = []
+    opened: list[_ElectRecordingConn] = []
+
+    async def fake_open(
+        dsn: str,
+        *,
+        label: str = "",
+        apply_keepalive: bool = True,
+        command_timeout: float | None = None,
+    ) -> FakeConn:
+        conn = _ElectRecordingConn(timeline, fetchval_result=True)
+        opened.append(conn)
+        return conn
+
+    leader, deps, _backend, first_conn, _, shutdown = await _make_leader(
+        leader_conn=_ElectRecordingConn(timeline, fetchval_result=True),
+        monkeypatch=None,
+        leader_lease=1.0,
+    )
+    import taskq.worker.leader as leader_mod
+
+    monkeypatch.setattr(leader_mod, "open_dedicated_conn", fake_open)
+
+    async def _probe_conn_dying_mid_courtesy_lock() -> bool:
+        raise asyncpg.PostgresConnectionError("courtesy-lock probe conn died")
+
+    monkeypatch.setattr(  # pyright: ignore[reportAttributeAccessIssue]  # Why: instance-attribute seam; the double stands in for the courtesy probe the election loop calls after a won elect.
+        leader,
+        "_try_election_lock",
+        _probe_conn_dying_mid_courtesy_lock,
+    )
+
+    task = asyncio.create_task(leader._election_loop(shutdown))  # pyright: ignore[reportPrivateUsage]  # Why: the election loop IS the escaped-failure path under test.
+    try:
+        with structlog.testing.capture_logs() as captured:
+            await wait_for_condition(
+                lambda: any(e.get("kind") == "leader_resigned_unassumable" for e in captured),
+                description="an escaped assume failure after a won elect never "
+                "triggered the trust-spent hand-back",
+            )
+    finally:
+        shutdown.set()
+        await task
+
+    assert not deps.is_leader.is_set()
+    # Same fence invariant as the caught-failure pin: the resign fences on
+    # the CURRENT win, which the escaped failure could not have carried
+    # anywhere but _resign_fence.
+    last_elect: datetime | None = None
+    resigned = 0
+    for event, term in timeline:
+        if event == "elect":
+            last_elect = term
+        else:
+            resigned += 1
+            assert last_elect is not None
+            assert term == last_elect, (
+                "the escaped-failure resign must fence on the CURRENT win's term"
+            )
+    assert resigned >= 1, "the hand-back must issue its fenced DELETE"
+    for _sql, args in _resign_deletes([*opened, first_conn]):
+        assert args[0] == leader._worker_id
+    hand_backs = [e for e in captured if e.get("kind") == "leader_resigned_unassumable"]
+    assert hand_backs[0]["reason"] == "assume_failed"
+
+
+class _SteerableConn(_ElectRecordingConn):
+    """A double whose elect answers follow a shared mutable flag, per call.
+
+    The R1 review shape needs the election to flip mid-run (a peer takes
+    the row, so this pod's elects start LOSING), while ``FakeConn`` binds
+    its lease-statement answer at construction and the leader conn is
+    rebuilt every failed cycle. The flag is therefore read at call time:
+    ``win`` truthy answers the elect with a fresh term (recorded in the
+    timeline), ``win`` falsy answers with no row at all (the ordinary
+    follower state).
+    """
+
+    def __init__(self, timeline: list[tuple[str, datetime]], state: dict[str, int]) -> None:
+        super().__init__(timeline, fetchval_result=True)
+        self._state = state
+
+    async def fetchval(self, sql: str, *args: object) -> object:
+        if _is_lease_statement(sql) and not _is_server_clock_read(sql) and not self._state["win"]:
+            return None
+        return await super().fetchval(sql, *args)
+
+
+async def test_a_blip_after_a_peer_takeover_gets_a_fresh_trust_window(
+    monkeypatch: Any,  # type: ignore[reportUnknownParameterType]
+) -> None:
+    """F1, the R1 review shape: an OLD episode's spent anchor must not
+    resign a NEW term's first conn-open blip.
+
+    Sequence: a broken episode hands the lease back at its trust horizon;
+    a peer takes the row; this pod later wins again (the peer's lease
+    ended) and hits ONE failed dedicated-conn open. The stale anchor,
+    cleared only by a successful assume in the code under review, is
+    long spent, so that single blip resigned the fresh term immediately:
+    the per-blip leadership thrash the #234 design explicitly rejected,
+    arriving through the back door for exactly the pods that once had an
+    unassumable episode.
+
+    A lost election is the observable end of an episode (a peer holds the
+    row now), so the anchor must clear there, while the sibling pin
+    (``test_persistent_dedicated_conn_failure_hands_the_won_lease_back``)
+    keeps the other rule: a re-win while still broken, with NO peer
+    having taken the row in between, hands it straight back.
+    """
+    import taskq.worker.leader as leader_mod
+
+    timeline: list[tuple[str, datetime]] = []
+    # win: 1 = this pod's elects win (its row / a free row), 0 = a live
+    # peer holds the row and every elect loses. fail_opens: every
+    # dedicated-conn open refuses (the broken episode). blips_left: a
+    # one-shot refusal count for the new term's single blip.
+    state: dict[str, int] = {"win": 1, "fail_opens": 1, "blips_left": 0}
+
+    async def fake_open(
+        dsn: str,
+        *,
+        label: str = "",
+        apply_keepalive: bool = True,
+        command_timeout: float | None = None,
+    ) -> FakeConn:
+        if label in ("leader_monitor_conn", "cron_conn") and (
+            state["fail_opens"] or state["blips_left"] > 0
+        ):
+            # The one-shot blip decrements only when the persistent
+            # failure is over: phase 3's single refusal.
+            if state["blips_left"] > 0 and not state["fail_opens"]:
+                state["blips_left"] -= 1
+            raise asyncpg.TooManyConnectionsError("remaining connection slots reserved")
+        return _SteerableConn(timeline, state)
+
+    monkeypatch.setattr(leader_mod, "open_dedicated_conn", fake_open)
+
+    leader, deps, _backend, _first_conn, _, shutdown = await _make_leader(
+        leader_conn=_SteerableConn(timeline, state),
+        monkeypatch=None,
+        leader_lease=1.0,
+    )
+
+    task = asyncio.create_task(leader._election_loop(shutdown))  # pyright: ignore[reportPrivateUsage]  # Why: the election loop IS the episode state machine under test.
+
+    try:
+        with structlog.testing.capture_logs() as captured:
+
+            def _warn_count() -> int:
+                return sum(1 for e in captured if e.get("kind") == "leader_resigned_unassumable")
+
+            # Phase 1, the broken episode: wins, failed opens, the
+            # trust-spent hand-back (and its re-win churn).
+            await wait_for_condition(
+                _warn_count,
+                description="phase 1 never produced the trust-spent hand-back",
+            )
+
+            # Phase 2, the peer takes the row: this pod's elects lose.
+            state["win"] = 0
+            await wait_for_condition(
+                lambda: any(e.get("kind") == "leader_retry" for e in captured),
+                description="the pod never observed the election loss that ends the episode",
+            )
+            warns_after_loss = _warn_count()
+
+            # Phase 3, the pod wins a NEW term (the peer's lease ended)
+            # and hits exactly one conn-open blip on it: the persistent
+            # failure is over, one open still refuses.
+            state["win"] = 1
+            state["fail_opens"] = 0
+            state["blips_left"] = 1
+            await wait_for_leader(deps)
+
+        assert _warn_count() == warns_after_loss, (
+            "the first conn-open blip of a NEW term resigned immediately: the "
+            "spent anchor from an old episode (ended by a peer takeover) "
+            "survived the election loss it should have cleared on"
+        )
+        assert deps.is_leader.is_set(), (
+            "the blipped term must recover through its own trust window and "
+            "assume on the next cycle"
+        )
+    finally:
+        shutdown.set()
+        await task
+
+    # The recovery was real leadership, not a hand-back: this pod assumed
+    # the term it won in phase 3.
+    assert deps.leader_term is not None
+    assert any(e.get("event") == "leader-elected" for e in captured)
+
+
+async def test_the_hand_back_warn_does_not_fire_when_the_resign_did_not_land(
+    monkeypatch: Any,  # type: ignore[reportUnknownParameterType]
+) -> None:
+    """F2: ``leader-resigned-unassumable`` is the policy record ("this
+    pod handed the lease back because it cannot assume it"), so it must
+    fire only when the resign actually DELETED the row.
+
+    The review run logged 20 of those WARNs against zero successful
+    resigns: the WARN used to follow the best-effort ``resign()``
+    unconditionally, and a resign with no live conn returns silently,
+    so the runbook's "the fleet is leading from elsewhere" advice was
+    pointed at a row nobody had resigned. The gate is ``resign()``'s own
+    return: the delete count from the command tag, not the absence of
+    an error (a fenced no-op is success-shaped).
+    """
+    leader, deps, _backend, _leader_conn, _, shutdown = await _make_leader(monkeypatch=monkeypatch)
+    _ = shutdown
+
+    # A spent anchor (an old episode's budget is long past) and a fenced
+    # term, so the hand-back's resign is due RIGHT NOW.
+    loop = asyncio.get_running_loop()
+    spent = LeaderTerm(elected_at=datetime.now(UTC), trusted_until=loop.time() - 1.0)
+    leader._unassumable_anchor = spent  # pyright: ignore[reportPrivateUsage]  # Why: driving the exact spent-anchor branch IS the test.
+    leader._resign_fence = spent  # pyright: ignore[reportPrivateUsage]  # Why: the fence the resign would carry.
+
+    # No live conn anywhere: resign() has nothing to ride and returns
+    # False silently; the hand-back must not claim a hand-back.
+    deps.leader_conn = None
+    assert leader._leader_monitor_conn is None
+    with structlog.testing.capture_logs() as silent:
+        await leader._hand_back_unassumable_lease(  # pyright: ignore[reportPrivateUsage]  # Why: the gate under test is this method's own logging decision.
+            reason="dedicated_conn_open_failed"
+        )
+    assert not any(e.get("kind") == "leader_resigned_unassumable" for e in silent), (
+        "the WARN claimed a handed-back lease while no resign could even be issued"
+    )
+
+    # A live conn whose DELETE lands: the WARN fires, and the record is
+    # true exactly when the row is gone.
+    deps.leader_conn = FakeConn(fetchval_result=True)  # type: ignore[assignment]  # Why: FakeConn is a drop-in for asyncpg.Connection in unit tests; the harness in this file assigns it the same way.
+    with structlog.testing.capture_logs() as landed:
+        await leader._hand_back_unassumable_lease(  # pyright: ignore[reportPrivateUsage]  # Why: same seam, affirmative arm.
+            reason="dedicated_conn_open_failed"
+        )
+    hand_backs = [e for e in landed if e.get("kind") == "leader_resigned_unassumable"]
+    assert len(hand_backs) == 1
+    assert hand_backs[0]["reason"] == "dedicated_conn_open_failed"
 
 
 # ── Leadership gap-window after reload ──────────────────────────────────
