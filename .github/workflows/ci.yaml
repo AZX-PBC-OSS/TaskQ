@@ -88,10 +88,12 @@ jobs:
     # One leg per Python version replaces the old 12-leg matrix (3 x 4
     # extra-sets, each re-running the same 9,000 tests with different skips):
     # the extras' tests were the only per-leg difference, and they now have
-    # their own spot-check legs below. On the 4-core larger runner at -n 4:
-    # the same per-core density the fast lanes always ran, on a dedicated
-    # core per worker.
-    runs-on: ubuntu-4-core-latest
+    # their own spot-check legs below. The intended lane is the 4-core
+    # larger runner at -n 4 (the same per-core density the fast lanes
+    # always ran, a dedicated core per worker); the standard runner is the
+    # stand-in until the org's larger-runner labels exist: the pinned
+    # labels matched no runner and queued these legs forever.
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
       matrix:
@@ -212,7 +214,7 @@ jobs:
     # stays at -n 2: every test here is xdist-safe by construction (this lane
     # has always run -n 2), and the wall-clock scenarios must not tighten
     # further under heavier packing.
-    runs-on: ubuntu-8-core-latest
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
@@ -259,7 +261,7 @@ jobs:
     # property, not a parallelism-count property) and roughly halves the
     # wall time; the larger runner's cost is linear per core, so this is
     # the cheapest wall-clock minute CI sells.
-    runs-on: ubuntu-8-core-latest
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       # fetch-depth 0: the breaking-change marker guard reads the branch's
