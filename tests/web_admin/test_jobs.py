@@ -18,6 +18,9 @@ from . import StubConnection, StubRecord, _StubPool
 # ── Job detail route: discovery and registration ───────────────────────
 
 
+pytestmark = [pytest.mark.fastapi]
+
+
 def test_job_detail_route_registered_via_discovery(
     monkeypatch: pytest.MonkeyPatch, stub_pool: _StubPool
 ) -> None:

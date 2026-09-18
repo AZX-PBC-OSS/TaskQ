@@ -20,6 +20,8 @@ from urllib.parse import parse_qs
 
 import pytest
 
+pytestmark = [pytest.mark.fastapi]
+
 pytest.importorskip("fastapi")
 
 ADMIN_JS = Path(__file__).resolve().parents[2] / "src" / "taskq" / "web" / "static" / "admin.js"

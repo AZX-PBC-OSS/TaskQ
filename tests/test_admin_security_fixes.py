@@ -26,6 +26,7 @@ from fastapi.testclient import TestClient
 
 from taskq.web.admin import create_router, setup_admin_state
 
+pytestmark = [pytest.mark.fastapi]
 _FAKE_UUID = UUID("00000000-0000-0000-0000-000000000001")
 
 

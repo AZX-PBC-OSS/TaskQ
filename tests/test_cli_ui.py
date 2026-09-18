@@ -11,6 +11,8 @@ from taskq.cli import app
 from taskq.settings import TaskQSettings
 from taskq.testing.assertions import plain_cli_output
 
+pytestmark = [pytest.mark.otel]
+
 runner = CliRunner()
 
 

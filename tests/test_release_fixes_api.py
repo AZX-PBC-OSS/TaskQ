@@ -167,6 +167,7 @@ def test_actor_config_drift_list_str_includes_remedy_hint_once() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.fastapi
 async def test_listen_notify_callback_drops_oldest_on_overflow(
     capsys: pytest.CaptureFixture[str],
 ) -> None:

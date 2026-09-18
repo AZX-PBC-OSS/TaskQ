@@ -16,6 +16,8 @@ from typing import Any
 import asyncpg
 import httpx
 import pytest
+
+pytest.importorskip("fastapi", reason="requires taskq[fastapi]")
 import pytest_asyncio
 from fastapi import FastAPI
 
@@ -31,6 +33,8 @@ from taskq.constants import (
 )
 from taskq.migrate import apply_pending
 from taskq.web.admin import create_router, setup_admin_state
+
+pytestmark = [pytest.mark.fastapi]
 
 pytestmark = pytest.mark.integration
 

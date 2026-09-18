@@ -45,6 +45,7 @@ from tests._sso_oidc_crypto import (
 )
 from tests.http_mock import mock_http, stacks_for
 
+pytestmark = [pytest.mark.oidc]
 _ISSUER = "https://idp.test.invalid"
 _CLIENT_ID = "test-client"
 _DISCOVERY_URL = f"{_ISSUER}/.well-known/openid-configuration"

@@ -44,6 +44,7 @@ from taskq.migrate import apply_pending
 from taskq.progress._events import ProgressEvent
 from taskq.web.progress import create_router
 
+pytestmark = [pytest.mark.fastapi]
 pytestmark = [pytest.mark.integration, pytest.mark.redis]
 
 SCHEMA_LABEL = f"twp_{new_base62()}".lower()

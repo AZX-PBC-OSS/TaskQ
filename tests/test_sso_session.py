@@ -25,6 +25,8 @@ from taskq.web.admin.auth._session import (
     create_auth_dependency,
 )
 
+pytestmark = [pytest.mark.fastapi]
+
 
 def _make_claims(
     subject: str = "user-1",

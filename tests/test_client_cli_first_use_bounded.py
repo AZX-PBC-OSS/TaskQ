@@ -876,6 +876,7 @@ def test_taskq_constructor_still_raises_on_a_malformed_schema_name(
 # ── taskq ui serve: startup factory calls and eager redis are bounded ──
 
 
+@pytest.mark.fastapi
 async def test_ui_serve_lifespan_pool_factory_is_bounded(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -910,6 +911,8 @@ async def test_ui_serve_lifespan_pool_factory_is_bounded(
     pytest.fail("UI startup completed against a factory that never returns")
 
 
+@pytest.mark.fastapi
+@pytest.mark.redis
 async def test_ui_serve_lifespan_redis_factory_is_bounded(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -947,6 +950,8 @@ async def test_ui_serve_lifespan_redis_factory_is_bounded(
     pytest.fail("UI startup completed against a redis factory that never returns")
 
 
+@pytest.mark.fastapi
+@pytest.mark.redis
 async def test_ui_serve_lifespan_redis_initialize_is_bounded(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1087,6 +1092,7 @@ class _FastAcquire:
         return None
 
 
+@pytest.mark.fastapi
 async def test_ui_serve_ready_hanging_acquire_is_bounded(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1118,6 +1124,7 @@ async def test_ui_serve_ready_hanging_acquire_is_bounded(
     assert body["reasons"] == ["pg_ping_timeout"]
 
 
+@pytest.mark.fastapi
 async def test_ui_serve_ready_hanging_execute_is_bounded(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1153,6 +1160,7 @@ async def test_ui_serve_ready_hanging_execute_is_bounded(
 # ── taskq ui serve: the admin pool carries a per-query bound ───────────
 
 
+@pytest.mark.fastapi
 async def test_ui_serve_pool_carries_command_timeout(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

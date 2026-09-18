@@ -33,6 +33,9 @@ from taskq.auth import PgCredential, PgCredentialProvider, RedisCredential, Redi
 # ── Fake credential ────────────────────────────────────────────────────
 
 
+pytestmark = [pytest.mark.aad]
+
+
 class _FakeAccessToken:
     def __init__(self, token: str) -> None:
         self.token = token

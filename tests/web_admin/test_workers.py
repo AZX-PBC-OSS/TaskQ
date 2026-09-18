@@ -22,6 +22,9 @@ from . import StubRecord, _StubPool  # Why: importorskip guard must precede.
 # ── Workers routes: discovery and registration ─────────────────────────
 
 
+pytestmark = [pytest.mark.fastapi]
+
+
 def test_workers_route_registered_via_discovery(
     monkeypatch: pytest.MonkeyPatch, stub_pool: _StubPool
 ) -> None:

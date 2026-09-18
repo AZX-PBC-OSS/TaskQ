@@ -83,36 +83,19 @@ jobs:
         run: uv run --no-sync pyright src/taskq tests
 
   test:
-    runs-on: ubuntu-latest
+    # The per-interpreter suite: ALL extras installed, the whole test suite
+    # except the load-sensitive family (which owns its serial lane below).
+    # One leg per Python version replaces the old 12-leg matrix (3 x 4
+    # extra-sets, each re-running the same 9,000 tests with different skips):
+    # the extras' tests were the only per-leg difference, and they now have
+    # their own spot-check legs below. On the 4-core larger runner at -n 4:
+    # the same per-core density the fast lanes always ran, on a dedicated
+    # core per worker.
+    runs-on: ubuntu-4-core-latest
     timeout-minutes: 30
     strategy:
       matrix:
         python-version: ["3.12", "3.13", "3.14"]
-        # Leg 1 (--all-extras): every optional extra installed, including
-        #   redis, oidc, and saml — runs the full SSO (OIDC + SAML) test
-        #   suite for real, not skipped.
-        # Leg 2 (otel+fastapi+prometheus+reload, "without redis"):
-        #   deliberately omits redis, oidc, and saml to verify graceful
-        #   degradation — the SSO tests correctly `pytest.importorskip`
-        #   rather than failing when those extras aren't installed (note:
-        #   authlib/httpx2/itsdangerous are already present via the `dev`
-        #   group regardless of extras, so this leg still exercises the OIDC
-        #   code path; python3-saml is not in `dev`, so SAML tests are
-        #   skipped here specifically).
-        # Leg 3 (oidc+fastapi only): confirms `taskq[oidc]` works in
-        #   isolation, without otel/prometheus/reload/saml/redis installed —
-        #   the exact combination the docs recommend
-        #   (`uv add "taskq[fastapi,oidc]"`).
-        # Leg 4 (saml+fastapi only): same, for `taskq[saml]` in isolation —
-        #   confirms the SAML backend doesn't accidentally depend on
-        #   anything from the oidc/otel/prometheus extras.
-        extras:
-          [
-            "--all-extras",
-            "--extra otel --extra fastapi --extra prometheus --extra reload",
-            "--extra oidc --extra fastapi",
-            "--extra saml --extra fastapi",
-          ]
     steps:
       # fetch-depth 0: same reason as the coverage job — history-sensitive
       # guards (tests/test_breaking_change_markers.py) walk the branch's
@@ -122,53 +105,91 @@ jobs:
         with:
           fetch-depth: 0
 
-      # The shared action exports UV_PYTHON for the whole job. The previous
-      # shape passed `--python ${{ matrix.python-version }}` to the sync and
-      # again to each `uv run`; those happened to agree, so this leg was NOT
-      # testing a pruned environment. But the safety rested entirely on two
-      # flags being kept in step by hand: dropping the one on `uv run` would
-      # have had uv read .python-version (3.13), delete the venv the sync
-      # built, and rebuild it from the default dependency set, discarding
-      # `${{ matrix.extras }}` and the dev group. Measured on this project:
-      # 116 packages before, 111 after, and `import fastapi` failing.
+      # The shared action exports UV_PYTHON for the whole job, so the sync
+      # and every uv call in the leg agree on the interpreter by
+      # construction.
       - uses: ./.github/actions/setup-uv-env
         with:
           python-version: ${{ matrix.python-version }}
-          sync-args: ${{ matrix.extras }} --group dev
+          sync-args: --all-extras --group dev
 
       # The admin UI's page component (src/taskq/web/static/admin.js) is
-      # tested by driving it under Node (tests/web_admin/test_admin_js_*).
-      # Those tests skip on a machine without Node and FAIL under CI=true,
-      # so this step is what keeps them from becoming silent coverage loss.
-      # The version is pinned rather than trusting whatever the runner image
-      # ships, so the behaviour under test does not move with the image.
+      # tested by driving it under Node; the workflow-level pin
+      # (tests/test_ci_workflow.py) requires Node on every pytest job.
       - uses: actions/setup-node@v7
         with:
           node-version: "22"
 
-      # A leg must fail loudly if it is ever running an interpreter other than
-      # the one it advertises. That failure mode is otherwise invisible for as
-      # long as the imports happen to resolve, which is what would let it
-      # survive review.
+      # A leg must fail loudly if it is ever running an interpreter other
+      # than the one it advertises.
       - name: Verify the interpreter matches this matrix leg
         run: |
           uv run --no-sync python -c "import sys; want='${{ matrix.python-version }}'; got='.'.join(map(str, sys.version_info[:2])); assert got == want, f'matrix leg {want} is running {got}'"
 
-      # Lane split: this matrix job is the FAST unit lane — the slow-marked
-      # family (the fleet/chaos tier; 43 wall-clock-bound tests that boot the
-      # shared container pair and wait real lease expiries) runs once in the
-      # `slow-suite` job below instead of on every one of this job's 12 legs.
-      # Rerun economics, not coverage loss: the slow family still runs on
-      # every push and PR (its own required lane), and the `coverage` job
-      # still executes the full suite — markers included — because the
-      # 90% gate counts the slow family's lines.
-      - name: Run tests (with redis)
-        if: matrix.extras == '--all-extras'
-        run: uv run --no-sync pytest -n 2 -m "not slow"
+      - name: Run the suite (all extras, minus load-sensitive)
+        run: uv run --no-sync pytest -n 4 -m "not load_sensitive"
 
-      - name: Run tests (without redis)
-        if: matrix.extras != '--all-extras'
-        run: uv run --no-sync pytest -n 2 -m "not slow and not redis"
+  test-extras:
+    # The extra-gated families, one leg per extra: install the extra, run
+    # ONLY its tagged tests. Each leg is small (seconds to minutes), so it
+    # stays on a standard runner: GitHub bills per second but rounds up to
+    # the minute, and a larger runner would cost more and buy nothing at
+    # this duration. The importorskip guards inside these files stay as the
+    # safety net for local runs without selection; under selection they are
+    # dead code by construction.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      matrix:
+        include:
+          - { extra: aad, install: aad }
+          - { extra: saml, install: "saml fastapi" }
+          - { extra: oidc, install: "oidc fastapi" }
+          - { extra: otel, install: "otel fastapi" }
+          - { extra: vault, install: vault }
+          - { extra: aws, install: aws }
+          - { extra: redis, install: redis }
+          - { extra: fastapi, install: fastapi }
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/setup-uv-env
+        with:
+          sync-args: ${{ matrix.install != 'fastapi' && '--extra' || '' }} ${{ matrix.install != 'fastapi' && matrix.install || '' }} ${{ matrix.install == 'fastapi' && '--extra fastapi' || '' }} --group dev
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+      - name: Run the extra's own tests
+        run: uv run --no-sync pytest -n 2 -m "${{ matrix.extra }}"
+
+  test-cross:
+    # Common extra PAIRS in one process: both families' tests run together
+    # in a single interpreter so cross-talk (shared session state, module
+    # interplay, container contention) surfaces here rather than in a
+    # user's install. Small legs, standard runners.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      matrix:
+        include:
+          - { pair: "redis and oidc", install: "redis oidc fastapi" }
+          - { pair: "redis and saml", install: "redis saml fastapi" }
+          - { pair: "saml and oidc", install: "saml oidc fastapi" }
+          - { pair: "aad and redis", install: "aad redis" }
+          - { pair: "otel and fastapi", install: "otel fastapi" }
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/setup-uv-env
+        with:
+          sync-args: ${{ matrix.install != 'fastapi' && '--extra' || '' }} ${{ matrix.install != 'fastapi' && matrix.install || '' }} ${{ matrix.install == 'fastapi' && '--extra fastapi' || '' }} --group dev
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+      - name: Run both families together
+        run: uv run --no-sync pytest -n 2 -m "${{ matrix.pair }}"
 
   slow-suite:
     # The slow-marked family's own lane: the fleet/chaos tier whose tests are
@@ -182,7 +203,14 @@ jobs:
     # Docker (testcontainers); one leg on the default interpreter, because
     # interpreter coverage is the fast matrix's job and the slow tier's value
     # is behaviour, not runtime parity.
-    runs-on: ubuntu-latest
+    # The slow tier is the wave's longest wall-clock lane (wall-clock-bound
+    # lease/failover/chaos windows), so it runs on the 8-core larger runner:
+    # the per-worker core density doubles and the lane's wall time drops
+    # accordingly, at the larger runner's linear per-core cost. Parallelism
+    # stays at -n 2: every test here is xdist-safe by construction (this lane
+    # has always run -n 2), and the wall-clock scenarios must not tighten
+    # further under heavier packing.
+    runs-on: ubuntu-8-core-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
@@ -194,10 +222,42 @@ jobs:
       - uses: ./.github/actions/setup-uv-env
 
       - name: Run the slow suite
-        run: uv run --no-sync pytest -n 2 -m "slow"
+        run: uv run --no-sync pytest -n 2 -m "slow and not load_sensitive"
+
+  load-sensitive:
+    # The wall-clock/timing guards (watchdog lag sampling, terminal-write
+    # budget, cron commit gates, otel overhead, bootstrap slots) assert on
+    # elapsed time, so they are load-fragile: under xdist a sibling's CPU
+    # churn shows up as flake. They run here, ONCE per CI run, serially, on
+    # a standard runner (the job is ~2 minutes: GitHub bills per second but
+    # rounds up to the minute, so a larger runner would cost more and buy
+    # nothing for a serial lane). Every other lane deselects the family via
+    # "not load_sensitive"; this lane is the one place it runs.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      # The workflow-level pin (test_ci_workflow.py) requires Node on every
+      # job whose pytest can reach tests/web_admin; keep it unconditional.
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+
+      - uses: ./.github/actions/setup-uv-env
+
+      - name: Run the load-sensitive suite serially
+        run: uv run --no-sync pytest -m "load_sensitive"
 
   coverage:
-    runs-on: ubuntu-latest
+    # The coverage lane is the single longest CI job (the whole suite, one
+    # leg, at -n 2 on a 4-core runner: ~19 min). The 8-core larger runner at
+    # -n 4 keeps the per-worker core density identical to -n 2 on 4 cores
+    # (the timing-sensitive tests' flake exposure is a per-core-density
+    # property, not a parallelism-count property) and roughly halves the
+    # wall time; the larger runner's cost is linear per core, so this is
+    # the cheapest wall-clock minute CI sells.
+    runs-on: ubuntu-8-core-latest
     timeout-minutes: 30
     steps:
       # fetch-depth 0: the breaking-change marker guard reads the branch's
@@ -221,7 +281,7 @@ jobs:
       # one place the whole suite runs in full. The fast/slow lane split above
       # moves rerun economics, not coverage.
       - name: Run tests with coverage gate
-        run: uv run --no-sync pytest -n 2 --cov=taskq --cov-report=term-missing --cov-fail-under=90
+        run: uv run --no-sync pytest -n 4 --cov=taskq --cov-report=term-missing --cov-fail-under=90
 
   e2e:
     # Containerized e2e tier: workers built from the packaged wheel run

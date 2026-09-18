@@ -23,6 +23,9 @@ from taskq.web.admin._listen import (  # Why: importorskip guard must precede.
 # ── _make_notify_callback ───────────────────────────────────────────────
 
 
+pytestmark = [pytest.mark.fastapi]
+
+
 def _open_conn() -> AsyncMock:
     """A LISTEN connection double that reports itself open.
 

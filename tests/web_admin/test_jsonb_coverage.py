@@ -9,6 +9,8 @@ from taskq.web.admin._jsonb import (
     decode_jsonb,  # Why: importorskip guard must precede.
 )
 
+pytestmark = [pytest.mark.fastapi]
+
 
 class TestDecodeJsonb:
     def test_none_returns_none(self) -> None:

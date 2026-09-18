@@ -15,6 +15,9 @@ from . import _StubPool
 # ── Route discovery ────────────────────────────────────────────────────
 
 
+pytestmark = [pytest.mark.fastapi]
+
+
 def test_jobs_routes_registered_via_discovery(
     monkeypatch: pytest.MonkeyPatch, stub_pool: _StubPool
 ) -> None:

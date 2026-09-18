@@ -16,6 +16,8 @@ from typing import TYPE_CHECKING
 from uuid import UUID
 
 import pytest
+
+pytest.importorskip("fastapi", reason="requires taskq[fastapi]")
 from pydantic import BaseModel
 
 from taskq.actor import actor

@@ -36,6 +36,7 @@ import taskq.obs._otel as otel_mod
 
 # The fields TaskQ actually reads, not the full dataclass. A future release may
 # add fields freely; removing or renaming one of these is what breaks us.
+pytestmark = [pytest.mark.otel]
 _NUMBER_FIELDS_USED = frozenset({"attributes", "value"})
 _HISTOGRAM_FIELDS_USED = frozenset(
     {"attributes", "count", "sum", "bucket_counts", "explicit_bounds"}

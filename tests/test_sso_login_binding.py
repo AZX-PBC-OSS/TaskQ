@@ -50,6 +50,7 @@ from taskq.web.admin.auth.oidc import OIDCAuthConfig, create_oidc_auth
 from tests._sso_oidc_crypto import jwks_dict, make_discovery, make_token_response
 from tests.http_mock import mock_http
 
+pytestmark = [pytest.mark.saml]
 _ISSUER = "https://idp.test.invalid"
 _CLIENT_ID = "test-client"
 _CLIENT_SECRET = "test-secret"

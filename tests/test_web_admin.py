@@ -14,6 +14,8 @@ from fastapi.testclient import TestClient
 
 from taskq.web.admin import create_router, setup_admin_state
 
+pytestmark = [pytest.mark.fastapi]
+
 
 class _FakeConn:
     async def fetch(self, query: str, *args: object) -> list[dict[str, object]]:

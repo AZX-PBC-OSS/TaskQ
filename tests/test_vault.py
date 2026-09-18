@@ -24,6 +24,9 @@ from taskq.vault import VaultDynamicDbProvider
 # ── Fake hvac client ───────────────────────────────────────────────────
 
 
+pytestmark = [pytest.mark.vault]
+
+
 def _fake_hvac_client(username: str = "v-root-dyn-user-abc", password: str = "dyn-pw-xyz") -> Any:  # noqa: S107  # Why: test fixture password, not a real credential.
     """Build a fake hvac client whose generate_credentials returns a canned pair."""
     client = MagicMock()

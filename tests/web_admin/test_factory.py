@@ -27,6 +27,7 @@ from . import _StubPool
 
 #: Every module in the admin package, checked as one set so a new module is
 #: covered by adding it here rather than by remembering to write two tests.
+pytestmark = [pytest.mark.fastapi]
 _ADMIN_MODULES = (
     _factory_mod,
     _static_mod,

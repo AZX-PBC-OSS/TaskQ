@@ -456,6 +456,7 @@ async def test_clock_type_guard_raises_missing_provider(pg_dsn: str) -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.load_sensitive
 async def test_ensure_slots_failure_logged_and_bootstrap_continues(
     pg_dsn: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:

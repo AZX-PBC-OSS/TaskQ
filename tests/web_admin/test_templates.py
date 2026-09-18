@@ -16,6 +16,8 @@ from taskq.web.admin import create_router
 
 from . import _StubPool
 
+pytestmark = [pytest.mark.fastapi]
+
 
 def _render_base(
     monkeypatch: pytest.MonkeyPatch,
