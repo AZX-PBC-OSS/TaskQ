@@ -88,6 +88,65 @@ async def test_diff_cancel_running_phase_and_poll(pg_dsn: str) -> None:
     assert pg["jobs"]["run"]["cancel_phase"] == 1
 
 
+async def _deferral_arms_fenced_by_in_flight_cancel(side: DiffSide) -> None:
+    """Issue #278: the consumer deferral arms carry mark_interrupted's
+    cancel fence. A phase-1 running row must refuse all three deferral
+    arms and keep the operator's audit columns intact."""
+    await side.enqueue("snoozed_job", scheduled_in=-1.0)
+    await side.enqueue("retry_true", scheduled_in=-1.0)
+    await side.enqueue("retry_false", scheduled_in=-1.0)
+    await side.dispatch("wholder", ["default"], limit=3)
+
+    for token in ("snoozed_job", "retry_true", "retry_false"):
+        side.record(f"cancel_{token}", await side.write_cancel_request(token, "operator stop"))
+
+    side.record("snooze", await side.mark_snoozed("snoozed_job", "wholder", 30.0))
+    side.record(
+        "retry_true",
+        await side.mark_retry_after("retry_true", "wholder", 10.0, consume_budget=True),
+    )
+    side.record(
+        "retry_false",
+        await side.mark_retry_after("retry_false", "wholder", 10.0, consume_budget=False),
+    )
+
+
+async def test_diff_deferral_arms_refuse_a_phase_carrying_row(pg_dsn: str) -> None:
+    """A snooze or retry-after landing mid-cancel must no-op on BOTH backends
+    and leave the row running with cancel_phase 1 + cancel_requested_at set:
+    the deferral arms' cancel-column resets are fenced by cancel_phase = 0,
+    exactly like mark_interrupted's release arm."""
+    mem, pg = await run_differential(_deferral_arms_fenced_by_in_flight_cancel, pg_dsn=pg_dsn)
+    assert_mirror(
+        "the deferral arms (mark_snoozed, mark_retry_after both ways) refuse "
+        "a running row carrying an in-flight operator cancel: the call reads "
+        "back noop, the row stays running, and cancel_phase/cancel_requested_at "
+        "survive untouched; identically on both backends",
+        mem,
+        pg,
+    )
+    assert pg["records"] == {
+        "cancel_snoozed_job": True,
+        "cancel_retry_true": True,
+        "cancel_retry_false": True,
+        "snooze": "noop",
+        "retry_true": "noop",
+        "retry_false": "noop",
+    }
+    for token in ("snoozed_job", "retry_true", "retry_false"):
+        row = pg["jobs"][token]
+        assert row["status"] == "running", (
+            f"{token}: the deferral arm rescheduled a phase-carrying row; "
+            "the operator's cancel was laundered mid-flight"
+        )
+        assert row["cancel_phase"] == 1, (
+            f"{token}: the deferral arm wiped the operator's cancel_phase"
+        )
+        assert row["cancel_requested_at"] is not None, (
+            f"{token}: the deferral arm wiped cancel_requested_at"
+        )
+
+
 async def _escalation_and_abandon(side: DiffSide) -> None:
     await side.enqueue("job", scheduled_in=-1.0)
     await side.enqueue("guarded", scheduled_in=-1.0)

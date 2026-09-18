@@ -893,9 +893,9 @@ class JobRow:
     interrupt_count: int = 0
     """Coalesced count of infrastructure interruptions (a running attempt
     released back to the queue by a worker shutdown) since enqueue — the
-    claim's attempt increment was refunded on each, so ``attempt`` alone
-    cannot count them.  Trailing default: rows materialised before the
-    counter existed read 0.
+    interruptions write no ``job_attempts`` rows and are not execution
+    outcomes, so ``attempt`` alone cannot count them.  Trailing default:
+    rows materialised before the counter existed read 0.
     """
     retry_base: timedelta = timedelta(seconds=5)
     """``RetryPolicy.base`` stamped at enqueue time — the source crash
@@ -1959,17 +1959,18 @@ class Backend(Protocol):
         """Release a running attempt this worker cannot finish because the
         process is going away.
 
-        The interruption is a non-consuming release of a *started* attempt:
-        the claim's increment is refunded exactly the way the snooze /
-        ``unavailable`` / actor-not-found arms return it
-        (``GREATEST(attempt - 1, 0)``), no ``job_attempts`` row is written
-        (an interruption is not an execution outcome), one ``job_events``
+        The interruption releases a *started* attempt, so it does NOT
+        refund the claim's increment: the attempt did start executing, and
+        refunding it would re-create the exact attempt epoch the
+        interrupted handler still holds; that handler's later terminal
+        write would then pass the attempt fence and land on the
+        re-dispatched attempt, and the live execution's own terminal write
+        would no-op (issue #287). No ``job_attempts`` row is written (an
+        interruption is not an execution outcome), one ``job_events``
         state_change with ``detail.reason = 'interrupted'`` records the
         transition, and the row's ``interrupt_count`` is bumped. The
-        hand-back is non-consuming: the attempt is returned with its
-        budget untouched, the ``GREATEST(attempt - 1, 0)`` refund flooring
-        the claim's increment so an interrupted job restarts with the
-        attempts it had not spent.
+        interrupted attempt counts against the retry budget; the
+        re-dispatch claims a fresh epoch at ``attempt + 1``.
 
         *hold* > 0 parks the row ``scheduled`` until the releasing process
         is provably gone (a job released while its coroutine may still be

@@ -15,12 +15,13 @@ FORCING or RELEASING, setting ``escalate_event`` is a no-op — the
 orchestrator is already past CANCELLING.
 
 What the phases owe the work: a deploy is an infrastructure event, so it
-never terminalises a job and never spends its budget. Rows claimed but
+never terminalises a job. Rows claimed but
 never started are handed back at DRAINING (attempt refunded; the producer
 repeats the hand-back on exit so a claim round in flight at the signal is
 caught too). Rows mid-execution get the cooperative cancel at CANCELLING
 and the forced cancel at FORCING; an actor that unwinds is *interrupted* —
-released back to the fleet, attempt refunded — and one still alive past
+released back to the fleet, the spent attempt standing; and one still
+alive past
 both graces is interrupted with a hold at RELEASING (released only once
 the process is provably gone). ``abandoned`` stays on the operator-cancel
 ladder (the row carries ``cancel_requested_at``): the FORCING escalation
@@ -100,9 +101,9 @@ class ShutdownPhase(IntEnum):
                  escalation write doubles as the origin probe (it lands only
                  on rows already carrying an operator's cancel request).
     RELEASING  — release jobs whose actors never unwound back to the fleet
-                 (``mark_interrupted``: attempt refunded, held until this
-                 process is provably gone); jobs under an operator cancel
-                 still reach ``abandoned`` here.
+                 (``mark_interrupted``: the spent attempt stands, held
+                 until this process is provably gone); jobs under an
+                 operator cancel still reach ``abandoned`` here.
 
     The value 4 was ``ABANDONING`` before the release phase stopped
     abandoning — the integer is unchanged, so ``/health`` JSON and the CLI
@@ -136,9 +137,10 @@ async def drain_local_queue_to_pending(deps: "WorkerDeps", worker_id: UUID) -> i
     Both refund the claim's attempt increment through the shared
     ``_ATTEMPT_REFUND_SQL`` fragment — a claim that never reached an
     actor bought nothing, so it spends nothing (the same idiom the
-    snooze / interruption release arms carry; the refund is floored at 0
+    snooze arms carry; the refund is floored at 0
     and a second pass matches no rows, so the two passes together are
-    exactly-once).
+    exactly-once). ``mark_interrupted`` is the deliberate exception: its
+    attempt DID start executing, so it keeps the increment (issue #287).
 
     Why no ``started_at IS NULL`` conjunct: the dispatch claim CTE
     stamps ``started_at = clock_timestamp()`` AT CLAIM
@@ -422,8 +424,9 @@ async def orchestrate_shutdown(
         # ── Phase 4: RELEASING ─────────────────────────────────────────
         # Every entry still registered belongs to an actor that ignored
         # both cancels. The shutdown owes it a release, not a verdict:
-        # mark_interrupted hands the row back to the fleet with the claim's
-        # attempt increment refunded, HELD behind the rest of this
+        # mark_interrupted hands the row back to the fleet with the spent
+        # attempt standing (no refund; the attempt started executing),
+        # HELD behind the rest of this
         # process's termination budget: plus the watchdog's exit tail
         # past the deadline itself (the dump-interval lag before the trip
         # is observed and the bounded flush before os._exit), so no other

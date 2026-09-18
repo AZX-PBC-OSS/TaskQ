@@ -830,6 +830,18 @@ async def _mark_snoozed(
     # arm above.  Being refused a slot is not an execution, so it cannot
     # exhaust a budget only executions spend.
     #
+    # The cancel fence (the SQL snoozed arm's `cancel_phase = 0` conjunct,
+    # mark_interrupted's semantics): an operator cancel in flight WINS
+    # over the deferral. A phase-carrying row must never be rescheduled
+    # the reset below would launder the operator's request mid-flight (the
+    # bulk-cancel drain would then report the same id from two arms). The
+    # fenced-out row stays 'running' carrying its phase, the caller reads
+    # back "noop", and the worker's cancel ladder terminalises it. On a
+    # clean row the check is trivially false and the deferral semantics
+    # are unchanged.
+    if row.cancel_phase != CancelPhase.NONE:
+        return "noop"
+
     # PG's snooze arm binds metadata_update through jsonb_param (the
     # NUL-guarded serialization) and merges it server-side
     # (j.metadata || update), so the update's values read back as PG's
@@ -1036,6 +1048,19 @@ async def _mark_retry_after(
     # counts itself on the row's snooze counter.  A consuming one IS a
     # real execution: its attempt increment stands and it keeps writing
     # its rows below.
+    #
+    # The cancel fence (the SQL snoozed arms' `cancel_phase = 0`
+    # conjunct, mark_interrupted's semantics): an operator cancel in
+    # flight WINS over the deferral. A phase-carrying row must never be
+    # rescheduled; the reset below would launder the operator's request
+    # mid-flight. The fenced-out row stays 'running' carrying its phase,
+    # the caller reads back "noop", and the worker's cancel ladder
+    # terminalises it. The deadline and exhaustion arms above stay
+    # unfenced (the SQL arms are too): they preserve the cancel columns,
+    # so there is nothing to launder. On a clean row the check is
+    # trivially false and the budget semantics are unchanged.
+    if row.cancel_phase != CancelPhase.NONE:
+        return "noop"
     new_attempt = row.attempt if consume_budget else max(row.attempt - 1, 0)
     retry_status: Literal["scheduled", "pending"] = (
         "scheduled" if new_scheduled_at > now else "pending"
@@ -1172,9 +1197,13 @@ async def _mark_interrupted(
         )
         return "failed:DeadlineExceeded"
 
-    # The release arm. The claim's attempt increment is refunded (floored
-    # at 0) exactly as the snooze/unavailable arms refund it; no attempt
-    # row is written (an interruption is not an execution outcome); one
+    # The release arm. The claim's attempt increment is NOT refunded: the
+    # attempt did start executing, so its increment stands; refunding it
+    # would re-create the exact epoch the interrupted (zombie) handler
+    # still holds, and the zombie's later terminal write would land on
+    # the re-dispatched attempt (issue #287; the snooze/unavailable arms
+    # keep their refund because nothing executed there). No attempt row
+    # is written (an interruption is not an execution outcome); one
     # state_change event with reason 'interrupted' records the transition
     # and interrupt_count carries the aggregate on the row. The release
     # is a re-pend, so the row routes by the actor's current assignment
@@ -1193,7 +1222,6 @@ async def _mark_interrupted(
         last_heartbeat_at=None,
         cancel_phase=CancelPhase.NONE,
         cancel_requested_at=None,
-        attempt=max(row.attempt - 1, 0),
         interrupt_count=row.interrupt_count + 1,
         assignment_routed=True,
         progress_seq=max(row.progress_seq, progress_seq),

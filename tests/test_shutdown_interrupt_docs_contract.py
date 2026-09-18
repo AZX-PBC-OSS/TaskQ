@@ -25,16 +25,17 @@ def _normalized(path: Path) -> str:
     return " ".join(path.read_text().split())
 
 
-def test_cancellation_guide_teaches_shutdown_origin_and_the_refund() -> None:
+def test_cancellation_guide_teaches_shutdown_origin_and_the_no_refund() -> None:
     text = _normalized(_DOCS / "guides" / "cancellation.md")
     assert "cancel_origin" in text and "CancelOrigin.SHUTDOWN" in text, (
         "cancellation.md must document ctx.cancel_origin so an actor can tell "
         "a deploy (checkpoint and raise — the fleet re-runs the attempt) from "
         "an operator cancel (the partial result returned is the one kept)"
     )
-    assert "released" in text and "refunded" in text, (
+    assert "released" in text and "not refunded" in text, (
         "cancellation.md must say what a deploy does to a running job: the "
-        "attempt is released back to the fleet with its budget refunded"
+        "attempt is released back to the fleet and its increment is NOT "
+        "refunded; the attempt started executing, so it is spent (issue #287)"
     )
     assert "never produces" in text or "never writes" in text, (
         "cancellation.md must state that shutdown never writes the operator-ladder terminal states"

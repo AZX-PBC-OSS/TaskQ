@@ -905,8 +905,9 @@ async def _mark_interrupted(
     acquire_timeout: float = DEFAULT_TERMINAL_POOL_ACQUIRE_TIMEOUT_S,
 ) -> Literal["pending", "scheduled", "failed:DeadlineExceeded", "noop"]:
     """Release a running attempt this worker cannot finish (process going
-    away): refund the claim's attempt increment, count the interruption on
-    the row, write one ``reason='interrupted'`` event. Fenced on ownership,
+    away): leave the spent attempt standing (no refund; the attempt did
+    start executing), count the interruption on the row, write one
+    ``reason='interrupted'`` event. Fenced on ownership,
     attempt epoch and ``cancel_phase = 0`` — an operator cancel in flight
     wins and reads back as ``"noop"`` (a row whose
     ``cancel_attempted_at`` is set is cancelled, never re-available).

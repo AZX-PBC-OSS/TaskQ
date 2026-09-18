@@ -1,12 +1,14 @@
 """Differential composition: admission-denied at capacity, then shutdown-interrupted.
 
-A job can meet both of the fleet's non-consuming release paths in one life:
+A job can meet both of the fleet's non-terminal release paths in one life:
 a worker claims it, the admission check answers 429 (no slot — a statement
 about capacity, never about the work), the claim's increment is refunded and
 ``rate_limit_blocked_count`` bumps; a later worker claims it again, takes
-SIGTERM mid-flight, and the shutdown release refunds the increment and bumps
-``interrupt_count``. Neither path ran the actor, so neither may spend retry
-budget — and neither may pretend the other's bookkeeping happened.
+SIGTERM mid-flight, and the shutdown release leaves the spent increment
+standing and bumps ``interrupt_count``. The denial never ran the actor, so
+it may not spend retry budget; the interrupt did start the attempt, so its
+increment is exactly what stands (issue #287); and neither may pretend the
+other's bookkeeping happened.
 
 The events diet is the second half of the pin. A non-terminal deferral mints
 NO per-occurrence rows — sustained saturation must cost one counter bump per
@@ -14,8 +16,9 @@ cycle, not a table's worth of history — while the interruption is a real
 state transition the fleet must see, so it mints exactly one
 ``reason='interrupted'`` event. Through the composed chain the row's
 durable record is therefore: two counter bumps of different kinds, one
-event, no attempt rows, and the attempt counter back at its pre-claim value
-— identical on both backends, or the in-memory twin certifies an audit
+event, no attempt rows, and the attempt counter carrying the interrupted
+epoch (the denials refunded theirs; the interrupt does not); identical on
+both backends, or the in-memory twin certifies an audit
 trail Postgres does not produce.
 """
 
@@ -54,8 +57,8 @@ async def _denied_then_interrupted(side: DiffSide) -> None:
     side.record("denials", denials)
 
     # The third claim is a different pod's — and that pod takes SIGTERM
-    # mid-attempt: the shutdown release refunds the claim and counts the
-    # interruption.
+    # mid-attempt: the shutdown release counts the interruption and leaves
+    # the spent claim standing (the attempt started executing, issue #287).
     claimed = await side.dispatch("w2", ["default"], limit=5)
     assert claimed == ["j1"]
     row = await side.backend.get(jid)
@@ -72,7 +75,8 @@ async def test_diff_denials_then_shutdown_interrupt_keep_the_counters_straight(
     pg_dsn: str,
 ) -> None:
     """Denials bump only ``rate_limit_blocked_count``, the interrupt bumps
-    only ``interrupt_count``, both refund the claim's increment, and the
+    only ``interrupt_count``, the denials refund their claim's increment
+    while the interrupt leaves its spent epoch standing, and the
     timeline carries exactly the transitions the events diet allows."""
     mem, pg = await run_differential(_denied_then_interrupted, pg_dsn=pg_dsn)
     assert_mirror(
@@ -95,10 +99,10 @@ async def test_diff_denials_then_shutdown_interrupt_keep_the_counters_straight(
     j1 = pg["jobs"]["j1"]
     assert j1["present"] is True
     assert j1["status"] == "pending"
-    assert j1["attempt"] == 0, (
-        "three claims, three non-consuming releases: every claim's increment "
-        f"was refunded, so the budget reads as if no claim happened; got "
-        f"attempt={j1['attempt']!r}"
+    assert j1["attempt"] == 1, (
+        "the two denials refunded their claims (nothing ran), but the "
+        "interrupted attempt did start executing: its increment stands and "
+        f"the epoch is 1, not 0 (issue #287); got attempt={j1['attempt']!r}"
     )
     assert j1["rate_limit_blocked_count"] == 2, (
         "each 429 counted itself exactly once — never as a snooze, never "

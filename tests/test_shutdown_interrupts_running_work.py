@@ -9,7 +9,9 @@ never discard it, spend its budget, or choose its outcome.
 The interrupted attempt is RELEASED, not terminalised: the row goes back to
 the fleet (``pending`` when the actor unwound on the cancel, ``scheduled``
 behind the remaining termination budget when it did not), the claim's attempt
-increment is refunded — exactly as every non-consuming release refunds it —
+increment is NOT refunded (the attempt started executing, so it is spent
+a refund would re-create the epoch the interrupted handler holds and let its
+zombie terminal write land on the re-dispatched attempt; see issue #287),
 and the row's ``interrupt_count`` plus one ``job_events`` transition are the
 record. An operator cancel that is in flight when the deploy lands still wins
 the row: interruption is identified by origin, never by exception type, so a
@@ -145,10 +147,10 @@ async def _interrupted_events(backend: PostgresBackend, job_id: UUID) -> int:
     )
 
 
-async def test_shutdown_releases_a_responsive_actor_back_to_pending_refunded(
+async def test_shutdown_releases_a_responsive_actor_back_to_pending(
     clean_jobs_app: JobsApp,
 ) -> None:
-    """The actor that unwinds on the cancel is re-pended immediately, refunded.
+    """The actor that unwinds on the cancel is re-pended immediately.
 
     The cancel event fires at CANCELLING and this actor raises on it — the
     shape the cancellation guide teaches. The deploy must leave the row
@@ -192,10 +194,10 @@ async def test_shutdown_releases_a_responsive_actor_back_to_pending_refunded(
         f"{after.status!r} — the deploy terminalised work that was only ever "
         "interrupted"
     )
-    assert after.attempt == enqueued.attempt, (
-        "the interruption must refund the claim's attempt increment: nothing "
-        f"executed, so nothing is spent. attempt went {enqueued.attempt} -> "
-        f"{after.attempt} across a deploy that never ran the job"
+    assert after.attempt == enqueued.attempt + 1, (
+        "the interruption must NOT refund the claim's attempt increment: the "
+        f"attempt started executing, so it is spent (issue #287). attempt went "
+        f"{enqueued.attempt} -> {after.attempt} across the deploy"
     )
     assert after.locked_by_worker is None and after.lock_expires_at is None, (
         "a released row must not stay locked to the departed pod"
@@ -208,7 +210,8 @@ async def test_shutdown_releases_a_responsive_actor_back_to_pending_refunded(
     assert await _attempt_rows(deps, schema, job_id) == 0, (
         "an interruption is not an execution outcome: no job_attempts row may "
         "be written for it (the same rule the other non-consuming releases "
-        "keep), so the refunded attempt number is never revisited by a writer"
+        "keep); the attempt number the interrupted handler holds is never "
+        "re-stamped by a writer, and the re-claim advances past it"
     )
     assert await _interrupted_events(backend, job_id) == 1, (
         "exactly one job_events transition with reason 'interrupted' records "
@@ -219,14 +222,15 @@ async def test_shutdown_releases_a_responsive_actor_back_to_pending_refunded(
 async def test_shutdown_releases_an_unresponsive_actor_behind_the_remaining_budget(
     clean_jobs_app: JobsApp,
 ) -> None:
-    """The actor that never unwinds is released behind a hold, refunded.
+    """The actor that never unwinds is released behind a hold.
 
     A job that ignores the cooperative cancel and the forced cancel is still
     running when the graces expire. Its row is released ``scheduled`` behind
     the rest of this process's termination budget — the window in which the
     watchdog guarantees the process is gone — so no other pod can claim the
-    row while its first runner might still be alive. The attempt is refunded
-    the same way: the actor never finished on its own terms.
+    row while its first runner might still be alive. The attempt is NOT
+    refunded: the attempt started executing, so its increment stands
+    (issue #287).
     """
     deps = clean_jobs_app.deps
     backend = clean_jobs_app.backend
@@ -265,9 +269,10 @@ async def test_shutdown_releases_an_unresponsive_actor_behind_the_remaining_budg
             "a job whose actor never unwound must be released behind a hold, not "
             f"left locked to a pod that is exiting; got {after.status!r}"
         )
-        assert after.attempt == enqueued.attempt, (
-            "the interruption must refund the claim's attempt increment; attempt "
-            f"went {enqueued.attempt} -> {after.attempt}"
+        assert after.attempt == enqueued.attempt + 1, (
+            "the interruption must NOT refund the claim's attempt increment; "
+            f"the attempt started executing (issue #287): attempt went "
+            f"{enqueued.attempt} -> {after.attempt}"
         )
         assert after.locked_by_worker is None and after.lock_expires_at is None
         assert after.interrupt_count == 1
@@ -290,7 +295,9 @@ async def test_shutdown_releases_an_unresponsive_actor_behind_the_remaining_budg
         )
     finally:
         # Let the zombie actor return; its late success write must be a no-op
-        # against the released row (the refund moved the attempt epoch).
+        # against the released row: the row is 'scheduled' (the status fence
+        # rejects it), and the attempt epoch it holds is never re-created by
+        # a refund (issue #287), so a re-claim advances past it.
         release_actor.set()
         with contextlib.suppress(asyncio.CancelledError, Exception):
             await attempt_task
@@ -635,9 +642,10 @@ async def test_a_deploy_never_hands_a_live_sync_actors_row_to_a_second_worker(
             "— a pending row here is the double-execution overlap: the "
             "second worker claims it while the first pod's thread still runs"
         )
-        assert after.attempt == enqueued.attempt, (
-            "the interruption must refund the claim's attempt increment: the "
-            "re-run must not spend a second attempt on one interruption"
+        assert after.attempt == enqueued.attempt + 1, (
+            "the interruption must NOT refund the claim's attempt increment: "
+            "the attempt started executing, so it is spent (issue #287); the "
+            "re-run spends its own fresh claim increment"
         )
         assert after.interrupt_count == 1
         # The hold covers the whole exit window: the deadline plus the
@@ -688,10 +696,10 @@ async def test_a_deploy_never_hands_a_live_sync_actors_row_to_a_second_worker(
             "after the hold expires the row must be claimable again: a held "
             "release that never becomes claimable strands the job"
         )
-        assert reclaimed[0].attempt == enqueued.attempt + 1, (
-            "the re-run's claim buys a fresh attempt increment: the "
-            "interruption refunded the first claim's, and only the claim "
-            "spends one"
+        assert reclaimed[0].attempt == enqueued.attempt + 2, (
+            "the re-run's claim buys a fresh attempt increment on top of the "
+            "interrupted attempt's (which is NOT refunded, issue #287): "
+            "enqueued -> interrupt claim (+1) -> re-claim (+1)"
         )
         assert len(executions) == 1, (
             "the actor body ran exactly once: the deploy interrupted it, "
@@ -776,7 +784,7 @@ async def test_a_deploy_holds_a_transactional_sync_actor_until_its_thread_exits(
                 "a transactional sync actor whose thread never provably "
                 f"exited must be released held; got {after.status!r}"
             )
-            assert after.attempt == enqueued.attempt
+            assert after.attempt == enqueued.attempt + 1
             assert after.interrupt_count == 1
 
             second_worker = await _spawn_second_worker(deps, schema)

@@ -3,8 +3,9 @@
 Two release paths hand a running row back to the fleet, and each keeps its
 own books:
 
-* ``mark_interrupted`` (the shutdown release) — a NON-consuming release of
-  a started attempt: the claim's increment is refunded, no attempt row is
+* ``mark_interrupted`` (the shutdown release); a NON-terminal release of
+  a started attempt: the claim's increment is NOT refunded (the attempt
+  started executing, so it is spent; issue #287), no attempt row is
   written (an interruption is not an execution outcome), one
   ``reason='interrupted'`` event records it, and ``interrupt_count`` bumps.
 * the crash-reclaim sweep — the holding worker died mid-attempt, so the
@@ -16,12 +17,14 @@ own books:
   ``'<job id>:<attempt>'`` — never drawn.
 
 The composition is what a rolling deploy actually produces: pod A's SIGTERM
-interrupts the job mid-flight, pod B claims the refunded row and is then
-killed outright, and the leader's sweep hands it back a second time. The
-pins here hold the two release paths' bookkeeping disjoint through the
-chain — the interrupt's refund leaves the re-claim at the SAME attempt
-number, so the reclaim reads (and hashes) exactly the attempt a
-never-interrupted job would show — and the cancel-wins fence
+interrupts the job mid-flight, pod B claims the row at the NEXT attempt epoch
+(the interrupt leaves the spent increment standing, so the re-claim advances
+past the epoch the interrupted handler holds) and is then killed outright,
+and the leader's sweep hands it back a second time. The pins here hold the
+two release paths' bookkeeping disjoint through the chain; the interrupt
+spends no attempt row and leaves the re-claim at attempt+1, so the
+crash-reclaim reads (and hashes) exactly the attempt a clean re-claim
+presents; and the cancel-wins fence
 (``cancel_phase = 0``) still declines the shutdown release when an
 operator's cancel lands on the re-claimed row between the release and the
 reclaim.
@@ -111,8 +114,8 @@ async def _interrupt_reclaim_chain(
     assert claimed_row is not None and claimed_row.attempt == 1
 
     # Pod A takes SIGTERM mid-attempt: the shutdown release hands the row
-    # back with the claim's increment refunded — the interrupt is not an
-    # execution and must not advance the row's retry curve.
+    # back with the claim's increment standing; the attempt did start
+    # executing, so it is spent (issue #287).
     released = await side.backend.mark_interrupted(
         args.id, wid, attempt=claimed_row.attempt, hold=timedelta(0)
     )
@@ -120,16 +123,18 @@ async def _interrupt_reclaim_chain(
         f"the shutdown release of a cleanly-owned row must land pending; got {released!r}"
     )
 
-    # Pod B claims the refunded row: the same attempt number again, because
-    # the refund returned the increment the first claim borrowed.
+    # Pod B claims the row at the NEXT attempt epoch: the interrupt did not
+    # refund the increment, so the re-claim advances past the epoch the
+    # interrupted (zombie) handler holds.
     second_claim = await side.dispatch("w1", ["default"], limit=5)
-    assert second_claim == ["j1"], "the refunded row must be re-claimable at once (zero hold)"
+    assert second_claim == ["j1"], "the released row must be re-claimable at once (zero hold)"
     reclaimed_row = await side.backend.get(args.id)
     assert reclaimed_row is not None
-    assert reclaimed_row.attempt == 1, (
-        "the re-claim after a shutdown release must stamp the SAME attempt "
-        f"number the interrupt refunded — got attempt={reclaimed_row.attempt}, "
-        "so the interrupt silently spent budget the retry curve reads"
+    assert reclaimed_row.attempt == 2, (
+        "the re-claim after a shutdown release must stamp a FRESH attempt "
+        f"epoch past the one the interrupted handler holds; got "
+        f"attempt={reclaimed_row.attempt}; a refund here would re-create the "
+        "zombie's epoch and let its late terminal write land (issue #287)"
     )
 
     # Pod B is killed outright: the lease expires with no terminal write,
@@ -145,10 +150,10 @@ async def _interrupt_reclaim_chain(
 async def test_diff_interrupted_then_crash_reclaimed_keeps_both_paths_books(
     pg_dsn: str,
 ) -> None:
-    """Interrupt → re-claim → crash-reclaim: the interrupt refunds and counts
-    itself, the reclaim spends the attempt and reschedules on the row's own
-    curve, and neither path's records leak into the other's — identical on
-    both backends."""
+    """Interrupt → re-claim → crash-reclaim: the interrupt counts itself and
+    leaves the spent attempt standing, the reclaim spends the re-claimed
+    attempt and reschedules on the row's own curve, and neither path's
+    records leak into the other's; identical on both backends."""
 
     async def scenario(side: DiffSide) -> None:
         # jitter pinned off: the harness compares scheduled_at across
@@ -163,29 +168,31 @@ async def test_diff_interrupted_then_crash_reclaimed_keeps_both_paths_books(
         "a shutdown-interrupted, re-claimed, then crash-reclaimed job keeps "
         "the two release paths' books disjoint: interrupt_count=1 with no "
         "attempt row for the interruption, one 'crashed' attempt row at the "
-        "re-claimed epoch, the interrupted and lock_expired events in order, "
-        "and the row back in the claimable pool on its own retry curve",
+        "re-claimed epoch (attempt 2; the interrupt refunded nothing), the "
+        "interrupted and lock_expired events in order, and the row back in "
+        "the claimable pool on its own retry curve",
         mem,
         pg,
     )
     j1 = pg["jobs"]["j1"]
     assert j1["present"] is True
     assert j1["status"] == "pending", (
-        "a transient job at attempt 1 of 5 has reclaim budget: the sweep "
+        "a transient job at attempt 2 of 5 has reclaim budget: the sweep "
         f"hands it back, got {j1['status']!r}"
     )
-    assert j1["attempt"] == 1, (
-        "the reclaim leaves the crashed attempt as claimed — the interrupt's "
-        "refund and the re-claim already netted out"
+    assert j1["attempt"] == 2, (
+        "the reclaim leaves the crashed attempt as claimed; the interrupt "
+        "did not refund it, so the re-claim advanced to 2 and the crash "
+        "spent that epoch"
     )
     assert j1["interrupt_count"] == 1, (
         "exactly the shutdown release counted itself; a crash reclaim is not an interruption"
     )
     assert j1["snooze_count"] == 0 and j1["rate_limit_blocked_count"] == 0
-    # The jitter-free curve: base * 2**(attempt-1) = 300 s exactly.
-    assert j1["scheduled_at"] == 300, (
-        f"the reclaim must reschedule on the row's own curve (300 s at "
-        f"attempt 1, jitter off) — the bucketed offset is "
+    # The jitter-free curve: base * 2**(attempt-1) = 600 s at attempt 2.
+    assert j1["scheduled_at"] == 600, (
+        f"the reclaim must reschedule on the row's own curve (600 s at "
+        f"attempt 2, jitter off); the bucketed offset is "
         f"{j1['scheduled_at']!r}; a flat reclaim constant or a curve read at "
         "the wrong attempt lands outside it"
     )
@@ -202,7 +209,7 @@ async def test_diff_interrupted_then_crash_reclaimed_keeps_both_paths_books(
         attempt_row["worker"],
         attempt_row["finished"],
     ) == (
-        1,
+        2,
         "crashed",
         "WorkerCrashed",
         "lock expired before worker reported terminal state",
@@ -222,7 +229,7 @@ async def test_diff_operator_cancel_between_release_and_reclaim_keeps_the_fence(
 ) -> None:
     """The cancel-wins fence holds on the re-claimed epoch: an operator
     cancel landing after the interrupt's release makes the next shutdown
-    release read back ``noop`` — no second refund, no second interruption
+    release read back ``noop``; no second release, no second interruption
     counted, no interrupted event — and the operator's terminal write owns
     the outcome."""
 
@@ -280,9 +287,10 @@ async def test_diff_operator_cancel_between_release_and_reclaim_keeps_the_fence(
 
     j1 = pg["jobs"]["j1"]
     assert j1["status"] == "cancelled"
-    assert j1["attempt"] == 1, (
-        "the declined release refunded nothing — the operator's terminal "
-        "write closed the re-claimed attempt as it stood"
+    assert j1["attempt"] == 2, (
+        "the declined release refunds nothing and the re-claim advanced the "
+        "epoch (the interrupt does not refund, issue #287); the operator's "
+        "terminal write closed the re-claimed attempt as it stood"
     )
     assert j1["interrupt_count"] == 1, (
         "only the first release counted an interruption; the declined one must not"
@@ -300,9 +308,9 @@ async def test_diff_operator_cancel_between_release_and_reclaim_keeps_the_fence(
 # draw different job ids (hence different derived jitter fractions), so the
 # exact delay cannot ride the mirror comparison. What the composition must
 # hold is per-backend exact: the reclaimed row's delay IS the twin formula's
-# value for THIS row at the re-claimed attempt — the interrupt's refund is
-# the only reason that attempt is 1 and not 2, and the two attempts' jitter
-# bands are disjoint by construction (see _POLICY).
+# value for THIS row at the re-claimed attempt; the interrupt leaves the
+# spent increment standing, so that attempt is 2 and not 1, and the two
+# attempts' jitter bands are disjoint by construction (see _POLICY).
 
 
 async def _worker_of(backend: Backend) -> UUID:
@@ -325,8 +333,9 @@ async def test_interrupt_does_not_advance_the_reclaim_curve_with_jitter_on(
 ) -> None:
     """With jitter armed, the interrupted-then-crash-reclaimed job's delay
     is exactly the derived curve value for the re-claimed attempt — the
-    interrupt did not advance the curve input, and the jitter is the row's
-    deterministic md5 fraction, not a fresh draw."""
+    re-claim advanced the epoch past the interrupted one (no refund,
+    issue #287), and the jitter is the row's deterministic md5 fraction,
+    not a fresh draw."""
     from taskq.backend.postgres import PostgresBackend
 
     backend = backend_pair
@@ -371,8 +380,9 @@ async def test_interrupt_does_not_advance_the_reclaim_curve_with_jitter_on(
         worker_id=worker_id, queues=["default"], limit=5, lock_lease=_LOCK_LEASE
     )
     assert [row.id for row in reclaimed_claim] == [job_id]
-    assert reclaimed_claim[0].attempt == 1, (
-        "the refund must return the re-claim to the interrupted attempt number — the curve's input"
+    assert reclaimed_claim[0].attempt == 2, (
+        "the re-claim must advance past the interrupted attempt's epoch (no "
+        "refund, issue #287); the curve's input"
     )
 
     # The crash: the lease expires with no terminal write.
@@ -420,8 +430,8 @@ async def test_interrupt_does_not_advance_the_reclaim_curve_with_jitter_on(
         f"rescheduled to {row.scheduled_at!r}, outside "
         f"[before + {expected}, after + {expected} + slack] with "
         f"before={before!r}, after={after!r}. The sweep must stamp the row's "
-        "own derived delay for the re-claimed attempt (attempt=1 — the "
-        "interrupt refunded, it did not spend): the attempt-2 curve starts "
-        f"at {timedelta(seconds=480)} and the bands cannot overlap, so any "
-        "shift of the curve input lands outside this bracket"
+        "own derived delay for the re-claimed attempt (attempt=2; the "
+        "interrupt did not refund, so the epoch advanced): the attempt-1 "
+        f"curve starts at {timedelta(seconds=240)} and the bands cannot "
+        "overlap, so any shift of the curve input lands outside this bracket"
     )
