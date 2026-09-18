@@ -17,6 +17,7 @@ dist-e2e-*/
 .env.*.local
 .envrc
 .venv/
+.venv
 venv/
 
 # Test / coverage
