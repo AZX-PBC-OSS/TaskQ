@@ -196,7 +196,7 @@ monopolizing the tick budget — resolve it with the knobs, not a restart:
    earned, and auto-disables after the threshold — freeing its peers. This is the
    fairness lever: an operator-chosen ceiling is an explicit decision, and the strike
    path is exactly where a too-slow factory belongs.
-2. **Or raise `TASKQ_DISPATCHER_COMMAND_TIMEOUT**, so the funded budget (and with it the
+2. **Or raise `TASKQ_DISPATCHER_COMMAND_TIMEOUT`**, so the funded budget (and with it the
    minimum fundable grant) fits the monopolizer *plus* a fundable grant for its peers —
    they then fire in the same tick. Mind the watchdog interplay documented on that
    setting before widening it.
