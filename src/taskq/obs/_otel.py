@@ -99,6 +99,7 @@ __all__ = [
     "record_queue_wait",
     "record_ratelimit_denial",
     "record_ratelimit_refund_failure",
+    "record_reclaimed_jobs",
     "record_reservation_denial",
     "record_reservation_reclaim_drain_duration",
     "record_reservation_reclaim_drain_failure",
@@ -454,6 +455,40 @@ def record_deadline_exceeded_swept(actor: str, count: int = 1) -> None:
     # The sweep's arm of the whole-job deadline, on the timeouts family
     # beside the handler arms (gated, unlike the sweep counter above).
     record_job_timeout(actor, kind="schedule_to_close", count=count)
+
+
+_reclaimed_jobs = get_meter().create_counter(
+    "taskq.jobs.reclaimed",
+    description=(
+        "Running jobs reclaimed by the expired-locks sweep (the holder broke "
+        "its liveness promise - lease expiry or heartbeat timeout), labeled "
+        "by actor and disposition: repended (attempts remained, the row went "
+        "back to pending on its retry curve), crashed (budget exhausted, "
+        "terminal), cancelled (a cancel request was in-flight when the "
+        "holder died - the honest terminal label)."
+    ),
+    unit="1",
+)
+
+
+def record_reclaimed_jobs(actor: str, disposition: str, count: int = 1) -> None:
+    """Bump the per-actor, per-disposition reclaimed-jobs counter.
+
+    Unconditional (not gated by ``_otel_enabled``): a reclaim is a worker
+    death the fleet recovered from -- the same class of fleet-health
+    signal as :func:`record_deadline_exceeded_swept`, which must be
+    counted even when OTel is disabled. Recorded aggregated per (actor,
+    disposition) after the sweep's transaction, by the Postgres sweep
+    (from its RETURNING) and by the in-memory twin alike, so the two
+    backends' label sets cannot drift. The disposition values are the
+    code-fixed enum ``repended`` / ``crashed`` / ``cancelled``
+    (``taskq.backend._sweeps._RECLAIM_DISPOSITIONS``); ``actor`` flows
+    through registration like every other actor-labeled instrument.
+    """
+    try:
+        _reclaimed_jobs.add(count, {"actor": actor, "disposition": disposition})
+    except Exception:
+        _log.warning("otel-metric-record-failed", instrument_name="taskq.jobs.reclaimed")
 
 
 #: Why the ``queue`` label is capped on the job-side instruments

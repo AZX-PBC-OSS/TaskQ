@@ -247,6 +247,8 @@ Job listing page with "Live Jobs" and "Archived" tabs. Supports filtering by sta
 
 Sorting by `started_at` ascending together with a `status=running` filter is the "running longest" view: the jobs that have held a worker the longest come first. `started_at` is NULL for jobs that have not started, and those rows sort last in both directions (NULLS LAST) so paging through live rows is never interrupted by the not-yet-started tail.
 
+The **Duration** column carries a live twin for exactly that view: a running row has no `finished_at`, so its settled `duration_ms` is NULL while it runs — the cell renders `running_for_ms` instead, the elapsed span since `started_at` computed by the database at render time (`clock_timestamp() - started_at`, the same single-arbiter shape the lease column uses; a Python-clock span would skew by the admin process's offset from the database clock). The live span renders amber with a "still running" tooltip so it cannot be misread as a settled duration, and disappears the row transitions terminal, where `duration_ms` takes over. Because the value is computed server-side on each request, both refresh modes — polling and the SSE-accelerated refresh — re-render it through the same table partial, as fresh as the last refresh.
+
 **Query parameters (selected):**
 
 | Parameter | Default | Description |
@@ -282,7 +284,9 @@ Used by the jobs list page to render the result count without re-fetching the fu
 
 ### `GET /admin/api/history/stats`
 
-Per-actor metrics as JSON. Returns aggregate execution statistics for all completed jobs in `jobs_archive`, grouped by `(actor, queue)`. Does not paginate; returns at most 200 rows ordered by total job count descending. This endpoint and the actors page render the same aggregate read through a shared helper, so the two cannot drift.
+Per-actor metrics as JSON. Returns aggregate execution statistics for all completed jobs the fleet still has a record of — `jobs_archive` UNIONed with the terminal rows still live in `jobs` — grouped by `(actor, queue)`. A terminal row stays in `jobs` for its whole prune retention before the prune sweep archives it, so an archive-only aggregate would hide an actor's freshest failures for exactly as long as they matter most; the live side counts terminal rows only (running/pending work never inflates executor totals, and its population is capped by prune retention).
+
+Accepts an optional `window` query parameter (`1h`, `24h`, `7d`, `30d`; omitted or `all` is the default) that bounds both sides by `finished_at` on the database's clock. Unknown values are a clean `400`, never a silent fallback to all-time. Does not paginate; returns at most 200 rows ordered by total job count descending. This endpoint and the actors page render the same aggregate read through a shared helper, so the two cannot drift.
 
 Response shape:
 
@@ -301,13 +305,14 @@ Response shape:
       "avg_duration_ms": 340,
       "p50_duration_ms": 280,
       "p95_duration_ms": 950,
-      "last_activity_at": "2026-09-16T12:00:00+00:00"
+      "last_activity_at": "2026-09-16T12:00:00+00:00",
+      "last_error_class": "ValueError"
     }
   ]
 }
 ```
 
-Duration percentiles are derived from `job_attempts_archive.duration_ms` via `percentile_cont`. Actors with no recorded attempt rows will have `null` for duration fields. `last_activity_at` is the freshest `finished_at` the actor has in the archive (`max(jobs_archive.finished_at)`); `total` counts archived attempt rows, which equals the job count in the common single-attempt case.
+Duration percentiles are derived from the attempt rows' `duration_ms` via `percentile_cont` (`job_attempts_archive` on the archive side, `job_attempts` on the live side). Actors with no recorded attempt rows will have `null` for duration fields. `last_activity_at` is the freshest `finished_at` the actor has on either side; `total` counts attempt rows (which equals the job count in the common single-attempt case). `last_error_class` is the error class of the actor's most recent completed row that carries one — the job row's own `error_class`, which every terminal failure path stamps (the classifier's exception name, `WorkerCrashed` on crash-reclaim, `DeadlineExceeded` on the deadline sweep) — so "what is this actor dying of" reads without opening a job; `null` when none of the actor's rows ever carried one.
 
 ### `GET /admin/workers`
 
@@ -367,14 +372,17 @@ The `/admin/actors` page lists all stored `actor_config` rows with:
 - Enabled schedule count
 - Last updated timestamp
 
-Each row also carries the executor statistics the shared per-actor stats read computes over `jobs_archive` joined to `job_attempts_archive` (the same aggregate `GET /admin/api/history/stats` serves, grouped by actor instead of by `(actor, queue)`), so the page answers "which actor is hot, which is failing, which is slow" without leaving the table:
+Each row also carries the executor statistics the shared per-actor stats read computes over the archive UNIONed with the live terminal population (the same aggregate `GET /admin/api/history/stats` serves, grouped by actor instead of by `(actor, queue)`), so the page answers "which actor is hot, which is failing, which is slow" without leaving the table:
 
-- **Jobs (archive)**: total archived attempt rows for the actor, hottest actor first
+- **Jobs**: total completed attempt rows for the actor (live terminal rows included, so a fresh failure counts before the prune sweep archives it), hottest actor first
 - **Failures**: failed count with its share of the total, red when non-zero
-- **p50 / p95 (ms)**: execution duration percentiles from `job_attempts_archive.duration_ms`
-- **Last Activity**: the freshest `finished_at` the actor has in the archive
+- **Last Error**: the most recent error class the actor's completed rows carry (`null` → a dash) — the job row's own `error_class`, which every terminal failure path stamps, so "what is this actor dying of" reads without opening a job
+- **p50 / p95 (ms)**: execution duration percentiles from the attempt rows' `duration_ms`
+- **Last Activity**: the freshest `finished_at` the actor has on either side of the read
 
-The stats read is capped at the 200 most active actors; the page says so when the cap is reached. Actors with archive history but no `actor_config` row (for example, one deregistered while its history is retained) render as "archive only": their stats show, but they have no capacity fields and no Deregister button.
+A **window toggle** beside the heading (`All time | 1h | 24h | 7d | 30d`, `?window=`) bounds both sides of the read by `finished_at`. The default is **all time** — the whole retained completed-job history; a named window is the recency view ("who failed in the last day"), anchored to the database clock server-side. Unknown window values are a clean `400`, never a silent fallback to all-time.
+
+The stats read is capped at the 200 most active actors; the page says so when the cap is reached. Actors with completed-job history but no `actor_config` row (for example, one deregistered while its history is retained) render as "history only": their stats show, but they have no capacity fields and no Deregister button.
 
 Each row with a config row has a **Deregister** button with `force` and `purge queue` checkboxes.
 The form asks for confirmation in the browser before submitting.

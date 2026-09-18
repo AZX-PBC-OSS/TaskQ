@@ -123,9 +123,16 @@ from taskq.constants import (
     RECLAIM_OUTBOX_RETENTION_MULTIPLIER,
     wake_channel,
 )
-from taskq.obs import get_logger, log_state_change, record_deadline_exceeded_swept
+from taskq.obs import (
+    get_logger,
+    log_state_change,
+    record_deadline_exceeded_swept,
+    record_reclaimed_jobs,
+)
 
 __all__ = [
+    "_RECLAIM_DISPOSITIONS",
+    "_RECLAIM_UNKNOWN_DISPOSITION",
     "_SWEEP_1_SQL",
     "_SWEEP_2_SQL",
     "_SWEEP_3_SQL",
@@ -135,6 +142,7 @@ __all__ = [
     "_SWEEP_IDLE_KEYED_SLOTS_SQL",
     "_SWEEP_RESULT_TTL_SQL",
     "SweepBatchSizer",
+    "_reclaim_disposition",
     "prune_job_events",
     "sweep_deadline_exceeded",
     "sweep_expired_events",
@@ -337,6 +345,57 @@ _ATTEMPT_MESSAGES: dict[str, str] = {
     "lock_expired": "lock expired before worker reported terminal state",
     "heartbeat_timeout": "heartbeat timeout passed before worker reported terminal state",
 }
+
+#: The disposition label the ``taskq.jobs.reclaimed`` counter carries for
+#: each branch, keyed by the post-update ``j.status`` the sweep's RETURNING
+#: already reports. One map, imported by the PG caller and the in-memory
+#: twin, so the metric's label set cannot drift between backends. The
+#: disposition is DERIVED from the returned status rather than emitted as
+#: a second CASE literal in the RETURNING on purpose: the status CASE is
+#: the single source of truth for which branch fired, and a second
+#: hand-maintained CASE beside it is exactly the drift surface the
+#: ``{has_budget}`` fragment exists to remove: one edit to the branch
+#: conditions must not leave a disposition literal silently disagreeing
+#: with the status it labels.
+#:
+#: The map's key set is pinned to the CASE's reachable statuses by
+#: ``tests/test_obs_reclaim_counters.py`` (both directions), and the
+#: lookups are total through :func:`_reclaim_disposition`.  See that
+#: function for why a bare ``[...]`` here is the reclaim loop's
+#: kill-streak, not a crash to be tolerated.
+_RECLAIM_DISPOSITIONS: dict[str, str] = {
+    "pending": "repended",
+    "crashed": "crashed",
+    "cancelled": "cancelled",
+}
+
+#: The disposition an unmapped post-update status counts under. Counting
+#: the unknowns, rather than dropping the rows or raising, preserves
+#: the metric's totals and makes map/code drift VISIBLE on dashboards as
+#: its own series, which is the property that turns a silent invariant
+#: breach into an operator-visible one.
+_RECLAIM_UNKNOWN_DISPOSITION: str = "unknown"
+
+
+def _reclaim_disposition(status: str) -> str:
+    """The disposition label for *status*; ``"unknown"`` when unmapped.
+
+    Total by construction, and it must be: this lookup runs inside the
+    reclaim sweep's transaction on the fleet's crash-recovery path, and a
+    bare ``_RECLAIM_DISPOSITIONS[status]`` on an unmapped status (a
+    future CASE branch, the #238 evolution, a migration-era change,
+    without its map entry) raises KeyError mid-transaction: the whole
+    reclaim batch rolls back (no job_attempts, no job_events, no wake
+    NOTIFY, no metric), the exception escapes the sweep loop's
+    NotImplementedError/TRANSIENT_PG_ERRORS guards into
+    ``UnexpectedLoopErrorGuard``, and five consecutive ticks kill the
+    leader worker, crash recovery dead fleet-wide. The in-memory twin
+    dies the same way mid-loop, leaving a half-drained corpus. The
+    exhaustiveness pin in ``tests/test_obs_reclaim_counters.py`` makes
+    the drift fail CI loudly; this default keeps the sweep alive and
+    counting on the day the pin is violated anyway.
+    """
+    return _RECLAIM_DISPOSITIONS.get(status, _RECLAIM_UNKNOWN_DISPOSITION)
 
 
 _SWEEP_1_BODY = """\
@@ -575,7 +634,17 @@ SET status = CASE
     END
 FROM snap
 WHERE j.id = snap.id
-RETURNING j.id, j.status, j.attempt, j.started_at, snap.locked_by_worker,
+-- j.actor rides the RETURNING for the reclaimed-jobs counter: it is a
+-- plain column of the row this statement already locked and updated, so
+-- reading it in RETURNING adds no join and no second visit to jobs:
+-- the snap CTEs' index-driven scans (the measured plans in the module
+-- docstring) are untouched, and the cost class of the statement is
+-- unchanged. The disposition half of the counter's label set is NOT a
+-- second literal here: it derives from the returned j.status through
+-- _RECLAIM_DISPOSITIONS (see that map's comment for why one CASE, not
+-- two, is the invariant).
+RETURNING j.id, j.status, j.attempt, j.started_at, j.actor,
+          snap.locked_by_worker,
           snap.reason AS reclaim_reason, clock_timestamp() AS now_ts"""
 
 #: The sweep with its shared fragments bound, still carrying ``{schema}``
@@ -1204,6 +1273,20 @@ async def sweep_expired_locks(
     NULL`` semantics — instead of FK-violating on the dangling id, while
     the job_events detail still carries the last-known holder for audit.
 
+    The RETURNING also carries ``j.actor`` and the post-update
+    ``j.status``; from those this function aggregates the
+    ``taskq.jobs.reclaimed{actor, disposition}`` counter (disposition via
+    :func:`_reclaim_disposition` over :data:`_RECLAIM_DISPOSITIONS`:
+    ``repended`` / ``crashed`` / ``cancelled``, and the explicit
+    ``unknown`` for a status no current CASE branch writes: a total
+    lookup, so map/code drift counts on the dashboard instead of rolling
+    the batch back; see the helper's docstring) and records it once per
+    (actor, disposition) pair after the transaction: the per-actor
+    crash split the generic
+    ``taskq.maintenance_leader.sweep_rows{sweep_name}`` total cannot
+    express. The in-memory twin emits the identical counter so the two
+    backends' label sets cannot drift.
+
     One ``pg_notify`` is fired per sweep call that reclaims at least one
     row (not one per row) so that fleet-wide consumers using
     ``watch_reclaims`` get a low-latency wakeup on both branches.
@@ -1228,6 +1311,12 @@ async def sweep_expired_locks(
     event_sql = INSERT_EVENTS_DETAIL_BATCH_SQL.format(schema=schema)
 
     reclaimed: list[_ReclaimedRow] = []
+    # (actor, disposition) -> rows this call reclaimed, for the
+    # taskq.jobs.reclaimed counter. Aggregated on the row loop and emitted
+    # AFTER the transaction: the same shape sweep_deadline_exceeded uses
+    # for its per-actor counter: per-row metric calls on the DB-hold path
+    # are what the batching exists to remove.
+    reclaim_counts: Counter[tuple[str, str]] = Counter()
 
     async with conn.transaction():
         prev_timeout = await _apply_batch_statement_timeout(conn, statement_timeout_ms)
@@ -1249,8 +1338,19 @@ async def sweep_expired_locks(
                 new_status: str = rec["status"]
                 attempt: int = rec["attempt"]
                 started_at: datetime | None = rec["started_at"]
+                actor_name: str = rec["actor"]
                 original_worker: UUID | None = rec["locked_by_worker"]
                 reclaim_reason: str = rec["reclaim_reason"]
+                # The disposition label derives from the ONE branch
+                # arbiter, the status this statement just wrote, so the
+                # counter's split can never disagree with the row's own
+                # disposition (see _RECLAIM_DISPOSITIONS). Total lookup:
+                # an unmapped status counts as the explicit "unknown"
+                # disposition instead of raising mid-transaction: the
+                # batch is the fleet's crash-recovery path (see
+                # _reclaim_disposition for the kill-streak chain a bare
+                # [] here would re-arm).
+                reclaim_counts[(actor_name, _reclaim_disposition(new_status))] += 1
 
                 # started_at is database-written and the attempt row's
                 # finished_at is stamped clock_timestamp(); the elapsed span
@@ -1314,6 +1414,15 @@ async def sweep_expired_locks(
             reason="lock_expired",
             cause=row.reclaim_reason,
         )
+    # Aggregated per (actor, disposition) AFTER the transaction: the
+    # same placement and rationale as sweep_deadline_exceeded's per-actor
+    # emission. The generic taskq.maintenance_leader.sweep_rows counter
+    # the leader loop records is deliberately left untouched: it stays
+    # the total per sweep_name, and this counter carries the per-actor
+    # crash split beside it, so dashboards keyed on the existing series
+    # keep reading the same totals.
+    for (actor_name, disposition), count in reclaim_counts.items():
+        record_reclaimed_jobs(actor=actor_name, disposition=disposition, count=count)
     if reclaimed:
         logger.error(
             "recovery_reclaim",
