@@ -107,9 +107,14 @@ _LIVE_COLS = (
     # written by that clock, so "is it past" is a stored predicate, not a
     # Python-clock guess (the same domain-mixing rule _build_where applies
     # to time windows). The zombie-running shape (running, lease past)
-    # must be visible on this page, not only on the gauge.
+    # must be visible on this page, not only on the gauge. Rows with a
+    # cancel in flight are carved out the same way
+    # taskq.jobs.running.lease_expired carves them: the reclaim sweep
+    # deliberately waits out the cancel grace ladder for them, so a lease
+    # expiring mid-cancel is the protocol working, not a zombie.
     "locked_by_worker, lock_expires_at, "
-    "CASE WHEN status = 'running' AND lock_expires_at < clock_timestamp() "
+    "CASE WHEN status = 'running' AND cancel_phase = 0 "
+    "  AND lock_expires_at < clock_timestamp() "
     "  THEN true ELSE false END AS lease_expired, "
     "cancel_requested_at, progress_state, error_message, "
     "tags"
