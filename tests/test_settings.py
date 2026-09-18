@@ -2001,6 +2001,40 @@ def test_saml_settings_repr_masks_private_key_and_session_secret() -> None:
     assert "session_secret=SecretStr('**********')" in r
 
 
+# ── SAML allow_cookieless_fallback: dotenvmodel bool coercion, fail-loud ───
+
+
+@pytest.mark.parametrize("raw", ["true", "1", "yes", "on", "TRUE", "On"])
+def test_saml_allow_cookieless_fallback_truthy_values_load_on(raw: str) -> None:
+    """Every dotenvmodel truthy spelling turns the cookie-less fallback on."""
+    s = SAMLSettings.load_from_dict({"TASKQ_SAML_ALLOW_COOKIELESS_FALLBACK": raw})
+    assert s.allow_cookieless_fallback is True
+
+
+@pytest.mark.parametrize("raw", ["false", "0", "no", "off", "FALSE", "Off"])
+def test_saml_allow_cookieless_fallback_falsy_values_load_off(raw: str) -> None:
+    """Every dotenvmodel falsy spelling turns the cookie-less fallback off."""
+    s = SAMLSettings.load_from_dict({"TASKQ_SAML_ALLOW_COOKIELESS_FALLBACK": raw})
+    assert s.allow_cookieless_fallback is False
+
+
+def test_saml_allow_cookieless_fallback_defaults_off() -> None:
+    """Unset means off: the cookie-less fallback is opt-in, never a default."""
+    assert SAMLSettings.load_from_dict({}).allow_cookieless_fallback is False
+
+
+def test_saml_allow_cookieless_fallback_malformed_fails_loud() -> None:
+    """A malformed value fails the load rather than falling back silently.
+
+    The flag trades browser binding for cookie-blocked-browser support, so a
+    silent default would hand the operator the opposite policy from the one
+    they believe they set. dotenvmodel raises TypeCoercionError, the same
+    fail-loud coercion every other bool setting gets.
+    """
+    with pytest.raises(TypeCoercionError):
+        SAMLSettings.load_from_dict({"TASKQ_SAML_ALLOW_COOKIELESS_FALLBACK": "maybe"})
+
+
 def test_taskq_settings_repr_masks_health_token() -> None:
     """TaskQSettings repr hides health_token (bearer credential for health/metrics routes)."""
     s = TaskQSettings.load_from_dict(

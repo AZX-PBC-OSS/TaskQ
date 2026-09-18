@@ -158,13 +158,17 @@ bundle = create_oidc_auth(config, base_path="/admin")
 | `session_max_age_seconds` | `int` | `28800` | _(same as OIDC)_ |
 | `group_attribute` | `str \| None` | `None` | `TASKQ_SAML_GROUP_ATTRIBUTE` |
 | `allowed_groups` | `frozenset[str]` | `frozenset()` | `TASKQ_SAML_ALLOWED_GROUPS` (comma-separated) |
+| `allow_cookieless_fallback` | `bool` | `false` | `TASKQ_SAML_ALLOW_COOKIELESS_FALLBACK` |
 
 ### Routes
 
 - **`/login`** — builds a SAML `AuthnRequest` and redirects to the IdP SSO URL.
 - **`/callback`** (POST, the ACS endpoint) — validates the signed SAML
-  response, extracts the NameID + attributes into `IdentityClaims`, sets the
-  session cookie, and redirects to the admin root.
+  response, requires the AuthnRequest correlation cookie set by `/login`
+  (see [Session handling](#session-handling); a cookie-less callback is
+  refused unless `allow_cookieless_fallback` is on), extracts the NameID +
+  attributes into `IdentityClaims`, sets the session cookie, and redirects
+  to the admin root.
 - **`/metadata`** (GET) — returns SP metadata XML for IdP configuration.
 - **`/logout`** — clears the session cookie.
 
@@ -343,15 +347,78 @@ browser withholds a `SameSite=Lax` cookie from a cross-site POST, so this one
 is marked `SameSite=None` when `secure_cookie` is on and is scoped to the
 `/callback` path alone. The session cookie's policy is untouched.
 
-Because a browser may withhold that cookie anyway (third-party cookie
-blocking, a privacy mode), the callback also keeps a short-lived record of the
-AuthnRequest IDs the process issued. An assertion arriving without the cookie
-is validated in full, and is then accepted only if its `InResponseTo` names an
-AuthnRequest that process issued and has not yet spent — so a response
-answering a login this deployment never started is still refused. That record
-is per process: with more than one admin replica, keep SAML logins on a single
-replica (sticky sessions) or expect an occasional retry when the cookie is
-dropped and the callback lands on a different replica than the login.
+The correlation cookie is the binding: the callback accepts an assertion only
+when its `InResponseTo` matches the request ID the signed cookie carries
+(python3-saml enforces the same comparison inside `process_response`), and the
+cookie is single-use — cleared on every callback outcome, and its request ID
+recorded as answered so a re-supplied captured copy cannot buy a second
+assertion on the process that answered it — with a 300 s TTL. Because it is
+signed with `session_secret`, **any replica sharing the secret can verify
+it**: multi-replica deployments and `uvicorn --workers N` need no sticky
+sessions, and a login whose callback lands on a different process than the
+one that issued it completes normally.
+
+One caveat survives that: the consumed-assertion replay record (and the
+answered-request record) are per process. A party who captured a complete ACS
+POST — cookie plus response body — can mint one additional session per
+sibling process within the 300 s cookie window, and the records are
+capped/evictable under a flood of valid assertions. Over HTTPS that capture
+implies a compromised client, a MITM, or a TLS break, each of which already
+yields session theft directly; closing it fully needs a replay record in a
+store every replica shares, which is tracked separately.
+
+### The cookie-less fallback (opt-in, default off)
+
+A hosted IdP's ACS POST is a genuine cross-site POST, and some browsers
+withhold even a `SameSite=None` cookie from it (third-party cookie blocking,
+privacy modes). On a default deployment such a callback is refused — the user
+sees the standard login error and can retry from the same browser, which
+re-issues a fresh correlation cookie.
+
+Deployments that must serve cookie-blocking browsers can opt in:
+
+```sh
+export TASKQ_SAML_ALLOW_COOKIELESS_FALLBACK=true
+```
+
+The callback then also accepts an assertion with no usable cookie when, after
+full signature and timestamp validation, its `InResponseTo` names an
+AuthnRequest the receiving process issued in the last 5 minutes and has not
+yet spent.
+
+**The tradeoff, stated directly:** nothing ties that response to the browser
+posting it. A party who starts a login, authenticates at the IdP as
+themselves, and captures the signed response without posting it to the ACS
+can have a cookie-less victim's browser POST it within the 5-minute window;
+the victim receives a session cookie for that party's NameID. The replay
+cache only blocks the *second* presentation of the same assertion. If your
+threat model cannot carry that, leave the flag off.
+
+Two operational consequences of opting in:
+
+- The pending-request record is **per process**. A cookie-less callback must
+  land on the same process that issued the login: put the SSO routes behind
+  sticky sessions, or expect an occasional retry when the browser withholds
+  the cookie *and* the callback lands on a different replica than the login.
+  This is the only configuration that needs sticky sessions — the cookie path
+  above works on any replica.
+- The record is capped (10,000 entries, soonest-to-expire eviction) and
+  `/login` is unauthenticated, so a flood of login starts can evict a real
+  pending ID and force that one cookie-less login to retry. The cookie path
+  is immune to eviction pressure.
+
+### Why OIDC does not have this fallback
+
+The OIDC callback is a top-level GET redirect, which browsers allow
+`SameSite=Lax` cookies on — the state cookie (carrying `state`, the PKCE
+`code_verifier`, and the `nonce` in one signed cookie) arrives where the SAML
+correlation cookie does not, because the ACS POST is not a safe-method
+navigation. PKCE also makes a cookie-less OIDC callback structurally unable
+to complete: without the `code_verifier` from the cookie there is no token
+exchange at all, and the nonce binds the ID token to the login that started
+it. OIDC therefore took the stateless-no-fallback tradeoff — a browser that
+loses the state cookie simply cannot log in — and has neither the
+cross-replica dependency nor the cookie-less acceptance shape.
 
 The auth dependency re-checks the group allowlist on every request, so changing
 `allowed_groups` takes effect immediately for existing sessions (a user whose
