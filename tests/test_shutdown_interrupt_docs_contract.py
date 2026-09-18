@@ -35,7 +35,7 @@ def test_cancellation_guide_teaches_shutdown_origin_and_the_no_refund() -> None:
     assert "released" in text and "not refunded" in text, (
         "cancellation.md must say what a deploy does to a running job: the "
         "attempt is released back to the fleet and its increment is NOT "
-        "refunded; the attempt started executing, so it is spent (issue #287)"
+        "refunded; the attempt started executing, so it is spent"
     )
     assert "never produces" in text or "never writes" in text, (
         "cancellation.md must state that shutdown never writes the operator-ladder terminal states"

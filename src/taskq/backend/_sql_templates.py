@@ -144,7 +144,7 @@ _MIN_DEFERRAL_INTERVAL_SQL: Final[str] = (
 # exact attempt epoch the interrupted (zombie) handler still holds; the
 # zombie's later terminal write then passes the attempt fence and lands
 # on the re-dispatched attempt, and the live execution's own terminal
-# write no-ops (issue #287). An interruption charges the attempt it ran.
+# write no-ops. An interruption charges the attempt it ran.
 # The reference is alias-qualified (``j.``): every consumer of the
 # fragment aliases its target table ``j``.
 #
@@ -1213,7 +1213,7 @@ released AS (
         -- _ATTEMPT_REFUND_SQL): the attempt started executing, so its
         -- increment stands; a refund would re-create the epoch the
         -- interrupted handler still holds and let its zombie terminal
-        -- write land on the re-dispatched attempt (issue #287).
+ -- write land on the re-dispatched attempt.
         interrupt_count = j.interrupt_count + 1,
         progress_seq = GREATEST(j.progress_seq, (SELECT progress_seq FROM params)),
         progress_state = CASE WHEN (SELECT progress_state FROM params) IS NOT NULL

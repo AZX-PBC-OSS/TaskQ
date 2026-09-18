@@ -1201,7 +1201,7 @@ async def _mark_interrupted(
     # attempt did start executing, so its increment stands; refunding it
     # would re-create the exact epoch the interrupted (zombie) handler
     # still holds, and the zombie's later terminal write would land on
-    # the re-dispatched attempt (issue #287; the snooze/unavailable arms
+    # the re-dispatched attempt; the snooze/unavailable arms
     # keep their refund because nothing executed there). No attempt row
     # is written (an interruption is not an execution outcome); one
     # state_change event with reason 'interrupted' records the transition

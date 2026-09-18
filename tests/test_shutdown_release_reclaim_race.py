@@ -11,7 +11,7 @@ shutdown racing a leader's reclaim tick -- both writers could believe they
 are the one entitled to release the row: the reclaim sweep would spend it as
 a crash (``_ATTEMPT_REFUND_SQL`` is NOT used on the crash-reclaim retry arm;
 the attempt is left as claimed) while ``mark_interrupted`` would leave the
-attempt as claimed too (the interrupt arm carries no refund since #287: the
+attempt as claimed too (the interrupt arm carries no refund since: the
 attempt started executing), and if both landed the job could be written
 twice into job_events / job_attempts for the same transition.
 
@@ -119,7 +119,7 @@ async def test_releasing_phase_does_not_double_refund_against_a_concurrent_recla
         )
         assert final.attempt == claimed_attempt, (
             "the release must NOT refund the attempt (the attempt started "
-            f"executing; issue #287): it stays at the claimed epoch "
+            f"executing;: it stays at the claimed epoch "
             f"{claimed_attempt}; got {final.attempt}"
         )
     else:

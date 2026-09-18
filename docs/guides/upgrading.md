@@ -652,8 +652,8 @@ when the watchdog is enabled, or when the platform SIGKILL lands at or
 before `TASKQ_TERMINATION_GRACE_PERIOD` plus the exit tail. The claim's
 `attempt` increment is NOT refunded: the attempt did start executing, and
 a refund would re-create the attempt epoch the interrupted handler still
-holds, letting its late terminal write land on the re-dispatched attempt
-(issue #287). An interrupted claim therefore spends the attempt; a job
+holds, letting its late terminal write land on the re-dispatched attempt.
+An interrupted claim therefore spends the attempt; a job
 interrupted on every deploy climbs its retry budget until it finishes or
 its `schedule_to_close` fails it with `DeadlineExceeded`. The release
 writes one `job_events` transition with

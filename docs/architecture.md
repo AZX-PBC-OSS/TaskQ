@@ -433,7 +433,7 @@ extends the active filter without a second edit.
 | running → cancelled | `reclaim_expired_locks` sweep (leader, Sweep 1 — cancel in-flight, retries exhausted) |
 | running → abandoned | `CancelController.run_post_tx` (heartbeat, post-phase-3) / shutdown RELEASING phase (operator cancel in flight only) |
 | running → crashed | `reclaim_expired_locks` sweep (leader, Sweep 1) |
-| running → pending/scheduled | `mark_interrupted` (consumer on a shutdown-origin cancel; shutdown RELEASING phase); the attempt is NOT refunded (it started executing; issue #287), `interrupt_count` bumps; `pending` when the actor has provably exited (async actor unwound, sync actor's thread finished, transactional unwind done; the consumer parks on the tracked exit handles, bounded by the remaining termination budget, before writing), `scheduled` behind the process's exit window (deadline + watchdog exit tail) when it has not |
+| running → pending/scheduled | `mark_interrupted` (consumer on a shutdown-origin cancel; shutdown RELEASING phase); the attempt is NOT refunded (it started executing), `interrupt_count` bumps; `pending` when the actor has provably exited (async actor unwound, sync actor's thread finished, transactional unwind done; the consumer parks on the tracked exit handles, bounded by the remaining termination budget, before writing), `scheduled` behind the process's exit window (deadline + watchdog exit tail) when it has not |
 | pending/scheduled → cancelled | `write_cancel_request` (client) |
 | pending/scheduled → failed | `deadline_sweep` (leader, Sweep 2) |
 

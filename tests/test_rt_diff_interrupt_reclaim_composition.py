@@ -5,7 +5,7 @@ own books:
 
 * ``mark_interrupted`` (the shutdown release); a NON-terminal release of
   a started attempt: the claim's increment is NOT refunded (the attempt
-  started executing, so it is spent; issue #287), no attempt row is
+ started executing, so it is spent;, no attempt row is
   written (an interruption is not an execution outcome), one
   ``reason='interrupted'`` event records it, and ``interrupt_count`` bumps.
 * the crash-reclaim sweep — the holding worker died mid-attempt, so the
@@ -115,7 +115,7 @@ async def _interrupt_reclaim_chain(
 
     # Pod A takes SIGTERM mid-attempt: the shutdown release hands the row
     # back with the claim's increment standing; the attempt did start
-    # executing, so it is spent (issue #287).
+    # executing, so it is spent.
     released = await side.backend.mark_interrupted(
         args.id, wid, attempt=claimed_row.attempt, hold=timedelta(0)
     )
@@ -134,7 +134,7 @@ async def _interrupt_reclaim_chain(
         "the re-claim after a shutdown release must stamp a FRESH attempt "
         f"epoch past the one the interrupted handler holds; got "
         f"attempt={reclaimed_row.attempt}; a refund here would re-create the "
-        "zombie's epoch and let its late terminal write land (issue #287)"
+        "zombie's epoch and let its late terminal write land"
     )
 
     # Pod B is killed outright: the lease expires with no terminal write,
@@ -289,7 +289,7 @@ async def test_diff_operator_cancel_between_release_and_reclaim_keeps_the_fence(
     assert j1["status"] == "cancelled"
     assert j1["attempt"] == 2, (
         "the declined release refunds nothing and the re-claim advanced the "
-        "epoch (the interrupt does not refund, issue #287); the operator's "
+        "epoch (the interrupt does not refund,; the operator's "
         "terminal write closed the re-claimed attempt as it stood"
     )
     assert j1["interrupt_count"] == 1, (
@@ -332,10 +332,10 @@ async def test_interrupt_does_not_advance_the_reclaim_curve_with_jitter_on(
     backend_pair: Backend,
 ) -> None:
     """With jitter armed, the interrupted-then-crash-reclaimed job's delay
-    is exactly the derived curve value for the re-claimed attempt — the
-    re-claim advanced the epoch past the interrupted one (no refund,
-    issue #287), and the jitter is the row's deterministic md5 fraction,
-    not a fresh draw."""
+        is exactly the derived curve value for the re-claimed attempt — the
+        re-claim advanced the epoch past the interrupted one (no refund,
+    , and the jitter is the row's deterministic md5 fraction,
+        not a fresh draw."""
     from taskq.backend.postgres import PostgresBackend
 
     backend = backend_pair
@@ -382,7 +382,7 @@ async def test_interrupt_does_not_advance_the_reclaim_curve_with_jitter_on(
     assert [row.id for row in reclaimed_claim] == [job_id]
     assert reclaimed_claim[0].attempt == 2, (
         "the re-claim must advance past the interrupted attempt's epoch (no "
-        "refund, issue #287); the curve's input"
+        "refund,; the curve's input"
     )
 
     # The crash: the lease expires with no terminal write.

@@ -1957,42 +1957,42 @@ class Backend(Protocol):
         progress_state: dict[str, object] | None = None,
     ) -> Literal["pending", "scheduled", "failed:DeadlineExceeded", "noop"]:
         """Release a running attempt this worker cannot finish because the
-        process is going away.
+               process is going away.
 
-        The interruption releases a *started* attempt, so it does NOT
-        refund the claim's increment: the attempt did start executing, and
-        refunding it would re-create the exact attempt epoch the
-        interrupted handler still holds; that handler's later terminal
-        write would then pass the attempt fence and land on the
-        re-dispatched attempt, and the live execution's own terminal write
-        would no-op (issue #287). No ``job_attempts`` row is written (an
-        interruption is not an execution outcome), one ``job_events``
-        state_change with ``detail.reason = 'interrupted'`` records the
-        transition, and the row's ``interrupt_count`` is bumped. The
-        interrupted attempt counts against the retry budget; the
-        re-dispatch claims a fresh epoch at ``attempt + 1``.
+               The interruption releases a *started* attempt, so it does NOT
+               refund the claim's increment: the attempt did start executing, and
+               refunding it would re-create the exact attempt epoch the
+               interrupted handler still holds; that handler's later terminal
+               write would then pass the attempt fence and land on the
+               re-dispatched attempt, and the live execution's own terminal write
+        would no-op. No ``job_attempts`` row is written (an
+               interruption is not an execution outcome), one ``job_events``
+               state_change with ``detail.reason = 'interrupted'`` records the
+               transition, and the row's ``interrupt_count`` is bumped. The
+               interrupted attempt counts against the retry budget; the
+               re-dispatch claims a fresh epoch at ``attempt + 1``.
 
-        *hold* > 0 parks the row ``scheduled`` until the releasing process
-        is provably gone (a job released while its coroutine may still be
-        alive in this process must not be claimable elsewhere until then);
-        *hold* = 0 lands the row ``pending`` at the head of the order — the
-        row is genuinely free and the actor is gone, so no deferral floor
-        applies. A hold that would push the row past its
-        ``schedule_to_close`` fails the job on the deadline instead
-        (``"failed:DeadlineExceeded"``), the same terminal exit every
-        deferral arm honours.
+               *hold* > 0 parks the row ``scheduled`` until the releasing process
+               is provably gone (a job released while its coroutine may still be
+               alive in this process must not be claimable elsewhere until then);
+               *hold* = 0 lands the row ``pending`` at the head of the order — the
+               row is genuinely free and the actor is gone, so no deferral floor
+               applies. A hold that would push the row past its
+               ``schedule_to_close`` fails the job on the deadline instead
+               (``"failed:DeadlineExceeded"``), the same terminal exit every
+               deferral arm honours.
 
-        Fenced on ownership, the attempt epoch, and ``cancel_phase = 0``:
-        an operator cancel in flight wins and the call returns ``"noop"``
-        so the caller routes to the cancel ladder (the row carries the
-        operator's request; the deploy must not launder it into a release:
-        a row whose ``cancel_attempted_at`` is set terminalises as
-        cancelled, never as available).
+               Fenced on ownership, the attempt epoch, and ``cancel_phase = 0``:
+               an operator cancel in flight wins and the call returns ``"noop"``
+               so the caller routes to the cancel ladder (the row carries the
+               operator's request; the deploy must not launder it into a release:
+               a row whose ``cancel_attempted_at`` is set terminalises as
+               cancelled, never as available).
 
-        *attempt* is the attempt-identity epoch — see
-        :meth:`mark_succeeded`. Here it is required, not optional: a
-        release that cannot prove which attempt it is handing back must
-        not touch the row (``"noop"``).
+               *attempt* is the attempt-identity epoch — see
+               :meth:`mark_succeeded`. Here it is required, not optional: a
+               release that cannot prove which attempt it is handing back must
+               not touch the row (``"noop"``).
         """
         ...
 

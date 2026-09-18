@@ -406,19 +406,19 @@ async def test_rolling_deploy_interrupts_running_jobs_and_the_fleet_finishes_the
     pg_dsn: str,
 ) -> None:
     """A pod stopped with actors mid-flight hands every one back, held
-    until the pod is gone, and finished by the fleet exactly once. The
-    interrupted claims spend their attempt: the interrupt arm does not
-    refund it (issue #287: a refund re-creates the epoch a zombie
-    handler holds).
+       until the pod is gone, and finished by the fleet exactly once. The
+       interrupted claims spend their attempt: the interrupt arm does not
+    refund it: a refund re-creates the epoch a zombie
+       handler holds).
 
-    Eight jobs run on one pod, every actor slower than the grace periods —
-    the ordinary shape of a rolling deploy under load. The deploy must not
-    terminalise any of them (no ``cancelled``/``abandoned``/``crashed``),
-    must not spend their budget (each completes on its first spent
-    attempt), and must not let the surviving pod claim a held row before
-    the departing pod is provably gone. The interruption is counted on
-    each row, so a week of deploys is visible as deploys, not as the
-    jobs' own failures.
+       Eight jobs run on one pod, every actor slower than the grace periods —
+       the ordinary shape of a rolling deploy under load. The deploy must not
+       terminalise any of them (no ``cancelled``/``abandoned``/``crashed``),
+       must not spend their budget (each completes on its first spent
+       attempt), and must not let the surviving pod claim a held row before
+       the departing pod is provably gone. The interruption is counted on
+       each row, so a week of deploys is visible as deploys, not as the
+       jobs' own failures.
     """
     schema = f"fleet_interrupt_{new_base62()}".lower()
     async with open_fleet(
@@ -486,7 +486,7 @@ async def test_rolling_deploy_interrupts_running_jobs_and_the_fleet_finishes_the
                 assert by_id[jid]["attempt"] == 1, (
                     "the interrupt arm must not refund the attempt increment: "
                     "the attempt started executing, and a refund re-creates the "
-                    "epoch a zombie handler holds (issue #287), the interrupted "
+                    "epoch a zombie handler holds, the interrupted "
                     "claim spends the attempt"
                 )
                 assert by_id[jid]["interrupt_count"] == 1
@@ -529,7 +529,7 @@ async def test_rolling_deploy_interrupts_running_jobs_and_the_fleet_finishes_the
         for row in claimed_back:
             assert row.attempt == 2, (
                 "the re-claim must climb past the interrupted attempt's epoch "
-                "(the interrupt arm does not refund, issue #287): the zombie "
+                "(the interrupt arm does not refund,: the zombie "
                 "handler's late write can then only lose the fence"
             )
 

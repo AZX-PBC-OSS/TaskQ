@@ -1,13 +1,13 @@
 """Fence pins for the consumer deferral arms and the interrupt release arm.
 
-Issue #278: ``mark_snoozed`` and ``mark_retry_after_{true,false}`` reset
+Issue: ``mark_snoozed`` and ``mark_retry_after_{true,false}`` reset
 ``cancel_phase``/``cancel_requested_at`` with no ``cancel_phase = 0`` fence, so a
 snooze/retry landing mid-cancel launders an in-flight operator cancel (the
 engine of the bulk-cancel double-report: the same id shows up in both the
 ``cancel_requested`` and ``cancelled_directly`` lists). The arms must refuse a
 phase-carrying row the way ``mark_interrupted`` does.
 
-Issue #287: ``mark_interrupted``'s release arm refunds the claim's attempt
+Issue: ``mark_interrupted``'s release arm refunds the claim's attempt
 increment, re-creating the exact attempt epoch the interrupted (zombie) handler
 holds. The zombie's later terminal write then passes the attempt fence and
 lands on the re-dispatched attempt, and the live execution's own terminal write
@@ -74,7 +74,7 @@ def _set_in_flight_cancel(backend: InMemoryBackend, job_id: JobId) -> None:
     )
 
 
-# ── Issue #278: the deferral arms must not launder an in-flight cancel ──
+# ── Issue: the deferral arms must not launder an in-flight cancel ──
 
 
 class TestDeferralArmsCarryTheCancelFence:
@@ -232,7 +232,7 @@ def _match_all_filter() -> JobFilter:
     return JobFilter()
 
 
-# ── Issue #287: the interrupt arm's attempt refund re-creates the epoch ──
+# ── Issue: the interrupt arm's attempt refund re-creates the epoch ──
 
 
 class TestInterruptArmAttemptEpoch:

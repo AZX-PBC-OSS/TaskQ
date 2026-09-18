@@ -120,43 +120,43 @@ class ShutdownPhase(IntEnum):
 async def drain_local_queue_to_pending(deps: "WorkerDeps", worker_id: UUID) -> int:
     """Re-pend every job this worker claimed but never started.
 
-    Issues a single bounded-timeout UPDATE that clears the lock on rows
-    where ``locked_by_worker = $worker_id AND status = 'running'``,
-    excluding the jobs with live consumers (``deps.active_jobs``):
-    CANCELLING owns those, and re-pending one would unlock a row
-    another worker can claim while its consumer still executes it. On
-    pool exhaustion or connection error the helper logs a warning and
-    returns 0 so the recovery sweep acts as the backstop rather than a
-    deadlocked shutdown.
+       Issues a single bounded-timeout UPDATE that clears the lock on rows
+       where ``locked_by_worker = $worker_id AND status = 'running'``,
+       excluding the jobs with live consumers (``deps.active_jobs``):
+       CANCELLING owns those, and re-pending one would unlock a row
+       another worker can claim while its consumer still executes it. On
+       pool exhaustion or connection error the helper logs a warning and
+       returns 0 so the recovery sweep acts as the backstop rather than a
+       deadlocked shutdown.
 
-    Two callers, one pass each, both on this worker's way out: the
-    orchestrator's DRAINING phase, and the producer loop's own exit (a
-    claim round in flight when the stop event landed commits after the
-    DRAINING pass; the producer's exit pass is the one write that cannot
-    be overtaken by this worker's next claim, because there is none).
-    Both refund the claim's attempt increment through the shared
-    ``_ATTEMPT_REFUND_SQL`` fragment — a claim that never reached an
-    actor bought nothing, so it spends nothing (the same idiom the
-    snooze arms carry; the refund is floored at 0
-    and a second pass matches no rows, so the two passes together are
-    exactly-once). ``mark_interrupted`` is the deliberate exception: its
-    attempt DID start executing, so it keeps the increment (issue #287).
+       Two callers, one pass each, both on this worker's way out: the
+       orchestrator's DRAINING phase, and the producer loop's own exit (a
+       claim round in flight when the stop event landed commits after the
+       DRAINING pass; the producer's exit pass is the one write that cannot
+       be overtaken by this worker's next claim, because there is none).
+       Both refund the claim's attempt increment through the shared
+       ``_ATTEMPT_REFUND_SQL`` fragment — a claim that never reached an
+       actor bought nothing, so it spends nothing (the same idiom the
+       snooze arms carry; the refund is floored at 0
+       and a second pass matches no rows, so the two passes together are
+       exactly-once). ``mark_interrupted`` is the deliberate exception: its
+    attempt DID start executing, so it keeps the increment.
 
-    Why no ``started_at IS NULL`` conjunct: the dispatch claim CTE
-    stamps ``started_at = clock_timestamp()`` AT CLAIM
-    (backend/_dispatch_sql.py), so every local_queue row is running +
-    locked + ``started_at IS NOT NULL`` — an ``IS NULL`` predicate
-    matched nothing and stranded the whole claimed-but-unstarted
-    backlog until lock-lease expiry. The DB row carries no
-    "a consumer took it" mark, so the only honest discriminator for
-    "never started" is this process's own active-jobs registry; the
-    claim-to-register window (a job taken off local_queue but not yet
-    in ``active_jobs``) is invisible to every shutdown arm — CANCELLING
-    iterates the same registry — and stays outside this predicate's
-    guarantee.
+       Why no ``started_at IS NULL`` conjunct: the dispatch claim CTE
+       stamps ``started_at = clock_timestamp()`` AT CLAIM
+       (backend/_dispatch_sql.py), so every local_queue row is running +
+       locked + ``started_at IS NOT NULL`` — an ``IS NULL`` predicate
+       matched nothing and stranded the whole claimed-but-unstarted
+       backlog until lock-lease expiry. The DB row carries no
+       "a consumer took it" mark, so the only honest discriminator for
+       "never started" is this process's own active-jobs registry; the
+       claim-to-register window (a job taken off local_queue but not yet
+       in ``active_jobs``) is invisible to every shutdown arm — CANCELLING
+       iterates the same registry — and stays outside this predicate's
+       guarantee.
 
-    Returns:
-        Number of rows updated, or 0 on timeout / connection error.
+       Returns:
+           Number of rows updated, or 0 on timeout / connection error.
     """
     schema = deps.settings.schema_name
     if not _IDENT_RE.match(schema):

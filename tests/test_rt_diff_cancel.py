@@ -89,7 +89,7 @@ async def test_diff_cancel_running_phase_and_poll(pg_dsn: str) -> None:
 
 
 async def _deferral_arms_fenced_by_in_flight_cancel(side: DiffSide) -> None:
-    """Issue #278: the consumer deferral arms carry mark_interrupted's
+    """The consumer deferral arms carry mark_interrupted's
     cancel fence. A phase-1 running row must refuse all three deferral
     arms and keep the operator's audit columns intact."""
     await side.enqueue("snoozed_job", scheduled_in=-1.0)

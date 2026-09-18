@@ -1082,7 +1082,7 @@ async def test_mark_retry_after_idempotent_returns_noop(
 #
 # A worker shutdown releases a running attempt it cannot finish: the
 # claim's attempt increment is NOT refunded (the attempt started
-# executing, so it is spent; issue #287), the row goes back to the fleet
+# executing, so it is spent;, the row goes back to the fleet
 # (pending at hold 0, scheduled behind the hold otherwise), no attempt row
 # is written (an interruption is not an execution outcome), one
 # 'interrupted' event records the transition, and interrupt_count carries

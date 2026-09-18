@@ -7,7 +7,7 @@ about capacity, never about the work), the claim's increment is refunded and
 SIGTERM mid-flight, and the shutdown release leaves the spent increment
 standing and bumps ``interrupt_count``. The denial never ran the actor, so
 it may not spend retry budget; the interrupt did start the attempt, so its
-increment is exactly what stands (issue #287); and neither may pretend the
+increment is exactly what stands; and neither may pretend the
 other's bookkeeping happened.
 
 The events diet is the second half of the pin. A non-terminal deferral mints
@@ -58,7 +58,7 @@ async def _denied_then_interrupted(side: DiffSide) -> None:
 
     # The third claim is a different pod's — and that pod takes SIGTERM
     # mid-attempt: the shutdown release counts the interruption and leaves
-    # the spent claim standing (the attempt started executing, issue #287).
+    # the spent claim standing (the attempt started executing,.
     claimed = await side.dispatch("w2", ["default"], limit=5)
     assert claimed == ["j1"]
     row = await side.backend.get(jid)
@@ -102,7 +102,7 @@ async def test_diff_denials_then_shutdown_interrupt_keep_the_counters_straight(
     assert j1["attempt"] == 1, (
         "the two denials refunded their claims (nothing ran), but the "
         "interrupted attempt did start executing: its increment stands and "
-        f"the epoch is 1, not 0 (issue #287); got attempt={j1['attempt']!r}"
+        f"the epoch is 1, not 0; got attempt={j1['attempt']!r}"
     )
     assert j1["rate_limit_blocked_count"] == 2, (
         "each 429 counted itself exactly once — never as a snooze, never "

@@ -11,7 +11,7 @@ the fleet (``pending`` when the actor unwound on the cancel, ``scheduled``
 behind the remaining termination budget when it did not), the claim's attempt
 increment is NOT refunded (the attempt started executing, so it is spent
 a refund would re-create the epoch the interrupted handler holds and let its
-zombie terminal write land on the re-dispatched attempt; see issue #287),
+zombie terminal write land on the re-dispatched attempt; see,
 and the row's ``interrupt_count`` plus one ``job_events`` transition are the
 record. An operator cancel that is in flight when the deploy lands still wins
 the row: interruption is identified by origin, never by exception type, so a
@@ -196,7 +196,7 @@ async def test_shutdown_releases_a_responsive_actor_back_to_pending(
     )
     assert after.attempt == enqueued.attempt + 1, (
         "the interruption must NOT refund the claim's attempt increment: the "
-        f"attempt started executing, so it is spent (issue #287). attempt went "
+        f"attempt started executing, so it is spent. attempt went "
         f"{enqueued.attempt} -> {after.attempt} across the deploy"
     )
     assert after.locked_by_worker is None and after.lock_expires_at is None, (
@@ -224,13 +224,13 @@ async def test_shutdown_releases_an_unresponsive_actor_behind_the_remaining_budg
 ) -> None:
     """The actor that never unwinds is released behind a hold.
 
-    A job that ignores the cooperative cancel and the forced cancel is still
-    running when the graces expire. Its row is released ``scheduled`` behind
-    the rest of this process's termination budget — the window in which the
-    watchdog guarantees the process is gone — so no other pod can claim the
-    row while its first runner might still be alive. The attempt is NOT
-    refunded: the attempt started executing, so its increment stands
-    (issue #287).
+        A job that ignores the cooperative cancel and the forced cancel is still
+        running when the graces expire. Its row is released ``scheduled`` behind
+        the rest of this process's termination budget — the window in which the
+        watchdog guarantees the process is gone — so no other pod can claim the
+        row while its first runner might still be alive. The attempt is NOT
+        refunded: the attempt started executing, so its increment stands
+    .
     """
     deps = clean_jobs_app.deps
     backend = clean_jobs_app.backend
@@ -271,7 +271,7 @@ async def test_shutdown_releases_an_unresponsive_actor_behind_the_remaining_budg
         )
         assert after.attempt == enqueued.attempt + 1, (
             "the interruption must NOT refund the claim's attempt increment; "
-            f"the attempt started executing (issue #287): attempt went "
+            f"the attempt started executing: attempt went "
             f"{enqueued.attempt} -> {after.attempt}"
         )
         assert after.locked_by_worker is None and after.lock_expires_at is None
@@ -297,7 +297,7 @@ async def test_shutdown_releases_an_unresponsive_actor_behind_the_remaining_budg
         # Let the zombie actor return; its late success write must be a no-op
         # against the released row: the row is 'scheduled' (the status fence
         # rejects it), and the attempt epoch it holds is never re-created by
-        # a refund (issue #287), so a re-claim advances past it.
+        # a refund, so a re-claim advances past it.
         release_actor.set()
         with contextlib.suppress(asyncio.CancelledError, Exception):
             await attempt_task
@@ -644,7 +644,7 @@ async def test_a_deploy_never_hands_a_live_sync_actors_row_to_a_second_worker(
         )
         assert after.attempt == enqueued.attempt + 1, (
             "the interruption must NOT refund the claim's attempt increment: "
-            "the attempt started executing, so it is spent (issue #287); the "
+            "the attempt started executing, so it is spent; the "
             "re-run spends its own fresh claim increment"
         )
         assert after.interrupt_count == 1
@@ -698,7 +698,7 @@ async def test_a_deploy_never_hands_a_live_sync_actors_row_to_a_second_worker(
         )
         assert reclaimed[0].attempt == enqueued.attempt + 2, (
             "the re-run's claim buys a fresh attempt increment on top of the "
-            "interrupted attempt's (which is NOT refunded, issue #287): "
+            "interrupted attempt's (which is NOT refunded,: "
             "enqueued -> interrupt claim (+1) -> re-claim (+1)"
         )
         assert len(executions) == 1, (
