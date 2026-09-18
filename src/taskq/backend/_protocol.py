@@ -656,6 +656,16 @@ class EnqueueArgs:
             (self.result_ttl, "result_ttl"),
             (self.schedule_to_close_interval, "schedule_to_close_interval"),
             (self.unique_for, "unique_for"),
+            # The stamped backoff curve joins the deadline columns: a
+            # negative base or cap feeds the reclaim sweep's delay
+            # computation a curve anchored in the past, the same
+            # instantly-past-deadline shape the checks above refuse. Zero
+            # is accepted here and floored at the reclaim writes (a row
+            # stamped by an earlier release carries it), while the
+            # RetryPolicy boundary refuses non-positive bases before one
+            # can be stamped.
+            (self.retry_base, "retry_base"),
+            (self.retry_cap, "retry_cap"),
         ):
             if value is not None and value < timedelta(0):
                 raise ValueError(f"{what} must not be negative, got {value}")

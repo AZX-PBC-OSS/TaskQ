@@ -16,12 +16,13 @@ When an actor raises an exception, TaskQ evaluates the actor's `RetryPolicy` to 
 | `max_attempts` | `int` | `3` | Maximum total attempts for `"transient"`. Must be >= 1. Ignored by `"indefinite"`. |
 | `time_budget` | `timedelta \| None` | `None` | Only active when `kind="indefinite"`. Passed to the enqueue path to auto-compute `schedule_to_close = now + time_budget`. Ignored for other kinds (a warning is emitted at decoration time if set on a non-indefinite actor). |
 | `backoff` | `"exponential" \| "linear" \| "fixed"` | `"exponential"` | Backoff algorithm; see [Backoff algorithms](#3-backoff-algorithms). |
-| `base` | `timedelta` | `timedelta(seconds=5)` | Starting delay for the chosen backoff algorithm. |
+| `base` | `timedelta` | `timedelta(seconds=5)` | Starting delay for the chosen backoff algorithm. Must be > 0. |
 | `cap` | `timedelta` | `timedelta(hours=1)` | Per-actor ceiling on the computed delay before jitter. Must be >= `base`. |
 | `jitter` | `float` | `0.2` | Multiplicative jitter factor. Must be in `[0.0, 1.0]`. |
 
 **Validation constraints enforced at construction time:**
 - `max_attempts >= 1` — `RetryPolicy(max_attempts=0)` raises `ValidationError`.
+- `base > 0` — `RetryPolicy(base=timedelta(0))` raises `ValidationError`. A zero or negative base degenerates the curve to a zero-period retry loop that monopolises a worker slot with no backoff; rows stamped by earlier releases that accepted the shape are floored at the retry and reclaim writes instead.
 - `cap >= base` — `RetryPolicy(cap=timedelta(seconds=1), base=timedelta(seconds=5))` raises `ValidationError`.
 - `jitter` in `[0.0, 1.0]` — `RetryPolicy(jitter=1.5)` raises `ValidationError`.
 
