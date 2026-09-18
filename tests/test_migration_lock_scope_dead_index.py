@@ -529,7 +529,12 @@ def _params_wrapper(lateral: str, schema: str, *, rr_keys: bool) -> str:
     lateral itself is rendered verbatim, and the five typed parameters are
     bound exactly as the real statement binds them. ``rr_keys`` (the
     round-robin lateral's cohort enumeration, which the recursive original
-    cannot be correlated) is literalized to the one seeded cohort."""
+    cannot be correlated) is literalized to the one seeded cohort.
+    ``queue_cap_headroom`` is literalized as the empty relation (the
+    uncapped-pair shape this pin has always exercised): the laterals'
+    scalar probes select from it, the probe yields NULL and LEAST ignores
+    it, so the residual bound is untouched (#242).
+    """
     ctes = [
         "params AS (SELECT $1::text[] AS queues, $2::int AS limit_n, "
         "$3::uuid AS worker_id, $4::interval AS lock_lease, $5::int AS oversample)"
@@ -539,6 +544,10 @@ def _params_wrapper(lateral: str, schema: str, *, rr_keys: bool) -> str:
             "rr_keys (actor, queue, fkey) AS (VALUES ('unrouted_probe'::text, "
             "'default'::text, '__null__'::text))"
         )
+    ctes.append(
+        "queue_cap_headroom AS (SELECT NULL::text AS actor, "
+        "NULL::text AS queue, NULL::bigint AS headroom WHERE false)"
+    )
     return (
         "WITH "
         + ", ".join(ctes)
