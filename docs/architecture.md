@@ -1258,6 +1258,21 @@ degrades to `lock_lease` — the bound the lease-expiry path already imposes —
 and the platform grace must supply the ceiling the watchdog would have (see
 the platform-grace window in docs/guides/workers.md).
 
+The timeout path re-pends, and its coverage is narrower by construction. A
+`start_to_close` timeout fires while the process is otherwise healthy: there
+is no shutdown deadline to anchor an enforced exit on, so the timeout handler
+cannot prove a sync actor's exit the way the interruption release can. What it
+does is reuse the same exit-proof machinery before the re-pend: it parks on
+the job's tracked exit handles, bounded by the exit-wait budget (the cleanup
+grace when no shutdown anchors it), and re-pends with the retry decision's own
+delay only on a provable exit inside that window. A sync actor still running
+at the window's expiry defers the re-pend behind the release hold, the same
+exit window the interruption release parks behind, but that deferral is a
+bound, not a proof: a sync actor that outlives both the park and the release
+window can still overlap a later re-claim of its retry. The enforced exit
+boundary (the watchdog gate) protects the interruption release; the timeout
+path's promise is exactly the park plus the deferral, and no more.
+
 #### Deliberate divergence from the queue ancestors
 
 No peer ships this contract. Celery requeues a job whose worker died mid-run
