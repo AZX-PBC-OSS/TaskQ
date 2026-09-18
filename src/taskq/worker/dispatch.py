@@ -172,7 +172,7 @@ class SlotPoolAcquireError(Exception):
 
 
 #: Process-local record of the physical connections the dispatch repair
-#: path has already carried the registration's declared init hook to — the
+#: path has already carried the registration's declared init hook to, the
 #: exactly-once-per-physical-connection record for pools bootstrap did not
 #: build (an injected/foreign pool leaves ``deps.slot_pool_connection_init``
 #: unset). asyncpg 0.31.0's ``PoolConnectionProxy`` is ``__slots__``-sealed
@@ -354,7 +354,7 @@ async def _ensure_registered_init_on_slot_conn(
         return
     # Why the physical connection: ConnLike is the object-typed runtime
     # alias for Connection | PoolConnectionProxy, and the hook's contract
-    # is the one asyncpg's own init= receives — the proxy forwards it to
+    # is the one asyncpg's own init= receives, the proxy forwards it to
     # the physical connection. The exactly-once record keys on the
     # physical connection (the proxy is __slots__-sealed with no
     # __weakref__, the physical Connection is weakref-able): a released
@@ -385,7 +385,7 @@ async def _ensure_registered_init_on_slot_conn(
         ) from exc
     if trackable:
         # Why the cast: the set is keyed by the physical connection behind
-        # the slot connection, whatever shape ConnLike handed over — the
+        # the slot connection, whatever shape ConnLike handed over, the
         # same runtime alias the target cast above already bridges.
         _SLOT_CONN_INIT_APPLIED.add(cast(asyncpg.Connection, physical))
 

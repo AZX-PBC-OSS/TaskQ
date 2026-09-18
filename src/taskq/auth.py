@@ -839,7 +839,7 @@ def make_dedicated_conn_factory(
             # Why here, not forwarded: asyncpg.connect has no setup
             # parameter (0.31.0), so forwarding it raises TypeError on
             # every open. The hook runs once per (re)open, with the fresh
-            # connection — the same lifecycle position as a pool's init.
+            # connection, the same lifecycle position as a pool's init.
             # A failed hook means no usable connection: terminate rather
             # than leak a half-configured connection (with_connection_init
             # applies the same rule to the LOOP-scope one).

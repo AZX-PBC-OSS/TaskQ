@@ -659,7 +659,7 @@ async def _maybe_open_slot_pool(
                 "taskq.connections.with_connection_init(...), or "
                 "taskq.auth.make_dedicated_conn_factory(..., setup=...), "
                 "which applies the setup to the fresh connection itself "
-                "(asyncpg.connect takes no setup parameter) — and "
+                "(asyncpg.connect takes no setup parameter), and "
                 "the worker replays the hook on every slot connection. "
                 "Session state (search_path, role) is read back and inherited "
                 "either way; this warning covers per-connection codecs and "

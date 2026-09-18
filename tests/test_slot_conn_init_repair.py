@@ -6,7 +6,7 @@ path (:func:`taskq.worker.dispatch._ensure_registered_init_on_slot_conn`)
 applies the registration's declared init hook to each acquired
 connection exactly once per physical connection. asyncpg 0.31.0's
 ``PoolConnectionProxy`` is ``__slots__``-sealed (``('_con', '_holder')``),
-so the exactly-once record must live off the connection object — a
+so the exactly-once record must live off the connection object, a
 setattr marker on the proxy raises ``AttributeError`` and kills every
 dispatch on an injected pool.
 """
