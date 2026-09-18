@@ -388,6 +388,34 @@ async def create_workered_running_job(
 # ── Row-visit counting (cost oracles) ────────────────────────────────────
 
 
+def _create_role_or_reuse_do_block(role: str) -> str:
+    """A DO block that creates *role* if absent, or reuses the winner's.
+
+    The guard exists because role creation is cluster-wide while the
+    advisory lock that serialises installs is per-database: two xdist
+    workers on different databases of one cluster can both see the role
+    as absent, and the loser of the concurrent CREATE ROLE dies on
+    pg_authid_rolname_index with UniqueViolationError (23505) or
+    DuplicateObjectError (42710). Both mean the winner's CREATE ROLE
+    committed, so the guard re-checks the role and proceeds with the
+    winner's; it re-raises when the role genuinely is absent, so real
+    breakage still surfaces.
+    """
+    # Why: CREATE ROLE takes no parameters, so the role name must be interpolated; the caller passes this module's own constant or a pin test's scratch name, never external input.
+    return (
+        "DO $$ BEGIN "  # noqa: S608
+        f"  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '{role}') "
+        "  THEN BEGIN "
+        f"    CREATE ROLE {role} NOLOGIN; "
+        "    EXCEPTION "
+        "    WHEN duplicate_object OR unique_violation THEN "
+        f"    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '{role}') "
+        "    THEN RAISE; END IF; "
+        "  END; END IF; "
+        "END $$"
+    )
+
+
 async def install_row_visit_counter(conn: _Conn, schema: str, table: str = "jobs") -> None:
     """Make *table* count every row the engine actually visits.
 
@@ -422,9 +450,13 @@ async def install_row_visit_counter(conn: _Conn, schema: str, table: str = "jobs
     to fire; :class:`RowVisitCounter` arranges that.
 
     Safe to call from concurrent processes against one cluster (the
-    suite's xdist workers do exactly that): role creation is serialised
-    by a transaction-scoped advisory lock, so whichever caller loses the
-    race re-reads the role after the winner creates it and reuses it.
+    suite's xdist workers do exactly that): role creation survives two
+    concurrent first-installs. The transaction-scoped advisory lock
+    serialises callers in the same database. Across databases the lock
+    cannot help: advisory locks are per-database while CREATE ROLE is
+    cluster-wide, so the create is additionally guarded: the loser of
+    the cluster-level duplicate catches the duplicate and reuses the
+    winner's role.
     """
     if not _IDENT_RE.match(schema):  # pragma: no cover - guards a test-only helper
         raise ValueError(f"invalid schema identifier: {schema!r}")
@@ -445,24 +477,25 @@ async def install_row_visit_counter(conn: _Conn, schema: str, table: str = "jobs
         f'USING ("{schema}".taskq_count_row_visit())'
     )
     # Creating the role is the one cluster-level statement here, and the
-    # suite's xdist workers share one Postgres cluster. A check-then-create
-    # inside a single DO block is atomic per statement but not across
-    # connections: a worker that takes its snapshot before another worker's
-    # CREATE ROLE commits then fails on pg_authid_rolname_index with
-    # UniqueViolationError. The transaction-scoped advisory lock serialises
-    # the check and the create, so the loser of the race waits, re-reads the
-    # role after the winner commits, and reuses it.
+    # suite's xdist workers share one Postgres cluster across per-module
+    # databases. Two guards make the check-then-create safe. First, the
+    # transaction-scoped advisory lock serialises same-database callers,
+    # so a loser that shares the winner's database waits, re-reads the
+    # role after the winner commits, and reuses it. Second, the guard is
+    # needed because advisory locks are per-database while CREATE ROLE is
+    # cluster-wide: two workers on different databases of one cluster are
+    # never serialised by the lock, both see the role as absent, and the
+    # loser of the index insert dies on pg_authid_rolname_index with
+    # UniqueViolationError. The guard in _create_role_or_reuse_do_block
+    # catches that duplicate, re-checks the role, and reuses the winner's
+    # role; it re-raises when the role genuinely is absent, so real
+    # breakage still surfaces.
     async with conn.transaction():
         await conn.execute(
             # Why: the lock key derives from this module's own role-name constant, never caller input.
             f"SELECT pg_advisory_xact_lock(hashtext('{ROW_VISIT_COUNTER_ROLE}'), 0)"
         )
-        await conn.execute(
-            "DO $$ BEGIN "  # noqa: S608  # Why: CREATE ROLE takes no parameters, so the role name must be interpolated; it is this module's own constant, never caller input.
-            f"  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '{ROW_VISIT_COUNTER_ROLE}') "
-            f"  THEN CREATE ROLE {ROW_VISIT_COUNTER_ROLE} NOLOGIN; END IF; "
-            "END $$"
-        )
+        await conn.execute(_create_role_or_reuse_do_block(ROW_VISIT_COUNTER_ROLE))
     await conn.execute(f'GRANT USAGE ON SCHEMA "{schema}" TO {ROW_VISIT_COUNTER_ROLE}')
     await conn.execute(f'GRANT ALL ON ALL TABLES IN SCHEMA "{schema}" TO {ROW_VISIT_COUNTER_ROLE}')
     await conn.execute(

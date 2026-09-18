@@ -2,7 +2,9 @@
 
 Covers: install_row_visit_counter is idempotent when its role already
 exists; concurrent callers serialise role creation on a transaction-scoped
-advisory lock.
+advisory lock; the create itself survives losing a cluster-level duplicate
+race, which is how two installs on different databases of one cluster race
+(advisory locks are per-database, CREATE ROLE is cluster-wide).
 
 Why this needs a pin: the role is cluster-wide state, and the suite's
 xdist workers share one Postgres cluster across per-module databases. Two
@@ -11,9 +13,11 @@ inside the single DO block, and the loser failed on pg_authid_rolname_index
 with UniqueViolationError. The failure needed full-suite ordering to line
 the two windows up, so a subset run could not reproduce it.
 
-The tests here never drop the role. Dropping cluster-level state from one
-test would break a concurrent worker sitting between its own SET ROLE and
-RESET ROLE, which is the same class of cross-worker damage the race caused.
+The tests here never drop the shared counter role. Dropping cluster-level
+state from one test would break a concurrent worker sitting between its own
+SET ROLE and RESET ROLE, which is the same class of cross-worker damage the
+race caused. The duplicate-race pin below races a scratch role it owns and
+drops only that.
 """
 
 from __future__ import annotations
@@ -25,7 +29,11 @@ import asyncpg
 import pytest
 
 from taskq.testing.fixtures import ModulePgSchema
-from taskq.testing.pg import ROW_VISIT_COUNTER_ROLE, install_row_visit_counter
+from taskq.testing.pg import (
+    ROW_VISIT_COUNTER_ROLE,
+    _create_role_or_reuse_do_block,
+    install_row_visit_counter,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -104,6 +112,42 @@ async def test_install_row_visit_counter_serialises_role_creation_across_connect
     finally:
         await other.close()
         await clean_pg_conn.execute(f'DROP SCHEMA IF EXISTS "{scratch}" CASCADE')
+
+
+async def test_create_role_do_block_survives_a_lost_duplicate_race(
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_schema: ModulePgSchema,
+) -> None:
+    """Two concurrent creates of one absent role both finish cleanly.
+
+    This pins the guard that covers the cross-database race the advisory
+    lock cannot: two installs on different databases of one cluster are
+    never serialised by the lock, so the DO block itself must tolerate
+    losing the pg_authid_rolname_index insert race and reuse the winner's
+    role. The pin races the DO block on two same-database connections,
+    which removes the lock from the path entirely and leaves the guard as
+    the only protection, exactly the loser's position in the real race.
+    A scratch role is raced and dropped so the shared counter role is
+    never touched; several rounds keep the pin honest against rounds
+    where the two calls happen not to overlap.
+    """
+    scratch = f"{ROW_VISIT_COUNTER_ROLE}_guard_pin"
+    other = await asyncpg.connect(module_pg_schema.pg_dsn)
+    try:
+        for _ in range(10):
+            await clean_pg_conn.execute(f"DROP ROLE IF EXISTS {scratch}")
+            await asyncio.gather(
+                clean_pg_conn.execute(_create_role_or_reuse_do_block(scratch)),
+                other.execute(_create_role_or_reuse_do_block(scratch)),
+            )
+            row = await clean_pg_conn.fetchrow(
+                "SELECT rolcanlogin FROM pg_roles WHERE rolname = $1", scratch
+            )
+            assert row is not None, "the raced role must exist after both creates"
+            assert row["rolcanlogin"] is False, "the raced role must stay NOLOGIN"
+    finally:
+        await other.close()
+        await clean_pg_conn.execute(f"DROP ROLE IF EXISTS {scratch}")
 
 
 async def _wait_until_blocked_on_the_lock(observer: asyncpg.Connection, blocked_pid: int) -> None:
