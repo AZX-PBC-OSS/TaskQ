@@ -43,7 +43,7 @@ def _otel_span_processor(
 
     Reads ``opentelemetry.trace.get_current_span().get_span_context()`` on every
     log call so nested sub-spans within a job are reflected in ``span_id``.
-    ``opentelemetry-api`` is a hard dep — no conditional import guard needed.
+    ``opentelemetry-api`` is a hard dep, no conditional import guard needed.
     """
     ctx = trace.get_current_span().get_span_context()
     if ctx.is_valid:
@@ -89,8 +89,8 @@ def _render_exc_info_safe(
 ) -> structlog.types.EventDict:
     """Replace ``exc_info`` with scrubbed ``exception.*`` keys on the JSON channel.
 
-    Mirrors structlog's ``format_exc_info`` key semantics — pop ``exc_info``,
-    render only when it resolves to a real exception — but renders through the
+    Mirrors structlog's ``format_exc_info`` key semantics, pop ``exc_info``,
+    render only when it resolves to a real exception, but renders through the
     ``_redact_exc`` helpers so Postgres DETAIL row values and URI credentials
     never reach the JSON log line. Without this, ``log.exception()`` shipped a
     leftover ``"exc_info": true`` bool and foreign stdlib records with real
@@ -107,14 +107,14 @@ class _ExcInfoSafeBoundLogger(structlog.stdlib.BoundLogger):
     """``BoundLogger`` whose ``.exception()`` never sets ``exc_info`` on the record.
 
     Why: structlog's own ``exception()`` proxies to ``logging.Logger.exception``,
-    and *that* hard-codes ``exc_info=True`` in the stdlib call — so
+    and *that* hard-codes ``exc_info=True`` in the stdlib call, so
     ``record.exc_info`` is populated with the live ``sys.exc_info()`` triple no
     matter what the processor chain did to the event dict. Every root handler
     then reads it: ``setup_logging`` installs on the ROOT logger and
     ``worker_main`` calls it unconditionally, and Azure Monitor's
     ``configure_azure_monitor()`` attaches its ``LoggingHandler`` alongside,
     reads ``record.exc_info`` directly, and ships the raw ``str(exc)`` plus the
-    full traceback to the App Insights ``exceptions`` table — Postgres DETAIL
+    full traceback to the App Insights ``exceptions`` table, Postgres DETAIL
     row values and all.
 
     No processor can close that, because the leak is added *after* the chain
@@ -132,7 +132,7 @@ def _scrub_exception_fields(
     logger: object, method: str, event_dict: structlog.types.EventDict
 ) -> structlog.types.EventDict:
     """Scrub the known exception-bearing field names (the
-    ``EXCEPTION_MESSAGE_FIELDS`` / ``EXCEPTION_TRACEBACK_FIELDS`` sets —
+    ``EXCEPTION_MESSAGE_FIELDS`` / ``EXCEPTION_TRACEBACK_FIELDS`` sets ,
     ``error``, ``error_message``, ``error_traceback``, ``exc``, and the
     terminal-write log's ``job_error_*`` / ``infra_error_*`` names).
 
@@ -156,7 +156,7 @@ def setup_logging(
 
     Production (``log_format="json"``): ``JSONRenderer`` via
     ``ProcessorFormatter`` stdlib bridge. Development (``log_format="console"``):
-    ``ConsoleRenderer`` via ``ProcessorFormatter``. Idempotent — guarded
+    ``ConsoleRenderer`` via ``ProcessorFormatter``. Idempotent, guarded
     by ``_logging_configured`` flag. Not called at import time .
     """
     global _logging_configured
@@ -187,7 +187,7 @@ def setup_logging(
         # dict is therefore an export surface for any vendor handler that
         # stringifies values. Console pays for this with a plain scrubbed
         # ``exception.stacktrace`` field instead of ConsoleRenderer's pretty
-        # traceback — the same record reaches the same vendor handlers whichever
+        # traceback, the same record reaches the same vendor handlers whichever
         # renderer the operator picked, so the dev view does not get an
         # unredacted exemption.
         _safe_processor_wrapper(_render_exc_info_safe),
@@ -209,7 +209,7 @@ def setup_logging(
             # Still needed for FOREIGN records: ``ProcessorFormatter`` lifts
             # their ``record.exc_info`` onto the event dict here, after the
             # shared chain has run, and orjson drops the whole line on a raw
-            # tuple. Idempotent for TaskQ's own records — ``exc_info`` is
+            # tuple. Idempotent for TaskQ's own records, ``exc_info`` is
             # already gone by then.
             _safe_processor_wrapper(_render_exc_info_safe),
             renderer,
@@ -276,7 +276,7 @@ def bind_job_context(
     """Bind job-scope fields to a logger, returning a new immutable BoundLogger.
 
     ``identity_key``, ``span_id``, and ``batch_id`` are omitted from the bound
-    dict when ``None`` — not set to null or empty string .  ``trace_id``
+    dict when ``None``, not set to null or empty string .  ``trace_id``
     is always bound (defaults to ``""`` when no active OTel span per spec).
     Returns a new ``BoundLogger``; does not mutate the input.
     """
@@ -324,7 +324,7 @@ def log_cancel_phase_change(
     """Emit an INFO log line with ``kind="cancel_phase_change"``.
 
     ``from_phase`` and ``to_phase`` are the cancel-phase integers before
-    and after the escalation.  ``cancel_observed_at`` is NOT included — it
+    and after the escalation.  ``cancel_observed_at`` is NOT included, it
     is per-handler context, not part of the canonical schema.
     """
     log.info(
@@ -343,7 +343,7 @@ def redact_payload(payload: object) -> str:
     for the same input.
     """
     # Why bytes directly, not dumps_str(...).encode(): the hash consumes
-    # bytes, and dumps() already produces them — the str round-trip was a
+    # bytes, and dumps() already produces them, the str round-trip was a
     # decode+encode pair per redacted log line.
     serialized = dumps(payload)
     return hashlib.sha256(serialized).hexdigest()[:16]

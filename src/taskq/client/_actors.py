@@ -1,4 +1,4 @@
-"""ActorsClient — pool-wrapping facade for actor configuration operations.
+"""ActorsClient, pool-wrapping facade for actor configuration operations.
 
 Provides a typed surface for listing, inspecting, tuning, and deregistering
 stored ``actor_config`` rows. Each method acquires a connection from the
@@ -34,7 +34,7 @@ class ActorsClient:
     lifecycle.
 
     .. note::
-       This client is Postgres-only — it delegates to
+       This client is Postgres-only, it delegates to
        :mod:`taskq.actor_config_ops`, which executes raw SQL against
        the ``actor_config`` table. The :class:`~taskq.backend._protocol.Backend`
        protocol does not include actor config operations, so

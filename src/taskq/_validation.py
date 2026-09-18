@@ -8,11 +8,11 @@ from taskq.exceptions import PayloadValidationError
 
 #: The payload schema version every row written today carries. Mirrors the
 #: ``EnqueueArgs.payload_schema_ver`` field default (``backend/_protocol.py``)
-#: as a literal rather than an import — the dataclass field default is not a
+#: as a literal rather than an import, the dataclass field default is not a
 #: module-level constant, and this module stays importable by the driver-free
 #: testing boundary (the same reason ``testing/_dispatch.py`` mirrors
 #: dispatch constants as literals). Raise sites that hold a job row must
-#: pass the ROW's stored version instead — see ``validate_actor_payload``'s
+#: pass the ROW's stored version instead, see ``validate_actor_payload``'s
 #: ``payload_schema_ver`` parameter.
 CURRENT_PAYLOAD_SCHEMA_VER: Final[int] = 1
 
@@ -42,7 +42,7 @@ def validate_actor_payload(
             ``payload_type``.
         actor: The actor name, for error context.
         payload_schema_ver: The schema version attached to the payload being
-            validated — for a dispatch-time failure this is the job row's
+            validated, for a dispatch-time failure this is the job row's
             stored ``payload_schema_ver``, so an error handler can tell a
             row that predates a payload migration apart from a malformed
             caller payload. Defaults to the version being validated against

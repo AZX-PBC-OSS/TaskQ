@@ -128,12 +128,12 @@ class RetryPolicy(BaseModel):
 class Retry(BaseModel):
     """Retry decision: reschedule the job after *retry_delay*.
 
-    The delay — not a computed timestamp — is the decision payload: the
+    The delay, not a computed timestamp, is the decision payload: the
     backend derives ``scheduled_at = now() + retry_delay`` and the
     scheduled/pending status from its own clock (single arbiter, immune to
     app↔DB clock skew).  The delay never falls below
-    :data:`~taskq.constants.MIN_DEFERRAL_INTERVAL` — the requeue-rate
-    floor the deferral arms already apply at their writes — so a
+    :data:`~taskq.constants.MIN_DEFERRAL_INTERVAL`, the requeue-rate
+    floor the deferral arms already apply at their writes, so a
     degenerate curve (``base=timedelta(0)``, where ``0 * 2**k == 0`` at
     every rung) or a zero ``Retry-After`` override cannot turn the
     failure cycle into a claim/run/fail round trip monopolising a worker
@@ -161,7 +161,7 @@ type RetryDecision = Retry | Fail
 class JobRetryState(NamedTuple):
     """Projection of JobRow columns consumed by the retry classifier.
 
-    ``schedule_to_close`` is no longer an input to classification — the
+    ``schedule_to_close`` is no longer an input to classification, the
     SQL deadline guard in ``mark_failed_or_retry`` is the single deadline
     arbiter (one arbiter per predicate; see docs/architecture.md §Clock
     Domains).  The field is retained on the projection for observability
@@ -183,7 +183,7 @@ _production_rng = random.Random(secrets.randbits(128))  # noqa: S311  Why: rando
 # unbounded and the exponential arm's exponent must be clamped somewhere
 # (the pre-clamp shape, ``base_s * 2 ** (attempt - 1)`` over Python ints,
 # built an exact int that raised OverflowError at float conversion once
-# attempt >= 1025 — escaping compute_backoff → classify →
+# attempt >= 1025, escaping compute_backoff → classify →
 # _dispatch_exception and crashing the failure path instead of retrying).
 # The bound is 67 because it is the smallest clamp that cannot change any
 # timedelta-representable curve AND cannot overflow on either evaluator:
@@ -192,16 +192,16 @@ _production_rng = random.Random(secrets.randbits(128))  # noqa: S311  Why: rando
 #   smallest positive ``base`` at 1e-6 s and the largest representable
 #   ``cap`` at ~8.6e13 s (999999999 days), so every representable
 #   (base, cap) curve reaches its cap by exponent 66 at the latest
-#   (1e-6 * 2**67 >= 1.4e14 >= 8.6e13) — min(cap_s, ...) saturates at
+#   (1e-6 * 2**67 >= 1.4e14 >= 8.6e13), min(cap_s, ...) saturates at
 #   cap_s with or without the clamp, and base == 0 yields 0 either way.
 # * Overflow: the SQL twin (_RECLAIM_RAW_BACKOFF_SQL) evaluates
 #   ``base * power(2.0, e)`` in float8, and Postgres RAISES
-#   "value out of range: overflow" (SQLSTATE 22003 — a data error the
+#   "value out of range: overflow" (SQLSTATE 22003, a data error the
 #   leader's transient classification deliberately excludes) where this
 #   module's float multiply saturates to inf and lets min() land on the
 #   cap.  A clamp at the float ceiling (the historical 1023) kept
 #   power() itself in range but let the multiply overflow for any
-#   base > ~2 once the attempt passed ~1021 — a non-transient error in
+#   base > ~2 once the attempt passed ~1021, a non-transient error in
 #   the leader sweep's failure path AND a parity break against this
 #   twin.  base * 2**67 <= ~1.3e34 for any timedelta-representable base,
 #   ~274 orders of magnitude below the float8 ceiling (~1.8e308).
@@ -210,8 +210,8 @@ _MAX_BACKOFF_EXPONENT: Final[int] = 67
 #: The denominator of the deterministic reclaim-jitter fraction: 2**32, the
 #: count of values the fraction's 8-hex-digit hash prefix can take.  A float
 #: literal so the division in :func:`_reclaim_jitter_fraction` is an IEEE-754
-#: float8 true-division — the same operation the SQL twin's
-#: ``::float8 / 4294967296.0::float8`` performs — and both are correctly
+#: float8 true-division, the same operation the SQL twin's
+#: ``::float8 / 4294967296.0::float8`` performs, and both are correctly
 #: rounded, so the two sides agree bit for bit.
 _RECLAIM_JITTER_MODULUS: Final[float] = 4294967296.0
 
@@ -225,7 +225,7 @@ def _reclaim_jitter_fraction(job_id: UUID, attempt: int) -> float:
     ``taskq.backend._sweeps``) computes the identical value in the database:
     same md5 over the same ASCII text (``j.id::text`` is the lowercase
     dashed uuid form ``str(job_id)`` produces, ``j.attempt::text`` the plain
-    decimal — both pure ASCII, so the database encoding cannot change the
+    decimal, both pure ASCII, so the database encoding cannot change the
     hashed bytes), same uint32 interpretation of the prefix, same float8
     division.  The leader's sweep, a partitioned worker's isolate_self, and
     the in-memory mirror therefore all draw the SAME fraction for the same
@@ -237,7 +237,7 @@ def _reclaim_jitter_fraction(job_id: UUID, attempt: int) -> float:
     every later sweep of the same row.  A per-statement ``random()`` makes
     those paths disagree about one row's hand-back instant and makes a
     replay stamp a different instant than the first pass; deriving the draw
-    from the row makes reclaim replay-idempotent — same row, same delay,
+    from the row makes reclaim replay-idempotent, same row, same delay,
     every path.  The fleet spread random jitter buys is preserved:
     distinct ids hash to distinct fractions, so a mass-expired cohort
     still arrives across the jitter band instead of at one synchronised
@@ -259,7 +259,7 @@ def _raw_backoff_seconds(
     backoff: Literal["exponential", "linear", "fixed"],
     attempt: int,
 ) -> float:
-    """The unjittered curve value for *attempt* — the single Python
+    """The unjittered curve value for *attempt*, the single Python
     implementation of ``_RECLAIM_RAW_BACKOFF_SQL``'s three-way branch,
     shared by :func:`compute_backoff` and :func:`_compute_reclaim_backoff`.
 
@@ -278,7 +278,7 @@ def _raw_backoff_seconds(
 
 def _jittered_seconds(raw_s: float, jitter: float, source: random.Random) -> float:
     """The one implementation of the multiplicative-symmetric jitter
-    multiplication — every delay this package spreads shares it.
+    multiplication, every delay this package spreads shares it.
 
     ``raw * source.uniform(1 - jitter, 1 + jitter)``, floored at zero.
     """
@@ -288,22 +288,22 @@ def _jittered_seconds(raw_s: float, jitter: float, source: random.Random) -> flo
 def _capped_jitter_band(raw_s: float, cap_s: float, jitter: float) -> tuple[float, float]:
     """The jitter band ``[raw·(1-j), raw·(1+j)]`` fitted under *cap_s*.
 
-    The cap bounds the BAND, not the drawn value. Clipping the drawn value
-    (``min(cap, raw·U(1-j, 1+j))``) collapses the upper half of a saturated
-    row's band onto ``cap`` exactly, so about half of any cohort at the cap
-    — the default exponential policy from attempt 11, every ``fixed`` or
-    ``linear`` policy whose base meets the cap, every reclaimed cohort at
-    the ceiling — comes due at the same instant: the thundering herd
-    jitter exists to prevent, on the retries most likely to be fleet-wide.
-    Fitting the band first (``raw`` clamped to the cap, then the band's
-    upper edge clamped to it) keeps the draw uniform over what remains —
-    ``[cap·(1-j), cap]`` for a saturated row — with the documented bounds
-    ``0 ≤ delay ≤ cap`` intact and ``jitter=0`` still the identity.
+     The cap bounds the BAND, not the drawn value. Clipping the drawn value
+     (``min(cap, raw·U(1-j, 1+j))``) collapses the upper half of a saturated
+     row's band onto ``cap`` exactly, so about half of any cohort at the cap
+    , the default exponential policy from attempt 11, every ``fixed`` or
+     ``linear`` policy whose base meets the cap, every reclaimed cohort at
+     the ceiling, comes due at the same instant: the thundering herd
+     jitter exists to prevent, on the retries most likely to be fleet-wide.
+     Fitting the band first (``raw`` clamped to the cap, then the band's
+     upper edge clamped to it) keeps the draw uniform over what remains ,
+     ``[cap·(1-j), cap]`` for a saturated row, with the documented bounds
+     ``0 ≤ delay ≤ cap`` intact and ``jitter=0`` still the identity.
 
-    Shared by :func:`compute_backoff` (RNG draw) and
-    :func:`_compute_reclaim_backoff` (row-derived fraction); the SQL twin
-    ``_RECLAIM_DELAY_SQL`` evaluates the same expressions in the same
-    operand order, so the reclaim delays agree bit for bit.
+     Shared by :func:`compute_backoff` (RNG draw) and
+     :func:`_compute_reclaim_backoff` (row-derived fraction); the SQL twin
+     ``_RECLAIM_DELAY_SQL`` evaluates the same expressions in the same
+     operand order, so the reclaim delays agree bit for bit.
     """
     capped_raw = min(cap_s, raw_s)
     lower = capped_raw * (1.0 - jitter)
@@ -330,7 +330,7 @@ def apply_jitter(
 
     Same formula as :func:`compute_backoff` (see it for why
     multiplicative-symmetric, not Full Jitter), for delays whose raw value
-    comes from outside the policy's own backoff curve — an admission
+    comes from outside the policy's own backoff curve, an admission
     denial's ``retry_after``. Every fielder of the same raw hint in one
     round would otherwise re-attempt in lockstep (same token deficit, same
     lease horizon), so the hint is spread across the band exactly as
@@ -356,7 +356,7 @@ def compute_backoff(
 ) -> timedelta:
     """Compute the backoff delay for a given attempt (1-indexed).
 
-    formula: multiplicative-symmetric jitter —
+    formula: multiplicative-symmetric jitter ,
       delay = raw * rng.uniform(1 - jitter, 1 + jitter)
     with the band fitted under the cap before the draw (see
     :func:`_capped_jitter_band`), so a saturated row spreads over
@@ -367,10 +367,10 @@ def compute_backoff(
     AWS Architecture Blog, and the AWS SDKs' published jitter debate.
 
     ``max_retry_backoff`` is the global ceiling applied *after*
-    ``policy.cap`` — i.e. ``effective_cap = min(policy.cap, max_retry_backoff)``.
+    ``policy.cap``, i.e. ``effective_cap = min(policy.cap, max_retry_backoff)``.
     The global cap prevents a misconfigured per-actor
     ``RetryPolicy(cap=timedelta(days=365))`` from stranding jobs for a year
-    with no operator visibility — a defensive layer beyond the policy's own cap.
+    with no operator visibility, a defensive layer beyond the policy's own cap.
     Callers that hold ``WorkerSettings`` should pass
     ``settings.max_retry_backoff``; the default 24 h matches
     ``WorkerSettings.max_retry_backoff``.
@@ -408,15 +408,15 @@ def _compute_reclaim_backoff(  # pyright: ignore[reportUnusedFunction]  # Why: c
     same ``min(policy.cap, max_retry_backoff)`` effective ceiling, same
     band fitted under that ceiling (:func:`_capped_jitter_band`) and the
     same ``lower + (upper - lower) * f`` draw evaluated in the SQL's operand
-    order, so the two agree bit for bit — pinned by
+    order, so the two agree bit for bit, pinned by
     ``tests/test_reclaim_backoff_policy_parity.py``.  The jitter is derived
     from the row, never drawn: the leader's sweep and a partitioned worker's
     isolate_self can each transition the same row within one outage window,
-    and both must stamp the same delay (replay idempotence — see
+    and both must stamp the same delay (replay idempotence, see
     :func:`_reclaim_jitter_fraction` for the full rationale).
 
     Unlike :func:`compute_backoff` this never raises on ``attempt < 1``: the
-    sweep must not crash on a direct-construction row — the SQL floors the
+    sweep must not crash on a direct-construction row, the SQL floors the
     exponent (``GREATEST(j.attempt - 1, 0)``, mirrored by
     :func:`_raw_backoff_seconds`) and hashes the row's raw stamped attempt
     (``j.attempt::text``), so this function does the same rather than
@@ -454,7 +454,7 @@ class RetryOverride(BaseModel):
     Both fields are optional; ``None`` means "use the actor's static
     ``RetryPolicy``/computed backoff for this field." Returning a
     ``RetryOverride`` with only ``kind`` set lets one exception *type*
-    branch into different retry behaviour per occurrence — e.g. an HTTP
+    branch into different retry behaviour per occurrence, e.g. an HTTP
     429 response goes ``indefinite`` while a 404 response on the same
     exception type goes ``non_retryable``. Returning one with only
     ``delay`` set lets the actor honour a server-provided retry-after
@@ -463,16 +463,16 @@ class RetryOverride(BaseModel):
     ceiling so a malicious or malformed header cannot strand a job.
 
     A ``delay`` schedules the next attempt; it does not extend the job's
-    budget, in either dimension. It does not spare the attempt — the
+    budget, in either dimension. It does not spare the attempt, the
     retry still counts against ``max_attempts`` unless ``kind`` is also
     set, or the actor raises ``RetryAfter(consume_budget=False)``. And it
     does not move the job's ``schedule_to_close``: an upstream under
     pressure will happily hand back an hour, and if the delay puts the
     next attempt past that deadline the deadline sweep fails the job
     terminally before any worker looks at it. ``max_retry_backoff`` does
-    not protect against this — the two bounds mean different things, one
+    not protect against this, the two bounds mean different things, one
     stopping a single absurd delay and the other stating how long the
-    caller still wants the result — and where they disagree
+    caller still wants the result, and where they disagree
     schedule-to-close wins.
     """
 
@@ -489,7 +489,7 @@ class RetryOverride(BaseModel):
             "retrying, or raise RetryAfter(delay, consume_budget=False) from "
             "the actor body for a known-duration wait that spends no budget. "
             "Clamped by max_retry_backoff, but NOT reconciled with "
-            "schedule_to_close — a delay landing past that deadline fails "
+            "schedule_to_close, a delay landing past that deadline fails "
             "the job terminally through the deadline path."
         ),
     )
@@ -507,7 +507,7 @@ type RetryClassifierHook = Callable[[BaseException, int], RetryOverride | None]
 
 ``non_retryable_exceptions`` and the built-in :class:`PayloadValidationError`
 check classify by exception *type* alone. Some integrations need finer
-granularity — a single exception type (e.g. an HTTP client's status-code
+granularity, a single exception type (e.g. an HTTP client's status-code
 error) that should retry indefinitely on a 429, fail immediately on a 404,
 and use a bounded transient budget on a 5xx, or a server-provided
 ``Retry-After`` value that should drive the actual backoff delay. Register
@@ -519,14 +519,14 @@ Invoked with ``(exception, attempt)`` for every exception that survives the
 :class:`RetryOverride` to refine ``kind`` and/or ``delay`` for this specific
 occurrence. Exceptions raised by the hook itself are caught and logged by
 :func:`decide_after_failure`; classification falls back to the static
-policy in that case — a broken hook can never crash the retry pipeline.
+policy in that case, a broken hook can never crash the retry pipeline.
 """
 
 
 class RetryClassifier:
     """Pure classifier that maps an exception + policy to a RetryDecision.
 
-    The classifier decides retry-*kind* and backoff only — it is
+    The classifier decides retry-*kind* and backoff only, it is
     deliberately NOT a deadline arbiter.  ``schedule_to_close`` is
     arbitrated by the SQL guard in ``mark_failed_or_retry`` (single
     arbiter, the backend's clock); a Python-side pre-check computed from
@@ -550,8 +550,8 @@ class RetryClassifier:
         # The monopolisation floor the deferral arms apply at their writes
         # (mark_snoozed / the non-consuming retry-after arm, via
         # MIN_DEFERRAL_INTERVAL): a failure-retry delay below it requeues
-        # the job at the head of dispatch order — one claim/run/fail round
-        # trip per cycle holding a worker slot — and an ``indefinite``
+        # the job at the head of dispatch order, one claim/run/fail round
+        # trip per cycle holding a worker slot, and an ``indefinite``
         # policy has no attempt ceiling to bound the cycle count. A
         # zero/near-zero ``base`` (or a zero Retry-After override)
         # degenerates the curve to exactly that, so the decision itself
@@ -576,7 +576,7 @@ class RetryClassifier:
         if isinstance(exception, PayloadValidationError):
             return Fail(error_class="PayloadValidationError", retryable=False)
 
-        # Why: the actor already ran to completion — the failure is the size
+        # Why: the actor already ran to completion, the failure is the size
         # of the value it returned, which a re-run reproduces exactly. Left
         # retryable, a single oversized result burns every remaining attempt
         # (re-running the actor's side effects each time) before landing in
@@ -585,7 +585,7 @@ class RetryClassifier:
             return Fail(error_class="ResultTooLarge", retryable=False)
 
         # Why the same contract for the encoding half: the actor already
-        # ran to completion — the value it returned is one no UTF-8 JSON
+        # ran to completion, the value it returned is one no UTF-8 JSON
         # encoding accepts (a lone surrogate, a non-str dict key), and a
         # re-run reproduces it exactly. Left retryable, a single
         # unencodable result burns every remaining attempt re-running the
@@ -646,7 +646,7 @@ Why ``JobRow`` (not generic ``JobRow[P]``): the hook is dispatched from
 the consumer loop, which knows only the raw ``JobRow`` with
 ``payload: dict[str, object]``. Making the hook generic over ``P``
 would require the consumer to track the original ``ActorRef`` for every
-in-flight job — possible, but it propagates type parameters into the
+in-flight job, possible, but it propagates type parameters into the
 registry for negligible benefit. Hooks that need a typed payload
 re-validate via ``actor_ref.payload_type.model_validate(job_row.payload)``.
 This is the documented payload-erasure boundary; see
@@ -675,7 +675,7 @@ reading ``status`` sees ``cancelled``.
 
 The hook fires only for a job that reached a worker and was cancelled
 while running. A job cancelled while still ``pending`` or ``scheduled``
-never enters a worker, so no hook of any kind can run for it — that
+never enters a worker, so no hook of any kind can run for it, that
 bookkeeping stays with whoever issued the cancel.
 """
 
@@ -731,7 +731,7 @@ def decide_after_failure(
     Reconstructs a RetryPolicy from row-stored max_attempts / retry_kind
     (authoritative) combined with live-registration scalars
     (backoff, base, cap, jitter, time_budget) that are not stored on the
-    row — reusing the registered policy object directly when the row
+    row, reusing the registered policy object directly when the row
     agrees with it and the registered policy satisfies the cap>=base
     invariant, so the common no-drift path skips per-failure pydantic
     validation. Any row/registration mismatch falls through to the full
@@ -743,7 +743,7 @@ def decide_after_failure(
     ``compute_backoff``. The consumer passes
     ``settings.max_retry_backoff`` so the knob is operator-controlled.
 
-    No clock input: the classifier decides retry-kind and backoff only —
+    No clock input: the classifier decides retry-kind and backoff only ,
     the ``schedule_to_close`` deadline is arbitrated server-side by
     ``mark_failed_or_retry`` (see RetryClassifier's docstring).
     """
@@ -778,7 +778,7 @@ def decide_after_failure(
             # straight into the fail-loud constructor would crash the
             # consumer's failure path on a row the system itself wrote; the
             # clamp's only semantic cost is the single classification
-            # boundary at the very top of the smallint domain — strictly
+            # boundary at the very top of the smallint domain, strictly
             # better than turning a legal row state into a ValidationError.
             max_attempts=min(job_state.max_attempts, MAX_ENQUEUABLE_MAX_ATTEMPTS),
             backoff=registered.backoff,
@@ -979,7 +979,7 @@ async def safe_mark_failed_or_retry(
     Returns the persisted JobRow on success, or None on ownership mismatch
     (signals the caller to skip the on_retry_exhausted hook). *attempt* is
     the attempt-identity epoch threaded from the handler's job-row
-    snapshot — see ``Backend.mark_failed_or_retry``; a fenced-out epoch
+    snapshot, see ``Backend.mark_failed_or_retry``; a fenced-out epoch
     surfaces here as the same None a worker-fence miss produces.
     """
     logger: structlog.stdlib.BoundLogger = (

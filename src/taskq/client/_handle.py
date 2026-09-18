@@ -1,4 +1,4 @@
-"""Generic :class:`JobHandle` — typed handle to an enqueued job.
+"""Generic :class:`JobHandle`, typed handle to an enqueued job.
 
 Carries a :class:`pydantic.TypeAdapter` for the actor's return type
 ``R``, which is the mechanism that prevents ``R`` from being a phantom
@@ -63,7 +63,7 @@ class JobHandle[R: BaseModel | None]:
     Why ``result_adapter: TypeAdapter[R]`` is a constructor arg: pyright
     only infers ``R`` for a generic class when the type parameter
     appears in at least one field or method signature. The adapter is
-    that field — without it ``R`` would be phantom and inference would
+    that field, without it ``R`` would be phantom and inference would
     silently fall back to ``Unknown``.
     """
 
@@ -103,8 +103,8 @@ class JobHandle[R: BaseModel | None]:
         """This enqueue deduplicated onto a job that had already finished.
 
         ``was_existing`` cannot carry this on its own: it is ``True`` for
-        every dedup, and the overwhelmingly common dedup — onto a live
-        pending or running job — is the mechanism working, the whole
+        every dedup, and the overwhelmingly common dedup, onto a live
+        pending or running job, is the mechanism working, the whole
         point of an identity key. The case that needs a signal is the
         rare one where the match was a job that already reached a
         terminal state: no worker will pick that work up, and with a long
@@ -113,7 +113,7 @@ class JobHandle[R: BaseModel | None]:
         success until the work was needed.
 
         Decided from the row the creating call handed back, so learning
-        this costs no second round trip — and frozen there rather than
+        this costs no second round trip, and frozen there rather than
         re-read from the live row, because it is a verdict about the
         enqueue, not about the job's status now: a dedup onto a running
         job that later finishes was never a strand. It pairs with the
@@ -138,10 +138,10 @@ class JobHandle[R: BaseModel | None]:
         """The last :class:`JobRow` this handle observed.
 
         Seeded at construction with the row the creating call fetched,
-        and advanced by every successful row fetch through the handle —
+        and advanced by every successful row fetch through the handle ,
         :meth:`refresh`, :meth:`status`, and :meth:`wait`'s polling loop
         each record the row they just read. :meth:`progress_stream`
-        does not advance it — its Redis path fetches no rows, and
+        does not advance it, its Redis path fetches no rows, and
         advancing only on the PG fallback would make the semantics
         backend-dependent. Reading the property costs no backend round
         trip: ``handle = await tq.get(id)`` followed by ``handle.row``
@@ -160,15 +160,15 @@ class JobHandle[R: BaseModel | None]:
     def _observe(self, row: JobRow) -> None:
         """Record *row* as the last row this handle observed (:attr:`row`).
 
-        Why a named seam instead of bare ``self._row = row`` at each
-        fetch site: the assignment is a dead store from the fetch
-        method's own perspective, so an un-named one reads as removable.
-        Every successful row fetch through the handle goes through here
-        — that single rule is what ``row``'s last-observed semantics are
-        built on. :meth:`progress_stream`'s internal polls are
-        deliberately outside it: its Redis path fetches no rows, and
-        advancing only on the PG fallback would make ``row``'s
-        semantics backend-dependent.
+         Why a named seam instead of bare ``self._row = row`` at each
+         fetch site: the assignment is a dead store from the fetch
+         method's own perspective, so an un-named one reads as removable.
+         Every successful row fetch through the handle goes through here
+        , that single rule is what ``row``'s last-observed semantics are
+         built on. :meth:`progress_stream`'s internal polls are
+         deliberately outside it: its Redis path fetches no rows, and
+         advancing only on the PG fallback would make ``row``'s
+         semantics backend-dependent.
         """
         self._row = row
 
@@ -202,7 +202,7 @@ class JobHandle[R: BaseModel | None]:
 
         Useful for callers that want full row state (timestamps,
         attempt counts, error metadata) without going through
-        :meth:`wait`. Does not block on terminal state — returns the
+        :meth:`wait`. Does not block on terminal state, returns the
         current row whatever its status. Advances :attr:`row` to the
         fetched row, so after a refresh ``handle.row`` and the return
         value are the same row.
@@ -261,9 +261,9 @@ class JobHandle[R: BaseModel | None]:
         """Block until the job reaches a terminal status, then return ``R``.
 
         Returns the actor's return value, validated through
-        :attr:`result_adapter`. The result type is ``R`` exactly —
+        :attr:`result_adapter`. The result type is ``R`` exactly ,
         never ``R | None``. Missing or failed results raise. Advances
-        :attr:`row` to each row the polling loop fetches — on return,
+        :attr:`row` to each row the polling loop fetches, on return,
         the terminal row the result was extracted from.
 
         Raises:
@@ -305,8 +305,8 @@ class JobHandle[R: BaseModel | None]:
 
         Why the fetch is bounded and not merely the gaps between polls:
         ``backend.get`` is a wait on something outside the process, and a
-        fetch that wedges — a pool acquire with no timeout of its own, a
-        black-holed connection, a hung custom backend — would otherwise
+        fetch that wedges, a pool acquire with no timeout of its own, a
+        black-holed connection, a hung custom backend, would otherwise
         park :meth:`wait` inside the fetch while the caller's deadline
         expires unenforced. :func:`asyncio.wait_for` cancels the wedged
         fetch at the deadline and raises the ``TimeoutError`` :meth:`wait`
@@ -348,17 +348,17 @@ class JobHandle[R: BaseModel | None]:
         one.
 
         Raises :class:`NotImplementedError` when the in-memory backend is
-        detected — the in-memory backend does not support pub/sub — and
+        detected, the in-memory backend does not support pub/sub, and
         :class:`~taskq.exceptions.StreamUnavailable` when the Postgres poll
         could not re-read the row for 30 s straight.
 
-        Does not advance :attr:`row` — the Redis path fetches no rows,
+        Does not advance :attr:`row`, the Redis path fetches no rows,
         and advancing only on the PG fallback would make the semantics
         backend-dependent.
 
         Yields events until a ``terminal=True`` event is produced.
         """
-        from taskq.testing.in_memory import InMemoryBackend  # lazy — test-only dep
+        from taskq.testing.in_memory import InMemoryBackend  # lazy, test-only dep
 
         if isinstance(self._backend, InMemoryBackend):
             raise NotImplementedError(

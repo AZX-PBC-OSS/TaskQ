@@ -9,7 +9,7 @@ participates in the DI dep-edge graph automatically because its
 Also registers the resolved :class:`RateLimitRegistry` instance as a
 LOOP-scope value so the consumer can resolve it at dispatch time.  When
 the module singleton is resolved (the default), the DI-registered
-instance and the singleton are the same object — callers that import
+instance and the singleton are the same object, callers that import
 the singleton directly see the same state as DI-resolved consumers.
 """
 
@@ -54,7 +54,7 @@ async def get_redis_pool(
         yield client
     finally:
         # Why bounded: this close runs on the worker exit stack, which unwinds
-        # each teardown bare — an unbounded close here is a teardown tail
+        # each teardown bare, an unbounded close here is a teardown tail
         # outside the accounted budget. One close bound, one mental model:
         # same CLOSE_TIMEOUT_SECS module-global seam as every other
         # TaskQ-initiated redis close (taskq._close; read at call time so
@@ -89,12 +89,12 @@ def register_rate_limit_registry(
 
     Registers the given :class:`RateLimitRegistry` as a ``Scope.LOOP`` value
     so it is available at dispatch time via DI resolution.  Skips when a
-    provider is already registered — a user pre-registered LOOP-scope value
+    provider is already registered, a user pre-registered LOOP-scope value
     provider wins (bootstrap resolution rule 2); after the bootstrap
     kind/scope checks the DI-cached instance and the bootstrap
     instance are provably the same object.  When the module singleton is
     resolved (the default), the DI-registered instance and
-    :data:`taskq.ratelimit.registry.registry` are the same object — both
+    :data:`taskq.ratelimit.registry.registry` are the same object, both
     paths observe identical state.
     """
     if di_registry.has_provider(RateLimitRegistry):

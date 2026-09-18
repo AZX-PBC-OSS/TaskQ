@@ -5,28 +5,28 @@ from __future__ import annotations
 Blueprint anchor:  Defines fixtures that downstream tests
 consume:
 
-- **memory_jobs** — function-scoped, yields a fresh ``InMemoryBackend``.
-- **jobs_app** — function-scoped, opens ``WorkerDeps`` + ``PostgresBackend``
+- **memory_jobs**, function-scoped, yields a fresh ``InMemoryBackend``.
+- **jobs_app**, function-scoped, opens ``WorkerDeps`` + ``PostgresBackend``
   against the database named by the ``pg_dsn`` fixture.
-- **actor_runner** — function-scoped, yields a callable that runs an actor
+- **actor_runner**, function-scoped, yields a callable that runs an actor
   function with a synthetic ``JobContext``.
-- **backend_pair** — function-scoped, parametrised ``["memory", "pg"]``,
+- **backend_pair**, function-scoped, parametrised ``["memory", "pg"]``,
   yields a single ``Backend`` instance per param id.
-- **module_pg_schema** — module-scoped, creates a per-file PG schema,
+- **module_pg_schema**, module-scoped, creates a per-file PG schema,
   applies migrations, seeds default data.  Drops the schema on module
   teardown.
-- **module_redis_url** — module-scoped, assigns a unique Redis DB per
+- **module_redis_url**, module-scoped, assigns a unique Redis DB per
   test module via a monotonic per-process counter (never reused).  FLUSHDB
   at setup AND again on module teardown.
-- **clean_pg_conn** — function-scoped, truncates all tables (FK-safe
+- **clean_pg_conn**, function-scoped, truncates all tables (FK-safe
   CASCADE) then re-seeds default data within the module's PG schema.
   Returns a clean ``asyncpg.Connection``.
-- **clean_jobs_app** — function-scoped, same truncate+seed as
+- **clean_jobs_app**, function-scoped, same truncate+seed as
   ``clean_pg_conn``, then opens ``WorkerDeps`` + ``PostgresBackend``
   against the module's schema.
-- **clean_redis_url** — function-scoped, ``FLUSHDB`` on the module's
+- **clean_redis_url**, function-scoped, ``FLUSHDB`` on the module's
   Redis DB, returns the clean URL.
-- **clean_redis_client** — function-scoped, returns a fresh
+- **clean_redis_client**, function-scoped, returns a fresh
   ``redis.asyncio.Redis`` client connected to the module's DB.
 
 These fixtures test at the Backend level (``write_cancel_request``), not
@@ -39,7 +39,7 @@ depending on ``JobsClient``.
 Consumer contracts
 ------------------
 **PG fixtures need a consumer-provided ``pg_dsn`` fixture.** The name is
-part of the contract — ``jobs_app``, ``backend_pair``, ``module_pg_schema``
+part of the contract, ``jobs_app``, ``backend_pair``, ``module_pg_schema``
 (and everything built on them) request it by name. Minimum scope is
 ``module``; it must point at a PostgreSQL cluster this test run owns
 EXCLUSIVELY: schema names are stable across runs (hashes of module path /
@@ -66,20 +66,20 @@ would let one consumer's FLUSHDB wipe another's mid-run state). Exhaustion
 raises ``RuntimeError``.
 
 **Crash cleanup.** The shared Postgres and Dragonfly containers belong to
-ONE pytest invocation — every xdist worker of it shares them, and no other
+ONE pytest invocation, every xdist worker of it shares them, and no other
 invocation, of this repo or any other, can find or reuse them (per-invocation
-state dir — :func:`taskq.testing._shared_containers.invocation_state_dir`;
+state dir, :func:`taskq.testing._shared_containers.invocation_state_dir`;
 references tracked by live holder pids in a per-invocation registry under a
-filelock, containers pid-labelled, with a stale-leftover sweep on startup —
+filelock, containers pid-labelled, with a stale-leftover sweep on startup ,
 see :mod:`taskq.testing._shared_containers`); Ryuk is disabled for them, so
 crash cleanup relies on the pid-ownership sweep rather than the sidecar.
 Because every schema/DB identifier is per-run unique, anything that does
-survive is a resource-only leak — it can never collide with a future run's
+survive is a resource-only leak, it can never collide with a future run's
 names.
 
 This is the only file in ``taskq.testing`` (besides the internal
 :mod:`taskq.testing._shared_containers` machinery it uses) that may import
-asyncpg, testcontainers, docker, filelock, and pytest — and only inside the
+asyncpg, testcontainers, docker, filelock, and pytest, and only inside the
 fixture definitions. ``InMemoryBackend`` and ``FakeClock`` modules remain
 stdlib-only.
 """
@@ -221,7 +221,7 @@ async def memory_jobs() -> AsyncIterator[InMemoryBackend]:
     """Yield a fresh ``InMemoryBackend`` with a ``FakeClock`` starting at
     ``datetime(2025, 1, 1, 0, 0, 0, tzinfo=UTC)``.  Default cancellation
     and cleanup grace from ``InMemoryBackend.__init__`` (30s each).
-    No teardown beyond GC (fully isolated per fixture instance — each call
+    No teardown beyond GC (fully isolated per fixture instance, each call
     constructs a new backend and clock; nothing is shared at module level).
     """
     clock = FakeClock(start=datetime(2025, 1, 1, tzinfo=UTC))
@@ -262,7 +262,7 @@ def actor_runner() -> ActorRunnerCallable:
         evt = cancel_event or asyncio.Event()
         backend.register_cancel_event(jid, evt)
 
-        # Coerce arbitrary payload shapes into BaseModel — the production
+        # Coerce arbitrary payload shapes into BaseModel, the production
         # JobContext requires P: BaseModel. Real test payloads (BaseModel
         # instances) pass through; raw dicts and other shapes get wrapped
         # in the permissive PassthroughPayload (extra="allow").
@@ -341,7 +341,7 @@ async def _open_pg_backend(
     from taskq.worker.deps import open_worker_deps
 
     settings = WorkerSettings.load_from_dict(make_integration_settings_dict(pg_dsn))
-    # Override schema name — make_integration_settings_dict defaults to a
+    # Override schema name, make_integration_settings_dict defaults to a
     # per-call unique name, but these fixtures manage the schema lifecycle
     # themselves (drop/migrate/seed) under a caller-chosen name.
     settings.schema_name = schema_name
@@ -355,7 +355,7 @@ async def _open_pg_backend(
     finally:
         await conn.close()
 
-    # 3. DSN narrowing — direct DSN is guaranteed set after post_load
+    # 3. DSN narrowing, direct DSN is guaranteed set after post_load
     assert settings.pg_dsn_direct is not None  # post-load guarantee
 
     # 4. Open WorkerDeps via AsyncExitStack for proper LIFO teardown.
@@ -404,7 +404,7 @@ async def _open_two_pg_workers(  # type: ignore[reportUnusedFunction]  # Why: mo
     Each pod gets an independent ``WorkerDeps`` + ``PostgresBackend``
     with its own pools, ``leader_conn``, ``is_leader`` event, and
     ``worker_id``. Both pods share the same migrated schema. The helper
-    does NOT start the leader loops — callers construct
+    does NOT start the leader loops, callers construct
     ``MaintenanceLeader`` themselves with different initial states.
 
     Teardown is LIFO: per-pod ``AsyncExitStack`` pools close first,
@@ -473,7 +473,7 @@ async def _open_two_pg_workers(  # type: ignore[reportUnusedFunction]  # Why: mo
         raise
 
     try:
-        # Create worker rows (both must exist before leader UPSERT — FK constraint)
+        # Create worker rows (both must exist before leader UPSERT, FK constraint)
         async with deps_a.dispatcher_pool.acquire() as conn_a:
             await _create_worker(conn_a, settings.schema_name, worker_id_a)
         async with deps_b.dispatcher_pool.acquire() as conn_b:
@@ -512,14 +512,14 @@ async def jobs_app(pg_dsn: str, request: pytest.FixtureRequest) -> AsyncIterator
     database named by the consumer-provided ``pg_dsn`` fixture.
 
     Access the fields as ``jobs_app.deps`` and ``jobs_app.backend`` instead
-    of unpacking — the named-tuple interface is clearer and type-safe.
+    of unpacking, the named-tuple interface is clearer and type-safe.
 
     Per-test isolation: drops the schema CASCADE before each test (schema
     name is hashed from the test's own node id via
     :func:`_schema_name_from_test`, so distinct tests never share a schema),
     applies migrations, opens pools, constructs the backend.  Teardown via
     ``AsyncExitStack`` unwind closes pools; the schema is dropped at the
-    next invocation's setup for the same test — same pattern as ``pg_conn``.
+    next invocation's setup for the same test, same pattern as ``pg_conn``.
     """
     stack, deps, backend = await _open_pg_backend(
         pg_dsn, schema_name=_schema_name_from_test(request)
@@ -576,13 +576,13 @@ async def backend_pair(request: pytest.FixtureRequest) -> AsyncIterator[Backend]
 # ── Redis container fixtures ───────────────────────────────────────────────
 
 # Dragonfly image and startup flags live in ``taskq.testing._shared_containers``
-# (``DRAGONFLY_IMAGE``, ``DRAGONFLY_RESOURCE_FLAGS``) — the single source of truth
+# (``DRAGONFLY_IMAGE``, ``DRAGONFLY_RESOURCE_FLAGS``), the single source of truth
 # shared by the shared-session pair and the disposable killable container below;
 # see that module for the pinning and resource-sizing rationale.
 
 
 class RedisContainerLike(Protocol):
-    """The ``RedisContainer`` surface ``redis_url_for`` needs — structural, so both
+    """The ``RedisContainer`` surface ``redis_url_for`` needs, structural, so both
     the real testcontainers object (``killable_redis_container``) and the shared-pair
     shim (``redis_container``) satisfy it."""
 
@@ -595,7 +595,7 @@ class RedisContainerLike(Protocol):
 class _RedisContainerShim:
     """Minimal shim matching the interface ``redis_url_for`` needs:
     ``get_container_host_ip`` and ``get_exposed_port``. Wraps the SHARED Dragonfly
-    (one container per pytest invocation, shared by every xdist worker of it — see
+    (one container per pytest invocation, shared by every xdist worker of it, see
     :mod:`taskq.testing._shared_containers`) so tests that take ``redis_container``
     as a fixture parameter work without starting a per-worker container.
     ``state_dir`` carries the invocation's state directory so the logical-DB
@@ -614,21 +614,21 @@ class _RedisContainerShim:
         # testcontainers container object, whose callers ask for the host
         # mapping of a given container port. The shared container
         # publishes exactly one port, already resolved into self.port, so
-        # the lookup is constant — but the parameter must stay for callers
+        # the lookup is constant, but the parameter must stay for callers
         # written against the real testcontainers interface.
         return self.port
 
 
 @pytest.fixture(scope="session")
 def redis_container(tmp_path_factory: pytest.TempPathFactory) -> Iterator[_RedisContainerShim]:
-    """One shared Dragonfly (Redis-compatible) container per pytest invocation —
+    """One shared Dragonfly (Redis-compatible) container per pytest invocation ,
     every xdist worker of it, and no other invocation of any repo.
 
     Backs onto :func:`taskq.testing._shared_containers.shared_service_pair` (file
-    lock + per-invocation holder registry under the invocation's state dir — see
+    lock + per-invocation holder registry under the invocation's state dir, see
     :func:`taskq.testing._shared_containers.invocation_state_dir`): the first
-    worker to take the lock boots the pair (``--dbnum 1024`` so every consumer —
-    module or test function, across ALL workers of the invocation — gets its own
+    worker to take the lock boots the pair (``--dbnum 1024`` so every consumer ,
+    module or test function, across ALL workers of the invocation, gets its own
     logical DB; sharing would let one consumer's FLUSHDB wipe another's mid-run
     state); later workers reuse it; the last worker to finish removes it. The
     shim exposes ``get_container_host_ip`` / ``get_exposed_port`` so
@@ -647,11 +647,11 @@ def redis_container(tmp_path_factory: pytest.TempPathFactory) -> Iterator[_Redis
 def killable_redis_container() -> Iterator[RedisContainer]:
     """Function-scoped disposable Dragonfly for chaos tests that stop/restart Redis.
 
-    Chaos tests must NEVER stop the shared container (``redis_container``) —
+    Chaos tests must NEVER stop the shared container (``redis_container``) ,
     every worker of the run shares it, and a slow restart leaks failures into
     unrelated tests. Each kill test gets its own container (~1s boot). The
     ownership labels (``creator_labels``) keep a crashed run's leftovers
-    sweepable — Ryuk is disabled process-wide by the shared-container machinery
+    sweepable, Ryuk is disabled process-wide by the shared-container machinery
     (see :mod:`taskq.testing._shared_containers`), so labeling is what lets the
     next run's stale sweep remove these once their owner pids are dead.
     Skips with a reason (never errors) when the Docker daemon is unreachable.
@@ -670,7 +670,7 @@ def killable_redis_container() -> Iterator[RedisContainer]:
 def redis_url_for(container: RedisContainerLike, db: int = 0) -> str:
     """Build a ``redis://host:port/{db}`` URL for *container*.
 
-    Accepts anything with the ``RedisContainer`` host/port surface — the real
+    Accepts anything with the ``RedisContainer`` host/port surface, the real
     testcontainers object or the shared-pair shim.
     """
     host = container.get_container_host_ip()
@@ -680,7 +680,7 @@ def redis_url_for(container: RedisContainerLike, db: int = 0) -> str:
 
 @pytest.fixture
 def redis_url(redis_container: _RedisContainerShim) -> str:
-    """Per-test Redis URL with a UNIQUE logical DB — a guaranteed clean slate.
+    """Per-test Redis URL with a UNIQUE logical DB, a guaranteed clean slate.
 
     Each test function gets its own DB (never reused within the invocation), so no
     setup/teardown flushing is needed and no two tests can observe each other's
@@ -696,7 +696,7 @@ def redis_url(redis_container: _RedisContainerShim) -> str:
 # One logical DB per consumer (test module OR test function) across EVERY xdist
 # worker of the invocation; the shared container runs --dbnum 1024. Allocation and
 # the never-reuse rule live in ``taskq.testing._shared_containers.next_redis_logical_db``
-# (file-backed under the pair's lock — a per-process counter would hand the SAME
+# (file-backed under the pair's lock, a per-process counter would hand the SAME
 # DB to different workers' consumers on the shared container).
 
 
@@ -716,9 +716,9 @@ def run_isolation_token() -> str:
     token in serial runs, ``master`` as a last-resort fallback (direct library
     use outside this repo's conftest).
 
-    The token's load-bearing job is WITHIN one invocation: the shared pair
+    The token's essential job is WITHIN one invocation: the shared pair
     serves every xdist worker of it, and two workers hashing the same module
-    or node id must not land the same database or schema on that one pair —
+    or node id must not land the same database or schema on that one pair ,
     each worker's ``DROP DATABASE ... WITH (FORCE)`` / ``DROP SCHEMA ... CASCADE``
     would kill the other's live pools mid-test.
 
@@ -729,7 +729,7 @@ def run_isolation_token() -> str:
     (:func:`taskq.testing._shared_containers.invocation_state_dir`), so two
     invocations' names can never land in one cluster. If that pair isolation
     ever regressed, per-invocation tokens would still keep the runs' names
-    distinct on whatever they ended up sharing — mutual clobbering could not
+    distinct on whatever they ended up sharing, mutual clobbering could not
     silently return.
     """
     token = os.environ.get(RUN_TOKEN_ENV_VAR)
@@ -743,7 +743,7 @@ def _schema_name_from_test(request: pytest.FixtureRequest) -> str:
 
     Used by function-scoped PG fixtures (``jobs_app``, ``backend_pair``)
     that must not share a schema across different tests within the same
-    xdist worker — the worker id alone is not a valid isolation key since
+    xdist worker, the worker id alone is not a valid isolation key since
     many test functions run sequentially within one worker process.  Hashed
     for the same 13-char PostgreSQL identifier / NOTIFY-channel budget as
     :func:`_schema_name_from_module`.
@@ -769,8 +769,8 @@ def _schema_name_from_module(request: pytest.FixtureRequest) -> str:
     module path (NOTIFY channels no longer constrain it: they embed a hash
     of the schema, not the schema).
 
-    The run token (see :func:`run_isolation_token`) — the xdist worker id
-    under xdist, the per-invocation token in serial runs — is incorporated
+    The run token (see :func:`run_isolation_token`), the xdist worker id
+    under xdist, the per-invocation token in serial runs, is incorporated
     into the hash input so that the same module never collides across
     parallel workers OR concurrent serial invocations.
     """
@@ -833,7 +833,7 @@ def module_redis_url(
     """Module-scoped Redis URL with a unique DB per test file.
 
     Assigns a unique Redis DB id (1-1023, never reused, unique across ALL
-    workers of the invocation — see ``_next_redis_db``) and returns
+    workers of the invocation, see ``_next_redis_db``) and returns
     ``redis://host:port/{db}``. FLUSHDB at setup (clean slate even after a
     crashed run) and again on teardown.
     """
@@ -888,7 +888,7 @@ async def module_jobs_app(module_pg_schema: ModulePgSchema) -> AsyncIterator[Job
 
     Pools are opened once per test module. Per-test isolation is handled by
     clean_jobs_app which truncates tables between tests against the same schema.
-    The backend instance is shared — callers should NOT cache or mutate backend
+    The backend instance is shared, callers should NOT cache or mutate backend
     state across test boundaries.
     """
     stack, deps, backend = await _open_pg_backend_on_schema(
@@ -931,7 +931,7 @@ async def worker_with_running_job(
 
     Yields ``(worker_id, job_id, conn)`` where *conn* is the same
     ``asyncpg.Connection`` provided by :func:`clean_pg_conn`.  The
-    connection lifecycle is managed by ``clean_pg_conn`` — this fixture
+    connection lifecycle is managed by ``clean_pg_conn``, this fixture
     only inserts the worker and job rows.
     """
     wid, jid = await create_workered_running_job(clean_pg_conn, module_pg_schema.schema_name)
@@ -945,7 +945,7 @@ async def _open_pg_backend_on_schema(
     """Open WorkerDeps + PostgresBackend on an already-migrated schema.
 
     Unlike :func:`_open_pg_backend`, this does NOT drop or recreate the
-    schema — the caller must handle truncation/reset via :func:`reset_schema`.
+    schema, the caller must handle truncation/reset via :func:`reset_schema`.
     """
     from taskq.backend.clock import SystemClock
     from taskq.backend.postgres import PostgresBackend

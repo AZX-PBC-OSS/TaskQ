@@ -19,7 +19,7 @@ _bearer_scheme = HTTPBearer(auto_error=False)
 def token_auth(expected_token: str) -> Callable[..., Any]:
     """Build a FastAPI dependency that validates a bearer token.
 
-    Raises :class:`ValueError` if *expected_token* is empty — an empty token
+    Raises :class:`ValueError` if *expected_token* is empty, an empty token
     would accept any request, which is a fail-open misconfiguration.
     """
     if not expected_token:

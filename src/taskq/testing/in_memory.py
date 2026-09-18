@@ -1,4 +1,4 @@
-"""InMemoryBackend — deterministic, single-threaded backend for tests.
+"""InMemoryBackend, deterministic, single-threaded backend for tests.
 
 The class owns storage and the Backend protocol method bodies (enqueue,
 dispatch, heartbeat, terminal writes, attempts, cancel signals, sweeps,
@@ -14,7 +14,7 @@ and dispatch (:mod:`taskq.testing._dispatch`) live in companion
 submodules; this module holds the cohesive core: ``__init__``, heartbeat,
 cancel signals, sweeps, and schedule CRUD.
 
-Single-threaded by contract — do not share across threads or event loops.
+Single-threaded by contract, do not share across threads or event loops.
 """
 
 import asyncio
@@ -188,7 +188,7 @@ if BACKEND_PROTOCOL_VERSION != _EXPECTED_PROTOCOL_VERSION:
     )
 
 
-# The lease the store stamps on a running row written without one — the
+# The lease the store stamps on a running row written without one, the
 # same lease ``run_until_drained`` dispatches with (``testing/_runner.py``)
 # and ``enqueue_and_dispatch_memory`` uses (``testing/jobs.py``): the
 # twin's canonical lock lease.
@@ -196,17 +196,17 @@ _STORE_STAMP_LEASE = timedelta(seconds=60)
 
 
 class _JobStore(dict[JobId, JobRow]):
-    """The twin's ``jobs`` table — the single choke point every row write shares.
+    """The twin's ``jobs`` table, the single choke point every row write shares.
 
-    Postgres has exactly one writer that moves a row to ``running`` — the
-    dispatch CTE — and it stamps ``lock_expires_at = clock_timestamp() +
+    Postgres has exactly one writer that moves a row to ``running``, the
+    dispatch CTE, and it stamps ``lock_expires_at = clock_timestamp() +
     lock_lease`` unconditionally (``backend/_dispatch_sql.py``), so a
     ``running`` row without a lease never exists there. The twin enforces
     the same invariant here: a ``running`` row stored without a lease gets
-    one stamped from the injected clock, so the lease-less running row —
+    one stamped from the injected clock, so the lease-less running row ,
     which the reclaim sweep's NULL guard (``lock_expires_at is not None``,
     the twin of PG's NULL-false ``lock_expires_at < bound``) can never
-    select, leaving it no reachable exit — is unrepresentable in the twin
+    select, leaving it no reachable exit, is unrepresentable in the twin
     too. Writers that carry their own lease (dispatch, heartbeat) are
     untouched: the stamp fires only for a lease-less ``running`` write.
     """
@@ -228,7 +228,7 @@ class InMemoryBackend:
     mutable state, no class-level caches.  Two ``InMemoryBackend`` instances
     created in the same test session are fully isolated.
 
-    Single-threaded by contract — do not share across threads or event loops.
+    Single-threaded by contract, do not share across threads or event loops.
     Intra-coroutine re-entry within a single event loop is acceptable;
     cross-thread use is a caller bug.
     """
@@ -270,7 +270,7 @@ class InMemoryBackend:
         # The (job, task) of the attempt run_until_drained is currently
         # executing, keyed by job id so only the abandon of the job
         # actually in flight can act on it. tick_cancel_polling's
-        # both-graces arm cancels it — the runner's mirror of production
+        # both-graces arm cancels it, the runner's mirror of production
         # phase 2's active.task.cancel(), so a non-cooperative attempt
         # cannot park the drain forever beside a row that already says
         # abandoned. None whenever no attempt is executing.
@@ -286,8 +286,8 @@ class InMemoryBackend:
         # is strictly increasing across rounds; a frozen FakeClock cannot
         # supply that, so the twin stamps with a per-backend tick
         # incremented once per CLAIMING dispatch round. Same-round winners
-        # share one tick and fall through to scheduled_at/id — exactly the
-        # tie shape PG's single statement_timestamp() produces — and an
+        # share one tick and fall through to scheduled_at/id, exactly the
+        # tie shape PG's single statement_timestamp() produces, and an
         # actor never claimed has no entry, mirroring NULL (sorts first).
         self._actor_claim_ticks: dict[str, int] = {}
         self._claim_tick: int = 0
@@ -778,7 +778,7 @@ class InMemoryBackend:
                 status="cancelled",
                 finished_at=now,
                 # Twin of cancel_pending_scheduled: the before-start origin
-                # marker goes on the ROW only — the state_change event
+                # marker goes on the ROW only, the state_change event
                 # detail keeps its {from_state, to_state} shape on both
                 # backends (the differential suite pins it exactly).
                 error_class=CANCEL_ORIGIN_PENDING,
@@ -830,7 +830,7 @@ class InMemoryBackend:
     # (the mirror of PG's server-side clock_timestamp() predicates).
     # Like the Postgres sweeps, one call processes at most batch_size
     # eligible rows; repeated calls drain.  The Backend protocol
-    # signature stays unchanged — the extra defaulted keyword-only
+    # signature stays unchanged, the extra defaulted keyword-only
     # parameter is structurally compatible with the protocol method.
 
     async def scheduled_to_pending(
@@ -941,7 +941,7 @@ class InMemoryBackend:
             consecutive_failures=0,
             next_fire_at=args.next_fire_at,
             # PG serialises metadata into jsonb at INSERT time and reads it
-            # back through loads — store the round-trip of the same
+            # back through loads, store the round-trip of the same
             # serialization, so a caller-held dict can never reach storage
             # by reference and values whose orjson encoding differs from
             # the Python object read back exactly as PG reads them.
@@ -990,7 +990,7 @@ class InMemoryBackend:
             updates["payload_factory"] = None
         if args.metadata is not None:
             # Same storage contract as create_schedule: the round-trip of
-            # the same serialization PG binds — no caller reference in
+            # the same serialization PG binds, no caller reference in
             # storage, PG's jsonb read-back values.
             updates["metadata"] = loads(dumps_jsonb_str(args.metadata))
         if args.consecutive_failures is not None:

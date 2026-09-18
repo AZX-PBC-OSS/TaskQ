@@ -11,10 +11,10 @@ Deviations from the original sketch:
   - ``orchestrate_shutdown`` takes no ``tg`` parameter.
   - ``ProcessScope``/``ThreadScope``/``LoopScope`` are bootstrapped inside
     ``open_worker_deps`` rather than before it (M3 single-process deployment
-    — process exit and deps exit are coterminal; see ``_main`` comment block).
+   , process exit and deps exit are coterminal; see ``_main`` comment block).
   - The ``_local_queue_seed`` keyword-only parameter is a test seam, not
     public API.
-  - ``local_queue`` maxsize uses ``max_concurrency`` (not ``batch_size`` —
+  - ``local_queue`` maxsize uses ``max_concurrency`` (not ``batch_size`` ,
     no ``batch_size`` field exists on ``WorkerSettings``).
 
 M1 stub consumers accept a ``stub_work_timeout`` keyword-only parameter
@@ -135,7 +135,7 @@ _POLL_JITTER_FRACTION: Final[float] = 0.1
 _CLAIM_COOLDOWN_SECONDS: Final[float] = 0.05
 """Floor between a claim round that came back short and the next one.
 
-A short round — fewer rows than asked, or none — says the backlog is
+A short round, fewer rows than asked, or none, says the backlog is
 drained or a peer won it; the triggers that keep arriving meanwhile (a
 schema-wide NOTIFY wakes every worker, every completion frees a slot) are
 folded into one round after this wait instead of each paying a full
@@ -148,16 +148,16 @@ settings surface is owned elsewhere and grows a knob only when a
 deployment shows it needs one.
 """
 
-_PRODUCER_RNG = random.Random(secrets.randbits(128))  # noqa: S311  # Why: random.Random is for timing jitter, not cryptography; seeded once from the OS entropy pool so two workers never share a jitter phase — same seeding pattern as retry.py's _production_rng.
+_PRODUCER_RNG = random.Random(secrets.randbits(128))  # noqa: S311  # Why: random.Random is for timing jitter, not cryptography; seeded once from the OS entropy pool so two workers never share a jitter phase, same seeding pattern as retry.py's _production_rng.
 
 
 def _jittered_poll_interval(interval: float, rng: random.Random) -> float:
-    """A producer wait — the fallback poll interval, or the claim cooldown —
+    """A producer wait, the fallback poll interval, or the claim cooldown ,
     with ±_POLL_JITTER_FRACTION jitter.
 
     Every producer in an idle fleet otherwise sleeps the same interval
     in phase, and any transient event (a GC pause, a network blip, a
-    coordinated restart — or one NOTIFY waking the whole fleet into the
+    coordinated restart, or one NOTIFY waking the whole fleet into the
     same cooldown) re-synchronizes them into periodic DB load spikes.
     Jittering the wait breaks that synchronization and spreads requests
     across time. The jitter is multiplicative-symmetric, the repo's
@@ -210,9 +210,9 @@ async def producer_loop(
     On each iteration the producer:
 
     1. Waits for a wake signal (NOTIFY-driven ``asyncio.Event``) or the
-       ``poll_interval`` fallback timer — whichever fires first.
+       ``poll_interval`` fallback timer, whichever fires first.
     2. Calls ``backend.dispatch_batch()`` to atomically claim up to the
-       worker's genuinely free slots — ``local_queue.maxsize -
+       worker's genuinely free slots, ``local_queue.maxsize -
        local_queue.qsize() - active_jobs.count()`` pending jobs
        (pending → running) using ``FOR UPDATE SKIP LOCKED``.
     3. Puts each returned :class:`JobRow` onto ``local_queue`` for the
@@ -223,8 +223,8 @@ async def producer_loop(
     round, so a burst of wakes or freed slots costs one round rather than
     one per trigger; a full round re-claims immediately.
 
-    Slot accounting (#229): a worker with ``max_concurrency`` slots may
-    hold at most that many rows locked at once — the claim sizes by the
+    Slot accounting: a worker with ``max_concurrency`` slots may
+    hold at most that many rows locked at once, the claim sizes by the
     slots actually free (queue emptiness minus jobs actively running),
     not by queue emptiness alone, which allowed up to 2x
     ``max_concurrency`` rows locked (a full local queue while every
@@ -235,13 +235,13 @@ async def producer_loop(
     uncounted for one scheduler step (bounded by the consumer count);
     the completion-side slot frees at the consumer's ``deregister``, and
     the wake the consumer sets there re-arms this producer the moment
-    accounting settles — no claim waits for the next poll tick.
+    accounting settles, no claim waits for the next poll tick.
 
     Exits cleanly when either ``shutdown_event`` or ``producer_stop_event``
     is set.
 
     ``slot_freed_event`` is set by the consumer loops at the two
-    slot-release points — when a ``local_queue.get()`` drains a queue
+    slot-release points, when a ``local_queue.get()`` drains a queue
     slot, and when a job's ``active_jobs`` registration ends; the
     bootstrap wires one shared event into this loop and every consumer.
     ``rng`` supplies the
@@ -280,7 +280,7 @@ async def producer_loop(
     # below: a producer that never claimed cannot hold a locked row, so
     # its exit owes the fleet no write (the common idle-shutdown shape).
     made_a_claim = False
-    # Monotonic deadline before which no claim round may start — armed by
+    # Monotonic deadline before which no claim round may start, armed by
     # a short round (see _CLAIM_COOLDOWN_SECONDS), so the triggers that
     # land while it runs (wakes, freed slots) coalesce into one round.
     claim_not_before = 0.0
@@ -306,24 +306,24 @@ async def producer_loop(
 
         while not (shutdown_event.is_set() or producer_stop_event.is_set()):
             deps.liveness.tick("producer", period=poll_interval)
-            # The worker's genuinely free slots (#229): every slot is
+            # The worker's genuinely free slots: every slot is
             # either empty, lent to a queued row (qsize), or occupied by
             # a running job (active_jobs). Sizing the claim by queue
             # emptiness alone counted a fully-busy worker's slots as
-            # free whenever its queue had drained — up to 2x
+            # free whenever its queue had drained, up to 2x
             # max_concurrency rows locked fleet-wide, 2x the reclaim
             # exposure on a crash, and pending work locked behind long
             # jobs while peer workers idled. The get()-to-register
             # window (a row taken from the queue but not yet in
             # active_jobs) is one scheduler step wide and bounded by the
-            # consumer count; the reverse — a row finished but not yet
-            # deregistered — delays only its own slot's re-claim until
+            # consumer count; the reverse, a row finished but not yet
+            # deregistered, delays only its own slot's re-claim until
             # the deregister-side wake, never a poll tick.
             available = local_queue.maxsize - local_queue.qsize() - deps.active_jobs.count()
             if available <= 0:
                 # All consumer slots busy and the local queue full. A
                 # consumer's get() frees a queue slot and a job's
-                # completion (deregister) frees an active slot — the
+                # completion (deregister) frees an active slot, the
                 # consumer loops set slot_freed at exactly those two
                 # points, so the next claim begins the moment either
                 # lands instead of on the next poll tick.
@@ -337,8 +337,8 @@ async def producer_loop(
 
             cooldown_remaining = claim_not_before - time.monotonic()
             if cooldown_remaining > 0:
-                # Every trigger that lands during this wait — more wakes,
-                # more freed slots — is answered by the single round that
+                # Every trigger that lands during this wait, more wakes,
+                # more freed slots, is answered by the single round that
                 # follows, sized to the slots free by then. Re-entering
                 # the loop re-reads availability and the stop flags.
                 await asyncio.sleep(cooldown_remaining)
@@ -384,7 +384,7 @@ async def producer_loop(
                 # A short round: the backlog is drained or a peer won it.
                 # A round on its heels would only re-run the claim CTE and
                 # the loser's window expansions for nothing. A full round
-                # arms no floor — there is backlog to drain, and the next
+                # arms no floor, there is backlog to drain, and the next
                 # freed slot claims immediately.
                 claim_not_before = round_started + _jittered_poll_interval(
                     _CLAIM_COOLDOWN_SECONDS, rng_source
@@ -440,14 +440,14 @@ async def producer_loop(
     # Exit hand-back, on the DRAINING path only (producer_stop_event is
     # what the orchestrator sets at DRAINING entry): the DRAINING pass
     # re-pends what this worker held when it ran, but a claim round already
-    # in flight at that moment commits AFTER it — the producer only
+    # in flight at that moment commits AFTER it, the producer only
     # observes the stop event between rounds. Those rows are locked to a
     # process on its way out and no later phase sees them (they never reach
     # the active-jobs registry), so the producer hands back whatever it
     # still holds as its own last act on that path: by loop exit no further
     # claim of this worker's can commit, which is exactly the ordering the
     # single DRAINING pass could not give. The statement is the same
-    # bounded, registry-excluding, attempt-refunding one (idempotent — a
+    # bounded, registry-excluding, attempt-refunding one (idempotent, a
     # row the first pass already released no longer matches), and its
     # failure mode is the helper's own (log + return 0; the lease-expiry
     # sweep remains the backstop). A bare shutdown_event exit (the
@@ -483,7 +483,7 @@ async def producer_loop_stub(
     takes that function's signature verbatim and the caller can swap one
     for the other without a shim. ``deps``, ``local_queue``, ``backend``
     and ``worker_id`` are exactly the arguments it does not need because
-    it never dispatches — a divergent signature here would move that
+    it never dispatches, a divergent signature here would move that
     branch into every call site.
 
     Outer loop: ``while not (producer_stop_event.is_set() or shutdown_event.is_set())``.
@@ -522,7 +522,7 @@ async def _stub_terminal_write(
     """The stub loop's shielded terminal write, with its fenced outcome read.
 
     The stub is a test/dev sentinel with no hooks or publishers, so a
-    fenced-out write has nothing further to unwind — but the outcome is
+    fenced-out write has nothing further to unwind, but the outcome is
     still bound and logged, never dropped: a bare ``await`` discards the
     boolean that says whether the row actually moved, the discard shape
     the terminal-write class-closure guard forbids in every worker module.
@@ -589,7 +589,7 @@ async def consumer_loop_stub(
                 return
             # Why fall through on a shutdown_event-only both-done turn:
             # the get has already TAKEN the job out of local_queue and no
-            # drain owns it (producer_stop_event is unset) — returning here
+            # drain owns it (producer_stop_event is unset), returning here
             # would discard it with no consumer run, no terminal write, and
             # no release, leaving recovery to lock-lease expiry. The taken
             # job runs this final iteration; the outer while's shutdown
@@ -601,9 +601,9 @@ async def consumer_loop_stub(
 
         job: JobRow = q_get.result()
 
-        # Slot-release point #1 of 2 (#229): the get() above dropped
+        # Slot-release point #1 of 2: the get() above dropped
         # qsize by one, so a producer held up on queue capacity can
-        # claim again — wake it now. Point #2 is the deregister at the
+        # claim again, wake it now. Point #2 is the deregister at the
         # end of this iteration (the active-side slot), because the
         # producer's availability subtracts active jobs too.
         if slot_freed_event is not None:
@@ -662,7 +662,7 @@ async def consumer_loop_stub(
                 # fallback_result_ttl is not forwarded here: the stub path has
                 # no actor registry and therefore no @actor(result_ttl=...)
                 # literal to supply. If the stored actor_config.result_ttl is
-                # cleared (NULL), the enqueue-pinned expiry survives — the
+                # cleared (NULL), the enqueue-pinned expiry survives, the
                 # original bug, on the one path that structurally cannot fix
                 # itself. This is acceptable because the stub is a test/dev
                 # sentinel, not a production consumer. The real consumer
@@ -679,10 +679,10 @@ async def consumer_loop_stub(
 
             finally:
                 await deps.active_jobs.deregister(job.id)
-                # Slot-release point #2 (#229): the producer's
+                # Slot-release point #2: the producer's
                 # availability subtracts active jobs, so this slot
                 # frees at the deregister above, not at the get() that
-                # only lent the queue slot — wake the producer the
+                # only lent the queue slot, wake the producer the
                 # moment accounting settles.
                 if slot_freed_event is not None:
                     slot_freed_event.set()
@@ -740,7 +740,7 @@ async def di_consumer_loop(
             if deps.producer_stop_event.is_set():
                 # DRAINING owns every row this worker holds: the get TAKEN
                 # a row on the same turn the drain began. Running it would
-                # double-execute — the row is locked to this worker and
+                # double-execute, the row is locked to this worker and
                 # never reached the active-jobs registry, so the hand-back
                 # (the orchestrator's DRAINING pass for rows claimed before
                 # it ran, the producer's exit pass for a claim round that
@@ -753,8 +753,8 @@ async def di_consumer_loop(
                 return
             # Why fall through on a shutdown_event-only both-done turn:
             # the get has already TAKEN the job out of local_queue and no
-            # drain owns it (producer_stop_event is unset — this is the
-            # external-exit path, not a graceful-shutdown orchestration) —
+            # drain owns it (producer_stop_event is unset, this is the
+            # external-exit path, not a graceful-shutdown orchestration) ,
             # returning here would discard it with no dispatch, no
             # terminal write, and no release, leaving recovery to
             # lock-lease expiry. The taken job runs this final iteration;
@@ -766,12 +766,12 @@ async def di_consumer_loop(
 
         job: JobRow = q_get.result()
 
-        # Slot-release point #1 of 2 (#229): the get() above dropped
+        # Slot-release point #1 of 2: the get() above dropped
         # qsize by one, so a producer held up on queue capacity can
-        # claim again — wake it now. Point #2 is the finally around
+        # claim again, wake it now. Point #2 is the finally around
         # dispatch_one_job below (the active-side slot), because the
         # producer's availability subtracts active jobs too. Fires on
-        # every iteration — every exit path (success, failure, snooze,
+        # every iteration, every exit path (success, failure, snooze,
         # not-found release) passes it.
         if slot_freed_event is not None:
             slot_freed_event.set()
@@ -783,18 +783,18 @@ async def di_consumer_loop(
                 actor=job.actor,
             )
             # Release the claimed job instead of leaving it 'running' until
-            # lease expiry — a worker whose registry has the actor can then
+            # lease expiry, a worker whose registry has the actor can then
             # pick it up. The short delay keeps this worker from re-claiming
             # it in a hot loop.
             #
             # Contract: an unregistered actor parks the job at the snooze
-            # cadence, budget-free — mark_snoozed's default 'snoozed'
+            # cadence, budget-free, mark_snoozed's default 'snoozed'
             # outcome refunds the claim's attempt increment, so a job whose
             # actor is missing (through no fault of its own) never burns
             # retry budget while it waits for a worker that can run it;
             # the stranded-jobs detector surfaces it. This is not an
             # actor-requested deferral semantically, but the snooze write
-            # is the closest bounded outcome — a delay, a release, and a
+            # is the closest bounded outcome, a delay, a release, and a
             # released_reason marker in one transition.
             try:
                 release_outcome = await backend.mark_snoozed(
@@ -820,7 +820,7 @@ async def di_consumer_loop(
                 # "failed" terminalised it on the deadline arm, and
                 # "noop" means the row stopped being this worker's to
                 # move between claim and release (a reclaim re-pended
-                # it, or a racing cancel terminalised it) — the new
+                # it, or a racing cancel terminalised it), the new
                 # owner holds it, so there is nothing to release, but
                 # a discarded outcome would make the fenced-out write
                 # indistinguishable from a landed one.
@@ -849,7 +849,7 @@ async def di_consumer_loop(
                 process_scope=process_scope,
                 thread_scope=thread_scope,
                 loop_scope=loop_scope,
-                actor_ref=actor_ref,  # type: ignore[arg-type]  # Why: ActorRef[Any, Any] is not ActorRef[BaseModel, BaseModel | None]; pyright cannot widen the generic parameters, but the runtime contract is sound — actor_ref carries the correct payload_type and fn.
+                actor_ref=actor_ref,  # type: ignore[arg-type]  # Why: ActorRef[Any, Any] is not ActorRef[BaseModel, BaseModel | None]; pyright cannot widen the generic parameters, but the runtime contract is sound, actor_ref carries the correct payload_type and fn.
                 actor_config=actor_ref.config,
                 clock=clock,
                 active_jobs=deps.active_jobs,
@@ -872,15 +872,15 @@ async def di_consumer_loop(
             _consumer_log.exception("dispatch-failed", job_id=str(job.id))
             deps.drain_failures += 1
         finally:
-            # Slot-release point #2 (#229): the producer's availability
+            # Slot-release point #2: the producer's availability
             # subtracts active jobs, so the slot this job held frees at
             # the deregister dispatch_one_job's own finally has run by
-            # every path that reaches here — not at the get() that only
+            # every path that reaches here, not at the get() that only
             # lent the queue slot. The wake is what re-arms the producer
             # the moment accounting settles; without it a finished job's
             # replacement claim would wait for the fallback poll tick.
             # (The SlotPoolAcquireError path never registered, so its
-            # wake is redundant with the get()-point one — bounded, and
+            # wake is redundant with the get()-point one, bounded, and
             # the price of one unconditional release point.)
             if slot_freed_event is not None:
                 slot_freed_event.set()
@@ -898,7 +898,7 @@ async def register_worker(pool: asyncpg.Pool, settings: WorkerSettings) -> UUID:
     they are stored directly for cross-process correlation and health checking.
 
     The row's metadata records the worker's runtime facts: whether NOTIFY
-    dispatch is enabled, and ``max_concurrency`` — the capacity the worker
+    dispatch is enabled, and ``max_concurrency``, the capacity the worker
     runs at, which sizes ``local_queue`` and bounds every dispatch.
     """
     worker_id = new_uuid()
@@ -947,7 +947,7 @@ async def deregister_worker(pool: asyncpg.Pool, settings: WorkerSettings, worker
 
     Acquires from *pool* with a 2.0 s timeout.  On timeout or connection
     error, logs a structured warning ``deregister_worker_failed`` and
-    returns without raising — the recovery sweep is the backstop and
+    returns without raising, the recovery sweep is the backstop and
     shutdown MUST NOT block on this cleanup.
     """
     schema = settings.schema_name
@@ -987,7 +987,7 @@ def _emit_resolved_capacity_startup_lines(
     ``actor_config.max_concurrent``, the ``queues`` row's cap for the queue
     the actor is assigned to, and the actor's declared reservations or
     ``singleton=True``. Whichever is smallest binds, so raising any of the
-    other three changes nothing — the failure an operator reports as "I
+    other three changes nothing, the failure an operator reports as "I
     bumped the cap and nothing happened". Each line carries both the
     resolved number and the layer that produced it, so the answer is a grep
     rather than a four-surface reconstruction.
@@ -995,7 +995,7 @@ def _emit_resolved_capacity_startup_lines(
     A second line rides the same pass: the startup UPSERT leaves the
     capacity columns alone once a row exists, so a changed ``@actor(...)``
     literal is silently overridden by the stored value. That precedence is
-    deliberate — stored capacity is operator-owned — but it is exactly the
+    deliberate, stored capacity is operator-owned, but it is exactly the
     state in which a deployed change appears to be ignored.
 
     Never raises and never refuses boot: every condition reported here is
@@ -1012,7 +1012,7 @@ def _emit_resolved_capacity_startup_lines(
         # object, both of which carry ``.slots`` directly. The object forms
         # are not JSON-serializable (``taskq._json.dumps`` has no fallback
         # for them, nor for ``KeyedReservationRef``'s ``key_fn`` callable),
-        # and structlog's JSON renderer is not exception-wrapped — logging
+        # and structlog's JSON renderer is not exception-wrapped, logging
         # the raw object drops the entire line. Report each entry as its
         # name plus its slot count when the count is knowable.
         reservation_names: list[str] = []
@@ -1066,12 +1066,12 @@ def _emit_resolved_capacity_startup_lines(
             layers.insert(0, (1, "singleton"))
         if reservation_slots:
             # A materialised reservation's slot count is authoritative and
-            # is what actually gates admission — reporting the process cap
+            # is what actually gates admission, reporting the process cap
             # here would print a number that is simply wrong whenever the
             # reservation is narrower (or wider) than it.
             layers.insert(0, (min(reservation_slots), "reservation"))
         elif reservation_names:
-            # Only bare-name entries are present — the concrete slot count
+            # Only bare-name entries are present, the concrete slot count
             # lives in the rate-limit registry, not on this ref, so it
             # cannot be reported as a specific number without risking a
             # wrong one. Still named as the binding layer whenever no

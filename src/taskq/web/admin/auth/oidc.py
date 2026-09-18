@@ -139,7 +139,7 @@ class _OIDCMetadataCache:
 
 @dataclass(frozen=True)
 class OIDCTokenContext:
-    """Passed to ``group_resolver`` — the ID token claims alone are not enough
+    """Passed to ``group_resolver``, the ID token claims alone are not enough
     for the Entra Graph-API overage fallback, which needs the access token to
     call ``/me/memberOf``.
     """
@@ -319,8 +319,8 @@ def create_oidc_auth(config: OIDCAuthConfig, *, base_path: str = "") -> AuthBund
                 )
             response = RedirectResponse(url=auth_url, status_code=302)
             # state + PKCE bind the authorization code to this browser; the
-            # nonce binds the ID token — the credential the session is minted
-            # from — so it rides the same signed cookie the callback compares
+            # nonce binds the ID token, the credential the session is minted
+            # from, so it rides the same signed cookie the callback compares
             # the ID token's nonce claim against.
             _issue_state_cookie(
                 response,

@@ -1,4 +1,4 @@
-"""Behavioral assertions for TaskQ tests — query observable state, not implementation details."""
+"""Behavioral assertions for TaskQ tests, query observable state, not implementation details."""
 
 from __future__ import annotations
 
@@ -38,9 +38,9 @@ _ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 def plain_cli_output(output: str) -> str:
     """Strip ANSI escapes and collapse whitespace for CLI-output assertions.
 
-    Rich/Typer help rendering varies with the detected environment — color
+    Rich/Typer help rendering varies with the detected environment, color
     codes get injected inside words, box-drawing characters wrap lines at
-    terminal width — so raw substring assertions on ``result.output`` are
+    terminal width, so raw substring assertions on ``result.output`` are
     environment-dependent. Asserting against the plain, whitespace-collapsed
     text is stable in any terminal, CI runner, or width.
     """
@@ -67,7 +67,7 @@ class _SpanExporter(Protocol):
 
 @runtime_checkable
 class _AssertBackend(Protocol):
-    """Protocol for Backend instances in test assertions — minimal get-only surface."""
+    """Protocol for Backend instances in test assertions, minimal get-only surface."""
 
     async def get(self, job_id: JobId) -> JobRow | None: ...
 
@@ -83,7 +83,7 @@ def _get(row: object, key: str) -> object:
     try:
         return getattr(row, key)
     except AttributeError:
-        return row[key]  # type: ignore[index]  # Why: row is object (asyncpg.Record or dataclass); subscript fallback is intentional duck-typing for test helpers — pyright cannot prove __getitem__ exists on object.
+        return row[key]  # type: ignore[index]  # Why: row is object (asyncpg.Record or dataclass); subscript fallback is intentional duck-typing for test helpers, pyright cannot prove __getitem__ exists on object.
 
 
 def parse_detail(detail: object) -> dict[str, object]:
@@ -261,7 +261,7 @@ def assert_has_otel_event(
 
 async def wait_for(
     event: asyncio.Event,
-    timeout: float = 2.0,  # noqa: ASYNC109  # Why: a `timeout` parameter is the point — callers pass per-call deadlines, not an enclosing asyncio.timeout scope; the repo's established wait-helper shape.
+    timeout: float = 2.0,  # noqa: ASYNC109  # Why: a `timeout` parameter is the point, callers pass per-call deadlines, not an enclosing asyncio.timeout scope; the repo's established wait-helper shape.
     *,
     description: str | None = None,
 ) -> None:
@@ -290,12 +290,12 @@ async def wait_for_condition(
     The wait surface for observables that carry no event: a background
     task's effect on a fake's counter, a captured log entry, a state
     flag a test cannot intercept at the flip point. The condition may
-    be async for observables that live behind a query — a server-side
-    connection count, a row's visibility — where each sample costs a
+    be async for observables that live behind a query, a server-side
+    connection count, a row's visibility, where each sample costs a
     round trip. The deadline is monotonic-wall-time (an iteration count
     says nothing about elapsed time under load), the cadence is the
     poll interval, and a timeout fails the test naming what never
-    became true — never a silent pass. For observables that DO carry
+    became true, never a silent pass. For observables that DO carry
     an event, prefer :func:`wait_for`: an event wait resolves exactly
     when the work finishes, with no cadence at all.
     """
@@ -346,7 +346,7 @@ async def wait_for_leader(deps: _LeaderDeps, timeout: float = 5.0) -> None:  # n
 
 
 async def pg_now(conn: asyncpg.Connection) -> datetime:
-    """Return PG's ``clock_timestamp()`` — the realtime clock the server uses.
+    """Return PG's ``clock_timestamp()``, the realtime clock the server uses.
 
     Use this instead of ``datetime.now(UTC)`` when a test needs to compute
     cutoffs/margins that are compared against rows written via SQL: the

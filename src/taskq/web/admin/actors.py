@@ -137,7 +137,7 @@ def register(router: APIRouter) -> None:
         )
         return HTMLResponse(content=html)
 
-    # Note: {actor} matches a single path segment — actor names containing "/"
+    # Note: {actor} matches a single path segment, actor names containing "/"
     # cannot be deregistered via the admin UI (use the CLI or client API instead).
     # This is an accepted limitation; %2F in URLs is decoded before routing.
     @router.post("/actors/{actor}/deregister")

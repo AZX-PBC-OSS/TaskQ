@@ -28,7 +28,7 @@ logger = structlog.get_logger("taskq.web.health")
 def create_health_router(deps: "WorkerDeps") -> APIRouter:
     """Create a FastAPI router at /jobs/health/{live,ready}.
 
-    Captures *deps* via closure — no FastAPI dependency injection.
+    Captures *deps* via closure, no FastAPI dependency injection.
     Mount alongside create_metrics_router (taskq.contrib.prometheus) for the
     full /jobs/health surface including Prometheus metrics.
     """

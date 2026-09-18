@@ -53,6 +53,9 @@ class TestTransitionMatrix:
             ("running", "crashed"),
             ("running", "abandoned"),
             ("running", "scheduled"),
+            # the lease-expiry and heartbeat-timeout sweeps return a
+            # reclaimed running job to pending when attempts remain
+            ("running", "pending"),
         ],
         ids=lambda v: v,
     )
@@ -75,9 +78,8 @@ class TestTransitionMatrix:
             ("scheduled", "succeeded"),
             ("scheduled", "crashed"),
             ("scheduled", "abandoned"),
-            # running — only the 6 listed above allowed
+            # running — only the 7 listed above allowed
             ("running", "running"),
-            ("running", "pending"),
             # terminal statuses — nothing allowed
             ("succeeded", "pending"),
             ("succeeded", "scheduled"),
@@ -140,16 +142,17 @@ class TestTransitionMatrix:
                 f"terminal {status!r} must map to empty frozenset"
             )
 
-    def test_pending_not_in_running_transitions(self) -> None:
-        """Worker-written retries go to 'scheduled', not 'pending'.
+    def test_pending_in_running_transitions_via_lease_expiry_sweep(self) -> None:
+        """'pending' must be a valid target from 'running'.
 
-        The canonical Python code block does not include the
-        running → pending arc; worker-facing retries target 'scheduled'.
-        The diagram shows a running → pending arrow for the recovery
-        sweep path, but that sweep operates outside the normal worker
-        write path and is not encoded in VALID_TRANSITIONS.
+        The lease-expiry and heartbeat-timeout sweeps send a reclaimed
+        running job back to pending whenever attempts remain, recording
+        the state change with from_state=running, reason=lock_expired.
+        The map's convention encodes sweep-authorized transitions (the
+        'failed' entries on 'pending' and 'scheduled' are the same
+        category), so the arc belongs in the canonical encoding.
         """
-        assert "pending" not in VALID_TRANSITIONS["running"]
+        assert "pending" in VALID_TRANSITIONS["running"]
 
     def test_scheduled_in_running_transitions(self) -> None:
         """'scheduled' must be a valid target from 'running' (retry/snooze)."""
@@ -245,7 +248,7 @@ def test_valid_transitions_matches_golden() -> None:
         "pending": frozenset({"running", "cancelled", "failed"}),
         "scheduled": frozenset({"pending", "cancelled", "failed"}),
         "running": frozenset(
-            {"succeeded", "failed", "cancelled", "crashed", "abandoned", "scheduled"}
+            {"succeeded", "failed", "cancelled", "crashed", "abandoned", "scheduled", "pending"}
         ),
         "succeeded": frozenset(),
         "failed": frozenset(),

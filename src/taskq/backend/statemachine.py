@@ -1,7 +1,7 @@
 """Canonical encoding of the job state machine.
 
 Provides ``VALID_TRANSITIONS``, ``TERMINAL_STATUSES``, and
-``assert_valid_transition`` — the application-level fast-path check
+``assert_valid_transition``, the application-level fast-path check
 that catches obvious bugs before they reach the SQL WHERE clause.
 The SQL clause remains the authoritative serialization gate.
 """
@@ -28,7 +28,9 @@ VALID_TRANSITIONS: dict[JobStatus, frozenset[JobStatus]] = {
     "scheduled": frozenset(
         {"pending", "cancelled", "failed"}
     ),  # failed only via deadline-exceeded sweep
-    "running": frozenset({"succeeded", "failed", "cancelled", "crashed", "abandoned", "scheduled"}),
+    "running": frozenset(
+        {"succeeded", "failed", "cancelled", "crashed", "abandoned", "scheduled", "pending"}
+    ),  # pending only via the lease-expiry and heartbeat-timeout sweep
     "succeeded": frozenset(),
     "failed": frozenset(),
     "cancelled": frozenset(),
@@ -37,7 +39,7 @@ VALID_TRANSITIONS: dict[JobStatus, frozenset[JobStatus]] = {
 }
 
 ACTIVE_STATUSES: frozenset[JobStatus] = frozenset(VALID_TRANSITIONS) - TERMINAL_STATUSES
-"""Non-terminal job statuses — the complement of :data:`TERMINAL_STATUSES`
+"""Non-terminal job statuses, the complement of :data:`TERMINAL_STATUSES`
 over the full :data:`JobStatus` set.
 
 'Active' here means 'not yet finished': it includes pending, scheduled,

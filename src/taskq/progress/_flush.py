@@ -20,7 +20,7 @@ __all__ = ["_flush_buffer", "_flush_buffer_immediate", "_flush_dirty_set", "prog
 
 _log: structlog.stdlib.BoundLogger = structlog.get_logger("taskq.progress._flush")
 
-# Columnar unnest binding order shared by BOTH flush surfaces — the
+# Columnar unnest binding order shared by BOTH flush surfaces, the
 # tick's batched multi-row statement and the single-row immediate/crash
 # statement (which binds one-element arrays). Keeping one list keeps the
 # template's parameter positions and the two call sites from drifting.
@@ -34,13 +34,13 @@ _FLUSH_UNNEST_BINDING_ORDER: Final[tuple[str, ...]] = (
 
 # The bounded-batch doctrine: no flush statement ever
 # carries more than this many rows, so every statement is short-lived and
-# independently bounded — an all-in-one statement over the whole dirty set
+# independently bounded, an all-in-one statement over the whole dirty set
 # is the long-running-statement trap (it times out as a whole and stalls
 # the tick). 32 rows keeps each UPDATE's lock footprint and runtime tiny
 # while still amortising the round trip across many jobs.
 _FLUSH_BATCH_ROWS: Final[int] = 32
 
-# The tick's drain cap — at most this many bounded batches per tick, so a
+# The tick's drain cap, at most this many bounded batches per tick, so a
 # huge dirty set cannot monopolise the tick; the remainder drains on the
 # next tick (the leader sweeps' incremental-commit discipline). 8 x 32 =
 # 256 rows per tick at the 0.5 s coalesce cadence.
@@ -50,7 +50,7 @@ _FLUSH_MAX_BATCHES_PER_TICK: Final[int] = 8
 def _flush_update_sql(schema: str) -> str:
     """Render the single-source-of-truth progress flush UPDATE.
 
-    One statement carries a bounded batch of rows columnar-style — the
+    One statement carries a bounded batch of rows columnar-style, the
     unnest-array bulk-writer shape reduces the number of parameters
     and makes merge operations efficient (array-side operations merge
     per-row without row-by-row iteration), sized by ``_FLUSH_BATCH_ROWS``
@@ -62,13 +62,13 @@ def _flush_update_sql(schema: str) -> str:
     it can neither clobber a row it no longer owns nor fail the
     statement. Parameters, in order (see ``_FLUSH_UNNEST_BINDING_ORDER``):
 
-      ``$1::uuid[]``   job ids — unique per statement: the tick flushes
+      ``$1::uuid[]``   job ids, unique per statement: the tick flushes
                        dict keys (one buffer per job), and the immediate
                        path binds one row
       ``$2::int[]``    per-row ``progress_seq`` deltas
       ``$3::jsonb[]``  per-row ``progress_state`` merge documents
       ``$4::int[]``    per-row attempt epochs (the fence's epoch conjunct)
-      ``$5::uuid``     the flushing worker — the loop-wide owner
+      ``$5::uuid``     the flushing worker, the loop-wide owner
     """
     if not _IDENT_RE.match(schema):
         raise ValueError(f"invalid schema identifier: {schema!r}")
@@ -159,7 +159,7 @@ async def _flush_buffer(
     The single-row form of the tick's batched statement: the same
     unnest-columnar template with one-element arrays, so the immediate
     (pre-terminal) and crash-flush paths carry the identical per-row
-    fencing gate — running + this worker + this attempt epoch — and the
+    fencing gate, running + this worker + this attempt epoch, and the
     identical per-row merge semantics.
     """
     sql = _flush_update_sql(schema)
@@ -173,8 +173,8 @@ async def _flush_buffer(
     try:
         # The acquire is a POOL-stage operation: a failure or exhaustion
         # here loses every job's flush this tick, not just this one's, so
-        # it is labeled with the pool event/kind — the same taxonomy the
-        # loop-level pool_getter handler uses — and must not be folded
+        # it is labeled with the pool event/kind, the same taxonomy the
+        # loop-level pool_getter handler uses, and must not be folded
         # into the per-job handler below. The statement runs in its own
         # try so only its failures count as per-job.
         async with worker_pool.acquire() as conn:
@@ -191,7 +191,7 @@ async def _flush_buffer(
                 if isinstance(exc, asyncio.CancelledError):
                     raise
                 # A failed flush UPDATE loses only this job's progress
-                # delta; the pool stages above lose every job's — hence
+                # delta; the pool stages above lose every job's, hence
                 # the distinct kinds and stage labels.
                 _log.error(
                     "progress-flush-error",
@@ -208,7 +208,7 @@ async def _flush_buffer(
         if isinstance(exc, asyncio.CancelledError):
             raise
         # A pool-wide acquire failure/exhaustion loses every job's flush
-        # this tick, exactly like the loop-level pool_getter failure —
+        # this tick, exactly like the loop-level pool_getter failure ,
         # hence the pool event/kind and stage, never the per-job ones.
         _log.error(
             "progress-flush-pool-error",
@@ -224,7 +224,7 @@ async def _flush_buffer(
 
     if row is None:
         _log.debug("progress-flush-no-row", job_id=str(job_id))
-        # Job no longer running on this worker at this attempt epoch —
+        # Job no longer running on this worker at this attempt epoch ,
         # the idempotency gate fenced the row out.
         _drop_fenced_out_buffer(progress_buffers, job_id, buffer)
         return
@@ -263,13 +263,13 @@ async def _flush_dirty_set(
 
     The doctrine (deliberately re-applied here after a
     one-statement shape regressed it): an all-in-one statement over an
-    unbounded dirty set is the long-running-statement trap — it times
+    unbounded dirty set is the long-running-statement trap, it times
     out as a whole, and the timeout kills the tick while the loop
     stalls. The tick therefore drains its dirty set in fixed-size
     row-batches (:data:`_FLUSH_BATCH_ROWS` per statement), each an
     independent short statement on its own connection checkout, with
     :data:`_FLUSH_MAX_BATCHES_PER_TICK` capping the tick so a huge
-    dirty set cannot monopolise it — the remainder drains on the next
+    dirty set cannot monopolise it, the remainder drains on the next
     tick, the same incremental-commit discipline the leader sweeps
     apply. A failing batch is that batch's failure alone: its buffers
     stay dirty with deltas and pending state intact, and the tick goes
@@ -286,7 +286,7 @@ async def _flush_dirty_set(
     """
     sql = _flush_update_sql(schema)
 
-    # Snapshot phase — before any await. A ctx.progress() call landing
+    # Snapshot phase, before any await. A ctx.progress() call landing
     # while a batch's statement is suspended mutates the buffer in place;
     # the retire phase subtracts only the snapshotted portion, so the late
     # call survives on top of the new base (snapshot-and-subtract).
@@ -299,8 +299,8 @@ async def _flush_dirty_set(
         except ValueError as exc:
             # The jsonb NUL guard: a permanent data defect in this one
             # row. Skipped and left dirty so the next tick retries (and
-            # re-logs) it — the same observable the single-row path has
-            # for a poisoned buffer — without poisoning its batch.
+            # re-logs) it, the same observable the single-row path has
+            # for a poisoned buffer, without poisoning its batch.
             _log.error(
                 "progress-flush-error",
                 job_id=str(job_id),
@@ -339,8 +339,8 @@ async def _flush_dirty_set(
                     if isinstance(exc, asyncio.CancelledError):
                         raise
                     # This batch's statement failed: only its jobs lose
-                    # their flush this tick — their buffers stay dirty,
-                    # deltas intact — and the tick goes on to the later
+                    # their flush this tick, their buffers stay dirty,
+                    # deltas intact, and the tick goes on to the later
                     # batches (per-batch isolation: no single unit may
                     # stall the tick). Per-job lines keep the
                     # getter-failure handler's per-job labeling shape;
@@ -364,7 +364,7 @@ async def _flush_dirty_set(
                 raise
             # A pool acquire failure/exhaustion loses this batch's jobs
             # this tick, exactly like the loop-level pool_getter failure
-            # — hence the pool event/kind and stage, never the statement
+            # , hence the pool event/kind and stage, never the statement
             # ones. Later batches still get their own checkout.
             for job_id in batch_job_ids:
                 _log.error(
@@ -404,7 +404,7 @@ async def progress_flush_loop(
 
     ``pool_getter`` is resolved once per tick rather than captured once,
     so a credential hot-reload (SIGHUP) that swaps the worker pool takes
-    effect on the next tick (bounded by ``coalesce_interval``) — a
+    effect on the next tick (bounded by ``coalesce_interval``), a
     captured pool would be drained and closed seconds after the reload,
     breaking every subsequent flush.
 
@@ -434,7 +434,7 @@ async def progress_flush_loop(
             raise
         except Exception as exc:
             # The worker cannot obtain a pool at all, so every dirty
-            # job's flush this tick is lost — hence the pool event/kind
+            # job's flush this tick is lost, hence the pool event/kind
             # per job, exactly as a getter failure was labeled when the
             # getter was resolved per buffer.
             for job_id, _buffer in dirty:

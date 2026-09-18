@@ -43,9 +43,9 @@ NUL_JSONB_ERROR: Final[str] = (
 )
 """The exact message :func:`dumps_jsonb_str` raises for a NUL payload.
 
-Declared once (not per call site) so every path that rejects a NUL — the
+Declared once (not per call site) so every path that rejects a NUL, the
 dict form here, and the byte-level scan over already-serialized result
-bytes in the terminal writes — raises byte-for-byte the same ValueError
+bytes in the terminal writes, raises byte-for-byte the same ValueError
 and no site can drift behind the wording tests pin.
 """
 
@@ -61,12 +61,12 @@ def _orjson_fallback(obj: Any) -> Any:
     mod = cls.__module__
     name = cls.__qualname__
 
-    # asyncpg protocol-level UUID — raw record access can leak these into
+    # asyncpg protocol-level UUID, raw record access can leak these into
     # structlog event dicts; convert to standard UUID string form.
     if mod.startswith("asyncpg") and "UUID" in name:
         return str(obj)
 
-    # bytes in a log event dict — decode with replacement.
+    # bytes in a log event dict, decode with replacement.
     if isinstance(obj, (bytes, bytearray)):
         return obj.decode("utf-8", errors="replace")
 
@@ -82,7 +82,7 @@ def dumps(value: Any, /) -> bytes:
     the flag is 1.29-1.73x faster on str-keyed input (its only effect
     there).
 
-    This is a contract change for raw (unvalidated) caller dicts —
+    This is a contract change for raw (unvalidated) caller dicts ,
     ``jobs.enqueue(metadata={1: ...})``, an actor returning ``{1: ...}``,
     and ``ctx.progress(data={1: ...})`` (whose size check and PG flush
     dump the dict directly) previously serialized via silent ``{"1": ...}``
@@ -91,13 +91,13 @@ def dumps(value: Any, /) -> bytes:
     validation (they do not coerce), so a payload that reaches
     :class:`~taskq.backend._protocol.EnqueueArgs` through
     ``jobs.enqueue`` already has string keys. Non-str keys were always
-    lossy on the wire — JSON objects and PG ``jsonb`` can only carry
-    string keys — so failing fast surfaces at the boundary what used to
+    lossy on the wire, JSON objects and PG ``jsonb`` can only carry
+    string keys, so failing fast surfaces at the boundary what used to
     surface as a silently rewritten key on read-back. NUL handling
     (``dumps_jsonb_str``) and all other behaviour are unchanged.
 
-    Every ``TypeError`` orjson raises here — a lone surrogate, a
-    non-``str`` dict key, an object the fallback cannot convert — is
+    Every ``TypeError`` orjson raises here, a lone surrogate, a
+    non-``str`` dict key, an object the fallback cannot convert, is
     re-raised as :class:`~taskq.exceptions.UnencodableValue` (a
     ``TypeError`` subclass, so ``except TypeError`` callers and wording
     pins are unaffected). The distinct class is what lets the retry
@@ -120,7 +120,7 @@ def embed_encoded(data: bytes, /) -> orjson.Fragment:
 
     orjson emits a nested value exactly as it emits that value at top
     level, so a document built around the embedded bytes is byte-identical
-    to one that encodes the original value in place — for the price of a
+    to one that encodes the original value in place, for the price of a
     copy of the bytes rather than a second walk of the value. The bytes
     must be :func:`dumps` output: orjson embeds a fragment unvalidated.
     """
@@ -171,20 +171,20 @@ def dumps_jsonb_str(value: Any, /) -> str:
     INSERT: opaque to an enqueue caller, and worse on the terminal-write
     path, where ``_TERMINAL_WRITE_INFRA_EXCEPTIONS`` reads any
     ``PostgresError`` as transient infrastructure failure.  The job is then
-    never marked failed — it stays ``running`` until the lease sweep reclaims
+    never marked failed, it stays ``running`` until the lease sweep reclaims
     it, re-runs, produces the same NUL, and loops, re-executing the actor's
     already-committed side effects each time.  Raising a ``ValueError`` here
     keeps that classification honest: it is a permanent data defect, so the
     normal actor-failure path handles it.
 
-    Refusal — not escape — is this boundary's contract for values no UTF-8
+    Refusal, not escape, is this boundary's contract for values no UTF-8
     encoder accepts (a lone surrogate, NUL's mirror defect), exactly as it
     is for NUL itself: the enqueue paths bind caller-supplied
     payloads/metadata/tags through here, and caller input must fail fast
     at the door with the typed :class:`~taskq.exceptions.UnencodableValue`
     rather than be silently rewritten to an escaped form. The escape for
-    values the actor already produced — progress state reaching a durable
-    write — lives at the consumption sites
+    values the actor already produced, progress state reaching a durable
+    write, lives at the consumption sites
     (:func:`sanitize_surrogates`), mirroring how the NUL family splits
     this function (refuse) from :func:`sanitize_nul_str` (escape derived
     text at its bind sites).
@@ -225,8 +225,8 @@ def check_no_nul_str(value: str, /, *, what: str = "value") -> None:
 def sanitize_nul_str(value: str, /) -> str:
     """Replace NUL codepoints in *value* with the visible ``\\x00`` escape.
 
-    For text DERIVED from uncontrolled sources — an actor exception's
-    message or formatted traceback — where rejecting (as
+    For text DERIVED from uncontrolled sources, an actor exception's
+    message or formatted traceback, where rejecting (as
     :func:`check_no_nul_str` does for caller-supplied values) would strand
     the very work the text describes: the terminal write fails, the job
     never reaches a terminal state, and the crash-reclaim loop re-dispatches
@@ -242,13 +242,13 @@ def sanitize_surrogates(value: Any, /) -> Any:
 
     The object-walking sibling of :func:`sanitize_nul_str`, for values the
     actor already produced (progress state reaching a durable write): a
-    lone surrogate — ``"\\udcff"``, exactly what ``os.fsdecode`` of a
-    non-UTF-8 filename byte yields — is a legal Python ``str`` that no
+    lone surrogate, ``"\\udcff"``, exactly what ``os.fsdecode`` of a
+    non-UTF-8 filename byte yields, is a legal Python ``str`` that no
     UTF-8 encoder accepts, so no ``text``/``jsonb`` form of it exists.
     Where rejecting (as :func:`dumps_jsonb_str` does for caller-supplied
-    values) would strand the very work the value describes — the terminal
+    values) would strand the very work the value describes, the terminal
     write fails, the job never reaches a terminal state, and the
-    crash-reclaim loop re-dispatches it into the same value forever —
+    crash-reclaim loop re-dispatches it into the same value forever ,
     the escaped form keeps the write valid and the defect diagnosable:
     the stored state shows exactly where the unencodable codepoint was.
 
@@ -276,7 +276,7 @@ def loads(data: bytes | bytearray | memoryview | str, /) -> Any:
     """Deserialize bytes or text to a Python value.
 
     Returns plain Python types (str, int, float, bool, None, list, dict).
-    UUID-like strings remain ``str`` — the consuming Pydantic model's
+    UUID-like strings remain ``str``, the consuming Pydantic model's
     ``model_validate`` coerces them to ``UUID`` when the field is typed
     ``UUID``, and keeps them as ``str`` when the field is typed ``str``.
     """
@@ -285,19 +285,19 @@ def loads(data: bytes | bytearray | memoryview | str, /) -> Any:
 
 def decode_result_bytes(data: bytes, /) -> Any:
     """Decode pre-serialized ``result_bytes`` for storage, rejecting
-    undecodable input with the canonical message.
+     undecodable input with the canonical message.
 
-    Both backends' ``result_bytes`` boundaries call this one helper, so a
-    bad encoding raises a byte-identical ``ValueError`` on either backend
-    — the standard the NUL and empty guards already hold. Bound as text
-    and cast server-side, the same bytes would surface as a
-    ``PostgresError`` the terminal-write classification reads as
-    transient infrastructure, looping the job through reclaim on a
-    permanent data defect; orjson output is always valid JSON, so this
-    fires only for direct Backend-protocol callers. The parse also
-    proves the bytes are decodable utf-8 (orjson rejects undecodable
-    input with the same exception family), so a caller binding
-    ``data.decode("utf-8")`` afterwards cannot fail there.
+     Both backends' ``result_bytes`` boundaries call this one helper, so a
+     bad encoding raises a byte-identical ``ValueError`` on either backend
+    , the standard the NUL and empty guards already hold. Bound as text
+     and cast server-side, the same bytes would surface as a
+     ``PostgresError`` the terminal-write classification reads as
+     transient infrastructure, looping the job through reclaim on a
+     permanent data defect; orjson output is always valid JSON, so this
+     fires only for direct Backend-protocol callers. The parse also
+     proves the bytes are decodable utf-8 (orjson rejects undecodable
+     input with the same exception family), so a caller binding
+     ``data.decode("utf-8")`` afterwards cannot fail there.
     """
     try:
         return loads(data)
@@ -312,7 +312,7 @@ def structlog_serializer(value: Any, /, **_kwargs: Any) -> str:
     """Serialize to ``str`` for structlog's ``JSONRenderer(serializer=...)``.
 
     Accepts and ignores ``**_kwargs`` (e.g. ``default``) that structlog passes
-    internally — orjson handles all types we encounter natively and does not
+    internally, orjson handles all types we encounter natively and does not
     use the ``default`` fallback that stdlib ``json`` requires.
     """
     return dumps_str(value)

@@ -194,7 +194,7 @@ def _complete_batch(
     # snapshot can predate a concurrent member's terminal write, so an
     # over-counted "members remain" must delay completion (the stale-
     # batch sweep is the safety net) while the attempt itself stays safe
-    # to issue after any terminal outcome — the same call that was
+    # to issue after any terminal outcome, the same call that was
     # vetoed lands once the last member turns terminal.
     if _count_batch_non_terminal(backend, batch_id) > 0:
         return
@@ -264,14 +264,14 @@ async def _enqueue_batch_atomic(
     try:
         # PG-tier parity for the chunked consumption + per-item failure
         # coordinates: the PG atomic arm re-chunks the stream inside the
-        # backend and each chunk crosses the bulk build loop — whose
+        # backend and each chunk crosses the bulk build loop, whose
         # per-item jsonb NUL guard annotates at index_base + the chunk
-        # position, i.e. STREAM-GLOBAL indices — BEFORE the chunk's
+        # position, i.e. STREAM-GLOBAL indices, BEFORE the chunk's
         # INSERT. The mirror consumes the same chunks (same islice, same
         # chunk_size) and preflights each stamped chunk through the same
         # shared guards at the same base, so a NUL-bearing item surfaces
         # as the SAME annotated PayloadValidationError naming the SAME
-        # caller-global index on both backends — previously this arm
+        # caller-global index on both backends, previously this arm
         # surfaced a BARE ValueError(NUL_JSONB_ERROR) with no item
         # attribution at all (the per-item single-enqueue path has no
         # index to name). Check ORDER also matches PG within a chunk
@@ -303,7 +303,7 @@ async def _enqueue_batch_atomic(
         finalizer_row: JobRow | None = None
         if finalizer_args is not None:
             # Same preflight at the finalizer's caller-global coordinate
-            # (one past the last stream item — the PG arm passes the same
+            # (one past the last stream item, the PG arm passes the same
             # index_base for its finalizer chunk); without it a NUL in
             # the finalizer's payload surfaced as the bare ValueError
             # while PG raised the annotated PayloadValidationError.

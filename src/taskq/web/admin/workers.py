@@ -35,7 +35,7 @@ _WORKERS_SQL = (
     "ORDER BY w.last_seen_at DESC"
 )
 
-# The watchdog freshness verdict is computed by the SERVER — the same
+# The watchdog freshness verdict is computed by the SERVER, the same
 # single-arbiter shape as queues.py's worker-liveness predicates
 # (last_seen_at is written by PG, so only PG can measure its age without
 # mixing the admin process's clock into the comparison).

@@ -1,0 +1,17 @@
+# gitleaks extends the default ruleset; the allowlist below silences only
+# the known test-fixture strings the generic-api-key rule false-positives
+# on (idempotency keys and scope query-params in tests/ and benchmarks/).
+# Real credentials stay in scope everywhere else.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "test fixture identifiers that match generic-api-key"
+paths = '''^(tests/|benchmarks/|docs/)'''
+regexes = [
+    '''idempotency[-_]scope=''',
+    '''idempotency-bench-[0-9a-f-]+''',
+    '''idemp-key-collision-[0-9a-z-]+''',
+    '''rt-cs-[0-9a-z-]+-key''',
+    '''idempotency[-_]?key[0-9a-z-]*''',
+]

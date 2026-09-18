@@ -1,9 +1,9 @@
 """Redis fire-and-forget publish helpers for progress events.
 
 Failure emission contract: every failed publish round trip bumps the
-``progress.publish_failures`` counter (the per-attempt aggregate — the
+``progress.publish_failures`` counter (the per-attempt aggregate, the
 observable that outages are alerted on), but the ``progress-publish-failure``
-WARNING is window-gated to one per channel per window — a sustained Redis
+WARNING is window-gated to one per channel per window, a sustained Redis
 death fails every publish attempt of every job, and a warning line per
 attempt is a log flood, not a signal.
 """
@@ -39,7 +39,7 @@ _PUBLISH_TIMEOUT_S: Final[float] = 1.0
 """Bounded worst-case wait for any progress publish round trip."""
 
 _PUBLISH_FAILURE_LOG_WINDOW_S: Final[float] = 60.0
-"""Window gating the progress-publish-failure WARNING — the same bound
+"""Window gating the progress-publish-failure WARNING, the same bound
 the registry's keyed heal-failure emission applies to a failure that
 repeats on every attempt. The OTel counter stays the per-attempt
 aggregate."""
@@ -69,8 +69,8 @@ def _publish_failure_warning_due(channel_labels: tuple[str, ...]) -> bool:
 def _failure_identity(job_id: UUID, actor: str, seq: int, status: str | None) -> dict[str, object]:
     """The event-identifying fields of a ``progress-publish-failure`` WARNING.
 
-    Built only on the failure path — a publish that succeeds never
-    formats them — and ``status`` appears only for state-change events,
+    Built only on the failure path, a publish that succeeds never
+    formats them, and ``status`` appears only for state-change events,
     which are the only ones that carry one.
     """
     fields: dict[str, object] = {"job_id": str(job_id), "actor": actor, "seq": seq}
@@ -132,7 +132,7 @@ async def _publish_event_dual(
     WARNING only (see :func:`_failure_identity`).
 
     Both PUBLISH commands are buffered locally and leave with one
-    ``execute`` — as two awaited ``publish`` calls, every progress event
+    ``execute``, as two awaited ``publish`` calls, every progress event
     paid two sequential round trips and two worst-case timeout budgets.
     The pipeline is non-transactional on purpose: the two publishes have
     no ordering dependency and no atomicity requirement, so MULTI/EXEC
@@ -156,7 +156,7 @@ async def _publish_event_dual(
                 **_failure_identity(job_id, actor, seq, status),
             )
         # One execute serves both channels, so a failed round trip means
-        # both channel-level delivery failures are true — recorded once
+        # both channel-level delivery failures are true, recorded once
         # each, which also preserves the counter total of the sequential
         # shape this replaces, where a hard Redis outage incremented both.
         record_progress_publish_failure(

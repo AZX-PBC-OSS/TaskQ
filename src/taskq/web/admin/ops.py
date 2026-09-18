@@ -105,7 +105,7 @@ _HELD_SLOTS_SQL = (
 
 # Log-frame escapes for caller-controlled text. A raw control character in a
 # structlog event value forges a whole subsequent line under any
-# line-oriented renderer (console/KV), corrupting log parsing and alerting —
+# line-oriented renderer (console/KV), corrupting log parsing and alerting ,
 # so a URL-controlled field is escaped before it reaches an event, never
 # passed through verbatim. \n/\r/\t keep their letter escapes for
 # readability; every other C0 control and DEL renders as its hex escape.
@@ -140,12 +140,12 @@ async def _fetch_redis_rl_state(
     * Sliding window log: ``taskq:{schema}:sw:{name}``    (ZCARD for count)
     * Sliding window GCRA: ``taskq:{schema}:sw_gcra:{name}`` (GET for TAT)
 
-    All reads run in ONE Redis pipeline — a single round trip for every
+    All reads run in ONE Redis pipeline, a single round trip for every
     bucket. The name set is unbounded by construction (the page unions the
     in-process registry with every ``rate_limit_buckets`` PG row, and keyed
     buckets accumulate there forever), so one awaited call per name made
     the request handler take O(names) sequential round trips on a page the
-    admin UI re-polls — the per-row-round-trip shape.
+    admin UI re-polls, the per-row-round-trip shape.
 
     The one round trip is bounded by *read_timeout* (``TASKQ_ADMIN_ACQUIRE_TIMEOUT``):
     a black-holed broker degrades the page after that long instead of
@@ -155,7 +155,7 @@ async def _fetch_redis_rl_state(
     the page reports the degradation). An unknown *kind* raises
     :class:`ValueError` instead: that
     is a caller bug (the registry only emits the three kinds), and the
-    degrade-to-None path exists for the transport being down — swallowing
+    degrade-to-None path exists for the transport being down, swallowing
     the validation failure would convert a loud programming error into a
     silent whole-page degrade.
     """
@@ -235,7 +235,7 @@ def register(router: APIRouter) -> None:
         html = tmpl.get_template("schedules.html").render(
             schedules=schedules,
             cron_installed=cron_installed,
-            notice_text="cron scheduling not installed — run taskq migrate up to enable",
+            notice_text="cron scheduling not installed, run taskq migrate up to enable",
             error=error,
             realtime_mode=realtime_mode,
             mode_label=mode_label,
@@ -445,7 +445,7 @@ def register(router: APIRouter) -> None:
                 payload=payload,
                 max_attempts=ac_row["max_attempts"],
                 retry_kind=parse_retry_kind(ac_row["retry_kind"]),
-                scheduled_at=None,  # Why: "run now" is immediate — the server stamps and decides, immune to app↔DB clock skew.
+                scheduled_at=None,  # Why: "run now" is immediate, the server stamps and decides, immune to app↔DB clock skew.
             )
 
         await backend.enqueue(args)
@@ -469,11 +469,11 @@ def register(router: APIRouter) -> None:
             )
 
         # A job is retryable from every state ``Backend.retry_job`` accepts
-        # as a source: every terminal status (see its docstring — an
+        # as a source: every terminal status (see its docstring, an
         # operator re-run is "run this again", and that includes
         # 'succeeded' and 'abandoned', not just the failure statuses).
-        # ``_TERMINAL_STATUSES`` (admin/_constants.py) is that same set —
-        # the list/detail pages already use it to mean "this job is done" —
+        # ``_TERMINAL_STATUSES`` (admin/_constants.py) is that same set ,
+        # the list/detail pages already use it to mean "this job is done" ,
         # so this gate derives from it rather than hand-maintaining a
         # second, narrower copy that silently falls behind the backend's
         # actual contract.
@@ -485,8 +485,8 @@ def register(router: APIRouter) -> None:
 
         # The read above is only a pre-check: the write's own guard is the
         # arbiter. A False means the row left a retryable state between the
-        # two (a concurrent claim or transition won the race) — or the spent
-        # attempt sits at the smallint ceiling — so the write applied to
+        # two (a concurrent claim or transition won the race), or the spent
+        # attempt sits at the smallint ceiling, so the write applied to
         # nothing and the operator must hear conflict, not success.
         retried = await backend.retry_job(JobId(job_id))
         if not retried:
@@ -667,7 +667,7 @@ def register(router: APIRouter) -> None:
             buckets=buckets,
             csrf_token=csrf_token,
             ratelimit_installed=ratelimit_installed,
-            notice_text="rate limiting not installed — run taskq migrate up to enable",
+            notice_text="rate limiting not installed, run taskq migrate up to enable",
             live_states=live_states,
             redis_state=redis_state,
             redis_available=redis_available,
@@ -736,7 +736,7 @@ def register(router: APIRouter) -> None:
             ) from None
         except KeyError as exc:
             # A keyed bucket a worker published to PG exists ONLY as a PG
-            # row in a standalone admin process — the registry has no
+            # row in a standalone admin process, the registry has no
             # primitive for it, so a reset is impossible here. The page
             # still renders the reset button for such rows; answer it with
             # an explanatory 404 instead of surfacing the KeyError as a 500.
@@ -770,7 +770,7 @@ def register(router: APIRouter) -> None:
         _queue_cap_prefix = QUEUE_CONCURRENCY_PREFIX
 
         configured_reservations: list[dict[str, object]] = []
-        # Filter by the admin's own schema before displaying or syncing —
+        # Filter by the admin's own schema before displaying or syncing ,
         # the process-global registry may carry reservations declared for
         # OTHER schemas (same reason worker/_bootstrap.py filters): syncing
         # a foreign-schema reservation here would insert/delete rows in the
@@ -860,7 +860,7 @@ def register(router: APIRouter) -> None:
                     {
                         "bucket_name": name,
                         "configured_slots": pg_row["total_slots"],
-                        "lease": "—",
+                        "lease": ",",
                         "held_count": pg_row["held_count"],
                         "free_count": pg_row["free_count"],
                         "total_slots": pg_row["total_slots"],
@@ -874,7 +874,7 @@ def register(router: APIRouter) -> None:
             reservations=reservations,
             reservations_installed=reservations_installed,
             sync_error=sync_error,
-            notice_text="reservations not installed — run taskq migrate up to enable",
+            notice_text="reservations not installed, run taskq migrate up to enable",
             held_slots=held_slots,
             realtime_mode=realtime_mode,
             mode_label=mode_label,

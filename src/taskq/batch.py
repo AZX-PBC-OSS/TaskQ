@@ -1,18 +1,18 @@
 """Batch enqueue primitives for TaskQ.
 
 Provides:
-- :class:`EnqueueItem` — one item in a :meth:`~taskq.client.JobsClient.enqueue_batch` call.
-- :class:`BatchCompletionStatus` — aggregated counts across all jobs in a batch.
-- :class:`BatchHandle` — returned by :meth:`~taskq.client.JobsClient.enqueue_batch`;
+- :class:`EnqueueItem`, one item in a :meth:`~taskq.client.JobsClient.enqueue_batch` call.
+- :class:`BatchCompletionStatus`, aggregated counts across all jobs in a batch.
+- :class:`BatchHandle`, returned by :meth:`~taskq.client.JobsClient.enqueue_batch`;
   holds all :class:`~taskq.client.JobHandle` instances and exposes a
   :meth:`BatchHandle.status` query.
-- :class:`BatchSummary` — one row from the batches table augmented with
+- :class:`BatchSummary`, one row from the batches table augmented with
   live job counts; returned by :meth:`~taskq.client.JobsClient.list_batches`.
-- :func:`wait_for_batch` — convenience helper for the fan-out-then-finalize
+- :func:`wait_for_batch`, convenience helper for the fan-out-then-finalize
   pattern.
-- :func:`apply_batch_terminal_outcome` — batch policy hook called after
+- :func:`apply_batch_terminal_outcome`, batch policy hook called after
   every terminal write; drives abort/completion semantics.
-- :data:`MAX_BATCH_SIZE` — maximum number of items per ``enqueue_batch``
+- :data:`MAX_BATCH_SIZE`, maximum number of items per ``enqueue_batch``
   call and upper bound on ``chunk_size`` for ``enqueue_batch_streaming``.
 """
 
@@ -81,14 +81,14 @@ _POOL_ACQUIRE_TIMEOUT_S: Final[float] = 2.0
 """Bound for the pool acquire on every :func:`wait_for_batch` poll.
 
 asyncpg's ``Pool.acquire`` has no default timeout, so an unbounded
-acquire parks the poll — the first one and every snooze-loop iteration
-after it — for as long as the pool stays exhausted. This is the same
+acquire parks the poll, the first one and every snooze-loop iteration
+after it, for as long as the pool stays exhausted. This is the same
 bound and rationale as the project's other caller-facing pool waits
 (``pg_pool.acquire(timeout=2.0)`` in the workgroup health check,
 ``DEFAULT_CAPACITY_READ_TIMEOUT`` around JobsClient's schedule-seed
 read): a wait on something outside the process is bounded, and
 exceeding the bound is reported as a :class:`TimeoutError` instead of
-wedging the caller. Only the acquire is bounded — the poll's statement
+wedging the caller. Only the acquire is bounded, the poll's statement
 runs on the caller's own pool, whose statement/command timeouts remain
 that pool's contract.
 """
@@ -99,7 +99,7 @@ class EnqueueItem(BaseModel):
 
     ``actor_ref`` is an :class:`~taskq.actor.ActorRef` for any payload and
     result type.  ``payload`` is the Pydantic model that will be
-    serialized into the job row — it is validated by the actor's
+    serialized into the job row, it is validated by the actor's
     ``payload_type`` inside :meth:`~taskq.client.JobsClient.enqueue_batch`
     before any INSERT.
 
@@ -260,7 +260,7 @@ def decide_batch_status(
     (jobs pruned or never created).
 
     When ``status.pending > 0`` and the batch is NOT aborted, returns
-    the status unchanged — the caller decides whether to raise
+    the status unchanged, the caller decides whether to raise
     :class:`~taskq.exceptions.Snooze` (exception mode) or block
     (polling mode).
     """
@@ -284,7 +284,7 @@ def decide_batch_status(
     if status.total == 0:
         if batch_row is not None:
             # M5: batch row exists with expected_size > 0 but zero jobs
-            # (pruned or never created) — surface as an error, not silent OK.
+            # (pruned or never created), surface as an error, not silent OK.
             if batch_row.expected_size > 0 and status.pending == 0:
                 raise EmptyBatchError(batch_id, expected=batch_row.expected_size, actual=0)
             return status
@@ -292,26 +292,26 @@ def decide_batch_status(
             return status
         raise EmptyBatchError(batch_id, expected=1, actual=0)
 
-    # Case 7-8: jobs exist — if pending > 0, caller decides Snooze vs block
+    # Case 7-8: jobs exist, if pending > 0, caller decides Snooze vs block
     return status
 
 
 # Build the terminal-status NOT IN clause from the canonical
 # TERMINAL_STATUSES set so the SQL never drifts when a new status is
 # added to the state machine.
-# Duplicates _TERMINAL_NOT_IN in taskq.backend._batch_sql — kept separate
+# Duplicates _TERMINAL_NOT_IN in taskq.backend._batch_sql, kept separate
 # because _batch_sql wraps the clause in "NOT IN (...)" while here it is
 # interpolated into a FILTER expression that supplies its own "NOT IN (".
 _TERMINAL_NOT_IN_SQL = ",".join(f"'{s}'" for s in TERMINAL_STATUSES)
 
 # One statement per poll for wait_for_batch: the member counts and the
 # batches row travel together in a single statement instead of a separate
-# row fetch and counts fetch — two sequential round trips of pure latency
+# row fetch and counts fetch, two sequential round trips of pure latency
 # for the finalizer loop. The counts subquery has no GROUP BY and therefore
 # always yields exactly one row; the batches row joins by primary key on
 # that row, so a batch with no row (enqueue_batch_fast members carry
 # batch_id metadata only) still reports its counts, and a row with no
-# members still reports its fields — the expected_size the empty-batch
+# members still reports its fields, the expected_size the empty-batch
 # decision reads. A joined-away row would surface as all-NULL batch fields,
 # which the reader turns into batch_row=None.
 _WFB_SELECT = (
@@ -334,7 +334,7 @@ _WFB_COUNTS = (
 _WFB_BATCH_ROW_JOIN = ' LEFT JOIN "{schema}".batches b ON b.id = $2'
 
 # Finalizer auto-exclusion: the batches row joins inside the counts CTE
-# so the exclusion resolves from the row itself — a NULL
+# so the exclusion resolves from the row itself, a NULL
 # finalizer_job_id (or no row at all) excludes nothing.
 _WAIT_FOR_BATCH_SQL = (
     _WFB_SELECT
@@ -347,7 +347,7 @@ _WAIT_FOR_BATCH_SQL = (
     + _WFB_BATCH_ROW_JOIN
 )
 
-# Caller-supplied exclude_job_id replaces the finalizer exclusion — one
+# Caller-supplied exclude_job_id replaces the finalizer exclusion, one
 # excluded id either way, the same contract the loop has always held.
 _WAIT_FOR_BATCH_EXCLUDED_SQL = (
     _WFB_SELECT
@@ -373,26 +373,26 @@ async def apply_batch_terminal_outcome(
 
     Called after every terminal write by the consumer and the in-memory
     runner.  For non-batched jobs (no ``metadata.batch_id``) this returns
-    immediately — zero overhead.  *outcome* is the dispatch outcome the
+    immediately, zero overhead.  *outcome* is the dispatch outcome the
     caller reports: an attempt-row outcome, or the consumer's ``"noop"``
-    (a terminal write that matched nothing — the job was never this
+    (a terminal write that matched nothing, the job was never this
     dispatch's to move, so no batch counter may budge).
 
     - ``"succeeded"``: resets the consecutive-failure counter and
       attempts completion.
     - ``"failed"``: increments the consecutive-failure counter.  If the
       threshold is reached, aborts the batch and logs ``batch-aborted``
-      — abort wins, so no completion attempt runs on that path.  If the
+     , abort wins, so no completion attempt runs on that path.  If the
       threshold is not reached, attempts completion.
     - ``"cancelled"`` / ``"crashed"``: attempts completion.
     - ``"snoozed"`` / ``"reservation_denied"`` / ``"rate_limit_denied"`` /
-      ``"scheduled"`` / ``"noop"``: returns immediately — the job is
+      ``"scheduled"`` / ``"noop"``: returns immediately, the job is
       rescheduled (or was never this dispatch's to move), not terminal.
 
     Completion is self-arbitrating: every terminal outcome issues the
     ``complete_batch`` attempt, and that statement's ``NOT EXISTS``
     guard decides against the live member set in its own snapshot.  The
-    increment/reset count is advisory only — under READ COMMITTED two
+    increment/reset count is advisory only, under READ COMMITTED two
     members terminating concurrently can each read the other as
     non-terminal, so a hook that gated the attempt on that count could
     leave a fully-terminal batch for the leader sweep; the optimistic
@@ -401,7 +401,7 @@ async def apply_batch_terminal_outcome(
 
     **Best-effort semantics (M7):** the increment/reset/abort/complete
     writes are best-effort.  A crash between the terminal job write and
-    the counter increment loses that increment — the failure count is
+    the counter increment loses that increment, the failure count is
     under-counted by one.  The next terminal failure re-triggers the
     check and increments again, so a consistently failing batch still
     aborts (just one failure later than it would have).  The same loss
@@ -412,7 +412,7 @@ async def apply_batch_terminal_outcome(
     job row.  The stale-batch
     sweep is the safety net for batch **STATUS** (it transitions stuck
     active/aborted rows to terminal) but it **cannot** recover lost
-    failure **counts** — a crash gap means the consecutive-failure streak
+    failure **counts**, a crash gap means the consecutive-failure streak
     is permanently broken, potentially preventing an abort that should
     have fired.
     """
@@ -427,7 +427,7 @@ async def apply_batch_terminal_outcome(
     if outcome == "succeeded":
         await backend.reset_batch_failures(batch_id, connection=transaction_conn)
         # The reset's remaining count is that statement's snapshot, not
-        # the completion decision — see the docstring's self-arbitrating
+        # the completion decision, see the docstring's self-arbitrating
         # paragraph. complete_batch re-checks membership in its own
         # statement, so the optimistic attempt can delay but never
         # complete prematurely.
@@ -454,7 +454,7 @@ async def apply_batch_terminal_outcome(
         await backend.complete_batch(batch_id, connection=transaction_conn)
         return
 
-    # outcome is "cancelled" or "crashed" — the only remaining
+    # outcome is "cancelled" or "crashed", the only remaining
     # terminal outcomes in AttemptOutcome that are not handled above.
     if outcome in ("cancelled", "crashed"):
         await backend.complete_batch(batch_id, connection=transaction_conn)
@@ -477,7 +477,7 @@ async def wait_for_batch(
     """Convenience helper for the fan-out-then-finalize pattern.
 
     Queries batch children by batch_id using the GIN-indexed
-    ``WHERE metadata @> $1::jsonb`` predicate — the containment form,
+    ``WHERE metadata @> $1::jsonb`` predicate, the containment form,
     not the open-members partial index the completion probes use, because
     the poll counts every member including the terminal ones. Each poll is
     one round trip: the member counts and the ``batches`` row travel in a
@@ -506,7 +506,7 @@ async def wait_for_batch(
     zero jobs and no ``batches`` row exists: ``"error"`` (default) raises
     :class:`~taskq.exceptions.EmptyBatchError`; ``"ok"`` returns the
     empty status.  ``exclude_job_id`` omits a specific job from the
-    count — when not set, the batch row's ``finalizer_job_id`` is used
+    count, when not set, the batch row's ``finalizer_job_id`` is used
     automatically.
 
     If the batch row has ``status = 'aborted'`` and all jobs are
@@ -592,7 +592,7 @@ async def wait_for_batch(
             snooze_via_exception=snooze_via_exception,
         )
 
-        # Snooze for pending > 0 (batch not aborted) — the decision
+        # Snooze for pending > 0 (batch not aborted), the decision
         # function already handles the aborted-but-in-flight case
         # (raises Snooze or returns status depending on snooze_via_exception).
         # Here we handle the normal pending case.
@@ -605,8 +605,8 @@ async def wait_for_batch(
         if isinstance(db, _asyncpg.Pool):
             # Bounded acquire (see _POOL_ACQUIRE_TIMEOUT_S): on an
             # exhausted pool the wait surfaces as a TimeoutError to the
-            # caller instead of parking this poll — and every
-            # snooze-loop iteration after it — forever. The workgroup
+            # caller instead of parking this poll, and every
+            # snooze-loop iteration after it, forever. The workgroup
             # health check bounds the identical shape the same way.
             async with db.acquire(timeout=_POOL_ACQUIRE_TIMEOUT_S) as conn:  # type: ignore[reportArgumentType]  # Why: Pool.acquire() returns PoolConnectionProxy; pyright stubs model it as incompatible with Connection but it is runtime-compatible
                 return await _fetch_and_decide(conn)  # type: ignore[reportArgumentType]  # Why: PoolConnectionProxy is a runtime-compatible Connection proxy; pyright stubs model it as incompatible
@@ -629,7 +629,7 @@ EnqueueItem.model_rebuild()
 
 # BatchHandle references JobHandle in its field types. JobHandle lives in
 # taskq.client._handle, which (via taskq.client.__init__) imports back from
-# taskq.batch — a circular dependency.  Deferring the import to the end of
+# taskq.batch, a circular dependency.  Deferring the import to the end of
 # the module ensures all batch.py classes are already defined when the
 # client subpackage tries to import them.  model_rebuild() then resolves
 # the forward references in BatchHandle's field annotations.

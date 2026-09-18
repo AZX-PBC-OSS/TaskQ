@@ -107,7 +107,7 @@ def _make_callback(
             event.set()
         # Guarded: every enqueue in the schema wakes every listener, and a
         # structlog call runs the full processor chain before the stdlib
-        # level check drops the record — the level check here is the only
+        # level check drops the record, the level check here is the only
         # per-notification cost at INFO.
         if logger.is_enabled_for(logging.DEBUG):
             logger.debug(
@@ -233,12 +233,12 @@ async def reconnect_notify_conn(
     passes this - the old connection is already closed by the time it calls
     in).
 
-    The factory call is bounded by ``settings.reload_factory_timeout`` —
+    The factory call is bounded by ``settings.reload_factory_timeout`` ,
     the same bound the SIGHUP reload path (deps.reload_credentials) and
-    the bootstrap slot-pool open use — and each post-factory ``LISTEN``
+    the bootstrap slot-pool open use, and each post-factory ``LISTEN``
     execute is bounded by ``settings.notify_listener_setup_timeout``,
     the same bound the ``add_listener`` beside it and the initial
-    listener setup use — so neither a hung credential provider/TCP
+    listener setup use, so neither a hung credential provider/TCP
     connect nor a rebuilt connection that completes the handshake and
     then black-holes on LISTEN can park the reconnect (and with it
     ``notify_reconnect_lock``). A timeout is the retry loop's ordinary
@@ -268,7 +268,7 @@ async def reconnect_notify_conn(
         # health-check reconnect loop here while holding
         # notify_reconnect_lock. reload_factory_timeout is the SAME
         # bound the SIGHUP reload path applies to every factory call
-        # (deps.reload_credentials) — not a second mechanism — and its
+        # (deps.reload_credentials), not a second mechanism, and its
         # exhaustion here behaves like any factory failure: the retry
         # loop logs the attempt, backs off, and retries.
         new_conn = await asyncio.wait_for(
@@ -283,9 +283,9 @@ async def reconnect_notify_conn(
         try:
             for channel, on_notify in channels:
                 # Why bounded: a rebuilt conn can complete the factory
-                # handshake and still black-hole on the LISTEN execute —
+                # handshake and still black-hole on the LISTEN execute ,
                 # the same black-hole shape the health-check query bound
-                # closes — parking
+                # closes, parking
                 # the reconnect loop (and notify_reconnect_lock) past
                 # every other bound. The SAME
                 # notify_listener_setup_timeout that bounds the
@@ -353,7 +353,7 @@ async def _health_check_loop(
 ) -> None:
     # Deliberately does NOT tick LoopLiveness. This loop is exempt from
     # watchdog detector 2 (see _watchdog's module docstring), for three
-    # independent reasons — a stale registration force-exits the worker:
+    # independent reasons, a stale registration force-exits the worker:
     #   1. It returns early on legitimate paths (conn dropped, and the
     #      notify-listener-disabled poll-fallback that keeps the worker
     #      running by design), which would leave the entry to go stale.
@@ -377,11 +377,11 @@ async def _health_check_loop(
             # carries no command_timeout (the DSN path's
             # dispatcher_command_timeout already bounds this probe there),
             # and this loop is deliberately exempt from the watchdog's
-            # stale-loop detector — an unbounded probe on a wedged conn
+            # stale-loop detector, an unbounded probe on a wedged conn
             # parks the health check forever with nothing to recover it.
             # notify_listener_setup_timeout is the SAME bound this loop
             # family already applies to every bounded execute/registration
-            # (the LISTEN at setup and reconnect) — not a second
+            # (the LISTEN at setup and reconnect), not a second
             # mechanism; exhaustion is treated like any dead conn: the
             # reconnect path runs.
             await asyncio.wait_for(
@@ -406,7 +406,7 @@ async def _health_check_loop(
             for channel, on_notify in channels:
                 # Why bounded + TimeoutError suppressed: the UNLISTEN is a
                 # best-effort network round trip on a conn already judged
-                # dead — unbounded, a wedged conn parks the health check's
+                # dead, unbounded, a wedged conn parks the health check's
                 # reconnect path forever. notify_listener_setup_timeout is
                 # the loop family's existing execute bound; a timeout is
                 # another suppressed failure, not a crash.
@@ -460,9 +460,9 @@ async def _health_check_loop(
                     # the logged delay is the delay actually slept. Applied
                     # on every retry including the first: without it a fleet
                     # that lost PG in the same instant (failover) retries in
-                    # lockstep waves — identical delays re-synchronize every
+                    # lockstep waves, identical delays re-synchronize every
                     # attempt, most visibly at the 30s cap where 100 workers
-                    # reconnect as one — exactly the storm the deadlock
+                    # reconnect as one, exactly the storm the deadlock
                     # backoff's jitter (taskq.backend._cancel_bulk) prevents
                     # for batch retries.
                     slept = delay * random.uniform(0.75, 1.25)  # noqa: S311  # Why: uniform is for reconnect-timing jitter, not cryptography; same non-crypto use as _cancel_bulk's deadlock backoff.
@@ -541,7 +541,7 @@ async def notify_listener_loop(
         _connected_lookup.pop(backend, None)
         for channel, on_notify_callback in channels:
             # Why bounded + TimeoutError suppressed: the teardown UNLISTEN
-            # is a best-effort network round trip — unbounded, a wedged
+            # is a best-effort network round trip, unbounded, a wedged
             # notify conn stalls the listener's shutdown past every
             # shutdown budget and the ShutdownWatchdog force-exits the
             # process for it. notify_listener_setup_timeout is the loop

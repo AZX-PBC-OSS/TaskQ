@@ -14,7 +14,7 @@ Metric dimensions are limited to values that are bounded by construction:
 
 - ``actor``: the set of registered actor names (bounded by the code the
   user ships) on every instrument whose actor flows through registration
-  — job-side emitters receive ``ActorRef`` names, and the cron loop's
+ , job-side emitters receive ``ActorRef`` names, and the cron loop's
   success/suppression paths only emit after the tick resolved the actor
   against ``actor_config``.  The one exception is
   ``taskq.cron.consecutive_failures``: its failure path emits the raw
@@ -60,7 +60,7 @@ type ConsumedOutcome = Literal["succeeded", "failed", "cancelled", "scheduled"]
 """The ``outcome`` label set of ``messaging.client.consumed.messages``.
 
 Every value has a producer: the three terminal outcomes, and ``scheduled``
-for an attempt that ended with the row released back to the queue — a
+for an attempt that ended with the row released back to the queue, a
 retryable failure, a ``Snooze`` / ``RetryAfter``, or an admission denial.
 ``taskq.jobs.attempt_failures`` separates the failure share of
 ``scheduled``; ``taskq.jobs.abandoned`` counts real abandonment, which is
@@ -142,7 +142,7 @@ def otel_enabled() -> bool:
 
     Read at call time, never imported by value: the flag is module state
     flipped once by worker startup (see :func:`set_otel_enabled`), and a
-    reader checks it to skip WORK whose only consumer is a metric — a
+    reader checks it to skip WORK whose only consumer is a metric, a
     query whose result only a reconcile would export is a wasted round
     trip when the flag is off.  The emitters themselves stay gated
     individually regardless.
@@ -201,7 +201,7 @@ def get_meter() -> Meter:
     the proxy/no-op behavior. And unlike the uncached call, it never asks
     the proxy provider for a second meter: ``_ProxyMeterProvider`` appends
     every ``get_meter`` result to a list with no cleanup path, so an
-    unmemoized accessor grows that list on every lazy-instrument call —
+    unmemoized accessor grows that list on every lazy-instrument call ,
     one entry per rate-limit denial, reservation denial, flush failure,
     and drain row-count, in exactly the default deployment (taskq never
     installs a provider itself).
@@ -258,22 +258,22 @@ def safe_start_span(
     links: Sequence[trace.Link] | None = None,
     new_root: bool = False,
 ) -> Generator[Span, None, None]:
-    """Start a span safely — never propagates exceptions from OTel API calls.
+    """Start a span safely, never propagates exceptions from OTel API calls.
 
     Checks ``_otel_enabled`` first; when ``False``, yields a no-op
     ``NonRecordingSpan``. When ``True``, delegates to
     ``get_tracer().start_as_current_span`` with a ``try/except`` around
     span *creation* only. Exceptions from code inside the ``with`` block
-    propagate normally — only OTel API failures (misconfiguration,
+    propagate normally, only OTel API failures (misconfiguration,
     exporter unavailability) are suppressed.
 
     When ``new_root=True``, passes an empty ``Context()`` so the span
-    has no parent — it is a root span linked (not parented) to the
+    has no parent, it is a root span linked (not parented) to the
     ambient trace. This satisfies the "linked, not parented"
     requirement for PRODUCER spans in the cron loop.
 
     The SDK's own exception handling is switched OFF and replaced by
-    :func:`_record_scrubbed_error` — see the comment at the call below.
+    :func:`_record_scrubbed_error`, see the comment at the call below.
     """
     if not _otel_enabled:
         yield trace.NonRecordingSpan(_NOOP_SPAN_CONTEXT)
@@ -337,7 +337,7 @@ _backpressure_errors = get_meter().create_counter(
         "kind ('max_pending' | 'max_pending_lock_timeout' | "
         "'unique_for_lock_timeout' | 'idempotency_lock_timeout'). The "
         "lock-timeout kinds count identity-serialization refusals beside "
-        "their typed errors — never a capacity signal, so an alert keyed "
+        "their typed errors, never a capacity signal, so an alert keyed "
         "on the capacity kinds is not tripped by them."
     ),
 )
@@ -367,11 +367,11 @@ def _resolve_error_type(error_type: str | None) -> str:
     name explicitly. The recorders swept onto that idiom are called from
     ``except`` blocks whose call sites predate the label, so an omitted
     *error_type* derives from the exception currently being handled
-    (``sys.exception()``) — every production call site records from an
+    (``sys.exception()``), every production call site records from an
     ``except`` block, so the derived value is the caught exception's class.
     With no explicit value and no active exception the label falls back to
-    the fixed ``"unknown"`` value: the value set stays a closed class set —
-    the exception types these paths can raise, plus that one constant —
+    the fixed ``"unknown"`` value: the value set stays a closed class set ,
+    the exception types these paths can raise, plus that one constant ,
     never caller-supplied text, so the label cannot mint unbounded series
     the way an identity value would.
     """
@@ -388,7 +388,7 @@ _capacity_refresh_failures = get_meter().create_counter(
         "Attributes: degraded ('stale_snapshot' when a previous snapshot is "
         "still being served, 'no_snapshot' when the cache never loaded and "
         "every enqueue is falling back to the @actor literal), error_type "
-        "(exception class name — a closed set; see _resolve_error_type)."
+        "(exception class name, a closed set; see _resolve_error_type)."
     ),
     unit="1",
 )
@@ -410,7 +410,7 @@ def record_capacity_refresh_failure(*, has_snapshot: bool, error_type: str | Non
     stays sick.
 
     ``error_type`` is the exception class name; omitted, it derives from the
-    exception being handled (``_resolve_error_type``) — the call site records
+    exception being handled (``_resolve_error_type``), the call site records
     from the refresh read's ``except`` block.
 
     Unconditional (not gated by ``_otel_enabled``) for the same reason as
@@ -442,7 +442,7 @@ def record_deadline_exceeded_swept(actor: str, count: int = 1) -> None:
     """Bump the deadline-exceeded sweep counter.
 
     Unconditional (not gated by ``_otel_enabled``): deadline-exceeded sweeps
-    indicate jobs that violated their execution budget — a correctness signal
+    indicate jobs that violated their execution budget, a correctness signal
     that must be counted even when OTel is disabled, so operators always have
     visibility into sweep activity.
     """
@@ -565,7 +565,7 @@ def record_published_message(actor: str, queue: str) -> None:
 
     Called after successful enqueue, outside the PRODUCER span body,
     to ensure sampling independence.
-    Respects ``_otel_enabled`` — no-op when False.
+    Respects ``_otel_enabled``, no-op when False.
     """
     if not _otel_enabled:
         return
@@ -586,7 +586,7 @@ def record_dispatch_duration(queue: str, elapsed: float) -> None:
     """Record dispatch query latency on the histogram.
 
     Called outside the ``dispatch`` span body for sampling independence.
-    Respects ``_otel_enabled`` — no-op when False.
+    Respects ``_otel_enabled``, no-op when False.
     """
     if not _otel_enabled:
         return
@@ -598,7 +598,7 @@ _dispatch_failures = get_meter().create_counter(
     description=(
         "Count of dispatch rounds that raised before returning a claim set, "
         "labeled by queue (capped -- see _bounded_queue) and error_type "
-        "(exception class name — a closed set; see _resolve_error_type). A "
+        "(exception class name, a closed set; see _resolve_error_type). A "
         "producer that fails every round emits successful-looking silence on "
         "every other dispatch signal; this counter is what separates a "
         "failing producer from an idle queue without reading logs, and "
@@ -616,9 +616,9 @@ def record_dispatch_failure(queue: str, error_type: str | None = None) -> None:
     Called from the dispatch round's exception path, outside the span body
     for sampling independence.  ``error_type`` is the exception class name;
     omitted, it derives from the exception being handled
-    (``_resolve_error_type``) — every call site records from an ``except``
+    (``_resolve_error_type``), every call site records from an ``except``
     block, so the derived value is the caught exception's class.
-    Respects ``_otel_enabled`` — no-op when False.
+    Respects ``_otel_enabled``, no-op when False.
     """
     if not _otel_enabled:
         return
@@ -642,11 +642,11 @@ def record_consumed_message(actor: str, queue: str, *, outcome: ConsumedOutcome)
 
     Called after job completion, outside the CONSUMER span body,
     to ensure sampling independence.
-    Respects ``_otel_enabled`` — no-op when False.
+    Respects ``_otel_enabled``, no-op when False.
 
     ``outcome`` is the closed :data:`ConsumedOutcome` set. A consumer-path
     ``AttemptOutcome`` of ``"scheduled"`` (retry, snooze, admission denial)
-    is recorded as exactly that — the row went back to the queue — never
+    is recorded as exactly that, the row went back to the queue, never
     as ``abandoned``, which is the operator-cancel outcome and has its own
     counter (:func:`record_job_abandoned`). A ``"noop"`` attempt consumed
     nothing and must not reach this recorder.
@@ -663,13 +663,13 @@ def record_attempt_failure(actor: str, error_type: str | None = None, *, retryab
     handled exception, after the retry decision and before the terminal
     write: an attempt that raised failed whether or not the row write that
     follows lands, and the consumed-messages ``outcome`` says what happened
-    to the row. ``retryable`` is the classifier's decision — ``true`` when
+    to the row. ``retryable`` is the classifier's decision, ``true`` when
     the attempt is rescheduled for another try, ``false`` when the failure
-    is terminal (a non-retryable class, or the attempt budget exhausted) —
+    is terminal (a non-retryable class, or the attempt budget exhausted) ,
     which is what a retry-rate alert reads. ``error_type`` is the exception
     class name; omitted, it derives from the exception being handled
     (``_resolve_error_type``): a closed set, never caller text.
-    Respects ``_otel_enabled`` — no-op when False.
+    Respects ``_otel_enabled``, no-op when False.
     """
     if not _otel_enabled:
         return
@@ -677,7 +677,7 @@ def record_attempt_failure(actor: str, error_type: str | None = None, *, retryab
         "taskq.jobs.attempt_failures",
         description=(
             "Attempts that ended in an actor failure. Attributes: actor, "
-            "error_type (exception class name — a closed set; see "
+            "error_type (exception class name, a closed set; see "
             "_resolve_error_type), retryable ('true' when the attempt is "
             "rescheduled for another try, 'false' when the failure is "
             "terminal). The failure share of consumed outcome='scheduled'."
@@ -697,10 +697,10 @@ def record_job_abandoned(actor: str) -> None:
 
     Called from ``mark_abandoned`` on both backends once the abandon write
     applied: the actor was asked to stop, then forced, and never exited, so
-    the row is taken from it. Shutdowns never produce this — a deploy
-    interrupts running attempts back to the fleet instead — which is why
+    the row is taken from it. Shutdowns never produce this, a deploy
+    interrupts running attempts back to the fleet instead, which is why
     any non-zero rate is worth a page. Attributes: actor.
-    Respects ``_otel_enabled`` — no-op when False.
+    Respects ``_otel_enabled``, no-op when False.
     """
     if not _otel_enabled:
         return
@@ -722,7 +722,7 @@ def record_loop_stall_attribution(actor: str | None, *, kind: str) -> None:
     the only attribution that works mid-block, and it needs no loop
     cooperation. ``actor`` is ``None`` when no registered actor function
     appeared in the sampled stack (the block sits under taskq's own code
-    or a non-actor coroutine). Respects ``_otel_enabled`` — no-op when
+    or a non-actor coroutine). Respects ``_otel_enabled``, no-op when
     False.
     """
     if not _otel_enabled:
@@ -770,7 +770,7 @@ def record_process_duration(
     attempt: a ``start_to_close`` timeout lands at exactly the budget and
     a failure at whatever it took, and either would drag a success
     percentile if the distributions were shared.
-    Respects ``_otel_enabled`` — no-op when False.
+    Respects ``_otel_enabled``, no-op when False.
     Custom buckets are the operator's responsibility via SDK Views.
     """
     if not _otel_enabled:
@@ -789,7 +789,7 @@ def record_queue_wait(actor: str, queue: str, waited_seconds: float) -> None:
     gauge shows the head of the line, this histogram shows what every
     dispatched job actually waited, retries and re-pends included. Labels
     are the job-side pair (actor, queue capped as everywhere).
-    Respects ``_otel_enabled`` — no-op when False.
+    Respects ``_otel_enabled``, no-op when False.
     """
     if not _otel_enabled:
         return
@@ -798,7 +798,7 @@ def record_queue_wait(actor: str, queue: str, waited_seconds: float) -> None:
         description=(
             "Seconds a job waited between becoming eligible (scheduled_at) "
             "and being claimed (started_at), both server-clock stamps on the "
-            "dispatched row. Attributes: actor, queue (capped — see "
+            "dispatched row. Attributes: actor, queue (capped, see "
             "_bounded_queue)."
         ),
         unit="s",
@@ -806,7 +806,7 @@ def record_queue_wait(actor: str, queue: str, waited_seconds: float) -> None:
 
 
 type TimeoutKind = Literal["start_to_close", "schedule_to_close"]
-"""Which budget a job exceeded — the closed ``kind`` label set of
+"""Which budget a job exceeded, the closed ``kind`` label set of
 ``taskq.jobs.timeouts``."""
 
 
@@ -819,7 +819,7 @@ def record_job_timeout(actor: str, *, kind: TimeoutKind, count: int = 1) -> None
     what ended it: the deadline sweep (which counts a batch at a time),
     and the handler arms where the backend's deadline arbitration refused
     a retry, a snooze or a denial's requeue with ``DeadlineExceeded``.
-    Respects ``_otel_enabled`` — no-op when False.
+    Respects ``_otel_enabled``, no-op when False.
     """
     if not _otel_enabled:
         return
@@ -827,8 +827,8 @@ def record_job_timeout(actor: str, *, kind: TimeoutKind, count: int = 1) -> None
         "taskq.jobs.timeouts",
         description=(
             "Jobs that exceeded a time budget. Attributes: actor, kind "
-            "('start_to_close' — the per-attempt budget, at the timeout "
-            "handler; 'schedule_to_close' — the whole-job deadline, at the "
+            "('start_to_close', the per-attempt budget, at the timeout "
+            "handler; 'schedule_to_close', the whole-job deadline, at the "
             "deadline sweep and the handler arms the backend refused with "
             "DeadlineExceeded)."
         ),
@@ -888,7 +888,7 @@ _lock_expires_in_seconds = get_meter().create_histogram(
         "the previous beat's UPDATE, measured, so a late or failed tick "
         "lowers the sample. 0 when the beat landed after expiry. Under "
         "threshold-gated renewal the sample is stamped on every successful "
-        "beat (renewed or not), so it measures the beat cadence — the floor "
+        "beat (renewed or not), so it measures the beat cadence, the floor "
         "the renewal threshold keeps is pinned by tests, not by this "
         "histogram. No dimensions."
     ),
@@ -902,9 +902,9 @@ def record_lock_expires_in_seconds(worker_id: str, remaining_ttl: float) -> None
 
     Called in heartbeat.py at each successful renewal after the first,
     with the lease the previous renewal stamped minus the time elapsed
-    since — a measurement, never the configured constant, so the
+    since, a measurement, never the configured constant, so the
     lock-expiry alert can fire when renewals run late.
-    Respects ``_otel_enabled`` — no-op when False.
+    Respects ``_otel_enabled``, no-op when False.
     """
     if not _otel_enabled:
         return
@@ -923,7 +923,7 @@ def record_heartbeat_miss(worker_id: str) -> None:
     """Bump the heartbeat.misses counter.
 
     Called in heartbeat.py on each heartbeat renewal failure.
-    Respects ``_otel_enabled`` — no-op when False.
+    Respects ``_otel_enabled``, no-op when False.
     """
     if not _otel_enabled:
         return
@@ -938,7 +938,7 @@ _slot_pool_acquire_failures = get_meter().create_counter(
         "(timeout or connection error). An acquire failure is "
         "infrastructure, not a job outcome: the claimed job recovers by "
         "lock-lease expiry. One dimension: error_type (exception class "
-        "name — a closed set; see _resolve_error_type). The pool name is "
+        "name, a closed set; see _resolve_error_type). The pool name is "
         "in the instrument name and the per-occurrence job id stays in "
         "the log event."
     ),
@@ -950,13 +950,13 @@ def record_slot_pool_acquire_failure(error_type: str | None = None) -> None:
     """Bump the worker.slot_pool.acquire_failures counter.
 
     Called from the exception branch of the bounded per-job acquire in
-    ``taskq.worker.dispatch`` — never the success path, matching
+    ``taskq.worker.dispatch``, never the success path, matching
     ``record_sweep_timeout``'s contract. A rate here is what separates
     one transient timeout from every transactional job on a worker
-    failing to acquire, and ``error_type`` is the exception class name —
+    failing to acquire, and ``error_type`` is the exception class name ,
     omitted, it derives from the exception being handled
     (``_resolve_error_type``).
-    Respects ``_otel_enabled`` — no-op when False.
+    Respects ``_otel_enabled``, no-op when False.
     """
     if not _otel_enabled:
         return
@@ -977,7 +977,7 @@ class _PoolOccupancySource(Protocol):
 
 
 _slot_pool_occupancy_source: _PoolOccupancySource | None = None
-"""The asyncpg pool the occupancy gauge reads — set at slot-pool open
+"""The asyncpg pool the occupancy gauge reads, set at slot-pool open
 and refreshed on credential-reload swaps."""
 
 
@@ -986,7 +986,7 @@ def set_slot_pool_occupancy_source(pool: _PoolOccupancySource | None) -> None:
 
     Called at slot-pool bootstrap open and whenever a credential reload
     swaps the pool, so the gauge always reads the live one. ``None``
-    clears the source — the gauge reports nothing, matching the
+    clears the source, the gauge reports nothing, matching the
     pool-not-open state.
     """
 
@@ -1036,21 +1036,21 @@ class _ActiveJobsSource(Protocol):
 
     Keeps this observability leaf free of a worker import; bootstrap
     passes the real registry, which satisfies this shape structurally.
-    ``count`` is a dict length — safe to read from the SDK reader thread.
+    ``count`` is a dict length, safe to read from the SDK reader thread.
     """
 
     def count(self) -> int: ...
 
 
 _worker_capacity_source: tuple[_ActiveJobsSource, int] | None = None
-"""(active-jobs registry, max_concurrency) — set once by worker bootstrap."""
+"""(active-jobs registry, max_concurrency), set once by worker bootstrap."""
 
 
 def set_worker_capacity_source(active_jobs: _ActiveJobsSource | None, max_concurrency: int) -> None:
     """Point the worker capacity gauges at *active_jobs* and *max_concurrency*.
 
     Called once at worker bootstrap, after the deps that own the
-    registry exist. ``None`` clears the source — both gauges report
+    registry exist. ``None`` clears the source, both gauges report
     nothing, matching a process that hosts no worker.
     """
     global _worker_capacity_source
@@ -1090,7 +1090,7 @@ get_meter().create_observable_gauge(
 get_meter().create_observable_gauge(
     name="taskq.worker.max_concurrency",
     description=(
-        "This worker process's configured max_concurrency — the ceiling "
+        "This worker process's configured max_concurrency, the ceiling "
         "taskq.worker.active_jobs saturates against. No dimensions."
     ),
     unit="1",
@@ -1161,7 +1161,7 @@ _queue_live_workers_cache: dict[str, int] = {}
 
 def update_queue_live_workers_cache(data: dict[str, int]) -> None:
     """Replace the per-queue live-worker cache with fresh data from the
-    leader's query — sampled in the same tick as the queue depth, so the
+    leader's query, sampled in the same tick as the queue depth, so the
     two can be joined on ``queue`` without describing different moments.
 
     A worker is live when its ``last_seen_at`` is within the liveness
@@ -1193,7 +1193,7 @@ _queue_live_workers_gauge = get_meter().create_observable_gauge(
 
 
 type StrandedReason = Literal["no_actor_config", "unserved_queue"]
-"""Why a pending/scheduled row can never dispatch — the closed ``reason``
+"""Why a pending/scheduled row can never dispatch, the closed ``reason``
 label set of ``taskq.jobs.stranded``."""
 
 _stranded_jobs_cache: dict[tuple[str, StrandedReason], int] = {}
@@ -1209,7 +1209,7 @@ def update_stranded_jobs_cache(data: Mapping[tuple[str, StrandedReason], int]) -
     probes only its own subscription's queues, and a worker whose
     last_seen_at has gone stale is not dispatching). Both shapes
     accumulate invisibly to dispatch and the deadline sweep. Keyed by
-    ``(actor, reason)`` so the gauge says which condition held — the two
+    ``(actor, reason)`` so the gauge says which condition held, the two
     have different remediations (register the actor vs. subscribe a
     worker to the queue), and a per-actor total made an operator who
     found the actor_config row present conclude the detector lied.
@@ -1233,8 +1233,8 @@ _stranded_jobs_gauge = get_meter().create_observable_gauge(
     name="taskq.jobs.stranded",
     description=(
         "Pending/scheduled jobs that can never be dispatched, sampled by the "
-        "leader. Attributes: actor, reason ('no_actor_config' — the actor "
-        "has no actor_config row; 'unserved_queue' — the queue dispatch "
+        "leader. Attributes: actor, reason ('no_actor_config', the actor "
+        "has no actor_config row; 'unserved_queue', the queue dispatch "
         "routes the row on has no live worker subscribed)."
     ),
     unit="1",
@@ -1281,9 +1281,9 @@ _progress_publish_failures = get_meter().create_counter(
 def record_progress_publish_failure(channel: str, error_type: str) -> None:
     """Bump the progress.publish_failures counter.
 
-    ``channel`` must be ``'per_job'`` or ``'global'`` — bounded cardinality.
+    ``channel`` must be ``'per_job'`` or ``'global'``, bounded cardinality.
     ``error_type`` is the exception class name (e.g. ``'ResponseError'``).
-    Respects ``_otel_enabled`` — no-op when False.
+    Respects ``_otel_enabled``, no-op when False.
     """
     if not _otel_enabled:
         return
@@ -1293,15 +1293,15 @@ def record_progress_publish_failure(channel: str, error_type: str) -> None:
 def record_progress_flush_failure(stage: str, error_type: str) -> None:
     """Bump the progress.flush_failures counter.
 
-    ``stage`` must be ``'per_job'`` (one job's flush UPDATE failed — that
+    ``stage`` must be ``'per_job'`` (one job's flush UPDATE failed, that
     job's progress since the last flush is lost) or ``'pool'`` (a pool
-    could not be obtained at all — the loop-level getter failed, or the
-    per-job acquire failed/exhausted — so every job's progress is lost).
+    could not be obtained at all, the loop-level getter failed, or the
+    per-job acquire failed/exhausted, so every job's progress is lost).
     The two are materially different incidents and must stay
     distinguishable in an alert rule, which is also why both pool-stage
     sites log a different kind than the per-job one.
     ``error_type`` is the exception class name.
-    Respects ``_otel_enabled`` — no-op when False.
+    Respects ``_otel_enabled``, no-op when False.
     """
     if not _otel_enabled:
         return
@@ -1324,7 +1324,7 @@ def record_sub_enqueue_failure(actor: str, count: int, error_type: str | None = 
     child enqueues that failed, so one incident with N lost children
     records N, not 1. ``error_type`` is the exception class name; omitted,
     it derives from the exception being handled (``_resolve_error_type``).
-    Respects ``_otel_enabled`` — no-op when False.
+    Respects ``_otel_enabled``, no-op when False.
     """
     if not _otel_enabled:
         return
@@ -1334,7 +1334,7 @@ def record_sub_enqueue_failure(actor: str, count: int, error_type: str | None = 
             "Sub-enqueue flush failures after the parent job committed; "
             "each counted unit is one child job that was reported as "
             "enqueued but was not. Attributes: actor (parent job's actor), "
-            "error_type (exception class name — a closed set; see "
+            "error_type (exception class name, a closed set; see "
             "_resolve_error_type)."
         ),
     ).add(count, {"actor": actor, "error_type": _resolve_error_type(error_type)})
@@ -1344,7 +1344,7 @@ _ratelimit_refund_failures = get_meter().create_counter(
     "taskq.ratelimit.refund_failures",
     description=(
         "Rate-limit refund/rollback failures, labeled by bucket, backend, "
-        "and error_type (exception class name — a closed set; see "
+        "and error_type (exception class name, a closed set; see "
         "_resolve_error_type)."
     ),
     unit="1",
@@ -1359,7 +1359,7 @@ def record_ratelimit_refund_failure(
     Called at the rate-limit refund failure catch site. ``error_type`` is
     the exception class name; omitted, it derives from the exception being
     handled (``_resolve_error_type``).
-    Respects ``_otel_enabled`` — no-op when False.
+    Respects ``_otel_enabled``, no-op when False.
     """
     if not _otel_enabled:
         return
@@ -1391,7 +1391,7 @@ def _cached_lazy_instrument[T: (Counter, Histogram)](
     unit, so on an SDK-backed meter the pre-memo shape was already a dict
     lookup. The no-SDK ``_ProxyMeter`` caches nothing: every
     ``create_counter`` mints a fresh ``_ProxyCounter`` and appends it to a
-    list with no cleanup path — so without this memo, the default
+    list with no cleanup path, so without this memo, the default
     deployment (no provider installed, which is taskq's own default)
     leaked one instrument per lazy-instrument call, growing through
     exactly the denial and flush-failure storms the counters exist to
@@ -1399,7 +1399,7 @@ def _cached_lazy_instrument[T: (Counter, Histogram)](
     the name: a meter swap (the meter-isolating test fixtures patch
     ``get_meter`` per test) must mint a fresh instrument on the new meter
     so the isolated reader sees the counts; a stale entry is replaced on
-    the first call after the swap. Emitter-thread only — nothing iterates
+    the first call after the swap. Emitter-thread only, nothing iterates
     these dicts on the SDK reader thread, so the rebind discipline the
     gauge caches follow does not apply.
     """
@@ -1421,7 +1421,7 @@ def _lazy_counter(name: str, *, description: str) -> Counter:
     application that configures its SDK after importing taskq (and the
     meter-isolating test harnesses, which swap ``get_meter`` per test)
     would never see these counts. Call-time resolution alone is not
-    enough — the no-SDK proxy meter caches nothing, so the instrument is
+    enough, the no-SDK proxy meter caches nothing, so the instrument is
     memoized per (meter identity, name); see
     :func:`_cached_lazy_instrument` for why that exact key.
     """
@@ -1449,7 +1449,7 @@ def record_ratelimit_denial(backend: str) -> None:
     bucket name is deliberately NOT a dimension: keyed bucket names are
     caller-derived and unbounded, so a bucket label would reintroduce the
     cardinality class the queue-label cap exists to prevent.
-    Respects ``_otel_enabled`` — no-op when False.
+    Respects ``_otel_enabled``, no-op when False.
     """
     if not _otel_enabled:
         return
@@ -1469,10 +1469,10 @@ def record_job_interrupted(actor: str, *, held: bool) -> None:
     Called when a worker shutdown releases a running attempt back to the
     fleet (``mark_interrupted`` landed). ``held`` buckets the release by
     whether the row was parked behind a hold (the actor was still running
-    when the graces expired) or re-pended immediately — the split an
+    when the graces expired) or re-pended immediately, the split an
     operator reads to see whether deploys are interrupting responsive or
     unresponsive actors. Attributes: actor, hold ("0" | ">0").
-    Respects ``_otel_enabled`` — no-op when False.
+    Respects ``_otel_enabled``, no-op when False.
     """
     if not _otel_enabled:
         return
@@ -1492,10 +1492,10 @@ def record_job_interrupted_noop(actor: str | None) -> None:
     Called when ``mark_interrupted``'s fence declines the release (the row
     moved: a reclaim, a terminal write, or an operator cancel in flight
     owns it). A silent no-op here is the failure mode the project rule
-    names — an interruption that looks released but never landed — so the
+    names, an interruption that looks released but never landed, so the
     fenced-out path is instrumented alongside the success path.
     ``actor`` is None when the fenced-out read cannot attribute one.
-    Respects ``_otel_enabled`` — no-op when False.
+    Respects ``_otel_enabled``, no-op when False.
     """
     if not _otel_enabled:
         return
@@ -1514,14 +1514,14 @@ def record_enqueue_dedup(dedup_reason: str) -> None:
 
     Called from the shared dedup-report helper
     (``backend/_enqueue.py::_log_enqueue_dedup``) at every dedup hit, on
-    both backends — the log lines are per-hit observability, and the
+    both backends, the log lines are per-hit observability, and the
     per-hit terminal-target WARNING arm is budget-bounded at batch
     scale, so the RATE a stampede produces has no log channel left to
     ride on; this counter is that rate. ``dedup_reason`` is the bounded
     enum of reasons a hit can occur (``unique_for`` |
-    ``idempotency_key``) — the same value the helper logs, never a
+    ``idempotency_key``), the same value the helper logs, never a
     caller-controlled string.
-    Respects ``_otel_enabled`` — no-op when False.
+    Respects ``_otel_enabled``, no-op when False.
     """
     if not _otel_enabled:
         return
@@ -1540,15 +1540,15 @@ def record_enqueue_dedup(dedup_reason: str) -> None:
 def record_ratelimit_acquire_dependency_failure(error_type: str) -> None:
     """Bump the ratelimit.acquire_dependency_failures counter.
 
-    Called when a rate-limit acquire fails because the limiter's store —
-    Redis, or the PG fallback behind it — could not answer, and the
+    Called when a rate-limit acquire fails because the limiter's store ,
+    Redis, or the PG fallback behind it, could not answer, and the
     worker failed the acquire closed as a denial. An AVAILABILITY
     signal, distinct from ``taskq.reservation.denials``, which counts
     admission decisions: a denial with this counter rising is an outage
     masquerading as contention, and an operator must read the two
     together before scaling a bucket. ``error_type`` is the exception
     class name.
-    Respects ``_otel_enabled`` — no-op when False.
+    Respects ``_otel_enabled``, no-op when False.
     """
     if not _otel_enabled:
         return
@@ -1556,7 +1556,7 @@ def record_ratelimit_acquire_dependency_failure(error_type: str) -> None:
         "taskq.ratelimit.acquire_dependency_failures",
         description=(
             "Rate-limit acquires that failed on a store dependency (Redis "
-            "or the PG fallback) and were failed closed as denials — an "
+            "or the PG fallback) and were failed closed as denials, an "
             "availability signal, distinct from reservation.denials "
             "(admission decisions). Attributes: error_type (exception "
             "class name)."
@@ -1574,7 +1574,7 @@ def record_reservation_denial(bucket_name: str, source: str) -> None:
     dimension: keyed bucket names are caller-derived and unbounded, so
     the label would reintroduce the cardinality class the queue-label cap
     exists to prevent.
-    Respects ``_otel_enabled`` — no-op when False.
+    Respects ``_otel_enabled``, no-op when False.
     """
     if not _otel_enabled:
         return
@@ -1594,12 +1594,12 @@ def record_reservation_reclaim_drain_failure(error_type: str) -> None:
     """Bump the ratelimit.reclaim_drain_failures counter.
 
     Called when the keyed-reservation slot-row reclaim drain fails. A
-    persistently failing drain strands ``reservation_slots`` rows — a
+    persistently failing drain strands ``reservation_slots`` rows, a
     STORAGE signal, and the pending-depth gauge shows the backlog
     forming. Distinct from heal failures, which are an AVAILABILITY
     signal; the two must not share a counter.
     ``error_type`` is the exception class name.
-    Respects ``_otel_enabled`` — no-op when False.
+    Respects ``_otel_enabled``, no-op when False.
     """
     if not _otel_enabled:
         return
@@ -1620,7 +1620,7 @@ def record_reservation_reclaim_drain_duration(elapsed_seconds: float) -> None:
     Recorded on success and failure alike (callers pass it from a
     ``finally``), so a timeout that aborted the drain still leaves a
     duration sample.
-    Respects ``_otel_enabled`` — no-op when False.
+    Respects ``_otel_enabled``, no-op when False.
     """
     if not _otel_enabled:
         return
@@ -1632,17 +1632,17 @@ def record_reservation_reclaim_drain_duration(elapsed_seconds: float) -> None:
 
 
 def record_reservation_reclaim_drain_rows(rows: int) -> None:
-    """Count rows deleted by one keyed-reclaim drain — ``reservation_slots``
+    """Count rows deleted by one keyed-reclaim drain, ``reservation_slots``
     slot rows and ``rate_limit_buckets`` bucket rows alike.
 
-    Respects ``_otel_enabled`` — no-op when False.
+    Respects ``_otel_enabled``, no-op when False.
     """
     if not _otel_enabled:
         return
     _lazy_counter(
         "taskq.ratelimit.reclaim_drain_rows",
         description=(
-            "Rows deleted by the keyed-reclaim drain — reservation_slots and "
+            "Rows deleted by the keyed-reclaim drain, reservation_slots and "
             "rate_limit_buckets alike (RETURNING-confirmed)."
         ),
     ).add(rows)
@@ -1653,11 +1653,11 @@ def record_reservation_reclaim_heal_failure(error_type: str) -> None:
 
     Called when the acquire-path re-materialisation heal for a keyed
     bucket whose slot rows were deleted by a sibling worker's drain
-    fails. A failing heal denies new admissions for that bucket — an
+    fails. A failing heal denies new admissions for that bucket, an
     AVAILABILITY signal, the opposite of a drain failure (storage); the
     two must not share a counter.
     ``error_type`` is the exception class name.
-    Respects ``_otel_enabled`` — no-op when False.
+    Respects ``_otel_enabled``, no-op when False.
     """
     if not _otel_enabled:
         return
@@ -1696,7 +1696,7 @@ def _observe_keyed_reclaim_pending(options: CallbackOptions) -> Iterable[Observa
 _keyed_reclaim_pending_gauge = get_meter().create_observable_gauge(
     name="taskq.ratelimit.reclaim_pending",
     description=(
-        "Evicted keyed bucket names — reservations and rate limits alike — "
+        "Evicted keyed bucket names, reservations and rate limits alike, "
         "waiting for their rows (slot or bucket) to be reclaimed by the next "
         "drain tick (scalar: bucket names are not a dimension)."
     ),
@@ -1723,7 +1723,7 @@ def record_election_attempt(worker_id: str, *, won: bool) -> None:
 
     Always increments ``election_attempts``; increments ``election_failures``
     only when the attempt did not win the lock.
-    Respects ``_otel_enabled`` — no-op when False.
+    Respects ``_otel_enabled``, no-op when False.
     """
     if not _otel_enabled:
         return
@@ -1828,14 +1828,14 @@ _cron_budget_deferrals = get_meter().create_counter(
         "budget, or the leftover fell below the minimum fundable grant. A "
         "brief burst is catch-up draining in tick-sized batches; a SUSTAINED "
         "rate means one schedule's payload factory is monopolizing the tick "
-        "budget every tick — a slow-but-successful factory never strikes and "
+        "budget every tick, a slow-but-successful factory never strikes and "
         "never auto-disables, so its peers retry every tick without ever "
         "being funded (delayed, not lost: the deferral advances "
         "next_fire_at one leader tick and the owed slot stays inside the "
         "catch-up window). Resolve with the operator knobs, not a restart: "
         "tighten TASKQ_CRON_PAYLOAD_FACTORY_TIMEOUT below the monopolizing "
         "factory's duration (it then takes the strike-and-auto-disable path "
-        "— the intended consequence), or raise "
+        ", the intended consequence), or raise "
         "TASKQ_DISPATCHER_COMMAND_TIMEOUT so the funded budget fits the "
         "monopolizer plus a fundable grant for its peers. Per-schedule "
         "attribution is on the cron-fire-budget-deferred log line, not on "
@@ -1869,7 +1869,7 @@ def record_cron_failure(actor: str, delta: int) -> None:
     """Record a cron failure delta on the UpDownCounter.
 
     On failure, callers add ``+1`` per failure. On success, callers add
-    ``-current_count`` for that schedule to reset the counter to zero —
+    ``-current_count`` for that schedule to reset the counter to zero ,
     a simple ``add(-1)`` would leave a non-zero cumulative value if
     there were multiple consecutive failures.
 
@@ -1881,10 +1881,10 @@ def record_cron_failure(actor: str, delta: int) -> None:
     above ``_bounded_cron_actor``).  Schedules on one actor share a
     series, and the per-schedule attribution the caller already holds
     rides on the ``cron fired`` / ``cron fire failed`` log lines and the
-    cron-fire span instead — ``schedule_id`` is a per-row,
+    cron-fire span instead, ``schedule_id`` is a per-row,
     runtime-minted UUID and identity-like (see the cardinality note
     above ``_lock_expires_in_seconds``).
-    Respects ``_otel_enabled`` — no-op when False.
+    Respects ``_otel_enabled``, no-op when False.
     """
     if not _otel_enabled:
         return
@@ -1898,7 +1898,7 @@ _cron_failure_levels: "WeakKeyDictionary[object, dict[str, int]]" = WeakKeyDicti
 """Per-instrument record of the value put on each actor's failure series.
 
 An UpDownCounter only accepts deltas, so reconciling it against the
-database's own count needs the level the deltas have reached — see
+database's own count needs the level the deltas have reached, see
 :func:`reconcile_cron_failures`.  Keyed by the instrument because the
 level describes THAT instrument's series: a fresh instrument starts from
 zero and must not inherit a level accumulated on another one.
@@ -1931,17 +1931,17 @@ def reconcile_cron_failures(totals: Mapping[str, int]) -> None:
     makes every out-of-process change self-correct on the next tick with
     due work.
 
-    *totals* must be the complete per-actor truth — every actor with a
+    *totals* must be the complete per-actor truth, every actor with a
     failing schedule anywhere in the table (see ``_actor_failure_totals``),
     not the slice one tick's batch happened to touch.  A batch covers only
     DUE schedules, so an actor whose failing schedule was deleted or
     disabled with nothing left due never appears in a batch again; under a
     batch-scoped *totals* its level would strand at its last value.  An
-    actor ABSENT from *totals* therefore reads as a true zero — the
-    database holds no failing schedule for it — and its series is returned
+    actor ABSENT from *totals* therefore reads as a true zero, the
+    database holds no failing schedule for it, and its series is returned
     to zero here.
 
-    Respects ``_otel_enabled`` — no-op when False.
+    Respects ``_otel_enabled``, no-op when False.
     """
     if not _otel_enabled:
         return
@@ -1958,7 +1958,7 @@ def reconcile_cron_failures(totals: Mapping[str, int]) -> None:
             _cron_consecutive_failures.add(delta, {"actor": label})
         level[label] = target
     # *totals* is the complete truth, so a label the database no longer
-    # reports is a schedule set that stopped failing somewhere else —
+    # reports is a schedule set that stopped failing somewhere else ,
     # return it to zero rather than stranding its last level.
     for label in list(level):
         if label not in wanted:
@@ -1997,19 +1997,19 @@ _disabled_schedules_gauge = get_meter().create_observable_gauge(
 # A sweep whose instrumentation lives only on the success path is invisible
 # exactly when it fails: the timeout that aborts the sweep also aborts the
 # code that would have recorded it, so a livelocking sweep emits no samples
-# at all — not zero, nothing. The emitters below are called from `finally`
+# at all, not zero, nothing. The emitters below are called from `finally`
 # blocks and failure branches so a timing-out sweep is recorded as such.
 #
 # Publication discipline: the three cache dicts below are read on TWO
 # threads. The event-loop thread publishes stamps via the record_* / update_*
 # functions, and the OTel SDK reader thread iterates them from the
-# observable-gauge callbacks (``_observe_sweep_success`` et al.) — the
+# observable-gauge callbacks (``_observe_sweep_success`` et al.), the
 # identical cross-thread shape the ``_active_leaders_lock`` in leader.py
 # guards against ("Unsynchronized iteration raises RuntimeError"). So every
 # writer REBINDS a fresh dict (copy-on-write, like ``_queue_depth_cache``
 # and ``_jobs_by_status_cache`` below) rather than mutating in place: an
 # in-place insert that lands while a reader's iterator is open raises
-# ``RuntimeError: dictionary changed size during iteration`` — and the first
+# ``RuntimeError: dictionary changed size during iteration``, and the first
 # success after startup and every post-demotion repopulation are exactly
 # such inserts. A rebind is atomic and leaves the reader's already-open
 # iterator over a frozen object.
@@ -2023,7 +2023,7 @@ def record_sweep_timeout(sweep_name: str) -> None:
     distinction between aborted and merely slow is the actionable one; a
     gauge sampler reports every failure, because its gauge keeps serving its
     last value either way and the read not happening is the whole fault.
-    Respects ``_otel_enabled`` — no-op when False.
+    Respects ``_otel_enabled``, no-op when False.
     """
     if not _otel_enabled:
         return
@@ -2092,7 +2092,7 @@ def record_sweep_batch_size(sweep_name: str, batch_size: int) -> None:
     cancellations; a worker reporting the reduced tier is reporting an
     unhealthy database and must not be silent about it. Feeds BOTH the
     batch-size gauge below AND ``maintenance_health``'s reduced-tier view
-    (health.py reads the cache directly) — so it is deliberately NOT gated
+    (health.py reads the cache directly), so it is deliberately NOT gated
     on ``_otel_enabled``: the health body must keep reporting a latched
     reduced tier when an operator has exported telemetry off, because that
     body is the Prometheus-free surface the degraded signal exists for.
@@ -2106,7 +2106,7 @@ _sweep_batch_size_cache: dict[str, int] = {}
 def update_sweep_batch_size_cache(sweep_name: str, batch_size: int) -> None:
     """Replace the recorded batch size for *sweep_name* (cache-push gauge).
 
-    Rebind, never write in place — same cross-thread reader discipline as
+    Rebind, never write in place, same cross-thread reader discipline as
     :func:`record_sweep_success`.
     """
     global _sweep_batch_size_cache
@@ -2138,10 +2138,10 @@ def record_sweep_batch_size_configured(sweep_name: str, configured_size: int) ->
     (used vs configured) is what makes the sweep-degraded signal track
     per-worker ``event_writer_batch_size``: a literal threshold is blind
     on every deployment whose configured size is not the default.
-    Respects ``_otel_enabled`` — no-op when False (its only consumer is
+    Respects ``_otel_enabled``, no-op when False (its only consumer is
     the OTel gauge, unlike :func:`record_sweep_batch_size`).
 
-    Rebind, never write in place — same cross-thread reader discipline as
+    Rebind, never write in place, same cross-thread reader discipline as
     :func:`record_sweep_success`.
     """
     if not _otel_enabled:
@@ -2198,17 +2198,17 @@ def record_leader_lease_expires_in_seconds(worker_id: str, remaining_ttl: float)
     """Stamp the leader lease's TTL as of this process's last elect/renew.
 
     The leader-side mirror of :func:`record_lock_expires_in_seconds`
-    (heartbeat.py) — but a gauge, not a histogram, because the contract
+    (heartbeat.py), but a gauge, not a histogram, because the contract
     that matters for the lease is FRESHNESS, not distribution: the series
     is present only on the pod that holds the lease, its value is the
     TTL the server just stamped (``leader_lease`` seconds out), and a
     series that stops moving or vanishes is a leader that stopped
-    renewing — the split-brain/no-leader detector's per-pod evidence.
+    renewing, the split-brain/no-leader detector's per-pod evidence.
     Called at election win and each successful renewal in
     ``worker/leader.py``; cleared on demotion by
     :func:`clear_leader_lease_expires_in_seconds` so a demoted pod never
     keeps claiming a lease it no longer holds.
-    Respects ``_otel_enabled`` — no-op when False.
+    Respects ``_otel_enabled``, no-op when False.
 
     Rebind, never write in place: the cache is read on the OTel reader
     thread while this runs on the event-loop thread (same discipline as
@@ -2247,7 +2247,7 @@ def clear_leader_lease_expires_in_seconds() -> None:
 
     Called on leadership demotion with the other leader-only clears: the
     stamp is this process's report of a lease IT holds, and a demoted
-    process exporting a frozen one claims authority it no longer has —
+    process exporting a frozen one claims authority it no longer has ,
     during a failover, which is exactly when the failover bound is being
     read. Rebound to the empty state rather than zeroed: an empty gauge
     yields no data point, so the series goes stale and the new leader's
@@ -2266,7 +2266,7 @@ def record_lock_contention(lock_name: str) -> None:
     lock, and a sustained rate equal to the attempt rate means the loser
     never wins at all. Cron's contention stays on its own dedicated
     counter (``taskq.cron.lock_contention``).
-    Respects ``_otel_enabled`` — no-op when False.
+    Respects ``_otel_enabled``, no-op when False.
     """
     if not _otel_enabled:
         return
@@ -2328,7 +2328,7 @@ get_meter().create_observable_gauge(
 # No worker refuses to start because an actor's queue has no consumer: in
 # a multi-worker fleet no single supervisor can know what consumes a
 # queue. A misrouted actor therefore produces no refusal, no error and no
-# failed job — its rows pile up pending while every probe stays green, so
+# failed job, its rows pile up pending while every probe stays green, so
 # monitoring is the only place that condition can surface, and only at
 # actor granularity. A queue-summed depth cannot separate "one actor on
 # this queue is never consumed" from "this queue is busy", and the
@@ -2336,8 +2336,8 @@ get_meter().create_observable_gauge(
 # pending), reading 0.0 for pending work nobody takes.
 #
 # Dimensions are exactly (actor, queue): both are bounded by the
-# deployment's own registration, and nothing identity-like — job, worker
-# or schedule id — may ride along, or the series that exists to be
+# deployment's own registration, and nothing identity-like, job, worker
+# or schedule id, may ride along, or the series that exists to be
 # alerted on becomes the series that cannot be stored.
 
 
@@ -2372,7 +2372,7 @@ def update_jobs_running_cache(data: Mapping[str, int]) -> None:
     Fed by the backlog sampler from one grouped read over the running
     population. Per actor, not per (actor, queue): the running row's
     queue label is not what dispatched it (re-pended rows route by the
-    actor's assignment), and the capacity question is per actor —
+    actor's assignment), and the capacity question is per actor ,
     which actors hold the fleet's slots while pending work waits. An
     actor with no running jobs vanishes from the series rather than
     freezing at its last count.
@@ -2454,8 +2454,8 @@ get_meter().create_observable_gauge(
     name="taskq.jobs.oldest_pending_age_seconds",
     description=(
         "Seconds since the oldest PENDING job became eligible, per (actor, "
-        "queue). Depth alone is ambiguous — a deep queue that drains is "
-        "healthy throughput — but an actor nobody consumes has a pending "
+        "queue). Depth alone is ambiguous, a deep queue that drains is "
+        "healthy throughput, but an actor nobody consumes has a pending "
         "job whose age grows with wall clock."
     ),
     unit="s",
@@ -2497,14 +2497,14 @@ def update_scheduled_count_cache(count: int) -> None:
 
     Emitted label-less (unlike `taskq.jobs.by_status`, which carries a
     `status` label for every status) specifically so it joins on identical
-    label sets with `taskq.jobs.oldest_due_age_seconds` — also label-less —
+    label sets with `taskq.jobs.oldest_due_age_seconds`, also label-less ,
     in `TaskQScheduledBacklogGrowing`. That alert needs both "the oldest
     due job has waited a long time" AND "the scheduled count is actually
     rising", not the age of a single straggling job (which climbs
     monotonically toward its own promotion regardless of how healthily
     everything behind it drains). A vector `and`/comparison between two
-    `taskq_*` series with mismatched label sets is a silent no-op join —
-    valid PromQL that can never produce a result — so this gauge exists
+    `taskq_*` series with mismatched label sets is a silent no-op join ,
+    valid PromQL that can never produce a result, so this gauge exists
     to keep the two operands directly comparable without a join modifier.
     """
     global _scheduled_count
@@ -2536,8 +2536,8 @@ def update_running_lease_expired_cache(count: int) -> None:
     """Record the count of running jobs whose lock lease is past.
 
     Fed by the backlog sampler (one statement beside jobs-by-status and
-    oldest-due-age). The zombie-running shape — work claimed, lease
-    expired, row still 'running' — is invisible in jobs.by_status (it
+    oldest-due-age). The zombie-running shape, work claimed, lease
+    expired, row still 'running', is invisible in jobs.by_status (it
     counts as a healthy running job) and in the miss counters (a dead
     worker emits nothing): this gauge is the direct count. A healthy
     fleet reads 0 (the reclaim sweep drains expired leases within a tick
@@ -2568,13 +2568,13 @@ _running_lease_expired_gauge = get_meter().create_observable_gauge(
     description=(
         "Running jobs whose lock lease is past expiry (the zombie-running "
         "shape), with rows in a cancel phase (cancel_phase != 0) carved out "
-        "— the reclaim sweep deliberately waits out the cancel grace ladder "
+        ", the reclaim sweep deliberately waits out the cancel grace ladder "
         "for those, so an expired lease mid-cancel is the protocol working, "
         "not a zombie; a cancel that never completes pages elsewhere "
         "(TaskQAbandonedJobs when its worker is alive to escalate, "
-        "TaskQHeartbeatMisses when it died mid-cancel — reclaim honors the "
-        "row to 'cancelled' either way). Healthy reads 0 — the reclaim "
-        "sweep drains expired leases within a tick or two — so a sustained "
+        "TaskQHeartbeatMisses when it died mid-cancel, reclaim honors the "
+        "row to 'cancelled' either way). Healthy reads 0, the reclaim "
+        "sweep drains expired leases within a tick or two, so a sustained "
         "non-zero reading means reclaim is not draining. Sampled by every "
         "worker with taskq.jobs.by_status."
     ),
@@ -2594,7 +2594,7 @@ def record_pruned_jobs(actor: str, status: str, count: int = 1) -> None:
     """Bump the pruned.jobs counter.
 
     Called at the prune sweep call site in leader.py.
-    Respects ``_otel_enabled`` — no-op when False.
+    Respects ``_otel_enabled``, no-op when False.
     """
     if not _otel_enabled:
         return
@@ -2612,7 +2612,7 @@ def record_archived_jobs(status: str, count: int = 1) -> None:
     """Bump the archived.jobs counter.
 
     Called alongside record_pruned_jobs at the prune sweep call site in leader.py.
-    Respects ``_otel_enabled`` — no-op when False.
+    Respects ``_otel_enabled``, no-op when False.
     """
     if not _otel_enabled:
         return
@@ -2630,7 +2630,7 @@ def record_expired_archive_jobs(status: str, count: int = 1) -> None:
     """Bump the expired_archive.jobs counter.
 
     Called at the archive expiry sweep call site in leader.py.
-    Respects ``_otel_enabled`` — no-op when False.
+    Respects ``_otel_enabled``, no-op when False.
     """
     if not _otel_enabled:
         return
@@ -2683,8 +2683,8 @@ def record_error_reporter_failure(reporter_type: str) -> None:
 
     Called at the error-reporter catch site when ``report()`` raises.
     ``reporter_type`` is the exception-safe class name of the reporter
-    instance (bounded cardinality — one per registered implementation).
-    Respects ``_otel_enabled`` — no-op when False.
+    instance (bounded cardinality, one per registered implementation).
+    Respects ``_otel_enabled``, no-op when False.
     """
     if not _otel_enabled:
         return

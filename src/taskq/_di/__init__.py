@@ -1,4 +1,4 @@
-"""Internal DI package — resolution engine and type vocabulary."""
+"""Internal DI package, resolution engine and type vocabulary."""
 
 from taskq._di.lifecycle import detect_factory_lifecycle, detect_lifecycle
 from taskq._di.registry import ProviderRegistry

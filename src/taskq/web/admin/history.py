@@ -32,13 +32,13 @@ _COUNT_CAP: int = 1001  # fetch one over 1000 so we can display "1000+"
 _CURSOR_NULL_SENTINEL: str = "__NULL__"
 _CURSOR_FAR_FUTURE: datetime = datetime(9999, 12, 31, 23, 59, 59, tzinfo=UTC)
 
-# JSON responses render through orjson (taskq._json), never stdlib json —
+# JSON responses render through orjson (taskq._json), never stdlib json ,
 # byte-identical bodies to starlette's stdlib JSONResponse for these payloads.
 _OrjsonJSONResponse: "type[JSONResponse]" = orjson_response_class()
 
 # ── History list SQL ────────────────────────────────────────────────────
 
-# Shared column list — both tables have identical core columns.
+# Shared column list, both tables have identical core columns.
 # retry_kind feeds the attempt_budget macro: an indefinite row's stored
 # max_attempts is inert, and a column the query never fetches can never be
 # rendered (the jobs-list pin's shape).
@@ -148,7 +148,7 @@ def register(router: APIRouter) -> None:
             cursor_id = None
 
         # NUL guard before the text binds ($2/$3): asyncpg rejects a NUL in
-        # a text parameter with an opaque 22021 — the same class the jobs
+        # a text parameter with an opaque 22021, the same class the jobs
         # list filters guard against via parse_text_filter.
         actor = parse_text_filter(actor, "actor")
         queue = parse_text_filter(queue, "queue")

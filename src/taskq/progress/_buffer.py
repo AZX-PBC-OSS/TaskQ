@@ -33,7 +33,7 @@ class _EncodedProgressData:
 class _ProgressBuffer:
     """Mutable per-job accumulator; not part of the public API.
 
-    Intentionally not frozen — ``pending_seq_delta``, ``dirty``, and
+    Intentionally not frozen, ``pending_seq_delta``, ``dirty``, and
     ``last_flush_at`` are mutated on every progress call and flush.
     """
 
@@ -45,7 +45,7 @@ class _ProgressBuffer:
     # attempt must no-op instead of clobbering the new epoch's progress.
     # Fail-closed by construction: dispatch stamps ``attempt + 1`` on
     # claiming, so a running row always carries attempt >= 1 and an
-    # unseeded epoch of 0 matches no running row — the flush no-ops
+    # unseeded epoch of 0 matches no running row, the flush no-ops
     # rather than writing. Production buffers are seeded from the
     # dispatched ``JobRow.attempt``; only direct test construction omits
     # it (against statement doubles that ignore the bound values).
@@ -62,7 +62,7 @@ def _snapshot_progress(
 ) -> tuple[int, dict[str, object]]:
     """Return (seq, state) from a progress buffer for a terminal write.
 
-    If the buffer is None or clean, returns (0, {}) — the caller's default.
+    If the buffer is None or clean, returns (0, {}), the caller's default.
     If dirty, returns the full accumulated seq (base_seq + pending_seq_delta)
     and a copy of pending_state so the terminal write carries all progress.
     """
@@ -91,7 +91,7 @@ def _terminal_seq_and_state(
     """Return (seq, state) for a terminal write that directly SETs progress_seq.
 
     Unlike :func:`_snapshot_progress`, which returns ``(0, {})`` when the buffer
-    is clean, this helper always computes ``base_seq + pending_seq_delta`` —
+    is clean, this helper always computes ``base_seq + pending_seq_delta`` ,
     the authoritative current sequence regardless of flush state.  All
     ``mark_*`` SQL uses direct assignment (``SET progress_seq = $N``), so
     returning 0 for a clean buffer with ``base_seq > 0`` would clobber the
@@ -109,7 +109,7 @@ def _seq_and_state_after_flush_attempt(
 
     If the flush succeeded (buffer is clean), reads ``base_seq`` and
     ``pending_state`` directly via :func:`_progress_after_flush`.  If the
-    flush failed silently (buffer still dirty — connection error, pool
+    flush failed silently (buffer still dirty, connection error, pool
     timeout, etc.), falls back to :func:`_snapshot_progress` which returns
     ``base_seq + pending_seq_delta`` and a copy of ``pending_state`` so
     the pending delta is not lost in the terminal write.

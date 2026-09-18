@@ -493,9 +493,10 @@ async def test_shutdown_exit_gate_trips_when_a_sync_actor_outlives_teardown(
         "the interrupted sync actor's row must be released HELD (scheduled "
         f"behind the exit window); got {row['status']!r}"
     )
-    assert row["attempt"] == enqueued.attempt, (
-        "the interruption refunds the claim's attempt increment: the re-run "
-        "must not spend a second attempt on one interruption"
+    assert row["attempt"] == enqueued.attempt + 1, (
+        "the interrupted claim spends the attempt increment: the attempt "
+        "started executing, and refunding it would re-create the attempt "
+        "epoch the interrupted handler still holds"
     )
     assert row["interrupt_count"] == 1
     scheduled_at = row["scheduled_at"]

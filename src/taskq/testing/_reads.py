@@ -6,7 +6,7 @@
 
 Every read seam returns :func:`_read_copy` products: the stored row
 with its mutable dict fields copied, so top-level mutation of a
-freshly-read row can never reach the backend's stored state — nested
+freshly-read row can never reach the backend's stored state, nested
 containers inside those dicts remain shared (:func:`_read_copy`
 documents the line). This is the same isolation contract
 ``PostgresBackend`` gives for free by materialising a fresh ``JobRow``
@@ -60,7 +60,7 @@ def _copy_result_value(value: Any) -> Any:
     contract), but a direct ``mark_succeeded(result_bytes=...)`` caller
     can store any single JSON value, exactly as PG's jsonb column holds
     it and reads it back (``jsonb_to_dict`` → ``loads`` returns the
-    array/bool/number/string verbatim) — the mirror must read the same
+    array/bool/number/string verbatim), the mirror must read the same
     bytes back the same way, so this copy cannot assume a dict. Mutable
     container shapes get one new container (the shallow-copy line the
     rest of this module takes); JSON scalars are immutable and pass
@@ -80,7 +80,7 @@ def _copy_result_value(value: Any) -> Any:
 def _read_copy(row: JobRow) -> JobRow:
     """Return *row* as an isolated copy for a read result.
 
-    The copy is deliberately shallow — one new container per mutable
+    The copy is deliberately shallow, one new container per mutable
     field, no deep-copy machinery, which is all a test backend needs:
     top-level mutation of a read row (``row.result["injected"] = True``)
     can never reach storage. Nested containers inside those fields are
@@ -99,21 +99,21 @@ def _read_copy(row: JobRow) -> JobRow:
 
 
 def _event_read_copy(event: EventRow) -> EventRow:
-    """The EventRow analogue of :func:`_read_copy` — one new dict for the
+    """The EventRow analogue of :func:`_read_copy`, one new dict for the
     single mutable field, severing the alias a read result would
     otherwise carry into ``_events`` storage."""
     return replace(event, detail=dict(event.detail))
 
 
 def _attempt_read_copy(attempt: AttemptRow) -> AttemptRow:
-    """The AttemptRow analogue of :func:`_read_copy` — one new dict for
+    """The AttemptRow analogue of :func:`_read_copy`, one new dict for
     the single mutable field, severing the alias a read result would
     otherwise carry into ``_attempts`` storage."""
     return replace(attempt, metadata=dict(attempt.metadata))
 
 
 def _schedule_read_copy(record: ScheduleRecord) -> ScheduleRecord:
-    """The ScheduleRecord analogue of :func:`_read_copy` — one new dict
+    """The ScheduleRecord analogue of :func:`_read_copy`, one new dict
     for the single mutable field, severing the alias a read result would
     otherwise carry into ``_schedules`` storage. Pydantic frozen model,
     so the copy goes through ``model_copy`` rather than
@@ -122,7 +122,7 @@ def _schedule_read_copy(record: ScheduleRecord) -> ScheduleRecord:
 
 
 def _batch_row_read_copy(row: BatchRow) -> BatchRow:
-    """The BatchRow analogue of :func:`_read_copy` — one new dict for the
+    """The BatchRow analogue of :func:`_read_copy`, one new dict for the
     single mutable field, severing the alias a read result would
     otherwise carry into ``_batches`` storage."""
     return replace(row, metadata=dict(row.metadata))
@@ -132,7 +132,7 @@ def _post_sweep_result_view(row: JobRow, now: datetime) -> JobRow:
     """Return *row* as the PG result-TTL sweep would have left it.
 
     PostgresBackend nulls an expired result via the leader-only
-    ``sweep_expired_results`` — but only when that sweep happens to fire,
+    ``sweep_expired_results``, but only when that sweep happens to fire,
     so a read landing between expiry and the next sweep still observes the
     result. The in-memory backend has no leader loop to schedule, so
     ``get`` evaluates the same predicate against the injected Clock on
@@ -143,8 +143,8 @@ def _post_sweep_result_view(row: JobRow, now: datetime) -> JobRow:
     comparison is strictly ``<`` (a read at exactly ``result_expires_at``
     still sees the result), and a row whose ``result`` is already ``None``
     is untouched. Only ``result`` / ``result_size_bytes`` /
-    ``result_expires_at`` are nulled — the stored row is never mutated,
-    only the returned copy — so status and every other column (terminal
+    ``result_expires_at`` are nulled, the stored row is never mutated,
+    only the returned copy, so status and every other column (terminal
     ones included) pass through unchanged, and an expired result can
     neither revive nor alter a terminal state. ``get`` feeds this view
     the already-isolated :func:`_read_copy` product, so the view's own
@@ -246,7 +246,7 @@ async def _poll_reclaim_events(
     visibility_delay: timedelta | None = None,
 ) -> list[EventRow]:
     """InMemoryBackend is single-threaded and synchronous, so ``event_id``
-    order already equals insertion order — there is no concurrent-commit
+    order already equals insertion order, there is no concurrent-commit
     race for a *visibility_delay* to guard against here, unlike
     PostgresBackend (see ``taskq.constants.RECLAIM_EVENT_VISIBILITY_DELAY``).
     The parameter is accepted and ignored purely so callers can pass it

@@ -109,9 +109,9 @@ class FakeBackend:
     ``(status='running', locked_by_worker, attempt)``, so once one
     terminal write has moved a job row out of ``running`` every later
     terminal write for that job matches nothing and reports ``False``.
-    The double keeps the terminal-state half of that contract — the first
+    The double keeps the terminal-state half of that contract, the first
     ``mark_succeeded``/``mark_cancelled`` for a job id lands, any
-    subsequent one returns ``False`` — so a test exercising a
+    subsequent one returns ``False``, so a test exercising a
     cancel/success race cannot pass vacuously against a backend that let
     both writes land. The worker/attempt conjuncts are subsumed by
     first-writer-wins: the landing write IS the holder's, and on the real
@@ -120,7 +120,7 @@ class FakeBackend:
     """
 
     # Bound to the canonical constant (not a literal) so the fake can
-    # never drift behind a protocol bump — a hardcoded 2 here previously
+    # never drift behind a protocol bump, a hardcoded 2 here previously
     # survived the v2→v3 list_jobs contract change unnoticed.
     BACKEND_PROTOCOL_VERSION: int = BACKEND_PROTOCOL_VERSION
     supports_transactional_simulation: bool = False

@@ -6,22 +6,22 @@ raised exception to the appropriate backend terminal write, span event,
 and structured log entry.
 
 Failure-logging contract.  The names below are the event strings as
-emitted — alert on them verbatim:
+emitted, alert on them verbatim:
 
-- ``state-change`` — INFO, lifecycle transitions.
-- ``job_timeout`` / ``job_exception`` — WARNING, every attempt (retryable
+- ``state-change``, INFO, lifecycle transitions.
+- ``job_timeout`` / ``job_exception``, WARNING, every attempt (retryable
   or terminal), with full error_class/error_message/error_traceback.
-- ``job-failed`` — ERROR, exactly once per dead job, emitted by all five
+- ``job-failed``, ERROR, exactly once per dead job, emitted by all five
   handlers after the terminal write persists.
-- ``terminal-write-retry`` — WARNING, one per retried attempt of a
+- ``terminal-write-retry``, WARNING, one per retried attempt of a
   terminal write that hit an infra error (attempt number, wait, cause).
-- ``terminal-write-failed`` — ERROR, infra write failure after the retry
+- ``terminal-write-failed``, ERROR, infra write failure after the retry
   budget is spent.
 
 Note the spelling split: this module emits ``job-failed`` hyphenated (the
 prevailing convention elsewhere in the tree) but ``job_timeout`` /
 ``job_exception`` in snake_case.  That inconsistency is real and is left
-alone deliberately — event names are an observable contract that
+alone deliberately, event names are an observable contract that
 operators' alert rules already match on, and the project-wide naming
 convention (kebab vs snake vs OTel dotted namespaces) is an open
 decision.  Renaming them belongs to that decision, not to a docstring
@@ -118,7 +118,7 @@ __all__ = [
 
 # Infra failures during the terminal-write itself (DB connection drop,
 # timeout acquiring a pool connection, socket errors, pool/conn
-# lifecycle refusals) — as opposed to the actor's own exception, which
+# lifecycle refusals), as opposed to the actor's own exception, which
 # is what decide_after_failure/error_info describe. These must NOT be
 # treated as "the actor failed with this exception": doing so would
 # overwrite the real error_info and re-run the retry decision against
@@ -129,7 +129,7 @@ __all__ = [
 # infrastructure: a bounded pool close (worker teardown, credential
 # rotation drain) terminates or releases the slot connection underneath
 # an in-flight dispatch, and the fallback terminal write then hits a
-# closed pool or a released proxy — teardown infrastructure, never a
+# closed pool or a released proxy, teardown infrastructure, never a
 # job outcome; letting it escape paints a job failure that never
 # happened (drain mode counts it as exit 3).
 _TERMINAL_WRITE_INFRA_EXCEPTIONS: tuple[type[BaseException], ...] = (
@@ -165,7 +165,7 @@ started. Attempts alone do not bound the window: against a black-holed
 Postgres each attempt costs a full statement timeout, and counting to
 four would hold the consumer slot for four of them. A retry whose wait
 would end past the budget is not made. One statement timeout at the
-default settings — a write still failing after that long is an outage,
+default settings, a write still failing after that long is an outage,
 not a blip. The seconds are canonical in taskq.constants: the settings
 layer's release-park lease floor reserves exactly this much of the
 termination budget for this write, and the two must not drift."""
@@ -188,7 +188,7 @@ async def _terminal_write_with_retry[T](
     *write* builds the backend call afresh per attempt (a coroutine can be
     awaited once). Each attempt runs under ``shield_with_retrieval`` so an
     external cancel never strands an in-flight statement, and only
-    :data:`_TERMINAL_WRITE_INFRA_EXCEPTIONS` is retried — a fence outcome
+    :data:`_TERMINAL_WRITE_INFRA_EXCEPTIONS` is retried, a fence outcome
     (``False``, ``"noop"``, ``None``) is the backend's answer and returns
     as-is, and any other exception is a defect that stays loud on the
     first raise. The budget is both :data:`_TERMINAL_WRITE_ATTEMPTS` and
@@ -199,7 +199,7 @@ async def _terminal_write_with_retry[T](
 
     Not for ``*_with_conn`` writes: those run on the job's own transaction
     connection, and an infra error there has already aborted the
-    transaction — re-issuing the statement on it cannot land.
+    transaction, re-issuing the statement on it cannot land.
     """
     started = monotonic()
     budget_s = _TERMINAL_WRITE_BUDGET.total_seconds()
@@ -248,7 +248,7 @@ class _TerminalWriteFailed(BaseException):
     ``mark_succeeded_with_conn``) when the DB write raises an infra
     exception.  Extends :class:`BaseException` (not :class:`Exception`) so
     it propagates past the generic ``except Exception`` dispatch clauses
-    without being re-dispatched into ``_handle_generic_exception`` — which
+    without being re-dispatched into ``_handle_generic_exception``, which
     would misclassify the infra error as the actor's failure.
 
     The actor already succeeded; the job stays ``running`` and is reclaimed
@@ -264,7 +264,7 @@ class _AttemptFencedOut(BaseException):
     """Control-flow sentinel: the attempt's terminal write matched no row.
 
     Raised inside the transactional success path when
-    ``mark_succeeded_with_conn`` returns ``False`` — the fencing predicate
+    ``mark_succeeded_with_conn`` returns ``False``, the fencing predicate
     (``id`` + ``status='running'`` + ``locked_by_worker`` + attempt epoch)
     matched nothing, so the row moved underneath this attempt (a lease
     reclaim re-pended it and a later attempt owns it now). Raised, not
@@ -274,7 +274,7 @@ class _AttemptFencedOut(BaseException):
 
     Extends :class:`BaseException` (not :class:`Exception`) so it
     propagates past the generic ``except Exception`` dispatch clauses
-    without being re-dispatched into ``_handle_generic_exception`` — a
+    without being re-dispatched into ``_handle_generic_exception``, a
     fenced-out write is not the actor's failure, and routing it there
     would issue a second, also-fenced terminal write and misreport the
     attempt. The consumer's transactional wrapper catches it by name and
@@ -291,8 +291,8 @@ def _log_terminal_write_failed(
 ) -> None:
     """Log a terminal-write infra failure without mutating job state.
 
-    The job row is left in ``running`` — none of the write's attempts
-    landed (see :func:`_terminal_write_with_retry`) — so lock-lease
+    The job row is left in ``running``, none of the write's attempts
+    landed (see :func:`_terminal_write_with_retry`), so lock-lease
     expiry and the crash sweep reclaim it for retry. This is intentionally
     NOT re-dispatched into
     ``_handle_generic_exception`` (that would classify the *infra*
@@ -325,8 +325,8 @@ def _disown_job(disowned_jobs: "set[UUID] | None", job: JobRow) -> None:
     is left ``running`` under this worker's lock. The heartbeat excludes
     the recorded ids from lease renewal (see ``WorkerDeps.disowned_jobs``),
     which is what turns "lock-lease expiry reclaims it" from a promise
-    into the actual recovery. ``None`` is a caller with no worker deps —
-    a direct test invocation — and nothing to record into.
+    into the actual recovery. ``None`` is a caller with no worker deps ,
+    a direct test invocation, and nothing to record into.
     """
     if disowned_jobs is not None:
         disowned_jobs.add(job.id)
@@ -355,11 +355,11 @@ def _log_job_failed(
     error_traceback: str | None = None,
     **context: object,
 ) -> None:
-    """Emit ``job-failed`` — the single ERROR event for a dead job.
+    """Emit ``job-failed``, the single ERROR event for a dead job.
 
     Alerting contract: exactly one ``job-failed`` per terminal
     (non-retryable) failure, emitted by all five handlers *after* the
-    terminal write persists — never on the retry path, never on infra
+    terminal write persists, never on the retry path, never on infra
     write failure (that is ``terminal-write-failed``), never on ownership
     mismatch (our write did not land; the job is not dead by our hand).
 
@@ -388,11 +388,11 @@ async def _post_write_row(backend: Backend, job: JobRow) -> JobRow:
 
     The snooze-family terminal writes return a tri-state string (unlike
     ``mark_failed_or_retry``, which returns the written row), so the
-    post-write world a hook inspects — status, error_class, the standing
-    attempt — is re-read here. A re-read that fails with an infra error
+    post-write world a hook inspects, status, error_class, the standing
+    attempt, is re-read here. A re-read that fails with an infra error
     or finds no row degrades to the dispatch-time row: the terminal
     write already landed, and misreporting it as a terminal-write
-    failure — or dropping the hooks entirely — would be worse than
+    failure, or dropping the hooks entirely, would be worse than
     handing the hooks the stale snapshot.
     """
     reread_log: structlog.stdlib.BoundLogger = structlog.get_logger("taskq.worker.hooks")
@@ -431,7 +431,7 @@ async def _report_terminal_failure(
     actor_config: ActorConfigLike,
     error_reporter: ErrorReporter | None,
 ) -> None:
-    """Announce a failure the terminal write just made final — once, and
+    """Announce a failure the terminal write just made final, once, and
     the same way however the job got there.
 
     The span event, the ``running -> failed`` state change, the
@@ -513,7 +513,7 @@ async def _handle_timeout(
         text = render_exception(exc)
     # The message and traceback are derived from an uncontrolled exception:
     # rejecting them (the ErrorInfo guard's job for caller-supplied text)
-    # would strand the very job the text describes — the terminal write
+    # would strand the very job the text describes, the terminal write
     # must land with the defect visible as an escape sequence.
     raw_message = str(exc)
     error_info = ErrorInfo(
@@ -593,7 +593,7 @@ async def _handle_timeout(
         )
         if updated_row is None:
             # Fenced out: the row moved underneath this attempt (a reclaim
-            # race), so nothing was scheduled — announce nothing. The live
+            # race), so nothing was scheduled, announce nothing. The live
             # attempt's own write records the real transition.
             log.debug(
                 "consume-timeout-noop",
@@ -605,7 +605,7 @@ async def _handle_timeout(
         if updated_row.status == "failed":
             # The write's deadline arm refused the retry: the row's
             # schedule_to_close lies before the next dispatch, so the
-            # backend landed it failed with DeadlineExceeded — a terminal
+            # backend landed it failed with DeadlineExceeded, a terminal
             # failure, reported exactly like a Fail decision.
             record_job_timeout(job.actor, kind="schedule_to_close")
             await _report_terminal_failure(
@@ -656,7 +656,7 @@ async def _handle_timeout(
             write_name="mark_failed_or_retry",
         )
         if updated_row is None:
-            # Fenced out — see the retry branch above.
+            # Fenced out, see the retry branch above.
             log.debug(
                 "consume-timeout-noop",
                 from_state="running",
@@ -694,7 +694,7 @@ async def _handle_snooze(
     *,
     error_reporter: ErrorReporter | None = None,
 ) -> AttemptOutcome:
-    # The row's snooze_count column is the deferral counter — the
+    # The row's snooze_count column is the deferral counter, the
     # backend's snooze arm increments it; no metadata mirror is merged
     # here (one source of truth).
     tri = await _terminal_write_with_retry(
@@ -895,7 +895,7 @@ async def _handle_reservation_class_denied(
     # Every denial a worker fields is counted before anything else: the
     # denial itself is the operational signal (a saturated bucket), and
     # the outcome of the snooze write below must never be able to lose
-    # it. Labeled by source only — bucket names are caller-derived and
+    # it. Labeled by source only, bucket names are caller-derived and
     # unbounded, so they are not a dimension (see obs/_otel.py).
     record_reservation_denial(e.bucket_name, e.source)
     # The raw retry_after is a synchroniser under mass denial: every job
@@ -903,7 +903,7 @@ async def _handle_reservation_class_denied(
     # deficit for same-round rate-limit denials, one lease horizon for
     # slot denials), so the herd re-attempts in lockstep and each cycle
     # costs claim + acquire + snooze per job. Spread it with the actor's
-    # retry jitter — the same knob and formula the failure backoff uses —
+    # retry jitter, the same knob and formula the failure backoff uses ,
     # before handing it to the snooze arm, whose MIN_DEFERRAL_INTERVAL
     # floor still applies downstream. Timing-only: retry_after is
     # advisory, never an admission or budget decision.
@@ -1016,7 +1016,7 @@ async def _handle_generic_exception(
         text = render_exception(e)
     # The message and traceback are derived from an uncontrolled exception:
     # rejecting them (the ErrorInfo guard's job for caller-supplied text)
-    # would strand the very job the text describes — the terminal write
+    # would strand the very job the text describes, the terminal write
     # must land with the defect visible as an escape sequence.
     error_info = ErrorInfo(
         error_class=type(e).__name__,
@@ -1063,7 +1063,7 @@ async def _handle_generic_exception(
         )
         if updated_row is None:
             # Fenced out: the row moved underneath this attempt (a reclaim
-            # race), so nothing was scheduled — announce nothing. The live
+            # race), so nothing was scheduled, announce nothing. The live
             # attempt's own write records the real transition.
             log.debug(
                 "consume-exception-noop",
@@ -1073,7 +1073,7 @@ async def _handle_generic_exception(
             )
             return "noop"
         if updated_row.status == "failed":
-            # The write's deadline arm refused the retry — see
+            # The write's deadline arm refused the retry, see
             # _handle_timeout's retry branch.
             record_job_timeout(job.actor, kind="schedule_to_close")
             await _report_terminal_failure(
@@ -1124,7 +1124,7 @@ async def _handle_generic_exception(
             write_name="mark_failed_or_retry",
         )
         if updated_row is None:
-            # Fenced out — see the retry branch above.
+            # Fenced out, see the retry branch above.
             log.debug(
                 "consume-exception-noop",
                 from_state="running",

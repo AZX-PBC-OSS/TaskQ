@@ -1,6 +1,6 @@
 """Credential-safe DSN host extraction for logging.
 
-Single-purpose tiny module — same pattern as :mod:`taskq._json`.
+Single-purpose tiny module, same pattern as :mod:`taskq._json`.
 The leading underscore on the module name signals "internal to taskq."
 """
 

@@ -2,7 +2,7 @@
 
 Consumed by ``TokenBucket.acquire()``, the sliding-window primitive,
 the concurrency reservation, and the unified AND-composition registry
-.  The shape is frozen — callers read fields, never mutate them.
+.  The shape is frozen, callers read fields, never mutate them.
 """
 
 from dataclasses import dataclass

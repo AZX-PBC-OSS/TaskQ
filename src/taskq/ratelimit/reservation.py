@@ -1,6 +1,6 @@
 """Concurrency reservation primitive using pre-allocated slot rows.
 
-PG-only — no Redis fast path. Slot rows live in ``taskq.reservation_slots``;
+PG-only, no Redis fast path. Slot rows live in ``taskq.reservation_slots``;
 acquisition uses a ``FOR UPDATE SKIP LOCKED`` CTE that, on the denial
 branch, reports the earliest held lease's expiry as the retry hint in the
 same statement. The heartbeat loop (``src/taskq/worker/heartbeat.py``)
@@ -12,7 +12,7 @@ stamps the fleet-reclaim bookkeeping on ``reservation_slots``: the
 ``keyed`` mark (set at materialisation by
 :class:`ConcurrencyReservation`'s ``keyed`` flag) and the
 ``last_used_at`` staleness stamp, refreshed by the very UPDATE/INSERT
-that already touches the row — coupling staleness tracking to the row
+that already touches the row, coupling staleness tracking to the row
 modification that drives progress. The maintenance leader's
 ``sweep_idle_keyed_rows`` deletes keyed rows unused past the operator
 horizon, closing the residual where a keyed bucket's rows orphan when
@@ -51,23 +51,23 @@ logger = structlog.get_logger("taskq.ratelimit.reservation")
 # One statement, one row set, two conflict-arm rules. The stamp rule:
 # re-materialisation over rows that SURVIVED (the registry's re-resolve
 # path after an idle eviction whose rows outlived the pending-reclaim
-# drain, held by another worker's live leases) restarts the horizon —
+# drain, held by another worker's live leases) restarts the horizon ,
 # ensure_slots' contract promises the bucket a fresh ``last_used_at``,
 # and a bucket that just came back into a live registry must not read
 # as idle past the horizon on staleness that predates its
 # re-materialisation, or the leader tick between the ensure and the
 # acquire's first stamp deletes the whole bucket out from under the
-# acquiring worker. The mark rule: ``keyed = existing AND EXCLUDED`` —
+# acquiring worker. The mark rule: ``keyed = existing AND EXCLUDED`` ,
 # the mark may be born true (the INSERT arm) or driven to false, never
 # resurrected. A keyed=false row is a static claim, and the registry's
 # concrete-name collision guard is process-local: another process's
 # registry can legally hold a static declaration whose concrete name
 # equals this keyed ref's, and flipping those rows true would hand the
 # fleet sweep a STATIC reservation's rows (no keyed lifecycle, no heal,
-# no re-materialisation — every later acquisition on that worker denies
+# no re-materialisation, every later acquisition on that worker denies
 # forever). The reverse direction stays: a static bootstrap ensure over
 # former keyed rows retires the mark (never-sweep again). The conflict
-# arm never touches the holder/lease columns — held state is untouched.
+# arm never touches the holder/lease columns, held state is untouched.
 _ENSURE_SLOTS_SQL_TEMPLATE = """\
 INSERT INTO "{schema}".reservation_slots (bucket_name, slot_index, keyed, last_used_at)
 SELECT $1, generate_series(0, $2 - 1), $3, clock_timestamp()
@@ -80,11 +80,11 @@ ON CONFLICT (bucket_name, slot_index) DO UPDATE SET
 # branch rides the same round trip:
 # ``earliest_held`` is an aggregate (exactly one row even over zero
 # matches), so the LEFT JOIN yields one row whose acquired fields are
-# NULL when nothing was acquired — the Python side reads the hint off
+# NULL when nothing was acquired, the Python side reads the hint off
 # that row instead of issuing a second statement.
 #
-# The acquirability predicate below — ``job_id IS NULL OR
-# lease_expires_at < clock_timestamp()`` — is THE definition of a free
+# The acquirability predicate below, ``job_id IS NULL OR
+# lease_expires_at < clock_timestamp()``, is THE definition of a free
 # slot, and it has a coupled reader: the dispatch claim's
 # reservation-headroom gate (taskq/backend/_dispatch_sql.py's
 # reservation_holdings / reservation_headroom CTEs) clamps an actor's
@@ -97,13 +97,13 @@ ON CONFLICT (bucket_name, slot_index) DO UPDATE SET
 # The hint is computed server-side (``clock_timestamp()``, the same
 # clock the leases are stamped with and the free-slot predicate reads)
 # so app↔DB clock skew cannot stretch or shrink it. It is NULL when no
-# live-held row exists — every row free but row-locked by a peer acquire
-# (the SKIP LOCKED case), or the anomalous held-without-lease state —
+# live-held row exists, every row free but row-locked by a peer acquire
+# (the SKIP LOCKED case), or the anomalous held-without-lease state ,
 # and the caller substitutes the flat constant. GREATEST clamps the
 # microsecond skew between the WHERE's and the SELECT's own
 # ``clock_timestamp()`` evaluations inside this one statement.
 #
-# The last_used_at stamp rides the acquired arm's UPDATE — the same
+# The last_used_at stamp rides the acquired arm's UPDATE, the same
 # statement that modifies the row also refreshes its staleness mark,
 # avoiding a dedicated stamping round trip. Only the acquired row is
 # stamped; the fleet reclaim sweep groups by bucket and decides on
@@ -206,7 +206,7 @@ ORDER BY slot_index"""
 class SlotLease(int):
     """A slot index that also carries the fence identifying its exact lease.
 
-    The value IS the ``slot_index`` — it subclasses ``int`` so every existing
+    The value IS the ``slot_index``, it subclasses ``int`` so every existing
     use (ordering, equality, ``$N`` binding, dict keys, logging) is unchanged
     and the token rides along the acquire→release round trip untouched, even
     through :class:`~taskq.ratelimit.composition.ReservationHandle`, which
@@ -220,7 +220,7 @@ class SlotLease(int):
     target for the redispatch.  A slot can only be re-acquired after it was
     released (``acquired_at`` goes NULL) or after its lease expired (so the new
     ``acquired_at`` is strictly later than ``lease_expires_at``, itself later
-    than the old ``acquired_at``) — in both cases the old fence can no longer
+    than the old ``acquired_at``), in both cases the old fence can no longer
     match.  Under a frozen ``FakeClock`` a release-then-reacquire within the
     same instant is the one case two leases can share a fence; real time never
     stands still, and the zombie case this fences against requires expiry,
@@ -334,15 +334,15 @@ class _InMemorySlotTable:
                     return SlotLease(i, now)
 
             # Every slot is held with a live lease: the honest re-attempt
-            # time is the earliest expiry — the capacity that can actually
-            # free — plus the safety margin, mirroring the PG arm's
+            # time is the earliest expiry, the capacity that can actually
+            # free, plus the safety margin, mirroring the PG arm's
             # denial-branch hint. A slot whose job_id is set but whose
             # lease is NULL (no production path stamps this) or past (an
             # expired lease is acquirable above, so it never reaches the
             # denial) contributes no expiry; with none at all the flat
             # constant is the fallback, as it is on PG for the SKIP
             # LOCKED case. The live filter guarantees expiry >= now, so
-            # no clamp is needed here — the PG statement's GREATEST
+            # no clamp is needed here, the PG statement's GREATEST
             # covers the microsecond skew between its own two
             # clock_timestamp() reads, which a single clock read has none
             # of.
@@ -443,17 +443,17 @@ class _InMemorySlotTable:
     ) -> SyncResult:
         """In-memory equivalent of the PG ``sync_slots`` function.
 
-        Computes diff between *desired_slots* and the current bucket state:
-        inserts missing slots (fills gaps from prior held-slot-preserving
-        shrinks), deletes excess free slots, and reports held slots that
-        cannot be deleted. Slot indices are persistent keys and never shift
-        — matching the PG model.
+         Computes diff between *desired_slots* and the current bucket state:
+         inserts missing slots (fills gaps from prior held-slot-preserving
+         shrinks), deletes excess free slots, and reports held slots that
+         cannot be deleted. Slot indices are persistent keys and never shift
+        , matching the PG model.
 
-        "Free" uses the same definition as ``acquire``: a slot with an
-        EXPIRED lease is acquirable, hence deletable — only slots with a
-        live (unexpired) lease are skipped. Skipping expired-lease slots
-        would let a dead worker's leaked slots defeat a shrink indefinitely
-        (they stay acquirable, so the old larger cap keeps being honored).
+         "Free" uses the same definition as ``acquire``: a slot with an
+         EXPIRED lease is acquirable, hence deletable, only slots with a
+         live (unexpired) lease are skipped. Skipping expired-lease slots
+         would let a dead worker's leaked slots defeat a shrink indefinitely
+         (they stay acquirable, so the old larger cap keeps being honored).
         """
         now = self._clock.now()
         inserted: list[tuple[str, int]] = []
@@ -506,11 +506,11 @@ class ConcurrencyReservation:
     carry the fleet-reclaimable ``keyed`` flag and a ``last_used_at``
     stamp (refreshed by this class's acquire/release/ensure statements),
     so the maintenance leader's ``sweep_idle_keyed_rows`` can reclaim
-    them after the OWNING PROCESS dies — the in-process registry
+    them after the OWNING PROCESS dies, the in-process registry
     bookkeeping that would otherwise name them dies with it. A
     statically declared reservation keeps the default: its rows are
     never fleet-reclaimable (there is no keyed lifecycle, no acquire-path
-    heal, and no re-materialisation — a sweep that deleted them would
+    heal, and no re-materialisation, a sweep that deleted them would
     leave a permanently denying limiter).
     """
 
@@ -583,7 +583,7 @@ class ConcurrencyReservation:
 
         Workers filter registry-global reservations by their own schema at
         startup (a process-global registry may carry reservations declared
-        for other schemas/databases — touching those would write into the
+        for other schemas/databases, touching those would write into the
         wrong schema or fail noisily).
         """
         return self._schema
@@ -594,7 +594,7 @@ class ConcurrencyReservation:
 
         Carried on the instance so the row-writing statements can stamp
         the fleet-reclaimable mark without every call site re-deriving
-        it — the constructor is the single point that knows the
+        it, the constructor is the single point that knows the
         reservation's lifecycle origin.
         """
         return self._keyed
@@ -619,7 +619,7 @@ class ConcurrencyReservation:
     def table(self) -> _InMemorySlotTable:
         """The in-memory slot table (requires ``clock`` at construction)."""
         if self._table is None:
-            raise RuntimeError("in-memory table not available — pass clock= at construction")
+            raise RuntimeError("in-memory table not available, pass clock= at construction")
         return self._table
 
     async def ensure_slots(
@@ -639,23 +639,23 @@ class ConcurrencyReservation:
 
         Inserts the bucket's full slot row set with this reservation's
         fleet-reclaimable mark and a fresh ``last_used_at``; the conflict
-        arm (rows already present — re-materialisation over survivors,
+        arm (rows already present, re-materialisation over survivors,
         or another process's earlier materialisation) refreshes
         ``last_used_at`` on every conflicting row and converges the
         ``keyed`` mark toward immortality without ever touching the
         holder/lease columns (held state is untouched):
 
         - a keyed materialisation (or its heal) re-marks rows that are
-          already keyed and refreshes their staleness — re-materialised
+          already keyed and refreshes their staleness, re-materialised
           survivors restart the horizon;
         - a keyed materialisation over rows marked ``keyed=false``
           leaves them false: that mark is a STATIC claim (born false,
           possibly declared in a process whose registry this worker's
           process-local collision guard cannot see), and a static
-          reservation has no acquire-path heal — swept rows would deny
+          reservation has no acquire-path heal, swept rows would deny
           forever;
         - a later static declaration of the same name (the bootstrap's
-          startup ensure) retires keyed rows to ``keyed=false`` —
+          startup ensure) retires keyed rows to ``keyed=false`` ,
           never-sweep again, the immortality direction a live static
           declaration owns.
         """
@@ -672,8 +672,8 @@ class ConcurrencyReservation:
 
         The acquire-path heal for keyed reservations uses this to
         distinguish a bucket whose rows were deleted out from under it
-        (zero rows — re-materialise via :meth:`ensure_slots`) from
-        ordinary contention (rows present, all held — deny). A read-only
+        (zero rows, re-materialise via :meth:`ensure_slots`) from
+        ordinary contention (rows present, all held, deny). A read-only
         existence probe: it never writes. *timeout* bounds the pool
         acquire exactly as:meth:`ensure_slots`' does.
         """
@@ -696,7 +696,7 @@ class ConcurrencyReservation:
     ) -> SlotLease:
         """Acquire a slot. Returns the acquired ``slot_index``.
 
-        The return value is a :class:`SlotLease` — an ``int`` that also
+        The return value is a :class:`SlotLease`, an ``int`` that also
         carries the fence :meth:`release` needs to tell this lease apart from
         an earlier, expired one on the same slot.  Pass it back to
         :meth:`release` (which is what ``ReservationHandle`` does) to get that
@@ -715,7 +715,7 @@ class ConcurrencyReservation:
         if pool is None:
             if self._table is None:
                 raise RuntimeError(
-                    "pool=None but no in-memory table — pass clock= at "
+                    "pool=None but no in-memory table, pass clock= at "
                     "construction for in-memory acquire, or supply a PG pool"
                 )
             # The keyed mark rides the materialisation exactly as the PG
@@ -739,8 +739,8 @@ class ConcurrencyReservation:
             return slot_index
 
         # No explicit transaction: the acquire is one data-modifying-CTE
-        # statement, atomic on its own — its FOR UPDATE SKIP LOCKED row
-        # lock lives exactly as long as the statement — so BEGIN/COMMIT
+        # statement, atomic on its own, its FOR UPDATE SKIP LOCKED row
+        # lock lives exactly as long as the statement, so BEGIN/COMMIT
         # would be two extra round trips per reserved job.
         async with pool.acquire(timeout=timeout) as conn:
             row = await conn.fetchrow(
@@ -755,8 +755,8 @@ class ConcurrencyReservation:
             # Denial branch of the acquire statement: the acquired fields
             # are NULL and the hint column carries the earliest held
             # lease's remaining seconds (NULL when no live-held row was
-            # readable). The margin is added client-side so both arms —
-            # this and the in-memory twin — share one definition of it.
+            # readable). The margin is added client-side so both arms ,
+            # this and the in-memory twin, share one definition of it.
             hint_seconds = row["retry_after_seconds"] if row is not None else None
             retry_after = (
                 timedelta(seconds=float(hint_seconds)) + RESERVATION_RETRY_HINT_MARGIN
@@ -789,7 +789,7 @@ class ConcurrencyReservation:
         """Release slot. No-op if ``worker_id`` mismatch.
 
         Also a no-op when *slot_index* is a :class:`SlotLease` whose fence no
-        longer matches the slot row — i.e. the caller is releasing a lease that
+        longer matches the slot row, i.e. the caller is releasing a lease that
         has since expired and been re-acquired.  Without that gate a zombie
         attempt (heartbeats stalled, job reclaimed and redispatched, original
         coroutine never cancelled) frees the slot its own LIVE successor
@@ -803,7 +803,7 @@ class ConcurrencyReservation:
         if pool is None:
             if self._table is None:
                 raise RuntimeError(
-                    "pool=None but no in-memory table — pass clock= at "
+                    "pool=None but no in-memory table, pass clock= at "
                     "construction for in-memory release, or supply a PG pool"
                 )
             self._table.release(self._name, slot_index, worker_id)
@@ -848,7 +848,7 @@ class ConcurrencyReservation:
         if pool is None:
             if self._table is None:
                 raise RuntimeError(
-                    "pool=None but no in-memory table — pass clock= at "
+                    "pool=None but no in-memory table, pass clock= at "
                     "construction for in-memory peek, or supply a PG pool"
                 )
             free, held = self._table.peek_slots(self._name)
@@ -892,7 +892,7 @@ async def sync_slots(
     held-slot-preserving shrinks), delete excess free slots, and report
     held slots that could not be deleted.
 
-    *timeout* bounds the WHOLE pass — one connection acquire plus a
+    *timeout* bounds the WHOLE pass, one connection acquire plus a
     transaction of statements per reservation, so a call costs
     O(reservations) round trips and a wedged store must not park the
     caller past the bound. Raises :class:`TimeoutError` when it fires
@@ -905,9 +905,9 @@ async def sync_slots(
     live (unexpired) lease are reported as ``skipped_held``. The anomalous
     ``job_id NOT NULL / lease_expires_at NULL`` state (no code path
     produces it, but the nullable schema permits it) is conservatively
-    reported as held rather than deleted — matching the in-memory table.
+    reported as held rather than deleted, matching the in-memory table.
     Treating expired-lease rows as held would let a dead worker's leaked slots
-    defeat a shrink indefinitely — the rows stay acquirable, so the old
+    defeat a shrink indefinitely, the rows stay acquirable, so the old
     larger cap would keep being honored. Deleting an expired-lease row is
     safe: lease expiry is the design's abandonment signal (the acquire CTE
     would hand the same slot to a new job anyway), and a late release by

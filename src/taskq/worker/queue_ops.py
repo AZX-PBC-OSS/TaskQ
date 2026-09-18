@@ -145,7 +145,7 @@ async def set_queue_max_concurrent(
     Unlike ``actor_config.max_concurrent``, this is read once at worker
     startup, so a change needs a worker restart to take effect.
 
-    ``max_concurrent`` must be ``>= 1`` or ``None`` — the table's CHECK
+    ``max_concurrent`` must be ``>= 1`` or ``None``, the table's CHECK
     constraint (``max_concurrent IS NULL OR max_concurrent >= 1``)
     enforces the same, but rejecting here saves the operator from a raw
     asyncpg ``CheckViolationError`` traceback. ``None`` is the uncapped
@@ -171,7 +171,7 @@ async def set_queue_max_concurrent(
     assert row is not None
     # Clearing the mode caches here is not strictly required (this upsert
     # never touches `mode`, and a fresh row's DEFAULT mode equals the
-    # resolver's miss fallback) — but the queues-table writes are exactly
+    # resolver's miss fallback), but the queues-table writes are exactly
     # two upserts in this module, and clearing on both keeps the cache
     # correct without assuming those two facts stay coupled.
     invalidate_queue_mode_caches()

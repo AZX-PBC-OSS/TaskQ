@@ -4,7 +4,7 @@ Extracted from ``_reads._list_jobs`` so that ``cancel_where`` (bulk
 cancel) reuses the exact same filter logic. Only predicate fields
 (queue, status, actor, identity_key, batch_id, tags, active) are
 translated to conditions. The ``cursor``, ``limit``, and ``order_by``
-fields are NOT handled here — callers apply them separately.
+fields are NOT handled here, callers apply them separately.
 
 This module is SQL-only; the in-memory backend filters via its own
 implementation in ``testing/_reads.py``. Filter semantics between the
@@ -28,7 +28,7 @@ class FilterSQL:
     ``conditions`` and ``params`` are stored as tuples so the container
     itself is immutable (prevents reassignment of the field). Individual
     param elements (e.g. ``list[str]`` for ``ANY()``) are inherently
-    mutable — callers consume them immediately without mutation.
+    mutable, callers consume them immediately without mutation.
     """
 
     conditions: tuple[str, ...] = ()
@@ -43,7 +43,7 @@ def build_filter_conditions(filter: JobFilter) -> FilterSQL:
 
     Only predicate fields (queue, status, actor, identity_key, batch_id,
     tags, active) are translated to conditions. The ``cursor``, ``limit``,
-    and ``order_by`` fields are NOT handled here — callers apply them
+    and ``order_by`` fields are NOT handled here, callers apply them
     separately:
 
     - ``_list_jobs`` appends the cursor keyset condition and LIMIT/OFFSET

@@ -1,11 +1,11 @@
 """Bulk cancel SQL implementation for PostgresBackend.
 
-Two-statement pattern — pending/scheduled first, then running — mirroring
+Two-statement pattern, pending/scheduled first, then running, mirroring
 the single-job ``write_cancel_request`` path:
 
-1. ``cancel_pending_scheduled`` — UPDATE pending/scheduled rows to
+1. ``cancel_pending_scheduled``, UPDATE pending/scheduled rows to
    terminal ``cancelled`` with EPQ-safe predicates on the target table.
-2. ``cancel_running`` — UPDATE running rows with ``cancel_phase=0`` to
+2. ``cancel_running``, UPDATE running rows with ``cancel_phase=0`` to
    ``cancel_phase=1`` (cooperative cancel), using a fresh snapshot that
    catches jobs dispatched between statements.
 
@@ -21,7 +21,7 @@ matching RUNNING row rescheduled mid-drain (a denial snooze, a shutdown
 interrupt, a crash reclaim, a consumer retry) lands pending/scheduled at
 an id the pending arm has already passed, where the running arm (strictly
 after it, matching only ``running AND cancel_phase=0``) can never see it
-(#237: the pre-rounds drain returned normally with such a row uncancelled,
+(the pre-rounds drain returned normally with such a row uncancelled,
 contradicting the "cancels EVERY matching job" contract below). The next
 round's fresh cursor re-walks from the bottom of the key space and picks
 the straggler up; the drain stops at the first round that matched nothing,
@@ -42,7 +42,7 @@ the same deliberately non-atomic contract the drain has always documented
 for a concurrent enqueue slipping a new matching row in between batches.
 The drain terminates on the WINDOW count: the
 ``matched_count`` aggregate each driving statement returns from its own
-MATERIALIZED ``matching`` CTE — never on the UPDATE's affected-row
+MATERIALIZED ``matching`` CTE, never on the UPDATE's affected-row
 count: under READ COMMITTED a row windowed by the CTE that a dispatcher
 claims (``pending→running``) between the statement's snapshot and the
 UPDATE's row lock fails the EPQ re-check on the target and drops out of
@@ -57,8 +57,8 @@ by the same bounded transaction as their driving UPDATE, and the batch
 carries a server-side ``statement_timeout`` (``SET LOCAL`` semantics,
 the same capture/restore discipline the maintenance sweeps use), so the
 INSERT-to-COMMIT span is not merely kept inside the margin
-:data:`taskq.constants.RECLAIM_EVENT_VISIBILITY_DELAY` documents — the
-timeout is the enforcement — with one batched ``unnest`` INSERT per
+:data:`taskq.constants.RECLAIM_EVENT_VISIBILITY_DELAY` documents, the
+timeout is the enforcement, with one batched ``unnest`` INSERT per
 event kind, never one round trip per row.
 
 NOTIFY is sent by the caller (``PostgresBackend.cancel_where``) after the
@@ -87,7 +87,7 @@ from taskq.backend._sweeps import (
 )
 from taskq.connections import (
     _RetryGuard,  # pyright: ignore[reportPrivateUsage]  # Why: the per-attempt pool discipline the dead-on-acquire retry hands to this drain's batch op: the annotation seam for _one_batch below; a local copy would drift from the discipline it documents.
-    _with_fresh_connection_retry,  # pyright: ignore[reportPrivateUsage]  # Why: the one implementation of the dead-on-acquire retry, shared with the enqueue paths — a local copy would drift from the discipline it documents.
+    _with_fresh_connection_retry,  # pyright: ignore[reportPrivateUsage]  # Why: the one implementation of the dead-on-acquire retry, shared with the enqueue paths, a local copy would drift from the discipline it documents.
 )
 from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining
@@ -111,7 +111,7 @@ _UUID_MIN = UUID(int=0)
 #: interrupt, a crash reclaim, a consumer retry. No single
 #: forward-only pass can see them, because the pending arm has already
 #: windowed past their ids and the running arm matches only
-#: ``status='running' AND cancel_phase=0`` (#237).
+#: ``status='running' AND cancel_phase=0``.
 #:
 #: Why a hard cap rather than "loop while progress": each round can only
 #: match rows a concurrent writer re-fed into the pending/scheduled (or
@@ -139,7 +139,7 @@ _UUID_MIN = UUID(int=0)
 #: in-repo instance of the shape: keep fetching batches, break when one
 #: comes back under the limit. The rounds adopt that
 #: re-scan-until-satisfied instinct in place of the single forward-only
-#: pass the pre-#237 drain made. Two deliberate divergences: every arm
+#: pass the pre-fix drain made. Two deliberate divergences: every arm
 #: pages on a keyset cursor inside its drain (no batch re-walks rows an
 #: earlier batch of the same arm already handled, where a bare
 #: predicate window re-evaluates them), and the loop is hard-capped:
@@ -222,9 +222,9 @@ async def _drain_cancel_batches(
     plan that can no longer see the keyset cursor's selectivity, and the
     re-walk the cursor exists to prevent returns mid-drain.
 
-    Termination keys on the WINDOW count — the ``matched_count``
+    Termination keys on the WINDOW count, the ``matched_count``
     aggregate the statement returns from its own MATERIALIZED
-    ``matching`` CTE — never on the UPDATE's affected-row count: under
+    ``matching`` CTE, never on the UPDATE's affected-row count: under
     READ COMMITTED a row windowed by the CTE that a dispatcher claims
     (``pending→running``) between the statement's snapshot and the
     UPDATE's row lock fails the EPQ re-check and drops out of the
@@ -238,7 +238,7 @@ async def _drain_cancel_batches(
     writes succeed, so a deadlocked batch contributes no phantom ids; the
     retry re-runs the CTE, which no longer matches rows an earlier
     committed batch cancelled (EPQ predicates) but does re-match this
-    batch's rolled-back rows — progress is never lost and nothing is
+    batch's rolled-back rows, progress is never lost and nothing is
     counted twice.
 
     Each batch attempt runs under ``_with_fresh_connection_retry`` so the
@@ -260,7 +260,7 @@ async def _drain_cancel_batches(
         the whole batch back server-side (the drain re-runs it: EPQ
         predicates skip whatever earlier batches committed, the cursor
         is unchanged, nothing is cancelled or counted twice), while past
-        the COMMIT the flag refuses the wrapper's retry (#236).
+        the COMMIT the flag refuses the wrapper's retry.
         """
         async with guard.checkout() as conn:
             async with conn.transaction():
@@ -322,7 +322,7 @@ async def _cancel_where(
     statement_timeout_ms: int = DEFAULT_EVENT_WRITER_STATEMENT_TIMEOUT_MS,
 ) -> tuple[BulkCancelResult, list[NotifyTarget]]:
     # Defence-in-depth: re-validate the schema identifier at the call site
-    # (docs/architecture.md §Identifier validation) — construction-time
+    # (docs/architecture.md §Identifier validation), construction-time
     # validation alone is single-point.
     if not _IDENT_RE.match(schema):
         raise ValueError(f"invalid schema identifier: {schema!r}")
@@ -344,7 +344,7 @@ async def _cancel_where(
     # EPQ-safe: predicates on the target table (j.status) are re-evaluated
     # for concurrently-modified rows.
     cancel_ps_sql = f"""
-    -- MATERIALIZED is load-bearing: without it the planner may inline the
+    -- MATERIALIZED is essential: without it the planner may inline the
     -- LIMIT-ed matching CTE into the UPDATE as a nested loop and update
     -- more rows than the LIMIT admits.
     -- The window is a keyset page, not a fresh scan: `id > cursor` starts
@@ -352,7 +352,7 @@ async def _cancel_where(
     -- gives the cursor its meaning and keeps the scan on an id-ordered
     -- index. Without the cursor, every pass re-walks from the bottom of
     -- the key space and discards the rows earlier batches already moved
-    -- to 'cancelled' (measured: batch N discards (N-1) * batch_size —
+    -- to 'cancelled' (measured: batch N discards (N-1) * batch_size ,
     -- the drain's quadratic term), and at fleet scale the later batches
     -- trip their own statement_timeout and strand the tail.
     WITH matching AS MATERIALIZED (
@@ -373,7 +373,7 @@ async def _cancel_where(
     --   join leaves the planner free to pick the scan method and join
     --   order for `jobs`. At these row counts it picks a Seq Scan of
     --   `jobs` hash-joined against the CTE, with the status predicate
-    --   applied as a post-scan filter — so every batch re-visits and
+    --   applied as a post-scan filter, so every batch re-visits and
     --   re-rejects every row earlier batches already moved to
     --   'cancelled', and the drain is quadratic in backlog depth.
     --   MATERIALIZED does NOT prevent this: it fixes what the join's
@@ -382,11 +382,11 @@ async def _cancel_where(
     --   `j.id = ANY (<array>)` is instead a RESTRICTION clause on `jobs`
     --   alone. There is no join to reorder, and the planner answers it
     --   with one primary-key probe per id (measured: `Index Cond: id =
-    --   ANY (...)` on jobs_pkey) — the Seq Scan is merely costed, not
+    --   ANY (...)` on jobs_pkey), the Seq Scan is merely costed, not
     --   chosen, and the batch's plan pin keeps that choice being made
     --   with this batch's real cursor value rather than a generic one.
     batch_ids AS MATERIALIZED (
-        -- The last element is the greatest id this batch windowed — the
+        -- The last element is the greatest id this batch windowed, the
         -- drain's next cursor. PostgreSQL has no max(uuid) aggregate, so
         -- the ordered array carries it; the ORDER BY is stated explicitly
         -- rather than assumed from `matching`'s scan order because the
@@ -401,7 +401,7 @@ async def _cancel_where(
         -- path stamps: the same outcome must read the same way whichever
         -- path produced it, or a cancelled-jobs dashboard splits into two
         -- populations that mean one thing and only one of them carries an
-        -- explanation. Row-only, like the single-job path — the event
+        -- explanation. Row-only, like the single-job path, the event
         -- detail shape stays {{from_state, to_state}}.
         SET status = 'cancelled', finished_at = clock_timestamp(),
             error_class = '{CANCEL_ORIGIN_PENDING}'
@@ -428,9 +428,9 @@ async def _cancel_where(
     """
 
     # Statement 2: cooperative cancel for running jobs with cancel_phase=0
-    # Fresh snapshot — catches jobs dispatched between statements 1 and 2.
+    # Fresh snapshot, catches jobs dispatched between statements 1 and 2.
     cancel_running_sql = f"""
-    -- MATERIALIZED is load-bearing: without it the planner may inline the
+    -- MATERIALIZED is essential: without it the planner may inline the
     -- LIMIT-ed matching CTE into the UPDATE as a nested loop and update
     -- more rows than the LIMIT admits.
     -- Same keyset window as the pending/scheduled arm, against the same
@@ -499,7 +499,7 @@ async def _cancel_where(
         prev_statuses: dict[UUID, str] = dict(
             zip(batch_ids, list(row["cancelled_prev_statuses"] or []), strict=True)
         )
-        # Per-row detail: from_state is each job's own pre-cancel status —
+        # Per-row detail: from_state is each job's own pre-cancel status ,
         # sharing one detail across the unnest would stamp a single
         # from_state on every event in a mixed pending/scheduled batch.
         await conn.execute(
@@ -543,7 +543,7 @@ async def _cancel_where(
             if wid is not None
         )
 
-    # The two-arm drain as bounded fixpoint ROUNDS (#237). A single
+    # The two-arm drain as bounded fixpoint ROUNDS. A single
     # pair of passes loses matching rows that a concurrent re-pend
     # moves BEHIND the pending arm's keyset cursor mid-drain: the row
     # was 'running' (or phase!=0) when the pending arm windowed past

@@ -7,12 +7,12 @@ and makes IDs naturally sortable by creation time.
 Also provides :func:`new_base62` for short identifiers where a full UUID
 is overkill.  Three precision modes are available:
 
-- ``"random"`` — pure random, no timestamp.  Good for test bucket names
+- ``"random"``, pure random, no timestamp.  Good for test bucket names
   and other labels where sortability doesn't matter.
-- ``"second"`` — timestamp with second precision + random suffix.
+- ``"second"``, timestamp with second precision + random suffix.
   IDs generated in different seconds sort correctly; within the same
   second, order is arbitrary but IDs are still unique.
-- ``"millisecond"`` — timestamp with millisecond precision + random suffix.
+- ``"millisecond"``, timestamp with millisecond precision + random suffix.
   Finer-grained sortability at the cost of more timestamp characters.
 """
 
@@ -64,7 +64,7 @@ integer sized to the modulus alone the headroom is 0-7 bits, and at the
 default length the leading character comes out of the low half of the
 alphabet half again as often as it should. Eight extra bytes put the
 range at least ``2**64`` times the modulus, so the bias is below
-``2**-64`` — one ``os.urandom`` call as before, and no retry loop.
+``2**-64``, one ``os.urandom`` call as before, and no retry loop.
 """
 
 
@@ -86,7 +86,7 @@ def new_base62(
     Three *precision* modes control the timestamp prefix:
 
     ``"random"``
-        Pure random — no timestamp.  Minimum length 1.
+        Pure random, no timestamp.  Minimum length 1.
         Good for test bucket names and labels.
 
     ``"second"``

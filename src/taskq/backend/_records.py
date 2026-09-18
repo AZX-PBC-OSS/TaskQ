@@ -59,7 +59,7 @@ def jsonb_param(value: dict[str, object] | None) -> str | None:
     ``::jsonb`` in the SQL string.
 
     Raises ``ValueError`` when the value carries a NUL (U+0000), which
-    ``jsonb`` cannot store — see :func:`~taskq._json.dumps_jsonb_str` for why
+    ``jsonb`` cannot store, see :func:`~taskq._json.dumps_jsonb_str` for why
     that has to fail here rather than inside the INSERT.
     """
     if value is None:
@@ -99,7 +99,7 @@ def item_jsonb_param(
 
     Why: the batch build loops serialize every item before any SQL runs,
     so a NUL in any item previously raised a bare ``ValueError`` that
-    named neither the item nor the field — one bad item aborted the
+    named neither the item nor the field, one bad item aborted the
     whole batch with no attribution. Pydantic validation failures get
     per-item annotation in the client layer; the NUL ``ValueError``
     bypassed that contract, so the same annotation is attached here, at
@@ -108,7 +108,7 @@ def item_jsonb_param(
     is issued, so nothing is written (attribution, not partial
     admission).
 
-    ``None`` normalizes to ``'{}'`` — the batch loops' ``or '{}'``
+    ``None`` normalizes to ``'{}'``, the batch loops' ``or '{}'``
     folded in so call sites stay one call.
     """
     try:
@@ -121,7 +121,7 @@ def item_tags_jsonb_param(tags: tuple[str, ...], *, idx: int, actor: str) -> str
     """``dumps_jsonb_str`` for one *batch* item's tags, same attribution.
 
     The batch path binds tags as ``$N::jsonb[]`` (jagged-array transit),
-    so a NUL tag hits the same ``jsonb_in`` rejection as a NUL payload —
+    so a NUL tag hits the same ``jsonb_in`` rejection as a NUL payload ,
     see :func:`item_jsonb_param` for the annotation rationale. Only
     reachable by bypassing the ``EnqueueArgs`` text-field chokepoint
     (``__post_init__`` rejects NUL tags at construction); the guard here

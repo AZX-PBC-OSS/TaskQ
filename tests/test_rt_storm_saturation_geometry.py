@@ -159,6 +159,7 @@ async def _seed_running(
     )
 
 
+@pytest.mark.load_sensitive
 async def test_full_fleet_geometry_saturates_without_livelock(pg_dsn: str) -> None:
     """max_concurrency=2, every pool at its true default size, all four
     dimensions loaded concurrently: both slots hold slot conns across
@@ -167,6 +168,13 @@ async def test_full_fleet_geometry_saturates_without_livelock(pg_dsn: str) -> No
     inside the bounded window. Then each saturation half: worker_pool
     fully held degrades-and-resolves (no deadlock); heartbeat_pool fully
     held fails fast inside its bounded acquire (loud, classified).
+
+    Load-sensitive, deliberately: the test saturates one containerized
+    Postgres from every pool dimension with two-second heartbeat command
+    budgets, which is the livelock property it exists to pin. Under
+    parallel-lane neighbors a busy shared PG trips the budget on a
+    healthy run, so the pin belongs on the quiet serial lane where a
+    timeout means a real hang and nothing else.
     """
     schema = f"tst_{new_base62()}".lower()
     settings = make_integration_settings(
