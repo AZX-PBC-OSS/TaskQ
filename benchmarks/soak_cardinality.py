@@ -174,13 +174,13 @@ async def _run_soak(
     orig_sweep_res = reg.evict_idle_keyed_reservations
     orig_sweep_rl = reg.evict_idle_keyed_rate_limits
 
-    def counted_sweep_res(idle_for: timedelta) -> int:
+    def counted_sweep_res(idle_for: timedelta, *, max_pending_reclaims: int | None = None) -> int:
         counters["res"] += 1
-        return orig_sweep_res(idle_for)
+        return orig_sweep_res(idle_for, max_pending_reclaims=max_pending_reclaims)
 
-    def counted_sweep_rl(idle_for: timedelta) -> int:
+    def counted_sweep_rl(idle_for: timedelta, *, max_pending_reclaims: int | None = None) -> int:
         counters["rl"] += 1
-        return orig_sweep_rl(idle_for)
+        return orig_sweep_rl(idle_for, max_pending_reclaims=max_pending_reclaims)
 
     reg.evict_idle_keyed_reservations = counted_sweep_res  # type: ignore[method-assign]
     reg.evict_idle_keyed_rate_limits = counted_sweep_rl  # type: ignore[method-assign]
