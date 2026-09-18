@@ -779,6 +779,27 @@ raises, so nothing points you at the call site — audit for them explicitly.
   and it reports the dropped remainder count. The bound follows
   `TASKQ_EXCEPTION_MESSAGE_MAX_CHARS` when raised.
 
+### A crash reclaim honours an in-flight cancel: the row ends `cancelled`, not `pending`
+
+> **Unreleased.**
+
+If a job's holder died while a cancel request was in flight and the lock
+stayed expired past `cancel_grace + cleanup_grace + 60s`, the crash-reclaim
+sweep used to put the row back `pending` with `cancel_phase` and
+`cancel_requested_at` wiped whenever retries remained, so the retried attempt
+ran to completion even though a cancel had been requested. The reclaim now
+evaluates operator intent first: a row carrying `cancel_phase != 0` past that
+horizon terminalises `cancelled` whatever its retry budget, keeping
+`cancel_phase`/`cancel_requested_at` as the audit trail of the honored
+request and stamping `finished_at`. The attempt row still records
+`outcome='crashed'`/`WorkerCrashed`; the job row left by a worker that
+isolated itself on heartbeat loss now also carries `error_class='HeartbeatLost'`
+where it used to be NULL. Automation that expected a cancel-addressed row to
+re-run after its holder crashed now sees a terminal `cancelled` row instead
+(see [Cancellation](cancellation.md) and the
+[Crash-reclaim interaction](../architecture.md#crash-reclaim-interaction)
+section of [Architecture](../architecture.md)).
+
 ### `unique_for`'s default `unique_states` now includes `succeeded`
 
 > **Unreleased.** Breaking for actors using `unique_for` without an

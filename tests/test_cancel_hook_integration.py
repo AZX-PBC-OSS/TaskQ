@@ -679,7 +679,13 @@ async def test_worker_dies_phase1(pg_dsn: str) -> None:
 
                 row = await backend.get(job_id)
                 assert row is not None
-                assert row.status in ("pending", "crashed")
+                assert row.status == "cancelled", (
+                    "a worker that dies mid-phase-1 leaves the operator's "
+                    "cancel in flight with no holder left to honour it: the "
+                    "deeply-expired reclaim must terminalise 'cancelled' "
+                    "(#238: operator intent outranks the retry budget), not "
+                    "re-pend the row with its cancel wiped"
+                )
             finally:
                 if not consumer_task.done():
                     consumer_task.cancel()

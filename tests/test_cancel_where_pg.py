@@ -344,6 +344,17 @@ class TestDeadlockRetry:
         }
 
     @staticmethod
+    def _ps_empty_row() -> dict[str, object]:
+        """The pending arm's terminating batch: an empty window (matched
+        0 below the batch size ends that arm's drain)."""
+        return {
+            "matched_count": 0,
+            "cancelled_directly": 0,
+            "cancelled_ids": [],
+            "cancelled_prev_statuses": [],
+        }
+
+    @staticmethod
     def _running_empty_row() -> dict[str, object]:
         return {
             "matched_count": 0,
@@ -366,11 +377,17 @@ class TestDeadlockRetry:
         """_cancel_where retries on DeadlockDetectedError and succeeds."""
         ps_row = self._ps_success_row()
         running_row = self._running_empty_row()
+        # Round 1: the ps arm's first batch deadlocks, its retry commits
+        # the ps row (matched 1 < batch size ends that drain), the
+        # running arm drains empty. Round 2 (the #237 fixpoint's
+        # confirmation pass): both arms window empty and the loop stops.
         pool, _ = self._mock_pool_and_conn(
             fetch_rows=[
                 asyncpg.DeadlockDetectedError(),
                 ps_row,
                 running_row,
+                self._ps_empty_row(),
+                self._running_empty_row(),
             ]
         )
 
@@ -398,14 +415,27 @@ class TestDeadlockRetry:
         """_cancel_where succeeds immediately without retry."""
         ps_row = self._ps_success_row()
         running_row = self._running_empty_row()
-        pool, conn = self._mock_pool_and_conn(fetch_rows=[ps_row, running_row])
+        # Round 1 drains both arms (2 driving fetchrows); round 2, the
+        # #237 fixpoint's confirmation pass, which must run because round
+        # 1 made progress, windows both arms empty (2 more) and stops.
+        pool, conn = self._mock_pool_and_conn(
+            fetch_rows=[
+                ps_row,
+                running_row,
+                self._ps_empty_row(),
+                self._running_empty_row(),
+            ]
+        )
 
         sql = MagicMock()
         sql.insert_event = "INSERT INTO job_events VALUES ($1, $2, $3, $4)"
 
         await _cancel_where(pool, "taskq", sql, JobFilter(tags=("x",)), "test")
 
-        assert conn.fetchrow.call_count == 2
+        assert conn.fetchrow.call_count == 4, (
+            "round 1's two driving batches plus round 2's two empty "
+            "confirmation batches: the fixpoint's bounded, terminating shape"
+        )
 
     async def test_deadlock_during_executemany_retries_correctly(self) -> None:
         """Deadlock during the event write (after fetchrow succeeds)
@@ -414,7 +444,16 @@ class TestDeadlockRetry:
         running_row = self._running_empty_row()
         # Attempt 1: fetchrow → ps_row, batched event INSERT → deadlock
         # Attempt 2: fetchrow → ps_row, event INSERTs → ok, fetchrow → running_row
-        pool, conn = self._mock_pool_and_conn(fetch_rows=[ps_row, ps_row, running_row])
+        # Round 2 (the #237 fixpoint confirmation): both arms empty.
+        pool, conn = self._mock_pool_and_conn(
+            fetch_rows=[
+                ps_row,
+                ps_row,
+                running_row,
+                self._ps_empty_row(),
+                self._running_empty_row(),
+            ]
+        )
 
         # The batch transaction also carries statement_timeout capture /
         # restore executes around the driving fetchrow; the injected
@@ -461,6 +500,8 @@ class TestDeadlockRetry:
                     "cancel_requested_ids": [jid],
                     "cancel_requested_workers": [None],
                 },
+                self._ps_empty_row(),
+                self._running_empty_row(),
             ]
         )
 

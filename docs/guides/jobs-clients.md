@@ -162,7 +162,7 @@ Serialises the payload through `ref.payload_type`, enqueues the job, and returns
 |---|---|---|---|
 | `ref` | `ActorRef[P, R]` | required | The actor to dispatch. |
 | `payload` | `P` | required | The payload model instance. Re-validated through `ref.payload_type` before insertion. |
-| `queue` | `QueueName \| None` | `ref.queue` | Override the actor's default queue. Must match `[A-Za-z0-9_][A-Za-z0-9_.-]*` — note `:` is excluded, because it separates segments in the `taskq:global:queue:` concurrency-cap namespace. |
+| `queue` | `QueueName \| None` | `ref.queue` | Override the actor's default queue **for this job's first placement only** — retries and every other re-pend route by the actor's current queue assignment; see [Queue overrides: first placement only](#queue-overrides-first-placement-only). Must match `[A-Za-z0-9_][A-Za-z0-9_.-]*` — note `:` is excluded, because it separates segments in the `taskq:global:queue:` concurrency-cap namespace. |
 | `scheduled_at` | `datetime \| None` | `None` | When to make the job eligible for dispatch. `None` means immediate — the backend's server stamps `scheduled_at` and decides `pending`/`scheduled` (the single-arbiter rule; immune to app↔DB clock skew). Pass a future **timezone-aware** `datetime` for deferred execution; naive datetimes raise `ValueError`. |
 | `priority` | `int \| None` | `None` | Dispatch priority. Higher values are dispatched first within the same queue. |
 | `schedule_to_close` | `datetime \| None` | derived from `retry.time_budget` | **Deprecated** (emits `DeprecationWarning`): an absolute datetime crosses clock domains (the app clock that produced it vs the database clock that evaluates it) and can misbehave under skew. Declare `retry.time_budget` on the actor instead — the interval form is anchored to the database clock. When supplied (timezone-aware; naive raises `ValueError`) it overrides the `time_budget`-derived interval. Hard deadline: if the job has not reached a terminal state by this datetime it fails with `DeadlineExceeded`. |
@@ -176,6 +176,44 @@ Serialises the payload through `ref.payload_type`, enqueues the job, and returns
 | `span_id` | `str \| None` | extracted from OTel span | Span ID for distributed tracing. See `trace_id`. |
 | `metadata` | `dict[str, object] \| None` | `{}` | Per-job metadata stored in the `jobs.metadata` JSONB column. Merged with the library-injected `singleton` key when applicable. The caller's dict is never mutated. |
 | `tags` | `list[str] \| None` | `[]` | Per-job tags stored in `jobs.tags text[]`. Must match `\A\w(?:[\w\-]*\w)?\Z` (1–255 chars). Used for filtering and categorization in queries and the admin UI. See [Tags](#tags). |
+
+### Queue overrides: first placement only
+
+A `queue=` override governs **where a consumer first claims the job** — nothing more. The row is
+placed on that queue with its label and is dispatched by that queue's consumers for its first
+attempt. The moment the job is handed back to the fleet by anything other than a fresh enqueue —
+a failure retry, an admission-denial or actor snooze, a crash reclaim, a shutdown interrupt, an
+operator `retry_job` — it is routed at dispatch by the actor's **current stored queue
+assignment** (`actor_config.queue`), not by the label it still carries.
+
+The label is kept as the audit trail of first placement, so be aware when reading job listings
+(admin UI, CLI): the `queue` column shows that label, and after a retry it no longer names the
+queue that will claim the row. The queue that **will** claim it is the actor's current
+assignment — the same routing queue the stranded-jobs detectors and the queues overview group
+by.
+
+Concretely: `enqueue(ref, payload, queue="gpu")` for an actor whose home queue is `default` puts
+the first attempt in front of `gpu` consumers, and — if that attempt fails — the retry is
+claimable by `default` consumers only. The override is **not** a durable affinity: it does not
+follow the job across attempts, and it is not re-applied by any retry path.
+
+This is a deliberate routing contract, not an oversight, and it is what keeps a queue move safe:
+`taskq actor-config move-queue` (see [ActorConfig sync](workers.md#actorconfig-sync)) rewrites an
+actor's stored assignment in one operator action, and every re-pended row of that actor follows
+the new assignment immediately — otherwise the move's left-behind tail (running jobs that
+re-pend after the flip) would be claimable only by consumers of the queue the operator just
+retired, and would strand the moment that queue's last consumer goes away. The same mechanism
+that rescues moved jobs is the one that retires your override after the first attempt.
+
+If you need a job class to run on dedicated consumers for its whole life:
+
+- **Put the actor on that queue** — declare `@actor(queue="gpu")` (or move it there with
+  `taskq actor-config move-queue`) and let every placement, first or retried, route there. This
+  is the supported way to express resource affinity.
+- A per-job `queue=` override is for steering **first placement** only — for example landing a
+  one-off job on a warm pool — and must not be relied on to keep a job off the actor's home
+  queue after a retry.
+
 
 ### Enqueue evaluation order
 

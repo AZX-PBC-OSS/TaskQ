@@ -67,9 +67,9 @@ async def test_diff_sweep1_branches_cap_and_drain(pg_dsn: str) -> None:
 
 
 async def _s1_cancel_margin_window(side: DiffSide) -> None:
-    # retry_jitter pinned to 0 for the same reason as _s1_branches_and_cap:
-    # the re-pended row's scheduled_at is compared at second-resolution
-    # buckets, which cannot resolve a jitter band.
+    # retry_jitter pinned to 0 for consistency with _s1_branches_and_cap: this
+    # scenario's row terminalises at the deep margin, so no reclaim delay is
+    # drawn at all, and a band could not show up in the projection either way.
     await side.enqueue("inflight", scheduled_in=-30.0, max_attempts=3, retry_jitter=0.0)
     await side.dispatch("wholder", ["default"], limit=1)
     await side.write_cancel_request("inflight", "margin-probe")
@@ -78,7 +78,8 @@ async def _s1_cancel_margin_window(side: DiffSide) -> None:
     await side.mutate("inflight", lock_expired_ago_s=40.0)
     held = await side.sweep_reclaim()
     side.record("shallow_sweep", held)
-    # Now past the deep margin (130s): the carve-out releases it.
+    # Now past the deep margin (130s): the carve-out releases it and the
+    # sweep's cancel arm terminalises the row (PR #272: never a re-pend).
     await side.mutate("inflight", lock_expired_ago_s=130.0)
     deep = await side.sweep_reclaim()
     side.record("deep_sweep", deep)
@@ -86,20 +87,33 @@ async def _s1_cancel_margin_window(side: DiffSide) -> None:
 
 async def test_diff_sweep1_cancel_carveout_margin(pg_dsn: str) -> None:
     """The cancel carve-out: an in-flight cancel is left alone until the lock
-    has been expired past grace+grace+60s, then reclaimed (retry branch for a
-    retryable job: requeued pending with a clean cancel slate)."""
+    has been expired past grace+grace+60s, then reclaimed. PR #272 (issues
+    #237/#238): operator intent outranks the retry budget, so the deep reclaim
+    terminalises the row 'cancelled' instead of requeueing it pending. A
+    cancelled job never re-pends; it terminalises, keeping cancel_phase and
+    cancel_requested_at as the audit trail of the honoured request (the same
+    choice river's rescuer makes for a stuck row stamped
+    metadata.cancel_attempted_at, and pg-boss makes terminal in cancelJobs:
+    only an explicit operator resume revives a cancelled row)."""
     mem, pg = await run_differential(_s1_cancel_margin_window, pg_dsn=pg_dsn)
     assert_mirror(
         "the reclaim sweep's cancel carve-out admits an in-flight-cancel job "
         "only once its lock has been expired past cancel_grace + "
-        "cleanup_grace + a flat 60s margin, requeueing it with a clean "
-        "cancel slate — on both backends",
+        "cleanup_grace + a flat 60s margin, then terminalises it 'cancelled' "
+        "with its cancel columns preserved as the audit trail, on both "
+        "backends",
         mem,
         pg,
     )
     assert pg["records"] == {"shallow_sweep": 0, "deep_sweep": 1}
-    assert pg["jobs"]["inflight"]["status"] == "pending"
-    assert pg["jobs"]["inflight"]["cancel_phase"] == 0
+    assert pg["jobs"]["inflight"]["status"] == "cancelled"
+    # The cancel columns survive the arm that honoured them. The phase is the
+    # 1 write_cancel_request stamped; the row is terminal, so no fresh claimant
+    # can inherit it and re-raise the re-cancel loop the old reset existed for.
+    assert pg["jobs"]["inflight"]["cancel_phase"] == 1
+    # A cancel-honouring row's record is the in-flight request the row
+    # preserves: no error marker describes the worker that died mid-protocol.
+    assert pg["jobs"]["inflight"]["error_class"] is None
 
 
 async def _s2_deadline_pending_never_dispatched(side: DiffSide) -> None:
