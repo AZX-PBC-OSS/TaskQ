@@ -117,20 +117,10 @@ def test_upstream_pytest_interleaved_conftest_behavior(tmp_path: Path) -> None:
 
     (tmp_path / "tests" / "services").mkdir(parents=True)
     (tmp_path / "tests" / "conftest.py").write_text(
-        "import pytest\n"
-        "\n"
-        "\n"
-        "@pytest.fixture\n"
-        "def root_fixture():\n"
-        '    return "root"\n'
+        'import pytest\n\n\n@pytest.fixture\ndef root_fixture():\n    return "root"\n'
     )
     (tmp_path / "tests" / "services" / "conftest.py").write_text(
-        "import pytest\n"
-        "\n"
-        "\n"
-        "@pytest.fixture\n"
-        "def nested_fixture():\n"
-        '    return "nested"\n'
+        'import pytest\n\n\n@pytest.fixture\ndef nested_fixture():\n    return "nested"\n'
     )
     (tmp_path / "tests" / "services" / "test_a.py").write_text(
         "def test_a(nested_fixture):\n    assert nested_fixture == 'nested'\n"
