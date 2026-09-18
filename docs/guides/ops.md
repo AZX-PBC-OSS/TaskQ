@@ -825,7 +825,7 @@ Two more states worth naming because they mean *infrastructure*, not your code:
 - **`abandoned`** — only ever produced by *cancellation* escalation: a force-cancel whose cleanup
   did not finish within the grace periods after an operator's cancel request. A timeout or
   exception never produces `abandoned` — and **shutdown never produces it either**: a deploy
-  releases (interrupts) the job back to the fleet with its attempt refunded instead.
+  releases (interrupts) the job back to the fleet instead, the spent attempt standing.
 
 !!! note "Infra failures during the terminal write leave the job `running` — on purpose"
     If Postgres itself errors while recording the outcome, the write is retried for about a

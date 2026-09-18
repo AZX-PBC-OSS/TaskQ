@@ -1081,7 +1081,8 @@ async def test_mark_retry_after_idempotent_returns_noop(
 # ── mark_interrupted (shutdown release) equivalence ──────────────────────
 #
 # A worker shutdown releases a running attempt it cannot finish: the
-# claim's attempt increment is refunded, the row goes back to the fleet
+# claim's attempt increment is NOT refunded (the attempt started
+# executing, so it is spent;, the row goes back to the fleet
 # (pending at hold 0, scheduled behind the hold otherwise), no attempt row
 # is written (an interruption is not an execution outcome), one
 # 'interrupted' event records the transition, and interrupt_count carries
@@ -1089,13 +1090,14 @@ async def test_mark_retry_after_idempotent_returns_noop(
 # cancel_phase = 0 fence declines the row ("noop").
 
 
-async def test_mark_interrupted_releases_pending_at_zero_hold_refunded(
+async def test_mark_interrupted_releases_pending_at_zero_hold(
     backend_pair: Backend,
 ) -> None:
     """hold=0 → 'pending' at the head of the order (no deferral floor — the
-    row is genuinely free and the actor is gone), attempt refunded,
-    interrupt_count = 1, no attempt rows, one interrupted event; the row is
-    immediately re-claimable and re-dispatch re-claims the refunded epoch."""
+    row is genuinely free and the actor is gone), the spent attempt stands
+    (no refund), interrupt_count = 1, no attempt rows, one interrupted
+    event; the row is immediately re-claimable and re-dispatch advances the
+    epoch past the one the interrupted handler holds."""
     job_id, wid = await _enqueue_dispatch_any(backend_pair)
 
     row = await backend_pair.get(job_id)
@@ -1109,16 +1111,16 @@ async def test_mark_interrupted_releases_pending_at_zero_hold_refunded(
 
     row = await backend_pair.get(job_id)
     assert row is not None
-    _assert_job_row(row, status="pending", attempt=0)
+    _assert_job_row(row, status="pending", attempt=1)
     assert row.interrupt_count == 1
 
     # No deferral floor on a zero hold: the row is claimable NOW, without
-    # advancing either backend's clock.
+    # advancing either backend's clock; at a FRESH epoch (no refund).
     redispatched = await backend_pair.dispatch_batch(
         worker_id=wid, queues=["default"], limit=1, lock_lease=_LOCK_LEASE
     )
     assert len(redispatched) == 1
-    assert redispatched[0].attempt == 1
+    assert redispatched[0].attempt == 2
 
     attempts = await backend_pair.get_attempts(job_id)
     assert attempts == [], "an interruption is not an execution outcome: no attempt row"
@@ -1135,8 +1137,9 @@ async def test_mark_interrupted_holds_the_release_until_the_process_is_gone(
     backend_pair: Backend,
 ) -> None:
     """hold>0 → 'scheduled' behind the hold (a still-running actor's row must
-    not be claimable until the releasing process is provably gone), attempt
-    refunded; the row promotes and re-dispatches once the hold elapses."""
+    not be claimable until the releasing process is provably gone), the
+    spent attempt standing; the row promotes and re-dispatches once the
+    hold elapses."""
     job_id, wid = await _enqueue_dispatch_any(backend_pair)
 
     row = await backend_pair.get(job_id)
@@ -1149,7 +1152,7 @@ async def test_mark_interrupted_holds_the_release_until_the_process_is_gone(
 
     row = await backend_pair.get(job_id)
     assert row is not None
-    _assert_job_row(row, status="scheduled", attempt=0)
+    _assert_job_row(row, status="scheduled", attempt=1)
     assert row.interrupt_count == 1
     assert row.scheduled_at > _now_for(backend_pair), (
         "the held row's due time must be in the future — claimable only once "
@@ -1169,7 +1172,7 @@ async def test_mark_interrupted_holds_the_release_until_the_process_is_gone(
         worker_id=wid, queues=["default"], limit=1, lock_lease=_LOCK_LEASE
     )
     assert len(redispatched) == 1
-    assert redispatched[0].attempt == 1
+    assert redispatched[0].attempt == 2
 
     events = await _get_events(backend_pair, job_id)
     interrupted = [
@@ -1206,7 +1209,7 @@ async def test_mark_interrupted_operator_cancel_in_flight_wins(
     assert row is not None
     assert row.status == "running", "a declined release leaves the row untouched"
     assert row.locked_by_worker == wid
-    assert row.attempt == 1, "a declined release refunds nothing"
+    assert row.attempt == 1, "a declined release moves nothing"
     assert row.interrupt_count == 0
     assert row.cancel_phase == 1, "the operator's audit columns are never wiped"
 
@@ -1290,7 +1293,8 @@ async def test_mark_interrupted_fenced_out_by_a_stale_epoch_or_wrong_worker(
     assert outcome == "pending"
     replayed = await backend_pair.mark_interrupted(job_id, wid, attempt=1, hold=timedelta(0))
     assert replayed == "noop", (
-        "the refunded epoch no longer matches the row — a release cannot be replayed"
+        "the released epoch no longer matches the row (status moved, and the "
+        "re-claim advances past it); a release cannot be replayed"
     )
     row = await backend_pair.get(job_id)
     assert row is not None and row.interrupt_count == 1

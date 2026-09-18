@@ -11,7 +11,8 @@ The ``CancelledError`` handler routes on the cancel's ORIGIN (the
 registry entry's ``cancel_origin``), not on the exception type: an
 operator's request terminalises via ``mark_cancelled``; a shutdown
 (SIGTERM / drain monitor) releases the attempt back to the fleet via
-``mark_interrupted`` — refunded, counted, never terminalised. The row is
+``mark_interrupted``; counted, never terminalised (the spent attempt
+stands, no refund). The row is
 the final arbiter between the two: the release's ``cancel_phase = 0``
 fence declines a row an operator cancel already claimed, and the handler
 falls through to the cancel write. A terminal write whose fence matches
@@ -921,14 +922,15 @@ async def consume_one_job(
             if entry is not None and entry.cancel_origin is CancelOrigin.SHUTDOWN:
                 # Infrastructure interruption (SIGTERM / drain monitor),
                 # not an operator cancel: release the attempt back to the
-                # fleet with its budget refunded instead of terminalising
-                # it. The hold is EARNED, never assumed: an async actor
+                # fleet instead of terminalising it (the spent attempt
+                # stands; no refund). The hold is EARNED, never assumed:
+                # an async actor
                 # has provably unwound by the time this handler runs (the
                 # cancellation propagated through its frames to get
                 # here), and a sync actor that honoured the stop raised
                 # from its own thread: both are gone, hold=0, and the
                 # row lands pending at the head of the order: available
-                # immediately, attempt refunded, no error recorded. A
+                # immediately, no error recorded. A
                 # sync actor still executing in its executor thread
                 # (task.cancel() cancels the await, never the thread) and
                 # a transactional actor still unwinding its rollback are

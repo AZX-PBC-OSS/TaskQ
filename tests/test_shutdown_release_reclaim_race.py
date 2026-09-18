@@ -10,10 +10,10 @@ already expired by the time the RELEASING phase reaches a row -- a slow
 shutdown racing a leader's reclaim tick -- both writers could believe they
 are the one entitled to release the row: the reclaim sweep would spend it as
 a crash (``_ATTEMPT_REFUND_SQL`` is NOT used on the crash-reclaim retry arm;
-the attempt is left as claimed) while ``mark_interrupted`` would refund it,
-and if both landed the row's attempt could be refunded twice or the job
-could be written twice into job_events / job_attempts for the same
-transition.
+the attempt is left as claimed) while ``mark_interrupted`` would leave the
+attempt as claimed too (the interrupt arm carries no refund since: the
+attempt started executing), and if both landed the job could be written
+twice into job_events / job_attempts for the same transition.
 
 This fires ``mark_interrupted`` and ``reclaim_expired_locks`` concurrently
 against a single row whose lease has already expired, and pins that exactly
@@ -117,9 +117,10 @@ async def test_releasing_phase_does_not_double_refund_against_a_concurrent_recla
         assert final.status in ("pending", "scheduled"), (
             f"a released row must come back to the fleet, not stay {final.status!r}"
         )
-        assert final.attempt == baseline_attempt, (
-            "the release must refund the attempt exactly once back to "
-            f"baseline {baseline_attempt}; got {final.attempt}"
+        assert final.attempt == claimed_attempt, (
+            "the release must NOT refund the attempt (the attempt started "
+            f"executing;: it stays at the claimed epoch "
+            f"{claimed_attempt}; got {final.attempt}"
         )
     else:
         # The reclaim sweep won the row first: it is the crash-recovery

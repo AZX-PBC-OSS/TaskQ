@@ -564,7 +564,7 @@ An attempt is spent at *claim* time: dispatch increments `attempt` when a worker
 | Event mid-execution | Attempt budget | Audit trail |
 |---|---|---|
 | **Crash** (SIGKILL, power loss, OOM kill) | **Spent** — the re-run climbs to the next attempt number | `job_attempts` row with `outcome='crashed'` and `error_class='WorkerCrashed'` (or `'HeartbeatLost'` when the worker is alive but cannot reach Postgres) |
-| **Graceful shutdown** (SIGTERM/SIGINT) | **Refunded** — the re-run reuses the same attempt number | No attempt row; one `interrupted` state-change event, and `interrupt_count` incremented on the job row |
+| **Graceful shutdown** (SIGTERM/SIGINT) | **Spent**; the interrupted attempt did start executing, so the re-run claims a fresh attempt number | No attempt row; one `interrupted` state-change event, and `interrupt_count` incremented on the job row |
 
 A crash is indistinguishable from the worker simply vanishing, so the fleet learns about it from the lease: once `lock_lease` (or the actor's `heartbeat_timeout`) expires without a heartbeat, the leader's reclaim sweep hands the row back through the job's own `RetryPolicy` — the same base/cap/backoff curve as an application-level failure, with jitter derived deterministically from the row's `(job_id, attempt)` so a fleet-wide reclaim does not re-synchronize every job to the same instant. Because the claim already spent the attempt, that hand-back consumes budget: with the default `max_attempts=3`, two crashes on a flaky node terminally fail a job whose actor body ran at most once. If node crashes should not eat your failure budget, size `max_attempts` for the crashes you expect, or use `kind="indefinite"` with a `time_budget`.
 

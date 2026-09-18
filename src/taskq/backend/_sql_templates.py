@@ -129,17 +129,24 @@ _MIN_DEFERRAL_INTERVAL_SQL: Final[str] = (
 
 # The non-consuming release's attempt refund, ONE fragment shared by every
 # release arm that hands back an attempt the actor did not finish on its
-# own terms: mark_snoozed's 'snoozed'/'unavailable' arm,
-# mark_retry_after_consume_false's snoozed arm, mark_interrupted's release
-# arm, and the shutdown drain's hand-back (worker/shutdown.py imports this
-# constant). Dispatch stamps ``attempt = j.attempt + 1`` at claim
-# (backend/_dispatch_sql.py); a release that executed nothing returns the
-# increment, floored at 0. The refund revisits an attempt number, which is
-# collision-safe: a non-terminal release writes no job_attempts row, so the
-# PK (job_id, attempt) is never revisited by a writer (see the mark_snoozed
-# comment block below for the full argument).
-# The reference is alias-qualified (``j.``): every consumer of the fragment
-# aliases its target table ``j``.
+# own terms AND did not start: mark_snoozed's 'snoozed'/'unavailable' arm,
+# mark_retry_after_consume_false's snoozed arm, and the shutdown drain's
+# hand-back (worker/shutdown.py imports this constant). Dispatch stamps
+# ``attempt = j.attempt + 1`` at claim (backend/_dispatch_sql.py); a
+# release that executed nothing returns the increment, floored at 0. The
+# refund revisits an attempt number, which is collision-safe: a
+# non-terminal release writes no job_attempts row, so the PK (job_id,
+# attempt) is never revisited by a writer (see the mark_snoozed comment
+# block below for the full argument).
+#
+# mark_interrupted's release arm is deliberately NOT a consumer: its
+# attempt DID start executing, so refunding the increment re-creates the
+# exact attempt epoch the interrupted (zombie) handler still holds; the
+# zombie's later terminal write then passes the attempt fence and lands
+# on the re-dispatched attempt, and the live execution's own terminal
+# write no-ops. An interruption charges the attempt it ran.
+# The reference is alias-qualified (``j.``): every consumer of the
+# fragment aliases its target table ``j``.
 #
 # None of these release arms wakes the fleet. A row they land as
 # 'pending' is re-pended by UPDATE, which the INSERT-only wake trigger
@@ -768,6 +775,18 @@ snoozed AS (
       AND j.status = 'running'
       AND j.locked_by_worker = (SELECT worker_id FROM params)
       AND j.attempt = (SELECT attempt FROM params)
+      -- The cancel fence (the mark_interrupted release arm's conjunct):
+      -- an operator cancel in flight WINS over the deferral. A row
+      -- carrying a cancel phase must never match this arm; the
+      -- cancel_phase = 0 / cancel_requested_at = NULL resets above would
+      -- launder the operator's request mid-flight (the re-pended row
+      -- would read as never-cancel-requested, and the bulk-cancel drain
+      -- would report the same id from two arms). The fenced-out row stays
+      -- 'running' carrying its phase, the caller reads back "noop", and
+      -- the worker's cancel ladder terminalises it. On a clean row the
+      -- conjunct is trivially true and the deferral semantics are
+      -- unchanged.
+      AND j.cancel_phase = 0
       -- The reschedule point is the ONLY admission condition: a deferral
       -- that never ran spends nothing, so nothing but the job's own
       -- deadline can refuse it.
@@ -861,6 +880,16 @@ WITH params AS (
       AND j.status = 'running'
       AND j.locked_by_worker = (SELECT worker_id FROM params)
       AND j.attempt = (SELECT attempt FROM params)
+      -- The cancel fence (the mark_interrupted release arm's conjunct):
+      -- an operator cancel in flight WINS over the deferral. A row
+      -- carrying a cancel phase must never match this arm; the
+      -- cancel_phase = 0 / cancel_requested_at = NULL resets above would
+      -- launder the operator's request mid-flight. The fenced-out row
+      -- stays 'running' carrying its phase, the caller reads back
+      -- "noop", and the worker's cancel ladder terminalises it. On a
+      -- clean row the conjunct is trivially true and the budget
+      -- semantics below are unchanged.
+      AND j.cancel_phase = 0
       AND (j.schedule_to_close IS NULL
            OR clock_timestamp() + (SELECT delay FROM params) <= j.schedule_to_close)
       AND (j.retry_kind = 'indefinite'
@@ -1035,6 +1064,16 @@ snoozed AS (
       AND j.status = 'running'
       AND j.locked_by_worker = (SELECT worker_id FROM params)
       AND j.attempt = (SELECT attempt FROM params)
+      -- The cancel fence (the mark_interrupted release arm's conjunct):
+      -- an operator cancel in flight WINS over the deferral. A row
+      -- carrying a cancel phase must never match this arm; the
+      -- cancel_phase = 0 / cancel_requested_at = NULL resets above would
+      -- launder the operator's request mid-flight. The fenced-out row
+      -- stays 'running' carrying its phase, the caller reads back
+      -- "noop", and the worker's cancel ladder terminalises it. On a
+      -- clean row the conjunct is trivially true and the deferral
+      -- semantics are unchanged.
+      AND j.cancel_phase = 0
       AND (j.schedule_to_close IS NULL
            OR clock_timestamp() + (SELECT effective_delay FROM params) <= j.schedule_to_close)
     RETURNING j.*, 'snoozed'::text AS outcome_branch, clock_timestamp() AS now_ts
@@ -1090,18 +1129,21 @@ SELECT * FROM snoozed
 UNION ALL SELECT * FROM deadline_failed""",
         # mark_interrupted releases a RUNNING attempt the worker cannot
         # finish because the process is going away (graceful shutdown past
-        # its graces). It is the non-consuming release of a *started*
-        # attempt: the claim's increment is refunded through the shared
-        # _ATTEMPT_REFUND_SQL fragment, no job_attempts row is written (an
-        # interruption is not an execution outcome — the same reasoning as
-        # the snooze/denial arms above), one job_events state_change with
-        # reason 'interrupted' records the transition, and interrupt_count
-        # bumps on the row (the same row-counter doctrine as
-        # snooze_count / rate_limit_blocked_count, 01.00.08_01). The
-        # release is a soft stop: the stop is recognised by the context's
-        # cancellation cause rather than by the error type, and the
-        # interrupted row lands back 'available' with reason 'interrupted'
-        # and its attempt refunded.
+        # its graces). It is the non-terminal release of a *started*
+        # attempt: the claim's increment is NOT refunded (an interruption
+        # charges the attempt it ran; refunding it would re-create the
+        # exact epoch the interrupted handler still holds, and its later
+        # terminal write would land on the re-dispatched attempt; see the
+        # _ATTEMPT_REFUND_SQL module header), no job_attempts row is
+        # written (an interruption is not an execution outcome; the same
+        # reasoning as the snooze/denial arms above), one job_events
+        # state_change with reason 'interrupted' records the transition,
+        # and interrupt_count bumps on the row (the same row-counter
+        # doctrine as snooze_count / rate_limit_blocked_count, 01.00.08_01).
+        # The release is a soft stop: the stop is recognised by the
+        # context's cancellation cause rather than by the error type, and
+        # the interrupted row lands back 'available' with reason
+        # 'interrupted' at the attempt it already spent.
         #
         # Two arms, exhaustive over every fenced row:
         #   released        — the release itself. hold > 0 parks the row
@@ -1167,7 +1209,11 @@ released AS (
         -- contract in taskq/backend/_dispatch_sql.py) — the same
         -- re-pend class as the snooze/refund arms and the sweep.
         assignment_routed = true,
-        attempt = {_ATTEMPT_REFUND_SQL},
+        -- Deliberately NO attempt refund (the snooze arms'
+        -- _ATTEMPT_REFUND_SQL): the attempt started executing, so its
+        -- increment stands; a refund would re-create the epoch the
+        -- interrupted handler still holds and let its zombie terminal
+ -- write land on the re-dispatched attempt.
         interrupt_count = j.interrupt_count + 1,
         progress_seq = GREATEST(j.progress_seq, (SELECT progress_seq FROM params)),
         progress_state = CASE WHEN (SELECT progress_state FROM params) IS NOT NULL

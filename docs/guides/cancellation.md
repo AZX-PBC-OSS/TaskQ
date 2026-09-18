@@ -156,7 +156,7 @@ Always re-raise `asyncio.CancelledError` or let it propagate. The consumer's exc
 
 ### Shutdown is not an operator cancel — `ctx.cancel_origin`
 
-A rolling deploy (SIGTERM, a drain-monitor trigger) signals the same `cancel_event`, but it is an *infrastructure* event, not a request to discard the work. When the grace windows expire with the job still running, the worker **releases** it back to the fleet — `pending` (or `scheduled` behind a hold) with the claim's attempt increment **refunded** — and the row's `interrupt_count` bumps. The job is then claimed and run by a surviving pod. Shutdown never writes `cancelled` or `abandoned`.
+A rolling deploy (SIGTERM, a drain-monitor trigger) signals the same `cancel_event`, but it is an *infrastructure* event, not a request to discard the work. When the grace windows expire with the job still running, the worker **releases** it back to the fleet; `pending` (or `scheduled` behind a hold); and the row's `interrupt_count` bumps. The attempt is not refunded: the interrupted attempt did start executing, so its increment stands (a refund would re-create the attempt epoch the interrupted handler holds and let its late terminal write land on the re-dispatched attempt). The job is then claimed and run by a surviving pod at a fresh attempt. Shutdown never writes `cancelled` or `abandoned`.
 
 Actors can tell the two signals apart with `ctx.cancel_origin`:
 
@@ -283,7 +283,7 @@ One shape carries no marker, deliberately: a worker can crash after a cancel was
 
 Cancellation does not consume retry budget. Once a job transitions to `cancelled` or `abandoned`, it is immediately terminal and will not be retried, regardless of `max_attempts` or `retry_kind`.
 
-An interruption by shutdown refunds the attempt too: the claim's increment is returned (`interrupt_count` on the row counts the release), so a job interrupted on every deploy never walks toward `max_attempts` — it is rescheduled until it finishes or its `schedule_to_close` expires.
+An interruption by shutdown spends the interrupted attempt: the claim's increment is **not** refunded (the attempt started executing, so it counts against `max_attempts`; `interrupt_count` on the row counts the release). A job interrupted on every deploy therefore walks toward `max_attempts` one attempt per deploy; give such jobs `schedule_to_close` (the release never parks a row past it) or checkpoint via progress state. This keeps the attempt epoch monotonic, which is what fences a delayed (zombie) handler's terminal write out of a re-dispatched attempt.
 
 This is distinct from a `TimeoutError` or unhandled exception, both of which go through the normal retry decision logic (`decide_after_failure`) and may reschedule the job if budget remains.
 
@@ -331,7 +331,7 @@ The contract is the same one the other lifecycle hooks carry:
 
 **Boundary: the hook cannot fire for a job cancelled before it ran.** A job cancelled while still `pending` or `scheduled` never enters a worker, so no hook of any kind can run for it — there is no attempt to clean up after. Bookkeeping on that path stays with whoever issued the cancel. This matters because the cancel an operator issues most often — on a job sitting in the queue — is exactly the one the hook cannot see; cleanup that must happen for every cancellation belongs on the caller's side of the enqueue. Tell the paths apart on the row via the [cancel-origin marker](#why-it-stopped-the-cancel-origin-marker): `CancelledBeforeStart` means no worker was ever involved.
 
-A shutdown interruption is also not a cancel: when `ctx.cancel_origin is CancelOrigin.SHUTDOWN`, the attempt is released back to the fleet (`pending` again, budget refunded) rather than terminalised, so `on_cancel` does not fire. An operator cancel that races a deploy still wins the row — the job ends `cancelled` and the hook fires.
+A shutdown interruption is also not a cancel: when `ctx.cancel_origin is CancelOrigin.SHUTDOWN`, the attempt is released back to the fleet (`pending` again; the spent attempt stands, it is not refunded) rather than terminalised, so `on_cancel` does not fire. An operator cancel that races a deploy still wins the row; the job ends `cancelled` and the hook fires.
 
 For in-process embedders: do not stop the worker by cancelling its loop tasks directly. The tracked-exit gate (which keeps the shutdown watchdog armed until actor threads are reaped) lives in the worker's own exit path and never runs on an external cancel. Stop through the worker's shutdown event, the same path a signal takes, and the gate holds.
 
