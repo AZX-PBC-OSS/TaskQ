@@ -1790,23 +1790,30 @@ class _GateSession:
 
 @pytest.fixture
 def _commit_gate_maps() -> Iterator[None]:  # pyright: ignore[reportUnusedFunction] # Why: pytest fixture consumed implicitly by the test runner; pyright does not track fixture usage.
-    """Snapshot and restore the module-level commit-gate maps.
+    """Give each commit-gate test a clean slate, and hand one back.
 
     The maps are process-global (keyed by backend pid); these tests fill
-    them deliberately, so each hands the suite back the state it found.
+    them deliberately with their own fake pids. Under xdist, a module that
+    ran earlier in the same worker can leave a real backend pid behind
+    (an entry whose connection closed without retiring it); snapshot-
+    and-restore would faithfully preserve that foreign entry and the
+    trio would assert on state it does not own (observed as
+    ``assert {6125} == set()`` under full-suite CI ordering). So the
+    fixture clears at setup and at teardown: the trio asserts only on
+    what its own connections do. The underlying question, whether a
+    closed connection can leave its confirmed-listening entry behind,
+    is tracked separately and is not masked here: these tests still pin
+    retirement for their own closes.
     """
-    armed = dict(cron_loop._armed_commit_emits)
-    confirmed = set(cron_loop._confirmed_listening)
-    hooked = set(cron_loop._termination_hooked)
+    cron_loop._armed_commit_emits.clear()
+    cron_loop._confirmed_listening.clear()
+    cron_loop._termination_hooked.clear()
     try:
         yield
     finally:
         cron_loop._armed_commit_emits.clear()
-        cron_loop._armed_commit_emits.update(armed)
         cron_loop._confirmed_listening.clear()
-        cron_loop._confirmed_listening.update(confirmed)
         cron_loop._termination_hooked.clear()
-        cron_loop._termination_hooked.update(hooked)
 
 
 async def test_commit_gate_retires_session_state_on_close(
