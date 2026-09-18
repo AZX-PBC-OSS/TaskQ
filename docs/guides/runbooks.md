@@ -275,6 +275,36 @@ The leader-count operand is what makes this alertable at all. A healthy multi-wo
 
 ---
 
+## TaskQCronBudgetDeferrals
+
+**What fired.** A sustained rate of `taskq_cron_budget_deferrals_total` (one increment per cron fire the tick's funded factory budget could not fund a grant for). A brief burst is benign — catch-up backlogs drain in tick-sized batches and each draining tick defers whatever its factories' waits could not fit. A rate that persists for minutes means one schedule's payload factory is **monopolizing the tick budget every tick**: it is planned ahead of its peers (an older `next_fire_at`, or a catch-up crawl), consumes most of the funded factory budget, and still SUCCEEDS — so it never strikes, never auto-disables, and never frees the budget. Its peers then defer on every tick: delayed (the deferral advances `next_fire_at` one leader tick, the owed slot stays inside the catch-up window), never struck, never disabled — quiet starvation with no auto-disable rescue, which is exactly why the counter exists. The monopolizer itself looks perfectly healthy (`cron fired` lines, `consecutive_failures = 0`).
+
+**How to confirm.**
+
+- Metric: `rate(taskq_cron_budget_deferrals_total[5m])` non-zero and flat, not decaying — a decaying rate is a catch-up drain ending. The `actor` label names the STARVING schedule's actor (per-schedule attribution is on the log line, not the label).
+- Logs: `cron-fire-budget-deferred` events with the same `schedule_id` every ~1s, while a NEIGHBOUR schedule's `cron fired` lines keep appearing — the neighbour whose fires sit immediately beside the deferrals in the timeline is the monopolizer. Its factory's duration is visible in the gap between consecutive `cron fired` lines.
+- SQL — the order the tick plans in (the monopolizer is the enabled, due row at the front):
+
+  ```sql
+  SELECT id, actor, name, payload_factory, next_fire_at,
+         now() - next_fire_at AS overdue_by, consecutive_failures
+  FROM taskq.cron_schedules
+  WHERE enabled AND next_fire_at <= now()
+  ORDER BY next_fire_at
+  LIMIT 10;
+  ```
+
+  The monopolizer is the due row with a `payload_factory` and the oldest `next_fire_at` (or one advancing by one catch-up slot per tick); the deferring schedules are the factory-backed rows behind it.
+
+**How to remediate.**
+
+1. Tighten `TASKQ_CRON_PAYLOAD_FACTORY_TIMEOUT` to below the monopolizing factory's real duration (read it off the `cron fired` timeline gaps). The factory then outruns its granted deadline, takes the strike it has earned, and auto-disables after `TASKQ_CRON_AUTO_DISABLE_THRESHOLD` ticks — freeing its peers. This is the intended consequence, not collateral damage: a payload factory slower than the operator-declared budget is a defect of that schedule.
+2. If the monopolizer's duration is legitimate, raise `TASKQ_DISPATCHER_COMMAND_TIMEOUT` so the funded factory budget (90% of it) fits the monopolizer plus a fundable grant (a quarter of the funded budget) for its peers — they then fire in the same tick. Check the watchdog interplay documented on that setting before widening it.
+3. Or move the slow work out of the factory: payload factories run inside the leader's tick, holding the cron advisory lock for the whole planning batch. Work slower than a fraction of a tick belongs in the job the schedule enqueues, not in the payload build.
+4. Confirm recovery: `taskq_cron_budget_deferrals_total` stops rising, the deferring schedules' `cron fired` lines resume, and their owed slots fire (deferred slots are retried, not skipped — nothing was lost).
+
+---
+
 ## TaskQRunningLeaseExpired
 
 **What fired.** `taskq_jobs_running_lease_expired > 0` for 5 minutes: running jobs whose lock lease is past expiry, sustained, with no cancel in flight — rows in a cancel phase (`cancel_phase != 0`) are carved out of the gauge, because the reclaim sweep deliberately waits cancel grace + cleanup grace + 60 s past expiry for a cancelling row before it pre-empts it, so an expired lease mid-cancel is the cancellation protocol working, not an incident (a cancel that never completes pages elsewhere: [TaskQAbandonedJobs](#taskqabandonedjobs) when its worker is alive to escalate through the phases, `TaskQHeartbeatMisses` when it died mid-cancel — the reclaim sweep honors the row to `cancelled` either way). A healthy fleet reads 0 — the leader's reclaim sweep (`sweep_name="expired_locks"`) drains expired leases within a tick or two of expiry — so a sustained non-zero count means reclaim is not draining. Work is claimed and stuck in `running` while health probes stay green: the zombie-running shape.

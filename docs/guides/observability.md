@@ -476,6 +476,7 @@ you *which* jobs absorbed them.
 | `taskq.maintenance_leader.sweep_timeouts` | `1` | `sweep_name` | Sweep calls aborted by a deadline or server-side statement cancel, and gauge-sampler reads that did not complete for ANY reason (the sampler `sweep_name`s are `queue_depth` / `backlog_detection` / `actor_backlog` / `reservation_slots`). A non-zero rate means work is being aborted or going unobserved, not completing slowly. | yes |
 | `taskq.leader.lock_contention` | `1` | `lock` | Advisory-lock acquisitions lost to another session, recorded by the losing side. | yes |
 | `taskq.cron.lock_contention` | `1` | — | Cron ticks that returned without firing because another session held the cron advisory lock. A sustained rate equal to the tick rate means cron is not running anywhere (a partitioned holder never releasing the transaction-scoped lock); a brief low rate is leader-handover overlap. | yes |
+| `taskq.cron.budget_deferrals` | `1` | `actor` | Cron fires deferred because the tick's funded factory budget had no fundable grant left for them — a schedule planned ahead consumed the budget, or the leftover fell below the minimum fundable grant. A brief burst is catch-up draining in tick-sized batches; a SUSTAINED rate means one schedule's payload factory is monopolizing the tick budget every tick: a slow-but-successful factory never strikes and never auto-disables, so its peers retry every tick without ever being funded (delayed, not lost — the deferral advances `next_fire_at` one leader tick). Per-schedule attribution is on the `cron-fire-budget-deferred` log line; the operator resolution (tighten `TASKQ_CRON_PAYLOAD_FACTORY_TIMEOUT` below the monopolizer's duration, or raise `TASKQ_DISPATCHER_COMMAND_TIMEOUT`) is the cron guide's tick-budget section and the `TaskQCronBudgetDeferrals` runbook. The `actor` label is capped like `taskq.cron.consecutive_failures`. | yes |
 
 !!! tip "Which job is starving? The denial counters live on the row"
 
@@ -622,8 +623,8 @@ Per-worker and per-schedule attribution is on the channels where cardinality is
 free:
 
 - **Logs** — `worker_id` is bound via contextvars onto every log line;
-  `schedule_id` is on the `cron fired`, `cron schedule auto-disabled` and
-  `cron-tick-lock-contended` lines.
+  `schedule_id` is on the `cron fired`, `cron schedule auto-disabled`,
+  `cron-tick-lock-contended` and `cron-fire-budget-deferred` lines.
 - **Spans** — `taskq.worker_id` and `taskq.cron_schedule_id` are attributes
   of the `cron fire` span.
 
@@ -648,7 +649,7 @@ span does not inflate metric counts relative to a partially-sampled trace.
 The repo ships alert rules for the metrics above — import them instead of
 writing from scratch:
 
-- [`src/taskq/contrib/prometheus/rules.yaml`](https://github.com/AZX-PBC-OSS/TaskQ/blob/main/src/taskq/contrib/prometheus/rules.yaml) — 20 rules (queue depth, heartbeat misses, terminal-failed share, retried-failure share, abandoned jobs, lock TTL, leader split-brain, dispatch latency, progress failures, disabled cron, scheduled-backlog growth, promotion stall, sweep timeouts, sweep degraded tier, maintenance-lock contention, rate-limit dependency outage, cron lock contention, unserved queue, stranded jobs, expired-lease zombies)
+- [`src/taskq/contrib/prometheus/rules.yaml`](https://github.com/AZX-PBC-OSS/TaskQ/blob/main/src/taskq/contrib/prometheus/rules.yaml) — 21 rules (queue depth, heartbeat misses, terminal-failed share, retried-failure share, abandoned jobs, lock TTL, leader split-brain, dispatch latency, progress failures, disabled cron, scheduled-backlog growth, promotion stall, sweep timeouts, sweep degraded tier, maintenance-lock contention, rate-limit dependency outage, cron lock contention, cron budget deferrals, unserved queue, stranded jobs, expired-lease zombies)
 - `src/taskq/contrib/kubernetes/prometheus_rule.yaml` — the same rules as a PrometheusRule CRD for Kubernetes
 
 The rules fire on the series above, so they only work where those series are
@@ -670,6 +671,7 @@ tunable failure modes to the knob that addresses them. Where each shipped alert 
 | `TaskQScheduledBacklogGrowing` | [Cron piling up at tick](ops.md#12-scaling-playbook-from-signal-to-knob) | [TaskQScheduledBacklogGrowing](runbooks.md#taskqscheduledbackloggrowing) |
 | `TaskQPromotionStalled` | [Cron piling up at tick](ops.md#12-scaling-playbook-from-signal-to-knob) | [TaskQPromotionStalled](runbooks.md#taskqpromotionstalled) |
 | `TaskQCronLockContention` | [Cron piling up at tick](ops.md#12-scaling-playbook-from-signal-to-knob) | [TaskQCronLockContention](runbooks.md#taskqcronlockcontention) |
+| `TaskQCronBudgetDeferrals` | the cron guide's [tick-budget lever](cron.md#tick-budget-and-deferral) | [TaskQCronBudgetDeferrals](runbooks.md#taskqcronbudgetdeferrals) |
 | `TaskQCronScheduleDisabled` | cron schedule failure, upstream of any sizing knob | none |
 | `TaskQRateLimitDependencyOutage` | [Rate-limit denials](ops.md#12-scaling-playbook-from-signal-to-knob) | [TaskQRateLimitDependencyOutage](runbooks.md#taskqratelimitdependencyoutage) |
 | `TaskQRunningLeaseExpired` | [`terminal-write-failed` logs / disowned jobs](ops.md#12-scaling-playbook-from-signal-to-knob) | [TaskQRunningLeaseExpired](runbooks.md#taskqrunningleaseexpired) |
