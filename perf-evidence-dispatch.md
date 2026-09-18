@@ -314,3 +314,109 @@ depth. Series semantics under the cap — depth exact below 1000 / reading
 the cap at or above it, oldest_age as head-of-line age — are documented on
 the template and in `docs/guides/ops.md`; the `TaskQQueueDepthHigh` alert
 (oldest-pending age) is unaffected.
+
+---
+
+## A8 — cap-gated running counts (the #226 running-row axis)
+
+Before/after for the removal of the materialized `running_per_actor`
+CTE (`SELECT actor, count(*) FROM jobs WHERE status='running' GROUP BY
+actor`, referenced three times and therefore materialized on every
+claim round): the per-actor running count is now a correlated count
+gated on `ac.max_concurrent IS NOT NULL` inside the CASE that computes
+each capacity CTE's residual (and the same gate in
+`eligible_candidates`' post-lock re-check), so the count subplan is
+evaluated only for actors that declared a cap, reading only that
+actor's own `jobs_actor_running_idx` entries.
+
+- **Method**: the same engine, EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)
+  protocol, re-seed discipline and median-of-3 recording as the pages
+  above. **OLD** = `src/taskq/backend/_dispatch_sql.py` at `5caf054`
+  (main, the branch point), **NEW** = this change. The measurement
+  connection sets `jit = off` (matching the production dispatcher
+  pools' `server_settings`). Host: Linux x86_64, Docker.
+- **The OLD plan's shape, measured**: at a 1000-row fleet running
+  population the CTE was served as a **Seq Scan on jobs** — 1000 rows of
+  row work per round, emitted after filtering the whole heap (the
+  partial index was not chosen at this shape) — on BOTH variants, capped
+  or not. The cost is O(heap), not even O(running rows via index).
+
+### R1 — the #226 axis: uncapped actor, fleet running population 0 -> 1000
+
+60 due pending rows on one uncapped polled actor; the fleet's running
+population (never-polled actors, live leases) grows 0 -> 1000.
+
+| variant | running rows | widest node rows (OLD -> NEW) | buffers (OLD -> NEW) | exec ms (OLD -> NEW) |
+|---|---|---|---|---|
+| strict_fifo | 0 | 60 -> 60 | 944 -> 942 | 1.80 -> 1.64 |
+| strict_fifo | 1,000 | **1000 (Seq Scan on jobs) -> 60** | 1192 -> 1150 | 2.26-2.43 -> 2.34-2.42 |
+| round_robin | 0 | 60 -> 60 | 943 -> 941 | 2.12 -> 1.64 |
+| round_robin | 1,000 | **1000 (Seq Scan on jobs) -> 60** | 1196-1205 -> 1143-1157 | 2.44-2.49 -> 2.37-2.76 |
+
+The NEW round's widest node stays the round's own candidate work (60
+rows) at every fleet running size; wall clock at the 1000-row shape is
+within run-to-run noise of OLD (±0.3 ms across repetitions — the Seq
+Scan's pages are largely the same heap pages the round's own probes
+touch, which is also why buffers move only ~40). The 0-running shape is
+where the wall-clock win is cleanest: OLD paid the CTE machinery (empty
+scan + three hash joins against it) that NEW simply does not have
+(2.12 -> 1.64 ms round-robin).
+
+### R2 — the capped branch: capped actor (cap=5, 2 own running), fleet running 0 -> 1000
+
+The gated count's taken branch: the polled actor declares
+`max_concurrent = 5` and holds 2 of its own running rows.
+
+| variant | running rows | widest node rows (OLD -> NEW) | buffers (OLD -> NEW) | exec ms (OLD -> NEW) |
+|---|---|---|---|---|
+| strict_fifo | 0 | 60 -> 60 | 104 -> 130 | 1.37 -> 1.28 |
+| strict_fifo | 1,000 | **1002 (Seq Scan on jobs) -> 60** | 158 -> 148 | 1.37-1.49 -> 1.31-1.51 |
+| round_robin | 0 | 60 -> 60 | 103 -> 129 | 1.20 -> 1.21 |
+| round_robin | 1,000 | **1002 (Seq Scan on jobs) -> 60** | 159 -> 156 | 1.47-1.73 -> 1.37-1.47 |
+
+The capped round reads only its own actor's running rows — never the
+fleet's. Plan-level ground truth (EXPLAIN ANALYZE BUFFERS, the count
+subplans' own nodes):
+
+- **Uncapped round (even with the polled actor holding 7 of its own
+  running rows)**: every count subplan reports `Actual Loops: 0` and
+  **zero shared-hit/read buffers** — the CASE gate means an uncapped
+  fleet does literally zero running-row work per round.
+- **Capped round (cap=5, 2 own running, 1000 unrelated running)**: the
+  count executes at 1 loop for `per_actor_capacity`'s residual and 6
+  loops (once per claimed row) for `eligible_candidates`' re-check —
+  plus the planner's duplicate of each at the inlined
+  `eligible_candidates` -> `eligible` boundary — for 14 executions
+  x 2 rows = 28 rows of count work, every one an index-only read of the
+  actor's OWN running entries. Honest note: the duplication is a
+  bounded constant factor on capped actors only (the `LIMIT 1` fence
+  holds per site; without it the pull-up would re-evaluate per
+  reference), and it is still 28 rows versus OLD's fleet-wide 1002-row
+  heap scan — while the uncapped default pays 0.
+
+### R3 — standing depth shape sanity (1k due pending, no running rows)
+
+| variant | widest node rows (OLD -> NEW) | buffers (OLD -> NEW) | exec ms (OLD -> NEW) |
+|---|---|---|---|
+| strict_fifo | 100 -> 100 | 1140-1152 -> 1146-1159 | 1.94-2.12 -> 2.05-2.07 |
+| round_robin | 100 -> 100 | 1139-1145 -> 1150-1159 | 2.02-2.35 -> 1.99-2.16 |
+
+Flat: the depth contract's 100-row bound and buffer class are unchanged
+on both sides (the CTE over a 0-row running population was nearly free,
+which is why the depth/registry oracles never caught the fleet-running
+axis — they seed no running rows; the new oracle
+`tests/test_dispatch_running_rows_scope_bound.py` does).
+
+### Verdict
+
+- An uncapped fleet — the default deployment — does **zero** running-row
+  work per claim round (measured: every count subplan at 0 loops, 0
+  buffers), where OLD materialized a fleet-wide count whose widest node
+  was a 1000-row Seq Scan of the heap at a 1000-row running population.
+- A capped fleet pays only its own capped actors' running rows (28 rows
+  at the R2 shape vs 1002), a per-round constant bounded by the capped
+  actor's own concurrency, never the fleet's.
+- The standing depth/registry shapes are unchanged in row work, buffers
+  and wall clock; the correctness pins (claim semantics, cap
+  enforcement, over-admission bound, reservation headroom, identity
+  serialization, fleet concurrency, cohort rotation) all stay green.
