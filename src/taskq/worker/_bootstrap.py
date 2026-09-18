@@ -977,8 +977,8 @@ def _emit_startup_warnings(settings: WorkerSettings) -> None:
         )
 
     # Why: the release park's lease cap (the first of the two
-    # lease-vs-park inequalities the release-until-exited design made
-    # load-bearing — this one CLOSED STRUCTURALLY, by the cap in
+    # lease-vs-park inequalities the release-until-exited design turned
+    # into guarantees — this one CLOSED STRUCTURALLY, by the cap in
     # _actor_exit_wait_budget, so this is a trade-off surface, not a
     # safety hole). The park's budget bound is the remaining termination
     # budget minus the release write's own budget; the lease cap
@@ -1007,8 +1007,8 @@ def _emit_startup_warnings(settings: WorkerSettings) -> None:
             cancellation_grace_period=settings.cancellation_grace_period,
             cleanup_grace_period=settings.cleanup_grace_period,
             remedy=(
-                "safe as configured — the release park is capped so the parked "
-                "consumer's release always beats the lease reclaim — but the cap "
+                "safe as configured (the release park is capped so the parked "
+                "consumer's release always beats the lease reclaim), but the cap "
                 f"({settings.release_park_lease_cap}s) binds before the budget "
                 f"bound ({settings.release_park_budget_bound}s): deploy-interrupted "
                 "sync actors release earlier with longer holds instead of "
@@ -1020,8 +1020,8 @@ def _emit_startup_warnings(settings: WorkerSettings) -> None:
         )
 
     # Why: the disown path's lease bound (the second of the two
-    # lease-vs-park inequalities the release-until-exited design made
-    # load-bearing). When BOTH release writers fail their writes (the
+    # lease-vs-park inequalities the release-until-exited design turned
+    # into guarantees). When BOTH release writers fail their writes (the
     # RELEASING phase's write and the consumer's, whose exhausted retries
     # disown the row), the row stays running behind a lease the heartbeat
     # has already stopped renewing, and the leader's reclaim sweep becomes
@@ -1053,7 +1053,7 @@ def _emit_startup_warnings(settings: WorkerSettings) -> None:
                 f"{settings.release_disown_lease_floor:.0f}s (or lower "
                 "TASKQ_TERMINATION_GRACE_PERIOD) so the leader's reclaim "
                 "sweep cannot take a disowned row before the shutdown "
-                f"watchdog's deadline trip kills its still-running actor — "
+                f"watchdog's deadline trip kills its still-running actor; "
                 f"the current settings leave a {residue:.1f}s window that "
                 "requires both release writes to fail AND a sweep tick to "
                 "land inside it"
