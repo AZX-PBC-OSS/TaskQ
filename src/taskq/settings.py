@@ -697,7 +697,7 @@ class TaskQSettings(DotEnvConfig):
         as a value source, and the winner is process-env-vs-dotfile per
         the resolved ``override`` (default: the process environment wins).
         The per-field winner selection replicates dotenvmodel's private
-        ``config._resolve_raw_value`` — the function is not exported, so
+        ``config._resolve_raw_value``: the function is not exported, so
         its six-line policy is restated here and pinned by
         ``tests/test_client_cli_first_use_bounded.py``'s precedence tests
         in both directions.

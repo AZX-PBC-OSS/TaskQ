@@ -732,9 +732,9 @@ def main() -> int:
     ap.add_argument(
         "--jit-off",
         action="store_true",
-        help="SET jit = off on the bench connection — the guarded shape an "
+        help="SET jit = off on the bench connection: the guarded shape an "
         "operator configures server-side (ALTER ROLE ... SET jit = off or DSN "
-        "?options=-c jit=off; docs/guides/ops.md — TaskQ's own pools set "
+        "?options=-c jit=off; docs/guides/ops.md, whose TaskQ-built pools set "
         "nothing client-side, #247). "
         "Default leaves the server default (jit on): the bench measures the "
         "statement's own estimate health, and a default jit=off here is what "

@@ -625,7 +625,7 @@ async def test_taskq_open_delivers_a_dotenv_only_widened_budget_end_to_end(
     tmp_path: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A budget widened ONLY in .env (no process env) reaches the client
-    pool's derived bound and the backend's budgets — the .env cascade the
+    pool's derived bound and the backend's budgets: the .env cascade the
     worker always read, delivered on the client path too (#251)."""
     import asyncpg as asyncpg_mod
 
@@ -657,8 +657,8 @@ async def test_taskq_open_delivers_a_dotenv_only_widened_budget_end_to_end(
 
     assert captured_kwargs.get("command_timeout") == 37.5, (
         "a 30000 ms budget set only in .env needs a 37.5 s pool bound to "
-        f"keep its 80% share; got {captured_kwargs.get('command_timeout')!r} "
-        "— the client's overlay is not reading the .env cascade (#251)"
+        f"keep its 80% share; got {captured_kwargs.get('command_timeout')!r}: "
+        "the client's overlay is not reading the .env cascade (#251)"
     )
     assert budgets == (5000.0, 5000.0, 30000.0)
 
@@ -668,7 +668,7 @@ async def test_taskq_open_lock_budget_process_env_beats_dotenv_by_default(
 ) -> None:
     """Default precedence is dotenvmodel's own: the process environment
     wins over .env files (override=False). The overlay must not invent a
-    different precedence — the worker's load() settles ties this way, so
+    different precedence: the worker's load() settles ties this way, so
     the client's derived bound must settle them the same way."""
     import asyncpg as asyncpg_mod
 
@@ -736,7 +736,7 @@ async def test_taskq_open_lock_budget_dotenv_excluded_when_read_dotfiles_off(
     tmp_path: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """``DOTENV_READ_DOTFILES=false`` disables the file layer for load();
-    the overlay honors the same knob — the .env widening disappears and
+    the overlay honors the same knob: the .env widening disappears and
     the shipped defaults apply."""
     import asyncpg as asyncpg_mod
 
@@ -805,7 +805,7 @@ def test_taskq_constructor_ignores_a_malformed_unrelated_setting(
     tmp_path: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A malformed setting the client never reads must not break its
-    constructor — in the process env OR in .env (#251: the constructor's
+    constructor: in the process env OR in .env (#251: the constructor's
     full validating TaskQSettings.load() raised on TASKQ_ADMIN_PORT)."""
     _dotenv_dir(
         tmp_path,
@@ -823,7 +823,7 @@ def test_taskq_constructor_honors_schema_name_from_the_dotenv_cascade(
     tmp_path: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A LEGITIMATE TASKQ_SCHEMA_NAME override in .env still wins the
-    default resolution — the fix must not swing from env-only to
+    default resolution: the fix must not swing from env-only to
     .env-blind the other way."""
     _dotenv_dir(
         tmp_path,
@@ -841,7 +841,7 @@ def test_taskq_constructor_schema_env_beats_dotenv_and_explicit_wins_all(
     tmp_path: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Precedence for the schema default matches load()'s (process env
-    beats .env), and an explicit ``schema=`` argument beats every layer —
+    beats .env), and an explicit ``schema=`` argument beats every layer:
     the cennan/TAStack shape (they pass their loaded schema explicitly)
     is untouched."""
     _dotenv_dir(
@@ -863,7 +863,7 @@ def test_taskq_constructor_still_raises_on_a_malformed_schema_name(
 ) -> None:
     """The one setting whose malformation the constructor MUST surface:
     schema_name is the client's own field (it reaches raw SQL), and the
-    worker's load fails the same value — failing soft here would silently
+    worker's load fails the same value: failing soft here would silently
     enqueue into a schema no worker reads."""
     monkeypatch.setenv("TASKQ_SCHEMA_NAME", "bad schema!")
 

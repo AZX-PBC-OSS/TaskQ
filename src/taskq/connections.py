@@ -206,12 +206,12 @@ class _RetryGuard:
 
     Two channels, one object:
 
-    * :meth:`checkout` — the bounded acquire/release the op runs its
+    * :meth:`checkout`: the bounded acquire/release the op runs its
       statements inside. Replaces a bare ``async with pool.acquire()``:
-      the acquire is unchanged (unbounded — pool-exhaustion waits are the
+      the acquire is unchanged (unbounded; pool-exhaustion waits are the
       pool's own backpressure, not this guard's to cut short), but the
       RELEASE carries :data:`_POOL_RELEASE_RESET_TIMEOUT_SECS` and never
-      raises — a reset that fails or times out is pool hygiene, not part
+      raises: a reset that fails or times out is pool hygiene, not part
       of the op's semantics. asyncpg's release path already terminates
       the connection on any reset failure, so swallowing costs nothing
       but a log line, and it buys two #236 fixes at once: an op whose
@@ -220,7 +220,7 @@ class _RetryGuard:
       duplicate-on-retry, and a reset sent into a silently-dead server
       times out instead of parking the caller (and ``pool.close()``)
       forever.
-    * :meth:`mark_wrote` — the durability flag the retry decision reads.
+    * :meth:`mark_wrote`: the durability flag the retry decision reads.
       The op calls it immediately after the first point at which a write
       has become DURABLE: an autocommit statement's acknowledgement, or
       the transaction COMMIT's acknowledgement (see the wrapper's
@@ -247,7 +247,7 @@ class _RetryGuard:
 
     @asynccontextmanager
     async def checkout(self) -> AsyncGenerator[asyncpg.pool.PoolConnectionProxy, None]:
-        """``async with guard.checkout() as conn:`` — acquire, run, bounded
+        """``async with guard.checkout() as conn:``: acquire, run, bounded
         release.
 
         The release is bounded and never raises (see the class docstring);
@@ -307,10 +307,10 @@ async def _with_fresh_connection_retry[T](  # pyright: ignore[reportUnusedFuncti
     operation: str,
 ) -> T:
     """Run *op* once, retrying once when the pool hands out a just-killed
-    connection — and only when no write has become durable yet.
+    connection, and only when no write has become durable yet.
 
-    Shared home for every "acquire from the pool, use immediately" caller —
-    the enqueue paths and the bulk-cancel drain — so the recovery
+    Shared home for every "acquire from the pool, use immediately" caller,
+    the enqueue paths and the bulk-cancel drain, so the recovery
     discipline exists once instead of per call site. *op* receives a
     :class:`_RetryGuard` and must run every pool checkout through
     ``guard.checkout()`` (bounded release, release errors never raised)
@@ -319,22 +319,22 @@ async def _with_fresh_connection_retry[T](  # pyright: ignore[reportUnusedFuncti
     Why the retry exists: a pooled connection whose backend Postgres has
     terminated (restart, failover, ``pg_terminate_backend``) learns of its
     death in two event-loop steps: the server's FATAL ErrorResponse arrives
-    first and — with no in-flight query to attribute it to — parks
+    first and, with no in-flight query to attribute it to, parks
     asyncpg's protocol in its error-consume state; only a later
     ``connection_lost`` callback marks the connection closed. In the gap,
     ``Pool.acquire``'s ``is_closed()`` guard still passes, so the pool can
     hand a caller a connection whose first statement fails locally with
     ``asyncpg.InternalClientError`` ("cannot switch to state 15; another
-    operation (2) is in progress") — a driver-internal state error that
+    operation (2) is in progress"): a driver-internal state error that
     matches no except clause written against the database's own error
     types, for a condition that is physically a dropped connection. The
-    boundary treats that first-statement failure as what it is — a
-    transient connection loss — and retries once. The retry always lands
+    boundary treats that first-statement failure as what it is, a
+    transient connection loss, and retries once. The retry always lands
     on a genuinely fresh connection: releasing the poisoned one cannot
     complete (its reset hits the same parked state), the release path
     terminates it, and the next acquire reconnects.
 
-    When the retry is REFUSED — ``guard.wrote``: an ``InternalClientError``
+    When the retry is REFUSED (``guard.wrote``): an ``InternalClientError``
     raised by the op *after* the attempt marked a write durable means the
     connection died between that write's acknowledgement and a LATER
     statement of the same attempt (a post-INSERT read, a savepoint
@@ -343,17 +343,17 @@ async def _with_fresh_connection_retry[T](  # pyright: ignore[reportUnusedFuncti
     error propagates instead. What that re-run actually produces (the
     enqueue table's ``id`` is the primary key, and the op's args carry
     their id): a ``UniqueViolationError`` for an enqueue that already
-    committed and will run — an error handed back for work that
+    committed and will run: an error handed back for work that
     SUCCEEDED, which is the first half of #236's harm. The second half is
     the invitation that error creates: a caller that retries it generates
-    a fresh id (a new enqueue call does), and THAT row lands — the actual
+    a fresh id (a new enqueue call does), and THAT row lands: the actual
     job-runs-twice route, and why idempotency keys remain the dedup
     channel for the retry the caller chooses. The marker is set AFTER the
     write's acknowledgement, not before the write is issued, on purpose:
     the dead-on-acquire case this wrapper exists for can strike the write
     statement itself (the plain enqueue arm's INSERT is its first
     statement), and a locally-poisoned protocol rejects that statement
-    BEFORE anything reaches the server — unmarked, so the retry runs and
+    BEFORE anything reaches the server, unmarked, so the retry runs and
     nothing can conflict. Marking before the write would refuse that
     retry and regress the wrapper's whole purpose; the only marking point
     that is correct for both orderings is the acknowledgement.
@@ -361,7 +361,7 @@ async def _with_fresh_connection_retry[T](  # pyright: ignore[reportUnusedFuncti
     What the retry does NOT have to gate: a release-time failure after the
     op's body finished. The guard's checkout bounds the release and never
     raises it (asyncpg terminates the connection either way), so the op's
-    result stands — a caller whose enqueue committed gets its row, not an
+    result stands: a caller whose enqueue committed gets its row, not an
     error inviting a re-enqueue. Only errors raised by the op's own
     statements reach this wrapper's catch.
 

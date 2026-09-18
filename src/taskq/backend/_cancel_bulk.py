@@ -66,7 +66,7 @@ from taskq.backend._sweeps import (
     _validate_positive,  # pyright: ignore[reportPrivateUsage]  # Why: the canonical pre-SQL bound validation, shared with the sweeps and deregistration.
 )
 from taskq.connections import (
-    _RetryGuard,  # pyright: ignore[reportPrivateUsage]  # Why: the per-attempt pool discipline the dead-on-acquire retry hands to this drain's batch op — the annotation seam for _one_batch below; a local copy would drift from the discipline it documents.
+    _RetryGuard,  # pyright: ignore[reportPrivateUsage]  # Why: the per-attempt pool discipline the dead-on-acquire retry hands to this drain's batch op: the annotation seam for _one_batch below; a local copy would drift from the discipline it documents.
     _with_fresh_connection_retry,  # pyright: ignore[reportPrivateUsage]  # Why: the one implementation of the dead-on-acquire retry, shared with the enqueue paths — a local copy would drift from the discipline it documents.
 )
 from taskq.constants import (
@@ -190,7 +190,7 @@ async def _drain_cancel_batches(
         Defined once, taking the keyset cursor explicitly: binding it
         per-iteration inside the ``while`` body would capture a variable
         the loop reassigns. The retry guard's flag is marked only after
-        the transaction's COMMIT is acknowledged — a parked/dead
+        the transaction's COMMIT is acknowledged: a parked/dead
         connection failing any statement INSIDE the transaction rolled
         the whole batch back server-side (the drain re-runs it: EPQ
         predicates skip whatever earlier batches committed, the cursor

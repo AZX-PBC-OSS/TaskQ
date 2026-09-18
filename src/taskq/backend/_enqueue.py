@@ -45,7 +45,7 @@ from taskq.backend._sql_templates import COPY_ENQUEUE_STATUS, SqlTemplates
 from taskq.backend.clock import Clock
 from taskq.backend.statemachine import TERMINAL_STATUSES
 from taskq.connections import (
-    _RetryGuard,  # pyright: ignore[reportPrivateUsage]  # Why: the per-attempt pool discipline the dead-on-acquire retry hands to this module's ops — the annotation seam for the op signatures below; a local copy would drift from the discipline it documents.
+    _RetryGuard,  # pyright: ignore[reportPrivateUsage]  # Why: the per-attempt pool discipline the dead-on-acquire retry hands to this module's ops: the annotation seam for the op signatures below; a local copy would drift from the discipline it documents.
     _with_fresh_connection_retry,  # pyright: ignore[reportPrivateUsage]  # Why: the one implementation of the dead-on-acquire retry, shared with the bulk-cancel drain — a local copy would drift from the discipline it documents.
 )
 from taskq.constants import (
@@ -843,7 +843,7 @@ async def _enqueue_on_conn(
     connection always qualifies: any scope opened here ends here.
 
     *mark_wrote*: the retry guard's durability flag, called immediately
-    after the INSERT's acknowledgement — the earliest point at which
+    after the INSERT's acknowledgement: the earliest point at which
     this enqueue's write is durable (autocommit plain arm) or at least
     acknowledged (the preflight arms' transaction still has to commit;
     marking there is conservative, never duplicating). ``None`` on every
