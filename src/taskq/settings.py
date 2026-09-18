@@ -1904,10 +1904,24 @@ class WorkerSettings(TaskQSettings):
         "for a cron schedule's payload factory (both the off-loop call and "
         "the coroutine a factory returns). Default 5.0s. The tick clamps it "
         "to stay strictly inside what is left of the leader's whole-tick "
-        "deadline (dispatcher_command_timeout), so the named per-schedule "
-        "failure this deadline records is what fires, never the whole-tick "
-        "cancellation; a value at or above that deadline is therefore an "
-        "upper bound, not the effective one.",
+        "deadline (dispatcher_command_timeout), so a factory that runs and "
+        "outlives its granted deadline takes the named per-schedule failure "
+        "this setting exists to record, never the whole-tick cancellation; "
+        "a value at or above that deadline is therefore an upper bound, not "
+        "the effective one. A factory is called only when the leftover can "
+        "fund at least min(this value, a quarter of the tick's funded "
+        "budget) — a smaller leftover funds no call and the schedule is "
+        "deferred (next_fire_at advances one tick cadence) rather than "
+        "struck: the factory never ran, so there is no evidence against the "
+        "schedule — only the schedule whose factory consumed the budget is "
+        "failing. That also makes this setting the fairness lever when one "
+        "slow-but-successful factory monopolizes the tick budget every tick "
+        "(its peers defer indefinitely — watch taskq.cron.budget_deferrals "
+        "and the cron-fire-budget-deferred log): set it BELOW the "
+        "monopolizing factory's real duration and that factory takes the "
+        "strike-and-auto-disable path instead, freeing its peers; raising "
+        "dispatcher_command_timeout widens the funded budget the same "
+        "resolution needs.",
     )
 
     # ── Until-idle drain mode ────────────────────────────────────────────

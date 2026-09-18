@@ -1784,6 +1784,52 @@ def record_cron_lock_contention(worker_id: str) -> None:
     _cron_lock_contention.add(1)
 
 
+_cron_budget_deferrals = get_meter().create_counter(
+    "taskq.cron.budget_deferrals",
+    unit="1",
+    description=(
+        "Cron fires deferred because the tick's funded factory budget had no "
+        "fundable grant left for them: a schedule planned ahead consumed the "
+        "budget, or the leftover fell below the minimum fundable grant. A "
+        "brief burst is catch-up draining in tick-sized batches; a SUSTAINED "
+        "rate means one schedule's payload factory is monopolizing the tick "
+        "budget every tick — a slow-but-successful factory never strikes and "
+        "never auto-disables, so its peers retry every tick without ever "
+        "being funded (delayed, not lost: the deferral advances "
+        "next_fire_at one leader tick and the owed slot stays inside the "
+        "catch-up window). Resolve with the operator knobs, not a restart: "
+        "tighten TASKQ_CRON_PAYLOAD_FACTORY_TIMEOUT below the monopolizing "
+        "factory's duration (it then takes the strike-and-auto-disable path "
+        "— the intended consequence), or raise "
+        "TASKQ_DISPATCHER_COMMAND_TIMEOUT so the funded budget fits the "
+        "monopolizer plus a fundable grant for its peers. Per-schedule "
+        "attribution is on the cron-fire-budget-deferred log line, not on "
+        "this label; the actor label is capped like "
+        "taskq.cron.consecutive_failures (first 100 distinct names, "
+        "overflow collapses to '_other_')."
+    ),
+)
+
+
+def record_cron_budget_deferral(actor: str) -> None:
+    """Count one cron fire deferred by the tick's factory budget.
+
+    The alertable face of the budget-deferral path: the log event
+    (``cron-fire-budget-deferred``) is unconditional and carries the
+    per-schedule attribution; this counter is the series an operator
+    alerts on when deferrals stop being transient.  See the counter's
+    description for the sustained-rate diagnosis and the operator knobs.
+    Labeled by ``actor``, admitted through the same cap as
+    :func:`record_cron_failure` (schedule rows accept any string at
+    creation time, so the label is bounded).
+    Respects ``_otel_enabled``: no-op when False.
+    """
+    if not _otel_enabled:
+        return
+    label = _bounded_cron_actor(actor)
+    _cron_budget_deferrals.add(1, {"actor": label})
+
+
 def record_cron_failure(actor: str, delta: int) -> None:
     """Record a cron failure delta on the UpDownCounter.
 
