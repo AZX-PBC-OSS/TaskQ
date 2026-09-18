@@ -345,7 +345,7 @@ def test_group_attribute_absent_with_allowlist_fails_closed() -> None:
     assert "taskq_session=" not in resp.headers.get("set-cookie", "")
 
 
-# ── logout clears session ─────────────────────────────────────────────────
+# ── logout clears session (POST + session-bound CSRF token) ───────────────
 
 
 def test_saml_logout_clears_session() -> None:
@@ -358,11 +358,36 @@ def test_saml_logout_clears_session() -> None:
     resp = _post_saml_response(client, saml_response)
     assert "error=authentication+failed" not in resp.headers.get("location", "")
 
-    resp = client.get("/admin/logout", follow_redirects=False)
+    from taskq.web.admin.auth._session import (  # pyright: ignore[reportPrivateUsage]  # Why: the token derivation is the behaviour under test and is not re-exported.
+        logout_csrf_token,
+    )
+
+    session_cookie = client.cookies["taskq_session"]
+    resp = client.post(
+        "/admin/logout",
+        data={"csrf_token": logout_csrf_token(_SESSION_SECRET, session_cookie)},
+        follow_redirects=False,
+    )
     assert resp.status_code == 302
     set_cookie = resp.headers.get("set-cookie", "")
     assert "taskq_session=" in set_cookie
     assert "Max-Age=0" in set_cookie or "expires=" in set_cookie.lower()
+
+
+def test_saml_logout_by_get_is_refused() -> None:
+    """A forced top-level navigation is a GET; it must not clear the session
+    (mirror of the OIDC pin, both backends must hold the line)."""
+    config = _config()
+    app = _make_app(config)
+    client = _client(app)
+
+    request_id = _do_login(client)
+    resp = _post_saml_response(client, build_saml_response(in_response_to=request_id))
+    assert "error=authentication+failed" not in resp.headers.get("location", "")
+
+    resp = client.get("/admin/logout", follow_redirects=False)
+    assert resp.status_code == 405
+    assert "taskq_session=" not in resp.headers.get("set-cookie", "")
 
 
 # ── Cross-site ACS must not be bought by weakening cookie policy ──────────

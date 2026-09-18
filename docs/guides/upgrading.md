@@ -288,6 +288,24 @@ never diverge.
 
 ## Breaking API changes
 
+### `/logout` is now a POST with a session-bound CSRF token
+
+> **Unreleased.** Breaking for anything that ended an SSO session by
+> fetching `GET /admin/logout`.
+
+Both SSO backends accepted `GET /logout`, so a forced top-level navigation
+to it, a link, an image, a redirect from any page, cleared the admin
+session. Logout is now POST-only and requires a CSRF token derived from the
+live session cookie; `GET /logout` answers 405 and a POST without the token
+answers 403. The admin UI's Sign out control posts the token. Switch
+scripts that logged out via `GET /admin/logout` to `POST` (see
+[sso.md](sso.md#logging-out)).
+
+The same change scopes the OIDC state cookie to the callback route (matching
+the SAML correlation cookie) and caches the OIDC discovery document and JWKS
+per issuer with a 300 s TTL, so an unauthenticated `/login` flood no longer
+translates into one outbound IdP fetch per request.
+
 ### `validate_actor_payload`: `actor_name=` → `actor=`
 
 > **Unreleased.** Breaking for anyone calling

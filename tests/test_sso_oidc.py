@@ -363,26 +363,173 @@ def test_token_endpoint_failure_redirects_with_generic_code() -> None:
     assert "boom" not in location
 
 
-# ── logout clears session ─────────────────────────────────────────────────
+# ── logout clears session (POST + session-bound CSRF token) ───────────────
 
 
-def test_oidc_logout_clears_session() -> None:
+def _logout_token(client: TestClient, secret: str = _SESSION_SECRET) -> str:
+    """The logout CSRF token derived from this client's live session cookie."""
+    from taskq.web.admin.auth._session import (  # pyright: ignore[reportPrivateUsage]  # Why: the token derivation is the behaviour under test and is not re-exported.
+        logout_csrf_token,
+    )
+
+    session_cookie = client.cookies["taskq_session"]
+    assert session_cookie, "client holds no session cookie to derive the token from"
+    return logout_csrf_token(secret, session_cookie)
+
+
+def _completed_client() -> TestClient:
+    """A TestClient holding a live OIDC session (login + callback completed)."""
     config = _config()
     app = _make_app(config)
     client = TestClient(app)
 
     with _mock_provider_echoing_login_nonce(client) as (state, _router):
-        client.get(
+        resp = client.get(
             "/admin/callback",
             params={"code": "fake-code", "state": state},
             follow_redirects=False,
         )
+    assert resp.status_code == 302
+    assert resp.headers["location"] == "/admin"
+    return client
 
-    resp = client.get("/admin/logout", follow_redirects=False)
+
+def test_oidc_logout_clears_session() -> None:
+    client = _completed_client()
+
+    resp = client.post(
+        "/admin/logout",
+        data={"csrf_token": _logout_token(client)},
+        follow_redirects=False,
+    )
     assert resp.status_code == 302
     set_cookie = resp.headers.get("set-cookie", "")
     assert "taskq_session=" in set_cookie
     assert "Max-Age=0" in set_cookie or "expires=" in set_cookie.lower()
+
+
+def test_logout_by_get_is_refused() -> None:
+    """A forced top-level navigation is a GET; it must not clear the session.
+
+    The whole logout-CSRF fix hangs on this: any page can make a browser
+    navigate to an arbitrary URL, so a GET logout hands every site on the
+    internet a one-URL admin session killer.
+    """
+    client = _completed_client()
+
+    resp = client.get("/admin/logout", follow_redirects=False)
+    assert resp.status_code == 405
+    assert "taskq_session=" not in resp.headers.get("set-cookie", "")
+
+    # The session survives the refused GET.
+    assert client.get("/admin/protected", headers={"accept": "application/json"}).status_code == 200
+
+
+def test_logout_post_without_the_token_is_refused() -> None:
+    client = _completed_client()
+
+    resp = client.post("/admin/logout", follow_redirects=False)
+    assert resp.status_code == 403
+    assert "taskq_session=" not in resp.headers.get("set-cookie", "")
+    assert client.get("/admin/protected", headers={"accept": "application/json"}).status_code == 200
+
+
+def test_logout_post_with_a_foreign_token_is_refused() -> None:
+    """The token must be derived from THIS session, not merely present."""
+    client = _completed_client()
+
+    resp = client.post(
+        "/admin/logout",
+        data={"csrf_token": "0" * 64},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 403
+    assert "taskq_session=" not in resp.headers.get("set-cookie", "")
+    assert client.get("/admin/protected", headers={"accept": "application/json"}).status_code == 200
+
+
+# ── state-cookie scoping (mirror of the SAML correlation-cookie pins) ─────
+
+
+def _state_cookie_headers(resp: Any) -> list[str]:
+    return [
+        header
+        for header in resp.headers.get_list("set-cookie")
+        if header.startswith("taskq_oidc_state=")
+    ]
+
+
+def test_state_cookie_is_scoped_to_the_callback_route() -> None:
+    """The state cookie (state + PKCE verifier + nonce) is consumed by exactly
+    one route, so it is offered on exactly one: the mount's callback. Pinned
+    on a non-default base_path, so a hardcoded literal fails here too, the
+    SAML correlation cookie carries the same pin."""
+    client = TestClient(_make_app(_config(), base_path="/console"))
+
+    with _mock_provider():
+        resp = client.get("/console/login", follow_redirects=False)
+
+    assert resp.status_code == 302
+    headers = _state_cookie_headers(resp)
+    assert headers, "login set no state cookie to inspect"
+    assert "path=/console/callback" in headers[0].lower()
+
+
+def test_state_cookie_is_cleared_on_the_callback_path() -> None:
+    """A delete on a different path clears nothing, so a cleared-but-live
+    state cookie would keep riding every callback request. The clearing
+    Set-Cookie must carry the same scoped Path the issue set."""
+    client = TestClient(_make_app(_config(), base_path="/console"))
+
+    with _mock_provider():
+        assert client.get("/console/login", follow_redirects=False).status_code == 302
+        resp = client.get(
+            "/console/callback",
+            params={"code": "fake-code", "state": "wrong-state"},
+            follow_redirects=False,
+        )
+
+    assert resp.status_code == 302
+    headers = _state_cookie_headers(resp)
+    assert headers, "failed callback cleared no state cookie"
+    cleared = headers[0].lower()
+    assert "max-age=0" in cleared or "expires=" in cleared
+    assert "path=/console/callback" in cleared
+
+
+# ── discovery/JWKS are cached per issuer, not fetched per request ─────────
+
+
+def test_login_and_callback_fetch_discovery_and_jwks_once_per_issuer() -> None:
+    """An unauthenticated /login is free to flood; each one must not perform a
+    live outbound discovery fetch. Within one bundle and TTL window the
+    discovery document is fetched once and the JWKS once, the second
+    /login and the callback both read the cache."""
+    client = TestClient(_make_app(_config()))
+    jwks_url = make_discovery(_ISSUER)["jwks_uri"]
+
+    with _mock_provider() as router:
+        _do_login(client)
+        state2 = _do_login(client)
+        # The callback answers the SECOND login (its state cookie is the one
+        # still in the jar). Whether the exchange itself later validates is
+        # out of scope here, discovery and JWKS are read before it.
+        client.get(
+            "/admin/callback",
+            params={"code": "fake-code", "state": state2},
+            follow_redirects=False,
+        )
+        discovery_calls = [c for c in router.calls if str(c.request.url) == _DISCOVERY_URL]
+        jwks_calls = [c for c in router.calls if str(c.request.url) == jwks_url]
+
+    assert len(discovery_calls) == 1, (
+        f"expected one discovery fetch, saw {len(discovery_calls)}, discovery is "
+        "being fetched per request instead of served from the per-issuer cache"
+    )
+    assert len(jwks_calls) == 1, (
+        f"expected one JWKS fetch, saw {len(jwks_calls)}, JWKS is being "
+        "refetched instead of served from the per-issuer cache"
+    )
 
 
 # ── PKCE authorization-request surface (login redirect) ────────────────────
@@ -577,29 +724,33 @@ def test_callback_jwks_failure_returns_error_redirect() -> None:
 
 
 def test_discovery_and_jwks_run_on_httpx2() -> None:
-    """A full round trip must reach the mock over httpx2, not httpx.
+    """The discovery and JWKS fetches must run over httpx2, not httpx.
 
-    ``oidc.py`` builds its discovery/JWKS client from ``import httpx2 as httpx``.
+    ``oidc.py`` builds its metadata client from ``import httpx2 as httpx``.
     The retired ``_bridge_httpx2`` fixture rebound ``httpx2.AsyncClient`` to
     ``httpx.AsyncClient`` so plain respx could see those calls, which meant every
     OIDC test ran on a client class production never constructs. Recording the
     stack that served each request makes a silent revert to that arrangement
     fail here instead of passing quietly.
+
+    Discovery is fetched at /login (the cache means the callback does not
+    refetch it); the JWKS is fetched at the callback. One mock context spans
+    both so the stack recorder sees each fetch exactly once.
     """
     client = TestClient(_make_app(_config()))
     jwks_url = make_discovery(_ISSUER)["jwks_uri"]
 
-    with _mock_provider_echoing_login_nonce(client) as (state, _router):
-        resp = client.get(
+    with _mock_provider() as _router:
+        assert client.get("/admin/login", follow_redirects=False).status_code == 302
+        state = _do_login(client)
+        # The callback's exchange itself may fail validation on this mocked
+        # provider; the JWKS fetch under test happens before any of that.
+        client.get(
             "/admin/callback",
             params={"code": "fake-code", "state": state},
             follow_redirects=False,
         )
-        assert resp.status_code == 302
-        assert resp.headers["location"] == "/admin"
 
-        # The callback refetches discovery and JWKS on the backend's own
-        # httpx2 client; these stacks are that refetch's, recorded live.
         assert stacks_for(_DISCOVERY_URL) == {"httpx2"}, (
             f"discovery ran on {stacks_for(_DISCOVERY_URL) or 'no stack'}; oidc.py "
             "imports httpx2, so anything else means a fixture substituted the client"

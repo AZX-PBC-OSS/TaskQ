@@ -62,6 +62,43 @@ def test_base_template_contains_htmx_script_tag(
     assert '<script src="/static/htmx.min.js"></script>' in html
 
 
+# ── the SSO logout control is a POST form carrying the session-bound token ─
+
+
+def test_base_template_renders_no_logout_control_without_an_sso_session(
+    monkeypatch: pytest.MonkeyPatch, stub_pool: _StubPool
+) -> None:
+    """No SSO session on the request → no Sign out control at all: a control
+    that posts to /logout on a deployment where no SSO backend is mounted is
+    a button that 404s."""
+    html = _render_base(monkeypatch=monkeypatch, pool=stub_pool)
+    assert "Sign out" not in html
+    assert "/logout" not in html
+
+
+def test_base_template_renders_logout_as_a_post_form_with_the_session_bound_token(
+    monkeypatch: pytest.MonkeyPatch, stub_pool: _StubPool
+) -> None:
+    """With an SSO session on the request, the control must be a POST form
+    whose hidden field carries the session-bound logout token, a plain link
+    (GET) is exactly the shape the logout hardening removed."""
+    from taskq.web.admin.auth import (
+        _session,  # pyright: ignore[reportPrivateUsage]  # Why: the ContextVar the auth dependency arms is what the template global reads.
+    )
+
+    token = _session._sso_logout_token.set("test-logout-token")
+    try:
+        html = _render_base(monkeypatch=monkeypatch, pool=stub_pool)
+    finally:
+        _session._sso_logout_token.reset(token)
+
+    assert "Sign out" in html
+    assert '<form method="post" action="/logout" class="m-0">' in html
+    assert '<input type="hidden" name="csrf_token" value="test-logout-token">' in html
+    # No bare GET link to /logout anywhere in the chrome.
+    assert 'href="/logout"' not in html
+
+
 def test_base_template_contains_css_stylesheet_link(
     monkeypatch: pytest.MonkeyPatch, stub_pool: _StubPool
 ) -> None:

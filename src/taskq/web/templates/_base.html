@@ -46,10 +46,22 @@
                 <h1 class="text-lg font-semibold tracking-tight">TaskQ Admin</h1>
                 <span class="taskq-badge text-xs font-medium px-2 py-0.5 rounded-full" data-mode="{{ realtime_mode | default('polling') }}">{{ mode_label | default('polling mode') }}</span>
             </a>
-            <button @click="dark = !dark" class="p-2 rounded-lg text-slate-400 hover:text-white hover:bg-slate-700 transition-colors" aria-label="Toggle dark mode">
-                <span x-show="!dark">☀</span>
-                <span x-show="dark">☾</span>
-            </button>
+            <div class="flex items-center gap-2">
+                {% set _logout_token = sso_logout_token() if sso_logout_token is defined else "" %}
+                {% if _logout_token %}
+                {# The SSO logout contract is POST + a token derived from the live session;
+                   a bare link (GET) is the shape the logout hardening removed, and the
+                   token is armed per request by the SSO auth dependency. #}
+                <form method="post" action="{{ base_path }}/logout" class="m-0">
+                    <input type="hidden" name="csrf_token" value="{{ _logout_token }}">
+                    <button type="submit" class="p-2 rounded-lg text-slate-400 hover:text-white hover:bg-slate-700 transition-colors" aria-label="Sign out">Sign out</button>
+                </form>
+                {% endif %}
+                <button @click="dark = !dark" class="p-2 rounded-lg text-slate-400 hover:text-white hover:bg-slate-700 transition-colors" aria-label="Toggle dark mode">
+                    <span x-show="!dark">☀</span>
+                    <span x-show="dark">☾</span>
+                </button>
+            </div>
         </div>
     </header>
     <nav class="bg-slate-800 dark:bg-slate-900 border-b border-slate-700">

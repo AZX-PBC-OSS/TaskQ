@@ -127,12 +127,119 @@ def test_sso_session_cookie_is_scoped_to_the_admin_mount(
     from fastapi.testclient import TestClient
 
     from taskq.web.admin.auth import create_oidc_auth
+    from taskq.web.admin.auth._session import (  # pyright: ignore[reportPrivateUsage]  # Why: the token derivation is the behaviour under test and is not re-exported.
+        logout_csrf_token,
+    )
 
     bundle = create_oidc_auth(_oidc_config(), base_path="/admin")
     app = FastAPI()
     app.include_router(bundle.router, prefix="/admin")
-    response = TestClient(app).get("/admin/logout", follow_redirects=False)
+    client = TestClient(app)
+    session_cookie = _crafted_session_cookie()
+    client.cookies.set("taskq_session", session_cookie)
+
+    response = client.post(
+        "/admin/logout",
+        data={"csrf_token": logout_csrf_token("s" * 32, session_cookie)},
+        follow_redirects=False,
+    )
 
     lines = [line for line in response.headers.get_list("set-cookie") if "taskq_session" in line]
     assert lines, response.headers.get_list("set-cookie")
     assert "Path=/admin" in lines[0], lines[0]
+
+
+# ── logout is a POST with a session-bound CSRF token, on both backends ────
+
+
+def _crafted_session_cookie() -> str:
+    """A valid signed session-cookie value for the shared test secret."""
+    manager = SessionManager(secret="s" * 32)
+    response = Response()
+    manager.set_session_cookie(response, _CLAIMS)
+    value = next(
+        (line for line in response.raw_headers if line[0].lower() == b"set-cookie"),
+        (b"", b""),
+    )[1].decode()
+    return value.split(";", 1)[0].split("=", 1)[1]
+
+
+def _logout_pins_for(
+    app: Any,
+    *,
+    base_path: str = "/admin",
+) -> None:
+    """Shared logout hardening assertions for one backend's mounted router.
+
+    A forced top-level navigation is a GET and used to clear the admin
+    session on both backends; the pins below hold either backend to the same
+    contract, which is why they live with the shared session machinery's
+    tests rather than in one backend's family.
+    """
+    from fastapi.testclient import TestClient
+
+    from taskq.web.admin.auth._session import (  # pyright: ignore[reportPrivateUsage]  # Why: the token derivation is the behaviour under test and is not re-exported.
+        logout_csrf_token,
+    )
+
+    client = TestClient(app)
+    session_cookie = _crafted_session_cookie()
+    client.cookies.set("taskq_session", session_cookie)
+
+    # GET, the shape a forced top-level navigation produces, is refused.
+    got = client.get(f"{base_path}/logout", follow_redirects=False)
+    assert got.status_code == 405, got.status_code
+    assert not any("taskq_session=" in header for header in got.headers.get_list("set-cookie")), (
+        "the refused GET still cleared the session cookie"
+    )
+
+    # POST without the token, and with a wrong token, is refused.
+    for data in ({}, {"csrf_token": "0" * 64}):
+        posted = client.post(f"{base_path}/logout", data=data, follow_redirects=False)
+        assert posted.status_code == 403, (data, posted.status_code)
+        assert not any(
+            "taskq_session=" in header for header in posted.headers.get_list("set-cookie")
+        ), f"POST with {data or 'no token'} still cleared the session cookie"
+
+    # POST with the token derived from the live session clears it, on the
+    # session cookie's own path.
+    token = logout_csrf_token("s" * 32, session_cookie)
+    posted = client.post(
+        f"{base_path}/logout",
+        data={"csrf_token": token},
+        follow_redirects=False,
+    )
+    assert posted.status_code == 302, posted.status_code
+    cleared = [
+        header
+        for header in posted.headers.get_list("set-cookie")
+        if header.startswith("taskq_session=")
+    ]
+    assert cleared, "the accepted POST cleared no session cookie"
+    line = cleared[0].lower()
+    assert "max-age=0" in line or "expires=" in line, cleared[0]
+    assert f"path={base_path}" in line, cleared[0]
+
+
+def test_oidc_logout_is_post_with_a_session_bound_csrf_token() -> None:
+    pytest.importorskip("authlib")
+    from fastapi import FastAPI
+
+    from taskq.web.admin.auth import create_oidc_auth
+
+    bundle = create_oidc_auth(_oidc_config(), base_path="/admin")
+    app = FastAPI()
+    app.include_router(bundle.router, prefix="/admin")
+    _logout_pins_for(app)
+
+
+def test_saml_logout_is_post_with_a_session_bound_csrf_token() -> None:
+    pytest.importorskip("onelogin.saml2")
+    from fastapi import FastAPI
+
+    from taskq.web.admin.auth import create_saml_auth
+
+    bundle = create_saml_auth(_saml_config(), base_path="/admin")
+    app = FastAPI()
+    app.include_router(bundle.router, prefix="/admin")
+    _logout_pins_for(app)
