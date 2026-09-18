@@ -122,7 +122,17 @@ Scenario = Callable[["DiffSide"], Awaitable[None]]
 
 
 def _bucket(ts: datetime | None, now: datetime) -> Any:
-    """Normalize one timestamp onto the domain-relative bucket scale."""
+    """Normalize one timestamp onto the domain-relative bucket scale.
+
+    The fence is 0.5 s: the reference is each side's own scenario-end
+    clock reading, so the two sides' write instants bucket against
+    comparable references (the mirror's clock is frozen during its
+    scenario; bucketing it against the advanced clock read its writes as
+    "past" purely because the PG side's wall time moved on). A scenario
+    whose assertion rides the fence keeps its boundary-sensitive write
+    last in the scenario, where the reference is captured; the fence
+    itself must not widen past the smallest asserted backoff.
+    """
     if ts is None:
         return None
     delta = (ts - now).total_seconds()
@@ -878,9 +888,19 @@ class DiffSide:
             "completed_at": _bucket(row.completed_at, now),
         }
 
-    async def snapshot(self) -> dict[str, Any]:
-        """The normalized observable dict the differential compares."""
-        now = await self.now()
+    async def snapshot(self, ref: datetime | None = None) -> dict[str, Any]:
+        """The normalized observable dict the differential compares.
+
+        ``ref`` is the bucket reference: each side's own scenario-end clock
+        reading, captured by :func:`run_differential` before any cross-side
+        work. Defaulting to the live clock keeps ad-hoc callers working,
+        but the differential must pass the reference: the mirror's clock is
+        frozen during its scenario while PG's advances in wall time, so a
+        shared reference reads the two sides' identical write instants at
+        different buckets whenever a loaded runner stretches the PG
+        scenario past the fence.
+        """
+        now = ref if ref is not None else await self.now()
         jobs = {
             token: await self._job_observable(jid, now)
             for token, jid in self._jobs_by_token.items()
@@ -991,6 +1011,12 @@ async def run_differential(
     pg = await _pg_side(pg_dsn, schema=schema, actors=actors)
     try:
         await scenario(mem)
+        # The memory side's bucket reference: its clock reading at its own
+        # scenario's end. The FakeClock is frozen during the scenario, so
+        # every action-written timestamp sits at this instant; bucketing
+        # the mirror against anything later reads its writes as "past"
+        # purely because the PG side's wall time moved on.
+        ref_mem = await mem.now()
         # Re-anchor the PG side to its OWN scenario's start. The anchor
         # captured at side construction (the calibrate() call) predates the
         # MEMORY scenario, whose wall time is time the PG side's
@@ -1024,11 +1050,15 @@ async def run_differential(
         # its own scenario's start), so action-written fields bucket
         # identically and the rounding absorbs only sub-second residual.
         assert pg._t0 is not None  # pyright: ignore[reportPrivateUsage]  # Why: harness-owned anchor; the established same-module pattern.
-        elapsed = await pg.now() - pg._t0
+        # The PG side's bucket reference: the server clock at its own
+        # scenario's end, captured BEFORE the snapshot round trips (their
+        # duration is runner latency, not scenario time).
+        ref_pg = await pg.now()
+        elapsed = ref_pg - pg._t0
         assert mem._clock is not None  # pyright: ignore[reportPrivateUsage]
         mem._clock.advance(elapsed)
-        mem_obs = await mem.snapshot()
-        pg_obs = await pg.snapshot()
+        mem_obs = await mem.snapshot(ref=ref_mem)
+        pg_obs = await pg.snapshot(ref=ref_pg)
         return mem_obs, pg_obs
     finally:
         await _close_pg_side(pg)
