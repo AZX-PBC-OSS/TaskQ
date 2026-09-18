@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import threading
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 from uuid import UUID
@@ -41,7 +42,13 @@ from taskq.testing.assertions import wait_for
 from taskq.testing.fixtures import JobsApp
 from taskq.testing.pg import create_worker
 from taskq.worker._consumer import consume_one_job
-from taskq.worker.shutdown import orchestrate_shutdown
+from taskq.worker.dispatch import (  # pyright: ignore[reportPrivateUsage]  # Why: the production sync-actor dispatch helper: the thread tracking under test is exactly what dispatch_one_job calls for a sync actor.
+    _run_sync_actor_tracked,
+)
+from taskq.worker.shutdown import (  # pyright: ignore[reportPrivateUsage]  # Why: the exit tail is the deadline model the hold assertions recompute.
+    _watchdog_exit_tail,
+    orchestrate_shutdown,
+)
 
 if TYPE_CHECKING:
     from taskq.backend.postgres import PostgresBackend
@@ -265,16 +272,21 @@ async def test_shutdown_releases_an_unresponsive_actor_behind_the_remaining_budg
         assert after.locked_by_worker is None and after.lock_expires_at is None
         assert after.interrupt_count == 1
 
-        # The hold is the remaining termination budget: positive (the row is
-        # deferred, not free) and never exceeding the process's total
-        # termination budget (it is the REMAINING share, counted from the
-        # start of the shutdown, not a fresh budget at release time).
+        # The hold is the remaining termination budget PLUS the watchdog's
+        # exit tail: the dump-interval lag before the deadline trip is
+        # observed and the bounded flush the trip performs before
+        # os._exit, and never exceeds that sum (the remaining share is
+        # counted from the start of the shutdown, not a fresh budget at
+        # release time).
         hold = after.scheduled_at - datetime.now(UTC)
         termination = deps.settings.termination_grace_period
-        assert timedelta(0) < hold <= timedelta(seconds=termination), (
+        tail = _watchdog_exit_tail(deps.settings)
+        assert timedelta(0) < hold <= timedelta(seconds=termination + tail), (
             f"the release of a still-running actor must be deferred until the "
-            f"releasing process is provably gone: hold reads {hold}, expected "
-            f"within (0, {termination}s]"
+            f"releasing process is provably gone — the deadline itself is not "
+            f"enough, the watchdog's exit tail ({tail}s) is part of the "
+            f"promise: hold reads {hold}, expected within (0, "
+            f"{termination + tail}s]"
         )
     finally:
         # Let the zombie actor return; its late success write must be a no-op
@@ -522,3 +534,256 @@ async def test_a_hold_that_outlives_the_jobs_deadline_fails_it_on_the_deadline(
         release_actor.set()
         with contextlib.suppress(asyncio.CancelledError, Exception):
             await attempt_task
+
+
+# ── The sync-actor gate: a deploy must never double-run a thread (#232) ──
+
+
+async def _spawn_second_worker(deps: WorkerDeps, schema: str) -> UUID:
+    """Register a second worker the way a surviving pod registers itself."""
+    worker_id = new_uuid()
+    async with deps.worker_pool.acquire() as conn:
+        await create_worker(conn, schema, worker_id)
+    return worker_id
+
+
+async def _claim_as(
+    backend: PostgresBackend,
+    worker_id: UUID,
+) -> list[JobRow]:
+    """One claim round for *worker_id*: exactly what a surviving pod's
+    producer loop does the moment a row looks available."""
+    return await backend.dispatch_batch(worker_id, ["default"], 1, _LOCK_LEASE)
+
+
+async def test_a_deploy_never_hands_a_live_sync_actors_row_to_a_second_worker(
+    clean_jobs_app: JobsApp,
+) -> None:
+    """THE sync-actor gate (#232): a thread the cancel cannot reach is never
+    concurrently claimable.
+
+    A sync actor runs in an executor thread; the deploy's ``task.cancel()``
+    cancels the await, never the thread. The old release wrote
+    ``mark_interrupted(hold=0)`` the moment the await died, so the row went
+    ``pending`` while the body was still mid-execution, and a second
+    worker's claim round took it and ran the job a second time, side by
+    side with the dying pod's thread. This is exactly the TAStack shape
+    (plain ``def`` actors, transactional workers), and the claim below
+    runs while the first attempt's thread is PROVABLY still alive.
+
+    The fixed contract: the release is held back: the consumer parks on
+    the tracked thread handle, bounded by the remaining termination budget,
+    and the row stays ``scheduled`` behind the process's exit window until
+    the body provably exits or the window ends. The row is never stranded
+    either: once the hold's ``scheduled_at`` passes (expired surgically
+    here: the scheduled_to_pending sweep's job in production), the second
+    worker claims it and the re-run buys a fresh attempt increment.
+    """
+    deps = clean_jobs_app.deps
+    backend = clean_jobs_app.backend
+    schema = deps.settings.schema_name
+
+    job_id = await _enqueue_job(backend)
+    enqueued = await backend.get(job_id)
+    assert enqueued is not None
+    worker_id, row = await _claim_one(backend, deps, schema)
+
+    body_started = threading.Event()
+    release_body = threading.Event()
+    body_exited = threading.Event()
+    executions: list[float] = []
+
+    def sync_body(payload: _Payload) -> object:
+        del payload
+        executions.append(datetime.now(UTC).timestamp())
+        body_started.set()
+        # The deploy's cancel cannot reach this thread: it runs until the
+        # test releases it, exactly like an actor mid-body across a SIGTERM.
+        release_body.wait(30.0)
+        body_exited.set()
+        return {"done": True}
+
+    async def run_sync_actor(job_row: JobRow, ctx: JobContext[BaseModel]) -> object:
+        del job_row
+        return await _run_sync_actor_tracked(sync_body, {"payload": ctx.payload}, ctx)  # type: ignore[arg-type]  # Why: the production dispatch helper driven with the test's body: the exact call shape dispatch_one_job makes for a registered sync actor.
+
+    attempt_task = _run_attempt(deps, backend, worker_id, row, run_sync_actor)
+    await asyncio.to_thread(body_started.wait, 10.0)
+
+    shutdown_started_wall = datetime.now(UTC)
+    shutdown_event = asyncio.Event()
+    try:
+        exit_code = await orchestrate_shutdown(
+            deps, deps.settings, worker_id, shutdown_event, None, backend=backend
+        )
+        assert exit_code == 0
+        # The consumer parks (bounded) on the tracked thread before its own
+        # release write; the attempt ends cancelled once that is done.
+        with contextlib.suppress(asyncio.CancelledError):
+            await asyncio.wait_for(attempt_task, timeout=30.0)
+
+        # The thread is PROVABLY still alive: the premise of the whole
+        # scenario: the dying process might still touch the row.
+        assert not body_exited.is_set()
+        assert executions, "the body must have started (and been counted) exactly once"
+
+        after = await backend.get(job_id)
+        assert after is not None
+        assert after.status == "scheduled", (
+            "a sync actor that never provably exited must be released HELD "
+            f"(scheduled behind the exit window), not pending; got {after.status!r} "
+            "— a pending row here is the double-execution overlap: the "
+            "second worker claims it while the first pod's thread still runs"
+        )
+        assert after.attempt == enqueued.attempt, (
+            "the interruption must refund the claim's attempt increment: the "
+            "re-run must not spend a second attempt on one interruption"
+        )
+        assert after.interrupt_count == 1
+        # The hold covers the whole exit window: the deadline plus the
+        # watchdog's tail past it. The tail is pinned from the settings and
+        # the two literals it is built from (the bounded 2s metrics flush
+        # and ~1s of stack-render/log slack): NOT from the shutdown
+        # module's own helper, so weakening the pad in the source trips
+        # this assertion instead of silently moving with it.
+        expected_tail = deps.settings.watchdog_dump_interval + 2.0 + 1.0
+        hold = after.scheduled_at - datetime.now(UTC)
+        min_cover = (
+            shutdown_started_wall
+            + timedelta(seconds=deps.settings.termination_grace_period)
+            + timedelta(seconds=expected_tail)
+            - timedelta(seconds=2.0)
+        )
+        assert after.scheduled_at >= min_cover, (
+            f"the hold must keep the row unclaimable until this process is "
+            f"provably gone (deadline {deps.settings.termination_grace_period}s "
+            f"+ exit tail {expected_tail}s from the shutdown's start — the "
+            f"watchdog observes the deadline only once per dump interval and "
+            f"flushes metrics before os._exit); hold reads {hold}"
+        )
+
+        # The gate itself: a second worker's claim round, run while the
+        # first pod's thread is provably still alive, must find nothing.
+        second_worker = await _spawn_second_worker(deps, schema)
+        claimed = await _claim_as(backend, second_worker)
+        assert claimed == [], (
+            "a second worker claimed the row while the first attempt's sync "
+            f"thread was still running: the job would execute twice at once "
+            f"(claimed {[c.id for c in claimed]})"
+        )
+
+        # Never stranded either: once the hold's scheduled_at passes (the
+        # scheduled_to_pending sweep's transition, applied surgically here),
+        # the second worker claims the row and the re-run buys its own
+        # attempt increment.
+        async with deps.worker_pool.acquire() as conn:
+            await conn.execute(
+                f"UPDATE \"{schema}\".jobs SET status='pending', "  # noqa: S608  # Why: schema is a fixture-owned identifier; the job id is $-bound.
+                f"scheduled_at = clock_timestamp() - interval '1 second' "
+                f"WHERE id = $1",
+                job_id,
+            )
+        reclaimed = await _claim_as(backend, second_worker)
+        assert len(reclaimed) == 1 and reclaimed[0].id == job_id, (
+            "after the hold expires the row must be claimable again: a held "
+            "release that never becomes claimable strands the job"
+        )
+        assert reclaimed[0].attempt == enqueued.attempt + 1, (
+            "the re-run's claim buys a fresh attempt increment: the "
+            "interruption refunded the first claim's, and only the claim "
+            "spends one"
+        )
+        assert len(executions) == 1, (
+            "the actor body ran exactly once: the deploy interrupted it, "
+            "held it, and handed it to the fleet without ever running it "
+            "twice at once"
+        )
+    finally:
+        release_body.set()
+        await asyncio.to_thread(body_exited.wait, 10.0)
+
+
+async def test_a_deploy_holds_a_transactional_sync_actor_until_its_thread_exits(
+    clean_jobs_app: JobsApp,
+) -> None:
+    """The transactional shape (ta_worker): a sync actor inside an open
+    transaction is released held, its unwind awaited first.
+
+    The transactional path cancelled ``tx_task`` and re-raised without
+    waiting, so the release landed while the transaction task was still
+    unwinding, and with a sync actor inside, the unwind's to_thread await
+    dies while the BODY carries on. The fixed path parks on both the tx
+    unwind and the tracked thread; the row stays held until the process is
+    provably gone.
+    """
+    deps = clean_jobs_app.deps
+    backend = clean_jobs_app.backend
+    schema = deps.settings.schema_name
+
+    job_id = await _enqueue_job(backend)
+    enqueued = await backend.get(job_id)
+    assert enqueued is not None
+    worker_id, row = await _claim_one(backend, deps, schema)
+
+    body_started = threading.Event()
+    release_body = threading.Event()
+    body_exited = threading.Event()
+
+    def sync_body(payload: _Payload) -> object:
+        del payload
+        body_started.set()
+        release_body.wait(30.0)
+        body_exited.set()
+        return {"done": True}
+
+    async def run_sync_actor(job_row: JobRow, ctx: JobContext[BaseModel]) -> object:
+        del job_row
+        return await _run_sync_actor_tracked(sync_body, {"payload": ctx.payload}, ctx)  # type: ignore[arg-type]  # Why: same production dispatch helper as the autonomous gate test.
+
+    shutdown_event = asyncio.Event()
+    async with deps.worker_pool.acquire() as tx_conn:
+        attempt_task = asyncio.ensure_future(
+            consume_one_job(
+                backend,
+                row,
+                worker_id,
+                deps=deps,
+                run_actor=run_sync_actor,
+                actor_config=StubActorConfig(
+                    retry=RetryPolicy(kind="transient", max_attempts=3, jitter=0.0)
+                ),
+                payload_type=_Payload,
+                clock=SystemClock(),
+                active_jobs=deps.active_jobs,
+                transaction_conn=tx_conn,
+            )
+        )
+        await asyncio.to_thread(body_started.wait, 10.0)
+
+        try:
+            exit_code = await orchestrate_shutdown(
+                deps, deps.settings, worker_id, shutdown_event, None, backend=backend
+            )
+            assert exit_code == 0
+            with contextlib.suppress(asyncio.CancelledError):
+                await asyncio.wait_for(attempt_task, timeout=30.0)
+
+            # The thread never exited: the release must have been held.
+            assert not body_exited.is_set()
+            after = await backend.get(job_id)
+            assert after is not None
+            assert after.status == "scheduled", (
+                "a transactional sync actor whose thread never provably "
+                f"exited must be released held; got {after.status!r}"
+            )
+            assert after.attempt == enqueued.attempt
+            assert after.interrupt_count == 1
+
+            second_worker = await _spawn_second_worker(deps, schema)
+            assert await _claim_as(backend, second_worker) == [], (
+                "the transactional path's row must be as unclaimable as the "
+                "autonomous one while the dying process's thread runs"
+            )
+        finally:
+            release_body.set()
+            await asyncio.to_thread(body_exited.wait, 10.0)

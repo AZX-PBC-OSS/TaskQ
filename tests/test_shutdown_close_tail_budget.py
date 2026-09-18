@@ -168,3 +168,136 @@ def test_startup_warning_remedy_cross_references_the_upgrading_entry() -> None:
     entry = next(log for log in logs if log["event"] == "shutdown-budget-exceeds-termination-grace")
     assert "docs/guides/upgrading.md" in entry["remedy"]
     assert "75s" in entry["remedy"]
+
+
+# ── The release hold's exit tail and the lease-vs-park arithmetic ──────
+
+
+def test_release_exit_tail_composes_the_three_canonical_terms() -> None:
+    """deadline check margin (dump interval) + bounded flush (2s) + slack (1s).
+
+    The exit tail is what a release hold pads its remaining share with, so
+    its terms are pinned against the canonical constants: a drift here
+    either under-covers a released row (tail shrinks below the real trip
+    lag) or silently inflates every held release's latency.
+    """
+    from taskq.constants import (
+        RELEASE_EXIT_TAIL_SLACK_SECS,
+        WATCHDOG_METRICS_FLUSH_TIMEOUT_SECS,
+    )
+
+    s = _settings()
+    assert s.release_exit_tail_seconds == (
+        s.watchdog_dump_interval
+        + WATCHDOG_METRICS_FLUSH_TIMEOUT_SECS
+        + RELEASE_EXIT_TAIL_SLACK_SECS
+    )
+    assert s.release_exit_tail_seconds == 8.0  # 5.0 dump + 2.0 flush + 1.0 slack
+
+
+def test_release_park_lease_cap_arithmetic_at_the_defaults() -> None:
+    """cap = lock_lease - heartbeat - terminal-write budget; bound = the rest.
+
+    At the shipped defaults the budget bound binds (60s lease covers the
+    85/30/10 budget with the 45s cap above the 40s bound), so the park
+    runs its full remaining budget and the lease-cap warning stays silent.
+    """
+    from taskq.constants import TERMINAL_WRITE_BUDGET_SECS
+
+    s = _settings()
+    assert (
+        s.release_park_lease_cap == s.lock_lease - s.heartbeat_interval - TERMINAL_WRITE_BUDGET_SECS
+    )
+    assert s.release_park_lease_cap == 45.0  # 60 - 10 - 5
+    assert s.release_park_budget_bound == (
+        s.termination_grace_period
+        - s.cancellation_grace_period
+        - s.cleanup_grace_period
+        - TERMINAL_WRITE_BUDGET_SECS
+    )
+    assert s.release_park_budget_bound == 40.0  # 85 - 30 - 10 - 5
+    assert s.release_park_lease_cap >= s.release_park_budget_bound
+
+
+def test_release_park_lease_capped_warning_names_the_arithmetic() -> None:
+    """The lease-cap warning fires exactly when the cap binds before the
+    budget bound, with both numbers and the raise-the-lease remedy.
+
+    The 120/30/10/60 shape is the one the #232 review constructed: under an
+    uncapped park its lease expires mid-park (a single failed RELEASING
+    write away from a double-run). The cap makes it safe by construction,
+    and the warning says the trade being made instead of staying quiet
+    about a 45s park where the budget promised 75s.
+    """
+    from taskq.worker._bootstrap import _emit_startup_warnings
+
+    s = _settings(
+        TASKQ_TERMINATION_GRACE_PERIOD="120",
+        TASKQ_CANCELLATION_GRACE_PERIOD="30",
+        TASKQ_CLEANUP_GRACE_PERIOD="10",
+        TASKQ_LOCK_LEASE="60",
+    )
+    assert s.release_park_lease_cap == 45.0
+    assert s.release_park_budget_bound == 75.0
+    with structlog.testing.capture_logs() as logs:
+        _emit_startup_warnings(s)
+    entry = next(log for log in logs if log["event"] == "release-park-lease-capped")
+    assert entry["log_level"] == "warning"
+    assert entry["park_lease_cap_seconds"] == 45.0
+    assert entry["park_budget_bound_seconds"] == 75.0
+    assert "TASKQ_LOCK_LEASE" in entry["remedy"]
+
+
+def test_release_park_lease_capped_warning_is_silent_at_the_defaults() -> None:
+    """The control: the shipped defaults run the full-budget park."""
+    from taskq.worker._bootstrap import _emit_startup_warnings
+
+    s = _settings()
+    with structlog.testing.capture_logs() as logs:
+        _emit_startup_warnings(s)
+    assert [e for e in logs if e["event"] == "release-park-lease-capped"] == []
+
+
+def test_disown_floor_warning_fires_at_the_defaults_with_the_arithmetic() -> None:
+    """The disown residue: 63 needed, 60 shipped: surfaced, not enforced.
+
+    The double-write-failure shape (the RELEASING write AND the consumer's
+    both failing) leaves the row to lease expiry, and the earliest reclaim
+    (last heartbeat + lease) must stay behind the deadline trip + exit
+    tail where an outlived actor dies. At the defaults that demands 63
+    against the shipped 60: a ~3s residue the maintainer chose to surface
+    rather than hard-fail (the default would not load) or change (a
+    maintainer call, flagged in the fix-round report).
+    """
+    from taskq.worker._bootstrap import _emit_startup_warnings
+
+    s = _settings()
+    assert s.release_disown_lease_floor == (
+        s.termination_grace_period
+        - s.cancellation_grace_period
+        - s.cleanup_grace_period
+        + s.heartbeat_interval
+        + s.release_exit_tail_seconds
+    )
+    assert s.release_disown_lease_floor == 63.0  # 85 - 30 - 10 + 10 + 8
+    assert s.lock_lease < s.release_disown_lease_floor  # 60 < 63: the residue is real
+
+    with structlog.testing.capture_logs() as logs:
+        _emit_startup_warnings(s)
+    entry = next(log for log in logs if log["event"] == "lock-lease-below-disown-exit-floor")
+    assert entry["log_level"] == "warning"
+    assert entry["disown_floor"] == 63.0
+    assert entry["residue_seconds"] == 3.0
+    assert entry["exit_tail_seconds"] == 8.0
+    assert "TASKQ_LOCK_LEASE" in entry["remedy"]
+
+
+def test_disown_floor_warning_is_quiet_once_the_lease_covers_it() -> None:
+    """Raise the lease to the floor and the residue warning goes away."""
+    from taskq.worker._bootstrap import _emit_startup_warnings
+
+    s = _settings(TASKQ_LOCK_LEASE="65")
+    assert s.lock_lease >= s.release_disown_lease_floor
+    with structlog.testing.capture_logs() as logs:
+        _emit_startup_warnings(s)
+    assert [e for e in logs if e["event"] == "lock-lease-below-disown-exit-floor"] == []

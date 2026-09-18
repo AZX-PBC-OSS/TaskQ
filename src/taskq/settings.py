@@ -50,6 +50,9 @@ from taskq.constants import (
     MAX_IDEMPOTENCY_KEY_BYTES,
     MAX_RESULT_BYTES,
     RECLAIM_EVENT_VISIBILITY_DELAY,
+    RELEASE_EXIT_TAIL_SLACK_SECS,
+    TERMINAL_WRITE_BUDGET_SECS,
+    WATCHDOG_METRICS_FLUSH_TIMEOUT_SECS,
     check_channels_fit,
 )
 
@@ -2006,6 +2009,18 @@ class WorkerSettings(TaskQSettings):
                 )
             )
 
+        # Park-tail vs heartbeat-exit: NO hard error here, deliberately:
+        # see WorkerSettings.release_park_lease_cap. The release park is
+        # capped by the lease in the consumer itself, which makes the
+        # single-RELEASING-write-failure exposure structurally impossible
+        # for every config that loads; a cross-field rejection here would
+        # refuse configs that are safe under the cap (and would break
+        # every fast test fixture that zeroes the graces against the
+        # default budget: post_load runs even with validate=False). The
+        # operator-facing surface is the warning tier in
+        # _emit_startup_warnings, and the residual double-write-failure
+        # bound is release_disown_lease_floor.
+
         # Cancellation + cleanup grace must fit within termination_grace_period.
         # termination_grace_period may be added by a subclass; the getattr guard
         # tolerates its absence when this base validation runs first.
@@ -2206,6 +2221,122 @@ class WorkerSettings(TaskQSettings):
         """
         return (
             self.cancellation_grace_period + self.cleanup_grace_period + worst_case_teardown_tail()
+        )
+
+    @property
+    def release_exit_tail_seconds(self) -> float:
+        """Seconds past the termination deadline the process can still be
+        alive: the tail every release hold pads its remaining share with.
+
+        The deadline trip is not instantaneous: the watchdog checks the
+        deadline once per ``watchdog_dump_interval`` (the check is clipped
+        to the deadline, so real lag is loop jitter and this term is
+        margin), and ``trip()`` then renders task stacks and joins the
+        bounded metrics flush before ``os._exit``. The stack render and
+        critical log write have no bound of their own: the
+        ``RELEASE_EXIT_TAIL_SLACK_SECS`` heuristic covers them, and the
+        residual (a full stderr pipe under a slow docker logging driver)
+        is documented in docs/guides/workers.md. Kept as a settings
+        property because the lease arithmetic that guards the disown path
+        (see ``release_disown_lease_floor``) needs the same number the
+        worker-layer hold pads with: one source, no drift.
+        """
+        return (
+            self.watchdog_dump_interval
+            + WATCHDOG_METRICS_FLUSH_TIMEOUT_SECS
+            + RELEASE_EXIT_TAIL_SLACK_SECS
+        )
+
+    @property
+    def release_park_lease_cap(self) -> float:
+        """The lease-derived ceiling on the release-until-exited park.
+
+        The consumer's shutdown arm parks a still-running sync actor (or
+        transactional unwind) so a provable exit can earn the immediate
+        ``pending`` release, but the heartbeat, the row's only lease
+        renewer, stops when the orchestrator sets ``shutdown_event``
+        (roughly ``cancellation_grace + cleanup_grace`` in). A park that
+        ran to the termination budget on a lease shorter than that budget
+        would let the row's lease expire mid-park, and the leader's
+        reclaim sweep (no carve-out for SHUTDOWN-origin rows:
+        ``cancel_phase`` stays 0) would re-pend a row whose actor thread
+        is still executing: the double-run, reachable from a single
+        infra-failed RELEASING write. The consumer therefore caps the
+        park at::
+
+            lock_lease - heartbeat_interval - TERMINAL_WRITE_BUDGET_SECS
+
+        which is exactly the bound that makes the parked consumer's
+        release write land before the earliest reclaim (last heartbeat,
+        up to one interval stale, plus the lease) for ANY config: the
+        write starts by ``cancel + cap`` and spends at most the terminal
+        write's budget, and ``cancel + (lock_lease - heartbeat -
+        write_budget) + write_budget <= (cancel + cleanup_grace -
+        heartbeat) + lock_lease`` holds identically. Safety by
+        construction, not by configuration, which is why there is no
+        cross-field rejection in ``post_load`` for this shape: the cap
+        makes every loadable config safe, and refusing e.g.
+        ``120/30/10/60`` outright would reject a config the cap already
+        protects. The cost of a binding cap is latency, not safety: a
+        capped park releases the row earlier with a longer hold, and the
+        ``release-park-lease-capped`` startup warning names the configs
+        where that trade is being made.
+        """
+        return self.lock_lease - self.heartbeat_interval - TERMINAL_WRITE_BUDGET_SECS
+
+    @property
+    def release_park_budget_bound(self) -> float:
+        """The budget-derived park bound at the graces: ``termination -
+        cancellation - cleanup - TERMINAL_WRITE_BUDGET_SECS``.
+
+        The park's other ceiling (the remaining termination budget minus
+        the release write's own budget, evaluated at the cancel). The
+        lease cap binds first whenever
+        ``release_park_lease_cap < release_park_budget_bound``: i.e.
+        whenever ``lock_lease < termination - cancellation - cleanup +
+        heartbeat``, and that is the inequality the
+        ``release-park-lease-capped`` startup warning surfaces with its
+        arithmetic. At the shipped defaults (60 vs 55) the budget bound
+        binds and the park runs its full remaining budget.
+        """
+        return (
+            self.termination_grace_period
+            - self.cancellation_grace_period
+            - self.cleanup_grace_period
+            - TERMINAL_WRITE_BUDGET_SECS
+        )
+
+    @property
+    def release_disown_lease_floor(self) -> float:
+        """The ``lock_lease`` the disown path needs (warning floor; the
+        shipped default is 63 vs lock_lease 60 and marginally fails).
+
+        When BOTH release writers fail their writes (the RELEASING phase's
+        and the consumer's: the consumer's exhaustion disowns the row),
+        the row stays ``running`` behind a lease the heartbeat has already
+        stopped renewing, and the leader's reclaim sweep becomes the only
+        exit: at the earliest ``last heartbeat + lock_lease``. For the
+        reclaim to stay behind the process's true exit (the deadline trip
+        plus the exit tail, which is where an outlived actor thread dies),
+        the lease must cover:
+
+        ``lock_lease >= termination - cancellation - cleanup + heartbeat
+        + release_exit_tail_seconds``
+
+        At the shipped defaults that is 63 against ``lock_lease`` 60: a
+        residue of ~3s that requires the double write failure AND a sweep
+        tick landing inside it. Surfaced as a startup warning, not a hard
+        fail: the shipped default would not load otherwise, and whether to
+        spend 3 more seconds of lease on a double-failure residue is a
+        maintainer/operator call (see
+        ``_emit_startup_warnings`` in taskq.worker._bootstrap).
+        """
+        return (
+            self.termination_grace_period
+            - self.cancellation_grace_period
+            - self.cleanup_grace_period
+            + self.heartbeat_interval
+            + self.release_exit_tail_seconds
         )
 
     @property

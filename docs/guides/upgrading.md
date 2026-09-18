@@ -638,11 +638,19 @@ re-pending a live row races its own terminal write.
 
 When a deploy's grace windows expire with a job still running, the worker
 no longer writes a terminal state for it. The job is *interrupted*:
-released back to the fleet as `pending` (actor unwound on the cancel) or
+released back to the fleet as `pending` (the actor **provably exited** — an
+async actor unwound on the cancel, a sync actor's thread finished, the
+transactional unwind completed; the consumer parks on the tracked exit
+handles, bounded by the remaining termination budget, before writing) or
 `scheduled` behind the remaining `TASKQ_TERMINATION_GRACE_PERIOD` budget
-(actor never unwound — the row stays unclaimable until the exiting process
-is provably gone; with `TASKQ_WATCHDOG_ENABLED=false` the hold is
-`TASKQ_LOCK_LEASE`). The claim's `attempt` increment is refunded — the
+plus the watchdog's exit tail — the dump-interval lag before the deadline
+trip is observed and the ~2s bounded flush before `os._exit` — when the
+actor never provably exits (the row stays unclaimable until the exiting
+process is provably gone; with `TASKQ_WATCHDOG_ENABLED=false` the hold is
+`TASKQ_LOCK_LEASE`). The no-concurrent-run promise is two-legged: it holds
+when the watchdog is enabled, or when the platform SIGKILL lands at or
+before `TASKQ_TERMINATION_GRACE_PERIOD` plus the exit tail. The claim's
+`attempt` increment is refunded — the
 same idiom the snooze/denial arms use — so a deploy no longer spends a
 job's retry budget, and a job interrupted on every deploy is rescheduled
 until it finishes or its `schedule_to_close` fails it with
@@ -653,6 +661,39 @@ row; `taskq.jobs.interrupted{actor,hold}` and
 
 What to audit:
 
+* **Sync actors are no longer assumed gone at the cancel.** A plain `def`
+  actor's thread cannot be interrupted: before this change its row went
+  straight back to `pending` while the body was still executing, and a
+  second worker could claim it — two live runners for one row across every
+  deploy that caught a sync actor mid-body. The release now waits (bounded
+  by the remaining termination budget, capped by the lease) for the thread
+  and holds the row behind the process's exit window when the thread
+  outlives the wait. A fleet of sync actors should teach long loops to poll
+  `ctx.should_abort()` so they exit inside the cancellation grace and get
+  the immediate `pending` release instead of the held one.
+* **An actor that outlives its budget is now ended at the deadline trip.**
+  The shutdown watchdog stays armed until every tracked actor handle is
+  reaped, and the trip carries a dedicated
+  `tracked-actor-outlived-teardown` reason. Previously the clean path
+  disarmed the watchdog and then joined the detached thread for up to
+  `THREAD_JOIN_TIMEOUT` (300s) — a released row could become claimable
+  while its actor still ran. The thread's late completion accomplished
+  nothing (the row was already released-with-hold and the fleet re-attempts
+  the work), so ending it at the deadline loses nothing — but an
+  embedder's own cleanup that expected the process to outlive a stuck
+  actor no longer does.
+* **Two new startup warnings, no new hard validation.** The release park
+  is lease-capped (`lock_lease - heartbeat - write budget`), which makes
+  the mid-park lease expiry structurally impossible for every loadable
+  config; `release-park-lease-capped` fires when that cap binds before the
+  budget bound (interrupted sync actors release earlier with longer holds
+  — safe, slower). `lock-lease-below-disown-exit-floor` fires at the
+  shipped defaults (60 vs 63): both release writers failing their writes
+  leaves a ~3s window in which the reclaim sweep can take the disowned row
+  before the trip ends its actor. Raising `TASKQ_LOCK_LEASE` to 63+ closes
+  the residue; whether to spend those 3 seconds of lease on a
+  double-write-failure shape is an operator call this release surfaces
+  rather than makes.
 * **`abandoned` now means "operator cancel".** A graceful shutdown never
   produces `cancelled` or `abandoned` for infrastructure reasons; any
   alert or dashboard that reads those statuses as deploy noise should now

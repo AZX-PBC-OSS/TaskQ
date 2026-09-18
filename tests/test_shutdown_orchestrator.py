@@ -1,6 +1,9 @@
 """Unit tests for orchestrate_shutdown four-phase orchestrator."""
 
 import asyncio
+import contextlib
+from datetime import timedelta
+from typing import cast
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
 from uuid import UUID
 
@@ -19,9 +22,16 @@ from taskq.context import CancelOrigin, JobContext
 from taskq.obs import bind_job_context
 from taskq.settings import WorkerSettings
 from taskq.testing.in_memory import PassthroughPayload
+from taskq.worker._watchdog import (  # pyright: ignore[reportPrivateUsage]  # Why: the flush bound is half of the exit tail pinned above.
+    _METRICS_FLUSH_TIMEOUT_SECS,
+)
 from taskq.worker.cancel import _ActiveJob
 from taskq.worker.deps import WorkerDeps, open_worker_deps
-from taskq.worker.shutdown import orchestrate_shutdown
+from taskq.worker.shutdown import (  # pyright: ignore[reportPrivateUsage]  # Why: the hold math under test is the module's own; the pinned constants are its deadline model.
+    _release_hold,
+    _watchdog_exit_tail,
+    orchestrate_shutdown,
+)
 
 # ── Helpers ─────────────────────────────────────────────────────────────
 
@@ -218,14 +228,24 @@ async def test_phase_ordering_and_backend_calls(monkeypatch: pytest.MonkeyPatch)
     # Both jobs are released back to the fleet at RELEASING — the shutdown
     # never terminalises them.
     assert backend.mark_interrupted.call_count == 2
+    # The exit tail the hold must cover past the deadline itself: the
+    # watchdog checks the deadline once per dump interval and then dumps
+    # stacks + flushes metrics (bounded) before os._exit, so a hold ending
+    # at the bare deadline leaves the row claimable while the dying process
+    # can still touch it (#232).
+    expected_tail = _watchdog_exit_tail(settings)
+    assert expected_tail == pytest.approx(
+        settings.watchdog_dump_interval + _METRICS_FLUSH_TIMEOUT_SECS + 1.0
+    )
     for call in backend.mark_interrupted.call_args_list:
         assert call.kwargs["attempt"] == 1
-        # The hold is the remaining termination budget: 60s grace counted
-        # from DRAINING, minus the ~0.8-0.9s the two grace windows consume
-        # on the fake clock (the 0.1s sleep quantum plus float drift can
-        # overshoot a grace boundary by one step).
+        # The hold is the remaining termination budget PLUS that exit
+        # tail: 60s grace counted from DRAINING, minus the ~0.8-0.9s the
+        # two grace windows consume on the fake clock (the 0.1s sleep
+        # quantum plus float drift can overshoot a grace boundary by one
+        # step).
         hold = call.kwargs["hold"]
-        assert hold.total_seconds() == pytest.approx(60.0 - 0.8, abs=0.15)
+        assert hold.total_seconds() == pytest.approx(60.0 - 0.8 + expected_tail, abs=0.15)
     assert backend.mark_abandoned.call_count == 0
 
     assert 0.7 < clock.time_val < 1.0
@@ -408,7 +428,16 @@ async def test_forcing_pg_write_before_cancel_phase_advances(
 
 
 async def test_forcing_failure_isolation(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Single PG write failure isolates that job; others proceed."""
+    """Single PG write failure isolates that job; others proceed.
+
+    The job whose escalation write failed is still force-cancelled locally
+    (#233): the row-side probe failing must not keep the process-side
+    ``task.cancel()`` from being delivered: a cancellable actor that never
+    gets the cancel runs untouched into RELEASING and is released-with-hold
+    while still alive. Its registry phase advances to FORCED like every
+    other job's; only the row-side escalation is missing, and the ladder's
+    row-side arms recover it (or the lease sweep does).
+    """
     import taskq.worker.shutdown as shutdown_mod
 
     job1 = _make_fake_active_job(job_id=UUID("11111111-1111-1111-1111-111111111111"))
@@ -449,9 +478,157 @@ async def test_forcing_failure_isolation(monkeypatch: pytest.MonkeyPatch) -> Non
         backend=backend,
     )
 
-    assert job1.cancel_phase == CancelPhase.COOPERATIVE
+    assert job1.cancel_phase == CancelPhase.FORCED, (
+        "a failed escalation write must not keep the local force-cancel "
+        "from advancing the entry — the process-side half of FORCING is "
+        "delivered regardless of the row-side probe's outcome (#233)"
+    )
+    job1_task = cast(
+        MagicMock, job1.task
+    )  # Why: _make_fake_active_job registered a MagicMock task; the dataclass field is typed asyncio.Task, so the mock's call record needs the cast.
+    assert job1_task.cancel.called, (
+        "the entry whose escalation write failed must still have its task "
+        "cancelled — skipping it let a cancellable actor run into RELEASING "
+        "untouched (#233)"
+    )
     assert job2.cancel_phase == CancelPhase.FORCED
     assert job3.cancel_phase == CancelPhase.FORCED
+    cast(MagicMock, job2.task).cancel.assert_called()
+    cast(MagicMock, job3.task).cancel.assert_called()
+
+
+async def test_forcing_write_failure_still_cancels_a_real_task(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A REAL consumer task is cancelled when its escalation write fails.
+
+    The isolation test above pins the registry fields with a MagicMock
+    task; this one pins the actual delivery: a cancellable asyncio task
+    registered in-flight must END cancelled when FORCING's row-side write
+    raises, not keep running into RELEASING. That is the overlap #233
+    names: an actor alive past both graces because the one cancel that
+    could reach it was skipped after a PG blip.
+    """
+    import taskq.worker.shutdown as shutdown_mod
+
+    actor_running = asyncio.Event()
+    actor_cancelled = asyncio.Event()
+
+    async def _cancellable_actor() -> None:
+        actor_running.set()
+        try:
+            await asyncio.sleep(3600)
+        except asyncio.CancelledError:
+            actor_cancelled.set()
+            raise
+
+    actor_task = asyncio.ensure_future(_cancellable_actor())
+    await actor_running.wait()
+
+    job = _make_fake_active_job()
+    # The real task replaces the MagicMock so task.cancel() lands on
+    # something that can actually be cancelled.
+    job.task = actor_task  # type: ignore[assignment]  # Why: _ActiveJob is a plain (non-frozen) dataclass; the test swaps the mock for a real cancellable task.
+    registry = FakeActiveJobRegistry([job])
+    settings = _worker_settings(cancellation_grace=0.1, cleanup_grace=0.1)
+    deps = _make_deps(registry=registry, settings=settings)
+
+    async def _failing_escalation(*args: object, **kwargs: object) -> bool:
+        raise asyncpg.PostgresConnectionError("escalation write failed")
+
+    backend = AsyncMock(spec=Backend)
+    backend.write_cancel_escalation = AsyncMock(side_effect=_failing_escalation)
+    backend.mark_interrupted = AsyncMock(return_value="scheduled")
+    backend.mark_abandoned = AsyncMock(return_value=True)
+
+    mock_drain = AsyncMock(return_value=0)
+    monkeypatch.setattr(shutdown_mod, "drain_local_queue_to_pending", mock_drain)
+
+    clock = FakeClock()
+    fake_loop = Mock()
+    _patch_clock(monkeypatch, clock, fake_loop)
+
+    shut_event = asyncio.Event()
+    await orchestrate_shutdown(
+        deps,
+        deps.settings,
+        new_uuid(),
+        shut_event,
+        None,
+        backend=backend,
+    )
+
+    assert actor_cancelled.is_set(), (
+        "the forced cancel must be delivered to a cancellable actor even "
+        "when the escalation PG write fails — the actor running into "
+        "RELEASING untouched is the double-execution overlap the shutdown "
+        "contract forbids (#233)"
+    )
+    with contextlib.suppress(asyncio.CancelledError):
+        await actor_task
+
+
+# ── The releasing hold covers the watchdog's exit tail ────────────
+
+
+async def test_release_hold_pads_the_remaining_budget_by_the_exit_tail() -> None:
+    """The RELEASING hold ends past the deadline, not at it (#232).
+
+    The watchdog checks the deadline once per ``watchdog_dump_interval``
+    sleep and then dumps stacks and joins the bounded metrics flush before
+    ``os._exit``: the process can be alive up to that tail past the
+    deadline. A hold ending at the bare deadline leaves exactly that window
+    in which the released row is claimable while the dying process could
+    still touch it.
+    """
+    settings = _worker_settings(termination_grace=60.0)
+    deps = _make_deps(settings=settings)
+    loop = asyncio.get_running_loop()
+    anchored = loop.time()
+    deps.shutdown_started_at = anchored - 10.0
+
+    hold = _release_hold(deps, settings, loop)
+
+    tail = _watchdog_exit_tail(settings)
+    assert tail > 0
+    # 60s budget, 10s spent: 50s remaining, plus the tail: never the bare
+    # remaining share. (abs tolerance: the remaining share decays with the
+    # real loop clock between the anchoring and the computation.)
+    expected_remaining = 60.0 - 10.0 - (loop.time() - anchored)
+    assert hold.total_seconds() == pytest.approx(expected_remaining + tail, abs=0.1)
+
+
+async def test_release_hold_unanchored_covers_the_full_budget_plus_tail() -> None:
+    """No shutdown start stamped (defensive shape): the full budget + tail.
+
+    The consumer's release arm can reach the hold computation on a bare
+    call with no deps; the hold must stay the full watchdog budget plus the
+    exit tail, never an assumption that the actor is gone.
+    """
+    settings = _worker_settings(termination_grace=60.0)
+    loop = asyncio.get_running_loop()
+
+    anchored_nowhere = _release_hold(None, settings, loop)
+    assert anchored_nowhere.total_seconds() == pytest.approx(
+        60.0 + _watchdog_exit_tail(settings), abs=1e-6
+    )
+
+    deps = _make_deps(settings=settings)
+    assert deps.shutdown_started_at is None
+    assert _release_hold(deps, settings, loop) == anchored_nowhere
+
+
+async def test_release_hold_without_the_watchdog_is_the_lock_lease_unchanged() -> None:
+    """Watchdog disabled: no guaranteed exit exists to pad towards, so the
+    hold stays the lock lease: the bound the lease-expiry path already
+    imposes (the pre-existing fallback, unpadded)."""
+    settings = _worker_settings(termination_grace=60.0)
+    settings.watchdog_enabled = False
+    deps = _make_deps(settings=settings)
+    loop = asyncio.get_running_loop()
+    deps.shutdown_started_at = loop.time() - 10.0
+
+    assert _release_hold(deps, settings, loop) == timedelta(seconds=settings.lock_lease)
 
 
 async def test_releasing_failure_isolation(monkeypatch: pytest.MonkeyPatch) -> None:

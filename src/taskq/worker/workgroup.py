@@ -55,7 +55,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import timedelta
 from pathlib import Path
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID
 
 import asyncpg
@@ -68,6 +68,9 @@ from taskq.constants import (
     _IDENT_RE as _SCHEMA_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining; same pattern as run.py.
 )
 from taskq.obs import get_logger
+
+if TYPE_CHECKING:
+    from taskq.settings import WorkerSettings
 
 __all__ = [
     "WorkerSpec",
@@ -403,6 +406,46 @@ def _warn_on_actor_queues_no_child_consumes(
             "can know the whole fleet, which is why this never refuses to "
             "start. If nothing consumes it, those jobs never run: add the "
             "queue to some [[workers]] entry's queues."
+        ),
+    )
+
+
+def _warn_shutdown_grace_window(scfg: SupervisorConfig, settings: WorkerSettings) -> None:
+    """Warn when the workgroup's SIGTERM-to-SIGKILL window is too short for
+    the children's held release to ever land.
+
+    The workgroup forwards SIGTERM to its children, waits
+    ``shutdown_grace``, then SIGKILLs. The children spend
+    ``cancellation_grace + cleanup_grace`` in the shutdown phases before
+    the RELEASING release write: a window shorter than that SIGKILLs the
+    child before its held release lands, and the interrupted row rides the
+    lease-expiry crash path instead (slower, and it spends the attempt the
+    release would have refunded). The honest floor for a CLEAN child exit
+    is the whole ``worst_case_shutdown_seconds`` (graces + bounded-close
+    tail); the floor warned on here is the minimal one at which the
+    release write itself lands. The ceiling matters only when the children
+    run with the watchdog disabled (no deadline trip bounds their exit):
+    then the platform SIGKILL must land by ``termination_grace + exit
+    tail`` or a lingering executor thread can outlive a released row's
+    hold: see docs/guides/workers.md's platform-grace window.
+    """
+    release_floor = settings.cancellation_grace_period + settings.cleanup_grace_period
+    if scfg.shutdown_grace >= release_floor:
+        return
+    logger.warning(
+        "workgroup.shutdown_grace_below_release_floor",
+        shutdown_grace=scfg.shutdown_grace,
+        cancellation_grace_period=settings.cancellation_grace_period,
+        cleanup_grace_period=settings.cleanup_grace_period,
+        release_floor_seconds=release_floor,
+        clean_exit_floor_seconds=settings.worst_case_shutdown_seconds,
+        remedy=(
+            f"raise supervisor.shutdown_grace to at least {release_floor}s so a "
+            "child's held release lands before the SIGKILL (its clean exit "
+            f"needs {settings.worst_case_shutdown_seconds}s (the graces plus "
+            "the bounded-close tail); below the floor every interrupted job "
+            "rides the lease-expiry crash path and spends the attempt the "
+            "release would have refunded"
         ),
     )
 
@@ -984,6 +1027,15 @@ async def run_forever(config_path: Path) -> None:
                 note="Permanent force-update will silently overwrite actor_config on "
                 "every restart. Set to false after the first deploy with config changes.",
             )
+
+    # The children inherit this process's environment, so their timing
+    # settings are loadable here: the shutdown-grace window warning needs
+    # the graces the children will actually run with. Best-effort: a
+    # warning must never keep a workgroup from starting.
+    with contextlib.suppress(Exception):
+        from taskq.settings import WorkerSettings
+
+        _warn_shutdown_grace_window(scfg, WorkerSettings.load())
 
     # ── Spawn all children initially ──────────────────────────────────
     for child in children.values():

@@ -433,7 +433,7 @@ extends the active filter without a second edit.
 | running → cancelled | `reclaim_expired_locks` sweep (leader, Sweep 1 — cancel in-flight, retries exhausted) |
 | running → abandoned | `CancelController.run_post_tx` (heartbeat, post-phase-3) / shutdown RELEASING phase (operator cancel in flight only) |
 | running → crashed | `reclaim_expired_locks` sweep (leader, Sweep 1) |
-| running → pending/scheduled | `mark_interrupted` (consumer on a shutdown-origin cancel; shutdown RELEASING phase) — the attempt is refunded, `interrupt_count` bumps |
+| running → pending/scheduled | `mark_interrupted` (consumer on a shutdown-origin cancel; shutdown RELEASING phase) — the attempt is refunded, `interrupt_count` bumps; `pending` when the actor has provably exited (async actor unwound, sync actor's thread finished, transactional unwind done — the consumer parks on the tracked exit handles, bounded by the remaining termination budget, before writing), `scheduled` behind the process's exit window (deadline + watchdog exit tail) when it has not |
 | pending/scheduled → cancelled | `write_cancel_request` (client) |
 | pending/scheduled → failed | `deadline_sweep` (leader, Sweep 2) |
 
@@ -1132,8 +1132,8 @@ begins, so health endpoints and consumers can observe the current phase:
 | `NONE` | 0 | Running normally |
 | `DRAINING` | 1 | Stop accepting new dispatch; re-pend locked-but-unstarted jobs (attempt refunded) |
 | `CANCELLING` | 2 | Cooperative cancel of remaining in-flight jobs (set `cancel_event`, stamp the shutdown origin) |
-| `FORCING` | 3 | Force-cancel grace: `task.cancel()` + `write_cancel_escalation(phase=2)` (lands only on rows carrying an operator's cancel request) |
-| `RELEASING` | 4 | Release never-unwound jobs back to the fleet via `mark_interrupted` (attempt refunded, held behind the remaining termination budget); operator-cancelled jobs still reach `abandoned` |
+| `FORCING` | 3 | Force-cancel grace: `task.cancel()` (delivered even when the escalation PG write fails — the local cancel is never skipped) + `write_cancel_escalation(phase=2)` (lands only on rows carrying an operator's cancel request) |
+| `RELEASING` | 4 | Release never-unwound jobs back to the fleet via `mark_interrupted` (attempt refunded, held behind the remaining termination budget **plus the watchdog's exit tail** past the deadline — the dump-interval check lag and the bounded pre-`os._exit` flush); operator-cancelled jobs still reach `abandoned` |
 
 Phase ordering invariant: `NONE → DRAINING → CANCELLING → FORCING → RELEASING`.
 
@@ -1174,6 +1174,64 @@ The `shutdown_event.set()` is ordered before the close park to stop the
 election loop and release `_main`'s `await shutdown_event.wait()` inside the
 `open_worker_deps` context, allowing the deps exit-stack guard to unwind
 concurrently.
+
+### The no-concurrent-run promise
+
+An interruption release (`mark_interrupted`) is held back until the
+interrupted actor has *provably exited* — the promise is that no other pod can
+claim a row while this process might still run or touch the work. An async
+actor proves it by unwinding (the `CancelledError` propagated through its
+frames); a sync `def` actor proves it only when its executor thread finishes,
+because `task.cancel()` cancels the await, never the thread; the transactional
+path proves it when its tx task finishes unwinding the rollback. The consumer's
+cancellation arm parks on the tracked exit handles, bounded by the remaining
+termination budget and capped by the lease
+(`lock_lease - heartbeat - write budget`: the heartbeat stops at
+`shutdown_event`, so the park must never outlive the lease the reclaim sweep
+reads), and releases `pending` (hold=0) only on a provable exit inside that
+window; otherwise the release is `scheduled` behind the rest of the process's
+exit window — the termination deadline **plus the watchdog's exit tail**
+(check lag + bounded flush + render slack), because the deadline trip is not
+instantaneous. An actor that outlives the window is still released, never
+stranded.
+
+The exit bound is **enforced, not modelled**: the shutdown watchdog stays
+armed until every tracked actor handle is reaped (`await_tracked_actor_reap`
+gates the disarm in the worker's exit path), so the process either exits
+cleanly with no live actor — its remaining lifetime is bounded pool closes,
+which touch no row — or the deadline trip `os._exit`s it with the
+still-running thread inside, under the dedicated
+`tracked-actor-outlived-teardown` reason. Without that gate the clean path
+disarmed the watchdog and then joined the detached thread in
+`asyncio.Runner.close()` (`THREAD_JOIN_TIMEOUT`, 300s) — a released row became
+claimable while its actor still ran. The alternative closure — a hard
+`os._exit(0)` on every clean exit — is rejected because TaskQ is a library:
+embedders run the worker in-process (cennan's CLI, TAStack's `ta_worker`), and
+a hard exit on the clean path would kill the host's own cleanup. In-process
+embedders with the watchdog enabled get the closure for free — the watchdog is
+TaskQ's own task on the embedder's loop, and the trip semantics are unchanged.
+
+The promise is scoped: it holds when the watchdog is enabled, or when the
+platform SIGKILL lands by `termination_grace_period + exit tail`. With
+`watchdog_enabled = false` there is no trip to enforce the bound, the hold
+degrades to `lock_lease` — the bound the lease-expiry path already imposes —
+and the platform grace must supply the ceiling the watchdog would have (see
+the platform-grace window in docs/guides/workers.md).
+
+#### Deliberate divergence from the queue ancestors
+
+No peer ships this contract. Celery requeues a job whose worker died mid-run
+(`worker/request.py`: an unacked message returns on `worker-lost`, by design —
+the at-least-once overlap is accepted), and River rescues stuck rows purely by
+a visibility timeout racing the attempt. TaskQ deliberately diverges: an
+interruption *releases with a hold sized to the releaser's own enforced exit*
+rather than accepting the overlap, at the cost of one exit-window of latency
+for an actor that outlives its budget. The other half of the design — the
+heartbeat continuing through the drain so a slow-but-alive worker's leases are
+not reclaimed out from under it — aligns with dramatiq's worker shutdown
+(`worker.py`: the broker drain waits for in-flight messages) and Celery 5.6+'s
+documented warm-shutdown waiting for active tasks
+(`docs/userguide/workers.rst`).
 
 The `ShutdownWatchdog` (detector 1) runs concurrently outside the TaskGroup
 and enforces `termination_grace_period` as a hard wall — see

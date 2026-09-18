@@ -25,8 +25,11 @@ from taskq.worker._watchdog import (
     LoopLiveness,
     ShutdownWatchdog,
     attribute_stall,
+    await_tracked_actor_reap,
     dump_task_stacks,
+    live_tracked_actor_handles,
     loop_watchdog_loop,
+    register_tracked_actor_handle,
     trip,
 )
 
@@ -161,6 +164,49 @@ async def test_shutdown_watchdog_trips_past_deadline(exit_codes: list[int]) -> N
     assert exit_codes == [EXIT_WATCHDOG]
 
 
+def test_trip_exits_even_when_the_counter_and_log_sink_raise(
+    exit_codes: list[int],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A raising metric add or a raising log write must not skip the exit.
+
+    The counter add and the critical log used to run BEFORE the
+    try/finally that guarantees os._exit. Either raising there killed the
+    watchdog task with no exit, and the tracked-exit gate lost its bound:
+    a stuck actor thread would then hold the process open past the
+    deadline a released row's hold modeled. Both now sit inside the try,
+    and the pre-exit flushes are suppressed rather than trusted, so the
+    only statement that cannot be skipped is the exit itself.
+    """
+    import taskq.worker._watchdog as watchdog_mod
+
+    def _raise(*args: object, **kwargs: object) -> None:
+        raise RuntimeError("observability hook blew up")
+
+    class _RaisingCounter:
+        def add(self, *args: object, **kwargs: object) -> None:
+            _raise()
+
+    class _RaisingLog:
+        def critical(self, *args: object, **kwargs: object) -> None:
+            _raise()
+
+    monkeypatch.setattr(watchdog_mod, "_watchdog_trips", _RaisingCounter())
+    monkeypatch.setattr(watchdog_mod, "_log", _RaisingLog())
+    # The dump renders to stderr and the flushes follow. A broken pipe
+    # there is the same hazard class, so make the dump raise too.
+    monkeypatch.setattr(watchdog_mod, "dump_task_stacks", _raise)
+
+    with pytest.raises(_ExitSentinelError):
+        trip("shutdown-deadline", "test: every observability hook raised")
+
+    assert exit_codes == [EXIT_WATCHDOG], (
+        "the force-exit is the one statement of the trip that must survive "
+        "every observability hook raising; a skipped exit unbounds the "
+        "tracked-exit gate"
+    )
+
+
 async def test_shutdown_watchdog_cancelled_on_clean_exit(exit_codes: list[int]) -> None:
     shutdown = asyncio.Event()
     watchdog = ShutdownWatchdog(shutdown, deadline=60.0, dump_interval=1.0)
@@ -200,6 +246,176 @@ async def test_shutdown_watchdog_logs_stragglers_by_name(
     err = capsys.readouterr().err
     assert "sibling.parked" in err
     assert "shutdown-straggler" in err
+
+
+async def test_shutdown_watchdog_deadline_check_does_not_lag_a_full_dump_interval(
+    exit_codes: list[int],
+) -> None:
+    """The deadline check is clipped to the deadline, not cadence-bound.
+
+    An unclipped ``sleep(dump_interval)`` observes a deadline that passes
+    just after a check up to a full dump interval late, and the release
+    hold's exit tail models that lag as its margin, so an unclipped watch
+    consumes the margin exactly (deadline + lag + flush EQUALS the held
+    scheduled_at, zero margin). With the clip, a 5s dump interval against
+    a 0.05s deadline still trips at the deadline: the margin stays real.
+    """
+    shutdown = asyncio.Event()
+    watchdog = ShutdownWatchdog(shutdown, deadline=0.05, dump_interval=5.0)
+    watchdog.start()
+    shutdown.set()
+    loop = asyncio.get_running_loop()
+    t0 = loop.time()
+    with pytest.raises(_ExitSentinelError):
+        # 2s, not 6s: an unclipped watch sleeps the full 5s dump interval
+        # before its next check and this wait_for times out instead.
+        await asyncio.wait_for(watchdog._task, timeout=2.0)
+    assert loop.time() - t0 < 1.0, (
+        "the deadline check must land ON the deadline (clipped final "
+        "sleep), not a full dump_interval after it — the release hold's "
+        "exit tail treats that lag as margin and an unclipped watch spends it"
+    )
+    assert exit_codes == [EXIT_WATCHDOG]
+
+
+async def test_shutdown_watchdog_trip_names_live_tracked_actor_handles(
+    exit_codes: list[int],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A live tracked actor handle at the deadline trips with its own reason.
+
+    The trip at the deadline with a tracked actor still alive is NOT a
+    stall: the shutdown completed, the TaskGroup exited, and an executor
+    thread the cancel could never reach is still running its body: the
+    designed exit for exactly that shape. An operator reading the dump
+    must not chase a phantom deadlock, so the reason says what it is and
+    how many handles are live.
+    """
+    import taskq.worker._watchdog as watchdog_mod
+
+    trips: list[tuple[str, str]] = []
+
+    def _recording_trip(detector: str, reason: str) -> None:
+        trips.append((detector, reason))
+        raise _ExitSentinelError(EXIT_WATCHDOG)
+
+    monkeypatch.setattr(watchdog_mod, "trip", _recording_trip)
+
+    async def _outlived_actor() -> None:
+        await asyncio.sleep(60.0)
+
+    handle = asyncio.create_task(_outlived_actor(), name="worker.sync_actor")
+    register_tracked_actor_handle(handle)
+    try:
+        shutdown = asyncio.Event()
+        watchdog = ShutdownWatchdog(shutdown, deadline=0.05, dump_interval=0.01)
+        watchdog.start()
+        shutdown.set()
+        with pytest.raises(_ExitSentinelError):
+            await asyncio.wait_for(watchdog._task, timeout=2.0)
+    finally:
+        handle.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await handle
+
+    assert trips, "the deadline must have tripped"
+    detector, reason = trips[0]
+    assert detector == "shutdown-deadline"
+    assert "tracked-actor-outlived-teardown" in reason, (
+        "a trip with a live tracked actor handle must carry the dedicated "
+        f"reason, not the stall framing; got {reason!r}"
+    )
+    assert "1 tracked actor handle" in reason
+
+
+async def test_shutdown_watchdog_trip_without_handles_keeps_the_stall_reason(
+    exit_codes: list[int],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The ordinary incomplete-shutdown trip keeps its original reason.
+
+    The dedicated tracked-actor reason must not swallow the stall signal:
+    a shutdown that is simply incomplete (a wedged sibling hanging the
+    TaskGroup) is still the stall it always was.
+    """
+    import taskq.worker._watchdog as watchdog_mod
+
+    trips: list[tuple[str, str]] = []
+
+    def _recording_trip(detector: str, reason: str) -> None:
+        trips.append((detector, reason))
+        raise _ExitSentinelError(EXIT_WATCHDOG)
+
+    monkeypatch.setattr(watchdog_mod, "trip", _recording_trip)
+    shutdown = asyncio.Event()
+    watchdog = ShutdownWatchdog(shutdown, deadline=0.05, dump_interval=0.01)
+    watchdog.start()
+    shutdown.set()
+    with pytest.raises(_ExitSentinelError):
+        await asyncio.wait_for(watchdog._task, timeout=2.0)
+
+    _detector, reason = trips[0]
+    assert "shutdown still incomplete" in reason
+    assert "tracked-actor-outlived-teardown" not in reason
+
+
+# ── Tracked actor handles: the reap gate ──────────────────────────────
+
+
+async def test_await_tracked_actor_reap_is_free_when_nothing_is_live() -> None:
+    """The common clean shutdown pays nothing: no handles, no wait, no log."""
+    done_handle = asyncio.ensure_future(_noop())
+    await done_handle
+    register_tracked_actor_handle(done_handle)  # done entries are filtered
+
+    with structlog.testing.capture_logs() as logs:
+        waited = await await_tracked_actor_reap()
+
+    assert waited is False
+    assert live_tracked_actor_handles() == []
+    assert [e for e in logs if e["event"] == "shutdown-tracked-actor-reap-wait"] == []
+
+
+async def test_await_tracked_actor_reap_waits_for_the_last_handle() -> None:
+    """The wait parks on live handles and returns once every one is reaped.
+
+    This is the exit gate's race shape: a handle reaping shortly after the
+    TaskGroup exited costs one poll interval and the WARN with the count:
+    never a trip (the deadline is far away), never a skipped disarm.
+    """
+    release = asyncio.Event()
+
+    async def _gated() -> None:
+        await release.wait()
+
+    handle = asyncio.create_task(_gated(), name="worker.sync_actor")
+    register_tracked_actor_handle(handle)
+    assert live_tracked_actor_handles() == [handle]
+
+    async def _reap_it_soon() -> None:
+        await asyncio.sleep(0.05)
+        release.set()
+
+    reaper = asyncio.ensure_future(_reap_it_soon())
+    try:
+        with structlog.testing.capture_logs() as logs:
+            waited = await await_tracked_actor_reap()
+    finally:
+        reaper.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await reaper
+        with contextlib.suppress(asyncio.CancelledError):
+            await handle
+
+    assert waited is True
+    assert live_tracked_actor_handles() == []
+    entry = next(e for e in logs if e["event"] == "shutdown-tracked-actor-reap-wait")
+    assert entry["log_level"] == "warning"
+    assert entry["handle_count"] == 1
+
+
+async def _noop() -> None:
+    return None
 
 
 # ── Detector 4: blocked event loop ───────────────────────────────────
