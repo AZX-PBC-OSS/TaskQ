@@ -1029,6 +1029,90 @@ no-op. As with `01.00.06_01`, the wait for the lock is bounded by
 `ddl_lock_timeout` and a held `jobs` fails the migration cleanly rather
 than stalling the fleet; the build itself, once it holds the lock, is not.
 
+### The assignment-routed marker round applies in bounded lock windows
+
+> **Unreleased.** Operational note for the `01.00.12_05` / `01.00.12_07` /
+> `01.00.12_08` / `01.00.12_09` round; the upgrade's lock profile changes,
+> the end state does not (same columns, same backfill, same indexes plus
+> the two new probe indexes below).
+
+The marker round originally shipped as one migration whose single
+transaction held `ACCESS EXCLUSIVE` on `jobs` (taken by the `ADD COLUMN`)
+across the re-pend backfill and two full-table index builds — every read,
+heartbeat and claim on the table queued behind it for the whole run, long
+enough to burn a live fleet's heartbeat budget during the apply
+([#250](https://github.com/AZX-PBC-OSS/TaskQ/issues/250)). It is now four
+single-purpose migrations, each holding the narrowest lock its work
+allows:
+
+- `01.00.12_05` — only the two metadata-only `ALTER TABLE ... ADD COLUMN`
+  statements. The `ACCESS EXCLUSIVE` window is the catalog writes plus
+  the commit: milliseconds, independent of table size.
+- `01.00.12_07` — only the backfill `UPDATE`. An `UPDATE` holds `ROW
+  EXCLUSIVE`, which blocks neither readers nor other writers, so a deep
+  re-pend backlog backfills for as long as it needs without parking the
+  fleet.
+- `01.00.12_08` / `01.00.12_09` — only the `CREATE INDEX` builds. Each
+  build takes a `SHARE` lock (writes queue, reads keep flowing). The
+  runner wraps each **file** in one transaction — not each statement —
+  so a file's builds share ONE write-block window whose duration is the
+  **sum** of that file's builds (`01.00.12_08`'s two builds run
+  back-to-back with no drain between them; measured, a writer INSERT
+  blocked 1.04 s behind both vs 0.49 s behind a single-build file).
+  Postgres' FIFO lock queue grants the writes that queued behind a file
+  when it commits, before the **next file** asks for the table: the
+  fleet sees one write-block window per file, never one continuous
+  window across the whole round, and reads never block.
+
+Same caveat as `01.00.06_01` above on the builds themselves: build time
+is proportional to the `jobs` row count, and on a deployment where a
+single build would outrun the workers' heartbeat budget the statements to
+pre-build `CONCURRENTLY` by hand are in each migration file's OPS NOTE
+(the migration then no-ops via `IF NOT EXISTS`). The wait for each lock
+is bounded by `ddl_lock_timeout` as everywhere else.
+
+Two more changes land with the same round ([#243](https://github.com/AZX-PBC-OSS/TaskQ/issues/243)):
+
+- The dead probe index pair is gone. The unreleased stack built
+  `jobs_repended_probe_idx` (`01.00.11_01`) and dropped it again two
+  files later (`01.00.12_05:post`) — no shipped code ever read its
+  predicate, so every upgrade paid one write-blocking full-table build
+  for nothing. Neither file ships now. A database that ran a **dev
+  checkout** of the unreleased stack carries the index only if its
+  `01.00.12_05:post` never ran — a pre-phase-only or intermediate-era
+  database (one that ran the stack's full pre AND post phases already
+  had the index dropped by the post file). Such a database also keeps
+  the deleted files' ledger rows; if it carries the index, drop it by
+  hand (`DROP INDEX IF EXISTS "{schema}".jobs_repended_probe_idx;`) —
+  nothing reads it. Released deployments never had it.
+- A database that ran a **dev checkout** of the unreleased stack will
+  also log a `migration-checksum-drift` warning on every future
+  `migrate up`, for `01.00.12_05:pre` (the file was restructured into
+  the columns/backfill/index files above) and `01.00.13_03:pre` (a
+  comment-only header fix changed its rendered checksum). The warning
+  means exactly what it says: the ledger's recorded checksum for that
+  key no longer matches the bundled file — the runner compares them,
+  warns, and skips the file because the ledger key is already recorded.
+  It is permanent for as long as that ledger lives (released
+  checksums are frozen and the files will not be reverted), and it is
+  harmless-but-expected for pre-release dev checkouts: nothing fails,
+  nothing re-applies, and every *new* migration applies normally.
+  Released deployments never see it — their ledgers never held the
+  pre-restructure checksums.
+- `01.00.12_09` adds the producer-placed population's two probe indexes
+  (`jobs_unrouted_actor_dispatch_idx`,
+  `jobs_unrouted_round_robin_probe_idx`), partial on
+  `status = 'pending' AND NOT assignment_routed`. The label-routed
+  dispatch arms filter `NOT assignment_routed`; on the pending-only
+  twins that conjunct is a post-scan Filter, so every claim probe walked
+  the re-pended rows ahead of the rows it could admit — claim cost grew
+  linearly in re-pend depth, exactly on the crash-reclaim tails a
+  fleet-wide restart produces. The probes now ride the marker-partial
+  indexes and visit zero re-pended rows; the re-pended population keeps
+  its own probe index (`jobs_assignment_routed_probe_idx`, in
+  `01.00.12_08`), so each arm's probe stops at its own population's
+  rows.
+
 ### Bulk cancel and force-deregistration now make bounded committed progress
 
 > **Unreleased.** Changes the failure semantics of `JobsClient.cancel_where()`

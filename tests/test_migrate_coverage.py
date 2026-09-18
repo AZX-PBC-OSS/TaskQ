@@ -201,6 +201,41 @@ async def test_apply_pending_target_stops_after_matching_version(
         await conn.close()
 
 
+async def test_apply_pending_rejects_unknown_target_loudly(pg_dsn: str) -> None:
+    """A target that names no discovered version must raise BEFORE
+    anything applies, not fall through the truncation loop and silently
+    apply the whole stack.
+
+    The truncation only stops when it SEES the target, so before this
+    guard a stale version, a deleted or renumbered migration, e.g. this
+    round's removed 01.00.11_01, was a silent apply-everything flag:
+    the exact inversion of what a caller passing a target means.
+    """
+    schema = f"mig_cov_stale_{new_base62()}".lower()
+    conn = await asyncpg.connect(pg_dsn)
+    try:
+        await _drop_schema(conn, schema)
+        with pytest.raises(ValueError, match="unknown migration target") as exc_info:
+            await migrate_mod.apply_pending(conn, schema=schema, target="01.00.11_01")
+        message = str(exc_info.value)
+        assert "01.00.11_01" in message
+        # The refusal must name the available range and the listing
+        # command, so the operator can see what the runner DOES bundle.
+        discovered = migrate_mod.discover()
+        assert discovered[0].version in message
+        assert discovered[-1].version in message
+        assert "taskq migrate status" in message
+        # Loud BEFORE anything is applied: no schema, no ledger, no DDL.
+        schema_exists = await conn.fetchval(
+            "SELECT EXISTS (SELECT 1 FROM information_schema.schemata WHERE schema_name = $1)",
+            schema,
+        )
+        assert schema_exists is False
+    finally:
+        await _drop_schema(conn, schema)
+        await conn.close()
+
+
 # ── apply_pending: max_steps stop ────────────────────────────────────────
 
 
