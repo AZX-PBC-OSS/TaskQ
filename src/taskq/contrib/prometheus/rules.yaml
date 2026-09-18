@@ -300,6 +300,25 @@ groups:
             releasing the transaction-scoped lock is the fleet-wide cron
             stall. Runbook: docs/guides/runbooks.md#taskqcronlockcontention.
 
+      - alert: TaskQCronBudgetDeferrals
+        expr: rate(taskq_cron_budget_deferrals_total[5m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "TaskQ cron ticks keep deferring schedule fires for lack of tick budget"
+          description: >-
+            Cron fires are being deferred because the tick's funded factory
+            budget had no fundable grant left for them, sustained for 5
+            minutes. A brief burst is benign (catch-up backlogs drain in
+            tick-sized batches and each draining tick defers whatever its
+            factories' waits could not fit); a rate that persists for minutes
+            means one schedule's payload factory is monopolizing the tick
+            budget every tick: a slow-but-successful factory never strikes
+            and never auto-disables, so its peers defer on every tick
+            without ever being funded. Runbook:
+            docs/guides/runbooks.md#taskqcronbudgetdeferrals.
+
       - alert: TaskQQueueUnserved
         expr: taskq_queue_depth{queue!="_other_"} > 0 unless on(queue) taskq_queue_live_workers > 0
         for: 2m

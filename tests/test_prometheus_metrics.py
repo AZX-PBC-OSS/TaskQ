@@ -219,6 +219,7 @@ _EXPECTED_ALERT_NAMES = {
     "TaskQLeaderLockContention",
     "TaskQRateLimitDependencyOutage",
     "TaskQCronLockContention",
+    "TaskQCronBudgetDeferrals",
     "TaskQRunningLeaseExpired",
     "TaskQQueueUnserved",
     "TaskQStrandedJobs",
@@ -362,13 +363,13 @@ def _populate_all_instruments(meter: Any) -> None:
 
 
 def test_rules_yaml_parses_correctly() -> None:
-    """rules.yaml has no YAML errors; single group; 20 rules with required fields."""
+    """rules.yaml has no YAML errors; single group; 21 rules with required fields."""
     assert _RULES_YAML.exists(), f"rules.yaml not found at {_RULES_YAML}"
     data = yaml.safe_load(_RULES_YAML.read_text())
     groups = data["groups"]
     assert len(groups) == 1
     rules = groups[0]["rules"]
-    assert len(rules) == 20
+    assert len(rules) == 21
     for rule in rules:
         assert "alert" in rule
         assert "expr" in rule
@@ -377,14 +378,14 @@ def test_rules_yaml_parses_correctly() -> None:
         assert "summary" in rule.get("annotations", {})
 
 
-# ── rules.yaml has exactly 20 alerts ───────────────────────────────
+# ── rules.yaml has exactly 21 alerts ───────────────────────────────
 
 
-def test_rules_yaml_exactly_20_alerts() -> None:
-    """rules.yaml contains exactly 20 alerts with the names."""
+def test_rules_yaml_exactly_21_alerts() -> None:
+    """rules.yaml contains exactly 21 alerts with the names."""
     data = yaml.safe_load(_RULES_YAML.read_text())
     rules = data["groups"][0]["rules"]
-    assert len(rules) == 20
+    assert len(rules) == 21
     assert {r["alert"] for r in rules} == _EXPECTED_ALERT_NAMES
 
 

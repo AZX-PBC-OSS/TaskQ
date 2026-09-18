@@ -649,7 +649,7 @@ span does not inflate metric counts relative to a partially-sampled trace.
 The repo ships alert rules for the metrics above — import them instead of
 writing from scratch:
 
-- [`src/taskq/contrib/prometheus/rules.yaml`](https://github.com/AZX-PBC-OSS/TaskQ/blob/main/src/taskq/contrib/prometheus/rules.yaml) — 20 rules (queue depth, heartbeat misses, terminal-failed share, retried-failure share, abandoned jobs, lock TTL, leader split-brain, dispatch latency, progress failures, disabled cron, scheduled-backlog growth, promotion stall, sweep timeouts, sweep degraded tier, maintenance-lock contention, rate-limit dependency outage, cron lock contention, unserved queue, stranded jobs, expired-lease zombies)
+- [`src/taskq/contrib/prometheus/rules.yaml`](https://github.com/AZX-PBC-OSS/TaskQ/blob/main/src/taskq/contrib/prometheus/rules.yaml) — 21 rules (queue depth, heartbeat misses, terminal-failed share, retried-failure share, abandoned jobs, lock TTL, leader split-brain, dispatch latency, progress failures, disabled cron, scheduled-backlog growth, promotion stall, sweep timeouts, sweep degraded tier, maintenance-lock contention, rate-limit dependency outage, cron lock contention, cron budget deferrals, unserved queue, stranded jobs, expired-lease zombies)
 - `src/taskq/contrib/kubernetes/prometheus_rule.yaml` — the same rules as a PrometheusRule CRD for Kubernetes
 
 The rules fire on the series above, so they only work where those series are
@@ -671,6 +671,7 @@ tunable failure modes to the knob that addresses them. Where each shipped alert 
 | `TaskQScheduledBacklogGrowing` | [Cron piling up at tick](ops.md#12-scaling-playbook-from-signal-to-knob) | [TaskQScheduledBacklogGrowing](runbooks.md#taskqscheduledbackloggrowing) |
 | `TaskQPromotionStalled` | [Cron piling up at tick](ops.md#12-scaling-playbook-from-signal-to-knob) | [TaskQPromotionStalled](runbooks.md#taskqpromotionstalled) |
 | `TaskQCronLockContention` | [Cron piling up at tick](ops.md#12-scaling-playbook-from-signal-to-knob) | [TaskQCronLockContention](runbooks.md#taskqcronlockcontention) |
+| `TaskQCronBudgetDeferrals` | the cron guide's [tick-budget lever](cron.md#tick-budget-and-deferral) | [TaskQCronBudgetDeferrals](runbooks.md#taskqcronbudgetdeferrals) |
 | `TaskQCronScheduleDisabled` | cron schedule failure, upstream of any sizing knob | none |
 | `TaskQRateLimitDependencyOutage` | [Rate-limit denials](ops.md#12-scaling-playbook-from-signal-to-knob) | [TaskQRateLimitDependencyOutage](runbooks.md#taskqratelimitdependencyoutage) |
 | `TaskQRunningLeaseExpired` | [`terminal-write-failed` logs / disowned jobs](ops.md#12-scaling-playbook-from-signal-to-knob) | [TaskQRunningLeaseExpired](runbooks.md#taskqrunningleaseexpired) |

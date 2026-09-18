@@ -77,9 +77,22 @@ _UNSERVED_SEVERITIES = {
     "TaskQStrandedJobs": "warning",
 }
 
+#: The cron tick-budget family: a schedule's payload factory monopolizing
+#: the tick's funded budget every tick, so its peers defer on every tick
+#: without ever being funded. Work is deferred, not lost (the deferral
+#: advances next_fire_at one leader tick), so it is a degradation signal
+#: at warning, like the sweep and outage families.
+_CRON_BUDGET_ALERTS = ("TaskQCronBudgetDeferrals",)
+
+_CRON_BUDGET_SEVERITIES = {
+    "TaskQCronBudgetDeferrals": "warning",
+}
+
 #: Every runbook-carrying alert, for the checks that apply to both
 #: generations alike.
-_ALL_RUNBOOKED_ALERTS = _NEW_ALERTS + _OUTAGE_ALERTS + _JOB_OUTCOME_ALERTS + _UNSERVED_ALERTS
+_ALL_RUNBOOKED_ALERTS = (
+    _NEW_ALERTS + _OUTAGE_ALERTS + _JOB_OUTCOME_ALERTS + _UNSERVED_ALERTS + _CRON_BUDGET_ALERTS
+)
 
 
 def _rules_from(path: Path) -> list[dict[str, Any]]:
@@ -266,6 +279,24 @@ def test_both_rule_files_carry_the_outage_alerts_at_their_severities() -> None:
                 f"{rules_path.name} is missing the alert {alert!r} — under a "
                 "Redis outage every rate-limited dispatch snoozes silently "
                 "and nothing fires"
+            )
+            assert by_name[alert]["labels"]["severity"] == severity, (
+                f"{rules_path.name}: {alert!r} must be {severity!r}"
+            )
+
+
+def test_both_rule_files_carry_the_cron_budget_alert_at_warning() -> None:
+    """The tick-budget deferral alert lives in BOTH rule files at warning
+    severity: a deferred fire is retried on a later leader tick, not lost,
+    so the alert pages as degradation, never as emergency."""
+    for rules_path in (_RULES_YAML, _K8S_RULES_YAML):
+        rules = _rules_from(rules_path)
+        by_name = {r["alert"]: r for r in rules}
+        for alert, severity in _CRON_BUDGET_SEVERITIES.items():
+            assert alert in by_name, (
+                f"{rules_path.name} is missing the alert {alert!r} — the "
+                "observability guide points operators at its runbook, so "
+                "without it nothing ever pages on a sustained deferral rate"
             )
             assert by_name[alert]["labels"]["severity"] == severity, (
                 f"{rules_path.name}: {alert!r} must be {severity!r}"
