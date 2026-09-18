@@ -1,14 +1,25 @@
-"""Pytest fixtures for the taskq.web.admin test suite.
+"""Fixtures for the taskq.web.admin test suite, registered from the ROOT conftest.
 
-Pytest discovers conftest.py fixtures in the test file's directory and all
-parent directories.  Test modules inside ``tests/web_admin/`` automatically
-see every fixture defined here.
+These fixtures deliberately do NOT live in ``tests/web_admin/conftest.py``.
+Pytest 9.1.1 drops a nested conftest's fixtures for a file that is REVISITED
+non-adjacently in the argument list: with
+``pytest tests/web_admin/a.py tests/test_root.py tests/web_admin/b.py`` every
+test in ``b.py`` errors with "fixture 'stub_pool' not found" while the same
+files in adjacent order pass (pytest-dev/pytest#14971; the fix landed on
+pytest main after 9.1.1 and is backported on the 9.1.x branch, but no release
+carried it at the time of writing). Registering the fixtures from
+``tests/conftest.py`` — which is loaded for every test regardless of argument
+order — removes the dependence on conftest adjacency entirely.
+
+The one autouse fixture here is path-gated: it mutates process env, so it must
+act ONLY on tests under ``tests/web_admin/``, not suite-wide.
 
 Shared stub classes live in the package ``__init__.py`` so they can be
 imported explicitly where type annotations need them.
 """
 
 from collections.abc import Callable, Generator
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -18,11 +29,13 @@ import structlog.types
 from . import StubBackend as _StubBackend
 from . import StubPool as _StubPool
 
+_WEB_ADMIN_DIR = Path(__file__).resolve().parent
+
 # ── Autouse fixtures ──────────────────────────────────────────────────────
 
 
 @pytest.fixture(autouse=True)
-def _dev_env(monkeypatch: pytest.MonkeyPatch) -> None:  # pyright: ignore[reportUnusedFunction]  # Why: pytest autouse fixture consumed by test runner via parameter injection.
+def _dev_env(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:  # pyright: ignore[reportUnusedFunction]  # Why: pytest autouse fixture consumed by test runner via parameter injection.
     """Set TASKQ_ENVIRONMENT=dev and TASKQ_ADMIN_ACTIONS_ENABLED=true for all
     web_admin tests so create_router's fail-closed auth check does not raise
     and mutation endpoints (run-now, retry, cancel) are accessible.
@@ -36,7 +49,15 @@ def _dev_env(monkeypatch: pytest.MonkeyPatch) -> None:  # pyright: ignore[report
 
     Tests that need non-dev or actions-disabled behavior override these with
     their own monkeypatch.setenv.
+
+    Registered from the root conftest (see the module docstring for why), so
+    the env mutation is gated to ``tests/web_admin/`` paths: every other test
+    in the suite runs with ambient env, exactly as before this fixture existed
+    at that level.
     """
+    path = getattr(request, "path", None)
+    if path is None or not Path(path).is_relative_to(_WEB_ADMIN_DIR):
+        return
     monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
     monkeypatch.setenv("TASKQ_ADMIN_ACTIONS_ENABLED", "true")
     monkeypatch.setenv("TASKQ_ADMIN_UI_SECURE_COOKIES", "false")

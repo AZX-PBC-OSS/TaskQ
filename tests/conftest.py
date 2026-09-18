@@ -24,6 +24,13 @@ each test for within-file isolation.
 Pytest discovers fixtures imported into a conftest.py.
 The fixtures are imported from :mod:`taskq.testing.fixtures`
 and re-registered here so they are available to all test modules.
+The web_admin suite's fixtures are likewise imported from
+:mod:`tests.web_admin._fixtures` — at THIS level rather than a
+``tests/web_admin/conftest.py`` because pytest 9.1.1 drops a nested
+conftest's fixtures for files revisited non-adjacently in the argument list
+(pytest-dev/pytest#14971), and the root-level registration removes the
+dependence on conftest adjacency. That module's autouse fixture is path-gated
+to ``tests/web_admin/``.
 """
 
 import asyncio
@@ -114,6 +121,13 @@ from taskq.testing.settings import (
 )
 from taskq.worker.deps import WorkerDeps
 from taskq.worker.health import HealthServer
+from tests.web_admin._fixtures import (
+    _dev_env,
+    make_app,
+    make_app_with_backend,
+    structlog_capture,
+    stub_pool,
+)
 
 # ── Health-socket isolation ──────────────────────────────────────────────
 # WorkerSettings.health_socket_path defaults to the shared production path
@@ -597,6 +611,7 @@ __all__ = [
     "ModulePgSchema",
     "StubActorConfig",
     "_FakePool",
+    "_dev_env",
     "_logging_configured_guard",
     "_otel_enabled_guard",
     "_otel_gauge_cache_guard",
@@ -623,6 +638,8 @@ __all__ = [
     "get_job_triple",
     "jobs_app",
     "killable_redis_container",
+    "make_app",
+    "make_app_with_backend",
     "make_enqueue_args",
     "make_integration_settings",
     "make_integration_settings_dict",
@@ -638,6 +655,8 @@ __all__ = [
     "reset_schema",
     "seed_actors",
     "setup_running_job",
+    "structlog_capture",
+    "stub_pool",
     "truncate_schema",
     "wait_for",
     "wait_for_job_status",
