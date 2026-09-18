@@ -411,7 +411,7 @@ class TestSweepExpiredLocks:
 
     async def test_cancel_phase_carve_out_deeply_expired(self, clean_jobs_app: JobsApp) -> None:
         """Running job with cancel_phase=1 and lock expired past the
-        cancel_grace + cleanup_grace + 60s threshold SHOULD be swept —
+        cancel_grace + cleanup_grace + 60s threshold SHOULD be swept,
         and with operator intent outranking the retry budget (#238),
         the reclaim terminalises it 'cancelled' whatever its budget,
         never re-pends it with a wiped cancel."""
@@ -448,7 +448,7 @@ class TestSweepExpiredLocks:
         assert row is not None
         assert row["status"] == "cancelled", (
             "a deeply expired row with a cancel in flight must land "
-            "'cancelled' even with retries remaining — the operator's "
+            "'cancelled' even with retries remaining: the operator's "
             "request is the honest terminal label, and the lock-holding "
             "worker this cancel was addressed to is provably gone"
         )
@@ -462,7 +462,7 @@ class TestSweepExpiredLocks:
 
         The pre-fix statement evaluated the retry budget before
         ``cancel_phase``, so this row went back 'pending' with
-        ``cancel_phase``/``cancel_requested_at`` wiped — the operator's
+        ``cancel_phase``/``cancel_requested_at`` wiped: the operator's
         cancel silently lost, addressed to a worker the reclaim itself
         had just declared dead. The cancel-first ordering cannot
         resurrect the re-cancel loop the old reset-on-re-pend spelling
@@ -470,7 +470,7 @@ class TestSweepExpiredLocks:
         carrying cancel columns, and the cancel arm never re-pends.
         The second half pins exactly that loop-guard from the other
         side: a phase-0 reclaim's re-pended row is claimable by a new
-        worker whose cancel-poll stays quiet — no inherited phase.
+        worker whose cancel-poll stays quiet (no inherited phase).
         """
         deps = clean_jobs_app.deps
         backend = clean_jobs_app.backend
@@ -515,7 +515,7 @@ class TestSweepExpiredLocks:
         assert row is not None
         assert row["status"] == "cancelled", (
             "a retryable row with a cancel in flight must terminalise "
-            "'cancelled' — the operator's request outranks the retry budget"
+            "'cancelled': the operator's request outranks the retry budget"
         )
         # The audit trail of the honored request survives the terminal
         # write, exactly as mark_cancelled keeps both columns.
@@ -575,7 +575,7 @@ class TestSweepExpiredLocks:
 
         flags = await backend.poll_cancel_flags(second_worker_id)
         assert flags == [], (
-            "a re-pended row must never carry an inherited cancel phase — "
+            "a re-pended row must never carry an inherited cancel phase: "
             "any regression that re-pends a phase-carrying row re-enters "
             "the cancel/reclaim/retry loop this pins shut"
         )

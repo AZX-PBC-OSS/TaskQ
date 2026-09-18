@@ -276,7 +276,7 @@ async def test_isolate_self_honours_fr12_case_shape() -> None:
         assert runner.index("WHEN j.cancel_phase != 0") < runner.index(
             "WHEN (j.retry_kind = 'indefinite'"
         ), (
-            "the cancel arm must be evaluated before the budget arm — "
+            "the cancel arm must be evaluated before the budget arm: "
             "budget-first re-pends a cancel-in-flight row and wipes the "
             "operator's cancel"
         )

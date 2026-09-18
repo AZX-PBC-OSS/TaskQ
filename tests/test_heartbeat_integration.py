@@ -404,14 +404,14 @@ async def test_sweep1_consistency(module_pg_schema: ModulePgSchema) -> None:
 async def test_isolate_self_transitions_cancel_phase_gt_zero(
     module_pg_schema: ModulePgSchema,
 ) -> None:
-    """isolate_self transitions jobs with cancel_phase > 0 — to
+    """isolate_self transitions jobs with cancel_phase > 0 to
     terminal 'cancelled', whatever the retry budget, mirroring
     _SWEEP_1_SQL's operator-intent-first CASE ordering (see
     tests/test_leader_property.py's isolate≡sweep invariant and #238).
     A departing worker is the only writer that could have honoured the
     request cooperatively, so the honest resolution is the caller's
     explicit terminal label, with the cancel columns preserved as the
-    audit trail of the honored request — the same doctrine
+    audit trail of the honored request, the same doctrine
     mark_cancelled carries."""
     stack, deps, schema = await _setup_fast(module_pg_schema)
     try:
@@ -438,7 +438,7 @@ async def test_isolate_self_transitions_cancel_phase_gt_zero(
             assert row is not None
             assert row["status"] == "cancelled", (
                 "a cancel in flight must outrank the retry budget at "
-                "isolation — the pre-fix template re-pended the row 'pending' "
+                "isolation: the pre-fix template re-pended the row 'pending' "
                 "and wiped the operator's cancel"
             )
             assert row["cancel_phase"] == 1
@@ -498,7 +498,7 @@ async def test_isolate_self_cancel_in_flight_exhausted_lands_cancelled(
         assert row["status"] == "cancelled"
         assert row["cancel_phase"] == 1, (
             "the cancelled arm preserves the phase as the audit trail of "
-            "the honored request — mark_cancelled keeps it too"
+            "the honored request; mark_cancelled keeps it too"
         )
         assert row["cancel_requested_at"] is not None
         assert row["finished_at"] is not None
@@ -638,7 +638,7 @@ async def test_isolate_self_non_retryable_mirrors_sweep1(
 ) -> None:
     """isolate_self non_retryable + budget-remaining mirrors Sweep 1 exactly.
     For a non_retryable job with attempt < max_attempts: status='crashed',
-    finished_at IS NOT NULL, scheduled_at unchanged, AttemptRow written —
+    finished_at IS NOT NULL, scheduled_at unchanged, AttemptRow written,
     and the crashed arm self-describes on the JOB row too (#238): the
     pre-fix template left error_class/error_message NULL there while the
     sweep stamped its own, despite the branch-for-branch mirror claim."""
@@ -674,7 +674,7 @@ async def test_isolate_self_non_retryable_mirrors_sweep1(
             assert_job_status(row, "crashed", finished=True)
             assert row["scheduled_at"] == original_scheduled_at
             assert row["error_class"] == "HeartbeatLost", (
-                "the isolate's crashed arm must self-describe on the job row — "
+                "the isolate's crashed arm must self-describe on the job row: "
                 "shape-mirror of the sweep's WorkerCrashed stamp, with the "
                 "intentionally distinct class the attempt rows have always "
                 "carried"

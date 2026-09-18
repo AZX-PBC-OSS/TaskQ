@@ -557,7 +557,7 @@ class TestSweepExpiredLocksBehaviourPinned:
             row = by_id[job_id]
             assert row["cancel_phase"] == 1, (
                 "the cancelled branch preserves cancel_phase as the audit "
-                "trail of the honored request — the mark_cancelled doctrine"
+                "trail of the honored request: the mark_cancelled doctrine"
             )
             assert row["cancel_requested_at"] is not None, (
                 "the cancelled branch preserves cancel_requested_at as the "

@@ -17,8 +17,8 @@ statement 2's fresh snapshot sees it as running and sets
 
 The pair runs as bounded fixpoint ROUNDS (``_MAX_CANCEL_DRAIN_ROUNDS``):
 round N's pending/scheduled arm walks a keyset window forward, and a
-matching RUNNING row rescheduled mid-drain — a denial snooze, a shutdown
-interrupt, a crash reclaim, a consumer retry — lands pending/scheduled at
+matching RUNNING row rescheduled mid-drain (a denial snooze, a shutdown
+interrupt, a crash reclaim, a consumer retry) lands pending/scheduled at
 an id the pending arm has already passed, where the running arm (strictly
 after it, matching only ``running AND cancel_phase=0``) can never see it
 (#237: the pre-rounds drain returned normally with such a row uncancelled,
@@ -30,17 +30,17 @@ the fixpoint into an unbounded loop.
 
 Completeness is scoped to those rounds, not absolute: each statement
 cancels every matching job it windows, and one call returns the complete
-:class:`BulkCancelResult` plus NOTIFY targets — but the work executes as
+:class:`BulkCancelResult` plus NOTIFY targets, but the work executes as
 a sequence of bounded committed batches (``batch_size`` driving-CTE rows
 per transaction), not one unbounded transaction, and the call's
 completeness is bounded by the fixpoint. A match set still being re-fed
 by concurrent churn when the round cap is reached returns normally with
 a residual a re-run converges (the EPQ predicates skip everything
 earlier rounds cancelled), and a row re-pended behind the keyset cursor
-inside the final round's own passes is likewise left for that re-run —
+inside the final round's own passes is likewise left for that re-run:
 the same deliberately non-atomic contract the drain has always documented
 for a concurrent enqueue slipping a new matching row in between batches.
-The drain terminates on the WINDOW count — the
+The drain terminates on the WINDOW count: the
 ``matched_count`` aggregate each driving statement returns from its own
 MATERIALIZED ``matching`` CTE — never on the UPDATE's affected-row
 count: under READ COMMITTED a row windowed by the CTE that a dispatcher

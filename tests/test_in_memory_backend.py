@@ -1104,7 +1104,7 @@ class TestReclaimExpiredLocks:
         """Mirrors PostgresBackend's carve-out and its #238 ordering: a
         job with an in-flight cancel request is still reclaimed once its
         lock has been expired for cancel_grace + cleanup_grace + 60s,
-        and — operator intent outranking the retry budget — the reclaim
+        and, operator intent outranking the retry budget, the reclaim
         terminalises it 'cancelled' (whatever the budget) with the
         cancel columns preserved as the audit trail of the honored
         request. The pre-fix twin re-pended this row 'pending' with the
@@ -1176,7 +1176,7 @@ class TestReclaimExpiredLocks:
         assert updated is not None
         assert updated.status == "cancelled"
         assert updated.cancel_phase == 1, (
-            "the cancel columns survive the arm that honoured them — the "
+            "the cancel columns survive the arm that honoured them: the "
             "mark_cancelled audit-trail doctrine"
         )
         assert updated.cancel_requested_at is not None
