@@ -1,4 +1,4 @@
-"""Evidence pins for two code-level observability defects.
+"""Evidence pins for the running-lease-expired gauge's alert truth.
 
 The running-lease-expired gauge must not alarm on rows the reclaim
 sweep is deliberately still waiting out. The reclaim sweep gives a
@@ -6,24 +6,27 @@ cancelling row (`cancel_phase >= 1`) a grace window before it reclaims
 an expired lease -- cancel grace + cleanup grace + 60 seconds
 (`_sweeps.py`'s lease_arm predicate), so an actor finishing its
 cooperative cancel does not get its in-flight work double-run. The
-`TaskQRunningLeaseExpired` alert fires on
-`taskq_jobs_running_lease_expired > 0` sustained for 5 minutes with no
-carve-out for that same grace window, so a row correctly waiting out
-its cancel grace reads as a stuck reclaim to the alert -- a false
-positive that pages an operator for behavior working exactly as
-designed.
+gauge's predicate now carves those rows out
+(`status='running' AND lock_expires_at < now AND cancel_phase = 0`),
+so `TaskQRunningLeaseExpired` pages only on genuinely stuck rows: a
+cancel that never completes pages elsewhere: TaskQAbandonedJobs when
+its worker is alive to escalate through the phases, TaskQHeartbeatMisses
+when it died mid-cancel, and the reclaim sweep honors the row to
+`cancelled` either way.
 
-This also proves the sampler's caches go stale, not empty, when a
-sampling round fails: the except branch only logs and never resets the
-per-gauge caches, so a dead sampler reports the last good number
-forever instead of a missing/zero sample -- indistinguishable from a
-healthy, quiet fleet.
+These pins were filed RED-for-the-desired-state (the gauge
+over-counted; the cache froze); the cancel_phase carve-out flipped the
+first to the corrected behavior -- a cancelling row inside its grace
+window reads 0 while a genuinely stuck row in the same sample still
+reads 1 -- rather than deleting it.
 
-Both pins currently assert the DEFECT'S observed behavior (the gauge
-over-counts; the cache freezes) so they read RED-for-the-desired-state;
-a fix addressing the alert's cancel_phase carve-out or the sampler's
-failure-path cache reset should flip these assertions to the corrected
-behavior rather than delete them.
+The second pin documents the fleet-wide arm's accepted failure
+semantics: when the whole tick cannot acquire its connection, the
+fleet-wide caches keep their last values (never reset to a fake zero --
+a missing sample reads identically to a healthy fleet, a false zero
+reads as recovery) and the failure counts on
+`taskq.maintenance_leader.sweep_timeouts` under the backlog_detection
+sweep_name, which is what keeps the degradation observable.
 """
 
 from __future__ import annotations
@@ -136,18 +139,69 @@ async def _drive_one_sample(ctx: SweepContext) -> int | None:
     return observed[0] if observed else None
 
 
-async def test_gauge_counts_a_cancelling_row_still_inside_its_reclaim_grace(
+@pytest.mark.parametrize("cancel_phase", [1, 2])
+async def test_gauge_excludes_cancelling_rows_but_counts_genuinely_stuck_ones(
     clean_pg_conn: asyncpg.Connection,
     module_pg_schema: ModulePgSchema,
+    cancel_phase: int,
 ) -> None:
     """A row with an expired lease but `cancel_phase >= 1` is exactly the
     shape the reclaim sweep deliberately leaves alone during its grace
     window -- the sweep's own predicate
     (`cancel_phase = 0 OR lock_expires_at < now - cancel_grace - cleanup_grace - 60s`)
-    proves it. The gauge's predicate is `status='running' AND
-    lock_expires_at < now` with no such carve-out, so it counts this row
-    as a stuck reclaim while the reclaim sweep is working exactly as
-    designed.
+    proves it, so the gauge must not count it: an expired lease mid-cancel
+    is the cancellation protocol working, not a stuck reclaim. A
+    genuinely-stuck row (cancel_phase = 0, lease past) in the SAME sample
+    must still count, so the carve-out cannot hide the real zombies --
+    and so this pin can never read 0 vacuously (a broken gauge reads 0 on
+    both rows, an uncarved one reads 2). Both phases are covered:
+    cooperative (1) and forced (2) sit under the same grace ladder.
+    """
+    schema = module_pg_schema.schema_name
+    now = datetime.now(UTC)
+    worker = new_uuid()
+    # The cancelling row inside its reclaim grace window...
+    await _seed_running_job(
+        clean_pg_conn,
+        schema,
+        locked_by_worker=worker,
+        lock_expires_at=now - timedelta(seconds=5),
+        cancel_phase=cancel_phase,
+    )
+    # ...beside a genuinely stuck row the gauge exists to count.
+    await _seed_running_job(
+        clean_pg_conn,
+        schema,
+        locked_by_worker=worker,
+        lock_expires_at=now - timedelta(seconds=60),
+        cancel_phase=0,
+    )
+
+    ctx = _pg_ctx(clean_pg_conn, schema=schema)
+    expired_lease = await _drive_one_sample(ctx)
+
+    assert expired_lease == 1, (
+        f"a cancelling row (cancel_phase={cancel_phase}) within its reclaim "
+        "grace window must not read as an expired lease — the "
+        "TaskQRunningLeaseExpired alert would page on reclaim working "
+        "exactly as designed — while the genuinely stuck row beside it "
+        f"must still count; the gauge read {expired_lease!r}, expected 1"
+    )
+
+
+@pytest.mark.parametrize("cancel_phase", [1, 2])
+async def test_gauge_excludes_a_lone_cancelling_row(
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_schema: ModulePgSchema,
+    cancel_phase: int,
+) -> None:
+    """The lone-row shape the original evidence pin caught red: nothing in
+    the fleet but a cancel in flight whose lease expired five seconds ago.
+    Both cooperative (1) and forced (2) phases are carved out: the
+    reclaim sweep's grace ladder applies to either, and a cancel that
+    never completes pages elsewhere (TaskQAbandonedJobs when its worker
+    is alive to escalate, TaskQHeartbeatMisses when it died mid-cancel,
+    reclaim honors the row to `cancelled` either way), not on this gauge.
     """
     schema = module_pg_schema.schema_name
     now = datetime.now(UTC)
@@ -157,18 +211,17 @@ async def test_gauge_counts_a_cancelling_row_still_inside_its_reclaim_grace(
         schema,
         locked_by_worker=worker,
         lock_expires_at=now - timedelta(seconds=5),
-        cancel_phase=1,
+        cancel_phase=cancel_phase,
     )
 
     ctx = _pg_ctx(clean_pg_conn, schema=schema)
     expired_lease = await _drive_one_sample(ctx)
 
-    assert expired_lease == 1, (
-        "a cancelling row within its reclaim grace window is counted by the "
-        "gauge as an expired lease with no carve-out -- this is the current, "
-        "documented defect: the TaskQRunningLeaseExpired alert has no "
-        "cancel_phase exemption, so it can fire on a row the reclaim sweep is "
-        "deliberately still waiting to reclaim, not a stuck fleet"
+    assert expired_lease == 0, (
+        f"a lone cancelling row (cancel_phase={cancel_phase}) inside its "
+        "reclaim grace window read as an expired lease — the gauge's "
+        "cancel_phase carve-out is gone and TaskQRunningLeaseExpired fires "
+        "on the cancellation protocol working as designed"
     )
 
 
@@ -177,11 +230,13 @@ async def test_gauge_freezes_at_last_good_value_when_sampling_fails(
     module_pg_schema: ModulePgSchema,
 ) -> None:
     """Drive one healthy sample (gauge reads 1), then break the pool so the
-    next round's statements fail. The except branch only logs -- it never
-    resets `_running_lease_expired_count` (or its by-status/oldest-due
-    siblings) -- so the gauge keeps reporting the stale value 1 forever
-    instead of dropping to a missing/zero sample an operator could tell
-    apart from a healthy fleet.
+    next round's statements fail. The fleet-wide arm never resets
+    `_running_lease_expired_count` (or its by-status/oldest-due siblings)
+    on a failed tick: the caches keep their last values rather than drop
+    to a zero an operator would read as recovery, and the failure counts
+    on `taskq.maintenance_leader.sweep_timeouts` under the
+    backlog_detection sweep_name, which is what keeps a held fleet-wide
+    value observable instead of silent (see TaskQSweepTimeouts).
     """
     schema = module_pg_schema.schema_name
     now = datetime.now(UTC)
@@ -258,7 +313,8 @@ async def test_gauge_freezes_at_last_good_value_when_sampling_fails(
 
     assert pool.calls >= 2, "setup: the sampler must have attempted a second round"
     assert observed[-1] == 1, (
-        f"the gauge cache should freeze at its last good value (1) while sampling "
-        f"fails, but observed {observed!r} -- if it dropped to 0 the except branch "
-        "reset the cache, contradicting the current code path that only logs"
+        f"the gauge cache should keep its last good value (1) while sampling "
+        f"fails — a held value is a missing sample the sweep-timeouts counter "
+        f"names; observed {observed!r} — if it dropped to 0 the except branch "
+        "wrote a fake zero that reads as recovery"
     )

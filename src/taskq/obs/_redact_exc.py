@@ -78,19 +78,40 @@ __all__ = [
 #: would delete every outer frame after it -- destroying the diagnostic while
 #: appearing to work on a single-exception test.
 #:
-#: The optional ``(?:[ \t]*[|+][ \t]*)*`` prefix absorbs
-#: ``traceback.format_exception``'s ``ExceptionGroup`` rendering, which
-#: indents every line of a sub-exception with a repeated ``| `` (or, on a
-#: group's own header/separator lines, ``+``) marker -- one added layer per
-#: level of nesting -- before the exception's own text. Without it, a DETAIL
-#: line inside a grouped or ``except*``-caught sub-exception reads
+#: The ``[ \t|+]*`` prefix absorbs ``traceback.format_exception``'s
+#: ``ExceptionGroup`` rendering, which indents every line of a sub-exception
+#: with a repeated ``| `` (or, on a group's own header/separator lines,
+#: ``+``) marker -- one added layer per level of nesting -- before the
+#: exception's own text. Without it, a DETAIL line inside a grouped or
+#: ``except*``-caught sub-exception reads
 #: ``    | DETAIL:  Key (...)=(...) already exists.`` and the anchor on a
 #: bare ``^[ \t]*`` never reaches past the marker, so the row value ships to
 #: the span/log unredacted. The prefix is still consumed only when it is
 #: immediately followed by ``DETAIL:`` -- a header line such as
 #: ``  | ExceptionGroup: ...`` does not itself start with ``DETAIL:`` and so
 #: is not touched.
-_PG_DETAIL_RE = re.compile(r"^(?:[ \t]*[|+][ \t]*)*[ \t]*DETAIL:.*$", re.MULTILINE)
+#:
+#: Why ONE character class and not the marker-shaped
+#: ``(?:[ \t]*[|+][ \t]*)*`` it replaced: the two accept exactly the same
+#: prefixes (every prefix they match is a run of spaces, tabs and ``|``/``+``
+#: -- a marker run is N zero-whitespace repetitions, the whitespace around
+#: each marker rides a repetition's ``[ \t]*`` arms or the trailing one),
+#: but the class matches in a single pass. The nested form put a quantifier
+#: (``[ \t]*``) inside another quantifier (the marker group's ``*``), so a
+#: long marker run with no ``DETAIL:`` after it could be partitioned across
+#: the repetitions in exponentially many ways and the engine tried them all:
+#: ~60 ms of scrub at 20 markers, ~4x that per marker pair added, seconds by
+#: the mid-20s and effectively unbounded beyond -- on a pass that runs
+#: synchronously on the event loop (the failed-attempt scrub, behind the
+#: ``"DETAIL:" in text`` prefilter, so one DETAIL line anywhere in the text
+#: plus one marker-heavy line is enough). A poison job whose message echoes
+#: that shape stalls every heartbeat with it until the watchdog dumps the
+#: worker (5 s) and then kills it (30 s), deterministically, on every retry.
+#: A character class has no nested quantifier to re-partition, so the match
+#: is linear in the line whatever it carries;
+#: ``test_detail_scrub_stays_under_a_time_bound_on_marker_runs`` pins the
+#: budget and ``test_no_nested_quantifier_regexes_in_taskq_obs`` the shape.
+_PG_DETAIL_RE = re.compile(r"^[ \t|+]*DETAIL:.*$", re.MULTILINE)
 
 #: Companion to :data:`_PG_DETAIL_RE` for ``repr()``-flattened text.
 #: ``repr(exc)`` renders the newline before DETAIL as the two
@@ -102,16 +123,35 @@ _PG_DETAIL_RE = re.compile(r"^(?:[ \t]*[|+][ \t]*)*[ \t]*DETAIL:.*$", re.MULTILI
 #: exception sits in an ``ExceptionGroup``'s list, one more ``])`` per
 #: nesting level) at end of line. The closing alternatives can only succeed
 #: at end-of-line, so they keep a repr's trailing closers when present
-#: without ever stopping the scrub early and leaving row values behind. The
-#: final bare ``$`` leg is fail-closed: a DETAIL whose tail matches NEITHER
-#: safe delimiter (an unterminated repr, or one embedded mid-line with more
-#: text after it) is scrubbed through end of line rather than shipped — a
-#: delimiter miss must delete more text, never less of the secret.
-#: ``MULTILINE`` makes ``$`` match per real line, so a repr line embedded in
-#: a rendered traceback (real newlines around it) is scrubbed too. Optional
-#: escaped ``\r`` covers the CRLF boundary shape.
+#: without ever stopping the scrub early and leaving row values behind.
+#: The closers leg ends in ``[ \t]*``, same-line trailing whitespace only,
+#: deliberately NOT ``\s*``: ``\s`` crosses newlines, so a DETAIL value
+#: carrying a quote, closers and a (CR/)LF boundary could satisfy the leg
+#: by peering PAST the line end: on CR-bearing text it really does, and
+#: the scrub then stopped at the mid-value quote and kept what the
+#: no-closers control scrubbed. A terminator that cannot cross a line
+#: boundary fails closed there instead: the closers ride the scrub (more
+#: deletion, never less), and the repr-tail shape the leg exists for,
+#: closers, optional same-line spaces, end of line, still terminates it
+#: (``test_repr_channel_pins``'s embedded-traceback case).
+#:
+#: The ``[ \t|+]*`` after the escaped newline is the same marker class
+#: :data:`_PG_DETAIL_RE` carries, for the same reason: the repr channel
+#: sees marker-prefixed DETAIL text too: an exception message that embeds
+#: a rendered ``ExceptionGroup`` traceback (or any echoed ``| | DETAIL:``
+#: text) reprs with the markers inline after the escaped newline, and an
+#: anchor without the class shipped the row value verbatim on exactly the
+#: poison-message vector the marker class was added for.
+#:
+#: The final bare ``$`` leg is fail-closed: a DETAIL whose tail matches
+#: NEITHER safe delimiter (an unterminated repr, or one embedded mid-line
+#: with more text after it) is scrubbed through end of line rather than
+#: shipped: a delimiter miss must delete more text, never less of the
+#: secret. ``MULTILINE`` makes ``$`` match per real line, so a repr line
+#: embedded in a rendered traceback (real newlines around it) is scrubbed
+#: too. Optional escaped ``\r`` covers the CRLF boundary shape.
 _PG_DETAIL_ESCAPED_RE = re.compile(
-    r"(?:\\r)?\\n[ \t]*DETAIL:.*?(?=(?:\\r)?\\n|['\"][)\]]*\s*$|$)",
+    r"(?:\\r)?\\n[ \t|+]*DETAIL:.*?(?=(?:\\r)?\\n|['\"][)\]]*[ \t]*$|$)",
     re.MULTILINE,
 )
 

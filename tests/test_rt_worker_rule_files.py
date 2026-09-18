@@ -238,6 +238,46 @@ def test_scheduled_backlog_growing_asserts_count_growth_not_self_referenced_age(
     )
 
 
+def test_sweep_timeouts_alert_counts_every_sampler_failure_class() -> None:
+    """TaskQSweepTimeouts must count the gauge samplers' read failures, not
+    only sweep batches, and must keep doing so.
+
+    The per-actor backlog read's failure arms (#249) count on the
+    sweep-timeouts counter under the actor_backlog sweep_name; the queue
+    depth, backlog-detection and reservation-slots samplers already do
+    under theirs. The alert's expression must therefore stay UNFILTERED on
+    sweep_name: a selector narrowed to the batch sweep names would silently
+    un-wire every sampler-failure class: a metrics-only operator would
+    again watch TaskQQueueDepthHigh resolve itself under the exact incident
+    that kills its read, with the counting alert green. Its description
+    must name the sampler class too, or the page will send the operator
+    hunting batch timeouts that are not the fault.
+    """
+    for rules_path in (_RULES_YAML, _K8S_RULES_YAML):
+        by_name = {r["alert"]: r for r in _rules_from(rules_path)}
+        assert "TaskQSweepTimeouts" in by_name, f"{rules_path.name} lost TaskQSweepTimeouts"
+        rule = by_name["TaskQSweepTimeouts"]
+        expr = " ".join(str(rule["expr"]).split())
+        assert "taskq_maintenance_leader_sweep_timeouts_total" in expr, (
+            f"{rules_path.name}: TaskQSweepTimeouts stopped reading the sweep-timeouts counter: {expr}"
+        )
+        assert "{" not in expr, (
+            f"{rules_path.name}: TaskQSweepTimeouts filters its series ({expr!r}) "
+            "— a sweep_name selector that excludes the gauge-sampler names "
+            "(queue_depth, backlog_detection, actor_backlog, "
+            "reservation_slots) silently un-wires the sampler-failure "
+            "class, and #249's silent alert resolution returns with the "
+            "counting alert green"
+        )
+        text = " ".join(str(v) for v in rule["annotations"].values()).lower()
+        assert "sampler" in text, (
+            f"{rules_path.name}: TaskQSweepTimeouts' annotations no longer "
+            "mention the gauge-sampler failure class — the page will send "
+            "the operator hunting batch timeouts when a sampler stopped "
+            "reading"
+        )
+
+
 def test_both_rule_files_carry_the_five_new_alerts() -> None:
     """The two files must move together: all five new alerts present in
     both, at warning severity (they are degradation signals, not

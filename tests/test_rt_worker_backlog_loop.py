@@ -479,22 +479,25 @@ async def _seed_running_job(
     lock_expires_at: datetime | None,
     actor: str = "test_actor",
     started_at: datetime | None = None,
+    cancel_phase: int = 0,
 ) -> UUID:
     """Seed one running row with the lock columns the zombie predicate reads
-    (and the actor / started_at the running-age sampler groups on)."""
+    (and the actor / started_at the running-age sampler groups on, and the
+    cancel_phase the zombie predicate's carve-out reads)."""
     job_id = new_uuid()
     await conn.execute(
         f'INSERT INTO "{schema}".jobs (id, actor, queue, payload, max_attempts, '  # noqa: S608  # Why: schema is the module fixture's validated identifier; no user input.
         "retry_kind, status, priority, scheduled_at, locked_by_worker, "
-        "lock_expires_at, started_at) "
+        "lock_expires_at, started_at, cancel_phase) "
         "VALUES ($1, $5, 'default', '{}'::jsonb, 1, 'non_retryable', "
-        "'running', 0, $2, $3, $4, $6)",
+        "'running', 0, $2, $3, $4, $6, $7)",
         job_id,
         datetime.now(UTC),
         locked_by_worker,
         lock_expires_at,
         actor,
         started_at,
+        cancel_phase,
     )
     return job_id
 
@@ -629,8 +632,12 @@ async def test_running_lease_expired_counts_only_expired_running_jobs(
     module_pg_schema: ModulePgSchema,
 ) -> None:
     """The zombie-running shape is visible: the expired-lease count covers
-    exactly the running rows whose lease is past — not future leases, not
-    pending rows, not running rows that hold no lease.
+    exactly the running rows whose lease is past AND that carry no cancel
+    in flight, not future leases, not pending rows, not running rows that
+    hold no lease, and not cancelling rows (the reclaim sweep deliberately
+    waits out the cancel grace ladder for those, so an expired lease
+    mid-cancel is the protocol working, never a zombie the alert should
+    page on).
 
     A healthy fleet drives this gauge to zero (the reclaim sweep reclaims
     expired leases within a tick or two of expiry), so a SUSTAINED
@@ -658,6 +665,16 @@ async def test_running_lease_expired_counts_only_expired_running_jobs(
     # …a running row holding no lease at all (NULL never satisfies the
     # bound)…
     await _seed_running_job(clean_pg_conn, schema, locked_by_worker=None, lock_expires_at=None)
+    # …a running row PAST its lease but mid-cancel (cancel_phase = 1: the
+    # reclaim sweep's grace ladder owns this row, so the carve-out, not the
+    # lease bound, must exclude it)…
+    await _seed_running_job(
+        clean_pg_conn,
+        schema,
+        locked_by_worker=worker,
+        lock_expires_at=now - timedelta(seconds=60),
+        cancel_phase=1,
+    )
     # …and a pending row whose lock columns are set (a raced write) —
     # status, not the columns, gates the zombie shape.
     await _seed_job(clean_pg_conn, schema, status="pending", scheduled_at=now)
@@ -667,9 +684,10 @@ async def test_running_lease_expired_counts_only_expired_running_jobs(
     _by_status, _oldest_due, expired_lease = await _drive_one_sample(ctx)
 
     assert expired_lease == 1, (
-        f"exactly one running row carries a past lease; the gauge read "
-        f"{expired_lease!r} — the zombie-running predicate is "
-        "status='running' AND lock_expires_at < now, nothing broader"
+        f"exactly one running row carries a past lease with no cancel in "
+        f"flight; the gauge read {expired_lease!r} — the zombie-running "
+        "predicate is status='running' AND lock_expires_at < now AND "
+        "cancel_phase = 0, nothing broader and nothing narrower"
     )
 
 
