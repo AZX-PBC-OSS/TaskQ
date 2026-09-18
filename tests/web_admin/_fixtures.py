@@ -1,18 +1,18 @@
-"""Fixtures for the taskq.web.admin test suite, registered from the ROOT conftest.
+"""Fixtures for the taskq.web.admin test suite, registered from the root conftest.
 
-These fixtures deliberately do NOT live in ``tests/web_admin/conftest.py``.
-Pytest 9.1.1 drops a nested conftest's fixtures for a file that is REVISITED
+These fixtures live here instead of ``tests/web_admin/conftest.py``.
+Pytest 9.1.1 drops a nested conftest's fixtures for a file revisited
 non-adjacently in the argument list: with
 ``pytest tests/web_admin/a.py tests/test_root.py tests/web_admin/b.py`` every
 test in ``b.py`` errors with "fixture 'stub_pool' not found" while the same
 files in adjacent order pass (pytest-dev/pytest#14971; the fix landed on
 pytest main after 9.1.1 and is backported on the 9.1.x branch, but no release
-carried it at the time of writing). Registering the fixtures from
-``tests/conftest.py`` — which is loaded for every test regardless of argument
-order — removes the dependence on conftest adjacency entirely.
+carried it at the time of writing). Because ``tests/conftest.py`` is loaded
+for every test regardless of argument order, registering the fixtures from
+there removes the dependence on conftest adjacency.
 
-The one autouse fixture here is path-gated: it mutates process env, so it must
-act ONLY on tests under ``tests/web_admin/``, not suite-wide.
+The one autouse fixture here is path-gated: it mutates process env, so it
+applies only to tests under ``tests/web_admin/``, not suite-wide.
 
 Shared stub classes live in the package ``__init__.py`` so they can be
 imported explicitly where type annotations need them.

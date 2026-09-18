@@ -25,11 +25,11 @@ Pytest discovers fixtures imported into a conftest.py.
 The fixtures are imported from :mod:`taskq.testing.fixtures`
 and re-registered here so they are available to all test modules.
 The web_admin suite's fixtures are likewise imported from
-:mod:`tests.web_admin._fixtures` — at THIS level rather than a
-``tests/web_admin/conftest.py`` because pytest 9.1.1 drops a nested
+:mod:`tests.web_admin._fixtures` and registered at this level rather than in
+a ``tests/web_admin/conftest.py``, because pytest 9.1.1 drops a nested
 conftest's fixtures for files revisited non-adjacently in the argument list
-(pytest-dev/pytest#14971), and the root-level registration removes the
-dependence on conftest adjacency. That module's autouse fixture is path-gated
+(pytest-dev/pytest#14971). Root-level registration removes the dependence
+on conftest adjacency. That module's autouse fixture is path-gated
 to ``tests/web_admin/``.
 """
 
