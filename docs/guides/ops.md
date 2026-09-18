@@ -160,8 +160,9 @@ async def reindex_bucket(payload: Payload) -> None: ...
 `RetryPolicy` backoff curve (base, cap, backoff kind, jitter — the same curve an
 application-level failure would use, not a flat interval) — or lands `crashed` if attempts are
 exhausted. Invariants that keep this safe:
-`lock_lease >= 4 * heartbeat_interval`, and the watchdog kills a stalled loop *before* its leases
-expire. Don't lower `TASKQ_LOCK_LEASE` without re-checking both
+`lock_lease >= (max_heartbeat_failures + 1) * (heartbeat_interval + 2 *
+heartbeat_command_timeout)` (the worst coherent failed-beat cascade, #284), and the watchdog kills a
+stalled loop *before* its leases expire. Don't lower `TASKQ_LOCK_LEASE` without re-checking both
 ([configuration.md — Validation Constraints](configuration.md#validation-constraints)).
 
 The heartbeat does not rewrite a healthy lease every beat: it renews a held

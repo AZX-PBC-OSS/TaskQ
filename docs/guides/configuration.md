@@ -151,7 +151,7 @@ PgBouncer recommendation threshold), see [ops.md — Sizing](ops.md#4-sizing-wor
 | Env Var | Type | Default | Description | Constraints |
 |---|---|---|---|---|
 | `TASKQ_HEARTBEAT_INTERVAL` | `float` (seconds) | `10.0` | Period between heartbeat ticks. | Min: 0.5 |
-| `TASKQ_LOCK_LEASE` | `float` (seconds) | `60.0` | Time before an unrenewed job lock is reclaimed by the sweep. Must be >= 4 × `TASKQ_HEARTBEAT_INTERVAL`, and must exceed `TASKQ_WATCHDOG_LOOP_LAG_BUDGET` + `TASKQ_HEARTBEAT_INTERVAL` (a stalled loop dies before its leases expire). The group-crash corner (a crashed TaskGroup's cancel reaching a consumer before the shutdown anchor stamps, so the release park takes the unanchored cleanup-grace bound and the lease cap does not apply) is only exposed when `lock_lease < cleanup_grace_period + heartbeat_interval + 5s` (the unanchored park plus the terminal-write budget); the `>= 4 × heartbeat` invariant already excludes that for heartbeat intervals above `(cleanup_grace + 5s) / 3` (~5s at the default cleanup), and the `cancellation + cleanup < lock_lease` invariant squeezes what is left further (the exposed band also needs `cancellation_grace < heartbeat_interval + 5s`), so only a tightly-graced config with a tiny heartbeat can load into the corner, and it is a startup-warning tier concern, not a validation. | Min: 1.0; see [Validation Constraints](#validation-constraints) |
+| `TASKQ_LOCK_LEASE` | `float` (seconds) | `60.0` | Time before an unrenewed job lock is reclaimed by the sweep. Must be >= (`TASKQ_MAX_HEARTBEAT_FAILURES` + 1) × (`TASKQ_HEARTBEAT_INTERVAL` + 2 × `TASKQ_HEARTBEAT_COMMAND_TIMEOUT`) — the worst coherent failed-beat cascade (56 at the defaults; issue #284) — and must exceed `TASKQ_WATCHDOG_LOOP_LAG_BUDGET` + `TASKQ_HEARTBEAT_INTERVAL` (a stalled loop dies before its leases expire). The group-crash corner (a crashed TaskGroup's cancel reaching a consumer before the shutdown anchor stamps, so the release park takes the unanchored cleanup-grace bound and the lease cap does not apply) is only exposed when `lock_lease < cleanup_grace_period + heartbeat_interval + 5s` (the unanchored park plus the terminal-write budget); the cascade invariant already excludes that for heartbeat intervals above `(cleanup_grace + 5s) / 3` (~5s at the default cleanup), and the `cancellation + cleanup < lock_lease` invariant squeezes what is left further (the exposed band also needs `cancellation_grace < heartbeat_interval + 5s`), so only a tightly-graced config with a tiny heartbeat can load into the corner, and it is a startup-warning tier concern, not a validation. | Min: 1.0; see [Validation Constraints](#validation-constraints) |
 | `TASKQ_LEADER_LEASE` | `float` (seconds) | `40.0` | How long the maintenance leader's lease is trusted without a renewal; another pod takes leadership once it lapses, so this plus `TASKQ_HEARTBEAT_INTERVAL` bounds failover from a leader that went silent. Renewed every heartbeat interval, and never honoured at less than 4 of them — raising the heartbeat interval alone raises the effective lease rather than shortening the renewal margin. | Min: 1.0 |
 | `TASKQ_MAX_HEARTBEAT_FAILURES` | `int` | `3` | Consecutive heartbeat failures before the worker self-terminates. | Min: 1 |
 
@@ -468,15 +468,24 @@ See [../architecture.md](../architecture.md) for the prune/archive schema design
 
 These cross-field constraints are enforced in `post_load` at startup. Violations raise `ValidationError` (or `MultipleValidationErrors` when several fire at once) before the process enters its main loop.
 
-### Lock lease vs heartbeat interval
+### Lock lease vs heartbeat cadence
 
 ```
-lock_lease >= 4 × heartbeat_interval
+lock_lease >= (max_heartbeat_failures + 1) ×
+              (heartbeat_interval + 2 × heartbeat_command_timeout)
 ```
 
-Rationale: tolerates three consecutive missed heartbeats before the sweep reclaims the lock, preventing false abandonment under transient PG connectivity issues.
+Rationale: the lease must outlive the worst coherent failed-beat cascade to
+the heartbeat's isolate decision — the `(max_heartbeat_failures + 1)`-th
+consecutive failed beat — where each failed beat's gap spans the interval
+(pool acquire) plus the tick's command sequence and its bounded teardown
+(one `heartbeat_command_timeout` each; issue #284). At the defaults the
+floor is `4 × (10 + 2 × 2) = 56` against the 60 s lease. Prevents false
+abandonment under transient PG connectivity issues AND under pool
+contention, which the older `lock_lease >= 4 × heartbeat_interval` rule
+ignored.
 
-Error pattern: `lock_lease must be >= 4 * heartbeat_interval`
+Error pattern: `lock_lease (...) must cover the worst coherent failed-beat cascade: (max_heartbeat_failures + 1) * (heartbeat_interval + 2 * heartbeat_command_timeout) = ...`
 
 ### Termination budget
 

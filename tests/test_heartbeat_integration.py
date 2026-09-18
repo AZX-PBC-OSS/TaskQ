@@ -39,7 +39,10 @@ from taskq.worker.heartbeat import (
 pytestmark = pytest.mark.integration
 
 _HEARTBEAT_INTERVAL = 0.5
-_LOCK_LEASE = 2.0
+# 3.0 >= the #284 cascade floor 2.8 at the factory defaults (h=0.5, c=0.1);
+# the renewal threshold (2.8) then sits just under the lease, so a crafted
+# row renews on its first beat and every beat after.
+_LOCK_LEASE = 3.0
 # Liveness freshness bound: a healthy heartbeat loop misses at most one
 # tick, so a liveness timestamp is never older than 2x heartbeat_interval
 # when read alongside the server clock in the same statement. This bound

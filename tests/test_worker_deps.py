@@ -134,6 +134,9 @@ async def test_heartbeat_pool_command_timeout(pg_dsn: str) -> None:
     """heartbeat_pool has command_timeout=2s; a stalled query is cancelled.
 
     The pre-assertion fails fast if a regression ever drops command_timeout
+    from the heartbeat pool factory on the PRODUCTION default (2s): the
+    fast integration defaults pin a tiny 0.1s timeout instead, so this test
+    overrides back to the shipped value explicitly.
     from the pool factory: without it the pg_sleep(60) below would burn the
     full 60s before failing (asyncpg's default is no timeout), and this test
     would take 2x60s per run instead of ~2s.
@@ -145,7 +148,14 @@ async def test_heartbeat_pool_command_timeout(pg_dsn: str) -> None:
     sleep; sync docker/testcontainers calls on the loop have been measured
     stalling it for seconds under parallel runs). pg_sleep(60) keeps the
     healthy-path runtime at ~timeout while tolerating such stalls."""
-    settings = make_integration_settings(pg_dsn)
+    settings = make_integration_settings(
+        pg_dsn,
+        # The shipped default command timeout is the subject of this test;
+        # the lease rises with it for the #284 cascade floor
+        # (4 * (0.5 + 2 * 2) = 18).
+        HEARTBEAT_COMMAND_TIMEOUT="2.0",
+        LOCK_LEASE="18.0",
+    )
 
     async with open_worker_deps(settings) as deps:
         # Fail fast: the pool must carry the timeout before the 60s probe.

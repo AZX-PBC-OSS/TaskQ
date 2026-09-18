@@ -289,6 +289,9 @@ def _worker_env(
         "TASKQ_MIGRATE_ON_START": "false",
         "TASKQ_ENVIRONMENT": "dev",
         "TASKQ_HEARTBEAT_INTERVAL": "0.5",
+        # The tiny command timeout keeps the #284 cascade floor
+        # satisfied for this lease: 4 * (0.5 + 2 * 0.1) = 2.8.
+        "TASKQ_HEARTBEAT_COMMAND_TIMEOUT": "0.1",
         # 10 s, deliberately wider than the fleet's 3.0: this test's purpose
         # is PG-restart isolation and replacement recovery, not lease
         # tightness. long_running_job stays in flight for 30 s, and the

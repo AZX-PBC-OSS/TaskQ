@@ -30,7 +30,9 @@ from taskq.worker.heartbeat import heartbeat_loop
 pytestmark = pytest.mark.integration
 
 _HEARTBEAT_INTERVAL = 0.5
-_LOCK_LEASE = 3.0
+# The factory's tiny heartbeat command timeout: the #284 cascade floor's
+# per-beat gap is heartbeat_interval + 2 * heartbeat_command_timeout = 0.7s.
+_HB_COMMAND_TIMEOUT = 0.1
 _MAX_HEARTBEAT_FAILURES = 2
 
 
@@ -40,10 +42,18 @@ async def _setup(
 ) -> tuple[AsyncExitStack, WorkerDeps, str]:
     from taskq.migrate import apply_pending
 
+    # The lease must scale with the isolate bound the test configures:
+    # (F+1) failed beats at ~0.7s of worst gap each is what the #284
+    # cascade floor requires, so an F=20 chaos config needs a ~15s lease —
+    # a 3s lease under 21 failed beats is exactly what the validator now
+    # refuses. An explicit LOCK_LEASE override still wins.
+    max_failures = int(overrides.get("MAX_HEARTBEAT_FAILURES", _MAX_HEARTBEAT_FAILURES))
+    default_lease = (max_failures + 1) * (_HEARTBEAT_INTERVAL + 2 * _HB_COMMAND_TIMEOUT) + 0.3
     merged: dict[str, str] = {
         "HEARTBEAT_INTERVAL": str(_HEARTBEAT_INTERVAL),
-        "LOCK_LEASE": str(_LOCK_LEASE),
-        "MAX_HEARTBEAT_FAILURES": str(_MAX_HEARTBEAT_FAILURES),
+        "HEARTBEAT_COMMAND_TIMEOUT": str(_HB_COMMAND_TIMEOUT),
+        "LOCK_LEASE": str(overrides.pop("LOCK_LEASE", default_lease)),
+        "MAX_HEARTBEAT_FAILURES": str(max_failures),
         "CANCELLATION_GRACE_PERIOD": "0.0",
         "CLEANUP_GRACE_PERIOD": "0.0",
     }
@@ -138,7 +148,7 @@ async def test_tc1_kill_pg_mid_tick(pg_dsn: str) -> None:
                 conn,
                 schema,
                 worker_id,
-                lock_expires_at=datetime.now(UTC) + timedelta(seconds=_LOCK_LEASE),
+                lock_expires_at=datetime.now(UTC) + timedelta(seconds=deps.settings.lock_lease),
             )
 
             row = await conn.fetchrow(
@@ -206,7 +216,7 @@ async def test_tc2_worker_isolation(pg_dsn: str) -> None:
                     conn,
                     schema,
                     worker_id,
-                    lock_expires_at=datetime.now(UTC) + timedelta(seconds=_LOCK_LEASE),
+                    lock_expires_at=datetime.now(UTC) + timedelta(seconds=deps.settings.lock_lease),
                 )
                 job_ids.append(jid)
 
@@ -271,7 +281,7 @@ async def test_tc3_pool_exhaustion(pg_dsn: str) -> None:
                 conn,
                 schema,
                 worker_id,
-                lock_expires_at=datetime.now(UTC) + timedelta(seconds=_LOCK_LEASE),
+                lock_expires_at=datetime.now(UTC) + timedelta(seconds=deps.settings.lock_lease),
             )
 
         holders: list[PoolAcquireContext] = []
@@ -348,7 +358,7 @@ async def test_tc4_isolate_self_fresh_connect_fails(pg_dsn: str) -> None:
                 conn,
                 schema,
                 worker_id,
-                lock_expires_at=datetime.now(UTC) + timedelta(seconds=_LOCK_LEASE),
+                lock_expires_at=datetime.now(UTC) + timedelta(seconds=deps.settings.lock_lease),
             )
 
         deps.heartbeat_pool = _FailingPool(  # type: ignore[assignment] # Why: chaos testing — replacing the Pool with a wrapper that returns ChaosConnection-wrapped connections.
@@ -410,7 +420,7 @@ async def test_tc5_query_canceled_counts_toward_isolation(pg_dsn: str) -> None:
                     conn,
                     schema,
                     worker_id,
-                    lock_expires_at=datetime.now(UTC) + timedelta(seconds=_LOCK_LEASE),
+                    lock_expires_at=datetime.now(UTC) + timedelta(seconds=deps.settings.lock_lease),
                 )
                 job_ids.append(jid)
 
@@ -454,7 +464,7 @@ async def test_tc6_oserror_on_execute(pg_dsn: str) -> None:
                 conn,
                 schema,
                 worker_id,
-                lock_expires_at=datetime.now(UTC) + timedelta(seconds=_LOCK_LEASE),
+                lock_expires_at=datetime.now(UTC) + timedelta(seconds=deps.settings.lock_lease),
             )
             row = await conn.fetchrow(
                 f'SELECT lock_expires_at FROM "{schema}".jobs WHERE id = $1', job_id
@@ -495,7 +505,8 @@ async def test_tc6_oserror_on_execute(pg_dsn: str) -> None:
 #: than isolating itself.
 _SAFE_SIZING_INTERVAL = 1.5
 _SAFE_SIZING_TIMEOUT = timedelta(seconds=2 * _SAFE_SIZING_INTERVAL)
-_SAFE_SIZING_LEASE = 30.0
+# 36 >= the #284 cascade floor at F=20: 21 * (1.5 + 2 * 0.1) = 35.7.
+_SAFE_SIZING_LEASE = 36.0
 _NO_GRACE = timedelta(seconds=0)
 
 

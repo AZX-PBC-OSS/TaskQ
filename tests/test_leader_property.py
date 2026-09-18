@@ -51,7 +51,10 @@ def _worker_settings(**overrides: str) -> WorkerSettings:
 def _make_deps() -> WorkerDeps:
     settings = _worker_settings(
         HEARTBEAT_INTERVAL="0.5",
-        LOCK_LEASE="2.0",
+        # 3.0 + the tiny command timeout satisfies the #284 cascade
+        # floor: 4 * (0.5 + 2 * 0.1) = 2.8 <= 3.0.
+        HEARTBEAT_COMMAND_TIMEOUT="0.1",
+        LOCK_LEASE="3.0",
         WATCHDOG_LOOP_LAG_BUDGET="1.2",
         WATCHDOG_LOOP_LAG_WARN_BUDGET="0.5",
         MAX_HEARTBEAT_FAILURES="3",

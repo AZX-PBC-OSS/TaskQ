@@ -441,7 +441,9 @@ async def test_race_condition_eviction_during_ensure_slots(
 
     marked_before_await = False
 
-    async def _evicting_ensure_slots(self: ConcurrencyReservation, pool: object) -> None:
+    async def _evicting_ensure_slots(
+        self: ConcurrencyReservation, pool: object, **_kwargs: object
+    ) -> None:
         nonlocal marked_before_await
         # The key should have been marked as recently-used before this await.
         marked_before_await = (
@@ -502,7 +504,9 @@ async def test_ensure_slots_failure_unwinds_materialization_for_retry(
 
     ensure_calls = 0
 
-    async def _flaky_ensure_slots(self: ConcurrencyReservation, pool: object) -> None:
+    async def _flaky_ensure_slots(
+        self: ConcurrencyReservation, pool: object, **_kwargs: object
+    ) -> None:
         nonlocal ensure_calls
         ensure_calls += 1
         if ensure_calls == 1:
@@ -847,7 +851,10 @@ async def test_leader_sweep_calls_evict_idle_keyed_reservations(
     deps_data: dict[str, str] = {
         "TASKQ_PG_DSN": "postgresql://x:x@localhost/x",
         "TASKQ_HEARTBEAT_INTERVAL": "0.5",
-        "TASKQ_LOCK_LEASE": "2.0",
+        # 3.0 + the tiny command timeout satisfies the #284 cascade
+        # floor: 4 * (0.5 + 2 * 0.1) = 2.8 <= 3.0.
+        "TASKQ_HEARTBEAT_COMMAND_TIMEOUT": "0.1",
+        "TASKQ_LOCK_LEASE": "3.0",
         "TASKQ_WATCHDOG_LOOP_LAG_BUDGET": "1.2",
         "TASKQ_WATCHDOG_LOOP_LAG_WARN_BUDGET": "0.5",
         "TASKQ_CANCELLATION_GRACE_PERIOD": "0.0",
@@ -901,7 +908,10 @@ async def test_leader_sweep_skips_eviction_when_no_keyed_reservations(
     settings_data: dict[str, str] = {
         "TASKQ_PG_DSN": "postgresql://x:x@localhost/x",
         "TASKQ_HEARTBEAT_INTERVAL": "0.5",
-        "TASKQ_LOCK_LEASE": "2.0",
+        # 3.0 + the tiny command timeout satisfies the #284 cascade
+        # floor: 4 * (0.5 + 2 * 0.1) = 2.8 <= 3.0.
+        "TASKQ_HEARTBEAT_COMMAND_TIMEOUT": "0.1",
+        "TASKQ_LOCK_LEASE": "3.0",
         "TASKQ_WATCHDOG_LOOP_LAG_BUDGET": "1.2",
         "TASKQ_WATCHDOG_LOOP_LAG_WARN_BUDGET": "0.5",
         "TASKQ_CANCELLATION_GRACE_PERIOD": "0.0",
@@ -955,7 +965,10 @@ async def test_leader_sweep_calls_evict_idle_keyed_rate_limits(
     deps_data: dict[str, str] = {
         "TASKQ_PG_DSN": "postgresql://x:x@localhost/x",
         "TASKQ_HEARTBEAT_INTERVAL": "0.5",
-        "TASKQ_LOCK_LEASE": "2.0",
+        # 3.0 + the tiny command timeout satisfies the #284 cascade
+        # floor: 4 * (0.5 + 2 * 0.1) = 2.8 <= 3.0.
+        "TASKQ_HEARTBEAT_COMMAND_TIMEOUT": "0.1",
+        "TASKQ_LOCK_LEASE": "3.0",
         "TASKQ_WATCHDOG_LOOP_LAG_BUDGET": "1.2",
         "TASKQ_WATCHDOG_LOOP_LAG_WARN_BUDGET": "0.5",
         "TASKQ_CANCELLATION_GRACE_PERIOD": "0.0",
@@ -1009,7 +1022,10 @@ async def test_leader_sweep_skips_eviction_when_no_keyed_rate_limits(
     settings_data: dict[str, str] = {
         "TASKQ_PG_DSN": "postgresql://x:x@localhost/x",
         "TASKQ_HEARTBEAT_INTERVAL": "0.5",
-        "TASKQ_LOCK_LEASE": "2.0",
+        # 3.0 + the tiny command timeout satisfies the #284 cascade
+        # floor: 4 * (0.5 + 2 * 0.1) = 2.8 <= 3.0.
+        "TASKQ_HEARTBEAT_COMMAND_TIMEOUT": "0.1",
+        "TASKQ_LOCK_LEASE": "3.0",
         "TASKQ_WATCHDOG_LOOP_LAG_BUDGET": "1.2",
         "TASKQ_WATCHDOG_LOOP_LAG_WARN_BUDGET": "0.5",
         "TASKQ_CANCELLATION_GRACE_PERIOD": "0.0",

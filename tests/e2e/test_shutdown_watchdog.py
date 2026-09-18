@@ -198,6 +198,9 @@ def _worker_env(
         "TASKQ_MIGRATE_ON_START": "false",
         "TASKQ_ENVIRONMENT": "dev",
         "TASKQ_HEARTBEAT_INTERVAL": "0.5",
+        # The tiny command timeout keeps the #284 cascade floor
+        # satisfied for this lease: 4 * (0.5 + 2 * 0.1) = 2.8.
+        "TASKQ_HEARTBEAT_COMMAND_TIMEOUT": "0.1",
         # Lease and lag budget sized so the shutdown-deadline detector (the
         # subject of this test, tripping at termination_grace 5.01s) wins
         # any race with the lag detector: 6.0 + 0.5 < 8.0 keeps the
@@ -366,6 +369,9 @@ def _reap_gate_worker_env(
         "TASKQ_MIGRATE_ON_START": "false",
         "TASKQ_ENVIRONMENT": "dev",
         "TASKQ_HEARTBEAT_INTERVAL": "0.5",
+        # The tiny command timeout keeps the #284 cascade floor
+        # satisfied for this lease: 4 * (0.5 + 2 * 0.1) = 2.8.
+        "TASKQ_HEARTBEAT_COMMAND_TIMEOUT": "0.1",
         "TASKQ_LOCK_LEASE": "8.0",
         "TASKQ_WATCHDOG_LOOP_LAG_BUDGET": "6.0",
         "TASKQ_WATCHDOG_LOOP_LAG_WARN_BUDGET": "1.0",

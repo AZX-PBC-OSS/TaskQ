@@ -426,6 +426,12 @@ ignore = [
 # `timeout` parameter is part of the mocked API surface, not a missing timeout
 # context-manager pattern.
 "tests/test_heartbeat_isolate.py" = ["ASYNC109"]
+# ASYNC109: the pool doubles' timeout parameters mirror asyncpg.Pool.acquire
+# (the driver raises TimeoutError once the budget lapses); the tests pin the
+# #293 forward contract.
+"tests/test_ratelimit_reservation.py" = ["ASYNC109"]
+"tests/test_reservation_denial_retry_hint.py" = ["ASYNC109"]
+"tests/test_worker_bootstrap_reservation_slots.py" = ["ASYNC109"]
 # S311: random.Random used for timing jitter in backoff tests, not
 # cryptographic purposes.
 "tests/test_retry_backoff.py" = ["S311"]

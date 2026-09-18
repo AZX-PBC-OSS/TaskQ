@@ -82,7 +82,8 @@ def _worker_settings_dict(pg_dsn: str, socket_path: str, schema: str) -> dict[st
         "TASKQ_SCHEMA_NAME": schema,
         "TASKQ_HEALTH_SOCKET_PATH": socket_path,
         # Shorten shutdown grace periods for fast test teardown.
-        # Must satisfy lock_lease >= 4*heartbeat_interval and
+        # Must satisfy the #284 cascade floor (4 * (0.5 + 2 * 0.1) = 2.8
+        # <= 3.0, hence the tiny heartbeat command timeout) and
         # cancel+cleanup < lock_lease (/).
         # Watchdog off: these tests exercise the health server and shutdown
         # phases, not the detectors — and the 3s lease leaves no room for a
@@ -91,6 +92,7 @@ def _worker_settings_dict(pg_dsn: str, socket_path: str, schema: str) -> dict[st
         # watchdog-disabled exemption.
         "TASKQ_HEARTBEAT_INTERVAL": "0.5",
         "TASKQ_LOCK_LEASE": "3.0",
+        "TASKQ_HEARTBEAT_COMMAND_TIMEOUT": "0.1",
         "TASKQ_WATCHDOG_ENABLED": "false",
         "TASKQ_CANCELLATION_GRACE_PERIOD": "1.0",
         "TASKQ_CLEANUP_GRACE_PERIOD": "1.0",

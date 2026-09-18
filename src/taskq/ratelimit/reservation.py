@@ -622,8 +622,20 @@ class ConcurrencyReservation:
             raise RuntimeError("in-memory table not available — pass clock= at construction")
         return self._table
 
-    async def ensure_slots(self, pool: "asyncpg.Pool") -> None:
+    async def ensure_slots(
+        self,
+        pool: "asyncpg.Pool",
+        *,
+        timeout: float | None = None,  # noqa: ASYNC109  # Why: mirrors asyncpg.Pool.acquire(timeout=...); the bound IS the forwarded driver kwarg (#293), not an enclosing asyncio.timeout scope.
+    ) -> None:
         """Idempotent pre-allocation of slot rows.
+
+        *timeout* bounds the pool acquire (forwarded to
+        ``asyncpg.Pool.acquire``): ``None`` — the historical default — waits
+        unboundedly under pool starvation, which is how a bootstrap startup
+        could hang forever on a contended dispatcher pool (#293). Callers in
+        bounded contexts (the bootstrap's ensure-slots loop passes its
+        ``dispatcher_command_timeout`` budget) must pass it.
 
         Inserts the bucket's full slot row set with this reservation's
         fleet-reclaimable mark and a fresh ``last_used_at``; the conflict
@@ -647,19 +659,25 @@ class ConcurrencyReservation:
           never-sweep again, the immortality direction a live static
           declaration owns.
         """
-        async with pool.acquire() as conn:
+        async with pool.acquire(timeout=timeout) as conn:
             await conn.execute(self._ensure_sql, self._name, self._slots, self._keyed)
 
-    async def slot_rows_exist(self, pool: "asyncpg.Pool") -> bool:
+    async def slot_rows_exist(
+        self,
+        pool: "asyncpg.Pool",
+        *,
+        timeout: float | None = None,  # noqa: ASYNC109  # Why: mirrors asyncpg.Pool.acquire(timeout=...); same forward contract as ensure_slots (#293).
+    ) -> bool:
         """Whether any ``reservation_slots`` row exists for this bucket.
 
         The acquire-path heal for keyed reservations uses this to
         distinguish a bucket whose rows were deleted out from under it
         (zero rows — re-materialise via :meth:`ensure_slots`) from
         ordinary contention (rows present, all held — deny). A read-only
-        existence probe: it never writes.
+        existence probe: it never writes. *timeout* bounds the pool
+        acquire exactly as :meth:`ensure_slots`' does (#293).
         """
-        async with pool.acquire() as conn:
+        async with pool.acquire(timeout=timeout) as conn:
             return (
                 await conn.fetchval(
                     _SYNC_EXISTING_SQL_TEMPLATE.format(schema=self._schema),
@@ -673,6 +691,8 @@ class ConcurrencyReservation:
         job_id: UUID,
         worker_id: UUID,
         pool: "asyncpg.Pool | None" = None,
+        *,
+        timeout: float | None = None,  # noqa: ASYNC109  # Why: mirrors asyncpg.Pool.acquire(timeout=...); same forward contract as ensure_slots (#293).
     ) -> SlotLease:
         """Acquire a slot. Returns the acquired ``slot_index``.
 
@@ -685,6 +705,12 @@ class ConcurrencyReservation:
         When *pool* is ``None``, the in-memory table (``clock=`` at
         construction) is used.  Raises :class:`ReservationUnavailable` when
         no slot is available.
+
+        *timeout* bounds the pool acquire (forwarded to
+        ``asyncpg.Pool.acquire``; ``None`` — the default — waits
+        unboundedly under pool starvation, the #293 shape). Callers that
+        already run under their own budget wrapper can leave it unset;
+        callers with a budget in hand should pass it.
         """
         if pool is None:
             if self._table is None:
@@ -716,7 +742,7 @@ class ConcurrencyReservation:
         # statement, atomic on its own — its FOR UPDATE SKIP LOCKED row
         # lock lives exactly as long as the statement — so BEGIN/COMMIT
         # would be two extra round trips per reserved job.
-        async with pool.acquire() as conn:
+        async with pool.acquire(timeout=timeout) as conn:
             row = await conn.fetchrow(
                 self._acquire_sql,
                 self._name,

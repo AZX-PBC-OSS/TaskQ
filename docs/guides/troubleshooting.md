@@ -402,7 +402,7 @@ A healthy worker's `stale_for` should be under `heartbeat_interval` (default 10s
 ### Fix
 
 - **Connection issues:** verify `TASKQ_PG_DSN_DIRECT` resolves to a reachable Postgres. Check `heartbeat_pool_size` (default 4) is sufficient.
-- **Increase tolerance:** set `TASKQ_MAX_HEARTBEAT_FAILURES` higher (e.g. `5`) to absorb transient blips. Keep `lock_lease >= 4 * heartbeat_interval`.
+- **Increase tolerance:** set `TASKQ_MAX_HEARTBEAT_FAILURES` higher (e.g. `5`) to absorb transient blips. Keep `lock_lease >= (max_heartbeat_failures + 1) * (heartbeat_interval + 2 * heartbeat_command_timeout)` — raising `TASKQ_MAX_HEARTBEAT_FAILURES` or `TASKQ_HEARTBEAT_COMMAND_TIMEOUT` raises the floor with it.
 - **Pool exhaustion:** if `heartbeat_pool.acquire()` times out, increase `TASKQ_HEARTBEAT_POOL_SIZE`.
 - **After self-isolation:** restart the worker via your process supervisor. Its running jobs were already transitioned — retryable jobs are re-pended with a 5s delay. `HeartbeatLost` is intentionally distinct from `WorkerCrashed` (Sweep 1): a heartbeat-lost worker may still be alive but partitioned.
 
@@ -545,7 +545,7 @@ The worker process exits immediately with a non-zero exit code and an error or t
 | Actor registry import error | `module:attr` does not resolve: module not found, attribute missing, or wrong type. |
 | DI validation failure | `MissingProvider`, `ScopeViolation`, or `DependencyCycle` during `registry.validate()`. |
 | `ActorConfigDriftList` | Registered `queue` or `metadata` differs from the stored `actor_config` row (structural drift); `--force-update-actor-config` not set. `max_concurrent` / `max_pending` / `result_ttl` never cause this — those are operator-owned and cannot drift; see [ActorConfig sync](workers.md#actorconfig-sync). |
-| Timing invariant violation | `lock_lease < 4 * heartbeat_interval`, or `cancellation + cleanup >= termination_grace - 5.0` or `>= lock_lease`. |
+| Timing invariant violation | `lock_lease < (max_heartbeat_failures + 1) * (heartbeat_interval + 2 * heartbeat_command_timeout)`, or `cancellation + cleanup >= termination_grace - 5.0` or `>= lock_lease`. |
 
 ### Diagnosis
 
@@ -570,7 +570,7 @@ SELECT actor, max_concurrent, max_pending, queue FROM {schema}.actor_config ORDE
   ```
 - **DI validation failure:** `MissingProvider` = missing provider. `ScopeViolation` = wider scope depends on narrower. `DependencyCycle` = provider cycle. Register the missing provider or fix the scope/cycle. See [dependency-injection.md](dependency-injection.md).
 - **ActorConfigDriftList:** this is always a `queue` or `metadata` mismatch. Deploy the first pod with `--force-update-actor-config`, then remaining pods without it. Do not leave it set permanently. If you only meant to change `max_concurrent` / `max_pending` / `result_ttl`, you don't need this flag at all — deploy normally, then run `taskq actor-config set <actor> ...`.
-- **Timing invariant violations:** adjust settings so `lock_lease >= 4 * heartbeat_interval` and `cancellation + cleanup < termination_grace - 5.0` and `< lock_lease`.
+- **Timing invariant violations:** adjust settings so `lock_lease >= (max_heartbeat_failures + 1) * (heartbeat_interval + 2 * heartbeat_command_timeout)` and `cancellation + cleanup < termination_grace - 5.0` and `< lock_lease`.
 
 ---
 

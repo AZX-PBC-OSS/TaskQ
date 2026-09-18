@@ -31,7 +31,13 @@ from taskq.worker.leader import MaintenanceLeader
 pytestmark = pytest.mark.integration
 
 _HEARTBEAT_INTERVAL = 1.0
-_LOCK_LEASE = 5.0
+_LOCK_LEASE = 1250.0
+# These modules pass max_heartbeat_failures=999 (isolation must never
+# fire mid-test); the #284 cascade floor sizes the lease with it:
+# 1000 beats x (0.5 + 2 x 0.1) = 700s of worst coherent gap, and the
+# validator refuses anything under it. Nothing here waits on the lease:
+# rows are stamped with explicit expiry timestamps.
+
 
 _HOURLY = "0 * * * *"
 
@@ -47,6 +53,7 @@ def _build_cron_settings(pg_dsn: str, schema: str) -> WorkerSettings:
             "TASKQ_WATCHDOG_LOOP_LAG_WARN_BUDGET": "0.5",
             "TASKQ_CANCELLATION_GRACE_PERIOD": "0.0",
             "TASKQ_CLEANUP_GRACE_PERIOD": "0.0",
+            "TASKQ_HEARTBEAT_COMMAND_TIMEOUT": "0.1",
             "TASKQ_MAX_HEARTBEAT_FAILURES": "999",
             "TASKQ_CRON_AUTO_DISABLE_THRESHOLD": "3",
         }

@@ -493,7 +493,7 @@ Every `heartbeat_interval` seconds (default `10.0`s, env `TASKQ_HEARTBEAT_INTERV
 3. Runs the cancel-controller `run_in_tx` inside the same transaction.
 4. After the transaction commits, calls `run_post_tx`.
 
-`lock_lease` (default `60.0`s, env `TASKQ_LOCK_LEASE`) is the duration a job's lock remains valid without a heartbeat. The invariant `lock_lease >= 4 * heartbeat_interval` is enforced at startup and prevents the recovery sweep from reclaiming locks on a live worker that experienced transient heartbeat delays.
+`lock_lease` (default `60.0`s, env `TASKQ_LOCK_LEASE`) is the duration a job's lock remains valid without a heartbeat. The invariant `lock_lease >= (max_heartbeat_failures + 1) * (heartbeat_interval + 2 * heartbeat_command_timeout)` is enforced at startup and prevents the recovery sweep from reclaiming locks on a live worker that experienced transient heartbeat delays: the lease must outlive the worst coherent failed-beat cascade to the heartbeat's isolate decision, including the command timeouts a contended beat can burn (issue #284). At the defaults that floor is 56s against the 60s lease.
 
 If `heartbeat_pool.acquire()` times out, raises a connection error, or `run_in_tx` raises an `OSError`, `heartbeat_failures` is incremented. When `heartbeat_failures > max_heartbeat_failures` (default `3`), `isolate_self` is called:
 
@@ -927,7 +927,7 @@ All variables use the `TASKQ_` prefix. `WorkerSettings` extends `TaskQSettings`;
 | `TASKQ_HEARTBEAT_POOL_SIZE` | `int` | `4` | Max connections in `heartbeat_pool` |
 | `TASKQ_MAX_CONCURRENCY` | `int` | `8` | Max concurrent jobs; `worker_pool_size = int(max_concurrency * 1.5)` |
 | `TASKQ_HEARTBEAT_INTERVAL` | `float` | `10.0` | Seconds between heartbeat ticks |
-| `TASKQ_LOCK_LEASE` | `float` | `60.0` | Seconds before a lock is reclaimed; must be `>= 4 * heartbeat_interval` |
+| `TASKQ_LOCK_LEASE` | `float` | `60.0` | Seconds before a lock is reclaimed; must be `>= (max_heartbeat_failures + 1) * (heartbeat_interval + 2 * heartbeat_command_timeout)` (56 at the defaults) |
 | `TASKQ_MAX_HEARTBEAT_FAILURES` | `int` | `3` | Consecutive heartbeat failures before `isolate_self` |
 | `TASKQ_TERMINATION_GRACE_PERIOD` | `float` | `85.0` | Total seconds from SIGTERM to forced exit; sized to cover the default shutdown worst case (82s) |
 | `TASKQ_CANCELLATION_GRACE_PERIOD` | `float` | `30.0` | Seconds for cooperative cancel phase |

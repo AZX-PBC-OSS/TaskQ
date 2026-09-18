@@ -1395,9 +1395,18 @@ _valid_grace_settings = st.tuples(
     st.floats(min_value=0.1, max_value=29.9),
     st.floats(min_value=0.1, max_value=29.9),
     st.floats(min_value=10.0, max_value=120.0),
-    st.floats(min_value=10.0, max_value=60.0),
+    st.floats(min_value=10.0, max_value=200.0),
     st.floats(min_value=0.5, max_value=14.9),
-).filter(lambda t: t[0] + t[1] < t[2] - 5.0 and t[0] + t[1] < t[3] and t[3] >= 4 * t[4])
+).filter(
+    lambda t: (
+        t[0] + t[1] < t[2] - 5.0
+        and t[0] + t[1] < t[3]
+        # The #284 cascade floor: (max_heartbeat_failures + 1) *
+        # (heartbeat_interval + 2 * heartbeat_command_timeout) at the defaults
+        # (F=3, c=2) is 4 * hb + 16.
+        and t[3] >= 4 * t[4] + 16
+    )
+)
 
 
 @given(_valid_grace_settings)
@@ -1408,8 +1417,8 @@ def test_grace_budget_accepted(
     """Valid grace budget tuples are accepted by load_from_dict."""
     cancel_g, cleanup_g, term_g, lock_l, hb_int = args
     # Lag budget derived as lease/2 keeps the lag-lease invariant satisfied
-    # whenever the 4x lease invariant holds (hb <= lease/4 < lease/2), so
-    # the grace boundaries stay the only ones under test.
+    # whenever the cascade lease invariant holds (hb <= (lease - 16)/4 <
+    # lease/2), so the grace boundaries stay the only ones under test.
     settings = WorkerSettings.load_from_dict(
         {
             "TASKQ_PG_DSN": "postgresql://x:x@localhost/x",
@@ -1435,7 +1444,15 @@ _invalid_grace_settings = st.tuples(
     st.floats(min_value=5.0, max_value=120.0),
     st.floats(min_value=1.0, max_value=60.0),
     st.floats(min_value=0.5, max_value=15.0),
-).filter(lambda t: t[0] + t[1] >= t[2] - 5.0 or t[0] + t[1] >= t[3] or t[3] < 4 * t[4])
+).filter(
+    lambda t: (
+        t[0] + t[1] >= t[2] - 5.0
+        or t[0] + t[1] >= t[3]
+        # The #284 cascade floor at the defaults (F=3, c=2): 4 * hb + 16 —
+        # its violation alone is enough for the rejection under test.
+        or t[3] < 4 * t[4] + 16
+    )
+)
 
 
 @given(_invalid_grace_settings)

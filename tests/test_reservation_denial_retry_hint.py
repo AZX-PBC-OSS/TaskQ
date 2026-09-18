@@ -125,7 +125,9 @@ class _FakePgPool:
     def __init__(self, row: dict[str, object] | None) -> None:
         self._conn = _FakeConn(row)
 
-    def acquire(self) -> _FakeAcquireCtx:
+    # Why: mirrors asyncpg.Pool.acquire's signature (the #293 forward
+    # contract under test).
+    def acquire(self, *, timeout: float | None = None) -> _FakeAcquireCtx:
         return _FakeAcquireCtx(self._conn)
 
 

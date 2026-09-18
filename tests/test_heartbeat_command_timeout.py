@@ -75,6 +75,10 @@ async def test_deps_heartbeat_pool_uses_the_configured_command_timeout(
         _DSN,
         HEARTBEAT_COMMAND_TIMEOUT=str(_RAISED),
         HEARTBEAT_POOL_SIZE="3",
+        # The raised command timeout raises the #284 cascade floor with it:
+        # 4 * (0.5 + 2 * 9.0) = 74 <= 80. The lease value is irrelevant to
+        # the pool-factory assertions below.
+        LOCK_LEASE="80.0",
     )
     async with open_worker_deps(settings):
         pass
@@ -103,6 +107,10 @@ def test_provider_heartbeat_factory_uses_the_configured_command_timeout(
         _DSN,
         HEARTBEAT_COMMAND_TIMEOUT=str(_RAISED),
         HEARTBEAT_POOL_SIZE="3",
+        # The raised command timeout raises the #284 cascade floor with it:
+        # 4 * (0.5 + 2 * 9.0) = 74 <= 80. The lease value is irrelevant to
+        # the pool-factory assertions below.
+        LOCK_LEASE="80.0",
     )
 
     class _Provider:
