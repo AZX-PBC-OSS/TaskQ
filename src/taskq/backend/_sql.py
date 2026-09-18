@@ -161,8 +161,8 @@ UPDATE_JOBS_LOCK_SQL_TEMPLATE = (
     "SET last_heartbeat_at = clock_timestamp(), lock_expires_at = clock_timestamp() + $2 "
     + _UPDATE_JOBS_LOCK_WHERE_CORE
 )
-# The heartbeat loop's renewal: the same write, gated so a healthy beat
-# no longer rewrites leases that are still fresh (#227).
+# The heartbeat loop's renewal: the same write, threshold-gated by the
+# caller (#227).
 #
 # lock_expires_at is the key of jobs_running_lock_expires_idx, so every
 # renewal is a non-HOT update that inserts new entries into every index
@@ -170,9 +170,14 @@ UPDATE_JOBS_LOCK_SQL_TEMPLATE = (
 # identity_active, lock_expires, the heartbeat_deadline partial, GIN
 # tags/metadata) — per running row, per beat, fleet-wide. The gate renews
 # only rows whose lease is at or under the threshold ($4, computed by
-# the caller — see _lease_renewal_threshold in taskq.worker.heartbeat
-# for the sizing derivation), so at the default settings a healthy
-# worker rewrites its leases every second beat instead of every beat.
+# the caller: see _lease_renewal_threshold in taskq.worker.heartbeat for
+# the sizing derivation). At the default settings the threshold (56s)
+# sits under one beat's decay of the 60s lease, so a healthy worker
+# rewrites its leases every beat, byte-identical to the unconditional
+# renewal. The gate defers nothing at the default lease; it only starts
+# spacing the rewrites out once lock_lease exceeds that floor, and the
+# savings begin at leases of about 70s (every second beat, 2x fewer
+# rewrites) and grow with the lease from there.
 #
 # The three OR arms, each load-bearing:
 # * heartbeat_timeout IS NOT NULL — the per-job heartbeat promise: the
