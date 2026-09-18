@@ -169,10 +169,10 @@ def _lock_budget_env_overlay() -> dict[str, str]:
     the constructor's own arguments stay authoritative; that loader reads
     the dict and nothing else, so the budget knobs' documented env channel
     is probed here and folded in. The probe goes through
-    :meth:`TaskQSettings.resolve_cascade_value` — the SAME layer
+    :meth:`TaskQSettings.resolve_cascade_value`: the SAME layer
     resolution the worker's ``TaskQSettings.load()`` applies (process
     environment, then the ``.env`` cascade, per dotenvmodel's ``override``
-    knob) — so a budget widened only in ``.env`` reaches the client pool's
+    knob), so a budget widened only in ``.env`` reaches the client pool's
     derived ``command_timeout`` the way it always reached the worker's
     server-side budgets (#251: the previous ``os.environ``-only probe made
     the two sides silently disagree). The env names come from the model's
@@ -199,7 +199,7 @@ def _resolve_default_schema_name() -> str:
     alone.
 
     The value resolves exactly as ``WorkerSettings.load()`` resolves it
-    (process environment, then the ``.env`` cascade —
+    (process environment, then the ``.env`` cascade, via
     :meth:`TaskQSettings.resolve_cascade_value`), then validates through a
     dict load carrying ONLY that variable, so the only malformed input
     that can fail here is a malformed ``schema_name`` itself. That failure
@@ -207,7 +207,7 @@ def _resolve_default_schema_name() -> str:
     worker's full load fails the same value, and failing soft here would
     silently enqueue into a schema no worker reads. A full
     ``TaskQSettings.load()`` in the constructor instead validated every
-    UNRELATED field too — a malformed ``TASKQ_ADMIN_PORT`` (a setting the
+    UNRELATED field too: a malformed ``TASKQ_ADMIN_PORT`` (a setting the
     client never reads) raised in an embedder's constructor (#251).
     Unset in every layer, the model's own shipped default applies.
     """

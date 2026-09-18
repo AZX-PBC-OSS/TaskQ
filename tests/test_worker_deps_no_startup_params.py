@@ -2,15 +2,15 @@
 
 ``server_settings`` entries ride asyncpg's STARTUP PACKET, and a pooler
 that rejects unknown startup parameters (PgBouncer: ``unsupported startup
-parameter: jit``) fails every connect through it — with a single
+parameter: jit``) fails every connect through it: with a single
 ``TASKQ_PG_DSN`` pointed at the pooler, the worker's eagerly-opened boot
 pools (``min_size=1``) never come up (#247). The dispatcher pool carried
 ``server_settings={"jit": "off"}`` for exactly that reason's opposite: a
 JIT guard whose measured win had already moved into the statement itself
-(perf-evidence-dispatch.md — the depth oracle passes with JIT enabled on
+(perf-evidence-dispatch.md: the depth oracle passes with JIT enabled on
 a plain connection), leaving the startup parameter pure pooler hazard.
 The guard remains available server-side without any startup packet
-(``ALTER ROLE ... SET jit = off`` / ``?options=-c jit=off`` — see
+(``ALTER ROLE ... SET jit = off`` / ``?options=-c jit=off``, see
 docs/guides/ops.md §"Database performance knobs").
 
 This pins the boot shape against a quiet re-add: every
@@ -22,11 +22,11 @@ are NOT reached by this harness.
 
 Docker-free: ``asyncpg.create_pool`` is monkeypatched with a recorder and
 the notify/leader roles are faked through ``WorkerConnections`` factories
-(the ``tests/test_deps_bootstrap_bounded.py`` convention — asyncpg types
+(the ``tests/test_deps_bootstrap_bounded.py`` convention: asyncpg types
 are C-extensions, no MagicMock for pools), so the real
 ``open_worker_deps`` runs its whole DSN sequence against fakes.
 
-No ``pytestmark`` — must run under ``pytest -m "not integration"``.
+No ``pytestmark``: must run under ``pytest -m "not integration"``.
 """
 
 from __future__ import annotations
@@ -90,7 +90,7 @@ async def test_worker_dsn_pools_boot_without_any_startup_params(
 
     The startup packet is the only channel a pooler can reject before
     authentication, and the boot error it produces names neither the
-    parameter nor the pool — an operator behind such a pooler sees workers
+    parameter nor the pool: an operator behind such a pooler sees workers
     that fail to start for no stated reason. A pool that needs a session
     GUC has server-side channels that never touch the packet (role
     defaults, DSN ``options``), so nothing here needs re-adding.
@@ -126,7 +126,7 @@ async def test_worker_dsn_pools_boot_without_any_startup_params(
         assert "server_settings" not in call["kwargs"], (
             f"asyncpg.create_pool received server_settings={call['kwargs']['server_settings']!r}: "
             "the entry rides the startup packet, which a pooler that rejects "
-            "unknown startup parameters (PgBouncer) refuses before auth — "
+            "unknown startup parameters (PgBouncer) refuses before auth; "
             "worker boot fails behind it with an error naming neither the "
             "parameter nor the pool (#247). Session GUCs belong server-side "
             "(ALTER ROLE ... SET / DSN options); see "

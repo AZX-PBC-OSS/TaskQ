@@ -638,7 +638,7 @@ class _FakePool:
         self,
         conn: _FakeEnqueueConn,
         *,
-        timeout: float | None = None,  # noqa: ASYNC109  # Why: models asyncpg's Pool.release(timeout=...) signature — the guard's bounded-release channel, not a cancel scope.
+        timeout: float | None = None,  # noqa: ASYNC109  # Why: models asyncpg's Pool.release(timeout=...) signature: the guard's bounded-release channel, not a cancel scope.
     ) -> None:
         self.releases.append((conn, timeout))
 
@@ -661,7 +661,7 @@ class _FakePoolSequence:
         self,
         conn: _FakeEnqueueConn,
         *,
-        timeout: float | None = None,  # noqa: ASYNC109  # Why: models asyncpg's Pool.release(timeout=...) signature — the guard's bounded-release channel, not a cancel scope.
+        timeout: float | None = None,  # noqa: ASYNC109  # Why: models asyncpg's Pool.release(timeout=...) signature: the guard's bounded-release channel, not a cancel scope.
     ) -> None:
         self.releases.append((conn, timeout))
 
@@ -839,7 +839,7 @@ class _ReleaseFailPool(_FakePool):
         self,
         conn: _FakeEnqueueConn,
         *,
-        timeout: float | None = None,  # noqa: ASYNC109  # Why: models asyncpg's Pool.release(timeout=...) signature — the guard's bounded-release channel, not a cancel scope.
+        timeout: float | None = None,  # noqa: ASYNC109  # Why: models asyncpg's Pool.release(timeout=...) signature: the guard's bounded-release channel, not a cancel scope.
     ) -> None:
         await super().release(conn, timeout=timeout)
         raise self._exc
@@ -931,13 +931,13 @@ async def test_enqueue_batch_committed_transaction_survives_a_failed_release() -
 async def test_enqueue_batch_mid_transaction_error_allows_the_safe_retry() -> None:
     """The batch arm's mid-transaction shape: the batch's driving statement
     fails locally on a parked/dead connection while the transaction is
-    still OPEN — pre-COMMIT, so the mark has not been set (the flag goes
+    still OPEN: pre-COMMIT, so the mark has not been set (the flag goes
     up only at the transaction's COMMIT acknowledgement) and the whole
     batch rolled back server-side when the server died. The retry is
     therefore provably safe, and it MUST run: re-executing the batch
     atomically on a fresh connection is how the drain survives the
     interruption. (Contrast the refused path: a failure AFTER the COMMIT
-    acknowledgement would propagate — that arm is pinned by the
+    acknowledgement would propagate: that arm is pinned by the
     release-failure and post-INSERT tests above.)"""
 
     # Model the simplest in-transaction failure: the driving fetch fails
