@@ -199,7 +199,7 @@ def _otel_enabled_guard() -> Generator[None, None, None]:  # pyright: ignore[rep
 # the load balancer schedules next on that worker.  The prune family is
 # the proven polluter: it stamps the batch-size gauges on EVERY batch,
 # empty ones included, so one prune-driving test leaves "prune" /
-# "archive_expiry" in ``_sweep_batch_size_cache`` forever — and the
+# "archive_expiry" in ``_sweep_batch_size_cache`` forever, and the
 # sweep-batch-size cardinality test, which MERGES its eight production
 # names into that cache and asserts strict key-set equality, failed once
 # in a full xdist suite exactly that way (reproduced deterministically;
@@ -212,7 +212,7 @@ def _otel_enabled_guard() -> Generator[None, None, None]:  # pyright: ignore[rep
 
 def reset_otel_gauge_caches() -> None:
     """Reset every process-global in :mod:`taskq.obs._otel` that a gauge
-    observer — or a test asserting on one — can read, to construction
+    observer, or a test asserting on one, can read, to construction
     state.
 
     Rebind, never mutate in place: the gauge caches follow a copy-on-write
@@ -233,7 +233,7 @@ def reset_otel_gauge_caches() -> None:
     age, oldest-due age, scheduled count, running-lease-expired count,
     heartbeat consecutive failures, disabled schedules, the slot-pool
     occupancy source) plus the two label-admission sets and the cron
-    failure-level ledger — emitter-side process globals the cardinality
+    failure-level ledger, emitter-side process globals the cardinality
     tests were already forced to pin per test because a prior test's
     admissions widen a later test's boundary.  Deliberately NOT reset:
     ``_lazy_counters`` / ``_lazy_histograms`` (memoized per meter
@@ -244,7 +244,7 @@ def reset_otel_gauge_caches() -> None:
     functions, not these values), and ``_otel_enabled`` (restored by
     ``_otel_enabled_guard``).
     """
-    otel_mod._queue_depth_cache = {}  # pyright: ignore[reportPrivateUsage]  # Why: test isolation seam — the suite's established pattern for module-global caches with no other reset surface.
+    otel_mod._queue_depth_cache = {}  # pyright: ignore[reportPrivateUsage]  # Why: test isolation seam, the suite's established pattern for module-global caches with no other reset surface.
     otel_mod._stranded_jobs_cache = {}  # pyright: ignore[reportPrivateUsage]  # Why: same seam as above.
     otel_mod._queue_live_workers_cache = {}  # pyright: ignore[reportPrivateUsage]  # Why: same seam as above.
     otel_mod._reservation_slots_cache = {}  # pyright: ignore[reportPrivateUsage]  # Why: same seam as above.
@@ -265,7 +265,7 @@ def reset_otel_gauge_caches() -> None:
     otel_mod._worker_capacity_source = None  # pyright: ignore[reportPrivateUsage]  # Why: same seam as above.
     otel_mod._jobs_running_cache = {}  # pyright: ignore[reportPrivateUsage]  # Why: same seam as above.
     otel_mod._actor_oldest_running_age_cache = {}  # pyright: ignore[reportPrivateUsage]  # Why: same seam as above.
-    otel_mod._queue_label_values.clear()  # pyright: ignore[reportPrivateUsage]  # Why: same seam as above — the set is iterated only on the emitter thread, so in-place clear is the copy-on-write exemption's exact case.
+    otel_mod._queue_label_values.clear()  # pyright: ignore[reportPrivateUsage]  # Why: same seam as above, the set is iterated only on the emitter thread, so in-place clear is the copy-on-write exemption's exact case.
     otel_mod._cron_actor_label_values.clear()  # pyright: ignore[reportPrivateUsage]  # Why: same seam and same exemption as above.
     otel_mod._cron_failure_levels.clear()  # pyright: ignore[reportPrivateUsage]  # Why: same seam as above.
 
@@ -273,7 +273,7 @@ def reset_otel_gauge_caches() -> None:
 @pytest.fixture(autouse=True)
 def _otel_gauge_cache_guard() -> Generator[None, None, None]:  # pyright: ignore[reportUnusedFunction]  # Why: pytest autouse fixture; referenced by pytest runner via reflection.
     """Reset the :mod:`taskq.obs._otel` process-global gauge caches around
-    every test — before, so no test inherits a prior test's residue, and
+    every test, before, so no test inherits a prior test's residue, and
     after, so none is left behind (see :func:`reset_otel_gauge_caches`'s
     section comment for the xdist flake this closes)."""
     reset_otel_gauge_caches()
@@ -298,12 +298,12 @@ def restore_logging_configured(saved: bool) -> None:
 # ``setup_logging`` configures structlog with ``cache_logger_on_first_use=True``.
 # A module-level ``structlog.get_logger(...)`` proxy whose ``bind`` first runs
 # while that flag is in force gets an INSTANCE-LEVEL ``bind`` closure wrapping
-# the assembled logger — the production processor chain frozen onto the proxy
+# the assembled logger, the production processor chain frozen onto the proxy
 # (``structlog._config.BoundLoggerLazyProxy.bind``). ``structlog.reset_defaults()``
 # replaces the configuration but cannot reach those closures: the pinned proxy
 # keeps rendering through the frozen chain forever, so a later test's
-# ``structlog.testing.capture_logs`` — which swaps only the CURRENT config's
-# processor list — captures none of its events. The victim test then fails on
+# ``structlog.testing.capture_logs``, which swaps only the CURRENT config's
+# processor list, captures none of its events. The victim test then fails on
 # an EMPTY capture with no hint why, and only when a polluter test happened to
 # run earlier in the same process (the event still reaches stdlib handlers,
 # which is what makes the failure order-dependent rather than total).
@@ -323,7 +323,7 @@ def _refresh_lazy_proxy_registry() -> None:
     """Rebuild the registry of module-level lazy proxies when ``sys.modules`` changed.
 
     Module-level proxies are created by a module's own import-time statements,
-    so a full rescan is only needed when the set of imported modules changes —
+    so a full rescan is only needed when the set of imported modules changes ,
     which, after collection, is the occasional lazy import rather than every
     test. The count comparison is what keeps the per-test sweep at O(#proxies)
     instead of O(#module-attributes).

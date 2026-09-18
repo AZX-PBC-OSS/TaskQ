@@ -20,7 +20,7 @@ if TYPE_CHECKING:
 __all__ = ["_dispatch_batch", "_set_queue_mode"]
 
 # Mirrors WorkerSettings.dispatch_oversample's default (settings.py): each
-# per-(actor, queue) candidate read is bounded by residual * oversample —
+# per-(actor, queue) candidate read is bounded by residual * oversample ,
 # the truncation the differential must model, because a dispatchable job
 # sorted behind a deep blocked cohort that fills the truncated read would
 # dispatch NOTHING on PG if PG stopped at the base window.
@@ -29,7 +29,7 @@ _DISPATCH_OVERSAMPLE: Final[int] = 2
 # Mirrors _MAX_DISPATCH_WINDOW_EXPANSIONS (backend/_dispatch.py), written
 # as a literal rather than imported because backend._dispatch binds the
 # asyncpg driver at import time and this module is part of the driver-free
-# testing boundary — the same reason settings.py's lock budgets mirror
+# testing boundary, the same reason settings.py's lock budgets mirror
 # backend/_enqueue's constants as literals. PG re-runs an empty round with
 # a geometrically widened window while routable rows remain; the twin must
 # reach the same rows or the differential sees past-truncation dispatches
@@ -58,8 +58,8 @@ async def _dispatch_batch(
     # PG's claim folds live reservation-slot occupancy into per-actor
     # admission (backend/_dispatch_sql.py's CTEs of the same names): an
     # actor whose claimed jobs hold live slots in a bucket with no
-    # acquirable slot left can run no more of its pending rows — every
-    # job of an actor AND-composes the same declared reservations — so
+    # acquirable slot left can run no more of its pending rows, every
+    # job of an actor AND-composes the same declared reservations, so
     # claiming them would only churn shared consumer slots into denied
     # acquires. The twin derives the same headroom from the same
     # holder-state signal (slot -> holding job -> actor; like the DB,
@@ -67,11 +67,11 @@ async def _dispatch_batch(
     # with the same acquirability predicate the twin acquire uses: free
     # is job_id-None or an expired lease, held is its negation. An actor
     # holding nothing is absent from the map, leaving its residual
-    # untouched — the gate never blocks a first claim (PG: LEAST ignores
+    # untouched, the gate never blocks a first claim (PG: LEAST ignores
     # the NULL headroom), so capacity can always be taken and a
     # saturated actor drains the moment a slot frees.
     #
-    # Two scoping rules mirror the PG gate's (#242):
+    # Two scoping rules mirror the PG gate's:
     #   * KEYED buckets are excluded from the holder derivation: their
     #     concrete names are payload-derived per job, so claim time
     #     cannot know which pending row needs them; their caps stay
@@ -130,15 +130,15 @@ async def _dispatch_batch(
         for pair, bucket_names in held_queue_caps_by_pair.items():
             queue_cap_headroom[pair] = min(free_by_bucket[name] for name in bucket_names)
 
-    # Why: `row.queue in queues` with NO `not queues` escape — PG builds the
+    # Why: `row.queue in queues` with NO `not queues` escape, PG builds the
     # candidate set with ``CROSS JOIN LATERAL unnest((SELECT queues FROM
     # params))`` (backend/_dispatch_sql.py), and an empty array annihilates
     # every candidate: ``queues=[]`` means match NOTHING. The old
     # ``not queues or ...`` read the same input as "no filter" (match ALL),
     # so the mirror dispatched work a real worker polling the same empty
-    # list never would — the mirror was greener than production.
+    # list never would, the mirror was greener than production.
     #
-    # Why: `or []` cannot re-admit an empty queue list here — the candidate
+    # Why: `or []` cannot re-admit an empty queue list here, the candidate
     # filter above matches NOTHING for `[]`, so no row survives to be
     # round-robin-ordered; it is only a None guard, never a selection.
     _use_round_robin = any(self._queues.get(q) == "round_robin" for q in (queues or []))
@@ -147,21 +147,21 @@ async def _dispatch_batch(
     # Candidates come FROM the actor_config registry, exactly PG's
     # per_actor_capacity and repend_capacity CTEs
     # (backend/_dispatch_sql.py): zero registered actors means zero
-    # capacity rows means zero candidates — "no actors registered" must
+    # capacity rows means zero candidates, "no actors registered" must
     # never read as "no filter" (the mirror was greener than
     # production). residual = the round's limit when the actor has no
     # max_concurrent, else max(max_concurrent - in_flight, 0).
     #
     # Routing contract, mirroring PG's two candidate arms: a pending row
     # routes by its OWN queue label while producer-placed (NOT
-    # assignment_routed — producer placement governs, so post-move
+    # assignment_routed, producer placement governs, so post-move
     # strays and enqueue overrides keep their queue), and by the actor's
     # Routing contract, mirroring PG's two candidate arms: a pending row
     # routes by its OWN queue label while producer-placed (NOT
-    # assignment_routed — producer placement governs, so post-move
+    # assignment_routed, producer placement governs, so post-move
     # strays and enqueue overrides keep their queue), and by the actor's
     # CURRENT stored assignment once a re-pend has handed it back
-    # (assignment_routed — every re-pend path keeps the row's label as
+    # (assignment_routed, every re-pend path keeps the row's label as
     # audit trail but follows the assignment, so a move's tails drain
     # through the target queue's consumers). The marker is written by
     # the re-pend paths themselves on both backends rather than inferred
@@ -170,15 +170,15 @@ async def _dispatch_batch(
     # ── Window-expansion mirror ─────────────────────────────────────
     # PG re-runs an empty claim with a geometrically widened candidate
     # window while routable rows remain (backend/_dispatch.py), gated by
-    # its claimable-rows probe; the twin needs no probe — a re-attempt is
-    # a local scan, not a round trip — but the schedule must match
+    # its claimable-rows probe; the twin needs no probe, a re-attempt is
+    # a local scan, not a round trip, but the schedule must match
     # exactly (base oversample, doubling, the same expansion cap) or the
     # differential sees one backend reach a row the other truncated away.
     # An empty attempt is side-effect free by the same invariant PG keeps
     # (zero admissions means nothing was written), so re-attempts start
     # clean.
-    # One pass groups the round's dispatchable population by actor —
-    # pending, due, and inside its schedule_to_close — in table order, so
+    # One pass groups the round's dispatchable population by actor ,
+    # pending, due, and inside its schedule_to_close, in table order, so
     # the per-actor sorts below see the same rows in the same order a
     # per-actor scan produced. The actor loop then reads its own group
     # instead of rescanning every job per registered actor (O(actors x
@@ -205,12 +205,12 @@ async def _dispatch_batch(
             # The reservation-headroom fold (PG: LEAST(base.residual,
             # rh.headroom) in per_actor_capacity / repend_capacity): a
             # live-held static bucket with fewer acquirable slots than the
-            # residual clamps admission to the acquirable count — zero
-            # when full — so a saturated actor's rows are not claimed
+            # residual clamps admission to the acquirable count, zero
+            # when full, so a saturated actor's rows are not claimed
             # into consumer slots that can only deny them. Keyed buckets
             # never reach this map (excluded upstream, mirroring PG's
             # reservation_holdings), and queue-cap buckets fold per queue
-            # below: the two #242 scoping rules.
+            # below: the two scoping rules.
             _headroom = reservation_headroom.get(_actor)
             if _headroom is not None and _headroom < _residual:
                 _residual = _headroom
@@ -228,7 +228,7 @@ async def _dispatch_batch(
                         _by_queue[row.queue].append(row)
                 elif _cfg.queue in queues:
                     # Assignment-routed arm: PG's repend_capacity gate (the
-                    # actor's stored assignment against the subscription) —
+                    # actor's stored assignment against the subscription) ,
                     # the row's own label is irrelevant once claimed.
                     _fk = row.fairness_key if row.fairness_key is not None else "__null__"
                     _repended_by_fk[_fk].append(row)
@@ -252,7 +252,7 @@ async def _dispatch_batch(
                         # per-row synthetic partition (f"__null__{r.id}") ranked
                         # every unkeyed job at fairness_rank 1, so a bounded batch
                         # was consumed entirely by the unkeyed cohort and the keyed
-                        # cohorts starved — the exact round-robin starvation the
+                        # cohorts starved, the exact round-robin starvation the
                         # mode exists to prevent, in the default configuration
                         # (fairness_key is None by default). Unkeyed jobs rank
                         # 1, 2, 3… and yield their surplus slots to the keyed
@@ -262,7 +262,7 @@ async def _dispatch_batch(
                     for _fk_rows in _fk_groups.values():
                         _fk_rows.sort(key=lambda r: (-r.priority, r.scheduled_at, r.id))
                         # The oversample bound is per fairness partition (a global
-                        # LIMIT would truncate before partitioning — PG filters
+                        # LIMIT would truncate before partitioning, PG filters
                         # ``fairness_rank <= residual * oversample`` instead), so
                         # every cohort contributes candidates up to the bound.
                         # _q_bound (not _bound): the queue-cap headroom rides
@@ -275,7 +275,7 @@ async def _dispatch_batch(
                                 candidates.append(_r)
                 else:
                     # Strict-FIFO lateral: ORDER BY priority DESC, scheduled_at,
-                    # id LIMIT residual * oversample — the truncation that can
+                    # id LIMIT residual * oversample, the truncation that can
                     # starve a dispatchable job sorting behind the bound.
                     # _q_bound carries the queue-cap fold (the lateral's
                     # LEAST(pac.residual, queue_cap_headroom) LIMIT).
@@ -324,13 +324,13 @@ async def _dispatch_batch(
 
         # ── ranked + eligible ordering ──────────────────────────────────
         # pending_rank: per-actor row number over the deduped set, per mode
-        # (PG's ranked CTE — strict FIFO: priority DESC, scheduled_at, id;
+        # (PG's ranked CTE, strict FIFO: priority DESC, scheduled_at, id;
         # round_robin: fairness_rank, priority DESC, scheduled_at, id). The
         # final selection order is PG's eligible ORDER BY: pending_rank, then
         # fairness_rank (round_robin only; strict-FIFO rows carry none), then
         # priority DESC, then the claim-recency stamp (never-claimed first,
-        # then least-recently-claimed — the cross-round actor rotation), then
-        # scheduled_at, id — NEVER alphabetical actor order,
+        # then least-recently-claimed, the cross-round actor rotation), then
+        # scheduled_at, id, NEVER alphabetical actor order,
         # which the old per-rank interleave substituted whenever a round's
         # limit cut inside a rank shared by jobs of different actors.
         _ranked_by_actor: dict[str, list[JobRow]] = _dd(list)
@@ -419,7 +419,7 @@ async def _dispatch_batch(
                 attempt=min(row.attempt + 1, SMALLINT_MAX),
             )
             self._jobs[row.id] = updated
-            # Mirrors PG's claim (backend/_dispatch.py): no job_events row —
+            # Mirrors PG's claim (backend/_dispatch.py): no job_events row ,
             # pending→running is dispatcher bookkeeping, and a claim is the
             # one act every admission-denial cycle repeats, so a row per
             # claim is the unbounded-growth vector the row's aggregated

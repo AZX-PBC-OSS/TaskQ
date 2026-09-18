@@ -4,7 +4,7 @@ The library emits OpenTelemetry spans/metrics/logs for all observability, but
 some error-routing workflows (e.g. DLQ forwarding to Sentry, custom alerting)
 need a hook that runs when a job reaches a terminal failure state.  Users
 implement the :class:`ErrorReporter` Protocol and register it as a DI provider
-— the library never imports vendor SDKs.
+, the library never imports vendor SDKs.
 
 See :mod:`taskq.obs` for the full observability surface.
 """
@@ -37,7 +37,7 @@ class ErrorReporter(Protocol):
 
     Implementations capture the error and job row, then forward to a
     vendor-specific backend (Sentry, Datadog, a DLQ, etc.).  The library
-    calls :meth:`report` when a job reaches a terminal failure state —
+    calls :meth:`report` when a job reaches a terminal failure state ,
     either because retries were exhausted or because the error was
     non-retryable.
 
@@ -55,7 +55,7 @@ class ErrorReporter(Protocol):
 
 
 class NullErrorReporter:
-    """Default no-op :class:`ErrorReporter` — silently drops all reports.
+    """Default no-op :class:`ErrorReporter`, silently drops all reports.
 
     Used when no vendor-specific error routing is configured.  Instances
     are stateless and safe to share.
@@ -87,7 +87,7 @@ async def invoke_error_reporter(
     A ``None`` reporter is treated as a no-op (equivalent to
     :class:`NullErrorReporter`).  Exceptions from ``report()`` are caught,
     logged at WARNING, and counted on the ``taskq.error_reporter.failures``
-    counter — they never propagate to the caller.
+    counter, they never propagate to the caller.
 
     This mirrors the defensive pattern of
     :func:`~taskq.retry.invoke_on_retry_exhausted`: a user-supplied hook

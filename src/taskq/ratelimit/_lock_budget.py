@@ -1,8 +1,8 @@
 """Operator-configured bounded-wait budgets for the Postgres admission locks.
 
-Every admission lock the PG paths take — the token bucket's and the GCRA
+Every admission lock the PG paths take, the token bucket's and the GCRA
 style's ``rate_limit_buckets`` row lock, the log style's per-bucket
-advisory lock — waits for a bounded budget so contention surfaces as a
+advisory lock, waits for a bounded budget so contention surfaces as a
 denial with a truthful retry hint instead of an indefinite block. This
 module holds the one place those budgets are read off the settings
 object, so the acquire and refund arms of both limiter shapes cannot
@@ -33,7 +33,7 @@ def _resolve(
     settings value governs, read WITHOUT a fallback: the field is declared
     on WorkerSettings and that declaration is pinned by the settings
     contract tests, so a settings object lacking it is a wiring bug. The
-    resulting AttributeError surfaces that bug at the acquire — a silent
+    resulting AttributeError surfaces that bug at the acquire, a silent
     fallback to the shipped constant would ignore the operator's setting
     while looking like success.
     """

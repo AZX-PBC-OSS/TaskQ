@@ -9,7 +9,7 @@ production class directly.
 
 Why this exists rather than ``deps`` on production: dependency
 resolution in production goes through :func:`solve_dependencies`, which
-operates on the actor's typed parameter list — not a mapping. ``deps``
+operates on the actor's typed parameter list, not a mapping. ``deps``
 on the test fixture gives actor test bodies a simple
 ``(payload, ctx, **deps)`` signature for injecting ad-hoc stub
 collaborators until production DI is wired into actor handlers.
@@ -36,7 +36,7 @@ class JobContext[P: BaseModel]:
     """Test-scoped context with ``deps`` for fixture-injected dependencies.
 
     Field shape mirrors :class:`taskq.context.JobContext` (the production
-    class) and adds ``deps``. The bound on ``P`` matches production —
+    class) and adds ``deps``. The bound on ``P`` matches production ,
     payload is always a :class:`pydantic.BaseModel`. Tests that pass raw
     dicts as payload should validate them through a wrapper model
     (:class:`taskq.testing.in_memory._PassthroughPayload` is the
@@ -58,7 +58,7 @@ class JobContext[P: BaseModel]:
     span: Span | None = None
     deps: dict[str, object] | None = field(default=None)
     abort_requested: threading.Event = field(default_factory=threading.Event)
-    # Every progress() call appends one record here — the harness half of
+    # Every progress() call appends one record here, the harness half of
     # the documented progress contract: the report lands observably (the
     # actor or its test inspects this list), with `seq` strictly monotone
     # per call as production guarantees. The fixture path has no Redis/
@@ -71,7 +71,7 @@ class JobContext[P: BaseModel]:
 
     # Mirrors the production JobContext's origin surface: actors that read
     # ``ctx.cancel_origin`` to tell a deploy apart from an operator cancel
-    # stay exercisable through the harness (the harness never stamps it —
+    # stay exercisable through the harness (the harness never stamps it ,
     # construct with an explicit value to test the shutdown branch).
     cancel_origin: CancelOrigin = CancelOrigin.NONE
 
@@ -82,7 +82,7 @@ class JobContext[P: BaseModel]:
 
     def check_cancelled(self) -> None:
         """Raise :class:`asyncio.CancelledError` when cancellation has
-        been requested — the production contract, so actors using the
+        been requested, the production contract, so actors using the
         raising style are exercisable through the harness."""
         if self.cancel_event.is_set():
             raise asyncio.CancelledError

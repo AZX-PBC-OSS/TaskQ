@@ -4,7 +4,7 @@ Blueprint anchor: ("injected clock dependency").  Both Backends
 accept a :class:`Clock` instance at construction time so that
 :class:`InMemoryBackend` can be wired with :class:`FakeClock` (defined in
 ``taskq.testing.clock``) and the production :class:`PostgresBackend`
-receives a :class:`SystemClock` (or whatever the wiring layer provides —
+receives a :class:`SystemClock` (or whatever the wiring layer provides ,
 Clock is a constructor parameter, not a global).
 
 The protocol is ``@runtime_checkable`` so that tests and wiring code can

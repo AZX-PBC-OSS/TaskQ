@@ -17,7 +17,7 @@ _log = structlog.get_logger("taskq.web.admin.listen")
 
 # Why: an unbounded queue lets a slow/disconnected SSE consumer accumulate
 # NOTIFY payloads without limit, which is an unbounded-memory-growth risk
-# under sustained load. Cap it and drop the oldest payload on overflow —
+# under sustained load. Cap it and drop the oldest payload on overflow ,
 # admin-UI live updates are best-effort, so losing a stale event in favor
 # of newer ones is the right tradeoff.
 _QUEUE_MAXSIZE = 1000

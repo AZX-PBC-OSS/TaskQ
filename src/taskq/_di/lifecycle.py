@@ -18,7 +18,7 @@ def detect_lifecycle(cls: type) -> ProviderLifecycle:
       3. hasattr(cls, 'close')                                    → SyncCloseable
       4. otherwise                                                → Plain
 
-    Pure — no instantiation, no warnings, no logs, no side effects.
+    Pure, no instantiation, no warnings, no logs, no side effects.
     The caller (register_class) owns all WARNING emissions.
     """
     if hasattr(cls, "__aenter__") and hasattr(cls, "__aexit__"):
@@ -38,10 +38,10 @@ def detect_factory_lifecycle(factory: Factory[object]) -> ProviderLifecycle:
       2. inspect.isgeneratorfunction(factory) → SyncGenerator
       3. otherwise                            → PlainFactory
 
-    Pure — no warnings, no logs, no side effects, no invocation.
+    Pure, no warnings, no logs, no side effects, no invocation.
     The caller (register_factory) owns all WARNING emissions .
 
-    factory: Factory[object] — detection inspects code flags, not the
+    factory: Factory[object], detection inspects code flags, not the
         produced type T; the caller (register_factory[T]) already
         enforces Factory[T].
     """

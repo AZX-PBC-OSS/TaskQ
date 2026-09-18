@@ -2,7 +2,7 @@
 
 Spawns the worker as a child subprocess via ``taskq worker --actors <module:attr>``
 and restarts it on file-change events from ``watchfiles.awatch()``. Each restart
-gets a fresh Python interpreter with clean import state — no ``importlib.reload()``
+gets a fresh Python interpreter with clean import state, no ``importlib.reload()``
 required.
 
 Layering: imports only stdlib, ``watchfiles`` (optional, imported inside function
@@ -58,7 +58,7 @@ async def _start_worker(module_attr: str) -> asyncio.subprocess.Process:
     """Spawn a worker subprocess and return the process handle.
 
     The child inherits the parent's full environment. Child stdout/stderr flow
-    directly to the terminal — no PIPE (avoids deadlock when pipe buffer fills).
+    directly to the terminal, no PIPE (avoids deadlock when pipe buffer fills).
     Uses the ``taskq`` console script so that the worker is invoked identically
     to a developer typing ``taskq worker --actors <module:attr>`` at a shell.
     """

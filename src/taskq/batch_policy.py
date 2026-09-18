@@ -32,7 +32,7 @@ class BatchFailurePolicy:
     base class).  :class:`AbortBatchAfter` sets this to its
     ``consecutive_failures`` value in ``__post_init__``; custom policies
     should set it to their computed threshold.  The client reads
-    ``failure_policy.failure_threshold`` polymorphically — no
+    ``failure_policy.failure_threshold`` polymorphically, no
     ``isinstance`` check is needed.
     """
 
@@ -58,7 +58,7 @@ class AbortBatchAfter(BatchFailurePolicy):
     ``__post_init__`` so the client can read it polymorphically via
     ``policy.failure_threshold``.
 
-    Running jobs are NOT cancelled by the abort — only pending and
+    Running jobs are NOT cancelled by the abort, only pending and
     scheduled jobs are cancelled.  Running jobs continue to completion.
     This matches the post-terminal-write hook design: the hook runs after
     the terminal write, so a job that was dispatched before the abort

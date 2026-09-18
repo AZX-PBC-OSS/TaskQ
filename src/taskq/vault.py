@@ -36,8 +36,8 @@ factory is invoked, and :func:`~taskq.auth.enrich_pg_dsn` overrides both
 the DSN's ``user`` and ``password`` with the dynamic values.
 
 Unlike token-as-password providers (AAD, AWS IAM RDS), Vault issues a
-**fresh username** on each lease — the ``PgCredential.username`` field is
-always set — and the pair is only valid together. The factory builders
+**fresh username** on each lease, the ``PgCredential.username`` field is
+always set, and the pair is only valid together. The factory builders
 therefore pin one lease per pool / dedicated connection: ``user=`` is the
 lease's username and every physical connection asyncpg opens
 authenticates with that lease's password (see
@@ -55,7 +55,7 @@ against the TTL Vault actually granted.
 ``hvac`` is synchronous; ``generate_credentials`` does network I/O, so the
 provider offloads it to a thread via :func:`asyncio.to_thread` to avoid
 blocking the event loop. This module never imports ``hvac`` at module top
-level — the import is deferred so ``import taskq.vault`` is safe without
+level, the import is deferred so ``import taskq.vault`` is safe without
 the extra installed.
 
 Prerequisites
@@ -92,7 +92,7 @@ __all__ = [
 class VaultDynamicDbProvider(PgCredentialProvider):
     """:class:`~taskq.auth.PgCredentialProvider` backed by Vault's database secrets engine.
 
-    Fetches a dynamic ``(username, password)`` pair — a new Vault lease —
+    Fetches a dynamic ``(username, password)`` pair, a new Vault lease ,
     from ``secrets.database.generate_credentials`` on each
     :meth:`get_pg_credential` call. The factory builders call it once per
     pool / connection build and pin the pair, so one lease is issued per
@@ -100,7 +100,7 @@ class VaultDynamicDbProvider(PgCredentialProvider):
     and the call does network I/O, so it is offloaded to a thread via
     :func:`asyncio.to_thread`.
 
-    ``client`` is an ``hvac.Client`` instance (caller-owned — you manage
+    ``client`` is an ``hvac.Client`` instance (caller-owned, you manage
     its lifecycle). ``role`` is the Vault database role name. ``mount_point``
     defaults to ``"database"`` (the standard engine mount path).
     """

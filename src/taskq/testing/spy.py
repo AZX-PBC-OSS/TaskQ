@@ -1,4 +1,4 @@
-"""Test spies for TaskQ — lightweight recording doubles."""
+"""Test spies for TaskQ, lightweight recording doubles."""
 
 from __future__ import annotations
 

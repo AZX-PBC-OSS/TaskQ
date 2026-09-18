@@ -27,7 +27,7 @@ Usage
         redis_client_factory=make_redis_client_factory(settings.redis_url, provider),
     )
 
-The provider implements **both** Protocols — pass the same instance to
+The provider implements **both** Protocols, pass the same instance to
 :func:`~taskq.auth.make_pg_pool_factory` and
 :func:`~taskq.auth.make_redis_client_factory`. For PG-only or Redis-only
 deployments, use :class:`EntraIdPgProvider` / :class:`EntraIdRedisProvider`
@@ -37,27 +37,27 @@ Credentials
 -----------
 
 The helpers accept any object exposing ``get_token(*scopes) -> AccessToken``
-— i.e. :class:`azure.core.credentials.TokenCredential` (sync) **or** its
+, i.e. :class:`azure.core.credentials.TokenCredential` (sync) **or** its
 async counterpart from :mod:`azure.identity.aio` (e.g.
 :class:`azure.identity.aio.DefaultAzureCredential`). See
 :data:`AadCredential`. Sync credentials are offloaded to a thread so
 their blocking HTTP never stalls the event loop. An explicit credential
 is **caller-owned**: create it once per process (async credentials are
-async context managers — close them in your lifespan). Pass ``None`` to
+async context managers, close them in your lifespan). Pass ``None`` to
 let the provider lazily create one async ``DefaultAzureCredential`` and
 reuse it for its lifetime (a per-fetch credential would leak unclosed
 aiohttp sessions and cold-cache every acquisition); that credential is
 the provider's own, released by ``await provider.aclose()`` (or by
-using the provider as an async context manager) — ``taskq ui serve``
+using the provider as an async context manager), ``taskq ui serve``
 closes the providers it loads at shutdown, and an embedder closes the
 ones it constructs. The one-shot helpers ``fetch_pg_access_token`` /
 ``fetch_redis_credentials`` called without a credential create and close
 one per call.
 
-This module never imports ``azure.identity`` at module top level — the
+This module never imports ``azure.identity`` at module top level, the
 import is deferred to call time so ``import taskq.aad`` is safe without
 the extra installed. Note ``import azure.identity`` alone does NOT make
-``azure.identity.aio`` available — the subpackage must be imported
+``azure.identity.aio`` available, the subpackage must be imported
 explicitly.
 """
 
@@ -123,10 +123,10 @@ class AadCredential(Protocol):
 def _require_azure_identity_aio() -> Any:
     """Import ``azure.identity.aio`` lazily and return the subpackage.
 
-    The ``aio`` subpackage is NOT pulled in by ``import azure.identity``
-    — accessing ``azure.identity.aio`` without an explicit import raises
-    :class:`AttributeError`. Raises :class:`ImportError` with install
-    instructions if the ``[aad]`` extra is not installed.
+     The ``aio`` subpackage is NOT pulled in by ``import azure.identity``
+    , accessing ``azure.identity.aio`` without an explicit import raises
+     :class:`AttributeError`. Raises :class:`ImportError` with install
+     instructions if the ``[aad]`` extra is not installed.
     """
     try:
         import azure.identity.aio  # type: ignore[import-not-found]  # Why: optional [aad] extra; deferred so the module is import-safe without it.
@@ -175,7 +175,7 @@ class _LazyDefaultCredential:
     """Lazily creates and caches a single default credential.
 
     Creating one per token fetch would leak unclosed aiohttp sessions and
-    cold-cache every acquisition (a full MSAL/IMDS round-trip each time) —
+    cold-cache every acquisition (a full MSAL/IMDS round-trip each time) ,
     worst on the Redis path, where the redis-py adapter re-fetches on
     every reconnect. :meth:`aclose` releases the one it created; a later
     :meth:`get` creates a fresh one, so a provider closed early is not
@@ -201,7 +201,7 @@ async def _get_token(credential: AadCredential, scope: str) -> str:
 
     Async credentials (:mod:`azure.identity.aio`) are awaited inline.
     Sync credentials (:mod:`azure.identity`) perform blocking HTTP
-    (requests/MSAL), so they are offloaded to a thread — running them
+    (requests/MSAL), so they are offloaded to a thread, running them
     inline would stall the worker's event loop (heartbeat starvation).
     """
     get_token = credential.get_token
@@ -240,7 +240,7 @@ async def fetch_redis_credentials(
     """Fetch AAD credentials ``(username, password)`` for Azure Cache for Redis.
 
     The password is the AAD token. The username is the managed identity's
-    **object ID** — decoded from the JWT ``oid`` claim — unless ``username``
+    **object ID**, decoded from the JWT ``oid`` claim, unless ``username``
     is passed explicitly (recommended in production: pass the object ID to
     avoid relying on JWT shape).
     """
@@ -287,12 +287,12 @@ def _decode_jwt_oid(jwt: str) -> str | None:
 class _EntraIdProviderBase:
     """Shared credential resolution for the Entra ID providers.
 
-    An explicit credential is used as-is (caller-owned). Otherwise a
-    single default async ``DefaultAzureCredential`` is created lazily and
-    reused for the provider's lifetime — see :class:`_LazyDefaultCredential`
-    — and released by :meth:`aclose`, which the provider's owner calls at
-    shutdown (or uses the provider as an async context manager). A
-    caller-owned credential is never closed here.
+     An explicit credential is used as-is (caller-owned). Otherwise a
+     single default async ``DefaultAzureCredential`` is created lazily and
+     reused for the provider's lifetime, see :class:`_LazyDefaultCredential`
+    , and released by :meth:`aclose`, which the provider's owner calls at
+     shutdown (or uses the provider as an async context manager). A
+     caller-owned credential is never closed here.
     """
 
     def __init__(self, credential: AadCredential | None = None) -> None:
@@ -356,7 +356,7 @@ class EntraIdProvider(EntraIdPgProvider, EntraIdRedisProvider):
     """AAD provider implementing **both** PG and Redis Protocols.
 
     Convenience class for deployments that use AAD for both Postgres and
-    Redis — pass one instance to :func:`~taskq.auth.make_pg_pool_factory`
+    Redis, pass one instance to :func:`~taskq.auth.make_pg_pool_factory`
     and :func:`~taskq.auth.make_redis_client_factory`.
     """
 

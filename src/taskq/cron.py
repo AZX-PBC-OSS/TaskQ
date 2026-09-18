@@ -54,7 +54,7 @@ def _resolve_factory(dotted_path: str) -> Callable[[], Any]:
 
     Uses ``importlib.import_module`` + ``getattr``. Results are cached in
     ``_factory_cache``.  Raises ``ImportError`` or ``AttributeError`` on
-    failure — the caller increments ``consecutive_failures`` and may
+    failure, the caller increments ``consecutive_failures`` and may
     auto-disable the schedule.
     """
     if dotted_path in _factory_cache:
@@ -76,7 +76,7 @@ sync factory runs: a cut-off call stays parked on its thread until the
 factory itself returns, which a truly hung one never does.  Cron ticks
 forever, so a permanently hung schedule strands one thread per fire.
 A private, capped pool turns that unbounded leak into a bounded one and
-keeps it off the loop's default executor, where sync actor bodies run —
+keeps it off the loop's default executor, where sync actor bodies run ,
 sharing that pool would let one stuck schedule consume the worker's own
 execution capacity until unrelated actors have no thread left, and would
 let a busy fleet of sync actors starve an instantaneous factory past its
@@ -87,8 +87,8 @@ parked thread, so enough concurrently-hung schedules (or one hung
 schedule whose ``cron_auto_disable_threshold`` an operator raised past
 the pool size) strand every worker and would starve healthy factories
 for the process's life. The submit path therefore retires a pool whose
-every thread is stranded on work its waiter already abandoned — see
-:func:`_payload_factory_pool` — which is also why no upper-bound
+every thread is stranded on work its waiter already abandoned, see
+:func:`_payload_factory_pool`, which is also why no upper-bound
 validation on the threshold is needed: saturation self-heals regardless
 of how it was reached.
 """
@@ -100,7 +100,7 @@ class _FactoryCall:
 
     ``on_thread`` is true while a pool thread is inside the call.
     ``waiter_gone`` flips when the awaiting side stops waiting (deadline
-    cut, caller cancelled, factory raised) — a call that is both
+    cut, caller cancelled, factory raised), a call that is both
     ``on_thread`` and ``waiter_gone`` is pool residue: a parked thread
     nobody will ever collect.
     """
@@ -168,14 +168,14 @@ def _run_factory_call(
 def _payload_factory_pool() -> _FactoryPoolState:
     """The live payload-factory pool, retiring a fully-stranded one first.
 
-    Lazy so a process that registers no factory-backed schedule — the
-    common case — never pays for the threads.
+    Lazy so a process that registers no factory-backed schedule, the
+    common case, never pays for the threads.
 
     Retirement fires when every thread of the current pool is stranded on
     a call its waiter abandoned: that pool can never serve new work, so
     new work gets a fresh pool instead of queueing behind residue for the
     rest of the process's life. The retired pool is shut down WITHOUT
-    waiting — waiting is exactly what cannot be done, its threads are
+    waiting, waiting is exactly what cannot be done, its threads are
     parked in unkillable user code; they finish (and the pool drains its
     queue) whenever the factories return. Queued calls are deliberately
     NOT cancelled: their waiters hold their own per-factory deadlines and
@@ -218,7 +218,7 @@ async def _await_factory_bounded(
 ) -> object:
     """Await one phase of a payload factory under the factory deadline.
 
-    *timeout_s* overrides :data:`_FACTORY_TIMEOUT_S` for this call — the
+    *timeout_s* overrides :data:`_FACTORY_TIMEOUT_S` for this call, the
     cron tick passes its ``cron_payload_factory_timeout`` setting already
     clamped to what is left of its whole-tick budget, so a per-factory
     budget can never silently exceed it (the leader's whole-tick
@@ -228,7 +228,7 @@ async def _await_factory_bounded(
     A timeout raises ``TimeoutError`` naming the factory's dotted path: the
     schedule's error text is the only place an operator sees WHICH factory
     hung.  A factory that fails with its own ``TimeoutError`` reason keeps
-    that reason — "pool exhausted" is the diagnosis, "hung for 5s" would be
+    that reason, "pool exhausted" is the diagnosis, "hung for 5s" would be
     a lie.  The type stays ``TimeoutError`` so every classification and
     catch site downstream is unchanged.
     """
@@ -257,8 +257,8 @@ async def resolve_payload(
     directly on the loop: the call only constructs a coroutine object and
     cannot block, so routing it through a thread buys nothing.  Any other
     callable may block, so the call runs on cron's own bounded executor
-    (:func:`_payload_factory_pool`) — never the loop's default pool,
-    which sync actor bodies also check out of — bounded by the per-factory
+    (:func:`_payload_factory_pool`), never the loop's default pool,
+    which sync actor bodies also check out of, bounded by the per-factory
     ``wait_for``, so a sync factory that blocks is cut at the deadline
     instead of freezing every timer on the loop (this bound and the
     caller's whole-tick deadline alike) while the tick holds the cron
@@ -269,7 +269,7 @@ async def resolve_payload(
     ``TypeError`` for unexpected return types.
 
     Thread-safety contract: a sync payload factory runs on a worker
-    thread — it must be thread-safe and must not require the event loop;
+    thread, it must be thread-safe and must not require the event loop;
     a coroutine factory keeps loop affinity.
 
     If no *payload_factory*, extracts ``static_payload`` from
@@ -293,8 +293,8 @@ async def resolve_payload(
             result = factory()
         else:
             # Called inline, a sync factory that blocks freezes every
-            # timer on the loop — this deadline and the caller's
-            # whole-tick asyncio.timeout alike — so the tick would hold
+            # timer on the loop, this deadline and the caller's
+            # whole-tick asyncio.timeout alike, so the tick would hold
             # the cron advisory lock for as long as the factory blocks.
             loop = asyncio.get_running_loop()
             pool = _payload_factory_pool()
@@ -308,8 +308,8 @@ async def resolve_payload(
             except (Exception, asyncio.CancelledError):
                 # The waiter is leaving (the per-factory deadline cut the
                 # call, the caller's own deadline cancelled it, or the
-                # factory raised). If the call is parked on its thread —
-                # a factory that never returns — that thread is now pool
+                # factory raised). If the call is parked on its thread ,
+                # a factory that never returns, that thread is now pool
                 # residue the stdlib cannot recall: count it so the submit
                 # path recognizes a fully-stranded pool and retires it.
                 # ``waiter_gone`` also arms the start path in
@@ -373,16 +373,16 @@ def compute_next_fire_after(
         ``allof``, both occurrences are returned so the caller can
         enqueue a job for each. A fold-0 seed inside a repeated range is
         special under ``allof``: once the range's fold-0 matches are
-        spent, the next owed fire is the fold-1 pass's first match — a
+        spent, the next owed fire is the fold-1 pass's first match, a
         wall time at or before the seed's that the naive walk cannot
-        see — so it is computed directly. Under ``skip`` and
+        see, so it is computed directly. Under ``skip`` and
         ``firstof`` the repeated range counts as one slot at the earlier
         occurrence, so the walk's answer stands. A fold-1 seed inside
         the range is the mirror: every in-range wall match's earlier
         occurrence is spent, so under ``allof`` the next owed fire is
         the next in-range match's fold-1 occurrence, and under ``skip``
         and ``firstof`` the answer is the first match beyond the range
-        — the naive walk alone would answer an instant at or before the
+       , the naive walk alone would answer an instant at or before the
         seed.
 
     Returns a list of 1 or 2 datetimes. A single-element list is the
@@ -398,12 +398,12 @@ def compute_next_fire_after(
 
     # A repeated range plays twice: its wall matches fire once as fold-0
     # instants, then the whole range re-plays as fold-1 instants.
-    # croniter's walk sees only wall time — it finds every match
+    # croniter's walk sees only wall time, it finds every match
     # strictly after the seed's wall, but it cannot see the fold-1 pass
     # at all: those matches' walls sit at or before the seed's wall.
-    # Only ``allof`` owes that pass — ``skip`` and ``firstof`` fire a
+    # Only ``allof`` owes that pass, ``skip`` and ``firstof`` fire a
     # repeated range once, at the earlier occurrence, which the seed's
-    # range has already given — so for those strategies the walk's
+    # range has already given, so for those strategies the walk's
     # answer stands.  This is reachable whenever a leader outage or a
     # manual edit leaves ``next_fire_at`` inside the range: without
     # this branch the fold-1 pass is silently lost for a year.
@@ -414,18 +414,18 @@ def compute_next_fire_after(
 
     # A fold-1 seed inside the range is the mirror image: every wall
     # match at or before the seed's wall has spent its earlier
-    # occurrence — all of the range's fold-0 instants precede all of
-    # its fold-1 instants — and the naive walk cannot express that
+    # occurrence, all of the range's fold-0 instants precede all of
+    # its fold-1 instants, and the naive walk cannot express that
     # ordering.  It answers the next wall match's fold-0 interpretation
     # (an instant BEFORE the seed) or, under ``allof``, a pair whose
-    # first member precedes the seed — a function named
+    # first member precedes the seed, a function named
     # ``compute_next_fire_after`` may never answer at or before its
     # seed.  ``allof`` owes the fold-1 occurrence of the next in-range
     # match; ``skip`` and ``firstof`` owe nothing further in the range
-    # (each slot fires once, at the earlier occurrence — all spent), so
+    # (each slot fires once, at the earlier occurrence, all spent), so
     # they advance to the first match beyond it.  A candidate outside
-    # the seed's range — a later match, possibly in a later repeated
-    # range — is ordered correctly by the ordinary walk below.
+    # the seed's range, a later match, possibly in a later repeated
+    # range, is ordered correctly by the ordinary walk below.
     if after_local.fold != 0:
         bounds = repeated_range_bounds(after_local, tz)
         if bounds is not None:
@@ -479,7 +479,7 @@ def compute_next_fire_after(
 
 def repeated_range_bounds(after_local: datetime, tz: ZoneInfo) -> tuple[datetime, datetime] | None:
     """The repeated (fall-back) wall range containing *after_local*'s wall
-    time, as naive dated walls ``[start, end)`` — or None when the wall is
+    time, as naive dated walls ``[start, end)``, or None when the wall is
     not ambiguous in *tz*.
 
     The bounds are walked from the wall rather than assumed hour-aligned:
@@ -509,18 +509,18 @@ def _next_fold1_fire(
     A repeated range plays twice: its wall matches fire once as fold-0
     instants, then the whole range re-plays as fold-1 instants.  The
     naive walk sees only wall time, so it finds every match strictly
-    after the seed's wall — the fold-0 pass's remaining matches — but
+    after the seed's wall, the fold-0 pass's remaining matches, but
     it cannot see the fold-1 pass at all: those matches' walls sit at
     or before the seed's wall.  Once the fold-0 pass owes nothing more,
     the next owed fire is the fold-1 pass's FIRST match, and only this
     computation can name it.  That match is the seed's own match's twin
     in the founding case (a single match in the range), the MATCH's
-    twin — not the seed's — when the seed sits past it, and the
+    twin, not the seed's, when the seed sits past it, and the
     range's first match when the seed sits late in the range.
 
     None (the walk answers) when the seed is not a fold-0 instant of a
-    repeated range, when a fold-0 match still remains in the range —
-    the walk finds it and its own overlap branch returns its pair — or
+    repeated range, when a fold-0 match still remains in the range ,
+    the walk finds it and its own overlap branch returns its pair, or
     when the expression matches nothing in the range: the seed's own
     match, if any, already fired, and the walk's beyond-range answer
     stands.
@@ -583,7 +583,7 @@ class CronScheduleSpec:
 
     Created by the :func:`cron` decorator or constructed directly for
     ``register_cron()``.  ``payload_factory`` and ``static_payload`` are
-    mutually exclusive — setting both raises :class:`ValueError` at
+    mutually exclusive, setting both raises :class:`ValueError` at
     construction time (via :func:`cron`).
 
     ``dst_strategy`` controls how DST gaps and overlaps are handled.

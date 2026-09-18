@@ -1,6 +1,6 @@
 """Five-phase startup-validation algorithm.
 
-Pure function — does not mutate any input. Raises ``MissingProvider`` /
+Pure function, does not mutate any input. Raises ``MissingProvider`` /
 ``DependencyCycle`` / ``ScopeViolation`` .
 """
 
@@ -18,7 +18,7 @@ from typing import (
 import structlog
 
 from taskq._di._utils import (
-    _origin_is_job_context,  # pyright: ignore[reportPrivateUsage] — internal helper shared within _di package; the _di prefix itself signals package-level privacy
+    _origin_is_job_context,  # pyright: ignore[reportPrivateUsage], internal helper shared within _di package; the _di prefix itself signals package-level privacy
 )
 from taskq._di.scope import LifecycleDetectionWarning, Scope
 from taskq._di.types import ProviderEntry
@@ -105,7 +105,7 @@ def _collect_actor_edges(
     return edges
 
 
-def _emit_redundant_override_warnings(  # pyright: ignore[reportUnusedFunction] — used by registry.py via import; the _di prefix signals package-level privacy
+def _emit_redundant_override_warnings(  # pyright: ignore[reportUnusedFunction], used by registry.py via import; the _di prefix signals package-level privacy
     actors: list["ActorRef[Any, Any]"],
     providers: dict[type, ProviderEntry[object]],
 ) -> None:
@@ -113,7 +113,7 @@ def _emit_redundant_override_warnings(  # pyright: ignore[reportUnusedFunction] 
 
     Runs after phases 1-4 so it never preempts error reporting. A redundant
     override is one where ``Annotated[T, Scope.X]`` matches the registered
-    default scope for ``T`` — the override has no effect.
+    default scope for ``T``, the override has no effect.
     """
     for actor in actors:
         fn = actor.fn
@@ -169,7 +169,7 @@ def _emit_redundant_override_warnings(  # pyright: ignore[reportUnusedFunction] 
                     f"Annotated[..., Scope.{scope.name}] matches the registered "
                     f"default for {_qual(t)}; the override has no effect."
                 ),
-                stacklevel=3,  # Why: three frames to skip — warn → _emit_redundant_override_warnings → validate() — so the warning points at validate()'s caller
+                stacklevel=3,  # Why: three frames to skip, warn → _emit_redundant_override_warnings → validate(), so the warning points at validate()'s caller
             )
             _log.warning(
                 "redundant_scope_override",
@@ -313,7 +313,7 @@ def _warn_sync_actor_loop_deps(
     LOOP-scoped providers (e.g. an ``asyncpg.Connection``) are not
     thread-safe. Sync actors run via ``asyncio.to_thread()``, so using a
     LOOP-scoped dependency from one is a latent thread-safety bug. This
-    is advisory only (does not raise) — see docs/guides/actors.md#sync-actors.
+    is advisory only (does not raise), see docs/guides/actors.md#sync-actors.
     """
     for actor in actors:
         if not actor.is_sync:
@@ -357,7 +357,7 @@ def _topo_sort_for_actor(
 
     # Why: post-order DFS on "depends-on" edges already produces
     # dependency-first order (leaf deps first, dependents last);
-    # no reversal needed — the "reverse" instruction
+    # no reversal needed, the "reverse" instruction
     # assumes edges point from deps to dependents, but our adjacency
     # has edges from dependents to dependencies.
     return post_order
@@ -372,9 +372,9 @@ def run_validation(
     """Run the five-phase algorithm. Return the plan cache.
 
     Raises MissingProvider / DependencyCycle / ScopeViolation.
-    Pure function — does not mutate any input.
+    Pure function, does not mutate any input.
     Never invokes a factory function, calls a resolver, or performs
-    await — the entire algorithm is synchronous introspection on
+    await, the entire algorithm is synchronous introspection on
     registration metadata only.
 
     When ``rate_limit_registry`` is provided, an additional phase
@@ -383,26 +383,26 @@ def run_validation(
     Unknown names raise ``MissingProvider`` at startup.
 
     Phase 2b name-checks plain ``str`` entries and primitive INSTANCES
-    (``TokenBucket`` / ``SlidingWindow`` / ``ConcurrencyReservation`` —
+    (``TokenBucket`` / ``SlidingWindow`` / ``ConcurrencyReservation`` ,
     checked by ``.name`` membership; post-bootstrap-registration they
     always resolve). ``KeyedRateLimitRef`` / ``KeyedReservationRef``
     instances are non-frozen pydantic ``BaseModel`` s (unhashable), so an
     ``x not in some_dict`` membership test on a ref instance raises
-    ``TypeError`` rather than returning a clean boolean — and there is
+    ``TypeError`` rather than returning a clean boolean, and there is
     nothing meaningful to validate ahead of time anyway, since a ref's
     concrete per-key name only materializes at acquisition time
     (``_resolve_rate_limit_name`` / ``_resolve_reservation_name`` in
     ``registry.py``). The ref's own pydantic ``field_validator`` s
     already enforce non-empty ``base_name`` / positive ``slots`` /
     positive ``capacity`` etc. at construction time, and runtime
-    key-validation enforces the rest — so this static startup pass
+    key-validation enforces the rest, so this static startup pass
     skips keyed-ref instances entirely.
     """
     actor_edges: list[tuple[str, type, Scope | None]] = []
     if actors is not None:
         actor_edges = _collect_actor_edges(actors)
 
-    # Phase 2 — MissingProvider check
+    # Phase 2, MissingProvider check
     for provider_type, dep_type, _override in dep_edges:
         if dep_type not in providers:
             raise MissingProvider(
@@ -416,10 +416,10 @@ def run_validation(
                 required_by=actor_name,
             )
 
-    # Phase 2b — Rate-limit / reservation name check
+    # Phase 2b, Rate-limit / reservation name check
     # Why: plain str entries are checked by name; primitive instances by
     # their .name (post-registration they always resolve). Keyed refs are
-    # skipped — unhashable pydantic models whose concrete name only
+    # skipped, unhashable pydantic models whose concrete name only
     # materializes at acquisition time. See the run_validation docstring.
     if rate_limit_registry is not None and actors is not None:
         rl_names = rate_limit_registry.rate_limits
@@ -435,7 +435,7 @@ def run_validation(
                     raise MissingProvider(
                         type_name="RateLimit",
                         required_by=(
-                            f"actor:{actor.name}:rate_limits:{rl_name} — "
+                            f"actor:{actor.name}:rate_limits:{rl_name}, "
                             "declare the primitive on the actor "
                             "(rate_limits=[TokenBucket(...)]) or register it "
                             "on the worker's rate-limit registry"
@@ -451,22 +451,22 @@ def run_validation(
                     raise MissingProvider(
                         type_name="ConcurrencyReservation",
                         required_by=(
-                            f"actor:{actor.name}:reservations:{res_name} — "
+                            f"actor:{actor.name}:reservations:{res_name}, "
                             "declare the primitive on the actor "
                             "(reservations=[ConcurrencyReservation(...)]) or "
                             "register it on the worker's rate-limit registry"
                         ),
                     )
 
-    # Phase 3 — DependencyCycle detection
+    # Phase 3, DependencyCycle detection
     adjacency = _build_adjacency(dep_edges)
     _detect_cycles(adjacency)
 
-    # Phase 4 — ScopeViolation direction check
+    # Phase 4, ScopeViolation direction check
     for provider_type, dep_type, override in dep_edges:
         provider_scope = providers[provider_type].scope
         effective_dep_scope = override or providers[dep_type].scope
-        # Why: direction rule — effective_dep_scope.value <=
+        # Why: direction rule, effective_dep_scope.value <=
         # provider_scope.value is valid (narrower dep is safe)
         if effective_dep_scope.value > provider_scope.value:
             raise ScopeViolation(
@@ -477,17 +477,17 @@ def run_validation(
             )
 
     # Why: actors run inside build_actor_scope which creates a
-    # per-invocation TRANSIENT container — the actor body is
+    # per-invocation TRANSIENT container, the actor body is
     # TRANSIENT-scoped by construction. Direction rule
     # applied uniformly: no actor→provider edge can ever raise
     # ScopeViolation because TRANSIENT (value 3) is the narrowest
     # scope (DoD item 5).
 
-    # Phase 4b — sync actor + LOOP-scoped dependency advisory warning
+    # Phase 4b, sync actor + LOOP-scoped dependency advisory warning
     if actors is not None:
         _warn_sync_actor_loop_deps(actors, providers)
 
-    # Phase 5 — topological sort and plan cache
+    # Phase 5, topological sort and plan cache
     plan_cache: dict[tuple[str, Scope], list[type]] = {}
     if actors is not None:
         for actor in actors:

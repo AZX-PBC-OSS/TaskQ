@@ -60,7 +60,7 @@ async def _create_worker(
     """Insert a worker row used by integration tests that exercise leader
     election or per-attempt history (both still FK to workers(id)).
     ``jobs.locked_by_worker`` is not an FK, so
-    tests that only dispatch/lock jobs do not strictly need this — it is
+    tests that only dispatch/lock jobs do not strictly need this, it is
     kept for tests that also write ``job_attempts`` or ``maintenance_leader``.
     """
     if not _IDENT_RE.match(schema):
@@ -77,7 +77,7 @@ async def _create_worker(
 create_worker = _create_worker
 
 # Default actor_config rows seeded into every test schema.
-# The dispatch CTE requires explicit rows in actor_config — even uncapped
+# The dispatch CTE requires explicit rows in actor_config, even uncapped
 # actors need an entry.  Test authors can override via seed_actors() or
 # pass their own list to reset_schema().
 DEFAULT_ACTORS: tuple[str, ...] = (
@@ -94,7 +94,7 @@ DEFAULT_ACTORS: tuple[str, ...] = (
 )
 
 # Tables truncated by truncate_schema() in FK-safe cascade order.
-# schema_migrations is excluded — migration metadata is not test data.
+# schema_migrations is excluded, migration metadata is not test data.
 _TRUNCATE_TABLES: tuple[str, ...] = (
     "reservation_slots",
     "rate_limit_window_entries",
@@ -111,8 +111,8 @@ _TRUNCATE_TABLES: tuple[str, ...] = (
 _migrated_triggers: dict[str, frozenset[tuple[str, str]]] = {}
 """Per-schema trigger set as the migrations left it, captured on first reset.
 
-A test that installs a trigger — a commit-time constraint trigger to make
-a COMMIT fail, say — changes the schema's DDL, which no TRUNCATE undoes.
+A test that installs a trigger, a commit-time constraint trigger to make
+a COMMIT fail, say, changes the schema's DDL, which no TRUNCATE undoes.
 The next test on the module's shared schema then meets a rule it never
 asked for, so its failure reads as a defect in the code under test.  The
 snapshot is what lets a reset put the DDL back.
@@ -123,13 +123,13 @@ async def _reset_triggers(conn: _Conn, schema: str) -> None:
     """Drop triggers on the dynamic tables that the migrations did not
     install, restoring the schema's DDL to its migrated state.
 
-    The first call for a schema records the migrated set instead — it runs
+    The first call for a schema records the migrated set instead, it runs
     in per-test setup, before any test body can add one.
 
     The trigger and table names come from the catalog and are interpolated
     into the DROP, so they pass the project's identifier validation first
     (the same rule every user-sourced identifier follows): a name the rule
-    cannot admit fails loudly here rather than being interpolated raw —
+    cannot admit fails loudly here rather than being interpolated raw ,
     a quote inside it would break out of the quoted identifier.
     """
     rows = await conn.fetch(
@@ -178,7 +178,7 @@ async def seed_actors(
     """Insert actor_config rows for the given actors (or DEFAULT_ACTORS).
 
     ``ON CONFLICT (actor) DO NOTHING`` makes this safe to call
-    alongside custom seed data — it never overwrites existing rows.
+    alongside custom seed data, it never overwrites existing rows.
     """
     if not _IDENT_RE.match(schema):
         raise ValueError(f"invalid schema name {schema!r}")
@@ -279,7 +279,7 @@ async def create_pending_job(
     scheduled_at: datetime | None = None,
 ) -> UUID:
     """Seed one job row directly. ``scheduled_at`` defaults to the
-    application clock's ``now()`` — a stamp a claim CTE comparing against
+    application clock's ``now()``, a stamp a claim CTE comparing against
     the database's ``statement_timestamp()`` reads as not-yet-due whenever
     the database clock lags the application clock (Docker VM pause and NTP
     drift both cause it). Seed a past margin or an explicit ``scheduled_at``

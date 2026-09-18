@@ -2,7 +2,7 @@
 
 Both :class:`PostgresBackend` and :class:`InMemoryBackend` must agree on
 cursor encoding and comparison semantics (``JobFilter.cursor`` docstring).
-This module is the canonical location for that contract — it lives in
+This module is the canonical location for that contract, it lives in
 ``taskq.backend`` so that production code can import it without depending
 on the ``taskq.testing`` package.
 
@@ -11,7 +11,7 @@ parallel switch statements: :class:`JobOrdering` owns the ORDER BY
 columns, the cursor text those columns encode to, the SQL keyset
 predicate and the in-memory comparison, all derived from the same
 :class:`SortColumn` tuple.  A sort direction can therefore never drift
-away from the cursor that is supposed to seam it — the failure mode that
+away from the cursor that is supposed to seam it, the failure mode that
 made every non-default ``order_by`` reject cursors outright.
 """
 
@@ -75,7 +75,7 @@ def decode_batch_cursor(cursor: str) -> tuple[datetime, UUID]:
     """Decode a batch keyset cursor to the columns' own Python types.
 
     Returning a ``datetime`` and a ``UUID`` -- not the raw text -- is
-    load-bearing, not tidiness: asyncpg infers each placeholder's type
+    essential, not tidiness: asyncpg infers each placeholder's type
     from its ``::`` cast and refuses a ``str`` for ``timestamptz`` or
     ``uuid``, which is what made every admin job-list page turn raise
     ``DataError`` before 2569da5.
@@ -215,7 +215,7 @@ class JobOrdering:
         """Render the keyset predicate for rows strictly past *values*.
 
         Returns the SQL and the parameters to bind at ``$first_param``
-        onwards.  A ``None`` in *values* binds no parameter — it is a
+        onwards.  A ``None`` in *values* binds no parameter, it is a
         NULL seam, expressed as ``IS NULL`` rather than a comparison,
         because ``col < NULL`` is NULL and would drop the whole range.
         """
@@ -236,7 +236,7 @@ class JobOrdering:
     def _row_wise_sql(
         self, values: tuple[CursorValue, ...], slots: list[int | None], *, forward: bool
     ) -> str:
-        """One row-wise tuple comparison — the ``list_batches`` shape.
+        """One row-wise tuple comparison, the ``list_batches`` shape.
 
         Available exactly when every column runs the same way, which is
         what ordering ``id`` with the primary column buys.  A leading
@@ -269,7 +269,7 @@ class JobOrdering:
         """Expanded seam for a mixed-direction ordering.
 
         The default ordering runs ``priority DESC, scheduled_at ASC``, so
-        no single tuple comparison describes it — a row-wise compare can
+        no single tuple comparison describes it, a row-wise compare can
         only express a seam when every column sorts the same way.  Same
         descriptor, same directions, one term per column.
         """
@@ -341,7 +341,7 @@ def _strict_cmp(
     """Rows strictly past the cursor on *col* alone, or ``None`` if none can be.
 
     Under NULLS LAST nothing follows a NULL going forwards, so a NULL
-    seam contributes no term at that position — the columns after it
+    seam contributes no term at that position, the columns after it
     carry the seam.  Going backwards from a NULL, every non-NULL row
     precedes it.
     """

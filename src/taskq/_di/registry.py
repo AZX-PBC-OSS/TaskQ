@@ -1,4 +1,4 @@
-"""Concrete ProviderRegistry — registration API and seal mechanics.
+"""Concrete ProviderRegistry, registration API and seal mechanics.
 
 The public surface (register_value / register_factory / register_class,
 has_provider, get[T], providers, validate) matches the
@@ -22,10 +22,10 @@ import structlog
 
 from taskq._di._shadow import shadow_derived_providers
 from taskq._di._utils import (
-    _origin_is_job_context,  # pyright: ignore[reportPrivateUsage] — internal helper shared within _di package; the _di prefix itself signals package-level privacy
+    _origin_is_job_context,  # pyright: ignore[reportPrivateUsage], internal helper shared within _di package; the _di prefix itself signals package-level privacy
 )
 from taskq._di._validate import (
-    _emit_redundant_override_warnings,  # pyright: ignore[reportPrivateUsage] — internal helper shared within _di package; the _di prefix itself signals package-level privacy
+    _emit_redundant_override_warnings,  # pyright: ignore[reportPrivateUsage], internal helper shared within _di package; the _di prefix itself signals package-level privacy
     run_validation,
 )
 from taskq._di.lifecycle import detect_factory_lifecycle, detect_lifecycle
@@ -44,7 +44,7 @@ class ProviderRegistry:
     """Mutable provider registry with seal guard and edge capture.
 
     Structurally satisfies the ``taskq._di.types.ProviderRegistry``
-    Protocol without explicit inheritance — the Protocol is
+    Protocol without explicit inheritance, the Protocol is
     ``runtime_checkable`` for isinstance checks, but the concrete class
     does not inherit from it to avoid forcing runtime_checkable
     constraints on the implementation.
@@ -253,12 +253,12 @@ class ProviderRegistry:
         """Walk all providers and actors; raise on first error; seal on success.
 
         Pure graph-walk over registration-time metadata. Never invokes a
-        factory, calls a resolver, or performs await — the entire algorithm
+        factory, calls a resolver, or performs await, the entire algorithm
         is synchronous introspection on ``_providers`` and ``_dep_edges``.
 
         actors: explicit list of ActorRef instances whose DI parameter
         annotations are walked for MissingProvider checks and plan-cache
-        population. Defaults to None (no actor walk — only
+        population. Defaults to None (no actor walk, only
         provider→provider edges are validated).
 
         rate_limit_registry: when provided, each actor's ``rate_limits``
@@ -268,7 +268,7 @@ class ProviderRegistry:
         skipped entirely.
 
         # Why: ActorRef[Any, Any] is the sanctioned erasure
-        # boundary for the heterogeneous actor registry — each ActorRef has
+        # boundary for the heterogeneous actor registry, each ActorRef has
         # different P and R type parameters, and validate() does not need
         # per-actor narrowing. The same erasure is used at the existing API
         # boundary in worker/run.py:283 and cli.py:98.

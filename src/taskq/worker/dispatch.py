@@ -87,7 +87,7 @@ logger: structlog.stdlib.BoundLogger = get_logger(__name__)
 
 def _redis_client_type() -> "type[redis_async.Redis] | None":
     """The LOOP-scope key a registered Redis client is cached under, or
-    ``None`` when the redis extra is not installed — resolved once at
+    ``None`` when the redis extra is not installed, resolved once at
     import, the same shape as the consumer's dependency-exception family,
     so no dispatch pays an import (or, without the extra, an ImportError
     raise and a finder walk) per job."""
@@ -117,7 +117,7 @@ async def _run_sync_actor_tracked(
     (true only once the thread finished). Without the handle, every
     consumer-side release assumed the actor unwound with the await and
     handed the row to the fleet while the thread was still mid-body: the
-    double-execution overlap #232 describes.
+    double-execution overlap the exit-proof machinery exists for.
 
     ``asyncio.shield``, not a bare await: the cancellation must detach the
     thread task rather than deliver to it: the executor thread cannot be
@@ -188,8 +188,8 @@ def _to_consumed_outcome(attempt_outcome: AttemptOutcome) -> ConsumedOutcome:
 
     The two sets differ by one value: ``"noop"``, a terminal write that
     matched nothing because the job moved underneath this worker. A noop
-    consumed nothing — the re-dispatch records the real message and
-    duration — so ``dispatch_one_job``'s finally block skips both
+    consumed nothing, the re-dispatch records the real message and
+    duration, so ``dispatch_one_job``'s finally block skips both
     job-outcome metrics for it, and a noop reaching this map is a caller
     defect, refused rather than relabelled. Every other value, ``scheduled``
     included, is recorded as itself: a snooze or retry released the row
@@ -212,11 +212,11 @@ def _effective_reservations(
     its reservation name is prepended to the actor-declared reservations so
     :meth:`RateLimitRegistry.acquire_for_actor` acquires a slot before the
     actor runs. This caps total concurrent jobs for this queue across all
-    workers, not just this one. Transparent to actor code — no ``@actor``
+    workers, not just this one. Transparent to actor code, no ``@actor``
     change needed.
 
     Hot-path notes: the membership test uses
-    :meth:`RateLimitRegistry.has_reservation`, an O(1) lookup — NOT the
+    :meth:`RateLimitRegistry.has_reservation`, an O(1) lookup, NOT the
     ``reservations`` property, which defensively copies the whole dict and
     would make every job dispatch O(registry size). And when no cap is
     registered (the common case) the actor's own list is returned unchanged,
@@ -238,9 +238,9 @@ async def _resolve_error_reporter(
 ) -> ErrorReporter | None:
     """The :class:`ErrorReporter` the application registered, or ``None``.
 
-    The reporter is a long-lived hook — a PROCESS-scope value for the
+    The reporter is a long-lived hook, a PROCESS-scope value for the
     stateless adapters most deployments register, a THREAD or LOOP scope
-    for one holding a loop-lifetime connection — so it is read from the
+    for one holding a loop-lifetime connection, so it is read from the
     scope container its registration named. Hot path: one registry probe
     and one cache lookup per job, no allocation; the LOOP read goes
     through the same resolved-cache seam the rate-limit registry and the
@@ -320,30 +320,30 @@ async def _ensure_registered_init_on_slot_conn(
     job_id: UUID,
 ) -> None:
     """Carry the registration's declared init hook onto a slot connection the
-    pool never applied it to — exactly once per physical connection.
+    pool never applied it to, exactly once per physical connection.
 
     Bootstrap threads the hook declared on the LOOP-scope connection's
     factory registration (:func:`taskq.connections.with_connection_init`,
     or :func:`taskq.auth.make_dedicated_conn_factory`'s ``setup``) into the
     slot pool's ``init=``, so a bootstrap-built pool's connections carry it
     from connect time; ``deps.slot_pool_connection_init`` records that, and
-    this function then returns on a single attribute read — the hook is
+    this function then returns on a single attribute read, the hook is
     never applied twice to one physical connection. A pool bootstrap did
     not open (an injected/foreign pool) leaves that record ``None`` while
     handing out bare connections: the actor's DI would resolve a connection
-    missing the registered setup — codecs, session configuration — and
+    missing the registered setup, codecs, session configuration, and
     silently diverge from what the application configured. For that shape
     the hook is applied here, once per physical connection, recorded in a
     process-local weak set keyed by the physical connection (a proxy's
     ``__slots__`` cannot carry a marker attribute).
 
     Hot path: with no hook declared, or a pool that already carries it,
-    this costs the attribute read plus the registry probe (dict lookups) —
+    this costs the attribute read plus the registry probe (dict lookups) ,
     no await, no allocation, no wrapper around the connection.
 
     A hook failure is connect-time infrastructure, never a job outcome: the
     connection is terminated (never released back to serve a sibling slot
-    half-configured — the same rule ``with_connection_init`` applies to the
+    half-configured, the same rule ``with_connection_init`` applies to the
     LOOP connection), the failure is logged, and the job recovers by
     lock-lease expiry via :class:`SlotPoolAcquireError`.
     """
@@ -410,7 +410,7 @@ async def dispatch_one_job(
 ) -> AttemptOutcome:
     """Dispatch one job through the DI-resolved actor scope.
 
-    1. Acquire the job's transaction connection — from the worker's
+    1. Acquire the job's transaction connection, from the worker's
        dedicated slot pool when one is open (the per-slot path), else
        the LOOP-scope connection, else none (autonomous consume). An
        acquire failure raises :class:`SlotPoolAcquireError` before any
@@ -475,7 +475,7 @@ async def dispatch_one_job(
     # When the worker runs a dedicated slot pool (bootstrap opens one
     # whenever a LOOP-scope connection is registered and
     # max_concurrency > 1), each job acquires its own connection for
-    # the duration of the dispatch — one transaction per connection, so
+    # the duration of the dispatch, one transaction per connection, so
     # concurrent slots can never nest savepoints on a shared one. The
     # acquire precedes the span/metrics block on purpose: a job that
     # cannot acquire is infrastructure, not a job outcome, so it must
@@ -485,7 +485,7 @@ async def dispatch_one_job(
     # below), so an actor's own writes join THIS job's transaction and
     # a registered LOOP-scope connection is never shared across
     # concurrent slots' actors. The registered LOOP-scope
-    # connection itself stays untouched — every non-actor reader
+    # connection itself stays untouched, every non-actor reader
     # (bootstrap's activation check, the loop-level enqueuer's
     # provenance inference) still resolves it from the LOOP cache.
     async with AsyncExitStack() as conn_stack:
@@ -516,7 +516,7 @@ async def dispatch_one_job(
             # container in a LoopScopeSlotView). The actor's writes then
             # join this job's transaction on this connection, and two
             # concurrent slots' actors can never interleave operations
-            # on one connection — asyncpg permits one operation per
+            # on one connection, asyncpg permits one operation per
             # connection, so the shared shape raised InterfaceError
             # inside healthy actors and burned their retry budget.
             actor_loop_slot_values = {asyncpg.Connection: transaction_conn}
@@ -534,19 +534,19 @@ async def dispatch_one_job(
                 # in-flight commit, so the task outlives the dispatch
                 # call), and asyncpg's release-reset would then ROLL
                 # BACK under that live transaction and hand the
-                # connection to a sibling mid-flight — a false
+                # connection to a sibling mid-flight, a false
                 # `succeeded` row with its sub-jobs gone, and two tasks
                 # on one connection. A connection still inside its
                 # transaction at release time is terminated instead:
                 # the server rolls the transaction back on disconnect,
                 # the job row stays `running`, and lock-lease expiry
-                # reclaims and retries it — the same loud, retryable
+                # reclaims and retries it, the same loud, retryable
                 # outcome a rotation-terminate produces, never a false
                 # success.
                 #
                 # Why the whole body is guarded: this callback runs in
                 # the AsyncExitStack unwind, where an exception it
-                # raises replaces the job's real outcome — a committed
+                # raises replaces the job's real outcome, a committed
                 # job reported as a dispatch failure. The pool's
                 # bounded close (a credential-rotation drain or worker
                 # teardown) can terminate the connection or release its
@@ -556,8 +556,8 @@ async def dispatch_one_job(
                 # forwarded probe raises AttributeError), and a proxy
                 # the close released refuses the call (InterfaceError).
                 # Those states are logged with their cause and
-                # swallowed — the bounded close owns a dead
-                # connection's disposal — so the unwind never
+                # swallowed, the bounded close owns a dead
+                # connection's disposal, so the unwind never
                 # manufactures a failure the job did not have.
                 # Anything outside these two families is a programming
                 # error and stays loud.
@@ -574,7 +574,7 @@ async def dispatch_one_job(
                 except asyncpg.InterfaceError as exc:
                     # The pool closed underneath the dispatch: release
                     # is refused, or the close already released the
-                    # proxy back — either way the close owns the
+                    # proxy back, either way the close owns the
                     # connection now.
                     logger.warning(
                         "slot-pool-release-skipped-pool-closed",
@@ -600,7 +600,7 @@ async def dispatch_one_job(
             # The acquired connection must carry the registered connection's
             # declared setup before the actor's DI can receive it. A
             # bootstrap-built pool applied it at connect time (recorded on
-            # deps); an injected/foreign pool did not — repair that here,
+            # deps); an injected/foreign pool did not, repair that here,
             # once per physical connection. Armed release first: a failed
             # hook terminates the connection and the unwind must own it.
             await _ensure_registered_init_on_slot_conn(
@@ -628,7 +628,7 @@ async def dispatch_one_job(
             # cache is keyed by type and populated through the typed
             # register_value seam, and every other reader of this seam
             # (bootstrap's activation, the enqueuer's provenance
-            # inference) trusts that key — an isinstance here would
+            # inference) trusts that key, an isinstance here would
             # disagree with them and silently drop to the autonomous
             # path for a value the rest of the seam treats as the
             # transaction connection.
@@ -659,8 +659,8 @@ async def dispatch_one_job(
                 # terminal failure like any other, and the outer handler
                 # below reports it through the same hook. A reporter
                 # misregistration surfaces the same way a broken actor
-                # dependency does — on the job, through the retry
-                # decision — rather than tearing down the consumer loop.
+                # dependency does, on the job, through the retry
+                # decision, rather than tearing down the consumer loop.
                 error_reporter: ErrorReporter | None = None
                 try:
                     error_reporter = await _resolve_error_reporter(
@@ -669,8 +669,8 @@ async def dispatch_one_job(
                         thread_scope=thread_scope,
                         loop_scope=loop_scope,
                     )
-                    # The row's stored version rides the raise — not the
-                    # helper's current-version default — so a row that
+                    # The row's stored version rides the raise, not the
+                    # helper's current-version default, so a row that
                     # predates a payload migration is distinguishable from
                     # a malformed caller payload.
                     validated_payload = validate_actor_payload(
@@ -714,7 +714,7 @@ async def dispatch_one_job(
                         process_scope=process_scope,
                         thread_scope=thread_scope,
                         loop_scope=loop_scope,
-                        actor_func=actor_ref.fn,  # type: ignore[arg-type]  # Why: actor_ref.fn is Callable[..., object] (covers both sync and async); build_actor_scope expects Callable[..., Awaitable[object]] for DI resolution but never calls the function — sync-vs-async dispatch is handled later via actor_ref.is_sync
+                        actor_func=actor_ref.fn,  # type: ignore[arg-type]  # Why: actor_ref.fn is Callable[..., object] (covers both sync and async); build_actor_scope expects Callable[..., Awaitable[object]] for DI resolution but never calls the function, sync-vs-async dispatch is handled later via actor_ref.is_sync
                         actor_name=actor_ref.name,
                         passthrough_kwargs=passthrough_kwargs,
                         loop_slot_values=actor_loop_slot_values,
@@ -816,7 +816,7 @@ async def dispatch_one_job(
                     # status. On the transactional consumer path the
                     # cancel has already aborted the slot's transaction,
                     # so the hook's writes on that connection fail, are
-                    # logged, and the sweep recovers — immediate
+                    # logged, and the sweep recovers, immediate
                     # completion holds on the autonomous path, the normal
                     # case.
                     try:
@@ -852,8 +852,8 @@ async def dispatch_one_job(
                         )
                     except _TERMINAL_WRITE_INFRA_EXCEPTIONS as infra_exc:
                         # An infra-failed terminal write leaves the row
-                        # RUNNING — disowned, so lock-lease expiry and the
-                        # sweep are the recovery — and no batch counter may
+                        # RUNNING, disowned, so lock-lease expiry and the
+                        # sweep are the recovery, and no batch counter may
                         # budge on a write that never landed: the same rule
                         # the hook itself applies to the clean-return
                         # path's "noop" (a terminal write that matched
@@ -878,7 +878,7 @@ async def dispatch_one_job(
             elapsed = time.monotonic() - t0
             # A noop means the row moved underneath this dispatch (a
             # reclaim race): nothing was consumed, and the re-dispatch
-            # will record the real message and duration — recording here
+            # will record the real message and duration, recording here
             # would double-count the message and stretch the histogram
             # with a phantom process.
             if outcome != "noop":

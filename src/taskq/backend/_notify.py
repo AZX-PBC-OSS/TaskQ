@@ -18,7 +18,7 @@ class _SubscriberContext:
     """Async context manager that adds/removes an event on a subscriber set.
 
     When *lock* is provided, the add (on enter) and discard (on exit) run
-    under the lock — matching the Postgres backend's cross-coroutine
+    under the lock, matching the Postgres backend's cross-coroutine
     safety.  When *lock* is ``None`` (in-memory backend), the operations
     are unsynchronised per the single-threaded contract.
     """

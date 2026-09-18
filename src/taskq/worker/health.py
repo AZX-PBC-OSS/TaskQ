@@ -7,8 +7,8 @@ Two transports serve the same handler:
 * an optional TCP listener (``health_port``), off until a port is set.
 
 The TCP listener exists because Azure Container Apps supports only ``httpGet``/``tcpSocket``
-probes — "``exec`` probes aren't supported"
-(https://learn.microsoft.com/en-us/azure/container-apps/health-probes) — so a Unix socket is
+probes, "``exec`` probes aren't supported"
+(https://learn.microsoft.com/en-us/azure/container-apps/health-probes), so a Unix socket is
 unreachable to a probe there. Kubernetes and ACA both treat 200-399 as success, so an unready
 worker answers 503.
 
@@ -91,7 +91,7 @@ def register_readiness_check(name: str, check: ReadinessCheck) -> None:
     transports *and* the CLI, which reads the same :func:`compute_health`.
 
     A check that raises, or that outruns ``health_readiness_check_timeout``, counts as a
-    failure — readiness fails closed.
+    failure, readiness fails closed.
     """
     _readiness_checks[name] = check
 
@@ -169,7 +169,7 @@ async def _ping_slot_pool_once(deps: WorkerDeps) -> tuple[bool, str | None]:
     except TimeoutError:
         return False, "slot_pool_ping_timeout"
     # Why the shared pool-infra family (taskq.worker.deps): a
-    # fresh-connection acquire — after a rotation drain or terminate —
+    # fresh-connection acquire, after a rotation drain or terminate ,
     # surfaces revoked or refused credentials as coded server errors
     # (InvalidPasswordError, AdminShutdownError) that are not
     # PostgresConnectionError children; reading them as "unexpected"
@@ -187,14 +187,14 @@ async def _ping_slot_pool_once(deps: WorkerDeps) -> tuple[bool, str | None]:
 async def _ping_slot_pool(deps: WorkerDeps) -> tuple[bool, str | None]:
     """Single-flight slot-pool readiness ping.
 
-    The in-flight probe lives on *deps* (one worker per deps object —
+    The in-flight probe lives on *deps* (one worker per deps object ,
     never shared across workers, so one worker's probe can never answer
     for another's pool). Concurrent requests join the one in-flight
     probe through a shield, so a cancelled waiter never cancels the
     shared probe; the join itself is bounded by one ping budget so a
     probe task left over from a torn-down event loop degrades to a
     failed ping instead of hanging readiness. A request arriving after
-    the probe completed starts a fresh one — no result is served stale.
+    the probe completed starts a fresh one, no result is served stale.
     """
     task = deps.slot_pool_probe_task
     if task is None or task.done():
@@ -213,7 +213,7 @@ async def compute_health(deps: WorkerDeps) -> HealthReport:
 
     Reads ``deps``, performs a bounded PG ping, runs any checks added via
     :func:`register_readiness_check`, and returns a fully-populated
-    :class:`HealthReport`.  No transport concerns and no caching — the check
+    :class:`HealthReport`.  No transport concerns and no caching, the check
     registry is the only global, and it is what lets a consumer extend
     readiness without a handle on the bootstrap-owned server.
     """
@@ -251,7 +251,7 @@ async def compute_health(deps: WorkerDeps) -> HealthReport:
 
     # A dead slot pool would leave every transactional job failing to
     # acquire while readiness stays green on the dispatcher pool's
-    # strength — the misattribution moved to the orchestrator. Ping the
+    # strength, the misattribution moved to the orchestrator. Ping the
     # slot pool too when it exists, under the same timeout discipline;
     # the single-flight coalescing in _ping_slot_pool is what lets the
     # pool's one readiness-reserve connection serve overlapping probes
@@ -279,7 +279,7 @@ async def compute_health(deps: WorkerDeps) -> HealthReport:
     # the stale-loop check below is the only thing that stops a zombie
     # worker reporting itself ready. Reading it defensively would let a
     # deps object with no liveness silently return a report that cannot
-    # detect the zombie state — so a missing field is a wiring bug and
+    # detect the zombie state, so a missing field is a wiring bug and
     # must surface as one.
     #
     # Deliberately NOT gated on watchdog_enabled: that switch controls the
@@ -311,7 +311,7 @@ async def compute_health(deps: WorkerDeps) -> HealthReport:
         is_leader=deps.is_leader.is_set(),
         # Why the client check: managed-identity deployments inject a
         # client via redis_client_factory (or pass a caller-owned one)
-        # without setting TASKQ_REDIS_URL — the URL alone would report
+        # without setting TASKQ_REDIS_URL, the URL alone would report
         # redis_configured: false despite a working client.
         redis_configured=bool(deps.settings.redis_url) or deps.redis_client is not None,
         pg_ping_ok=pg_ping_ok_,
@@ -345,7 +345,7 @@ def _unlink_stale_socket(path: str) -> None:
 
     ``ENOTSOCK`` means *path* exists but is a regular file, not a socket
     at all (e.g. leftover from a crash before the socket was ever bound,
-    or a stray file created at that path) — also stale, also safe to
+    or a stray file created at that path), also stale, also safe to
     remove.
     """
     probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -366,7 +366,7 @@ def _bind_unix_socket(path: str) -> socket.socket:
 
     The bind is done here rather than by handing the path to
     ``asyncio.start_unix_server``, which removes any existing socket file
-    before binding and therefore always succeeds — replacing a live
+    before binding and therefore always succeeds, replacing a live
     server's socket instead of colliding with it. The liveness check in
     :func:`_unlink_stale_socket` is only meaningful if the bind that
     follows it cannot itself clear the path: with the path left in place,
@@ -399,11 +399,11 @@ async def _read_request_head(
     """Read the request line and drain the headers, bounded in *time* and in *bytes*.
 
     Returns the request line, or ``None`` for a malformed, oversized or too-slow request (the
-    caller then closes without answering — there is nothing honest to say).
+    caller then closes without answering, there is nothing honest to say).
 
     Why both bounds, and why not a per-line timeout alone: a peer that sends one *valid* header
-    line just under a per-line timeout never trips it, while holding the connection — and its
-    server task — open indefinitely. The TCP listener is reachable from the pod network in a way
+    line just under a per-line timeout never trips it, while holding the connection, and its
+    server task, open indefinitely. The TCP listener is reachable from the pod network in a way
     the Unix socket is not, so an unauthenticated peer must not be able to exhaust accept
     capacity or file descriptors that way. ``max_bytes`` covers the mirror case: many tiny lines
     sent fast enough to stay inside the deadline. Both are settings
@@ -425,7 +425,7 @@ async def _read_request_head(
                     break
     except (TimeoutError, ValueError, ConnectionError, OSError):
         # ValueError: StreamReader.readline() raises it when a single line exceeds the stream
-        # limit — an oversized header by another name.
+        # limit, an oversized header by another name.
         return None
     return request_line
 
@@ -450,7 +450,7 @@ class HealthTcpBindError(RuntimeError):
         super().__init__(
             f"health TCP listener could not bind {host}:{port} ({cause}); "
             "the deployment's probes target this port, so refusing to start "
-            "is the honest outcome — free the port or change "
+            "is the honest outcome, free the port or change "
             "TASKQ_HEALTH_PORT / TASKQ_HEALTH_HOST"
         )
 
@@ -464,7 +464,7 @@ class HealthUnixBindCollisionError(OSError):
     which :func:`_bind_unix_socket` refuses to steal) or any other
     unusable path (a directory at it, ``EACCES`` on the directory chain,
     ...), costs the Unix surface alone, and the boot keeps the port-routed
-    probe surface answering (#245; before, the Unix bind failure
+    probe surface answering (before, the Unix bind failure
     aborted ``start()`` before the TCP bind was even attempted, leaving
     a registered, claiming worker with no listener at all). The message
     says which shape it is: the peer collision prescribes a unique
@@ -472,7 +472,7 @@ class HealthUnixBindCollisionError(OSError):
     what actually sits at the path.
 
     Subclasses :class:`OSError` so a caller following the historical
-    "warn and continue on a health OSError" rule (the fix for #207)
+    "warn and continue on a health OSError" rule
     still degrades rather than crashes. The contract differs from a bare
     bind ``OSError`` in one respect: this server OWNS the TCP listener it
     managed to bind, so ``stop()`` must still be called, exactly what
@@ -534,7 +534,7 @@ class HealthServer:
         # start(): the TCP listener below is the surface the deployment's
         # port-routed probes actually target, and skipping it because a
         # peer owns the socket path left the worker registered, claiming,
-        # and answering nothing anywhere (#245). The failure is raised
+        # and answering nothing anywhere. The failure is raised
         # AFTER the TCP bind, so the caller learns of it only once every
         # bindable surface is up and owned.
         unix_bind_error: OSError | None = None
@@ -560,7 +560,7 @@ class HealthServer:
                 sock.close()
                 raise
             # Capture the inode we just bound so `stop()` can later verify it
-            # still owns this path before unlinking — a slow-shutting-down
+            # still owns this path before unlinking, a slow-shutting-down
             # worker must never delete a *replacement* worker's fresh socket
             # bound to the same path.
             with contextlib.suppress(OSError):
@@ -606,7 +606,7 @@ class HealthServer:
         except OSError as exc:
             # Why fail the whole startup rather than log and continue: the operator has told an
             # orchestrator to probe this port. A worker that came up with the listener dead
-            # answers nothing there, so every probe fails — or worse, under a tcpSocket probe on
+            # answers nothing there, so every probe fails, or worse, under a tcpSocket probe on
             # a port some *other* process holds, they all pass and traffic is routed to a worker
             # nobody is actually checking. Refusing to start is the only honest outcome.
             logger.error("health-http-bind-failed", host=host, port=port, error=str(exc))
@@ -625,7 +625,7 @@ class HealthServer:
             await self._server.wait_closed()
 
         if self._socket_path is not None:
-            # A start() that lost the Unix bind to a collision (#245's
+            # A start() that lost the Unix bind to a collision (a
             # partial start) owns neither the server nor the inode, and
             # the path is a live peer's serving surface: the guard below
             # would WARN about "not the one this worker bound" for a
@@ -850,7 +850,7 @@ def maintenance_health(settings: WorkerSettings) -> MaintenanceHealth:
     humans read from the body.
 
     Reads ``taskq.obs._otel``'s cache singletons directly because the health
-    endpoint reports THIS process's view of ITS sweep health — the caches are
+    endpoint reports THIS process's view of ITS sweep health, the caches are
     module-level singletons in this process and there is no second source of
     truth to reconcile against.
 
@@ -858,7 +858,7 @@ def maintenance_health(settings: WorkerSettings) -> MaintenanceHealth:
     reports ``degraded=False`` with the informational reason ``"no sweep has
     completed yet"``: a worker that just started has not stalled anything, but
     a body that silently omits the gap is exactly the "no samples" shape the
-    original backlog incident hid behind — the string keeps the gap visible
+    original backlog incident hid behind, the string keeps the gap visible
     without paging anyone.
     """
     reasons: list[str] = []
@@ -894,7 +894,7 @@ def build_ready_body(report: HealthReport, deps: WorkerDeps) -> bytes:
     """Serialize the readiness body shared by both transports.
 
     The body carries the probe verdict (``ready``/``live``/``reasons``), the
-    worker-state view, and — as ``maintenance`` — the degraded-maintenance
+    worker-state view, and, as ``maintenance``, the degraded-maintenance
     view from :func:`maintenance_health`. ``maintenance.degraded`` never feeds
     ``report.ready``: degraded means "up but sweeps are unhealthy", an
     operator signal in the body, not a 503.

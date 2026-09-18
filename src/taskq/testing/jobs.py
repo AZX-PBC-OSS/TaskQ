@@ -127,7 +127,7 @@ def make_enqueue_args(
     computed here reads as still-future by the time the row lands.
 
     ``retry_jitter`` defaults to the ``EnqueueArgs`` field's own default;
-    pass ``0.0`` to make a test's reclaim/retry timing assertions exact —
+    pass ``0.0`` to make a test's reclaim/retry timing assertions exact ,
     jitter is fleet randomness, and the suite doubles randomness at the
     boundary rather than sampling it.
     """

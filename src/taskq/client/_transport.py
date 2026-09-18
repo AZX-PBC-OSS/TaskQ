@@ -148,7 +148,7 @@ async def redis_event_stream[EventT](
     finally:
         with contextlib.suppress(Exception):
             await pubsub.unsubscribe(channel)
-        # Why bounded: keeps "every TaskQ-initiated close is bounded" true —
+        # Why bounded: keeps "every TaskQ-initiated close is bounded" true ,
         # the helper never raises, so the redundant suppress is dropped and a
         # hung broker cannot wedge the stream finalizer. Module-global read
         # at call time: tests monkeypatch CLOSE_TIMEOUT_SECS to shrink it.

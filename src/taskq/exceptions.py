@@ -1,7 +1,7 @@
 """Exception hierarchy for TaskQ.
 
 Mirrors: control-flow exceptions like Snooze and
-RetryAfter are not errors — they are signals the consumer translates into
+RetryAfter are not errors, they are signals the consumer translates into
 state transitions.
 """
 
@@ -116,7 +116,7 @@ class SingletonCollisionError(BackpressureError):
     ``schedule_to_close`` set, or when raised from the Layer 2 catch path.
 
     The ``heartbeat_interval * 4`` fallback is intentionally NOT
-    implemented — ``retry_after`` is computed from ``schedule_to_close`` only.
+    implemented, ``retry_after`` is computed from ``schedule_to_close`` only.
     Callers who need a poll cadence when ``retry_after is None`` should poll on
     their own schedule (research.md Gap 1, resolution path (a)). Reason:
     ``heartbeat_interval`` is not available at the backend enqueue boundary;
@@ -199,12 +199,12 @@ class UniqueForLockTimeoutError(TaskQError):
     error is a :class:`BackpressureError`: the caller's own load filled
     the contention scope (every producer of a capped actor), the cap
     check never ran, and the correct response is the same as for a cap
-    rejection — retry later or shed load. This error means the DEDUP
+    rejection, retry later or shed load. This error means the DEDUP
     ANSWER for one ``(schema, actor, identity_key)`` could not be
     determined in time: the contention scope is a single logical
     entity's identity (a same-key stampede, or a black-holed holder the
     server has not yet reaped), nothing about capacity is wrong, and the
-    correct response is to RETRY THE SAME ENQUEUE — by then the winner's
+    correct response is to RETRY THE SAME ENQUEUE, by then the winner's
     row is typically committed and the preflight returns it as a dedup
     hit, which is the very outcome the wait existed to produce.
     Deliberately NOT a :class:`BackpressureError` so handlers that react
@@ -246,15 +246,15 @@ class IdempotencyKeyLockTimeoutError(TaskQError):
     :class:`UniqueForLockTimeoutError` (single-flight identity): the
     speculative ``ON CONFLICT (idempotency_scope, idempotency_key) DO
     NOTHING`` token INSERT blocks on another transaction's UNCOMMITTED
-    same-pair row — Postgres must wait for that transaction's uniqueness
-    verdict — and on a transactional consumer the holder IS the actor's
+    same-pair row, Postgres must wait for that transaction's uniqueness
+    verdict, and on a transactional consumer the holder IS the actor's
     own open transaction, whose runtime is unbounded by default
     (``default_start_to_close`` = None). The wait is bounded by a
     ``lock_timeout`` scoped to the INSERT's savepoint; on expiry the
     DEDUP ANSWER for that one ``(idempotency_scope, idempotency_key)``
     pair could not be determined in time, which is
     :class:`UniqueForLockTimeoutError`'s exact situation and therefore
-    takes its treatment: retry the same enqueue — once the holder's
+    takes its treatment: retry the same enqueue, once the holder's
     transaction resolves, the retry either dedupes against the committed
     token or inserts fresh. Deliberately NOT a
     :class:`BackpressureError` (nothing about capacity is wrong) and
@@ -264,7 +264,7 @@ class IdempotencyKeyLockTimeoutError(TaskQError):
 
     This enqueue wrote nothing: the savepoint that carried the GUC and
     the INSERT rolled back first, so the caller's transaction remains
-    usable — the same caller-owned-transaction discipline the singleton
+    usable, the same caller-owned-transaction discipline the singleton
     collision's savepoint established.
     """
 
@@ -283,9 +283,9 @@ class IdempotencyKeyLockTimeoutError(TaskQError):
         super().__init__(
             f"enqueue for actor {actor!r} idempotency_key {idempotency_key!r} "
             f"(scope {idempotency_scope!r}) could not resolve the speculative token "
-            f"insert within {timeout_ms:g} ms — another transaction holds an "
+            f"insert within {timeout_ms:g} ms, another transaction holds an "
             "uncommitted same-pair token (on a transactional consumer, the actor's "
-            "own open transaction). Nothing was inserted; retry the same enqueue — "
+            "own open transaction). Nothing was inserted; retry the same enqueue, "
             "once the holder's transaction resolves, the retry dedupes or inserts."
         )
 
@@ -293,11 +293,11 @@ class IdempotencyKeyLockTimeoutError(TaskQError):
 class IdempotencyKeyActorMismatchError(TaskQError):
     """An idempotency hit resolved to a job of a DIFFERENT actor.
 
-    Uniqueness is ``(idempotency_scope, idempotency_key)`` — schema-wide, so
+    Uniqueness is ``(idempotency_scope, idempotency_key)``, schema-wide, so
     two actors sharing a key collide. A same-actor hit is a dedup and returns
-    the existing row; a cross-actor hit cannot be one — the caller asked for
+    the existing row; a cross-actor hit cannot be one, the caller asked for
     THIS actor's job and would receive a handle whose result is another
-    actor's, indistinguishable from a successful dedup — so it is refused.
+    actor's, indistinguishable from a successful dedup, so it is refused.
     The composite index here cannot include the actor without a migration,
     so the hit is checked after the fact and refused instead of silently
     resolved.
@@ -348,7 +348,7 @@ class BatchMaxPendingExceededError(BackpressureError):
     :meth:`~taskq.backend._protocol.Backend.enqueue_batch_fast` (and every
     client path riding them) when one or more actors' items exceed their
     effective ``max_pending``: the within-cap actors' items are inserted
-    FIRST, then this error raises naming the refusals — the bulk-tier
+    FIRST, then this error raises naming the refusals, the bulk-tier
     sibling of :class:`PartialBatchError`, which is the house shape for
     partial batch admission (succeeded count + failed indices + typed
     per-failure exceptions).
@@ -360,31 +360,31 @@ class BatchMaxPendingExceededError(BackpressureError):
 
     Fields:
 
-    - ``refusals`` — one :class:`MaxPendingExceededError` per over-cap
+    - ``refusals``, one :class:`MaxPendingExceededError` per over-cap
       actor (``actor``, ``current_count`` at the admission check, the
       effective ``max_pending``).
-    - ``refused_indices`` — actor name -> indices into the caller's items
+    - ``refused_indices``, actor name -> indices into the caller's items
       list of that actor's refused items. For
       :meth:`~taskq.client.JobsClient.enqueue_batch_streaming`'s chunked
       path the indices are stream-global and the stream stops at the
       refusing chunk: items after it were never attempted.
-    - ``admitted_count`` — how many items were admitted and inserted by
+    - ``admitted_count``, how many items were admitted and inserted by
       the raising call.
 
     Durability of the admitted items depends on the path: committed when
-    the call owned its transaction (no caller-supplied connection — one
+    the call owned its transaction (no caller-supplied connection, one
     pool transaction per call/chunk); inserted-but-uncommitted on a
     caller-supplied connection with an open transaction, where that
     transaction's commit/rollback decides. ``enqueue_batch`` /
     ``enqueue_batch_streaming`` with ``failure_policy`` or ``finalizer``
-    and no connection (the atomic path) never raises this error — its
+    and no connection (the atomic path) never raises this error, its
     single transaction keeps the legacy all-or-nothing contract and
     raises plain :class:`MaxPendingExceededError` with nothing committed.
 
     Deliberately NOT a :class:`MaxPendingExceededError` subclass: handlers
     written for the pre-partition contract assume that a raised
     ``MaxPendingExceededError`` left nothing enqueued. Under this error
-    part of the batch IS stored — a blind whole-batch retry would
+    part of the batch IS stored, a blind whole-batch retry would
     duplicate the admitted items. Catch this type explicitly and retry
     only the refused indices, or give items ``idempotency_key``s so a
     whole-batch retry deduplicates against the admitted rows.
@@ -394,8 +394,8 @@ class BatchMaxPendingExceededError(BackpressureError):
     base's contract ("the caller decides whether to retry, fail, or
     wait") predates partial admission. A generic backpressure handler
     that retries the whole batch MUST first consult
-    ``admitted_count`` / ``refused_indices`` — retry only the refused
-    items, or rely on ``idempotency_key``s — otherwise it duplicates
+    ``admitted_count`` / ``refused_indices``, retry only the refused
+    items, or rely on ``idempotency_key``s, otherwise it duplicates
     the admitted items on every retry.
     """
 
@@ -438,7 +438,7 @@ class PayloadValidationError(TaskQError):
 
     ``item_index`` is the failing item's position in the CALLER's
     coordinate space (the batch list / the streaming caller's stream)
-    whenever the raise site knows one — batch per-item guards and their
+    whenever the raise site knows one, batch per-item guards and their
     remapping boundaries populate it, so a handler or retry tool reads
     the position as a field instead of parsing the message. ``None``
     is the no-coordinate case: single-item enqueue, dispatch-time
@@ -469,7 +469,7 @@ def __getattr__(name: str) -> object:
     variant: ``include_url=False, include_input=False`` and no raw-payload
     embedding). It cannot be re-exported at module level here because
     ``taskq._validation`` imports ``PayloadValidationError`` from this
-    module — a module-level ``from taskq._validation import ...`` would be
+    module, a module-level ``from taskq._validation import ...`` would be
     circular and blow up whenever ``taskq._validation`` is imported first.
     PEP 562 module ``__getattr__`` resolves the name only when requested,
     by which time both modules are fully initialized.
@@ -496,18 +496,18 @@ class UnencodableValue(TypeError):
     """A value no UTF-8 JSON encoding accepts, so no PG ``text``/``jsonb``
     form of it exists.
 
-    The canonical case is a lone surrogate (``"\\udcff"`` — exactly what
+    The canonical case is a lone surrogate (``"\\udcff"``, exactly what
     ``os.fsdecode`` of a non-UTF-8 filename byte yields): a legal Python
     ``str`` that orjson refuses to encode. Non-``str`` dict keys and
     objects the fallback cannot convert raise the same class. Raised by
-    :func:`taskq._json.dumps` — the single serialization boundary — so
+    :func:`taskq._json.dumps`, the single serialization boundary, so
     every producer sees one class; subclassing :class:`TypeError` keeps
     the historical orjson contract every ``except TypeError`` caller and
     wording pin already relies on.
 
     Non-retryable wherever the producer already ran (an actor result): a
     re-run reproduces the same unencodable value, so retrying only burns
-    the remaining attempts — the exact burn :class:`ResultTooLarge`
+    the remaining attempts, the exact burn :class:`ResultTooLarge`
     exists to prevent. Classified alongside it in
     :meth:`taskq.retry.RetryClassifier.classify`. The durable-write
     boundary (:func:`taskq._json.dumps_jsonb_str`) instead escapes the
@@ -609,7 +609,7 @@ class ReservationUnavailable(TaskQError):
     When the upstream ``RateLimitDecision.retry_after`` is ``None``, callers
     MUST substitute ``DEFAULT_RESERVATION_BACKOFF``. When it is
     ``timedelta(0)`` (allowed decisions) callers MUST pass it through
-    unchanged — do NOT use a truthiness coalesce
+    unchanged, do NOT use a truthiness coalesce
     (``x or DEFAULT_RESERVATION_BACKOFF``) because ``timedelta(0)`` is falsy
     and would be wrongly replaced.
     """
@@ -630,7 +630,7 @@ class ReservationUnavailable(TaskQError):
 
 
 class RateLimitDependencyUnavailable(RuntimeError):
-    """A rate limiter's PG store was never wired — no pool was injected.
+    """A rate limiter's PG store was never wired, no pool was injected.
 
     Raised by every ratelimit PG delegate's no-pool branch (the token
     bucket's acquire/peek/reset/refund and both sliding-window styles)
@@ -638,7 +638,7 @@ class RateLimitDependencyUnavailable(RuntimeError):
     Redis→PG fallback funnelling into a fallback pool the caller never
     injected, but a directly PG-backed limiter with no pool is the same
     condition. The store dependency cannot answer, so the acquire
-    boundary's correct response is the limiter's fail-closed denial —
+    boundary's correct response is the limiter's fail-closed denial ,
     :data:`taskq.worker._consumer._RATE_LIMIT_DEPENDENCY_EXCEPTIONS`
     includes this class for exactly that; an escapee would instead be
     misattributed to the job as a failure (a retry attempt burnt and a
@@ -646,7 +646,7 @@ class RateLimitDependencyUnavailable(RuntimeError):
 
     Deliberately NOT a :class:`TaskQError`: subclassing
     :class:`RuntimeError` keeps the historical contract every existing
-    caller and wording pin relies on — the ``except RuntimeError`` /
+    caller and wording pin relies on, the ``except RuntimeError`` /
     ``pytest.raises(RuntimeError, match="pg_pool not injected...")`` pins
     and the chaos tier's fail-loud ``pytest.raises(RuntimeError)`` all
     hold unchanged (the same builtin-base precedent as
@@ -699,7 +699,7 @@ _ACTOR_CONFIG_DRIFT_HINT = (
 class ActorConfigDriftError(TaskQError):
     """One actor whose registered *structural* config differs from the stored row.
 
-    Only ``metadata`` is structural — no operator surface can move it, so a
+    Only ``metadata`` is structural, no operator surface can move it, so a
     mismatch there is always a correctness bug and refuses boot. The queue
     assignment is operator-owned once a row exists (moved by
     ``taskq actor-config move-queue``): a differing literal never raises,
@@ -757,7 +757,7 @@ class ActorHasActiveJobsError(ActorDeregistrationError):
     caller can decide whether to cancel them first or use ``force=True``.
 
     When *force* is ``True``, the message reflects that running jobs
-    cannot be cancelled by ``force=True`` — the caller must wait for
+    cannot be cancelled by ``force=True``, the caller must wait for
     them to finish or cancel them individually first.
     """
 
@@ -808,7 +808,7 @@ class ActorHasEnabledSchedulesError(ActorDeregistrationError):
 
 
 class ActorNotFoundError(ActorDeregistrationError):
-    """The actor_config row does not exist — nothing to deregister.
+    """The actor_config row does not exist, nothing to deregister.
 
     Currently raised only by :func:`deregister_actor`. Other ops
     (``get``, ``set_capacity``) return ``None`` for missing rows.
@@ -845,7 +845,7 @@ class PartialBatchError(TaskQError):
 
 
 class SchemaNotMigratedError(TaskQError):
-    """Backend raised ``UndefinedTableError`` — the TaskQ schema is missing.
+    """Backend raised ``UndefinedTableError``, the TaskQ schema is missing.
 
     Translated by the client layer (:mod:`taskq.client._jobs`) from an
     ``asyncpg.exceptions.UndefinedTableError`` on the enqueue/get/list/cancel
@@ -867,7 +867,7 @@ class EmptyFilterError(TaskQError):
     """Raised when cancel_where is called with a filter that has no predicates.
 
     A filter with no queue, status, actor, identity_key, batch_id, tags, or
-    active predicate would match every job in the table — almost certainly
+    active predicate would match every job in the table, almost certainly
     a bug. The guardrail is intentionally loud: the caller must add at least
     one predicate or explicitly bypass with ``allow_empty_filter=True``.
     """
@@ -890,18 +890,18 @@ class ScopedIdempotencyMigrationPendingError(TaskQError):
     passes through), BOTH the old global ``jobs_idempotency_key_uniq``
     index (on ``idempotency_key`` alone) and the new composite
     ``jobs_idempotency_scope_key_uniq`` index (on ``(idempotency_scope,
-    idempotency_key)``) exist simultaneously — this is deliberate, see the
+    idempotency_key)``) exist simultaneously, this is deliberate, see the
     "PHASE OBLIGATIONS" comment in the pre migration file, and is what
     keeps pre-this-release code's unscoped ``ON CONFLICT (idempotency_key)``
     working unmodified during the window.
 
     The cost of that safety: enqueuing the same ``idempotency_key`` under
     two *different* ``idempotency_scope`` values satisfies the new
-    composite index's ``ON CONFLICT`` target (no conflict there — the
+    composite index's ``ON CONFLICT`` target (no conflict there, the
     ``(scope, key)`` pair is new) but still violates the still-present old
     global index, which is not covered by that ``ON CONFLICT`` target.
     PostgreSQL raises ``UniqueViolationError`` for a conflict against a
-    non-arbiter unique index unconditionally — the library deliberately
+    non-arbiter unique index unconditionally, the library deliberately
     does NOT catch that and silently fall back to a different scope's row,
     because doing so would return the *wrong* job for the scope the caller
     actually asked for, silently, which is a worse failure mode than a
@@ -909,12 +909,12 @@ class ScopedIdempotencyMigrationPendingError(TaskQError):
     condition. Raised instead of letting the raw
     ``asyncpg.UniqueViolationError`` propagate.
 
-    Any call — scoped or unscoped — is affected whenever its
+    Any call, scoped or unscoped, is affected whenever its
     ``idempotency_key`` already exists under a *different* scope: an
     unscoped call that reuses a key first written under a non-default
     scope raises this error just as a scoped call reusing an unscoped
     key does (verified against live PostgreSQL). Only brand-new keys and
-    same-scope repeats are unaffected — a repeated key under the *same*
+    same-scope repeats are unaffected, a repeated key under the *same*
     scope (including two unscoped calls, which share the default ``''``
     scope) conflicts identically against both indexes for the exact same
     row, which ``ON CONFLICT DO NOTHING`` on the composite index resolves
@@ -923,7 +923,7 @@ class ScopedIdempotencyMigrationPendingError(TaskQError):
     Resolution: confirm every worker is running the release that shipped
     ``idempotency_scope``, then apply
     ``taskq migrate up --phase post`` (or a plain ``taskq migrate up``) to
-    drop the old index and activate scoped dedupe — or avoid passing
+    drop the old index and activate scoped dedupe, or avoid passing
     ``idempotency_scope`` until that migration has run.
     """
 
@@ -976,16 +976,16 @@ class DuplicateIdempotencyKeyError(TaskQError):
     :class:`IdempotencyKeyActorMismatchError` instead, the same refusal the
     single and batch tiers apply.
 
-    COPY has no ``ON CONFLICT`` arbiter, so a same-pair duplicate —
+    COPY has no ``ON CONFLICT`` arbiter, so a same-pair duplicate ,
     repeated within the batch or raced against a row the composite
-    ``jobs_idempotency_scope_key_uniq`` index already covers — aborts the
+    ``jobs_idempotency_scope_key_uniq`` index already covers, aborts the
     ENTIRE batch before a single row is written (all-or-nothing; the
     abort is deliberate bulk-import semantics, unchanged by the
     classification this error introduced). The non-fast paths never
     raise for this condition: their ``ON CONFLICT`` arbiter dedupes and
     RETURNS the existing row, so a typed domain error for a
     deduplication-constraint violation on the enqueue path does not exist
-    there — hence this class, expressing the same idempotency constraint
+    there, hence this class, expressing the same idempotency constraint
     at the bulk-import boundary in both the SQL and in-memory backends.
     Distinct from :class:`ScopedIdempotencyMigrationPendingError`, which is
     the rolling-deploy window's cross-scope reuse signal.
@@ -995,12 +995,12 @@ class DuplicateIdempotencyKeyError(TaskQError):
     (``first_duplicate_idempotency_pair``): the first item in batch order
     whose pair repeats an earlier item or is already stored. The PG path
     resolves the stored half with a targeted post-abort lookup inside the
-    caller's transaction scope — never by parsing the violation's detail
+    caller's transaction scope, never by parsing the violation's detail
     text, which renders values raw and unquoted (ambiguous under
     positional reading for comma-bearing scopes, unusable when localized
     or truncated). Both fields are ``None`` only when the conflicting
-    row could not be resolved at all — a committed-and-instantly-deleted
-    racer — where the detail-text match is the last word and still never
+    row could not be resolved at all, a committed-and-instantly-deleted
+    racer, where the detail-text match is the last word and still never
     guesses. ``detail`` carries the postgres detail verbatim when
     present.
 
@@ -1042,7 +1042,7 @@ class SubEnqueueError(TaskQError):
 
     ``failed_items`` carries each failed ``EnqueueArgs`` and the exception
     that caused the enqueue to fail.  The parent job has already been
-    marked succeeded — this exception signals that child jobs were lost.
+    marked succeeded, this exception signals that child jobs were lost.
     """
 
     def __init__(
@@ -1058,7 +1058,7 @@ class SubEnqueueError(TaskQError):
 class BatchAbortedError(TaskQError):
     """A batch was aborted because consecutive failures exceeded the threshold.
 
-    Running jobs are NOT cancelled by the abort — only pending and
+    Running jobs are NOT cancelled by the abort, only pending and
     scheduled jobs are cancelled.  Running jobs continue to completion.
     This matches the post-terminal-write hook design: the hook runs after
     the terminal write, so a job that was dispatched before the abort
@@ -1092,7 +1092,7 @@ class EmptyBatchError(TaskQError):
         super().__init__(
             f"batch {batch_id} has {actual} jobs, expected at least {expected}"
             + (
-                ' — jobs may have been pruned; pass on_empty="ok" to suppress'
+                ', jobs may have been pruned; pass on_empty="ok" to suppress'
                 " the no-batch-row variant"
                 if actual == 0
                 else ""

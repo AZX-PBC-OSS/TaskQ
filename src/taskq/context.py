@@ -41,11 +41,11 @@ class CancelOrigin(IntEnum):
     ``CancelledError``), so the distinction must come from the row's
     cancel bookkeeping rather than from the raised error's type.
 
-    NONE     — no cancel has been signalled.
-    OPERATOR — the row's ``cancel_requested_at`` was observed (the heartbeat
+    NONE    , no cancel has been signalled.
+    OPERATOR, the row's ``cancel_requested_at`` was observed (the heartbeat
                cancel poll), or the orchestrator's escalation probe found
                the row already under an operator cancel.
-    SHUTDOWN — the shutdown orchestration (SIGTERM / drain monitor) asked.
+    SHUTDOWN, the shutdown orchestration (SIGTERM / drain monitor) asked.
     """
 
     NONE = 0
@@ -60,7 +60,7 @@ _log: structlog.stdlib.BoundLogger = structlog.get_logger(__name__)
 class JobContext[P: BaseModel]:
     """Per-job execution context handed to worker actors.
 
-    The ``cancel_event`` field is a plain :class:`asyncio.Event` — never
+    The ``cancel_event`` field is a plain :class:`asyncio.Event`, never
     wrapped in a cancel scope or :class:`asyncio.TaskGroup` (
     PEP 789 mitigation). The consumer constructs a fresh event per
     attempt; the cancel-poll hook sets it on phase 1; user actor code
@@ -80,7 +80,7 @@ class JobContext[P: BaseModel]:
     :meth:`RetryAfter<taskq.exceptions.RetryAfter>` with
     ``consume_budget=False``) at dispatch time. Such a deferral refunds
     the claim's attempt increment, so ``attempt`` alone cannot count
-    snooze cycles — an actor that wants to snooze N times and then
+    snooze cycles, an actor that wants to snooze N times and then
     succeed keys off ``snooze_count``, not off ``attempt``.
     """
 
@@ -126,7 +126,7 @@ class JobContext[P: BaseModel]:
 
     def _set_cancel_origin(self, origin: CancelOrigin) -> None:
         """Stamp the cancel origin. Called by the cancel controller and the
-        shutdown orchestrator alongside ``cancel_event.set()`` — never by
+        shutdown orchestrator alongside ``cancel_event.set()``, never by
         actor code.
 
         ``object.__setattr__`` because the dataclass is frozen: the origin
@@ -147,7 +147,7 @@ class JobContext[P: BaseModel]:
         body exited" (true only once the thread finished): it parks on the
         handle, bounded by the remaining termination budget, before
         releasing the row, and holds the release back when the body never
-        exits (#232). ``object.__setattr__`` because the dataclass is
+        exits. ``object.__setattr__`` because the dataclass is
         frozen; the handle is dispatch state that arrives after
         construction, exactly as the origin stamp does.
         """
@@ -161,7 +161,7 @@ class JobContext[P: BaseModel]:
         The tx task unwinds asynchronously after ``tx_task.cancel()``:
         savepoint rollback, the enclosing transaction's rollback, and the
         release write must not land while that unwind is still in flight
-        (#232): the consumer's shutdown arm parks on this handle, bounded,
+        : the consumer's shutdown arm parks on this handle, bounded,
         before releasing the row. ``object.__setattr__`` because the
         dataclass is frozen; the handle is consumer state that arrives
         after construction.
@@ -180,7 +180,7 @@ class JobContext[P: BaseModel]:
         the underlying :class:`threading.Event` during phase 1.
 
         Returns:
-            ``True`` when cancellation has been requested — the sync
+            ``True`` when cancellation has been requested, the sync
             actor should return or raise immediately.
         """
         return self._abort_requested.is_set()
@@ -197,7 +197,7 @@ class JobContext[P: BaseModel]:
 
         Updates the in-memory coalesce buffer synchronously, then schedules a
         best-effort ``kind="progress"`` Redis publish as a background task
-        when a client is connected — this call never blocks on the network.
+        when a client is connected, this call never blocks on the network.
         Raises :class:`~taskq.exceptions.ProgressTooLarge` if the serialised
         ``data`` payload exceeds ``WorkerSettings.progress_data_max_bytes``.
 
@@ -212,8 +212,8 @@ class JobContext[P: BaseModel]:
         keys) where it previously would have been silently coerced.
 
         When no progress buffers are wired into this context (direct
-        actor testing, a miswired context), the call — the Redis publish
-        included — is a deliberate no-op; the first such dropped call
+        actor testing, a miswired context), the call, the Redis publish
+        included, is a deliberate no-op; the first such dropped call
         emits one debug-level notice so the no-op is discoverable, and
         later calls stay silent.
 
@@ -222,7 +222,7 @@ class JobContext[P: BaseModel]:
         Consumers reading the SSE/pub-sub stream already discard any event
         whose ``seq`` is not greater than the last one seen (see
         :mod:`taskq.web.progress`), so out-of-order or dropped publishes
-        never corrupt displayed state — the buffer mutation above (and the
+        never corrupt displayed state, the buffer mutation above (and the
         eventual Postgres flush) is the durable source of truth. Failures
         publishing to Redis are logged and recorded as a metric, never
         raised here.
@@ -235,7 +235,7 @@ class JobContext[P: BaseModel]:
             # must raise ``ProgressTooLarge`` synchronously to the actor
             # BEFORE the oversized dict enters the coalesce buffer (and from
             # there the durable PG jsonb). ``_publish_progress_event`` is
-            # fire-and-forget — a failure there is logged, never raised — so
+            # fire-and-forget, a failure there is logged, never raised, so
             # the cap cannot move below this call; and pydantic cannot reuse
             # pre-serialized bytes for the event's ``data`` field (a
             # ``Json[dict]``-typed field rejects dict construction outright
@@ -263,7 +263,7 @@ class JobContext[P: BaseModel]:
                 dumps(detail)
 
         if self._progress_buffers is None:
-            # No coalesce buffer wired, so this call — publish included —
+            # No coalesce buffer wired, so this call, publish included ,
             # is a deliberate no-op. The first dropped call reports itself
             # at debug level so a silent no-op is discoverable; the
             # once-latch keeps a tight progress loop from emitting one
@@ -311,7 +311,7 @@ class JobContext[P: BaseModel]:
                 task.add_done_callback(self._pending_publish_tasks.discard)
             else:
                 # No shared task set to hold a reference (e.g. a caller
-                # constructing JobContext directly without a WorkerDeps) —
+                # constructing JobContext directly without a WorkerDeps) ,
                 # fall back to awaiting inline rather than risking the
                 # scheduled task being garbage-collected mid-publish.
                 await coro

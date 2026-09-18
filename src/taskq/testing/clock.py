@@ -1,4 +1,4 @@
-"""FakeClock — deterministic time control for tests.
+"""FakeClock, deterministic time control for tests.
 
 Blueprint anchor: ("injected clock dependency").  ``FakeClock`` lives
 in ``taskq.testing.clock`` (not ``taskq.backend.clock``) so the production
@@ -41,7 +41,7 @@ class FakeClock:
         self._now = self._now + delta
 
     def monotonic(self) -> float:
-        """Elapsed seconds since ``_EPOCH`` — consistent with ``now()``.
+        """Elapsed seconds since ``_EPOCH``, consistent with ``now()``.
 
         Same wall-clock position always returns the same float; never
         decreases within a test.

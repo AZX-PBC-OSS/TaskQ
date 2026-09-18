@@ -6,7 +6,7 @@ as the first parameter, following the testing-module pattern.
 
 Time domain: every window predicate and TAT epoch runs on the PG server
 clock (``clock_timestamp()`` / ``EXTRACT(EPOCH FROM clock_timestamp())``)
-read in the same statement or transaction as the state it measures — the
+read in the same statement or transaction as the state it measures, the
 shared window state is server-domain by construction, so callers on nodes
 with divergent Python clocks are all measured against the same window.
 """
@@ -19,7 +19,7 @@ from uuid import UUID
 import structlog
 
 from taskq._advisory import (
-    _LOCK_TIMEOUT_SET_SQL,  # pyright: ignore[reportPrivateUsage]  # Why: the one implementation of the set_config statement shared with the enqueue path's bounded locks — a local copy would drift from the machinery it mirrors.
+    _LOCK_TIMEOUT_SET_SQL,  # pyright: ignore[reportPrivateUsage]  # Why: the one implementation of the set_config statement shared with the enqueue path's bounded locks, a local copy would drift from the machinery it mirrors.
     DEFAULT_ADVISORY_LOCK_CLIENT_BACKSTOP_SLACK_S,
     acquire_advisory_xact_lock_bounded,
 )
@@ -259,14 +259,14 @@ async def _refund_pg_log(
 
 #: Bounded wait (milliseconds) for the per-bucket log-style advisory
 #: lock. The lock is held across ONE fused statement (prune + admission
-#: insert + count + retry hint in a single round trip, #228), so a
+#: insert + count + retry hint in a single round trip), so a
 #: holder's critical section is one statement's execution time, and
 #: 5 s tolerates a burst of hundreds of queued racers while capping
 #: tail latency instead of letting it scale with the racer count, and a
 #: black-holed holder (dead TCP, no FIN) blocks its bucket for at most
 #: one budget instead of until the server's keepalives reap it. Same
 #: default as the enqueue path's DEFAULT_MAX_PENDING_LOCK_TIMEOUT_MS. A
-#: racer that exhausts the budget gets the limiter's DENIAL outcome —
+#: racer that exhausts the budget gets the limiter's DENIAL outcome ,
 #: fail closed, never an admission. ``0`` (or less) waits indefinitely,
 #: matching the ``lock_timeout`` GUC convention used by migrate.py.
 #: The shipped ceiling; an operator retunes it with
@@ -275,7 +275,7 @@ DEFAULT_SLIDING_WINDOW_LOCK_TIMEOUT_MS: float = 5000.0
 
 #: The acquire mechanics (try-lock fast path, savepoint + lock_timeout +
 #: blocking contended tier, client-side backstop) live in
-#: ``taskq._advisory`` — one implementation shared with the enqueue
+#: ``taskq._advisory``, one implementation shared with the enqueue
 #: path's locks; this module contributes only the site-specific budget
 #: above and the denial-on-exhaustion semantics at the call site.
 
@@ -290,19 +290,19 @@ async def _acquire_pg_log(
 ) -> RateLimitDecision:
     """Acquire log-style against PG.
 
-    Every window predicate and the inserted ``ts`` are ``clock_timestamp()``
-    — the PG server clock owns the shared window state, so nodes with
-    divergent Python clocks all get measured against the same window.
+     Every window predicate and the inserted ``ts`` are ``clock_timestamp()``
+    , the PG server clock owns the shared window state, so nodes with
+     divergent Python clocks all get measured against the same window.
 
-    The per-bucket advisory lock is acquired with the two-tier bounded
-    acquire (``acquire_advisory_xact_lock_bounded`` from
-    ``taskq._advisory``) for the operator's
-    ``sliding_window_lock_timeout_ms`` budget, defaulting to
-    :data:`DEFAULT_SLIDING_WINDOW_LOCK_TIMEOUT_MS`. On budget
-    exhaustion the acquire FAILS CLOSED: it returns the limiter's denial
-    outcome — ``allowed=False`` with a retry hint, never an exception and
-    never an admission — so a racer that could not check the window can
-    never over-admit past the limit.
+     The per-bucket advisory lock is acquired with the two-tier bounded
+     acquire (``acquire_advisory_xact_lock_bounded`` from
+     ``taskq._advisory``) for the operator's
+     ``sliding_window_lock_timeout_ms`` budget, defaulting to
+     :data:`DEFAULT_SLIDING_WINDOW_LOCK_TIMEOUT_MS`. On budget
+     exhaustion the acquire FAILS CLOSED: it returns the limiter's denial
+     outcome, ``allowed=False`` with a retry hint, never an exception and
+     never an admission, so a racer that could not check the window can
+     never over-admit past the limit.
     """
     if pg_pool is None:
         raise RateLimitDependencyUnavailable("pg_pool not injected for postgres backend")
@@ -317,7 +317,7 @@ async def _acquire_pg_log(
     window_ms = int(self._window.total_seconds() * 1000)
     schema = settings.schema_name
 
-    # ONE fused statement for the whole locked critical section (#228):
+    # ONE fused statement for the whole locked critical section:
     # the pre-fused shape spent DELETE + INSERT + COUNT (+ retry SELECT on
     # denial) as four separate round trips under the advisory lock,
     # and lock hold time linear in round trips is exactly the contention tail
@@ -374,7 +374,7 @@ async def _acquire_pg_log(
     count_after: int
 
     # Serialise acquirers per bucket: under READ COMMITTED the DELETE +
-    # INSERT ... WHERE count < N pair is not serialised — two concurrent
+    # INSERT ... WHERE count < N pair is not serialised, two concurrent
     # acquires can each count the pre-insert window and both insert,
     # over-admitting past the limit. A transaction-scoped advisory lock
     # makes the whole delete/count/insert sequence atomic per bucket;
@@ -382,7 +382,7 @@ async def _acquire_pg_log(
     #
     # The key is schema-qualified (same shape as the bucket's Redis key,
     # ``taskq:{schema}:sw:{name}``): advisory locks are database-scoped,
-    # so a bare bucket name is shared by every schema in the database —
+    # so a bare bucket name is shared by every schema in the database ,
     # two deployments in one database would serialize on one lock while
     # operating on different ``"{schema}".rate_limit_window_entries``
     # tables. Qualifying keeps the lock's scope identical to the table
@@ -390,11 +390,11 @@ async def _acquire_pg_log(
     #
     # Why a bounded TWO-TIER acquire and not the unbounded blocking
     # acquire this path once took (the same machinery as the enqueue
-    # path's locks — see acquire_advisory_xact_lock_bounded in
+    # path's locks, see acquire_advisory_xact_lock_bounded in
     # taskq._advisory for the measured rationale): every racer on this lock holds it across
     # its own DELETE + count/INSERT round trips, so an unbounded
     # blocking acquire makes N concurrent dispatches of a rate-limited
-    # actor queue on one lock — tail latency linear in the racer count,
+    # actor queue on one lock, tail latency linear in the racer count,
     # and a black-holed holder (dead TCP, no FIN; the server reaps it
     # only via keepalives) blocks the whole bucket's dispatch until
     # then. The two-tier acquire keeps the happy path at exactly one
@@ -408,17 +408,17 @@ async def _acquire_pg_log(
     #
     # On budget exhaustion the acquire FAILS CLOSED: a racer that could
     # not check the window must never over-admit, so it returns the
-    # limiter's denial outcome — RateLimitDecision allowed=False with a
-    # retry hint — never an exception, never an admission. A lock-timeout
+    # limiter's denial outcome, RateLimitDecision allowed=False with a
+    # retry hint, never an exception, never an admission. A lock-timeout
     # denial is NOT an empty bucket; operators should read it the same
-    # way as any other denial (backpressure — the dispatch layer snoozes
+    # way as any other denial (backpressure, the dispatch layer snoozes
     # and re-promotes the job either way), with the distinct
     # ratelimit-lock-timeout warning below as the signal that the bucket
     # (or its holder) is contended or sick rather than merely busy. No
     # counter bump: taskq.backpressure.errors is enqueue-scoped
     # (actor-keyed); the limiter's denial channel is the
     # rate-limit-decision log event, which this denial flows through
-    # like any other. retry_after carries one more budget — the holder's
+    # like any other. retry_after carries one more budget, the holder's
     # critical section is a few round trips, so if this budget expired
     # the honest earliest re-check is after another full one.
     lock_key = f"taskq:{schema}:sw:{self._name}"
@@ -494,7 +494,7 @@ async def _acquire_pg_gcra(
     """Acquire GCRA-style against PG.
 
     ONE fused ``INSERT … ON CONFLICT DO UPDATE … WHERE … RETURNING``
-    (#228): the pre-fused shape spent a preseed, a blocking ``SELECT …
+    : the pre-fused shape spent a preseed, a blocking ``SELECT …
     FOR UPDATE``, and a TAT upsert (BEGIN + set_config + SAVEPOINT
     around them, 8 round trips in bounded mode); the conflict arm now
     advances the TAT server-side under the row lock it takes itself,
@@ -513,7 +513,7 @@ async def _acquire_pg_gcra(
     admission through this row lock, so an unbounded wait would let one
     black-holed holder (dead TCP, no FIN) stall its bucket's admission
     until the server's keepalives reap it. On budget exhaustion the
-    acquire FAILS CLOSED — the limiter's denial outcome, ``allowed=False``
+    acquire FAILS CLOSED, the limiter's denial outcome, ``allowed=False``
     with a retry hint of one more budget, never an exception and never
     an admission: a racer that could not read the TAT can never advance
     it. ``lock_timeout_ms <= 0`` waits indefinitely (one autocommit
@@ -534,7 +534,7 @@ async def _acquire_pg_gcra(
     delay_tolerance_seconds = window_seconds
     schema = settings.schema_name
 
-    # ONE fused upsert (#228): the pre-fused shape spent preseed + SELECT
+    # ONE fused upsert: the pre-fused shape spent preseed + SELECT
     # FOR UPDATE + upsert (BEGIN + set_config + SAVEPOINT around them):
     # 8 round trips in bounded mode. The conflict arm computes the TAT
     # advance server-side, and the ALLOWANCE is the update's WHERE

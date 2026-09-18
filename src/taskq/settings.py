@@ -75,7 +75,7 @@ class OIDCSettings(DotEnvConfig):
     # repr reaches logs, debuggers and crash tracebacks; SecretStr masks
     # itself there and in every error path, loads straight from the env var
     # (a raw str is coerced on load and on a str default), and unwraps only
-    # at the explicit get_secret_value() boundary. client_id stays plain —
+    # at the explicit get_secret_value() boundary. client_id stays plain ,
     # a public OAuth2 identifier, not a credential.
     client_secret: SecretStr = Field(default="", description="OAuth2 client secret.")
     redirect_uri: str = Field(
@@ -133,7 +133,7 @@ class SAMLSettings(DotEnvConfig):
         description="SP cert (signed requests / encrypted assertions).",
     )
     # Why SecretStr: the SP's private key is the secret half of the keypair
-    # (its public half sp_x509_cert and the IdP's idp_x509_cert stay plain —
+    # (its public half sp_x509_cert and the IdP's idp_x509_cert stay plain ,
     # published certificates, not credentials); session_secret signs session
     # cookies. Same dotenvmodel-native masking rationale as OIDCSettings.
     sp_private_key: SecretStr | None = Field(
@@ -226,7 +226,7 @@ def _schema_name_validator(value: str, ctx: ValidatorContext) -> str:
         )
     if len(value) > 63:
         # NAMEDATALEN is 64 including the terminator, so Postgres silently
-        # truncates longer identifiers — while Redis channel templates
+        # truncates longer identifiers, while Redis channel templates
         # interpolate the full string, quietly diverging between stores.
         # A length cap belongs in this hook, not `max_length=`, because
         # built-in constraints are skipped under validate=False (see above).
@@ -251,7 +251,7 @@ class _NoEnvFilesWarningFilter(logging.Filter):
     Why a logger-level filter works: every dotenvmodel 1.x module logs
     through the single ``"dotenvmodel"`` logger (``LOGGER_NAME`` in
     ``dotenvmodel/_constants.py``; ``loading.py`` hardcodes the same
-    string) — there are no child loggers, so one filter sees all of its
+    string), there are no child loggers, so one filter sees all of its
     records. Why prefix matching rather than raising the logger level:
     the level approach swallows *every* dotenvmodel warning, hiding real
     misconfiguration (e.g. an invalid ``DOTENV_OVERRIDE`` value falling
@@ -477,10 +477,10 @@ class TaskQSettings(DotEnvConfig):
         "'none' (default, unauthenticated/BYO-auth), 'oidc' (taskq[oidc]), "
         "or 'saml' (taskq[saml]). See docs/guides/sso.md.",
     )
-    # Why SecretStr: the bearer credential for the health/metrics routes —
+    # Why SecretStr: the bearer credential for the health/metrics routes ,
     # same dotenvmodel-native masking rationale as the SSO secrets. Two
     # gotchas pinned by the cli's unwrap: a SecretStr is always truthy (even
-    # the empty default), and an unset env var loads the field as None —
+    # the empty default), and an unset env var loads the field as None ,
     # hence the Optional annotation and the None-safe set-check. DSN fields
     # stay their BaseDsn types (their own repr already masks passwords).
     health_token: SecretStr | None = Field(
@@ -543,7 +543,7 @@ class TaskQSettings(DotEnvConfig):
     )
 
     # -- Postgres statement cache (asyncpg) -------------------------------
-    # Defaults come from taskq.connections's module constants — the same
+    # Defaults come from taskq.connections's module constants, the same
     # values every TaskQ-built pool passes explicitly at its construction
     # site (worker role pools, the per-slot transaction pool, the TaskQ
     # client pool, the admin UI pool). One source of truth: a tuning change
@@ -555,7 +555,7 @@ class TaskQSettings(DotEnvConfig):
         ge=0,
         description="TASKQ_STATEMENT_CACHE_SIZE. Size of the per-connection "
         "prepared-statement LRU asyncpg keeps on every pool TaskQ builds. "
-        "asyncpg's default of 100 thrashes on TaskQ's read paths — "
+        "asyncpg's default of 100 thrashes on TaskQ's read paths, "
         "list_jobs alone renders 384+ filter-combination SQL variants (a "
         "measured 90-96% steady-state miss rate, each miss re-paying the "
         "Parse/Describe round trips; see benchmarks/ab_stmt_cache.py and "
@@ -563,7 +563,7 @@ class TaskQSettings(DotEnvConfig):
         "0 disables the statement cache. Applies only to pools TaskQ "
         "builds: bring-your-own pools (WorkerConnections factories, a "
         "caller-supplied pool) must pass the same create_pool kwargs "
-        "themselves — TaskQ cannot resize a pool it did not build.",
+        "themselves, TaskQ cannot resize a pool it did not build.",
     )
     max_cached_statement_lifetime: int = Field(
         default=DEFAULT_MAX_CACHED_STATEMENT_LIFETIME,
@@ -581,7 +581,7 @@ class TaskQSettings(DotEnvConfig):
     # -- Enqueue advisory-lock budgets ------------------------------------
     # Defaults are the values of taskq.backend._enqueue's
     # DEFAULT_MAX_PENDING_LOCK_TIMEOUT_MS / DEFAULT_UNIQUE_FOR_LOCK_TIMEOUT_MS
-    # / DEFAULT_IDEMPOTENCY_LOCK_TIMEOUT_MS (5 s each) — written as literals,
+    # / DEFAULT_IDEMPOTENCY_LOCK_TIMEOUT_MS (5 s each), written as literals,
     # not imported, because that module binds the asyncpg driver at import
     # time and this module is imported by the driver-free testing boundary
     # (taskq.testing.settings). The PostgresBackend enqueue wrappers read
@@ -606,20 +606,20 @@ class TaskQSettings(DotEnvConfig):
         description="TASKQ_MAX_PENDING_LOCK_TIMEOUT_MS (milliseconds). Bounded "
         "wait for the max_pending advisory lock on the single-enqueue path "
         "(the count-then-insert serialization per capped actor). Exhaustion "
-        "raises MaxPendingLockTimeoutError — the same typed backpressure "
+        "raises MaxPendingLockTimeoutError, the same typed backpressure "
         "treatment as a cap rejection, and denials consume retry budget, so "
         "widen this during an outage that slows lock holders rather than "
         "letting the fixed ceiling convert slow holders into refused "
         "enqueues. Widening past the default re-derives the per-query bound "
         "of every pool the TaskQ client builds itself, so the wider budget "
         "is delivered end to end; at or below the default the client path "
-        "delivers the budget clamped to 80% of that pool bound — a share of "
+        "delivers the budget clamped to 80% of that pool bound, a share of "
         "the 10 s shipped bound exceeds the 5 s default budget, so the "
         "defaults are delivered in full, and the margin is what the "
         "server-side lock_timeout needs to fire "
         "before the pool's own timer. 0 or less waits indefinitely "
         "server-side (the lock_timeout GUC convention shared with the "
-        "sibling budgets) — a pool TaskQ builds still applies its per-query "
+        "sibling budgets), a pool TaskQ builds still applies its per-query "
         "bound, so set a large finite value there instead.",
     )
     unique_for_lock_timeout_ms: float = Field(
@@ -639,19 +639,19 @@ class TaskQSettings(DotEnvConfig):
         "below the default the client path delivers the budget clamped to "
         "80% of that pool bound. 0 or less waits indefinitely server-side "
         "(the lock_timeout GUC convention shared with the sibling budgets) "
-        "— a pool TaskQ builds still applies its per-query bound, so set a "
+        ", a pool TaskQ builds still applies its per-query bound, so set a "
         "large finite value there instead.",
     )
     idempotency_lock_timeout_ms: float = Field(
         default=5000.0,
         description="TASKQ_IDEMPOTENCY_LOCK_TIMEOUT_MS (milliseconds). Bounded "
         "wait for the idempotency token INSERT's speculative-lock conflict "
-        "on the single-enqueue path — another transaction's UNCOMMITTED row "
+        "on the single-enqueue path, another transaction's UNCOMMITTED row "
         "with the same (idempotency_scope, idempotency_key) pair. On a "
         "transactional consumer the holder is the actor's own open "
         "transaction (unbounded by default), so this budget bounds the "
         "VICTIM; exhaustion raises IdempotencyKeyLockTimeoutError, meaning "
-        "the dedup answer could not be determined in time — retry the same "
+        "the dedup answer could not be determined in time, retry the same "
         "enqueue, which typically dedupes against the now-visible winner. "
         "Widening past the default re-derives the per-query bound of every "
         "pool the TaskQ client builds itself (see "
@@ -659,7 +659,7 @@ class TaskQSettings(DotEnvConfig):
         "below the default the client path delivers the budget clamped to "
         "80% of that pool bound. 0 or less waits indefinitely server-side "
         "(the lock_timeout GUC convention shared with the sibling budgets) "
-        "— a pool TaskQ builds still applies its per-query bound, so set a "
+        ", a pool TaskQ builds still applies its per-query bound, so set a "
         "large finite value there instead.",
     )
 
@@ -678,7 +678,7 @@ class TaskQSettings(DotEnvConfig):
 
         All parameters are forwarded to ``DotEnvConfig.load`` unchanged
         (resolution: explicit argument > ``DOTENV_*`` env var > default).
-        ``override=None`` keeps dotenvmodel's default precedence — the
+        ``override=None`` keeps dotenvmodel's default precedence, the
         process environment beats ``.env`` files; pass ``override=True``
         or set ``DOTENV_OVERRIDE=true`` to make ``.env`` files win instead.
         ``read_dotfiles=False`` / ``read_environ=False`` disable the
@@ -735,7 +735,7 @@ class TaskQSettings(DotEnvConfig):
 
         Why this exists: ``load()`` validates EVERY field, so a caller
         that needs one value (the client's schema default, its lock-budget
-        overlay) would fail on a malformed setting it never uses (#251).
+        overlay) would fail on a malformed setting it never uses.
         This method resolves the value; validation stays the caller's,
         scoped to the fields it actually consumes.
 
@@ -984,7 +984,7 @@ class WorkerSettings(TaskQSettings):
         "command_timeout upward from a widened token_bucket_lock_timeout_ms "
         "or sliding_window_lock_timeout_ms (max(configured, widest budget / "
         "0.8), connections.lock_budget_command_timeout_secs) the same way "
-        "the client pool follows the enqueue lock budgets — a widened "
+        "the client pool follows the enqueue lock budgets, a widened "
         "admission budget is honored end to end instead of being silently "
         "truncated by the pool's own client-side timer. The leader/notify "
         "dedicated connections keep the configured value: no admission "
@@ -1005,7 +1005,7 @@ class WorkerSettings(TaskQSettings):
         "or above the number of dispatchers that routinely poll the same "
         "actor+queue. A round that finds its whole window locked expands it "
         "geometrically (up to 8x) while claimable rows remain, which covers "
-        "transient oversubscription — the setting governs the steady state "
+        "transient oversubscription, the setting governs the steady state "
         "so the common case never pays the expansion round trip.",
     )
     dispatch_scope_by_home_queue: bool = Field(
@@ -1021,12 +1021,12 @@ class WorkerSettings(TaskQSettings):
     # -- Admission row-lock budgets ---------------------------------------
     # Defaults are the values of the rate-limit package's
     # DEFAULT_TOKEN_BUCKET_LOCK_TIMEOUT_MS /
-    # DEFAULT_SLIDING_WINDOW_LOCK_TIMEOUT_MS (5 s each) — written as
+    # DEFAULT_SLIDING_WINDOW_LOCK_TIMEOUT_MS (5 s each), written as
     # literals, not imported, because of dependency direction, not driver
     # binding (unlike the enqueue budgets above: both ratelimit modules
     # keep their asyncpg import under TYPE_CHECKING). Those modules
-    # CONSUME this settings object — their PG acquire and refund paths
-    # read these fields off it — and importing anything under
+    # CONSUME this settings object, their PG acquire and refund paths
+    # read these fields off it, and importing anything under
     # taskq.ratelimit runs the package's DI provider, which imports this
     # module at runtime, so a runtime import here would close a
     # settings → ratelimit → settings cycle. Drift between the literals
@@ -1049,17 +1049,17 @@ class WorkerSettings(TaskQSettings):
         "than its 5.0s floor before the server-side lock_timeout could fire: "
         "widening this past the default re-derives the TaskQ-built dispatcher "
         "pool's per-query bound upward (budget / 0.8), so the wider budget is "
-        "delivered end to end — the same reconciliation the client pool "
+        "delivered end to end, the same reconciliation the client pool "
         "applies to the enqueue lock budgets. A caller-supplied dispatcher "
         "pool keeps its own timeouts; size it above the budgets you set. 0 or "
         "less waits indefinitely server-side (the lock_timeout GUC convention "
-        "shared with the sibling budgets) — a TaskQ-built pool still applies "
+        "shared with the sibling budgets), a TaskQ-built pool still applies "
         "its per-query bound, so set a large finite value there instead.",
     )
     sliding_window_lock_timeout_ms: float = Field(
         default=5000.0,
         description="TASKQ_SLIDING_WINDOW_LOCK_TIMEOUT_MS (milliseconds). "
-        "Bounded wait for the sliding window's admission lock on Postgres — "
+        "Bounded wait for the sliding window's admission lock on Postgres, "
         "the per-bucket advisory lock on the log style and the "
         "rate_limit_buckets row lock on the GCRA style. Separate knob from "
         "token_bucket_lock_timeout_ms because the two limiter shapes hold "
@@ -1070,11 +1070,11 @@ class WorkerSettings(TaskQSettings):
         "budget wider than its 5.0s floor before the server-side lock_timeout "
         "could fire: widening this past the default re-derives the "
         "TaskQ-built dispatcher pool's per-query bound upward (budget / 0.8), "
-        "so the wider budget is delivered end to end — the same "
+        "so the wider budget is delivered end to end, the same "
         "reconciliation the client pool applies to the enqueue lock budgets. "
         "A caller-supplied dispatcher pool keeps its own timeouts; size it "
         "above the budgets you set. 0 or less waits indefinitely server-side "
-        "(the lock_timeout GUC convention shared with the sibling budgets) — "
+        "(the lock_timeout GUC convention shared with the sibling budgets), "
         "a TaskQ-built pool still applies its per-query bound, so set a large "
         "finite value there instead.",
     )
@@ -1088,11 +1088,11 @@ class WorkerSettings(TaskQSettings):
         default=2.0,
         gt=0.0,
         description="TASKQ_HEARTBEAT_COMMAND_TIMEOUT (seconds). Per-query "
-        "timeout for the heartbeat pool — and, since the #227 fix round, "
+        "timeout for the heartbeat pool, and, since the single-command-budget fix round, "
         "the SINGLE command budget the heartbeat tick wraps around its "
         "whole command sequence (BEGIN, the liveness write, the lease "
         "renewals, the still-held probe, the cancel hook's statements, "
-        "COMMIT — each statement's own per-query timeout stays as the "
+        "COMMIT, each statement's own per-query timeout stays as the "
         "inner backstop). A tick whose statements legitimately need more "
         "than one of these in total now fails fast instead of dragging "
         "the beat out past the lease model's gap bound: raise this for a "
@@ -1114,7 +1114,7 @@ class WorkerSettings(TaskQSettings):
         "LOOP-scope asyncpg.Connection is registered, this also sizes the "
         "worker's per-slot transaction pool (max_concurrency + 1 "
         "connections, fully warmed at boot), so a change requires a "
-        "worker restart and moves the direct-connection budget — see "
+        "worker restart and moves the direct-connection budget, see "
         "docs/guides/deployment.md. Boot-only: no reload path re-reads "
         "settings.",
     )
@@ -1149,7 +1149,7 @@ class WorkerSettings(TaskQSettings):
         "at the defaults (3 failures, 2 s command timeout) roughly six "
         "seconds of Postgres unavailability ends every worker at once, and "
         "the orchestrator restarts them into a recovered database while "
-        "crash reclaim re-pends their leases — expect a restart herd on a "
+        "crash reclaim re-pends their leases, expect a restart herd on a "
         "Postgres failover, sized by your replica count.",
     )
 
@@ -1158,7 +1158,7 @@ class WorkerSettings(TaskQSettings):
         default=30.0,
         ge=1.0,
         description="TASKQ_SWEEP_INTERVAL (seconds). Period between leader "
-        "sweep loop iterations — reclaim_expired_locks, "
+        "sweep loop iterations, reclaim_expired_locks, "
         "sweep_expired_results, cleanup_stale_workers, and idle keyed-ref "
         "eviction. Lower values reduce recovery latency for crashed workers "
         "at the cost of more frequent PG queries.",
@@ -1193,7 +1193,7 @@ class WorkerSettings(TaskQSettings):
         "the reduced event-writer batch tier: once a worker's sweeps trip "
         "the batch-size breaker, batches shrink to "
         "max(1, event_writer_batch_size / this). Only a degradation ceiling "
-        "— raising it makes the degraded tier closer to the normal one.",
+        ", raising it makes the degraded tier closer to the normal one.",
     )
     sweep_breaker_failure_threshold: int = Field(
         default=3,
@@ -1225,7 +1225,7 @@ class WorkerSettings(TaskQSettings):
         validator=_non_negative_timedelta,
         description="TASKQ_EVENT_RETENTION_PERIOD. The age at which "
         "job_events rows are deleted regardless of parent-job status. "
-        "timedelta(0) DISABLES the sweep — a deliberate inversion of the "
+        "timedelta(0) DISABLES the sweep, a deliberate inversion of the "
         "prune family's zero-means-archive-immediately: for a brand-new "
         "deletion loop the safe misconfiguration is off. The "
         "crash-reclaim outbox slice (kind='state_change' AND "
@@ -1247,9 +1247,9 @@ class WorkerSettings(TaskQSettings):
         default=DEFAULT_KEYED_ROW_RECLAIM_PERIOD,
         validator=_non_negative_timedelta,
         description="TASKQ_KEYED_ROW_RECLAIM_PERIOD. The idle age at which "
-        "fleet-reclaimable keyed rows — keyed reservation_slots rows and "
+        "fleet-reclaimable keyed rows, keyed reservation_slots rows and "
         "PG-state-backed keyed rate_limit_buckets rows, marked by the "
-        "keyed column — are deleted by the maintenance leader's "
+        "keyed column, are deleted by the maintenance leader's "
         "sweep_idle_keyed_rows, one bounded committed batch per tick per "
         "table. Why a fleet sweep exists: keyed rows orphan when the "
         "worker that materialised them dies, because the in-process "
@@ -1258,7 +1258,7 @@ class WorkerSettings(TaskQSettings):
         "(refreshed by the acquire/release/upsert statements that already "
         "touch them) is the fleet-wide signal. Static buckets and "
         "redis-backend keyed rows are never deleted by this sweep at any "
-        "setting. timedelta(0) DISABLES the sweep — the same "
+        "setting. timedelta(0) DISABLES the sweep, the same "
         "zero-means-off sentinel event_retention_period uses, so a "
         "brand-new deletion loop's safe misconfiguration is off. "
         "Negative values raise at settings load.",
@@ -1268,7 +1268,7 @@ class WorkerSettings(TaskQSettings):
         ge=1,
         description="TASKQ_KEYED_ROW_RECLAIM_BATCH_SIZE. BUCKETS (rows, "
         "for rate_limit_buckets) the fleet reclaim sweep deletes per "
-        "committed batch per tick — the constant-size bound that keeps "
+        "committed batch per tick, the constant-size bound that keeps "
         "one tick's DELETE independent of the dead-worker backlog it is "
         "recovering from, the same doctrine as "
         "event_retention_batch_size.",
@@ -1303,10 +1303,10 @@ class WorkerSettings(TaskQSettings):
         "cancellation_grace + cleanup_grace < termination_grace - 5, and "
         "should cover the modelled worst case cancellation_grace + "
         "cleanup_grace + the ~42s bounded-close teardown tail (see "
-        "WorkerSettings.worst_case_shutdown_seconds) — the default does: "
+        "WorkerSettings.worst_case_shutdown_seconds), the default does: "
         "30 + 10 + 42 = 82s. The ~87s sibling-crash path (nine closes, "
         "including the conditional per-slot pool) exceeds the default by "
-        "2s on per-slot workers — that path is the documented caveat the "
+        "2s on per-slot workers, that path is the documented caveat the "
         "model understates; raise this setting when per-slot workers need "
         "a tight crash budget. A value below the worst case still "
         "loads but logs shutdown-budget-exceeds-termination-grace at "
@@ -1385,7 +1385,7 @@ class WorkerSettings(TaskQSettings):
         "is reached, new keyed reservations raise ReservationUnavailable. "
         "Tune to your workload's expected key cardinality: the guardrail is "
         "PER PROCESS, so adding replicas does not raise the effective "
-        "tenant-key fleet capacity — a tenant fleet above the limit gets "
+        "tenant-key fleet capacity, a tenant fleet above the limit gets "
         "denials on every replica at once.",
     )
     max_keyed_rate_limits: int = Field(
@@ -1412,10 +1412,10 @@ class WorkerSettings(TaskQSettings):
         "shape as TASKQ_HEALTH_PORT. Needs the [prometheus] extra and "
         "TASKQ_OTEL_AUTOCONFIGURE=true: the `taskq worker` CLI then adds a "
         "PrometheusMetricReader to the SDK meter provider it installs, so "
-        "every taskq_* / messaging_* series this worker records — the "
+        "every taskq_* / messaging_* series this worker records, the "
         "leader-sampled gauges and the dispatch/consume counters the admin "
-        "process never sees — is served at http://<host>:<port>/metrics. "
-        "See observability.md — Serving the metrics.",
+        "process never sees, is served at http://<host>:<port>/metrics. "
+        "See observability.md, Serving the metrics.",
     )
 
     # -- Health server ------------------------------------------
@@ -1449,7 +1449,7 @@ class WorkerSettings(TaskQSettings):
         "/tasks asyncio stack-dump endpoint on the Unix health socket. "
         "Off by default: the dump reveals code structure, file paths, and "
         "task names (never locals or payload values). Enabling it also "
-        "tightens the socket to owner-only (no group/other access). Unix socket only — "
+        "tightens the socket to owner-only (no group/other access). Unix socket only, "
         "never mounted on the admin UI surface.",
     )
     health_host: str = Field(
@@ -1581,7 +1581,7 @@ class WorkerSettings(TaskQSettings):
         description="TASKQ_WATCHDOG_STALE_FLOOR (seconds). Minimum "
         "staleness budget for any loop (period x grace_factor, floored at "
         "this value). Guards tiny intervals against false trips under "
-        "host starvation — a terminal detector must never fire on load.",
+        "host starvation, a terminal detector must never fire on load.",
     )
     watchdog_check_interval: float = Field(
         default=1.0,
@@ -1783,7 +1783,7 @@ class WorkerSettings(TaskQSettings):
         "knob. Currently INERT: the prune sweep reads the four per-status "
         "fields below, and together they cover every terminal status "
         "(succeeded, failed, cancelled, crashed, abandoned), so no status "
-        "ever falls back here — setting this value changes nothing today. "
+        "ever falls back here, setting this value changes nothing today. "
         "Size the per-status fields instead; see "
         "TASKQ_PRUNE_RETENTION_SUCCEEDED. Negative values raise "
         "ConstraintViolationError at settings load.",
@@ -1794,18 +1794,18 @@ class WorkerSettings(TaskQSettings):
         description="TASKQ_PRUNE_RETENTION_SUCCEEDED. How long a succeeded "
         "job stays in the hot jobs table before the daily prune sweep "
         "moves it to jobs_archive (where archive_retention_period then "
-        "governs hard-deletion — 365 d by default, so history is not lost "
+        "governs hard-deletion, 365 d by default, so history is not lost "
         "at prune time). Sizing is a hot-table trade: succeeded rows are "
         "usually the bulk of terminal volume, and every day of retention "
         "keeps roughly a day's terminal throughput in the hot table the "
         "admin /jobs list reads (at 100k jobs/day the default 30 d holds "
-        "~3M rows — see the storage-planning note in configuration.md). "
+        "~3M rows, see the storage-planning note in configuration.md). "
         "Lower it for high-volume actors whose "
         "successes nobody audits (the per-actor metadata retention_days "
         "override shortens it further for one actor); raise it when "
         "operators routinely inspect successful runs older than a month "
         "without querying the archive. timedelta(0) archives succeeded "
-        "jobs at the next sweep — the prune family's zero-means-now "
+        "jobs at the next sweep, the prune family's zero-means-now "
         "polarity, deliberately opposite to the sweep family's "
         "zero-means-off (see the 0 convention in configuration.md). "
         "Negative values raise ConstraintViolationError at settings load.",
@@ -1815,14 +1815,14 @@ class WorkerSettings(TaskQSettings):
         validator=_non_negative_timedelta,
         description="TASKQ_PRUNE_RETENTION_FAILED. How long a failed job "
         "stays in the hot jobs table before the daily prune sweep moves it "
-        "to jobs_archive. Failed rows are the first incident-audit trail — "
-        "they carry error_class, error_message and the attempt history — "
+        "to jobs_archive. Failed rows are the first incident-audit trail, "
+        "they carry error_class, error_message and the attempt history, "
         "so the default keeps them hot three times longer than succeeded "
         "rows (90 d vs 30 d). Size to how far back your on-call reads "
         "failures in the fast surfaces (admin /jobs) before the archive is "
         "acceptable; lower it only if failure volume makes the hot table's "
         "size the bigger incident risk. timedelta(0) archives failed jobs "
-        "at the next sweep (zero-means-now — see the 0 convention in "
+        "at the next sweep (zero-means-now, see the 0 convention in "
         "configuration.md). Negative values raise ConstraintViolationError "
         "at settings load.",
     )
@@ -1836,7 +1836,7 @@ class WorkerSettings(TaskQSettings):
         "default follows succeeded (30 d); raise it if cancellations are "
         "part of your audit story, lower it toward 0 for bulk-cancel "
         "workloads whose rows are pure churn. timedelta(0) archives "
-        "cancelled jobs at the next sweep (zero-means-now — see the 0 "
+        "cancelled jobs at the next sweep (zero-means-now, see the 0 "
         "convention in configuration.md). Negative values raise "
         "ConstraintViolationError at settings load.",
     )
@@ -1850,7 +1850,7 @@ class WorkerSettings(TaskQSettings):
         "outlived its execution budget or its worker, and both are the "
         "rows you reach for when reconstructing a fleet-level incident, so "
         "they share the longer 90 d default with failed. Same sizing trade "
-        "and zero-means-now polarity as the sibling fields — see "
+        "and zero-means-now polarity as the sibling fields, see "
         "TASKQ_PRUNE_RETENTION_SUCCEEDED. Negative values raise "
         "ConstraintViolationError at settings load.",
     )
@@ -1862,7 +1862,7 @@ class WorkerSettings(TaskQSettings):
         description="TASKQ_ARCHIVE_RETENTION_PERIOD. How long archived jobs are "
         "retained in jobs_archive before hard-deletion. Default 1 year. "
         "timedelta(0) hard-deletes an archived row at the next "
-        "archive-expiry sweep — the row's expire_at is stamped "
+        "archive-expiry sweep, the row's expire_at is stamped "
         "archive-time plus this period, so a zero period expires it on "
         "arrival; the prune family's zero-means-now polarity, not the "
         "deletion-sweep family's zero-means-off (see the 0 convention in "
@@ -1937,7 +1937,7 @@ class WorkerSettings(TaskQSettings):
         le=1048576,
         description="TASKQ_RESULT_MAX_BYTES. Maximum serialised byte length of "
         "a job's terminal result dict. A larger result raises ResultTooLarge, "
-        "which is non-retryable — the actor already ran, so a re-run returns "
+        "which is non-retryable, the actor already ran, so a re-run returns "
         "the same oversized value. Range: 1 KiB - 1 MiB (the same ceiling as "
         "progress_data_max_bytes, so the durable payload can be configured as "
         "large as the transient one); default 64 KiB. Raise it only with the "
@@ -1983,13 +1983,13 @@ class WorkerSettings(TaskQSettings):
         "a value at or above that deadline is therefore an upper bound, not "
         "the effective one. A factory is called only when the leftover can "
         "fund at least min(this value, a quarter of the tick's funded "
-        "budget) — a smaller leftover funds no call and the schedule is "
+        "budget), a smaller leftover funds no call and the schedule is "
         "deferred (next_fire_at advances one tick cadence) rather than "
         "struck: the factory never ran, so there is no evidence against the "
-        "schedule — only the schedule whose factory consumed the budget is "
+        "schedule, only the schedule whose factory consumed the budget is "
         "failing. That also makes this setting the fairness lever when one "
         "slow-but-successful factory monopolizes the tick budget every tick "
-        "(its peers defer indefinitely — watch taskq.cron.budget_deferrals "
+        "(its peers defer indefinitely, watch taskq.cron.budget_deferrals "
         "and the cron-fire-budget-deferred log): set it BELOW the "
         "monopolizing factory's real duration and that factory takes the "
         "strike-and-auto-disable path instead, freeing its peers; raising "
@@ -2031,7 +2031,7 @@ class WorkerSettings(TaskQSettings):
 
         The lease is renewed once per heartbeat interval, so one shorter
         than four of them would demote a leader whose renewal is merely a
-        tick behind — leadership would churn on every slow tick. Raising
+        tick behind, leadership would churn on every slow tick. Raising
         ``heartbeat_interval`` alone must not produce that, and must not
         refuse to boot either: a fleet that can no longer be told what to
         do is worse than one running a longer lease than it asked for. The
@@ -2203,7 +2203,7 @@ class WorkerSettings(TaskQSettings):
         #
         # The producer loop is deliberately NOT checked here: it is not
         # wrapped in asyncio.timeout (dispatch_batch is a multi-statement
-        # transaction — BEGIN + dispatch CTE + INSERTs + COMMIT, plus a
+        # transaction, BEGIN + dispatch CTE + INSERTs + COMMIT, plus a
         # queue-mode resolve on cache miss (the worker-side TTL cache in
         # taskq.backend._dispatch.QueueModeCache), each bounded
         # separately by the pool's command_timeout), so the timeout +
@@ -2268,7 +2268,7 @@ class WorkerSettings(TaskQSettings):
                         f"lock_lease ({self.lock_lease}): a stalled event loop must die "
                         f"(the terminal lag watchdog) before its leases expire, or the "
                         f"leader sweep reclaims LIVE jobs' locks mid-stall. Keep the lag "
-                        f"budget comfortably inside lock_lease — both knobs must move "
+                        f"budget comfortably inside lock_lease, both knobs must move "
                         f"together."
                     ),
                 )
@@ -2303,7 +2303,7 @@ class WorkerSettings(TaskQSettings):
 
         # Tier-1 vs tier-2 ordering: the warn budget must be able to fire
         # before the terminal budget. A warn budget at or above the
-        # terminal budget silently disables tier 1 — the worker is
+        # terminal budget silently disables tier 1, the worker is
         # force-exited with no prior lag warning, exactly the
         # silent-disable failure the (0, 1) bound on
         # watchdog_dump_after_fraction exists to prevent ("at 1.0 the
@@ -2348,7 +2348,7 @@ class WorkerSettings(TaskQSettings):
         validator there rejects a config outright, and a budget below this
         dead-backend worst case is a legitimate operator choice (a tight
         dev deployment that would rather be SIGKILLed mid-unwind than wait
-        out a hung close). The shipped default covers the model — raising
+        out a hung close). The shipped default covers the model, raising
         the validator to reject sub-worst-case budgets would take that
         choice away. The number is surfaced as a startup warning instead,
         and ``docs/guides/deployment.md`` documents the pod-grace formula.

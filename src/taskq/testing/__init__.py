@@ -1,13 +1,13 @@
 """Test-only helpers for TaskQ: FakeClock, InMemoryBackend, and stub utilities.
 
-Every symbol here lives in ``taskq.testing`` — never in ``taskq.backend`` — so
+Every symbol here lives in ``taskq.testing``, never in ``taskq.backend``, so
 production code does not pull in test-only helpers.
 
 ``run_until_drained``, ``tick_cancel_polling``, and ``register_cancel_event``
 are methods on the re-exported :class:`InMemoryBackend` class.  The runner
 logic lives in :mod:`taskq.testing._runner`.
 
-Pytest fixtures are NOT re-exported here — they live in
+Pytest fixtures are NOT re-exported here, they live in
 :mod:`taskq.testing.fixtures` and are imported by
 :mod:`tests.conftest` directly.  This avoids importing ``pytest`` /
 ``asyncpg`` at the ``taskq.testing`` top level.
@@ -16,7 +16,7 @@ Pytest fixtures are NOT re-exported here — they live in
 ``JobContext`` will replace this test-scoped version.
 
 OTel test utilities (``ListSpanExporter``, ``setup_tracer``, ``setup_meter``)
-are NOT re-exported here — import them from ``taskq.testing.otel`` directly.
+are NOT re-exported here, import them from ``taskq.testing.otel`` directly.
 They require the ``[otel]`` extra (``opentelemetry-sdk``).
 """
 

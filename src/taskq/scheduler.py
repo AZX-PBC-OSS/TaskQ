@@ -1,11 +1,11 @@
-"""Cron schedule registry — ``register_cron`` and ``get_registered_crons``.
+"""Cron schedule registry, ``register_cron`` and ``get_registered_crons``.
 
 The registry is a module-level list of :class:`~taskq.cron.CronScheduleSpec`
 objects populated at import time by the ``@cron`` decorator (or manually
 via :func:`register_cron`).  At worker startup, the bootstrap iterates
 the registry and calls ``create_schedule()`` for each spec (cron_loop).
 
-The registry is a plain ``list`` — deduplication is the caller's
+The registry is a plain ``list``, deduplication is the caller's
 responsibility.  The DB-layer ``(actor, name)`` UNIQUE constraint
 prevents duplicate schedules from persisting.
 """
@@ -25,7 +25,7 @@ def register_cron(schedule: CronScheduleSpec) -> None:
 
     Validates the cron expression at call time.  Raises :class:`ValueError`
     on bad expression or mutually exclusive fields.  Duplicate calls append
-    again — deduplication is the caller's responsibility (the DB
+    again, deduplication is the caller's responsibility (the DB
     ``(actor, name)`` UNIQUE constraint is the authoritative gate at
     startup time).
     """

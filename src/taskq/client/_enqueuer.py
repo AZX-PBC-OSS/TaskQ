@@ -1,26 +1,26 @@
-"""Sub-job enqueuer — enqueues child jobs from within an actor body.
+"""Sub-job enqueuer, enqueues child jobs from within an actor body.
 
 Connection resolution, in priority order:
 
 1. An explicit ``connection=`` argument to ``enqueue()`` /
-   ``enqueue_batch()`` — an immediate write on that connection, outside
+   ``enqueue_batch()``, an immediate write on that connection, outside
    any transaction lifecycle.
-2. A constructor-bound ``transaction_conn`` — the per-job enqueuer the
+2. A constructor-bound ``transaction_conn``, the per-job enqueuer the
    dispatch path constructs around the job's slot transaction
    connection. Writes join that transaction, and the transactional
    buffering lifecycle (``flush_buffer`` / ``discard_buffer`` /
-   ``drain_for_re_enqueue``) is active **by construction** — the
+   ``drain_for_re_enqueue``) is active **by construction**, the
    binding is what activates it, not where the connection came from.
-3. A LOOP-scope ``asyncpg.Connection`` from ``loop_scope_resolved`` —
+3. A LOOP-scope ``asyncpg.Connection`` from ``loop_scope_resolved`` ,
    the provenance-based inference the loop-level shared enqueuer uses
    for the single-slot / autonomous path.
-4. The worker pool — autonomous commit, no transactional semantics.
+4. The worker pool, autonomous commit, no transactional semantics.
 
 Parent-tag propagation: the consumer sets the parent job's tags via
 ``set_parent_tags()`` before actor invocation and resets them after
 (via ``parent_tags()`` context manager or manual token reset). The
 ``contextvars.ContextVar`` ensures concurrent consumers in the same
-event loop each see their own parent tags — asyncio Tasks copy the
+event loop each see their own parent tags, asyncio Tasks copy the
 context at creation time.
 """
 
@@ -83,7 +83,7 @@ def set_parent_tags(tags: tuple[str, ...]) -> contextvars.Token[tuple[str, ...]]
     """Set the parent job's tags for sub-job tag inheritance.
 
     Called by the consumer before actor invocation. The returned token
-    must be used to reset the context after the actor completes — use
+    must be used to reset the context after the actor completes, use
     ``_parent_tags_var.reset(token)`` or the ``parent_tags()`` context
     manager.
     """
@@ -114,15 +114,15 @@ class SubJobEnqueuer:
 
     Two construction shapes, deliberately distinct:
 
-    * **Loop-level shared** — ``loop_scope_resolved`` set, no
+    * **Loop-level shared**, ``loop_scope_resolved`` set, no
       ``transaction_conn``. Serves the single-slot path and the
       autonomous fallback; transactional buffering is inferred from
       connection provenance (a LOOP-scope connection means "inside the
       consumer's transaction"). One instance per loop, so the
       per-100-enqueue re-warning fires on the loop-level counter, not
       per-job. Never shared across concurrent jobs that each own a
-      transaction — its buffer state is unkeyed.
-    * **Per-job bound** — ``transaction_conn`` set to the job's slot
+      transaction, its buffer state is unkeyed.
+    * **Per-job bound**, ``transaction_conn`` set to the job's slot
       transaction connection (the shape ``dispatch_one_job``
       constructs whenever the worker runs a dedicated slot pool).
       Every write joins that one transaction and the buffers are this
@@ -189,11 +189,11 @@ class SubJobEnqueuer:
         """Enqueue a sub-job. ``max_pending`` is a per-call limit resolved
         against the operator-owned stored cap and the ``@actor(...)``
         literal: against a non-NULL *stored* ``actor_config.max_pending``
-        the tighter of the two wins (``min(stored, per_call)`` — an
+        the tighter of the two wins (``min(stored, per_call)``, an
         explicit caller shedding load is never widened by an operator
         override, and no code path can raise an operator's fleet cap);
         with no stored value this parameter wins outright over the
-        literal (historical behavior — actor code may loosen its own
+        literal (historical behavior, actor code may loosen its own
         declaration).
 
         ``_batch_id`` is a library-internal parameter used by
@@ -243,7 +243,7 @@ class SubJobEnqueuer:
                     metadata={**args.metadata, "batch_id": _batch_id},
                 )
             span.set_attribute("messaging.message.id", str(args.id))
-            # The per-call seam's coherence check — the same warn-once
+            # The per-call seam's coherence check, the same warn-once
             # contract JobsClient.enqueue applies to the actor-declared
             # form; this is the only caller-facing surface that accepts a
             # per-call unique_for, and it was fully silent.
@@ -267,8 +267,8 @@ class SubJobEnqueuer:
     ) -> list[str] | None:
         """Resolve tags with parent inheritance.
 
-        Caller tags are UNIONED with the parent's, so ``[]`` — the
-        identity element — resolves to the parent's tags exactly as
+        Caller tags are UNIONED with the parent's, so ``[]``, the
+        identity element, resolves to the parent's tags exactly as
         ``None`` does. Why: every non-empty list unions, and making the
         empty list mean "suppress" would put a discontinuity in the
         middle of that, so a computed list that happens to come out
@@ -303,7 +303,7 @@ class SubJobEnqueuer:
         write joins a transaction the consumer owns, so the in-memory
         backend buffers it for flush/discard and the enqueuer tracks it
         for re-enqueue on snooze/retry. Resolution order: an explicit
-        per-call connection (never transactional — the caller owns its
+        per-call connection (never transactional, the caller owns its
         lifecycle), then the constructor-bound ``transaction_conn``
         (transactional by construction), then LOOP-scope provenance
         (transactional by inference), then no connection at all.
@@ -318,7 +318,7 @@ class SubJobEnqueuer:
             self._loop_scope_resolved is not None
             and (loop_conn := self._loop_scope_resolved.get(_asyncpg.Connection)) is not None
         ):
-            # Why: cast — loop_conn comes from Mapping[type, object]; the DI resolver guarantees it is asyncpg.Connection at runtime
+            # Why: cast, loop_conn comes from Mapping[type, object]; the DI resolver guarantees it is asyncpg.Connection at runtime
             return cast(_asyncpg.Connection, loop_conn), True
         return None, False
 
@@ -363,14 +363,14 @@ class SubJobEnqueuer:
         All ``items`` share a single ``batch_id`` UUID written into each
         job's ``metadata.batch_id`` field (as a string). When ``batch_id``
         is not supplied it is auto-generated as a UUIDv7 via
-        :func:`~taskq._ids.new_job_id` — mirrors
+        :func:`~taskq._ids.new_job_id`, mirrors
         :meth:`~taskq.client.JobsClient.enqueue_batch`. Pass an explicit
         ``batch_id`` to correlate this batch with a caller-constructed
         identifier (e.g. a finalizer job enqueued separately that needs to
         reference the same batch).
 
         Raises ``ValueError`` when ``items`` is empty or exceeds
-        ``MAX_BATCH_SIZE`` — the same guardrails
+        ``MAX_BATCH_SIZE``, the same guardrails
         :meth:`~taskq.client.JobsClient.enqueue_batch` applies to the
         identical operation one layer up. Without the empty check the
         no-connection fallback loop would iterate zero items and return
@@ -380,8 +380,8 @@ class SubJobEnqueuer:
         unbounded fan-out that bypasses the client-side guardrail.
 
         ``max_pending``: the connection arm gets the backend's per-actor
-        partition admission — over-cap actors' items are refused after
-        the within-cap actors' items are inserted — and converts the
+        partition admission, over-cap actors' items are refused after
+        the within-cap actors' items are inserted, and converts the
         refusal to :class:`~taskq.exceptions.PartialBatchError` so this
         method speaks one error contract across all connection modes
         (the no-connection fallback already raises it per item). On a
@@ -562,7 +562,7 @@ class SubJobEnqueuer:
 
         Display-only guess in the Python domain: ``status``/``scheduled_at``
         are predicted from this process's clock so callers get a plausible
-        row before the transaction commits — the stored row is decided
+        row before the transaction commits, the stored row is decided
         server-side and may differ (this row is never written back).
         """
         now = self._clock.now()

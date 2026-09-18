@@ -17,12 +17,12 @@ bounded probe, never a scan of the pending backlog.  The
 shipped shape re-examined the whole backlog twice per round (the
 ``locked`` CTE's ``ranked``-to-``jobs`` re-join and the terminal
 UPDATE's join were planned as hash joins over a Seq Scan of every
-pending row — measured 1.04 ms at a 1k backlog degrading to 55.8 ms at
+pending row, measured 1.04 ms at a 1k backlog degrading to 55.8 ms at
 200k, O(depth) in both time and buffers) and, in the round-robin
 variant, a third time (the candidates lateral's ``ROW_NUMBER`` window
 ran over EVERY due row of the (actor, queue) pair before the
 ``fairness_rank <= residual * oversample`` filter could drop the excess
-— a window function cannot short-circuit, so the WindowAgg paid full
+, a window function cannot short-circuit, so the WindowAgg paid full
 backlog depth every tick).  The shipped bounds also rendered as
 ``(SELECT ... FROM params)`` subquery LIMITs, which the planner cannot
 fold into row estimates in ANY plan (custom or generic), so the
@@ -33,7 +33,7 @@ The geometry below pins each stage to the round's own constants:
 
 * ``per_actor_capacity`` / ``repend_capacity`` never scan the registry:
   the label-routed actor set is enumerated from jobs by the variant's
-  keys walk (``pa_keys`` / ``rr_keys`` — recursive loose index scans,
+  keys walk (``pa_keys`` / ``rr_keys``, recursive loose index scans,
   one bounded seek per distinct key on the round's queues) and read
   back through actor_config by primary key, while ``repend_capacity``
   filters on the assignment-queue index. A Seq Scan of actor_config is
@@ -43,7 +43,7 @@ The geometry below pins each stage to the round's own constants:
   table is usually never analyzed, a garbage estimate that cascades
   through the candidate chain's nested loops.
 * ``candidates`` reads at most ``residual * oversample`` admitted rows
-  per (actor, queue) probe — but the SCAN bound each probe's innermost
+  per (actor, queue) probe, but the SCAN bound each probe's innermost
   LIMIT carries is the pure parameter expression ``$2 * $5`` (limit_n x
   oversample), and the exact ``residual * oversample`` admission window
   is re-imposed one level up, over the bounded probe output, by a
@@ -52,7 +52,7 @@ The geometry below pins each stage to the round's own constants:
   a constant is estimated as a fixed fraction of the scanned index
   range, so an unfoldable ``residual * oversample`` bound keeps the
   plan's ESTIMATED cost depth-proportional even though execution stops
-  at the bound — and past the default ``jit_above_cost`` (100000) that
+  at the bound, and past the default ``jit_above_cost`` (100000) that
   estimate makes Postgres JIT-compile the whole statement on every
   dispatch round (~1 s of Optimization+Emission measured at a 30k due
   backlog, where the scan itself is ~1.5 ms; pinned by
@@ -66,7 +66,7 @@ The geometry below pins each stage to the round's own constants:
   identity-duplicate rows, so a post-dedup cut would silently widen it.
 * ``top_ids`` finalizes the LIMIT-ed id set BEFORE the statement
   touches the heap a second time, and ``locked`` then drives ``jobs``
-  by primary key through a correlated LATERAL — a materialized CTE is an
+  by primary key through a correlated LATERAL, a materialized CTE is an
   optimization fence: the planner may otherwise choose a nested loop over
   the LIMITing subquery. A bounded, locked CTE whose UPDATE joins by
   id ensures the dispatch never re-optimizes across the candidacy cut
@@ -74,37 +74,37 @@ The geometry below pins each stage to the round's own constants:
 * every actor_config readback outside the two capacity CTEs
   (``capped_ranked``, ``sliding_locked``, ``eligible_candidates``, and
   the ``stamp`` UPDATE) is a correlated primary-key LATERAL or a
-  one-shot ``ANY(ARRAY(SELECT ...))`` InitPlan — never a plain join the
+  one-shot ``ANY(ARRAY(SELECT ...))`` InitPlan, never a plain join the
   planner can serve as a Seq Scan + hash over the whole registry.
 * the per-actor RUNNING count (the old ``running_per_actor`` CTE) is a
   correlated count gated on ``ac.max_concurrent IS NOT NULL`` in each
   of its three reads (both capacity CTEs' residuals and
-  ``eligible_candidates``' post-lock re-check) — a CASE branch
+  ``eligible_candidates``' post-lock re-check), a CASE branch
   subquery is evaluated only when its branch is taken, so an uncapped
   fleet does ZERO running-row work per round and a capped fleet pays
   only its own capped actors' running rows (each a scan over the
-  running-row partial indexes — the planner picks
+  running-row partial indexes, the planner picks
   ``jobs_actor_running_idx`` or the ``jobs_locked_by_worker_running_idx``
   partial at its own cost discretion, heap-visiting either way), never
   the fleet-wide materialization the CTE cost on every round. Pinned by
   tests/test_dispatch_running_rows_scope_bound.py.
 * the terminal UPDATE re-finds its rows through
-  ``j.id = ANY(ARRAY(SELECT id FROM eligible))`` — the id array
+  ``j.id = ANY(ARRAY(SELECT id FROM eligible))``, the id array
   materializes once as an InitPlan and the ScalarArrayOp is served
   either as a Bitmap Index Scan on the primary key (deep backlogs) or
   as a scan-level filter (shallow ones); both carry at most ``limit_n``
   rows of work per node.
-* every LIMIT bound is a direct ``$n`` parameter — because a parameter
+* every LIMIT bound is a direct ``$n`` parameter, because a parameter
   folds to a literal in custom plans, where a subquery bound never folds.  The bounds that must hold even under a generic plan do
   not rely on estimates at all: they are structural (correlated
   laterals, ORDER BY + LIMIT probes, the one-shot id array), which is
-  why this CTE family must never return to subquery LIMITs — the v1
+  why this CTE family must never return to subquery LIMITs, the v1
   experiment in docs/design/sql-hotpath-followups.md §1 under-dispatched
   (2 rows instead of 50) under ``plan_cache_mode = force_generic_plan``
   with them.
 
-The depth contract — every plan node's row work is independent of
-backlog depth, at 1k and at 30k due rows — is pinned by
+The depth contract, every plan node's row work is independent of
+backlog depth, at 1k and at 30k due rows, is pinned by
 tests/test_dispatch_backlog_depth_bound.py; the per-probe bound is
 ``residual * oversample`` candidates per (actor, queue) cohort probe
 plus ``limit_n`` locked/eligible rows, exactly what that pin's oracle
@@ -114,17 +114,17 @@ tail across rounds, it never removes any row from consideration.
 Under peer lock contention the window also bounds the slide: a round
 whose whole window is row-locked expands the window geometrically
 (bounded, in ``taskq.backend._dispatch``) instead of scanning deeper
-without a bound — see :data:`DISPATCH_CLAIMABLE_PROBE_SQL`.
+without a bound, see :data:`DISPATCH_CLAIMABLE_PROBE_SQL`.
 
 Fairness contract (cross-actor rotation): within a round, selection is
-``pending_rank`` first — every actor's head job before any actor's
-second — then priority. Across rounds, the remaining tie is broken by
+``pending_rank`` first, every actor's head job before any actor's
+second, then priority. Across rounds, the remaining tie is broken by
 ``actor_config.last_claimed_at ASC NULLS FIRST`` (never-claimed actors
 first, then least-recently-claimed), a durable per-actor stamp the
 claim statement's own ``stamp`` CTE writes for every admitted actor
-(its SKIP LOCKED driver keeps the claim wait-free — a peer mid-claim
+(its SKIP LOCKED driver keeps the claim wait-free, a peer mid-claim
 on the same actors costs the stamp, never the round). Without the
-stamp the tie falls to ``scheduled_at, id`` — a stable total order
+stamp the tie falls to ``scheduled_at, id``, a stable total order
 that re-elects the same prefix of actors every round once more actors
 hold due work than the round's limit admits, starving the rest
 silently (pinned by tests/test_dispatch_actor_cohort_rotation.py and
@@ -136,15 +136,15 @@ rotation read adds no per-round probe: it is carried through the
 already-materialized ``ranked`` window to the cut.
 
 Reservation-headroom contract (consumer-slot isolation): dispatch has
-no in-process knowledge of an actor's declared reservations — that
-mapping lives in each worker's rate-limit registry — but it can read
+no in-process knowledge of an actor's declared reservations, that
+mapping lives in each worker's rate-limit registry, but it can read
 the only durable signal there is: which actors' claimed jobs currently
 hold live reservation slots (``reservation_slots.job_id`` →
 ``jobs.actor``), and how many slots in those buckets remain acquirable
 right now. ``reservation_holdings`` / ``reservation_headroom`` derive
 that once per statement, and both capacity CTEs fold it in:
 ``residual = LEAST(capacity residual, headroom)``. An actor whose held
-bucket is FULL is admitted nothing this round — without the gate its
+bucket is FULL is admitted nothing this round, without the gate its
 pending rows are claimed into the shared ``max_concurrency`` consumer
 pool, denied by the post-claim ``acquire_for_actor``, and snoozed,
 spending one consumer coroutine per row per cycle on work that cannot
@@ -155,7 +155,7 @@ is deliberately a damper, not an authority: the post-claim acquire
 remains the decision of record (a race between the read and a peer's
 acquire degrades to one bounded denial, never a wrong admission), the
 first claim of a never-running actor always gets through (NULL
-headroom leaves the residual untouched — that is what lets capacity
+headroom leaves the residual untouched, that is what lets capacity
 ever be taken), and a full bucket implies a holder already running
 whose completion or lease expiry re-opens the gate, so a saturated
 actor drains the moment capacity frees (no starvation inversion).
@@ -169,7 +169,7 @@ per-actor fold directly. Queue-cap buckets ride it scoped to the queue
 being probed (``queue_cap_headroom``, folded into each candidates
 lateral's per-(actor, queue) admission LIMIT), a fleet-wide queue
 cap binds per queue, so queue X's saturation must not zero the same
-actor's admission on queue Y (#242). Keyed buckets ride NOTHING here,
+actor's admission on queue Y. Keyed buckets ride NOTHING here,
 deliberately: their concrete names are payload-derived per job and
 resolvable only in-process, so the claim cannot know which key a
 pending row needs, one saturated tenant must not block every other
@@ -185,7 +185,7 @@ Routing contract (the running-job-tail fix for
 :func:`taskq.actor_config_ops.move_actor_queue`): a pending row's
 dispatch routing queue is decided by its ORIGIN.  A row a producer
 placed (``assignment_routed`` false) routes by its OWN ``jobs.queue``
-label — producer placement governs, so a stale producer's post-move
+label, producer placement governs, so a stale producer's post-move
 enqueue to a retired source queue stays served by that queue's
 consumers, and an explicit ``enqueue(queue=...)`` override keeps its
 queue.  A row a re-pend handed back (``assignment_routed`` true)
@@ -194,14 +194,14 @@ routes by its actor's CURRENT stored assignment
 (``mark_retry``/``mark_failed_or_retry``, the leader's crash-reclaim
 sweep, the operator ``retry_job``, the snooze/refund deferral arms)
 returns a row to the pending pool still carrying its original queue
-label — the label is the audit trail of first placement, and no path
-rewrites it — so without the assignment-routed arm a move's
+label, the label is the audit trail of first placement, and no path
+rewrites it, so without the assignment-routed arm a move's
 left-behind tails would be claimable only by consumers of the queue
 the operator is retiring: stranded the moment the source queue's last
 consumer goes away.  The marker is written by the re-pend paths
 themselves rather than inferred: ``started_at`` answers only "was
 claimed", which misses an operator retry of a job terminalized before
-it was ever claimed — a deliberate hand-back that would otherwise
+it was ever claimed, a deliberate hand-back that would otherwise
 route by its stale label and strand permanently; ``attempt`` is
 likewise unusable (the snooze/refund arms give the claim's increment
 back, flooring to 0).  The two populations are probed by disjoint arms
@@ -277,16 +277,16 @@ pa_actors AS (
 ),
 -- (No running_per_actor CTE, deliberately: the fleet-wide
 -- `GROUP BY actor` over every running row was materialized on every
--- claim round — referenced three times, so Postgres could not inline it
--- — at a cost proportional to the fleet's TOTAL running rows, paid
+-- claim round, referenced three times, so Postgres could not inline it
+--, at a cost proportional to the fleet's TOTAL running rows, paid
 -- whether or not a single actor declared a cap. The per-actor running
 -- count now lives in the capacity CTEs' residual expression as a
 -- correlated count gated on `ac.max_concurrent IS NOT NULL` (see
 -- per_actor_capacity): an uncapped fleet pays zero running-row work per
 -- round, and a capped one pays only its own capped actors' running rows
--- — each a scan over the running-row partial indexes (the planner
+--, each a scan over the running-row partial indexes (the planner
 -- picks jobs_actor_running_idx or the jobs_locked_by_worker_running_idx
--- partial at its own cost discretion, heap-visiting either way) — never the
+-- partial at its own cost discretion, heap-visiting either way), never the
 -- fleet's. The best-effort TOCTOU doctrine the CTE's comment carried
 -- moves with the count.)
 -- Best-effort under concurrent dispatchers: this snapshot is read once at
@@ -305,7 +305,7 @@ running_identities AS (
 -- Which (actor, bucket) pairs have a live hold right now, derived from
 -- holder state alone: reservation_slots.job_id points at the claimed
 -- jobs row, whose actor is the holder. The derivation needs no
--- actor -> bucket declaration mapping (the DB has none — declarations
+-- actor -> bucket declaration mapping (the DB has none, declarations
 -- live in the workers' rate-limit registries), so static and queue-cap
 -- buckets both ride it. KEYED buckets deliberately do not: their
 -- concrete names are payload-derived per job (the base name, a colon,
@@ -316,7 +316,7 @@ running_identities AS (
 -- cannot know which key a pending row will need: folding a keyed
 -- bucket's occupancy in would gate the actor on a tenant the pending
 -- row may not even belong to (one saturated tenant blocking every other
--- tenant's claims, #242). Keyed caps are still enforced where the key
+-- tenant's claims). Keyed caps are still enforced where the key
 -- IS known: the post-claim acquire_for_actor, the admission authority,
 -- resolves the concrete name from the payload and denies (snooze) when
 -- that key's bucket is full: the gate below is a damper, never the
@@ -327,7 +327,7 @@ running_identities AS (
 -- candidates laterals keep, so the liveness bound can ride
 -- reservation_slots_lease_expires_idx as an Index Cond and the whole
 -- statement keeps one snapshot. A lease that expires mid-statement
--- reads as held — a conservative under-admission for one round,
+-- reads as held, a conservative under-admission for one round,
 -- self-correcting on the next.
 --
 -- Best-effort under concurrent dispatchers, on the same doctrine as
@@ -339,11 +339,11 @@ running_identities AS (
 --
 -- Cost: the outer scan reads only live-held slot rows (the table is
 -- bounded by total reservation slots fleet-wide, never by jobs
--- backlog), and each holder's actor is one primary-key probe — the
+-- backlog), and each holder's actor is one primary-key probe, the
 -- correlated LATERAL with LIMIT 1 defeats the subquery pull-up that
 -- would flatten the lookup into a hash join over the whole jobs table
--- (the same doctrine per_actor_capacity relies on). Zero held slots —
--- the common case — costs one scan of an empty/small table and no jobs
+-- (the same doctrine per_actor_capacity relies on). Zero held slots ,
+-- the common case, costs one scan of an empty/small table and no jobs
 -- probes, so the depth oracles' row-visit counts are unchanged.
 reservation_holdings AS (
   SELECT DISTINCT hj.actor, lh.bucket_name
@@ -368,14 +368,14 @@ reservation_holdings AS (
 -- separately (queue_cap_headroom below) because their constraint binds
 -- per QUEUE, not per actor: an actor with running jobs on two queues
 -- must not have queue X's saturation close the gate on queue Y's
--- claims (#242). The free predicate is the acquire statement's own
--- (job_id IS NULL OR lease expired — an expired lease is the design's
+-- claims. The free predicate is the acquire statement's own
+-- (job_id IS NULL OR lease expired, an expired lease is the design's
 -- abandonment signal and is acquirable on the spot), again on
 -- statement_timestamp(). Each probe is a primary-key-prefix range over
--- one bucket's rows — bounded by the bucket's slot count, never by
+-- one bucket's rows, bounded by the bucket's slot count, never by
 -- backlog depth. An actor holding nothing is absent here, and
 -- LEAST(residual, NULL) is the residual unchanged (LEAST ignores NULL
--- arguments) — the first claim of a never-running actor is never
+-- arguments), the first claim of a never-running actor is never
 -- gated.
 reservation_headroom AS (
   SELECT h.actor, MIN(f.free_slots) AS headroom
@@ -425,7 +425,7 @@ queue_cap_headroom AS (
 -- both a registry-proportional cost per round and a garbage estimate
 -- (~440 rows even for a one-actor fleet) that cascades through the
 -- candidate chain's nested loops. Driving from pa_actors makes the
--- registry read one primary-key probe per live actor — bounded by the
+-- registry read one primary-key probe per live actor, bounded by the
 -- round's own population, independent of the registered-actor count.
 -- The LATERAL correlation on pa.actor denies the planner the hash-join
 -- path it would otherwise take over the unanalyzed table.
@@ -527,7 +527,7 @@ per_actor_capacity AS (
       -- every ORDER BY that cuts a round's admitted set. NULL means "never
       -- claimed": those actors sort first (NULLS FIRST at the cut), then
       -- least-recently-claimed. Without it the cross-actor tiebreak among
-      -- rank-1 rows is priority/scheduled_at/id — a STABLE total order that
+      -- rank-1 rows is priority/scheduled_at/id, a STABLE total order that
       -- re-elects the same prefix of actors every round (each winner refills
       -- its own rank-1 slot from its own backlog with the same relative
       -- key), so every actor past the limit starves while the queue drains
@@ -536,8 +536,8 @@ per_actor_capacity AS (
       -- claim: a plain UPDATE would wait on any peer transaction holding a
       -- claimed actor's registry row (a concurrent dispatcher mid-round,
       -- an operator's move_actor_queue flip), coupling this round's
-      -- latency — and, for a peer whose transaction is held open, its
-      -- liveness — to the peer's commit. Skipping a locked row degrades
+      -- latency, and, for a peer whose transaction is held open, its
+      -- liveness, to the peer's commit. Skipping a locked row degrades
       -- the stamp bounded-ly (that actor re-competes with its older stamp
       -- next round; self-correcting), never the claim's liveness.
       ac.last_claimed_at AS actor_claimed_at
@@ -551,7 +551,7 @@ per_actor_capacity AS (
       -- pulled up into a plain join, which the planner then serves as a
       -- Seq Scan + hash over the whole (usually unanalyzed) registry.
       -- LIMIT 1 defeats the pull-up, keeping this a nested-loop pkey
-      -- probe per live actor — the same doctrine the has_pending probe
+      -- probe per live actor, the same doctrine the has_pending probe
       -- below relies on. Exact because actor is the primary key.
       LIMIT 1
     ) ac
@@ -621,13 +621,13 @@ rr_tail_keys AS (
 -- candidates downstream (the repended lateral's rr_tail_keys join
 -- annihilates its probes), so restricting the driver to actors that
 -- actually hold re-pended rows is selection-identical, and the registry
--- read collapses to one primary-key probe per such actor — bounded by
+-- read collapses to one primary-key probe per such actor, bounded by
 -- the re-pended population, independent of the fleet-wide
 -- registered-actor count, and immune to the planner's honest
 -- small-registry Seq Scan preference that a plain
 -- ac.queue = ANY(queues) filter leaves open. The LIMIT 1 keeps the
 -- probe correlated (a bare pkey-equality subquery is pulled up into a
--- plain join and the Seq Scan returns — same doctrine as
+-- plain join and the Seq Scan returns, same doctrine as
 -- per_actor_capacity). ac.queue = ANY(p.queues) reads the CROSS JOINed
 -- params column (a plain text[] value), NOT a subquery -- =
 -- ANY(subquery) iterates the subquery's ROWS, and a one-row
@@ -641,7 +641,7 @@ repend_capacity AS (
     -- half only): a re-pended row of a reservation-saturated actor (a
     -- denied job coming back through the snooze/promote path routes
     -- here by its assignment_routed marker) is no more runnable than a
-    -- producer-placed one — claiming it would churn a consumer slot
+    -- producer-placed one, claiming it would churn a consumer slot
     -- into another denial. The queue-cap half is deliberately NOT
     -- folded here: this arm's rows carry any queue label (the marker
     -- population is label-agnostic), and the queue-cap acquire that
@@ -735,7 +735,7 @@ identity_dedup AS (
     WHERE c.identity_key IS NULL
   )
 ),
--- MATERIALIZED is load-bearing, not documentation: ranked is the fence
+-- MATERIALIZED is essential, not documentation: ranked is the fence
 -- that finalizes the candidate ranks before top_ids cuts the round's id
 -- set. Inlining it would let the planner re-optimize across the cut and
 -- re-derive the whole chain per downstream reference (a materialized CTE
@@ -841,7 +841,7 @@ locked AS (
 -- already-materialized, already cap-filtered ranked window evaluates
 -- once as an InitPlan, and j2.id = ANY(<that array>) is then a Bitmap
 -- Index Scan on the primary key at depth or a scan-level filter in the
--- shallows — never a hash build over the whole pending backlog, which
+-- shallows, never a hash build over the whole pending backlog, which
 -- an honest-cost planner picks for a plain ranked⋈jobs join exactly
 -- where the table is small enough to hide the depth coupling). The
 -- ranked re-join for the ordering columns hashes only the bounded
@@ -940,12 +940,12 @@ eligible AS (
 -- The rotation stamp: every actor this round admitted is stamped with
 -- this statement's statement_timestamp() (one value for the whole round,
 -- so same-round winners tie on the stamp and fall through to
--- scheduled_at/id — exactly the tie shape the in-memory twin's per-round
+-- scheduled_at/id, exactly the tie shape the in-memory twin's per-round
 -- tick produces). The write is bounded by
 -- construction (at most limit_n distinct actors, each a primary-key
 -- probe) and CANNOT block: the driver's FOR UPDATE SKIP LOCKED takes
 -- only registry rows no peer holds, so the stamp never waits on a
--- concurrent dispatcher or an operator's move flip mid-transaction — the
+-- concurrent dispatcher or an operator's move flip mid-transaction, the
 -- price is a dropped stamp for actors a peer is stamping right now, a
 -- bounded, self-correcting rotation degradation rather than a coupled
 -- commit. No window function rides the locking arm (PG forbids the
@@ -964,9 +964,9 @@ stamp_rows AS (
 -- ac.actor = ANY(<that array>) is served as a Bitmap Index Scan on the
 -- actor_config primary key, so the write touches at most limit_n
 -- registry rows. A FROM-clause join against stamp_rows would leave the
--- strategy to the planner, which honestly prefers a Seq Scan + hash of
+-- strategy to the planner, which prefers a Seq Scan + hash of
 -- the whole registry whenever actor_config is unanalyzed (the usual
--- production state) — registry-proportional work per round.
+-- production state), registry-proportional work per round.
 stamp AS (
   UPDATE "{schema}".actor_config ac
   SET last_claimed_at = statement_timestamp()
@@ -988,13 +988,13 @@ SET status = 'running',
     -- constants.MAX_ATTEMPTS_SMALLINT_CEILING, written as a literal here
     -- the same way _sql_templates.py's retry_job raise arm does): a
     -- pre-existing row parked at the ceiling (retry_kind='indefinite'
-    -- climbs there — nothing else bounds its counter) must not turn the
+    -- climbs there, nothing else bounds its counter) must not turn the
     -- whole round's claim into a smallint-out-of-range driver error that
     -- also aborts every healthy job selected beside it. The clamped row
     -- still runs; its terminal write then lands through the existing
     -- budget arms (a transient row at the ceiling is already past its
     -- max_attempts and terminalises on failure; an indefinite one runs
-    -- until its deadline arm terminalises it) — never stranded pending.
+    -- until its deadline arm terminalises it), never stranded pending.
     -- The repeat attempt number this makes possible (32767 claimed twice)
     -- is absorbed by the ON CONFLICT guard every job_attempts insert
     -- carries, so the audit trail keeps the first record of the number
@@ -1003,7 +1003,7 @@ SET status = 'running',
 -- The UPDATE finds its rows through a one-shot id array, not a
 -- FROM-clause join against eligible: a join's strategy is the
 -- planner's choice, and at shallow depths the whole-backlog seq scan
--- plus hash is honestly cheaper than limit_n pkey probes, so the join
+-- plus hash is cheaper than limit_n pkey probes, so the join
 -- form re-introduces depth-proportional row work exactly where the
 -- backlog is small enough to hide it. ARRAY(SELECT ...) evaluates
 -- once as an InitPlan; `id = ANY(<that array>)` is then either a
@@ -1038,7 +1038,7 @@ RETURNING j.*;
 # CTE, but it CAN read the round's bound parameters, and $1 is the
 # queue list -- so the walk scopes itself to the round's own queues
 # rather than enumerating the whole table's cohorts. That scoping is
-# load-bearing, not an optimization: an unscoped walk takes one
+# essential, not an optimization: an unscoped walk takes one
 # enumeration step per pending cohort anywhere in the fleet, so a
 # round's cost grows with other teams' cohort counts and every queue's
 # dispatch latency couples to fleet-wide backlog. The predicate also
@@ -1093,7 +1093,7 @@ rr_keys AS (
 # makes the walk fleet-clean here: queue = ANY($1) is a ScalarArrayOp
 # on the index's LEADING column, so Postgres drives one index range per
 # round queue, and each step's (queue, actor) > (cur.queue, cur.actor)
-# row-compare is an Index Cond within those ranges — one bounded seek
+# row-compare is an Index Cond within those ranges, one bounded seek
 # per distinct (queue, actor) pair on the ROUND's queues, with zero
 # entries visited for queues the round does not poll. (The
 # actor-leading indexes cannot do this: with actor first, the queue
@@ -1101,7 +1101,7 @@ rr_keys AS (
 # fleet actor's index entries between matches.)
 #
 # The index is partial on (status = 'pending' AND NOT
-# assignment_routed) — exactly this walk's population (the label-routed
+# assignment_routed), exactly this walk's population (the label-routed
 # set per_actor_capacity drives from), so a queue holding only
 # re-pended rows costs the walk nothing; re-pended actors enter the
 # round through repend_capacity instead.
@@ -1144,7 +1144,7 @@ pa_keys AS (
 # volatile bound removed 20,000 rows by filter over 20,172 buffers
 # (~5.1 ms) where the stable bound terminates at the range boundary
 # (10 buffers, ~0.04 ms). statement_timestamp() is the statement-start
-# wall clock — for a LIMIT-ed, sub-second snap it is semantically
+# wall clock, for a LIMIT-ed, sub-second snap it is semantically
 # clock_timestamp() evaluated once. The WRITTEN values in the UPDATE
 # (started_at / last_heartbeat_at / lock_expires_at) stay
 # clock_timestamp(): they must stay co-monotonic with the rows this
@@ -1177,14 +1177,14 @@ _STRICT_FIFO_CANDIDATES_LATERAL = """\
         -- constant is estimated as a fixed fraction of the scanned
         -- index range, which keeps the plan's ESTIMATED cost
         -- depth-proportional even though execution stops at the bound
-        -- — and past jit_above_cost that estimate makes Postgres
+        --, and past jit_above_cost that estimate makes Postgres
         -- JIT-compile the plan on every dispatch round. $2 * $5 folds
         -- to its value in custom plans (the same doctrine as top_ids),
         -- so the estimate tracks the bound that actually limits
         -- execution. The window below CANNOT replace this LIMIT: a
         -- window function is logically evaluated before LIMIT, so a
         -- window on the un-bounded probe would read the whole index
-        -- range per (actor, queue) — the depth-proportional read the
+        -- range per (actor, queue), the depth-proportional read the
         -- round-robin variant's own history documents.
         LIMIT $2::int * $5::int
       ) p
@@ -1197,7 +1197,7 @@ _STRICT_FIFO_CANDIDATES_LATERAL = """\
     -- (for an uncapped actor residual IS limit_n, so the two bounds
     -- coincide exactly; for a capped actor deeper than limit_n the
     -- round's own limit binds first and the tail drains on later
-    -- rounds — the depth contract's standing rule). Cutting here,
+    -- rounds, the depth contract's standing rule). Cutting here,
     -- BEFORE identity_dedup, matters: the shipped bound counted
     -- identity-duplicate rows against the window, so a post-dedup cut
     -- would silently widen it.
@@ -1208,7 +1208,7 @@ _STRICT_FIFO_CANDIDATES_LATERAL = """\
     -- holds nothing in this queue's cap bucket, so an uncapped pair
     -- pays the bound not at all. A full queue-cap bucket admits ZERO
     -- rows of its holder actors on THIS queue while their claims on
-    -- every other queue flow untouched (#242). The bound stays an
+    -- every other queue flow untouched. The bound stays an
     -- unfoldable expression like the residual it extends: only the
     -- SCAN bound above must fold.
     ORDER BY w.probe_rank
@@ -1241,7 +1241,7 @@ _ROUND_ROBIN_CANDIDATES_LATERAL = """\
       --  AND NOT assignment_routed:
       -- the three-column equality prefix is an Index Cond, the
       -- priority DESC order is the index's own within that prefix, and
-      -- the STABLE due bounds are index-level conditions — so each
+      -- the STABLE due bounds are index-level conditions, so each
       -- probe is an ordered scan that stops at its LIMIT. The COALESCE
       -- equality is what folds the NULL cohort into one probe: a bare
       -- `fairness_key IS NULL` qual does not combine with the keyed
@@ -1252,11 +1252,11 @@ _ROUND_ROBIN_CANDIDATES_LATERAL = """\
       -- bound ($2 * $5) is a pure parameter expression: a LIMIT the
       -- planner cannot fold to a constant is estimated as a fixed
       -- fraction of the scanned index range, keeping the plan's
-      -- ESTIMATED cost depth-proportional past jit_above_cost — which
+      -- ESTIMATED cost depth-proportional past jit_above_cost, which
       -- makes Postgres JIT-compile the plan on every dispatch round
       -- even though execution stops at the bound. The ADMISSION bound
       -- (cohort_rank <= residual * oversample, applied as the outer
-      -- LIMIT after the cohort_rank window — windows are logically
+      -- LIMIT after the cohort_rank window, windows are logically
       -- evaluated before LIMIT, so the cut cannot share the probe's
       -- own query level) is the shipped per-cohort window exactly:
       -- residual <= limit_n makes the two coincide, and a capped actor
@@ -1267,7 +1267,7 @@ _ROUND_ROBIN_CANDIDATES_LATERAL = """\
       -- the strict-FIFO arm's comment above documents (NULL ignored by
       -- LEAST when the actor holds nothing in this queue's cap), so a
       -- full queue-cap bucket admits zero rows of its holder actors on
-      -- THIS queue and touches their claims on no other queue (#242).
+      -- THIS queue and touches their claims on no other queue.
       SELECT c.id, c.actor, c.identity_key, c.fairness_key,
              c.priority, c.scheduled_at,
              ROW_NUMBER() OVER (
@@ -1345,7 +1345,7 @@ _ROUND_ROBIN_CANDIDATES_LATERAL = """\
 # estimated as a fixed fraction of the scanned range, which is what
 # pushed this statement past jit_above_cost at depth), and the outer
 # cohort_rank cut re-imposes the exact per-cohort admission window
-# (residual * oversample) over the bounded probe output — the window
+# (residual * oversample) over the bounded probe output, the window
 # cannot share the probe's own level because a window is logically
 # evaluated before LIMIT.
 _REPENDED_STRICT_FIFO_LATERAL = """\
@@ -1396,7 +1396,7 @@ _REPENDED_STRICT_FIFO_LATERAL = """\
 # admitted each round, so neither series can starve the other. The
 # two-bound split (foldable $2 * $5 scan bound, then the exact
 # residual * oversample cohort cut over the cohort_rank window) is the
-# label-routed arm's doctrine — see its comment for why the scan bound
+# label-routed arm's doctrine, see its comment for why the scan bound
 # must fold.
 _REPENDED_ROUND_ROBIN_LATERAL = """\
     SELECT w.id, w.actor, w.identity_key, w.fairness_key,
@@ -1462,7 +1462,7 @@ def _render_dispatch_sql(
     ``{schema}`` placeholders are preserved so the returned constant can be
     rendered with ``.format(schema=...)`` at the call site.  ``keys_cte`` is
     the variant's label-routed keys enumeration (``pa_keys`` for
-    strict-FIFO, ``rr_keys`` for round-robin — the round-robin candidates
+    strict-FIFO, ``rr_keys`` for round-robin, the round-robin candidates
     lateral joins that enumeration by name) and ``keys_source`` the CTE name
     ``pa_actors`` reads its DISTINCT actor set from.  ``rr_tail_keys`` (the
     re-pended cohort enumeration) is shared verbatim by both variants in the
@@ -1525,8 +1525,8 @@ DISPATCH_ROUND_ROBIN_SQL: str = _render_dispatch_sql(
 # deeper rows sit unlocked. Re-running the claim with a widened window
 # is only worth its round trips when rows actually remain, and this
 # probe is what tells the two empty-round causes apart: an idle queue
-# (false — the round stays one statement) versus a locked-out window
-# (true — expand and re-claim).
+# (false, the round stays one statement) versus a locked-out window
+# (true, expand and re-claim).
 #
 # The probe mirrors the candidacy ROUTING contract exactly (the same
 # two populations the candidates CTE's two arms serve: never-claimed
@@ -1534,7 +1534,7 @@ DISPATCH_ROUND_ROBIN_SQL: str = _render_dispatch_sql(
 # subscription, re-pended rows matched by their actor's current
 # assignment) and it shares per_actor_capacity's "has pending" probe
 # semantics: existence of pending rows, nothing more. It deliberately
-# does NOT re-derive admission — no residual arithmetic, no identity
+# does NOT re-derive admission, no residual arithmetic, no identity
 # anti-join, no due-window predicate. Admission is the claim
 # statement's own job; a probe that re-implemented it would be a second
 # copy of the candidacy logic, and its per-row subqueries would turn
@@ -1542,12 +1542,12 @@ DISPATCH_ROUND_ROBIN_SQL: str = _render_dispatch_sql(
 # price of the simpler question: when pending rows exist but are all
 # currently inadmissible (cap-saturated actor, identity already running)
 # the probe answers true and the loop burns its bounded expansions
-# before returning empty — bounded wasted work on a transient state,
+# before returning empty, bounded wasted work on a transient state,
 # never an unbounded scan.
 #
 # Depth contract: actor_config is read in one pass per EMPTY round
 # (bounded by the registered-actor count, and only ever paid by a round
-# that already admitted nothing — the claim statement proper no longer
+# that already admitted nothing, the claim statement proper no longer
 # scans the registry at all; see per_actor_capacity) and every inner
 # probe is a LIMIT-1 index read that stops at the first matching entry,
 # so the probe's work is bounded by registered actors x round queues,
@@ -1565,7 +1565,7 @@ WHERE EXISTS (
         FROM "{schema}".jobs j
         WHERE j.actor = ac.actor
           AND j.queue = pq.q
-          -- Producer-placed rows only, by the marker — never the
+          -- Producer-placed rows only, by the marker, never the
           -- started_at proxy: an operator-retried row that failed
           -- before its first claim is assignment_routed with
           -- started_at still NULL, and the proxy would enumerate its
@@ -1582,7 +1582,7 @@ OR (
         FROM "{schema}".jobs j
         WHERE j.actor = ac.actor
           -- The assignment-routed half: the marker, not
-          -- started_at IS NOT NULL — same divergent-row shape as
+          -- started_at IS NOT NULL, same divergent-row shape as
           -- above, and this arm rides jobs_assignment_routed_probe_idx
           -- whose partial predicate is the marker itself.
           AND j.assignment_routed

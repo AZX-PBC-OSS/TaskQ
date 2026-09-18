@@ -184,7 +184,7 @@ _CLEANUP_STALE_WORKERS_SQL = """\
 -- so the stale set shrinks monotonically per committed batch.
 -- statement_timestamp() (STABLE) rather than clock_timestamp() (VOLATILE)
 -- lets workers_last_seen_idx serve the staleness bound as an Index Cond
--- instead of a post-scan filter — same derivation as the sweep snaps in
+-- instead of a post-scan filter, same derivation as the sweep snaps in
 -- taskq.backend._sweeps (see that module's docstring for the measured
 -- plans); harmless here at membership-table scale, uniform with the
 -- sweeps, and it keeps this snap correct-by-shape if workers ever grows.
@@ -216,7 +216,7 @@ async def cleanup_stale_workers(
     The caller's *worker_id* is never deleted. Returns the number of
     worker rows removed by this call. Worker-level cascade
     (``maintenance_leader``, ``job_attempts``) is handled by the DDL
-    ``ON DELETE`` clauses — no extra sweeping needed — and the window
+    ``ON DELETE`` clauses, no extra sweeping needed, and the window
     bounds workers per call, which bounds that per-worker fan-out per
     transaction: a whole-fleet crash drains in committed batches instead
     of one transaction rewriting every stale worker's attempt history.
@@ -262,7 +262,7 @@ _QUERY_RESERVATION_SLOTS_SQL_TEMPLATE = (
 # Postgres ALTER TABLE ADD COLUMN always appends at the end of a table's own
 # column order, so a new column added to one side of a mirrored pair (e.g.
 # `jobs.idempotency_scope`) lands in a different relative position than on
-# the other side once mirrored there — a bare `SELECT source.*` relies on
+# the other side once mirrored there, a bare `SELECT source.*` relies on
 # the two tables' column orders staying in lockstep, which a future
 # single-table ALTER TABLE ADD COLUMN silently breaks. Naming every column
 # explicitly on both sides makes this correct regardless of physical order.
@@ -286,17 +286,17 @@ _JOB_ATTEMPTS_COLUMNS_CSV = ", ".join(_JOB_ATTEMPTS_COLUMNS)
 _JOB_ATTEMPTS_COLUMNS_QUALIFIED_CSV = ", ".join(f"ja.{c}" for c in _JOB_ATTEMPTS_COLUMNS)
 
 # Two clocks, one statement. The SELECTION bound is statement_timestamp()
-# (STABLE — the database's wall clock at this statement's start): a
+# (STABLE, the database's wall clock at this statement's start): a
 # VOLATILE clock_timestamp() comparison cannot be a btree index
 # condition, so the candidate scan degrades to a post-scan Filter that
-# walks jobs_finished_at_idx's whole terminal population per batch —
+# walks jobs_finished_at_idx's whole terminal population per batch ,
 # measured on a 70k-terminal-row corpus (PG 18, EXPLAIN ANALYZE,
 # BUFFERS): 1,757 buffers / ~11 ms per drained-state call vs 2 buffers /
 # ~0.05 ms when the stable bound is an Index Cond that terminates at the
 # range boundary (pinned, including the server-prepared form a
 # long-lived connection runs past five same-statement executions, by
-# tests/test_index_audit.py). The WRITE side — the archived_at/expire_at
-# stamps below — stays clock_timestamp(): the same clock that wrote
+# tests/test_index_audit.py). The WRITE side, the archived_at/expire_at
+# stamps below, stays clock_timestamp(): the same clock that wrote
 # finished_at, so a skewed worker host cannot silently extend or shorten
 # retention, and the stamps cannot disagree with the clock domain of the
 # rows they annotate; statement_timestamp() differs from those stamps
@@ -304,7 +304,7 @@ _JOB_ATTEMPTS_COLUMNS_QUALIFIED_CSV = ", ".join(f"ja.{c}" for c in _JOB_ATTEMPTS
 # days-scale retention cutoff).
 #
 # MATERIALIZED on candidate_ids (and on the sibling windows below) is
-# load-bearing with the same rationale every windowed sweep in
+# essential with the same rationale every windowed sweep in
 # backend/_sweeps.py documents: the planner may inline a LIMIT-ed CTE
 # into the data-modifying statement that joins it and move more rows
 # than the LIMIT (the LIMIT then bounds only the CTE's inlined
@@ -375,10 +375,10 @@ _DB_NOW_SQL = "SELECT clock_timestamp()"
 # 2,039 buffers / ~6.7 ms vs 2 buffers / ~0.03 ms in the drained steady
 # state; the server-prepared form a long-lived connection runs past five
 # same-statement executions degrades worst, flipping to a generic plan
-# that walks the entire population under a Filter — pinned, with the
+# that walks the entire population under a Filter, pinned, with the
 # eligible-backlog state, by tests/test_index_audit.py). No write side
 # here: the CTE only selects and deletes. The MATERIALIZED fence on the
-# LIMIT-ed window is the same load-bearing anti-inlining pin as every
+# LIMIT-ed window is the same essential anti-inlining pin as every
 # sibling sweep's.
 _EXPIRY_CTE_SQL = (
     "WITH expired AS MATERIALIZED ("
@@ -402,7 +402,7 @@ def _effective_prune_batch_size(batch_size: int, sizer: SweepBatchSizer | None) 
 
 def _record_prune_batch_size(sweep_name: str, size: int, sizer: SweepBatchSizer | None) -> None:
     """Record the used and configured batch-size gauges for one
-    prune-family batch — the same label pair ``_run_bounded_sweep`` emits
+    prune-family batch, the same label pair ``_run_bounded_sweep`` emits
     for the backend sweeps, so the gauge-to-gauge sweep-degraded alert
     covers the prune family too."""
     record_sweep_batch_size(sweep_name, size)
@@ -423,7 +423,7 @@ async def _run_prune_batch(
     The batch runs inside one short transaction with a server-side
     ``statement_timeout`` bound via ``SET LOCAL`` semantics (captured and
     restored on the success path; the savepoint rollback restores it on
-    the error path) — the same wrapper every bounded backend sweep in
+    the error path), the same wrapper every bounded backend sweep in
     :mod:`taskq.backend._sweeps` applies, so the prune family gets the
     identical guarantee: one committed, server-bounded statement per
     batch, whatever the backlog behind it. A deadline-family abort
@@ -431,7 +431,7 @@ async def _run_prune_batch(
     ``TimeoutError`` from a client-side one) counts against *sizer* when
     given and re-raises: the caller's failure path retries later at the
     latched reduced tier, and every batch this call already committed
-    stays committed — a stopped drain is a pause, not a rollback.
+    stays committed, a stopped drain is a pause, not a rollback.
     """
     async with conn.transaction():
         prev_timeout = await _apply_batch_statement_timeout(conn, statement_timeout_ms)
@@ -471,8 +471,8 @@ async def prune_terminal_jobs(
     inside one statement), committed before the next batch runs. The
     batch runs under a server-side ``statement_timeout`` (the
     :data:`~taskq.constants.DEFAULT_PRUNE_STATEMENT_TIMEOUT_MS`
-    derivation), and when *sizer* is given its latched tier — not
-    *batch_size* — sizes every window, so a database that keeps aborting
+    derivation), and when *sizer* is given its latched tier, not
+    *batch_size*, sizes every window, so a database that keeps aborting
     batches is retried at a reduced tier instead of the same one.
 
     *drain_gate* is called before every batch; a ``False`` return stops
@@ -482,7 +482,7 @@ async def prune_terminal_jobs(
 
     The archive predicate's clock is the database's own
     (``statement_timestamp()`` in the CTE), and the reported cutoffs are
-    anchored to a database-side ``clock_timestamp()`` read — see the
+    anchored to a database-side ``clock_timestamp()`` read, see the
     "Anchored to the database clock" comment in the body below.
     """
     if not _IDENT_RE.match(schema):
@@ -501,7 +501,7 @@ async def prune_terminal_jobs(
     # Anchored to the database clock, not this process's: the archive
     # predicate is server-side (statement_timestamp() - $2::interval in
     # _ARCHIVE_CTE_SQL), and the caller derives `prune_old_batches`'
-    # DELETE cutoff from `max(cutoffs.values())` — so these are NOT
+    # DELETE cutoff from `max(cutoffs.values())`, so these are NOT
     # display-only, and a Python `now` here would compare an app-clock
     # instant against DB-written `completed_at` values, pruning batches
     # early or late by the skew.
@@ -608,7 +608,7 @@ async def archive_expiry_sweep(
 
     Each batch is one ``_EXPIRY_CTE_SQL`` statement, committed before the
     next runs, under the same server-side ``statement_timeout`` and
-    breaker semantics as :func:`prune_terminal_jobs` — see that
+    breaker semantics as :func:`prune_terminal_jobs`, see that
     function's docstring and
     :data:`~taskq.constants.DEFAULT_PRUNE_STATEMENT_TIMEOUT_MS` for the
     timeout/breaker contract. *drain_gate* is called before every batch;
@@ -626,7 +626,7 @@ async def archive_expiry_sweep(
     # Reported on the result for observability; the DELETE predicate itself
     # is server-side (`expire_at < statement_timestamp()` in _EXPIRY_CTE_SQL).
     # Read from the database anyway so the reported instant stays in the
-    # predicate's own clock domain — the sibling cutoffs above were
+    # predicate's own clock domain, the sibling cutoffs above were
     # documented as display-only and then quietly grew a second consumer.
     expire_before: datetime = await conn.fetchval(_DB_NOW_SQL)
     sql = _EXPIRY_CTE_SQL.format(schema=schema)
@@ -666,7 +666,7 @@ async def archive_expiry_sweep(
 
 
 _COMPLETE_STALE_BATCHES_SQL = """\
--- MATERIALIZED is load-bearing: without it the planner may inline the
+-- MATERIALIZED is essential: without it the planner may inline the
 -- LIMIT-ed CTE into the UPDATE and run it as a nested loop, completing
 -- more batches than the LIMIT; the window-then-update-by-id shape bounds
 -- one call to batch_size rows.

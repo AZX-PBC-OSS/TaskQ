@@ -4,12 +4,12 @@ When spawned as a sibling in the worker's TaskGroup, the drain monitor
 polls the backend for active jobs in the worker's subscribed queues.
 When the count stays zero for the settle window (and no jobs are active
 on this worker), the monitor triggers the normal graceful shutdown
-via orchestrate_shutdown — the same path SIGTERM takes.
+via orchestrate_shutdown, the same path SIGTERM takes.
 
 Exit codes:
-  0 — all jobs succeeded (drain_failures == 0)
-  3 — some jobs failed (drain_failures > 0)
-  4 — max_runtime exceeded before drain completed
+  0, all jobs succeeded (drain_failures == 0)
+  3, some jobs failed (drain_failures > 0)
+  4, max_runtime exceeded before drain completed
 """
 
 import asyncio
@@ -59,27 +59,27 @@ async def drain_monitor_loop(
 ) -> None:
     """Monitor for queue drain and trigger graceful shutdown when idle.
 
-    Polls backend.count_active_jobs(queues) and deps.active_jobs.count()
-    every idle_poll_interval. When both are zero, starts the settle timer.
-    If still zero after idle_settle_window, triggers shutdown.
+     Polls backend.count_active_jobs(queues) and deps.active_jobs.count()
+     every idle_poll_interval. When both are zero, starts the settle timer.
+     If still zero after idle_settle_window, triggers shutdown.
 
-    If max_runtime is set and exceeded, triggers shutdown with exit code 4.
+     If max_runtime is set and exceeded, triggers shutdown with exit code 4.
 
-    Returns after creating the orchestrate_shutdown task. Spawns with
-    may_return=True in the sibling spawner. Does NOT set shutdown_event
-    — orchestrate_shutdown's finally block sets it at the correct point
-    (after all phase work completes), exactly as the SIGTERM signal
-    handler does.
+     Returns after creating the orchestrate_shutdown task. Spawns with
+     may_return=True in the sibling spawner. Does NOT set shutdown_event
+    , orchestrate_shutdown's finally block sets it at the correct point
+     (after all phase work completes), exactly as the SIGTERM signal
+     handler does.
 
-    Forgets the liveness registration on every exit path (same contract
-    as the producer loop, run.py): the monitor stops ticking the moment
-    it returns, while the watchdog keeps sweeping until the
-    orchestration's finally sets shutdown_event.
+     Forgets the liveness registration on every exit path (same contract
+     as the producer loop, run.py): the monitor stops ticking the moment
+     it returns, while the watchdog keeps sweeping until the
+     orchestration's finally sets shutdown_event.
 
-    Double-orchestration guard (H2): if orchestrator_holder is already
-    non-empty or deps.shutdown_phase is not ShutdownPhase.NONE, the
-    monitor skips triggering — a SIGTERM-driven orchestration is already
-    in progress.
+     Double-orchestration guard (H2): if orchestrator_holder is already
+     non-empty or deps.shutdown_phase is not ShutdownPhase.NONE, the
+     monitor skips triggering, a SIGTERM-driven orchestration is already
+     in progress.
     """
     queues = settings.queues
     start_time = time.monotonic()
@@ -97,8 +97,8 @@ async def drain_monitor_loop(
     # Worst-case seconds ONE iteration can consume: the count bound plus
     # the trailing poll sleep. A slow-but-recovering count_active_jobs
     # that spends the whole bound is a transient this loop rides out
-    # (TRANSIENT_PG_ERRORS below), so the liveness tick period — and the
-    # staleness budget derived from it — must cover that gap. Registering
+    # (TRANSIENT_PG_ERRORS below), so the liveness tick period, and the
+    # staleness budget derived from it, must cover that gap. Registering
     # only the poll interval makes the budget equal the count bound (both
     # max(5*poll, 10)); the gap exceeds it by one poll and detector 2
     # force-exits a healthy worker for a single degraded query. Same
@@ -133,7 +133,7 @@ async def drain_monitor_loop(
                     )
                     return
 
-            # Check idle condition — catch only recoverable transient errors
+            # Check idle condition, catch only recoverable transient errors
             # (F3). Non-recoverable errors propagate and tear down the TaskGroup.
             try:
                 queue_count = await asyncio.wait_for(
@@ -142,7 +142,7 @@ async def drain_monitor_loop(
                 )
             except TRANSIENT_PG_ERRORS:
                 _log.warning("drain-monitor-count-error", worker_id=str(worker_id))
-                queue_count = -1  # unknown — don't trigger
+                queue_count = -1  # unknown, don't trigger
 
             active_count = deps.active_jobs.count()
             is_idle = queue_count == 0 and active_count == 0
@@ -197,7 +197,7 @@ async def drain_monitor_loop(
         # The tick registration must not outlive the loop: this monitor
         # returns (or is cancelled) while orchestrate_shutdown is still
         # running its phases, and shutdown_event is set only in the
-        # orchestrator's finally — the watchdog sweeps that whole window.
+        # orchestrator's finally, the watchdog sweeps that whole window.
         # A lingering entry goes stale and detector 2 force-exits the
         # worker mid-grace. Mirrors the producer loop's forget (run.py).
         deps.liveness.forget("drain_monitor")
@@ -219,14 +219,14 @@ async def _trigger_drain_shutdown(
     """Create the orchestrate_shutdown task with a drain exit code.
 
     Mirrors the SIGTERM signal handler exactly: create the wrapper task,
-    append to orchestrator_holder, and do NOT set shutdown_event —
+    append to orchestrator_holder, and do NOT set shutdown_event ,
     orchestrate_shutdown's finally sets it at the correct point (after
     all phase work completes).
 
     Double-orchestration guard (H2): if orchestrator_holder is already
     non-empty or deps.shutdown_phase is not ShutdownPhase.NONE, skip
     triggering. The create_task/append pair is effectively atomic under
-    CPython's signal delivery model — signal handlers fire between event
+    CPython's signal delivery model, signal handlers fire between event
     loop iterations, not between synchronous Python statements, so no
     signal can interleave between create_task() and .append().
     """

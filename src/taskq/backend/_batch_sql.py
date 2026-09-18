@@ -7,7 +7,7 @@ companion-module pattern (``_dispatch_sql.py``, ``_enqueue.py``,
 
 Schema identifier is baked into pre-rendered SQL strings at render time
 via :func:`render_batch_sql`.  All user-supplied values use asyncpg
-``$N`` positional parameter binding — no f-string interpolation of user
+``$N`` positional parameter binding, no f-string interpolation of user
 data.  The schema identifier is validated against ``_IDENT_RE`` before
 formatting (defence-in-depth).
 """
@@ -23,7 +23,7 @@ import structlog
 from asyncpg.exceptions import LockNotAvailableError, UniqueViolationError
 
 from taskq._advisory import (
-    _LOCK_TIMEOUT_READ_SQL,  # pyright: ignore[reportPrivateUsage]  # Why: the one implementation of the lock_timeout GUC statements, shared with the advisory and bounded-wait machinery — a local copy would drift from the discipline it mirrors.
+    _LOCK_TIMEOUT_READ_SQL,  # pyright: ignore[reportPrivateUsage]  # Why: the one implementation of the lock_timeout GUC statements, shared with the advisory and bounded-wait machinery, a local copy would drift from the discipline it mirrors.
     _LOCK_TIMEOUT_SET_SQL,  # pyright: ignore[reportPrivateUsage]
 )
 from taskq._json import dumps_str
@@ -84,7 +84,7 @@ _ACTIVE_IN = "IN (" + ", ".join(f"'{s}'" for s in sorted(ACTIVE_STATUSES)) + ")"
 
 def open_member_where(batch_id: str) -> str:
     """The open-member probe: "a member of the batch whose id (as text)
-    is *batch_id* that is not terminal". *batch_id* is a SQL expression —
+    is *batch_id* that is not terminal". *batch_id* is a SQL expression ,
     a bound parameter (``"$2"``) or a correlated column
     (``"b.id::text"``).
 
@@ -92,8 +92,8 @@ def open_member_where(batch_id: str) -> str:
     batch id is the index's expression key, and the positive, sorted
     status list is the index predicate's exact text, which is what lets
     the planner prove the partial index applies. Every question about
-    open members — the per-terminal-write probes here and the leader's
-    stale-batch sweep — goes through this one predicate; the
+    open members, the per-terminal-write probes here and the leader's
+    stale-batch sweep, goes through this one predicate; the
     ``metadata @>`` containment form stays only for the statements that
     must touch terminal members too (abort's cancel, list counts, prune,
     the wait-for-batch poll and completion status in taskq.batch).
@@ -116,8 +116,8 @@ WHERE id = $1"""
 # Both counter writes run on every batched job's terminal write, so the
 # member count they return must not walk the batch: the LATERAL probe is
 # the open-member predicate, which jobs_batch_open_members_idx serves as
-# one index range over the members still open — never the terminal
-# history — so its cost tracks what remains, not what the batch was.
+# one index range over the members still open, never the terminal
+# history, so its cost tracks what remains, not what the batch was.
 # The LATERAL only executes for the rows the UPDATE returned: a batch
 # that is missing or no longer active costs one empty-scan of `updated`,
 # never the member probe.
@@ -209,12 +209,12 @@ WHERE id = $1 AND status = 'active'"""
 # no-ops -- a DELAY, the docstring's own "can delay completion but never
 # complete prematurely" contract -- leaving the row 'active' for the
 # append to commit and the next hook or the stale-batch sweep to
-# re-arbitrate. Skipping, not a blocking wait, is load-bearing: the
+# re-arbitrate. Skipping, not a blocking wait, is essential: the
 # completer may run inside a caller's open transaction (the
 # ``connection=`` arm, the shape the terminal-outcome hook uses), and
 # blocking here would park a terminal write behind an appender of
 # unbounded duration. Skipping rather than NOWAIT is equally
-# load-bearing: a NOWAIT refusal is an error (SQLSTATE 55P03) that
+# essential: a NOWAIT refusal is an error (SQLSTATE 55P03) that
 # leaves the enclosing transaction aborted even once caught, so the
 # terminal write committed alongside the probe would roll back with it.
 # The lock is held to this statement's commit, so an appender arriving
@@ -274,12 +274,12 @@ LEFT JOIN LATERAL (
 WHERE 1=1"""
 
 # Bounded batch + MATERIALIZED, the _COMPLETE_STALE_BATCHES_SQL shape
-# (worker/_leader_shared.py — same table family, same correlated NOT EXISTS
+# (worker/_leader_shared.py, same table family, same correlated NOT EXISTS
 # member-probe): LIMIT $2 caps one call's DELETE, and MATERIALIZED stops the
 # planner from inlining the LIMIT-ed CTE into the DELETE in a way that could
 # remove more rows than the LIMIT. No ORDER BY: batches cardinality grows
 # with batch usage, not job volume, so the window's scan is cheap however it
-# plans — the same rationale the stale-batch completion sweep documents. The
+# plans, the same rationale the stale-batch completion sweep documents. The
 # count comes from a COUNT over the DELETE's RETURNING set rather than
 # materialising ids the caller only counts.
 _PRUNE_OLD_BATCHES_SQL = """\
@@ -575,14 +575,14 @@ async def complete_batch(
     guard counts non-terminal members in the statement's own snapshot,
     so a caller acting on a stale count (two members terminating
     concurrently can each read the other as non-terminal) can delay
-    completion but never complete prematurely — an optimistic attempt
+    completion but never complete prematurely, an optimistic attempt
     after any terminal member is always safe, and the same attempt that
     was vetoed lands once the last member turns terminal.
 
     Delay also covers the member-append window: the statement's
     membership CTE takes the batches row ``FOR UPDATE SKIP LOCKED``, and
     a concurrent append transaction holding that lock (the streaming
-    chunk path — see ``_COMPLETE_BATCH_SQL``'s comment) makes the CTE
+    chunk path, see ``_COMPLETE_BATCH_SQL``'s comment) makes the CTE
     yield nothing, so the UPDATE no-ops. That is a DELAY, not an error: a
     READ COMMITTED snapshot cannot see the appender's uncommitted member
     INSERT, so completing now would be precisely the premature completion
@@ -727,9 +727,9 @@ async def enqueue_batch_atomic(
     finalizer job as the LAST statements.
 
     The finalizer is NOT stamped with ``batch_id`` metadata (deadlock
-    prevention — see spec §5.4).
+    prevention, see spec §5.4).
 
-    Consumes the iterable lazily in chunks of *chunk_size* — never
+    Consumes the iterable lazily in chunks of *chunk_size*, never
     materializes the full list.  On any exception (including generator
     failure mid-stream) the transaction is rolled back and the exception
     re-raised (MEDIUM-4).
@@ -756,7 +756,7 @@ async def enqueue_batch_atomic(
                 # The chunk's base in the CALLER's coordinate space: the
                 # consumed prefix BEFORE this chunk. Captured before the
                 # count bump so the bulk core's per-item annotations (the
-                # jsonb NUL guard) name STREAM-GLOBAL indices — a
+                # jsonb NUL guard) name STREAM-GLOBAL indices, a
                 # chunk-local index from inside this loop is unfixable at
                 # the client layer, which cannot know the backend's chunk
                 # base (the streaming boundary's registry can only shift
@@ -779,14 +779,14 @@ async def enqueue_batch_atomic(
                     connection=cast("asyncpg.Connection | None", conn),
                     # Explicit, not defaulted: these chunks share the atomic
                     # transaction, so per-chunk admission accumulates to the
-                    # true aggregate — a default flip must not silently
+                    # true aggregate, a default flip must not silently
                     # disarm it.
                     enforce_max_pending=True,
                     # Why whole-call refusal: every chunk runs inside ONE
                     # shared transaction, so the partition's
                     # insert-then-raise would insert this chunk's admitted
                     # items only for the wrapper's rollback to discard
-                    # them — a misleading non-admission. All-or-nothing is
+                    # them, a misleading non-admission. All-or-nothing is
                     # the atomic path's documented contract; the refusal
                     # raises here as plain MaxPendingExceededError before
                     # any INSERT, and the rollback discards earlier chunks.
@@ -813,7 +813,7 @@ async def enqueue_batch_atomic(
                     refuse_whole_batch_on_cap=True,
                     # The finalizer's caller-global coordinate: one past
                     # the last stream item (it is the (N+1)th enqueue this
-                    # call performs). index 0 — the pre-fix annotation —
+                    # call performs). index 0, the pre-fix annotation ,
                     # falsely accused an innocent stream item.
                     index_base=item_count,
                 )
