@@ -18,7 +18,10 @@ from taskq._ids import new_base62, new_job_id, new_uuid
 from taskq.backend._protocol import EnqueueArgs, JobId, RetryKind
 from taskq.testing.fixtures import JobsApp
 from taskq.testing.pg import create_pending_job, create_running_job, create_worker, parse_detail
-from taskq.worker.heartbeat import isolate_self
+from taskq.worker.heartbeat import (
+    _ISOLATE_CRASHED_MESSAGE,  # pyright: ignore[reportPrivateUsage]  # Why: the pinned assertion reads the same constant the template renders, not a copy that can drift.
+    isolate_self,
+)
 
 if TYPE_CHECKING:
     from asyncpg.pool import PoolConnectionProxy
@@ -586,7 +589,7 @@ class TestIsolateSelfCrashed:
 
             async with deps.worker_pool.acquire() as conn:
                 row = await conn.fetchrow(
-                    f'SELECT status, error_class, finished_at FROM "{schema}".jobs WHERE id = $1',
+                    f'SELECT status, error_class, error_message, finished_at FROM "{schema}".jobs WHERE id = $1',
                     job_id,
                 )
                 attempts = await conn.fetch(
@@ -595,7 +598,14 @@ class TestIsolateSelfCrashed:
                 )
             assert row is not None
             assert row["status"] == "crashed"
-            assert row["error_class"] is None
+            # PR #272 (issue #238): the isolate's crashed arm now self-describes
+            # on the job row, the same doctrine sweep 1's crashed arm follows.
+            # The old template left both fields NULL while claiming the
+            # branch-for-branch mirror of the sweep's SET clause. The label is
+            # 'HeartbeatLost', not the sweep's 'WorkerCrashed': isolate means
+            # the worker itself declared PG unreachable and walked away.
+            assert row["error_class"] == "HeartbeatLost"
+            assert row["error_message"] == _ISOLATE_CRASHED_MESSAGE
             assert row["finished_at"] is not None
             assert len(attempts) >= 1
             assert attempts[-1]["outcome"] == "crashed"
