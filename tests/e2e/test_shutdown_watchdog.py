@@ -16,12 +16,23 @@ the settings validator enforces
 ``termination_grace``.
 
 The watchdog is a safety net for *when things go beyond bounds*. This test
-triggers it by stopping Postgres mid-run: with PG down,
-``close_conn_bounded`` hangs for the full 5.0 s timeout. The orchestration
-sets ``shutdown_event`` BEFORE the close (``shutdown.py:254``), so the
-watchdog starts counting during the hang. With
-``termination_grace = 5.01`` and zero grace periods, the watchdog trips
-just after the 5.0 s close timeout.
+triggers it by pausing Postgres's container mid-run. Paused, not stopped: a
+stopped container loses its Docker DNS record, and on a runner whose resolver
+honours that immediately every pool-path PG write fails FAST (gaierror name
+resolution, no retries worth the name) — the whole orchestration then
+completes inside the 5.01 s budget, the clean path disarms the watchdog
+(it is cancelled only after the TaskGroup's exit, so a completed shutdown
+exits 0, which is the correct behavior for a shutdown that finished before
+its deadline), and the test's exit-2 assertion becomes a coin flip on the
+runner's DNS behavior. CI rolled exactly that once: the worker log showed
+``terminal-write-failed ... gaierror`` and the container exited 0. A paused
+container is the deterministic shape this test needs: the DNS record stays,
+the established TCP connections blackhole (the peer's network stack is
+frozen — no RST, no reply), so every in-flight and next PG write hangs
+past the deadline and the trip is the only exit left. The orchestration
+sets ``shutdown_event`` BEFORE the bounded close, so the watchdog starts
+counting during the hang. With ``termination_grace = 5.01`` and zero grace
+periods, the watchdog trips just after the deadline.
 
 This module follows the ``test_pg_restart_chaos.py`` pattern: a dedicated
 PG container, schema, pool, client, and worker — none of the shared module
@@ -249,16 +260,16 @@ async def test_shutdown_hard_deadline_watchdog(
     chaos_pool: asyncpg.Pool,
     run_id: str,
 ) -> None:
-    """Stop PG, SIGTERM the worker: the ShutdownWatchdog trips when the
-    ``close_conn_bounded`` hang pushes the shutdown past
+    """Pause PG, SIGTERM the worker: the ShutdownWatchdog trips when the
+    shutdown can no longer make progress past
     ``termination_grace_period``.
 
-    With ``termination_grace = 5.01`` and zero grace periods, the
-    orchestration completes in < 0.1 s. The ``shutdown_event.set()`` at
-    line 254 wakes the watchdog. Then ``close_conn_bounded`` hangs for
-    5.0 s (PG is down, ``CLOSE_TIMEOUT_SECS``). The watchdog checks every
-    0.5 s; at ``elapsed ≈ 5.0 s >= 5.01``, it trips with
-    ``detector="shutdown-deadline"`` and exits the container with
+    With ``termination_grace = 5.01`` and zero grace periods, every
+    pool-path PG write hangs once PG's container is paused (the peer's
+    TCP stack is frozen: no RST, no reply, no DNS change — see the module
+    docstring for why the container is paused rather than stopped). The
+    watchdog checks every 0.5 s; at ``elapsed ≈ 5.0 s >= 5.01``, it trips
+    with ``detector="shutdown-deadline"`` and exits the container with
     ``EXIT_WATCHDOG`` (code 2).
     """
     schema = chaos_schema.schema_name
@@ -277,9 +288,16 @@ async def test_shutdown_hard_deadline_watchdog(
         timeout=30.0,
     )
 
-    # Stop PG so close_conn_bounded hangs for the full CLOSE_TIMEOUT_SECS.
+    # Pause PG so every pool-path write hangs past the deadline (paused =
+    # frozen network stack: established connections blackhole instead of
+    # failing fast, so the shutdown provably cannot complete before the
+    # watchdog's deadline). Stopping instead would let a runner whose
+    # resolver drops the container's DNS record fail every write fast,
+    # finish the orchestration inside the budget, and exit 0 — correct
+    # behavior for a completed shutdown, and a coin flip this test must
+    # not depend on.
     wrapped_pg = chaos_pg.container.get_wrapped_container()
-    await asyncio.to_thread(wrapped_pg.stop, timeout=2)
+    await asyncio.to_thread(wrapped_pg.pause)
 
     # Send SIGTERM immediately (before isolate_self fires).
     wrapped_worker = chaos_worker.container.get_wrapped_container()
@@ -303,12 +321,23 @@ async def test_shutdown_hard_deadline_watchdog(
         assert exit_code == EXIT_WATCHDOG, (
             f"expected watchdog exit code {EXIT_WATCHDOG}, got {exit_code}\n{logs}"
         )
-        assert "shutdown-deadline" in logs, (
-            f"shutdown-deadline detector marker missing from worker log\n{logs}"
+        # Pin the DETECTOR-1 trip record, not just any force-exit: a paused
+        # PG hangs the leader loops too, so detector 2 (stale sibling loop,
+        # stale floor 10s) can also force-exit with EXIT_WATCHDOG, and the
+        # straggler dumps carry the "shutdown-deadline" label without any
+        # trip having fired. The trip record with the stall reason is the
+        # one line only detector 1 writes (this actor is async, so no
+        # tracked handle can substitute its reason).
+        assert "worker-watchdog-trip" in logs and "shutdown still incomplete" in logs, (
+            "the shutdown-deadline trip record is missing from the worker log: "
+            "the exit must be detector 1's deadline trip, not a sibling "
+            f"watchdog's force-exit\n{logs}"
         )
     finally:
-        # Restart PG so the chaos_schema fixture teardown can connect.
+        # Unpause (and, defensively, start) PG so the chaos_schema fixture
+        # teardown can connect.
         with contextlib.suppress(Exception):
+            await asyncio.to_thread(wrapped_pg.unpause)
             await asyncio.to_thread(wrapped_pg.start)
             await _probe_pg(chaos_pg.host_dsn, attempts=60, interval=1.0)
 
