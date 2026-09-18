@@ -495,19 +495,19 @@ async def _handle_timeout(
 ) -> AttemptOutcome:
     """Route a ``start_to_close`` timeout to its retry decision and terminal write.
 
-    *text* is the rendering the ``attempt.N`` span already made of *exc* when
-    the exception escaped the span; rendered here when the caller has none.
+       *text* is the rendering the ``attempt.N`` span already made of *exc* when
+       the exception escaped the span; rendered here when the caller has none.
 
-    *ctx* / *deps* / *settings* carry the exit-proof hold (#286): the write
-    below re-pends the row, and a sync actor's executor thread, detached by
-    the ``wait_for`` cancel, unreachable from the loop, may still be
-    executing its body. Before anything re-pends, the handler parks on the
-    job's tracked exit handles exactly as the interrupt path does
-    (:func:`taskq.worker._consumer._interrupted_actor_hold`): a provable
-    exit inside the bounded window re-pends with the decision's own retry
-    delay; a thread still alive at the window's expiry defers the re-pend
-    behind the release hold. With no *ctx* (a direct handler call in a
-    test) there is nothing to consult and the write is immediate.
+    *ctx* / *deps* / *settings* carry the exit-proof hold: the write
+       below re-pends the row, and a sync actor's executor thread, detached by
+       the ``wait_for`` cancel, unreachable from the loop, may still be
+       executing its body. Before anything re-pends, the handler parks on the
+       job's tracked exit handles exactly as the interrupt path does
+       (:func:`taskq.worker._consumer._interrupted_actor_hold`): a provable
+       exit inside the bounded window re-pends with the decision's own retry
+       delay; a thread still alive at the window's expiry defers the re-pend
+       behind the release hold. With no *ctx* (a direct handler call in a
+       test) there is nothing to consult and the write is immediate.
     """
     if text is None:
         text = render_exception(exc)
@@ -549,7 +549,7 @@ async def _handle_timeout(
         max_retry_backoff=max_retry_backoff,
     )
     record_attempt_failure(job.actor, error_info.error_class, retryable=isinstance(decision, Retry))
-    # The exit-proof hold (#286), the interrupt path's own machinery reused:
+    # The exit-proof hold, the interrupt path's own machinery reused:
     # the write below re-pends the row, and a sync actor detached by the
     # wait_for cancel may still be executing in its executor thread. Park on
     # the tracked exit handles, bounded by _actor_exit_wait_budget: hold=0
@@ -1172,28 +1172,28 @@ async def _dispatch_exception(
 ) -> AttemptOutcome:
     """Route *exc* to the appropriate terminal handler via ``_run_terminal_path``.
 
-    Consolidates the 6 exception handler blocks that were duplicated between
-    ``consume_one_job`` and ``_consume_transactional``.  When *pre_handler*
-    is provided (transactional path), it is called before each handler to
-    discard the sub-enqueue buffer.
+        Consolidates the 6 exception handler blocks that were duplicated between
+        ``consume_one_job`` and ``_consume_transactional``.  When *pre_handler*
+        is provided (transactional path), it is called before each handler to
+        discard the sub-enqueue buffer.
 
-    *error_reporter* is forwarded to each handler so it can invoke
-    :func:`~taskq.obs.invoke_error_reporter` alongside
-    :func:`~taskq.retry.invoke_on_retry_exhausted` when a job reaches a
-    terminal failure state.
+        *error_reporter* is forwarded to each handler so it can invoke
+        :func:`~taskq.obs.invoke_error_reporter` alongside
+        :func:`~taskq.retry.invoke_on_retry_exhausted` when a job reaches a
+        terminal failure state.
 
-    *text* is the rendering the ``attempt.N`` span already made of *exc*
-    when the exception escaped it (the autonomous path); the handlers that
-    report a traceback reuse it rather than rendering a second time. The
-    transactional path catches inside the span and passes none, and only
-    those handlers render — a snooze never pays for a traceback.
+        *text* is the rendering the ``attempt.N`` span already made of *exc*
+        when the exception escaped it (the autonomous path); the handlers that
+        report a traceback reuse it rather than rendering a second time. The
+        transactional path catches inside the span and passes none, and only
+        those handlers render — a snooze never pays for a traceback.
 
-    *disowned_jobs* is the worker's disowned set, handed to
-    ``_run_terminal_path`` for the exhausted-write path.
+        *disowned_jobs* is the worker's disowned set, handed to
+        ``_run_terminal_path`` for the exhausted-write path.
 
-    *ctx* / *deps* are forwarded to the timeout handler's exit-proof hold
-    (#286): the re-pend its write performs must wait for a detached sync
-    actor's provable exit, which only the job's tracked handles can attest.
+        *ctx* / *deps* are forwarded to the timeout handler's exit-proof hold
+    : the re-pend its write performs must wait for a detached sync
+        actor's provable exit, which only the job's tracked handles can attest.
     """
     from taskq.worker._consumer import _run_terminal_path
 

@@ -1,5 +1,5 @@
 """A wait_for timeout on a sync actor must not re-pend the row while its
-thread still runs (#286).
+thread still runs.
 
 Both timeout arms (the transactional ``wait_for`` and the autonomous one)
 route the ``TimeoutError`` to ``_handle_timeout``, whose terminal write
@@ -8,7 +8,7 @@ sync ``def`` actor the wrapped executor thread cannot be cancelled: the
 ``wait_for`` cancel detaches the shield, the thread keeps executing, and the
 row went straight back to claimable while the body was still mid-run, the
 same overlap shape the shutdown release path closed for the interrupt path
-(#232/#274), on the timeout path.
+, on the timeout path.
 
 The fix routes the timeout handler through the SAME exit-proof hold the
 interrupt path uses: the handler parks on the job's tracked exit handles
@@ -149,7 +149,7 @@ def _tracked_sync_run_actor(
 async def test_a_sync_actor_that_outlives_its_timeout_is_not_repended_while_its_thread_runs() -> (
     None
 ):
-    """The #286 regression cell (autonomous arm): the re-pend waits for exit.
+    """The regression cell (autonomous arm): the re-pend waits for exit.
 
     The ``wait_for`` fires while the sync body is mid-run; the timeout
     handler must park on the tracked thread handle and write the retry
