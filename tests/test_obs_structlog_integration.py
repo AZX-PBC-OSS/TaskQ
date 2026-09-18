@@ -67,7 +67,12 @@ from tests._di_scopes import bootstrap_scopes, make_scopes
 pytestmark = pytest.mark.integration
 
 _HEARTBEAT_INTERVAL = 0.5
-_LOCK_LEASE = 2.0
+_LOCK_LEASE = 750.0
+# These modules pass max_heartbeat_failures=999 (isolation must never
+# fire mid-test); the cascade floor sizes the lease with it:
+# 1000 beats x (0.5 + 2 x 0.1) = 700s of worst coherent gap, and the
+# validator refuses anything under it. Nothing here waits on the lease:
+# rows are stamped with explicit expiry timestamps.
 
 
 def _proxy_pinned_binds() -> set[int]:
@@ -164,6 +169,7 @@ async def _setup_worker(
             "TASKQ_WATCHDOG_LOOP_LAG_WARN_BUDGET": "0.5",
             "TASKQ_CANCELLATION_GRACE_PERIOD": "0.5",
             "TASKQ_CLEANUP_GRACE_PERIOD": "0.5",
+            "TASKQ_HEARTBEAT_COMMAND_TIMEOUT": "0.1",
             "TASKQ_MAX_HEARTBEAT_FAILURES": "999",
         }
     )

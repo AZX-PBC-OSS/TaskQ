@@ -934,8 +934,12 @@ def _queue_names_validator(value: list[str], ctx: ValidatorContext) -> list[str]
 class WorkerSettings(TaskQSettings):
     """Worker-specific configuration with three-pool sizing and dual-DSN support.
 
-    Extends :class:`TaskQSettings` with pool-size knobs, dual-DSN fields, and
-    the validated ``lock_lease >= 4 * heartbeat_interval`` invariant.
+       Extends :class:`TaskQSettings` with pool-size knobs, dual-DSN fields, and
+       the validated ``lock_lease >= (max_heartbeat_failures + 1) *
+       (heartbeat_interval + 2 * heartbeat_command_timeout)`` invariant: the
+       lease must outlive the worst coherent failed-beat cascade to the
+       heartbeat's isolate decision, with the per-tick command budget
+    making each failed beat's gap bound true by enforcement.
     """
 
     # -- DSNs -----------------------------------------------------------
@@ -1124,7 +1128,10 @@ class WorkerSettings(TaskQSettings):
         ge=1.0,
         description="TASKQ_LOCK_LEASE (seconds). Time before a held lock is "
         "reclaimed by the recovery sweep. "
-        "Must be >= 4 * heartbeat_interval.",
+        "Must be >= (max_heartbeat_failures + 1) * (heartbeat_interval + "
+        "2 * heartbeat_command_timeout): the lease must outlive the worst "
+        "coherent failed-beat cascade to the heartbeat's isolate decision "
+        "(at the defaults, 4 * (10 + 2 * 2) = 56).",
     )
     leader_lease: float = Field(
         default=40.0,
@@ -2100,15 +2107,38 @@ class WorkerSettings(TaskQSettings):
         if self.pg_dsn_pooled is None:
             self.pg_dsn_pooled = self.pg_dsn
 
-        # lock_lease invariant: "Tolerates 3 missed heartbeats before reclamation."
-        if self.lock_lease < 4 * self.heartbeat_interval:
+        # lock_lease invariant: the lease must outlive the worst coherent
+        # failed-beat cascade. A heartbeat tick's beat-to-beat gap is
+        # bounded, with the per-tick command budget/ enforced,
+        # by heartbeat_interval (the pool acquire's own timeout) + ONE
+        # heartbeat_command_timeout (the tick's whole command sequence) + ONE
+        # heartbeat_command_timeout (the bounded rollback-or-close teardown);
+        # the isolate decision lands on the (max_heartbeat_failures + 1)-th
+        # consecutive failed beat, so the lease must cover
+        # (max_heartbeat_failures + 1) of those gaps. This is exactly the
+        # safety floor taskq.worker.heartbeat._lease_renewal_threshold sizes
+        # its renewal gate against, so keeping lock_lease above it guarantees
+        # that gate's floor can never exceed the lease it guards. The bare
+        # 4 * heartbeat_interval rule this check replaced ignored both
+        # command-timeout terms and let the lease lapse before the isolate
+        # decision under contention. Tightening note: this refuses
+        # configs that loaded before, a lease between the old 4x edge and
+        # the cascade floor must come up (or the command timeouts come down);
+        # see docs/guides/upgrading.md.
+        isolate_beats = self.max_heartbeat_failures + 1
+        worst_beat_gap = self.heartbeat_interval + 2 * self.heartbeat_command_timeout
+        cascade_floor = isolate_beats * worst_beat_gap
+        if self.lock_lease < cascade_floor:
             errors.append(
                 ValidationError(
                     field_name="lock_lease",
                     value=self.lock_lease,
                     error_msg=(
-                        f"lock_lease ({self.lock_lease}) must be >= 4 * heartbeat_interval "
-                        f"({4 * self.heartbeat_interval})"
+                        f"lock_lease ({self.lock_lease}) must cover the worst coherent "
+                        f"failed-beat cascade: (max_heartbeat_failures + 1) * "
+                        f"(heartbeat_interval + 2 * heartbeat_command_timeout) = "
+                        f"{isolate_beats} * ({self.heartbeat_interval} + 2 * "
+                        f"{self.heartbeat_command_timeout}) = {cascade_floor}"
                     ),
                 )
             )

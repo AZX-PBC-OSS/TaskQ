@@ -7,6 +7,7 @@ instance required.
 """
 
 import asyncio
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -671,3 +672,94 @@ async def test_sync_slots_timeout_bounds_a_wedged_store() -> None:
             schema="taskq",
             timeout=0.05,
         )
+
+
+# ── Bounded pool acquire ─────────────────────────────────
+
+
+class _FakePGConn:
+    """Connection double for the pool-acquire contract tests."""
+
+    def __init__(self, pool: "_StarvablePool") -> None:
+        self._pool = pool
+
+    async def execute(self, *_args: object) -> str:
+        self._pool.executes += 1
+        return "INSERT 0 0"
+
+    async def fetchval(self, *_args: object) -> object:
+        self._pool.executes += 1
+        return None
+
+
+class _StarvablePool:
+    """asyncpg-shaped pool double for the acquire-timeout contract.
+
+    Mirrors the driver's own contract (asyncpg wraps the queue get in a
+    wait_for): ``acquire(timeout=None)`` never resolves under starvation,
+    the unbounded wait hung bootstrap on, and a set timeout raises
+    ``TimeoutError`` once the budget lapses.
+    """
+
+    def __init__(self, *, starved: bool = False) -> None:
+        self.starved = starved
+        self.acquire_timeouts: list[float | None] = []
+        self.executes = 0
+
+    @asynccontextmanager
+    async def acquire(self, *, timeout: float | None = None):
+        self.acquire_timeouts.append(timeout)
+        if not self.starved:
+            yield _FakePGConn(self)
+            return
+        if timeout is None:
+            await asyncio.Event().wait()  # never resolves: the hang
+        await asyncio.sleep(min(timeout, 5.0))
+        raise TimeoutError("starved: could not acquire a pool connection")
+        yield  # pragma: no cover - unreachable, keeps the generator a generator
+
+
+async def test_ensure_slots_forwards_the_acquire_timeout() -> None:
+    """ensure_slots must forward the caller's budget to pool.acquire.
+
+    The dispatcher pool's per-query command_timeout does NOT bound a pool
+    ACQUIRE, the bare acquire is the unbounded wait pinned. The
+    forward is the whole bound; the kwarg's arrival is the contract.
+    """
+    clock = FakeClock(_START)
+    res = _reservation(name="gpu", slots=1, clock=clock)
+    pool = _StarvablePool(starved=False)
+
+    await res.ensure_slots(pool, timeout=1.5)  # type: ignore[arg-type]
+
+    assert pool.acquire_timeouts == [1.5]
+    assert pool.executes == 1
+
+
+async def test_ensure_slots_starved_pool_is_bounded() -> None:
+    """A starved pool acquire with a budget raises TimeoutError, bounded.
+
+    On the pre- code the timeout kwarg did not exist and the acquire
+    hung forever (the 300s CI hang); this pin fails fast if the bound is
+    ever dropped again.
+    """
+    clock = FakeClock(_START)
+    res = _reservation(name="gpu", slots=1, clock=clock)
+    pool = _StarvablePool(starved=True)
+
+    with pytest.raises(TimeoutError):
+        await asyncio.wait_for(res.ensure_slots(pool, timeout=0.05), timeout=5.0)  # type: ignore[arg-type]
+
+    assert pool.acquire_timeouts == [0.05]
+
+
+async def test_slot_rows_exist_starved_pool_is_bounded() -> None:
+    """slot_rows_exist carries the same acquire bound as ensure_slots."""
+    clock = FakeClock(_START)
+    res = _reservation(name="gpu", slots=1, clock=clock)
+    pool = _StarvablePool(starved=True)
+
+    with pytest.raises(TimeoutError):
+        await asyncio.wait_for(res.slot_rows_exist(pool, timeout=0.05), timeout=5.0)  # type: ignore[arg-type]
+
+    assert pool.acquire_timeouts == [0.05]

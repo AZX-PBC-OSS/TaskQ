@@ -1204,6 +1204,44 @@ async def _refuse_boot_on_pending_migrations(deps: WorkerDeps, settings: WorkerS
         )
 
 
+async def _ensure_own_reservation_slots(
+    deps: WorkerDeps,
+    own_reservations: list[ConcurrencyReservation],
+) -> None:
+    """Run the bootstrap's ensure-slots pass over this worker's reservations.
+
+    Every wait here is bounded by ``dispatcher_command_timeout``, the same
+    budget every sibling bootstrap await carries. The bound matters because
+    the dispatcher pool's ``command_timeout`` does NOT bound a pool ACQUIRE:
+    under pool starvation a bare ``pool.acquire`` waits forever,
+    observed once as a 300s CI hang in this exact path). The pool-level
+    bound comes from ``ensure_slots``' ``timeout`` forward; a typed
+    ``ensure_slots_timeout`` warning (distinct from the generic
+    ``ensure_slots_failed`` so a starvation stall is diagnosable from logs
+    instead of surfacing as a mystery hang) is the failure surface:
+    observability, not a gate, a worker able to do work must start, the
+    same doctrine the resolved-capacity read above follows. The next
+    restart re-runs the idempotent materialisation.
+    """
+    budget = deps.settings.dispatcher_command_timeout
+    for res in own_reservations:
+        try:
+            await res.ensure_slots(deps.dispatcher_pool, timeout=budget)
+        except TimeoutError as exc:
+            _startup_log.warning(
+                "ensure_slots_timeout",
+                bucket_name=res.name,
+                timeout_seconds=budget,
+                error=str(exc),
+            )
+        except Exception as exc:
+            _startup_log.warning(
+                "ensure_slots_failed",
+                bucket_name=res.name,
+                error=str(exc),
+            )
+
+
 async def _main(
     settings: WorkerSettings,
     *,
@@ -1705,15 +1743,7 @@ async def _main(
                         log=_startup_log,
                     )
 
-            for res in own_reservations:
-                try:
-                    await res.ensure_slots(deps.dispatcher_pool)
-                except Exception as exc:
-                    _startup_log.warning(
-                        "ensure_slots_failed",
-                        bucket_name=res.name,
-                        error=str(exc),
-                    )
+            await _ensure_own_reservation_slots(deps, own_reservations)
 
         # Fleet-wide per-queue concurrency caps (DB-driven): query the
         # queues table for queues this worker consumes that have a

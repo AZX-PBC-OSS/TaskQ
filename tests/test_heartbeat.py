@@ -153,7 +153,11 @@ def _make_deps(
     heartbeat_pool: FakePool | None = None,
     is_leader: bool = False,
     heartbeat_interval: float = 0.5,
-    lock_lease: float = 2.0,
+    # 18.0 = the cascade floor at h=0.5 with the default
+    # heartbeat_command_timeout of 2.0: 4 * (0.5 + 2 * 2). The renewal
+    # threshold the loop derives is unchanged by this bump (its safety
+    # floor, 18.0, dominated the old lease/2 arm already).
+    lock_lease: float = 18.0,
     max_heartbeat_failures: int = 3,
     heartbeat_command_timeout: float = 2.0,
 ) -> WorkerDeps:
@@ -483,6 +487,8 @@ async def test_soft_warning_at_half_max_failures() -> None:
     deps = _make_deps(
         heartbeat_pool=pool,
         max_heartbeat_failures=4,
+        # 25 >= the cascade floor at F=4: 5 * (0.5 + 2 * 2) = 22.5.
+        lock_lease=25.0,
     )
     shutdown = asyncio.Event()
 
@@ -617,7 +623,10 @@ async def test_custom_schema_name_flows_to_sql() -> None:
         "postgresql://x:x@localhost/x",
         SCHEMA_NAME="custom_ns",
         HEARTBEAT_INTERVAL="0.5",
-        LOCK_LEASE="2.0",
+        # 18.0 = the cascade floor at h=0.5 with the default command
+        # timeout of 2.0 (see _make_deps for the same bump and why the
+        # renewal-threshold behaviour is unchanged).
+        LOCK_LEASE="18.0",
         WATCHDOG_LOOP_LAG_BUDGET="1.2",
         WATCHDOG_LOOP_LAG_WARN_BUDGET="0.5",
         MAX_HEARTBEAT_FAILURES="3",
@@ -759,7 +768,7 @@ async def test_lock_ttl_sample_is_the_lease_minus_the_gap_between_renewals() -> 
     tick."""
     import taskq.worker.heartbeat as hb_mod
 
-    interval, lease, stall = 0.5, 2.0, 0.3
+    interval, lease, stall = 0.5, 18.0, 0.3
     samples: list[float] = []
     two_samples = asyncio.Event()
 
@@ -913,7 +922,7 @@ async def test_lock_expires_at_always_gt_now_property(
 
     pool = FakePool()
     worker_id = new_uuid()
-    deps = _make_deps(heartbeat_pool=pool, lock_lease=4.0, heartbeat_interval=0.5)
+    deps = _make_deps(heartbeat_pool=pool, lock_lease=18.0, heartbeat_interval=0.5)
 
     shutdown = asyncio.Event()
     task = asyncio.create_task(heartbeat_loop(deps, worker_id, shutdown))
@@ -947,17 +956,18 @@ def test_invalid_heartbeat_ratio_raises_validation_error() -> None:
 
 
 def test_valid_heartbeat_ratio_passes() -> None:
-    """boundary. Valid ratio (lock_lease=40, heartbeat_interval=10)
+    """boundary. A ratio inside the cascade floor
+    (lock_lease=60 >= 4 * (10 + 2 * 2) = 56, heartbeat_interval=10)
     loads without error."""
     settings = _worker_settings(
         "postgresql://x:x@localhost/x",
-        LOCK_LEASE="40.0",
+        LOCK_LEASE="60.0",
         HEARTBEAT_INTERVAL="10.0",
         WATCHDOG_LOOP_LAG_BUDGET="25.0",
         CANCELLATION_GRACE_PERIOD="0.0",
         CLEANUP_GRACE_PERIOD="0.0",
     )
-    assert settings.lock_lease == 40.0
+    assert settings.lock_lease == 60.0
     assert settings.heartbeat_interval == 10.0
 
 
@@ -1669,7 +1679,10 @@ async def _run_budget_tick(
     deps = _make_deps(
         heartbeat_pool=pool,
         heartbeat_interval=0.5,
-        lock_lease=2.0,
+        # 18.0 = the cascade floor at h=0.5, c=2.0 (see _make_deps);
+        # the tick-budget assertions below read the threshold, which this
+        # bump leaves unchanged (its 18.0 safety floor dominated already).
+        lock_lease=18.0,
         max_heartbeat_failures=3,
         heartbeat_command_timeout=heartbeat_command_timeout,
     )

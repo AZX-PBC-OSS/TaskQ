@@ -105,6 +105,9 @@ async def e2e_schema(
         "TASKQ_MIGRATE_ON_START": "false",
         "TASKQ_ENVIRONMENT": "dev",
         "TASKQ_HEARTBEAT_INTERVAL": "0.5",
+        # The tiny command timeout keeps the cascade floor
+        # satisfied for this lease: 4 * (0.5 + 2 * 0.1) = 2.8.
+        "TASKQ_HEARTBEAT_COMMAND_TIMEOUT": "0.1",
         # 8 s, widened from 3.0 for the same reason the fleet conftest
         # widened its lease (and pg_restart_chaos its own to 10 s): the
         # lease IS the loop-stall budget for in-flight jobs. Every 0.5 s

@@ -42,12 +42,20 @@ def _load(**overrides: str) -> WorkerSettings:
 
 
 def test_lock_lease_too_small_raises() -> None:
-    """lock_lease < 4 * heartbeat_interval raises ValidationError."""
+    """lock_lease below the worst coherent failed-beat cascade raises.
+
+    : the cascade bound is (max_heartbeat_failures + 1) * (heartbeat_interval
+        + 2 * heartbeat_command_timeout), the isolate decision lands on the
+        (max_heartbeat_failures + 1)-th consecutive failed beat, and each failed
+        beat's gap is the pool acquire (bounded by heartbeat_interval) plus the
+        tick's command sequence plus its bounded teardown (one
+        heartbeat_command_timeout each, with the per-tick budget enforced).
+    """
     # Pin grace periods small so only the lock_lease invariant fires
     # (cancellation+cleanup < lock_lease holds at 0.1+0.1 < 30), and the
     # lag budget inside the lease so the lag-lease invariant stays quiet
-    # (25 < 30 - 10).
-    with pytest.raises(ValidationError, match=r"lock_lease.*must be >= 4 \* heartbeat_interval"):
+    # (15 + 10 < 30).
+    with pytest.raises(ValidationError, match=r"lock_lease.*heartbeat_command_timeout"):
         _load(
             TASKQ_LOCK_LEASE="30.0",
             TASKQ_HEARTBEAT_INTERVAL="10.0",
@@ -58,7 +66,7 @@ def test_lock_lease_too_small_raises() -> None:
 
 
 def test_lock_lease_error_message_contains_fields() -> None:
-    """Error message includes both field names and the ratio."""
+    """Error message includes the field names and the cascade terms."""
     with pytest.raises(ValidationError) as exc_info:
         _load(
             TASKQ_LOCK_LEASE="30.0",
@@ -70,24 +78,66 @@ def test_lock_lease_error_message_contains_fields() -> None:
     msg = str(exc_info.value)
     assert "lock_lease" in msg
     assert "heartbeat_interval" in msg
-    assert "40" in msg  # 4 * 10
+    # The command-timeout term must be NAMED: the validator's point
+    # is that the bare 4x-heartbeat rule ignored it.
+    assert "heartbeat_command_timeout" in msg
+    assert "56" in msg  # 4 * (10 + 2 * 2) at the defaults
+
+
+def test_lock_lease_at_old_invariant_edge_but_inside_cascade_refused() -> None:
+    """red pin: a config at the OLD invariant's edge is refused.
+
+    lock_lease == 4 * heartbeat_interval used to load (the old validator's
+    exact boundary), but a tick's commands can each burn up to
+    heartbeat_command_timeout, so the worst coherent cascade at these
+    settings outlives the lease: the isolate decision would land on an
+    already-lapsed lease. The refusal message names the term the old rule
+    ignored.
+    """
+    with pytest.raises(ValidationError, match=r"lock_lease.*heartbeat_command_timeout"):
+        _load(
+            TASKQ_LOCK_LEASE="40.0",
+            TASKQ_HEARTBEAT_INTERVAL="10.0",
+            TASKQ_CANCELLATION_GRACE_PERIOD="0.1",
+            TASKQ_CLEANUP_GRACE_PERIOD="0.1",
+            TASKQ_WATCHDOG_LOOP_LAG_BUDGET="15.0",
+        )
+
+
+def test_shipped_defaults_still_load_under_cascade_floor() -> None:
+    """: the shipped defaults must still load.
+
+    The cascade floor at the defaults is 4 * (10 + 2 * 2) = 56s against the
+    60s lease, the same sizing _lease_renewal_threshold derives in
+    taskq.worker.heartbeat, where the gate renews every beat.
+    """
+    s = _load()
+    assert s.lock_lease == 60.0
+    assert s.lock_lease >= (s.max_heartbeat_failures + 1) * (
+        s.heartbeat_interval + 2 * s.heartbeat_command_timeout
+    )
 
 
 # ── lock_lease boundary acceptance ─────────────────────────────────
 
 
 def test_lock_lease_at_boundary_accepted() -> None:
-    """lock_lease == 4 * heartbeat_interval is accepted."""
-    # Lag budget pinned inside the lease (25 + 10 < 40) so the lag-lease
-    # invariant stays quiet and only the 4x boundary is under test.
+    """lock_lease == the cascade floor is accepted.
+
+    The boundary moved with: at the defaults the floor is
+    4 * (10 + 2 * 2) = 56 (heartbeat_interval 10, heartbeat_command_timeout 2,
+    max_heartbeat_failures 3), not the old 4 * heartbeat_interval = 40.
+    """
+    # Lag budget pinned inside the lease (25 + 10 < 56) so the lag-lease
+    # invariant stays quiet and only the cascade boundary is under test.
     s = _load(
-        TASKQ_LOCK_LEASE="40.0",
+        TASKQ_LOCK_LEASE="56.0",
         TASKQ_HEARTBEAT_INTERVAL="10.0",
         TASKQ_CANCELLATION_GRACE_PERIOD="15.0",
         TASKQ_CLEANUP_GRACE_PERIOD="5.0",
         TASKQ_WATCHDOG_LOOP_LAG_BUDGET="25.0",
     )
-    assert s.lock_lease == 40.0
+    assert s.lock_lease == 56.0
 
 
 def test_lock_lease_above_boundary_accepted() -> None:
@@ -108,11 +158,12 @@ def test_lag_budget_plus_heartbeat_must_fit_lease() -> None:
     worker wakes to find its work reassigned. The heartbeat_interval term
     is the worst-case age the last beat can carry when the stall starts.
     """
-    # lease 8 == 4 x heartbeat 2 (the 4x invariant holds at its boundary);
-    # default lag budget 30 + 2 >= 8, so only the lag-lease invariant fires.
+    # lease 24 == the cascade floor at h=2 (4 * (2 + 2 * 2)), so the
+    # cascade invariant holds at its boundary; default lag budget 30 + 2
+    # >= 24, so only the lag-lease invariant fires.
     with pytest.raises(ValidationError, match=r"watchdog_loop_lag_budget.*must be <"):
         _load(
-            TASKQ_LOCK_LEASE="8.0",
+            TASKQ_LOCK_LEASE="24.0",
             TASKQ_HEARTBEAT_INTERVAL="2.0",
             TASKQ_CANCELLATION_GRACE_PERIOD="0.1",
             TASKQ_CLEANUP_GRACE_PERIOD="0.1",
@@ -124,7 +175,7 @@ def test_lag_lease_error_message_names_both_knobs() -> None:
     know both knobs to adjust, and explains the live-reclaim semantics."""
     with pytest.raises(ValidationError) as exc_info:
         _load(
-            TASKQ_LOCK_LEASE="8.0",
+            TASKQ_LOCK_LEASE="24.0",
             TASKQ_HEARTBEAT_INTERVAL="2.0",
             TASKQ_CANCELLATION_GRACE_PERIOD="0.1",
             TASKQ_CLEANUP_GRACE_PERIOD="0.1",
@@ -139,21 +190,23 @@ def test_lag_lease_invariant_exempt_when_watchdog_disabled() -> None:
     """watchdog_enabled=False exempts the config: with no terminal lag
     detector armed, stall-vs-lease ordering is a deployment concern, not a
     load-time guarantee (same gating as the bounded-loop invariant)."""
+    # Lease 24 == the cascade floor at h=2 (4 * (2 + 2 * 2)): the
+    # exemption, not a lease violation, is what's under test.
     s = _load(
-        TASKQ_LOCK_LEASE="8.0",
+        TASKQ_LOCK_LEASE="24.0",
         TASKQ_HEARTBEAT_INTERVAL="2.0",
         TASKQ_CANCELLATION_GRACE_PERIOD="0.1",
         TASKQ_CLEANUP_GRACE_PERIOD="0.1",
         TASKQ_WATCHDOG_ENABLED="false",
     )
-    assert s.lock_lease == 8.0
+    assert s.lock_lease == 24.0
 
 
 def test_lag_lease_invariant_satisfied_loads() -> None:
     """lag budget + heartbeat strictly below the lease loads and keeps the
     configured value (the defaults 30 + 10 < 60 are the shipped example)."""
     s = _load(
-        TASKQ_LOCK_LEASE="40.0",
+        TASKQ_LOCK_LEASE="60.0",
         TASKQ_HEARTBEAT_INTERVAL="10.0",
         TASKQ_CANCELLATION_GRACE_PERIOD="15.0",
         TASKQ_CLEANUP_GRACE_PERIOD="5.0",
@@ -178,7 +231,7 @@ def test_lag_budget_at_or_below_check_interval_raises() -> None:
     """
     with pytest.raises(ValidationError, match=r"watchdog_loop_lag_budget.*must be >"):
         _load(
-            TASKQ_LOCK_LEASE="40.0",
+            TASKQ_LOCK_LEASE="60.0",
             TASKQ_HEARTBEAT_INTERVAL="10.0",
             TASKQ_CANCELLATION_GRACE_PERIOD="15.0",
             TASKQ_CLEANUP_GRACE_PERIOD="5.0",
@@ -194,7 +247,7 @@ def test_lag_budget_check_interval_coherence_exempt_when_watchdog_disabled() -> 
     """watchdog_enabled=False exempts the coherence check too: no lag
     detector is spawned, so the budget is inert."""
     s = _load(
-        TASKQ_LOCK_LEASE="40.0",
+        TASKQ_LOCK_LEASE="60.0",
         TASKQ_HEARTBEAT_INTERVAL="10.0",
         TASKQ_CANCELLATION_GRACE_PERIOD="15.0",
         TASKQ_CLEANUP_GRACE_PERIOD="5.0",
@@ -207,7 +260,7 @@ def test_lag_budget_check_interval_coherence_exempt_when_watchdog_disabled() -> 
 def test_lag_budget_above_check_interval_accepted() -> None:
     """A budget strictly above the check interval (with headroom) loads."""
     s = _load(
-        TASKQ_LOCK_LEASE="40.0",
+        TASKQ_LOCK_LEASE="60.0",
         TASKQ_HEARTBEAT_INTERVAL="10.0",
         TASKQ_CANCELLATION_GRACE_PERIOD="15.0",
         TASKQ_CLEANUP_GRACE_PERIOD="5.0",
@@ -573,22 +626,27 @@ def test_lock_lease_violation_before_connections() -> None:
     ),
 )
 def test_lock_lease_invariant_universality(lock_lease: float, heartbeat_interval: float) -> None:
-    """ValidationError raised iff lock_lease < 4 * heartbeat_interval.
+    """ValidationError raised iff lock_lease is under the cascade floor.
 
-    Picks generous cancellation/cleanup grace values that always satisfy the
-    cancellation invariant (sum < lock_lease) when the invariant
-    holds, so the 4x boundary is the only one under test. The lag budget is
-    derived as 0.7 x lease, which keeps every other invariant quiet
-    wherever the 4x invariant holds (hb <= lease/4 < 0.3 x lease, so
-    0.7 x lease + hb < lease; and lease >= 2 in that branch, so
-    0.7 x lease > 1.0 = the default check interval) — except where the
-    draw cannot satisfy the lease invariant at all (heartbeat >= lease
-    leaves no legal positive budget), in which case the 4x violation and
-    the lag-lease violation aggregate into MultipleValidationErrors;
-    DotEnvModelError covers both shapes.
+    : at the defaults (max_heartbeat_failures 3, heartbeat_command_timeout
+        2) the floor is 4 * (heartbeat_interval + 2 * 2) = 4 * heartbeat_interval
+        + 16, strictly above the old 4 * heartbeat_interval rule the command
+        timeouts are the terms it ignored.
+
+        Picks generous cancellation/cleanup grace values that always satisfy the
+        cancellation invariant (sum < lock_lease) when the invariant
+        holds, so the cascade boundary is the only one under test. The lag budget is
+        derived as 0.7 x lease, which keeps every other invariant quiet
+        wherever the cascade invariant holds (hb <= (lease - 16)/4 < 0.3 x lease,
+        so 0.7 x lease + hb < lease; and lease >= 10 in that branch, so
+        0.7 x lease > 1.0 = the default check interval) — except where the
+        draw cannot satisfy the lease invariant at all (heartbeat >= lease
+        leaves no legal positive budget), in which case the cascade violation and
+        the lag-lease violation aggregate into MultipleValidationErrors;
+        DotEnvModelError covers both shapes.
     """
     # Pin grace values small enough that is satisfied for the smallest
-    # accepted lock_lease (>= 4 * heartbeat_interval >= 4 * 0.5 = 2.0).
+    # accepted lock_lease (>= 4 * heartbeat_interval + 16 >= 4 * 0.5 + 16 = 18).
     grace_each = 0.1
     overrides = {
         "TASKQ_LOCK_LEASE": str(lock_lease),
@@ -597,11 +655,11 @@ def test_lock_lease_invariant_universality(lock_lease: float, heartbeat_interval
         "TASKQ_CLEANUP_GRACE_PERIOD": str(grace_each),
         "TASKQ_WATCHDOG_LOOP_LAG_BUDGET": str(lock_lease * 0.7),
         # Half the derived budget, so the warn-vs-budget invariant stays
-        # quiet wherever the draw lands and the 4x boundary stays the only
-        # one under test.
+        # quiet wherever the draw lands and the cascade boundary stays the
+        # only one under test.
         "TASKQ_WATCHDOG_LOOP_LAG_WARN_BUDGET": str(lock_lease * 0.35),
     }
-    should_raise = lock_lease < 4 * heartbeat_interval
+    should_raise = lock_lease < 4 * heartbeat_interval + 16
 
     if should_raise:
         with pytest.raises(DotEnvModelError, match="lock_lease"):

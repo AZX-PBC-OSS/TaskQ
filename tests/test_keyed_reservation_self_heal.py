@@ -175,7 +175,9 @@ async def test_busy_denial_issues_no_heal(
         ensure_calls = 0
         real_ensure = ConcurrencyReservation.ensure_slots
 
-        async def _spy_ensure(self: ConcurrencyReservation, pool: "asyncpg.Pool") -> None:
+        async def _spy_ensure(
+            self: ConcurrencyReservation, pool: "asyncpg.Pool", **_kwargs: object
+        ) -> None:
             nonlocal ensure_calls
             ensure_calls += 1
             await real_ensure(self, pool)
@@ -214,7 +216,9 @@ async def test_heal_window_does_not_survive_eviction_and_re_registration(
         probes = 0
         real_probe = ConcurrencyReservation.slot_rows_exist
 
-        async def _spy_probe(self: ConcurrencyReservation, pool: "asyncpg.Pool") -> bool:
+        async def _spy_probe(
+            self: ConcurrencyReservation, pool: "asyncpg.Pool", **_kwargs: object
+        ) -> bool:
             nonlocal probes
             probes += 1
             return await real_probe(self, pool)
@@ -499,7 +503,9 @@ async def test_cancelled_heal_does_not_leave_a_standing_window_stamp(
         real_probe = ConcurrencyReservation.slot_rows_exist
         cancelled_once = False
 
-        async def _cancel_once_probe(self: ConcurrencyReservation, pool: "asyncpg.Pool") -> bool:
+        async def _cancel_once_probe(
+            self: ConcurrencyReservation, pool: "asyncpg.Pool", **_kwargs: object
+        ) -> bool:
             nonlocal probes, cancelled_once
             probes += 1
             if not cancelled_once:
@@ -551,7 +557,9 @@ async def test_heal_failure_counts_every_attempt_but_warns_once_per_window(
         # Job A holds the only slot; the bucket is busy for the whole test.
         await _acquire(reg, ref, pool, settings)
 
-        async def _failing_probe(self: ConcurrencyReservation, pool: "asyncpg.Pool") -> bool:
+        async def _failing_probe(
+            self: ConcurrencyReservation, pool: "asyncpg.Pool", **_kwargs: object
+        ) -> bool:
             raise ConnectionError("probe down")
 
         monkeypatch.setattr(ConcurrencyReservation, "slot_rows_exist", _failing_probe)

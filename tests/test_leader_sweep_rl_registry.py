@@ -63,7 +63,10 @@ def _deps() -> WorkerDeps:
         {
             "TASKQ_PG_DSN": "postgresql://x:x@localhost/x",
             "TASKQ_HEARTBEAT_INTERVAL": "0.5",
-            "TASKQ_LOCK_LEASE": "2.0",
+            # 3.0 + the tiny command timeout satisfies the cascade
+            # floor: 4 * (0.5 + 2 * 0.1) = 2.8 <= 3.0.
+            "TASKQ_HEARTBEAT_COMMAND_TIMEOUT": "0.1",
+            "TASKQ_LOCK_LEASE": "3.0",
             "TASKQ_WATCHDOG_LOOP_LAG_BUDGET": "1.2",
             "TASKQ_WATCHDOG_LOOP_LAG_WARN_BUDGET": "0.5",
             "TASKQ_CANCELLATION_GRACE_PERIOD": "0.0",

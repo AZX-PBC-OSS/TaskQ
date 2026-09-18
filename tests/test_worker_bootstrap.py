@@ -477,7 +477,9 @@ async def test_ensure_slots_failure_logged_and_bootstrap_continues(
 
     settings = _settings_for(pg_dsn, schema)
 
-    async def _raise_ensure_slots(self: ConcurrencyReservation, pool: object) -> None:
+    async def _raise_ensure_slots(
+        self: ConcurrencyReservation, pool: object, **_kwargs: object
+    ) -> None:
         raise RuntimeError("ensure_slots boom")
 
     monkeypatch.setattr(ConcurrencyReservation, "ensure_slots", _raise_ensure_slots)
