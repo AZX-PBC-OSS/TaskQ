@@ -1040,6 +1040,13 @@ def test_live_jobs_list_fetches_the_lease_columns() -> None:
         "the database clock — comparing the row's timestamptz in Python mixes "
         "clock domains on the one field where 'past' is the whole signal"
     )
+    assert "cancel_phase = 0" in cols, (
+        "the expired flag must carve out rows with a cancel in flight, the "
+        "same carve-out taskq.jobs.running.lease_expired applies: the reclaim "
+        "sweep deliberately waits out the cancel grace ladder for those rows, "
+        "so their lease expiring mid-cancel is the protocol working, not a "
+        "zombie, flagging them would page an operator onto a healthy cancel"
+    )
 
 
 def test_live_jobs_table_renders_lease_column_with_expired_badge(
