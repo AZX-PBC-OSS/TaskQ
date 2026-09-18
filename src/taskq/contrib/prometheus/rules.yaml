@@ -225,10 +225,20 @@ groups:
         labels:
           severity: warning
         annotations:
-          summary: "TaskQ sweep batches are being aborted by deadlines or server-side cancels"
+          summary: "TaskQ sweep batches are being aborted, or a gauge sampler stopped reading"
           description: >-
             Sweep batches are being aborted by deadlines or server-side
-            cancels — the database cannot finish bounded batches. Runbook:
+            cancels — the database cannot finish bounded batches — or a
+            gauge sampler's read did not complete. The sweep_name label
+            says which: sweep names are aborted batches; the sampler names
+            (queue_depth, backlog_detection, actor_backlog,
+            reservation_slots) are reads that did not happen for ANY
+            reason, counted every failure because a dead sampler's gauges
+            go stale or absent while nothing else names the loss — the
+            per-actor backlog read dying, for instance, resolves
+            TaskQQueueDepthHigh at the exact moment the incident it
+            alerts on is killing the read, and this counter is what
+            keeps that failure observable. Runbook:
             docs/guides/runbooks.md#taskqsweeptimeouts.
 
       - alert: TaskQSweepDegraded
@@ -344,9 +354,18 @@ groups:
           summary: "TaskQ running jobs are stuck on expired leases"
           description: >-
             Running jobs whose lock lease is past expiry, sustained for 5
-            minutes. A healthy fleet reads 0 — the reclaim sweep drains
-            expired leases within a tick or two of expiry — so a sustained
-            non-zero reading means reclaim is not draining: work is claimed
-            and stuck while health probes stay green. Inspect the admin
-            /jobs lease column (or jobs.lock_expires_at) for the holders.
-            Runbook: docs/guides/runbooks.md#taskqrunningleaseexpired.
+            minutes — with rows in a cancel phase carved out: the reclaim
+            sweep deliberately waits cancel grace + cleanup grace + 60 s
+            past expiry for a cancelling row before it pre-empts, so an
+            expired lease mid-cancel is the protocol working, not an
+            incident (a cancel that never completes pages elsewhere:
+            TaskQAbandonedJobs when its worker is alive to escalate,
+            TaskQHeartbeatMisses when it died mid-cancel — reclaim
+            honors the row to cancelled either way). A healthy fleet
+            reads 0 — the
+            reclaim sweep drains expired leases within a tick or two of
+            expiry — so a sustained non-zero reading means reclaim is not
+            draining: work is claimed and stuck while health probes stay
+            green. Inspect the admin /jobs lease column (or
+            jobs.lock_expires_at) for the holders. Runbook:
+            docs/guides/runbooks.md#taskqrunningleaseexpired.
