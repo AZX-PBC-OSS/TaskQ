@@ -442,7 +442,7 @@ def _warn_shutdown_grace_window(scfg: SupervisorConfig, settings: WorkerSettings
         remedy=(
             f"raise supervisor.shutdown_grace to at least {release_floor}s so a "
             "child's held release lands before the SIGKILL (its clean exit "
-            f"needs {settings.worst_case_shutdown_seconds}s — the graces plus "
+            f"needs {settings.worst_case_shutdown_seconds}s (the graces plus "
             "the bounded-close tail); below the floor every interrupted job "
             "rides the lease-expiry crash path and spends the attempt the "
             "release would have refunded"
