@@ -2009,14 +2009,14 @@ class WorkerSettings(TaskQSettings):
                 )
             )
 
-        # Park-tail vs heartbeat-exit: NO hard error here, deliberately —
+        # Park-tail vs heartbeat-exit: NO hard error here, deliberately:
         # see WorkerSettings.release_park_lease_cap. The release park is
         # capped by the lease in the consumer itself, which makes the
         # single-RELEASING-write-failure exposure structurally impossible
         # for every config that loads; a cross-field rejection here would
         # refuse configs that are safe under the cap (and would break
         # every fast test fixture that zeroes the graces against the
-        # default budget — post_load runs even with validate=False). The
+        # default budget: post_load runs even with validate=False). The
         # operator-facing surface is the warning tier in
         # _emit_startup_warnings, and the residual double-write-failure
         # bound is release_disown_lease_floor.
@@ -2226,20 +2226,20 @@ class WorkerSettings(TaskQSettings):
     @property
     def release_exit_tail_seconds(self) -> float:
         """Seconds past the termination deadline the process can still be
-        alive — the tail every release hold pads its remaining share with.
+        alive: the tail every release hold pads its remaining share with.
 
         The deadline trip is not instantaneous: the watchdog checks the
         deadline once per ``watchdog_dump_interval`` (the check is clipped
         to the deadline, so real lag is loop jitter and this term is
         margin), and ``trip()`` then renders task stacks and joins the
         bounded metrics flush before ``os._exit``. The stack render and
-        critical log write have no bound of their own — the
+        critical log write have no bound of their own: the
         ``RELEASE_EXIT_TAIL_SLACK_SECS`` heuristic covers them, and the
         residual (a full stderr pipe under a slow docker logging driver)
         is documented in docs/guides/workers.md. Kept as a settings
         property because the lease arithmetic that guards the disown path
         (see ``release_disown_lease_floor``) needs the same number the
-        worker-layer hold pads with — one source, no drift.
+        worker-layer hold pads with: one source, no drift.
         """
         return (
             self.watchdog_dump_interval
@@ -2253,14 +2253,14 @@ class WorkerSettings(TaskQSettings):
 
         The consumer's shutdown arm parks a still-running sync actor (or
         transactional unwind) so a provable exit can earn the immediate
-        ``pending`` release — but the heartbeat, the row's only lease
+        ``pending`` release, but the heartbeat, the row's only lease
         renewer, stops when the orchestrator sets ``shutdown_event``
         (roughly ``cancellation_grace + cleanup_grace`` in). A park that
         ran to the termination budget on a lease shorter than that budget
         would let the row's lease expire mid-park, and the leader's
         reclaim sweep (no carve-out for SHUTDOWN-origin rows:
         ``cancel_phase`` stays 0) would re-pend a row whose actor thread
-        is still executing — the double-run, reachable from a single
+        is still executing: the double-run, reachable from a single
         infra-failed RELEASING write. The consumer therefore caps the
         park at::
 
@@ -2273,7 +2273,7 @@ class WorkerSettings(TaskQSettings):
         write's budget, and ``cancel + (lock_lease - heartbeat -
         write_budget) + write_budget <= (cancel + cleanup_grace -
         heartbeat) + lock_lease`` holds identically. Safety by
-        construction, not by configuration — which is why there is no
+        construction, not by configuration, which is why there is no
         cross-field rejection in ``post_load`` for this shape: the cap
         makes every loadable config safe, and refusing e.g.
         ``120/30/10/60`` outright would reject a config the cap already
@@ -2292,9 +2292,9 @@ class WorkerSettings(TaskQSettings):
         The park's other ceiling (the remaining termination budget minus
         the release write's own budget, evaluated at the cancel). The
         lease cap binds first whenever
-        ``release_park_lease_cap < release_park_budget_bound`` — i.e.
+        ``release_park_lease_cap < release_park_budget_bound``: i.e.
         whenever ``lock_lease < termination - cancellation - cleanup +
-        heartbeat`` — and that is the inequality the
+        heartbeat``, and that is the inequality the
         ``release-park-lease-capped`` startup warning surfaces with its
         arithmetic. At the shipped defaults (60 vs 55) the budget bound
         binds and the park runs its full remaining budget.
@@ -2312,10 +2312,10 @@ class WorkerSettings(TaskQSettings):
         shipped default is 63 vs lock_lease 60 and marginally fails).
 
         When BOTH release writers fail their writes (the RELEASING phase's
-        and the consumer's — the consumer's exhaustion disowns the row),
+        and the consumer's: the consumer's exhaustion disowns the row),
         the row stays ``running`` behind a lease the heartbeat has already
         stopped renewing, and the leader's reclaim sweep becomes the only
-        exit — at the earliest ``last heartbeat + lock_lease``. For the
+        exit: at the earliest ``last heartbeat + lock_lease``. For the
         reclaim to stay behind the process's true exit (the deadline trip
         plus the exit tail, which is where an outlived actor thread dies),
         the lease must cover:
@@ -2323,7 +2323,7 @@ class WorkerSettings(TaskQSettings):
         ``lock_lease >= termination - cancellation - cleanup + heartbeat
         + release_exit_tail_seconds``
 
-        At the shipped defaults that is 63 against ``lock_lease`` 60 — a
+        At the shipped defaults that is 63 against ``lock_lease`` 60: a
         residue of ~3s that requires the double write failure AND a sweep
         tick landing inside it. Surfaced as a startup warning, not a hard
         fail: the shipped default would not load otherwise, and whether to

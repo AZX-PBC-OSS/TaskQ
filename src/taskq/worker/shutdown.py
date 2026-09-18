@@ -220,7 +220,7 @@ def _watchdog_exit_tail(settings: "WorkerSettings") -> float:
     stack render and the critical log write have no bound of their own, so
     the fixed slack covers them. A hold that ends at the bare deadline
     leaves exactly this window in which the row is claimable while the
-    dying process can still touch it — the overlap the hold exists to
+    dying process can still touch it: the overlap the hold exists to
     prevent (#232). The composition itself lives on the settings
     (``WorkerSettings.release_exit_tail_seconds``) so the disown-path
     lease floor reads the identical arithmetic; this reader exists so the
@@ -241,17 +241,17 @@ def _release_hold(
     any more. The shutdown watchdog force-exits at
     ``termination_grace_period`` counted from the shutdown's start, so the
     hold is the budget's remaining share plus the exit tail past the
-    deadline itself — the dump-interval lag before the trip is observed and
+    deadline itself: the dump-interval lag before the trip is observed and
     the bounded flush the trip performs before ``os._exit``
     (:func:`_watchdog_exit_tail`). Zero is fine: the release then lands
     pending, and a past-budget process is already on borrowed time the tail
     still covers. With ``watchdog_enabled = False`` there is no guaranteed
-    exit, so the hold is ``lock_lease`` — the bound the lease-expiry path
+    exit, so the hold is ``lock_lease``: the bound the lease-expiry path
     already imposes today, now without spending the attempt.
 
     *deps* may be ``None`` (the consumer's release arm on a bare direct
     call): there is no shutdown start to anchor on, so the defensive full
-    budget applies — the same bound the watchdog enforces from the first
+    budget applies: the same bound the watchdog enforces from the first
     signal.
     """
     if not settings.watchdog_enabled:
@@ -388,7 +388,7 @@ async def orchestrate_shutdown(
                 # The local cancel is delivered even when the row-side
                 # write failed: skipping it let a cancellable actor run
                 # untouched into RELEASING and be released-with-hold
-                # while still alive — the exact overlap the hold exists
+                # while still alive: the exact overlap the hold exists
                 # to prevent (#233). The escalation probe is the row-side
                 # half of FORCING; task.cancel() is the process-side
                 # half, and only both together advance the entry. The
@@ -424,9 +424,9 @@ async def orchestrate_shutdown(
         # both cancels. The shutdown owes it a release, not a verdict:
         # mark_interrupted hands the row back to the fleet with the claim's
         # attempt increment refunded, HELD behind the rest of this
-        # process's termination budget — plus the watchdog's exit tail
+        # process's termination budget: plus the watchdog's exit tail
         # past the deadline itself (the dump-interval lag before the trip
-        # is observed and the bounded flush before os._exit) — so no other
+        # is observed and the bounded flush before os._exit), so no other
         # pod can claim the row while this one might still touch it. The
         # release is ordered before the process dies, never after, and the
         # hold closes the overlap where the row is claimable while the

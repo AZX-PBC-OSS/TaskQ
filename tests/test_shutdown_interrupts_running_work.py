@@ -42,7 +42,7 @@ from taskq.testing.assertions import wait_for
 from taskq.testing.fixtures import JobsApp
 from taskq.testing.pg import create_worker
 from taskq.worker._consumer import consume_one_job
-from taskq.worker.dispatch import (  # pyright: ignore[reportPrivateUsage]  # Why: the production sync-actor dispatch helper — the thread tracking under test is exactly what dispatch_one_job calls for a sync actor.
+from taskq.worker.dispatch import (  # pyright: ignore[reportPrivateUsage]  # Why: the production sync-actor dispatch helper: the thread tracking under test is exactly what dispatch_one_job calls for a sync actor.
     _run_sync_actor_tracked,
 )
 from taskq.worker.shutdown import (  # pyright: ignore[reportPrivateUsage]  # Why: the exit tail is the deadline model the hold assertions recompute.
@@ -273,9 +273,9 @@ async def test_shutdown_releases_an_unresponsive_actor_behind_the_remaining_budg
         assert after.interrupt_count == 1
 
         # The hold is the remaining termination budget PLUS the watchdog's
-        # exit tail — the dump-interval lag before the deadline trip is
+        # exit tail: the dump-interval lag before the deadline trip is
         # observed and the bounded flush the trip performs before
-        # os._exit — and never exceeds that sum (the remaining share is
+        # os._exit, and never exceeds that sum (the remaining share is
         # counted from the start of the shutdown, not a fresh budget at
         # release time).
         hold = after.scheduled_at - datetime.now(UTC)
@@ -551,7 +551,7 @@ async def _claim_as(
     backend: PostgresBackend,
     worker_id: UUID,
 ) -> list[JobRow]:
-    """One claim round for *worker_id* — exactly what a surviving pod's
+    """One claim round for *worker_id*: exactly what a surviving pod's
     producer loop does the moment a row looks available."""
     return await backend.dispatch_batch(worker_id, ["default"], 1, _LOCK_LEASE)
 
@@ -565,18 +565,18 @@ async def test_a_deploy_never_hands_a_live_sync_actors_row_to_a_second_worker(
     A sync actor runs in an executor thread; the deploy's ``task.cancel()``
     cancels the await, never the thread. The old release wrote
     ``mark_interrupted(hold=0)`` the moment the await died, so the row went
-    ``pending`` while the body was still mid-execution — and a second
+    ``pending`` while the body was still mid-execution, and a second
     worker's claim round took it and ran the job a second time, side by
     side with the dying pod's thread. This is exactly the TAStack shape
     (plain ``def`` actors, transactional workers), and the claim below
     runs while the first attempt's thread is PROVABLY still alive.
 
-    The fixed contract: the release is held back — the consumer parks on
+    The fixed contract: the release is held back: the consumer parks on
     the tracked thread handle, bounded by the remaining termination budget,
     and the row stays ``scheduled`` behind the process's exit window until
     the body provably exits or the window ends. The row is never stranded
     either: once the hold's ``scheduled_at`` passes (expired surgically
-    here — the scheduled_to_pending sweep's job in production), the second
+    here: the scheduled_to_pending sweep's job in production), the second
     worker claims it and the re-run buys a fresh attempt increment.
     """
     deps = clean_jobs_app.deps
@@ -605,7 +605,7 @@ async def test_a_deploy_never_hands_a_live_sync_actors_row_to_a_second_worker(
 
     async def run_sync_actor(job_row: JobRow, ctx: JobContext[BaseModel]) -> object:
         del job_row
-        return await _run_sync_actor_tracked(sync_body, {"payload": ctx.payload}, ctx)  # type: ignore[arg-type]  # Why: the production dispatch helper driven with the test's body — the exact call shape dispatch_one_job makes for a registered sync actor.
+        return await _run_sync_actor_tracked(sync_body, {"payload": ctx.payload}, ctx)  # type: ignore[arg-type]  # Why: the production dispatch helper driven with the test's body: the exact call shape dispatch_one_job makes for a registered sync actor.
 
     attempt_task = _run_attempt(deps, backend, worker_id, row, run_sync_actor)
     await asyncio.to_thread(body_started.wait, 10.0)
@@ -622,7 +622,7 @@ async def test_a_deploy_never_hands_a_live_sync_actors_row_to_a_second_worker(
         with contextlib.suppress(asyncio.CancelledError):
             await asyncio.wait_for(attempt_task, timeout=30.0)
 
-        # The thread is PROVABLY still alive — the premise of the whole
+        # The thread is PROVABLY still alive: the premise of the whole
         # scenario: the dying process might still touch the row.
         assert not body_exited.is_set()
         assert executions, "the body must have started (and been counted) exactly once"
@@ -643,8 +643,8 @@ async def test_a_deploy_never_hands_a_live_sync_actors_row_to_a_second_worker(
         # The hold covers the whole exit window: the deadline plus the
         # watchdog's tail past it. The tail is pinned from the settings and
         # the two literals it is built from (the bounded 2s metrics flush
-        # and ~1s of stack-render/log slack) — NOT from the shutdown
-        # module's own helper — so weakening the pad in the source trips
+        # and ~1s of stack-render/log slack): NOT from the shutdown
+        # module's own helper, so weakening the pad in the source trips
         # this assertion instead of silently moving with it.
         expected_tail = deps.settings.watchdog_dump_interval + 2.0 + 1.0
         hold = after.scheduled_at - datetime.now(UTC)
@@ -685,7 +685,7 @@ async def test_a_deploy_never_hands_a_live_sync_actors_row_to_a_second_worker(
             )
         reclaimed = await _claim_as(backend, second_worker)
         assert len(reclaimed) == 1 and reclaimed[0].id == job_id, (
-            "after the hold expires the row must be claimable again — a held "
+            "after the hold expires the row must be claimable again: a held "
             "release that never becomes claimable strands the job"
         )
         assert reclaimed[0].attempt == enqueued.attempt + 1, (
@@ -694,7 +694,7 @@ async def test_a_deploy_never_hands_a_live_sync_actors_row_to_a_second_worker(
             "spends one"
         )
         assert len(executions) == 1, (
-            "the actor body ran exactly once — the deploy interrupted it, "
+            "the actor body ran exactly once: the deploy interrupted it, "
             "held it, and handed it to the fleet without ever running it "
             "twice at once"
         )
@@ -711,7 +711,7 @@ async def test_a_deploy_holds_a_transactional_sync_actor_until_its_thread_exits(
 
     The transactional path cancelled ``tx_task`` and re-raised without
     waiting, so the release landed while the transaction task was still
-    unwinding — and with a sync actor inside, the unwind's to_thread await
+    unwinding, and with a sync actor inside, the unwind's to_thread await
     dies while the BODY carries on. The fixed path parks on both the tx
     unwind and the tracked thread; the row stays held until the process is
     provably gone.

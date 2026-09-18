@@ -2286,7 +2286,7 @@ def test_shutdown_grace_below_the_release_floor_warns_with_the_numbers() -> None
 
 def test_shutdown_grace_at_or_above_the_release_floor_stays_quiet() -> None:
     """The control: a grace that lets the release land (45s against the
-    40s floor) emits nothing — a warning that fires on correct configs is
+    40s floor) emits nothing: a warning that fires on correct configs is
     noise that buries the next real one."""
     from taskq.worker.workgroup import _warn_shutdown_grace_window
 
