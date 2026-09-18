@@ -855,6 +855,7 @@ async def consume_one_job(
                             error_reporter=error_reporter,
                             fallback_result_ttl=fallback_result_ttl,
                             disowned_jobs=_disowned_jobs,
+                            deps=deps,
                         )
                         _completion = _OK if tx_outcome == "succeeded" else None
                         if tx_outcome == "succeeded":
@@ -1149,6 +1150,8 @@ async def consume_one_job(
                 error_reporter=error_reporter,
                 text=attempt_text,
                 disowned_jobs=_disowned_jobs,
+                ctx=ctx,
+                deps=deps,
             )
 
         finally:
@@ -1224,6 +1227,7 @@ async def _consume_transactional(
     error_reporter: ErrorReporter | None = None,
     fallback_result_ttl: timedelta | None = None,
     disowned_jobs: set[UUID] | None = None,
+    deps: WorkerDeps | None = None,
 ) -> AttemptOutcome:
     """Transactional success/failure path when a transaction conn is available.
 
@@ -1523,6 +1527,8 @@ async def _consume_transactional(
             pre_handler=enqueuer.discard_buffer,
             error_reporter=error_reporter,
             disowned_jobs=disowned_jobs,
+            ctx=ctx,
+            deps=deps,
         )
 
 

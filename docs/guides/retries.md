@@ -332,6 +332,12 @@ In short: `schedule_to_close` is a ceiling on the whole job; `start_to_close` is
 individual attempt. A job can hit its `start_to_close` timeout three times in a row and still
 retry a fourth time, as long as `max_attempts` and `schedule_to_close` allow it.
 
+One sync-actor caveat: the timeout cancels the *await*, never a sync `def` actor's executor
+thread. Before the retry write re-pends the row, the consumer parks on the thread's tracked
+exit handle (bounded by the exit-wait budget) and defers the retry behind the release hold when
+the thread outlives that window — a bound, not a proof, for an actor that outlives both. See
+the no-concurrent-run promise's scoping in [architecture.md](../architecture.md).
+
 ### Precedence chain
 
 The effective `start_to_close` for a given attempt is resolved in this order — the first value
