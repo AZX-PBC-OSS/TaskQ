@@ -276,27 +276,27 @@ async def _bounded_checkout(
     acquire_timeout: float | None = None,
 ) -> AsyncGenerator[asyncpg.pool.PoolConnectionProxy, None]:
     """The bounded acquire/release one attempt's statements run inside:
-    :meth:`_RetryGuard.checkout`'s implementation, shared with the read,
-    schedule, and batch paths that run no retry wrapper and so have no
-    guard of their own (issue #280's sweep).
+       :meth:`_RetryGuard.checkout`'s implementation, shared with the read,
+       schedule, and batch paths that run no retry wrapper and so have no
+    guard of their own sweep).
 
-    Replaces a bare ``async with pool.acquire()``: the acquire is
-    unchanged unless *acquire_timeout* is given (a site that already
-    bounded its acquire, such as the notify-pool sweeps' dispatcher
-    command timeout, keeps that bound verbatim), but the RELEASE carries
-    :data:`_POOL_RELEASE_RESET_TIMEOUT_SECS` and never raises: a reset
-    that fails or times out is pool hygiene, not part of the op's
-    semantics. asyncpg's release path already terminates the connection
-    on any reset failure, so swallowing costs nothing but a log line, and
-    it buys two #236 fixes at once: an op whose work committed but whose
-    release hit a parked/dead connection returns its RESULT instead of an
-    error that invites a duplicate-on-retry, and a reset sent into a
-    silently-dead server times out instead of parking the caller (and
-    ``pool.close()``) forever.
+       Replaces a bare ``async with pool.acquire()``: the acquire is
+       unchanged unless *acquire_timeout* is given (a site that already
+       bounded its acquire, such as the notify-pool sweeps' dispatcher
+       command timeout, keeps that bound verbatim), but the RELEASE carries
+       :data:`_POOL_RELEASE_RESET_TIMEOUT_SECS` and never raises: a reset
+       that fails or times out is pool hygiene, not part of the op's
+       semantics. asyncpg's release path already terminates the connection
+       on any reset failure, so swallowing costs nothing but a log line, and
+    it buys two fixes at once: an op whose work committed but whose
+       release hit a parked/dead connection returns its RESULT instead of an
+       error that invites a duplicate-on-retry, and a reset sent into a
+       silently-dead server times out instead of parking the caller (and
+       ``pool.close()``) forever.
 
-    *operation* names the call site in the ``pool-release-failed``
-    WARNING, the operator's one observable trace of the swallowed
-    failure.
+       *operation* names the call site in the ``pool-release-failed``
+       WARNING, the operator's one observable trace of the swallowed
+       failure.
     """
     acquired = (
         pool.acquire(timeout=acquire_timeout) if acquire_timeout is not None else pool.acquire()
@@ -320,7 +320,7 @@ async def _bounded_checkout(
                 # either mask the op's real outcome with pool hygiene
                 # (on the error path) or hand the caller a failure for
                 # work that committed (on the success path), which is
-                # precisely the duplicate-invitation #236 exists to
+                # precisely the duplicate-invitation exists to
                 # remove.
                 from taskq.obs import get_logger
 
