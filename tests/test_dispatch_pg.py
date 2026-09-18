@@ -743,8 +743,16 @@ async def statement_timeout_dispatcher_pool(
     ]
 
     async def _warm_and_degrade(conn: _asyncpg.Connection) -> None:
-        for warm in warm_sqls:
-            await conn.fetch(warm, ["default"], 1, new_uuid(), timedelta(seconds=30), 2)
+        # The warm-up's prepare and type introspection must mutate nothing:
+        # a connection created MID-TEST would otherwise run a real claim
+        # against the seeded backlog (its rows exist by then) and mark real
+        # jobs running under a throwaway worker id. The transaction's
+        # rollback returns anything the warm claim touched; prepared-
+        # statement state is session-level and survives the rollback, which
+        # is the part the budget needs.
+        async with conn.transaction():
+            for warm in warm_sqls:
+                await conn.fetch(warm, ["default"], 1, new_uuid(), timedelta(seconds=30), 2)
         await conn.execute("SET statement_timeout = '1ms'")
 
     async def _keep_session_budget(conn: _asyncpg.Connection) -> None:
