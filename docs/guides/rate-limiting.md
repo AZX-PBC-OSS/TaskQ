@@ -362,6 +362,12 @@ If a job's queue has a registered cap, the worker prepends that reservation to t
 acquire list before running the actor — transparent to actor code, no `@actor` argument
 needed. This is the "implicit, not per-actor opt-in" behavior the issue asked for.
 
+The claim's reservation-headroom gate also reads queue-cap occupancy, but scoped per queue:
+an actor whose running jobs hold a queue's cap slots is admitted nothing **on that queue**
+while the cap bucket is full, while its claims on every other queue flow untouched. An actor
+holding nothing in the cap bucket is never gated by it (the first-claim doctrine — the
+post-claim acquire stays the admission authority).
+
 ### How it works
 
 The queue-level cap is a fleet-wide limit applied per-queue rather than opted into per
@@ -510,7 +516,7 @@ For full `FakeClock` walkthroughs, see
 | Backend | Value | Storage | Notes |
 |---|---|---|---|
 | Redis | `"redis"` | Redis sorted set / hash | Fastest. Requires `taskq-py[redis]` extra and `TASKQ_REDIS_URL`. Atomic Lua scripts prevent race conditions. |
-| Postgres | `"postgres"` | `rate_limit_buckets`, `rate_limit_window_entries` | No extra dependencies. Slower; uses bounded `FOR UPDATE` row locks (token bucket — `TASKQ_TOKEN_BUCKET_LOCK_TIMEOUT_MS`; GCRA — `TASKQ_SLIDING_WINDOW_LOCK_TIMEOUT_MS`) and a bounded per-bucket advisory lock (log-style sliding window, same setting as GCRA — see the note above). Also serves as fallback when Redis is unavailable. |
+| Postgres | `"postgres"` | `rate_limit_buckets`, `rate_limit_window_entries` | No extra dependencies. Each acquire is a single fused `INSERT … ON CONFLICT DO UPDATE … RETURNING` (token bucket, GCRA) or one CTE statement (log-style window) doing the arithmetic server-side under a bounded lock — 4 round trips in bounded mode (BEGIN + `set_config` + statement + COMMIT), 1 in indefinite mode; see [perf-evidence-rate-limit-pg.md](https://github.com/AZX-PBC-OSS/TaskQ/blob/main/perf-evidence-rate-limit-pg.md). Lock waits are bounded (`FOR UPDATE` row lock — token bucket/GCRA, `TASKQ_TOKEN_BUCKET_LOCK_TIMEOUT_MS` / `TASKQ_SLIDING_WINDOW_LOCK_TIMEOUT_MS`; per-bucket advisory lock — log-style, same setting as GCRA). Also serves as fallback when Redis is unavailable. |
 | Memory | `"memory"` | Per-process `asyncio.Lock`-guarded data structure | No external dependencies. State is lost on restart and **not shared across worker processes**. Use in tests and single-process development only. |
 
 !!! warning "Redis backend without the `[redis]` extra"
@@ -870,6 +876,22 @@ seen, and reused for every subsequent job with the same key — it is not re-cre
 dispatch. Registration is idempotent for identical config, which every acquisition for a given
 `KeyedReservationRef` always produces (its `slots`/`lease` are fixed).
 
+!!! note "Claim-time admission never gates on keyed buckets"
+    The dispatch claim folds live reservation occupancy into per-actor admission (the
+    `reservation_holdings` / `reservation_headroom` CTEs — see
+    [perf-evidence-dispatch.md, section A6](https://github.com/AZX-PBC-OSS/TaskQ/blob/main/perf-evidence-dispatch.md)
+    for the fold and its measured cost), but **keyed buckets are excluded from that fold**:
+    their concrete names are payload-derived per job (`f"{base_name}:{key}"`), and the claim
+    cannot know which pending row will need which key. Folding a keyed bucket in would let one
+    saturated tenant block every other tenant's claims of the same actor.
+
+    The trade: a keyed bucket's saturation never stops the claim from admitting the actor's
+    rows, so a saturated tenant's extra jobs are claimed, denied by the post-claim
+    `acquire_for_actor` (which resolves the key from the validated payload — the admission
+    authority), and rescheduled per the 429 semantics. That bounded claim → deny → snooze
+    cycle is the accepted cost of not gating a whole actor on one tenant's occupancy; the
+    per-key cap itself is enforced exactly where the key is known.
+
 !!! warning "Registry growth under high key cardinality"
     Concrete per-key reservations are registered lazily and, absent eviction, never removed.
     Under high key cardinality — for example, one reservation per customer session over a
@@ -1100,10 +1122,19 @@ bound the Python-process-local registry dict; the Redis TTL bounds Redis memory.
     the drained quota to full — whereas the Redis backend deliberately retains that same state
     for 24h. The trade-off is deliberate: such buckets count against `max_keyed_rate_limits`
     until their quota returns to full (refund/reset) or the process restarts, so under
-    sustained high-cardinality fixed-quota keys the cap can fill permanently and deny *new*
+    sustained high-cardinality fixed-quota **memory** keys the cap can fill and deny *new*
     keys. The cap fails closed rather than silently resetting quotas. Buckets that are full
     (no quota consumed) and refilling buckets are evicted normally — the latter self-heal
     because their state converges back toward full on its own.
+
+    `backend="postgres"` fixed-quota buckets are evicted normally (they are *not* exempt):
+    their quota state lives in the `rate_limit_buckets` row, and eviction of the registry
+    entry cannot lose it. Both row-deletion paths — the per-worker pending-reclaim drain and
+    the maintenance leader's fleet sweep — refuse to delete a row whose fixed quota is partly
+    spent, and a re-materialized bucket resumes from the surviving row (the acquire preseeds
+    `ON CONFLICT DO NOTHING` and reads the existing state under the row lock). Recycling the
+    registry entry is what keeps `max_keyed_rate_limits` from filling with never-again-used
+    fixed-quota keys and refusing every new key past the cap.
 
 !!! note "Independent caps for keyed reservations and keyed rate limits"
     `settings.max_keyed_reservations` (default `10_000`) governs keyed

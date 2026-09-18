@@ -1793,25 +1793,32 @@ class RateLimitRegistry:
         ``registry-keyed-reclaim-pending-cap-veto`` warning are the
         visible signals).
 
-        **Exemption — fixed-quota buckets.** A bucket with
-        ``refill_per_second == 0`` whose state an eviction cycle would
-        discard is NOT evicted (see
-        :meth:`TokenBucket.holds_consumed_quota`). For ``backend="memory"``
-        that is a bucket which has consumed part of its quota, held because
-        its token state lives on the instance; for ``backend="postgres"``
-        it is every such bucket, because the state lives in the row the
-        reclaim drain deletes and remaining tokens are not readable on this
-        synchronous path. Either way the next acquire would start again at
-        full capacity against a budget already spent — whereas Redis
-        deliberately retains that same state for 24 h. The exemption applies to both callers of
-        this method (the per-worker sweep and the cap-pressure opportunistic
-        eviction). Trade-off, deliberately chosen: an exempt bucket counts
-        against ``settings.max_keyed_rate_limits`` until its quota returns
-        to full (refund/reset) or the process restarts, so under sustained
-        high-cardinality fixed-quota keys the cardinality cap can
-        permanently fill and deny NEW keys — the cap fails CLOSED with a
-        warning rather than silently resetting quotas, which is the correct
-        failure direction for a limiter.
+        **Exemption: memory fixed-quota buckets.** A ``backend="memory"``
+        bucket with ``refill_per_second == 0`` that has consumed part of its
+        quota is NOT evicted (see :meth:`TokenBucket.holds_consumed_quota`):
+        its token state lives only on the in-process instance, so eviction
+        would silently reset the drained quota to full, and the next acquire
+        would over-admit against a budget the tenant already spent. The
+        exemption applies to both callers of this method (the per-worker
+        sweep and the cap-pressure opportunistic eviction). Trade-off,
+        deliberately chosen: an exempt bucket counts against
+        ``settings.max_keyed_rate_limits`` until its quota returns to full
+        (refund/reset) or the process restarts, so under sustained
+        high-cardinality memory fixed-quota keys the cardinality cap can
+        fill and deny NEW keys, the cap fails CLOSED with a warning rather
+        than silently resetting quotas, which is the correct failure
+        direction for a limiter.
+
+        PG fixed-quota buckets are NOT exempt: their quota state lives in
+        the ``rate_limit_buckets`` row, and no reclamation path here can
+        lose it, the drain's DELETE below and the maintenance leader's
+        fleet sweep share the consumed-quota veto
+        (``_no_consumed_quota_sql``) that keeps a partly-spent row, and a
+        re-materialized bucket resumes from that row (the acquire path
+        preseeds ``ON CONFLICT DO NOTHING`` and reads the surviving state).
+        Evicting the registry entry is pure bookkeeping recycling, which is
+        what keeps the ``max_keyed_rate_limits`` cap from filling with
+        never-again-used fixed-quota keys and refusing every new key (#244).
 
         Returns the number of entries evicted.
         """
@@ -1897,13 +1904,23 @@ class RateLimitRegistry:
           away) deletes it. A name with no rows left — fully deleted
           this tick, or never materialized at all — leaves the pending
           set.
-        - The rate-limit DELETE needs no guard and no probe: a bucket
-          row has no holder, so nothing survives the statement and every
-          sliced name leaves the pending set in one pass — the queue
-          drains FIFO with no survivors to rotate. A live bucket never
-          reaches the statement at all: only evicted keyed names are
-          ever recorded, and the re-registered check above drops a
-          re-activated key first.
+        - The rate-limit DELETE needs no HOLDER guard and no survivor
+          probe, a bucket row has no holder or lease, so nothing
+          survives the statement on that axis and every sliced name
+          leaves the pending set in one pass, the queue drains FIFO
+          with no survivors to rotate. It DOES carry a guard, and that
+          guard is critical: the consumed-quota veto
+          (``_no_consumed_quota_sql``, the same predicate the fleet
+          sweep applies) refuses to delete a row whose fixed quota is
+          partly spent, so an evicted spent bucket's row survives the
+          drain and a re-materialized key resumes its spent state
+          instead of resetting to full capacity (pinned by
+          tests/test_keyed_fixed_quota_eviction.py). A vetoed name
+          still leaves the pending set, the row simply stays, and the
+          fleet sweep is the backstop once the quota is no longer
+          consumed. A live bucket never reaches the statement at all:
+          only evicted keyed names are ever recorded, and the
+          re-registered check above drops a re-activated key first.
         - A schema key whose pending set empties (every name
           re-registered, or every row reclaimed) is popped after the
           pass, so a later drain with nothing pending acquires no

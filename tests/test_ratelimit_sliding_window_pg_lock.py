@@ -1,7 +1,8 @@
 """Bounded-wait contract for the log-style PG sliding-window bucket lock.
 
-``_acquire_pg_log`` serialises its per-bucket DELETE / count+INSERT behind
-a transaction-scoped advisory lock keyed ``taskq:{schema}:sw:{name}``. This
+``_acquire_pg_log`` serialises its per-bucket window work, one fused
+prune + admission-insert + count statement (#228), behind a
+transaction-scoped advisory lock keyed ``taskq:{schema}:sw:{name}``. This
 module pins three properties:
 
 1. The lock WAIT is bounded: a racer that cannot acquire the lock within
@@ -142,10 +143,16 @@ class _ContendedFakeConn:
 
     async def fetchrow(self, sql: str, *params: object) -> object:
         self.fetched_rows.append(sql)
-        if "INSERT INTO" in sql:
-            return {"1": 1}
-        if "count(*)" in sql:
-            return {"count": 1}
+        if "WITH pruned AS" in sql:
+            # The fused log-style acquire: one row carrying the whole
+            # decision (insert landed, pre-insert in-window count, and
+            # the denial hint's inputs, unused on the allowed path).
+            return {
+                "inserted": True,
+                "count_in_window": 1,
+                "oldest_ts": None,
+                "server_now": None,
+            }
         return None
 
 
@@ -224,9 +231,9 @@ class TestSlidingWindowLockBoundedWaitUnit:
         assert conn.savepoint_opens == 2
         assert conn.blocking_lock_calls == 1
         assert conn.set_config_values == ["100ms"]
-        # Fail closed: no admission slot was written or evicted.
-        assert not any("INSERT INTO" in s for s in conn.fetched_rows)
-        assert not any("DELETE FROM" in s for s in conn.executed_sql)
+        # Fail closed: no admission slot was written or evicted: the
+        # fused statement (prune + admission insert in one) never ran.
+        assert not any("WITH pruned AS" in s for s in conn.fetched_rows)
 
     async def test_lock_timeout_logs_ratelimit_warning_event(self) -> None:
         """The ``ratelimit-lock-timeout`` log event carries the bucket and
@@ -320,8 +327,10 @@ class TestSlidingWindowLockBoundedWaitUnit:
         # Granted path: the budget was set, then restored to the prior
         # value BEFORE the savepoint RELEASE.
         assert conn.set_config_values == ["1000ms", "0"]
-        assert any("DELETE FROM" in s for s in conn.executed_sql)
-        assert any("INSERT INTO" in s for s in conn.fetched_rows)
+        # The fused statement is the whole locked critical section: the
+        # prune DELETE and the admission INSERT both live in it.
+        assert any("DELETE FROM" in s and "WITH pruned AS" in s for s in conn.fetched_rows)
+        assert any("INSERT INTO" in s and "WITH pruned AS" in s for s in conn.fetched_rows)
 
     async def test_fast_path_uncontended_is_single_try_lock_statement(self) -> None:
         """Happy-path round-trip parity: an uncontended acquire issues
@@ -344,7 +353,9 @@ class TestSlidingWindowLockBoundedWaitUnit:
         # contended tier never ran.
         assert conn.savepoint_opens == 1
         assert conn.set_config_values == []
-        assert any("INSERT INTO" in s for s in conn.fetched_rows)
+        # The fused statement (prune + admission insert in one) is the
+        # only work statement under the lock.
+        assert any("INSERT INTO" in s and "WITH pruned AS" in s for s in conn.fetched_rows)
 
     async def test_lock_timeout_budget_zero_waits_indefinitely(self) -> None:
         """``lock_timeout_ms <= 0`` disables the bound (the pre-fix
@@ -396,9 +407,9 @@ class TestSlidingWindowLockBoundedWaitUnit:
         # well before any plausible unbounded hang.
         assert elapsed >= 0.5, f"the backstop must outlast the 100ms budget, took {elapsed:.3f}s"
         assert elapsed < 2.0, f"the backstop must bound the black hole, took {elapsed:.3f}s"
-        # Fail closed: no admission slot was written or evicted.
-        assert not any("INSERT INTO" in s for s in conn.fetched_rows)
-        assert not any("DELETE FROM" in s for s in conn.executed_sql)
+        # Fail closed: no admission slot was written or evicted: the
+        # fused statement (prune + admission insert in one) never ran.
+        assert not any("WITH pruned AS" in s for s in conn.fetched_rows)
 
 
 # ── Integration: real Postgres ───────────────────────────────────────────
