@@ -405,7 +405,7 @@ async def test_concurrent_pods_cannot_both_finish_the_same_job(pg_dsn: str) -> N
 async def test_rolling_deploy_interrupts_running_jobs_and_the_fleet_finishes_them(
     pg_dsn: str,
 ) -> None:
-    """A pod stopped with actors mid-flight hands every one back — held
+    """A pod stopped with actors mid-flight hands every one back, held
     until the pod is gone, and finished by the fleet exactly once. The
     interrupted claims spend their attempt: the interrupt arm does not
     refund it (issue #287: a refund re-creates the epoch a zombie
@@ -486,7 +486,7 @@ async def test_rolling_deploy_interrupts_running_jobs_and_the_fleet_finishes_the
                 assert by_id[jid]["attempt"] == 1, (
                     "the interrupt arm must not refund the attempt increment: "
                     "the attempt started executing, and a refund re-creates the "
-                    "epoch a zombie handler holds (issue #287) — the interrupted "
+                    "epoch a zombie handler holds (issue #287), the interrupted "
                     "claim spends the attempt"
                 )
                 assert by_id[jid]["interrupt_count"] == 1
