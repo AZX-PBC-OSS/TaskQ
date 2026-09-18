@@ -120,7 +120,7 @@ def test_dead_probe_index_pair_is_gone_from_the_bundled_set() -> None:
     keys = {m.key for m in migrate_mod.discover()}
     assert "01.00.11_01:pre" not in keys
     assert "01.00.12_05:post" not in keys, (
-        "the drop file went with the create file — keeping the post alone "
+        "the drop file went with the create file: keeping the post alone "
         "would fail every apply with a DROP of an index that no longer exists"
     )
     filenames = {m.filename for m in migrate_mod.discover()}
@@ -584,7 +584,7 @@ async def test_strict_fifo_lateral_probe_rides_the_unrouted_index(
             f"the strict-FIFO probe must ride the marker-partial index:\n{plan}"
         )
         assert "Rows Removed by Filter" not in plan, (
-            "the probe walked rows it cannot admit — the NOT assignment_routed "
+            "the probe walked rows it cannot admit: the NOT assignment_routed "
             "conjunct must be the index predicate, not a post-scan Filter:\n"
             f"{plan}"
         )
@@ -614,7 +614,7 @@ async def test_round_robin_lateral_probe_rides_the_unrouted_index(
             f"the round-robin probe must ride the marker-partial index:\n{plan}"
         )
         assert "Rows Removed by Filter" not in plan, (
-            "the probe walked rows it cannot admit — the NOT assignment_routed "
+            "the probe walked rows it cannot admit: the NOT assignment_routed "
             "conjunct must be the index predicate, not a post-scan Filter:\n"
             f"{plan}"
         )
