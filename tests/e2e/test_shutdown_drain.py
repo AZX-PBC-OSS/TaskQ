@@ -172,9 +172,10 @@ async def test_sigterm_drains_inflight_job(
     terminalised by an infrastructure event.
 
     (b) A replacement worker container is started on the same schema/queue.
-    It claims the released job and runs it to completion — the deploy cost
-    the job nothing but time — and a fresh ``send_welcome_email`` job
-    completes normally, proving the system is functional after the SIGTERM.
+    It claims the released job and runs it to completion: the deploy cost
+    the job one attempt of budget (the interrupted claim spent its own),
+    and a fresh ``send_welcome_email`` job completes normally, proving
+    the system is functional after the SIGTERM.
     """
     # ── Phase 1: enqueue, wait for start, SIGTERM ──────────────────────
     handle = await e2e_client.enqueue(
